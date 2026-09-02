@@ -1,12 +1,21 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-02
-**Updated by:** M0 setup session — toolchain pinned, SDL3 gate cleared
+**Updated by:** M0 setup session — toolchain pinned, SDL3 gate cleared, repository published
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
 
 ---
+
+## Repository
+
+**Canonical home: `github.com/sjoygsh/Foundry`** — public, Apache-2.0, established
+2026-09-02. This repository is the engine, its tools, its samples and its documentation.
+Games live in their own repositories and consume Foundry as a dependency (ADR-0017).
+
+No CI, release automation or contribution infrastructure yet; those arrive when the project
+is mature enough to need them rather than as decoration.
 
 ## Current phase
 
@@ -36,6 +45,11 @@ New this session:
 * `THIRD_PARTY_LICENSES/sdl3.md` — SDL3's entry, including the HIDAPI license election.
 * Resolution notes appended to ADR-0001 (which Zig release, and how it is installed) and
   ADR-0002 (which SDL3 package, and the evidence it works).
+* `docs/adr/0017-repository-scope.md` — the engine is a standalone public repository; games
+  are separate consumers. Reflected in `CLAUDE.md` §4.1, §4.5 and §10.
+* `README.md` rewritten for an audience that is not us: scope, toolchain setup, and an honest
+  statement of how early this is.
+* Commit history normalised to a single author identity before publication.
 
 Pre-existing: `CLAUDE.md`, `docs/ROADMAP.md`, ADRs 0001–0016, `docs/design/README.md`,
 `THIRD_PARTY_LICENSES/README.md`, `LICENSE`, `NOTICE`, `README.md`, `.gitignore`,
@@ -58,10 +72,6 @@ also cross-compiles from macOS to Windows x64 and Linux x64.
 repository. There is still no `build.zig`, no `build.zig.zon` and no engine source here. The
 verification is evidence that the plan works, not code that implements it. Nothing in the repo
 builds yet, because there is nothing in the repo to build.
-
-**Action for the developer:** `~/.local/bin` is not on your `PATH`. Until it is, `zig` must be
-invoked by full path. Add it with:
-`echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc`
 
 ## What is being worked on
 
@@ -139,6 +149,10 @@ Anticipated debt, recorded early so it is not mistaken for oversight:
   years from now (`THIRD_PARTY_LICENSES/sdl3.md`).
 * **Neither ADR-0002 fallback was needed**, so ADR-0014's "Zig is the only build tool" claim
   survived contact with the project's first real dependency.
+* **The engine gets its own public repository; games get theirs** (ADR-0017). The convenience
+  of a shared repository is exactly the friction that keeps I4 and I5 honest, so it is
+  deliberately declined. Consequence: Foundry has to be genuinely consumable before there is
+  anything consuming it.
 
 **Earlier (architecture session):** sixteen ADRs. Widest blast radius: Metal-first with macOS
 primary (0003, 0008); two rendering boundaries with the RHI never exposed (0003); Zig pinned to
@@ -185,7 +199,11 @@ supports it. Both were the top two questions on this list.*
   `root_source_file` directly; `build.zig.zon` requires a `.fingerprint` field and its `.name`
   is an enum literal (`.foundry`, not `"foundry"`). Run `zig init` in a scratch directory and
   read the generated files before trusting any remembered API.
-* Machine: Apple M5, macOS 26.6.2, Xcode 26 with SDK 26.5, Metal toolchain present (always via
-  `xcrun`, never a hardcoded path), Homebrew present but unused by Foundry, git and Python
-  present. **Zig 0.16.0 installed at `~/.local/zig/0.16.0`, symlinked `~/.local/bin/zig`,
-  which is not yet on `PATH`.**
+* **Reference development environment**, which is what the verification above was performed
+  against: Apple Silicon, macOS 26, Xcode 26 with SDK 26.5, Zig 0.16.0. The Metal toolchain is
+  always invoked via `xcrun`, never a hardcoded path — it lives on a versioned mount that moves
+  between updates. Homebrew may exist on a developer's machine but nothing in Foundry may
+  assume it.
+* `scripts/install-zig.sh` places Zig at `~/.local/zig/<version>` and symlinks
+  `~/.local/bin/zig`. If `~/.local/bin` is not on `PATH`, add it:
+  `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc`

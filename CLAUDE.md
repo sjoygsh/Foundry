@@ -171,6 +171,7 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Tooling | Tools are Foundry applications built on the public API | [0011](docs/adr/0011-tooling-architecture.md) |
 | Toolchain | Zig only; no CMake, Ninja, Make or pkg-config | [0014](docs/adr/0014-toolchain.md) |
 | Licensing | Apache-2.0; permissive-only third-party policy | [0016](docs/adr/0016-licensing.md) |
+| Repository | Engine is a standalone public repo; games are separate consumers | [0017](docs/adr/0017-repository-scope.md) |
 | Process | CLAUDE.md + PROJECT_STATE.md + numbered ADRs | [0009](docs/adr/0009-documentation-process.md) |
 
 **Language note.** Zig is pre-1.0 and both the language and `std` break between releases. This
@@ -286,6 +287,16 @@ Foundry/
                          as the dependency. See its README for the policy.
   scripts/
 ```
+
+**What does not live here.** Foundry is the engine, and its repository contains the engine,
+its tools, its samples and its documentation — nothing else. **Games live in their own
+repositories** and consume Foundry as a dependency (ADR-0017). A game developed inside the
+engine tree would leak its assumptions into the engine silently, which is precisely what I4
+and I5 exist to prevent.
+
+`samples/` holds the smallest thing that exercises a capability. A sample is not a game. When
+a sample starts wanting features rather than demonstrating them, it has outgrown this
+repository.
 
 ---
 
@@ -446,6 +457,7 @@ A future session must not, without explicit discussion:
 * Violate any Invariant in §3.
 * Give the editor, tools or first-party content a private path the mod API does not have.
 * Hardcode game content into engine source.
+* Move a game into this repository, or let `samples/` grow into one (ADR-0017).
 * Let SDL3 references escape `platform`, or graphics API references escape `rhi`.
 * Expose the RHI to games or mods. The Renderer API is the game-facing boundary, not the RHI.
 * Track Zig master or nightly, or upgrade the pinned toolchain during a milestone.
