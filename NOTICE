@@ -1,0 +1,10 @@
+Foundry Engine
+Copyright 2026 The Foundry Authors
+
+This product includes software developed by the Foundry project.
+
+Licensed under the Apache License, Version 2.0. See LICENSE for the full text.
+
+Third-party components distributed with Foundry, and their licenses, are recorded in
+THIRD_PARTY_LICENSES/. Shipped builds carry the aggregated attribution file generated
+from that directory.

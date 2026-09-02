@@ -1,60 +1,75 @@
-# ADR-0008: Target platforms and the macOS development host
+# ADR-0008: Target platforms
 
 **Status:** Accepted
 **Date:** 2026-09-02
+**Revised:** 2026-09-02 — the initial version treated macOS as a development host with
+deferred shipping status. Corrected the same session, before any code existed: macOS is the
+primary development target and first-class supported. Revised in place per the policy in
+`README.md`.
 
 ## Context
 
-Windows and Linux are the shipping targets. Development happens on macOS, which the
-developer also wants as an eventual shipping target.
+Development happens on Apple Silicon macOS 26 (M5). The architecture must be runnable and
+usable locally on macOS from the beginning, not eventually.
 
-Developing on a platform you do not ship creates a real hazard: code that is never run on the
-target until late. Zig's built-in cross-compilation removes the *build* half of that problem
-but not the *test* half — a cross-compiled binary still has to run somewhere.
+Windows x64 and Linux x64 are intended supported targets. Under Metal-first (ADR-0003) they
+will not have render backends for some time, which raises a concrete policy question: what
+does each milestone actually owe a platform that cannot yet draw anything?
 
 ## Decision
 
-**Supported platforms:**
+**Initial target platforms:**
 
-| Platform | Role | Graphics path |
+| Platform | Role | Graphics |
 | --- | --- | --- |
-| Windows | Ship target | Vulkan |
-| Linux | Ship target | Vulkan |
-| macOS | Dev host now, ship target later | Vulkan via MoltenVK now; native Metal at ship time |
+| macOS on Apple Silicon | **Primary development target, first-class supported** | Metal (native, not MoltenVK) |
+| Windows x64 | Intended supported target | Backend deferred until there is a reason |
+| Linux x64 | Intended supported target | Backend deferred until there is a reason |
 
-All three are built from any host via Zig cross-compilation. All three must **build** on every
-milestone; a build break on a non-host platform is treated as a bug, not as acceptable drift.
+Other platforms — consoles, mobile, web, VR, x86-64 macOS — are considered later and do not
+constrain the initial architecture. Web in particular stays out because it would constrain
+threading, file I/O, the graphics API and the mod sandbox.
 
-Because one Vulkan backend covers all three platforms initially, no additional renderer work
-is owed to macOS until it actually ships.
+**Per-milestone obligation to Windows and Linux: build-check, no runtime.**
 
-**Testing discipline:** Windows and Linux must be *run*, not merely compiled, at least once
-per milestone — on real hardware or a VM. Cross-compiling successfully is not evidence that
-anything works. The null RHI backend makes a large share of the engine testable headlessly,
-which is what makes automated cross-platform testing practical at all.
+* Every milestone **cross-compiles** the non-rendering modules — `core`, `data`, `asset`,
+  `scene`, and `platform` where SDL3 builds for the target — for `x86_64-windows` and
+  `x86_64-linux`. A cross-compilation failure is a bug, fixed in that milestone.
+* There is **no obligation to run** anything on Windows or Linux until a backend for them
+  exists. Cross-compiling successfully is not evidence that anything works, and this policy
+  does not pretend otherwise.
+* When a backend for either platform is started, that milestone also establishes real
+  hardware or VM testing. Until then, the logistics are not owed.
 
-Out of scope indefinitely: consoles, mobile, VR, web. Web in particular is excluded
-deliberately, as it would constrain threading, file I/O, the graphics API and the mod sandbox.
+This keeps portability rot to one-line fixes found early, without making SDL3
+cross-compilation a blocker for M0 and without pretending untested cross-builds are support.
 
 ## Consequences
 
-* macOS being a real target rather than a convenience means platform-specific assumptions get
-  caught continuously instead of at the end.
-* Endianness is a non-issue (all targets are little-endian), but alignment, path handling,
-  line endings, case-sensitive vs. case-insensitive filesystems, and dynamic library naming
-  all differ and must be handled in `platform` from the start.
-* Cost: a native Metal backend is eventually owed. Deferred, not avoided.
-* Cost: real testing requires a Windows machine or VM. This is a standing logistical
-  requirement, not a one-off.
+* macOS being primary means the engine is genuinely usable locally from day one, with Apple's
+  own debugging and profiling tools.
+* Cheap, continuous portability pressure on the majority of the codebase. Endianness is a
+  non-issue (all targets little-endian), but path handling, case-sensitive vs.
+  case-insensitive filesystems, line endings, dynamic library naming and alignment all differ
+  and get caught by the build-check.
+* Cost: honest acknowledgement that "supported" currently means "compiles." Windows and Linux
+  are targets we are *designing for*, not targets we are *testing*. Saying this plainly is
+  better than implying coverage that does not exist.
+* Cost: a second backend is owed eventually, and it will find RHI design errors (ADR-0003).
 
 ## Alternatives considered
 
-* **macOS as a dev host only, never shipped** — cheaper; no Metal backend ever needed.
-  Rejected by developer preference.
-* **Drop macOS entirely and develop in a Linux VM** — removes the host/target mismatch.
-  Rejected: it degrades the daily development experience on the actual machine available.
+* **macOS only until Phase 3** — fastest, zero cross-compilation work now. Rejected:
+  platform assumptions accumulate silently in code nobody has ever compiled elsewhere, and
+  the bill arrives all at once.
+* **Full parity now** — treat all three as first-class immediately, requiring a Vulkan or
+  D3D12 backend early. Rejected: contradicts building backends only when there is a reason,
+  and would restore the months-long wall that Metal-first removes.
+* **macOS as dev host only, never shipped** — cheaper, no Metal backend ever needed.
+  Rejected by developer decision; macOS is first-class.
 
 ## Revisit if
 
-MoltenVK proves inadequate for daily development, or macOS is dropped as a shipping target,
-which would let the Metal backend be cancelled outright.
+A decision to ship Windows or Linux arrives, which triggers backend #2 and the corresponding
+testing logistics; or the build-check proves to catch nothing useful, in which case it is
+ceremony and should be dropped.

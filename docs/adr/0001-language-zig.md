@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-09-02
+**Revised:** 2026-09-02 — pinning tightened to stable releases only, no master/nightly.
 
 ## Context
 
@@ -21,9 +22,20 @@ The developer proposed Zig with a C ABI, noting the C ABI part was open to chang
   allocators. Internal module boundaries are Zig interfaces, not C ones.
 * **At the outer boundary**, a narrow versioned C ABI (see ADR-0004).
 
-The compiler version is **pinned in-repo** (`.zigversion` plus `minimum_zig_version` in
-`build.zig.zon`). Toolchain upgrades are an explicit chore performed between milestones,
-never during one.
+The compiler version is **pinned in-repo** to a **specific stable Zig release**
+(`.zigversion` plus `minimum_zig_version` in `build.zig.zon`, with the release's SHA256
+recorded).
+
+**Foundry never tracks Zig master or nightly builds.** Not for a feature, not temporarily,
+not for a dependency that only builds against master. A pre-1.0 language is survivable when
+you control *when* you absorb its breakage; tracking master means absorbing it continuously
+and unpredictably, which is the failure mode that kills long-running Zig projects.
+
+Toolchain upgrades are an explicit, deliberate project decision, performed **between**
+milestones and never during one. An upgrade is its own commit, carrying the version bump, any
+resulting code changes, and a note in `PROJECT_STATE.md`. The compiler is installed from the
+official release tarball at a versioned path rather than through a package manager, so that
+an unrelated `brew upgrade` cannot silently change the toolchain.
 
 ## Consequences
 
@@ -44,8 +56,12 @@ Good:
 Costs, accepted knowingly:
 
 * **Zig is pre-1.0. The language and `std` break between releases.** Over a multi-year
-  project this cost is paid repeatedly. Mitigated by pinning, by scheduling upgrades between
-  milestones, and by concentrating `std` usage behind `core`.
+  project this cost is paid repeatedly. Mitigated by pinning to stable releases, by never
+  tracking master, by scheduling upgrades between milestones, and by concentrating `std`
+  usage behind `core`.
+* A consequence of refusing master: a third-party Zig package that only supports master is
+  not usable by Foundry. This is a real constraint on dependency choice, accepted
+  deliberately — it is the price of a stable floor.
 * Small ecosystem; few engine-specific resources or people to ask.
 * Debugger and profiler tooling is less mature than C++'s.
 * No guarantee of a 1.0 date.

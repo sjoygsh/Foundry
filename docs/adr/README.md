@@ -6,8 +6,14 @@ arbitrary to a future session.
 ## Rules
 
 * One decision per file, named `NNNN-short-title.md`, numbered sequentially and never reused.
-* **Append-only once accepted.** To change a decision, write a new ADR and mark the old one
-  `Superseded by NNNN`. Do not edit an accepted decision's Context or Decision sections.
+* **Append-only once code depends on it.** Before any implementation exists against a
+  decision, it may be revised in place with a dated revision note at the top. After code
+  depends on it, changing it means writing a new ADR that supersedes the old one, and marking
+  the old one `Superseded by NNNN`.
+
+  The line is drawn at "code depends on it" rather than at "accepted" because a trail of
+  superseded ADRs from a single planning session is archaeology, not history. Once something
+  is built, the old reasoning becomes genuinely valuable and must be preserved.
 * Every ADR states what would cause us to revisit it.
 * The index of accepted ADRs is the table in `CLAUDE.md` §4.1. Keep it in sync.
 
