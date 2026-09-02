@@ -1,0 +1,30 @@
+# Zig
+.zig-cache/
+zig-cache/
+zig-out/
+
+# Build / tooling
+build/
+out/
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.pdb
+*.exe
+
+# Compiled content / assets (produced by tools/fpack)
+*.fpk
+content-build/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
