@@ -1,7 +1,7 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-02
-**Updated by:** M0 — setup complete, repository published, first two design docs written
+**Updated by:** M0 — build graph and `core` implemented, 50 tests passing
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -23,9 +23,8 @@ is mature enough to need them rather than as decoration.
 
 ## Current milestone
 
-**M0 — Skeleton: "it runs."** In progress. Setup is complete and the two design docs owed
-before M0 are written. No engine code yet — by design: development rule 1 is design before
-implementation.
+**M0 — Skeleton: "it runs."** In progress. Setup, design docs, the build graph and `core`
+are done. Next is `platform`.
 
 Target: a window that opens and responds to input on macOS, a fixed-timestep loop, `core`
 primitives, a null RHI backend, and cross-compilation checks for Windows and Linux. Full
@@ -55,6 +54,12 @@ New this session:
   ID hashing, logging, assertions, math, time, RNG.
 * `docs/design/platform-interface.md` — window and surface, events and input, filesystem,
   dynamic library loading, clock, and the null platform backend.
+* `build.zig` — the ADR-0007 module graph expressed as a data table, plus `test` and `check`
+  steps. `build.zig.zon` — package identity and the pinned SDL3 dependency.
+* `engine/src/core/` — the whole of L0: `assert`, `handle`, `id`, `log`, `math`, `mem`,
+  `rng`, `time`.
+* `scripts/check-targets.sh` — runs everything a milestone owes: pinned-version check,
+  native tests, and compile checks for Windows and Linux.
 
 Pre-existing: `CLAUDE.md`, `docs/ROADMAP.md`, ADRs 0001–0016, `docs/design/README.md`,
 `THIRD_PARTY_LICENSES/README.md`, `LICENSE`, `NOTICE`, `README.md`, `.gitignore`,
@@ -73,10 +78,20 @@ under the `cocoa` driver with `SDL_WINDOW_METAL`, obtained a live `CAMetalLayer`
 `SDL_Metal_CreateView` / `SDL_Metal_GetLayer`, pumped events and exited cleanly. Full SDL3
 also cross-compiles from macOS to Windows x64 and Linux x64.
 
-**Caveat, stated plainly:** that probe was built in a scratch directory and is **not** in this
-repository. There is still no `build.zig`, no `build.zig.zon` and no engine source here. The
-verification is evidence that the plan works, not code that implements it. Nothing in the repo
-builds yet, because there is nothing in the repo to build.
+**`core` is implemented and tested.** `zig build test` passes 50 tests covering the handle
+pool (stale resolution, LIFO reuse, generation wraparound, iteration order), the pinned FNV-1a
+and PCG32 vectors, the arena, the math types and the fixed-timestep model. `zig build check
+-Dtarget=x86_64-windows-gnu` and `-Dtarget=x86_64-linux-gnu` both compile, so ADR-0008's
+per-milestone obligation is met and automated.
+
+**The build graph enforces layering (I7).** `build.zig` declares each module with an explicit
+dependency list; a module can only `@import` what the graph grants it, and Zig separately
+refuses to import a file outside a module's own directory, which closes the workaround. Only
+`core` exists so far, so nothing is being constrained yet — but the mechanism is in place
+before there is anything to constrain, which was the point.
+
+**Still true:** the SDL3 probe from setup was scratch work and is not in this repository.
+`platform` does not exist yet, so nothing here opens a window.
 
 ## What is being worked on
 
@@ -89,22 +104,13 @@ Nothing in progress. The next session continues M0 at step 1 below.
 Setup and design are finished. Everything remaining in M0 is implementation, and it is now
 transcription of the two design documents rather than invention.
 
-1. **Write `build.zig` and `build.zig.zon`** with the module graph from ADR-0007, so layering
-   is enforced from the first line of code (I7). The SDL3 dependency lands here, pinned by the
-   hash already verified this session:
-   `git+https://github.com/castholm/SDL.git?ref=v0.5.3+3.4.14#fb2d799c4778832a34ccb3739e40dded700684bd`
-   `hash = "sdl-0.5.3+3.4.14-SDL--v4eqAGuIKFsspMVxBxZf1OIEmmH-yHDdEl9ZRdX"`
-   Its `THIRD_PARTY_LICENSES/` entry already exists, so the same-commit rule is satisfied.
-2. **Implement `core`**: allocators, generational handle table, string IDs and hashing, logging,
-   assertions, math, time, explicit RNG.
-3. **Implement `platform`**: window, event pump, input, clock, filesystem, opaque
+1. **Implement `platform`**: window, event pump, input, clock, filesystem, opaque
    `NativeSurfaceHandle`. SDL3 confined here.
-4. **Implement `app`**: fixed-timestep loop, subsystem lifecycle, clean shutdown.
-5. **Define the `rhi` interface and write the null backend.** Interface shape matters far more
+2. **Implement `app`**: fixed-timestep loop (drive it with `core.time.FixedStepper`, which
+   already exists and is tested), subsystem lifecycle, clean shutdown.
+3. **Define the `rhi` interface and write the null backend.** Interface shape matters far more
    than the backend at this stage.
-6. **Build `samples/sandbox`** to M0's exit criteria.
-7. **Add a script that builds all three targets**, so the cross-compile obligation is checked
-   rather than remembered.
+4. **Build `samples/sandbox`** to M0's exit criteria.
 
 Before M1, and before any Metal code: **`docs/design/rhi.md`**, including the Metal / Vulkan /
 D3D12 concept mapping table from ADR-0003. This is the highest-leverage document in the project.
@@ -127,8 +133,14 @@ Anticipated debt, recorded early so it is not mistaken for oversight:
 * Sparse-set entity storage (M4) is explicitly a first implementation, not a final one.
 * The first content authoring format may need replacing once real content exists at scale.
   ADR-0006 contains this by separating schemas from syntax.
-* "Supported" still means "compiles" for Windows and Linux — but as of this session that claim
-  is at least tested, including SDL itself, rather than assumed.
+* "Supported" still means "compiles" for Windows and Linux — but the claim is now checked by
+  `scripts/check-targets.sh` rather than asserted.
+* **`core.log` currently formats through `std.log`'s default handler.** `app` will need to
+  install a real log sink: destination, timestamps, runtime filtering by scope. The interface
+  is right; the backend behind it is temporary.
+* **The handle pool is sparse and iterates dead slots.** Fine for its intended use — lookup by
+  identity, rare iteration. Deliberately not optimised, and deliberately not generalised toward
+  component storage (ADR-0010, M4).
 
 ---
 
@@ -150,6 +162,9 @@ Anticipated debt, recorded early so it is not mistaken for oversight:
   years from now (`THIRD_PARTY_LICENSES/sdl3.md`).
 * **Neither ADR-0002 fallback was needed**, so ADR-0014's "Zig is the only build tool" claim
   survived contact with the project's first real dependency.
+* **The build graph is a data table, not procedural wiring.** One line per module with its
+  dependency list, so the layering from ADR-0007 is legible in one place and a violation is a
+  compile error naming the offending import.
 * **Handles are `extern struct`, and the null handle is all-zero bits.** Their layout is a
   C ABI compatibility decision (ADR-0004), not an implementation detail, so it was fixed now
   while it is free.
@@ -207,6 +222,12 @@ supports it. Both were the top two questions on this list.*
   the conditions that would justify revisiting it.
 * Sessions are bounded by available context, not calendar time. Prefer finishing a coherent
   piece and updating this file over leaving several things half-built.
+* **Two Zig 0.16 behaviours worth not rediscovering.** The test runner **fails a test that
+  logs at `err` level** — correct behaviour, but a test proving an error path compiles must not
+  actually emit one. And a `build.zig.zon` dependency marked `.lazy = true` is *still*
+  extracted into `zig-pkg/` on every build; `lazy` governs how `build.zig` must ask for it
+  (`b.lazyDependency`, which returns an optional), not whether it is materialised. `zig-pkg/`
+  is build output and is gitignored.
 * **Zig 0.16.0 build-system idioms differ from older releases.** Confirmed against this exact
   compiler: modules are created with `b.addModule` / `b.createModule` and wired through
   `.imports`; `addExecutable` and `addTest` take a `.root_module` rather than a

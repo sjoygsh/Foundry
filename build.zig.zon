@@ -1,0 +1,35 @@
+.{
+    .name = .foundry,
+    .version = "0.0.0",
+    // Globally unique package identity. Generated once, then never changed.
+    .fingerprint = 0x1d6d45b13ea75e55, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0",
+
+    .dependencies = .{
+        // SDL3, via its Zig build-system port. Confined to the `platform` module
+        // (ADR-0002); nothing above L1 may reference it, and `rhi` never sees an SDL
+        // type — it gets an opaque NativeSurfaceHandle instead.
+        //
+        // Marked lazy, but note what that does and does not do in Zig 0.16: the
+        // package is still extracted into `zig-pkg/` on any build, whether or not
+        // `platform` is reached. `lazy` governs how build.zig must ask for it
+        // (`b.lazyDependency`, which may return null), not whether it is materialised.
+        // The cost is a local extraction from the global cache, not a download.
+        //
+        // License entry: THIRD_PARTY_LICENSES/sdl3.md (zlib; HIDAPI elected BSD-3-Clause)
+        .sdl = .{
+            .url = "git+https://github.com/castholm/SDL.git?ref=v0.5.3+3.4.14#fb2d799c4778832a34ccb3739e40dded700684bd",
+            .hash = "sdl-0.5.3+3.4.14-SDL--v4eqAGuIKFsspMVxBxZf1OIEmmH-yHDdEl9ZRdX",
+            .lazy = true,
+        },
+    },
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "engine",
+        "LICENSE",
+        "NOTICE",
+        "README.md",
+    },
+}

@@ -126,6 +126,14 @@ free:   LIFO list of free slot indices, threaded through free slots
 **Slots are never removed from the array.** The array only grows. This keeps indices stable
 forever, which is what makes handles meaningful.
 
+### Resolving returns a borrow, not ownership
+
+A successful resolve yields a pointer into the slot array, and that pointer is **valid
+only until the next mutation of the pool** — `add` may reallocate. This is not a wart to
+be engineered away with stable-address chunked storage; it is I1 restated. Hold the
+handle, not the pointer. A pointer kept across an `add` is already the thing handles
+exist to replace.
+
 ### Generation wraparound
 
 A `u32` generation wraps after 2^32 reuses of *one particular slot*. At sixty
@@ -283,8 +291,9 @@ to `null` (§2) is the archetype: it is *expected*, because handles come from sa
 
 ## 6. Math
 
-`core` provides `Vec2/3/4`, `Mat3/Mat4`, `Rect`, `Quat` and the usual operations, over `f32`.
-`f64` is not provided until something needs it.
+`core` provides `Vec2/3/4`, `Mat4`, `Rect` and the usual operations, over `f32`. `f64` is
+not provided until something needs it, and **quaternions arrive with 3D** — adding them
+now would be unused code with no caller to validate the conventions they encode.
 
 **Matrices are column-major in storage**, matching MSL, GLSL and HLSL's default and the
 conventions of the graphics literature. `Mat4` is sixteen contiguous `f32` that can be handed
