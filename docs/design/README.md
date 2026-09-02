@@ -19,4 +19,7 @@ depended on by several others, or will be hard to change later.
 
 ## Written
 
-None yet.
+| Document | Covers | Decisions worth knowing about |
+| --- | --- | --- |
+| [`core-memory-and-handles.md`](core-memory-and-handles.md) | Allocator model, generational handles, content ID hashing, logging, assertions, math, time, RNG | Handles are `extern struct` because they cross the C ABI later; null handle is all-zero bits; FNV-1a 64 and PCG32 are **specified in the document**, not delegated to `std`, because both are persisted; simulation time is an integer tick count, never a float |
+| [`platform-interface.md`](platform-interface.md) | Window and surface, events and input, filesystem, dynamic libraries, clock, the null backend | Compile-time backend selection with a `comptime` conformance check; logical size and pixel size are never conflated; input is captured into a per-frame immutable snapshot (an I9 requirement); keys are identified by physical position, with text entry as a separate event |

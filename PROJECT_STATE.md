@@ -1,7 +1,7 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-02
-**Updated by:** M0 setup session — toolchain pinned, SDL3 gate cleared, repository published
+**Updated by:** M0 — setup complete, repository published, first two design docs written
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -23,8 +23,9 @@ is mature enough to need them rather than as decoration.
 
 ## Current milestone
 
-**M0 — Skeleton: "it runs."** In progress. The three setup items are done; no engine code
-written yet.
+**M0 — Skeleton: "it runs."** In progress. Setup is complete and the two design docs owed
+before M0 are written. No engine code yet — by design: development rule 1 is design before
+implementation.
 
 Target: a window that opens and responds to input on macOS, a fixed-timestep loop, `core`
 primitives, a null RHI backend, and cross-compilation checks for Windows and Linux. Full
@@ -50,6 +51,10 @@ New this session:
 * `README.md` rewritten for an audience that is not us: scope, toolchain setup, and an honest
   statement of how early this is.
 * Commit history normalised to a single author identity before publication.
+* `docs/design/core-memory-and-handles.md` — allocator model, generational handles, content
+  ID hashing, logging, assertions, math, time, RNG.
+* `docs/design/platform-interface.md` — window and surface, events and input, filesystem,
+  dynamic library loading, clock, and the null platform backend.
 
 Pre-existing: `CLAUDE.md`, `docs/ROADMAP.md`, ADRs 0001–0016, `docs/design/README.md`,
 `THIRD_PARTY_LICENSES/README.md`, `LICENSE`, `NOTICE`, `README.md`, `.gitignore`,
@@ -81,28 +86,24 @@ Nothing in progress. The next session continues M0 at step 1 below.
 
 ## Immediate next steps
 
-Setup is finished. Everything remaining in M0 is engineering.
+Setup and design are finished. Everything remaining in M0 is implementation, and it is now
+transcription of the two design documents rather than invention.
 
-1. **Write `docs/design/core-memory-and-handles.md`**, then `docs/design/platform-interface.md`.
-   The handle table underpins Invariant I1 and every subsystem uses it; it is worth designing
-   on paper first. The platform interface doc matters for a second reason recorded in ADR-0002:
-   it is where SDL concepts are most likely to leak into the *design* rather than just the
-   implementation.
-2. **Write `build.zig` and `build.zig.zon`** with the module graph from ADR-0007, so layering
+1. **Write `build.zig` and `build.zig.zon`** with the module graph from ADR-0007, so layering
    is enforced from the first line of code (I7). The SDL3 dependency lands here, pinned by the
    hash already verified this session:
    `git+https://github.com/castholm/SDL.git?ref=v0.5.3+3.4.14#fb2d799c4778832a34ccb3739e40dded700684bd`
    `hash = "sdl-0.5.3+3.4.14-SDL--v4eqAGuIKFsspMVxBxZf1OIEmmH-yHDdEl9ZRdX"`
    Its `THIRD_PARTY_LICENSES/` entry already exists, so the same-commit rule is satisfied.
-3. **Implement `core`**: allocators, generational handle table, string IDs and hashing, logging,
+2. **Implement `core`**: allocators, generational handle table, string IDs and hashing, logging,
    assertions, math, time, explicit RNG.
-4. **Implement `platform`**: window, event pump, input, clock, filesystem, opaque
+3. **Implement `platform`**: window, event pump, input, clock, filesystem, opaque
    `NativeSurfaceHandle`. SDL3 confined here.
-5. **Implement `app`**: fixed-timestep loop, subsystem lifecycle, clean shutdown.
-6. **Define the `rhi` interface and write the null backend.** Interface shape matters far more
+4. **Implement `app`**: fixed-timestep loop, subsystem lifecycle, clean shutdown.
+5. **Define the `rhi` interface and write the null backend.** Interface shape matters far more
    than the backend at this stage.
-7. **Build `samples/sandbox`** to M0's exit criteria.
-8. **Add a script that builds all three targets**, so the cross-compile obligation is checked
+6. **Build `samples/sandbox`** to M0's exit criteria.
+7. **Add a script that builds all three targets**, so the cross-compile obligation is checked
    rather than remembered.
 
 Before M1, and before any Metal code: **`docs/design/rhi.md`**, including the Metal / Vulkan /
@@ -149,6 +150,19 @@ Anticipated debt, recorded early so it is not mistaken for oversight:
   years from now (`THIRD_PARTY_LICENSES/sdl3.md`).
 * **Neither ADR-0002 fallback was needed**, so ADR-0014's "Zig is the only build tool" claim
   survived contact with the project's first real dependency.
+* **Handles are `extern struct`, and the null handle is all-zero bits.** Their layout is a
+  C ABI compatibility decision (ADR-0004), not an implementation detail, so it was fixed now
+  while it is free.
+* **FNV-1a 64 and PCG32 are specified in the design docs, not delegated to `std`.** Both are
+  persisted — content ID hashes go into compiled content and saves, RNG seeds are a
+  reproducibility promise — and `std` is not a stability contract in a pre-1.0 language. Test
+  vectors are pinned so a Zig upgrade that moves `std` produces a failing test rather than
+  silent data corruption.
+* **Simulation time is an integer tick count, never a float** (I9). A float accumulator makes
+  identical inputs diverge through rounding alone.
+* **Input is captured into a per-frame immutable snapshot** that simulation reads instead of
+  querying devices (I9). This is also what makes replay and, much later, networking possible
+  without redesign.
 * **The engine gets its own public repository; games get theirs** (ADR-0017). The convenience
   of a shared repository is exactly the friction that keeps I4 and I5 honest, so it is
   deliberately declined. Consequence: Foundry has to be genuinely consumable before there is
