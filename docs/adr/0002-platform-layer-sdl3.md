@@ -73,3 +73,45 @@ adds the dependency (ADR-0016).
 
 SDL3's release cadence or licensing changes, a platform we need is unsupported, or SDL's
 abstractions start distorting the design of Foundry's platform interface.
+
+---
+
+## Resolution — 2026-09-02
+
+The open question above ("does the SDL3 Zig package build against a pinned stable release?")
+is settled. Verified on Apple Silicon macOS 26.6.2 with Zig 0.16.0:
+
+* **Package chosen: `castholm/SDL` v0.5.3+3.4.14** (SDL 3.4.14), pinned in `build.zig.zon` by
+  content hash. Its manifest declares `minimum_zig_version = "0.16.0"` and its README states
+  "Requires Zig 0.16.0 or 0.17.0-dev (master)" — so it supports our pinned stable release
+  directly, and ADR-0001's refusal to track master costs us nothing here.
+* It is a genuine Zig-build-system port that compiles SDL from source, not a wrapper around a
+  prebuilt binary or a CMake invocation. **Neither documented fallback was needed**, and
+  ADR-0014's "Zig is the only tool" claim survives contact with the project's first dependency.
+* **The Metal seam works.** `SDL_Metal_CreateView` followed by `SDL_Metal_GetLayer` returns a
+  live `CAMetalLayer` from a window created with `SDL_WINDOW_METAL`, under the `cocoa` video
+  driver. This is the entire graphics contract between `platform` and `rhi`, and it is now
+  demonstrated rather than assumed — which matters, because ADR-0003's Metal-first plan rests
+  on it.
+* **Cross-compilation works, including SDL itself.** Full SDL3 builds from macOS for
+  `x86_64-windows-gnu` and `x86_64-linux-gnu`, producing a PE32+ executable and an ELF
+  executable respectively. ADR-0008's per-milestone "build-check, no runtime" obligation is
+  therefore achievable for `platform` too, not only for the SDL-free modules — a better
+  outcome than that ADR assumed.
+
+Considered and rejected: `allyourcodebase/SDL`, which also supports 0.16.0 but resolves X11,
+Wayland, dbus, EGL and xkbcommon as separate package dependencies. `castholm/SDL` keeps the
+Linux system dependencies behind a single lazily-fetched package, which is a smaller surface
+to pin and to audit.
+
+**Licensing note.** SDL is zlib, but its tree bundles HIDAPI under
+`GPL-3.0-only OR BSD-3-Clause OR HIDAPI`. Foundry elects **BSD-3-Clause**; no GPL obligation
+attaches. Every `GPL-3.0-only` occurrence in the package was checked against its `REUSE.toml`
+and all are `OR` disjunctions — none stands alone. Full reasoning in
+`THIRD_PARTY_LICENSES/sdl3.md`.
+
+**Residual risk, unchanged in kind but now smaller:** the port is a third-party build script
+that can bitrot against a future pinned Zig release. The fallbacks above remain the plan if a
+Zig upgrade outruns it. The mitigation is ADR-0001's rule that toolchain upgrades happen
+between milestones, deliberately — which gives us a moment to check this specific dependency
+before committing to a new compiler.

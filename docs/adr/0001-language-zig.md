@@ -85,3 +85,27 @@ worst-case port to C or C++ is painful but not fatal. This is a fallback, not a 
 Zig's churn consumes a materially disruptive share of development time across several
 milestones, or the language's direction changes in a way that breaks the allocator or
 `comptime` models Foundry depends on.
+
+---
+
+## Resolution — 2026-09-02
+
+**Pinned to Zig 0.16.0** (released 2026-04-13), the current stable release. Master at the time
+of pinning was `0.17.0-dev.1963+e00c6c439`; we do not use it.
+
+Installed by `scripts/install-zig.sh`, which fetches the official tarball, verifies it against
+a SHA256 recorded in the script, and extracts it to a versioned path (`~/.local/zig/0.16.0` by
+default) with a symlink at `~/.local/bin/zig`. Deliberately **not** a Homebrew install: an
+unrelated `brew upgrade` must not be able to move the compiler.
+
+The version is recorded in `.zigversion` as a bare version string so standard tooling can read
+it. The tarball hashes live in the install script rather than in `.zigversion`, next to the
+download that verifies them — one place, so the hash cannot drift from the code that checks it.
+
+Upgrading means adding the new hashes to the script, changing `PINNED`, and re-running it. The
+old version stays installed alongside, so a bad upgrade is reverted by re-pointing the symlink
+rather than by re-downloading.
+
+Verified on Apple Silicon macOS 26.6.2: native build, `zig build test`, and cross-compilation
+to `x86_64-windows-gnu`, `x86_64-linux-gnu` and `aarch64-linux-gnu`, all with no toolchain
+beyond Zig itself.
