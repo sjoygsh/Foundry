@@ -8,6 +8,12 @@ const std = @import("std");
 /// code review finding. Zig additionally refuses to import a file outside a module's
 /// own directory, which closes the obvious workaround.
 ///
+/// One nuance, verified rather than assumed: the error fires at the point of *use*.
+/// Zig analyses top-level declarations lazily, so an undeclared import that nothing
+/// references is never resolved and compiles clean. That is harmless — a dead import
+/// grants no access — but it means the guarantee is "you cannot use what you were not
+/// given", not "you cannot type it".
+///
 /// Dependencies point downward only. Modules are declared in dependency order.
 /// If a new subsystem does not fit here, that is a signal to re-examine the subsystem
 /// or the layering explicitly — not to add a sideways dependency.

@@ -90,6 +90,13 @@ refuses to import a file outside a module's own directory, which closes the work
 `core` exists so far, so nothing is being constrained yet — but the mechanism is in place
 before there is anything to constrain, which was the point.
 
+Tested directly, not assumed: adding `@import("platform")` to `core` and referencing it fails
+with *no module named 'platform' available within module 'root'*. The nuance found while
+testing it is that the error fires at the point of **use** — Zig analyses top-level
+declarations lazily, so an undeclared import nothing references compiles clean. Harmless, since
+a dead import grants no access, but the guarantee is "you cannot use what you were not given",
+not "you cannot type it".
+
 **Still true:** the SDL3 probe from setup was scratch work and is not in this repository.
 `platform` does not exist yet, so nothing here opens a window.
 
