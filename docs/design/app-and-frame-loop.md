@@ -1,6 +1,6 @@
 # Design: `app` — the engine loop and what owns what
 
-**Status:** Accepted
+**Status:** Implemented 2026-09-03 as `engine/src/app/`. 22 tests.
 **Date:** 2026-09-03
 **Implements:** I9 · **Informed by:** ADR-0007, ADR-0011, `core-memory-and-handles.md`,
 `platform-interface.md`

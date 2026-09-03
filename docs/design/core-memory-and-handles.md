@@ -1,6 +1,6 @@
 # Design: `core` — memory, handles and identity
 
-**Status:** Accepted, not yet implemented
+**Status:** Implemented 2026-09-02 as `engine/src/core/`. 50 tests.
 **Date:** 2026-09-02
 **Implements:** I1, I2, I9 · **Informed by:** ADR-0005, ADR-0007, ADR-0013
 

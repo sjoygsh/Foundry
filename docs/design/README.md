@@ -9,10 +9,10 @@ depended on by several others, or will be hard to change later.
 
 ## Owed, in order
 
+Written documents move to the table below. This one is a schedule, not an index.
+
 | Document | Needed before | Why it matters |
 | --- | --- | --- |
-| `core-memory-and-handles.md` | M0 | Allocator model and the generational handle table. Invariant I1 depends on getting this right, and every subsystem uses it. |
-| `platform-interface.md` | M0 | The interface Foundry owns, with SDL3 as one implementation behind it. Watch for SDL concepts leaking into the *design*, not just the implementation. |
 | `content-schemas.md` | M3 | Schema model, versioning, package load order and override semantics. |
 | `entity-storage.md` | M4 | Type-erased component storage with runtime registration (ADR-0010). |
 

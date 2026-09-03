@@ -135,8 +135,14 @@ headless one — a better outcome than that ADR assumed was available.
 
 ## What is being worked on
 
-Nothing in progress. `docs/design/rhi.md` is written and accepted; implementing it is step 1
-below and is all that remains of M0.
+Nothing in progress. **M0 is complete and tagged `m0`.** The next session starts M1 at
+step 1 below.
+
+Verified after the fact, because a long outage interrupted the session that finished M0:
+every commit builds and passes from a clean worktree (109, 109, 137, 137, 222 tests), a
+cold-cache rebuild passes all 222, all six target/backend combinations compile, the pinned
+SDL3 hash still verifies after deleting `zig-pkg/`, and layering, both conformance checks
+and the Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ---
 

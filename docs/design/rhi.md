@@ -1,6 +1,7 @@
 # Design: `rhi` — the render hardware interface
 
-**Status:** Accepted
+**Status:** Implemented 2026-09-03 as `engine/src/rhi/`, interface plus validation
+backend. 82 tests, 55 of them in the backend. The Metal backend is M1.
 **Date:** 2026-09-03
 **Implements:** I1, I7, I8 · **Informed by:** ADR-0003, ADR-0012, ADR-0015, ADR-0007
 

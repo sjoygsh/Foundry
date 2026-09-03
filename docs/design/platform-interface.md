@@ -290,8 +290,8 @@ of the snapshot design in §4.
 
 ## Resolution — 2026-09-03
 
-Implemented as `engine/src/platform/`, against Zig 0.16.0. Both backends exist: 59 tests
-with the null backend, 67 with SDL3.
+Implemented as `engine/src/platform/`, against Zig 0.16.0. Both backends exist: 60 tests
+with the null backend, 68 with SDL3.
 
 The design above survived contact with the compiler almost intact. Four things changed,
 three of them forced by what Zig 0.16's `std` actually provides.
