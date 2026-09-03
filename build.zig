@@ -29,13 +29,16 @@ const layering = [_]Module{
     // L1 — SDL3 lives ONLY here (ADR-0002).
     .{ .name = "platform", .deps = &.{"core"} },
 
+    // L4 — the engine loop and subsystem lifecycle. Gains dependencies as the layers
+    // between it and `platform` arrive; it is allowed to see all of them (ADR-0007).
+    .{ .name = "app", .deps = &.{ "core", "platform" } },
+
     // Added as each is implemented. The rest of the graph from ADR-0007 is:
     //   L1  data       -> core
     //   L2  rhi        -> core, platform  (Metal/Vulkan/D3D live ONLY here)
     //   L2  asset      -> core, data, platform
     //   L3  render2d   -> core, rhi, asset
     //   L3  scene      -> core, data, asset
-    //   L4  app        -> all of the above
     //   L5  abi        -> app             (M7)
 };
 
@@ -62,7 +65,7 @@ pub fn build(b: *std.Build) void {
         PlatformBackend,
         "platform",
         "Platform backend to build against (default: null, headless)",
-    ) orelse .null;
+    ) orelse .sdl3;
 
     // Passed as a string rather than as the enum: `addOption` would emit its own
     // definition of the enum type, which would not be the same type as the one
@@ -112,6 +115,28 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    // Samples are consumers of the engine, exactly as a game in its own repository
+    // would be (ADR-0017): they depend on `app` and reach nothing that `app` does not
+    // hand them. `samples/` holds the smallest thing that exercises a capability — when
+    // one starts wanting features rather than demonstrating them, it has outgrown this
+    // repository.
+    const sandbox_mod = b.createModule(.{
+        .root_source_file = b.path("samples/sandbox/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    sandbox_mod.addImport("app", modules.get("app").?);
+    sandbox_mod.addImport("core", modules.get("core").?);
+    sandbox_mod.addImport("platform", platform_module);
+
+    const sandbox = b.addExecutable(.{ .name = "sandbox", .root_module = sandbox_mod });
+    b.installArtifact(sandbox);
+
+    const run_sandbox = b.addRunArtifact(sandbox);
+    run_sandbox.step.dependOn(b.getInstallStep());
+    if (b.args) |args| run_sandbox.addArgs(args);
+    b.step("run", "Build and run samples/sandbox").dependOn(&run_sandbox.step);
+
     // Unit tests are colocated in source (project convention). One test binary per
     // module, all hung off `zig build test`.
     const test_step = b.step("test", "Run all unit tests");
@@ -121,6 +146,11 @@ pub fn build(b: *std.Build) void {
     // Linux every milestone, with no obligation to *run* them there until a backend
     // exists. `zig build check -Dtarget=...` is that check.
     const check_step = b.step("check", "Compile everything without running it");
+
+    // Samples are part of the per-milestone portability obligation too: a sample that
+    // stopped cross-compiling would be a milestone rule broken (ROADMAP), and finding
+    // that out at release time is the expensive way.
+    check_step.dependOn(&sandbox.step);
 
     for (layering) |spec| {
         const unit_tests = b.addTest(.{ .root_module = modules.get(spec.name).? });

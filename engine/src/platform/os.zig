@@ -182,6 +182,27 @@ pub const Os = struct {
         return std.math.cast(i64, ts.nanoseconds) orelse std.math.maxInt(i64);
     }
 
+    /// Yields the thread for approximately `duration`.
+    ///
+    /// Real time, necessarily: sleeping against a synthetic clock would not sleep. It
+    /// lives here rather than on `Platform` for that reason — it is an OS service like
+    /// the filesystem, not something a windowing backend varies.
+    ///
+    /// Approximate by nature. The OS guarantees *at least* this long, and schedulers
+    /// routinely overshoot by a millisecond or more, so nothing whose correctness
+    /// depends on the duration may use it. The fixed timestep exists precisely so that
+    /// simulation does not care how long a frame actually took.
+    pub fn sleep(self: *Os, duration: core.time.Duration) void {
+        if (duration.ns <= 0) return;
+        std.Io.sleep(
+            self.io(),
+            .fromNanoseconds(duration.ns),
+            .awake,
+        ) catch |err| {
+            log.debug("sleep interrupted: {t}", .{err});
+        };
+    }
+
     // -- filesystem ----------------------------------------------------------------
 
     /// Reads a whole file. The caller owns the returned bytes.
@@ -665,6 +686,24 @@ test "the executable directory is discoverable" {
     defer testing.allocator.free(dir);
     try testing.expect(dir.len > 0);
     try testing.expect(os.exists(dir));
+}
+
+test "sleeping advances real time and refuses nonsense" {
+    var os = try testOs(&.{});
+    defer os.deinit();
+
+    // Zero and negative durations return immediately rather than blocking forever or
+    // trapping on an unsigned conversion.
+    os.sleep(.zero);
+    os.sleep(.fromNanos(-1));
+
+    const before = os.wallClockNanos();
+    os.sleep(.fromMillis(5));
+    const slept = os.wallClockNanos() - before;
+
+    // At least the requested time. No upper bound is asserted: schedulers overshoot,
+    // and a test that demanded precision here would fail on a loaded machine.
+    try testing.expect(slept >= 5 * std.time.ns_per_ms);
 }
 
 test "the wall clock is plausible and is not an Instant" {

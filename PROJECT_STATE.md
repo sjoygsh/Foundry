@@ -1,7 +1,7 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-03
-**Updated by:** M0 — `platform` (L1) complete with both backends; a window opens on macOS
+**Updated by:** M0 — `app` (L4) and `samples/sandbox`; the engine runs a window on macOS
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -23,12 +23,13 @@ is mature enough to need them rather than as decoration.
 
 ## Current milestone
 
-**M0 — Skeleton: "it runs."** In progress. Setup, design docs, the build graph, `core` and
-`platform` (both backends) are done. Next is `app`.
+**M0 — Skeleton: "it runs."** Nearly done. `core`, `platform` (both backends), `app` and
+`samples/sandbox` are implemented. The remaining item is the `rhi` interface plus its null
+backend.
 
-**A window now opens on macOS with a live `CAMetalLayer`** — half of M0's exit criteria,
-though only from a throwaway probe so far. `app` and `samples/sandbox` are what make it a
-runnable result the repository actually contains.
+**`zig build run` opens a window on macOS and exits cleanly** — M0's exit criteria, met by
+something the repository actually contains rather than by a probe. Nothing is drawn, which
+M0 deliberately excludes.
 
 Target: a window that opens and responds to input on macOS, a fixed-timestep loop, `core`
 primitives, a null RHI backend, and cross-compilation checks for Windows and Linux. Full
@@ -55,10 +56,18 @@ New this session:
   * `backends/sdl3.zig` — the SDL3 backend. **The only file in Foundry that may name an
     SDL type**, and the build graph is what enforces that: no other module is linked
     against SDL.
-* `build.zig` — `platform` added to the layering table; `-Dplatform=null|sdl3` selects the
-  backend, and the lazy SDL dependency is linked into that one module and nowhere else.
-* `scripts/check-targets.sh` — now runs both backends natively and cross-compiles both for
-  Windows and Linux: six combinations, all green.
+* `engine/src/app/` — the engine loop and lifecycle:
+  * `engine.zig` — `EngineOf(Platform)`, the frame phases, subsystem ordering, the frame
+    arena, and `environment` (the one place a `std.process.Init` appears in Foundry).
+  * `log_sink.zig` — the log sink and the runtime level filter.
+* `samples/sandbox/` — M0's runnable result, and the reference for what a game's `main`
+  looks like. Opens a window, logs input, runs the loop, exits cleanly.
+* `platform/os.zig` — gained `sleep`, an OS service beside the clock and filesystem.
+* `docs/design/app-and-frame-loop.md` — written before the code, per development rule 1.
+* `build.zig` — `app` added to the layering table; the `sandbox` executable and a `run`
+  step; `-Dplatform=null|sdl3` selects the backend and **now defaults to `sdl3`**.
+* `scripts/check-targets.sh` — runs both backends natively and cross-compiles both,
+  sample included: six combinations, all green.
 * `core/handle.zig` — `HandlePool` now takes a **tag type and a value type**
   (`HandlePool(Window, WindowState)`). See "decisions" below.
 * `docs/design/platform-interface.md` — Resolution section recording what implementation
@@ -70,20 +79,30 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 109 tests** with the default null backend (50 `core`, 59
-`platform`), and **117 with `-Dplatform=sdl3`** (the 8 extra cover the scancode, button and
-modifier mappings). The SDL3 tests are headless by design — nothing in the suite calls
-`SDL_Init` — so they run anywhere. `scripts/check-targets.sh` runs the whole per-milestone
-obligation for both backends against both cross-targets.
+**`zig build test` passes 137 tests** (50 `core`, 68 `platform`, 19 `app`) with the default
+SDL3 backend, and 129 with `-Dplatform=null`. Every test is headless: nothing in the suite
+calls `SDL_Init`, and `app`'s tests instantiate `EngineOf(null_backend.Platform)` so the
+frame loop is always measured against a synthetic clock rather than against this machine.
 
-**A window opens on macOS.** Verified live by a throwaway probe, not merely compiled: SDL3
-3.4.14 under the `cocoa` video driver, a window reporting **logical 800x600, pixel
-1600x1200, scale 2**, a live `CAMetalLayer` delivered upward as an opaque
-`NativeSurfaceHandle`, and 1500ms of real time driving exactly 90 simulation steps at 60Hz.
-The probe was scratch work and is not in the repository — `samples/sandbox` is where this
-becomes a runnable result Foundry actually ships.
+**`zig build run` opens a window and exits cleanly.**
 
-**Both backends cross-compile to Windows and Linux, SDL included.** ADR-0008's "supported
+```
+info(platform): platform backend: SDL3 3.4.14, video driver 'cocoa'
+info(app): engine up: 60Hz simulation, windowed
+info(sandbox): window: 1280x720 points, 2560x1440 pixels, scale 2.00
+info(sandbox): native surface ready: metal_layer
+info(sandbox): clean exit after 400 frames, 55 ticks, 916ms simulated
+```
+
+Headless (`-Dplatform=null`) it is exact rather than merely plausible: 300 frames of a 1ms
+synthetic clock produce 300ms of simulated time and 18 ticks at 60Hz, every run.
+
+**Live keyboard input has not been machine-verified** — it needs a person at the keyboard.
+The event-to-snapshot path is covered end to end through the null backend's scriptable
+queue, and the sandbox logs every event it receives, so `zig build run` and pressing keys
+is the check.
+
+**Both backends cross-compile to Windows and Linux — SDL and the sandbox executable included**, since the sample is part of the same per-milestone obligation. ADR-0008's "supported
 means compiles" claim therefore covers the backend that actually ships, not only the
 headless one — a better outcome than that ADR assumed was available.
 
@@ -104,26 +123,35 @@ Nothing in progress. The next session continues M0 at step 1 below.
 
 ## Immediate next steps
 
-1. **Implement `app`**: fixed-timestep loop (drive it with `core.time.FixedStepper`, which
-   already exists and is tested), subsystem lifecycle, clean shutdown. `app` owns `main`,
-   so it is where the process environment is captured and handed to `platform.Os` — see
-   "the environment is an input" below.
-2. **Define the `rhi` interface and write the null backend.** Interface shape matters far
-   more than the backend at this stage.
-3. **Build `samples/sandbox`** to M0's exit criteria. The probe described above is
-   effectively its skeleton; it needs `app` underneath it rather than driving `platform`
-   directly.
+1. **Write `docs/design/rhi.md`** — the highest-leverage document in the project. It must
+   include the Metal / Vulkan / D3D12 concept mapping table from ADR-0003, because
+   designing the RHI against Metal alone is the single most likely way to force a renderer
+   rewrite later. The two open questions in §1 of this file's "unresolved" list are what it
+   has to answer.
+2. **Define the `rhi` interface and write the null backend**, which finishes M0. Interface
+   shape matters far more than the backend at this stage; the null backend exists partly so
+   the strict, Vulkan-shaped rules Metal forgives are enforced somewhere from day one.
+3. **Tag M0** and update this file. `samples/sandbox` already meets the exit criteria; the
+   RHI interface is the last item.
 
-Before M1, and before any Metal code: **`docs/design/rhi.md`**, including the Metal / Vulkan /
-D3D12 concept mapping table from ADR-0003. This is the highest-leverage document in the project.
+Then M1 is the Metal backend, and `engine.nativeSurface()` already hands it a live
+`CAMetalLayer`.
 
 ---
 
 ## Known bugs and technical debt
 
-* **`core.log` still formats through `std.log`'s default handler.** `app` will need to
-  install a real log sink: destination, timestamps, runtime filtering by scope. The
-  interface is right; the backend behind it is temporary.
+* **The log sink has a runtime *level* filter but no timestamps, no scope filtering and no
+  destination but stderr.** Timestamps want a monotonic source, which lives on `Platform`,
+  and a free logging function has no instance to ask — worth solving when there is a log
+  *file* to correlate against, at M9. Scope filtering is compile-time only for now
+  (`std.Options.log_scope_levels`), and there are three scopes.
+* **The frame loop has no pacing.** With no renderer there is no swapchain to block on, so
+  the sandbox sleeps 2ms per frame to avoid pegging a core. Frame pacing is renderer
+  policy and belongs with M1's present, not in `Engine`.
+* **Subsystem lifecycle is explicit fields, not a registry.** Correct at two subsystems and
+  machinery guarding nothing; revisit at perhaps six, which is also when the ordering stops
+  being obvious by inspection.
 * **The handle pool is sparse and iterates dead slots.** Fine for its intended use — lookup
   by identity, rare iteration. Deliberately not optimised, and deliberately not generalised
   toward component storage (ADR-0010, M4).
@@ -192,6 +220,27 @@ D3D12 concept mapping table from ADR-0003. This is the highest-leverage document
   one known point" structural rather than conventional, and gives the snapshot an
   unambiguous place to be taken.
 
+* **`app` is a library, not a framework.** `Engine` is initialised and driven; it does not
+  call you back. Tools are Foundry applications (ADR-0011) and an editor's loop is not a
+  game's loop, so a framework would grow a knob per application shape. It also inverts
+  control, which is the same objection `platform` raised against event callbacks. And it is
+  the reversible direction: a `run` helper over a library is a dozen lines, while extracting
+  a library from a framework rewrites every game's entry point.
+* **`Engine` is generic over its platform backend.** `EngineOf(P)`, with `Engine =
+  EngineOf(platform.Platform)`. So that `app`'s own tests always run against the null
+  backend's synthetic clock whatever the build selected — the frame loop is precisely what
+  must be tested deterministically, and a test against SDL would measure the machine. It
+  also keeps `app` honest: nothing in it can depend on a particular backend.
+* **The default platform backend is now `sdl3`.** A milestone's runnable result must not be
+  behind a flag. Nothing is lost: every test is headless either way, and
+  `scripts/check-targets.sh` runs the null backend explicitly so that path cannot rot.
+* **Input is captured once per frame, before any step runs.** Two steps in one frame see
+  identical input rather than whatever the OS delivered between them — the requirement
+  `platform`'s snapshot design exists to serve (I9).
+* **A quit request is handled by the engine but still passed to the caller.** Handled, so
+  that a game which never drains events still exits when asked; passed on, so a game can
+  ask "save first?" rather than exiting immediately. Input events are never intercepted:
+  what looks like an obviously engine-level key today is a game's binding tomorrow.
 * **SDL's several resize events collapse into Foundry's one.** SDL reports logical resize,
   pixel-size change and display-scale change separately, and one drag between monitors can
   produce all three. Every consumer reacts identically, so they become a single

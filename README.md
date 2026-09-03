@@ -8,9 +8,18 @@ leave behind something that runs.
 
 ## Status
 
-**Pre-implementation.** The architecture is established and the toolchain is pinned and
-verified; no engine code is written yet. Nothing here builds, because there is nothing here
-to build.
+**Early — M0, the skeleton.** It runs: a window opens on macOS, the fixed-timestep loop
+turns, and the sample exits cleanly. Nothing is drawn yet; the renderer is M1.
+
+```sh
+./scripts/install-zig.sh   # the only tool you need
+zig build run              # opens a window; escape quits
+zig build test             # 137 tests
+```
+
+Implemented so far: `core` (allocators, generational handles, content IDs, math, time,
+RNG), `platform` (window, input, filesystem, dynamic libraries, clocks — with an SDL3
+backend and a headless one), and `app` (the engine loop and subsystem lifecycle).
 
 [PROJECT_STATE.md](PROJECT_STATE.md) records exactly where things stand, and is updated
 every session.

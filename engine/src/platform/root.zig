@@ -54,7 +54,13 @@ pub const Backend = enum {
 pub const backend: Backend = std.meta.stringToEnum(Backend, build_options.platform_backend) orelse
     @compileError("unknown platform backend '" ++ build_options.platform_backend ++ "'");
 
-const null_backend = @import("backends/null.zig");
+/// The headless backend, reachable by name as well as by selection.
+///
+/// Exposed for two reasons: `app`'s tests instantiate the engine against it so that the
+/// frame loop is tested against a synthetic clock whatever backend the build selected,
+/// and a genuinely headless application — a content compiler, a dedicated server — can
+/// ask for it directly rather than being given a window it does not want.
+pub const null_backend = @import("backends/null.zig");
 
 const selected = switch (backend) {
     .null => null_backend,
