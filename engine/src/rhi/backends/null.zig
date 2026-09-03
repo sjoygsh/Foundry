@@ -39,10 +39,13 @@ const log = core.log.scoped(.rhi);
 
 /// Generous internal capacities. These are *not* contract limits — exceeding one is an
 /// engine bug with no sensible behaviour to report, so it asserts rather than becoming a
-/// violation. The two real limits are in `pipeline.zig` and are enforced as rule 10.
+/// violation. The real limits live in `pipeline.zig` and are enforced as rule 10.
 const max_color_attachments = 8;
-const max_vertex_buffers = 16;
 const max_frames_in_flight = 4;
+
+/// A contract limit, unlike the two above: `pipeline.max_vertex_buffers` is what the RHI
+/// guarantees, so exceeding it is a rule 10 violation rather than an assertion.
+const max_vertex_buffers = pipeline.max_vertex_buffers;
 
 /// The ten rules of `docs/design/rhi.md` §11, numbered as they are there.
 ///
@@ -793,8 +796,13 @@ pub const RenderPass = struct {
     pub fn setVertexBuffer(self: *RenderPass, slot: u32, buffer: resource.BufferHandle, offset: u64) void {
         _ = offset;
         const dev = self.device;
-        assert.debugOnly(slot < max_vertex_buffers, "vertex buffer slot {d} exceeds backend capacity {d}", .{ slot, max_vertex_buffers });
-        if (slot >= max_vertex_buffers) return;
+        // Rule 10. A slot past the guarantee is a caller mistake with a defined answer —
+        // the binding does not exist on a conforming backend — so it is reported, exactly
+        // as an out-of-range bind group index is, rather than asserted.
+        if (slot >= max_vertex_buffers) {
+            dev.violate(.limits, "vertex buffer slot {d} exceeds the guaranteed maximum of {d}", .{ slot, max_vertex_buffers });
+            return;
+        }
 
         self.bound_vertex_buffers[slot] = buffer;
         dev.touchBuffer(buffer);
@@ -2026,6 +2034,44 @@ test "rule 10: a bind group index beyond the guaranteed maximum is caught" {
     pass.end();
 
     try testing.expect(fx.dev.hasViolation(.limits));
+}
+
+test "rule 10: a vertex buffer slot beyond the guaranteed maximum is caught" {
+    // Eight is a contract limit, not a backend capacity (`rhi.md` §9): Metal's argument
+    // table is shared, so a ninth slot has nowhere to go on a conforming backend.
+    var fx = try Fixture.init();
+    defer fx.deinit();
+
+    const spare = try fx.dev.createBuffer(.{ .size = 64, .usage = .{ .vertex = true } });
+    const frame = try fx.dev.beginFrame();
+    var cmd = try fx.dev.beginCommandBuffer();
+    var pass = try cmd.beginRenderPass(.{
+        .color = &.{.{ .texture = frame.surface_texture, .initial_state = .undefined, .final_state = .present }},
+    });
+    pass.setVertexBuffer(pipeline.max_vertex_buffers, spare, 0);
+    pass.end();
+
+    try testing.expect(fx.dev.hasViolation(.limits));
+}
+
+test "rule 10: the last guaranteed vertex buffer slot is accepted" {
+    // The other half of the rule, and the half that catches an off-by-one that would make
+    // the engine reject a binding every conforming backend must support.
+    var fx = try Fixture.init();
+    defer fx.deinit();
+
+    const spare = try fx.dev.createBuffer(.{ .size = 64, .usage = .{ .vertex = true } });
+    const frame = try fx.dev.beginFrame();
+    var cmd = try fx.dev.beginCommandBuffer();
+    var pass = try cmd.beginRenderPass(.{
+        .color = &.{.{ .texture = frame.surface_texture, .initial_state = .undefined, .final_state = .present }},
+    });
+    pass.setVertexBuffer(pipeline.max_vertex_buffers - 1, spare, 0);
+    pass.end();
+    try cmd.submit();
+    try fx.dev.endFrame();
+
+    try testing.expectEqual(@as(usize, 0), fx.dev.violationCount());
 }
 
 test "rule 10: writing more inline bytes than the layout declares is caught" {

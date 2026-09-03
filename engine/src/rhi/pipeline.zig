@@ -1,10 +1,11 @@
 //! Pipelines, layouts, and the binding model.
 //!
-//! The two numbers below are the most consequential in the RHI, and neither comes from
-//! Metal. They are Vulkan's **guaranteed minimums**, because those are the binding
-//! constraint and the other two APIs are more generous. Designing to what Metal permits
-//! would produce an engine that works on every machine we own and fails on hardware we
-//! do not.
+//! The three numbers below are the most consequential in the RHI, and each is taken from
+//! whichever API is **strictest** about it rather than from the one implemented first.
+//! Two are Vulkan's guaranteed minimums; the third is Metal's shared argument table, the
+//! one place among the three where Metal is the tighter constraint. Designing to what the
+//! first backend permits would produce an engine that works on every machine we own and
+//! fails on hardware we do not.
 //!
 //! Design: `docs/design/rhi.md` §9.
 
@@ -39,6 +40,18 @@ pub const max_bind_groups: u32 = 4;
 /// anything with structure, or that must outlive a pass, or that exceeds 128 bytes,
 /// belongs in a uniform buffer reached through a bind group.
 pub const max_inline_constant_bytes: u32 = 128;
+
+/// **Eight vertex buffers, because Metal's argument table is the constraint here.**
+///
+/// The one limit in this file taken from Metal rather than from Vulkan. Metal exposes 31
+/// buffer argument slots per stage, *shared* between vertex buffers, uniform buffers and
+/// inline constants, while Vulkan guarantees 16 vertex input bindings and D3D12 offers 32
+/// input slots. Eight leaves twenty-two slots for bind group buffers once inline constants
+/// have taken one, which is more than any renderer Foundry has planned needs.
+///
+/// See `docs/design/rhi.md` §9 for the index convention this participates in. A backend may
+/// report more in `Capabilities`; none may require fewer.
+pub const max_vertex_buffers: u32 = 8;
 
 // -- identity ------------------------------------------------------------------------
 
@@ -249,10 +262,23 @@ pub const RenderPipelineDesc = struct {
 const testing = std.testing;
 
 test "the limits are the ones the strictest API guarantees" {
-    // If either of these ever changes, it is a contract change and belongs in the design
+    // If any of these ever changes, it is a contract change and belongs in the design
     // document first. They are asserted here so that a casual edit fails a test.
     try testing.expectEqual(@as(u32, 4), max_bind_groups);
     try testing.expectEqual(@as(u32, 128), max_inline_constant_bytes);
+    try testing.expectEqual(@as(u32, 8), max_vertex_buffers);
+}
+
+test "the vertex buffers and inline constants fit in one Metal argument table" {
+    // The arithmetic behind `max_vertex_buffers`, asserted so that raising either number
+    // without rechecking it fails here rather than on a device. Metal guarantees 31 buffer
+    // argument slots per stage, shared; the convention in `rhi.md` §9 spends them as eight
+    // vertex buffers, one block of inline constants, and the rest on bind group buffers.
+    const metal_buffer_slots_per_stage: u32 = 31;
+    const reserved = max_vertex_buffers + 1;
+    try testing.expect(reserved < metal_buffer_slots_per_stage);
+    // Room left for bind group buffers, with all four groups able to carry several each.
+    try testing.expect(metal_buffer_slots_per_stage - reserved >= 4 * max_bind_groups);
 }
 
 test "128 bytes holds what it is meant to hold" {

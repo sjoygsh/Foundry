@@ -254,6 +254,15 @@ Frequency ordering is not decoration either: Vulkan invalidates all descriptor s
 first one whose layout changes, so putting the least-frequently-changed data in group 0 is
 what makes rebinding cheap. Getting this backwards is invisible in Metal.
 
+**Eight vertex buffers, guaranteed.** The third number in this interface, and the only one
+taken from Metal rather than from Vulkan. Metal exposes **31 buffer argument slots per
+stage**, shared between vertex buffers, uniform buffers and inline constants; Vulkan
+guarantees 16 vertex input bindings and D3D12 offers 32 input slots, so here Metal's shared
+table is the binding constraint rather than the most generous case. Reserving eight for
+vertex buffers leaves twenty-two for bind group buffers once inline constants have taken
+one — more than any renderer Foundry has planned needs. A backend may report more in
+`Capabilities`; none may require fewer.
+
 ### Inline constants
 
 **128 bytes, guaranteed.** Vulkan guarantees at least 128 bytes of push constants; D3D12's
@@ -304,6 +313,51 @@ A `RenderPipeline` is monolithic — shaders, vertex layout, blend, depth-stenci
 state, attachment formats, and its layout — because all three APIs are monolithic here.
 Pipelines are created ahead of time and never mutated.
 
+### Binding indices, and why they are part of the contract
+
+An abstract bind group has to land somewhere concrete. Metal has no descriptor sets: it has
+three flat argument tables per shader stage — buffers, textures and samplers — and a shader
+names a slot in one of them as `[[buffer(n)]]`, `[[texture(n)]]` or `[[sampler(n)]]`.
+Something has to decide which `n`.
+
+That decision is **shader-visible**, which makes it a contract rather than an implementation
+detail. A shader is compiled against these indices, and getting them wrong does not fail —
+it silently reads the wrong resource. Because shaders are assets with per-backend variants
+(ADR-0015) this contract is *per backend*, but it must be written down for each, since
+mod-authored shaders will eventually be compiled against it (`CLAUDE.md` §5).
+
+**The Metal backend flattens a pipeline layout deterministically**, in one documented walk
+order: bind groups 0 through 3 in ascending order, and within each group its entries in
+ascending `binding` value — never the order entries happen to appear in the descriptor. Two
+identical layouts therefore always produce identical indices, whoever built them and in
+whatever order. That is I9's stable-iteration-order requirement applied somewhere it is easy
+to overlook, and it is what lets a shader be compiled once and used with any layout that
+matches.
+
+| Metal table | Index | Holds |
+| --- | --- | --- |
+| buffer | `0 .. 7` | RHI vertex buffer slots 0–7. Vertex stage only. |
+| buffer | `8` | Inline constants. Both stages. |
+| buffer | `9 +` | Uniform and storage buffer bindings, in walk order. |
+| texture | `0 +` | Sampled texture bindings, in walk order. |
+| sampler | `0 +` | Sampler bindings, in walk order. |
+
+**An index is allocated per binding, not per stage.** A binding visible to both stages gets
+one index and is bound at that index in each stage that declares it, so the same binding is
+never `[[buffer(9)]]` in the vertex shader and `[[buffer(3)]]` in the fragment shader. This
+wastes a slot in a stage that cannot see the binding, and the waste is worth it: the
+alternative makes an index depend on which stages a binding is visible to, which is the kind
+of rule an author gets wrong once and then debugs for an afternoon.
+
+The vertex-buffer block is reserved at a fixed eight rather than sized per pipeline for the
+same reason. A vertex buffer's index does not move when some bind group gains a binding, so
+`[[buffer(0)]]` in a vertex shader means RHI vertex slot 0 in every pipeline in the engine.
+
+Vulkan and D3D12 will each need their own written convention when they arrive. Neither is
+obliged to match this one — they have descriptor sets and root signatures and can express
+groups directly — but each owes the same explicitness, and §2's mapping table is where that
+belongs.
+
 ## 10. Shaders
 
 Per ADR-0015, shaders are **assets with per-backend variants**. That decision lands here as
@@ -344,8 +398,8 @@ forgives:
 8. **Encoder discipline.** One pass open at a time; every pass ended; every command buffer
    ended before submission.
 9. **Lifetime.** No resource destroyed while a frame that references it is in flight.
-10. **Limits.** At most 4 bind groups. Inline constants at most 128 bytes, and never more
-    than the bound pipeline's layout declares.
+10. **Limits.** At most 4 bind groups and at most 8 vertex buffers. Inline constants at
+    most 128 bytes, and never more than the bound pipeline's layout declares.
 
 Rules 1, 3, 5 and 9 are the ones that would otherwise be discovered by a second backend
 producing garbage, months later, with no obvious cause. Rules 2 and 6 are the ones that
