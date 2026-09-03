@@ -58,7 +58,14 @@ cross-compiles succeed for the non-rendering modules.
 
 **Not in this milestone:** anything drawn.
 
-### M1 — First pixels: "it draws"
+### M1 — First pixels: "it draws" — **complete (2026-09-04)**
+
+*Exit criteria met: `zig build run -Drhi=metal` draws a rotating, nearest-filtered textured
+quad that survives being resized, with Metal API and shader validation clean and the null
+validation backend raising no complaints about the same command stream. 227 tests under
+`-Drhi=null`, 235 under `-Drhi=metal`. Xcode GPU frame capture is confirmed by its
+prerequisites — the sandbox runs clean under `MTL_CAPTURE_ENABLED=1` and shaders carry
+`-frecord-sources` — but no trace has been opened in Xcode yet.*
 
 Preceded by `docs/design/rhi.md` — **the highest-leverage document in the project.** It must
 include the concept mapping table across Metal, Vulkan and D3D12 (ADR-0003). Designing the RHI

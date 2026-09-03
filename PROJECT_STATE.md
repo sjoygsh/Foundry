@@ -1,7 +1,8 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-04
-**Updated by:** **M1 complete.** A textured quad that survives a resize, both halves clean
+**Updated by:** **M1 complete and tagged `m1`.** A textured quad that survives a resize,
+both halves clean
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -28,9 +29,11 @@ done and both exit criteria are met: `zig build run` opens a window on macOS tha
 to input, and both platform backends cross-compile for Windows and Linux. Nothing is
 drawn, which M0 deliberately excludes.
 
-**Current milestone: M1 — First pixels. Complete.** `zig build run -Drhi=metal` opens a
-window on macOS and draws a rotating, nearest-filtered textured quad, vsync-paced, which
-survives being resized.
+**M1 — First pixels: "it draws." Complete and tagged `m1`, 2026-09-04.** `zig build run
+-Drhi=metal` opens a window on macOS and draws a rotating, nearest-filtered textured quad,
+vsync-paced, which survives being resized.
+
+**Next milestone: M2 — Sprites: "it draws a lot."** Not started.
 
 All five ROADMAP items are done: the Metal backend and its Objective-C shim (1), the
 `xcrun metal` → `.metallib` build step (2), runtime MSL compilation (3), the validation
@@ -42,8 +45,11 @@ command stream* — and every clause of it was checked rather than inferred. The
 was the last to close and needed a new platform capability to do it; see the decisions
 below.
 
-Xcode GPU frame capture is still unconfirmed. It is a look, not a change, and nothing
-suggests it is broken.
+Xcode GPU frame capture is confirmed as far as a terminal can confirm it: the sandbox runs
+clean under `MTL_CAPTURE_ENABLED=1` alongside both validation layers, so the capture layer
+loads and accepts the command stream. Opening the resulting trace in Xcode and reading MSL
+source in it is a GUI action, and is the one M1 item verified by its prerequisites rather
+than by being done.
 
 ---
 
@@ -221,11 +227,12 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M1, complete but for one check.** Every ROADMAP item is done and the exit criterion is
-met and seen. Nothing is half-built: the tree is green on both backends and the sandbox
-runs. What remains is confirming the resize path against a real window, which is blocked on
-a machine permission rather than on any code — and confirming Xcode frame capture, which is
-a look rather than a change.
+**M1 is complete and tagged `m1`.** Every ROADMAP item is done and the exit criterion is
+met and seen, clause by clause. Nothing is half-built: the tree is green on both backends,
+227 tests pass under `-Drhi=null` and 235 under `-Drhi=metal`, all eight target/backend
+combinations compile, and the sandbox runs, resizes and exits cleanly. The resize path —
+the last clause to close — needed a new platform capability, `setWindowSize`, and is now
+confirmed against a real window under both Metal validation layers.
 
 M0 is complete and tagged `m0`. It was re-audited after the outage that interrupted the
 session finishing it — every commit builds from a clean worktree, a cold-cache rebuild
@@ -236,15 +243,9 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**M1 is done.** One optional look remains, then it is tagged.
+**M1 is done, tagged and pushed.** Nothing is outstanding against it.
 
-1. **Confirm Xcode GPU frame capture** works against the shim, which is one of the stated
-   reasons Metal is the first backend (ADR-0012). Shaders are built with `-frecord-sources`,
-   so a capture should show source rather than disassembly. This is a look rather than a
-   change, and nothing suggests it is broken.
-2. **Tag `m1`** and update this file, per the milestone rules.
-
-**Then M2 — sprites.** The quad is one draw; M2 is thousands, which means batching, a
+**M2 — sprites.** The quad is one draw; M2 is thousands, which means batching, a
 texture atlas, PNG decode, a real 2D camera and bitmap text. The camera is the first thing
 that will want more of `core.math` than `Mat4.scaling` — the sandbox's `aspectCorrection` is
 deliberately the three lines M1 needed and no more.
@@ -296,9 +297,11 @@ deliberately the three lines M1 needed and no more.
   (`OUT_OF_DATE` versus `SURFACE_LOST`), which is a hint that the RHI should too — but
   adding an error is a contract change, so it is recorded rather than done quietly.
 
-* **Xcode GPU frame capture is not yet confirmed** against the shim, despite being one of
-  ADR-0012's stated reasons for the design. Nothing suggests it is broken; it simply has
-  not been checked.
+* **Xcode GPU frame capture is confirmed only by its prerequisites.** The sandbox runs
+  clean under `MTL_CAPTURE_ENABLED=1`, and shaders carry `-frecord-sources`, so a capture
+  should open and should show MSL rather than disassembly — but no one has yet opened one
+  in Xcode and looked. This is one of ADR-0012's stated reasons for the shim design, so it
+  is worth an actual look during M2, when there is more than one draw to inspect.
 
 * **Where a compiled shader lives is unsettled, deliberately.** The build step exists and
   `createShaderModule` has a producer, but the only shader belongs to `samples/sandbox`,
