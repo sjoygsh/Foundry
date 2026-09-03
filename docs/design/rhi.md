@@ -253,11 +253,46 @@ Frequency ordering is not decoration either: Vulkan invalidates all descriptor s
 first one whose layout changes, so putting the least-frequently-changed data in group 0 is
 what makes rebinding cheap. Getting this backwards is invisible in Metal.
 
-**Inline constants: 128 bytes, guaranteed.** Vulkan guarantees at least 128 bytes of push
-constants; D3D12's root signature is 64 DWORDs total and must also hold the descriptor
-tables; Metal's `setVertexBytes:` is far more generous. 128 is the number all three can
-honour, so it is the number the interface promises. Enough for a 4x4 matrix and change,
-which is the intended use — anything larger belongs in a buffer.
+### Inline constants
+
+**128 bytes, guaranteed.** Vulkan guarantees at least 128 bytes of push constants; D3D12's
+root signature is 64 DWORDs total and must also hold the descriptor tables; Metal's
+`setVertexBytes:` is far more generous. 128 is the number all three can honour, so it is
+the number the interface promises.
+
+This facility is **push-constant-style and nothing more**. Its semantics are stated here in
+full, because a small untyped byte block is exactly the kind of thing that accretes into an
+accidental general-purpose parameter system if its limits are left implicit:
+
+* **It is part of the command stream, not a resource.** There is no handle, no allocation,
+  no lifetime to manage, and nothing to destroy.
+* **The bytes are copied at the call.** `setInlineConstants` takes a slice and copies it
+  immediately; the caller's buffer may be reused or freed the instant the call returns.
+* **Update scope is one render pass.** The value is encoder state. It persists until the
+  next `setInlineConstants` in the same pass, or until the pass ends — whichever comes
+  first. **It does not survive across passes or command buffers**, and there is no way to
+  ask what the current value is.
+* **Writes are whole-block.** There is no offset, no partial update, no merging with a
+  previous value. Each call replaces the block. Vulkan permits ranged updates and D3D12
+  permits single-DWORD writes; the RHI offers neither, because a partial-update model is
+  the first step towards treating this as storage.
+* **Binding a pipeline whose layout differs invalidates the block.** This is Vulkan's real
+  behaviour — push constants are pipeline-layout-scoped — and pretending otherwise would
+  produce an engine that works on Metal and renders garbage elsewhere. After such a bind,
+  the constants must be set again before the next draw.
+* **Size is declared by the pipeline layout.** A pipeline layout states how many bytes it
+  uses, at most 128. Writing more than the layout declares is an error; writing fewer
+  leaves the remainder undefined, and a shader that reads it gets undefined values.
+
+**What it is deliberately not.** It is not a parameter system. It has no names, no types,
+no reflection, and no persistence. Anything that wants structure, wants to outlive a pass,
+wants to be shared between draws, or exceeds 128 bytes belongs in a uniform buffer reached
+through a bind group — which is the mechanism designed for exactly that, and the one that
+maps efficiently to all three APIs at any size.
+
+The intended use is a per-draw transform and a couple of scalars: a 4x4 matrix is 64 bytes,
+leaving room for a colour and an index or two. If a call site is packing a struct that
+approaches 128 bytes, that is the signal it wanted a buffer.
 
 **`PipelineLayout` is an explicit object**, declaring the group layouts and the inline
 constant size. Metal does not need it and the Metal backend mostly ignores it; Vulkan and
@@ -300,17 +335,28 @@ forgives:
 4. **Bind group compatibility.** A bind group must have been created with the layout the
    bound pipeline declares.
 5. **Complete bindings.** A draw with a group the pipeline's layout requires but nothing
-   bound to it is an error. Metal frequently renders this correctly by accident.
+   bound to it is an error, and so is a draw whose layout declares inline constants that
+   have not been set — including the case where binding a pipeline with a different layout
+   invalidated them (§9). Metal frequently renders all of these correctly by accident.
 6. **Vertex layout match.** Bound vertex buffers must match the pipeline's declared layout.
 7. **Attachment format match.** A pass's attachment formats must match the pipeline's.
 8. **Encoder discipline.** One pass open at a time; every pass ended; every command buffer
    ended before submission.
 9. **Lifetime.** No resource destroyed while a frame that references it is in flight.
-10. **Limits.** At most 4 bind groups; inline constants at most 128 bytes.
+10. **Limits.** At most 4 bind groups. Inline constants at most 128 bytes, and never more
+    than the bound pipeline's layout declares.
 
 Rules 1, 3, 5 and 9 are the ones that would otherwise be discovered by a second backend
 producing garbage, months later, with no obvious cause. Rules 2 and 6 are the ones that
 would be discovered as *performance* problems on hardware nobody here owns.
+
+**The list is exhaustive, and deliberately so.** The validation backend enforces the RHI's
+documented contract and nothing beyond it. It is not a style checker and it does not hold
+opinions the abstraction does not state: a call that this document permits must not be
+rejected, however unwise it looks. Tightening a rule means changing the contract here
+first, because a validation backend that enforces more than the interface promises makes
+the interface a fiction and turns the Metal backend into the real specification — which is
+the exact failure ADR-0003 is trying to avoid.
 
 The validation backend also draws nothing, which makes rendering-adjacent code testable
 headlessly — the same reason the null *platform* backend exists.
@@ -342,7 +388,15 @@ headlessly — the same reason the null *platform* backend exists.
 3. **Whether `frames_in_flight` should adapt.** Fixed at 2 is right for latency; 3 tolerates
    frame-time spikes better. This becomes answerable when there is a frame long enough to
    spike.
-4. **What happens on device loss.** Real on Windows, rare on macOS, and untestable until
+4. **Whether usage-flag conformance should be enforced.** Surfaced by implementation, and
+   deliberately left open. Buffers and textures declare a usage set at creation because
+   Vulkan and D3D12 require it, and both treat using a resource outside its declared usage
+   as undefined behaviour — so it is a genuine invariant of the abstraction. It is *not*
+   one of the ten rules in §11, and the validation backend therefore does not check it.
+   Enforcing it would be an eleventh rule, which is a contract change and belongs here
+   before it appears in code. Recorded rather than resolved, because implementation did
+   not force the decision: everything else works without it.
+5. **What happens on device loss.** Real on Windows, rare on macOS, and untestable until
    there is a second backend. Recorded so that it is a known gap rather than an oversight —
    the handle model at least makes recovery expressible, since every resource is already
    addressed indirectly.

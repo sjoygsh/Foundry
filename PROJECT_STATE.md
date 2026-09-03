@@ -1,7 +1,7 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-03
-**Updated by:** M0 — `docs/design/rhi.md` written; the RHI interface is the last M0 item
+**Updated by:** **M0 complete.** `rhi` implemented with its validation backend; 222 tests
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -23,13 +23,15 @@ is mature enough to need them rather than as decoration.
 
 ## Current milestone
 
-**M0 — Skeleton: "it runs."** Nearly done. `core`, `platform` (both backends), `app` and
-`samples/sandbox` are implemented. The remaining item is the `rhi` interface plus its null
-backend.
+**M0 — Skeleton: "it runs." Complete, 2026-09-03.** Every item on its ROADMAP list is
+done and both exit criteria are met: `zig build run` opens a window on macOS that responds
+to input, and both platform backends cross-compile for Windows and Linux. Nothing is
+drawn, which M0 deliberately excludes.
 
-**`zig build run` opens a window on macOS and exits cleanly** — M0's exit criteria, met by
-something the repository actually contains rather than by a probe. Nothing is drawn, which
-M0 deliberately excludes.
+**Next milestone: M1 — First pixels.** The Metal backend, behind the Objective-C shim
+(ADR-0012), against the RHI that now exists. `docs/design/rhi.md` is written and
+implemented; `engine.gpu` is a live device and `engine.nativeSurface()` already hands back
+a `CAMetalLayer`.
 
 Target: a window that opens and responds to input on macOS, a fixed-timestep loop, `core`
 primitives, a null RHI backend, and cross-compilation checks for Windows and Linux. Full
@@ -56,6 +58,13 @@ New this session:
   * `backends/sdl3.zig` — the SDL3 backend. **The only file in Foundry that may name an
     SDL type**, and the build graph is what enforces that: no other module is linked
     against SDL.
+* `engine/src/rhi/` — the render hardware interface and its validation backend:
+  * `format.zig`, `resource.zig`, `pipeline.zig`, `command.zig` — formats, memory intent,
+    resource states, the binding model, render passes and draws.
+  * `interface.zig` — the three-type backend interface (`Device`, `CommandBuffer`,
+    `RenderPass`) and the `comptime` check that enforces all 40 of its functions.
+  * `backends/null.zig` — the validation backend. 55 tests: at least one per rule, plus
+    18 assertions that legal usage produces **zero** violations.
 * `engine/src/app/` — the engine loop and lifecycle:
   * `engine.zig` — `EngineOf(Platform)`, the frame phases, subsystem ordering, the frame
     arena, and `environment` (the one place a `std.process.Init` appears in Foundry).
@@ -79,10 +88,24 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 137 tests** (50 `core`, 68 `platform`, 19 `app`) with the default
-SDL3 backend, and 129 with `-Dplatform=null`. Every test is headless: nothing in the suite
-calls `SDL_Init`, and `app`'s tests instantiate `EngineOf(null_backend.Platform)` so the
-frame loop is always measured against a synthetic clock rather than against this machine.
+**`zig build test` passes 222 tests** (50 `core`, 68 `platform`, 82 `rhi`, 22 `app`) with
+the default SDL3 backend. Every test is headless: nothing in the suite calls `SDL_Init`,
+and `app`'s tests instantiate `EngineOf(null_backend.Platform)` so the frame loop is always
+measured against a synthetic clock rather than against this machine.
+
+**The whole stack comes up.** `platform` (SDL3, `cocoa` driver) hands an opaque
+`CAMetalLayer` handle to `rhi`, which brings up a validating device with a 2-frame ring:
+
+```
+info(platform): platform backend: SDL3 3.4.14, video driver 'cocoa'
+info(rhi): rhi backend: null (validating), 2 frames in flight
+info(sandbox): window: 1280x720 points, 2560x1440 pixels, scale 2.00
+info(sandbox): gpu: 'null' backend, surface bgra8_unorm_srgb, 4 bind groups, 128 inline bytes
+info(sandbox): native surface ready: metal_layer
+```
+
+**Live input is confirmed working** — focus and mouse events arrive and are logged. That
+was the one thing left machine-unverified in the previous session.
 
 **`zig build run` opens a window and exits cleanly.**
 
@@ -96,11 +119,6 @@ info(sandbox): clean exit after 400 frames, 55 ticks, 916ms simulated
 
 Headless (`-Dplatform=null`) it is exact rather than merely plausible: 300 frames of a 1ms
 synthetic clock produce 300ms of simulated time and 18 ticks at 60Hz, every run.
-
-**Live keyboard input has not been machine-verified** — it needs a person at the keyboard.
-The event-to-snapshot path is covered end to end through the null backend's scriptable
-queue, and the sandbox logs every event it receives, so `zig build run` and pressing keys
-is the check.
 
 **Both backends cross-compile to Windows and Linux — SDL and the sandbox executable included**, since the sample is part of the same per-milestone obligation. ADR-0008's "supported
 means compiles" claim therefore covers the backend that actually ships, not only the
@@ -124,16 +142,23 @@ below and is all that remains of M0.
 
 ## Immediate next steps
 
-1. **Implement `rhi` to `docs/design/rhi.md`**, which finishes M0. The interface first —
-   handles, formats, resource descriptors, pipeline layouts, the render pass and command
-   recording types — then the **validation backend**, whose ten enforced rules are listed in
-   §11 of that document. That rule list is the deliverable, not the empty backend: it is what
-   substitutes for the second graphics backend Foundry does not have.
-2. **Tag M0** and update this file. `samples/sandbox` already meets the exit criteria; the
-   RHI interface is the last item.
+**M1 — First pixels.** In ROADMAP order:
 
-Then M1 is the Metal backend, and `engine.nativeSurface()` already hands it a live
-`CAMetalLayer`.
+1. **The Metal backend** (`engine/src/rhi/backends/metal/`), via the thin Objective-C shim
+   ADR-0012 specifies: device, command queue, the `CAMetalLayer` `platform` already
+   provides, pipeline state objects, buffers, textures, draw submission, resize handling.
+   The shim mirrors Metal one-to-one and holds **no policy** — that is a standing rule, and
+   the shim growing a decision is the signal to move it up into the Zig backend.
+2. **The Metal shader build step**: `xcrun metal` → `.air` → `xcrun metallib`, wired into
+   `build.zig`, always through `xcrun` and never a hardcoded path (ADR-0014, ADR-0015).
+3. **Runtime MSL compilation** for development builds, giving shader hot reload. Not merely
+   a convenience: it is the same mechanism mod-authored shaders will need at M7.
+4. **Metal API validation** on in debug builds, and Xcode GPU frame capture confirmed
+   working.
+
+The exit criterion is a textured quad that survives a window resize, with Metal validation
+clean *and* the null backend raising no complaints about the same command stream. That last
+clause is the whole point of having built the validation backend first.
 
 ---
 
@@ -165,6 +190,16 @@ Then M1 is the Metal backend, and `engine.nativeSurface()` already hands it a li
 * **Reading a directory as a file reports `IoFailed`, not `WrongFileKind`,** because macOS
   opens the directory happily and fails at the read. The test asserts only that it errors.
   Classifying it would cost a `stat` on every read, which is not worth it.
+* **Usage-flag conformance is declared but unenforced.** Buffers and textures carry a
+  usage set because Vulkan and D3D12 require it at creation, and both treat using a
+  resource outside its declared usage as undefined behaviour — so it is a real invariant.
+  It is not one of the ten documented rules, so the validation backend deliberately does
+  not check it. Enforcing it would be an eleventh rule and therefore a contract change;
+  recorded as an open question in `docs/design/rhi.md` §13 rather than resolved quietly.
+* **The RHI's `Device` is not generic over its backend, unlike `app`'s `Engine`.** There is
+  only one graphics backend, so there is nothing to parameterise over yet. When Metal
+  lands, `app`'s tests will need the same treatment `platform` got, or the loop tests stop
+  being headless.
 * **The RHI will be validated by exactly one backend for a long time.** ADR-0003's
   mitigations (design to the strict model, null backend as validator) reduce this but do
   not remove it. Expect backend #2 to find design errors.
@@ -218,6 +253,25 @@ Then M1 is the Metal backend, and `engine.nativeSurface()` already hands it a li
   one known point" structural rather than conventional, and gives the snapshot an
   unambiguous place to be taken.
 
+* **The RHI's two hard numbers come from Vulkan's guaranteed minimums, not from Metal.**
+  Four bind groups (`maxBoundDescriptorSets >= 4`) and 128 bytes of inline constants
+  (Vulkan's push-constant minimum, which D3D12's 64-DWORD root signature can also honour).
+  Designing to what Metal permits would produce an engine that works on every machine here
+  and fails on hardware nobody here owns.
+* **Inline constants are push-constant-style and the semantics are written down in full**
+  (`rhi.md` §9): part of the command stream rather than a resource, bytes copied at the
+  call, scope is one render pass, writes replace the whole block, and binding a pipeline
+  with a different layout invalidates them — which is Vulkan's real behaviour. Stated
+  exhaustively because a small untyped byte block otherwise accretes into an accidental
+  general-purpose parameter system.
+* **The validation backend's remit is exactly the ten documented rules.** It is not a style
+  checker: a call the design document permits must not be rejected, which is why 18 of its
+  tests assert *zero* violations. Three checks were removed during implementation for
+  overstepping this — zero-size descriptors (now just `error.InvalidDescriptor`) and
+  usage-flag conformance (now an open question).
+* **Recording follows Metal's encoder model, the one place Metal is the strictest.** No
+  draw outside a pass and no nesting. Vulkan and D3D12 permit sloppier structures, so
+  taking Metal's shape costs them nothing and yields a structure valid everywhere.
 * **`app` is a library, not a framework.** `Engine` is initialised and driven; it does not
   call you back. Tools are Foundry applications (ADR-0011) and an editor's loop is not a
   game's loop, so a framework would grow a knob per application shape. It also inverts

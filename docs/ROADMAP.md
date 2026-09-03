@@ -22,9 +22,12 @@ and each leaves behind something that runs.
 
 ## Phase 1 — Foundation
 
-### M0 — Skeleton: "it runs"
+### M0 — Skeleton: "it runs" — **complete (2026-09-03)**
 
 The smallest useful version of Foundry. Deliberately excludes the GPU.
+
+*Exit criteria met: `zig build run` opens a window on macOS that responds to input, and
+both platform backends cross-compile for Windows and Linux. 222 tests.*
 
 **Setup, before code:**
 

@@ -29,13 +29,15 @@ const layering = [_]Module{
     // L1 — SDL3 lives ONLY here (ADR-0002).
     .{ .name = "platform", .deps = &.{"core"} },
 
+    // L2 — Metal/Vulkan/D3D live ONLY here (ADR-0003).
+    .{ .name = "rhi", .deps = &.{ "core", "platform" } },
+
     // L4 — the engine loop and subsystem lifecycle. Gains dependencies as the layers
     // between it and `platform` arrive; it is allowed to see all of them (ADR-0007).
-    .{ .name = "app", .deps = &.{ "core", "platform" } },
+    .{ .name = "app", .deps = &.{ "core", "platform", "rhi" } },
 
     // Added as each is implemented. The rest of the graph from ADR-0007 is:
     //   L1  data       -> core
-    //   L2  rhi        -> core, platform  (Metal/Vulkan/D3D live ONLY here)
     //   L2  asset      -> core, data, platform
     //   L3  render2d   -> core, rhi, asset
     //   L3  scene      -> core, data, asset
@@ -57,6 +59,17 @@ const PlatformBackend = enum {
     sdl3,
 };
 
+/// Which graphics backend to build against.
+///
+/// `metal` joins this list at M1 (ADR-0003). Vulkan and D3D12 are deliberately
+/// unscheduled: they start when there is a reason — shipping Windows or Linux, or
+/// validating the RHI against a second API — not when the roadmap reaches them.
+const RhiBackend = enum {
+    /// Draws nothing and validates everything. Not scaffolding: it is the agreed
+    /// mitigation for designing an abstraction against a single graphics API.
+    null,
+};
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -71,8 +84,15 @@ pub fn build(b: *std.Build) void {
     // definition of the enum type, which would not be the same type as the one
     // `platform` declares. The name is converted back at comptime there, so an
     // unrecognised value is still a compile error naming the offender.
+    const rhi_backend = b.option(
+        RhiBackend,
+        "rhi",
+        "Graphics backend to build against (default: null, which validates and draws nothing)",
+    ) orelse .null;
+
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "platform_backend", @tagName(platform_backend));
+    build_options.addOption([]const u8, "rhi_backend", @tagName(rhi_backend));
     const build_options_module = build_options.createModule();
 
     var modules: std.StringHashMapUnmanaged(*std.Build.Module) = .empty;
@@ -101,6 +121,7 @@ pub fn build(b: *std.Build) void {
     // supposed to be decided by their inputs alone.
     const platform_module = modules.get("platform").?;
     platform_module.addImport("build_options", build_options_module);
+    modules.get("rhi").?.addImport("build_options", build_options_module);
 
     // **The only place SDL enters the build graph.** I7 is enforced here as much as by
     // the layering table above: no other module is linked against it, so no other
@@ -128,6 +149,7 @@ pub fn build(b: *std.Build) void {
     sandbox_mod.addImport("app", modules.get("app").?);
     sandbox_mod.addImport("core", modules.get("core").?);
     sandbox_mod.addImport("platform", platform_module);
+    sandbox_mod.addImport("rhi", modules.get("rhi").?);
 
     const sandbox = b.addExecutable(.{ .name = "sandbox", .root_module = sandbox_mod });
     b.installArtifact(sandbox);

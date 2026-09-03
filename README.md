@@ -8,18 +8,25 @@ leave behind something that runs.
 
 ## Status
 
-**Early — M0, the skeleton.** It runs: a window opens on macOS, the fixed-timestep loop
-turns, and the sample exits cleanly. Nothing is drawn yet; the renderer is M1.
+**M0 complete.** It runs: a window opens on macOS and responds to input, the
+fixed-timestep loop turns, and the sample exits cleanly. Nothing is drawn yet — M0
+deliberately excludes the GPU, and the renderer is M1.
 
 ```sh
 ./scripts/install-zig.sh   # the only tool you need
 zig build run              # opens a window; escape quits
-zig build test             # 137 tests
+zig build test             # 222 tests
 ```
 
-Implemented so far: `core` (allocators, generational handles, content IDs, math, time,
-RNG), `platform` (window, input, filesystem, dynamic libraries, clocks — with an SDL3
-backend and a headless one), and `app` (the engine loop and subsystem lifecycle).
+Implemented so far:
+
+* **`core`** — allocators, generational handles, content IDs, math, fixed-timestep time, RNG.
+* **`platform`** — window, input, filesystem, dynamic libraries, clocks. An SDL3 backend
+  and a headless one, kept honest by a `comptime` conformance check.
+* **`rhi`** — the render hardware interface, with a **validation backend** that enforces
+  the strict rules Metal forgives. Not scaffolding: it is what substitutes for a second
+  graphics backend until there is one.
+* **`app`** — the engine loop, subsystem lifecycle, and the log sink.
 
 [PROJECT_STATE.md](PROJECT_STATE.md) records exactly where things stand, and is updated
 every session.

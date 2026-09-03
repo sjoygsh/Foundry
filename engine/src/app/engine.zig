@@ -24,13 +24,14 @@
 const std = @import("std");
 const core = @import("core");
 const platform = @import("platform");
+const rhi = @import("rhi");
 
 const log_sink = @import("log_sink.zig");
 
 const Allocator = std.mem.Allocator;
 const log = core.log.scoped(.app);
 
-pub const InitError = platform.InitError || platform.WindowError;
+pub const InitError = platform.InitError || platform.WindowError || rhi.InitError;
 
 pub const Config = struct {
     /// The process environment, from `main`. See `app.environment`.
@@ -50,6 +51,10 @@ pub const Config = struct {
     /// Upper bound on simulation steps per frame. Without it, a frame that ran long
     /// produces more steps, which takes longer, which produces more steps.
     max_steps_per_frame: u32 = 8,
+
+    /// How far the CPU may run ahead of the GPU. Passed straight to the RHI, which owns
+    /// the frame ring — see `docs/design/rhi.md` §7.
+    frames_in_flight: u32 = 2,
 
     /// Runtime log verbosity. Independent of the compile-time level, which decides what
     /// is *built* (`log_sink`).
@@ -90,6 +95,7 @@ pub fn EngineOf(comptime P: type) type {
         // Subsystems, in initialisation order. Teardown is strictly the reverse.
         os: *platform.Os,
         platform: *P,
+        gpu: *rhi.Device,
 
         window: platform.WindowHandle,
 
@@ -127,12 +133,34 @@ pub fn EngineOf(comptime P: type) type {
                 window = try plat.openWindow(config.window);
             }
 
+            // The one place `platform` and `rhi` meet: an opaque tagged surface handle
+            // crosses, and neither module learns what the other's library is (ADR-0002,
+            // ADR-0003). `rhi` comes up after `platform` because it consumes that handle,
+            // and goes down before it for the same reason.
+            const surface: platform.NativeSurfaceHandle = if (window.isNone())
+                .none
+            else
+                plat.nativeSurface(window) orelse .none;
+            const surface_size = if (plat.windowInfo(window)) |info|
+                rhi.Extent2D{ .width = info.pixel_size.width, .height = info.pixel_size.height }
+            else
+                rhi.Extent2D{ .width = config.window.logical_width, .height = config.window.logical_height };
+
+            const gpu = try rhi.Device.init(gpa, .{
+                .label = "engine",
+                .surface = surface,
+                .surface_size = surface_size,
+                .frames_in_flight = config.frames_in_flight,
+            });
+            errdefer gpu.deinit();
+
             const self = try gpa.create(Self);
             self.* = .{
                 .gpa = gpa,
                 .frame_arena = .init(gpa),
                 .os = os,
                 .platform = plat,
+                .gpu = gpu,
                 .window = window,
                 .stepper = .init(timestep),
                 .step_delta = timestep.elapsedAt(1),
@@ -147,9 +175,11 @@ pub fn EngineOf(comptime P: type) type {
             };
             self.stepper.max_steps_per_frame = config.max_steps_per_frame;
 
-            log.info("engine up: {d}Hz simulation, {s}", .{
+            log.info("engine up: {d}Hz simulation, {s}, rhi backend '{t}', {d} frames in flight", .{
                 config.tick_rate_hz,
                 if (config.headless) "headless" else "windowed",
+                rhi.backend,
+                config.frames_in_flight,
             });
             return self;
         }
@@ -164,6 +194,7 @@ pub fn EngineOf(comptime P: type) type {
 
             self.events.deinit(gpa);
             self.frame_arena.deinit();
+            self.gpu.deinit();
             self.platform.deinit();
             self.os.deinit();
             gpa.destroy(self);
@@ -212,6 +243,15 @@ pub fn EngineOf(comptime P: type) type {
                 .quit_requested => self.quit = true,
                 .window_closed => |e| if (e.window.eql(self.window)) {
                     self.quit = true;
+                },
+                // The RHI is told explicitly rather than discovering it inside
+                // `beginFrame`, because a resize invalidates textures the caller may hold
+                // handles to — a fact the caller must be told (`rhi.md` §7).
+                .window_resized => |e| if (e.window.eql(self.window)) {
+                    self.gpu.resizeSurface(.{
+                        .width = e.pixel_size.width,
+                        .height = e.pixel_size.height,
+                    }) catch |err| log.err("surface resize failed: {t}", .{err});
                 },
                 else => {},
             }
@@ -506,6 +546,40 @@ test "the same frame timings produce the same simulation, twice" {
     const b = try run();
     try testing.expectEqual(a.ticks, b.ticks);
     try testing.expectEqual(a.elapsed, b.elapsed);
+}
+
+test "the gpu device comes up and goes down with the engine" {
+    const engine = try testEngine(.{});
+    defer engine.deinit();
+
+    const caps = engine.gpu.capabilities();
+    try testing.expectEqual(rhi.max_bind_groups, caps.max_bind_groups);
+    try testing.expectEqual(rhi.max_inline_constant_bytes, caps.max_inline_constant_bytes);
+}
+
+test "a window's surface crosses from platform to rhi" {
+    // The seam M1 depends on. The null platform backend cannot produce a real surface, so
+    // what is checked here is that the handle travels and the device accepts it — the
+    // live CAMetalLayer case is exercised by the sandbox.
+    const engine = try TestEngine.init(testing.allocator, .{
+        .window = .{ .logical_width = 800, .logical_height = 600 },
+    });
+    defer engine.deinit();
+
+    try testing.expect(!engine.window.isNone());
+    const info = engine.windowInfo().?;
+    try testing.expect(info.pixel_size.eql(.{ .width = 800, .height = 600 }));
+}
+
+test "a resize reaches the rhi surface" {
+    const engine = try TestEngine.init(testing.allocator, .{});
+    defer engine.deinit();
+
+    try engine.platform.resizeWindow(engine.window, .{ .width = 640, .height = 480 }, 2.0);
+    engine.beginFrame();
+    engine.endFrame();
+
+    try testing.expect(engine.gpu.surface_size.eql(.{ .width = 1280, .height = 960 }));
 }
 
 test "environment marshalling produces borrowed pairs" {

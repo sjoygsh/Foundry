@@ -16,6 +16,7 @@ const builtin = @import("builtin");
 const app = @import("app");
 const core = @import("core");
 const platform = @import("platform");
+const rhi = @import("rhi");
 
 /// Routes Foundry's logging through the engine's sink. One line, in the root source file.
 pub const std_options = app.std_options;
@@ -65,6 +66,10 @@ pub fn main(init: std.process.Init) !void {
             info.logical_size.width, info.logical_size.height,
             info.pixel_size.width,   info.pixel_size.height,
             info.scale,
+        });
+        const caps = engine.gpu.capabilities();
+        log.info("gpu: '{t}' backend, surface {t}, {d} bind groups, {d} inline bytes", .{
+            rhi.backend, caps.surface_format, caps.max_bind_groups, caps.max_inline_constant_bytes,
         });
         if (engine.nativeSurface()) |surface| {
             if (!surface.isNone()) {
