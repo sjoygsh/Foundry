@@ -216,6 +216,25 @@ pub const Platform = struct {
         return state.info();
     }
 
+    /// Asks the window manager for a new **logical** size.
+    ///
+    /// SDL applies this asynchronously on some platforms and synchronously on others, so
+    /// the size is deliberately *not* read back here. The window manager's
+    /// `SDL_EVENT_WINDOW_RESIZED` is what `pumpEvents` turns into Foundry's
+    /// `window_resized`, and that is the one path a resize takes whether it came from
+    /// here or from a user dragging an edge. A caller that trusted a read-back instead
+    /// would work on this machine and desynchronise on the next one.
+    pub fn setWindowSize(self: *Platform, handle: win.WindowHandle, logical: win.Size) interface.WindowError!void {
+        if (logical.isEmpty()) return error.InvalidWindowSize;
+        const state = self.windows.getConst(handle) orelse return error.InvalidWindow;
+        if (!c.SDL_SetWindowSize(state.ptr, @intCast(logical.width), @intCast(logical.height))) {
+            // The window manager declining is not a programmer error — a tiling
+            // compositor may simply refuse — so it is reported and the caller carries on.
+            log.warn("SDL_SetWindowSize({d}x{d}) failed: {s}", .{ logical.width, logical.height, sdlError() });
+            return error.WindowResizeRefused;
+        }
+    }
+
     pub fn nativeSurface(self: *Platform, handle: win.WindowHandle) ?win.NativeSurfaceHandle {
         const state = self.windows.getConst(handle) orelse return null;
         return switch (state.surface_kind) {

@@ -1,7 +1,7 @@
 //! `samples/sandbox` — the smallest thing that exercises the engine.
 //!
-//! It opens a window, logs input, runs the fixed-timestep loop, draws a textured quad and
-//! exits cleanly.
+//! It opens a window, logs input, runs the fixed-timestep loop, draws a textured quad that
+//! survives being resized, and exits cleanly.
 //!
 //! The rendering is deliberately run on **both** backends rather than only where it is
 //! visible. Under `-Drhi=null` the same command stream goes through the validation backend,
@@ -92,10 +92,12 @@ pub fn main(init: std.process.Init) !void {
                 log.info("no native surface; the clear goes to an offscreen target", .{});
             }
         }
-        log.info("escape or the window's close button quits", .{});
+        log.info("R resizes the window; escape or the close button quits", .{});
     }
 
     var reported_tick: u64 = 0;
+    var size_index: usize = 0;
+    const auto_resize_every = autoResizeEvery(engine);
 
     while (!engine.shouldQuit()) {
         engine.beginFrame();
@@ -115,6 +117,22 @@ pub fn main(init: std.process.Init) !void {
                     step.elapsed.toMillis(),
                     engine.alpha(),
                 });
+            }
+        }
+
+        // Resizing, deliberately **outside** the step loop: which shape a window is is a
+        // presentation concern, not simulation, and a simulation step that resized a window
+        // would be reaching outside the world it is meant to be computing. It reads the
+        // frame's input snapshot, which is the same value every step of this frame saw, so
+        // it cannot disagree with them (I9).
+        if (!headless) {
+            const advance = engine.input.wasPressed(.r) or blk: {
+                const every = auto_resize_every orelse break :blk false;
+                break :blk engine.frame_index > 0 and engine.frame_index % every == 0;
+            };
+            if (advance) {
+                size_index = (size_index + 1) % size_cycle.len;
+                requestResize(engine, size_cycle[size_index]);
             }
         }
 
@@ -539,6 +557,45 @@ const Quad = struct {
 /// the one Metal requires for a buffer bound to a `constant` address space argument.
 fn align16(n: u64) u64 {
     return (n + 15) & ~@as(u64, 15);
+}
+
+/// The window sizes `R` cycles through.
+///
+/// Deliberately awkward shapes as well as ordinary ones: a square and a very wide window
+/// are what make a broken aspect correction or a stale swapchain obvious, and 640x480 is
+/// small enough to catch a surface that never shrank.
+const size_cycle = [_]platform.Size{
+    .{ .width = 1280, .height = 720 },
+    .{ .width = 900, .height = 900 },
+    .{ .width = 1400, .height = 500 },
+    .{ .width = 640, .height = 480 },
+};
+
+/// Asks for a new window size, and carries on if the answer is no.
+///
+/// A window manager may decline — a tiling compositor will — and a size read from a config
+/// file may be nonsense. Neither is a programmer error, so both are reported at `warn` and
+/// the frame continues (`CLAUDE.md` §7).
+fn requestResize(engine: *app.Engine, size: platform.Size) void {
+    engine.setWindowSize(size) catch |err| {
+        log.warn("resize to {d}x{d} refused: {t}", .{ size.width, size.height, err });
+        return;
+    };
+    log.info("requested {d}x{d}; watch for the resized event", .{ size.width, size.height });
+}
+
+/// How often to advance `size_cycle` on its own, or null to only do it on `R`.
+///
+/// Same rationale as `FOUNDRY_SANDBOX_FRAMES`, and read the same way: a windowed run that
+/// cannot be scripted can only be checked by a person remembering to check it, and the
+/// resize path is precisely the one that went unverified for two sessions because of that.
+fn autoResizeEvery(engine: *app.Engine) ?u64 {
+    const raw = engine.os.envVar("FOUNDRY_SANDBOX_RESIZE_EVERY") orelse return null;
+    const n = std.fmt.parseInt(u64, std.mem.trim(u8, raw, " "), 10) catch {
+        log.warn("FOUNDRY_SANDBOX_RESIZE_EVERY='{s}' is not a number; ignoring", .{raw});
+        return null;
+    };
+    return if (n == 0) null else n;
 }
 
 /// What surface the renderer will eventually want here.

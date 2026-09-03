@@ -320,6 +320,16 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         pub fn nativeSurface(self: *Self) ?platform.NativeSurfaceHandle {
             return self.platform.nativeSurface(self.window);
         }
+
+        /// Asks for a new **logical** window size — what a settings menu calls.
+        ///
+        /// A request, not a change: the new size arrives as a `window_resized` event on a
+        /// later frame, and `beginFrame` resizes the swapchain from that event exactly as
+        /// it does for a user dragging an edge. So there is one resize path, and calling
+        /// this exercises it.
+        pub fn setWindowSize(self: *Self, logical: platform.Size) platform.WindowError!void {
+            return self.platform.setWindowSize(self.window, logical);
+        }
     };
 }
 

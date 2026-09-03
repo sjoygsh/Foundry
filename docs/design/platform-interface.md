@@ -1,6 +1,7 @@
 # Design: `platform` — the interface Foundry owns
 
-**Status:** Implemented 2026-09-03, both backends. See the Resolution at the end.
+**Status:** Implemented 2026-09-03, both backends. `setWindowSize` added 2026-09-04.
+See the Resolution at the end.
 **Date:** 2026-09-02
 **Implements:** I7, I9 · **Informed by:** ADR-0002, ADR-0003, ADR-0007, ADR-0008
 
@@ -73,6 +74,34 @@ Both are exposed, separately and unambiguously named. Neither is called "size".
 This is stated first because conflating them is the most common source of "everything is
 half-size on my laptop but fine on my monitor" bugs, and because the mistake is cheap to
 avoid at design time and expensive to unpick after a renderer depends on it.
+
+### Resizing is a request, not a setter
+
+`setWindowSize` takes a **logical** size, because logical is the only one of a window's two
+sizes that can be set: pixel size follows from it and the display's scale factor, and the
+scale belongs to the display rather than to us.
+
+**The call does not change the window; it asks.** The new size is observed by draining
+`window_resized` from the event queue, exactly as a user dragging an edge is observed. Three
+reasons, in increasing order of how expensive they are to discover later:
+
+* A window manager may decline, or comply partially. Asking for 900x900 on this machine
+  yields 900x794, because the request exceeded the usable display height. A setter's return
+  value would have to express that; an event just reports what happened.
+* Some platforms apply the change synchronously and some do not, so a caller that read the
+  size straight back would work on one and desynchronise on another.
+* There is then exactly **one** resize path, whoever initiated it. A program that resizes
+  itself is running the same code as a user dragging an edge — which means testing either
+  one tests both, and it is why this function exists at all: without it, the swapchain
+  resize path could only ever be checked by a person remembering to check it.
+
+The null backend enforces the strict reading — it queues the event and changes nothing until
+the queue is drained — for the same reason the null `rhi` backend enforces rules Metal
+forgives. Making the strict contract the easy one to satisfy is that backend's job.
+
+A zero dimension is reported as `InvalidWindowSize` rather than asserted: a resolution
+usually arrives from a settings file or a mod, which is untrusted input and is validated at
+the boundary (`CLAUDE.md` §7).
 
 ### The native surface seam
 
@@ -431,3 +460,25 @@ key would be un-bindable and its twin would fire twice.
 Surface kinds other than `metal_layer` return `SurfaceUnavailable` with a log line. SDL
 can produce an `HWND` through its properties API, but there is no Windows RHI backend to
 consume one and no way to test it, so it arrives with that backend.
+
+
+---
+
+## Resolution, part three — `setWindowSize`, 2026-09-04
+
+Added while closing M1, and worth recording because it began as something deliberately *not*
+done. The Metal swapchain resize path had been written for two sessions and never run: the
+interface offered no way to resize a window, and driving one from outside the process needs
+macOS Accessibility permission this machine does not grant. The path was therefore a claim
+about code rather than about behaviour, and it was recorded as exactly that.
+
+It was not added silently, and it was not added as a test hook. **Any game with a settings
+menu needs to set its resolution**, so this is a capability the interface was missing rather
+than scaffolding for a check — which is what makes it the right answer instead of a
+convenient one. That it also makes the swapchain path testable is a consequence of there
+being one resize path, not the justification.
+
+What it found immediately, which is the argument for having done it: asking for 900x900
+returns 900x794, because the window manager clamps to the usable display area. A design that
+had treated the call as a setter would have been wrong on the first call on the first
+machine it ran on.

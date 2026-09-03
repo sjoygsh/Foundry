@@ -1,7 +1,7 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-04
-**Updated by:** **M1 exit criterion met.** A textured quad, both validation halves clean
+**Updated by:** **M1 complete.** A textured quad that survives a resize, both halves clean
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -28,21 +28,22 @@ done and both exit criteria are met: `zig build run` opens a window on macOS tha
 to input, and both platform backends cross-compile for Windows and Linux. Nothing is
 drawn, which M0 deliberately excludes.
 
-**Current milestone: M1 — First pixels. Exit criterion met, one check outstanding.**
-`zig build run -Drhi=metal` opens a window on macOS and draws a rotating, nearest-filtered
-textured quad, vsync-paced.
+**Current milestone: M1 — First pixels. Complete.** `zig build run -Drhi=metal` opens a
+window on macOS and draws a rotating, nearest-filtered textured quad, vsync-paced, which
+survives being resized.
 
 All five ROADMAP items are done: the Metal backend and its Objective-C shim (1), the
 `xcrun metal` → `.metallib` build step (2), runtime MSL compilation (3), the validation
-backend (4), and Metal API validation enabled and clean (5). The exit criterion —
-*a textured quad, Metal validation clean, the null backend raising no complaints about the
-same command stream* — is met and was confirmed by looking at the window, not only by
-inference from a clean run.
+backend (4), and Metal API validation enabled and clean (5).
 
-**The one part not confirmed is "surviving window resize."** The path is written and its
-headless half is tested; driving a real window resize turns out to need macOS Accessibility
-permission this environment does not have. See the debt list — it is a gap in the *check*,
-not a known bug, and there are exactly two ways to close it.
+**The exit criterion is met in full** — *a textured quad on screen, surviving window resize,
+with Metal validation clean and the null backend raising no complaints about the same
+command stream* — and every clause of it was checked rather than inferred. The resize half
+was the last to close and needed a new platform capability to do it; see the decisions
+below.
+
+Xcode GPU frame capture is still unconfirmed. It is a look, not a change, and nothing
+suggests it is broken.
 
 ---
 
@@ -53,6 +54,12 @@ textured quad.**
 
 New this session:
 
+* `engine/src/platform/` — **`setWindowSize` joins the backend interface**, with its
+  conformance-check entry, both backend implementations, and four tests. Logical size only,
+  and a *request* rather than a setter — see the decisions below. `Engine.setWindowSize`
+  passes it through; `samples/sandbox` cycles window shapes on `R`, or on a timer when
+  `FOUNDRY_SANDBOX_RESIZE_EVERY` is set, which is what finally made the swapchain resize
+  path checkable.
 * `build.zig` — `metalLibrary`, the shader build step (ADR-0015): `xcrun metal` per source
   to `.air`, then `xcrun metallib` to link. Always through `xcrun` and never a hardcoded
   path (ADR-0014), and compiled with `-gline-tables-only -frecord-sources` so a frame
@@ -139,8 +146,8 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 225 tests** (50 `core`, 68 `platform`, 85 `rhi`, 22 `app`), and
-**233 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8
+**`zig build test` passes 227 tests** (50 `core`, 70 `platform`, 85 `rhi`, 22 `app`), and
+**235 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8
 is headless: nothing calls `SDL_Init`, and `app`'s tests instantiate
 `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is measured
 against a synthetic clock and a validating device, never against this machine. The 8
@@ -229,24 +236,13 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Closing M1.** Two checks, then the milestone is done and tagged.
+**M1 is done.** One optional look remains, then it is tagged.
 
-1. **Confirm a real-window resize.** The only substantive thing left. Driving one
-   programmatically needs macOS Accessibility permission, which this environment does not
-   have, so there are two ways to close it and they are a real choice rather than a
-   formality:
-   * **Look at it.** Run `zig build run -Drhi=metal` and drag the window edge. If the quad
-     stays square and the log shows `resized:` lines with no error, the path works. Ten
-     seconds, no code, but it is a one-off that no future session repeats.
-   * **Add `setWindowSize` to `platform`.** Then the check is automatable and repeatable.
-     This is *not* a test hook: any game with a settings menu needs to set its resolution,
-     so it is a genuinely missing platform capability rather than scaffolding. But it is an
-     interface change — the conformance check, both backends and the design doc — and
-     `CLAUDE.md` rule 10 says that is the user's call, not something to slip in while
-     finishing a milestone.
-2. **Confirm Xcode GPU frame capture** works against the shim, which is one of the stated
-   reasons Metal is the first backend (ADR-0012). The shaders are already built with
-   `-frecord-sources`, so a capture should show source rather than disassembly.
+1. **Confirm Xcode GPU frame capture** works against the shim, which is one of the stated
+   reasons Metal is the first backend (ADR-0012). Shaders are built with `-frecord-sources`,
+   so a capture should show source rather than disassembly. This is a look rather than a
+   change, and nothing suggests it is broken.
+2. **Tag `m1`** and update this file, per the milestone rules.
 
 **Then M2 — sprites.** The quad is one draw; M2 is thousands, which means batching, a
 texture atlas, PNG decode, a real 2D camera and bitmap text. The camera is the first thing
@@ -284,13 +280,13 @@ deliberately the three lines M1 needed and no more.
 * **Reading a directory as a file reports `IoFailed`, not `WrongFileKind`,** because macOS
   opens the directory happily and fails at the read. The test asserts only that it errors.
   Classifying it would cost a `stat` on every read, which is not worth it.
-* **A real-window resize has still never been run.** The Metal backend's resize path is
-  written and the headless half of it is tested, but the `CAMetalLayer` branch has not been
-  exercised. Driving a window resize from outside the process needs macOS Accessibility
-  permission (`osascript is not allowed assistive access`), and `platform` exposes no way to
-  do it from inside. Until it is checked, "survives a resize" is a claim about code, not
-  about behaviour. This is a gap in the *check*, not a known bug — and the two ways to close
-  it are in "immediate next steps" above.
+* ~~**A real-window resize has never been run.**~~ **Closed 2026-09-04** by adding
+  `setWindowSize` to `platform`. Five real resizes per run — 1280x720, 900x900 (clamped by
+  the window manager to 900x794), 1400x500, 640x480 — each producing a `window_resized`
+  event with the pixel size tracking it, the `CAMetalLayer` following, zero Metal API and
+  GPU validation messages, and zero violations from the null backend on the same command
+  stream. Driving it from *outside* the process is still impossible here (`osascript is not
+  allowed assistive access`), which is why the capability went in the engine instead.
 
 * **`FrameError` cannot distinguish transient from fatal surface failure.** Metal returning
   no drawable — a minimised or occluded window, or every drawable still in flight — is
@@ -344,7 +340,34 @@ deliberately the three lines M1 needed and no more.
 
 ## Important decisions made recently
 
-**This session (M1, the quad):**
+**This session (M1, closing it):**
+
+* **`setWindowSize` was added to `platform`, deliberately and not quietly.** It had been
+  refused twice as "a contract change, not something to slip in", and that was the right
+  call both times — what changed is that it was raised as a decision and taken. The
+  justification is not the test it unblocks: **any game with a settings menu needs to set
+  its resolution**, so this was a capability the interface was missing. That it also makes
+  the swapchain resize path checkable follows from there being exactly one resize path, and
+  is a consequence rather than the reason.
+* **A resize is a request, not a setter, and the interface says so.** `setWindowSize` does
+  not change the window; the new size is observed by draining `window_resized` like any
+  other resize. This was vindicated on the first call: asking for 900x900 yields **900x794**,
+  because the window manager clamps to the usable display height. A setter would have been
+  wrong on the first call on the first machine it ran on. The null backend enforces the
+  strict reading — it changes nothing until the queue is drained — for the same reason the
+  null `rhi` backend enforces rules Metal forgives.
+* **`InvalidWindowSize` and `WindowResizeRefused` are separate errors.** The first is the
+  caller at fault — a resolution from a settings file or a mod is untrusted input and is
+  validated rather than asserted (`CLAUDE.md` §7). The second is the *environment* declining:
+  a tiling compositor will, and so will a full-screen window. Collapsing them, or reusing
+  `WindowCreationFailed` for a window that plainly exists, would make the error set say
+  something untrue.
+* **The sandbox resizes outside the step loop.** Which shape a window is is presentation,
+  not simulation, and a step that resized a window would be reaching outside the world it
+  is computing. It reads the frame's input snapshot, so it cannot disagree with what the
+  steps saw (I9).
+
+**Earlier this session (M1, the quad):**
 
 * **The §9 binding convention survived contact with a real compiler.** It was written down
   before the backend and asserted in a unit test, but a unit test only checks our arithmetic

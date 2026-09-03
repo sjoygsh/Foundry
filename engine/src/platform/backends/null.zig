@@ -113,6 +113,32 @@ pub const Platform = struct {
         return state.info();
     }
 
+    /// Queues the resize the window manager would have sent, and **changes nothing yet**.
+    ///
+    /// The eager thing would be to update the window here and queue the event as a
+    /// courtesy. This backend deliberately does not, for the same reason the null *rhi*
+    /// backend enforces rules Metal forgives: the interface says a resize is observed by
+    /// draining `window_resized`, and a caller that read the size straight back would work
+    /// here, work on macOS, and desynchronise on a platform that resizes asynchronously.
+    /// Making the strict contract the one that is easy to satisfy is this backend's job.
+    ///
+    /// The scale is carried over: a headless window has no second display to have moved
+    /// between. `resizeWindow` below is the test-only counterpart that can change it.
+    pub fn setWindowSize(self: *Platform, handle: win.WindowHandle, logical: win.Size) interface.WindowError!void {
+        if (logical.isEmpty()) return error.InvalidWindowSize;
+        const state = self.windows.getConst(handle) orelse return error.InvalidWindow;
+
+        var pending = state.*;
+        pending.logical_size = logical;
+
+        self.pushEvent(.{ .window_resized = .{
+            .window = handle,
+            .logical_size = logical,
+            .pixel_size = pending.pixelSize(),
+            .scale = pending.scale,
+        } }) catch return error.OutOfMemory;
+    }
+
     pub fn nativeSurface(self: *Platform, handle: win.WindowHandle) ?win.NativeSurfaceHandle {
         if (!self.windows.contains(handle)) return null;
         // A live window with nothing behind it. `rhi`'s null backend accepts this;
@@ -294,6 +320,40 @@ test "a closed window's handle resolves to nothing" {
     const w2 = try p.openWindow(.{});
     try testing.expect(!w.eql(w2));
     try testing.expectEqual(@as(?win.WindowInfo, null), p.windowInfo(w));
+}
+
+test "setWindowSize resizes through the event queue, not behind it" {
+    const p = try Platform.init(testing.allocator, .{});
+    defer p.deinit();
+
+    const w = try p.openWindow(.{ .logical_width = 800, .logical_height = 600 });
+    try p.setWindowSize(w, .{ .width = 1024, .height = 768 });
+
+    // Still the old size: a resize is a request, and the interface says it is observed
+    // by draining the queue. A backend that changed it here would let a caller get away
+    // with never handling `window_resized`, which SDL would then punish.
+    try testing.expect(p.windowInfo(w).?.logical_size.eql(.{ .width = 800, .height = 600 }));
+
+    p.pumpEvents();
+    const ev = p.nextEvent().?;
+    try testing.expect(ev == .window_resized);
+    try testing.expect(ev.window_resized.logical_size.eql(.{ .width = 1024, .height = 768 }));
+    try testing.expect(p.windowInfo(w).?.logical_size.eql(.{ .width = 1024, .height = 768 }));
+}
+
+test "setWindowSize validates rather than asserts" {
+    const p = try Platform.init(testing.allocator, .{});
+    defer p.deinit();
+
+    const w = try p.openWindow(.{});
+
+    // A resolution out of a settings file or a mod is untrusted input (`CLAUDE.md` §7).
+    try testing.expectError(error.InvalidWindowSize, p.setWindowSize(w, .{ .width = 0, .height = 720 }));
+    try testing.expectError(error.InvalidWindowSize, p.setWindowSize(w, .{ .width = 1280, .height = 0 }));
+
+    // And a dead handle resolves to nothing rather than to whatever took its slot (I1).
+    p.closeWindow(w);
+    try testing.expectError(error.InvalidWindow, p.setWindowSize(w, .{ .width = 640, .height = 480 }));
 }
 
 test "a headless backend refuses to invent a GPU surface" {

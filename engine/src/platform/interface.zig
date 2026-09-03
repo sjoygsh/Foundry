@@ -44,6 +44,15 @@ pub const WindowError = error{
     /// (asking a headless backend for a `CAMetalLayer`), not a programmer error, so it
     /// is reported rather than asserted.
     SurfaceUnavailable,
+    /// A requested window size with a zero dimension. Reported rather than asserted
+    /// because a resolution usually comes from a settings file or a mod, which is
+    /// untrusted input and is validated at the boundary (`CLAUDE.md` §7).
+    InvalidWindowSize,
+    /// The window manager declined a resize of a live window. A tiling compositor will;
+    /// so will a full-screen window. Distinct from `WindowCreationFailed`, which is about
+    /// a window that never existed, and from `InvalidWindowSize`, where the caller was at
+    /// fault rather than the environment.
+    WindowResizeRefused,
 };
 
 /// Options common to every backend. Empty today; present so that adding one later is
@@ -72,6 +81,16 @@ pub fn check(comptime Impl: type, comptime label: []const u8) void {
         expectFn(P, label, "closeWindow", &.{ *P, window.WindowHandle }, void);
         expectFn(P, label, "windowInfo", &.{ *P, window.WindowHandle }, ?window.WindowInfo);
         expectFn(P, label, "nativeSurface", &.{ *P, window.WindowHandle }, ?window.NativeSurfaceHandle);
+
+        // Resizing from inside the process. **The size is logical**, because logical is
+        // the only one of a window's two sizes that can be set: pixel size follows from
+        // it and the display's scale, which belongs to the display and not to us.
+        //
+        // This is a *request*. The new size is observed by draining `window_resized`
+        // from the event queue like any other resize, not by reading it back, so a
+        // program that resizes itself takes the identical path as a user dragging an
+        // edge — which is what makes the one testable by exercising the other.
+        expectFn(P, label, "setWindowSize", &.{ *P, window.WindowHandle, window.Size }, WindowError!void);
 
         // The frame's input boundary, in the order it is called:
         //   pumpEvents  — drain the OS queue, once, at one known point in the frame
@@ -166,6 +185,11 @@ test "the check accepts a conforming implementation" {
                 _ = handle;
                 return null;
             }
+            pub fn setWindowSize(self: *@This(), handle: window.WindowHandle, logical: window.Size) WindowError!void {
+                _ = self;
+                _ = handle;
+                _ = logical;
+            }
             pub fn pumpEvents(self: *@This()) void {
                 _ = self;
             }
@@ -194,6 +218,7 @@ test "the interface names every call a frame makes" {
     const required = [_][]const u8{
         "init",          "deinit",     "openWindow", "closeWindow",  "windowInfo",
         "nativeSurface", "pumpEvents", "nextEvent",  "captureInput", "now",
+        "setWindowSize",
     };
-    try testing.expectEqual(@as(usize, 10), required.len);
+    try testing.expectEqual(@as(usize, 11), required.len);
 }
