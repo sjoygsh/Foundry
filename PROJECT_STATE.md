@@ -1,7 +1,7 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-03
-**Updated by:** M0 — `platform` (L1) implemented against the null backend, 109 tests passing
+**Updated by:** M0 — `platform` (L1) complete with both backends; a window opens on macOS
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -24,7 +24,11 @@ is mature enough to need them rather than as decoration.
 ## Current milestone
 
 **M0 — Skeleton: "it runs."** In progress. Setup, design docs, the build graph, `core` and
-`platform` are done. Next is the SDL3 platform backend, then `app`.
+`platform` (both backends) are done. Next is `app`.
+
+**A window now opens on macOS with a live `CAMetalLayer`** — half of M0's exit criteria,
+though only from a throwaway probe so far. `app` and `samples/sandbox` are what make it a
+runnable result the repository actually contains.
 
 Target: a window that opens and responds to input on macOS, a fixed-timestep loop, `core`
 primitives, a null RHI backend, and cross-compilation checks for Windows and Linux. Full
@@ -48,8 +52,13 @@ New this session:
   * `interface.zig` — the backend interface and its `comptime` conformance check.
   * `backends/null.zig` — the headless backend, with a scriptable event queue and an
     exactly-reproducible synthetic clock.
-* `build.zig` — `platform` added to the layering table; `-Dplatform=<backend>` selects the
-  backend and reaches only that module.
+  * `backends/sdl3.zig` — the SDL3 backend. **The only file in Foundry that may name an
+    SDL type**, and the build graph is what enforces that: no other module is linked
+    against SDL.
+* `build.zig` — `platform` added to the layering table; `-Dplatform=null|sdl3` selects the
+  backend, and the lazy SDL dependency is linked into that one module and nowhere else.
+* `scripts/check-targets.sh` — now runs both backends natively and cross-compiles both for
+  Windows and Linux: six combinations, all green.
 * `core/handle.zig` — `HandlePool` now takes a **tag type and a value type**
   (`HandlePool(Window, WindowState)`). See "decisions" below.
 * `docs/design/platform-interface.md` — Resolution section recording what implementation
@@ -61,16 +70,22 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 109 tests** — 50 in `core`, 59 in `platform`. `zig build check`
-compiles for `x86_64-windows-gnu`, `x86_64-linux-gnu` and `aarch64-linux-gnu`.
-`scripts/check-targets.sh` runs the whole per-milestone obligation.
+**`zig build test` passes 109 tests** with the default null backend (50 `core`, 59
+`platform`), and **117 with `-Dplatform=sdl3`** (the 8 extra cover the scancode, button and
+modifier mappings). The SDL3 tests are headless by design — nothing in the suite calls
+`SDL_Init` — so they run anywhere. `scripts/check-targets.sh` runs the whole per-milestone
+obligation for both backends against both cross-targets.
 
-**The M0 gate is cleared: SDL3 builds and the Metal seam works.** `castholm/SDL`
-v0.5.3+3.4.14 (SDL 3.4.14) builds from source against Zig 0.16.0. A probe opened a window
-under the `cocoa` driver with `SDL_WINDOW_METAL`, obtained a live `CAMetalLayer` via
-`SDL_Metal_CreateView` / `SDL_Metal_GetLayer`, pumped events and exited cleanly. Full SDL3
-also cross-compiles from macOS to Windows x64 and Linux x64. *That probe was scratch work
-and is not in this repository* — `platform`'s SDL3 backend is the next unit of work.
+**A window opens on macOS.** Verified live by a throwaway probe, not merely compiled: SDL3
+3.4.14 under the `cocoa` video driver, a window reporting **logical 800x600, pixel
+1600x1200, scale 2**, a live `CAMetalLayer` delivered upward as an opaque
+`NativeSurfaceHandle`, and 1500ms of real time driving exactly 90 simulation steps at 60Hz.
+The probe was scratch work and is not in the repository — `samples/sandbox` is where this
+becomes a runnable result Foundry actually ships.
+
+**Both backends cross-compile to Windows and Linux, SDL included.** ADR-0008's "supported
+means compiles" claim therefore covers the backend that actually ships, not only the
+headless one — a better outcome than that ADR assumed was available.
 
 **Four guarantees were verified by breaking them on purpose**, not by assertion:
 
@@ -89,18 +104,15 @@ Nothing in progress. The next session continues M0 at step 1 below.
 
 ## Immediate next steps
 
-1. **Write the SDL3 platform backend** (`engine/src/platform/backends/sdl3.zig`). Adding it
-   is purely additive: add `sdl3` to `Backend` in `platform/root.zig` and to
-   `PlatformBackend` in `build.zig`, and link the lazy `sdl` dependency into the `platform`
-   module. The conformance check will name anything missed. SDL3 must not appear outside
-   this one file.
-2. **Implement `app`**: fixed-timestep loop (drive it with `core.time.FixedStepper`, which
+1. **Implement `app`**: fixed-timestep loop (drive it with `core.time.FixedStepper`, which
    already exists and is tested), subsystem lifecycle, clean shutdown. `app` owns `main`,
    so it is where the process environment is captured and handed to `platform.Os` — see
    "the environment is an input" below.
-3. **Define the `rhi` interface and write the null backend.** Interface shape matters far
+2. **Define the `rhi` interface and write the null backend.** Interface shape matters far
    more than the backend at this stage.
-4. **Build `samples/sandbox`** to M0's exit criteria.
+3. **Build `samples/sandbox`** to M0's exit criteria. The probe described above is
+   effectively its skeleton; it needs `app` underneath it rather than driving `platform`
+   directly.
 
 Before M1, and before any Metal code: **`docs/design/rhi.md`**, including the Metal / Vulkan /
 D3D12 concept mapping table from ADR-0003. This is the highest-leverage document in the project.
@@ -118,6 +130,12 @@ D3D12 concept mapping table from ADR-0003. This is the highest-leverage document
 * **`platform` has no gamepad support, file watching, IME preedit or audio.** Each is
   deferred with a recorded reason in the design doc's Resolution; none requires the
   interface to change to accommodate it later.
+* **Text input is enabled for a window's whole lifetime.** SDL3 requires
+  `SDL_StartTextInput` explicitly, and without it `text_input` events never arrive at all.
+  Per-window IME control belongs with the UI system (M6).
+* **Only `metal_layer` surfaces are implemented.** `win32_hwnd` and the X11/Wayland kinds
+  return `SurfaceUnavailable`. SDL can produce an `HWND` through its properties API, but
+  there is no backend to consume one and no way to test it.
 * **Reading a directory as a file reports `IoFailed`, not `WrongFileKind`,** because macOS
   opens the directory happily and fails at the read. The test asserts only that it errors.
   Classifying it would cost a `stat` on every read, which is not worth it.
@@ -173,6 +191,15 @@ D3D12 concept mapping table from ADR-0003. This is the highest-leverage document
   rather than one polling call that pumps on first use. It makes "the OS queue is drained at
   one known point" structural rather than conventional, and gives the snapshot an
   unambiguous place to be taken.
+
+* **SDL's several resize events collapse into Foundry's one.** SDL reports logical resize,
+  pixel-size change and display-scale change separately, and one drag between monitors can
+  produce all three. Every consumer reacts identically, so they become a single
+  `window_resized` carrying both sizes — emitted only when something actually changed,
+  which also avoids redundant swapchain rebuilds.
+* **The SDL3 backend needed no interface changes.** The interface was designed by asking
+  "would this be right for hand-written Cocoa and Win32?", and SDL fitted inside it rather
+  than the other way round. That is the outcome ADR-0002's named risk was worried about.
 
 **Earlier sessions:** pinned Zig 0.16.0 (ADR-0001 resolution); SDL3 via `castholm/SDL`
 (ADR-0002 resolution); HIDAPI licence elected BSD-3-Clause; the build graph as a data table;

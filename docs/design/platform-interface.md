@@ -1,6 +1,6 @@
 # Design: `platform` — the interface Foundry owns
 
-**Status:** Implemented 2026-09-03, less the SDL3 backend. See the Resolution at the end.
+**Status:** Implemented 2026-09-03, both backends. See the Resolution at the end.
 **Date:** 2026-09-02
 **Implements:** I7, I9 · **Informed by:** ADR-0002, ADR-0003, ADR-0007, ADR-0008
 
@@ -290,8 +290,8 @@ of the snapshot design in §4.
 
 ## Resolution — 2026-09-03
 
-Implemented as `engine/src/platform/`, against Zig 0.16.0. **Status: implemented, less
-the SDL3 backend**, which is the next unit of work. 59 tests.
+Implemented as `engine/src/platform/`, against Zig 0.16.0. Both backends exist: 59 tests
+with the null backend, 67 with SDL3.
 
 The design above survived contact with the compiler almost intact. Four things changed,
 three of them forced by what Zig 0.16's `std` actually provides.
@@ -382,3 +382,52 @@ things and confirming the build noticed:
 * **IME preedit.** Committed text arrives as `text_input`; in-progress composition does
   not. Nothing needs it until there is a text field to show it in.
 * **Double-click detection.** A UI concern, and the events carry enough to derive it.
+
+---
+
+## Resolution, part two — the SDL3 backend
+
+Written after the interface, against it, and it needed no changes to accommodate SDL.
+That is the result this document was hoping for: the interface was designed by asking
+*"would this be right for hand-written Cocoa and Win32?"*, and SDL turned out to fit
+inside it rather than the other way round.
+
+**Verified live, not just compiled.** A throwaway probe opened a window under the `cocoa`
+video driver and reported **logical 800x600, pixel 1600x1200, scale 2** — so §3's
+insistence that these are different numbers is load-bearing on the very first machine
+Foundry runs on, not a hypothetical about someone else's laptop. `SDL_Metal_CreateView`
+followed by `SDL_Metal_GetLayer` produced a live `CAMetalLayer`, delivered upward as an
+opaque `NativeSurfaceHandle` with no SDL or Metal type in the signature. 1500ms of real
+time drove exactly 90 simulation steps at 60Hz.
+
+**Both backends cross-compile to Windows and Linux**, SDL included, and
+`scripts/check-targets.sh` now runs all six combinations. ADR-0008's "supported means
+compiles" claim therefore covers the backend that actually ships, not only the headless
+one.
+
+Four things SDL does that the translation layer absorbs, so nothing above L1 sees them:
+
+* **SDL reports a resize three ways** — `WINDOW_RESIZED`, `WINDOW_PIXEL_SIZE_CHANGED` and
+  `WINDOW_DISPLAY_SCALE_CHANGED` — and one drag between monitors can produce all three.
+  They collapse into Foundry's single `window_resized`, carrying both sizes, and only
+  when something actually changed. Consumers react identically to all three, so telling
+  them apart would be work with no payoff and a redundant swapchain rebuild as the cost.
+* **SDL numbers mouse buttons left, middle, right.** Not the order the names are usually
+  said in. There is a test for it, because swapping the last two is a bug that survives a
+  long time — both buttons still do *something*.
+* **SDL may report the wheel axes inverted** depending on OS settings, and says so in the
+  event rather than normalising. Foundry's contract is fixed (positive y scrolls away
+  from the user), so the sign is applied here.
+* **SDL3 requires `SDL_StartTextInput` explicitly**, and without it `text_input` events
+  never arrive at all. It is enabled for the window's lifetime. Per-window IME control —
+  enabling it only while a text field has focus — is a UI concern that arrives with the UI
+  system (M6); until then, always-on is what makes the event variant real rather than dead.
+
+The scancode mapping has two tests that matter more than they look: every Foundry key is
+reachable from some scancode, and no two scancodes map to the same key. Without the first,
+a key could be bound in a config file but never pressed; without the second, one physical
+key would be un-bindable and its twin would fire twice.
+
+Surface kinds other than `metal_layer` return `SurfaceUnavailable` with a log line. SDL
+can produce an `HWND` through its properties API, but there is no Windows RHI backend to
+consume one and no way to test it, so it arrives with that backend.

@@ -24,13 +24,26 @@ if [ "$actual" != "$pinned" ]; then
 fi
 
 echo
-echo "== native: build and run tests"
+echo "== native: build and run tests (null platform backend)"
 "$ZIG" build test
 
+# The SDL3 backend is built and its tests run too. They are headless by design — nothing
+# in the suite calls SDL_Init — so this needs no display and is safe anywhere. Without
+# it, the backend that actually ships would only be compiled when someone remembered to
+# ask for it.
+echo
+echo "== native: build and run tests (SDL3 platform backend)"
+"$ZIG" build test -Dplatform=sdl3
+
+# Both backends are checked against both targets. The null backend proves the engine
+# builds without SDL at all; the SDL3 backend proves SDL itself cross-compiles, which is
+# a stronger claim than ADR-0008 assumed was available.
 for target in x86_64-windows-gnu x86_64-linux-gnu; do
-    echo
-    echo "== $target: compile check"
-    "$ZIG" build check -Dtarget="$target"
+    for backend in null sdl3; do
+        echo
+        echo "== $target: compile check ($backend backend)"
+        "$ZIG" build check -Dtarget="$target" -Dplatform="$backend"
+    done
 done
 
 echo

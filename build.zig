@@ -43,9 +43,16 @@ const layering = [_]Module{
 ///
 /// A compile-time choice rather than a runtime one: nobody swaps platform backends
 /// mid-run, and a vtable would cost an indirect call on every input poll and clock
-/// read for no benefit. `sdl3` joins this list when that backend is written; until
-/// then `-Dplatform=sdl3` fails with an accurate message rather than a misleading one.
-const PlatformBackend = enum { null };
+/// read for no benefit. A backend is an engine port, and ports are compile-time
+/// decisions — deliberately unlike component types and asset loaders, which I6 requires
+/// be runtime-registered so that mods can add them.
+const PlatformBackend = enum {
+    /// Headless. No window, no real input, a synthetic clock. The default, because it
+    /// needs no display server and no dependency, so `zig build test` works anywhere.
+    null,
+    /// SDL3. The backend that actually opens a window (ADR-0002).
+    sdl3,
+};
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -89,7 +96,21 @@ pub fn build(b: *std.Build) void {
     // layering exception: `build_options` carries no engine code, and granting it
     // broadly would let build-time configuration leak into modules whose behaviour is
     // supposed to be decided by their inputs alone.
-    modules.get("platform").?.addImport("build_options", build_options_module);
+    const platform_module = modules.get("platform").?;
+    platform_module.addImport("build_options", build_options_module);
+
+    // **The only place SDL enters the build graph.** I7 is enforced here as much as by
+    // the layering table above: no other module is linked against it, so no other
+    // module can name an SDL type even by accident (ADR-0002).
+    //
+    // `lazyDependency` rather than `dependency` because the manifest marks it lazy, so
+    // a null-backend build must not require it. It returns an optional; null means the
+    // package still needs fetching and the build will re-run itself.
+    if (platform_backend == .sdl3) {
+        if (b.lazyDependency("sdl", .{ .target = target, .optimize = optimize })) |sdl| {
+            platform_module.linkLibrary(sdl.artifact("SDL3"));
+        }
+    }
 
     // Unit tests are colocated in source (project convention). One test binary per
     // module, all hung off `zig build test`.

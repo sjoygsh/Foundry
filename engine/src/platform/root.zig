@@ -47,6 +47,8 @@ pub const window = @import("window.zig");
 pub const Backend = enum {
     /// Headless. No window, no real input, a synthetic clock.
     null,
+    /// SDL3, confined entirely to `backends/sdl3.zig` (ADR-0002, I7).
+    sdl3,
 };
 
 pub const backend: Backend = std.meta.stringToEnum(Backend, build_options.platform_backend) orelse
@@ -56,6 +58,7 @@ const null_backend = @import("backends/null.zig");
 
 const selected = switch (backend) {
     .null => null_backend,
+    .sdl3 => @import("backends/sdl3.zig"),
 };
 
 comptime {
