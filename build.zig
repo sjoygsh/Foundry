@@ -26,8 +26,10 @@ const layering = [_]Module{
     // L0 — std only.
     .{ .name = "core" },
 
-    // Added as each is implemented. The full graph from ADR-0007 is:
-    //   L1  platform   -> core            (SDL3 lives ONLY here)
+    // L1 — SDL3 lives ONLY here (ADR-0002).
+    .{ .name = "platform", .deps = &.{"core"} },
+
+    // Added as each is implemented. The rest of the graph from ADR-0007 is:
     //   L1  data       -> core
     //   L2  rhi        -> core, platform  (Metal/Vulkan/D3D live ONLY here)
     //   L2  asset      -> core, data, platform
@@ -37,9 +39,31 @@ const layering = [_]Module{
     //   L5  abi        -> app             (M7)
 };
 
+/// Which platform backend to build against.
+///
+/// A compile-time choice rather than a runtime one: nobody swaps platform backends
+/// mid-run, and a vtable would cost an indirect call on every input poll and clock
+/// read for no benefit. `sdl3` joins this list when that backend is written; until
+/// then `-Dplatform=sdl3` fails with an accurate message rather than a misleading one.
+const PlatformBackend = enum { null };
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+
+    const platform_backend = b.option(
+        PlatformBackend,
+        "platform",
+        "Platform backend to build against (default: null, headless)",
+    ) orelse .null;
+
+    // Passed as a string rather than as the enum: `addOption` would emit its own
+    // definition of the enum type, which would not be the same type as the one
+    // `platform` declares. The name is converted back at comptime there, so an
+    // unrecognised value is still a compile error naming the offender.
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "platform_backend", @tagName(platform_backend));
+    const build_options_module = build_options.createModule();
 
     var modules: std.StringHashMapUnmanaged(*std.Build.Module) = .empty;
 
@@ -60,6 +84,12 @@ pub fn build(b: *std.Build) void {
 
         modules.put(b.allocator, spec.name, mod) catch @panic("OOM");
     }
+
+    // Build configuration reaches exactly the module that needs it. This is not a
+    // layering exception: `build_options` carries no engine code, and granting it
+    // broadly would let build-time configuration leak into modules whose behaviour is
+    // supposed to be decided by their inputs alone.
+    modules.get("platform").?.addImport("build_options", build_options_module);
 
     // Unit tests are colocated in source (project convention). One test binary per
     // module, all hung off `zig build test`.

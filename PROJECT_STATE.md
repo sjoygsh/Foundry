@@ -1,7 +1,7 @@
 # Foundry Project State
 
-**Last updated:** 2026-09-02
-**Updated by:** M0 — build graph and `core` implemented, 50 tests passing
+**Last updated:** 2026-09-03
+**Updated by:** M0 — `platform` (L1) implemented against the null backend, 109 tests passing
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -23,8 +23,8 @@ is mature enough to need them rather than as decoration.
 
 ## Current milestone
 
-**M0 — Skeleton: "it runs."** In progress. Setup, design docs, the build graph and `core`
-are done. Next is `platform`.
+**M0 — Skeleton: "it runs."** In progress. Setup, design docs, the build graph, `core` and
+`platform` are done. Next is the SDL3 platform backend, then `app`.
 
 Target: a window that opens and responds to input on macOS, a fixed-timestep loop, `core`
 primitives, a null RHI backend, and cross-compilation checks for Windows and Linux. Full
@@ -34,71 +34,52 @@ definition and exit criteria in `docs/ROADMAP.md`.
 
 ## What has been implemented
 
-**Toolchain and dependency verification. No engine code yet.**
+**`core` (L0) and `platform` (L1). No renderer, and nothing yet opens a window.**
 
 New this session:
 
-* `scripts/install-zig.sh` — fetches the pinned Zig release from the official tarball,
-  verifies SHA256, installs to a versioned path, symlinks `~/.local/bin/zig`, and writes
-  `.zigversion`. Idempotent.
-* `.zigversion` — `0.16.0`.
-* `THIRD_PARTY_LICENSES/sdl3.md` — SDL3's entry, including the HIDAPI license election.
-* Resolution notes appended to ADR-0001 (which Zig release, and how it is installed) and
-  ADR-0002 (which SDL3 package, and the evidence it works).
-* `docs/adr/0017-repository-scope.md` — the engine is a standalone public repository; games
-  are separate consumers. Reflected in `CLAUDE.md` §4.1, §4.5 and §10.
-* `README.md` rewritten for an audience that is not us: scope, toolchain setup, and an honest
-  statement of how early this is.
-* Commit history normalised to a single author identity before publication.
-* `docs/design/core-memory-and-handles.md` — allocator model, generational handles, content
-  ID hashing, logging, assertions, math, time, RNG.
-* `docs/design/platform-interface.md` — window and surface, events and input, filesystem,
-  dynamic library loading, clock, and the null platform backend.
-* `build.zig` — the ADR-0007 module graph expressed as a data table, plus `test` and `check`
-  steps. `build.zig.zon` — package identity and the pinned SDL3 dependency.
-* `engine/src/core/` — the whole of L0: `assert`, `handle`, `id`, `log`, `math`, `mem`,
-  `rng`, `time`.
-* `scripts/check-targets.sh` — runs everything a milestone owes: pinned-version check,
-  native tests, and compile checks for Windows and Linux.
+* `engine/src/platform/` — the whole L1 interface plus the null backend:
+  * `key.zig` — keys by physical position, `KeySet`, mouse buttons, modifiers.
+  * `event.zig` — Foundry's own event union; text input carried by value.
+  * `input.zig` — the per-frame `InputSnapshot` and the `Accumulator` that builds it.
+  * `window.zig` — `WindowHandle`, logical vs pixel size, `NativeSurfaceHandle`.
+  * `os.zig` — filesystem, base directories, environment, wall clock. Owns `std.Io`.
+  * `library.zig` — dynamic library loading, including Foundry's own Win32 bindings.
+  * `interface.zig` — the backend interface and its `comptime` conformance check.
+  * `backends/null.zig` — the headless backend, with a scriptable event queue and an
+    exactly-reproducible synthetic clock.
+* `build.zig` — `platform` added to the layering table; `-Dplatform=<backend>` selects the
+  backend and reaches only that module.
+* `core/handle.zig` — `HandlePool` now takes a **tag type and a value type**
+  (`HandlePool(Window, WindowState)`). See "decisions" below.
+* `docs/design/platform-interface.md` — Resolution section recording what implementation
+  changed about the design, and why.
 
-Pre-existing: `CLAUDE.md`, `docs/ROADMAP.md`, ADRs 0001–0016, `docs/design/README.md`,
-`THIRD_PARTY_LICENSES/README.md`, `LICENSE`, `NOTICE`, `README.md`, `.gitignore`,
-`.editorconfig`.
+Earlier sessions: pinned toolchain (`scripts/install-zig.sh`, `.zigversion`), the SDL3
+dependency and its licence entry, ADRs 0001–0017, `core` (L0), `scripts/check-targets.sh`,
+and the published repository.
 
 ## What currently works
 
-**Zig 0.16.0 is installed and pinned.** `~/.local/zig/0.16.0`, symlinked at
-`~/.local/bin/zig`. Verified: native build, `zig build test`, and cross-compilation to
-`x86_64-windows-gnu`, `x86_64-linux-gnu` and `aarch64-linux-gnu` producing correct PE32+ and
-ELF binaries — with no toolchain beyond Zig.
+**`zig build test` passes 109 tests** — 50 in `core`, 59 in `platform`. `zig build check`
+compiles for `x86_64-windows-gnu`, `x86_64-linux-gnu` and `aarch64-linux-gnu`.
+`scripts/check-targets.sh` runs the whole per-milestone obligation.
 
 **The M0 gate is cleared: SDL3 builds and the Metal seam works.** `castholm/SDL`
 v0.5.3+3.4.14 (SDL 3.4.14) builds from source against Zig 0.16.0. A probe opened a window
 under the `cocoa` driver with `SDL_WINDOW_METAL`, obtained a live `CAMetalLayer` via
 `SDL_Metal_CreateView` / `SDL_Metal_GetLayer`, pumped events and exited cleanly. Full SDL3
-also cross-compiles from macOS to Windows x64 and Linux x64.
+also cross-compiles from macOS to Windows x64 and Linux x64. *That probe was scratch work
+and is not in this repository* — `platform`'s SDL3 backend is the next unit of work.
 
-**`core` is implemented and tested.** `zig build test` passes 50 tests covering the handle
-pool (stale resolution, LIFO reuse, generation wraparound, iteration order), the pinned FNV-1a
-and PCG32 vectors, the arena, the math types and the fixed-timestep model. `zig build check
--Dtarget=x86_64-windows-gnu` and `-Dtarget=x86_64-linux-gnu` both compile, so ADR-0008's
-per-milestone obligation is met and automated.
+**Four guarantees were verified by breaking them on purpose**, not by assertion:
 
-**The build graph enforces layering (I7).** `build.zig` declares each module with an explicit
-dependency list; a module can only `@import` what the graph grants it, and Zig separately
-refuses to import a file outside a module's own directory, which closes the workaround. Only
-`core` exists so far, so nothing is being constrained yet — but the mechanism is in place
-before there is anything to constrain, which was the point.
-
-Tested directly, not assumed: adding `@import("platform")` to `core` and referencing it fails
-with *no module named 'platform' available within module 'root'*. The nuance found while
-testing it is that the error fires at the point of **use** — Zig analyses top-level
-declarations lazily, so an undeclared import nothing references compiles clean. Harmless, since
-a dead import grants no access, but the guarantee is "you cannot use what you were not given",
-not "you cannot type it".
-
-**Still true:** the SDL3 probe from setup was scratch work and is not in this repository.
-`platform` does not exist yet, so nothing here opens a window.
+| Claim | How it was checked |
+| --- | --- |
+| Layering (I7) | `platform` importing `rhi`, and `core` importing `platform`, both fail with *no module named X available within module 'root'* |
+| Conformance | A backend missing a function, with a wrong signature, or with no `Platform` type each fails with a message naming the backend and the declaration |
+| Windows really compiles | Breaking only the Win32 loader branch fails `zig build check -Dtarget=x86_64-windows-gnu` and no other target |
+| Determinism (I9) | The same event sequence yields byte-identical snapshots; the synthetic clock drives a fixed-timestep loop to the same step count every run |
 
 ## What is being worked on
 
@@ -108,15 +89,17 @@ Nothing in progress. The next session continues M0 at step 1 below.
 
 ## Immediate next steps
 
-Setup and design are finished. Everything remaining in M0 is implementation, and it is now
-transcription of the two design documents rather than invention.
-
-1. **Implement `platform`**: window, event pump, input, clock, filesystem, opaque
-   `NativeSurfaceHandle`. SDL3 confined here.
+1. **Write the SDL3 platform backend** (`engine/src/platform/backends/sdl3.zig`). Adding it
+   is purely additive: add `sdl3` to `Backend` in `platform/root.zig` and to
+   `PlatformBackend` in `build.zig`, and link the lazy `sdl` dependency into the `platform`
+   module. The conformance check will name anything missed. SDL3 must not appear outside
+   this one file.
 2. **Implement `app`**: fixed-timestep loop (drive it with `core.time.FixedStepper`, which
-   already exists and is tested), subsystem lifecycle, clean shutdown.
-3. **Define the `rhi` interface and write the null backend.** Interface shape matters far more
-   than the backend at this stage.
+   already exists and is tested), subsystem lifecycle, clean shutdown. `app` owns `main`,
+   so it is where the process environment is captured and handed to `platform.Os` — see
+   "the environment is an input" below.
+3. **Define the `rhi` interface and write the null backend.** Interface shape matters far
+   more than the backend at this stage.
 4. **Build `samples/sandbox`** to M0's exit criteria.
 
 Before M1, and before any Metal code: **`docs/design/rhi.md`**, including the Metal / Vulkan /
@@ -126,28 +109,28 @@ D3D12 concept mapping table from ADR-0003. This is the highest-leverage document
 
 ## Known bugs and technical debt
 
-No code, so no bugs.
-
-Anticipated debt, recorded early so it is not mistaken for oversight:
-
-* **The RHI will be validated by exactly one backend for a long time.** ADR-0003's mitigations
-  (design to the strict model, null backend as validator) reduce this but do not remove it.
-  Expect backend #2 to find design errors.
-* **SDL3 arrives through a third-party build script** that can bitrot against a future pinned
-  Zig release. Checking it is part of the cost of every Zig upgrade. Fallbacks in ADR-0002.
-* Shaders will need per-backend variants when a second backend lands (ADR-0015). Small while
-  the shader set is small; the shader set's growth is the trigger to revisit.
+* **`core.log` still formats through `std.log`'s default handler.** `app` will need to
+  install a real log sink: destination, timestamps, runtime filtering by scope. The
+  interface is right; the backend behind it is temporary.
+* **The handle pool is sparse and iterates dead slots.** Fine for its intended use — lookup
+  by identity, rare iteration. Deliberately not optimised, and deliberately not generalised
+  toward component storage (ADR-0010, M4).
+* **`platform` has no gamepad support, file watching, IME preedit or audio.** Each is
+  deferred with a recorded reason in the design doc's Resolution; none requires the
+  interface to change to accommodate it later.
+* **Reading a directory as a file reports `IoFailed`, not `WrongFileKind`,** because macOS
+  opens the directory happily and fails at the read. The test asserts only that it errors.
+  Classifying it would cost a `stat` on every read, which is not worth it.
+* **The RHI will be validated by exactly one backend for a long time.** ADR-0003's
+  mitigations (design to the strict model, null backend as validator) reduce this but do
+  not remove it. Expect backend #2 to find design errors.
+* **SDL3 arrives through a third-party build script** that can bitrot against a future
+  pinned Zig release. Checking it is part of the cost of every Zig upgrade. Fallbacks in
+  ADR-0002.
+* Shaders will need per-backend variants when a second backend lands (ADR-0015).
 * Sparse-set entity storage (M4) is explicitly a first implementation, not a final one.
 * The first content authoring format may need replacing once real content exists at scale.
   ADR-0006 contains this by separating schemas from syntax.
-* "Supported" still means "compiles" for Windows and Linux — but the claim is now checked by
-  `scripts/check-targets.sh` rather than asserted.
-* **`core.log` currently formats through `std.log`'s default handler.** `app` will need to
-  install a real log sink: destination, timestamps, runtime filtering by scope. The interface
-  is right; the backend behind it is temporary.
-* **The handle pool is sparse and iterates dead slots.** Fine for its intended use — lookup by
-  identity, rare iteration. Deliberately not optimised, and deliberately not generalised toward
-  component storage (ADR-0010, M4).
 
 ---
 
@@ -155,70 +138,69 @@ Anticipated debt, recorded early so it is not mistaken for oversight:
 
 **This session:**
 
-* **Pinned Zig 0.16.0**, installed from the official tarball with hash verification to a
-  versioned path, never Homebrew (ADR-0001 resolution). Constrains which Zig packages are
-  usable, which is exactly why it was the first thing settled.
-* **SDL3 via `castholm/SDL` v0.5.3+3.4.14**, chosen over `allyourcodebase/SDL` because it keeps
-  the Linux system dependencies behind one lazily-fetched package instead of resolving X11,
-  Wayland, dbus, EGL and xkbcommon separately — a smaller surface to pin and audit
-  (ADR-0002 resolution).
-* **HIDAPI license election: BSD-3-Clause.** SDL bundles HIDAPI under
-  `GPL-3.0-only OR BSD-3-Clause OR HIDAPI`. The `OR` makes it the recipient's choice, so no GPL
-  obligation attaches. Verified against the package's `REUSE.toml` that no GPL identifier
-  stands alone. Written down because "SDL has GPL in it" would otherwise cause a false alarm
-  years from now (`THIRD_PARTY_LICENSES/sdl3.md`).
-* **Neither ADR-0002 fallback was needed**, so ADR-0014's "Zig is the only build tool" claim
-  survived contact with the project's first real dependency.
-* **The build graph is a data table, not procedural wiring.** One line per module with its
-  dependency list, so the layering from ADR-0007 is legible in one place and a violation is a
-  compile error naming the offending import.
-* **Handles are `extern struct`, and the null handle is all-zero bits.** Their layout is a
-  C ABI compatibility decision (ADR-0004), not an implementation detail, so it was fixed now
-  while it is free.
-* **FNV-1a 64 and PCG32 are specified in the design docs, not delegated to `std`.** Both are
-  persisted — content ID hashes go into compiled content and saves, RNG seeds are a
-  reproducibility promise — and `std` is not a stability contract in a pre-1.0 language. Test
-  vectors are pinned so a Zig upgrade that moves `std` produces a failing test rather than
-  silent data corruption.
-* **Simulation time is an integer tick count, never a float** (I9). A float accumulator makes
-  identical inputs diverge through rounding alone.
-* **Input is captured into a per-frame immutable snapshot** that simulation reads instead of
-  querying devices (I9). This is also what makes replay and, much later, networking possible
-  without redesign.
-* **The engine gets its own public repository; games get theirs** (ADR-0017). The convenience
-  of a shared repository is exactly the friction that keeps I4 and I5 honest, so it is
-  deliberately declined. Consequence: Foundry has to be genuinely consumable before there is
-  anything consuming it.
+* **`platform` splits into `Platform` and `Os`.** `Platform` is what a windowing backend
+  changes — window, surface, events, input, monotonic clock — and is conformance-checked.
+  `Os` is what it does not — filesystem, base directories, dynamic libraries, wall clock —
+  and sits beside the seam rather than behind it. A hand-written Cocoa backend and a
+  hand-written Win32 backend would share `os.zig` byte for byte.
+* **`std.Io` stops at L1.** Zig 0.16 finished its I/O migration: `std.fs` is a deprecation
+  shim over `std.Io.Dir`, every filesystem call takes an explicit `Io`, and
+  `std.time.Instant` is gone. `Os` owns one `std.Io.Threaded` and never lets it out, so no
+  `std` type appears in any Foundry interface. ADR-0001's containment argument, applied to
+  the module whose job is owning OS specifics.
+* **The environment is an input, never read from the air.** Zig 0.16 removed ambient
+  environment access entirely (`std.posix.getenv`, `std.os.environ`,
+  `std.process.getEnvVarOwned` are all gone) and hands the environment to the process entry
+  point. `Os.init` takes the variables it may see. This is the better design regardless:
+  configuration read from the air is exactly the hidden input I9 objects to, and it makes
+  the environment-dependent paths testable without touching the real machine.
+* **Foundry declares the Windows dynamic loader itself.** `std.DynLib` is a compile error on
+  Windows in Zig 0.16, and `std.os.windows.kernel32` has been stripped to one binding.
+  Windows is a supported target (ADR-0008) and native mods are fundamental (`CLAUDE.md` §5),
+  so `library.zig` declares `LoadLibraryW`, `GetProcAddress` and `FreeLibrary` directly.
+* **`core.HandlePool` now takes a tag type and a value type.** `HandlePool(Window,
+  WindowState)` — a subsystem exposes a public handle over private state, and deriving the
+  handle type from the stored type would either leak the private type into the public
+  interface or force a cast at every boundary. Found by the first real consumer, which is
+  when you want to find it. `HandlePool(T, T)` covers the simple case.
+* **Path validation is in force before there are any mods.** `isSafeRelativePath` rejects
+  absolute paths, drive letters, backslashes, `..` components and embedded NULs. Retrofitting
+  this after untrusted paths are already flowing means auditing every call site instead of one.
+* **`readFile` requires a size bound.** Every caller knows roughly how big the thing it is
+  reading should be, and a content package naming a hundred-gigabyte file should fail rather
+  than exhaust memory. Untrusted input is bounded at the boundary, not after it.
+* **The frame's event boundary is three calls** — `pumpEvents`, `nextEvent`, `captureInput` —
+  rather than one polling call that pumps on first use. It makes "the OS queue is drained at
+  one known point" structural rather than conventional, and gives the snapshot an
+  unambiguous place to be taken.
 
-**Earlier (architecture session):** sixteen ADRs. Widest blast radius: Metal-first with macOS
-primary (0003, 0008); two rendering boundaries with the RHI never exposed (0003); Zig pinned to
-stable, never master (0001); toolchain is Zig only (0014); one public C ABI shared by mods,
-scripts, tools and the editor (0004); stable namespaced content IDs, never load-order-derived
-(0005); runtime-registered type-erased component types (0010); deterministic-friendly
-simulation (0013, I9); Apache-2.0 with a permissive-only dependency policy (0016).
+**Earlier sessions:** pinned Zig 0.16.0 (ADR-0001 resolution); SDL3 via `castholm/SDL`
+(ADR-0002 resolution); HIDAPI licence elected BSD-3-Clause; the build graph as a data table;
+handles are `extern struct` with an all-zero null; FNV-1a 64 and PCG32 specified in the
+design docs rather than delegated to `std`; simulation time is an integer tick count;
+input is captured into a per-frame immutable snapshot; the engine gets its own public
+repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 
 ---
 
 ## Major unresolved questions
 
-1. **RHI granularity.** To be settled in `docs/design/rhi.md`: how coarse the resource-group /
-   binding model should be, and how explicitly resource state transitions are expressed given
-   that Metal will ignore them. Too abstract and Vulkan cannot implement it efficiently; too
-   thin and the Metal backend carries pointless ceremony.
-2. **What "package zero" means for the engine itself.** Does the engine ship content of its own
-   — default font, error texture, fallback shader — as a real content package? Probably yes, and
-   it is a good early test of Invariant I3. Decide during M3.
-3. **Authoring format syntax.** Postponed to M3 by ADR-0006. Requirements recorded; candidates
-   are adopting an existing format versus a small purpose-built one.
-4. **Zig upgrade cadence.** ADR-0001 says between milestones, never during. Whether that means
-   *every* milestone boundary or only when there is a reason is still unresolved. Now has a
-   concrete input: each upgrade must re-verify the SDL3 port.
+1. **RHI granularity.** To be settled in `docs/design/rhi.md`: how coarse the resource-group
+   / binding model should be, and how explicitly resource state transitions are expressed
+   given that Metal will ignore them. Too abstract and Vulkan cannot implement it
+   efficiently; too thin and the Metal backend carries pointless ceremony.
+2. **What "package zero" means for the engine itself.** Does the engine ship content of its
+   own — default font, error texture, fallback shader — as a real content package? Probably
+   yes, and it is a good early test of Invariant I3. Decide during M3.
+3. **Authoring format syntax.** Postponed to M3 by ADR-0006. Requirements recorded;
+   candidates are adopting an existing format versus a small purpose-built one.
+4. **Zig upgrade cadence.** ADR-0001 says between milestones, never during. Whether that
+   means *every* milestone boundary or only when there is a reason is still unresolved. Two
+   concrete inputs now: each upgrade must re-verify the SDL3 port, and 0.16 showed that a
+   single release can move `std.fs`, the clock and dynamic library loading at once.
 5. **When backend #2 is triggered.** Deliberately unscheduled (ADR-0003). The trigger is a
    reason, not a date — but it is worth noticing if that reason never arrives, since the RHI
    stays unvalidated until it does.
-
-*Resolved this session: which stable Zig release to pin, and whether the SDL3 Zig package
-supports it. Both were the top two questions on this list.*
 
 ---
 
@@ -229,23 +211,43 @@ supports it. Both were the top two questions on this list.*
   the conditions that would justify revisiting it.
 * Sessions are bounded by available context, not calendar time. Prefer finishing a coherent
   piece and updating this file over leaving several things half-built.
-* **Two Zig 0.16 behaviours worth not rediscovering.** The test runner **fails a test that
-  logs at `err` level** — correct behaviour, but a test proving an error path compiles must not
-  actually emit one. And a `build.zig.zon` dependency marked `.lazy = true` is *still*
-  extracted into `zig-pkg/` on every build; `lazy` governs how `build.zig` must ask for it
-  (`b.lazyDependency`, which returns an optional), not whether it is materialised. `zig-pkg/`
-  is build output and is gitignored.
-* **Zig 0.16.0 build-system idioms differ from older releases.** Confirmed against this exact
-  compiler: modules are created with `b.addModule` / `b.createModule` and wired through
-  `.imports`; `addExecutable` and `addTest` take a `.root_module` rather than a
-  `root_source_file` directly; `build.zig.zon` requires a `.fingerprint` field and its `.name`
-  is an enum literal (`.foundry`, not `"foundry"`). Run `zig init` in a scratch directory and
-  read the generated files before trusting any remembered API.
-* **Reference development environment**, which is what the verification above was performed
-  against: Apple Silicon, macOS 26, Xcode 26 with SDK 26.5, Zig 0.16.0. The Metal toolchain is
-  always invoked via `xcrun`, never a hardcoded path — it lives on a versioned mount that moves
-  between updates. Homebrew may exist on a developer's machine but nothing in Foundry may
-  assume it.
-* `scripts/install-zig.sh` places Zig at `~/.local/zig/<version>` and symlinks
-  `~/.local/bin/zig`. If `~/.local/bin` is not on `PATH`, add it:
-  `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc`
+
+**Zig 0.16 behaviours worth not rediscovering.** All confirmed against the pinned compiler:
+
+* **`std.fs` is a deprecation shim.** The real API is `std.Io.Dir` / `std.Io.File`, and every
+  call takes an explicit `Io`. `std.time` has only constants — no `Instant`, no
+  `nanoTimestamp`. Get an `Io` from `std.Io.Threaded.init(gpa, .{})` then `.io()`; in tests,
+  `std.testing.io` already exists.
+* **Ambient environment access is gone.** `pub fn main(init: std.process.Init) !void` is how
+  a program receives `gpa`, `io`, `environ_map` and `args`.
+* **`std.DynLib` does not support Windows.** Its backing type resolves to a stub whose `open`
+  is `@compileError("unsupported platform")`. `platform/library.zig` works around it.
+* **A file imported only for its types contributes no tests.** Zig collects tests from files
+  reached through a test block, so `os.zig` importing `library.zig` for `Library` did *not*
+  pull in its tests — they silently never ran. Every file gets an explicit `_ =` line in its
+  module root's test block. This is the same lazy-analysis family as the layering nuance.
+* **Lazy analysis makes negative tests lie.** A function body is only analysed when something
+  reaches it, and an *undeclared identifier* is caught earlier than a *type error*, so a
+  probe using the former proves nothing about branch analysis. Break things with a genuine
+  type mismatch, and check the failure lands on the target you expect and not on others.
+* **The build test runner reprints a command as "failed" when a test logs at `warn` or
+  above**, while the build still exits 0. Two tests do this deliberately (handle generation
+  wraparound, and an unclassifiable OS read error). Noise, not failure — check the exit code
+  and the `Build Summary` line.
+* **`.lazy = true` still extracts a dependency into `zig-pkg/`** on every build; it governs
+  how `build.zig` must ask for it (`b.lazyDependency`, returning an optional), not whether it
+  is materialised. `zig-pkg/` is build output and is gitignored.
+* Modules are created with `b.addModule` / `b.createModule` and wired through `.imports`;
+  `addExecutable` and `addTest` take a `.root_module`; `build.zig.zon` requires `.fingerprint`
+  and its `.name` is an enum literal. `b.addOptions()` emits its *own* definition of any enum
+  passed to `addOption`, which is not the same type as the one the module declares — pass the
+  name as a string and convert it back at comptime.
+
+**Reference development environment**, which the verification above was performed against:
+Apple Silicon, macOS 26, Xcode 26 with SDK 26.5, Zig 0.16.0. The Metal toolchain is always
+invoked via `xcrun`, never a hardcoded path — it lives on a versioned mount that moves between
+updates. Homebrew may exist on a developer's machine but nothing in Foundry may assume it.
+
+`scripts/install-zig.sh` places Zig at `~/.local/zig/<version>` and symlinks `~/.local/bin/zig`.
+If `~/.local/bin` is not on `PATH`, add it:
+`echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc`

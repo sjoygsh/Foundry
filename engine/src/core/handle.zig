@@ -59,11 +59,23 @@ pub fn Handle(comptime T: type) type {
 /// It is the *wrong* structure for entity components, which are iterated in bulk every
 /// frame; that is a separate design (ADR-0010, M4). Resist generalising this to cover
 /// both, which would serve neither well.
-pub fn HandlePool(comptime T: type) type {
+/// A pool of `T`, addressed by `Handle(Tag)`.
+///
+/// **The tag and the stored type are separate on purpose.** A subsystem exposes a
+/// public handle over private state — `platform` hands out `Handle(Window)` while
+/// storing a `WindowState` nobody outside it can name — and a pool that derived the
+/// handle type from the stored type would either leak the private type into the
+/// public interface or force a cast at every boundary. Requiring both makes the
+/// public identity a deliberate choice, which is what I1 is asking for.
+///
+/// When a type is its own public identity, pass it twice: `HandlePool(Thing, Thing)`.
+pub fn HandlePool(comptime Tag: type, comptime T: type) type {
     return struct {
         const Self = @This();
 
-        pub const Id = Handle(T);
+        /// The public identity of an entry. Distinct from `Handle(Value)`, and that
+        /// is the point.
+        pub const Id = Handle(Tag);
         pub const Value = T;
 
         /// Sentinel terminating the free list. Also caps the usable index range, which
@@ -230,7 +242,7 @@ pub fn HandlePool(comptime T: type) type {
 const testing = std.testing;
 
 const Thing = struct { n: u32 };
-const ThingPool = HandlePool(Thing);
+const ThingPool = HandlePool(Thing, Thing);
 
 test "handle layout is stable and C-compatible" {
     try testing.expectEqual(@as(usize, 8), @sizeOf(Handle(Thing)));

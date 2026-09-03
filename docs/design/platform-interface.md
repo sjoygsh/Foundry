@@ -1,6 +1,6 @@
 # Design: `platform` — the interface Foundry owns
 
-**Status:** Accepted, not yet implemented
+**Status:** Implemented 2026-09-03, less the SDL3 backend. See the Resolution at the end.
 **Date:** 2026-09-02
 **Implements:** I7, I9 · **Informed by:** ADR-0002, ADR-0003, ADR-0007, ADR-0008
 
@@ -285,3 +285,100 @@ of the snapshot design in §4.
    consumer.
 4. **Whether `platform` should own the main loop.** It should not, and does not: `app` owns
    the loop. Recorded because most platform libraries invert this, and SDL's examples do.
+
+---
+
+## Resolution — 2026-09-03
+
+Implemented as `engine/src/platform/`, against Zig 0.16.0. **Status: implemented, less
+the SDL3 backend**, which is the next unit of work. 59 tests.
+
+The design above survived contact with the compiler almost intact. Four things changed,
+three of them forced by what Zig 0.16's `std` actually provides.
+
+### The frame's event boundary is three calls, not one
+
+§4 sketches `while (platform.pollEvent()) |ev|`. The implementation splits that into
+`pumpEvents` (drain the OS queue once, at one known point), `nextEvent` (read what that
+produced) and `captureInput` (freeze it into the value simulation reads). The single call
+would have had to do the pumping on its first invocation, which makes "the OS queue is
+drained at one known point in the frame" true only by convention. Three named calls make
+the frame's shape explicit, and give the input snapshot a place to be taken that is
+unambiguously *after* every event has been seen.
+
+### `Os` was split out from `Platform`
+
+The document treats the filesystem, dynamic library loading and the clock as part of one
+platform interface. Implementation split them in two:
+
+* **`Platform`** — window, surface, events, input, monotonic clock. Backend-specific,
+  selected at build time, conformance-checked.
+* **`Os`** — filesystem, base directories, dynamic libraries, wall clock. Identical under
+  every backend, so it sits beside the backend seam rather than behind it.
+
+The dividing line is *does a windowing backend change this?* A hand-written Cocoa backend
+and a hand-written Win32 backend would share `os.zig` byte for byte, so putting it behind
+the seam would only duplicate it — and would force the null backend to carry a fake
+filesystem it has no use for. The monotonic clock stayed with `Platform` precisely because
+it *does* differ: the null backend's is synthetic, which is what makes loop tests
+reproducible (§9).
+
+### The environment is an input, not something read from the air
+
+§5 lists the user data directory as part of the interface, which in earlier Zig would have
+been a `getenv` call. Zig 0.16 removed ambient environment access outright —
+`std.posix.getenv`, `std.os.environ` and `std.process.getEnvVarOwned` are all gone — and
+hands the environment to the process entry point instead.
+
+So `Os.init` takes the variables it is allowed to see, and reads nothing else. This is the
+better design regardless of what `std` forced: configuration read from the air is exactly
+the kind of hidden input I9 objects to, and it makes the environment-dependent paths
+testable without touching the real machine. Whoever owns `main` — `app`, from the next
+milestone — passes them down.
+
+### `std.Io` stops at this layer
+
+Zig 0.16 completed its I/O migration: `std.fs` is a deprecation shim over `std.Io.Dir`,
+every filesystem call takes an explicit `Io`, and `std.time.Instant` no longer exists.
+`Os` owns one `std.Io.Threaded` and never lets it out, so **no `std` type appears in any
+Foundry interface**. That is ADR-0001's containment argument applied to the module whose
+job is owning OS specifics: when that API moves again, one file changes.
+
+### Foundry declares the Windows dynamic loader itself
+
+`std.DynLib` is a compile error on Windows in Zig 0.16 — its backing type resolves to a
+stub whose `open` is `@compileError("unsupported platform")`, and `std.os.windows.kernel32`
+has been stripped to a single binding. Verified against the pinned compiler by compiling
+it, not by reading it.
+
+Since Windows is a supported target (ADR-0008) and native mods are a fundamental feature
+rather than a later addition (`CLAUDE.md` §5), waiting for `std` to fill the gap was not an
+option. `library.zig` declares `LoadLibraryW`, `GetProcAddress` and `FreeLibrary` directly.
+Three `extern` declarations, and `platform` is not hostage to a `std` gap.
+
+### What the tests actually check
+
+Beyond the per-file unit tests, four properties were verified by deliberately breaking
+things and confirming the build noticed:
+
+* **Layering (I7)** — `platform` cannot import `rhi`, and `core` cannot import `platform`.
+  Both fail with *no module named X available within module 'root'*.
+* **Conformance** — a backend missing a function, carrying a wrong signature, or lacking a
+  `Platform` type each fails with a message naming the backend and the declaration.
+* **The Windows target is really analysed** — breaking only the Win32 loader branch fails
+  `zig build check -Dtarget=x86_64-windows-gnu` and no other target. Before this was
+  checked, it silently passed, because the file was imported for its types and so
+  contributed no tests (see below).
+* **Determinism (I9)** — the same event sequence produces byte-identical snapshots, and
+  the synthetic clock drives a fixed-timestep loop to the same step count every run.
+
+### Deferred, deliberately
+
+* **Gamepads.** Not needed before M5, and exposing them early risks shaping the input
+  snapshot around SDL's gamepad model. The snapshot is designed to accept more device
+  state without changing what already reads it.
+* **File watching.** Hot reload needs it from M2+; what the OS makes cheap should decide
+  its granularity, so it is not guessed at now.
+* **IME preedit.** Committed text arrives as `text_input`; in-progress composition does
+  not. Nothing needs it until there is a text field to show it in.
+* **Double-click detection.** A UI concern, and the events carry enough to derive it.
