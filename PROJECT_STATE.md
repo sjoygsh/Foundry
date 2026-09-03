@@ -1,7 +1,7 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-03
-**Updated by:** M0 — `app` (L4) and `samples/sandbox`; the engine runs a window on macOS
+**Updated by:** M0 — `docs/design/rhi.md` written; the RHI interface is the last M0 item
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -117,21 +117,19 @@ headless one — a better outcome than that ADR assumed was available.
 
 ## What is being worked on
 
-Nothing in progress. The next session continues M0 at step 1 below.
+Nothing in progress. `docs/design/rhi.md` is written and accepted; implementing it is step 1
+below and is all that remains of M0.
 
 ---
 
 ## Immediate next steps
 
-1. **Write `docs/design/rhi.md`** — the highest-leverage document in the project. It must
-   include the Metal / Vulkan / D3D12 concept mapping table from ADR-0003, because
-   designing the RHI against Metal alone is the single most likely way to force a renderer
-   rewrite later. The two open questions in §1 of this file's "unresolved" list are what it
-   has to answer.
-2. **Define the `rhi` interface and write the null backend**, which finishes M0. Interface
-   shape matters far more than the backend at this stage; the null backend exists partly so
-   the strict, Vulkan-shaped rules Metal forgives are enforced somewhere from day one.
-3. **Tag M0** and update this file. `samples/sandbox` already meets the exit criteria; the
+1. **Implement `rhi` to `docs/design/rhi.md`**, which finishes M0. The interface first —
+   handles, formats, resource descriptors, pipeline layouts, the render pass and command
+   recording types — then the **validation backend**, whose ten enforced rules are listed in
+   §11 of that document. That rule list is the deliverable, not the empty backend: it is what
+   substitutes for the second graphics backend Foundry does not have.
+2. **Tag M0** and update this file. `samples/sandbox` already meets the exit criteria; the
    RHI interface is the last item.
 
 Then M1 is the Metal backend, and `engine.nativeSurface()` already hands it a live
@@ -261,10 +259,16 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 
 ## Major unresolved questions
 
-1. **RHI granularity.** To be settled in `docs/design/rhi.md`: how coarse the resource-group
-   / binding model should be, and how explicitly resource state transitions are expressed
-   given that Metal will ignore them. Too abstract and Vulkan cannot implement it
-   efficiently; too thin and the Metal backend carries pointless ceremony.
+1. ~~**RHI granularity.**~~ **Settled** in `docs/design/rhi.md` §6 and §9. Binding is four
+   frequency-ordered bind groups plus 128 bytes of inline constants, both numbers taken from
+   Vulkan's *guaranteed minimums* rather than from what Metal permits. State transitions are
+   declared at pass boundaries and via explicit barriers between passes, never per draw —
+   per-draw is the shape that makes Vulkan slow. The Metal backend will discard them; the
+   validation backend checks them.
+   *Still genuinely open, and recorded in that document's §13:* whether bind groups should be
+   transient or persistent, how much the validation backend should model cost rather than
+   just correctness, whether `frames_in_flight` should adapt, and what happens on device
+   loss.
 2. **What "package zero" means for the engine itself.** Does the engine ship content of its
    own — default font, error texture, fallback shader — as a real content package? Probably
    yes, and it is a good early test of Invariant I3. Decide during M3.
