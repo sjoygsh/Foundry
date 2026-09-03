@@ -1,8 +1,10 @@
 # Design: `rhi` — the render hardware interface
 
-**Status:** Implemented 2026-09-03 as `engine/src/rhi/`, interface plus validation
-backend. 82 tests, 55 of them in the backend. The Metal backend is M1.
-**Date:** 2026-09-03
+**Status:** Implemented as `engine/src/rhi/`. Interface and validation backend
+2026-09-03; **Metal backend 2026-09-04**, which added §9's binding index convention. 85
+tests, 55 of them in the validation backend, plus 8 more against a real GPU when Metal is
+the selected backend.
+**Date:** 2026-09-03, revised 2026-09-04
 **Implements:** I1, I7, I8 · **Informed by:** ADR-0003, ADR-0012, ADR-0015, ADR-0007
 
 `rhi` is layer L2. It depends on `core` and `platform`. **Graphics API symbols appear

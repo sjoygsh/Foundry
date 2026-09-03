@@ -1,7 +1,12 @@
 //! `samples/sandbox` — the smallest thing that exercises the engine.
 //!
-//! M0's runnable result: it opens a window, logs input, runs the fixed-timestep loop and
-//! exits cleanly. Nothing is drawn, because M0 deliberately excludes the GPU.
+//! It opens a window, logs input, runs the fixed-timestep loop, clears the screen and
+//! exits cleanly.
+//!
+//! The clear is deliberately run on **both** backends rather than only where it is visible.
+//! Under `-Drhi=null` the same command stream goes through the validation backend, so the
+//! headless run is a continuous check that what Metal accepts also satisfies the ten rules
+//! of `docs/design/rhi.md` §11 — which is exactly the cross-check M1 exists to establish.
 //!
 //! It is also the reference for what a game's entry point looks like. A game lives in its
 //! own repository and consumes Foundry as a dependency (ADR-0017), but its `main` is this
@@ -73,11 +78,11 @@ pub fn main(init: std.process.Init) !void {
         });
         if (engine.nativeSurface()) |surface| {
             if (!surface.isNone()) {
-                // The seam M1 depends on: `platform` produced it, `rhi` will consume it,
-                // and neither knows what the other's library is.
+                // The seam: `platform` produced it, `rhi` consumed it, and neither knows
+                // what the other's library is.
                 log.info("native surface ready: {t}", .{surface.kind});
             } else {
-                log.info("no native surface; nothing will be drawn until M1", .{});
+                log.info("no native surface; the clear goes to an offscreen target", .{});
             }
         }
         log.info("escape or the window's close button quits", .{});
@@ -106,16 +111,27 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        // Where rendering will go, interpolated by `engine.alpha()` (M1).
+        // Rendering. Interpolation by `engine.alpha()` arrives with something that moves;
+        // a clear has nothing to interpolate.
+        renderFrame(engine) catch |err| switch (err) {
+            // No drawable this frame: minimised, occluded, or all of them still in flight.
+            // Transient, so the frame is skipped rather than treated as fatal. The RHI has
+            // a single error for "the swapchain gave us nothing", which is a known gap
+            // recorded in `PROJECT_STATE.md` rather than papered over here.
+            error.SurfaceLost => {},
+            else => {
+                log.err("frame {d} failed: {t}", .{ engine.frame_index, err });
+                engine.requestQuit();
+            },
+        };
 
         engine.endFrame();
 
-        // Nothing blocks this loop yet: with no renderer there is no swapchain to wait
-        // on, so it would otherwise spin as fast as the CPU allows and peg a core for a
-        // sample that draws nothing. A crude yield stands in until M1's present provides
-        // real pacing. Deliberately not in `Engine` — frame pacing is renderer policy,
-        // and guessing at it now would be a decision to unpick later.
-        if (!headless) engine.os.sleep(.fromMillis(2));
+        // A windowed Metal build is paced by the display: the layer has vsync enabled, so
+        // acquiring the next drawable blocks. The null backend has no swapchain to wait on
+        // and would otherwise spin as fast as the CPU allows, so that path keeps the crude
+        // yield. Still deliberately not inside `Engine` — pacing is renderer policy.
+        if (!headless and rhi.backend == .null) engine.os.sleep(.fromMillis(2));
 
         if (frame_limit) |limit| {
             if (engine.frame_index >= limit) break;
@@ -127,6 +143,44 @@ pub fn main(init: std.process.Init) !void {
         engine.stepper.tick,
         engine.elapsed().toMillis(),
     });
+}
+
+/// One frame of rendering: a single pass that clears the surface and ends.
+///
+/// Short, and every line of it is contract. The attachment declares the state the surface
+/// arrives in and the state it leaves in (`rhi.md` §6) — `undefined` in, because nothing in
+/// last frame's image is worth preserving, and `present` out, because the display takes it
+/// next. Metal discards both declarations and the validation backend checks them, which is
+/// the arrangement that keeps the interface honest while Metal is the only real backend.
+fn renderFrame(engine: *app.Engine) !void {
+    const frame = try engine.gpu.beginFrame();
+
+    var cmd = try engine.gpu.beginCommandBuffer();
+    var pass = try cmd.beginRenderPass(.{
+        .label = "clear",
+        .color = &.{.{
+            .texture = frame.surface_texture,
+            .load = .{ .clear = .{ .color = clearColor(engine) } },
+            .store = .store,
+            .initial_state = .undefined,
+            .final_state = .present,
+        }},
+    });
+    pass.end();
+    try cmd.submit();
+
+    try engine.gpu.endFrame();
+}
+
+/// A colour that moves, so that a stalled loop looks stalled rather than merely dark.
+///
+/// Driven by **simulated** time rather than the wall clock, so the same run produces the
+/// same colours every time (I9). Reading the clock here instead would be exactly the hidden
+/// input the determinism rule exists to forbid.
+fn clearColor(engine: *app.Engine) [4]f32 {
+    const seconds = @as(f32, @floatFromInt(engine.elapsed().toMillis())) / 1000.0;
+    const t = 0.5 + 0.5 * @sin(seconds * 0.8);
+    return .{ 0.05 + 0.10 * t, 0.08 + 0.13 * t, 0.15 + 0.20 * t, 1.0 };
 }
 
 /// What surface the renderer will eventually want here.

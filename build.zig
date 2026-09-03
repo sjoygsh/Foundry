@@ -68,6 +68,9 @@ const RhiBackend = enum {
     /// Draws nothing and validates everything. Not scaffolding: it is the agreed
     /// mitigation for designing an abstraction against a single graphics API.
     null,
+    /// Metal, through the Objective-C shim (ADR-0012). macOS only, and the only backend
+    /// that puts pixels on a screen.
+    metal,
 };
 
 pub fn build(b: *std.Build) void {
@@ -121,7 +124,37 @@ pub fn build(b: *std.Build) void {
     // supposed to be decided by their inputs alone.
     const platform_module = modules.get("platform").?;
     platform_module.addImport("build_options", build_options_module);
-    modules.get("rhi").?.addImport("build_options", build_options_module);
+
+    const rhi_module = modules.get("rhi").?;
+    rhi_module.addImport("build_options", build_options_module);
+
+    // **The only place Metal enters the build graph**, mirroring how SDL enters it below:
+    // the Objective-C shim, its header's include path, and the three frameworks are attached
+    // to `rhi` and to nothing else, so no module above L2 can name a Metal type even by
+    // accident (I7, ADR-0003).
+    //
+    // ARC is not optional here. It is the reason the bridge is Objective-C rather than
+    // `objc_msgSend` calls from Zig (ADR-0012): object lifetime stays in the language that
+    // handles it correctly.
+    if (rhi_backend == .metal) {
+        if (target.result.os.tag != .macos) {
+            std.debug.panic(
+                "-Drhi=metal is macOS only; target is '{s}'. Use -Drhi=null to cross-compile.",
+                .{@tagName(target.result.os.tag)},
+            );
+        }
+        const metal_dir = "engine/src/rhi/backends/metal";
+        rhi_module.addIncludePath(b.path(metal_dir));
+        rhi_module.addCSourceFile(.{
+            .file = b.path(metal_dir ++ "/metal_shim.m"),
+            .flags = &.{ "-fobjc-arc", "-Wall", "-Wextra" },
+        });
+        rhi_module.link_libc = true;
+        rhi_module.linkSystemLibrary("objc", .{});
+        rhi_module.linkFramework("Metal", .{});
+        rhi_module.linkFramework("QuartzCore", .{});
+        rhi_module.linkFramework("Foundation", .{});
+    }
 
     // **The only place SDL enters the build graph.** I7 is enforced here as much as by
     // the layering table above: no other module is linked against it, so no other

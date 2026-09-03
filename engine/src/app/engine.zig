@@ -77,14 +77,15 @@ pub const Step = struct {
 
 /// The engine, parameterised by its platform backend.
 ///
-/// Generic so that `app`'s own tests always run against the **null** backend's synthetic
-/// clock and scriptable events, whatever backend the build selected. The frame loop is
-/// precisely the thing that has to be tested deterministically, and a test that ran
-/// against SDL would be measuring the machine. It also keeps `app` honest: nothing here
-/// may depend on a particular backend, because the type is not fixed until instantiation.
+/// Generic over **both** ports, so that `app`'s own tests always run against the null
+/// platform's synthetic clock and the null RHI's validating device, whatever backend the
+/// build selected. The frame loop is precisely the thing that has to be tested
+/// deterministically: a test against SDL would be measuring the machine, and a test against
+/// Metal would be measuring the GPU. It also keeps `app` honest — nothing here may depend on
+/// a particular backend, because neither type is fixed until instantiation.
 ///
-/// Games and tools want `app.Engine`, which is this with the selected backend.
-pub fn EngineOf(comptime P: type) type {
+/// Games and tools want `app.Engine`, which is this with the selected backends.
+pub fn EngineOf(comptime P: type, comptime G: type) type {
     return struct {
         const Self = @This();
 
@@ -95,7 +96,7 @@ pub fn EngineOf(comptime P: type) type {
         // Subsystems, in initialisation order. Teardown is strictly the reverse.
         os: *platform.Os,
         platform: *P,
-        gpu: *rhi.Device,
+        gpu: *G,
 
         window: platform.WindowHandle,
 
@@ -146,7 +147,7 @@ pub fn EngineOf(comptime P: type) type {
             else
                 rhi.Extent2D{ .width = config.window.logical_width, .height = config.window.logical_height };
 
-            const gpu = try rhi.Device.init(gpa, .{
+            const gpu = try G.init(gpa, .{
                 .label = "engine",
                 .surface = surface,
                 .surface_size = surface_size,
@@ -322,8 +323,8 @@ pub fn EngineOf(comptime P: type) type {
     };
 }
 
-/// The engine, with whichever platform backend the build selected.
-pub const Engine = EngineOf(platform.Platform);
+/// The engine, with whichever backends the build selected.
+pub const Engine = EngineOf(platform.Platform, rhi.Device);
 
 /// Marshals Zig's process environment into the form `platform.Os` takes.
 ///
@@ -345,13 +346,15 @@ pub fn environment(gpa: Allocator, init: std.process.Init) Allocator.Error![]pla
 
 // -- tests ---------------------------------------------------------------------------
 //
-// Always against the null backend, whatever the build selected: the loop must be tested
-// against a clock that does not depend on how fast this machine is.
+// Always against the null backends, whatever the build selected: the loop must be tested
+// against a clock that does not depend on how fast this machine is, and against a device
+// that does not depend on this machine having a GPU.
 
 const testing = std.testing;
 
 const NullPlatform = platform.null_backend.Platform;
-const TestEngine = EngineOf(NullPlatform);
+const NullDevice = rhi.null_backend.Device;
+const TestEngine = EngineOf(NullPlatform, NullDevice);
 
 fn testEngine(config: Config) !*TestEngine {
     var c = config;

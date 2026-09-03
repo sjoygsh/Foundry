@@ -33,6 +33,8 @@ pub const resource = @import("resource.zig");
 pub const Backend = enum {
     /// Draws nothing, validates everything. See `backends/null.zig`.
     null,
+    /// Metal, via the Objective-C shim (ADR-0012). macOS only.
+    metal,
 };
 
 pub const backend: Backend = std.meta.stringToEnum(Backend, build_options.rhi_backend) orelse
@@ -44,8 +46,12 @@ pub const backend: Backend = std.meta.stringToEnum(Backend, build_options.rhi_ba
 /// because its `Rule` enum is how a test asserts *which* contract a change broke.
 pub const null_backend = @import("backends/null.zig");
 
+/// Imported inside the switch rather than at the top level, so that a null build never
+/// analyses it. The Metal backend `@cImport`s the shim header, which is only on the include
+/// path when the build graph selected Metal.
 const selected = switch (backend) {
     .null => null_backend,
+    .metal => @import("backends/metal/backend.zig"),
 };
 
 comptime {
@@ -99,4 +105,7 @@ test {
     // Always tested, whichever backend is selected — a file imported only for its types
     // contributes no tests.
     _ = null_backend;
+    // And the selected one, which for Metal means the tests that need a real device. Not a
+    // duplicate when the selection *is* null: Zig collects tests per file.
+    _ = selected;
 }

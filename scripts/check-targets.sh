@@ -35,9 +35,20 @@ echo
 echo "== native: build and run tests (SDL3 platform backend)"
 "$ZIG" build test -Dplatform=sdl3
 
-# Both backends are checked against both targets. The null backend proves the engine
+# The Metal backend, which is macOS-only and is the one that actually draws. Its tests need
+# a real GPU, so unlike everything above they are not portable — which is exactly why the
+# rest of the suite is written against the null backend and why this runs separately.
+echo
+echo "== native: build and run tests (Metal rhi backend)"
+"$ZIG" build test -Drhi=metal
+
+# Both platform backends against both cross targets. The null backend proves the engine
 # builds without SDL at all; the SDL3 backend proves SDL itself cross-compiles, which is
 # a stronger claim than ADR-0008 assumed was available.
+#
+# The rhi backend is left at null throughout: Metal cannot cross-compile and must not be
+# needed to. That is the check that matters here — a Windows or Linux build must not have
+# acquired a dependency on the macOS backend.
 for target in x86_64-windows-gnu x86_64-linux-gnu; do
     for backend in null sdl3; do
         echo

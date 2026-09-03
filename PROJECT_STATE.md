@@ -1,7 +1,7 @@
 # Foundry Project State
 
-**Last updated:** 2026-09-03
-**Updated by:** **M0 complete.** `rhi` implemented with its validation backend; 222 tests
+**Last updated:** 2026-09-04
+**Updated by:** **M1 in progress.** The Metal backend draws; 225 tests, 233 with Metal
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -28,22 +28,45 @@ done and both exit criteria are met: `zig build run` opens a window on macOS tha
 to input, and both platform backends cross-compile for Windows and Linux. Nothing is
 drawn, which M0 deliberately excludes.
 
-**Next milestone: M1 — First pixels.** The Metal backend, behind the Objective-C shim
-(ADR-0012), against the RHI that now exists. `docs/design/rhi.md` is written and
-implemented; `engine.gpu` is a live device and `engine.nativeSurface()` already hands back
-a `CAMetalLayer`.
+**Current milestone: M1 — First pixels. In progress.** The Metal backend exists and
+draws: `zig build run -Drhi=metal` opens a window on macOS and clears it, vsync-paced.
 
-Target: a window that opens and responds to input on macOS, a fixed-timestep loop, `core`
-primitives, a null RHI backend, and cross-compilation checks for Windows and Linux. Full
-definition and exit criteria in `docs/ROADMAP.md`.
+Done: the backend and its Objective-C shim (ROADMAP step 1), runtime MSL compilation
+(step 3), and Metal API validation clean (most of step 4). **Not done:** the `xcrun metal`
+build step (step 2), Xcode frame capture confirmation, and the exit criterion itself — a
+*textured quad*, where today there is a clear. Full definition in `docs/ROADMAP.md`.
 
 ---
 
 ## What has been implemented
 
-**`core` (L0) and `platform` (L1). No renderer, and nothing yet opens a window.**
+**`core` (L0), `platform` (L1), `rhi` (L2) with two backends, `app` (L4). It draws.**
 
 New this session:
+
+* `engine/src/rhi/backends/metal/` — the first backend that produces pixels:
+  * `metal_shim.h` / `metal_shim.m` — the C boundary of ADR-0012, 60 functions, ARC,
+    clean under `-Wall -Wextra`. Mirrors Metal one-to-one and holds **no policy**.
+    Declares Metal's enum values and `_Static_assert`s all 86 of them against the real
+    `MTL*` constants, because Zig cannot parse Objective-C headers and an unchecked
+    constant would render something subtly wrong with no error anywhere.
+  * `backend.zig` — all 40 interface functions: format translation, the §9 argument-table
+    flattening computed once per pipeline layout, the frame ring, resize, and the blit
+    upload path. Does **not** validate, deliberately — that is the null backend's job.
+* `build.zig` — `-Drhi=metal`, with the shim, its include path and the Metal, QuartzCore
+  and Foundation frameworks attached to `rhi` and nothing else. Metal on a non-macOS
+  target fails immediately with a message rather than at link time.
+* `samples/sandbox/` — now clears the screen, on both backends, so the headless run puts
+  the same command stream through the validation backend.
+* `scripts/check-targets.sh` — seven combinations now, Metal included.
+
+Earlier this session:
+
+* `docs/design/rhi.md` §9 — the **Metal binding index convention**, written before the
+  backend that needed it (see "decisions" below), plus `max_vertex_buffers` as a third
+  guaranteed limit and its addition to rule 10.
+
+From the previous session:
 
 * `engine/src/platform/` — the whole L1 interface plus the null backend:
   * `key.zig` — keys by physical position, `KeySet`, mouse buttons, modifiers.
@@ -88,21 +111,34 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 222 tests** (50 `core`, 68 `platform`, 82 `rhi`, 22 `app`) with
-the default SDL3 backend. Every test is headless: nothing in the suite calls `SDL_Init`,
-and `app`'s tests instantiate `EngineOf(null_backend.Platform)` so the frame loop is always
-measured against a synthetic clock rather than against this machine.
+**`zig build test` passes 225 tests** (50 `core`, 68 `platform`, 85 `rhi`, 22 `app`), and
+**233 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8
+is headless: nothing calls `SDL_Init`, and `app`'s tests instantiate
+`EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is measured
+against a synthetic clock and a validating device, never against this machine. The 8
+exceptions need a real GPU and compile only when Metal is selected.
 
-**The whole stack comes up.** `platform` (SDL3, `cocoa` driver) hands an opaque
-`CAMetalLayer` handle to `rhi`, which brings up a validating device with a 2-frame ring:
+**It draws.** `platform` (SDL3, `cocoa` driver) hands an opaque `CAMetalLayer` to `rhi`,
+which brings up a real Metal device and clears the window:
 
 ```
 info(platform): platform backend: SDL3 3.4.14, video driver 'cocoa'
-info(rhi): rhi backend: null (validating), 2 frames in flight
+info(rhi): rhi backend: metal on 'Apple M5', 2 frames in flight, surface bgra8_unorm_srgb
+info(app): engine up: 60Hz simulation, windowed, rhi backend 'metal', 2 frames in flight
 info(sandbox): window: 1280x720 points, 2560x1440 pixels, scale 2.00
-info(sandbox): gpu: 'null' backend, surface bgra8_unorm_srgb, 4 bind groups, 128 inline bytes
 info(sandbox): native surface ready: metal_layer
+info(sandbox): clean exit after 600 frames, 299 ticks, 4983ms simulated
 ```
+
+**Both halves of M1's cross-check already hold, for the command stream that exists.** With
+`MTL_DEBUG_LAYER=1` and `MTL_SHADER_VALIDATION=1`, Metal API validation *and* GPU
+validation produce **zero messages** over 60 frames; the null backend reports **zero
+violations** on the same command stream over 120 headless frames. That is the arrangement
+ADR-0003 is built around, working — though it is currently checking a clear, not a quad.
+
+**The Objective-C bridge leaks nothing.** Peak RSS over 600 frames is 92.91MB against
+92.77MB over 60 — 0.16% across a tenfold frame count, which is flat. Drawables and command
+buffers are balanced.
 
 **Live input is confirmed working** — focus and mouse events arrive and are logged. That
 was the one thing left machine-unverified in the previous session.
@@ -120,9 +156,12 @@ info(sandbox): clean exit after 400 frames, 55 ticks, 916ms simulated
 Headless (`-Dplatform=null`) it is exact rather than merely plausible: 300 frames of a 1ms
 synthetic clock produce 300ms of simulated time and 18 ticks at 60Hz, every run.
 
-**Both backends cross-compile to Windows and Linux — SDL and the sandbox executable included**, since the sample is part of the same per-milestone obligation. ADR-0008's "supported
-means compiles" claim therefore covers the backend that actually ships, not only the
-headless one — a better outcome than that ADR assumed was available.
+**Both platform backends cross-compile to Windows and Linux — SDL and the sandbox
+executable included**, since the sample is part of the same per-milestone obligation.
+ADR-0008's "supported means compiles" claim therefore covers the backend that actually
+ships, not only the headless one. The cross builds keep `-Drhi=null`, which is itself the
+check that matters now: a Windows or Linux build must not have acquired a dependency on
+the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by design.
 
 **Four guarantees were verified by breaking them on purpose**, not by assertion:
 
@@ -135,36 +174,38 @@ headless one — a better outcome than that ADR assumed was available.
 
 ## What is being worked on
 
-Nothing in progress. **M0 is complete and tagged `m0`.** The next session starts M1 at
-step 1 below.
+**M1, roughly half done.** ROADMAP steps 1 and 3 are complete and step 4 is most of the
+way there. Nothing is half-built: the tree is green on both backends and the sandbox runs.
 
-Verified after the fact, because a long outage interrupted the session that finished M0:
-every commit builds and passes from a clean worktree (109, 109, 137, 137, 222 tests), a
-cold-cache rebuild passes all 222, all six target/backend combinations compile, the pinned
-SDL3 hash still verifies after deleting `zig-pkg/`, and layering, both conformance checks
-and the Windows compile scoping were each re-confirmed by deliberately breaking them.
+M0 is complete and tagged `m0`. It was re-audited after the outage that interrupted the
+session finishing it — every commit builds from a clean worktree, a cold-cache rebuild
+passes, the pinned SDL3 hash re-verifies, and layering, both conformance checks and the
+Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ---
 
 ## Immediate next steps
 
-**M1 — First pixels.** In ROADMAP order:
+**Finishing M1.** What is left, in the order it should be done:
 
-1. **The Metal backend** (`engine/src/rhi/backends/metal/`), via the thin Objective-C shim
-   ADR-0012 specifies: device, command queue, the `CAMetalLayer` `platform` already
-   provides, pipeline state objects, buffers, textures, draw submission, resize handling.
-   The shim mirrors Metal one-to-one and holds **no policy** — that is a standing rule, and
-   the shim growing a decision is the signal to move it up into the Zig backend.
-2. **The Metal shader build step**: `xcrun metal` → `.air` → `xcrun metallib`, wired into
-   `build.zig`, always through `xcrun` and never a hardcoded path (ADR-0014, ADR-0015).
-3. **Runtime MSL compilation** for development builds, giving shader hot reload. Not merely
-   a convenience: it is the same mechanism mod-authored shaders will need at M7.
-4. **Metal API validation** on in debug builds, and Xcode GPU frame capture confirmed
-   working.
+1. **The Metal shader build step** (ROADMAP step 2): `xcrun metal` → `.air` →
+   `xcrun metallib`, wired into `build.zig`, always through `xcrun` and never a hardcoded
+   path (ADR-0014, ADR-0015). Both invocations are already confirmed to work on this
+   machine. Runtime MSL compilation exists and is tested, so this is about *shipped*
+   shaders rather than about hot reload.
+2. **The textured quad** — the exit criterion. Needs a vertex buffer, a texture uploaded
+   through the staging path, a sampler, a bind group and a pipeline. Every one of those
+   already has a backend implementation and none of them has yet been exercised together
+   on a real device. The first MSL shader is also the first real test of the §9 binding
+   convention against an actual compiler, which is the part most likely to be wrong.
+3. **Confirm a real-window resize.** The layer path is written but *not verified* — see
+   the debt list. This wants either a manual check or a way to drive a window resize.
+4. **Confirm Xcode GPU frame capture** works against the shim, which is one of the stated
+   reasons Metal is the first backend (ADR-0012).
 
 The exit criterion is a textured quad that survives a window resize, with Metal validation
-clean *and* the null backend raising no complaints about the same command stream. That last
-clause is the whole point of having built the validation backend first.
+clean *and* the null backend raising no complaints about the same command stream. Both
+validation halves already hold for the clear; the quad is what makes them mean something.
 
 ---
 
@@ -175,9 +216,10 @@ clause is the whole point of having built the validation backend first.
   and a free logging function has no instance to ask — worth solving when there is a log
   *file* to correlate against, at M9. Scope filtering is compile-time only for now
   (`std.Options.log_scope_levels`), and there are three scopes.
-* **The frame loop has no pacing.** With no renderer there is no swapchain to block on, so
-  the sandbox sleeps 2ms per frame to avoid pegging a core. Frame pacing is renderer
-  policy and belongs with M1's present, not in `Engine`.
+* **Frame pacing exists only on Metal.** A windowed Metal build is paced by the display,
+  because the layer has vsync enabled and acquiring a drawable blocks. The null backend has
+  no swapchain to wait on, so that path still sleeps 2ms per frame to avoid pegging a core.
+  Still deliberately outside `Engine` — pacing is renderer policy.
 * **Subsystem lifecycle is explicit fields, not a registry.** Correct at two subsystems and
   machinery guarding nothing; revisit at perhaps six, which is also when the ordering stops
   being obvious by inspection.
@@ -196,19 +238,38 @@ clause is the whole point of having built the validation backend first.
 * **Reading a directory as a file reports `IoFailed`, not `WrongFileKind`,** because macOS
   opens the directory happily and fails at the read. The test asserts only that it errors.
   Classifying it would cost a `stat` on every read, which is not worth it.
+* **A real-window resize has never been run.** The Metal backend's resize path is written
+  and the headless half of it is tested, but the `CAMetalLayer` branch has not been
+  exercised, because `platform` exposes no way to resize a window programmatically and
+  adding one would be a contract change. Until it is checked, "survives a resize" is a
+  claim about code, not about behaviour. This is a gap, not a known bug.
+
+* **`FrameError` cannot distinguish transient from fatal surface failure.** Metal returning
+  no drawable — a minimised or occluded window, or every drawable still in flight — is
+  transient and the right response is to skip the frame. A genuinely lost surface is fatal.
+  The RHI has one error, `SurfaceLost`, for both, so the backend reports the transient case
+  as `SurfaceLost` and the sandbox skips. Vulkan draws exactly this distinction
+  (`OUT_OF_DATE` versus `SURFACE_LOST`), which is a hint that the RHI should too — but
+  adding an error is a contract change, so it is recorded rather than done quietly.
+
+* **Xcode GPU frame capture is not yet confirmed** against the shim, despite being one of
+  ADR-0012's stated reasons for the design. Nothing suggests it is broken; it simply has
+  not been checked.
+
+* **Shipped shaders have no build step yet.** Runtime MSL compilation works and is tested,
+  but `xcrun metal` → `.metallib` is not wired into `build.zig`, so `createShaderModule`
+  (as opposed to `...FromSource`) has no producer. M1 step 2.
+
 * **Usage-flag conformance is declared but unenforced.** Buffers and textures carry a
   usage set because Vulkan and D3D12 require it at creation, and both treat using a
   resource outside its declared usage as undefined behaviour — so it is a real invariant.
   It is not one of the ten documented rules, so the validation backend deliberately does
   not check it. Enforcing it would be an eleventh rule and therefore a contract change;
   recorded as an open question in `docs/design/rhi.md` §13 rather than resolved quietly.
-* **The RHI's `Device` is not generic over its backend, unlike `app`'s `Engine`.** There is
-  only one graphics backend, so there is nothing to parameterise over yet. When Metal
-  lands, `app`'s tests will need the same treatment `platform` got, or the loop tests stop
-  being headless.
-* **The RHI will be validated by exactly one backend for a long time.** ADR-0003's
-  mitigations (design to the strict model, null backend as validator) reduce this but do
-  not remove it. Expect backend #2 to find design errors.
+* **The RHI is still validated by one real backend.** ADR-0003's mitigations reduce this
+  and are now demonstrably working — the null backend checks every command stream Metal
+  runs — but they do not remove it. Expect backend #2 to find design errors, particularly
+  in the parts Metal is most forgiving about: resource state and bind group compatibility.
 * **SDL3 arrives through a third-party build script** that can bitrot against a future
   pinned Zig release. Checking it is part of the cost of every Zig upgrade. Fallbacks in
   ADR-0002.
@@ -221,7 +282,54 @@ clause is the whole point of having built the validation backend first.
 
 ## Important decisions made recently
 
-**This session:**
+**This session (M1):**
+
+* **The Metal binding index convention is written down, and was written *before* the code
+  that needed it.** Metal has no descriptor sets, only three flat argument tables per
+  stage, so something had to decide which `[[buffer(n)]]` an abstract binding lands on.
+  That is shader-visible, therefore a contract — eventually with mod authors, since
+  mod-authored shaders compile against it. `rhi.md` §9: eight reserved vertex-buffer slots,
+  inline constants at buffer 8, bind group bindings from 9 upward in a documented walk
+  order (groups ascending, entries ascending by `binding`, never descriptor order), and one
+  index per binding rather than per stage. Deterministic, so identical layouts always
+  produce identical indices.
+* **`max_vertex_buffers` is the RHI's third guaranteed number, and the only one from
+  Metal.** 31 shared buffer argument slots per stage is tighter than Vulkan's 16 vertex
+  input bindings or D3D12's 32 input slots. Eight leaves twenty-two for bind group buffers.
+  Being a contract limit rather than a backend capacity, exceeding it is a rule 10
+  violation instead of an assertion.
+* **Metal's enum values are declared in the shim header and `_Static_assert`ed against the
+  real `MTL*` constants — all 86.** Zig cannot parse Objective-C headers, so the numbers
+  had to be written down; writing them down unchecked would make a wrong one render
+  something subtly incorrect with no error anywhere. `MTLColorWriteMask` is why: red is
+  `1 << 3` and alpha `1 << 0`, the reverse of the obvious guess.
+* **The frame ring waits on command buffers, not on a semaphore.** Each slot keeps the
+  command buffer that last used it. Metal orders a queue, so waiting on a frame's last
+  command buffer waits for all of it — no atomics, no completion callbacks, no
+  synchronisation primitive. Which matters: Zig 0.16 moved those under `std.Io`, and `rhi`
+  has no `Io` to hand.
+* **The swapchain texture handle is stable across frames**, with only the `MTLTexture`
+  behind it changing — the same shape the null backend already had. Code written against
+  one therefore behaves identically on the other, which is what makes the null backend a
+  useful check rather than merely a second implementation.
+* **`device_local` becomes Metal *private* storage even on unified memory.** Shared would
+  skip a copy on every machine we own. Private is chosen anyway, per `rhi.md` §5: it makes
+  `mapBuffer` genuinely impossible rather than merely forbidden, and an engine tuned only
+  on unified memory develops habits that cost a fraction of the frame rate on a discrete
+  GPU we cannot test on.
+* **`EngineOf` is generic over both ports, not just the platform.** `EngineOf(P, G)`, so
+  `app`'s loop tests keep running against the null device instead of quietly requiring a
+  GPU whenever Metal is selected. This was recorded as debt coming due when Metal landed,
+  and it did.
+* **`err` is for the engine failing; `warn` is for the caller's input being wrong.** An
+  unusable surface kind, a shader that will not compile, a pipeline Metal rejects — all
+  reported at `warn` alongside the error value. This is `CLAUDE.md` §7's
+  assert-versus-validate distinction applied to diagnostics: a shader failing to compile is
+  the *expected* case of the hot-reload path, not a malfunction. Found because Zig's test
+  runner fails a test that logs at `err`, which turned out to be pointing at a real
+  conflation rather than being an inconvenience.
+
+**Previous session:**
 
 * **`platform` splits into `Platform` and `Os`.** `Platform` is what a windowing backend
   changes — window, surface, events, input, monotonic clock — and is conformance-checked.
