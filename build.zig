@@ -184,6 +184,20 @@ pub fn build(b: *std.Build) void {
     sandbox_mod.addImport("platform", platform_module);
     sandbox_mod.addImport("rhi", modules.get("rhi").?);
 
+    // The shader the sandbox draws with, compiled by the build and embedded in the
+    // executable. Only under Metal: `xcrun` is a macOS toolchain, and a null build must not
+    // require Xcode to be installed at all.
+    //
+    // Embedding is deliberately the *simple* answer, not the final one. Loading a shader by
+    // content ID needs the asset system, which is M3, and inventing half of one here to
+    // avoid an `@embedFile` would prejudge the package-zero question that milestone owes an
+    // answer to. What M1 is obliged to prove is that `createShaderModule` has a producer.
+    if (rhi_backend == .metal) {
+        sandbox_mod.addAnonymousImport("quad_metallib", .{
+            .root_source_file = metalLibrary(b, "quad", &.{"samples/sandbox/shaders/quad.metal"}),
+        });
+    }
+
     const sandbox = b.addExecutable(.{ .name = "sandbox", .root_module = sandbox_mod });
     b.installArtifact(sandbox);
 
@@ -214,4 +228,36 @@ pub fn build(b: *std.Build) void {
         const run = b.addRunArtifact(unit_tests);
         test_step.dependOn(&run.step);
     }
+}
+
+/// Compiles MSL into a `.metallib`, per ADR-0015: `xcrun metal` turns each source into an
+/// `.air`, then `xcrun metallib` links them together.
+///
+/// **Always through `xcrun`, never a hardcoded path** (ADR-0014). The Metal toolchain is an
+/// on-demand component living on a versioned mount that moves between Xcode updates, so a
+/// path recorded today is wrong after the next one.
+///
+/// This is also the concrete answer to ADR-0014's claim that Foundry needs no separate build
+/// tool: a shader compiler is an ordinary build step with declared inputs and outputs, so
+/// Zig caches it and rebuilds it exactly when a source changes. No Make, no Ninja, no script.
+///
+/// Returns the linked library as a `LazyPath`, which the consumer decides what to do with.
+/// Today the sandbox embeds it; from M3 shaders are assets loaded through the content system
+/// (ADR-0015), and this step becomes what `tools/fpack` invokes rather than what a sample does.
+fn metalLibrary(b: *std.Build, name: []const u8, sources: []const []const u8) std.Build.LazyPath {
+    const link = b.addSystemCommand(&.{ "xcrun", "metallib" });
+
+    for (sources) |source| {
+        const compile = b.addSystemCommand(&.{ "xcrun", "metal", "-c" });
+        compile.addFileArg(b.path(source));
+        // Line tables and embedded source, so an Xcode frame capture shows the shader that
+        // actually ran rather than disassembly. Confirming frame capture works is part of
+        // M1, and it is much less useful without these (ADR-0012).
+        compile.addArgs(&.{ "-gline-tables-only", "-frecord-sources" });
+        compile.addArg("-o");
+        link.addFileArg(compile.addOutputFileArg(b.fmt("{s}.air", .{std.fs.path.stem(source)})));
+    }
+
+    link.addArg("-o");
+    return link.addOutputFileArg(b.fmt("{s}.metallib", .{name}));
 }

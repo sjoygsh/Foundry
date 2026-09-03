@@ -1,9 +1,11 @@
 # Design: `rhi` — the render hardware interface
 
 **Status:** Implemented as `engine/src/rhi/`. Interface and validation backend
-2026-09-03; **Metal backend 2026-09-04**, which added §9's binding index convention. 85
-tests, 55 of them in the validation backend, plus 8 more against a real GPU when Metal is
-the selected backend.
+2026-09-03; **Metal backend 2026-09-04**, which added §9's binding index convention, and
+the shader build step in §10 the same day. 85 tests, 55 of them in the validation backend,
+plus 8 more against a real GPU when Metal is the selected backend. §9's convention is
+additionally confirmed against a real MSL compiler by `samples/sandbox`, which a unit test
+cannot do: a test checks our arithmetic against this document, not that Metal agrees.
 **Date:** 2026-09-03, revised 2026-09-04
 **Implements:** I1, I7, I8 · **Informed by:** ADR-0003, ADR-0012, ADR-0015, ADR-0007
 
@@ -376,6 +378,27 @@ backend supports it; the null backend accepts anything; a future SPIR-V backend 
 without a compiler. It is on the interface now because it is the same mechanism
 mod-authored shaders will need at M7, and finding out then that the interface cannot express
 it would be expensive.
+
+### Where the bytes come from
+
+`createShaderModule` needs a producer, and the producer is a build step: `metalLibrary` in
+`build.zig` runs `xcrun metal` over each `.metal` source and `xcrun metallib` over the
+results. **Always through `xcrun`, never a hardcoded path** (ADR-0014) — the Metal toolchain
+is an on-demand component on a versioned mount that moves between Xcode updates. It is
+compiled with `-gline-tables-only -frecord-sources` so an Xcode frame capture shows the
+shader that actually ran rather than disassembly, which is one of the reasons Metal is the
+first backend (ADR-0012).
+
+This is also the concrete answer to ADR-0014's claim that Foundry needs no build tool beyond
+Zig: a shader compiler is an ordinary build step with declared inputs and outputs, so Zig
+caches it and re-runs it exactly when a source changes.
+
+**Where a shader *lives* is not settled here, deliberately.** Today the only one belongs to
+`samples/sandbox`, which embeds the compiled library in its executable. That is the smallest
+thing that proves the interface has a producer, and it avoids prejudging two decisions that
+belong to M3: whether the engine ships content of its own as package zero, and how an asset
+is named and found. From M3 shaders are assets referenced by content ID (ADR-0015) and this
+step becomes what the content compiler invokes rather than what a sample does.
 
 ## 11. The validation backend
 

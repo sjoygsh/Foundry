@@ -1,7 +1,7 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-04
-**Updated by:** **M1 in progress.** The Metal backend draws; 225 tests, 233 with Metal
+**Updated by:** **M1 exit criterion met.** A textured quad, both validation halves clean
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -28,21 +28,49 @@ done and both exit criteria are met: `zig build run` opens a window on macOS tha
 to input, and both platform backends cross-compile for Windows and Linux. Nothing is
 drawn, which M0 deliberately excludes.
 
-**Current milestone: M1 — First pixels. In progress.** The Metal backend exists and
-draws: `zig build run -Drhi=metal` opens a window on macOS and clears it, vsync-paced.
+**Current milestone: M1 — First pixels. Exit criterion met, one check outstanding.**
+`zig build run -Drhi=metal` opens a window on macOS and draws a rotating, nearest-filtered
+textured quad, vsync-paced.
 
-Done: the backend and its Objective-C shim (ROADMAP step 1), runtime MSL compilation
-(step 3), and Metal API validation clean (most of step 4). **Not done:** the `xcrun metal`
-build step (step 2), Xcode frame capture confirmation, and the exit criterion itself — a
-*textured quad*, where today there is a clear. Full definition in `docs/ROADMAP.md`.
+All five ROADMAP items are done: the Metal backend and its Objective-C shim (1), the
+`xcrun metal` → `.metallib` build step (2), runtime MSL compilation (3), the validation
+backend (4), and Metal API validation enabled and clean (5). The exit criterion —
+*a textured quad, Metal validation clean, the null backend raising no complaints about the
+same command stream* — is met and was confirmed by looking at the window, not only by
+inference from a clean run.
+
+**The one part not confirmed is "surviving window resize."** The path is written and its
+headless half is tested; driving a real window resize turns out to need macOS Accessibility
+permission this environment does not have. See the debt list — it is a gap in the *check*,
+not a known bug, and there are exactly two ways to close it.
 
 ---
 
 ## What has been implemented
 
-**`core` (L0), `platform` (L1), `rhi` (L2) with two backends, `app` (L4). It draws.**
+**`core` (L0), `platform` (L1), `rhi` (L2) with two backends, `app` (L4). It draws a
+textured quad.**
 
 New this session:
+
+* `build.zig` — `metalLibrary`, the shader build step (ADR-0015): `xcrun metal` per source
+  to `.air`, then `xcrun metallib` to link. Always through `xcrun` and never a hardcoded
+  path (ADR-0014), and compiled with `-gline-tables-only -frecord-sources` so a frame
+  capture shows the shader rather than disassembly. This is also the concrete answer to
+  ADR-0014's claim that Zig's build system suffices: a shader compiler is an ordinary build
+  step with declared inputs and outputs, so it is cached and re-run exactly when a source
+  changes.
+* `samples/sandbox/shaders/quad.metal` — Foundry's first shader. Every binding index in it
+  is spelled out with the `rhi.md` §9 rule it comes from, because that is the documentation
+  a mod author will eventually be reading.
+* `samples/sandbox/main.zig` — the textured quad: staging arena, `device_local`
+  destinations, batched barriers, a bind group, a pipeline layout and a pipeline. Its
+  `Vertex`, `Constants` and `Frame` structs are `comptime`-asserted against the sizes and
+  offsets the MSL declares, the same discipline as the shim's `_Static_assert`s.
+* `scripts/check-targets.sh` — a Metal `check` as well as a Metal `test`, since `zig build
+  test` does not depend on the sample and would otherwise never run the shader build step.
+
+Earlier this session:
 
 * `engine/src/rhi/backends/metal/` — the first backend that produces pixels:
   * `metal_shim.h` / `metal_shim.m` — the C boundary of ADR-0012, 60 functions, ARC,
@@ -118,40 +146,52 @@ is headless: nothing calls `SDL_Init`, and `app`'s tests instantiate
 against a synthetic clock and a validating device, never against this machine. The 8
 exceptions need a real GPU and compile only when Metal is selected.
 
-**It draws.** `platform` (SDL3, `cocoa` driver) hands an opaque `CAMetalLayer` to `rhi`,
-which brings up a real Metal device and clears the window:
+**It draws a textured quad.** `platform` (SDL3, `cocoa` driver) hands an opaque
+`CAMetalLayer` to `rhi`, which brings up a real Metal device and renders:
 
 ```
 info(platform): platform backend: SDL3 3.4.14, video driver 'cocoa'
 info(rhi): rhi backend: metal on 'Apple M5', 2 frames in flight, surface bgra8_unorm_srgb
 info(app): engine up: 60Hz simulation, windowed, rhi backend 'metal', 2 frames in flight
 info(sandbox): window: 1280x720 points, 2560x1440 pixels, scale 2.00
+info(sandbox): gpu: 'metal' backend, surface bgra8_unorm_srgb, 4 bind groups, 128 inline bytes
 info(sandbox): native surface ready: metal_layer
 info(sandbox): clean exit after 600 frames, 299 ticks, 4983ms simulated
 ```
 
-**Both halves of M1's cross-check already hold, for the command stream that exists.** With
-`MTL_DEBUG_LAYER=1` and `MTL_SHADER_VALIDATION=1`, Metal API validation *and* GPU
-validation produce **zero messages** over 60 frames; the null backend reports **zero
-violations** on the same command stream over 120 headless frames. That is the arrangement
-ADR-0003 is built around, working — though it is currently checking a clear, not a quad.
+**Both halves of M1's cross-check hold, on the quad.** With `MTL_DEBUG_LAYER=1` and
+`MTL_SHADER_VALIDATION=1`, Metal API validation *and* GPU validation produce **zero
+messages** over 180 frames; the null backend reports **zero violations** on the same
+command stream headlessly. That is the arrangement ADR-0003 is built around, now checking
+something worth checking.
 
-**The Objective-C bridge leaks nothing.** Peak RSS over 600 frames is 92.91MB against
-92.77MB over 60 — 0.16% across a tenfold frame count, which is flat. Drawables and command
-buffers are balanced.
+**And the pixels were looked at, not inferred.** A clean validation run proves the draw was
+legal, not that anything is visible — a quad transformed off-screen or sampling to zero
+would validate perfectly. Two captures of the sandbox's own window (by window id, so
+nothing else on the screen is read) show a nearest-filtered checkerboard, square in a 16:9
+window, at two different rotations. That is worth stating precisely, because each visible
+property is a separate thing being right:
+
+| What is visible | What it proves |
+| --- | --- |
+| A checkerboard at all | The staging upload and `copyBufferToTexture` path work |
+| Hard-edged squares, no blur | The sampler is `nearest`, as a 2D engine's default must be |
+| No skew, corners aligned | The vertex layout and UVs agree with what the shader declares |
+| It is coloured, not black | Group 0's uniform reached `[[buffer(9)]]` — the §9 walk order |
+| It rotates | Inline constants reached `[[buffer(8)]]` in the vertex stage |
+| It is square in a 16:9 window | Aspect correction, and the surface size the device reports |
+
+**The Objective-C bridge leaks nothing**, re-measured now that a frame binds textures,
+samplers and buffers as well as acquiring a drawable. Peak RSS over 600 frames is 99.12MB
+against 98.83MB over 60 — 0.30% across a tenfold frame count, which is flat. Drawables,
+command buffers and blit encoders are all balanced.
 
 **Live input is confirmed working** — focus and mouse events arrive and are logged. That
 was the one thing left machine-unverified in the previous session.
 
-**`zig build run` opens a window and exits cleanly.**
-
-```
-info(platform): platform backend: SDL3 3.4.14, video driver 'cocoa'
-info(app): engine up: 60Hz simulation, windowed
-info(sandbox): window: 1280x720 points, 2560x1440 pixels, scale 2.00
-info(sandbox): native surface ready: metal_layer
-info(sandbox): clean exit after 400 frames, 55 ticks, 916ms simulated
-```
+**`zig build run` opens a window and exits cleanly** on the default `-Drhi=null` too,
+where the window stays empty because that backend draws nothing by design — the same
+command stream still goes through its ten rules.
 
 Headless (`-Dplatform=null`) it is exact rather than merely plausible: 300 frames of a 1ms
 synthetic clock produce 300ms of simulated time and 18 ticks at 60Hz, every run.
@@ -174,8 +214,11 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M1, roughly half done.** ROADMAP steps 1 and 3 are complete and step 4 is most of the
-way there. Nothing is half-built: the tree is green on both backends and the sandbox runs.
+**M1, complete but for one check.** Every ROADMAP item is done and the exit criterion is
+met and seen. Nothing is half-built: the tree is green on both backends and the sandbox
+runs. What remains is confirming the resize path against a real window, which is blocked on
+a machine permission rather than on any code — and confirming Xcode frame capture, which is
+a look rather than a change.
 
 M0 is complete and tagged `m0`. It was re-audited after the outage that interrupted the
 session finishing it — every commit builds from a clean worktree, a cold-cache rebuild
@@ -186,26 +229,29 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Finishing M1.** What is left, in the order it should be done:
+**Closing M1.** Two checks, then the milestone is done and tagged.
 
-1. **The Metal shader build step** (ROADMAP step 2): `xcrun metal` → `.air` →
-   `xcrun metallib`, wired into `build.zig`, always through `xcrun` and never a hardcoded
-   path (ADR-0014, ADR-0015). Both invocations are already confirmed to work on this
-   machine. Runtime MSL compilation exists and is tested, so this is about *shipped*
-   shaders rather than about hot reload.
-2. **The textured quad** — the exit criterion. Needs a vertex buffer, a texture uploaded
-   through the staging path, a sampler, a bind group and a pipeline. Every one of those
-   already has a backend implementation and none of them has yet been exercised together
-   on a real device. The first MSL shader is also the first real test of the §9 binding
-   convention against an actual compiler, which is the part most likely to be wrong.
-3. **Confirm a real-window resize.** The layer path is written but *not verified* — see
-   the debt list. This wants either a manual check or a way to drive a window resize.
-4. **Confirm Xcode GPU frame capture** works against the shim, which is one of the stated
-   reasons Metal is the first backend (ADR-0012).
+1. **Confirm a real-window resize.** The only substantive thing left. Driving one
+   programmatically needs macOS Accessibility permission, which this environment does not
+   have, so there are two ways to close it and they are a real choice rather than a
+   formality:
+   * **Look at it.** Run `zig build run -Drhi=metal` and drag the window edge. If the quad
+     stays square and the log shows `resized:` lines with no error, the path works. Ten
+     seconds, no code, but it is a one-off that no future session repeats.
+   * **Add `setWindowSize` to `platform`.** Then the check is automatable and repeatable.
+     This is *not* a test hook: any game with a settings menu needs to set its resolution,
+     so it is a genuinely missing platform capability rather than scaffolding. But it is an
+     interface change — the conformance check, both backends and the design doc — and
+     `CLAUDE.md` rule 10 says that is the user's call, not something to slip in while
+     finishing a milestone.
+2. **Confirm Xcode GPU frame capture** works against the shim, which is one of the stated
+   reasons Metal is the first backend (ADR-0012). The shaders are already built with
+   `-frecord-sources`, so a capture should show source rather than disassembly.
 
-The exit criterion is a textured quad that survives a window resize, with Metal validation
-clean *and* the null backend raising no complaints about the same command stream. Both
-validation halves already hold for the clear; the quad is what makes them mean something.
+**Then M2 — sprites.** The quad is one draw; M2 is thousands, which means batching, a
+texture atlas, PNG decode, a real 2D camera and bitmap text. The camera is the first thing
+that will want more of `core.math` than `Mat4.scaling` — the sandbox's `aspectCorrection` is
+deliberately the three lines M1 needed and no more.
 
 ---
 
@@ -238,11 +284,13 @@ validation halves already hold for the clear; the quad is what makes them mean s
 * **Reading a directory as a file reports `IoFailed`, not `WrongFileKind`,** because macOS
   opens the directory happily and fails at the read. The test asserts only that it errors.
   Classifying it would cost a `stat` on every read, which is not worth it.
-* **A real-window resize has never been run.** The Metal backend's resize path is written
-  and the headless half of it is tested, but the `CAMetalLayer` branch has not been
-  exercised, because `platform` exposes no way to resize a window programmatically and
-  adding one would be a contract change. Until it is checked, "survives a resize" is a
-  claim about code, not about behaviour. This is a gap, not a known bug.
+* **A real-window resize has still never been run.** The Metal backend's resize path is
+  written and the headless half of it is tested, but the `CAMetalLayer` branch has not been
+  exercised. Driving a window resize from outside the process needs macOS Accessibility
+  permission (`osascript is not allowed assistive access`), and `platform` exposes no way to
+  do it from inside. Until it is checked, "survives a resize" is a claim about code, not
+  about behaviour. This is a gap in the *check*, not a known bug — and the two ways to close
+  it are in "immediate next steps" above.
 
 * **`FrameError` cannot distinguish transient from fatal surface failure.** Metal returning
   no drawable — a minimised or occluded window, or every drawable still in flight — is
@@ -256,9 +304,23 @@ validation halves already hold for the clear; the quad is what makes them mean s
   ADR-0012's stated reasons for the design. Nothing suggests it is broken; it simply has
   not been checked.
 
-* **Shipped shaders have no build step yet.** Runtime MSL compilation works and is tested,
-  but `xcrun metal` → `.metallib` is not wired into `build.zig`, so `createShaderModule`
-  (as opposed to `...FromSource`) has no producer. M1 step 2.
+* **Where a compiled shader lives is unsettled, deliberately.** The build step exists and
+  `createShaderModule` has a producer, but the only shader belongs to `samples/sandbox`,
+  which `@embedFile`s the `.metallib` into its executable. That is the smallest thing that
+  proves the interface has a producer; naming and finding an asset is M3's question, and
+  inventing half an answer here would prejudge the package-zero decision that milestone owes
+  (unresolved question 2 below).
+
+* **No backend defers a destroy, though `interface.zig` says every one does.** The comment
+  claims a destroy is deferred until no in-flight frame can reference the resource; neither
+  backend implements that. Metal happens to be safe — `[queue commandBuffer]` retains its
+  referenced resources, so a destroyed buffer outlives the GPU's use of it — and
+  `Device.deinit` does wait on every in-flight command buffer before releasing anything. But
+  a Vulkan or D3D12 backend would need a real deferred-destroy queue, and until one exists
+  the interface is promising something it does not deliver. Found while writing the quad,
+  which is why the sandbox holds its resources for the process lifetime instead of leaning
+  on the guarantee. Fixing it is a design choice — a destroy queue, or an explicit
+  `waitIdle` the interface also lacks — so it is recorded rather than settled quietly.
 
 * **Usage-flag conformance is declared but unenforced.** Buffers and textures carry a
   usage set because Vulkan and D3D12 require it at creation, and both treat using a
@@ -282,7 +344,45 @@ validation halves already hold for the clear; the quad is what makes them mean s
 
 ## Important decisions made recently
 
-**This session (M1):**
+**This session (M1, the quad):**
+
+* **The §9 binding convention survived contact with a real compiler.** It was written down
+  before the backend and asserted in a unit test, but a unit test only checks our arithmetic
+  against our own document — it cannot check that Metal agrees. The quad does: its uniform
+  is group 0 binding 2, which the walk puts at `[[buffer(9)]]`, and the shader declares
+  exactly that. Had the convention been wrong the quad would have rendered black rather than
+  failing, which is precisely the failure mode §9 exists to prevent, and precisely why this
+  needed a real draw and not another assertion.
+* **A clean validation run is not evidence of pixels, so the pixels were looked at.** Metal
+  API and GPU validation both check that a draw is *legal*; a quad transformed off-screen or
+  sampling to zero passes both. The captures in "what currently works" are the other half of
+  that, and the table there records which visible property proves which thing — because
+  "it looks right" is not a result, and "the checkerboard has hard edges, therefore the
+  sampler is `nearest`" is.
+* **The shader is compiled by a build step, but where a shader *lives* is left to M3.** The
+  sandbox embeds its `.metallib`. Loading one by content ID needs the asset system, and
+  deciding where engine shaders live is the package-zero question M3 owes an answer to
+  (unresolved question 2). Answering it here to avoid an `@embedFile` would have been
+  exactly the opportunistic resolution that is not wanted.
+* **Uniform buffers and inline constants are kept visibly separate in the sample.** The
+  uniform is written once at startup and never again, because rewriting a buffer a frame in
+  flight may still be reading is what rule 3 forbids and the per-frame ring that makes it
+  safe is the renderer's job (M2). Everything that changes per frame goes through inline
+  constants, which are command stream data and need no ring at all. A sample that blurred
+  the two would teach the wrong habit.
+* **The staging path is used even though this machine has unified memory.** The quad's
+  vertex, index and uniform buffers are `device_local` and filled through an `upload`
+  staging arena with batched barriers, rather than being made mappable because they could
+  be. Same argument as `device_local` mapping to Metal *private*: an engine tuned only on
+  unified memory develops habits that cost a fraction of the frame rate on hardware nobody
+  here owns.
+* **Sample structs are `comptime`-asserted against the MSL they must match.** `Vertex`,
+  `Constants` and `Frame` are declared twice — once in Zig, once in `quad.metal` — and
+  nothing checks the two against each other, so every size and offset that must agree is
+  asserted. Same discipline as the shim's 86 `_Static_assert`s, same reason: a silent
+  mismatch renders something subtly wrong with no error anywhere.
+
+**Earlier this session (M1, the backend):**
 
 * **The Metal binding index convention is written down, and was written *before* the code
   that needed it.** Metal has no descriptor sets, only three flat argument tables per

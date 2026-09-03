@@ -42,6 +42,13 @@ echo
 echo "== native: build and run tests (Metal rhi backend)"
 "$ZIG" build test -Drhi=metal
 
+# And the sandbox under Metal, which is what pulls in the shader build step: `zig build
+# test` does not depend on the sample, so without this the `xcrun metal` -> `.metallib`
+# path would only be exercised when someone happened to run the thing (ADR-0015).
+echo
+echo "== native: compile check (Metal rhi backend, sandbox and shaders)"
+"$ZIG" build check -Drhi=metal
+
 # Both platform backends against both cross targets. The null backend proves the engine
 # builds without SDL at all; the SDL3 backend proves SDL itself cross-compiles, which is
 # a stronger claim than ADR-0008 assumed was available.
