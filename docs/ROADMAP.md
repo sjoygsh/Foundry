@@ -106,6 +106,11 @@ the font and the selection outline share one atlas. Metal API and GPU validation
 stream. 346 tests under `-Drhi=null`, 354 under `-Drhi=metal`, all eight target/backend
 combinations compiling.*
 
+*Read the batch count as M2's. At M3 step 9 the sample's images became assets, which arrive
+as standalone textures, so it draws 5 batches now. `render2d`'s atlas is unchanged and still
+covered by its own tests; the sample stopped using it, and making it an atlas again is a
+decision about what an asset is (`docs/design/assets.md` §9).*
+
 *Two things arrived that the entry does not name. `render2d` gained **views** — a per-frame
 table of spaces rather than a screen/world flag — because the statistics readout needed a
 second space and a boolean would have answered M2 and nothing after it. `rhi` gained

@@ -1,10 +1,11 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-05
-**Updated by:** **M3, step 9.** `content/core` is package zero. The engine loads it
-through the same call a mod's package goes through, the sandbox ships a package of its own
-and embeds nothing, and a third package dropped in after them overrides both — an asset and
-a value — without naming a path
+**Updated by:** **M3, step 10 — and M3 closed and tagged `m3`.** Content reloads under a
+running program: an edit compiled by `fpack` reaches the sandbox at the top of the next
+frame, and a replaced `.png` reloads behind its handle with no package recompile at all.
+`docs/modding/` begins, with the content-mod guide written by doing it and then verified by
+following it verbatim
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -40,7 +41,9 @@ vsync-paced, which survives being resized.
 exit criterion is met and seen: `zig build run -Drhi=metal` draws 4,185 sprites at vsync
 under a camera driven by keyboard and mouse, with the batcher's own numbers on screen in a
 space that does not move when the camera does — 4 batches and 4 draw calls, because the
-sheet, the font and the selection outline share one atlas.
+sheet, the font and the selection outline share one atlas. *The batch count is M2's. At M3
+step 9 the sample's images became assets, which arrive as standalone textures, so it now
+draws 5; `render2d`'s atlas is unchanged and the sample simply stopped using it.*
 
 **M3 — Content: "it has data." Complete, 2026-09-05.** All ten steps done. It started at
 the only place it could: its decisions. The first modding-relevant milestone, and it comes due on two of
@@ -326,7 +329,7 @@ and the two design documents they needed, per `CLAUDE.md` rule 1 — design befo
 implementation — and rule 10, which says never make a major architectural decision silently.
 Both are spent, as ADR-0020 and ADR-0021, and `data` is built behind them.
 
-**Steps 1 to 9 are built.** `data` exists end to end — identity, schemas, the registry, the
+**All ten steps are built.** `data` exists end to end — identity, schemas, the registry, the
 lexer, the parser, diagnostics, the checking pass, the `.fpk` writer and reader, and the
 store that merges packages — `tools/fpack` drives all of it from a directory, and the asset
 registry above it turns a content id into a loaded payload, `content/core` is package zero,
@@ -1482,9 +1485,12 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
   probe using the former proves nothing about branch analysis. Break things with a genuine
   type mismatch, and check the failure lands on the target you expect and not on others.
 * **The build test runner reprints a command as "failed" when a test logs at `warn` or
-  above**, while the build still exits 0. Two tests do this deliberately (handle generation
-  wraparound, and an unclassifiable OS read error). Noise, not failure — check the exit code
-  and the `Build Summary` line.
+  above**, while the build still exits 0. Six of the nine test binaries do this now — every
+  module that tests a failure path deliberately logs one (`core` handle wraparound,
+  `platform` read errors, `asset` and `render2d` rejections, `app` refused packages). Noise,
+  not failure: `zig build test` exits 0 and the counts are in `--summary all`. The inverse
+  is the rule in `assets.md` — `log.err` fails the test, which is why a failure with another
+  way to report itself logs at `warn`.
 * **`.lazy = true` still extracts a dependency into `zig-pkg/`** on every build; it governs
   how `build.zig` must ask for it (`b.lazyDependency`, returning an optional), not whether it
   is materialised. `zig-pkg/` is build output and is gitignored.
