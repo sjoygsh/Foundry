@@ -116,9 +116,13 @@ means re-uploading the whole thing; rule 10 in `rhi.md` §11 grew to match, befo
 
 * Schema system: record types with typed fields, versioned.
 * Content packages, ordered load, override-by-ID (replace semantics first).
-* Authoring text format — **syntax decided here** (`CLAUDE.md` §9).
+* Authoring text format — **syntax decided here** (`CLAUDE.md` §9). *Decided 2026-09-04:
+  Foundry's own `.fdt` (ADR-0020), specified in `docs/design/content-schemas.md` §4.*
 * Runtime binary format and `tools/fpack` to compile one to the other.
-* `asset`: registry, loading by content ID, reference counting. Shaders become assets.
+* `asset`: registry, loading by content ID, reference counting. Shaders become assets — the
+  *content-owned* ones; engine-owned shaders stay embedded (ADR-0019). *Asset identity decided
+  2026-09-04: assets are content records, and a path derives an ID but never defines it
+  (ADR-0021), specified in `docs/design/assets.md`.*
 * Hot reload of content and assets in development builds.
 * Base game content moved into `content/core` as package zero (I3).
 * `docs/modding/` begins.

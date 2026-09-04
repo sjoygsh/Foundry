@@ -1,10 +1,11 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-04
-**Updated by:** **M2 is complete.** The design doc, the decisions M2 forced, Foundry's own
-PNG decoder, the sprite batcher, a camera that pans, zooms and answers what was clicked, an
-atlas that puts the sprites, the glyphs and the selection outline in one draw call, and
-views — a frame's several spaces — carrying the statistics readout
+**Updated by:** **M3 has begun with its decisions.** The two postponed decisions M3 comes
+due on are spent — ADR-0020 (Foundry's own `.fdt` authoring format) and ADR-0021 (assets are
+content records; a path derives an ID but never defines identity) — and the two design
+documents they unblock are written: `content-schemas.md` and `assets.md`. No content code
+yet, deliberately
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -41,9 +42,12 @@ under a camera driven by keyboard and mouse, with the batcher's own numbers on s
 space that does not move when the camera does — 4 batches and 4 draw calls, because the
 sheet, the font and the selection outline share one atlas.
 
-**Current milestone: M3 — Content: "it has data."** Not started. The first
-modding-relevant milestone, and the one that resolves two of `CLAUDE.md` §9's postponed
-decisions: the authoring text syntax and the asset ID scheme. See `docs/ROADMAP.md`.
+**Current milestone: M3 — Content: "it has data."** Started, at the only place it could
+start: its decisions. The first modding-relevant milestone, and it comes due on two of
+`CLAUDE.md` §9's postponed decisions — both now spent, as **ADR-0020** and **ADR-0021**, and
+struck from the §9 table. The two design documents `docs/design/README.md` has owed since M2
+are written. **No implementation yet**, which is rule 1 working as intended rather than a
+delay. See `docs/ROADMAP.md`.
 
 **M1, for reference.** All five ROADMAP items are done: the Metal backend and its Objective-C shim (1), the
 `xcrun metal` → `.metallib` build step (2), runtime MSL compilation (3), the validation
@@ -302,6 +306,69 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
+**M3 — Content: "it has data."** Two decisions and two design documents, and nothing else
+yet. That is the whole of the milestone so far and it is the right amount: `CLAUDE.md` rule 1
+says design before implementation, rule 10 says never make a major architectural decision
+silently, and M3 opens with two decisions §9 has been holding since M0.
+
+**ADR-0020 — the authoring format is Foundry's own, `.fdt`.** Four candidates were weighed
+against ADR-0006's recorded requirements, and three facts settled it. There is no permissive
+Zig parser for TOML or KDL that rule 3 and ADR-0016 would let us adopt, so **we write the
+parser either way** — which collapses the usual adopt-versus-build argument, since adopting
+buys a maintained spec and editor highlighting, not saved work. **No candidate has imports**,
+which ADR-0006 requires, so every adopted format gets extended until it is no longer that
+format and its errors cite a spec that does not describe it. And **content is named records**,
+which is the one shape a general-purpose format expresses worst. There is precedent too, and
+it is loud: ADR-0018 wrote a PNG decoder rather than take a library, and `core/id.zig`
+specifies FNV-1a in full rather than call `std` — both because a persisted format is a
+compatibility contract. Content text is the most persisted thing in the engine.
+
+Two syntactic choices in it are worth more than they look, and a future session should know
+they are load-bearing rather than taste:
+
+* **Content IDs are bare tokens, not strings** — `foundry:item.ash`, never `"foundry:item.ash"`.
+  A reference is visibly a reference, so a typo fails at compile time instead of becoming a
+  string that happens to be wrong; and `grep foundry:item.ash` finds every use across every
+  package on disk, including in mods nobody has seen.
+* **Directives are `@`-prefixed** — `@import`, `@schema`, `@patch`. Schema names come from
+  mods (I6), so an unprefixed directive is a permanent hazard: some future release would have
+  to choose between adding a keyword and breaking somebody's schema. One character buys that
+  away forever. This deviates from the syntax sketch approved in the session — deliberately,
+  and it is the cheapest irreversible decision in the format.
+
+**ADR-0021 — an asset is a content record, and its identity is its content ID.** The
+developer's framing is what settled it: a path is the default *way of obtaining* an ID, not
+the *definition* of identity, and once a unique ID exists the path is not part of it. So
+`source` is an ordinary field meaningful only to `fpack`; **`fpack` materialises every derived
+ID into the compiled package**, which is the structural half — the runtime is never given the
+chance to learn about paths, so it cannot come to depend on one.
+
+Path-as-identity was refused for the same reason I2 refuses load-order indices: identity must
+not be a consequence of where the bytes happen to sit. The concrete payoff is that
+`content/core/` can be reorganised without breaking a mod, and a mod overriding
+`foundry:texture.sprites` never has to mirror the base game's folders. The honest cost is
+recorded in the ADR: a derived ID is only as stable as its path until someone writes it down,
+and the ledger that would catch a rename is designed for and deliberately not built.
+
+**`docs/design/content-schemas.md`** (560 lines) and **`docs/design/assets.md`** (272 lines)
+are written, and the design README's owed table is now down to `entity-storage.md` for M4.
+
+Two things in them are worth carrying forward:
+
+* **The layering caught a design decision before it was made.** `data` depends on `core`
+  alone (ADR-0007), so it **cannot open a file**: the parser is handed bytes and resolves
+  `@import` through a caller-supplied resolver callback. That was not designed for — it fell
+  out of the layering table — and it makes the whole content pipeline a pure function:
+  hermetically testable, trivially deterministic (I9), and safe on untrusted input without
+  wondering what it might read. I7 earning its keep in a way that had nothing to do with
+  preventing a bad import.
+* **One principle now lives in three places without diverging.** `core/id.zig` refuses to
+  normalise content IDs, because normalisation would be a second specification every mod tool
+  must reimplement identically. So `data` refuses to *accept* anything that would need
+  normalising — IDs are lowercase ASCII or they are not IDs — and asset ID derivation
+  transforms nothing, offering a rename or an explicit ID instead of a `Panel-01` → `panel_01`
+  rule somebody else would have to guess at.
+
 **M2 is complete.** All six steps below are done: the clip-space contract is written down,
 `asset` exists with the PNG decoder ADR-0018 called for, **`render2d` draws**, **the camera
 moves**, **it has an atlas and words**, and **a frame has more than one space**. The sandbox
@@ -363,22 +430,46 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 **M2 is done and tagged.** Nothing is outstanding against it except the one thing a person
 still has to judge, recorded above: the key and button *bindings*.
 
-**M3 — Content: "it has data."** The first modding-relevant milestone, and the one that
-finally spends two of `CLAUDE.md` §9's postponed decisions. Its ROADMAP entry is the list;
-what is worth deciding before any of it is written:
+**M3 — Content: "it has data."** Its decisions and its design are done; what remains is
+implementation. Ten steps, ordered so each leaves the tree green and the sandbox runnable,
+and so nothing is a rewrite of the one before.
 
-* **The authoring syntax** (§9, due now). JSON is disqualified by ADR-0006. The real
-  question is custom versus adopting something — and the requirements are already written
-  down in that ADR, so this is a decision to make against them rather than from taste.
-* **The asset ID scheme** (§9, due now). Path-derived versus GUID, and it interacts with I2
-  and with mod-authored overrides. `asset` currently takes paths, and paths are exactly what
-  this replaces.
-* **A design doc before code**, per rule 1 and the pattern that has worked three times now:
-  `docs/design/content.md`, written far enough ahead that implementation can leave
-  *Resolution* notes where it disagrees.
-* The shape M3 must not quietly break: **I3**, the base game loading through the same path a
-  mod does. `content/core` becomes package zero, and the sandbox's embedded sprite sheet and
-  font are the first things that should move into it.
+1. **`data` (L1), and identity.** Add the module to `build.zig`'s `layering` table and grant
+   it to `asset`, which ADR-0007 already says it gets. `SchemaId`, the `namespace:name`
+   validator of `content-schemas.md` §2, and the runtime schema registry (I6). No parsing yet
+   — this is the part everything else is checked against.
+2. **The `.fdt` lexer and parser.** Grammar per §4, the resolver callback for `@import`, the
+   `Limits` struct, and multi-error recovery to the next record boundary. Hermetic tests: a
+   resolver backed by a hash map, no disk anywhere in the module.
+3. **Diagnostics.** File, line, column, span, schema, field, expected, found — §4.5. This is
+   what owning the parser was bought for, so it is a step rather than a detail.
+4. **Values and validation.** Typed values, checking against a schema, defaults, the
+   int-literal-in-a-float-field rule, and the versioning behaviour of §3.
+5. **`.fpk`, writer and reader.** §5. The reader validates every offset and length against the
+   file's own size before dereferencing anything, and a random file is a test.
+6. **Packages and the store.** Ordered merge, replace semantics, provenance, and the two
+   documented iteration orders I9 depends on (§6).
+7. **`tools/fpack`.** Walks a package directory, derives asset IDs per `assets.md` §3,
+   reports collisions naming both files, and emits a `.fpk`.
+8. **`asset` gains its registry.** Loaders registered at runtime, reference counting,
+   `render2d` registering the texture loader from above. **`loadImage(path)` goes away** — it
+   was scaffolding with a stated expiry.
+9. **`content/core` becomes package zero (I3).** The sandbox's embedded sheet and font are the
+   first things to move, and the sample stops embedding anything. This is the step that proves
+   the mod path by using it.
+10. **Hot reload, and `docs/modding/` begins.** Queued changes applied at frame start, never
+    mid-frame; a failed reload changes nothing.
+
+**The exit criteria** are the sandbox's content living entirely in data, a second package
+placed after it overriding a value visibly, and editing a content file live-updating the
+running program. The third is the one that will be tempting to declare rather than see.
+
+**What M3 must not quietly break:** I3 above all — there is no privileged loading path, and
+`content/core` going through the same code a mod does is the only durable proof of it. Also
+ADR-0019, which a future session could undo by accident: the sprite shader stays embedded in
+the binary, because it is the other half of a contract with the batcher's vertex layout.
+Moving it into the content system "for consistency" would be undoing a decision, not finding
+an oversight.
 
 **M2, for reference** — each step left the tree green and the sandbox runnable, and none was
 a rewrite of the one before.
@@ -515,6 +606,61 @@ a rewrite of the one before.
 ---
 
 ## Important decisions made recently
+
+**This session (M3, the decisions it comes due on):**
+
+* **Foundry gets its own authoring text format, `.fdt` (ADR-0020).** Not taste — three facts.
+  There is no permissive Zig parser for TOML or KDL that rule 3 and ADR-0016 would let us
+  adopt, so we write the parser either way and adopting buys a maintained spec and editor
+  highlighting rather than saved work. No candidate has imports, which ADR-0006 requires, so
+  every adopted format ends up extended past the point where it is still that format. And
+  content is *named records*, the one shape a general-purpose format expresses worst. The
+  precedent was already set twice: ADR-0018's PNG decoder and `core/id.zig`'s hand-specified
+  FNV-1a, both because a persisted format is a compatibility contract. **The honest cost,
+  recorded in the ADR: nobody's editor highlights `.fdt` until we ship a grammar**, and that
+  is owed before `docs/modding/` can send anyone off to write content.
+* **Content IDs are bare tokens in the text, not strings.** `foundry:item.ash`. A reference is
+  visibly a reference, so a mistyped one fails at compile time instead of becoming a string
+  that happens to be wrong, and `grep` finds every use across every package on disk. Making
+  them strings later would silently convert a class of build error into a runtime lookup
+  failure.
+* **Directives are `@`-prefixed.** `@import`, `@schema`, `@patch` — so any bare leading token
+  is a schema name. Schema names come from mods (I6), so an unprefixed directive is a
+  permanent hazard: some future release would have to choose between adding a keyword and
+  breaking somebody's schema. One character, and there will never be that release. **This
+  deviates from the syntax sketch approved in the session**, deliberately and flagged.
+* **An asset is a content record; a path derives an ID but never defines identity
+  (ADR-0021).** The developer's framing settled it: the path is the default way of *obtaining*
+  an ID, not the *definition* of one, and once a unique ID exists the path is not part of it.
+  `fpack` materialises every derived ID into the compiled package, which is the structural
+  half — the runtime never sees a path as identity, so it cannot come to depend on one.
+  Refused for the same reason I2 refuses load-order indices: **identity must not be a
+  consequence of where the bytes happen to sit.** The payoff is that `content/core/` can be
+  reorganised without breaking a mod, and an override never mirrors somebody else's folders.
+  The cost is that a derived ID is only as stable as its path until it is written down; the
+  ledger that would catch a rename is designed for and not built.
+* **Derivation transforms nothing.** `Panel-01.png` does not become `panel_01` — it is an
+  error offering a rename or an explicit ID. Same principle `core/id.zig` states for hashing:
+  a transformation is a second specification every external mod tool must reimplement
+  identically, and any divergence produces IDs that differ invisibly. Refusing to transform
+  means there is nothing to reimplement. That principle now holds in three places and has not
+  diverged in any of them.
+* **`data` cannot open a file, and that turned out to be the best thing about it.** ADR-0007
+  gives L1 `data` only `core`, so the parser is handed bytes and resolves `@import` through a
+  caller-supplied callback. Not designed for — it fell out of the layering table — and it
+  makes the content pipeline a pure function: hermetically testable, trivially deterministic
+  (I9), and safe on untrusted input without wondering what it might read. Worth remembering
+  the next time the layering looks like it is in the way.
+* **`render2d` will register the texture loader into `asset` from above.** L2 `asset` cannot
+  know what a GPU texture is and does not need to; the payload it holds is opaque and freed by
+  the module that made it. The dependency points down while the capability points up, which is
+  what I6's runtime registration is for — a layering problem solved by the mechanism rather
+  than by an exception.
+* **Merge semantics land incrementally, as ADR-0006 said they would.** M3 implements
+  **replace**. `@patch` and `@remove` are specified in `content-schemas.md` §7 and land after,
+  along with the schema-declared choice of whether a patched list replaces or appends —
+  because "the loot table" and "the display name" want opposite answers and no global default
+  is right for both.
 
 **This session (M2, views and the readout):**
 
@@ -1002,9 +1148,16 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
    good early test of Invariant I3. Decide during M3. **Narrowed 2026-09-04 by ADR-0019**:
    the fallback *shader* is no longer part of this question, because engine-owned shaders are
    engine machinery rather than content. The font still is, and M2 deliberately dodges it by
-   having the sample supply one.
-3. **Authoring format syntax.** Postponed to M3 by ADR-0006. Requirements recorded;
-   candidates are adopting an existing format versus a small purpose-built one.
+   having the sample supply one. **Sharpened 2026-09-04 by ADR-0021**: the question is no
+   longer *how* engine content would be identified — it is a record with a content ID like
+   everything else — only *whether* the engine ships any. M3 step 9 forces the answer.
+3. ~~**Authoring format syntax.**~~ **Settled 2026-09-04 by ADR-0020**: Foundry's own
+   `.fdt`, specified in `docs/design/content-schemas.md` §4. *Still open, and recorded in
+   that document's §10:* multi-line strings (deliberately absent until it is known whether
+   prose lives in `.fdt` at all, or in string tables keyed by ID), whether `f64` earns its
+   place given that I9 makes `f32` the simulation type, whether a mod may extend another
+   package's schema, a canonical formatter, and the editor grammar ADR-0020 names as the
+   decision's largest real cost.
 4. **Zig upgrade cadence.** ADR-0001 says between milestones, never during. Whether that
    means *every* milestone boundary or only when there is a reason is still unresolved. Two
    concrete inputs now: each upgrade must re-verify the SDL3 port, and 0.16 showed that a
