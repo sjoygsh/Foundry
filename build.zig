@@ -29,15 +29,21 @@ const layering = [_]Module{
     // L1 — SDL3 lives ONLY here (ADR-0002).
     .{ .name = "platform", .deps = &.{"core"} },
 
+    // L1 — schemas, content, packages (docs/design/content-schemas.md). Note what it
+    // does *not* get, and that this is the interesting part: `platform`. `data` cannot
+    // open a file. The parser is handed bytes and resolves `@import` through a
+    // caller-supplied callback, which makes the whole content pipeline a pure function —
+    // hermetically testable, deterministic (I9), and safe on untrusted input without
+    // wondering what it might read. That fell out of ADR-0007 rather than being designed.
+    .{ .name = "data", .deps = &.{"core"} },
+
     // L2 — Metal/Vulkan/D3D live ONLY here (ADR-0003).
     .{ .name = "rhi", .deps = &.{ "core", "platform" } },
 
-    // L2 — assets. ADR-0007 gives this `data` as well; `data` arrives at M3 and this
-    // gains it then. What exists now is deliberately less than the end state: image
-    // decoding and file loading, with no registry, no ID resolution and no hot reload,
-    // because the asset ID scheme is a postponed decision due at M3 (CLAUDE.md §9) and
-    // building half of it here would resolve it by accident.
-    .{ .name = "asset", .deps = &.{ "core", "platform" } },
+    // L2 — assets. The module with both a filesystem and the content model, which makes
+    // it the seam between them: `data` cannot open a file and `render2d` should not, so
+    // opening files on content's behalf is this module's job (docs/design/assets.md).
+    .{ .name = "asset", .deps = &.{ "core", "data", "platform" } },
 
     // L3 — the game-facing 2D renderer (docs/design/render2d.md). Note what it does
     // *not* get: `platform`. The renderer neither opens files nor reads input; `asset`
@@ -49,7 +55,6 @@ const layering = [_]Module{
     .{ .name = "app", .deps = &.{ "core", "platform", "rhi" } },
 
     // Added as each is implemented. The rest of the graph from ADR-0007 is:
-    //   L1  data       -> core
     //   L3  scene      -> core, data, asset
     //   L5  abi        -> app             (M7)
 };
