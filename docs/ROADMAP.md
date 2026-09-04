@@ -89,7 +89,7 @@ clean and the null backend raising no complaints about the same command stream.
 
 ## Phase 2 — A real 2D engine
 
-### M2 — Sprites: "it draws a lot"
+### M2 — Sprites: "it draws a lot" — **complete (2026-09-04)**
 
 * Sprite batching; texture atlas support; texture loading from disk (PNG decode).
 * 2D camera with pan/zoom; screen and world coordinate spaces.
@@ -97,6 +97,20 @@ clean and the null backend raising no complaints about the same command stream.
 * Frame statistics: frame time, draw calls, batch count.
 
 **Exit criteria:** thousands of sprites at a stable frame rate, with a camera and on-screen text.
+
+*Exit criteria met: `zig build run -Drhi=metal` draws 4,185 sprites at vsync under a camera
+driven by keyboard and mouse, with the batcher's own statistics on screen in a screen-space
+view that does not move when the camera does — 4 batches and 4 draw calls, because the sheet,
+the font and the selection outline share one atlas. Metal API and GPU validation clean over
+2,400 frames; the null validation backend raises no complaints about the same command
+stream. 346 tests under `-Drhi=null`, 354 under `-Drhi=metal`, all eight target/backend
+combinations compiling.*
+
+*Two things arrived that the entry does not name. `render2d` gained **views** — a per-frame
+table of spaces rather than a screen/world flag — because the statistics readout needed a
+second space and a boolean would have answered M2 and nothing after it. `rhi` gained
+`dst_origin` on a buffer-to-texture copy, without which packing one sprite into an atlas
+means re-uploading the whole thing; rule 10 in `rhi.md` §11 grew to match, before the code.*
 
 ### M3 — Content: "it has data" — *first modding-relevant milestone*
 

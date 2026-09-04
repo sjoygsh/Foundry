@@ -1,10 +1,10 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-04
-**Updated by:** **M2: it draws thousands, the camera moves, and it has words.** The design
-doc, the decisions M2 forced, Foundry's own PNG decoder, the sprite batcher, a camera that
-pans, zooms and answers what was clicked, and an atlas that puts the sprites, the glyphs and
-the selection outline in one draw call
+**Updated by:** **M2 is complete.** The design doc, the decisions M2 forced, Foundry's own
+PNG decoder, the sprite batcher, a camera that pans, zooms and answers what was clicked, an
+atlas that puts the sprites, the glyphs and the selection outline in one draw call, and
+views — a frame's several spaces — carrying the statistics readout
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -35,12 +35,15 @@ drawn, which M0 deliberately excludes.
 -Drhi=metal` opens a window on macOS and draws a rotating, nearest-filtered textured quad,
 vsync-paced, which survives being resized.
 
-**Current milestone: M2 — Sprites: "it draws a lot."** In progress; five of six steps done.
-Exit criterion: thousands of sprites at a stable frame rate, with a camera and on-screen
-text. Sprites, the camera, the atlas and text are done. What remains is the **screen-space**
-overlay the statistics readout needs — everything drawn so far is in world space, and a HUD
-that scrolled away when you panned would not be a HUD. `docs/design/render2d.md` is the
-plan.
+**M2 — Sprites: "it draws a lot." Complete, 2026-09-04.** All six steps are done and the
+exit criterion is met and seen: `zig build run -Drhi=metal` draws 4,185 sprites at vsync
+under a camera driven by keyboard and mouse, with the batcher's own numbers on screen in a
+space that does not move when the camera does — 4 batches and 4 draw calls, because the
+sheet, the font and the selection outline share one atlas.
+
+**Current milestone: M3 — Content: "it has data."** Not started. The first
+modding-relevant milestone, and the one that resolves two of `CLAUDE.md` §9's postponed
+decisions: the authoring text syntax and the asset ID scheme. See `docs/ROADMAP.md`.
 
 **M1, for reference.** All five ROADMAP items are done: the Metal backend and its Objective-C shim (1), the
 `xcrun metal` → `.metallib` build step (2), runtime MSL compilation (3), the validation
@@ -212,8 +215,8 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 323 tests** (50 `core`, 70 `platform`, 92 `rhi`, 17 `asset`,
-77 `render2d`, 22 `app`), and **331 under `-Drhi=metal`**, where `rhi` gains the backend's
+**`zig build test` passes 346 tests** (50 `core`, 70 `platform`, 92 `rhi`, 17 `asset`,
+102 `render2d`, 22 `app`), and **354 under `-Drhi=metal`**, where `rhi` gains the backend's
 own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
@@ -229,14 +232,17 @@ info(app): engine up: 60Hz simulation, windowed, rhi backend 'metal', 2 frames i
 info(render2d): render2d up: 16384 quads per buffer, unified memory
 info(sandbox): atlas 512x512: sheet 64x64, font 128x48, 3.9% full
 info(sandbox): window: 1280x720 points, 2560x1440 pixels, scale 2.00
-debug(sandbox): frame 2400: 735 sprites (31 glyphs), 3 batches, 3 draw calls, 57 KiB of vertices, 8.1ms/frame, zoom 1.00
+debug(sandbox): frame 2400: 4186 sprites (180 glyphs), 4 batches, 4 draw calls, 327 KiB of vertices, 8.1ms/frame, zoom 1.00
 info(sandbox): clean exit after 2400 frames, 1200 ticks, 20000ms simulated
 ```
 
 **The text was looked at, not inferred**, the same way M1's quad was. A capture of the
 sandbox's own window (by window id, so nothing else on the screen is read) shows the
-world-space banner and the screen-constant `#682` label above the outlined sprite, both
-legible, over 2,400 frames with Metal API *and* GPU validation on and **zero messages**.
+statistics panel and the help line in screen space, the world-space banner, and the
+`#1863` label above the outlined sprite, all legible — over 2,400 frames with Metal API
+*and* GPU validation on and **zero messages**. That capture is also what caught the Y-axis
+bug: the first windowed run drew the whole readout upside down, which no unit test had
+asked about because until then every space was Y-up.
 
 **What the M1 record below describes is the quad**, kept because each row is a separate
 property that was checked once and has not been rechecked since.
@@ -296,20 +302,21 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M2 is under way and past its hardest part.** Five of the six steps below are done: the
-clip-space contract is written down, `asset` exists with the PNG decoder ADR-0018 called
-for, **`render2d` draws**, **the camera moves**, and **it has an atlas and words**. The
-sandbox puts thousands of sprites on screen from a decoded PNG sheet, under a camera driven
-by keyboard and mouse, surviving resize, with zero Metal validation messages and zero
+**M2 is complete.** All six steps below are done: the clip-space contract is written down,
+`asset` exists with the PNG decoder ADR-0018 called for, **`render2d` draws**, **the camera
+moves**, **it has an atlas and words**, and **a frame has more than one space**. The sandbox
+puts thousands of sprites on screen from a decoded PNG sheet, under a camera driven by
+keyboard and mouse, surviving resize, with zero Metal validation messages and zero
 null-backend violations on the same command stream. Clicking selects the topmost sprite
-under the pointer, outlines it and labels it with its index.
+under the pointer, outlines it and labels it with its index, and the batcher's own numbers
+sit in a screen-space panel that stays put while the camera moves.
 
 **Everything the sample draws now comes out of one atlas** — sheet, glyphs and the white
 patch the outline stretches — so the sprites, the outline and the text are **three batches
 and three draw calls**, and all three breaks are blend-mode changes rather than texture
 changes. Adding text cost no draw call at all.
 
-323 tests pass under `-Drhi=null` and 331 under `-Drhi=metal`; all eight target/backend
+346 tests pass under `-Drhi=null` and 354 under `-Drhi=metal`; all eight target/backend
 combinations compile.
 
 Measured on an M5, 600 frames per run: 4,000 and 20,000 sprites both hold vsync at 120Hz
@@ -353,10 +360,28 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**M1 is done, tagged and pushed.** Nothing is outstanding against it.
+**M2 is done and tagged.** Nothing is outstanding against it except the one thing a person
+still has to judge, recorded above: the key and button *bindings*.
 
-**M2, in the order it should be built.** Each step leaves the tree green and the sandbox
-runnable; none of them is a rewrite of the one before.
+**M3 — Content: "it has data."** The first modding-relevant milestone, and the one that
+finally spends two of `CLAUDE.md` §9's postponed decisions. Its ROADMAP entry is the list;
+what is worth deciding before any of it is written:
+
+* **The authoring syntax** (§9, due now). JSON is disqualified by ADR-0006. The real
+  question is custom versus adopting something — and the requirements are already written
+  down in that ADR, so this is a decision to make against them rather than from taste.
+* **The asset ID scheme** (§9, due now). Path-derived versus GUID, and it interacts with I2
+  and with mod-authored overrides. `asset` currently takes paths, and paths are exactly what
+  this replaces.
+* **A design doc before code**, per rule 1 and the pattern that has worked three times now:
+  `docs/design/content.md`, written far enough ahead that implementation can leave
+  *Resolution* notes where it disagrees.
+* The shape M3 must not quietly break: **I3**, the base game loading through the same path a
+  mod does. `content/core` becomes package zero, and the sandbox's embedded sprite sheet and
+  font are the first things that should move into it.
+
+**M2, for reference** — each step left the tree green and the sandbox runnable, and none was
+a rewrite of the one before.
 
 1. ~~**`core.math` grows what a camera needs.**~~ **Done differently, 2026-09-04.** The
    projection did *not* go into `core.math`, which opens by promising it "does not know
@@ -386,12 +411,11 @@ runnable; none of them is a rewrite of the one before.
    gained `dst_origin` on a buffer-to-texture copy, without which packing one sprite means
    re-uploading the whole atlas. The sandbox packs its sheet, its font and its white patch
    into one 512-pixel atlas and draws both world-space and screen-constant text.
-6. **Frame statistics on screen**, which needs a **screen-space** pass and so is the one
-   real piece of design left in M2: everything drawn so far is in world space, and a HUD
-   that scrolled away when you panned would not be a HUD. The likely shape is a second
-   `begin`/`record` pair with a camera whose viewport *is* the window, since the renderer
-   already takes the camera per frame — but that is a decision to make deliberately rather
-   than by reaching for the first thing that works.
+6. ~~**Frame statistics on screen.**~~ **Done, 2026-09-04.** It needed a second space, and
+   the answer was **views** rather than the screen/world flag the question suggested: a
+   per-frame table with `world` and `screen` always present and `addView` for anything
+   else. The sandbox's panel is `setView(.screen)` and then ordinary draws, converting no
+   coordinates at all.
 
 ---
 
@@ -492,7 +516,45 @@ runnable; none of them is a rewrite of the one before.
 
 ## Important decisions made recently
 
-**This session (M2, the atlas and text):**
+**This session (M2, views and the readout):**
+
+* **A frame has a table of views, not a screen/world flag.** The statistics readout needed a
+  second space, and the smallest thing that answers *that* answers nothing after it: a
+  parallax layer, a minimap, a split screen and a mod's overlay are all spaces and none of
+  them is "screen". So the renderer holds a small per-frame table — `world` and `screen`
+  always present, `addView` for the rest — and a draw is recorded against whichever is
+  current. The alternative shapes were considered explicitly: a `space` field on `Sprite`
+  would have to be copied onto `TextOptions` and every future draw struct while still
+  carrying two values, and a second `begin`/`record` pair doubles a lifecycle that a game
+  can forget half of.
+
+* **The current view is renderer state, not a parameter.** It changes per screenful, not per
+  sprite — a HUD is one `setView` and then a hundred draws — so paying for it in every draw
+  struct is paying per sprite for something that changes per frame. It resets with `begin`,
+  which is the only place it could go stale.
+
+* **`view` leads the sort key.** A view is drawn entirely before the next, and `layer`
+  orders *within* a view rather than across views. That is what makes a HUD a HUD: nothing
+  in the world can be given a layer high enough to cover it. The honest cost is that the
+  floor on batch count is the number of views in use, and `Stats.views` reports it so a
+  surprising batch count has somewhere to be checked first.
+
+* **A space knows which way is up, and the first windowed run is what insisted.** The world
+  is Y-up and the screen is Y-down; `writeQuad` had assumed Y-up, so the whole readout drew
+  upside down. `YAxis` now travels from the view to the quad builder, where it swaps which
+  corner the texture's top row belongs to and flips the rotation sign so a positive angle
+  turns the same way *as seen* in both. `containsPoint` takes it too, so a UI element will
+  be clickable exactly where it is drawn — which M6 will want. Worth recording as a
+  verification lesson as much as a design one: 102 `render2d` tests passed while every
+  glyph on screen was inverted, because until then every space in the engine was Y-up.
+
+* **Views were cheap because the transform was already inline constants.** A view change
+  costs one `setInlineConstants`, one `setViewport` and a batch break — the same order as a
+  blend-mode change, which the batcher already handled. Had the view-projection been a
+  per-frame bind group this decision would have been much more expensive, and that is worth
+  remembering the next time something looks like it belongs in a frame-wide uniform.
+
+**Earlier this session (M2, the atlas and text):**
 
 * **The RHI learned to write a rectangle of a texture, and the contract moved first.**
   `BufferToTextureCopy` could only write a whole texture, so packing one sprite into an
@@ -560,7 +622,7 @@ runnable; none of them is a rewrite of the one before.
   This is the atlas lesson the sample exists to carry, and it is why padding defaults to one
   texel as well.
 
-**Earlier this session (M2, the camera):**
+**Earlier still this session (M2, the camera):**
 
 * **The camera got two operations, and the sample got the bindings.** `panByScreen` and
   `zoomAround` are camera *maths* — decided by the projection, and wrong in subtle ways
