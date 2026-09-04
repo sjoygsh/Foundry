@@ -203,8 +203,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     sandbox_mod.addImport("app", modules.get("app").?);
+    sandbox_mod.addImport("asset", modules.get("asset").?);
     sandbox_mod.addImport("core", modules.get("core").?);
     sandbox_mod.addImport("platform", platform_module);
+    sandbox_mod.addImport("render2d", modules.get("render2d").?);
     sandbox_mod.addImport("rhi", modules.get("rhi").?);
 
     // The shader the sandbox draws with, compiled by the build and embedded in the

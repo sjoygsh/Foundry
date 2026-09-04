@@ -111,6 +111,7 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
 
         input: platform.InputSnapshot,
         frame_index: u64,
+        frames_in_flight: u32,
         quit: bool,
 
         pub fn init(gpa: Allocator, config: Config) InitError!*Self {
@@ -172,6 +173,7 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                 .event_cursor = 0,
                 .input = .{},
                 .frame_index = 0,
+                .frames_in_flight = config.frames_in_flight,
                 .quit = false,
             };
             self.stepper.max_steps_per_frame = config.max_steps_per_frame;
@@ -329,6 +331,57 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         /// this exercises it.
         pub fn setWindowSize(self: *Self, logical: platform.Size) platform.WindowError!void {
             return self.platform.setWindowSize(self.window, logical);
+        }
+
+        /// What a frame does besides draw: clear, and label itself in a GPU capture.
+        pub const FrameOptions = struct {
+            /// `null` keeps the previous contents, which is almost never what a 2D game
+            /// wants and is offered because a game drawing a full-screen background
+            /// legitimately does not need the clear.
+            clear: ?[4]f32 = .{ 0, 0, 0, 1 },
+            label: []const u8 = "frame",
+        };
+
+        /// Runs one frame of rendering: opens the frame and the render pass, lets
+        /// `recorder` fill it, and submits.
+        ///
+        /// **The engine owns the frame, not the renderer** (`docs/design/render2d.md` §3).
+        /// A frame will later carry more than sprites — a debug UI at M6, a 3D pass after
+        /// that — and whoever opens the pass decides what shares it. Doing this in the
+        /// renderer would be convenient now and would foreclose that.
+        ///
+        /// `recorder` is `anytype` rather than a `render2d.Renderer` deliberately: `app`
+        /// owns the frame and should not care who records into it. It must provide:
+        ///
+        /// * `prepare(*rhi.CommandBuffer, rhi.FrameContext) !void` — sorting, uploads and
+        ///   copies, before the pass opens, because copies cannot be recorded inside one.
+        /// * `record(*rhi.RenderPass) !void` — the draw calls.
+        ///
+        /// The game calls this and never sees either argument, which is what keeps the
+        /// RHI out of the game-facing surface (CLAUDE.md §4.2).
+        pub fn renderFrame(self: *Self, options: FrameOptions, recorder: anytype) !void {
+            const frame = try self.gpu.beginFrame();
+
+            const cmd = try self.gpu.beginCommandBuffer();
+            try recorder.prepare(cmd, frame);
+
+            const pass = try cmd.beginRenderPass(.{
+                .label = options.label,
+                .color = &.{.{
+                    .texture = frame.surface_texture,
+                    .load = if (options.clear) |c| .{ .clear = .{ .color = c } } else .load,
+                    .store = .store,
+                    // `undefined` in because nothing from last frame's image is worth
+                    // preserving, `present` out because the display takes it next.
+                    .initial_state = .undefined,
+                    .final_state = .present,
+                }},
+            });
+            try recorder.record(pass);
+            pass.end();
+
+            try cmd.submit();
+            try self.gpu.endFrame();
         }
     };
 }
