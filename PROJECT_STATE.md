@@ -1,8 +1,9 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-04
-**Updated by:** **M2: it draws thousands.** The design doc, the decisions M2 forced,
-Foundry's own PNG decoder, and the sprite batcher — 4,000 sprites in two draw calls
+**Updated by:** **M2: it draws thousands, and the camera moves.** The design doc, the
+decisions M2 forced, Foundry's own PNG decoder, the sprite batcher, and a camera that pans,
+zooms and answers what was clicked
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -33,11 +34,12 @@ drawn, which M0 deliberately excludes.
 -Drhi=metal` opens a window on macOS and draws a rotating, nearest-filtered textured quad,
 vsync-paced, which survives being resized.
 
-**Current milestone: M2 — Sprites: "it draws a lot."** In progress; design complete, no
-code yet. Exit criterion: thousands of sprites at a stable frame rate, with a camera and
-on-screen text. `docs/design/render2d.md` is written and is the plan.
+**Current milestone: M2 — Sprites: "it draws a lot."** In progress; four of six steps done.
+Exit criterion: thousands of sprites at a stable frame rate, with a camera and on-screen
+text. Sprites and the camera are done; the atlas, text and on-screen statistics are not.
+`docs/design/render2d.md` is the plan.
 
-All five ROADMAP items are done: the Metal backend and its Objective-C shim (1), the
+**M1, for reference.** All five ROADMAP items are done: the Metal backend and its Objective-C shim (1), the
 `xcrun metal` → `.metallib` build step (2), runtime MSL compilation (3), the validation
 backend (4), and Metal API validation enabled and clean (5).
 
@@ -57,10 +59,39 @@ than by being done.
 
 ## What has been implemented
 
-**`core` (L0), `platform` (L1), `rhi` (L2) with two backends, `app` (L4). It draws a
-textured quad.**
+**`core` (L0), `platform` (L1), `rhi` (L2) with two backends, `asset` (L2), `render2d`
+(L3), `app` (L4). `data` and `scene` do not exist yet. It draws thousands of sprites under
+a camera that pans, zooms and picks.**
 
 New this session:
+
+* `engine/src/render2d/camera.zig` — `panByScreen` and `zoomAround`, the two camera
+  operations that are maths rather than policy, both derived from `screenToWorld` and both
+  validating the whole change before committing it.
+* `engine/src/render2d/sprite.zig` — `containsPoint`, the exact inverse of `writeQuad`'s
+  transform, sharing its extents through one `localExtents`.
+* `engine/src/app/engine.zig` — `frameDelta`, the wall-clock frame time the engine already
+  measured for the stepper. Presentation only (I9).
+* `samples/sandbox/main.zig` — the camera is state the sample owns and input drives; a
+  click picks the topmost sprite under it and outlines it with a one-pixel white texture
+  built in memory. `FOUNDRY_SANDBOX_PICK_EVERY` scripts a pick at the window's centre.
+
+Earlier this session:
+
+* `engine/src/asset/` — `Image` (always RGBA8, straight alpha, sRGB), Foundry's own PNG
+  decoder (ADR-0018) and `loadImage`. No cache: one with no consumer would be speculative.
+* `engine/src/render2d/` — the whole batcher. `color.zig`, `camera.zig`, `texture.zig` with
+  its retirement queue, `sprite.zig`, `batch.zig` with the `(layer, submission index)` sort
+  key, `renderer.zig` with the per-slot buffer pool and both memory paths, and
+  `shaders/sprite.metal`.
+* `engine/src/rhi/` — the `clip_space` contract, `waitIdle` on the interface and both
+  backends, and the `premultiplied_alpha` and `additive` blend states.
+* `engine/src/app/engine.zig` — `renderFrame`, which owns the frame and takes an `anytype`
+  recorder so the game never sees a command buffer or a pass.
+* `build.zig` — `asset` and `render2d` in the `layering` table; the `sprite_metallib`
+  embed under Metal.
+
+From M1:
 
 * `engine/src/platform/` — **`setWindowSize` joins the backend interface**, with its
   conformance-check entry, both backend implementations, and four tests. Logical size only,
@@ -229,13 +260,16 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M2 is under way and past its hardest part.** Three of the six steps below are done: the
+**M2 is under way and past its hardest part.** Four of the six steps below are done: the
 clip-space contract is written down, `asset` exists with the PNG decoder ADR-0018 called
-for, and **`render2d` draws**. The sandbox puts 4,000 sprites on screen from a decoded PNG
-sheet in **two draw calls**, under a drifting camera, surviving resize, with zero Metal
-validation messages and zero null-backend violations on the same command stream.
+for, **`render2d` draws**, and **the camera moves**. The sandbox puts 4,000 sprites on
+screen from a decoded PNG sheet in **two draw calls**, under a camera driven by keyboard
+and mouse, surviving resize, with zero Metal validation messages and zero null-backend
+violations on the same command stream. Clicking selects the topmost sprite under the
+pointer and outlines it, which takes the batch count to three because the outline is a
+second texture.
 
-283 tests pass under `-Drhi=null` and 291 under `-Drhi=metal`; all eight target/backend
+294 tests pass under `-Drhi=null` and 302 under `-Drhi=metal`; all eight target/backend
 combinations compile.
 
 Measured on an M5, 600 frames per run: 4,000 and 20,000 sprites both hold vsync at 120Hz
@@ -244,11 +278,16 @@ calls. Batching is plainly not the limit there. Whether the wall is fill-rate �
 sprites of ~30 pixels on a 2560x1440 target is heavy overdraw — or submission cost is
 **not measured, and so is not claimed**.
 
-`docs/design/render2d.md` is written — the submission model,
-coordinate spaces, camera, sprite and vertex layout, batching and sort key, the per-slot
-buffer pool, textures and atlases, the retirement queue, text, statistics and the intended
-M7 mod surface. No `render2d` code exists yet, and `build.zig`'s `layering` table still has
-`render2d` and `asset` commented out awaiting it.
+`docs/design/render2d.md` describes the whole subsystem — the submission model, coordinate
+spaces, camera, sprite and vertex layout, batching and sort key, the per-slot buffer pool,
+textures and atlases, the retirement queue, text, statistics and the intended M7 mod
+surface. Everything in it up to text and atlases is now built.
+
+**One thing in M2 has not been verified by a person:** the key and button *bindings*. That
+WASD pans the right way, that dragging carries the world with the cursor, that the wheel
+zooms toward the pointer — the maths under each is unit-tested with exact round-trip
+properties, and picking is confirmed on screen, but which key means which direction can
+only be judged by using it.
 
 Two decisions M2 forced were taken as ADRs rather than in code: **ADR-0018** (Foundry
 decodes its own PNG) and **ADR-0019** (engine-owned shaders are embedded, content-owned
@@ -293,10 +332,12 @@ runnable; none of them is a rewrite of the one before.
 3. ~~**`render2d` (L3), the batcher.**~~ **Done, 2026-09-04.** Sprite submission, the sort
    key, the per-slot buffer pool, both memory paths, the engine sprite shader, the texture
    pool with its retirement queue, and `app.Engine.renderFrame` owning the frame.
-4. **Camera input** — the camera and its coordinate spaces exist and are tested, including
-   `screenToWorld` cross-checked against the projection matrix. What remains is driving pan
-   and zoom from sandbox input, and demonstrating picking by selecting a sprite under the
-   mouse.
+4. ~~**Camera input.**~~ **Done, 2026-09-04.** `Camera2D.panByScreen` and
+   `Camera2D.zoomAround` in `render2d`; the bindings in the sandbox, because which key pans
+   is input policy and `render2d` cannot import `platform` anyway. `sprite.containsPoint`
+   answers what was clicked, and the sandbox scans its own sprites — the renderer retains no
+   list to search. Confirmed on screen: the selection outline appears around the sprite under
+   the pick point, rotated with it.
 5. **Atlas, then text** — the shelf packer, then fixed-grid bitmap fonts, which are sprites
    and therefore mostly free once the batcher exists.
 6. **Frame statistics on screen**, which needs text and so closes the loop: the first thing
@@ -401,7 +442,47 @@ runnable; none of them is a rewrite of the one before.
 
 ## Important decisions made recently
 
-**This session (M2, building it):**
+**This session (M2, the camera):**
+
+* **The camera got two operations, and the sample got the bindings.** `panByScreen` and
+  `zoomAround` are camera *maths* — decided by the projection, and wrong in subtle ways
+  under rotation or an off-origin viewport if written at the call site. Which key drives
+  them is input policy and belongs to the game. That seam was not a judgement call in the
+  end: `render2d` does not depend on `platform`, so the build graph would refuse a
+  binding table inside the renderer (I7). The layering picked the boundary.
+
+* **Both movement operations derive from `screenToWorld` rather than re-deriving the
+  transform.** `zoomAround` in particular *measures* the drift — ask what world point is
+  under the anchor, change the zoom, ask again, move the centre by the difference — instead
+  of solving for it. It is then correct under rotation and an offset viewport for free,
+  because `screenToWorld` already is, and there is one transform to keep right rather than
+  three that agree today.
+
+* **A refused camera move leaves the camera untouched.** Both operations validate the whole
+  change before committing it. A half-applied camera from a NaN scroll delta would render
+  nothing and look like a renderer bug, and the input can come from a device, a config file
+  or eventually a script.
+
+* **Picking is geometry in the engine and a loop in the game.** `sprite.containsPoint` is
+  the exact inverse of what `writeQuad` applies, sharing its extents through one
+  `localExtents`. There is deliberately no `whatIsAt(point)`: submission is immediate, so
+  the renderer retains no sprite list, and giving it one purely to answer that question
+  would undo the submission model. The sandbox scans its own sprites and orders hits by
+  `(layer, submission index)` — the batcher's own sort key, so "topmost" means the same
+  thing to the pick as it does to the GPU.
+
+* **`app.Engine` exposes the frame delta it already measured.** `beginFrame` computed it for
+  the stepper and discarded it, so a caller wanting it read the clock again and got a
+  different answer. Documented as presentation-only: integrating simulation against
+  wall-clock time is what the fixed step exists to prevent (I9).
+
+* **The sandbox builds a one-pixel white texture in memory.** It draws the selection
+  outline, and being a *second* texture it makes the batcher break a batch on a texture
+  change — 4,000 sprites in 2 batches, 4,004 in 3 when something is selected. That path had
+  never run: a one-texture sample cannot exercise it, and the unit tests that cover it are
+  not the real command stream.
+
+**Previous session (M2, building the batcher):**
 
 * **`rhi` gained `waitIdle`, because teardown forced it.** Every consumer destroys its
   resources before the device that owns them — that is creation order reversed — and there
@@ -447,7 +528,7 @@ runnable; none of them is a rewrite of the one before.
   exact check the per-slot ring exists to earn. The cost is a map/unmap pair per buffer per
   frame, which on Metal is a pointer.
 
-**Previous session (M2, designing it):**
+**Session before that (M2, designing it):**
 
 * **`render2d` uses immediate submission with retained resources.** The game calls
   `drawSprite` each frame; textures, atlases and fonts are handles that outlive the frame.
