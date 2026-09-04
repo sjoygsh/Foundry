@@ -180,6 +180,10 @@ pub fn main(init: std.process.Init) !void {
     while (!engine.shouldQuit()) {
         engine.beginFrame();
 
+        // Immediately after `beginFrame`, which is where a hot reload happens. Anything the
+        // sample derived from content is derived again here, before the frame reads it.
+        field.refresh(engine);
+
         while (engine.nextEvent()) |ev| report(ev);
 
         while (engine.nextStep()) |step| {
@@ -380,6 +384,19 @@ const SpriteField = struct {
     font: render2d.BitmapFont,
     seeds: []Seed,
 
+    /// The content generation this was last built against.
+    ///
+    /// Hot reload swaps what a handle points at, so the handles above survive; what does
+    /// not survive is anything *derived* — the regions, and every string borrowed from a
+    /// package's bytes. Comparing this to `engine.contentGeneration()` is how the sample
+    /// knows to derive them again.
+    content_generation: u64 = 0,
+    /// **A copy, not a borrow.** The record's string lives in the package's bytes, which a
+    /// reload frees; a sample holding one across a reload would be reading freed memory
+    /// between the swap and the next refresh. Copy what you keep.
+    banner_buf: [256]u8 = undefined,
+    banner_len: usize = 0,
+
     /// Driven by input, so it is state rather than something recomputed per frame.
     camera: render2d.Camera2D,
     /// Which sprite was last clicked, by index into `seeds`. Presentation only: nothing
@@ -462,19 +479,19 @@ const SpriteField = struct {
         // asset kind the engine has never heard of makes exactly this call.
         try engine.assets.registerLoader(gpa, render2d.textureLoader(&self.renderer));
 
-        self.settings = Settings.read(engine);
+        self.readSettings(engine);
 
         self.sheet_asset = try engine.assets.acquire(gpa, self.settings.sheet);
-        self.sheet = self.renderer.textureRegion(self.textureOf(engine, self.sheet_asset)).?;
-
         self.font_asset = try engine.assets.acquire(gpa, self.settings.font);
         self.font = .{
-            .glyphs = self.renderer.textureRegion(self.textureOf(engine, self.font_asset)).?,
+            .glyphs = .{ .texture = .none, .uv = .{}, .size_px = .{} },
             .cell = .{ .width = 8, .height = 8 },
             .columns = 16,
             .first_codepoint = ' ',
             .glyph_count = 95,
         };
+        self.deriveRegions(engine);
+        self.content_generation = engine.contentGeneration();
 
         // An image from memory, not from a file: `createTexture` takes an `asset.Image`
         // and does not care what made it, which is what lets a game generate one.
@@ -494,6 +511,80 @@ const SpriteField = struct {
         try self.makeSeeds(count);
     }
 
+    /// Rebuilds everything **derived** from content, if content has moved since last time.
+    ///
+    /// **Called every frame, right after `beginFrame`** — which is where a reload happens,
+    /// so nothing gets to read a stale derivation. `assets.md` §4 promises that a handle
+    /// follows a swap on its own, and it does; a `Region` cut from a texture and a string
+    /// borrowed from a package's bytes are not handles, and this is the other half of that
+    /// promise being kept by the caller.
+    ///
+    /// Nothing here can fail the frame. A content edit that names a missing asset keeps
+    /// what was working and says so, which is the same bargain `§6` rule 2 makes one layer
+    /// down.
+    fn refresh(self: *SpriteField, engine: *app.Engine) void {
+        const generation = engine.contentGeneration();
+        if (generation == self.content_generation) return;
+        self.content_generation = generation;
+
+        const previous = self.settings;
+        self.readSettings(engine);
+
+        // Only if the record now names a *different* asset. An asset whose bytes changed
+        // keeps its handle, which is the whole point of holding one.
+        self.reacquire(engine, &self.sheet_asset, previous.sheet, self.settings.sheet);
+        self.reacquire(engine, &self.font_asset, previous.font, self.settings.font);
+        self.deriveRegions(engine);
+
+        if (self.settings.sprites != previous.sprites) {
+            const count = spriteCount(engine, self.settings.sprites);
+            if (count != self.seeds.len) {
+                self.makeSeeds(count) catch |err| {
+                    log.warn("could not resize the field to {d} ({t}); keeping {d}", .{
+                        count, err, self.seeds.len,
+                    });
+                    return;
+                };
+                self.selected = null;
+            }
+        }
+        log.info("content changed: {d} sprites, grid {d}", .{ self.seeds.len, self.settings.grid });
+    }
+
+    fn readSettings(self: *SpriteField, engine: *app.Engine) void {
+        self.settings = Settings.read(engine);
+        const text = self.settings.banner;
+        self.banner_len = @min(text.len, self.banner_buf.len);
+        @memcpy(self.banner_buf[0..self.banner_len], text[0..self.banner_len]);
+    }
+
+    /// The regions the drawing code cuts from, re-derived from whatever the handles point
+    /// at now.
+    fn deriveRegions(self: *SpriteField, engine: *app.Engine) void {
+        if (self.renderer.textureRegion(self.textureOf(engine, self.sheet_asset))) |region| {
+            self.sheet = region;
+        }
+        if (self.renderer.textureRegion(self.textureOf(engine, self.font_asset))) |region| {
+            self.font.glyphs = region;
+        }
+    }
+
+    fn reacquire(
+        self: *SpriteField,
+        engine: *app.Engine,
+        handle: *asset.AssetHandle,
+        before: core.ContentId,
+        after: core.ContentId,
+    ) void {
+        if (before.eql(after)) return;
+        const fresh = engine.assets.acquire(self.gpa, after) catch |err| {
+            log.warn("content now asks for {f}, which did not load ({t}); keeping the old one", .{ after, err });
+            return;
+        };
+        engine.assets.release(handle.*);
+        handle.* = fresh;
+    }
+
     /// The texture behind an asset handle.
     ///
     /// The registry holds a loader's product as one opaque word and never looks inside; the
@@ -508,6 +599,7 @@ const SpriteField = struct {
         const gpa = self.gpa;
         const seeds = try gpa.alloc(Seed, count);
         errdefer gpa.free(seeds);
+        gpa.free(self.seeds);
 
         // Explicit seed and stream, never the clock: the same build draws the same field
         // on every run, which is what makes a visual difference mean something.
@@ -825,8 +917,8 @@ const SpriteField = struct {
     /// deliberately the other kind. On-screen statistics are a third kind again — they
     /// belong in a screen-space pass, which M2's last step is about.
     fn banner(self: *SpriteField) !void {
-        if (self.settings.banner.len == 0) return;
-        try self.renderer.drawText(self.font, self.settings.banner, .{
+        if (self.banner_len == 0) return;
+        try self.renderer.drawText(self.font, self.banner_buf[0..self.banner_len], .{
             .position = .init(-56, 120),
             .scale = 2,
             .line_spacing = 4,

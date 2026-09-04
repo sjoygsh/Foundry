@@ -8,14 +8,17 @@ leave behind something that runs.
 
 ## Status
 
-**M0, M1 and M2 complete; M3 in progress.** It draws: thousands of sprites under a
-camera that pans, zooms and picks, at vsync, with text — and everything it draws is
-content, loaded by content ID from packages the base game and a mod share one path into.
+**M0 through M3 complete.** It draws: thousands of sprites under a camera that pans, zooms
+and picks, at vsync, with text — and everything it draws is content, loaded by content ID
+from packages the base game and a mod share one path into. Edit a content file and the
+running program follows without restarting.
+
+Tier 1 content modding works: see [docs/modding](docs/modding/).
 
 ```sh
 ./scripts/install-zig.sh   # the only tool you need
 zig build run -Drhi=metal  # opens a window and draws; escape quits
-zig build test             # 495 tests
+zig build test             # 502 tests
 ```
 
 Implemented so far:

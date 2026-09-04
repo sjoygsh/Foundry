@@ -170,6 +170,23 @@ pub const Registry = struct {
         payload: Payload,
         /// Zero means evictable, not freed (§4).
         refs: u32,
+        /// What the source file looked like when this was loaded, for `reloadChanged`.
+        stamp: Stamp,
+    };
+
+    /// Enough of a file to answer "did this change?" and nothing more.
+    ///
+    /// Modification time **and** size, because a wall clock is not monotonic (a corrected
+    /// clock, a restored backup) and a coarse one can miss two edits in the same second.
+    /// Two fields agreeing is a much better answer than either alone, and hashing the
+    /// contents would mean reading every watched file on every check.
+    pub const Stamp = struct {
+        modified_ns: i64 = 0,
+        size: u64 = 0,
+
+        pub fn eql(a: Stamp, b: Stamp) bool {
+            return a.modified_ns == b.modified_ns and a.size == b.size;
+        }
     };
 
     pub fn init(gpa: Allocator, os: *platform.os.Os, store: *const data.Store, options: Options) Registry {
@@ -307,7 +324,9 @@ pub const Registry = struct {
             return existing;
         }
 
-        const bytes = try self.readSource(gpa, record);
+        const path = try self.sourcePath(gpa, record);
+        defer gpa.free(path);
+        const bytes = try self.readSource(gpa, record, path);
         defer gpa.free(bytes);
 
         const loader = self.loaders.items[loader_index].?;
@@ -323,6 +342,7 @@ pub const Registry = struct {
             .loader = loader_index,
             .payload = payload,
             .refs = 1,
+            .stamp = self.stampOf(path),
         });
         self.by_id.putAssumeCapacity(id.hash, handle);
         return handle;
@@ -349,6 +369,129 @@ pub const Registry = struct {
     pub fn payloadOf(self: *Registry, handle: AssetHandle) ?Payload {
         const entry = self.entries.get(handle) orelse return null;
         return entry.payload;
+    }
+
+    // -- reloading ---------------------------------------------------------------------
+
+    /// Re-reads an asset's source and swaps the payload behind its handle.
+    ///
+    /// **The handle does not change, and neither does the reference count.** That is the
+    /// whole mechanism `assets.md` §6 describes: everything holding the handle follows
+    /// without being told, because the handle is what it holds (I1).
+    ///
+    /// **A failed reload changes nothing** (§6, rule 2). The new payload is built and only
+    /// then is the old one released, so a texture someone is mid-edit — half-written, a
+    /// syntax error away from valid — leaves the running program with the last thing that
+    /// worked, and an error saying so.
+    ///
+    /// Callers who derived something from the payload (a `Region`, a size) have to derive
+    /// it again: what a handle points at is what follows a swap, not what was copied out of
+    /// it. `app` bumps a generation counter so a caller knows when.
+    pub fn reload(self: *Registry, gpa: Allocator, handle: AssetHandle) AcquireError!void {
+        const id, const previous = blk: {
+            const entry = self.entries.get(handle) orelse {
+                log.warn("reload of an asset handle that is stale or was never issued", .{});
+                return error.AssetNotFound;
+            };
+            break :blk .{ entry.id, entry.loader };
+        };
+
+        // Looked up afresh: a package reload may have replaced the record with another
+        // package's, changed where its bytes are, or changed its record type outright.
+        const record = self.store.lookup(id) orelse {
+            log.warn("asset {f} is no longer in any loaded package", .{id});
+            return error.AssetNotFound;
+        };
+        const loader_index = self.loaderIndex(record.schema_id) orelse {
+            log.warn("no loader is registered for the record type of '{s}'", .{record.name});
+            return error.NoLoader;
+        };
+
+        const path = try self.sourcePath(gpa, record);
+        defer gpa.free(path);
+        const stamp = self.stampOf(path);
+        const bytes = try self.readSource(gpa, record, path);
+        defer gpa.free(bytes);
+
+        const loader = self.loaders.items[loader_index].?;
+        const payload = try loader.load(loader.ctx, gpa, record, bytes);
+
+        // Past every failure. From here nothing can go wrong, which is what makes the swap
+        // atomic from the caller's side.
+        const entry = self.entries.get(handle).?;
+        const old = self.loaders.items[previous].?;
+        old.unload(old.ctx, gpa, entry.payload);
+        entry.payload = payload;
+        entry.loader = loader_index;
+        entry.schema_id = record.schema_id;
+        entry.stamp = stamp;
+    }
+
+    /// Reloads every loaded asset whose source file has changed on disk.
+    ///
+    /// **Development only.** Nothing calls this in a shipped build, because nothing should
+    /// be watching anything there (§6) — `app` decides, and defaults to build mode.
+    ///
+    /// Order is ascending slot index, which `core.HandlePool` documents and does not vary
+    /// (I9): reloading many files gives the same result as reloading them one at a time.
+    /// A failure is reported and skipped, leaving that asset as it was.
+    pub fn reloadChanged(self: *Registry, gpa: Allocator) u32 {
+        var reloaded: u32 = 0;
+        var it = self.entries.iterator();
+        while (it.next()) |entry| {
+            const record = self.store.lookup(entry.value.id) orelse continue;
+            const path = self.sourcePath(gpa, record) catch continue;
+            defer gpa.free(path);
+            if (self.stampOf(path).eql(entry.value.stamp)) continue;
+
+            const handle = entry.id;
+            self.reload(gpa, handle) catch |err| {
+                log.warn("'{s}' changed on disk but did not reload: {t}", .{ record.name, err });
+                // Stamped anyway, so a file that is broken *and* not being edited does not
+                // produce the same complaint sixty times a second. The next real edit
+                // changes the stamp again and it is retried.
+                if (self.entries.get(handle)) |e| e.stamp = self.stampOf(path);
+                continue;
+            };
+            log.info("reloaded '{s}'", .{record.name});
+            reloaded += 1;
+        }
+        return reloaded;
+    }
+
+    /// Reloads every loaded asset, whatever its source looks like.
+    ///
+    /// For after a **package** reload, when the records themselves may have moved: a record
+    /// can now name a different file, different sampler settings, or a different record
+    /// type entirely, and none of that shows up as a changed source file. Reloading
+    /// everything is the simple answer and this is a development path; comparing records to
+    /// reload only what moved is an optimisation with a correctness risk and no measurement
+    /// behind it yet.
+    ///
+    /// An asset whose record has gone from the store keeps what it has, with a warning —
+    /// §6's rule 2 again, and better than handing its holders a hole.
+    pub fn reloadAll(self: *Registry, gpa: Allocator) u32 {
+        var reloaded: u32 = 0;
+        var it = self.entries.iterator();
+        while (it.next()) |entry| {
+            const id = entry.value.id;
+            self.reload(gpa, entry.id) catch |err| {
+                log.warn("asset {f} did not reload ({t}); keeping the last version", .{ id, err });
+                continue;
+            };
+            reloaded += 1;
+        }
+        return reloaded;
+    }
+
+    /// Forgets every mounted root.
+    ///
+    /// For a package reload: the roots are keyed by handles into a store that is about to
+    /// be replaced, and a handle from the old store means nothing to the new one. The
+    /// caller re-mounts.
+    pub fn clearMounts(self: *Registry) void {
+        self.roots.clearRetainingCapacity();
+        self.arena.reset();
     }
 
     /// Diagnostics and tests. A caller reasoning about its own counts is a caller with a
@@ -400,12 +543,41 @@ pub const Registry = struct {
         return null;
     }
 
-    /// The bytes a record's `source` names, read relative to its own package's root.
+    /// Reads the bytes at a path the caller got from `sourcePath`.
+    fn readSource(self: *Registry, gpa: Allocator, record: Record, path: []const u8) AcquireError![]u8 {
+        return self.os.readFile(gpa, path, self.options.max_source_bytes) catch |err| switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            // The record is fine and the file is not there. This is the distinction §7
+            // exists to keep: "your texture is missing" is a different sentence from
+            // "your texture is corrupt", and a mod author needs to be told which.
+            error.FileNotFound, error.WrongFileKind => {
+                log.warn("'{s}' names a source that is not there", .{record.name});
+                return error.SourceMissing;
+            },
+            error.InvalidPath => error.SourceRejected,
+            error.AccessDenied, error.FileTooLarge, error.IoFailed => {
+                log.warn("'{s}': its source could not be read ({s})", .{ record.name, @errorName(err) });
+                return error.LoadFailed;
+            },
+        };
+    }
+
+    /// What a file looks like now, or a zero stamp if it cannot be seen at all.
+    ///
+    /// A file that has vanished stamps as zero, which differs from any real file — so it
+    /// registers as a change and the reload attempt reports the missing source properly,
+    /// rather than the watcher swallowing it.
+    fn stampOf(self: *Registry, path: []const u8) Stamp {
+        const info = self.os.statFile(path) catch return .{};
+        return .{ .modified_ns = info.modified_ns, .size = info.size };
+    }
+
+    /// Where a record's `source` points, resolved against its own package's root.
     ///
     /// Every step here is a refusal waiting to happen, because every input is a package's:
     /// the record must be shaped like an asset, the path must be one a package is allowed
-    /// to name, the package must be mounted, and the file must be there and small enough.
-    fn readSource(self: *Registry, gpa: Allocator, record: Record) AcquireError![]u8 {
+    /// to name, and the package must be mounted.
+    fn sourcePath(self: *Registry, gpa: Allocator, record: Record) AcquireError![]u8 {
         // Against the schema the record's own package carries, which is the one its bytes
         // are laid out by — not the registry's, which may have moved on.
         const index = record.schema.fieldIndex(schemas.source_field) orelse {
@@ -440,26 +612,9 @@ pub const Registry = struct {
             return error.SourceMissing;
         };
 
-        const path = platform.os.joinPath(gpa, &.{ root, rel }) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return error.LoadFailed,
-        };
-        defer gpa.free(path);
-
-        return self.os.readFile(gpa, path, self.options.max_source_bytes) catch |err| switch (err) {
+        return platform.os.joinPath(gpa, &.{ root, rel }) catch |err| switch (err) {
             error.OutOfMemory => error.OutOfMemory,
-            // The record is fine and the file is not there. This is the distinction §7
-            // exists to keep: "your texture is missing" is a different sentence from
-            // "your texture is corrupt", and a mod author needs to be told which.
-            error.FileNotFound, error.WrongFileKind => {
-                log.warn("'{s}' names '{s}', which is not there", .{ record.name, rel });
-                return error.SourceMissing;
-            },
-            error.InvalidPath => error.SourceRejected,
-            error.AccessDenied, error.FileTooLarge, error.IoFailed => {
-                log.warn("'{s}': '{s}' could not be read ({s})", .{ record.name, rel, @errorName(err) });
-                return error.LoadFailed;
-            },
+            else => error.LoadFailed,
         };
     }
 };
@@ -477,6 +632,17 @@ const one_pixel_png = [_]u8{
     0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0xDA, 0x63, 0x38, 0xA1, 0x61, 0xF3,
     0x1F, 0x00, 0x05, 0x14, 0x02, 0x2C, 0xC2, 0x0E, 0x5D, 0x14, 0x00, 0x00,
     0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+};
+
+/// A 2x2 RGBA PNG. A different image at the same path, for the reload tests.
+const four_pixel_png = [_]u8{
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+    0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
+    0x08, 0x06, 0x00, 0x00, 0x00, 0x72, 0xB6, 0x0D, 0x24, 0x00, 0x00, 0x00,
+    0x1B, 0x49, 0x44, 0x41, 0x54, 0x78, 0xDA, 0x63, 0x38, 0xA1, 0x61, 0xF3,
+    0x5F, 0xE4, 0x44, 0xC0, 0x7F, 0x06, 0x0D, 0x9B, 0x13, 0xFF, 0xFF, 0xFF,
+    0x67, 0xF8, 0x0F, 0x00, 0x4D, 0xA1, 0x09, 0x7F, 0x63, 0xEE, 0x64, 0x39,
+    0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
 };
 
 /// A stand-in for `render2d`'s texture loader: it decodes the same bytes and keeps the
@@ -814,6 +980,111 @@ test "one loader per record type; adding is not replacing" {
         fx.texture_loader.loader(schemas.texture.id),
     ));
     try testing.expectEqual(@as(u32, 1), fx.registry.loaderCount());
+}
+
+test "a changed file reloads behind the handle, and the handle does not move" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+
+    try fx.writeFile("textures/sprites.png", &one_pixel_png);
+    _ = try fx.addPackage("foundry:core", one_texture);
+    try fx.registerTextureLoader();
+
+    const handle = try fx.registry.acquire(fx.gpa, sprites_id);
+    defer fx.registry.release(handle);
+    const before = fx.payload(handle);
+    try testing.expectEqual(@as(u32, 1), before.width);
+
+    // A different image at the same path: what an artist saving over a sprite does.
+    try fx.writeFile("textures/sprites.png", &four_pixel_png);
+    try fx.registry.reload(fx.gpa, handle);
+
+    // Same handle, same reference count, new payload. Everything holding the handle
+    // follows without being told, which is the whole of §6's mechanism.
+    try testing.expectEqual(@as(u32, 1), fx.registry.refCount(handle).?);
+    try testing.expectEqual(@as(u32, 2), fx.payload(handle).width);
+    try testing.expectEqual(@as(u32, 2), fx.texture_loader.loads);
+    try testing.expectEqual(@as(u32, 1), fx.texture_loader.unloads);
+    try testing.expectEqual(@as(u32, 1), fx.registry.count());
+}
+
+test "a reload that fails leaves the last thing that worked" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+
+    try fx.writeFile("textures/sprites.png", &one_pixel_png);
+    _ = try fx.addPackage("foundry:core", one_texture);
+    try fx.registerTextureLoader();
+
+    const handle = try fx.registry.acquire(fx.gpa, sprites_id);
+    defer fx.registry.release(handle);
+
+    // Half-saved, or being edited. §6 rule 2: the running program keeps what it has.
+    try fx.writeFile("textures/sprites.png", "not a png any more");
+    try testing.expectError(error.InvalidAsset, fx.registry.reload(fx.gpa, handle));
+    try testing.expectEqual(@as(u32, 1), fx.payload(handle).width);
+    try testing.expectEqual(@as(u32, 0), fx.texture_loader.unloads);
+
+    // And the same for a source that has gone away entirely.
+    fx.texture_loader.fail = error.LoadFailed;
+    try testing.expectError(error.LoadFailed, fx.registry.reload(fx.gpa, handle));
+    try testing.expectEqual(@as(u32, 1), fx.payload(handle).width);
+    try testing.expectEqual(@as(u32, 0), fx.texture_loader.unloads);
+}
+
+test "only what changed reloads, and an unchanged file is not read twice" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+
+    try fx.writeFile("textures/sprites.png", &one_pixel_png);
+    try fx.writeFile("textures/other.png", &one_pixel_png);
+    _ = try fx.addPackage("foundry:core",
+        \\foundry:texture foundry:textures.sprites { source "textures/sprites.png" }
+        \\foundry:texture foundry:textures.other   { source "textures/other.png" }
+    );
+    try fx.registerTextureLoader();
+
+    const sprites = try fx.registry.acquire(fx.gpa, sprites_id);
+    defer fx.registry.release(sprites);
+    const other = try fx.registry.acquire(fx.gpa, core.ContentId.fromString("foundry:textures.other"));
+    defer fx.registry.release(other);
+    try testing.expectEqual(@as(u32, 2), fx.texture_loader.loads);
+
+    // Nothing has moved, so nothing is reloaded.
+    try testing.expectEqual(@as(u32, 0), fx.registry.reloadChanged(fx.gpa));
+    try testing.expectEqual(@as(u32, 2), fx.texture_loader.loads);
+
+    try fx.writeFile("textures/sprites.png", &four_pixel_png);
+    try testing.expectEqual(@as(u32, 1), fx.registry.reloadChanged(fx.gpa));
+    try testing.expectEqual(@as(u32, 2), fx.payload(sprites).width);
+    try testing.expectEqual(@as(u32, 1), fx.payload(other).width);
+
+    // And the change is consumed: asking again finds nothing to do.
+    try testing.expectEqual(@as(u32, 0), fx.registry.reloadChanged(fx.gpa));
+}
+
+test "a file that changed into rubbish is complained about once, not every frame" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+
+    try fx.writeFile("textures/sprites.png", &one_pixel_png);
+    _ = try fx.addPackage("foundry:core", one_texture);
+    try fx.registerTextureLoader();
+
+    const handle = try fx.registry.acquire(fx.gpa, sprites_id);
+    defer fx.registry.release(handle);
+
+    try fx.writeFile("textures/sprites.png", "still typing");
+    try testing.expectEqual(@as(u32, 0), fx.registry.reloadChanged(fx.gpa));
+    // Stamped despite failing, so a watcher polling twice a second does not produce the
+    // same complaint twice a second.
+    try testing.expectEqual(@as(u32, 0), fx.registry.reloadChanged(fx.gpa));
+    try testing.expectEqual(@as(u32, 1), fx.payload(handle).width);
+
+    // Fixing the file is a new change, and it is picked up.
+    try fx.writeFile("textures/sprites.png", &four_pixel_png);
+    try testing.expectEqual(@as(u32, 1), fx.registry.reloadChanged(fx.gpa));
+    try testing.expectEqual(@as(u32, 2), fx.payload(handle).width);
 }
 
 test "a loader's owner can leave, taking everything it made with it" {

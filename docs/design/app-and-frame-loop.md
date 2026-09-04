@@ -1,7 +1,7 @@
 # Design: `app` — the engine loop and what owns what
 
-**Status:** Implemented 2026-09-03 as `engine/src/app/`. 25 tests. Gained the content
-subsystem at M3 step 9 (§8), which is where package zero is loaded.
+**Status:** Implemented 2026-09-03 as `engine/src/app/`. 28 tests. Gained the content
+subsystem at M3 steps 9 and 10 (§8): package zero, and the hot reload watcher.
 **Date:** 2026-09-03, revised 2026-09-05
 **Implements:** I3, I9 · **Informed by:** ADR-0007, ADR-0011, ADR-0021,
 `core-memory-and-handles.md`, `platform-interface.md`, `assets.md`
@@ -221,3 +221,28 @@ Those failures are logged at `warn` and returned as an error — the convention 
 registry already follows, where the returned error is the signal and the log line is the
 context. It also keeps them testable: the test runner counts an `err`-level log as a failed
 test, so a failure path that logs at `err` is a failure path nothing can exercise.
+
+### Hot reload
+
+*Added at M3 step 10.* Development builds only — the default for `Config.hot_reload` is the
+build mode, because a shipped game watching its own files would be reading the disk on a
+schedule forever to serve nobody.
+
+Every `hot_reload_frames` frames, **at the very top of `beginFrame`**, the engine stamps
+every package file and asks the asset registry to stamp every loaded source. Packages first,
+then assets, which is the documented order `assets.md` §6's third rule wants: reloading a
+package reloads its assets anyway, so the other order would load some of them twice.
+
+The top of `beginFrame` is where it belongs and the reason is §6's first rule: a texture
+replaced between two draws of one frame is a class of bug worth never having. It is also
+safe against the GPU for a reason worth naming — `render2d` retires a destroyed texture
+behind the frames that could still reference it, so an unload at the top of a frame does not
+free something in flight.
+
+`reloadContent` is public, because a game may have a better trigger than a timer — a key, an
+editor telling it something changed — and because the watcher is only a convenience over it.
+It cannot fail: a reload that will not complete leaves everything as it was and says so.
+
+**`contentGeneration()` is the one signal a game needs.** A handle follows a reload on its
+own; anything derived from content does not. Compare the generation to what you saw last
+frame and derive again when it differs. `samples/sandbox` is the worked example.

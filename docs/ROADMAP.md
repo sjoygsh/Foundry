@@ -112,26 +112,45 @@ second space and a boolean would have answered M2 and nothing after it. `rhi` ga
 `dst_origin` on a buffer-to-texture copy, without which packing one sprite into an atlas
 means re-uploading the whole thing; rule 10 in `rhi.md` §11 grew to match, before the code.*
 
-### M3 — Content: "it has data" — *first modding-relevant milestone*
+### M3 — Content: "it has data" — **complete (2026-09-05)** — *first modding-relevant milestone*
 
-* Schema system: record types with typed fields, versioned.
-* Content packages, ordered load, override-by-ID (replace semantics first).
-* Authoring text format — **syntax decided here** (`CLAUDE.md` §9). *Decided 2026-09-04:
+* ~~Schema system: record types with typed fields, versioned.~~
+* ~~Content packages, ordered load, override-by-ID (replace semantics first).~~
+* ~~Authoring text format~~ — **syntax decided here** (`CLAUDE.md` §9). *Decided 2026-09-04:
   Foundry's own `.fdt` (ADR-0020), specified in `docs/design/content-schemas.md` §4.*
-* Runtime binary format and `tools/fpack` to compile one to the other.
-* `asset`: registry, loading by content ID, reference counting. Shaders become assets — the
-  *content-owned* ones; engine-owned shaders stay embedded (ADR-0019). *Asset identity decided
+* ~~Runtime binary format and `tools/fpack` to compile one to the other.~~
+* ~~`asset`: registry, loading by content ID, reference counting.~~ *Asset identity decided
   2026-09-04: assets are content records, and a path derives an ID but never defines it
   (ADR-0021), specified in `docs/design/assets.md`.*
-* Hot reload of content and assets in development builds.
-* Base game content moved into `content/core` as package zero (I3).
-* `docs/modding/` begins.
+  * **Shaders did not become assets, deliberately.** Engine-owned shaders stay embedded
+    (ADR-0019) and the sprite shader is one; the only remaining case is a *content-owned*
+    shader, which needs something to reference it. Building an asset kind with per-backend
+    variant selection (ADR-0015) for no consumer would be exactly the hypothetical
+    requirement rule 7 warns about. **Due with the material system**, which is Phase 4 or
+    whenever a sample needs its own shader — and the asset kind is a schema and a loader
+    registered at runtime, so nothing has to be reshaped to add it.
+* ~~Hot reload of content and assets in development builds.~~
+* ~~Base game content moved into `content/core` as package zero (I3).~~
+* ~~`docs/modding/` begins.~~
 
-**Exit criteria:** the sandbox's content lives entirely in data; a second package placed after
-it overrides a value and the change is visible; editing a content file live-updates the running
-program.
+**Exit criteria — all three met and seen, not inferred:**
 
-**At this point Tier 1 content modding effectively works**, long before the mod system exists.
+1. *The sandbox's content lives entirely in data.* Its sprite sheet, its font, its sheet
+   grid, its banner and its sprite count are records in packages; it embeds nothing and
+   names no path. What remains in Zig is the sample's own behaviour — camera speeds, zoom
+   limits, HUD margins — which is code, not content.
+2. *A second package placed after it overrides a value and the change is visible.* A package
+   compiled with `fpack` into `zig-out/content/` and named in `FOUNDRY_SANDBOX_PACKAGES`
+   changed the sprite count from 4000 to 250 and replaced `foundry:fonts.debug` with an
+   image at `whatever/i/like/glyphs.png` — a path mirroring nothing.
+3. *Editing a content file live-updates the running program.* Under Metal, windowed: editing
+   `sandbox.fdt` and recompiling the package changed the field from 4000 sprites to 300 and
+   changed the banner text, mid-run, with a clean exit. Replacing a `.png` alone reloads the
+   texture behind its handle with no package recompile at all.
+
+**At this point Tier 1 content modding effectively works**, long before the mod system
+exists — and `docs/modding/content-mods.md` is written by doing it, then verified by
+following it verbatim.
 
 ### M4 — World: "it has entities"
 

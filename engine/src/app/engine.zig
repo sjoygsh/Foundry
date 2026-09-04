@@ -22,6 +22,7 @@
 //! Design: `docs/design/app-and-frame-loop.md`
 
 const std = @import("std");
+const builtin = @import("builtin");
 const core = @import("core");
 const data = @import("data");
 const platform = @import("platform");
@@ -99,6 +100,19 @@ pub const Config = struct {
     /// Bound on one compiled package. Generous, because a package is records and not
     /// payloads — the assets themselves are files beside it, bounded separately.
     max_package_bytes: usize = 64 << 20,
+
+    /// Watch content for changes and apply them at the start of a frame.
+    ///
+    /// **Development builds only** (`assets.md` §6), which is why the default is the build
+    /// mode rather than `true`. A shipped game watching its own files would be paying for
+    /// something nobody can use and reading the disk on a schedule forever. Overridable
+    /// either way, because "development" is a judgement the application makes and a tool
+    /// that wants it in a release build should be able to say so.
+    hot_reload: bool = builtin.mode == .Debug,
+
+    /// Frames between checks. Thirty is twice a second at 60Hz, which is faster than
+    /// anyone can alt-tab and cheap enough not to think about.
+    hot_reload_frames: u32 = 30,
 };
 
 /// One fixed simulation step.
@@ -161,6 +175,19 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
 
         /// Where packages and their files live. Owned.
         content_dir: []u8,
+        /// The load order, **owned**, because a reload has to read it again long after the
+        /// caller's `Config` has gone.
+        content: []ContentPackage,
+        /// What each package's file looked like when it was loaded. Same order as
+        /// `content`.
+        package_stamps: std.ArrayList(asset.Registry.Stamp),
+        /// Bumped whenever content changes under the program. **The one signal a game
+        /// needs**: anything it derived from content — a string borrowed from a package's
+        /// bytes, a `Region` cut from a texture — is derived again when this moves.
+        content_generation: u64,
+        hot_reload: bool,
+        hot_reload_frames: u32,
+        max_package_bytes: usize,
         /// The compiled bytes of every loaded package, kept alive because the store reads
         /// records **in place** out of them rather than copying (`content-schemas.md`
         /// §5.3). Freeing one would leave the store pointing at nothing.
@@ -220,10 +247,16 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             // Resolved before anything owns it, so a bad `content_dir` fails before the
             // window opens rather than after.
             const content_dir = try resolveContentDir(gpa, os, config);
+            const content = dupePackages(gpa, config.content) catch |err| {
+                gpa.free(content_dir);
+                return err;
+            };
             // Handed over explicitly rather than guarded by an `errdefer`: from the
-            // assignment below, `deinitOwned` is its only owner, and an `errdefer` here
+            // assignment below, `deinitOwned` is their only owner, and an `errdefer` here
             // would make it two.
             const self = gpa.create(Self) catch |err| {
+                freePackages(gpa, content);
+                gpa.free(content);
                 gpa.free(content_dir);
                 return err;
             };
@@ -248,6 +281,12 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                 .frames_in_flight = config.frames_in_flight,
                 .quit = false,
                 .content_dir = content_dir,
+                .content = content,
+                .package_stamps = .empty,
+                .content_generation = 1,
+                .hot_reload = config.hot_reload,
+                .hot_reload_frames = @max(config.hot_reload_frames, 1),
+                .max_package_bytes = config.max_package_bytes,
                 .package_bytes = .empty,
                 .schemas = .init(gpa, .default),
                 .store = .init(gpa, .default),
@@ -259,7 +298,7 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             self.stepper.max_steps_per_frame = config.max_steps_per_frame;
 
             errdefer self.deinitOwned();
-            try self.loadContent(config);
+            try self.loadContent();
 
             log.info("engine up: {d}Hz simulation, {s}, rhi backend '{t}', {d} frames in flight", .{
                 config.tick_rate_hz,
@@ -302,6 +341,9 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             self.schemas.deinit(gpa);
             for (self.package_bytes.items) |bytes| gpa.free(bytes);
             self.package_bytes.deinit(gpa);
+            self.package_stamps.deinit(gpa);
+            freePackages(gpa, self.content);
+            gpa.free(self.content);
             gpa.free(self.content_dir);
             self.events.deinit(gpa);
             self.frame_arena.deinit();
@@ -309,38 +351,39 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
 
         // -- content -------------------------------------------------------------------
 
-        /// Loads every configured package, in the order given, and mounts its files.
+        /// A complete set of content, built to one side before anything replaces what is
+        /// running.
+        ///
+        /// **This shape is `assets.md` §6's rule 2.** A reload compiles and validates the
+        /// new state in full, and only a complete one is ever swapped in — so a package
+        /// mid-save, or a schema edited without a version bump, leaves the running program
+        /// with the last thing that worked and a line saying why.
+        const Loaded = struct {
+            schemas: data.Registry,
+            store: data.Store,
+            bytes: std.ArrayList([]u8),
+            stamps: std.ArrayList(asset.Registry.Stamp),
+
+            fn deinit(self: *Loaded, gpa: Allocator) void {
+                self.store.deinit(gpa);
+                self.schemas.deinit(gpa);
+                for (self.bytes.items) |b| gpa.free(b);
+                self.bytes.deinit(gpa);
+                self.stamps.deinit(gpa);
+            }
+        };
+
+        /// Loads every configured package, in the order given.
         ///
         /// **This is I3, and it is deliberately unremarkable code.** The engine's own
         /// package goes through `store.add` exactly as a mod's does — same reader, same
         /// validation, same merge — because the only durable way to know the mod path works
         /// is to be on it ourselves.
-        fn loadContent(self: *Self, config: Config) InitError!void {
-            const gpa = self.gpa;
+        fn loadContent(self: *Self) InitError!void {
+            var loaded = try self.readAll();
+            self.adopt(&loaded);
 
-            // The record types the engine can load, before any package that uses them. A
-            // package carrying its own copy of one is checked against these rather than
-            // trusted (`content-schemas.md` §3).
-            asset.schemas.registerAll(gpa, &self.schemas) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                else => {
-                    log.warn("the engine's own asset schemas were refused: {t}", .{err});
-                    return error.ContentUnavailable;
-                },
-            };
-            if (config.content.len == 0) return;
-
-            var diags: data.Diagnostics = .init(gpa, .default);
-            defer diags.deinit(gpa);
-
-            for (config.content) |pkg| {
-                self.loadPackage(pkg, config.max_package_bytes, &diags) catch |err| {
-                    reportContent(&diags);
-                    return err;
-                };
-            }
-            reportContent(&diags);
-
+            if (self.content.len == 0) return;
             log.info("content: {d} package(s), {d} record(s), from '{s}'", .{
                 self.store.packageCount(),
                 self.store.count(),
@@ -348,58 +391,198 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             });
         }
 
-        fn loadPackage(
+        fn readAll(self: *Self) InitError!Loaded {
+            const gpa = self.gpa;
+
+            var out: Loaded = .{
+                .schemas = .init(gpa, .default),
+                .store = .init(gpa, .default),
+                .bytes = .empty,
+                .stamps = .empty,
+            };
+            errdefer out.deinit(gpa);
+
+            // The record types the engine can load, before any package that uses them. A
+            // package carrying its own copy of one is checked against these rather than
+            // trusted (`content-schemas.md` §3).
+            asset.schemas.registerAll(gpa, &out.schemas) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    log.warn("the engine's own asset schemas were refused: {t}", .{err});
+                    return error.ContentUnavailable;
+                },
+            };
+
+            var diags: data.Diagnostics = .init(gpa, .default);
+            defer diags.deinit(gpa);
+
+            for (self.content) |pkg| {
+                self.readPackage(&out, pkg, &diags) catch |err| {
+                    reportContent(&diags);
+                    return err;
+                };
+            }
+            reportContent(&diags);
+            return out;
+        }
+
+        fn readPackage(
             self: *Self,
+            into: *Loaded,
             pkg: ContentPackage,
-            max_bytes: usize,
             diags: *data.Diagnostics,
         ) InitError!void {
             const gpa = self.gpa;
 
-            const path = joinUnder(gpa, self.content_dir, pkg.file) catch |err| return err;
+            const path = try joinUnder(gpa, self.content_dir, pkg.file);
             defer gpa.free(path);
+
+            // Stamped before it is read, so a file rewritten between the two shows as
+            // changed on the next check rather than being missed.
+            const stamp: asset.Registry.Stamp = if (self.os.statFile(path)) |info|
+                .{ .modified_ns = info.modified_ns, .size = info.size }
+            else |_|
+                .{};
 
             // Reported at `warn` and returned as an error, which is the convention the
             // asset registry already follows: the returned error is the signal and the log
             // line is the context. It is also what keeps these paths testable — the test
             // runner counts an `err`-level log as a failed test, so a failure nothing can
             // exercise is a failure nothing checks.
-            const bytes = self.os.readFile(gpa, path, max_bytes) catch |err| {
+            const bytes = self.os.readFile(gpa, path, self.max_package_bytes) catch |err| {
                 log.warn("content package '{s}' could not be read: {t}", .{ path, err });
                 return error.ContentUnavailable;
             };
-            // Appended before the store can borrow it, so the failure path frees it once
-            // and `deinitOwned` frees it once, never both.
-            try self.package_bytes.append(gpa, bytes);
+            // Appended before the store can borrow it, so exactly one thing frees it.
+            try into.bytes.append(gpa, bytes);
+            try into.stamps.append(gpa, stamp);
 
-            const handle = self.store.add(gpa, pkg.file, bytes, &self.schemas, diags) catch |err| switch (err) {
+            _ = into.store.add(gpa, pkg.file, bytes, &into.schemas, diags) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 error.PackageRejected => {
                     log.warn("content package '{s}' was refused", .{pkg.file});
                     return error.ContentUnavailable;
                 },
             };
+        }
 
-            const root = joinUnder(gpa, self.content_dir, pkg.root) catch |err| return err;
-            defer gpa.free(root);
-            try self.assets.mount(gpa, handle, root);
+        /// Puts a complete `Loaded` in place of what is running, and mounts it.
+        ///
+        /// The old set goes only once the new one exists, and the swap itself cannot fail.
+        /// Mounting is after, because a root is keyed by a handle into *this* store and a
+        /// handle from the old one means nothing to the new.
+        fn adopt(self: *Self, loaded: *Loaded) void {
+            const gpa = self.gpa;
+
+            self.assets.clearMounts();
+            self.store.deinit(gpa);
+            self.schemas.deinit(gpa);
+            for (self.package_bytes.items) |b| gpa.free(b);
+            self.package_bytes.deinit(gpa);
+            self.package_stamps.deinit(gpa);
+
+            self.schemas = loaded.schemas;
+            self.store = loaded.store;
+            self.package_bytes = loaded.bytes;
+            self.package_stamps = loaded.stamps;
+            loaded.* = undefined;
+
+            const order = self.store.loadOrder();
+            std.debug.assert(order.len == self.content.len);
+            for (order, self.content) |handle, pkg| {
+                const root = joinUnder(gpa, self.content_dir, pkg.root) catch continue;
+                defer gpa.free(root);
+                self.assets.mount(gpa, handle, root) catch {
+                    log.warn("package '{s}' could not be mounted; its assets will not load", .{pkg.root});
+                };
+            }
+            self.content_generation +%= 1;
+        }
+
+        // -- hot reload ---------------------------------------------------------------
+
+        /// Moves whenever content has changed under the program.
+        ///
+        /// **The one signal a game needs.** A handle follows a reload on its own; anything
+        /// *derived* from content does not — a string borrowed from a package's bytes, a
+        /// region cut from a texture, a value copied into a struct. Compare this to what you
+        /// saw last frame and derive again when it differs.
+        pub fn contentGeneration(self: *const Self) u64 {
+            return self.content_generation;
+        }
+
+        /// Re-reads every package and every loaded asset, now.
+        ///
+        /// Public because a game may have a better trigger than a timer — a key, an editor
+        /// telling it something changed — and because the watcher is only a convenience
+        /// over this.
+        ///
+        /// **Never fails.** A reload that cannot complete leaves everything as it was, says
+        /// so, and does not move the generation.
+        pub fn reloadContent(self: *Self) void {
+            const gpa = self.gpa;
+
+            var loaded = self.readAll() catch |err| {
+                log.warn("content reload failed ({t}); keeping what is loaded", .{err});
+                return;
+            };
+            self.adopt(&loaded);
+
+            // Records may now name different files, different sampler settings, or a
+            // different record type, and none of that shows as a changed source file.
+            const reloaded = self.assets.reloadAll(gpa);
+            log.info("content reloaded: {d} package(s), {d} record(s), {d} asset(s)", .{
+                self.store.packageCount(),
+                self.store.count(),
+                reloaded,
+            });
+        }
+
+        /// One watcher pass. **Packages first, then assets**, which is the documented order
+        /// §6's third rule asks for: reloading a package reloads its assets anyway, so
+        /// doing it the other way round would load some of them twice.
+        fn pollContent(self: *Self) void {
+            for (self.content, self.package_stamps.items) |pkg, stamp| {
+                const path = joinUnder(self.gpa, self.content_dir, pkg.file) catch continue;
+                defer self.gpa.free(path);
+                const now: asset.Registry.Stamp = if (self.os.statFile(path)) |info|
+                    .{ .modified_ns = info.modified_ns, .size = info.size }
+                else |_|
+                    .{};
+                if (now.eql(stamp)) continue;
+
+                log.info("'{s}' changed on disk", .{pkg.file});
+                self.reloadContent();
+                return;
+            }
+
+            if (self.assets.reloadChanged(self.gpa) > 0) self.content_generation +%= 1;
         }
 
         /// Puts whatever the content pipeline had to say into the log, and clears it.
         ///
         /// One line each rather than the caret-and-source rendering `fpack` prints: a
         /// running game's log is a stream of lines, and the tool that can show a caret is
-        /// the one whose job it is.
+        /// the one whose job it is. The diagnostic's own severity is in the text, where a
+        /// reader can see it.
+        ///
+        /// **Nothing here logs at `err`, and the rule behind that is worth stating once:**
+        /// `log.err` is for a failure the program has no other way to report. These have
+        /// one — the reload does not happen, or `init` returns `ContentUnavailable` — so
+        /// the log line is context rather than the report. The practical consequence is
+        /// that these paths stay testable, because the test runner counts an `err`-level
+        /// log as a failed test.
         fn reportContent(diags: *data.Diagnostics) void {
             for (diags.items.items) |d| {
                 switch (d.severity) {
-                    .err => log.err("content: {f}: {s}", .{ d.location, d.message }),
-                    .warning => log.warn("content: {f}: {s}", .{ d.location, d.message }),
+                    .err, .warning => log.warn("content: {s}: {f}: {s}", .{
+                        d.severity.text(), d.location, d.message,
+                    }),
                     .note => log.info("content: {f}: {s}", .{ d.location, d.message }),
                 }
             }
             if (diags.suppressed > 0) {
-                log.err("content: {d} further diagnostic(s) not shown", .{diags.suppressed});
+                log.warn("content: {d} further diagnostic(s) not shown", .{diags.suppressed});
             }
             diags.items.clearRetainingCapacity();
             diags.suppressed = 0;
@@ -418,6 +601,26 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                     return error.ContentUnavailable;
                 },
             };
+        }
+
+        /// Copies a load order the caller owns into one the engine owns.
+        fn dupePackages(gpa: Allocator, from: []const ContentPackage) Allocator.Error![]ContentPackage {
+            const out = try gpa.alloc(ContentPackage, from.len);
+            var made: usize = 0;
+            errdefer freePackages(gpa, out[0..made]);
+            errdefer gpa.free(out);
+            for (from, out) |src, *dst| {
+                dst.* = .{ .file = try gpa.dupe(u8, src.file), .root = try gpa.dupe(u8, src.root) };
+                made += 1;
+            }
+            return out;
+        }
+
+        fn freePackages(gpa: Allocator, packages: []const ContentPackage) void {
+            for (packages) |pkg| {
+                gpa.free(pkg.file);
+                gpa.free(pkg.root);
+            }
         }
 
         /// Where content lives: what the caller said, or `../content` beside the executable.
@@ -451,6 +654,17 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         /// in the frame. That is what lets the rest of the frame be a pure function of
         /// values.
         pub fn beginFrame(self: *Self) void {
+            // **Before anything else in the frame** (`assets.md` §6, rule 1). A texture
+            // replaced between two draws of one frame is a class of bug worth never having,
+            // so the swap happens here, before events, before input, before simulation.
+            //
+            // Safe against the GPU for a reason worth naming: `render2d` retires a
+            // destroyed texture behind the frames that could still reference it, so an
+            // unload at the top of a frame does not free something in flight.
+            if (self.hot_reload and self.frame_index % self.hot_reload_frames == 0) {
+                self.pollContent();
+            }
+
             self.platform.pumpEvents();
 
             // Drained into our own list rather than read straight through, so that
@@ -727,7 +941,144 @@ const ContentFixture = struct {
         testing.allocator.free(self.dir);
         self.os.deinit();
     }
+
+    /// Recompiles the package with different content, the way `zig build` would after an
+    /// edit.
+    fn rewrite(self: *ContentFixture, source: []const u8) !void {
+        const gpa = testing.allocator;
+
+        var registry: data.Registry = .init(gpa, .default);
+        defer registry.deinit(gpa);
+        var diags: data.Diagnostics = .init(gpa, .default);
+        defer diags.deinit(gpa);
+
+        var doc = try data.parser.parse(gpa, "test.fdt", source, .{ .namespace = "foundry" }, &diags);
+        defer doc.deinit(gpa);
+        var pkg = try data.check.Package.init(gpa, "foundry:core", 1, .default);
+        defer pkg.deinit(gpa);
+        try pkg.addDocument(gpa, &doc, &registry, &diags);
+
+        var bytes: std.ArrayList(u8) = .empty;
+        defer bytes.deinit(gpa);
+        try data.fpk.write(gpa, &pkg, &registry, &bytes);
+
+        const path = try platform.os.joinPath(gpa, &.{ self.dir, "core.fpk" });
+        defer gpa.free(path);
+        try self.os.writeFile(path, bytes.items);
+    }
+
+    /// Writes bytes that are not a package at all.
+    fn corrupt(self: *ContentFixture) !void {
+        const gpa = testing.allocator;
+        const path = try platform.os.joinPath(gpa, &.{ self.dir, "core.fpk" });
+        defer gpa.free(path);
+        try self.os.writeFile(path, "half a file, mid-save");
+    }
 };
+
+const changed_source =
+    \\@schema settings { sprites u32 (default 10) }
+    \\settings foundry:settings.main { sprites 99 }
+;
+
+fn spriteSetting(engine: *TestEngine) ?i128 {
+    const record = engine.store.lookup(core.ContentId.fromString("foundry:settings.main")) orelse return null;
+    const index = record.schema.fieldIndex("sprites") orelse return null;
+    return record.fields.intAt(index) catch null;
+}
+
+test "a changed package is picked up, and the generation says so" {
+    var fx = try ContentFixture.init(content_source);
+    defer fx.deinit();
+
+    const engine = try testEngine(.{
+        .content_dir = fx.dir,
+        .content = &.{.{ .file = "core.fpk", .root = "." }},
+        .hot_reload = true,
+    });
+    defer engine.deinit();
+
+    const before = engine.contentGeneration();
+    try testing.expectEqual(@as(?i128, 42), spriteSetting(engine));
+
+    try fx.rewrite(changed_source);
+    engine.reloadContent();
+
+    try testing.expectEqual(@as(?i128, 99), spriteSetting(engine));
+    try testing.expect(engine.contentGeneration() != before);
+    try testing.expectEqual(@as(u32, 1), engine.store.packageCount());
+
+    // The package's files are mounted again against the *new* store's handles, which is
+    // the part a swap would quietly get wrong.
+    try testing.expect(engine.assets.rootOf(engine.store.loadOrder()[0]) != null);
+}
+
+test "a reload that cannot complete leaves the running program exactly as it was" {
+    var fx = try ContentFixture.init(content_source);
+    defer fx.deinit();
+
+    const engine = try testEngine(.{
+        .content_dir = fx.dir,
+        .content = &.{.{ .file = "core.fpk", .root = "." }},
+    });
+    defer engine.deinit();
+
+    const before = engine.contentGeneration();
+    try fx.corrupt();
+    engine.reloadContent();
+
+    // §6 rule 2: a package caught mid-save leaves the last thing that worked, and the
+    // generation does not move — so nothing downstream re-derives from a state that
+    // never happened.
+    try testing.expectEqual(@as(?i128, 42), spriteSetting(engine));
+    try testing.expectEqual(before, engine.contentGeneration());
+    try testing.expectEqual(@as(u32, 1), engine.store.packageCount());
+
+    // And it recovers when the file is whole again.
+    try fx.rewrite(changed_source);
+    engine.reloadContent();
+    try testing.expectEqual(@as(?i128, 99), spriteSetting(engine));
+    try testing.expect(engine.contentGeneration() != before);
+}
+
+test "the watcher runs at the start of a frame, and only when it is switched on" {
+    var fx = try ContentFixture.init(content_source);
+    defer fx.deinit();
+
+    {
+        const engine = try testEngine(.{
+            .content_dir = fx.dir,
+            .content = &.{.{ .file = "core.fpk", .root = "." }},
+            .hot_reload = false,
+        });
+        defer engine.deinit();
+
+        try fx.rewrite(changed_source);
+        for (0..4) |_| {
+            engine.beginFrame();
+            engine.endFrame();
+        }
+        // A shipped build watches nothing (§6), so nothing changed under it.
+        try testing.expectEqual(@as(?i128, 42), spriteSetting(engine));
+    }
+
+    try fx.rewrite(content_source);
+    const engine = try testEngine(.{
+        .content_dir = fx.dir,
+        .content = &.{.{ .file = "core.fpk", .root = "." }},
+        .hot_reload = true,
+        .hot_reload_frames = 2,
+    });
+    defer engine.deinit();
+    try testing.expectEqual(@as(?i128, 42), spriteSetting(engine));
+
+    try fx.rewrite(changed_source);
+    for (0..4) |_| {
+        engine.beginFrame();
+        engine.endFrame();
+    }
+    try testing.expectEqual(@as(?i128, 99), spriteSetting(engine));
+}
 
 const content_source =
     \\@schema settings { sprites u32 (default 10) }

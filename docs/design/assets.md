@@ -1,10 +1,9 @@
 # Design: `asset` — bytes become things the engine can use
 
-**Status:** Implemented as `engine/src/asset/`, except §6 — hot reload, which is M3 step 10.
-The record shape (§2), derivation (§3), the registry (§4), runtime-registered loaders (§5)
-and the error set (§7) are built: the schemas and the registry in `asset/`, the derivation in
-`tools/fpack/`, the texture loader in `render2d/loader.zig`. `loadImage` is gone. The two
-Resolution sections at the end record what building them settled.
+**Status:** Implemented in full as `engine/src/asset/`, plus `tools/fpack/` for §3's
+derivation, `render2d/loader.zig` for §5's texture loader and `app` for §6's watcher.
+`loadImage` is gone. The three Resolution sections at the end record what building it
+settled.
 **Date:** 2026-09-04, revised 2026-09-05
 **Implements:** I1, I2, I3, I5, I6, I8 · **Informed by:** ADR-0005, ADR-0006, ADR-0015,
 ADR-0018, ADR-0019, ADR-0021
@@ -386,3 +385,53 @@ registry, which does not know how to make a texture of any colour, so it would b
 third function on `Loader` — cheap, and worth adding when there is a game to see it in. What
 exists now is the half that cannot be deferred: a failed acquire is a value naming the ID and
 the reason, and every one of §7's failures is separately reachable in a test.
+
+---
+
+## Resolution: hot reload (implementation, 2026-09-05)
+
+§6 asked for three rules and got them literally. What it did not say, and building it
+settled:
+
+**Nothing recompiles anything at runtime.** §6 says "recompile the changed package", and
+the engine does not: `fpack` compiles, the engine *reloads*. The watcher stamps every
+package file and every loaded asset's source, and a change to either is picked up — so the
+loop is edit, `zig build` (or `fpack` alone, which is faster), and the running program
+follows without restarting. Putting a content compiler inside the engine would mean shipping
+one in every build to serve a development path, and the value of hot reload is the process
+not dying, not who ran the compiler.
+
+**A reload builds a whole new content set and swaps it.** Rule 2 — "a failed reload changes
+nothing" — is not a check, it is a shape: a fresh schema registry, store and byte set are
+built to one side, and only a complete one is ever swapped in. A package caught mid-save
+leaves the running program with the last thing that worked and a line saying why, and the
+generation counter does not move, so nothing downstream re-derives from a state that never
+happened.
+
+**The schema registry is rebuilt too, which is what makes editing a schema work.** Reusing
+it would refuse any schema changed without a version bump — the registry's rule, correct and
+extremely annoying in a development loop. Rebuilding costs nothing and the engine's own
+asset schemas go back in the same way they did at startup.
+
+**Reloading a package reloads every asset in it.** A record can now name a different file,
+different sampler settings or a different record type, and none of that shows up as a
+changed source file. Reloading all of them is the simple correct answer; comparing records
+to reload only what moved is an optimisation with a correctness risk and no measurement
+behind it.
+
+**A handle follows a swap; anything derived from one does not.** §4 promises that "hot
+reload works by swapping what a handle points at, so every holder follows without knowing
+anything happened", and that is exactly true of the handle and exactly false of a `Region`
+cut from a texture or a string borrowed from a package's bytes. So `app` publishes a
+**generation counter**, and a caller that derived something compares it and derives again.
+The sandbox is the worked example, and it copies its banner string rather than borrowing
+it — the freed-bytes case is real.
+
+**A file that changed into rubbish is complained about once.** The watcher stamps a source
+even when reloading it failed, so a half-written PNG does not produce the same complaint
+twice a second. The next real edit changes the stamp again and it is retried.
+
+**Stamps are modification time *and* size.** A wall clock is not monotonic — a corrected
+clock, a restored backup — and a coarse one can miss two edits in the same second. Two
+fields agreeing is a much better answer than either alone, and hashing contents would mean
+reading every watched file on every check.

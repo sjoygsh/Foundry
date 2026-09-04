@@ -22,7 +22,8 @@ is mature enough to need them rather than as decoration.
 
 ## Current phase
 
-**Phase 1 — Foundation.**
+**Phase 2 — A real 2D engine.** Phase 1 (M0, M1) closed with the first pixels; M2 and M3
+are done. Next is **M4 — World: "it has entities."**
 
 ## Current milestone
 
@@ -41,7 +42,7 @@ under a camera driven by keyboard and mouse, with the batcher's own numbers on s
 space that does not move when the camera does — 4 batches and 4 draw calls, because the
 sheet, the font and the selection outline share one atlas.
 
-**Current milestone: M3 — Content: "it has data."** Nine of ten steps done. It started at
+**M3 — Content: "it has data." Complete, 2026-09-05.** All ten steps done. It started at
 the only place it could: its decisions. The first modding-relevant milestone, and it comes due on two of
 `CLAUDE.md` §9's postponed decisions — both now spent, as **ADR-0020** and **ADR-0021**, and
 struck from the §9 table. The two design documents `docs/design/README.md` has owed since M2
@@ -49,8 +50,11 @@ are written, and `data` is built behind them, front to back: text in, checked re
 compiled to a package file, merged with other packages by load order — and `fpack` now
 drives the whole of it from a directory. The asset registry sits above it now, and a
 content id resolves all the way to a GPU texture. `content/core` is package zero, the
-sandbox embeds nothing, and a mod dropped in after them overrides by id. What remains is
-hot reload. See `docs/ROADMAP.md`.
+sandbox embeds nothing, a mod dropped in after them overrides by id, and an edit reaches the
+running program without restarting it. **All three exit criteria were met and seen.** One
+roadmap item was deliberately not built: shaders did not become assets, because the engine's
+own stay embedded (ADR-0019) and a content-owned one has nothing to reference it yet. See
+`docs/ROADMAP.md`.
 
 **M1, for reference.** All five ROADMAP items are done: the Metal backend and its Objective-C shim (1), the
 `xcrun metal` → `.metallib` build step (2), runtime MSL compilation (3), the validation
@@ -229,8 +233,8 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 495 tests** (52 `core`, 70 `platform`, 102 `data`, 92 `rhi`,
-32 `asset`, 103 `render2d`, 25 `app`, 14 `fpack`, 5 integration), and **503 under
+**`zig build test` passes 502 tests** (52 `core`, 70 `platform`, 102 `data`, 92 `rhi`,
+36 `asset`, 103 `render2d`, 28 `app`, 14 `fpack`, 5 integration), and **510 under
 `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
@@ -325,9 +329,38 @@ Both are spent, as ADR-0020 and ADR-0021, and `data` is built behind them.
 **Steps 1 to 9 are built.** `data` exists end to end — identity, schemas, the registry, the
 lexer, the parser, diagnostics, the checking pass, the `.fpk` writer and reader, and the
 store that merges packages — `tools/fpack` drives all of it from a directory, and the asset
-registry above it turns a content id into a loaded payload, and `content/core` is package
-zero. 495 tests, up from 346 at the end of M2; all eight target/backend combinations
-compile; `zig fmt` clean.
+registry above it turns a content id into a loaded payload, `content/core` is package zero,
+and content reloads under a running program. 502 tests, up from 346 at the end of M2; all
+eight target/backend combinations compile; `zig fmt` clean.
+
+**Step 10 — hot reload, and `docs/modding/`.** The watcher lives in `app` and runs at the
+top of `beginFrame`; the swapping lives in `asset.Registry`. Six things worth carrying
+forward, recorded in `assets.md`'s third Resolution section:
+
+* **Nothing recompiles at runtime.** §6 said "recompile the changed package"; `fpack`
+  compiles and the engine *reloads*. Putting a content compiler in the engine would ship one
+  in every build to serve a development path, and what hot reload is worth is the process
+  not dying — not who ran the compiler.
+* **A reload builds a whole new content set and swaps it.** "A failed reload changes
+  nothing" is not a check, it is a shape: a fresh schema registry, store and byte set are
+  built to one side and only a complete one is ever swapped in. A package caught mid-save
+  leaves the last thing that worked and the generation does not move.
+* **The schema registry is rebuilt too**, which is what makes editing a schema work at all.
+  Reusing it would refuse any schema changed without a version bump — correct, and
+  intolerable in a development loop.
+* **A handle survives a reload; anything derived from one does not.** §4's promise is exactly
+  true of the handle and exactly false of a `Region` or a string borrowed from a package's
+  bytes. So `app` publishes a **generation counter** and the sandbox re-derives from it —
+  including copying its banner rather than borrowing it, because the freed-bytes case is
+  real.
+* **A file that turned to rubbish is complained about once.** The watcher stamps a source
+  even when reloading it failed, so a half-written PNG does not produce the same complaint
+  twice a second; the next real edit retries it.
+* **`log.err` is for a failure with no other way to report itself.** Content problems have
+  one — the reload does not happen, or `init` returns `ContentUnavailable` — so they log at
+  `warn` with the severity in the text. The practical half: the Zig test runner counts an
+  `err`-level log as a failed test, so a path that logs at `err` is a path no test can
+  exercise. Making these testable found a double free and a leaked slice.
 
 **Step 9 — package zero.** `content/core` exists and is compiled by `fpack` during the
 build; `app` loads it and mounts it; the sandbox ships a package of its own and embeds
@@ -639,12 +672,25 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**M2 is done and tagged.** Nothing is outstanding against it except the one thing a person
-still has to judge, recorded above: the key and button *bindings*.
+**M3 is done and tagged.** Two things are outstanding, and neither is a bug:
 
-**M3 — Content: "it has data."** Its decisions and its design are done, and text now
-compiles to checked records. Ten steps, ordered so each leaves the tree green and the
-sandbox runnable, and so nothing is a rewrite of the one before.
+* The key and button *bindings*, carried from M2 and still needing a person to judge them —
+  that WASD pans the right way, that dragging carries the world with the cursor, that the
+  wheel zooms toward the pointer.
+* **Shaders are not assets**, which was an M3 roadmap item and was deliberately not built.
+  Engine-owned shaders stay embedded (ADR-0019), so the only case is a *content-owned*
+  shader, and nothing can reference one until there is a material system. Building an asset
+  kind with per-backend variant selection (ADR-0015) for no consumer is the hypothetical
+  requirement rule 7 warns about. Due with the material system, or the first time a sample
+  wants its own shader. Adding it is a schema and a runtime-registered loader; nothing has
+  to be reshaped.
+
+**M4 — World: "it has entities"** is next, and its decisions come first as M3's did: ADR-0010
+already constrains the component model, and `docs/design/` owes a document before any of it
+is written.
+
+**M3, for reference.** Ten steps, ordered so each left the tree green and the sandbox
+runnable, and so nothing was a rewrite of the one before.
 
 1. ~~**`data` (L1), and identity.**~~ **Done, 2026-09-04.** The module, the `namespace:name`
    validator, `SchemaId` as a type distinct from `ContentId` over the same hash, and the
@@ -691,8 +737,11 @@ sandbox runnable, and so nothing is a rewrite of the one before.
    move into `content/core` together — the sheet went to the sample's own package instead,
    because a sample is the reference for what a game looks like and a game's content is
    its own.
-10. **Hot reload, and `docs/modding/` begins.** Queued changes applied at frame start, never
-    mid-frame; a failed reload changes nothing.
+10. ~~**Hot reload, and `docs/modding/` begins.**~~ **Done, 2026-09-05.** Stamps on every
+    package file and every loaded asset source, checked at the top of `beginFrame`; packages
+    reload by building a whole new content set and swapping it, assets reload behind their
+    handles, and a failed reload changes nothing. `docs/modding/README.md` and
+    `content-mods.md`, the second verified by following it verbatim.
 
 **The exit criteria** are the sandbox's content living entirely in data, a second package
 placed after it overriding a value visibly, and editing a content file live-updating the
