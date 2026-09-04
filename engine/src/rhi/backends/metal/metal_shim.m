@@ -780,6 +780,7 @@ void fd_mtl_blit_copy_buffer(FdMtlBlitEncoder *enc, FdMtlBuffer *src, uint64_t s
 void fd_mtl_blit_copy_buffer_to_texture(FdMtlBlitEncoder *enc, FdMtlBuffer *src,
                                         uint64_t src_offset, uint32_t bytes_per_row,
                                         FdMtlTexture *dst, uint32_t mip_level,
+                                        uint32_t origin_x, uint32_t origin_y,
                                         uint32_t width, uint32_t height) {
     if (enc == NULL || src == NULL || dst == NULL) return;
     id<MTLBlitCommandEncoder> e = (__bridge id<MTLBlitCommandEncoder>)enc;
@@ -791,5 +792,5 @@ void fd_mtl_blit_copy_buffer_to_texture(FdMtlBlitEncoder *enc, FdMtlBuffer *src,
             toTexture:(__bridge id<MTLTexture>)dst
      destinationSlice:0
      destinationLevel:mip_level
-    destinationOrigin:MTLOriginMake(0, 0, 0)];
+    destinationOrigin:MTLOriginMake(origin_x, origin_y, 0)];
 }

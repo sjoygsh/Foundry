@@ -33,6 +33,34 @@ pub const Extent2D = struct {
     pub fn isEmpty(e: Extent2D) bool {
         return e.width == 0 or e.height == 0;
     }
+
+    /// The extent of mip level `level`, halving and never reaching zero.
+    ///
+    /// The clamp at 1 is the part worth stating: a 16x1 texture's level 4 is 1x1, not
+    /// 1x0, and every graphics API agrees on that. Written once here rather than at each
+    /// place that needs to bound a copy.
+    pub fn mipLevel(e: Extent2D, level: u32) Extent2D {
+        const shift: u5 = @intCast(@min(level, 31));
+        return .{
+            .width = @max(1, e.width >> shift),
+            .height = @max(1, e.height >> shift),
+        };
+    }
+};
+
+/// The top-left corner of a rectangle in **texture space**, in texels.
+///
+/// Y increases downward, which is the same direction `Viewport` uses and the same
+/// direction every image format on disk stores its rows in. That this disagrees with
+/// `clip_space.y_axis` is not a contradiction: they are different spaces, and the
+/// projection matrix is what bridges them (`command.zig`).
+pub const Origin2D = struct {
+    x: u32 = 0,
+    y: u32 = 0,
+
+    pub fn isZero(o: Origin2D) bool {
+        return o.x == 0 and o.y == 0;
+    }
 };
 
 // -- memory --------------------------------------------------------------------------
@@ -239,4 +267,20 @@ test "extent comparison" {
     try testing.expect((Extent2D{ .width = 1, .height = 2 }).eql(.{ .width = 1, .height = 2 }));
     try testing.expect(!(Extent2D{ .width = 1, .height = 2 }).eql(.{ .width = 2, .height = 1 }));
     try testing.expect((Extent2D{ .width = 0, .height = 5 }).isEmpty());
+}
+
+test "a mip level halves without ever reaching zero" {
+    const base: Extent2D = .{ .width = 16, .height = 4 };
+    try testing.expect(base.mipLevel(0).eql(.{ .width = 16, .height = 4 }));
+    try testing.expect(base.mipLevel(2).eql(.{ .width = 4, .height = 1 }));
+    // Level 4 is where the two axes stop agreeing: 1x1, not 1x0. Every graphics API
+    // clamps here and a copy bounded by a zero extent would reject legal writes.
+    try testing.expect(base.mipLevel(4).eql(.{ .width = 1, .height = 1 }));
+    // A nonsense level still produces something bounded rather than a shift overflow.
+    try testing.expect(base.mipLevel(999).eql(.{ .width = 1, .height = 1 }));
+}
+
+test "an origin defaults to the corner" {
+    try testing.expect((Origin2D{}).isZero());
+    try testing.expect(!(Origin2D{ .y = 1 }).isZero());
 }

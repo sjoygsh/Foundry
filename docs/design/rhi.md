@@ -233,6 +233,14 @@ from the first pass.
 `resolve` (for MSAA) is a store action that does not exist yet. The enum is shaped to gain
 it without changing anything that already uses it.
 
+**A copy names where in the destination it lands.** `copyBufferToTexture` writes a
+rectangle, not a whole texture: `dst_origin` places it, and defaults to the corner so the
+common case still reads as a whole-texture upload. All three APIs express this natively —
+Metal's `destinationOrigin:`, Vulkan's `VkBufferImageCopy.imageOffset`, D3D12's
+`D3D12_BOX` — so it costs no backend anything. Leaving it out costs something real: a
+runtime-packed atlas (`render2d` §8) would have to re-upload the whole texture to add one
+sprite, which is megabytes per glyph.
+
 ## 9. Pipelines, layouts, and the binding model
 
 This is the granularity question `PROJECT_STATE.md` recorded as unresolved. The answer is
@@ -480,7 +488,12 @@ forgives:
    ended before submission.
 9. **Lifetime.** No resource destroyed while a frame that references it is in flight.
 10. **Limits.** At most 4 bind groups and at most 8 vertex buffers. Inline constants at
-    most 128 bytes, and never more than the bound pipeline's layout declares.
+    most 128 bytes, and never more than the bound pipeline's layout declares. A copy's
+    region must also lie inside the resource it addresses, and name a mip level that
+    exists. A texture's extent is a bound on writes to it in exactly the way the other
+    numbers here are bounds, so this is a clarification of rule 10's scope rather than an
+    eleventh rule — the same reading rule 8 already gets. Written here before it appeared
+    in code, which is what the paragraph below asks of any tightening.
 
 Rules 1, 3, 5 and 9 are the ones that would otherwise be discovered by a second backend
 producing garbage, months later, with no obvious cause. Rules 2 and 6 are the ones that

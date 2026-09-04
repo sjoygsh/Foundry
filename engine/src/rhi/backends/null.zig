@@ -719,6 +719,27 @@ pub const CommandBuffer = struct {
                     dst.desc.label, dst.state,
                 });
             }
+            // Rule 10: the region must lie inside the level it addresses. Metal silently
+            // clamps some of these and produces garbage for others; Vulkan and D3D12 call
+            // an out-of-bounds region undefined behaviour. A destination origin makes this
+            // reachable by ordinary code — an atlas packing one sprite too many — so it is
+            // checked rather than trusted.
+            if (copy.dst_mip_level >= dst.desc.mip_levels) {
+                dev.violate(.limits, "copy targets mip level {d} of texture '{s}', which has {d}", .{
+                    copy.dst_mip_level, dst.desc.label, dst.desc.mip_levels,
+                });
+            } else {
+                const level = dst.desc.size.mipLevel(copy.dst_mip_level);
+                const right = @as(u64, copy.dst_origin.x) + copy.size.width;
+                const bottom = @as(u64, copy.dst_origin.y) + copy.size.height;
+                if (right > level.width or bottom > level.height) {
+                    dev.violate(.limits, "copy of {d}x{d} at ({d}, {d}) does not fit texture '{s}' level {d}, which is {d}x{d}", .{
+                        copy.size.width,   copy.size.height, copy.dst_origin.x,
+                        copy.dst_origin.y, dst.desc.label,   copy.dst_mip_level,
+                        level.width,       level.height,
+                    });
+                }
+            }
             dst.last_frame_used = dev.frame_index;
         }
         dev.touchBuffer(copy.src);
@@ -2101,6 +2122,102 @@ test "rule 10: writing more inline bytes than the layout declares is caught" {
     pass.end();
 
     try testing.expect(fx.dev.hasViolation(.limits));
+}
+
+test "rule 10: a copy region that does not fit the destination is caught" {
+    // The failure a runtime-packed atlas reaches by packing one sprite too many. Metal
+    // clamps some of these and produces garbage for the rest; Vulkan and D3D12 call it
+    // undefined behaviour. Here it is a named rule with the numbers in the message.
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    const atlas = try dev.createTexture(.{
+        .label = "atlas",
+        .size = .{ .width = 64, .height = 64 },
+        .format = .rgba8_unorm_srgb,
+        .usage = .{ .sampled = true, .copy_dst = true },
+    });
+    const staging = try dev.createBuffer(.{
+        .size = 16 * 16 * 4,
+        .usage = .{ .copy_src = true },
+        .memory = .upload,
+    });
+
+    _ = try dev.beginFrame();
+    var cmd = try dev.beginCommandBuffer();
+    try cmd.textureBarrier(&.{.{ .texture = atlas, .from = .undefined, .to = .copy_dst }});
+    // 16 wide at x=56 runs eight texels past the right edge. One axis is enough.
+    try cmd.copyBufferToTexture(.{
+        .src = staging,
+        .dst = atlas,
+        .dst_origin = .{ .x = 56, .y = 0 },
+        .size = .{ .width = 16, .height = 16 },
+    });
+    try testing.expectError(error.ValidationFailed, cmd.submit());
+    try testing.expect(dev.hasViolation(.limits));
+}
+
+test "rule 10: a copy that exactly reaches the far edge is accepted" {
+    // The boundary is the interesting case: an off-by-one here would reject the last
+    // shelf of every atlas, which is precisely the packing a packer aims for.
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    const atlas = try dev.createTexture(.{
+        .label = "atlas",
+        .size = .{ .width = 64, .height = 64 },
+        .format = .rgba8_unorm_srgb,
+        .usage = .{ .sampled = true, .copy_dst = true },
+    });
+    const staging = try dev.createBuffer(.{
+        .size = 16 * 16 * 4,
+        .usage = .{ .copy_src = true },
+        .memory = .upload,
+    });
+
+    _ = try dev.beginFrame();
+    var cmd = try dev.beginCommandBuffer();
+    try cmd.textureBarrier(&.{.{ .texture = atlas, .from = .undefined, .to = .copy_dst }});
+    try cmd.copyBufferToTexture(.{
+        .src = staging,
+        .dst = atlas,
+        .dst_origin = .{ .x = 48, .y = 48 },
+        .size = .{ .width = 16, .height = 16 },
+    });
+    try cmd.submit();
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
+}
+
+test "rule 10: a copy naming a mip level the texture does not have is caught" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    const tex = try dev.createTexture(.{
+        .label = "one-level",
+        .size = .{ .width = 8, .height = 8 },
+        .format = .rgba8_unorm,
+        .usage = .{ .copy_dst = true },
+    });
+    const staging = try dev.createBuffer(.{
+        .size = 4,
+        .usage = .{ .copy_src = true },
+        .memory = .upload,
+    });
+
+    _ = try dev.beginFrame();
+    var cmd = try dev.beginCommandBuffer();
+    try cmd.textureBarrier(&.{.{ .texture = tex, .from = .undefined, .to = .copy_dst }});
+    try cmd.copyBufferToTexture(.{
+        .src = staging,
+        .dst = tex,
+        .dst_mip_level = 1,
+        .size = .{ .width = 1, .height = 1 },
+    });
+    try testing.expectError(error.ValidationFailed, cmd.submit());
+    try testing.expect(dev.hasViolation(.limits));
 }
 
 test "rule 10: writing more than 128 bytes is caught even with no pipeline bound" {

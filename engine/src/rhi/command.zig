@@ -158,6 +158,10 @@ pub const BufferToTextureCopy = struct {
     src_bytes_per_row: u32 = 0,
     dst: resource.TextureHandle,
     dst_mip_level: u32 = 0,
+    /// Where in the destination the region lands. Defaults to the corner, so a
+    /// whole-texture upload still reads as one. A runtime-packed atlas is why this is
+    /// not the only option (`docs/design/rhi.md` §8).
+    dst_origin: resource.Origin2D = .{},
     size: resource.Extent2D,
 };
 

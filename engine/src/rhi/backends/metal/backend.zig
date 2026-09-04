@@ -1165,6 +1165,8 @@ pub const CommandBuffer = struct {
             bytes_per_row,
             dst_mtl,
             copy.dst_mip_level,
+            copy.dst_origin.x,
+            copy.dst_origin.y,
             copy.size.width,
             copy.size.height,
         );
