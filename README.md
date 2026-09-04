@@ -8,14 +8,14 @@ leave behind something that runs.
 
 ## Status
 
-**M0 complete.** It runs: a window opens on macOS and responds to input, the
-fixed-timestep loop turns, and the sample exits cleanly. Nothing is drawn yet — M0
-deliberately excludes the GPU, and the renderer is M1.
+**M0, M1 and M2 complete; M3 in progress.** It draws: thousands of sprites under a
+camera that pans, zooms and picks, at vsync, with text. M3 is giving it content — schemas,
+an authoring format, a compiled package format and the tool that turns one into the other.
 
 ```sh
 ./scripts/install-zig.sh   # the only tool you need
-zig build run              # opens a window; escape quits
-zig build test             # 222 tests
+zig build run -Drhi=metal  # opens a window and draws; escape quits
+zig build test             # 474 tests
 ```
 
 Implemented so far:
@@ -23,10 +23,15 @@ Implemented so far:
 * **`core`** — allocators, generational handles, content IDs, math, fixed-timestep time, RNG.
 * **`platform`** — window, input, filesystem, dynamic libraries, clocks. An SDL3 backend
   and a headless one, kept honest by a `comptime` conformance check.
-* **`rhi`** — the render hardware interface, with a **validation backend** that enforces
-  the strict rules Metal forgives. Not scaffolding: it is what substitutes for a second
-  graphics backend until there is one.
+* **`data`** — schemas and their runtime registry, the `.fdt` authoring format and its
+  diagnostics, the `.fpk` runtime format, and the store that merges packages by load order.
+* **`rhi`** — the render hardware interface, with a Metal backend and a **validation
+  backend** that enforces the strict rules Metal forgives. Not scaffolding: it is what
+  substitutes for a second graphics backend until there is one.
+* **`asset`** — Foundry's own PNG decoder, and the schemas for the asset kinds it can load.
+* **`render2d`** — sprite and text batching, atlases, cameras.
 * **`app`** — the engine loop, subsystem lifecycle, and the log sink.
+* **`tools/fpack`** — the content compiler: a package directory in, one `.fpk` out.
 
 [PROJECT_STATE.md](PROJECT_STATE.md) records exactly where things stand, and is updated
 every session.

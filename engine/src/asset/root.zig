@@ -1,7 +1,7 @@
 //! Foundry `asset` — layer L2. Bytes on disk become things the engine can use.
 //!
-//! Depends on `core` and `platform`. ADR-0007 gives this module `data` as well; `data`
-//! arrives at M3 and this gains it then.
+//! Depends on `core`, `data` and `platform` — the module with both a filesystem and the
+//! content model, which is what makes it the seam between them.
 //!
 //! **What is here is deliberately less than what this module will be.** It decodes images
 //! and loads them from disk. It has no registry, no content IDs, no reference counting and
@@ -22,6 +22,7 @@ const platform = @import("platform");
 
 pub const image = @import("image.zig");
 pub const png = @import("png.zig");
+pub const schemas = @import("schemas.zig");
 
 pub const Image = image.Image;
 pub const DecodeError = png.DecodeError;
@@ -50,6 +51,7 @@ pub fn loadImage(
 test {
     _ = image;
     _ = png;
+    _ = schemas;
 }
 
 const testing = std.testing;

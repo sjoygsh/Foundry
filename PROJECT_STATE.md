@@ -1,11 +1,10 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-04
-**Updated by:** **M3, step 6.** The store: packages merged in load order, records
-addressed by content id, and each one still carrying the package that supplied it. Building
-it reversed a decision from the day before — a package now carries every schema its records
-use, not only the ones it declares, because a record's layout has to be stated by the file
-it lives in
+**Updated by:** **M3, step 7.** `tools/fpack` — the content compiler. A directory of
+`.fdt` files and images goes in and one `.fpk` comes out, with asset ids derived from paths
+and materialised as records that were never written by hand. The first Foundry program that
+is not the engine
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -42,14 +41,15 @@ under a camera driven by keyboard and mouse, with the batcher's own numbers on s
 space that does not move when the camera does — 4 batches and 4 draw calls, because the
 sheet, the font and the selection outline share one atlas.
 
-**Current milestone: M3 — Content: "it has data."** Six of ten steps done. It started at
+**Current milestone: M3 — Content: "it has data."** Seven of ten steps done. It started at
 the only place it could: its decisions. The first modding-relevant milestone, and it comes due on two of
 `CLAUDE.md` §9's postponed decisions — both now spent, as **ADR-0020** and **ADR-0021**, and
 struck from the §9 table. The two design documents `docs/design/README.md` has owed since M2
 are written, and `data` is built behind them, front to back: text in, checked records out,
-compiled to a package file, merged with other packages by load order. What remains is the
-tool that drives it from a directory, the asset registry above it, and moving the sandbox's
-own content into `content/core`. See `docs/ROADMAP.md`.
+compiled to a package file, merged with other packages by load order — and `fpack` now
+drives the whole of it from a directory. What remains is the asset registry above it,
+moving the sandbox's own content into `content/core`, and hot reload. See
+`docs/ROADMAP.md`.
 
 **M1, for reference.** All five ROADMAP items are done: the Metal backend and its Objective-C shim (1), the
 `xcrun metal` → `.metallib` build step (2), runtime MSL compilation (3), the validation
@@ -221,8 +221,8 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 456 tests** (51 `core`, 70 `platform`, 102 `data`, 92 `rhi`,
-17 `asset`, 102 `render2d`, 22 `app`), and **464 under `-Drhi=metal`**, where `rhi` gains
+**`zig build test` passes 474 tests** (51 `core`, 70 `platform`, 102 `data`, 92 `rhi`,
+21 `asset`, 102 `render2d`, 22 `app`, 14 `fpack`), and **482 under `-Drhi=metal`**, where `rhi` gains
 the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
@@ -313,10 +313,36 @@ and the two design documents they needed, per `CLAUDE.md` rule 1 — design befo
 implementation — and rule 10, which says never make a major architectural decision silently.
 Both are spent, as ADR-0020 and ADR-0021, and `data` is built behind them.
 
-**Steps 1 to 6 are built.** `data` exists end to end: identity, schemas, the registry, the
-lexer, the parser, diagnostics, the pass that checks a document against the schemas it
-names, the `.fpk` writer and reader, and the store that merges packages. 456 tests, up from
-346 at the end of M2; all eight target/backend combinations compile; `zig fmt` clean.
+**Steps 1 to 7 are built.** `data` exists end to end — identity, schemas, the registry, the
+lexer, the parser, diagnostics, the checking pass, the `.fpk` writer and reader, and the
+store that merges packages — and `tools/fpack` drives all of it from a directory. 474
+tests, up from 346 at the end of M2; all eight target/backend combinations compile; `zig
+fmt` clean.
+
+**Step 7 — `tools/fpack`.** The first Foundry program that is not the engine: a plain
+command-line tool (ADR-0011) that links `data`, `platform` and `asset`, walks a package
+directory, and writes one `.fpk`. `zig build fpack -- --name foundry:core --out
+zig-out/content/core.fpk content/core`. Five things worth carrying forward, recorded in
+`assets.md`'s Resolution section:
+
+* **The asset schemas live in `asset`, and the loaders stay above it.** `render2d` owns
+  what a GPU texture is and will register the loader; the *record* — a source path — is
+  not a GPU concept, and a content compiler must see it without linking a renderer. So
+  `asset/schemas.zig` holds the schema and the extension table.
+* **A derived asset record is `.fdt` text**, written into a buffer named `<derived>` and
+  put through the same parser and checker as an authored one. `assets.md` §3 says a derived
+  id is materialised "exactly as if it had been written by hand", and the cheapest way to
+  be sure of that is for it to be. A collision with an authored record is then reported by
+  the checker's existing message rather than by a second implementation of it.
+* **`foundry:texture` has one field.** `source`. `filter` and `wrap` arrive with the loader
+  that reads them, at version 2, with defaults — the case additive versioning exists for.
+  Choosing how an enumeration is spelled in `.fdt` with nothing to check the choice against
+  would be inventing.
+* **The package's name and version are arguments, not a manifest file.** Mod manifests are
+  M7, and `data` consumes a load order rather than computing one.
+* **Every listing is sorted and dot-prefixed names are skipped.** A filesystem's
+  enumeration order is not a specification (I9): compiling the same directory twice
+  produces identical bytes, and that is a test.
 
 **Step 6 — packages and the store.** `store.zig`: packages added in an order supplied from
 outside, records merged by content id with replace semantics, and provenance kept for every
@@ -556,8 +582,11 @@ sandbox runnable, and so nothing is a rewrite of the one before.
    the order given, records at the position where they were first defined. Loading is all
    or nothing, a package carries every schema its records use, and each record is read
    against the copy its own package shipped rather than the registry's newer one.
-7. **`tools/fpack`.** Walks a package directory, derives asset IDs per `assets.md` §3,
-   reports collisions naming both files, and emits a `.fpk`.
+7. ~~**`tools/fpack`.**~~ **Done, 2026-09-04.** Walks a package directory in sorted order,
+   parses and checks every `.fdt` in it, derives asset ids per `assets.md` §3 as records
+   that go through the same parser and checker as authored ones, reports collisions naming
+   both files, and emits a `.fpk`. Its `@import` resolver is the first real one: relative
+   to the importing file, textually normalised, and unable to climb out of the package.
 8. **`asset` gains its registry.** Loaders registered at runtime, reference counting,
    `render2d` registering the texture loader from above. **`loadImage(path)` goes away** — it
    was scaffolding with a stated expiry.

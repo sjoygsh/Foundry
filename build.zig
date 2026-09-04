@@ -231,10 +231,34 @@ pub fn build(b: *std.Build) void {
     const sandbox = b.addExecutable(.{ .name = "sandbox", .root_module = sandbox_mod });
     b.installArtifact(sandbox);
 
+    // `tools/fpack` — the content compiler (ADR-0011). A consumer of the engine's modules
+    // like a sample is, not a privileged member of the layering: it gets `data` because it
+    // compiles content, `platform` because `data` cannot open a file, and `asset` because
+    // that is where the asset kinds a path can derive are declared. It does not get `rhi`
+    // or `render2d`, and a content compiler that needed a GPU would be a design mistake
+    // announcing itself.
+    const fpack_mod = b.createModule(.{
+        .root_source_file = b.path("tools/fpack/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    fpack_mod.addImport("asset", modules.get("asset").?);
+    fpack_mod.addImport("core", modules.get("core").?);
+    fpack_mod.addImport("data", modules.get("data").?);
+    fpack_mod.addImport("platform", platform_module);
+
+    const fpack = b.addExecutable(.{ .name = "fpack", .root_module = fpack_mod });
+    b.installArtifact(fpack);
+
     const run_sandbox = b.addRunArtifact(sandbox);
     run_sandbox.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_sandbox.addArgs(args);
     b.step("run", "Build and run samples/sandbox").dependOn(&run_sandbox.step);
+
+    const run_fpack = b.addRunArtifact(fpack);
+    run_fpack.step.dependOn(b.getInstallStep());
+    if (b.args) |args| run_fpack.addArgs(args);
+    b.step("fpack", "Build and run tools/fpack (pass arguments after --)").dependOn(&run_fpack.step);
 
     // Unit tests are colocated in source (project convention). One test binary per
     // module, all hung off `zig build test`.
@@ -250,6 +274,7 @@ pub fn build(b: *std.Build) void {
     // stopped cross-compiling would be a milestone rule broken (ROADMAP), and finding
     // that out at release time is the expensive way.
     check_step.dependOn(&sandbox.step);
+    check_step.dependOn(&fpack.step);
 
     for (layering) |spec| {
         const unit_tests = b.addTest(.{ .root_module = modules.get(spec.name).? });
@@ -258,6 +283,13 @@ pub fn build(b: *std.Build) void {
         const run = b.addRunArtifact(unit_tests);
         test_step.dependOn(&run.step);
     }
+
+    // Tools are tested like modules are. `fpack`'s tests reach a real filesystem, which is
+    // the point of them: everything below it is already hermetic, and what is left to prove
+    // is exactly the part that touches a disk.
+    const fpack_tests = b.addTest(.{ .root_module = fpack_mod });
+    check_step.dependOn(&fpack_tests.step);
+    test_step.dependOn(&b.addRunArtifact(fpack_tests).step);
 }
 
 /// Compiles MSL into a `.metallib`, per ADR-0015: `xcrun metal` turns each source into an

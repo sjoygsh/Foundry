@@ -1,8 +1,11 @@
 # Design: `asset` — bytes become things the engine can use
 
 **Status:** Partly implemented as `engine/src/asset/`. M2 built the PNG decoder and
-`loadImage`; everything in §2 onward is design for M3.
-**Date:** 2026-09-04
+`loadImage`. §2's record shape and §3's derivation are implemented — the schemas in
+`asset/schemas.zig`, the derivation in `tools/fpack/` — and see the Resolution section at
+the end for what building them settled. §4 onward (the registry, loaders, hot reload) is
+still design, and `loadImage` survives until it has a replacement.
+**Date:** 2026-09-04, revised 2026-09-04
 **Implements:** I1, I2, I3, I5, I6, I8 · **Informed by:** ADR-0005, ADR-0006, ADR-0015,
 ADR-0018, ADR-0019, ADR-0021
 
@@ -270,3 +273,44 @@ itself.
   one.
 * **Audio decoding.** M5. `foundry:sound` is named here so the shape is uniform, not because
   anything decodes one yet.
+
+---
+
+## Resolution: derivation and `fpack` (implementation, 2026-09-04)
+
+§3 specified a function and a rule, and building the tool around them settled five things
+the specification did not have to.
+
+**The asset schemas live in `asset`, and the loaders stay above.** §5 puts the texture
+loader in `render2d`, which is L3 and cannot be seen from a content compiler. But the
+*record* — a source path, and later its sampling parameters — is not a GPU concept, and
+`fpack` has to know it at compile time without linking a renderer. So `asset/schemas.zig`
+holds the schema and the extension table, `render2d` will register the loader that reads
+it, and the dependency still points down while the capability points up.
+
+**`foundry:texture` has one field for now.** §2 sketches `filter` and `wrap` beside
+`source`, and they arrive with the loader that reads them, at version 2, with defaults —
+which is exactly the case additive versioning exists for. Adding them now would mean
+deciding how an enumeration is spelled in `.fdt` with nothing to check the decision
+against, and the type list is closed (`content-schemas.md` §3). This is the cheap half of
+I8: the schema can grow, and content written against version 1 keeps working.
+
+**A derived record is `.fdt` text, parsed and checked like any other.** §3 says a derived
+id is materialised "exactly as if it had been written by hand", and the cheapest way to be
+sure of that is for it to *be* written — into a buffer named `<derived>`, then through the
+same parser and the same checker the authored records went through. A derived id that
+collides with an authored one is then reported by the checker's existing "defined twice in
+this package" message, with its note pointing at the authored record, rather than by a
+second implementation of the same complaint.
+
+**The package's name and version are arguments, not a file.** `fpack --name foundry:core`
+rather than a manifest in the directory. `content-schemas.md` §11 defers mod manifests to
+M7 and says `data` consumes a load order rather than computing one; inventing a manifest
+format here would answer that question early, in the wrong place, and in a format nothing
+else reads yet.
+
+**Dot-prefixed names are skipped, and every listing is sorted.** `.git`, `.DS_Store` and an
+editor's swap files are not content, and a package that had to enumerate its exclusions
+would be a package with a manifest. Sorting is the I9 half: a filesystem's enumeration
+order is not a specification, so the walk imposes one, and compiling the same directory
+twice produces the same bytes — which is a test.
