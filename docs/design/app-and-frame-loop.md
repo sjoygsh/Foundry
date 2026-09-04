@@ -1,9 +1,10 @@
 # Design: `app` — the engine loop and what owns what
 
-**Status:** Implemented 2026-09-03 as `engine/src/app/`. 22 tests.
-**Date:** 2026-09-03
-**Implements:** I9 · **Informed by:** ADR-0007, ADR-0011, `core-memory-and-handles.md`,
-`platform-interface.md`
+**Status:** Implemented 2026-09-03 as `engine/src/app/`. 25 tests. Gained the content
+subsystem at M3 step 9 (§8), which is where package zero is loaded.
+**Date:** 2026-09-03, revised 2026-09-05
+**Implements:** I3, I9 · **Informed by:** ADR-0007, ADR-0011, ADR-0021,
+`core-memory-and-handles.md`, `platform-interface.md`, `assets.md`
 
 `app` is layer L4. It depends on every module below it and nothing depends on it except
 games, samples, tools, and eventually `abi` (L5).
@@ -89,6 +90,16 @@ lifecycle callbacks is the right answer at perhaps six subsystems; at two it is 
 guarding nothing. **Revisit when `rhi`, `asset` and `scene` have joined**, which is also
 when the ordering stops being obvious by inspection.
 
+*As of M3 step 9 it is five: `Os`, `Platform`, the RHI device, and the content pair (schema
+registry, store) with the asset registry over them. Still obvious by inspection, and the
+open question above stands.*
+
+**One ordering rule is not the engine's to enforce, and it is worth naming.** The asset
+registry unloads through the loaders it was given, and the game owns the module that
+registered one. So a game tearing down its renderer calls `assets.unregisterLoader` first,
+which hands every payload back while there is still something to hand it to. `app` cannot
+check this: it has no `render2d` and no idea who registered what.
+
 Allocators follow `core-memory-and-handles.md` §1: the caller supplies the persistent
 allocator, and `Engine` owns **one frame arena**, exposed as `frameAllocator()` and reset in
 `endFrame`. Nothing allocated from it may outlive the frame. In safe builds the arena
@@ -106,6 +117,14 @@ which is honest about where the values come from.
 The environment is part of `Config`, because Zig 0.16 hands the process environment to the
 entry point and `app` is what owns the entry point. `app.environment` marshals it — the one
 place in Foundry a `std.process.Init` appears.
+
+### Content is not configuration
+
+`Config.content` is a list of packages **in load order**, and `Config.content_dir` says
+where they are. That is the whole of it. The engine consumes an order and does not compute
+one: discovering packages, resolving dependencies between them and deciding what a player
+has enabled is M7 (`content-schemas.md` §11), and answering it in a config struct would be
+answering it in the wrong place.
 
 ## 5. Logging
 
@@ -146,3 +165,59 @@ the arena is empty again after `endFrame`.
    (`CLAUDE.md` §9). The frame phases above are deliberately expressed as an order of
    *stages* rather than as a single-threaded call sequence, so that parallelism inside a
    stage does not require re-shaping the loop.
+
+---
+
+## 8. Content, and where package zero comes from
+
+*Added at M3 step 9.*
+
+The engine holds three things above `platform`: a schema registry, a merged store, and the
+asset registry over both. At `init` it registers the record types it can load, then loads
+every configured package in order and mounts each one's files.
+
+**That code is deliberately unremarkable, and its being unremarkable is the point.**
+Package zero goes through `store.add` exactly as a mod's package does — same reader, same
+validation, same merge, same registry — because the only durable way to know the mod path
+works is to be standing on it (I3). There is no branch anywhere that asks whether a package
+is the base game.
+
+### Where content lives
+
+`<prefix>/content`, beside the executable rather than beside the working directory: a game
+is launched from anywhere and its content is part of its installation. `zig build` installs
+exactly that shape —
+
+```
+zig-out/
+  bin/sandbox
+  content/
+    core.fpk      content/core compiled by fpack
+    core/         its files, because an asset record names where its bytes are
+    sandbox.fpk   samples/sandbox/content compiled the same way
+    sandbox/
+```
+
+A package's `file` and `root` are **locations, never identity** (ADR-0021). The compiled
+package states its own content id and the store checks it; the stem under `content/` is how
+a launcher finds the bytes and nothing else depends on it.
+
+### What the game supplies
+
+The loaders. `app` has no `render2d` and no opinion about what a texture is, so a game
+registers `render2d.textureLoader(&renderer)` into `engine.assets` at startup. The
+dependency points down and the capability points up, which is what I6's runtime
+registration is for — and is why the engine can own an asset registry without owning a
+renderer.
+
+### Failure
+
+A configured package that cannot be read or is refused stops `init` with
+`error.ContentUnavailable`, naming it. Package zero missing is not a state a game carries on
+from, and neither is a mod the player asked for: half a load order is not a state worth
+being able to describe, which is the same judgement `store.add` makes one level down.
+
+Those failures are logged at `warn` and returned as an error — the convention the asset
+registry already follows, where the returned error is the signal and the log line is the
+context. It also keeps them testable: the test runner counts an `err`-level log as a failed
+test, so a failure path that logs at `err` is a failure path nothing can exercise.

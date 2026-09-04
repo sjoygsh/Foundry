@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Generate the sandbox's font: a 16x6 grid of 8x8 cells, ASCII 32..126.
+"""Generate Foundry's debug font: a 16x6 grid of 8x8 cells, ASCII 32..126.
 
 A developer script, never load-bearing in the build (ADR-0014): the PNG it writes is
 committed, and this exists so the glyphs have a **source** rather than only a binary. Every
 glyph below is ours, drawn as ASCII art, which is why the sandbox ships a font with no
 third-party licence entry to make (ADR-0016).
+
+It lives in `content/core`, the base content package (I3), because the engine itself will
+want a font for its M6 debug overlay and `render2d` ships no glyphs (I5). It loads through
+the same path a mod's font would, and a mod may override `foundry:fonts.debug`.
 
 Glyphs are 5 wide and occupy rows 0..6, with row 7 reserved for descenders. The three blank
 columns to the right of every glyph are where a fixed-grid font's letter spacing comes from
@@ -159,7 +163,7 @@ png = (b'\x89PNG\r\n\x1a\n' +
        chunk(b'IDAT', zlib.compress(bytes(raw), 9)) +
        chunk(b'IEND', b''))
 
-out = os.path.join("samples", "sandbox", "assets", "font.png")
+out = os.path.join("content", "core", "fonts", "debug.png")
 os.makedirs(os.path.dirname(out), exist_ok=True)
 with open(out, "wb") as f:
     f.write(png)

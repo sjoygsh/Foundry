@@ -52,7 +52,10 @@ const layering = [_]Module{
 
     // L4 — the engine loop and subsystem lifecycle. Gains dependencies as the layers
     // between it and `platform` arrive; it is allowed to see all of them (ADR-0007).
-    .{ .name = "app", .deps = &.{ "core", "platform", "rhi" } },
+    // `data` and `asset` joined at M3 step 9: the engine loads package zero and mounts it
+    // (I3). Not `render2d` — the game owns its renderer and registers the texture loader
+    // from there, so the engine needs no opinion about what a texture is.
+    .{ .name = "app", .deps = &.{ "core", "data", "platform", "rhi", "asset" } },
 
     // Added as each is implemented. The rest of the graph from ADR-0007 is:
     //   L3  scene      -> core, data, asset
@@ -210,6 +213,10 @@ pub fn build(b: *std.Build) void {
     sandbox_mod.addImport("app", modules.get("app").?);
     sandbox_mod.addImport("asset", modules.get("asset").?);
     sandbox_mod.addImport("core", modules.get("core").?);
+    // A game reads its own content, which means naming `data`'s types. It gets the module
+    // the same way it gets every other one: as a consumer of the engine, not as a member
+    // of the layering.
+    sandbox_mod.addImport("data", modules.get("data").?);
     sandbox_mod.addImport("platform", platform_module);
     sandbox_mod.addImport("render2d", modules.get("render2d").?);
     sandbox_mod.addImport("rhi", modules.get("rhi").?);
@@ -249,6 +256,62 @@ pub fn build(b: *std.Build) void {
 
     const fpack = b.addExecutable(.{ .name = "fpack", .root_module = fpack_mod });
     b.installArtifact(fpack);
+
+    // Content packages, compiled by `fpack` and installed beside the executable.
+    //
+    // **The base game is package zero and there is no privileged path** (I3): the engine's
+    // own content is compiled by the same tool, in the same format, and loaded by the same
+    // call a mod's would be. `content/core` is the engine's; the sample keeps its own,
+    // because a game has its own package and `samples/sandbox` is the reference for what a
+    // game looks like (ADR-0017).
+    //
+    // The order here is the load order, which is what the engine is handed. Discovering
+    // one — mod manifests, dependency resolution — is M7; `data` consumes a load order and
+    // does not compute one.
+    const ContentPackage = struct {
+        /// The package's content id, which is its identity.
+        id: []const u8,
+        /// Where its sources are in this repository.
+        dir: []const u8,
+        /// What it is called under `<prefix>/content`. A location, never identity
+        /// (ADR-0021) — the compiled package states its own id and the store checks it.
+        stem: []const u8,
+    };
+    const content_packages = [_]ContentPackage{
+        .{ .id = "foundry:core", .dir = "content/core", .stem = "core" },
+        .{ .id = "sandbox:content", .dir = "samples/sandbox/content", .stem = "sandbox" },
+    };
+
+    // **Only when the build target can run here.** `fpack` is built for the target like
+    // everything else, so a cross build produces a compiler this machine cannot execute.
+    // `zig build check` — the portability obligation from ADR-0008 — does not install and
+    // so does not reach this; cross-*installing* is not a workflow Foundry has yet. When it
+    // is one, the answer is a host-targeted `fpack`, not a weaker check here.
+    if (target.query.isNative()) {
+        for (content_packages) |pkg| {
+            const compile_content = b.addRunArtifact(fpack);
+            compile_content.addArgs(&.{ "--quiet", "--name", pkg.id, "--out" });
+            const compiled = compile_content.addOutputFileArg(b.fmt("{s}.fpk", .{pkg.stem}));
+            // As a directory argument, so the build re-runs `fpack` exactly when something
+            // in the package changes and not otherwise.
+            compile_content.addDirectoryArg(b.path(pkg.dir));
+
+            b.getInstallStep().dependOn(&b.addInstallFileWithDir(
+                compiled,
+                .prefix,
+                b.fmt("content/{s}.fpk", .{pkg.stem}),
+            ).step);
+
+            // The sources go beside it, because an asset record names where its bytes are
+            // and the registry reads them at load (`assets.md` §4). It is also what step
+            // 10's hot reload will watch.
+            b.getInstallStep().dependOn(&b.addInstallDirectory(.{
+                .source_dir = b.path(pkg.dir),
+                .install_dir = .prefix,
+                .install_subdir = b.fmt("content/{s}", .{pkg.stem}),
+            }).step);
+        }
+    }
 
     const run_sandbox = b.addRunArtifact(sandbox);
     run_sandbox.step.dependOn(b.getInstallStep());

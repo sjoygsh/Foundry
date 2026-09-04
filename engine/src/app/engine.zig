@@ -23,15 +23,34 @@
 
 const std = @import("std");
 const core = @import("core");
+const data = @import("data");
 const platform = @import("platform");
 const rhi = @import("rhi");
+const asset = @import("asset");
 
 const log_sink = @import("log_sink.zig");
 
 const Allocator = std.mem.Allocator;
 const log = core.log.scoped(.app);
 
-pub const InitError = platform.InitError || platform.WindowError || rhi.InitError;
+pub const InitError = error{
+    /// A configured content package could not be read, or was refused. Package zero
+    /// failing is not a condition a game can carry on from, and neither is a mod the
+    /// player asked for: both are reported with the reason and stop startup.
+    ContentUnavailable,
+} || platform.InitError || platform.WindowError || rhi.InitError;
+
+/// One package to load, in load order.
+///
+/// Both fields are **locations, never identity** (ADR-0021). The compiled package states
+/// its own content id and the store checks it; these only say where the bytes are.
+pub const ContentPackage = struct {
+    /// The compiled `.fpk`, relative to the content directory.
+    file: []const u8,
+    /// Where that package's source files live, relative to the content directory. An
+    /// asset record names its bytes relative to this.
+    root: []const u8,
+};
 
 pub const Config = struct {
     /// The process environment, from `main`. See `app.environment`.
@@ -59,6 +78,27 @@ pub const Config = struct {
     /// Runtime log verbosity. Independent of the compile-time level, which decides what
     /// is *built* (`log_sink`).
     log_level: core.log.Level = .info,
+
+    /// Where compiled content packages and their files live. Null means beside the
+    /// executable, in `../content` — which is where `zig build` installs them.
+    content_dir: ?[]const u8 = null,
+
+    /// The packages to load, **in load order**.
+    ///
+    /// The first is package zero (I3), and the engine's own content is in it — loaded
+    /// through the same call, in the same format, with no privileged path. The engine
+    /// consumes this order and does not compute one: discovering packages, resolving
+    /// dependencies between them and deciding what a player has enabled is M7's problem
+    /// (`content-schemas.md` §11), and answering it here would answer it in the wrong
+    /// place.
+    ///
+    /// Empty by default. A tool or a test that wants the loop and the filesystem without
+    /// any content should pay nothing for it.
+    content: []const ContentPackage = &.{},
+
+    /// Bound on one compiled package. Generous, because a package is records and not
+    /// payloads — the assets themselves are files beside it, bounded separately.
+    max_package_bytes: usize = 64 << 20,
 };
 
 /// One fixed simulation step.
@@ -117,6 +157,24 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         frames_in_flight: u32,
         quit: bool,
 
+        // -- content -----------------------------------------------------------------
+
+        /// Where packages and their files live. Owned.
+        content_dir: []u8,
+        /// The compiled bytes of every loaded package, kept alive because the store reads
+        /// records **in place** out of them rather than copying (`content-schemas.md`
+        /// §5.3). Freeing one would leave the store pointing at nothing.
+        package_bytes: std.ArrayList([]u8),
+        /// Every record type the engine and its content know about, registered at runtime
+        /// through the same call a mod's `@schema` uses (I6).
+        schemas: data.Registry,
+        /// The merged content of every loaded package, in load order.
+        store: data.Store,
+        /// Content id in, loaded asset out. **The game registers the loaders**: `app` has
+        /// no `render2d` and no opinion about what a texture is, which is what keeps the
+        /// capability pointing up while the dependency points down.
+        assets: asset.Registry,
+
         pub fn init(gpa: Allocator, config: Config) InitError!*Self {
             log_sink.setLevel(config.log_level);
 
@@ -159,7 +217,17 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             });
             errdefer gpu.deinit();
 
-            const self = try gpa.create(Self);
+            // Resolved before anything owns it, so a bad `content_dir` fails before the
+            // window opens rather than after.
+            const content_dir = try resolveContentDir(gpa, os, config);
+            // Handed over explicitly rather than guarded by an `errdefer`: from the
+            // assignment below, `deinitOwned` is its only owner, and an `errdefer` here
+            // would make it two.
+            const self = gpa.create(Self) catch |err| {
+                gpa.free(content_dir);
+                return err;
+            };
+            errdefer gpa.destroy(self);
             self.* = .{
                 .gpa = gpa,
                 .frame_arena = .init(gpa),
@@ -179,8 +247,19 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                 .frame_index = 0,
                 .frames_in_flight = config.frames_in_flight,
                 .quit = false,
+                .content_dir = content_dir,
+                .package_bytes = .empty,
+                .schemas = .init(gpa, .default),
+                .store = .init(gpa, .default),
+                // Assigned below: it borrows `&self.store`, which has no address until
+                // the struct is in its final home.
+                .assets = undefined,
             };
+            self.assets = .init(gpa, os, &self.store, .{});
             self.stepper.max_steps_per_frame = config.max_steps_per_frame;
+
+            errdefer self.deinitOwned();
+            try self.loadContent(config);
 
             log.info("engine up: {d}Hz simulation, {s}, rhi backend '{t}', {d} frames in flight", .{
                 config.tick_rate_hz,
@@ -199,12 +278,169 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         pub fn deinit(self: *Self) void {
             const gpa = self.gpa;
 
-            self.events.deinit(gpa);
-            self.frame_arena.deinit();
+            self.deinitOwned();
             self.gpu.deinit();
             self.platform.deinit();
             self.os.deinit();
             gpa.destroy(self);
+        }
+
+        /// Everything the engine struct itself owns, in reverse order of construction.
+        ///
+        /// Separate from `deinit` because a failed `init` has to undo exactly this much and
+        /// no more: the subsystems below have their own `errdefer`s already.
+        ///
+        /// **The asset registry goes first, and its loaders must still be alive.** It
+        /// unloads through them, and a game whose renderer is about to go should have
+        /// called `assets.unregisterLoader` before tearing it down — which hands everything
+        /// back while there is still something to hand it to.
+        fn deinitOwned(self: *Self) void {
+            const gpa = self.gpa;
+
+            self.assets.deinit(gpa);
+            self.store.deinit(gpa);
+            self.schemas.deinit(gpa);
+            for (self.package_bytes.items) |bytes| gpa.free(bytes);
+            self.package_bytes.deinit(gpa);
+            gpa.free(self.content_dir);
+            self.events.deinit(gpa);
+            self.frame_arena.deinit();
+        }
+
+        // -- content -------------------------------------------------------------------
+
+        /// Loads every configured package, in the order given, and mounts its files.
+        ///
+        /// **This is I3, and it is deliberately unremarkable code.** The engine's own
+        /// package goes through `store.add` exactly as a mod's does — same reader, same
+        /// validation, same merge — because the only durable way to know the mod path works
+        /// is to be on it ourselves.
+        fn loadContent(self: *Self, config: Config) InitError!void {
+            const gpa = self.gpa;
+
+            // The record types the engine can load, before any package that uses them. A
+            // package carrying its own copy of one is checked against these rather than
+            // trusted (`content-schemas.md` §3).
+            asset.schemas.registerAll(gpa, &self.schemas) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    log.warn("the engine's own asset schemas were refused: {t}", .{err});
+                    return error.ContentUnavailable;
+                },
+            };
+            if (config.content.len == 0) return;
+
+            var diags: data.Diagnostics = .init(gpa, .default);
+            defer diags.deinit(gpa);
+
+            for (config.content) |pkg| {
+                self.loadPackage(pkg, config.max_package_bytes, &diags) catch |err| {
+                    reportContent(&diags);
+                    return err;
+                };
+            }
+            reportContent(&diags);
+
+            log.info("content: {d} package(s), {d} record(s), from '{s}'", .{
+                self.store.packageCount(),
+                self.store.count(),
+                self.content_dir,
+            });
+        }
+
+        fn loadPackage(
+            self: *Self,
+            pkg: ContentPackage,
+            max_bytes: usize,
+            diags: *data.Diagnostics,
+        ) InitError!void {
+            const gpa = self.gpa;
+
+            const path = joinUnder(gpa, self.content_dir, pkg.file) catch |err| return err;
+            defer gpa.free(path);
+
+            // Reported at `warn` and returned as an error, which is the convention the
+            // asset registry already follows: the returned error is the signal and the log
+            // line is the context. It is also what keeps these paths testable — the test
+            // runner counts an `err`-level log as a failed test, so a failure nothing can
+            // exercise is a failure nothing checks.
+            const bytes = self.os.readFile(gpa, path, max_bytes) catch |err| {
+                log.warn("content package '{s}' could not be read: {t}", .{ path, err });
+                return error.ContentUnavailable;
+            };
+            // Appended before the store can borrow it, so the failure path frees it once
+            // and `deinitOwned` frees it once, never both.
+            try self.package_bytes.append(gpa, bytes);
+
+            const handle = self.store.add(gpa, pkg.file, bytes, &self.schemas, diags) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.PackageRejected => {
+                    log.warn("content package '{s}' was refused", .{pkg.file});
+                    return error.ContentUnavailable;
+                },
+            };
+
+            const root = joinUnder(gpa, self.content_dir, pkg.root) catch |err| return err;
+            defer gpa.free(root);
+            try self.assets.mount(gpa, handle, root);
+        }
+
+        /// Puts whatever the content pipeline had to say into the log, and clears it.
+        ///
+        /// One line each rather than the caret-and-source rendering `fpack` prints: a
+        /// running game's log is a stream of lines, and the tool that can show a caret is
+        /// the one whose job it is.
+        fn reportContent(diags: *data.Diagnostics) void {
+            for (diags.items.items) |d| {
+                switch (d.severity) {
+                    .err => log.err("content: {f}: {s}", .{ d.location, d.message }),
+                    .warning => log.warn("content: {f}: {s}", .{ d.location, d.message }),
+                    .note => log.info("content: {f}: {s}", .{ d.location, d.message }),
+                }
+            }
+            if (diags.suppressed > 0) {
+                log.err("content: {d} further diagnostic(s) not shown", .{diags.suppressed});
+            }
+            diags.items.clearRetainingCapacity();
+            diags.suppressed = 0;
+        }
+
+        /// Joins a configured name onto the content directory.
+        ///
+        /// `joinPath`'s wider error set collapses here: out of memory is out of memory, and
+        /// everything else means the configured location is unusable, which is the same
+        /// answer as a package that will not open.
+        fn joinUnder(gpa: Allocator, dir: []const u8, name: []const u8) InitError![]u8 {
+            return platform.os.joinPath(gpa, &.{ dir, name }) catch |err| switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                else => {
+                    log.warn("content location '{s}/{s}' is not a usable path", .{ dir, name });
+                    return error.ContentUnavailable;
+                },
+            };
+        }
+
+        /// Where content lives: what the caller said, or `../content` beside the executable.
+        ///
+        /// Beside the executable rather than beside the working directory, because a game
+        /// is launched from anywhere and its content is part of its installation. `zig
+        /// build` installs to exactly this shape.
+        fn resolveContentDir(gpa: Allocator, os: *platform.Os, config: Config) InitError![]u8 {
+            if (config.content_dir) |dir| return gpa.dupe(u8, dir);
+
+            const exe_dir = os.executableDirAlloc(gpa) catch |err| {
+                log.warn("cannot locate the executable to find content beside it: {t}", .{err});
+                return error.ContentUnavailable;
+            };
+            defer gpa.free(exe_dir);
+
+            // `<prefix>/bin/..` rather than a literal "..", so the path in a log line is
+            // one a person can read back to us.
+            const prefix = std.fs.path.dirname(exe_dir) orelse exe_dir;
+            return platform.os.joinPath(gpa, &.{ prefix, "content" }) catch |err| switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                else => error.ContentUnavailable,
+            };
         }
 
         // -- the frame -------------------------------------------------------------
@@ -443,6 +679,112 @@ fn testEngine(config: Config) !*TestEngine {
     var c = config;
     c.headless = true;
     return TestEngine.init(testing.allocator, c);
+}
+
+/// A content directory with one compiled package in it, laid out the way `zig build`
+/// installs one.
+///
+/// Written to a real temporary directory rather than faked, because the thing under test is
+/// precisely the part that reads a disk: everything below `app` is already hermetic.
+const ContentFixture = struct {
+    os: *platform.Os,
+    dir: []u8,
+
+    fn init(source: []const u8) !ContentFixture {
+        const gpa = testing.allocator;
+        const os = try platform.Os.init(gpa, .{ .app_name = "foundry-app-test", .env = &.{} });
+        errdefer os.deinit();
+
+        const temp = try os.tempDirAlloc(gpa);
+        defer gpa.free(temp);
+        const dir = try platform.os.joinPath(gpa, &.{ temp, "foundry-app-content" });
+        errdefer gpa.free(dir);
+        try os.createDirPath(dir);
+
+        var registry: data.Registry = .init(gpa, .default);
+        defer registry.deinit(gpa);
+        var diags: data.Diagnostics = .init(gpa, .default);
+        defer diags.deinit(gpa);
+
+        var doc = try data.parser.parse(gpa, "test.fdt", source, .{ .namespace = "foundry" }, &diags);
+        defer doc.deinit(gpa);
+        var pkg = try data.check.Package.init(gpa, "foundry:core", 1, .default);
+        defer pkg.deinit(gpa);
+        try pkg.addDocument(gpa, &doc, &registry, &diags);
+
+        var bytes: std.ArrayList(u8) = .empty;
+        defer bytes.deinit(gpa);
+        try data.fpk.write(gpa, &pkg, &registry, &bytes);
+
+        const path = try platform.os.joinPath(gpa, &.{ dir, "core.fpk" });
+        defer gpa.free(path);
+        try os.writeFile(path, bytes.items);
+
+        return .{ .os = os, .dir = dir };
+    }
+
+    fn deinit(self: *ContentFixture) void {
+        testing.allocator.free(self.dir);
+        self.os.deinit();
+    }
+};
+
+const content_source =
+    \\@schema settings { sprites u32 (default 10) }
+    \\settings foundry:settings.main { sprites 42 }
+;
+
+test "the engine loads package zero, and it is an ordinary package" {
+    var fx = try ContentFixture.init(content_source);
+    defer fx.deinit();
+
+    const engine = try testEngine(.{
+        .content_dir = fx.dir,
+        .content = &.{.{ .file = "core.fpk", .root = "." }},
+    });
+    defer engine.deinit();
+
+    // I3: nothing about this is special. The store took it through the same call a mod's
+    // package goes through, and the record is addressable by the name someone wrote.
+    try testing.expectEqual(@as(u32, 1), engine.store.packageCount());
+    const record = engine.store.lookup(core.ContentId.fromString("foundry:settings.main")).?;
+    const index = record.schema.fieldIndex("sprites").?;
+    try testing.expectEqual(@as(?i128, 42), try record.fields.intAt(index));
+
+    // And the package's files are mounted, so an asset in it would be findable.
+    try testing.expect(engine.assets.rootOf(engine.store.loadOrder()[0]) != null);
+}
+
+test "the engine's own asset schemas are registered before any package is" {
+    const engine = try testEngine(.{});
+    defer engine.deinit();
+
+    // Registered even with no content configured: a package that arrives later — through
+    // hot reload, or a mod — is checked against them rather than defining them.
+    try testing.expect(engine.schemas.lookup(asset.schemas.texture.id) != null);
+    try testing.expectEqual(@as(u32, 0), engine.store.packageCount());
+}
+
+test "a package that is not there stops startup and says which one" {
+    var fx = try ContentFixture.init(content_source);
+    defer fx.deinit();
+
+    // Package zero missing is not a state a game carries on from, so it is an error at
+    // `init` rather than a surprise at the first `acquire`.
+    try testing.expectError(error.ContentUnavailable, testEngine(.{
+        .content_dir = fx.dir,
+        .content = &.{.{ .file = "absent.fpk", .root = "." }},
+    }));
+
+    // And a good package followed by a bad one fails the same way: half a load order is
+    // not a state worth being able to describe.
+    try testing.expectError(error.ContentUnavailable, testEngine(.{
+        .content_dir = fx.dir,
+        .content = &.{
+            .{ .file = "core.fpk", .root = "." },
+            .{ .file = "absent.fpk", .root = "." },
+        },
+    }));
 }
 
 test "an engine comes up and goes down without leaking" {

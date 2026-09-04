@@ -283,9 +283,11 @@ Foundry/
 
   samples/
     sandbox/             The runnable app every milestone must keep working.
+      content/           Its own content package, as a game has one.
 
   content/
-    core/                Base content package. Package zero (I3).
+    core/                Base content package. Package zero (I3). Engine content
+                         only; a sample's or a game's belongs to it, not here.
 
   THIRD_PARTY_LICENSES/  One file per dependency. Entry lands in the same commit
                          as the dependency. See its README for the policy.
@@ -300,7 +302,8 @@ and I5 exist to prevent.
 
 `samples/` holds the smallest thing that exercises a capability. A sample is not a game. When
 a sample starts wanting features rather than demonstrating them, it has outgrown this
-repository.
+repository. A sample does, however, ship its **own** content package, because that is the
+shape a real consumer has and the sample is the reference for one.
 
 ---
 

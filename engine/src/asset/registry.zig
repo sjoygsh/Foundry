@@ -22,7 +22,9 @@
 //! own GPU textures while this module (L2) knows nothing about a GPU.
 //!
 //! **Deinit order matters and is not enforceable from here:** the registry must be torn
-//! down *before* whatever registered the loaders, because its `deinit` calls them.
+//! down *before* whatever registered the loaders, because its `deinit` calls them. A loader's
+//! owner that has to go first calls `unregisterLoader`, which hands everything it made back
+//! to it while it is still there to receive it.
 //!
 //! Everything here reads files named by content, which means content from mods, which means
 //! **untrusted input**: validated and refused, never asserted.
@@ -149,8 +151,11 @@ pub const Registry = struct {
     options: Options,
 
     /// Linear, because there are a handful of asset kinds and a lookup happens once per
-    /// load rather than once per frame. Append-only, so an index into it is stable.
-    loaders: std.ArrayList(Loader) = .empty,
+    /// load rather than once per frame. Append-only, and a withdrawn loader leaves a
+    /// vacancy rather than closing the gap, so an index into it is stable forever — an
+    /// entry remembers which loader made its payload, and the answer must not shift under
+    /// it.
+    loaders: std.ArrayList(?Loader) = .empty,
     roots: std.AutoHashMapUnmanaged(PackageHandle, []const u8) = .empty,
 
     entries: core.HandlePool(Assets, Entry) = .empty,
@@ -178,7 +183,7 @@ pub const Registry = struct {
     pub fn deinit(self: *Registry, gpa: Allocator) void {
         var it = self.entries.iterator();
         while (it.next()) |entry| {
-            const loader = self.loaders.items[entry.value.loader];
+            const loader = self.loaders.items[entry.value.loader].?;
             loader.unload(loader.ctx, gpa, entry.value.payload);
         }
         self.entries.deinit(gpa);
@@ -197,8 +202,48 @@ pub const Registry = struct {
         try self.loaders.append(gpa, loader);
     }
 
+    /// Whether a record type has a loader right now.
+    pub fn hasLoader(self: *const Registry, schema_id: SchemaId) bool {
+        return self.loaderIndex(schema_id) != null;
+    }
+
+    /// Withdraws a loader and unloads everything it made, whatever the reference counts.
+    ///
+    /// **The way a loader's owner leaves safely.** A payload belongs to whoever made it, so
+    /// a renderer that is about to shut down cannot simply stop answering: anything it
+    /// loaded has to go back to it *first*, while it still exists. Doing that here rather
+    /// than leaving it to teardown order means the rule is a call a caller can make, not a
+    /// comment a caller can miss.
+    ///
+    /// Returns how many assets were unloaded. Nothing if no such loader is registered.
+    pub fn unregisterLoader(self: *Registry, gpa: Allocator, schema_id: SchemaId) u32 {
+        const index = self.loaderIndex(schema_id) orelse return 0;
+        const loader = self.loaders.items[index].?;
+
+        var unloaded: u32 = 0;
+        var it = self.entries.iterator();
+        while (it.next()) |entry| {
+            if (entry.value.loader != index) continue;
+            if (entry.value.refs != 0) {
+                log.warn("asset {f} is still held; unloading it with its loader", .{entry.value.id});
+            }
+            loader.unload(loader.ctx, gpa, entry.value.payload);
+            _ = self.by_id.remove(entry.value.id.hash);
+            _ = self.entries.remove(entry.id);
+            unloaded += 1;
+        }
+
+        self.loaders.items[index] = null;
+        return unloaded;
+    }
+
+    /// How many loaders are registered. Withdrawn ones do not count.
     pub fn loaderCount(self: *const Registry) u32 {
-        return @intCast(self.loaders.items.len);
+        var live: u32 = 0;
+        for (self.loaders.items) |slot| {
+            if (slot != null) live += 1;
+        }
+        return live;
     }
 
     /// Says where a loaded package's files live, so `source` can be resolved against it.
@@ -265,7 +310,7 @@ pub const Registry = struct {
         const bytes = try self.readSource(gpa, record);
         defer gpa.free(bytes);
 
-        const loader = self.loaders.items[loader_index];
+        const loader = self.loaders.items[loader_index].?;
         const payload = try loader.load(loader.ctx, gpa, record, bytes);
         errdefer loader.unload(loader.ctx, gpa, payload);
 
@@ -336,7 +381,7 @@ pub const Registry = struct {
         var it = self.entries.iterator();
         while (it.next()) |entry| {
             if (entry.value.refs != 0) continue;
-            const loader = self.loaders.items[entry.value.loader];
+            const loader = self.loaders.items[entry.value.loader].?;
             loader.unload(loader.ctx, gpa, entry.value.payload);
             _ = self.by_id.remove(entry.value.id.hash);
             _ = self.entries.remove(entry.id);
@@ -348,7 +393,8 @@ pub const Registry = struct {
     // -- internals ---------------------------------------------------------------------
 
     fn loaderIndex(self: *const Registry, schema_id: SchemaId) ?u32 {
-        for (self.loaders.items, 0..) |loader, i| {
+        for (self.loaders.items, 0..) |slot, i| {
+            const loader = slot orelse continue;
             if (loader.schema.eql(schema_id)) return @intCast(i);
         }
         return null;
@@ -768,6 +814,40 @@ test "one loader per record type; adding is not replacing" {
         fx.texture_loader.loader(schemas.texture.id),
     ));
     try testing.expectEqual(@as(u32, 1), fx.registry.loaderCount());
+}
+
+test "a loader's owner can leave, taking everything it made with it" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+
+    try fx.writeFile("textures/sprites.png", &one_pixel_png);
+    _ = try fx.addPackage("foundry:core", one_texture);
+    try fx.registerTextureLoader();
+
+    // Deliberately still held. A renderer shutting down cannot wait for its callers to
+    // tidy up, and unloading through a loader that has already gone is the crash this
+    // call exists to make impossible.
+    _ = try fx.registry.acquire(fx.gpa, sprites_id);
+
+    try testing.expectEqual(@as(u32, 1), fx.registry.unregisterLoader(fx.gpa, schemas.texture.id));
+    try testing.expectEqual(@as(u32, 1), fx.texture_loader.unloads);
+    try testing.expectEqual(@as(u32, 0), fx.registry.count());
+    try testing.expectEqual(@as(u32, 0), fx.registry.loaderCount());
+    try testing.expect(!fx.registry.hasLoader(schemas.texture.id));
+
+    // The record type is unclaimed again, so acquiring says exactly that.
+    try testing.expectError(error.NoLoader, fx.registry.acquire(fx.gpa, sprites_id));
+
+    // Withdrawing something that was never there is not an error.
+    try testing.expectEqual(@as(u32, 0), fx.registry.unregisterLoader(fx.gpa, schemas.texture.id));
+
+    // And the slot it left does not shift the indices of loaders registered after it: a
+    // second loader goes in, loads, and unloads through itself.
+    try fx.registerTextureLoader();
+    const again = try fx.registry.acquire(fx.gpa, sprites_id);
+    fx.registry.release(again);
+    try testing.expectEqual(@as(u32, 1), fx.registry.evictUnused(fx.gpa));
+    try testing.expectEqual(@as(u32, 2), fx.texture_loader.unloads);
 }
 
 test "a mod's texture overrides the base game's, and the loader is handed the winner" {

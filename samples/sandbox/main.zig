@@ -22,6 +22,7 @@ const builtin = @import("builtin");
 const app = @import("app");
 const core = @import("core");
 const asset = @import("asset");
+const data = @import("data");
 const platform = @import("platform");
 const render2d = @import("render2d");
 const rhi = @import("rhi");
@@ -30,6 +31,70 @@ const rhi = @import("rhi");
 pub const std_options = app.std_options;
 
 const log = core.log.scoped(.sandbox);
+
+/// What the sandbox loads, **in load order**.
+///
+/// Package zero first (I3): Foundry's own content, through the same call and the same
+/// format the sample's package uses. Then the sample's own, which is what a game ships —
+/// and where anything the sample draws is described.
+///
+/// Both are compiled by `fpack` during the build and installed under `<prefix>/content`,
+/// which is where the engine looks by default. A third package placed after these
+/// overrides either of them by content id, without knowing where their files are.
+const content_packages = [_]app.ContentPackage{
+    .{ .file = "core.fpk", .root = "core" },
+    .{ .file = "sandbox.fpk", .root = "sandbox" },
+};
+
+/// The built-ins, plus whatever `FOUNDRY_SANDBOX_PACKAGES` names, in that order.
+///
+/// **This is the mod path, with no mod manager in front of it.** Compile a package with
+/// `fpack` into `<prefix>/content`, name it here, and it loads after the base game and
+/// overrides by content id — which is the whole of Tier 1 modding working long before the
+/// mod system exists (CLAUDE.md §5). Discovering packages rather than being told about
+/// them is M7's job, and a sample inventing a discovery rule would be answering it early.
+///
+/// The result borrows nothing from the caller and is freed by it. `Engine.init` copies
+/// what it keeps.
+fn contentPackages(gpa: std.mem.Allocator, env: []const platform.os.EnvVar) ![]app.ContentPackage {
+    var list: std.ArrayList(app.ContentPackage) = .empty;
+    errdefer freePackages(gpa, list.items);
+    errdefer list.deinit(gpa);
+
+    for (content_packages) |pkg| try list.append(gpa, .{
+        .file = try gpa.dupe(u8, pkg.file),
+        .root = try gpa.dupe(u8, pkg.root),
+    });
+
+    const extra = for (env) |v| {
+        if (std.mem.eql(u8, v.name, "FOUNDRY_SANDBOX_PACKAGES")) break v.value;
+    } else return list.toOwnedSlice(gpa);
+
+    var it = std.mem.splitScalar(u8, extra, ',');
+    while (it.next()) |raw| {
+        const name = std.mem.trim(u8, raw, " ");
+        if (name.len == 0) continue;
+        // A location, not an identity, and therefore checked as one: a stem that could
+        // climb out of the content directory is refused rather than joined.
+        if (!platform.os.isSafeRelativePath(name)) {
+            log.warn("FOUNDRY_SANDBOX_PACKAGES: '{s}' is not a package name", .{name});
+            continue;
+        }
+        log.info("extra content package: '{s}'", .{name});
+        try list.append(gpa, .{
+            .file = try std.fmt.allocPrint(gpa, "{s}.fpk", .{name}),
+            .root = try gpa.dupe(u8, name),
+        });
+    }
+    return list.toOwnedSlice(gpa);
+}
+
+fn freePackages(gpa: std.mem.Allocator, packages: []const app.ContentPackage) void {
+    for (packages) |pkg| {
+        gpa.free(pkg.file);
+        gpa.free(pkg.root);
+    }
+}
 
 /// The null platform backend has no window and no way to deliver a quit event, so a
 /// headless run bounds itself instead of hanging forever. Overridable so that a windowed
@@ -49,6 +114,12 @@ pub fn main(init: std.process.Init) !void {
     // was built against rather than discovering it by failing.
     const headless = platform.backend == .null;
 
+    const packages = try contentPackages(gpa, env);
+    defer {
+        freePackages(gpa, packages);
+        gpa.free(packages);
+    }
+
     var engine = try app.Engine.init(gpa, .{
         .env = env,
         .app_name = "foundry-sandbox",
@@ -61,14 +132,16 @@ pub fn main(init: std.process.Init) !void {
             .logical_height = 720,
             .surface = wanted_surface,
         },
+        .content = packages,
     });
     defer engine.deinit();
 
     // The renderer and its sprites, created once and torn down explicitly. Unlike M1's
     // quad, this *does* have a teardown: `Renderer.deinit` idles the device first, which
     // is what `rhi.waitIdle` was added for.
-    var field = try SpriteField.init(gpa, engine.gpu, spriteCount(engine));
-    defer field.deinit();
+    var field = try SpriteField.init(gpa, engine.gpu);
+    defer field.deinit(engine);
+    try field.load(engine);
     field.pick_every = everyFrames(engine, "FOUNDRY_SANDBOX_PICK_EVERY");
 
     const frame_limit = frameLimit(engine, headless);
@@ -198,26 +271,73 @@ pub fn main(init: std.process.Init) !void {
     });
 }
 
-/// The sprite sheet the sandbox draws with, embedded rather than loaded from disk.
+/// Everything the sample draws with, read from content rather than written here.
 ///
-/// **Still embedded, and this is the last milestone it will be.** The asset registry now
-/// exists and would take `foundry:textures.sprites` today; what does not exist yet is
-/// `content/core` as package zero, which is M3 step 9 and is the step that proves the mod
-/// path by making the base game use it (I3). Moving the sheet into the content system
-/// before there is a package to put it in would be inventing a private path for it.
-const sprite_sheet_png = @embedFile("assets/sprites.png");
+/// **This is the sample's half of I3.** The sandbox ships its own package —
+/// `samples/sandbox/content/`, compiled to `sandbox.fpk` — loaded after Foundry's package
+/// zero through the same call, with no privileged path either way. A game does exactly
+/// this, which is what makes the sample worth having as a reference (ADR-0017).
+///
+/// Nothing here is a path. The record names two asset ids and the registry answers; the
+/// sample cannot ask what is at a path even if it wanted to (ADR-0021).
+const Settings = struct {
+    sprites: u32,
+    grid: u32,
+    /// Borrowed from the package's own bytes, which the engine keeps for its lifetime.
+    banner: []const u8,
+    sheet: core.ContentId,
+    font: core.ContentId,
 
-/// The sandbox's font: 95 glyphs on a 16-by-6 grid of 8-pixel cells, ASCII 32 to 126.
-///
-/// **Ours, drawn as ASCII art and generated by `scripts/make-sandbox-font.py`** — which is
-/// in the repository so the glyphs have a source rather than only a PNG. No third-party
-/// asset and so no licence entry, which is the cheapest way to satisfy the permissive-only
-/// policy (ADR-0016).
-///
-/// `render2d` ships no glyphs (I5): a font is an asset the game supplies. The M6 debug
-/// overlay will need one too, and the answer to where it comes from has to be "the same
-/// place this one does" (I3, I4).
-const font_png = @embedFile("assets/font.png");
+    /// Where the record is, and the only content id spelled in this file. Everything else
+    /// the sample draws is reached through it.
+    const id = "sandbox:settings.main";
+
+    const fallback: Settings = .{
+        .sprites = 4000,
+        .grid = 4,
+        .banner = "",
+        .sheet = .none,
+        .font = .none,
+    };
+
+    /// Reads the record, falling back field by field.
+    ///
+    /// **Content is untrusted, including our own** (CLAUDE.md §5). A package that a mod has
+    /// replaced can be missing, malformed or a different shape, and none of that is a
+    /// reason for a sample to crash — so every read has an answer and a bad one is a log
+    /// line, not an assertion.
+    fn read(engine: *app.Engine) Settings {
+        const record = engine.store.lookup(core.ContentId.fromString(id)) orelse {
+            log.err("'{s}' is not in any loaded package; drawing defaults", .{id});
+            return fallback;
+        };
+
+        return .{
+            .sprites = intField(record, "sprites", fallback.sprites),
+            .grid = intField(record, "grid", fallback.grid),
+            .banner = stringField(record, "banner", fallback.banner),
+            .sheet = idField(record, "sheet"),
+            .font = idField(record, "font"),
+        };
+    }
+
+    fn intField(record: data.store.Record, name: []const u8, fallback_value: u32) u32 {
+        const index = record.schema.fieldIndex(name) orelse return fallback_value;
+        const value = (record.fields.intAt(index) catch null) orelse return fallback_value;
+        if (value < 0 or value > std.math.maxInt(u32)) return fallback_value;
+        return @intCast(value);
+    }
+
+    fn stringField(record: data.store.Record, name: []const u8, fallback_value: []const u8) []const u8 {
+        const index = record.schema.fieldIndex(name) orelse return fallback_value;
+        return (record.fields.stringAt(index) catch null) orelse fallback_value;
+    }
+
+    fn idField(record: data.store.Record, name: []const u8) core.ContentId {
+        const index = record.schema.fieldIndex(name) orelse return .none;
+        return (record.fields.idAt(index) catch null) orelse .none;
+    }
+};
 
 /// A field of sprites, which is the thing M2 exists to make possible.
 ///
@@ -233,22 +353,29 @@ const font_png = @embedFile("assets/font.png");
 const SpriteField = struct {
     gpa: std.mem.Allocator,
     renderer: render2d.Renderer,
-    /// Everything the sample draws lives in one atlas, which is the whole point of having
-    /// one: the batcher breaks a batch on a texture change, and after packing there are no
-    /// texture changes left to break on. Sprites, glyphs and the selection outline are one
-    /// draw call between them.
-    atlas: render2d.AtlasHandle,
-    /// The 4x4 sprite sheet, as a region of the atlas. Cells come from `Region.sub`, which
-    /// cuts in the *region's* pixel space — so this code is identical whether the sheet is
-    /// packed or standalone.
-    sheet: render2d.Region,
-    /// The interior of an 8-pixel white patch, built in memory rather than loaded.
-    /// Stretched into thin quads it draws the selection outline.
+    settings: Settings,
+
+    /// The two assets, held as **asset** handles rather than texture handles.
     ///
-    /// The interior, not the whole patch, and that is the atlas lesson worth having: UVs
-    /// interpolate to a region's edges, and in an atlas the texel past an edge belongs to
-    /// somebody else. Addressing the middle four pixels of an eight-pixel patch means a
-    /// sample that strays lands on more white.
+    /// What the registry gave out is what it takes back, and holding the asset handle is
+    /// what keeps the reference count honest. The texture handle is derived from it where
+    /// it is needed, which is also how hot reload will get to swap one without this struct
+    /// noticing (step 10).
+    sheet_asset: asset.AssetHandle,
+    font_asset: asset.AssetHandle,
+
+    /// The sheet's grid, as a region. Cells come from `Region.sub`, which cuts in the
+    /// *region's* pixel space — so this code is identical whether the sheet is standalone
+    /// or packed into something larger later.
+    sheet: render2d.Region,
+    /// An 8-pixel white patch, built in memory rather than loaded, stretched into thin
+    /// quads to draw the selection outline and the HUD panels.
+    ///
+    /// **Not content, and that is the point.** A game generating an image at runtime is a
+    /// capability worth keeping exercised, and `createTexture` takes an `asset.Image`
+    /// whatever made it. The sample addresses the middle four pixels of the eight rather
+    /// than the whole thing, so a sample that strays lands on more white.
+    blank_texture: render2d.TextureHandle,
     blank: render2d.Region,
     font: render2d.BitmapFont,
     seeds: []Seed,
@@ -276,13 +403,6 @@ const SpriteField = struct {
         blend: render2d.BlendMode,
     };
 
-    /// The sheet is a 4x4 grid, so a cell is a quarter of the sheet in each axis.
-    const grid: u32 = 4;
-
-    /// Big enough for everything the sample packs, and no bigger. Its fill is logged at
-    /// startup, which is the number that says whether that is still true.
-    const atlas_size: render2d.Extent2D = .{ .width = 512, .height = 512 };
-
     /// Screen points. The HUD is placed in the same units the mouse is reported in, which
     /// is what the screen view buys.
     const hud_margin: f32 = 12;
@@ -298,52 +418,94 @@ const SpriteField = struct {
     const pan_speed: f32 = 700;
     const fast_pan_speed: f32 = 2400;
 
-    fn init(gpa: std.mem.Allocator, device: *rhi.Device, count: u32) !SpriteField {
+    /// The renderer and nothing else. Content arrives in `load`, which needs this struct
+    /// to already be where it is going to live.
+    fn init(gpa: std.mem.Allocator, device: *rhi.Device) !SpriteField {
         var renderer = try render2d.Renderer.init(gpa, device, .{
             .frames_in_flight = 2,
         });
         errdefer renderer.deinit();
 
-        const atlas = try renderer.createAtlas(atlas_size, .{
-            .label = "sandbox atlas",
-            // Nearest, so scaling up shows the sheet's pixels rather than a blur. The
-            // default, spelled out because it is the interesting choice. It applies to the
-            // whole atlas, which is a real constraint: two images needing different
-            // filtering cannot share one.
-            .filter = .nearest,
-        });
-        errdefer renderer.destroyAtlas(atlas);
+        return .{
+            .gpa = gpa,
+            .renderer = renderer,
+            .settings = Settings.fallback,
+            .sheet_asset = .none,
+            .font_asset = .none,
+            .sheet = .{ .texture = .none, .uv = .{}, .size_px = .{} },
+            .blank_texture = .none,
+            .blank = .{ .texture = .none, .uv = .{}, .size_px = .{} },
+            .font = .{
+                .glyphs = .{ .texture = .none, .uv = .{}, .size_px = .{} },
+                .cell = .{ .width = 8, .height = 8 },
+                .columns = 16,
+                .glyph_count = 95,
+            },
+            .seeds = &.{},
+            .camera = .{ .viewport = .init(0, 0, 1280, 720) },
+        };
+    }
 
-        // The engine's own decoder, on the engine's own content (ADR-0018).
-        var image = try asset.png.decode(gpa, sprite_sheet_png, .{});
-        defer image.deinit(gpa);
-        const sheet = try renderer.atlasAdd(atlas, image);
+    /// Registers the texture loader, reads the settings record, and acquires what it names.
+    ///
+    /// **Separate from `init` because the loader borrows `&self.renderer`**, and a renderer
+    /// returned by value has not reached its final address yet. Registering against a
+    /// pointer into a temporary is a bug that would work for a while.
+    ///
+    /// This is also the whole of what a game does with the asset system: hand up the loader
+    /// that knows what a texture is, then ask for content ids. It never names a file.
+    fn load(self: *SpriteField, engine: *app.Engine) !void {
+        const gpa = self.gpa;
 
-        var glyphs = try asset.png.decode(gpa, font_png, .{});
-        defer glyphs.deinit(gpa);
-        const font: render2d.BitmapFont = .{
-            .glyphs = try renderer.atlasAdd(atlas, glyphs),
+        // The capability points up, the dependency points down (I6). `app` has no
+        // `render2d`, so the engine could not have done this itself — and a mod adding an
+        // asset kind the engine has never heard of makes exactly this call.
+        try engine.assets.registerLoader(gpa, render2d.textureLoader(&self.renderer));
+
+        self.settings = Settings.read(engine);
+
+        self.sheet_asset = try engine.assets.acquire(gpa, self.settings.sheet);
+        self.sheet = self.renderer.textureRegion(self.textureOf(engine, self.sheet_asset)).?;
+
+        self.font_asset = try engine.assets.acquire(gpa, self.settings.font);
+        self.font = .{
+            .glyphs = self.renderer.textureRegion(self.textureOf(engine, self.font_asset)).?,
             .cell = .{ .width = 8, .height = 8 },
             .columns = 16,
             .first_codepoint = ' ',
             .glyph_count = 95,
         };
 
-        // An image from memory, not from a file: `atlasAdd` takes an `asset.Image` and
-        // does not care where it came from, which is what lets a game generate one.
+        // An image from memory, not from a file: `createTexture` takes an `asset.Image`
+        // and does not care what made it, which is what lets a game generate one.
         var white = try asset.Image.alloc(gpa, 8, 8);
         defer white.deinit(gpa);
         @memset(white.pixels, 0xFF);
-        const patch = try renderer.atlasAdd(atlas, white);
-        const blank = patch.sub(2, 2, 4, 4);
+        self.blank_texture = try self.renderer.createTexture(white, .{ .label = "sandbox blank" });
+        self.blank = self.renderer.textureRegion(self.blank_texture).?.sub(2, 2, 4, 4);
 
-        log.info("atlas {d}x{d}: sheet {d}x{d}, font {d}x{d}, {d:.1}% full", .{
-            atlas_size.width,                           atlas_size.height,
-            image.width,                                image.height,
-            glyphs.width,                               glyphs.height,
-            (renderer.atlasFill(atlas) orelse 0) * 100,
+        const count = spriteCount(engine, self.settings.sprites);
+        log.info("content: sheet {d}x{d}, glyphs {d}x{d}, {d} sprites, grid {d}", .{
+            self.sheet.size_px.width,       self.sheet.size_px.height,
+            self.font.glyphs.size_px.width, self.font.glyphs.size_px.height,
+            count,                          self.settings.grid,
         });
 
+        try self.makeSeeds(count);
+    }
+
+    /// The texture behind an asset handle.
+    ///
+    /// The registry holds a loader's product as one opaque word and never looks inside; the
+    /// module that put a `TextureHandle` there is the one that may take it back out.
+    fn textureOf(self: *SpriteField, engine: *app.Engine, handle: asset.AssetHandle) render2d.TextureHandle {
+        _ = self;
+        const payload = engine.assets.payloadOf(handle) orelse return .none;
+        return payload.asHandle(render2d.TextureHandle);
+    }
+
+    fn makeSeeds(self: *SpriteField, count: u32) !void {
+        const gpa = self.gpa;
         const seeds = try gpa.alloc(Seed, count);
         errdefer gpa.free(seeds);
 
@@ -370,19 +532,20 @@ const SpriteField = struct {
             };
         }
 
-        return .{
-            .gpa = gpa,
-            .renderer = renderer,
-            .atlas = atlas,
-            .sheet = sheet,
-            .blank = blank,
-            .font = font,
-            .seeds = seeds,
-            .camera = .{ .viewport = .init(0, 0, 1280, 720) },
-        };
+        self.seeds = seeds;
     }
 
-    fn deinit(self: *SpriteField) void {
+    /// **The asset loader goes back before the renderer does.**
+    ///
+    /// `unregisterLoader` hands every texture this renderer made back to it while it still
+    /// exists. Without it the engine's registry would unload through a `*Renderer` that had
+    /// already been torn down — a teardown-order bug the compiler cannot see, and the
+    /// reason that call exists.
+    fn deinit(self: *SpriteField, engine: *app.Engine) void {
+        engine.assets.release(self.sheet_asset);
+        engine.assets.release(self.font_asset);
+        _ = engine.assets.unregisterLoader(self.gpa, asset.schemas.texture.id);
+
         self.gpa.free(self.seeds);
         self.renderer.deinit();
     }
@@ -398,8 +561,9 @@ const SpriteField = struct {
         const angle = seed.phase + seconds * seed.speed;
 
         // In the sheet's own pixels, not the atlas's. `Region.sub` is what makes that
-        // possible, and it is why packing the sheet into an atlas changed this line from
-        // dividing by four to dividing by four.
+        // possible, and it is why the sheet being its own texture rather than part of
+        // something larger changes nothing here.
+        const grid = @max(self.settings.grid, 1);
         const cell_w = self.sheet.size_px.width / grid;
         const cell_h = self.sheet.size_px.height / grid;
         const cell = self.sheet.sub(
@@ -661,7 +825,8 @@ const SpriteField = struct {
     /// deliberately the other kind. On-screen statistics are a third kind again — they
     /// belong in a screen-space pass, which M2's last step is about.
     fn banner(self: *SpriteField) !void {
-        try self.renderer.drawText(self.font, "foundry sandbox\nworld origin", .{
+        if (self.settings.banner.len == 0) return;
+        try self.renderer.drawText(self.font, self.settings.banner, .{
             .position = .init(-56, 120),
             .scale = 2,
             .line_spacing = 4,
@@ -749,11 +914,16 @@ fn clearColor(engine: *app.Engine) [4]f32 {
 
 /// How many sprites to draw. Overridable, because "thousands at a stable frame rate" is
 /// M2's exit criterion and a number you cannot change is a number you cannot test.
-fn spriteCount(engine: *app.Engine) u32 {
-    const text = engine.os.envVar("FOUNDRY_SANDBOX_SPRITES") orelse return 4000;
+/// How many sprites to draw: what the content says, unless the environment overrides it.
+///
+/// Content is the answer and the variable is the override, not the other way round. The
+/// variable stays because a scripted run wants to vary the load without editing content,
+/// which is the same reason `FOUNDRY_SANDBOX_RESIZE_EVERY` exists.
+fn spriteCount(engine: *app.Engine, from_content: u32) u32 {
+    const text = engine.os.envVar("FOUNDRY_SANDBOX_SPRITES") orelse return from_content;
     return std.fmt.parseInt(u32, text, 10) catch |err| {
-        log.warn("FOUNDRY_SANDBOX_SPRITES='{s}' is not a count ({t}); using 4000", .{ text, err });
-        return 4000;
+        log.warn("FOUNDRY_SANDBOX_SPRITES='{s}' is not a count ({t}); using {d}", .{ text, err, from_content });
+        return from_content;
     };
 }
 

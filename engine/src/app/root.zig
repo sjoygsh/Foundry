@@ -17,6 +17,7 @@ pub const log_sink = @import("log_sink.zig");
 pub const Engine = engine.Engine;
 pub const EngineOf = engine.EngineOf;
 pub const Config = engine.Config;
+pub const ContentPackage = engine.ContentPackage;
 pub const InitError = engine.InitError;
 pub const Step = engine.Step;
 pub const environment = engine.environment;

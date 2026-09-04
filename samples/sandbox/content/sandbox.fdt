@@ -1,0 +1,32 @@
+# The sandbox's own content package.
+#
+# A game defines its own schemas and ships its own package; this is the smallest honest
+# example of that. It loads after `foundry:core` (package zero), through the same call,
+# with no privileged path either way — which is I3 seen from the consumer's side.
+#
+# Everything the sample would otherwise have written as a Zig constant lives here, so
+# changing what it draws is a content edit rather than a rebuild — and a package placed
+# after this one can override `sandbox:settings.main` and change it again without touching
+# either.
+
+@schema settings {
+    # How many sprites the field holds. The number M2 exists to make interesting.
+    sprites u32 (default 4000)
+    # The sprite sheet is a square grid; this is its side, in cells.
+    grid u32 (default 4)
+    # Drawn in world space at the origin, so the camera moves relative to it.
+    banner string (default "")
+    # Which assets to draw with, by content id. The sample names no paths and no files:
+    # it asks for these two ids and the asset registry answers (ADR-0021).
+    sheet id
+    # From `foundry:core`, not from here. A cross-package reference is an ordinary id.
+    font id
+}
+
+settings sandbox:settings.main {
+    sprites 4000
+    grid    4
+    banner  "foundry sandbox\nworld origin"
+    sheet   sandbox:textures.sprites
+    font    foundry:fonts.debug
+}

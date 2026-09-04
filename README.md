@@ -9,13 +9,13 @@ leave behind something that runs.
 ## Status
 
 **M0, M1 and M2 complete; M3 in progress.** It draws: thousands of sprites under a
-camera that pans, zooms and picks, at vsync, with text. M3 is giving it content — schemas,
-an authoring format, a compiled package format and the tool that turns one into the other.
+camera that pans, zooms and picks, at vsync, with text — and everything it draws is
+content, loaded by content ID from packages the base game and a mod share one path into.
 
 ```sh
 ./scripts/install-zig.sh   # the only tool you need
 zig build run -Drhi=metal  # opens a window and draws; escape quits
-zig build test             # 491 tests
+zig build test             # 495 tests
 ```
 
 Implemented so far:
@@ -31,8 +31,11 @@ Implemented so far:
 * **`asset`** — Foundry's own PNG decoder, and the registry that turns a content ID into a
   loaded asset through loaders registered at runtime. Nothing is addressable by path.
 * **`render2d`** — sprite and text batching, atlases, cameras.
-* **`app`** — the engine loop, subsystem lifecycle, and the log sink.
+* **`app`** — the engine loop, subsystem lifecycle, the log sink, and loading content
+  packages in the order it is given them.
 * **`tools/fpack`** — the content compiler: a package directory in, one `.fpk` out.
+* **`content/core`** — package zero. The engine's own content, loaded through exactly the
+  path a mod's package uses, because that is the only durable way to know that path works.
 
 [PROJECT_STATE.md](PROJECT_STATE.md) records exactly where things stand, and is updated
 every session.

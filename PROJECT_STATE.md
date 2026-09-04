@@ -1,10 +1,10 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-05
-**Updated by:** **M3, step 8.** The asset registry. A content id goes in and a loaded
-payload comes out, through a loader `render2d` registers from above at runtime — so the
-engine can now turn `foundry:textures.sprites` into a GPU texture without anything knowing
-a path. `loadImage` is gone
+**Updated by:** **M3, step 9.** `content/core` is package zero. The engine loads it
+through the same call a mod's package goes through, the sandbox ships a package of its own
+and embeds nothing, and a third package dropped in after them overrides both — an asset and
+a value — without naming a path
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -41,15 +41,16 @@ under a camera driven by keyboard and mouse, with the batcher's own numbers on s
 space that does not move when the camera does — 4 batches and 4 draw calls, because the
 sheet, the font and the selection outline share one atlas.
 
-**Current milestone: M3 — Content: "it has data."** Eight of ten steps done. It started at
+**Current milestone: M3 — Content: "it has data."** Nine of ten steps done. It started at
 the only place it could: its decisions. The first modding-relevant milestone, and it comes due on two of
 `CLAUDE.md` §9's postponed decisions — both now spent, as **ADR-0020** and **ADR-0021**, and
 struck from the §9 table. The two design documents `docs/design/README.md` has owed since M2
 are written, and `data` is built behind them, front to back: text in, checked records out,
 compiled to a package file, merged with other packages by load order — and `fpack` now
 drives the whole of it from a directory. The asset registry sits above it now, and a
-content id resolves all the way to a GPU texture. What remains is moving the sandbox's own
-content into `content/core`, and hot reload. See `docs/ROADMAP.md`.
+content id resolves all the way to a GPU texture. `content/core` is package zero, the
+sandbox embeds nothing, and a mod dropped in after them overrides by id. What remains is
+hot reload. See `docs/ROADMAP.md`.
 
 **M1, for reference.** All five ROADMAP items are done: the Metal backend and its Objective-C shim (1), the
 `xcrun metal` → `.metallib` build step (2), runtime MSL compilation (3), the validation
@@ -95,10 +96,14 @@ New this session:
 * `samples/sandbox/assets/font.png` and `scripts/gen-sandbox-font.py` — 95 glyphs on a 16x6
   grid of 8-pixel cells, drawn as ASCII art in the script so the font has a source and not
   only a binary. Ours, so no third-party licence entry (ADR-0016), and `render2d` still
-  ships no glyphs (I5).
+  ships no glyphs (I5). *Moved at M3 step 9 to `content/core/fonts/debug.png` and
+  `scripts/gen-debug-font.py`: it is the engine's font, loaded as `foundry:fonts.debug`.*
 * `samples/sandbox/main.zig` — one atlas holds the sheet, the font and the white patch, so
   700 sprites, four outline quads and 31 glyphs are **three batches and three draw calls**.
-  A world-space banner and a screen-constant selection label, deliberately both.
+  A world-space banner and a screen-constant selection label, deliberately both. *The atlas
+  went at M3 step 9: assets arrive as standalone textures and the sample now draws 5
+  batches. See step 9's notes for why that is the honest state rather than a regression to
+  fix here.*
 
 Earlier this session:
 
@@ -224,8 +229,8 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 491 tests** (52 `core`, 70 `platform`, 102 `data`, 92 `rhi`,
-31 `asset`, 103 `render2d`, 22 `app`, 14 `fpack`, 5 integration), and **499 under
+**`zig build test` passes 495 tests** (52 `core`, 70 `platform`, 102 `data`, 92 `rhi`,
+32 `asset`, 103 `render2d`, 25 `app`, 14 `fpack`, 5 integration), and **503 under
 `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
@@ -237,12 +242,13 @@ driver) hands an opaque `CAMetalLayer` to `rhi`, which brings up a real Metal de
 ```
 info(platform): platform backend: SDL3 3.4.14, video driver 'cocoa'
 info(rhi): rhi backend: metal on 'Apple M5', 2 frames in flight, surface bgra8_unorm_srgb
+info(app): content: 2 package(s), 3 record(s), from '.../zig-out/content'
 info(app): engine up: 60Hz simulation, windowed, rhi backend 'metal', 2 frames in flight
 info(render2d): render2d up: 16384 quads per buffer, unified memory
-info(sandbox): atlas 512x512: sheet 64x64, font 128x48, 3.9% full
+info(sandbox): content: sheet 64x64, glyphs 128x48, 4000 sprites, grid 4
 info(sandbox): window: 1280x720 points, 2560x1440 pixels, scale 2.00
-debug(sandbox): frame 2400: 4186 sprites (180 glyphs), 4 batches, 4 draw calls, 327 KiB of vertices, 8.1ms/frame, zoom 1.00
-info(sandbox): clean exit after 2400 frames, 1200 ticks, 20000ms simulated
+debug(sandbox): frame 120: 4177 sprites (175 glyphs), 5 batches, 5 draw calls, 326 KiB of vertices, 17.0ms/frame, zoom 1.00
+info(sandbox): clean exit after 180 frames, 178 ticks, 2966ms simulated
 ```
 
 **The text was looked at, not inferred**, the same way M1's quad was. A capture of the
@@ -316,11 +322,52 @@ and the two design documents they needed, per `CLAUDE.md` rule 1 — design befo
 implementation — and rule 10, which says never make a major architectural decision silently.
 Both are spent, as ADR-0020 and ADR-0021, and `data` is built behind them.
 
-**Steps 1 to 8 are built.** `data` exists end to end — identity, schemas, the registry, the
+**Steps 1 to 9 are built.** `data` exists end to end — identity, schemas, the registry, the
 lexer, the parser, diagnostics, the checking pass, the `.fpk` writer and reader, and the
 store that merges packages — `tools/fpack` drives all of it from a directory, and the asset
-registry above it turns a content id into a loaded payload. 491 tests, up from 346 at the
-end of M2; all eight target/backend combinations compile; `zig fmt` clean.
+registry above it turns a content id into a loaded payload, and `content/core` is package
+zero. 495 tests, up from 346 at the end of M2; all eight target/backend combinations
+compile; `zig fmt` clean.
+
+**Step 9 — package zero.** `content/core` exists and is compiled by `fpack` during the
+build; `app` loads it and mounts it; the sandbox ships a package of its own and embeds
+nothing. Seven things worth carrying forward:
+
+* **The sample got its own package, rather than putting its sheet in `content/core`.**
+  `content/core` is *engine* content — right now the debug font, which M6's overlay will
+  want and which `render2d` must not ship (I5). A sprite sheet used by a sample is the
+  sample's. `main.zig` already says the sandbox is the reference for what a game's entry
+  point looks like, and a game has its own package; so it has one, loaded second, through
+  the same call.
+* **The engine consumes a load order and does not compute one.** `Config.content` is a list
+  of packages in order and `Config.content_dir` says where they are. Discovery, dependency
+  resolution and what a player has enabled are M7 (`content-schemas.md` §11), and answering
+  any of it in a config struct would answer it in the wrong place.
+* **The sandbox lost its runtime atlas, and that is the honest state.** It packed the
+  sheet, the glyphs and a white patch into one atlas and drew them in 4 batches; assets
+  arrive as standalone textures, so it now draws 5. Fixing that means either an
+  atlas-aware loader or a texture-to-texture copy in the RHI, and both are policy decisions
+  about what an asset *is* — `assets.md` §9's third open question territory. `render2d`'s
+  atlas is unchanged and still covered by its own tests; the sample stopped using it.
+* **A loader's owner needs a way to leave.** The registry unloads through its loaders, and
+  the game owns the renderer that registered one — whose `deinit` runs *before* the
+  engine's. `asset.Registry.unregisterLoader` hands everything a loader made back to it
+  while it still exists. Step 8 declined to add it for want of a caller; step 9 produced
+  one, which is the evidence the earlier note was waiting for.
+* **`app` gained `data` and `asset`, and deliberately not `render2d`.** The engine owns the
+  store and the asset registry; the *game* registers the texture loader. An engine that had
+  to know what a texture is in order to own an asset registry would have the layering
+  upside down.
+* **Content failures are logged at `warn` and returned as errors.** The convention the asset
+  registry already followed, and there is a second reason for it: the Zig test runner counts
+  an `err`-level log as a failed test, so a failure path that logs at `err` is one no test
+  can exercise. The three new `app` tests found a double free of the content directory on
+  the failure path, which is precisely the kind of thing an untestable path keeps.
+* **The mod path is demonstrable now, by hand.** `FOUNDRY_SANDBOX_PACKAGES=demo` appends a
+  package. Compiling one with `fpack` into `zig-out/content/` and running it changed the
+  sprite count from 4000 to 128 and replaced `foundry:fonts.debug` with an image at
+  `whatever/i/like/glyphs.png` — a path mirroring nothing. Two thirds of M3's exit criteria,
+  seen rather than declared.
 
 **Step 8 — the asset registry.** `asset/registry.zig` plus `render2d/loader.zig`: content
 id in, `AssetHandle` out, reference counted, with the loader that knows what a GPU texture
@@ -544,7 +591,9 @@ sit in a screen-space panel that stays put while the camera moves.
 **Everything the sample draws now comes out of one atlas** — sheet, glyphs and the white
 patch the outline stretches — so the sprites, the outline and the text are **three batches
 and three draw calls**, and all three breaks are blend-mode changes rather than texture
-changes. Adding text cost no draw call at all.
+changes. Adding text cost no draw call at all. *True of M2. At M3 step 9 the sample's images
+became content, which arrives as standalone textures, and it draws 5 batches; `render2d`'s
+atlas is unchanged and still tested.*
 
 346 tests pass under `-Drhi=null` and 354 under `-Drhi=metal`; all eight target/backend
 combinations compile.
@@ -634,9 +683,14 @@ sandbox runnable, and so nothing is a rewrite of the one before.
    to version 2 with the `filter` and `wrap` the loader reads, and version 1 content still
    loads. `loadImage` is gone. `engine/tests/` exists, holding the first test that needs to
    stand above two modules at once.
-9. **`content/core` becomes package zero (I3).** The sandbox's embedded sheet and font are the
-   first things to move, and the sample stops embedding anything. This is the step that proves
-   the mod path by using it.
+9. ~~**`content/core` becomes package zero (I3).**~~ **Done, 2026-09-05.** `content/core`
+   holds the debug font; the sandbox ships `samples/sandbox/content/` with its sheet and its
+   settings; `build.zig` compiles both with `fpack` and installs them under
+   `<prefix>/content`; `app` loads them in the order it is given and mounts each one's
+   files. The sample embeds nothing and names no path. The sheet and font were expected to
+   move into `content/core` together — the sheet went to the sample's own package instead,
+   because a sample is the reference for what a game looks like and a game's content is
+   its own.
 10. **Hot reload, and `docs/modding/` begins.** Queued changes applied at frame start, never
     mid-frame; a failed reload changes nothing.
 
