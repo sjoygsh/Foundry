@@ -1,7 +1,9 @@
 # Design: `render2d` — the 2D renderer
 
-**Status:** Not implemented. Design only, written before M2 begins.
-**Date:** 2026-09-04
+**Status:** Implemented as `engine/src/render2d/`, except the screen-space overlay M2's
+last step needs. The batcher, camera, textures and blending 2026-09-04; the atlas, text and
+`Region` the same day, which is when the resolutions in §8, §10 and §11 were written.
+**Date:** 2026-09-04, revised 2026-09-04
 **Implements:** I1, I5, I8, I9 · **Informed by:** ADR-0003, ADR-0007, ADR-0015, CLAUDE.md §4.2
 
 `render2d` is layer L3. It depends on `core`, `rhi` and `asset`. It is the **first
@@ -304,7 +306,7 @@ sends you to look for the setting. Defaults should fail loudly.
 An **atlas** is a texture plus a rectangle packer:
 
 ```zig
-pub fn createAtlas(self: *Renderer, size: Extent2D) !AtlasHandle
+pub fn createAtlas(self: *Renderer, size: Extent2D, options: AtlasOptions) !AtlasHandle
 pub fn atlasAdd(self: *Renderer, atlas: AtlasHandle, image: asset.Image) !Region
 pub const Region = struct { texture: TextureHandle, uv: Rect, size_px: Extent2D };
 ```
@@ -313,6 +315,35 @@ Packing is a **shelf packer** — sort by height, fill rows, start a new row whe
 skyline or MAXRECTS packer: shelf is a hundred lines, gets within a few percent of optimal
 for same-height sprites (which is what sprite sheets are), and can be replaced without any
 caller noticing because the only thing that escapes is a `Region`.
+
+**Resolution (implementation).** Sorting is not available: `atlasAdd` takes one image at a
+time, because a mod adds one sprite at load time long after the others were packed. The
+incremental equivalent is **best fit by height** — the shelf that wastes the least — which
+degenerates to the sorted result when the images are the same height, and that is what a
+sprite sheet and a glyph grid both are. Ties go to the first shelf, so packing is a pure
+function of insertion order (I9).
+
+Two further things implementation settled:
+
+* **`Region.sub` cuts in the region's own pixel space**, not the texture's. A caller
+  slicing a sheet into cells should not have to know whether the sheet is a texture of its
+  own or a corner of a shared atlas — which is exactly what makes moving a font into an
+  atlas a change to one creation call and to nothing else.
+* **One texel of padding, by default.** Linear filtering samples four texels and reaches
+  across a shared edge; nearest does too at a non-integer scale, because the sample point
+  is a position rather than an index. A neighbour bleeding into a sprite's edge is the
+  classic atlas artefact and is confusing precisely because the sprite is right on its own.
+  What has to *fit* is the image and not its padding: the reserved texels past the last
+  thing on a shelf are never written, so an image exactly as large as the atlas is legal.
+
+Two answers, not one, when an image does not fit. `error.AtlasFull` means try another
+atlas; `error.RegionTooLarge` means no atlas this size will ever take it, and a caller that
+answered both the same way would allocate atlases until it ran out of memory. Content comes
+from files, so that path is reachable.
+
+The atlas needed one thing from below it: `copyBufferToTexture` gained a `dst_origin`
+(`rhi.md` §8), since writing a rectangle of a texture rather than the whole thing is the
+difference between adding one sprite and re-uploading megabytes.
 
 Packing happens at **runtime**, deliberately. An offline packer in `tools/fpack` would pack
 better, but a mod that adds a sprite needs packing to work at load time, and I3 says the
@@ -358,13 +389,25 @@ and sprites in the same layer with the same atlas are one draw call.
 
 ```zig
 pub const BitmapFont = struct {
-    texture: TextureHandle,
+    glyphs: Region,        // where the grid lives
     cell: Extent2D,        // glyph cell size in pixels
-    columns: u32,          // cells per row in the texture
+    columns: u32,          // cells per row of the grid
     first_codepoint: u21,  // usually 32, space
     glyph_count: u32,
+    substitute: ?u21,      // drawn for anything the font lacks
 };
 ```
+
+**Resolution (implementation).** `glyphs` is a `Region` rather than a `TextureHandle`, and
+that is what makes the paragraph above true rather than aspirational: a font packed into a
+shared atlas and a font on a texture of its own are the same thing to everything
+downstream, because `Region.sub` (§8) cuts the grid the same way either. A font on its own
+texture is `Region.whole(handle, size)`.
+
+`substitute` is a font property because it is the font that does or does not have the
+glyph. Null draws nothing and still advances, so a missing character leaves a gap rather
+than shifting the rest of the line; a substitute the font also lacks yields nothing rather
+than looking itself up again.
 
 A fixed grid needs **no metrics file**, and that is the whole reason it was chosen. The
 authoring text syntax is a deliberately postponed decision due at M3 (CLAUDE.md §9), and
@@ -391,10 +434,19 @@ pub const Stats = struct {
     sprites: u32, glyphs: u32,
     batches: u32, draw_calls: u32,
     vertices: u32, vertex_bytes: u32,
-    textures_resident: u32, atlas_fill: f32,
-    cpu_record_ns: u64,
+    buffers_used: u32, textures_resident: u32,
 };
 ```
+
+**Resolution (implementation).** `atlas_fill` is not here: an atlas's fill is a property of
+that atlas and not of a frame, and a renderer with three atlases has no single number to
+report. It is `Renderer.atlasFill(handle)` instead. `cpu_record_ns` is not here either —
+`app.Engine.frameDelta` already measures the frame, and a second clock read that measured
+*almost* the same thing would mostly generate arguments about which one was right.
+
+Glyphs are counted in `sprites` as well as in `glyphs`, because a glyph *is* a sprite by the
+time the batcher sees it. Counting it once would make the sprite count disagree with the
+vertex count.
 
 Counters reset in `beginFrame` and are published in `endFrame`, so a reader always sees a
 complete frame rather than a half-written one. **Statistics never feed simulation** (I9):
@@ -426,10 +478,12 @@ Anything that is a programmer mistake asserts.
 | --- | --- |
 | Malformed or oversized image | `error.InvalidImage` / `error.TextureTooLarge` |
 | Atlas is full | `error.AtlasFull` — a normal condition, the caller makes another atlas |
-| Stale or foreign handle | `error.InvalidTexture`, from the generation check |
+| Atlas cannot ever hold it | `error.RegionTooLarge` — retrying with a fresh atlas would loop |
+| Stale or foreign handle | `error.InvalidTexture` / `error.InvalidAtlas`, from the generation check |
 | Zero, negative or non-finite zoom | `error.InvalidCamera` |
 | Invalid UTF-8 in a string | Substitution glyph, no error |
-| `drawSprite` before `beginFrame` | Assertion — pure programmer error |
+| `drawSprite` or `drawText` before `begin` | `error.NotRecording` |
+| A font with zero columns or an empty cell | No glyph, no error — at M3 those fields come from a file |
 
 ## 14. Deliberately not here
 

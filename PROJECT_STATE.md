@@ -1,9 +1,10 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-04
-**Updated by:** **M2: it draws thousands, and the camera moves.** The design doc, the
-decisions M2 forced, Foundry's own PNG decoder, the sprite batcher, and a camera that pans,
-zooms and answers what was clicked
+**Updated by:** **M2: it draws thousands, the camera moves, and it has words.** The design
+doc, the decisions M2 forced, Foundry's own PNG decoder, the sprite batcher, a camera that
+pans, zooms and answers what was clicked, and an atlas that puts the sprites, the glyphs and
+the selection outline in one draw call
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -34,10 +35,12 @@ drawn, which M0 deliberately excludes.
 -Drhi=metal` opens a window on macOS and draws a rotating, nearest-filtered textured quad,
 vsync-paced, which survives being resized.
 
-**Current milestone: M2 — Sprites: "it draws a lot."** In progress; four of six steps done.
+**Current milestone: M2 — Sprites: "it draws a lot."** In progress; five of six steps done.
 Exit criterion: thousands of sprites at a stable frame rate, with a camera and on-screen
-text. Sprites and the camera are done; the atlas, text and on-screen statistics are not.
-`docs/design/render2d.md` is the plan.
+text. Sprites, the camera, the atlas and text are done. What remains is the **screen-space**
+overlay the statistics readout needs — everything drawn so far is in world space, and a HUD
+that scrolled away when you panned would not be a HUD. `docs/design/render2d.md` is the
+plan.
 
 **M1, for reference.** All five ROADMAP items are done: the Metal backend and its Objective-C shim (1), the
 `xcrun metal` → `.metallib` build step (2), runtime MSL compilation (3), the validation
@@ -65,6 +68,30 @@ a camera that pans, zooms and picks.**
 
 New this session:
 
+* `engine/src/render2d/atlas.zig` — `Packer` (a shelf packer, best fit by height, no GPU
+  and no allocator beyond its own list) and `Region`, whose `sub` cuts in the region's own
+  pixel space so that packed and standalone images slice identically.
+* `engine/src/render2d/text.zig` — `BitmapFont` over a `Region`, and `Layout`, the one
+  definition of where each glyph goes that both drawing and `measure` run. Untrusted bytes
+  throughout: invalid UTF-8 and missing glyphs draw the substitute.
+* `engine/src/render2d/renderer.zig` — `createAtlas`, `atlasAdd`, `atlasFill`,
+  `destroyAtlas`, `textureRegion`, `drawText`, and `Stats.glyphs`. `render2d` also has its
+  own `Extent2D` now: `textureSize` used to return an `rhi.Extent2D`, and a game that had
+  to name an RHI type to ask how big its texture is would be touching the RHI (§4.2).
+* `engine/src/rhi/` — `Origin2D`, `Extent2D.mipLevel`, and `BufferToTextureCopy.dst_origin`,
+  threaded through the Metal shim. **Rule 10 grew** to cover a copy's region lying inside
+  the resource it addresses; the contract in `rhi.md` §11 moved first, as that section
+  demands of any tightening.
+* `samples/sandbox/assets/font.png` and `scripts/gen-sandbox-font.py` — 95 glyphs on a 16x6
+  grid of 8-pixel cells, drawn as ASCII art in the script so the font has a source and not
+  only a binary. Ours, so no third-party licence entry (ADR-0016), and `render2d` still
+  ships no glyphs (I5).
+* `samples/sandbox/main.zig` — one atlas holds the sheet, the font and the white patch, so
+  700 sprites, four outline quads and 31 glyphs are **three batches and three draw calls**.
+  A world-space banner and a screen-constant selection label, deliberately both.
+
+Earlier this session:
+
 * `engine/src/render2d/camera.zig` — `panByScreen` and `zoomAround`, the two camera
   operations that are maths rather than policy, both derived from `screenToWorld` and both
   validating the whole change before committing it.
@@ -76,7 +103,7 @@ New this session:
   click picks the topmost sprite under it and outlines it with a one-pixel white texture
   built in memory. `FOUNDRY_SANDBOX_PICK_EVERY` scripts a pick at the window's centre.
 
-Earlier this session:
+Earlier still this session:
 
 * `engine/src/asset/` — `Image` (always RGBA8, straight alpha, sRGB), Foundry's own PNG
   decoder (ADR-0018) and `loadImage`. No cache: one with no consumer would be speculative.
@@ -185,25 +212,34 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 227 tests** (50 `core`, 70 `platform`, 85 `rhi`, 22 `app`), and
-**235 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8
-is headless: nothing calls `SDL_Init`, and `app`'s tests instantiate
-`EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is measured
-against a synthetic clock and a validating device, never against this machine. The 8
-exceptions need a real GPU and compile only when Metal is selected.
+**`zig build test` passes 323 tests** (50 `core`, 70 `platform`, 92 `rhi`, 17 `asset`,
+77 `render2d`, 22 `app`), and **331 under `-Drhi=metal`**, where `rhi` gains the backend's
+own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
+instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
+measured against a synthetic clock and a validating device, never against this machine. The
+8 exceptions need a real GPU and compile only when Metal is selected.
 
-**It draws a textured quad.** `platform` (SDL3, `cocoa` driver) hands an opaque
-`CAMetalLayer` to `rhi`, which brings up a real Metal device and renders:
+**It draws thousands of sprites, under a camera, with text.** `platform` (SDL3, `cocoa`
+driver) hands an opaque `CAMetalLayer` to `rhi`, which brings up a real Metal device:
 
 ```
 info(platform): platform backend: SDL3 3.4.14, video driver 'cocoa'
 info(rhi): rhi backend: metal on 'Apple M5', 2 frames in flight, surface bgra8_unorm_srgb
 info(app): engine up: 60Hz simulation, windowed, rhi backend 'metal', 2 frames in flight
+info(render2d): render2d up: 16384 quads per buffer, unified memory
+info(sandbox): atlas 512x512: sheet 64x64, font 128x48, 3.9% full
 info(sandbox): window: 1280x720 points, 2560x1440 pixels, scale 2.00
-info(sandbox): gpu: 'metal' backend, surface bgra8_unorm_srgb, 4 bind groups, 128 inline bytes
-info(sandbox): native surface ready: metal_layer
-info(sandbox): clean exit after 600 frames, 299 ticks, 4983ms simulated
+debug(sandbox): frame 2400: 735 sprites (31 glyphs), 3 batches, 3 draw calls, 57 KiB of vertices, 8.1ms/frame, zoom 1.00
+info(sandbox): clean exit after 2400 frames, 1200 ticks, 20000ms simulated
 ```
+
+**The text was looked at, not inferred**, the same way M1's quad was. A capture of the
+sandbox's own window (by window id, so nothing else on the screen is read) shows the
+world-space banner and the screen-constant `#682` label above the outlined sprite, both
+legible, over 2,400 frames with Metal API *and* GPU validation on and **zero messages**.
+
+**What the M1 record below describes is the quad**, kept because each row is a separate
+property that was checked once and has not been rechecked since.
 
 **Both halves of M1's cross-check hold, on the quad.** With `MTL_DEBUG_LAYER=1` and
 `MTL_SHADER_VALIDATION=1`, Metal API validation *and* GPU validation produce **zero
@@ -260,16 +296,20 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M2 is under way and past its hardest part.** Four of the six steps below are done: the
+**M2 is under way and past its hardest part.** Five of the six steps below are done: the
 clip-space contract is written down, `asset` exists with the PNG decoder ADR-0018 called
-for, **`render2d` draws**, and **the camera moves**. The sandbox puts 4,000 sprites on
-screen from a decoded PNG sheet in **two draw calls**, under a camera driven by keyboard
-and mouse, surviving resize, with zero Metal validation messages and zero null-backend
-violations on the same command stream. Clicking selects the topmost sprite under the
-pointer and outlines it, which takes the batch count to three because the outline is a
-second texture.
+for, **`render2d` draws**, **the camera moves**, and **it has an atlas and words**. The
+sandbox puts thousands of sprites on screen from a decoded PNG sheet, under a camera driven
+by keyboard and mouse, surviving resize, with zero Metal validation messages and zero
+null-backend violations on the same command stream. Clicking selects the topmost sprite
+under the pointer, outlines it and labels it with its index.
 
-294 tests pass under `-Drhi=null` and 302 under `-Drhi=metal`; all eight target/backend
+**Everything the sample draws now comes out of one atlas** — sheet, glyphs and the white
+patch the outline stretches — so the sprites, the outline and the text are **three batches
+and three draw calls**, and all three breaks are blend-mode changes rather than texture
+changes. Adding text cost no draw call at all.
+
+323 tests pass under `-Drhi=null` and 331 under `-Drhi=metal`; all eight target/backend
 combinations compile.
 
 Measured on an M5, 600 frames per run: 4,000 and 20,000 sprites both hold vsync at 120Hz
@@ -281,7 +321,9 @@ sprites of ~30 pixels on a 2560x1440 target is heavy overdraw — or submission 
 `docs/design/render2d.md` describes the whole subsystem — the submission model, coordinate
 spaces, camera, sprite and vertex layout, batching and sort key, the per-slot buffer pool,
 textures and atlases, the retirement queue, text, statistics and the intended M7 mod
-surface. Everything in it up to text and atlases is now built.
+surface. **All of it is now built** except the screen-space pass §11's statistics need, and
+three places where implementation changed the design carry a *Resolution* note saying what
+changed and why (§8's packer, §10's font, §11's counters).
 
 **One thing in M2 has not been verified by a person:** the key and button *bindings*. That
 WASD pans the right way, that dragging carries the world with the cursor, that the wheel
@@ -338,10 +380,18 @@ runnable; none of them is a rewrite of the one before.
    answers what was clicked, and the sandbox scans its own sprites — the renderer retains no
    list to search. Confirmed on screen: the selection outline appears around the sprite under
    the pick point, rotated with it.
-5. **Atlas, then text** — the shelf packer, then fixed-grid bitmap fonts, which are sprites
-   and therefore mostly free once the batcher exists.
-6. **Frame statistics on screen**, which needs text and so closes the loop: the first thing
-   the text renderer draws is the batcher's own numbers.
+5. ~~**Atlas, then text.**~~ **Done, 2026-09-04.** `atlas.Packer` and `Region` in
+   `render2d`, `text.BitmapFont` and `text.Layout` over a `Region` so a font in an atlas
+   and a font on its own texture are the same thing, and `Renderer.drawText`. The RHI
+   gained `dst_origin` on a buffer-to-texture copy, without which packing one sprite means
+   re-uploading the whole atlas. The sandbox packs its sheet, its font and its white patch
+   into one 512-pixel atlas and draws both world-space and screen-constant text.
+6. **Frame statistics on screen**, which needs a **screen-space** pass and so is the one
+   real piece of design left in M2: everything drawn so far is in world space, and a HUD
+   that scrolled away when you panned would not be a HUD. The likely shape is a second
+   `begin`/`record` pair with a camera whose viewport *is* the window, since the renderer
+   already takes the camera per frame — but that is a decision to make deliberately rather
+   than by reaching for the first thing that works.
 
 ---
 
@@ -442,7 +492,75 @@ runnable; none of them is a rewrite of the one before.
 
 ## Important decisions made recently
 
-**This session (M2, the camera):**
+**This session (M2, the atlas and text):**
+
+* **The RHI learned to write a rectangle of a texture, and the contract moved first.**
+  `BufferToTextureCopy` could only write a whole texture, so packing one sprite into an
+  atlas would have meant re-uploading megabytes. `dst_origin` defaults to the corner, so a
+  whole-texture upload still reads as one, and Metal, Vulkan and D3D12 all express it
+  natively. **Rule 10 grew** to cover a copy's region lying inside the resource it
+  addresses — a clarification of its scope, the way rule 8 already gets one, since a
+  texture's extent bounds writes to it exactly as the other numbers in rule 10 bound
+  things. `rhi.md` §11 says a tightening changes the contract there first, and it did.
+
+* **The packer is pure logic and only a `Placement` escapes it.** No allocator beyond its
+  own list, no GPU, no renderer. That is what makes a better packer a drop-in replacement
+  rather than an API change, and it is the reason the design doc could commit to "shelf"
+  without committing to it forever.
+
+* **Sorting by height was not available, so best fit by height replaced it.** The design
+  said "sort by height, fill rows"; sorting is what an *offline* packer does, and
+  `atlasAdd` takes one image at a time because a mod adds one sprite at load time long
+  after the others were packed (I3). Best fit is the incremental equivalent and degenerates
+  to the sorted result when the images are the same height — which a sprite sheet and a
+  glyph grid both are. Recorded as a resolution in `render2d.md` §8 rather than left as a
+  quiet divergence.
+
+* **`Region.sub` cuts in the region's own pixel space, not the texture's.** This is the
+  decision that makes "a font in an atlas and a font on its own texture are the same thing"
+  true rather than aspirational: the sandbox's sheet-cell arithmetic did not change when
+  the sheet moved into an atlas, and `BitmapFont` never learns which it has.
+
+* **`AtlasFull` and `RegionTooLarge` are different answers.** The first means try another
+  atlas. A caller that answered the second the same way would allocate atlases until it ran
+  out of memory, and an image too large for any atlas of that size is exactly what a mod
+  shipping a 4096-pixel sprite produces. Content comes from files, so the loop is reachable.
+
+* **Text is not a separate pipeline, and there is nothing to make it one.** A glyph is a
+  sprite by the time the batcher sees it, so "text and sprites from one atlas cost one draw
+  call" falls out of there being no second path rather than being arranged — and there is a
+  test that fails if that stops being true. Glyphs count in `sprites` as well as in
+  `glyphs`, because counting them once would make the sprite count disagree with the vertex
+  count.
+
+* **`Layout` is the one definition of where a glyph goes, and `measure` runs it.** Same
+  discipline as `writeQuad` and `containsPoint` sharing `localExtents`: two implementations
+  that agree today are a bug you can only find in a screenshot.
+
+* **A mod's translation file is text from a stranger.** Invalid UTF-8 draws a substitution
+  glyph and advances one byte; a codepoint the font lacks draws the same; a substitute the
+  font *also* lacks yields nothing rather than looking itself up again; iteration stops at
+  the slice's end and not at a terminator; and a font with zero columns is refused rather
+  than dividing by zero, because at M3 those fields come from a file.
+
+* **`atlas_fill` and `cpu_record_ns` were dropped from `Stats`.** An atlas's fill belongs to
+  that atlas, not to a frame — a renderer with three atlases has no single number — so it
+  is `atlasFill(handle)`. And `frameDelta` already measures the frame; a second clock read
+  measuring almost the same thing mostly generates arguments about which one is right.
+
+* **The sandbox's font is ours, drawn as ASCII art in a script.** `scripts/gen-sandbox-font.py`
+  is committed so the glyphs have a source rather than only a PNG, which is also the
+  cheapest way to satisfy the permissive-only policy: there is no third-party asset and so
+  no licence entry to make (ADR-0016). `render2d` still ships no glyphs (I5), and the M6
+  debug overlay will get its font the same way a game does (I3, I4).
+
+* **The outline is drawn from the *interior* of an 8-pixel white patch.** UVs interpolate to
+  a region's edges, and in an atlas the texel past an edge belongs to somebody else's
+  sprite. Addressing the middle four pixels means a sample that strays lands on more white.
+  This is the atlas lesson the sample exists to carry, and it is why padding defaults to one
+  texel as well.
+
+**Earlier this session (M2, the camera):**
 
 * **The camera got two operations, and the sample got the bindings.** `panByScreen` and
   `zoomAround` are camera *maths* — decided by the projection, and wrong in subtle ways
@@ -480,7 +598,9 @@ runnable; none of them is a rewrite of the one before.
   outline, and being a *second* texture it makes the batcher break a batch on a texture
   change — 4,000 sprites in 2 batches, 4,004 in 3 when something is selected. That path had
   never run: a one-texture sample cannot exercise it, and the unit tests that cover it are
-  not the real command stream.
+  not the real command stream. *Superseded the same day:* the patch is 8x8 and lives in the
+  atlas with everything else, so the sample no longer changes texture at all — which is the
+  atlas working. The texture-change break is still covered, by the renderer's own tests.
 
 **Previous session (M2, building the batcher):**
 
