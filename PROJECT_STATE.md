@@ -1,8 +1,8 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-04
-**Updated by:** **M1 complete and tagged `m1`.** A textured quad that survives a resize,
-both halves clean
+**Updated by:** **M2 begun: `render2d` designed, not yet built.** The design doc plus the
+two decisions M2 forced
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -33,7 +33,9 @@ drawn, which M0 deliberately excludes.
 -Drhi=metal` opens a window on macOS and draws a rotating, nearest-filtered textured quad,
 vsync-paced, which survives being resized.
 
-**Next milestone: M2 — Sprites: "it draws a lot."** Not started.
+**Current milestone: M2 — Sprites: "it draws a lot."** In progress; design complete, no
+code yet. Exit criterion: thousands of sprites at a stable frame rate, with a camera and
+on-screen text. `docs/design/render2d.md` is written and is the plan.
 
 All five ROADMAP items are done: the Metal backend and its Objective-C shim (1), the
 `xcrun metal` → `.metallib` build step (2), runtime MSL compilation (3), the validation
@@ -227,6 +229,18 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
+**M2 is in its design phase.** `docs/design/render2d.md` is written — the submission model,
+coordinate spaces, camera, sprite and vertex layout, batching and sort key, the per-slot
+buffer pool, textures and atlases, the retirement queue, text, statistics and the intended
+M7 mod surface. No `render2d` code exists yet, and `build.zig`'s `layering` table still has
+`render2d` and `asset` commented out awaiting it.
+
+Two decisions M2 forced were taken as ADRs rather than in code: **ADR-0018** (Foundry
+decodes its own PNG) and **ADR-0019** (engine-owned shaders are embedded, content-owned
+shaders are assets). A third — that `asset` arrives now, minimal, with no ID scheme — is
+recorded below rather than as an ADR, because it changes sequencing rather than
+architecture.
+
 **M1 is complete and tagged `m1`.** Every ROADMAP item is done and the exit criterion is
 met and seen, clause by clause. Nothing is half-built: the tree is green on both backends,
 227 tests pass under `-Drhi=null` and 235 under `-Drhi=metal`, all eight target/backend
@@ -245,10 +259,25 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 **M1 is done, tagged and pushed.** Nothing is outstanding against it.
 
-**M2 — sprites.** The quad is one draw; M2 is thousands, which means batching, a
-texture atlas, PNG decode, a real 2D camera and bitmap text. The camera is the first thing
-that will want more of `core.math` than `Mat4.scaling` — the sandbox's `aspectCorrection` is
-deliberately the three lines M1 needed and no more.
+**M2, in the order it should be built.** Each step leaves the tree green and the sandbox
+runnable; none of them is a rewrite of the one before.
+
+1. **`core.math` grows what a camera needs** — `Mat4.orthographic`, and whatever the
+   analytic 2D inverse turns out to want. Small, testable, and blocks everything else. The
+   sandbox's `aspectCorrection` is deliberately the three lines M1 needed and is replaced
+   here.
+2. **`asset` (L2), minimal** — `Image`, the PNG decoder of ADR-0018, and a path-keyed cache.
+   No registry, no IDs, no hot reload. Its test corpus includes deliberately malformed files
+   asserting refusal, which is the point of writing the decoder ourselves.
+3. **`render2d` (L3), the batcher** — sprite submission, the sort key, the per-slot buffer
+   pool, the engine sprite shader, and `app` wiring the pass. First runnable result: the
+   sandbox drawing thousands of sprites instead of one quad.
+4. **Camera and coordinate spaces** — pan and zoom driven from sandbox input, and
+   `screenToWorld` demonstrated by picking a sprite under the mouse.
+5. **Atlas, then text** — the shelf packer, then fixed-grid bitmap fonts, which are sprites
+   and therefore mostly free once the batcher exists.
+6. **Frame statistics on screen**, which needs text and so closes the loop: the first thing
+   the text renderer draws is the batcher's own numbers.
 
 ---
 
@@ -303,12 +332,12 @@ deliberately the three lines M1 needed and no more.
   in Xcode and looked. This is one of ADR-0012's stated reasons for the shim design, so it
   is worth an actual look during M2, when there is more than one draw to inspect.
 
-* **Where a compiled shader lives is unsettled, deliberately.** The build step exists and
-  `createShaderModule` has a producer, but the only shader belongs to `samples/sandbox`,
-  which `@embedFile`s the `.metallib` into its executable. That is the smallest thing that
-  proves the interface has a producer; naming and finding an asset is M3's question, and
-  inventing half an answer here would prejudge the package-zero decision that milestone owes
-  (unresolved question 2 below).
+* ~~**Where a compiled shader lives is unsettled, deliberately.**~~ **Settled by ADR-0019**,
+  2026-09-04, because M2 forced it: `render2d` needs a sprite shader before any content
+  system exists. Engine-owned shaders — those whose absence means the renderer cannot draw —
+  are compiled by the build step and embedded in the engine module. Content-owned shaders
+  remain assets per ADR-0015. This does not prejudge M3: first-party *content* shaders will
+  still load through the package-zero path like everyone else's.
 
 * **No backend defers a destroy, though `interface.zig` says every one does.** The comment
   claims a destroy is deferred until no in-flight frame can reference the resource; neither
@@ -320,6 +349,9 @@ deliberately the three lines M1 needed and no more.
   which is why the sandbox holds its resources for the process lifetime instead of leaning
   on the guarantee. Fixing it is a design choice — a destroy queue, or an explicit
   `waitIdle` the interface also lacks — so it is recorded rather than settled quietly.
+  **`render2d.md` §9 responds to this without discharging it**: the renderer keeps its own
+  retirement queue and does not rely on the RHI's promise, so M2's code is correct whether or
+  not the RHI ever keeps it. The interface still says something untrue, and that stays here.
 
 * **Usage-flag conformance is declared but unenforced.** Buffers and textures carry a
   usage set because Vulkan and D3D12 require it at creation, and both treat using a
@@ -343,7 +375,74 @@ deliberately the three lines M1 needed and no more.
 
 ## Important decisions made recently
 
-**This session (M1, closing it):**
+**This session (M2, designing it):**
+
+* **`render2d` uses immediate submission with retained resources.** The game calls
+  `drawSprite` each frame; textures, atlases and fonts are handles that outlive the frame.
+  The alternative — a retained list of sprite objects the game mutates — was rejected
+  because it becomes a second place game objects live, which `scene` (M4) will already own,
+  and because immediate calls are trivially expressible as C ABI entry points at M7 while
+  retained object lifetimes across the ABI are exactly the problem I1 exists to avoid. The
+  honest cost is that a game drawing 50,000 static sprites re-submits them every frame; if
+  that ever bites, the answer is a retained *batch* alongside immediate submission, not
+  instead of it.
+
+* **`app` owns the frame; `render2d` records into a pass it is handed.** The renderer does
+  not call `beginFrame` or open the render pass, because a frame will later carry a debug UI
+  (M6) and eventually a 3D pass, and whoever opens the pass decides what shares it. The game
+  never sees an `rhi.RenderPass` in any signature it can reach, which is what §4.2 requires
+  and is easy to get wrong by having the renderer own the frame for convenience.
+
+* **World Y points up; screen Y points down.** Not a default — y-down would match screen
+  coordinates and tilemap rows, and several 2D engines choose it. Y-up wins because rotation
+  signs and trigonometry then behave the way `core.math` already assumes, and because
+  `render2d` and a future `render3d` disagreeing about which way is up would be a genuinely
+  bad thing to discover late.
+
+* **The batcher's sort key is `(layer, submission_index)` and deliberately not texture.**
+  Sorting by texture within a layer would cut batch count and would reorder overlapping
+  translucent sprites — wrong in a way that surfaces as flickering in someone else's game
+  much later. The atlas is the answer to batch count. Including `submission_index` makes the
+  key a *total* order, so determinism (I9) does not depend on the sort algorithm being
+  stable, which is a property that survives someone swapping the sort.
+
+* **Colour is linear everywhere above the texture sample.** The surface is
+  `bgra8_unorm_srgb` and decoded textures are `rgba8_unorm_srgb`, so the GPU converts in
+  both directions and everything between is linear light. One `srgb8()` helper converts the
+  numbers a colour picker gives you. This is the most common silent rendering bug there is —
+  everything looks fine and every blend and fade is subtly wrong forever.
+
+* **PNG decoding is ours, not a dependency** (ADR-0018). The deciding argument is that
+  images are the first thing a stranger's file reaches directly, and image decoders are
+  historically the richest source of memory-safety bugs in this kind of software. Verified
+  against the pinned toolchain before deciding: `std.compress.flate.Decompress` handles the
+  zlib container with its checksum, and `std.hash.Crc32` is PNG's CRC — so this is the PNG
+  layer only, not an inflate implementation. A stated subset (8-bit, non-interlaced) with
+  everything outside it *refused* rather than approximated.
+
+* **Engine-owned shaders are embedded; content-owned shaders are assets** (ADR-0019). M2
+  forced the question PROJECT_STATE had carried as deliberately unsettled since M1, because
+  `render2d` needs a sprite shader before `data` or the content pipeline exist. The line is
+  functional, not proprietary: an engine-owned shader is one whose absence means the
+  renderer cannot draw, making it machinery in the same category as the index buffer. A
+  consequence worth knowing: **the sprite shader is not overridable**, because it is the
+  other half of a contract with the batcher's vertex layout.
+
+* **`asset` arrives now, minimal, with no ID scheme.** It gets `Image`, the decoder and a
+  path-keyed cache, and it depends on `core` and `platform` only — ADR-0007's
+  `asset -> core, data, platform` is unchanged as the end state, and `data` joins at M3.
+  This keeps file I/O out of `render2d`, where the layering says it does not belong, while
+  leaving the postponed asset-ID decision (CLAUDE.md §9) genuinely untouched. Recorded here
+  rather than as an ADR because it changes sequencing, not architecture.
+
+* **Bitmap fonts are fixed-grid in M2, and the font is an asset the game supplies.** A fixed
+  grid needs no metrics file, which is the entire reason it was chosen: inventing a
+  font-metrics format now would resolve part of the authoring-syntax decision that M3 owes.
+  `render2d` ships no glyphs (I5) — the sample ships a font with its licence recorded, and
+  uses the call a mod would. The M6 debug overlay will get its font the same way, not
+  through a private path (I3, I4).
+
+**Previous session (M1, closing it):**
 
 * **`setWindowSize` was added to `platform`, deliberately and not quietly.** It had been
   refused twice as "a contract change, not something to slip in", and that was the right
@@ -564,8 +663,11 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
    just correctness, whether `frames_in_flight` should adapt, and what happens on device
    loss.
 2. **What "package zero" means for the engine itself.** Does the engine ship content of its
-   own — default font, error texture, fallback shader — as a real content package? Probably
-   yes, and it is a good early test of Invariant I3. Decide during M3.
+   own — default font, error texture — as a real content package? Probably yes, and it is a
+   good early test of Invariant I3. Decide during M3. **Narrowed 2026-09-04 by ADR-0019**:
+   the fallback *shader* is no longer part of this question, because engine-owned shaders are
+   engine machinery rather than content. The font still is, and M2 deliberately dodges it by
+   having the sample supply one.
 3. **Authoring format syntax.** Postponed to M3 by ADR-0006. Requirements recorded;
    candidates are adopting an existing format versus a small purpose-built one.
 4. **Zig upgrade cadence.** ADR-0001 says between milestones, never during. Whether that
