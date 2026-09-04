@@ -32,13 +32,19 @@ const layering = [_]Module{
     // L2 — Metal/Vulkan/D3D live ONLY here (ADR-0003).
     .{ .name = "rhi", .deps = &.{ "core", "platform" } },
 
+    // L2 — assets. ADR-0007 gives this `data` as well; `data` arrives at M3 and this
+    // gains it then. What exists now is deliberately less than the end state: image
+    // decoding and file loading, with no registry, no ID resolution and no hot reload,
+    // because the asset ID scheme is a postponed decision due at M3 (CLAUDE.md §9) and
+    // building half of it here would resolve it by accident.
+    .{ .name = "asset", .deps = &.{ "core", "platform" } },
+
     // L4 — the engine loop and subsystem lifecycle. Gains dependencies as the layers
     // between it and `platform` arrive; it is allowed to see all of them (ADR-0007).
     .{ .name = "app", .deps = &.{ "core", "platform", "rhi" } },
 
     // Added as each is implemented. The rest of the graph from ADR-0007 is:
     //   L1  data       -> core
-    //   L2  asset      -> core, data, platform
     //   L3  render2d   -> core, rhi, asset
     //   L3  scene      -> core, data, asset
     //   L5  abi        -> app             (M7)
