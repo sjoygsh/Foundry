@@ -96,23 +96,62 @@ pub const Record = struct {
 /// construction rather than by care.
 pub const Package = struct {
     arena: core.Arena,
-    namespace: []const u8,
+    /// The package's own content id — `foundry:core` for package zero (I3). A package is
+    /// content like anything else, which is what lets load order, overrides and, later, a
+    /// mod manifest all address it the same way everything else is addressed.
+    id: ContentId,
+    /// The source spelling of `id`.
+    name: []const u8,
+    version: u32,
     limits: Limits,
     list: std.ArrayList(Record) = .empty,
     by_id: std.AutoHashMapUnmanaged(u64, u32) = .empty,
+    /// The schemas this package *declares*, in declaration order, each once.
+    ///
+    /// A package carries the schemas it declares and not the ones it merely uses: a mod
+    /// adding records of `foundry:item` does not ship a second copy of that schema, which
+    /// is both smaller and the only version of events the registry can accept (§3 refuses
+    /// to re-register a schema at the same version).
+    schemas: std.ArrayList(DeclaredSchema) = .empty,
 
-    pub fn init(gpa: Allocator, namespace: []const u8, limits: Limits) Allocator.Error!Package {
-        var pkg: Package = .{ .arena = .init(gpa), .namespace = "", .limits = limits };
+    /// A schema id and the spelling it was written with. The registry holds only the
+    /// hash, and a compiled package has to carry the name: "unknown schema 4f2a…" is not
+    /// a thing anyone can act on.
+    pub const DeclaredSchema = struct {
+        id: SchemaId,
+        text: []const u8,
+    };
+
+    pub const InitError = id_mod.Error || Allocator.Error;
+
+    /// `name` is the package's `namespace:name`, validated here — a package with an
+    /// unspellable id could not be depended on, overridden or reported.
+    pub fn init(gpa: Allocator, name: []const u8, version: u32, limits: Limits) InitError!Package {
+        const package_id = try id_mod.contentId(name);
+        var pkg: Package = .{
+            .arena = .init(gpa),
+            .id = package_id,
+            .name = "",
+            .version = version,
+            .limits = limits,
+        };
         errdefer pkg.arena.deinit();
-        pkg.namespace = try pkg.arena.allocator().dupe(u8, namespace);
+        pkg.name = try pkg.arena.allocator().dupe(u8, name);
         return pkg;
     }
 
     pub fn deinit(self: *Package, gpa: Allocator) void {
         self.list.deinit(gpa);
         self.by_id.deinit(gpa);
+        self.schemas.deinit(gpa);
         self.arena.deinit();
         self.* = undefined;
+    }
+
+    /// The part of `name` before the colon.
+    pub fn namespace(self: *const Package) []const u8 {
+        const colon = std.mem.indexOfScalar(u8, self.name, ':') orelse return self.name;
+        return self.name[0..colon];
     }
 
     pub fn count(self: *const Package) u32 {
@@ -132,6 +171,54 @@ pub const Package = struct {
         return self.list.items[self.find(id) orelse return null];
     }
 
+    /// Registers a document's `@schema` declarations into `registry`, and records that
+    /// this package declares them.
+    ///
+    /// A schema the registry refuses is reported against the `@schema` that declared it
+    /// and then skipped. Records naming it will fail too, which is the right outcome and
+    /// is worth one extra message: "unknown schema" after "schema was refused" tells a
+    /// truer story than silence about the records would.
+    pub fn registerSchemas(
+        self: *Package,
+        gpa: Allocator,
+        doc: *const Document,
+        registry: *Registry,
+        diags: *Diagnostics,
+    ) Error!void {
+        var failed = false;
+        for (doc.schemas) |decl| {
+            _ = registry.register(gpa, .{
+                .id = decl.id,
+                .version = decl.version,
+                .fields = decl.fields,
+            }) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    failed = true;
+                    try diags.addFmt(
+                        gpa,
+                        .err,
+                        decl.origin.location(),
+                        decl.origin.length,
+                        decl.origin.line_text,
+                        "schema '{s}' {s}",
+                        .{ decl.text, describeRegisterError(err) },
+                    );
+                    continue;
+                },
+            };
+            // Extending a schema declared earlier in the same package is one schema, not
+            // two: the file will carry it once, at whatever version it ends up at.
+            for (self.schemas.items) |seen| {
+                if (seen.id.eql(decl.id)) break;
+            } else try self.schemas.append(gpa, .{
+                .id = decl.id,
+                .text = try self.arena.allocator().dupe(u8, decl.text),
+            });
+        }
+        if (failed) return error.ContentInvalid;
+    }
+
     /// Registers a document's schema declarations, then checks its records against them.
     ///
     /// The two halves are separately callable because a package is many files: a record
@@ -148,7 +235,7 @@ pub const Package = struct {
         // would otherwise hide every mistake in every record of the file, which turns one
         // bad `@schema` into a rebuild per record.
         var failed = false;
-        registerSchemas(gpa, doc, registry, diags) catch |e| switch (e) {
+        self.registerSchemas(gpa, doc, registry, diags) catch |e| switch (e) {
             error.OutOfMemory => return error.OutOfMemory,
             error.ContentInvalid => failed = true,
         };
@@ -185,44 +272,6 @@ pub const Package = struct {
         if (checker.failed) return error.ContentInvalid;
     }
 };
-
-/// Registers a document's `@schema` declarations into `registry`.
-///
-/// A schema the registry refuses is reported against the `@schema` that declared it and
-/// then skipped. Records naming it will fail too, which is the right outcome and is worth
-/// one extra message: "unknown schema" after "schema was refused" tells a truer story
-/// than silence about the records would.
-pub fn registerSchemas(
-    gpa: Allocator,
-    doc: *const Document,
-    registry: *Registry,
-    diags: *Diagnostics,
-) Error!void {
-    var failed = false;
-    for (doc.schemas) |decl| {
-        _ = registry.register(gpa, .{
-            .id = decl.id,
-            .version = decl.version,
-            .fields = decl.fields,
-        }) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => {
-                failed = true;
-                try diags.addFmt(
-                    gpa,
-                    .err,
-                    decl.origin.location(),
-                    decl.origin.length,
-                    decl.origin.line_text,
-                    "schema '{s}' {s}",
-                    .{ decl.text, describeRegisterError(err) },
-                );
-                continue;
-            },
-        };
-    }
-    if (failed) return error.ContentInvalid;
-}
 
 fn describeRegisterError(err: anyerror) []const u8 {
     return switch (err) {
@@ -629,11 +678,11 @@ const Harness = struct {
     diags: Diagnostics,
     pkg: Package,
 
-    fn init() Allocator.Error!Harness {
+    fn init() !Harness {
         return .{
             .registry = .init(testing.allocator, .default),
             .diags = .init(testing.allocator, .default),
-            .pkg = try .init(testing.allocator, "foundry", .default),
+            .pkg = try .init(testing.allocator, "foundry:core", 1, .default),
         };
     }
 

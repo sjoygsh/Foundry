@@ -1,10 +1,10 @@
 # Design: `data` — schemas, content, packages
 
-**Status:** §2, §3, §4 and the checking half of §6 implemented as `engine/src/data/`
-(2026-09-04) — identity, schemas and the registry, the lexer, the parser, diagnostics, and
-the pass that checks a parsed document against the schemas it names. §5, the merge and the
-store are still design. See §4.7 and the Resolution section at the end for what
-implementation changed.
+**Status:** §2, §3, §4, §5 and the checking half of §6 implemented as `engine/src/data/`
+(2026-09-04) — identity, schemas and the registry, the lexer, the parser, diagnostics, the
+pass that checks a parsed document against the schemas it names, and the `.fpk` writer and
+reader. The merge and the store (§6, §7, §8) are still design. See §4.7 and the two
+Resolution sections at the end for what implementation changed.
 **Date:** 2026-09-04, revised 2026-09-04
 **Implements:** I2, I3, I5, I6, I8, I9 · **Informed by:** ADR-0005, ADR-0006, ADR-0007,
 ADR-0020, ADR-0021, CLAUDE.md §6
@@ -429,19 +429,20 @@ loading a package is a read (or a map) plus validation, not a parse.
 
 ```
 header      64 bytes
-  magic            [4]u8   "FPKG"
-  format_version   u32     bumped when this layout changes (I8)
-  package_id       u64     ContentId hash of the package's namespace:name
-  package_version  u32
-  flags            u32
-  schema_count     u32
-  record_count     u32
-  section table    offset+length for each of the four sections below
+  0   magic            [4]u8   "FPKG"
+  4   format_version   u32     bumped when this layout changes (I8)
+  8   package_id       u64     ContentId hash of the package's namespace:name
+  16  package_version  u32
+  20  flags            u32     must be zero; an unknown flag is refused
+  24  schema_count     u32
+  28  record_count     u32
+  32  section table    offset+length for each of the four sections below
 
-schemas     schema_count entries: id, version, field count, field descriptors
-records     record_count entries: { content_id, schema_id, offset, length } into fields
+schemas     schema_count entries of { id, version, name, declaration offset },
+            then the field declarations they point at
+records     record_count entries of { content_id, schema_id, name, offset, length }
 fields      the packed field data, laid out per each record's schema
-strings     length-prefixed UTF-8; every string in the package, deduplicated
+strings     every string in the package, deduplicated; refs carry their own length
 ```
 
 The version lives in a **field, not in the magic**, so a package from a future Foundry
@@ -665,3 +666,72 @@ code or, later, through the ABI has no file to point at, and a diagnostic that a
 when the schema happened to be declared in a `.fdt` file would be worse than one that never
 appears. Revisit if schema declarations ever grow a provenance table for the content
 browser, which would make the note free.
+
+---
+
+## Resolution: `.fpk` (implementation, 2026-09-04)
+
+§5 was a sketch of a file format, which is the kind of design that only becomes true when
+something writes one. Nine things it left open, settled by `engine/src/data/fpk.zig`.
+
+**Two encodings, for two different jobs.** Schemas are self-describing — a tag byte per
+type, a tag byte per value — and are *decoded* at load, because they have to become
+`Schema` values a registry can hold. Records are the opposite: laid out by their schema at
+fixed offsets and never decoded at all. §5.3 argued for exactly this and the code makes the
+split explicit, which is worth naming because the temptation on any future field type will
+be to use the self-describing form for both.
+
+**Every tag byte is spelled out, not taken from a Zig declaration order.** `bool` is 1,
+`i32` is 2, and so on, in a table that exists only to be a table. This is the same rule
+`core/id.zig` follows in specifying FNV-1a rather than calling `std`: a persisted format is
+a compatibility contract, and reordering a union in an editor must not be able to change
+what a byte in a shipped package means. Zero is never written, so a zeroed buffer fails.
+
+**A record entry carries the record's name.** §5.1 had `{ content_id, schema_id, offset,
+length }`. A `u64` cannot answer "why is this torch heavy?", which §8 promises is
+answerable, and ADR-0005 asks that a hash always be traceable to the string it came from.
+The entry is 32 bytes with the name ref in it, and the strings it points at are shared with
+everything else in the package.
+
+**Absence is a bitmap, one bit per field, at the head of every block** — a record's and an
+inline struct's alike. §5.1 did not say how an absent optional was represented, and the
+alternatives (a sentinel value, a separate list) are both worse: a sentinel steals a value
+from the field's range, and a list turns a constant-time read into a search.
+
+**Strings are `{ offset, length }` into a raw blob, not length-prefixed entries.** §5.1
+said both, and they are redundant with each other. Dropping the prefix is what lets two
+identical strings be one span — a test asserts that a string written four times appears in
+the file once — and nothing ever needs to walk the section without a ref in hand.
+
+**"Read in place" means explicit little-endian loads, not a cast over a mapped struct.**
+Every value is read with a byte-order-explicit load at a computed offset, which compiles to
+a plain load on every platform Foundry targets and stays correct on one it does not. Nothing
+is copied and nothing is parsed, which is what §5.3 was actually asking for. Slots are still
+aligned to their natural alignment even though the loads no longer require it, because that
+is the cheap half of keeping a genuine zero-copy mapping possible later.
+
+**UTF-8 is validated once over the whole strings section, and each ref is checked for
+landing on a codepoint boundary.** §5.2's "every string is UTF-8-validated on the way in"
+cannot be done exhaustively at open: a record's strings are only reachable through a schema,
+and a package may reference schemas another package declares. One scan of the section plus
+two byte tests per resolve is exactly equivalent — a slice of valid UTF-8 is valid UTF-8
+precisely when neither end lands mid-codepoint — and it is O(1) per read rather than O(n).
+
+**A package carries the schemas it declares, not the schemas it uses.** §5.1 said
+"schema_count entries" without saying which. Carrying every schema a record *references*
+would make a mod that adds items ship a second copy of `foundry:item`, and loading it would
+then be refused by §3's rule against re-registering a schema at the same version. So
+`check.Package` records what its documents declared, and `.fpk` carries that.
+
+**The reader trusts nothing, in two stages.** `open` validates the header, the sections, the
+entry tables, every string in those tables and every record's field-block bounds, then
+decodes the schemas under depth and count limits — believing a count only after finding the
+bytes to hold it. Everything past that is checked at the point of use, because a block's
+shape depends on a schema the file is under no obligation to agree with. Both halves are
+tested by mutating a valid package one byte at a time: of four thousand mutations, roughly
+five in eight still open, and every accessor on every one of them either reads a value or
+returns an error. A byte-for-byte random file is refused outright.
+
+**A package is at most four gigabytes**, because every offset in the format is a `u32`.
+Recorded rather than argued: it is a bound worth knowing before something bumps into it, and
+`format_version` is how it would be raised.

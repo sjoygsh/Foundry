@@ -1,10 +1,11 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-04
-**Updated by:** **M3, step 4.** The checking pass: a parsed `Document` wired against a
-`Registry`, every record checked against the schema it names, defaults filled at every
-level, and the result laid out by schema field index rather than by name. Content goes in
-and a `Package` of checked records comes out; nothing writes or merges one yet
+**Updated by:** **M3, steps 4 and 5.** The checking pass — a parsed `Document` wired
+against a `Registry`, defaults filled at every level, the result laid out by schema field
+index — and then `.fpk`, the runtime format it compiles to. Text goes in, a package file
+comes out, and reading one back is arithmetic on bytes that were never copied. Nothing
+merges packages yet
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -41,7 +42,7 @@ under a camera driven by keyboard and mouse, with the batcher's own numbers on s
 space that does not move when the camera does — 4 batches and 4 draw calls, because the
 sheet, the font and the selection outline share one atlas.
 
-**Current milestone: M3 — Content: "it has data."** Four of ten steps done. It started at
+**Current milestone: M3 — Content: "it has data."** Five of ten steps done. It started at
 the only place it could: its decisions. The first modding-relevant milestone, and it comes due on two of
 `CLAUDE.md` §9's postponed decisions — both now spent, as **ADR-0020** and **ADR-0021**, and
 struck from the §9 table. The two design documents `docs/design/README.md` has owed since M2
@@ -219,8 +220,8 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 431 tests** (50 `core`, 70 `platform`, 78 `data`, 92 `rhi`,
-17 `asset`, 102 `render2d`, 22 `app`), and **439 under `-Drhi=metal`**, where `rhi` gains
+**`zig build test` passes 443 tests** (50 `core`, 70 `platform`, 90 `data`, 92 `rhi`,
+17 `asset`, 102 `render2d`, 22 `app`), and **451 under `-Drhi=metal`**, where `rhi` gains
 the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
@@ -311,10 +312,31 @@ yet. That is the whole of the milestone so far and it is the right amount: `CLAU
 says design before implementation, rule 10 says never make a major architectural decision
 silently, and M3 opens with two decisions §9 has been holding since M0.
 
-**Steps 1 to 4 are built.** `data` exists: identity, schemas, the registry, the lexer, the
-parser, diagnostics, and the pass that checks a document against the schemas it names. 431
-tests, up from 346 at the end of M2; all eight target/backend combinations compile;
-`zig fmt` clean.
+**Steps 1 to 5 are built.** `data` exists: identity, schemas, the registry, the lexer, the
+parser, diagnostics, the pass that checks a document against the schemas it names, and the
+`.fpk` writer and reader. 443 tests, up from 346 at the end of M2; all eight target/backend
+combinations compile; `zig fmt` clean.
+
+**Step 5 — `.fpk`.** The runtime format, both halves, in `data` — so the round trip is a
+pure function over byte buffers and every test of it is hermetic, the same property the
+parser got for the same reason. Four things worth carrying forward, recorded in
+`content-schemas.md`'s third Resolution section:
+
+* **Two encodings, deliberately.** Schemas are self-describing and are decoded at load,
+  because they have to become `Schema` values a registry can hold. Records are laid out by
+  their schema at fixed offsets and are never decoded — read in place, with explicit
+  little-endian loads, so nothing is copied and nothing is parsed. The temptation on the
+  next field type will be to use the self-describing form for both; §5.3 is why not.
+* **Every tag byte is spelled out rather than taken from a Zig declaration order**, the
+  same rule `core/id.zig` follows in specifying FNV-1a by hand. Reordering a union in an
+  editor must not be able to change what a byte in a shipped package means.
+* **A package carries the schemas it declares, not the ones it uses.** Otherwise a mod that
+  adds items ships a second copy of `foundry:item`, and loading it is then refused by the
+  rule against re-registering a schema at the same version.
+* **The reader is tested by breaking packages, not by reading good ones.** A valid package
+  is mutated one byte at a time, four thousand times: about five in eight still open, and
+  every accessor on every one either reads a value or returns an error. A byte-for-byte
+  random file is refused outright.
 
 **Step 4 — checking.** `check.Package` holds records whose fields are an array indexed by
 schema field index, with defaults filled at every level, so the name-to-index lookup happens
@@ -497,8 +519,11 @@ sandbox runnable, and so nothing is a rewrite of the one before.
    result laid out by schema field index. `schema.checkValue` still owns the leaf rules, so
    the parser, the registry and `fpack` cannot come to disagree about them; the walk that
    names *which* value is wrong lives in the checker, where the field names are.
-5. **`.fpk`, writer and reader.** §5. The reader validates every offset and length against the
-   file's own size before dereferencing anything, and a random file is a test.
+5. ~~**`.fpk`, writer and reader.**~~ **Done, 2026-09-04.** `fpk.zig`, both halves. The
+   reader validates the header, the sections, the tables and every string in them at open,
+   and re-checks everything it reads out of a record block, because a block's shape depends
+   on a schema the file need not agree with. A random file is a test, and so is a valid
+   package with one byte changed.
 6. **Packages and the store.** Ordered merge, replace semantics, provenance, and the two
    documented iteration orders I9 depends on (§6).
 7. **`tools/fpack`.** Walks a package directory, derives asset IDs per `assets.md` §3,
