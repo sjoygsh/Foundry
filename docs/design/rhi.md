@@ -419,6 +419,22 @@ without a compiler. It is on the interface now because it is the same mechanism
 mod-authored shaders will need at M7, and finding out then that the interface cannot express
 it would be expensive.
 
+### Entry points are named by convention
+
+*Written 2026-09-04, during M2. The convention existed in the Metal backend from M1 and
+was undocumented; `render2d`'s shader found it by failing pipeline creation.*
+
+A shader module's entry points must be called **`vertexMain`** and **`fragmentMain`**. The
+backend looks them up by those names, and a shader that names them anything else fails
+`createRenderPipeline` with `InvalidDescriptor` rather than rendering incorrectly — which
+is the right failure, but only if the rule is written down somewhere findable.
+
+The alternative is an entry-point name in `RenderPipelineDesc`, which every one of the
+three APIs supports. It is not obviously worth it: a fixed name is one fewer string to get
+wrong, and a module can still hold several pipelines' worth of code as long as only one
+pair is the entry. If a shader ever genuinely needs two vertex entry points in one module,
+that is the point to add the field — and it is recorded in §13 rather than done now.
+
 ### Where the bytes come from
 
 `createShaderModule` needs a producer, and the producer is a build step: `metalLibrary` in
@@ -516,7 +532,11 @@ headlessly — the same reason the null *platform* backend exists.
    Enforcing it would be an eleventh rule, which is a contract change and belongs here
    before it appears in code. Recorded rather than resolved, because implementation did
    not force the decision: everything else works without it.
-5. **What happens on device loss.** Real on Windows, rare on macOS, and untestable until
+5. **Whether shader entry points should be named in the descriptor.** Fixed as
+   `vertexMain`/`fragmentMain` today (§10), which is one fewer string to get wrong. All
+   three APIs support naming them per pipeline. Revisit when a module genuinely needs two
+   vertex entry points, which the material system might well want.
+6. **What happens on device loss.** Real on Windows, rare on macOS, and untestable until
    there is a second backend. Recorded so that it is a known gap rather than an oversight —
    the handle model at least makes recovery expressible, since every resource is already
    addressed indirectly.

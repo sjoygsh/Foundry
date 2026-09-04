@@ -39,13 +39,17 @@ const layering = [_]Module{
     // building half of it here would resolve it by accident.
     .{ .name = "asset", .deps = &.{ "core", "platform" } },
 
+    // L3 — the game-facing 2D renderer (docs/design/render2d.md). Note what it does
+    // *not* get: `platform`. The renderer neither opens files nor reads input; `asset`
+    // hands it decoded images and the game hands it draw calls.
+    .{ .name = "render2d", .deps = &.{ "core", "rhi", "asset" } },
+
     // L4 — the engine loop and subsystem lifecycle. Gains dependencies as the layers
     // between it and `platform` arrive; it is allowed to see all of them (ADR-0007).
     .{ .name = "app", .deps = &.{ "core", "platform", "rhi" } },
 
     // Added as each is implemented. The rest of the graph from ADR-0007 is:
     //   L1  data       -> core
-    //   L3  render2d   -> core, rhi, asset
     //   L3  scene      -> core, data, asset
     //   L5  abi        -> app             (M7)
 };
@@ -173,6 +177,19 @@ pub fn build(b: *std.Build) void {
         if (b.lazyDependency("sdl", .{ .target = target, .optimize = optimize })) |sdl| {
             platform_module.linkLibrary(sdl.artifact("SDL3"));
         }
+    }
+
+    // The renderer's own shader, compiled by the build and embedded in the module
+    // (ADR-0019). This is an *engine-owned* shader — one whose absence means the renderer
+    // cannot draw — so it is machinery rather than content, and it does not wait for the
+    // content system. Mod-authored and content-owned shaders remain assets per ADR-0015.
+    //
+    // Metal only, for the same reason as the sandbox's: `xcrun` is a macOS toolchain and a
+    // null build must not require Xcode to exist.
+    if (rhi_backend == .metal) {
+        modules.get("render2d").?.addAnonymousImport("sprite_metallib", .{
+            .root_source_file = metalLibrary(b, "sprite", &.{"engine/src/render2d/shaders/sprite.metal"}),
+        });
     }
 
     // Samples are consumers of the engine, exactly as a game in its own repository

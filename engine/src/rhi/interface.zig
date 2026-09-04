@@ -127,6 +127,12 @@ pub fn check(comptime Impl: type, comptime label: []const u8) void {
         expectFn(D, label, "beginFrame", &.{*D}, FrameError!command.FrameContext);
         expectFn(D, label, "endFrame", &.{*D}, FrameError!void);
         expectFn(D, label, "resizeSurface", &.{ *D, resource.Extent2D }, FrameError!void);
+        // Added during M2, because teardown forced it. Every consumer destroys its
+        // resources before the device that owns them, and without this there is no way to
+        // reach the state in which doing so is legal — the validation backend's rule 9
+        // fires on the most ordinary shutdown imaginable. Deliberately not an error
+        // union: waiting cannot fail in a way a caller could act on.
+        expectFn(D, label, "waitIdle", &.{*D}, void);
 
         // Recording.
         expectFn(D, label, "beginCommandBuffer", &.{*D}, CommandError!*C);

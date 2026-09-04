@@ -490,14 +490,24 @@ pub const Device = struct {
         return c.fd_mtl_texture_create(self.dev, &d, "surface (offscreen)");
     }
 
+    /// Waits until the GPU has finished everything submitted so far.
+    ///
+    /// The frame ring's own mechanism answers this exactly: wait on every slot's last
+    /// command buffer. Teardown needs it, and so does anything that must destroy a
+    /// resource without knowing whether a frame still references it.
+    pub fn waitIdle(self: *Device) void {
+        for (&self.in_flight) |slot| {
+            if (slot) |cb| c.fd_mtl_command_buffer_wait_until_completed(cb);
+        }
+    }
+
     pub fn deinit(self: *Device) void {
         const gpa = self.gpa;
 
-        // Nothing may be released while the GPU might still read it. The frame ring's own
-        // mechanism answers this exactly: wait on every slot's last command buffer.
+        // Nothing may be released while the GPU might still read it.
+        self.waitIdle();
         for (&self.in_flight) |*slot| {
             if (slot.*) |cb| {
-                c.fd_mtl_command_buffer_wait_until_completed(cb);
                 c.fd_mtl_command_buffer_destroy(cb);
                 slot.* = null;
             }

@@ -1,0 +1,830 @@
+//! The renderer: what a game holds, and what turns its draw calls into GPU work.
+
+const std = @import("std");
+const core = @import("core");
+const rhi = @import("rhi");
+const asset = @import("asset");
+
+const batch_mod = @import("batch.zig");
+const camera_mod = @import("camera.zig");
+const color_mod = @import("color.zig");
+const sprite_mod = @import("sprite.zig");
+const texture_mod = @import("texture.zig");
+
+const Allocator = std.mem.Allocator;
+const BlendMode = color_mod.BlendMode;
+const Camera2D = camera_mod.Camera2D;
+const Color = color_mod.Color;
+const Sprite = sprite_mod.Sprite;
+const TextureHandle = texture_mod.TextureHandle;
+const Vertex = sprite_mod.Vertex;
+const log = core.log.scoped(.render2d);
+
+/// The shader the renderer draws with, compiled by the build and embedded (ADR-0019).
+///
+/// An engine-owned shader: the renderer cannot function without it, which makes it
+/// machinery rather than content, so it does not wait for the content system.
+const sprite_shader: []const u8 = switch (rhi.backend) {
+    .metal => @embedFile("sprite_metallib"),
+    .null => "null-backend-shader",
+};
+
+pub const Error = error{
+    /// A texture handle that never existed, or that has been destroyed.
+    InvalidTexture,
+    /// Larger than the device can hold.
+    TextureTooLarge,
+    /// Drawing outside a `begin`/`record` pair.
+    NotRecording,
+} || camera_mod.CameraError || rhi.ResourceError || rhi.MapError ||
+    rhi.CommandError || Allocator.Error;
+
+pub const Config = struct {
+    /// Quads per vertex buffer. A frame needing more simply uses more buffers, so this
+    /// trades allocation granularity against draw-call count, and is not a limit.
+    quads_per_buffer: u32 = 16 * 1024,
+    /// Must match the value the device was created with. The retirement queue and the
+    /// per-slot buffer pools are both sized by it.
+    frames_in_flight: u32 = 2,
+};
+
+/// What the camera contributes to a frame.
+pub const FrameView = struct {
+    camera: Camera2D,
+    /// Framebuffer pixels per logical point, from `platform.WindowInfo`.
+    ///
+    /// `Camera2D.viewport` is in **logical points** — the same space as mouse input, so
+    /// `screenToWorld` takes a mouse position directly — and the GPU viewport is in
+    /// pixels. This is the one number that bridges them, and it is asked for rather than
+    /// assumed because `render2d` does not depend on `platform` and cannot look it up.
+    pixel_scale: f32 = 1,
+};
+
+/// Per-frame counters. Outputs only: statistics never feed simulation (I9).
+pub const Stats = struct {
+    sprites: u32 = 0,
+    batches: u32 = 0,
+    draw_calls: u32 = 0,
+    vertices: u32 = 0,
+    vertex_bytes: u32 = 0,
+    buffers_used: u32 = 0,
+    textures_resident: u32 = 0,
+};
+
+/// One vertex buffer's worth of storage for one frame slot.
+///
+/// Two shapes, chosen by `unified_memory` at creation:
+///
+/// * **Unified** — one `upload` buffer, written by the CPU and read directly by the GPU
+///   as vertices. No copy.
+/// * **Discrete** — an `upload` staging buffer plus a `device_local` vertex buffer, with
+///   one copy per frame. A GPU reading vertices across PCIe every frame is the slow path
+///   that makes people conclude batching does not work.
+///
+/// Both paths are exercised: Metal on Apple Silicon reports unified, and the validation
+/// backend deliberately reports **not** unified, so its ten rules check the barriers and
+/// copies of the discrete path on every test run.
+const SlotBuffer = struct {
+    upload: rhi.BufferHandle,
+    /// `.none` on unified memory, where the upload buffer *is* the vertex buffer.
+    device: rhi.BufferHandle,
+    /// Tracked so the per-frame barrier declares the truth (`rhi.md` §6).
+    state: rhi.ResourceState,
+
+    fn vertexSource(self: SlotBuffer) rhi.BufferHandle {
+        return if (self.device.isNone()) self.upload else self.device;
+    }
+};
+
+const Slot = struct {
+    buffers: std.ArrayList(SlotBuffer) = .empty,
+};
+
+pub const Renderer = struct {
+    gpa: Allocator,
+    device: *rhi.Device,
+    config: Config,
+    unified: bool,
+
+    shader: rhi.ShaderModuleHandle,
+    group_layout: rhi.BindGroupLayoutHandle,
+    pipeline_layout: rhi.PipelineLayoutHandle,
+    /// One per blend mode. The permutation count is exactly this because the CPU
+    /// premultiplies, so the modes differ only in blend factors.
+    pipelines: [BlendMode.count]rhi.RenderPipelineHandle,
+    indices: rhi.BufferHandle,
+
+    textures: texture_mod.Pool,
+    batcher: batch_mod.Batcher,
+    slots: []Slot,
+
+    view: FrameView,
+    view_projection: core.math.Mat4,
+    recording: bool,
+    frame: ?rhi.FrameContext,
+    stats: Stats,
+    last_stats: Stats,
+
+    const Self = @This();
+
+    pub fn init(gpa: Allocator, device: *rhi.Device, config: Config) Error!Self {
+        std.debug.assert(config.quads_per_buffer > 0);
+        std.debug.assert(config.frames_in_flight > 0);
+
+        const caps = device.capabilities();
+
+        const shader = try device.createShaderModule(.{
+            .label = "render2d sprite",
+            .bytes = sprite_shader,
+        });
+        errdefer device.destroyShaderModule(shader);
+
+        // Group 0 is the material: a texture and its sampler. Ascending `binding` is what
+        // §9's walk uses, which is what puts them at texture(0) and sampler(0).
+        const group_layout = try device.createBindGroupLayout(.{
+            .label = "render2d material",
+            .entries = &.{
+                .{ .binding = 0, .type = .sampled_texture, .visibility = .{ .fragment = true } },
+                .{ .binding = 1, .type = .sampler, .visibility = .{ .fragment = true } },
+            },
+        });
+        errdefer device.destroyBindGroupLayout(group_layout);
+
+        const pipeline_layout = try device.createPipelineLayout(.{
+            .label = "render2d",
+            .bind_group_layouts = &.{group_layout},
+            // The view-projection, and nothing else. It changes every frame and is 64
+            // bytes, so it is command stream data rather than a resource that would need
+            // its own ring buffering.
+            .inline_constant_bytes = @sizeOf(core.math.Mat4),
+        });
+        errdefer device.destroyPipelineLayout(pipeline_layout);
+
+        var pipelines: [BlendMode.count]rhi.RenderPipelineHandle = undefined;
+        var built: usize = 0;
+        errdefer for (pipelines[0..built]) |p| device.destroyRenderPipeline(p);
+        inline for (comptime std.enums.values(BlendMode), 0..) |mode, i| {
+            pipelines[i] = try device.createRenderPipeline(.{
+                .label = "render2d sprite " ++ @tagName(mode),
+                .layout = pipeline_layout,
+                .vertex_shader = shader,
+                .fragment_shader = shader,
+                .vertex_buffers = &.{.{
+                    .stride = @sizeOf(Vertex),
+                    .attributes = &.{
+                        .{ .location = 0, .offset = @offsetOf(Vertex, "position"), .format = .float32x2 },
+                        .{ .location = 1, .offset = @offsetOf(Vertex, "uv"), .format = .float32x2 },
+                        .{ .location = 2, .offset = @offsetOf(Vertex, "color"), .format = .unorm8x4 },
+                    },
+                }},
+                .color_targets = &.{.{
+                    .format = caps.surface_format,
+                    .blend = switch (mode) {
+                        .alpha => rhi.pipeline.BlendState.premultiplied_alpha,
+                        .additive => rhi.pipeline.BlendState.additive,
+                        .none => null,
+                    },
+                }},
+            });
+            built += 1;
+        }
+
+        const indices = try buildIndexBuffer(device, config.quads_per_buffer);
+        errdefer device.destroyBuffer(indices);
+
+        const slots = try gpa.alloc(Slot, config.frames_in_flight);
+        errdefer gpa.free(slots);
+        for (slots) |*slot| slot.* = .{};
+
+        log.info("render2d up: {d} quads per buffer, {s} memory", .{
+            config.quads_per_buffer,
+            if (caps.unified_memory) "unified" else "discrete",
+        });
+
+        return .{
+            .gpa = gpa,
+            .device = device,
+            .config = config,
+            .unified = caps.unified_memory,
+            .shader = shader,
+            .group_layout = group_layout,
+            .pipeline_layout = pipeline_layout,
+            .pipelines = pipelines,
+            .indices = indices,
+            .textures = .init(config.frames_in_flight),
+            .batcher = .init(config.quads_per_buffer),
+            .slots = slots,
+            .view = .{ .camera = .{ .viewport = .init(0, 0, 1, 1) } },
+            .view_projection = .identity,
+            .recording = false,
+            .frame = null,
+            .stats = .{},
+            .last_stats = .{},
+        };
+    }
+
+    /// Releases everything.
+    ///
+    /// Idles the device first, because a renderer is destroyed *before* the device it
+    /// borrows — that is the order every consumer creates them in, reversed — and
+    /// releasing a resource a frame in flight still references is undefined behaviour.
+    /// This is what `rhi`'s `waitIdle` exists for; M2 added it because this teardown is
+    /// the ordinary case, not a corner.
+    pub fn deinit(self: *Self) void {
+        self.device.waitIdle();
+
+        for (self.slots) |*slot| {
+            for (slot.buffers.items) |buffer| {
+                self.device.destroyBuffer(buffer.upload);
+                if (!buffer.device.isNone()) self.device.destroyBuffer(buffer.device);
+            }
+            slot.buffers.deinit(self.gpa);
+        }
+        self.gpa.free(self.slots);
+
+        self.batcher.deinit(self.gpa);
+        self.textures.deinit(self.gpa, self.device);
+
+        self.device.destroyBuffer(self.indices);
+        for (self.pipelines) |p| self.device.destroyRenderPipeline(p);
+        self.device.destroyPipelineLayout(self.pipeline_layout);
+        self.device.destroyBindGroupLayout(self.group_layout);
+        self.device.destroyShaderModule(self.shader);
+        self.* = undefined;
+    }
+
+    // -- resources -------------------------------------------------------------------
+
+    /// Upload a decoded image and get back a handle a game can hold.
+    pub fn createTexture(
+        self: *Self,
+        image: asset.Image,
+        options: texture_mod.TextureOptions,
+    ) Error!TextureHandle {
+        const caps = self.device.capabilities();
+        // The image came from a file, so the size is checked rather than asserted.
+        if (image.width > caps.max_texture_dimension or image.height > caps.max_texture_dimension) {
+            log.warn("texture '{s}' is {d}x{d}, larger than the device's {d}", .{
+                options.label, image.width, image.height, caps.max_texture_dimension,
+            });
+            return error.TextureTooLarge;
+        }
+
+        const gpu = try self.device.createTexture(.{
+            .label = options.label,
+            .size = .{ .width = image.width, .height = image.height },
+            // sRGB, matching the surface, so sampling returns linear light and the write
+            // encodes back. `asset.Image` documents its bytes as sRGB for this reason.
+            .format = .rgba8_unorm_srgb,
+            .usage = .{ .sampled = true, .copy_dst = true },
+        });
+        errdefer self.device.destroyTexture(gpu);
+
+        const sampler = try self.device.createSampler(.{
+            .label = options.label,
+            .min_filter = switch (options.filter) {
+                .nearest => .nearest,
+                .linear => .linear,
+            },
+            .mag_filter = switch (options.filter) {
+                .nearest => .nearest,
+                .linear => .linear,
+            },
+            .address_u = switch (options.wrap) {
+                .clamp => .clamp_to_edge,
+                .repeat => .repeat,
+            },
+            .address_v = switch (options.wrap) {
+                .clamp => .clamp_to_edge,
+                .repeat => .repeat,
+            },
+        });
+        errdefer self.device.destroySampler(sampler);
+
+        try self.uploadTexture(gpu, image);
+
+        const group = try self.device.createBindGroup(.{
+            .label = options.label,
+            .layout = self.group_layout,
+            .entries = &.{
+                .{ .binding = 0, .resource = .{ .sampled_texture = gpu } },
+                .{ .binding = 1, .resource = .{ .sampler = sampler } },
+            },
+        });
+        errdefer self.device.destroyBindGroup(group);
+
+        return self.textures.add(self.gpa, .{
+            .gpu = gpu,
+            .group = group,
+            .sampler = sampler,
+            .width = image.width,
+            .height = image.height,
+        });
+    }
+
+    /// Requests destruction. The handle stops resolving immediately; the GPU objects are
+    /// released once no in-flight frame can reference them (`texture.Pool`).
+    pub fn destroyTexture(self: *Self, handle: TextureHandle) void {
+        const frame_index = if (self.frame) |f| f.index else 0;
+        _ = self.textures.destroy(self.gpa, handle, frame_index);
+    }
+
+    pub fn textureSize(self: *Self, handle: TextureHandle) ?rhi.Extent2D {
+        const state = self.textures.get(handle) orelse return null;
+        return .{ .width = state.width, .height = state.height };
+    }
+
+    fn uploadTexture(self: *Self, gpu: rhi.TextureHandle, image: asset.Image) Error!void {
+        const staging = try self.device.createBuffer(.{
+            .label = "render2d texture staging",
+            .size = image.byteSize(),
+            .usage = .{ .copy_src = true },
+            .memory = .upload,
+        });
+        // Destroyed at the end of this function, which is safe specifically because it is
+        // not inside a frame: nothing is in flight, so the deferred-destroy guarantee the
+        // RHI documents but does not implement is not being leaned on.
+        defer self.device.destroyBuffer(staging);
+
+        {
+            const bytes = try self.device.mapBuffer(staging);
+            defer self.device.unmapBuffer(staging);
+            @memcpy(bytes[0..image.byteSize()], image.pixels);
+        }
+
+        var cmd = try self.device.beginCommandBuffer();
+        try cmd.textureBarrier(&.{.{ .texture = gpu, .from = .undefined, .to = .copy_dst }});
+        try cmd.copyBufferToTexture(.{
+            .src = staging,
+            .dst = gpu,
+            .size = .{ .width = image.width, .height = image.height },
+        });
+        try cmd.textureBarrier(&.{.{ .texture = gpu, .from = .copy_dst, .to = .shader_read }});
+        try cmd.submit();
+    }
+
+    // -- the frame -------------------------------------------------------------------
+
+    /// Starts a frame's draw list. Called by the game, before any `drawSprite`.
+    pub fn begin(self: *Self, view: FrameView) Error!void {
+        try view.camera.validate();
+        self.view = view;
+        self.view_projection = try view.camera.viewProjection();
+        self.batcher.reset();
+        self.stats = .{};
+        self.recording = true;
+    }
+
+    /// Appends one sprite to this frame's draw list. No GPU work happens here.
+    pub fn drawSprite(self: *Self, sprite: Sprite) Error!void {
+        if (!self.recording) return error.NotRecording;
+        // Validated at submission rather than at draw time, so a stale handle is a clean
+        // error at the call site that caused it — the payoff of I1.
+        if (self.textures.get(sprite.texture) == null) return error.InvalidTexture;
+        try self.batcher.add(self.gpa, sprite);
+    }
+
+    /// Sorts, writes vertices, and records any copies the memory model needs.
+    ///
+    /// Called by `app`, not by the game: it takes a command buffer, and a game that could
+    /// reach one would be reaching the RHI (CLAUDE.md §4.2).
+    pub fn prepare(self: *Self, cmd: *rhi.CommandBuffer, frame: rhi.FrameContext) Error!void {
+        self.frame = frame;
+        self.textures.collect(self.device, frame.index);
+
+        try self.batcher.plan(self.gpa);
+
+        const slot = &self.slots[frame.slot];
+        const needed = self.batcher.bufferCount();
+        while (slot.buffers.items.len < needed) {
+            try slot.buffers.append(self.gpa, try self.createSlotBuffer(frame.slot));
+        }
+
+        const quads_per_buffer = self.config.quads_per_buffer;
+        var written_quads: u32 = 0;
+
+        for (0..needed) |i| {
+            const first = @as(u32, @intCast(i)) * quads_per_buffer;
+            const count = @min(quads_per_buffer, self.batcher.count() - first);
+            const buffer = slot.buffers.items[i];
+
+            {
+                // Mapped per frame rather than persistently, deliberately: the validation
+                // backend's rule 3 fires on `mapBuffer` when the slot is still in flight,
+                // so a persistent mapping would switch off the exact check the per-slot
+                // scheme exists to earn.
+                const bytes = try self.device.mapBuffer(buffer.upload);
+                defer self.device.unmapBuffer(buffer.upload);
+
+                const aligned: []align(@alignOf(Vertex)) u8 = @alignCast(bytes);
+                const vertices = std.mem.bytesAsSlice(Vertex, aligned);
+                for (0..count) |q| {
+                    const sprite = self.batcher.sprites.items[self.batcher.order.items[first + q]];
+                    const at = q * sprite_mod.vertices_per_quad;
+                    sprite_mod.writeQuad(sprite, vertices[at..][0..sprite_mod.vertices_per_quad]);
+                }
+            }
+
+            written_quads += count;
+        }
+
+        if (!self.unified and needed > 0) {
+            try self.recordUploads(cmd, slot, needed);
+        }
+
+        self.stats.sprites = self.batcher.count();
+        self.stats.batches = @intCast(self.batcher.batches.items.len);
+        self.stats.buffers_used = needed;
+        self.stats.vertices = written_quads * sprite_mod.vertices_per_quad;
+        self.stats.vertex_bytes = self.stats.vertices * @sizeOf(Vertex);
+        self.stats.textures_resident = self.textures.count();
+    }
+
+    /// Emits the draw calls. Called by `app`, into the pass it opened.
+    pub fn record(self: *Self, pass: *rhi.RenderPass) Error!void {
+        defer {
+            self.recording = false;
+            self.last_stats = self.stats;
+        }
+        if (self.batcher.batches.items.len == 0) return;
+
+        const frame = self.frame orelse return error.NotRecording;
+        const slot = &self.slots[frame.slot];
+
+        const vp = self.view.camera.viewport;
+        const scale = self.view.pixel_scale;
+        pass.setViewport(.{
+            .x = vp.x * scale,
+            .y = vp.y * scale,
+            .width = vp.w * scale,
+            .height = vp.h * scale,
+        });
+
+        var bound_pipeline: ?BlendMode = null;
+        var bound_texture: ?TextureHandle = null;
+        var bound_buffer: ?u32 = null;
+
+        for (self.batcher.batches.items) |item| {
+            const state = self.textures.get(item.texture) orelse continue;
+
+            if (bound_pipeline == null or bound_pipeline.? != item.blend) {
+                pass.setPipeline(self.pipelines[@intFromEnum(item.blend)]);
+                // Inline constants belong to the pipeline layout, so they are re-set with
+                // the pipeline rather than once per frame.
+                pass.setInlineConstants(std.mem.asBytes(&self.view_projection));
+                bound_pipeline = item.blend;
+                // A new pipeline invalidates nothing else here, but the bindings are
+                // re-issued below anyway if they changed.
+            }
+            if (bound_texture == null or !bound_texture.?.eql(item.texture)) {
+                pass.setBindGroup(0, state.group);
+                bound_texture = item.texture;
+            }
+            if (bound_buffer == null or bound_buffer.? != item.buffer) {
+                pass.setVertexBuffer(0, slot.buffers.items[item.buffer].vertexSource(), 0);
+                pass.setIndexBuffer(self.indices, .uint32, 0);
+                bound_buffer = item.buffer;
+            }
+
+            pass.drawIndexed(.{
+                .index_count = item.quad_count * sprite_mod.indices_per_quad,
+                .first_index = item.first_quad * sprite_mod.indices_per_quad,
+            });
+            self.stats.draw_calls += 1;
+        }
+    }
+
+    /// The most recently completed frame's counters.
+    pub fn frameStats(self: *const Self) Stats {
+        return self.last_stats;
+    }
+
+    // -- internals -------------------------------------------------------------------
+
+    fn createSlotBuffer(self: *Self, slot_index: u32) Error!SlotBuffer {
+        const size = @as(u64, self.config.quads_per_buffer) *
+            sprite_mod.vertices_per_quad * @sizeOf(Vertex);
+
+        if (self.unified) {
+            return .{
+                .upload = try self.device.createBuffer(.{
+                    .label = "render2d vertices",
+                    .size = size,
+                    .usage = .{ .vertex = true },
+                    .memory = .upload,
+                }),
+                .device = .none,
+                .state = .shader_read,
+            };
+        }
+
+        const staging = try self.device.createBuffer(.{
+            .label = "render2d vertex staging",
+            .size = size,
+            .usage = .{ .copy_src = true },
+            .memory = .upload,
+        });
+        errdefer self.device.destroyBuffer(staging);
+
+        const device_buffer = try self.device.createBuffer(.{
+            .label = "render2d vertices",
+            .size = size,
+            .usage = .{ .vertex = true, .copy_dst = true },
+            .memory = .device_local,
+        });
+
+        _ = slot_index;
+        return .{ .upload = staging, .device = device_buffer, .state = .undefined };
+    }
+
+    /// The discrete-memory path: one barrier batch, the copies, one barrier batch back.
+    ///
+    /// Batched at the boundaries rather than issued per copy, which is the shape `rhi.md`
+    /// §6 asks for — per-resource barriers between every command are what make Vulkan slow.
+    fn recordUploads(self: *Self, cmd: *rhi.CommandBuffer, slot: *Slot, used: u32) Error!void {
+        var to_copy: [8]rhi.command.BufferBarrier = undefined;
+        var to_read: [8]rhi.command.BufferBarrier = undefined;
+
+        var i: u32 = 0;
+        while (i < used) {
+            const chunk = @min(@as(u32, to_copy.len), used - i);
+            for (0..chunk) |j| {
+                const buffer = &slot.buffers.items[i + j];
+                to_copy[j] = .{ .buffer = buffer.device, .from = buffer.state, .to = .copy_dst };
+                to_read[j] = .{ .buffer = buffer.device, .from = .copy_dst, .to = .shader_read };
+            }
+
+            try cmd.bufferBarrier(to_copy[0..chunk]);
+            for (0..chunk) |j| {
+                const index = i + j;
+                const first = @as(u32, @intCast(index)) * self.config.quads_per_buffer;
+                const count = @min(self.config.quads_per_buffer, self.batcher.count() - first);
+                const buffer = &slot.buffers.items[index];
+                try cmd.copyBufferToBuffer(.{
+                    .src = buffer.upload,
+                    .dst = buffer.device,
+                    // Only what was written, not the whole buffer.
+                    .size = @as(u64, count) * sprite_mod.vertices_per_quad * @sizeOf(Vertex),
+                });
+                buffer.state = .shader_read;
+            }
+            try cmd.bufferBarrier(to_read[0..chunk]);
+
+            i += chunk;
+        }
+    }
+
+    fn buildIndexBuffer(device: *rhi.Device, quads: u32) Error!rhi.BufferHandle {
+        const count = quads * sprite_mod.indices_per_quad;
+        const size = @as(u64, count) * @sizeOf(u32);
+
+        const staging = try device.createBuffer(.{
+            .label = "render2d index staging",
+            .size = size,
+            .usage = .{ .copy_src = true },
+            .memory = .upload,
+        });
+        defer device.destroyBuffer(staging);
+
+        const indices = try device.createBuffer(.{
+            .label = "render2d indices",
+            .size = size,
+            // `u32` rather than `u16`: `u16` would cap a draw at 16,384 quads and save two
+            // bytes a vertex, and a cap that produces a rare size-dependent bug is a bad
+            // trade for a buffer written once and never touched again.
+            .usage = .{ .index = true, .copy_dst = true },
+            .memory = .device_local,
+        });
+        errdefer device.destroyBuffer(indices);
+
+        {
+            const bytes = try device.mapBuffer(staging);
+            defer device.unmapBuffer(staging);
+            // Mapped GPU memory carries no Zig alignment guarantee, so this is checked
+            // rather than assumed: `@alignCast` panics in a safe build if a backend ever
+            // hands back something a `u32` cannot be written to.
+            const aligned: []align(@alignOf(u32)) u8 = @alignCast(bytes[0..@intCast(size)]);
+            sprite_mod.writeIndices(std.mem.bytesAsSlice(u32, aligned));
+        }
+
+        var cmd = try device.beginCommandBuffer();
+        try cmd.bufferBarrier(&.{.{ .buffer = indices, .from = .undefined, .to = .copy_dst }});
+        try cmd.copyBufferToBuffer(.{ .src = staging, .dst = indices, .size = size });
+        // `shader_read` is the state for "the GPU reads this now"; the RHI does not
+        // distinguish index fetch from shader read, because none of the three APIs needs
+        // it to (`rhi.md` §6).
+        try cmd.bufferBarrier(&.{.{ .buffer = indices, .from = .copy_dst, .to = .shader_read }});
+        try cmd.submit();
+
+        return indices;
+    }
+};
+
+const testing = std.testing;
+
+/// A device, a renderer and one texture: the smallest thing that can draw.
+///
+/// Under `-Drhi=null` this runs against the validation backend with violation logging on,
+/// so any of its ten rules broken anywhere in the renderer fails the test through the log
+/// — including the barrier and copy discipline of the discrete-memory path, which is the
+/// path the null backend takes because it deliberately reports memory as *not* unified.
+const Fixture = struct {
+    device: *rhi.Device,
+    renderer: Renderer,
+    texture: TextureHandle,
+    other: TextureHandle,
+
+    fn init(quads_per_buffer: u32) !Fixture {
+        const device = try rhi.Device.init(testing.allocator, .{});
+        errdefer device.deinit();
+
+        var renderer = try Renderer.init(testing.allocator, device, .{
+            .quads_per_buffer = quads_per_buffer,
+        });
+        errdefer renderer.deinit();
+
+        var image = try asset.Image.alloc(testing.allocator, 2, 2);
+        defer image.deinit(testing.allocator);
+        @memset(image.pixels, 0xFF);
+
+        const texture = try renderer.createTexture(image, .{ .label = "fixture a" });
+        const other = try renderer.createTexture(image, .{ .label = "fixture b" });
+
+        return .{ .device = device, .renderer = renderer, .texture = texture, .other = other };
+    }
+
+    fn deinit(self: *Fixture) void {
+        self.renderer.deinit();
+        self.device.deinit();
+    }
+
+    /// One complete frame, driven the way `app` drives it.
+    fn frame(self: *Fixture) !void {
+        const ctx = try self.device.beginFrame();
+        const cmd = try self.device.beginCommandBuffer();
+        try self.renderer.prepare(cmd, ctx);
+
+        const pass = try cmd.beginRenderPass(.{
+            .label = "test",
+            .color = &.{.{
+                .texture = ctx.surface_texture,
+                .load = .{ .clear = .{ .color = .{ 0, 0, 0, 1 } } },
+                .store = .store,
+                .initial_state = .undefined,
+                .final_state = .present,
+            }},
+        });
+        try self.renderer.record(pass);
+        pass.end();
+        try cmd.submit();
+        try self.device.endFrame();
+    }
+
+    fn sprite(self: *Fixture, which: TextureHandle, layer: i16, blend: BlendMode) Sprite {
+        _ = self;
+        return .{
+            .texture = which,
+            .position = .init(0, 0),
+            .size = .init(10, 10),
+            .layer = layer,
+            .blend = blend,
+        };
+    }
+
+    fn view(self: *Fixture) FrameView {
+        _ = self;
+        return .{ .camera = .{ .viewport = .init(0, 0, 1280, 720) } };
+    }
+};
+
+test "a frame with no sprites still completes, and draws nothing" {
+    var fx = try Fixture.init(1024);
+    defer fx.deinit();
+
+    try fx.renderer.begin(fx.view());
+    try fx.frame();
+
+    const stats = fx.renderer.frameStats();
+    try testing.expectEqual(@as(u32, 0), stats.sprites);
+    try testing.expectEqual(@as(u32, 0), stats.draw_calls);
+    try testing.expectEqual(@as(u32, 0), stats.buffers_used);
+}
+
+test "sprites sharing a texture and blend mode become a single draw call" {
+    var fx = try Fixture.init(1024);
+    defer fx.deinit();
+
+    try fx.renderer.begin(fx.view());
+    for (0..500) |_| try fx.renderer.drawSprite(fx.sprite(fx.texture, 0, .alpha));
+    try fx.frame();
+
+    const stats = fx.renderer.frameStats();
+    try testing.expectEqual(@as(u32, 500), stats.sprites);
+    try testing.expectEqual(@as(u32, 1), stats.batches);
+    try testing.expectEqual(@as(u32, 1), stats.draw_calls);
+    try testing.expectEqual(@as(u32, 2000), stats.vertices);
+    try testing.expectEqual(@as(u32, 2), stats.textures_resident);
+}
+
+test "a second texture and a second blend mode each cost a draw call" {
+    var fx = try Fixture.init(1024);
+    defer fx.deinit();
+
+    try fx.renderer.begin(fx.view());
+    try fx.renderer.drawSprite(fx.sprite(fx.texture, 0, .alpha));
+    try fx.renderer.drawSprite(fx.sprite(fx.other, 0, .alpha));
+    try fx.renderer.drawSprite(fx.sprite(fx.other, 0, .additive));
+    try fx.frame();
+
+    try testing.expectEqual(@as(u32, 3), fx.renderer.frameStats().draw_calls);
+}
+
+test "more sprites than one buffer holds spill into the next one" {
+    var fx = try Fixture.init(2);
+    defer fx.deinit();
+
+    try fx.renderer.begin(fx.view());
+    for (0..5) |_| try fx.renderer.drawSprite(fx.sprite(fx.texture, 0, .alpha));
+    try fx.frame();
+
+    const stats = fx.renderer.frameStats();
+    // Five quads at two per buffer is three buffers, and a batch cannot span two.
+    try testing.expectEqual(@as(u32, 3), stats.buffers_used);
+    try testing.expectEqual(@as(u32, 3), stats.draw_calls);
+    try testing.expectEqual(@as(u32, 5), stats.sprites);
+}
+
+test "frames cycle through slots without writing memory a frame may still read" {
+    var fx = try Fixture.init(64);
+    defer fx.deinit();
+
+    // Six frames is three times round a two-slot ring. If the renderer wrote a slot the
+    // GPU had not finished with, the validation backend's rule 3 would fire on the map
+    // and fail this test through the log.
+    for (0..6) |i| {
+        try fx.renderer.begin(fx.view());
+        for (0..(i + 1) * 10) |_| try fx.renderer.drawSprite(fx.sprite(fx.texture, 0, .alpha));
+        try fx.frame();
+    }
+
+    try testing.expectEqual(@as(u32, 60), fx.renderer.frameStats().sprites);
+}
+
+test "a destroyed texture is refused at the draw call that uses it" {
+    var fx = try Fixture.init(64);
+    defer fx.deinit();
+
+    var image = try asset.Image.alloc(testing.allocator, 1, 1);
+    defer image.deinit(testing.allocator);
+    @memset(image.pixels, 0x80);
+    const doomed = try fx.renderer.createTexture(image, .{ .label = "doomed" });
+
+    try fx.renderer.begin(fx.view());
+    try fx.renderer.drawSprite(fx.sprite(doomed, 0, .alpha));
+    fx.renderer.destroyTexture(doomed);
+
+    // The generation bump makes this a clean error at the call site rather than a draw
+    // that samples freed GPU memory. That is the whole point of I1.
+    try testing.expectError(error.InvalidTexture, fx.renderer.drawSprite(fx.sprite(doomed, 0, .alpha)));
+
+    // The sprite submitted *before* the destroy is skipped rather than drawn from freed
+    // memory: a batch whose texture no longer resolves is dropped.
+    try fx.frame();
+    try testing.expectEqual(@as(u32, 0), fx.renderer.frameStats().draw_calls);
+
+    // And the GPU objects survive until no in-flight frame can reference them, which is
+    // why the frames above did not trip rule 9.
+    for (0..3) |_| {
+        try fx.renderer.begin(fx.view());
+        try fx.frame();
+    }
+}
+
+test "drawing outside a begin is a caller error, not a crash" {
+    var fx = try Fixture.init(64);
+    defer fx.deinit();
+    try testing.expectError(error.NotRecording, fx.renderer.drawSprite(fx.sprite(fx.texture, 0, .alpha)));
+}
+
+test "an unusable camera is refused before anything is recorded" {
+    var fx = try Fixture.init(64);
+    defer fx.deinit();
+    try testing.expectError(error.InvalidCamera, fx.renderer.begin(.{
+        .camera = .{ .viewport = .init(0, 0, 800, 600), .zoom = 0 },
+    }));
+}
+
+test "an oversized image is refused rather than truncated" {
+    var fx = try Fixture.init(64);
+    defer fx.deinit();
+
+    const caps = fx.device.capabilities();
+    // Only allocate a plausible buffer; the check is on the declared dimensions.
+    var image: asset.Image = .{
+        .width = caps.max_texture_dimension + 1,
+        .height = 1,
+        .pixels = &.{},
+    };
+    try testing.expectError(error.TextureTooLarge, fx.renderer.createTexture(image, .{}));
+    image.width = 1;
+}

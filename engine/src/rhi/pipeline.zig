@@ -199,10 +199,28 @@ pub const BlendState = struct {
     color: BlendComponent = .{},
     alpha: BlendComponent = .{},
 
-    /// Straight alpha blending, which is what almost every 2D sprite wants.
+    /// Straight alpha blending: the source carries un-premultiplied colour.
     pub const alpha_blend: BlendState = .{
         .color = .{ .src = .src_alpha, .dst = .one_minus_src_alpha, .op = .add },
         .alpha = .{ .src = .one, .dst = .one_minus_src_alpha, .op = .add },
+    };
+
+    /// Alpha blending where the source has **already** been multiplied by its alpha.
+    ///
+    /// Distinct from `alpha_blend` by exactly one factor, and pairing the wrong one with
+    /// a shader is a bug that looks almost right — which is why both are named here
+    /// rather than spelled out at each call site. `render2d` premultiplies when it packs
+    /// vertex colours, so this is what it uses.
+    pub const premultiplied_alpha: BlendState = .{
+        .color = .{ .src = .one, .dst = .one_minus_src_alpha, .op = .add },
+        .alpha = .{ .src = .one, .dst = .one_minus_src_alpha, .op = .add },
+    };
+
+    /// Additive, for light: glows, sparks, muzzle flashes. Also assumes a premultiplied
+    /// source, so it differs from `premultiplied_alpha` in one factor and nothing else.
+    pub const additive: BlendState = .{
+        .color = .{ .src = .one, .dst = .one, .op = .add },
+        .alpha = .{ .src = .one, .dst = .one, .op = .add },
     };
 };
 
@@ -317,6 +335,20 @@ test "alpha blending is available as a named state" {
     const b = BlendState.alpha_blend;
     try testing.expectEqual(BlendFactor.src_alpha, b.color.src);
     try testing.expectEqual(BlendFactor.one_minus_src_alpha, b.color.dst);
+}
+
+test "the premultiplied states differ from each other by exactly one factor" {
+    // The property that lets a renderer premultiply once, on the CPU, and then switch
+    // between normal and additive blending without a second pipeline permutation.
+    const a = BlendState.premultiplied_alpha;
+    const b = BlendState.additive;
+    try testing.expectEqual(a.color.src, b.color.src);
+    try testing.expectEqual(BlendFactor.one, a.color.src);
+    try testing.expect(a.color.dst != b.color.dst);
+
+    // And premultiplied differs from straight in the source factor, which is the whole
+    // distinction: the shader, not the blender, has already applied alpha.
+    try testing.expect(BlendState.alpha_blend.color.src != a.color.src);
 }
 
 test "pipeline handles are distinct types from resource handles" {

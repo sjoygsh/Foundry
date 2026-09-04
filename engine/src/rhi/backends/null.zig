@@ -157,6 +157,9 @@ pub const Device = struct {
     surface_size: resource.Extent2D,
 
     frame_index: u64 = 0,
+    /// The highest frame index `waitIdle` has been told is finished. Frames complete on
+    /// their own as the ring turns; this is the other way they can complete.
+    idled_through: u64 = 0,
     frame_slot: u32 = 0,
     in_frame: bool = false,
 
@@ -285,7 +288,15 @@ pub const Device = struct {
     /// by the time frame N begins, frame `N - frames_in_flight` must have completed,
     /// because `beginFrame` would otherwise have waited for it.
     fn completedFrame(self: *Device) u64 {
-        return self.frame_index -| self.desc.frames_in_flight;
+        return @max(self.frame_index -| self.desc.frames_in_flight, self.idled_through);
+    }
+
+    /// Waits for the GPU to finish everything. Here there is no GPU, so this records that
+    /// every frame begun so far has completed — which is exactly what the modelled
+    /// contract says, and is what makes rule 9 stop firing for a teardown that is
+    /// genuinely safe.
+    pub fn waitIdle(self: *Device) void {
+        self.idled_through = self.frame_index;
     }
 
     fn inFlight(self: *Device, last_used: u64) bool {
