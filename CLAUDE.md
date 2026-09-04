@@ -166,6 +166,8 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Public API | One versioned C ABI table shared by mods, scripts and tools | [0004](docs/adr/0004-public-c-abi.md) |
 | Identity | Generational handles internally; stable namespaced string IDs for content | [0005](docs/adr/0005-handles-and-content-ids.md) |
 | Content | Engine is a library; content is data; two representations (authoring / runtime) | [0006](docs/adr/0006-content-model.md) |
+| Authoring format | Foundry's own `.fdt` text format; IDs are bare tokens, directives are `@`-prefixed | [0020](docs/adr/0020-authoring-text-format.md) |
+| Asset identity | Assets are content records; a path derives an ID but never defines identity | [0021](docs/adr/0021-asset-identity.md) |
 | Images | Foundry decodes its own PNG; no third-party image library | [0018](docs/adr/0018-image-decoding.md) |
 | Modularity | Layering enforced by the Zig build graph | [0007](docs/adr/0007-module-layering.md) |
 | Entities | Type-erased component storage with runtime-registered types | [0010](docs/adr/0010-entity-component-constraints.md) |
@@ -367,11 +369,18 @@ by whoever defines it — engine, game or mod. Content is instances of schemas.
   reload.
 
 **JSON is disqualified** as either format: no comments, ambiguous numeric handling, needless
-parse cost at load. Tool interchange only. The specific authoring syntax is a postponed decision
-(§9); its requirements are recorded in [ADR-0006](docs/adr/0006-content-model.md).
+parse cost at load. Tool interchange only. The authoring format is Foundry's own `.fdt`
+([ADR-0020](docs/adr/0020-authoring-text-format.md)), drawn around the record shape and
+specified in [`docs/design/content-schemas.md`](docs/design/content-schemas.md).
 
 **Binary payloads are never embedded in content text.** Textures, meshes, audio and similar are
 assets, referenced by ID and stored in their own formats. Shaders are assets too (ADR-0015).
+
+**An asset is content, and its identity is its content ID** — never its path
+([ADR-0021](docs/adr/0021-asset-identity.md)). A path may *derive* an ID at compile time, as a
+default for a field an author may write instead; it is never what an ID *means*. No runtime
+code resolves an asset by path, so directory layout stays private to each package and a mod
+overriding an asset never has to mirror someone else's folders.
 
 ---
 
@@ -434,8 +443,6 @@ Recorded so they are not made accidentally. Each notes when it comes due.
 
 | Decision | Due | Notes |
 | --- | --- | --- |
-| Authoring text syntax | M3 | Requirements in ADR-0006. Custom vs. adopting an existing format. |
-| Asset ID scheme (path-derived vs. GUID) | M3 | Interacts with I2 and with mod-authored asset overrides. |
 | Physics: own vs. ported | M5 | 2D collision first; 3D physics far later. Must respect I9. |
 | Audio: own mixer vs. library | M5 | SDL3 gives the device either way. |
 | Debug/game UI: own IMGUI vs. cimgui | M6 | We need a UI system regardless; that argues for our own. |
