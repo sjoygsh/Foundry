@@ -19,7 +19,10 @@
 //!
 //! Design: `docs/design/content-schemas.md`
 
+pub const diagnostic = @import("diagnostic.zig");
 pub const id = @import("id.zig");
+pub const lexer = @import("lexer.zig");
+pub const parser = @import("parser.zig");
 pub const limits = @import("limits.zig");
 pub const schema = @import("schema.zig");
 pub const value = @import("value.zig");
@@ -27,6 +30,8 @@ pub const value = @import("value.zig");
 // The names reached for most often. These are seen by people we do not control — mod
 // authors from M3, compiled mods from M7 — so renaming one is a compatibility decision
 // rather than a tidy-up (CLAUDE.md §7).
+pub const Diagnostic = diagnostic.Diagnostic;
+pub const Diagnostics = diagnostic.Diagnostics;
 pub const Field = schema.Field;
 pub const FieldType = schema.FieldType;
 pub const Limits = limits.Limits;
@@ -42,7 +47,10 @@ pub const Value = value.Value;
 pub const contentId = id.contentId;
 
 test {
+    _ = diagnostic;
     _ = id;
+    _ = lexer;
+    _ = parser;
     _ = limits;
     _ = schema;
     _ = value;

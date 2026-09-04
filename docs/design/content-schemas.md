@@ -1,7 +1,9 @@
 # Design: `data` — schemas, content, packages
 
-**Status:** Design only — not yet implemented.
-**Date:** 2026-09-04
+**Status:** §2, §3 and §4 implemented as `engine/src/data/` (2026-09-04) — identity,
+schemas and the registry, the lexer, the parser and diagnostics. §5 onward is still design.
+See §4.7 for what implementation changed.
+**Date:** 2026-09-04, revised 2026-09-04
 **Implements:** I2, I3, I5, I6, I8, I9 · **Informed by:** ADR-0005, ADR-0006, ADR-0007,
 ADR-0020, ADR-0021, CLAUDE.md §6
 
@@ -218,14 +220,16 @@ directive   := "@import" string
              | "@patch"   content_id "{" field* "}"
              | "@remove"  content_id
 
-record      := schema_id content_id "{" field* "}"
+record      := schema_ref content_id "{" field* "}"
+schema_ref  := ident | content_id
 field       := ident value
 value       := bool | integer | float | string | content_id | list | struct
 list        := "[" value* "]"
 struct      := "{" field* "}"
 
-field_decl  := ident type_expr attribute*
+field_decl  := ident type_expr attributes*
 type_expr   := primitive | "[" type_expr "]" | "{" field_decl* "}"
+attributes  := "(" attribute* ")"
 attribute   := "optional" | "default" value | "since" integer
 ```
 
@@ -363,6 +367,42 @@ struct in the shape `asset`'s PNG decoder already uses:
 
 The parser is a target for fuzzing from the day it exists, and reaching an assertion or an
 unhandled panic on *any* input is a bug regardless of how malformed the input was.
+
+### 4.7 Resolution (implementation, 2026-09-04)
+
+Three things the parser settled that this section had left ambiguous or open. All three are
+syntax, and syntax is frozen the moment content outside this repository uses it, so they are
+recorded rather than absorbed.
+
+**A record's schema may be written bare; a content id may not.** §4.2 said
+`record := schema_id content_id`, and §4.1's worked example wrote `item foundry:item.torch`.
+Those disagreed. The resolution keeps both halves of what each was reaching for: a **bare
+schema name means one in this package's own namespace**, so `item` in package `foundry` is
+`foundry:item`, and a schema from elsewhere is written in full — `othermod:weapon
+mymod:weapon.sword { ... }`.
+
+The asymmetry with content ids is the point rather than an inconsistency. A schema name
+repeats on every record of that type, so eliding it pays for itself immediately. A content id
+is unique, so eliding it would save nothing and would cost the property ADR-0020 bought the
+bare-token syntax for: `grep foundry:item.ash` finding every use across every package on
+disk, including in mods nobody has seen.
+
+**Schema attributes are bracketed: `weight f32 (default 0.5)`.** §4.2 had them bare, which
+put attribute names in the same syntactic slot as field names — so a field could not be named
+`optional`, and, worse, *adding an attribute in a later release would break any mod that had
+used the new word as a field name*. That is precisely the hazard ADR-0020 spent a character
+on `@` to remove at the directive level, and leaving it in place one level down would have
+been inconsistent in the expensive direction. Parentheses make it impossible instead of
+merely unlikely; a test asserts that `optional`, `default` and `since` are all usable as
+field names. Repeated groups are accepted — `(since 5) (optional)` — because that is how
+somebody who thinks of them as separate modifiers will write it.
+
+**A schema's version is inferred, not declared.** §4.4 gave no syntax for declaring one,
+which was a gap rather than a decision. The version is now **the highest `since` on any of
+its fields**, defaulting to 1. One source of truth: a declared number could disagree with the
+fields, and under the additive-only rule of §3 the only change that can bump a version *is*
+adding a field. An author who forgets `since 2` on a new field gets a loud `DuplicateSchema`
+from the registry rather than a silent reinterpretation.
 
 ---
 
