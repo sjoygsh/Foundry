@@ -49,6 +49,20 @@ pub fn Handle(comptime T: type) type {
             if (self.isNone()) return writer.print("{s}(none)", .{@typeName(T)});
             try writer.print("{s}({d}#{d})", .{ @typeName(T), self.index, self.generation });
         }
+
+        /// The handle as a single 64-bit value, and back.
+        ///
+        /// The layout above is not published, but the *width* is: at the ABI a handle is
+        /// an opaque 64-bit value (ADR-0004). Anywhere one word has to stand for either a
+        /// pointer or a handle — the asset registry's loader payloads are the first such
+        /// place — this is the packing, written down once instead of at each site.
+        pub fn bits(self: Self) u64 {
+            return @as(u64, self.index) | (@as(u64, self.generation) << 32);
+        }
+
+        pub fn fromBits(value: u64) Self {
+            return .{ .index = @truncate(value), .generation = @truncate(value >> 32) };
+        }
     };
 }
 
@@ -267,6 +281,21 @@ test "a zeroed handle is none" {
     try testing.expect(zeroed.isNone());
     try testing.expect(std.mem.zeroes(Handle(Thing)).isNone());
     try testing.expect(Handle(Thing).none.isNone());
+}
+
+test "a handle survives a round trip through 64 bits" {
+    const h: Handle(Thing) = .{ .index = 7, .generation = 3 };
+    try testing.expect(h.eql(Handle(Thing).fromBits(h.bits())));
+
+    // `none` is all-zero bits, and stays that way through the packing — so a zeroed
+    // payload word is an absent handle rather than slot 0.
+    try testing.expectEqual(@as(u64, 0), Handle(Thing).none.bits());
+    try testing.expect(Handle(Thing).fromBits(0).isNone());
+
+    // Both halves are carried, not just the index: a stale handle must not come back
+    // looking live.
+    const max: Handle(Thing) = .{ .index = 0xFFFF_FFFF, .generation = 0xFFFF_FFFF };
+    try testing.expect(max.eql(Handle(Thing).fromBits(max.bits())));
 }
 
 test "handles of different targets are different types" {

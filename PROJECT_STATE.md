@@ -1,10 +1,10 @@
 # Foundry Project State
 
-**Last updated:** 2026-09-04
-**Updated by:** **M3, step 7.** `tools/fpack` — the content compiler. A directory of
-`.fdt` files and images goes in and one `.fpk` comes out, with asset ids derived from paths
-and materialised as records that were never written by hand. The first Foundry program that
-is not the engine
+**Last updated:** 2026-09-05
+**Updated by:** **M3, step 8.** The asset registry. A content id goes in and a loaded
+payload comes out, through a loader `render2d` registers from above at runtime — so the
+engine can now turn `foundry:textures.sprites` into a GPU texture without anything knowing
+a path. `loadImage` is gone
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -41,15 +41,15 @@ under a camera driven by keyboard and mouse, with the batcher's own numbers on s
 space that does not move when the camera does — 4 batches and 4 draw calls, because the
 sheet, the font and the selection outline share one atlas.
 
-**Current milestone: M3 — Content: "it has data."** Seven of ten steps done. It started at
+**Current milestone: M3 — Content: "it has data."** Eight of ten steps done. It started at
 the only place it could: its decisions. The first modding-relevant milestone, and it comes due on two of
 `CLAUDE.md` §9's postponed decisions — both now spent, as **ADR-0020** and **ADR-0021**, and
 struck from the §9 table. The two design documents `docs/design/README.md` has owed since M2
 are written, and `data` is built behind them, front to back: text in, checked records out,
 compiled to a package file, merged with other packages by load order — and `fpack` now
-drives the whole of it from a directory. What remains is the asset registry above it,
-moving the sandbox's own content into `content/core`, and hot reload. See
-`docs/ROADMAP.md`.
+drives the whole of it from a directory. The asset registry sits above it now, and a
+content id resolves all the way to a GPU texture. What remains is moving the sandbox's own
+content into `content/core`, and hot reload. See `docs/ROADMAP.md`.
 
 **M1, for reference.** All five ROADMAP items are done: the Metal backend and its Objective-C shim (1), the
 `xcrun metal` → `.metallib` build step (2), runtime MSL compilation (3), the validation
@@ -71,9 +71,10 @@ than by being done.
 
 ## What has been implemented
 
-**`core` (L0), `platform` (L1), `rhi` (L2) with two backends, `asset` (L2), `render2d`
-(L3), `app` (L4). `data` and `scene` do not exist yet. It draws thousands of sprites under
-a camera that pans, zooms and picks.**
+**`core` (L0), `platform` and `data` (L1), `rhi` (L2) with two backends, `asset` (L2),
+`render2d` (L3), `app` (L4), plus `tools/fpack`. `scene` does not exist yet. It draws
+thousands of sprites under a camera that pans, zooms and picks, and it loads content by
+content id.**
 
 New this session:
 
@@ -116,6 +117,8 @@ Earlier still this session:
 
 * `engine/src/asset/` — `Image` (always RGBA8, straight alpha, sRGB), Foundry's own PNG
   decoder (ADR-0018) and `loadImage`. No cache: one with no consumer would be speculative.
+  *`loadImage` was removed at M3 step 8, as its own doc comment said it would be; the
+  registry replaced it.*
 * `engine/src/render2d/` — the whole batcher. `color.zig`, `camera.zig`, `texture.zig` with
   its retirement queue, `sprite.zig`, `batch.zig` with the `(layer, submission index)` sort
   key, `renderer.zig` with the per-slot buffer pool and both memory paths, and
@@ -221,9 +224,9 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 474 tests** (51 `core`, 70 `platform`, 102 `data`, 92 `rhi`,
-21 `asset`, 102 `render2d`, 22 `app`, 14 `fpack`), and **482 under `-Drhi=metal`**, where `rhi` gains
-the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
+**`zig build test` passes 491 tests** (52 `core`, 70 `platform`, 102 `data`, 92 `rhi`,
+31 `asset`, 103 `render2d`, 22 `app`, 14 `fpack`, 5 integration), and **499 under
+`-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
 8 exceptions need a real GPU and compile only when Metal is selected.
@@ -313,11 +316,49 @@ and the two design documents they needed, per `CLAUDE.md` rule 1 — design befo
 implementation — and rule 10, which says never make a major architectural decision silently.
 Both are spent, as ADR-0020 and ADR-0021, and `data` is built behind them.
 
-**Steps 1 to 7 are built.** `data` exists end to end — identity, schemas, the registry, the
+**Steps 1 to 8 are built.** `data` exists end to end — identity, schemas, the registry, the
 lexer, the parser, diagnostics, the checking pass, the `.fpk` writer and reader, and the
-store that merges packages — and `tools/fpack` drives all of it from a directory. 474
-tests, up from 346 at the end of M2; all eight target/backend combinations compile; `zig
-fmt` clean.
+store that merges packages — `tools/fpack` drives all of it from a directory, and the asset
+registry above it turns a content id into a loaded payload. 491 tests, up from 346 at the
+end of M2; all eight target/backend combinations compile; `zig fmt` clean.
+
+**Step 8 — the asset registry.** `asset/registry.zig` plus `render2d/loader.zig`: content
+id in, `AssetHandle` out, reference counted, with the loader that knows what a GPU texture
+is registered upward at runtime. `loadImage` is gone. `engine/tests/` exists now, because
+this is the first behaviour no single module can test on its own — `asset` is below
+`render2d` and `render2d` is not granted `data`, so the seam between them is only reachable
+from something standing above both. Seven things worth carrying forward, recorded in
+`assets.md`'s second Resolution section:
+
+* **`source` is location, never identity, and the design document now says so.** §2 called
+  `source` meaningful "only to `fpack`" while §7 specified a `SourceMissing` error only a
+  runtime file read can produce. The second is right: ADR-0021's promise is that *nothing
+  can be looked up by path*, and `acquire` takes a `ContentId` with no other way in. Where
+  a record says its own bytes live was never what the ADR was protecting.
+* **A package's root is mounted on the registry, not carried by `data`.**
+  `store.LoadedPackage.label` documents itself as diagnostics-only, and reusing it would
+  have quietly made a diagnostic string load-bearing. `asset` still consumes a merged store
+  and assembles nothing.
+* **A loader's payload is one 64-bit word.** `render2d` returns a `TextureHandle`, which is
+  a value; a `*anyopaque` payload would make every handle-producing loader box two `u32`s.
+  `core.Handle` gained `bits`/`fromBits`, which is the packing the ABI already publishes.
+* **`foundry:texture` is version 2, and version 1 content still loads.** `filter` and `wrap`
+  arrived with the loader that reads them, appended with defaults. A package compiled when
+  the schema had one field is read against the version it carries and filled from the
+  newest schema's defaults — I8's additive versioning made real rather than asserted, and a
+  test.
+* **They are strings, because the type list is closed.** No enum type exists, so the domain
+  is only knowable in the loader, whose enum tag names *are* the content spelling. An
+  unrecognised value warns and falls back: answering a typo with a missing sprite is the
+  least diagnosable outcome available.
+* **§7's error table gained two rows.** `SourceRejected`, so a package trying to read
+  outside itself is not filed under "not found"; `LoadFailed`, so a device refusing a
+  texture does not tell a mod author their file is corrupt.
+* **Eviction is a call nobody makes.** Zero references means evictable, not freed, exactly
+  as §4 said. `evictUnused` is the mechanism and `assets.md` §9's open question — *when* —
+  stays open, because answering it before there is a memory number to look at is guessing.
+  A texture released between two levels that both use it stays resident and comes back
+  without a decode.
 
 **Step 7 — `tools/fpack`.** The first Foundry program that is not the engine: a plain
 command-line tool (ADR-0011) that links `data`, `platform` and `asset`, walks a package
@@ -334,10 +375,10 @@ zig-out/content/core.fpk content/core`. Five things worth carrying forward, reco
   id is materialised "exactly as if it had been written by hand", and the cheapest way to
   be sure of that is for it to be. A collision with an authored record is then reported by
   the checker's existing message rather than by a second implementation of it.
-* **`foundry:texture` has one field.** `source`. `filter` and `wrap` arrive with the loader
-  that reads them, at version 2, with defaults — the case additive versioning exists for.
-  Choosing how an enumeration is spelled in `.fdt` with nothing to check the choice against
-  would be inventing.
+* ~~**`foundry:texture` has one field.**~~ **Superseded by step 8**, which brought the
+  loader that reads `filter` and `wrap` and so brought the fields: version 2, appended with
+  defaults, and version 1 content still loads. This is what "arrive with the loader that
+  reads them" was waiting for, not a reversal.
 * **The package's name and version are arguments, not a manifest file.** Mod manifests are
   M7, and `data` consumes a load order rather than computing one.
 * **Every listing is sorted and dot-prefixed names are skipped.** A filesystem's
@@ -587,9 +628,12 @@ sandbox runnable, and so nothing is a rewrite of the one before.
    that go through the same parser and checker as authored ones, reports collisions naming
    both files, and emits a `.fpk`. Its `@import` resolver is the first real one: relative
    to the importing file, textually normalised, and unable to climb out of the package.
-8. **`asset` gains its registry.** Loaders registered at runtime, reference counting,
-   `render2d` registering the texture loader from above. **`loadImage(path)` goes away** — it
-   was scaffolding with a stated expiry.
+8. ~~**`asset` gains its registry.**~~ **Done, 2026-09-05.** `registry.zig`: content id in,
+   reference-counted handle out, loaders registered at runtime, and `render2d/loader.zig`
+   registering the one that knows what a GPU texture is from above. `foundry:texture` went
+   to version 2 with the `filter` and `wrap` the loader reads, and version 1 content still
+   loads. `loadImage` is gone. `engine/tests/` exists, holding the first test that needs to
+   stand above two modules at once.
 9. **`content/core` becomes package zero (I3).** The sandbox's embedded sheet and font are the
    first things to move, and the sample stops embedding anything. This is the step that proves
    the mod path by using it.
@@ -787,11 +831,13 @@ a rewrite of the one before.
   makes the content pipeline a pure function: hermetically testable, trivially deterministic
   (I9), and safe on untrusted input without wondering what it might read. Worth remembering
   the next time the layering looks like it is in the way.
-* **`render2d` will register the texture loader into `asset` from above.** L2 `asset` cannot
-  know what a GPU texture is and does not need to; the payload it holds is opaque and freed by
-  the module that made it. The dependency points down while the capability points up, which is
-  what I6's runtime registration is for — a layering problem solved by the mechanism rather
-  than by an exception.
+* **`render2d` registers the texture loader into `asset` from above.** *Built at step 8.* L2
+  `asset` cannot know what a GPU texture is and does not need to; the payload it holds is one
+  opaque word, freed by the module that made it. The dependency points down while the
+  capability points up, which is what I6's runtime registration is for — a layering problem
+  solved by the mechanism rather than by an exception. The one thing it costs is a teardown
+  order the compiler cannot enforce: the registry unloads through its loaders, so it goes
+  before the renderer, which goes before the device.
 * **Merge semantics land incrementally, as ADR-0006 said they would.** M3 implements
   **replace**. `@patch` and `@remove` are specified in `content-schemas.md` §7 and land after,
   along with the schema-declared choice of whether a patched list replaces or appends —
@@ -979,6 +1025,8 @@ a rewrite of the one before.
   which is M3's question. Decoding is what M2 owes, and embedding exercises it in the real
   application without prejudging the postponed decision. `asset.loadImage` is unit-tested
   against a real file, so the disk path is covered where it can be covered honestly.
+  *`loadImage` is gone as of M3 step 8; the sandbox still embeds, until step 9 gives it a
+  `content/core` to load from.*
 
 * **Both memory paths are implemented, and both are exercised.** Metal reports unified
   memory and binds the upload buffer as vertices directly; the validation backend

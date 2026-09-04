@@ -17,6 +17,7 @@ pub const atlas = @import("atlas.zig");
 pub const batch = @import("batch.zig");
 pub const camera = @import("camera.zig");
 pub const color = @import("color.zig");
+pub const loader = @import("loader.zig");
 pub const renderer = @import("renderer.zig");
 pub const sprite = @import("sprite.zig");
 pub const text = @import("text.zig");
@@ -30,6 +31,8 @@ pub const CameraError = camera.CameraError;
 pub const Color = color.Color;
 pub const BlendMode = color.BlendMode;
 pub const Renderer = renderer.Renderer;
+/// The `foundry:texture` loader, to register with an `asset.Registry` at startup (I6).
+pub const textureLoader = loader.textureLoader;
 pub const Sprite = sprite.Sprite;
 /// Hit-testing one sprite. Picking is the game's loop over its own objects; see
 /// `sprite.containsPoint` for why the renderer does not own a "what is at this point".
@@ -51,6 +54,7 @@ test {
     _ = batch;
     _ = camera;
     _ = color;
+    _ = loader;
     _ = renderer;
     _ = sprite;
     _ = text;

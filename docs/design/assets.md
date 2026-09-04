@@ -1,11 +1,11 @@
 # Design: `asset` — bytes become things the engine can use
 
-**Status:** Partly implemented as `engine/src/asset/`. M2 built the PNG decoder and
-`loadImage`. §2's record shape and §3's derivation are implemented — the schemas in
-`asset/schemas.zig`, the derivation in `tools/fpack/` — and see the Resolution section at
-the end for what building them settled. §4 onward (the registry, loaders, hot reload) is
-still design, and `loadImage` survives until it has a replacement.
-**Date:** 2026-09-04, revised 2026-09-04
+**Status:** Implemented as `engine/src/asset/`, except §6 — hot reload, which is M3 step 10.
+The record shape (§2), derivation (§3), the registry (§4), runtime-registered loaders (§5)
+and the error set (§7) are built: the schemas and the registry in `asset/`, the derivation in
+`tools/fpack/`, the texture loader in `render2d/loader.zig`. `loadImage` is gone. The two
+Resolution sections at the end record what building them settled.
+**Date:** 2026-09-04, revised 2026-09-05
 **Implements:** I1, I2, I3, I5, I6, I8 · **Informed by:** ADR-0005, ADR-0006, ADR-0015,
 ADR-0018, ADR-0019, ADR-0021
 
@@ -34,7 +34,9 @@ that produces one (ADR-0018). `asset/root.zig` says why the rest was left out �
 
 ADR-0021 has now made that decision, and this document is what M3 builds on it. **The
 path-taking API goes away.** `loadImage(path)` was scaffolding with a stated expiry, not an
-interface.
+interface. *Removed 2026-09-05; the test that made it worth having — a missing file and a
+corrupt one staying distinguishable — moved into the registry's, which is where the
+distinction is now made.*
 
 ---
 
@@ -61,8 +63,12 @@ The engine registers the schemas for the kinds it can load — `foundry:texture`
 uses (I6). They are mechanisms, not content: an engine that can load a texture has not thereby
 hardcoded a game (I5).
 
-`source` is meaningful **only to `fpack`**, at compile time. It does not reach the runtime as
-identity, and the runtime cannot ask "what is at this path".
+`source` is **location, never identity**, and the difference is the whole decision. Nothing
+can be looked up by path: `acquire` takes a `ContentId` and there is no other way in. A record
+found that way may then say where its own bytes live, and the registry reads them — which is
+what §7's `SourceMissing` has always described. So `source` is an ordinary field a mod
+changes in one line without any reference, save or other package noticing, and no caller can
+turn a path back into an asset.
 
 ### Why this is worth the trouble
 
@@ -133,15 +139,20 @@ built in M3.
 Content ID in, handle out. The registry is the only way to reach a loaded asset.
 
 ```zig
-pub const AssetHandle = core.Handle(Asset);
+pub const AssetHandle = core.Handle(Assets);
 
 pub const Registry = struct {
     /// Resolve and load if needed; increments the reference count.
-    pub fn acquire(self: *Registry, id: ContentId) AcquireError!AssetHandle;
+    pub fn acquire(self: *Registry, gpa: Allocator, id: ContentId) AcquireError!AssetHandle;
+    /// The same, refusing anything that is not the record type asked for.
+    pub fn acquireOf(self: *Registry, gpa: Allocator, id: ContentId, schema: SchemaId) AcquireError!AssetHandle;
     /// Decrement. Reaching zero makes it evictable, not immediately freed.
     pub fn release(self: *Registry, handle: AssetHandle) void;
     /// The loaded payload, or null if the handle is stale.
     pub fn get(self: *Registry, handle: AssetHandle) ?Asset;
+    /// Unloads every asset at zero references, and says how many. Nothing calls it on
+    /// its own — see §9's first open question.
+    pub fn evictUnused(self: *Registry, gpa: Allocator) u32;
 };
 ```
 
@@ -168,9 +179,9 @@ A loader turns a record plus its source bytes into a payload the registry holds 
 ```zig
 pub const Loader = struct {
     schema: SchemaId,
-    load: *const fn (ctx: *anyopaque, gpa: Allocator, record: Record, bytes: []const u8) LoadError!*anyopaque,
-    unload: *const fn (ctx: *anyopaque, gpa: Allocator, payload: *anyopaque) void,
-    ctx: *anyopaque,
+    ctx: ?*anyopaque = null,
+    load: *const fn (ctx: ?*anyopaque, gpa: Allocator, record: Record, bytes: []const u8) LoadError!Payload,
+    unload: *const fn (ctx: ?*anyopaque, gpa: Allocator, payload: Payload) void,
 };
 ```
 
@@ -226,6 +237,8 @@ Three rules that matter more than the mechanism:
 | `NoLoader` | Nothing is registered for that schema — usually a subsystem not yet initialised. |
 | `InvalidAsset` | The bytes are not what they claim to be. Decode failure, from `DecodeError`. |
 | `UnsupportedVersion` | The asset's format version is newer than this build understands (I8). |
+| `SourceRejected` | The `source` field is not a path a package may name. *Added in implementation.* |
+| `LoadFailed` | The loader failed for a reason that is neither the bytes' fault nor a version. *Added in implementation.* |
 
 The M2 test that separates "your texture is corrupt" from "your texture is missing" was
 written to pin that distinction, and it survives: the reasons a load can fail stay
@@ -314,3 +327,62 @@ editor's swap files are not content, and a package that had to enumerate its exc
 would be a package with a manifest. Sorting is the I9 half: a filesystem's enumeration
 order is not a specification, so the walk imposes one, and compiling the same directory
 twice produces the same bytes — which is a test.
+
+---
+
+## Resolution: the registry (implementation, 2026-09-05)
+
+§4 through §7 became `asset/registry.zig` and `render2d/loader.zig`. Six things the
+specification left to the implementation, and one it asked for that it did not get.
+
+**`source` had to become a runtime read, and saying so cost nothing.** §2 said `source` was
+meaningful "only to `fpack`", and §7 simultaneously specified a `SourceMissing` error that
+only a runtime file read can produce. The second is right and the first was imprecise:
+ADR-0021's promise is that *nothing can be looked up by path*, and that is kept exactly —
+`acquire` takes a `ContentId` and there is no other entry point. What a record says about
+where its own bytes are is location, and location was never the thing the ADR was protecting.
+§2 now says this in the words the code uses.
+
+**A package's root is mounted here, not carried by `data`.** Resolving `source` needs to know
+where a package's files are, and `data.store.LoadedPackage` documents its own label as
+diagnostics-only — reusing it would have quietly made a diagnostic string load-bearing. So
+`Registry.mount(package, root)` is a separate call, in the module whose job is having a
+filesystem. §10 stays true: `asset` still consumes a merged store and assembles nothing.
+
+**A payload is one 64-bit word, not a `*anyopaque`.** §5's sketch made it a pointer, and
+`render2d`'s payload is a `TextureHandle` — a value, not an allocation. A pointer-shaped
+payload would force every handle-producing loader to box two `u32`s for no reason. A word
+holds either, and it is already the shape the public ABI publishes a handle in (ADR-0004),
+so `core.Handle` gained `bits`/`fromBits` and the packing is written down once.
+
+**§7's table gained two rows.** `SourceRejected` for a `source` that is not a path a package
+may name — the security-relevant half of `SourceMissing`, and merging the two would file a
+package trying to read outside itself under "not found", where nobody would look. And
+`LoadFailed` for a loader failing when neither the bytes nor a version are at fault: the
+device refused the texture, the file could not be read. Calling that `InvalidAsset` sends a
+mod author to inspect a file that is perfectly fine.
+
+**`foundry:texture` is version 2, and version 1 content still loads.** `filter` and `wrap`
+arrived with the loader that reads them, appended with defaults — the case additive
+versioning exists for, and the cheap half of I8 made real rather than asserted: a package
+compiled when the schema had one field is read against the version it carries, and the rest
+is filled from the newest schema's defaults. That is a test.
+
+They are **strings**, because the type list is closed (`content-schemas.md` §3) and there is
+no enum type. The domain is therefore only knowable in the loader, whose enum tag names *are*
+the content spelling, so the two cannot drift. An unrecognised spelling warns and falls back
+rather than refusing the texture: answering a typo with a missing sprite is the least
+diagnosable outcome available.
+
+**Eviction is a call nobody makes.** §4 said zero references means evictable, not freed, and
+§9's first open question is *when* eviction runs. Both are honoured literally:
+`evictUnused` is the mechanism, and nothing invokes it on a schedule. A texture released
+between two levels that both use it stays resident and comes back without a decode, which is
+a test.
+
+**What §4 asked for and did not get: the development-build placeholder.** "A magenta texture
+is diagnosable from across the room" is right, and it is not built. It cannot live in the
+registry, which does not know how to make a texture of any colour, so it would be an optional
+third function on `Loader` — cheap, and worth adding when there is a game to see it in. What
+exists now is the half that cannot be deferred: a failed acquire is a value naming the ID and
+the reason, and every one of §7's failures is separately reachable in a test.

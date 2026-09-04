@@ -15,7 +15,7 @@ an authoring format, a compiled package format and the tool that turns one into 
 ```sh
 ./scripts/install-zig.sh   # the only tool you need
 zig build run -Drhi=metal  # opens a window and draws; escape quits
-zig build test             # 474 tests
+zig build test             # 491 tests
 ```
 
 Implemented so far:
@@ -28,7 +28,8 @@ Implemented so far:
 * **`rhi`** — the render hardware interface, with a Metal backend and a **validation
   backend** that enforces the strict rules Metal forgives. Not scaffolding: it is what
   substitutes for a second graphics backend until there is one.
-* **`asset`** — Foundry's own PNG decoder, and the schemas for the asset kinds it can load.
+* **`asset`** — Foundry's own PNG decoder, and the registry that turns a content ID into a
+  loaded asset through loaders registered at runtime. Nothing is addressable by path.
 * **`render2d`** — sprite and text batching, atlases, cameras.
 * **`app`** — the engine loop, subsystem lifecycle, and the log sink.
 * **`tools/fpack`** — the content compiler: a package directory in, one `.fpk` out.

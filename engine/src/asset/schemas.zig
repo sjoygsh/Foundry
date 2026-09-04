@@ -22,9 +22,11 @@ const std = @import("std");
 const data = @import("data");
 
 const Allocator = std.mem.Allocator;
+const Record = data.store.Record;
 const Registry = data.Registry;
 const Schema = data.Schema;
 const SchemaId = data.SchemaId;
+const Value = data.Value;
 
 /// The field every asset kind has: where `fpack` reads the bytes from.
 ///
@@ -48,20 +50,34 @@ pub const Kind = struct {
     extensions: []const []const u8,
 };
 
+/// How the sampler filters and how it addresses outside `[0,1]`.
+///
+/// **Strings, because the type list is closed** (`content-schemas.md` §3): there is no enum
+/// type and adding one would cost a text form, a binary form and a validator for a case an
+/// inline struct does not compose. So the domain is checked by the loader that reads them
+/// rather than by the checker, and an unrecognised spelling is a warning naming the legal
+/// set, not a texture that fails to appear (§4: a failed load must stay diagnosable, and a
+/// missing sprite is less diagnosable than a wrong-looking one).
+pub const filter_field = "filter";
+pub const wrap_field = "wrap";
+
 pub const texture_name = "foundry:texture";
 
 /// An image loaded into a GPU texture.
 ///
-/// One field for now. `assets.md` §2 sketches `filter` and `wrap` alongside it, and they
-/// arrive with the loader that reads them — at which point the schema goes to version 2 with
-/// defaults, which is precisely the case additive versioning exists for. Adding them now
-/// would mean choosing how an enumeration is spelled in `.fdt` with nothing to check the
-/// choice against, and the type list is closed (`content-schemas.md` §3).
+/// **Version 2, and version 1 content still loads.** `source` was the whole of version 1;
+/// `filter` and `wrap` arrived with the loader that reads them, appended with defaults —
+/// which is exactly the case additive versioning exists for and the cheap half of I8. A
+/// package compiled before they existed is read against the version it carries and fills
+/// the rest from these defaults (`store.Record.missingDefault`), so nothing has to be
+/// recompiled to keep working.
 pub const texture: Schema = .{
     .id = SchemaId.fromStringUnchecked(texture_name),
-    .version = 1,
+    .version = 2,
     .fields = &.{
         .{ .name = source_field, .type = .string },
+        .{ .name = filter_field, .type = .string, .since = 2, .presence = .{ .default = .{ .string = "nearest" } } },
+        .{ .name = wrap_field, .type = .string, .since = 2, .presence = .{ .default = .{ .string = "clamp" } } },
     },
 };
 
@@ -104,12 +120,47 @@ pub fn registerAll(gpa: Allocator, registry: *Registry) (data.schema.RegisterErr
     for (&kinds) |kind| _ = try registry.register(gpa, kind.schema);
 }
 
+/// A string field of `record`, read against `newest` and filled from its default when the
+/// record's own package predates the field.
+///
+/// A loader is compiled against the newest schema it knows — the constants above — while a
+/// record it is handed was laid out against whatever version its package shipped. That gap
+/// is what I8's additive versioning is for, and this is the two-line composition that
+/// closes it: `Fields` can only answer for the fields its own version had, and
+/// `missingDefault` supplies the rest.
+///
+/// **Here rather than in `data`.** It composes two of that module's primitives and adds no
+/// third; `data`'s surface is seen by mod authors and is a compatibility decision
+/// (CLAUDE.md §7), so a convenience with one consumer lives with the consumer.
+pub fn stringField(record: Record, newest: Schema, name: []const u8) ?[]const u8 {
+    const index = newest.fieldIndex(name) orelse return null;
+    // A malformed block is the package's problem, not this call's: report absence and let
+    // the loader's own read of `source` be the one that refuses the record.
+    if (record.fields.stringAt(index) catch null) |present| return present;
+    return switch (record.missingDefault(newest, index) orelse return null) {
+        .string => |text| text,
+        else => null,
+    };
+}
+
 const testing = std.testing;
 
 test "every asset kind has a source field, and it is field zero" {
     for (&kinds) |kind| {
         try testing.expectEqual(@as(?u32, 0), kind.schema.fieldIndex(source_field));
         try testing.expect(kind.schema.fields[0].type == .string);
+        // Field zero is `source` in every version, because versioning is additive: a
+        // reader of version 1 content finds it at the same offset a version 2 reader does.
+        try testing.expectEqual(@as(u32, 1), kind.schema.fields[0].since);
+    }
+}
+
+test "a field added after version 1 carries a default, or old content could not be read" {
+    for (&kinds) |kind| {
+        for (kind.schema.fields) |field| {
+            if (field.since == 1) continue;
+            try testing.expect(field.presence != .required);
+        }
     }
 }
 

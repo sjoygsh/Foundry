@@ -200,10 +200,11 @@ pub fn main(init: std.process.Init) !void {
 
 /// The sprite sheet the sandbox draws with, embedded rather than loaded from disk.
 ///
-/// Embedding, not `asset.loadImage`: finding an asset at runtime needs the content system
-/// to answer where assets live and what they are called, and that is M3's question
-/// (CLAUDE.md §9). Decoding is the part M2 owes, and this exercises it in the real
-/// application rather than only in a test.
+/// **Still embedded, and this is the last milestone it will be.** The asset registry now
+/// exists and would take `foundry:textures.sprites` today; what does not exist yet is
+/// `content/core` as package zero, which is M3 step 9 and is the step that proves the mod
+/// path by making the base game use it (I3). Moving the sheet into the content system
+/// before there is a package to put it in would be inventing a private path for it.
 const sprite_sheet_png = @embedFile("assets/sprites.png");
 
 /// The sandbox's font: 95 glyphs on a 16-by-6 grid of 8-pixel cells, ASCII 32 to 126.

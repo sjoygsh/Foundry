@@ -290,6 +290,24 @@ pub fn build(b: *std.Build) void {
     const fpack_tests = b.addTest(.{ .root_module = fpack_mod });
     check_step.dependOn(&fpack_tests.step);
     test_step.dependOn(&b.addRunArtifact(fpack_tests).step);
+
+    // Integration tests (CLAUDE.md §4.5): what no single module can test alone, because
+    // testing it means standing above two of them. `render2d` registering a texture loader
+    // into `asset` is the first: the modules deliberately cannot see each other — `asset`
+    // is below and `render2d` has no `data` — so the seam between them is only reachable
+    // from a consumer that has both, which is what `app` and a game are.
+    const integration_mod = b.createModule(.{
+        .root_source_file = b.path("engine/tests/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    for ([_][]const u8{ "core", "data", "platform", "rhi", "asset", "render2d" }) |name| {
+        integration_mod.addImport(name, modules.get(name).?);
+    }
+
+    const integration_tests = b.addTest(.{ .root_module = integration_mod });
+    check_step.dependOn(&integration_tests.step);
+    test_step.dependOn(&b.addRunArtifact(integration_tests).step);
 }
 
 /// Compiles MSL into a `.metallib`, per ADR-0015: `xcrun metal` turns each source into an
