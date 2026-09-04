@@ -116,6 +116,70 @@ pub const Camera2D = struct {
         }
         return .{ .x = min.x, .y = min.y, .w = max.x - min.x, .h = max.y - min.y };
     }
+
+    // -- movement ------------------------------------------------------------------
+    //
+    // Two operations, and deliberately only two. Both are *camera maths*: what they do
+    // is decided by the projection, and getting either wrong under rotation is subtle.
+    // Which key or button drives them is **input policy**, which belongs to the game —
+    // and `render2d` could not implement it anyway, since it does not depend on
+    // `platform` and the build graph would refuse the import (I7). The layering makes
+    // the seam for us.
+    //
+    // Both take the whole change and validate it before committing, so a refused change
+    // leaves the camera exactly as it was rather than half-applied.
+
+    /// Moves the **camera** by a screen-space offset, in the same points as the mouse.
+    ///
+    /// The camera, not the content: `+x` scrolls the view right, so the world appears to
+    /// slide left. A drag that makes the world follow the cursor passes the negated
+    /// mouse motion, which is the caller's decision to make.
+    ///
+    /// Screen space is Y-down and world space is Y-up, and rotation and zoom both apply,
+    /// so this is not `center.add(delta)`. It is derived from `screenToWorld` rather than
+    /// re-derived, because two routes to the same transform is two things to keep in
+    /// step.
+    pub fn panByScreen(self: *Camera2D, delta: Vec2) CameraError!void {
+        try self.validate();
+        if (!std.math.isFinite(delta.x) or !std.math.isFinite(delta.y)) {
+            return error.InvalidCamera;
+        }
+
+        // The affine part of `screenToWorld`: the difference of two screen points maps
+        // to a world vector that does not depend on `center`.
+        const world_delta = self.screenToWorld(delta).sub(self.screenToWorld(.zero));
+
+        var next = self.*;
+        next.center = self.center.add(world_delta);
+        try next.validate();
+        self.* = next;
+    }
+
+    /// Changes zoom while keeping the world point under `screen_anchor` under it.
+    ///
+    /// This is what a mouse wheel should do, and what "set `zoom` and hope" does not: a
+    /// bare assignment zooms about the viewport's centre, so the thing being examined
+    /// slides away from the cursor exactly when it is being looked at closely.
+    ///
+    /// Implemented by measuring the drift rather than solving for it. Ask what world
+    /// point is under the anchor, change the zoom, ask again, and move the centre by the
+    /// difference. Correct under rotation and an offset viewport for free, because
+    /// `screenToWorld` already is.
+    pub fn zoomAround(self: *Camera2D, screen_anchor: Vec2, new_zoom: f32) CameraError!void {
+        try self.validate();
+        if (!std.math.isFinite(screen_anchor.x) or !std.math.isFinite(screen_anchor.y)) {
+            return error.InvalidCamera;
+        }
+        if (!std.math.isFinite(new_zoom) or new_zoom <= 0) return error.InvalidCamera;
+
+        const before = self.screenToWorld(screen_anchor);
+
+        var next = self.*;
+        next.zoom = new_zoom;
+        next.center = self.center.add(before.sub(next.screenToWorld(screen_anchor)));
+        try next.validate();
+        self.* = next;
+    }
 };
 
 /// Orthographic projection into the clip space `rhi.clip_space` describes.
@@ -275,4 +339,115 @@ test "visible bounds cover the viewport and grow when rotated" {
     const turned_bounds = turned.visibleBounds();
     try testing.expect(turned_bounds.w > bounds.w);
     try testing.expect(turned_bounds.h > bounds.h);
+}
+
+test "panning by a screen delta moves the camera in screen terms, not world terms" {
+    var cam: Camera2D = .{ .viewport = .init(0, 0, 800, 600), .zoom = 2 };
+
+    // 100 points right is 50 world units right, because zoom is pixels per world unit.
+    try cam.panByScreen(.init(100, 0));
+    try testing.expectApproxEqAbs(@as(f32, 50), cam.center.x, tolerance);
+    try testing.expectApproxEqAbs(@as(f32, 0), cam.center.y, tolerance);
+
+    // Screen Y is down and world Y is up, so panning down the screen lowers the camera.
+    try cam.panByScreen(.init(0, 100));
+    try testing.expectApproxEqAbs(@as(f32, -50), cam.center.y, tolerance);
+}
+
+test "panning is exact in screen space, whatever the camera is doing" {
+    // The property that matters at the call site: panning the camera by `delta` slides
+    // the world the other way, so whatever was under a pixel is now under that pixel
+    // *minus* `delta`. It has to hold under rotation, off-origin viewports and extreme
+    // zoom, which is where a hand-rolled `center.add(delta)` stops being right.
+    const cases = [_]Camera2D{
+        .{ .viewport = .init(0, 0, 800, 600) },
+        .{ .viewport = .init(0, 0, 800, 600), .zoom = 0.05 },
+        .{ .viewport = .init(120, 40, 500, 500), .center = .init(-9, 3), .zoom = 7 },
+        .{ .viewport = .init(0, 0, 1280, 720), .center = .init(60, -20), .zoom = 1.7, .rotation = 1.1 },
+        .{ .viewport = .init(0, 0, 1280, 720), .rotation = -2.4, .zoom = 0.3 },
+    };
+    const deltas = [_]Vec2{ .init(37, 0), .init(0, -18), .init(-120, 64), .init(0.5, 0.5) };
+
+    for (cases) |start| {
+        for (deltas) |delta| {
+            const probe: Vec2 = .init(310, 205);
+            const before = start.screenToWorld(probe);
+
+            var cam = start;
+            try cam.panByScreen(delta);
+
+            const after = cam.screenToWorld(.{ .x = probe.x - delta.x, .y = probe.y - delta.y });
+            try testing.expectApproxEqAbs(before.x, after.x, 1e-2);
+            try testing.expectApproxEqAbs(before.y, after.y, 1e-2);
+        }
+    }
+}
+
+test "zooming about a point keeps that point under the cursor" {
+    // The whole reason `zoomAround` exists. If this fails, zooming in on something makes
+    // it slide off the screen.
+    const cases = [_]Camera2D{
+        .{ .viewport = .init(0, 0, 800, 600) },
+        .{ .viewport = .init(0, 0, 1280, 720), .center = .init(-140, 260), .zoom = 3 },
+        .{ .viewport = .init(64, 32, 900, 400), .center = .init(11, -4), .zoom = 0.4, .rotation = 0.7 },
+    };
+    const anchors = [_]Vec2{ .init(0, 0), .init(200, 150), .init(799, 599) };
+    const zooms = [_]f32{ 0.01, 0.5, 1, 2.5, 64 };
+
+    for (cases) |start| {
+        for (anchors) |anchor| {
+            const pinned = start.screenToWorld(anchor);
+            for (zooms) |z| {
+                var cam = start;
+                try cam.zoomAround(anchor, z);
+                try testing.expectApproxEqAbs(z, cam.zoom, tolerance);
+
+                const still_there = cam.screenToWorld(anchor);
+                // Scaled tolerance: at zoom 0.01 one pixel *is* a hundred world units,
+                // so an absolute world tolerance would be meaningless. The test is
+                // "within a pixel of where it was", which is what the user sees.
+                const slack = @max(1e-2, 1 / z);
+                try testing.expectApproxEqAbs(pinned.x, still_there.x, slack);
+                try testing.expectApproxEqAbs(pinned.y, still_there.y, slack);
+            }
+        }
+    }
+}
+
+test "zooming about the viewport centre leaves the centre alone" {
+    var cam: Camera2D = .{ .viewport = .init(0, 0, 800, 600), .center = .init(25, -8) };
+    try cam.zoomAround(.init(400, 300), 5);
+    try testing.expectApproxEqAbs(@as(f32, 25), cam.center.x, tolerance);
+    try testing.expectApproxEqAbs(@as(f32, -8), cam.center.y, tolerance);
+}
+
+test "a refused move leaves the camera exactly as it was" {
+    // Every one of these can arrive from a mod, a settings file or a device that reported
+    // nonsense. None of them may leave a half-applied camera behind.
+    const start: Camera2D = .{ .viewport = .init(0, 0, 800, 600), .center = .init(3, 4), .zoom = 2 };
+    const nan = std.math.nan(f32);
+    const inf = std.math.inf(f32);
+
+    for ([_]Vec2{ .init(nan, 0), .init(0, nan), .init(inf, 0) }) |bad| {
+        var cam = start;
+        try testing.expectError(error.InvalidCamera, cam.panByScreen(bad));
+        try testing.expectEqual(start, cam);
+    }
+
+    for ([_]f32{ 0, -1, nan, inf }) |bad| {
+        var cam = start;
+        try testing.expectError(error.InvalidCamera, cam.zoomAround(.init(10, 10), bad));
+        try testing.expectEqual(start, cam);
+    }
+
+    {
+        var cam = start;
+        try testing.expectError(error.InvalidCamera, cam.zoomAround(.init(nan, 0), 2));
+        try testing.expectEqual(start, cam);
+    }
+
+    // And a camera that was already unusable is refused rather than repaired.
+    var broken: Camera2D = .{ .viewport = .init(0, 0, 0, 600) };
+    try testing.expectError(error.InvalidCamera, broken.panByScreen(.init(1, 1)));
+    try testing.expectError(error.InvalidCamera, broken.zoomAround(.init(1, 1), 2));
 }

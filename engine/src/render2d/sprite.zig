@@ -77,12 +77,11 @@ pub const Corner = enum(u2) { bottom_left = 0, bottom_right = 1, top_right = 2, 
 /// the GPU. Four rotated points cost eight multiplies; a per-sprite matrix costs a binding
 /// and ends the batch, and one draw call for ten thousand sprites is the entire point.
 pub fn writeQuad(sprite: Sprite, out: *[vertices_per_quad]Vertex) void {
-    // Local extents. `origin` is normalised, so an origin of (0.5, 0.5) centres the quad
-    // and (0, 0) puts `position` at its bottom-left.
-    const x0 = -sprite.origin.x * sprite.size.x;
-    const x1 = (1 - sprite.origin.x) * sprite.size.x;
-    const y0 = -sprite.origin.y * sprite.size.y;
-    const y1 = (1 - sprite.origin.y) * sprite.size.y;
+    const e = localExtents(sprite);
+    const x0 = e.x0;
+    const x1 = e.x1;
+    const y0 = e.y0;
+    const y1 = e.y1;
 
     const c = @cos(sprite.rotation);
     const s = @sin(sprite.rotation);
@@ -124,6 +123,55 @@ pub fn writeQuad(sprite: Sprite, out: *[vertices_per_quad]Vertex) void {
             .color = packed_color,
         };
     }
+}
+
+/// The sprite's own frame: the quad's corners before rotation and before translation.
+///
+/// Shared by `writeQuad` and `containsPoint` on purpose. Drawing and hit-testing
+/// disagreeing about where a sprite is would be a bug you could only find by clicking,
+/// and it is avoided by there being one definition rather than two that agree today.
+const LocalExtents = struct { x0: f32, x1: f32, y0: f32, y1: f32 };
+
+/// `origin` is normalised, so (0.5, 0.5) centres the quad and (0, 0) puts `position` at
+/// its bottom-left.
+fn localExtents(sprite: Sprite) LocalExtents {
+    return .{
+        .x0 = -sprite.origin.x * sprite.size.x,
+        .x1 = (1 - sprite.origin.x) * sprite.size.x,
+        .y0 = -sprite.origin.y * sprite.size.y,
+        .y1 = (1 - sprite.origin.y) * sprite.size.y,
+    };
+}
+
+/// True when `world_point` falls inside the sprite as drawn — rotation included.
+///
+/// The answer to "what did I click", once `Camera2D.screenToWorld` has turned the mouse
+/// into a world point. It is *geometry*, not a picking system: there is no sprite list to
+/// search, because submission is immediate and a sprite becomes vertices the moment it is
+/// drawn (`docs/design/render2d.md` §2). The game owns its objects and knows which of them
+/// are worth testing; a renderer-side "what is at this point" would have to retain
+/// everything in order to answer, which is the design this one deliberately is not.
+///
+/// Alpha is not consulted. This is the rectangle, so a click in a sprite's transparent
+/// corner counts as a hit. Per-pixel picking needs the decoded image kept around and is a
+/// different feature with a different cost; when something wants it, it should say so.
+pub fn containsPoint(sprite: Sprite, world_point: Vec2) bool {
+    const e = localExtents(sprite);
+
+    // Into the sprite's own frame: translate, then rotate by `-rotation`, which is
+    // exactly the inverse of what `writeQuad` applies to each corner.
+    const dx = world_point.x - sprite.position.x;
+    const dy = world_point.y - sprite.position.y;
+    const c = @cos(-sprite.rotation);
+    const s = @sin(-sprite.rotation);
+    const lx = dx * c - dy * s;
+    const ly = dx * s + dy * c;
+
+    // `@min`/`@max` rather than assuming `x0 < x1`: a negative size mirrors the quad,
+    // which draws fine and would silently never be clickable otherwise. A NaN point
+    // fails every comparison and so is a miss, which is the right answer for it.
+    return lx >= @min(e.x0, e.x1) and lx <= @max(e.x0, e.x1) and
+        ly >= @min(e.y0, e.y1) and ly <= @max(e.y0, e.y1);
 }
 
 /// The static index pattern: two triangles per quad, sharing the diagonal.
@@ -239,4 +287,95 @@ test "the index pattern is two triangles sharing the diagonal" {
     try testing.expectEqualSlices(u32, &.{ 0, 1, 2, 0, 2, 3 }, indices[0..6]);
     // The second quad's indices are offset by four vertices, not by six.
     try testing.expectEqualSlices(u32, &.{ 4, 5, 6, 4, 6, 7 }, indices[6..12]);
+}
+
+test "a point inside a sprite is a hit and a point outside is not" {
+    const sprite = unitSprite(); // 2x2, centred on the origin.
+    try testing.expect(containsPoint(sprite, .init(0, 0)));
+    try testing.expect(containsPoint(sprite, .init(0.99, -0.99)));
+    try testing.expect(containsPoint(sprite, .init(-1, 1))); // exactly on a corner
+    try testing.expect(!containsPoint(sprite, .init(1.01, 0)));
+    try testing.expect(!containsPoint(sprite, .init(0, -1.01)));
+    try testing.expect(!containsPoint(sprite, .init(50, 50)));
+}
+
+test "hit testing respects rotation, and not just the bounding box" {
+    // The test that catches forgetting to rotate. Turned 45 degrees, a 2x2 square's own
+    // corner is at (1.41, 0) — so the point (0.9, 0.9), comfortably inside the *axis
+    // aligned* bounds, is now outside the sprite itself.
+    var sprite = unitSprite();
+    sprite.rotation = std.math.pi / 4.0;
+
+    try testing.expect(containsPoint(sprite, .init(0, 0)));
+    try testing.expect(containsPoint(sprite, .init(1.3, 0)));
+    try testing.expect(!containsPoint(sprite, .init(0.9, 0.9)));
+
+    // Unrotated, that same point is inside — so the two answers really do differ.
+    sprite.rotation = 0;
+    try testing.expect(containsPoint(sprite, .init(0.9, 0.9)));
+}
+
+test "hit testing agrees with the quad that gets drawn" {
+    // Drawing and picking must not drift apart, so this checks them against each other
+    // rather than against hand-written coordinates: take the vertices `writeQuad`
+    // produces, and probe just inside and just outside each corner along the diagonal.
+    const cases = [_]Sprite{
+        .{ .texture = .none, .position = .init(0, 0), .size = .init(2, 2) },
+        .{ .texture = .none, .position = .init(-30, 12), .size = .init(64, 16) },
+        .{ .texture = .none, .position = .init(5, 5), .size = .init(10, 10), .rotation = 0.9 },
+        .{ .texture = .none, .position = .init(1, -7), .size = .init(3, 40), .rotation = -2.2 },
+        .{ .texture = .none, .position = .init(0, 0), .size = .init(8, 8), .origin = .init(0, 0) },
+        .{ .texture = .none, .position = .init(4, 4), .size = .init(8, 2), .origin = .init(1, 0.25), .rotation = 0.3 },
+    };
+
+    for (cases) |sprite| {
+        var v: [vertices_per_quad]Vertex = undefined;
+        writeQuad(sprite, &v);
+
+        var centroid: Vec2 = .zero;
+        for (v) |vertex| {
+            centroid.x += vertex.position[0] / 4;
+            centroid.y += vertex.position[1] / 4;
+        }
+        try testing.expect(containsPoint(sprite, centroid));
+
+        for (v) |vertex| {
+            const corner: Vec2 = .init(vertex.position[0], vertex.position[1]);
+            const toward = centroid.sub(corner);
+            // Inside the corner by 2% of the diagonal, and outside it by the same.
+            try testing.expect(containsPoint(sprite, corner.add(toward.scale(0.02))));
+            try testing.expect(!containsPoint(sprite, corner.sub(toward.scale(0.02))));
+        }
+    }
+}
+
+test "origin moves what counts as inside, exactly as it moves what gets drawn" {
+    var sprite = unitSprite();
+    sprite.origin = .init(0, 0); // `position` is now the bottom-left corner.
+    try testing.expect(containsPoint(sprite, .init(0.1, 0.1)));
+    try testing.expect(containsPoint(sprite, .init(1.9, 1.9)));
+    try testing.expect(!containsPoint(sprite, .init(-0.1, 0.1)));
+}
+
+test "a mirrored sprite is still clickable" {
+    // A negative extent draws a mirrored quad, which is a legitimate thing to ask for.
+    // Testing `x0 <= lx <= x1` without ordering them would make it unhittable.
+    var sprite = unitSprite();
+    sprite.size = .init(-4, 4);
+    try testing.expect(containsPoint(sprite, .init(0, 0)));
+    try testing.expect(containsPoint(sprite, .init(1.5, 1)));
+    try testing.expect(containsPoint(sprite, .init(-1.5, 1)));
+    try testing.expect(!containsPoint(sprite, .init(3, 0)));
+}
+
+test "a degenerate sprite is a miss, not a crash" {
+    var sprite = unitSprite();
+    sprite.size = .zero;
+    try testing.expect(containsPoint(sprite, .init(0, 0))); // the single point it is
+    try testing.expect(!containsPoint(sprite, .init(0.01, 0)));
+
+    // Nonsense coordinates arrive from content and from scripts. They miss.
+    const nan = std.math.nan(f32);
+    try testing.expect(!containsPoint(unitSprite(), .init(nan, 0)));
+    try testing.expect(!containsPoint(unitSprite(), .init(0, nan)));
 }

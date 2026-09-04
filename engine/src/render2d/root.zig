@@ -26,6 +26,9 @@ pub const Color = color.Color;
 pub const BlendMode = color.BlendMode;
 pub const Renderer = renderer.Renderer;
 pub const Sprite = sprite.Sprite;
+/// Hit-testing one sprite. Picking is the game's loop over its own objects; see
+/// `sprite.containsPoint` for why the renderer does not own a "what is at this point".
+pub const containsPoint = sprite.containsPoint;
 pub const TextureHandle = texture.TextureHandle;
 pub const TextureOptions = texture.TextureOptions;
 pub const Filter = texture.Filter;
