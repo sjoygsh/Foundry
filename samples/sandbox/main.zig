@@ -282,6 +282,11 @@ const SpriteField = struct {
     /// startup, which is the number that says whether that is still true.
     const atlas_size: render2d.Extent2D = .{ .width = 512, .height = 512 };
 
+    /// Screen points. The HUD is placed in the same units the mouse is reported in, which
+    /// is what the screen view buys.
+    const hud_margin: f32 = 12;
+    const hud_padding: f32 = 8;
+
     /// Zoom limits, in pixels per world unit. Policy, and therefore the sample's: the
     /// camera itself refuses only zooms that are not numbers.
     const min_zoom: f32 = 0.05;
@@ -521,7 +526,8 @@ const SpriteField = struct {
         var best_layer: i16 = 0;
         for (0..self.seeds.len) |index| {
             const sprite = self.spriteAt(index, seconds);
-            if (!render2d.containsPoint(sprite, world)) continue;
+            // World space, so `.up` — the sample's picking is of world sprites.
+            if (!render2d.containsPoint(sprite, world, .up)) continue;
             // Later in the draw order wins, and the draw order is `(layer, submission
             // index)` — the batcher's own sort key. So "topmost" means the same thing to
             // the pick as it does to the GPU, rather than being a second guess at it.
@@ -551,6 +557,100 @@ const SpriteField = struct {
         }
 
         try self.banner();
+        try self.hud(engine);
+    }
+
+    /// The statistics readout, in **screen space**, which is what views are for.
+    ///
+    /// `setView` once and then draw: the panel and every glyph after it are in screen
+    /// points, the same units the mouse is reported in, and none of it moves when the
+    /// camera does. Nothing here converts a coordinate, which is the whole gain — before
+    /// views, a HUD meant running every position through `screenToWorld` and dividing
+    /// every size by the zoom, and it was still wrong under camera rotation.
+    ///
+    /// The numbers are **last frame's**, because this frame's are not known until the
+    /// batcher has planned — which happens after the game has finished submitting. One
+    /// frame of lag in a diagnostic is not worth a second pass to remove.
+    fn hud(self: *SpriteField, engine: *app.Engine) !void {
+        const stats = self.renderer.frameStats();
+        const info = engine.windowInfo();
+        const width: f32 = if (info) |i| @floatFromInt(i.logical_size.width) else 1280;
+
+        var buffer: [512]u8 = undefined;
+        const text = std.fmt.bufPrint(
+            &buffer,
+            "{d:.1}ms  {d} sprites  {d} glyphs\n" ++
+                "{d} batches  {d} draw calls  {d} views\n" ++
+                "{d} KiB vertices  {d} buffers  zoom {d:.2}",
+            .{
+                engine.frameDelta().toSecondsF32() * 1000,
+                stats.sprites,
+                stats.glyphs,
+                stats.batches,
+                stats.draw_calls,
+                stats.views,
+                stats.vertex_bytes / 1024,
+                stats.buffers_used,
+                self.camera.zoom,
+            },
+            // A statistics line that cannot be formatted is not worth failing a frame for.
+        ) catch return;
+
+        try self.renderer.setView(.screen);
+        defer self.renderer.setView(.world) catch {};
+
+        const options: render2d.TextOptions = .{
+            .position = .init(hud_margin + hud_padding, hud_margin + hud_padding),
+            .scale = 2,
+            .line_spacing = 4,
+            .tint = .srgb8(190, 235, 255, 255),
+        };
+        const size = render2d.measureText(self.font, text, options);
+
+        // A panel behind it, so the readout is legible over whatever it lands on. Drawn
+        // from the same atlas as the glyphs, so it costs no draw call of its own.
+        try self.renderer.drawSprite(.{
+            .texture = self.blank.texture,
+            .uv = self.blank.uv,
+            .position = .init(hud_margin, hud_margin),
+            .size = .init(size.x + hud_padding * 2, size.y + hud_padding * 2),
+            .origin = .init(0, 0),
+            .tint = .srgb8(0, 0, 0, 150),
+            .layer = 0,
+        });
+        try self.renderer.drawText(self.font, text, .{
+            .position = options.position,
+            .scale = options.scale,
+            .line_spacing = options.line_spacing,
+            .tint = options.tint,
+            .layer = 1,
+        });
+
+        // Right-aligned, to show that `measureText` is usable for layout and not only for
+        // centring — and that screen space has a right-hand edge, which world space does
+        // not.
+        const help = "wasd pan  wheel zoom  click picks  c recentres";
+        const help_options: render2d.TextOptions = .{ .position = .zero, .scale = 1.5 };
+        const help_size = render2d.measureText(self.font, help, help_options);
+        const help_at: core.math.Vec2 = .init(
+            width - help_size.x - hud_margin - hud_padding,
+            hud_margin + hud_padding,
+        );
+        try self.renderer.drawSprite(.{
+            .texture = self.blank.texture,
+            .uv = self.blank.uv,
+            .position = .init(help_at.x - hud_padding, hud_margin),
+            .size = .init(help_size.x + hud_padding * 2, help_size.y + hud_padding * 2),
+            .origin = .init(0, 0),
+            .tint = .srgb8(0, 0, 0, 150),
+            .layer = 0,
+        });
+        try self.renderer.drawText(self.font, help, .{
+            .position = help_at,
+            .scale = help_options.scale,
+            .tint = .srgb8(180, 180, 200, 230),
+            .layer = 1,
+        });
     }
 
     /// Text at the world origin, in **world** units.
