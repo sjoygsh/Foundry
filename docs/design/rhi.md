@@ -362,6 +362,46 @@ obliged to match this one — they have descriptor sets and root signatures and 
 groups directly — but each owes the same explicitness, and §2's mapping table is where that
 belongs.
 
+### Clip space, which is the other shader-visible contract
+
+*Written 2026-09-04, during M2's design. `core/math.zig` has said since M0 that handedness,
+the 2D origin and the clip-space range "are owed in `docs/design/rhi.md`" — this is that
+debt, called in by the first camera.*
+
+A vertex shader's output is meaningless without a convention, and a backend that quietly
+used a different one would not fail: it would render the world upside down, or with
+everything clipped, which is a worse failure than a validation error because it looks like a
+bug in the game.
+
+**The contract, which every backend must present:**
+
+| | Value |
+| --- | --- |
+| `x`, `y` | `[-1, 1]`, with **+Y up** |
+| `z` | `[0, 1]`, with `0` at the near plane |
+| Viewport origin | Top-left, `y` increasing **down** — the `Viewport` in §8 is in pixels |
+| Texture origin | Top-left, so `v = 0` is the **top** row of an image |
+
+Y-up in clip space and Y-down in the viewport are not in conflict; they are different
+spaces, and the projection matrix is what bridges them. That is precisely why both are
+written down.
+
+**Why this one.** Metal and D3D12 both use Y-up clip space with `[0, 1]` depth natively, so
+they conform for free. Vulkan's clip space has **+Y down**, and the correction is a
+negative-height viewport — a mechanism Vulkan itself provides and has had in core since 1.1,
+costing one sign in the backend. OpenGL's `[-1, 1]` depth is the outlier and OpenGL is not a
+target. So this is not the usual "take the strictest" call: it is the convention two of the
+three targets get for nothing and the third can adopt for one line.
+
+**Expressed in code as `rhi.clip_space`**, so that the renderer reads the convention rather
+than hardcoding it. This costs nothing today — every backend conforms — and means that a
+backend which one day genuinely cannot conform is a value change plus a sign in one matrix,
+rather than an archaeology exercise across every shader and camera in the engine.
+
+The convention already holds in the code that exists: `samples/sandbox` pairs its top-left
+vertex `(-half, +half)` with `uv (0, 0)`, which is only correct under exactly these two
+rules. M1 was relying on it without saying so.
+
 ## 10. Shaders
 
 Per ADR-0015, shaders are **assets with per-backend variants**. That decision lands here as

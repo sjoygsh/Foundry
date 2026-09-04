@@ -83,6 +83,8 @@ pub const TextureFormat = format.TextureFormat;
 pub const VertexFormat = format.VertexFormat;
 pub const IndexFormat = format.IndexFormat;
 pub const Capabilities = command.Capabilities;
+pub const ClipSpace = command.ClipSpace;
+pub const clip_space = command.clip_space;
 pub const FrameContext = command.FrameContext;
 pub const RenderPassDesc = command.RenderPassDesc;
 

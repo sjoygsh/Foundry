@@ -2,8 +2,13 @@
 //!
 //! Deliberately convention-free: this file does not know which way is up. Coordinate
 //! system, handedness, the 2D origin and clip-space range are renderer-facing decisions
-//! that interact with the differences between Metal, Vulkan and D3D12, and they are
-//! owed in `docs/design/rhi.md` at M1 (ADR-0003). Choosing them here would be guessing.
+//! that interact with the differences between Metal, Vulkan and D3D12.
+//!
+//! **Those decisions are now written down** — `docs/design/rhi.md` §9 states the clip space
+//! and `docs/design/render2d.md` §4 the world and screen spaces — and they still do not
+//! live here. `core` is L0 and has consumers that are not renderers; a projection matrix
+//! baking in one clip space would be a landmine for any of them. The renderer builds its
+//! own projection from these primitives and reads the convention from `rhi.clip_space`.
 //!
 //! Matrices are **column-major in storage**, matching MSL, GLSL and HLSL, so a `Mat4`
 //! is sixteen contiguous floats that can go into a uniform buffer untransposed.

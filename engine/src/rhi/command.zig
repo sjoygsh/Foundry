@@ -84,6 +84,32 @@ pub const BufferBarrier = struct {
     to: resource.ResourceState,
 };
 
+/// The clip space every backend must present to a shader.
+///
+/// This is a **shader-visible contract**, in the same sense as the binding indices in
+/// `docs/design/rhi.md` §9: a vertex shader's output is only meaningful relative to a
+/// convention, and a backend that quietly used a different one would not fail loudly — it
+/// would draw the world upside down, which reads as a bug in the game.
+///
+/// Metal and D3D12 present this natively. Vulkan's clip space has +Y down and corrects it
+/// with a negative-height viewport, which that API provides for the purpose.
+pub const ClipSpace = struct {
+    /// Which way +Y points in normalised device coordinates.
+    y_axis: enum { up, down },
+    /// The range `z` is mapped into. `[0, 1]` is what Metal, Vulkan and D3D12 all use;
+    /// OpenGL's `[-1, 1]` is the outlier and is not a target.
+    depth_range: enum { zero_to_one, minus_one_to_one },
+};
+
+/// Exposed as a value rather than left implicit so the renderer reads the convention
+/// instead of hardcoding it. Every backend conforms today, so this costs nothing — and if
+/// one ever genuinely cannot, the change is this value plus a sign in one matrix rather
+/// than an archaeology exercise across every shader and camera in the engine.
+pub const clip_space: ClipSpace = .{ .y_axis = .up, .depth_range = .zero_to_one };
+
+/// In pixels, with the origin at the **top-left** and `y` increasing downward. This does
+/// not contradict `clip_space.y_axis` being `up`: they are different spaces, and the
+/// projection matrix is what bridges them.
 pub const Viewport = struct {
     x: f32 = 0,
     y: f32 = 0,
@@ -211,4 +237,11 @@ test "tightly packed is expressible as zero rather than as a computation" {
     // already knows from the format.
     const c: BufferToTextureCopy = .{ .src = .none, .dst = .none, .size = .{ .width = 8, .height = 8 } };
     try testing.expectEqual(@as(u32, 0), c.src_bytes_per_row);
+}
+
+test "clip space is pinned, because changing it silently flips the world" {
+    // Not a tautology: this is the contract in `docs/design/rhi.md` §9, and a shader,
+    // every projection matrix and every backend depend on it. Changing it should require
+    // deleting a test that says why, not editing a constant in passing.
+    try testing.expectEqual(ClipSpace{ .y_axis = .up, .depth_range = .zero_to_one }, clip_space);
 }
