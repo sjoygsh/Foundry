@@ -22,12 +22,14 @@ const core = @import("core");
 const atlas_mod = @import("atlas.zig");
 const color_mod = @import("color.zig");
 const texture_mod = @import("texture.zig");
+const view_mod = @import("view.zig");
 
 const BlendMode = color_mod.BlendMode;
 const Color = color_mod.Color;
 const Extent2D = texture_mod.Extent2D;
 const Region = atlas_mod.Region;
 const Vec2 = core.math.Vec2;
+const YAxis = view_mod.YAxis;
 
 /// A font whose glyphs sit on a fixed grid, in codepoint order.
 pub const BitmapFont = struct {
@@ -140,6 +142,11 @@ pub const Layout = struct {
     font: BitmapFont,
     text: []const u8,
     options: TextOptions,
+    /// Which way the space this is laid out in grows. Successive lines go *down* in both,
+    /// which means subtracting in a Y-up world and adding on a Y-down screen. Set by the
+    /// renderer from the current view; `measure` does not care, because a bounding box is
+    /// two magnitudes and has no direction.
+    y_axis: YAxis = .up,
 
     byte: usize = 0,
     column: u32 = 0,
@@ -160,6 +167,10 @@ pub const Layout = struct {
         return .{ .font = font, .text = text, .options = options };
     }
 
+    pub fn initIn(font: BitmapFont, text: []const u8, options: TextOptions, y_axis: YAxis) Layout {
+        return .{ .font = font, .text = text, .options = options, .y_axis = y_axis };
+    }
+
     pub fn next(self: *Layout) ?Placement {
         const size = self.font.cellSize(self.options.scale);
 
@@ -176,11 +187,14 @@ pub const Layout = struct {
 
             return .{
                 .codepoint = codepoint,
-                // Y-down within the text block, in a Y-up world: the second line is
-                // *below* the first, so the line offset is subtracted.
+                // The second line is *below* the first in both spaces, which is a
+                // subtraction in one and an addition in the other.
                 .position = .init(
                     self.options.position.x + x,
-                    self.options.position.y - y,
+                    switch (self.y_axis) {
+                        .up => self.options.position.y - y,
+                        .down => self.options.position.y + y,
+                    },
                 ),
                 .size = size,
                 .region = self.font.glyph(codepoint),
@@ -388,4 +402,32 @@ test "carriage returns are ignored so CRLF text does not gain a glyph per line" 
     try testing.expectEqual(@as(u21, 'b'), b.codepoint);
     try testing.expectApproxEqAbs(@as(f32, 0), b.position.x, 1e-6);
     try testing.expect(layout.next() == null);
+}
+
+test "lines stack downward in both spaces" {
+    const font = testFont();
+    const options: TextOptions = .{ .position = .init(0, 0) };
+
+    var up: Layout = .initIn(font, "a\nb", options, .up);
+    _ = up.next().?;
+    // Y-up world: the second line is below, so y decreases.
+    try testing.expectApproxEqAbs(@as(f32, -8), up.next().?.position.y, 1e-6);
+
+    var down: Layout = .initIn(font, "a\nb", options, .down);
+    _ = down.next().?;
+    // Y-down screen: below is a larger y. Getting this backwards puts the second line of
+    // a HUD above the first, which reads as the whole readout being upside down.
+    try testing.expectApproxEqAbs(@as(f32, 8), down.next().?.position.y, 1e-6);
+}
+
+test "measuring is the same in both spaces" {
+    // A bounding box is two magnitudes and has no direction, so `measure` needs no axis —
+    // which is why right-aligning a HUD works with the same call that centres a label.
+    const font = testFont();
+    const options: TextOptions = .{ .position = .zero };
+    const size = measure(font, "hello\\nhi", options);
+
+    var down: Layout = .initIn(font, "hello\\nhi", options, .down);
+    while (down.next()) |_| {}
+    try testing.expectApproxEqAbs(size.x, down.max_right, 1e-6);
 }

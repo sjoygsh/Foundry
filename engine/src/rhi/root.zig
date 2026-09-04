@@ -88,6 +88,7 @@ pub const ClipSpace = command.ClipSpace;
 pub const clip_space = command.clip_space;
 pub const FrameContext = command.FrameContext;
 pub const RenderPassDesc = command.RenderPassDesc;
+pub const Viewport = command.Viewport;
 
 pub const DeviceDesc = interface.DeviceDesc;
 pub const InitError = interface.InitError;

@@ -11,6 +11,7 @@ const camera_mod = @import("camera.zig");
 const color_mod = @import("color.zig");
 const sprite_mod = @import("sprite.zig");
 const text_mod = @import("text.zig");
+const view_mod = @import("view.zig");
 const texture_mod = @import("texture.zig");
 
 const Allocator = std.mem.Allocator;
@@ -24,6 +25,8 @@ const Region = atlas_mod.Region;
 const BitmapFont = text_mod.BitmapFont;
 const Sprite = sprite_mod.Sprite;
 const TextOptions = text_mod.TextOptions;
+const ViewDesc = view_mod.ViewDesc;
+const ViewId = view_mod.ViewId;
 const TextureHandle = texture_mod.TextureHandle;
 const Vertex = sprite_mod.Vertex;
 const log = core.log.scoped(.render2d);
@@ -46,8 +49,8 @@ pub const Error = error{
     TextureTooLarge,
     /// Drawing outside a `begin`/`record` pair.
     NotRecording,
-} || atlas_mod.Error || camera_mod.CameraError || rhi.ResourceError || rhi.MapError ||
-    rhi.CommandError || Allocator.Error;
+} || atlas_mod.Error || camera_mod.CameraError || view_mod.Error || rhi.ResourceError ||
+    rhi.MapError || rhi.CommandError || Allocator.Error;
 
 pub const Config = struct {
     /// Quads per vertex buffer. A frame needing more simply uses more buffers, so this
@@ -83,6 +86,9 @@ pub const Stats = struct {
     vertex_bytes: u32 = 0,
     buffers_used: u32 = 0,
     textures_resident: u32 = 0,
+    /// How many views the frame used. Its floor on the batch count, so a frame with more
+    /// batches than expected is worth checking against this first.
+    views: u32 = 0,
 };
 
 /// One vertex buffer's worth of storage for one frame slot.
@@ -139,10 +145,13 @@ pub const Renderer = struct {
     textures: texture_mod.Pool,
     atlases: core.HandlePool(atlas_mod.Atlas, AtlasState),
     batcher: batch_mod.Batcher,
+    /// This frame's spaces. Rebuilt by `begin`, so it never outlives the camera it was
+    /// derived from.
+    views: std.ArrayList(view_mod.View),
+    current_view: ViewId,
     slots: []Slot,
 
     view: FrameView,
-    view_projection: core.math.Mat4,
     recording: bool,
     frame: ?rhi.FrameContext,
     stats: Stats,
@@ -237,9 +246,10 @@ pub const Renderer = struct {
             .textures = .init(config.frames_in_flight),
             .atlases = .empty,
             .batcher = .init(config.quads_per_buffer),
+            .views = .empty,
+            .current_view = .world,
             .slots = slots,
             .view = .{ .camera = .{ .viewport = .init(0, 0, 1, 1) } },
-            .view_projection = .identity,
             .recording = false,
             .frame = null,
             .stats = .{},
@@ -267,6 +277,7 @@ pub const Renderer = struct {
         self.gpa.free(self.slots);
 
         self.batcher.deinit(self.gpa);
+        self.views.deinit(self.gpa);
         {
             var it = self.atlases.iterator();
             while (it.next()) |entry| entry.value.packer.deinit(self.gpa);
@@ -554,13 +565,69 @@ pub const Renderer = struct {
     // -- the frame -------------------------------------------------------------------
 
     /// Starts a frame's draw list. Called by the game, before any `drawSprite`.
+    ///
+    /// Fills views 0 and 1 — `world` from the camera, `screen` from the same rectangle in
+    /// points — and selects `world`. A game that never mentions views therefore behaves
+    /// exactly as it did before there were any.
     pub fn begin(self: *Self, view: FrameView) Error!void {
         try view.camera.validate();
         self.view = view;
-        self.view_projection = try view.camera.viewProjection();
+
+        self.views.clearRetainingCapacity();
+        try self.views.append(self.gpa, try view_mod.View.resolve(
+            .{ .camera = view.camera },
+            view.pixel_scale,
+        ));
+        // The screen view spans the camera's own viewport, so a screen point is a point in
+        // the same space the mouse is reported in — which is what makes a HUD placeable
+        // without any conversion at all.
+        try self.views.append(self.gpa, try view_mod.View.resolve(
+            .{ .screen = view.camera.viewport },
+            view.pixel_scale,
+        ));
+        self.current_view = .world;
+
         self.batcher.reset();
         self.stats = .{};
         self.recording = true;
+    }
+
+    /// Adds a space for this frame and returns its id.
+    ///
+    /// The id is valid until the next `begin`, which is the only lifetime that makes sense
+    /// for something derived from this frame's camera and window size. Views are ordered
+    /// by id, so a view added later draws over one added earlier (`batch.zig`).
+    pub fn addView(self: *Self, desc: ViewDesc) Error!ViewId {
+        if (!self.recording) return error.NotRecording;
+        if (self.views.items.len >= view_mod.max_views) return error.TooManyViews;
+
+        const resolved = try view_mod.View.resolve(desc, self.view.pixel_scale);
+        const id: ViewId = .fromIndex(self.views.items.len);
+        try self.views.append(self.gpa, resolved);
+        return id;
+    }
+
+    /// Selects the space subsequent draws are recorded in.
+    ///
+    /// Renderer state rather than a parameter on every draw: this changes per screenful,
+    /// not per sprite, and a HUD is one call followed by a hundred draws. It resets to
+    /// `world` with `begin`, which is the only place it could go stale.
+    pub fn setView(self: *Self, id: ViewId) Error!void {
+        if (!self.recording) return error.NotRecording;
+        if (id.index() >= self.views.items.len) return error.InvalidView;
+        self.current_view = id;
+    }
+
+    pub fn currentView(self: *const Self) ViewId {
+        return self.current_view;
+    }
+
+    /// Which way `+y` points in a view. `.up` for anything the frame does not have, which
+    /// cannot happen — `setView` refuses an unknown id — but is answered rather than
+    /// asserted because the alternative is an out-of-bounds read.
+    fn viewAxis(self: *const Self, id: ViewId) view_mod.YAxis {
+        if (id.index() >= self.views.items.len) return .up;
+        return self.views.items[id.index()].y_axis;
     }
 
     /// Appends one sprite to this frame's draw list. No GPU work happens here.
@@ -569,7 +636,7 @@ pub const Renderer = struct {
         // Validated at submission rather than at draw time, so a stale handle is a clean
         // error at the call site that caused it — the payoff of I1.
         if (self.textures.get(sprite.texture) == null) return error.InvalidTexture;
-        try self.batcher.add(self.gpa, sprite);
+        try self.batcher.add(self.gpa, sprite, self.current_view);
     }
 
     /// Appends one string's glyphs to this frame's draw list.
@@ -592,7 +659,8 @@ pub const Renderer = struct {
         // thousand-character line should not pay for a thousand lookups.
         if (self.textures.get(font.glyphs.texture) == null) return error.InvalidTexture;
 
-        var layout: text_mod.Layout = .init(font, string, options);
+        const y_axis = self.viewAxis(self.current_view);
+        var layout: text_mod.Layout = .initIn(font, string, options, y_axis);
         while (layout.next()) |placed| {
             const region = placed.region orelse continue;
             try self.batcher.add(self.gpa, .{
@@ -600,12 +668,17 @@ pub const Renderer = struct {
                 .position = placed.position,
                 .size = placed.size,
                 .uv = region.uv,
-                // Top-left, because that is where `TextOptions.position` is measured from.
-                .origin = .init(0, 1),
+                // Top-left, because that is where `TextOptions.position` is measured
+                // from — which is `origin.y = 1` in a Y-up space and `0` in a Y-down one,
+                // since `origin` is normalised against the space's own direction.
+                .origin = .init(0, switch (y_axis) {
+                    .up => 1,
+                    .down => 0,
+                }),
                 .tint = options.tint,
                 .layer = options.layer,
                 .blend = options.blend,
-            });
+            }, self.current_view);
             self.stats.glyphs += 1;
         }
     }
@@ -645,9 +718,15 @@ pub const Renderer = struct {
                 const aligned: []align(@alignOf(Vertex)) u8 = @alignCast(bytes);
                 const vertices = std.mem.bytesAsSlice(Vertex, aligned);
                 for (0..count) |q| {
-                    const sprite = self.batcher.sprites.items[self.batcher.order.items[first + q]];
+                    const item = self.batcher.items.items[self.batcher.order.items[first + q]];
                     const at = q * sprite_mod.vertices_per_quad;
-                    sprite_mod.writeQuad(sprite, vertices[at..][0..sprite_mod.vertices_per_quad]);
+                    // Which way is up is the *space's* property, not the sprite's, and
+                    // this is where the two meet.
+                    sprite_mod.writeQuad(
+                        item.sprite,
+                        self.viewAxis(item.view),
+                        vertices[at..][0..sprite_mod.vertices_per_quad],
+                    );
                 }
             }
 
@@ -664,6 +743,7 @@ pub const Renderer = struct {
         self.stats.vertices = written_quads * sprite_mod.vertices_per_quad;
         self.stats.vertex_bytes = self.stats.vertices * @sizeOf(Vertex);
         self.stats.textures_resident = self.textures.count();
+        self.stats.views = @intCast(self.views.items.len);
     }
 
     /// Emits the draw calls. Called by `app`, into the pass it opened.
@@ -677,30 +757,37 @@ pub const Renderer = struct {
         const frame = self.frame orelse return error.NotRecording;
         const slot = &self.slots[frame.slot];
 
-        const vp = self.view.camera.viewport;
-        const scale = self.view.pixel_scale;
-        pass.setViewport(.{
-            .x = vp.x * scale,
-            .y = vp.y * scale,
-            .width = vp.w * scale,
-            .height = vp.h * scale,
-        });
-
         var bound_pipeline: ?BlendMode = null;
         var bound_texture: ?TextureHandle = null;
         var bound_buffer: ?u32 = null;
+        var bound_view: ?ViewId = null;
 
         for (self.batcher.batches.items) |item| {
             const state = self.textures.get(item.texture) orelse continue;
+            // Batches are grouped by view (`batch.zig`), so this changes a handful of
+            // times a frame at most. A view whose id the frame no longer has cannot occur
+            // — `setView` refused it — but the lookup is bounded rather than trusted.
+            const view = if (item.view.index() < self.views.items.len)
+                self.views.items[item.view.index()]
+            else
+                continue;
+
+            const view_changed = bound_view == null or bound_view.? != item.view;
+            if (view_changed) {
+                pass.setViewport(view.viewport);
+                bound_view = item.view;
+            }
 
             if (bound_pipeline == null or bound_pipeline.? != item.blend) {
                 pass.setPipeline(self.pipelines[@intFromEnum(item.blend)]);
-                // Inline constants belong to the pipeline layout, so they are re-set with
-                // the pipeline rather than once per frame.
-                pass.setInlineConstants(std.mem.asBytes(&self.view_projection));
                 bound_pipeline = item.blend;
-                // A new pipeline invalidates nothing else here, but the bindings are
-                // re-issued below anyway if they changed.
+                // Binding a pipeline invalidates inline constants when the layout differs
+                // (`rhi.md` §9), so they are always re-set here rather than only when the
+                // transform changed.
+                pass.setInlineConstants(std.mem.asBytes(&view.view_projection));
+            } else if (view_changed) {
+                // Same pipeline, different space: the constants still have to change.
+                pass.setInlineConstants(std.mem.asBytes(&view.view_projection));
             }
             if (bound_texture == null or !bound_texture.?.eql(item.texture)) {
                 pass.setBindGroup(0, state.group);
@@ -1296,4 +1383,143 @@ test "text a font cannot render still costs the frame nothing surprising" {
     try fx.frame();
 
     try testing.expectEqual(@as(u32, 2), fx.renderer.frameStats().glyphs);
+}
+
+test "a frame has a world view and a screen view without being asked" {
+    var fx = try Fixture.init(64);
+    defer fx.deinit();
+
+    try fx.renderer.begin(fx.view());
+    // The default is world, so a game that has never heard of views is in the one it
+    // expects.
+    try testing.expectEqual(ViewId.world, fx.renderer.currentView());
+    try fx.renderer.drawSprite(fx.sprite(fx.texture, 0, .alpha));
+
+    try fx.renderer.setView(.screen);
+    try fx.renderer.drawSprite(fx.sprite(fx.texture, 0, .alpha));
+    try fx.frame();
+
+    const stats = fx.renderer.frameStats();
+    try testing.expectEqual(@as(u32, 2), stats.views);
+    // Same texture, same blend, same layer: the only difference is the space, and that is
+    // a different transform on the GPU.
+    try testing.expectEqual(@as(u32, 2), stats.draw_calls);
+}
+
+test "the screen view does not move when the camera does" {
+    // The property a HUD is for. Checked on the transform rather than on pixels, because
+    // the transform is what the recorder binds.
+    var fx = try Fixture.init(64);
+    defer fx.deinit();
+
+    try fx.renderer.begin(fx.view());
+    const before = fx.renderer.views.items[ViewId.screen.index()].view_projection;
+    const world_before = fx.renderer.views.items[ViewId.world.index()].view_projection;
+
+    var moved = fx.view();
+    moved.camera.center = .init(500, -250);
+    moved.camera.zoom = 3;
+    try fx.renderer.begin(moved);
+
+    const after = fx.renderer.views.items[ViewId.screen.index()].view_projection;
+    try testing.expectEqualSlices([4]f32, &before.cols, &after.cols);
+    // And the world view did change, so the test is not passing because nothing moved.
+    const world_after = fx.renderer.views.items[ViewId.world.index()].view_projection;
+    try testing.expect(!std.mem.eql(u8, std.mem.asBytes(&world_before), std.mem.asBytes(&world_after)));
+}
+
+test "a view added this frame draws over the ones before it" {
+    var fx = try Fixture.init(64);
+    defer fx.deinit();
+
+    try fx.renderer.begin(fx.view());
+    const minimap = try fx.renderer.addView(.{ .camera = .{
+        .viewport = .init(1000, 20, 260, 200),
+        .zoom = 0.1,
+    } });
+    try testing.expectEqual(@as(usize, 2), minimap.index());
+
+    // Submitted last-first, to show that the ordering is by view id and not by when the
+    // draw happened.
+    try fx.renderer.setView(minimap);
+    try fx.renderer.drawSprite(fx.sprite(fx.texture, 0, .alpha));
+    try fx.renderer.setView(.world);
+    try fx.renderer.drawSprite(fx.sprite(fx.texture, 0, .alpha));
+    try fx.frame();
+
+    const stats = fx.renderer.frameStats();
+    try testing.expectEqual(@as(u32, 3), stats.views);
+    try testing.expectEqual(@as(u32, 2), stats.draw_calls);
+    try testing.expectEqual(ViewId.world, fx.renderer.batcher.batches.items[0].view);
+    try testing.expectEqual(minimap, fx.renderer.batcher.batches.items[1].view);
+}
+
+test "a view id the frame does not have is refused" {
+    var fx = try Fixture.init(64);
+    defer fx.deinit();
+
+    try fx.renderer.begin(fx.view());
+    try testing.expectError(error.InvalidView, fx.renderer.setView(.fromIndex(9)));
+    // And the current view is unchanged, so a refused selection cannot silently redirect
+    // the next hundred draws.
+    try testing.expectEqual(ViewId.world, fx.renderer.currentView());
+}
+
+test "a view that cannot be drawn is refused, and the table is bounded" {
+    var fx = try Fixture.init(64);
+    defer fx.deinit();
+
+    try fx.renderer.begin(fx.view());
+    try testing.expectError(error.InvalidCamera, fx.renderer.addView(.{ .screen = .init(0, 0, 0, 10) }));
+
+    // `addView` is reachable from a mod, so the table has a bound and the failure is an
+    // error rather than growth until something else breaks.
+    while (fx.renderer.views.items.len < view_mod.max_views) {
+        _ = try fx.renderer.addView(.{ .screen = .init(0, 0, 8, 8) });
+    }
+    try testing.expectError(error.TooManyViews, fx.renderer.addView(.{ .screen = .init(0, 0, 8, 8) }));
+}
+
+test "views are a frame's business, not the renderer's" {
+    var fx = try Fixture.init(64);
+    defer fx.deinit();
+
+    // Outside a frame there is no camera to derive one from, so both are refused rather
+    // than answered from a stale table.
+    try testing.expectError(error.NotRecording, fx.renderer.addView(.{ .screen = .init(0, 0, 8, 8) }));
+    try testing.expectError(error.NotRecording, fx.renderer.setView(.screen));
+
+    // And a view added in one frame does not survive into the next.
+    try fx.renderer.begin(fx.view());
+    const extra = try fx.renderer.addView(.{ .screen = .init(0, 0, 8, 8) });
+    try fx.frame();
+
+    try fx.renderer.begin(fx.view());
+    try testing.expectError(error.InvalidView, fx.renderer.setView(extra));
+}
+
+test "text goes wherever the current view is" {
+    // `drawText` takes no view of its own: that is the point of the current view being
+    // renderer state rather than a field on every draw struct.
+    var fx = try Fixture.init(64);
+    defer fx.deinit();
+
+    var glyphs = try asset.Image.alloc(testing.allocator, 128, 48);
+    defer glyphs.deinit(testing.allocator);
+    @memset(glyphs.pixels, 0xFF);
+    const texture = try fx.renderer.createTexture(glyphs, .{});
+    const font: BitmapFont = .{
+        .glyphs = fx.renderer.textureRegion(texture).?,
+        .cell = .{ .width = 8, .height = 8 },
+        .columns = 16,
+        .glyph_count = 96,
+    };
+
+    try fx.renderer.begin(fx.view());
+    try fx.renderer.setView(.screen);
+    try fx.renderer.drawText(font, "hud", .{ .position = .init(8, 8) });
+    try fx.frame();
+
+    try testing.expectEqual(@as(u32, 3), fx.renderer.frameStats().glyphs);
+    try testing.expectEqual(ViewId.screen, fx.renderer.batcher.batches.items[0].view);
 }

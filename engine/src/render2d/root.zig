@@ -21,6 +21,7 @@ pub const renderer = @import("renderer.zig");
 pub const sprite = @import("sprite.zig");
 pub const text = @import("text.zig");
 pub const texture = @import("texture.zig");
+pub const view = @import("view.zig");
 
 pub const AtlasHandle = atlas.AtlasHandle;
 pub const Region = atlas.Region;
@@ -37,6 +38,8 @@ pub const BitmapFont = text.BitmapFont;
 pub const TextOptions = text.TextOptions;
 /// The bounding box a string would occupy. Runs the layout the drawing runs.
 pub const measureText = text.measure;
+pub const ViewId = view.ViewId;
+pub const ViewDesc = view.ViewDesc;
 pub const Extent2D = texture.Extent2D;
 pub const TextureHandle = texture.TextureHandle;
 pub const TextureOptions = texture.TextureOptions;
@@ -52,4 +55,5 @@ test {
     _ = sprite;
     _ = text;
     _ = texture;
+    _ = view;
 }

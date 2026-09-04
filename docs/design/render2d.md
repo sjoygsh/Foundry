@@ -176,6 +176,54 @@ flag. A game that wants crisp pixel art picks a nearest sampler (§8), an intege
 a camera centre snapped to a whole pixel. Those are three lines in a game and three
 irreversible assumptions in an engine.
 
+### Views: more than one space in a frame
+
+A frame is not all one space. Statistics have to sit still while the camera moves, a
+minimap looks at the world from somewhere else, and a mod's overlay is neither. So the
+renderer holds a small table of **views** for the frame, and a draw is recorded against
+whichever one is current:
+
+```zig
+pub const ViewId = enum(u16) { world = 0, screen = 1, _ };
+
+pub const ViewDesc = union(enum) {
+    /// World units through a 2D camera. Its `viewport` is where it draws.
+    camera: Camera2D,
+    /// Screen points, origin at the top-left of the rectangle, **+Y down** — the same
+    /// units and direction as mouse input, so a HUD is placed where the pointer is read.
+    screen: Rect,
+};
+
+pub fn addView(self: *Renderer, desc: ViewDesc) !ViewId
+pub fn setView(self: *Renderer, id: ViewId) !void
+```
+
+`begin` fills views 0 and 1 from the frame's camera and resets the current view to
+`.world`, so a game that never mentions views behaves exactly as before. Everything else is
+`addView`.
+
+**Not a two-valued `space` flag, and not a field on `Sprite`.** A flag answers M2 and
+nothing after it — a parallax layer, a split screen, a minimap and a mod's own overlay are
+all *spaces*, and none of them is "screen". A field on `Sprite` would also have to be
+copied onto `TextOptions` and onto every draw struct that ever exists, and would still only
+carry two values. A view table costs one indirection and answers all of it, and a mod can
+add an entry the way a mod can add anything else (I6).
+
+**The current view is renderer state, not a parameter.** `setView` is called far less often
+than `drawSprite` — a HUD is one call and then a hundred draws — and putting it in every
+draw struct would be paying per sprite for something that changes per screenful. It resets
+with `begin`, which is the only place it could go stale.
+
+Views are cheap because the view-projection is **inline constants** (`rhi.md` §9), re-set
+per batch rather than per frame. A view change costs one `setInlineConstants`, one
+`setViewport` and a batch break — the same order as a blend-mode change, which the batcher
+already handles.
+
+**A view is validated, never asserted.** Its camera can come from a settings file and its
+count from a mod, so `addView` refuses a bad camera with `error.InvalidCamera` and refuses
+more than `max_views` with `error.TooManyViews`; `setView` refuses an id this frame does
+not have with `error.InvalidView`.
+
 ## 6. Sprites, and how they become vertices
 
 ```zig
@@ -249,17 +297,22 @@ kind of bug that costs an afternoon.
 The draw list is sorted, then walked, and a new batch begins whenever the GPU state must
 change.
 
-**Sort key: `(layer, submission_index)`.** Nothing else. Sorting by texture within a layer
-would produce fewer batches and *would reorder overlapping translucent sprites*, which is
-wrong in a way that shows up as flickering in someone else's game six months later. The
-atlas (§8) is the correct answer to batch count; reordering is not.
+**Sort key: `(view, layer, submission_index)`.** Nothing else. Sorting by texture within a
+layer would produce fewer batches and *would reorder overlapping translucent sprites*,
+which is wrong in a way that shows up as flickering in someone else's game six months
+later. The atlas (§8) is the correct answer to batch count; reordering is not.
+
+`view` comes first, so a view is drawn **entirely** before the next one and `layer` orders
+within a view rather than across views. That is what makes a HUD a HUD: nothing in the
+world can be given a layer high enough to cover it. It also means the floor on batch count
+is the number of views in use, which is the honest cost of having them.
 
 Because the key includes `submission_index`, it is a **total order**, so the result does not
 depend on the sort algorithm's stability. That is an I9 requirement discharged by
 construction rather than by choosing a stable sort and hoping nobody swaps it.
 
-A batch breaks when the next sprite differs in **texture** or **blend mode**, or when the
-current vertex buffer is full (§8). With a well-packed atlas and a couple of layers, a
+A batch breaks when the next sprite differs in **view**, **texture** or **blend mode**, or
+when the current vertex buffer is full (§8). With a well-packed atlas and a couple of layers, a
 typical frame is a handful of draw calls regardless of sprite count.
 
 ### Buffers, and the frame ring
@@ -434,7 +487,7 @@ pub const Stats = struct {
     sprites: u32, glyphs: u32,
     batches: u32, draw_calls: u32,
     vertices: u32, vertex_bytes: u32,
-    buffers_used: u32, textures_resident: u32,
+    buffers_used: u32, textures_resident: u32, views: u32,
 };
 ```
 
@@ -459,7 +512,13 @@ CLAUDE.md §5 requires that adding a subsystem includes deciding what it exposes
 answer is "nothing yet". For M7's ABI, the intended surface is:
 
 **Exposed:** create/destroy texture, create atlas and add to it, load a font, draw a sprite,
-draw text, set and query the camera, convert between screen and world, read frame stats.
+draw text, add and select a view, set and query the camera, convert between screen and
+world, read frame stats.
+
+`addView` is deliberately in that list. A mod that draws an overlay needs a space to draw it
+in, and the alternative — a fixed `screen` and nothing else — would mean a mod wanting a
+minimap has to reimplement the projection in world coordinates and get it wrong under
+rotation.
 
 **Not exposed:** the render pass, the vertex format, the batcher's internals, buffer pools,
 `rhi` handles, and anything that would let a mod reorder or bypass batching.
@@ -480,6 +539,8 @@ Anything that is a programmer mistake asserts.
 | Atlas is full | `error.AtlasFull` — a normal condition, the caller makes another atlas |
 | Atlas cannot ever hold it | `error.RegionTooLarge` — retrying with a fresh atlas would loop |
 | Stale or foreign handle | `error.InvalidTexture` / `error.InvalidAtlas`, from the generation check |
+| A view id this frame does not have | `error.InvalidView` |
+| More views than `max_views` | `error.TooManyViews` |
 | Zero, negative or non-finite zoom | `error.InvalidCamera` |
 | Invalid UTF-8 in a string | Substitution glyph, no error |
 | `drawSprite` or `drawText` before `begin` | `error.NotRecording` |
