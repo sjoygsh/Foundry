@@ -103,6 +103,9 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         stepper: core.time.FixedStepper,
         step_delta: core.time.Duration,
         previous: core.time.Instant,
+        /// Wall-clock time the previous frame took. **Presentation only** — see
+        /// `frameDelta`.
+        frame_delta: core.time.Duration,
 
         /// This frame's events, drained from the platform so that engine-level handling
         /// does not depend on the caller draining them.
@@ -166,6 +169,7 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                 .window = window,
                 .stepper = .init(timestep),
                 .step_delta = timestep.elapsedAt(1),
+                .frame_delta = .zero,
                 // Read now, so the first frame's delta is the time spent getting to it
                 // rather than everything since the process started.
                 .previous = plat.now(),
@@ -231,7 +235,8 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             self.input = self.platform.captureInput();
 
             const current = self.platform.now();
-            self.stepper.advance(current.since(self.previous));
+            self.frame_delta = current.since(self.previous);
+            self.stepper.advance(self.frame_delta);
             self.previous = current;
         }
 
@@ -276,6 +281,21 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                 .input = self.input,
                 .elapsed = self.stepper.elapsed(),
             };
+        }
+
+        /// How long the previous frame took, in wall-clock time.
+        ///
+        /// **For presentation, and never for simulation.** Simulation advances by
+        /// `Step.delta`, which is fixed; anything integrated against this number depends
+        /// on how fast the machine happened to be, which is what the fixed step exists to
+        /// prevent (I9). Camera smoothing, UI animation and frame-time readouts are what
+        /// it is for.
+        ///
+        /// The engine already measured it in order to drive the stepper. It is exposed
+        /// rather than recomputed by the caller, because a second clock read would give a
+        /// second, slightly different answer.
+        pub fn frameDelta(self: *const Self) core.time.Duration {
+            return self.frame_delta;
         }
 
         /// How far the next step has progressed, in `[0, 1)`.
