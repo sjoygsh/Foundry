@@ -1,7 +1,7 @@
 //! `samples/sandbox` — the smallest thing that exercises the engine.
 //!
-//! It opens a window, logs input, runs the fixed-timestep loop, draws a textured quad that
-//! survives being resized, and exits cleanly.
+//! It opens a window, logs input, runs the fixed-timestep loop, draws thousands of sprites
+//! under a camera that pans, zooms and picks, survives being resized, and exits cleanly.
 //!
 //! The rendering is deliberately run on **both** backends rather than only where it is
 //! visible. Under `-Drhi=null` the same command stream goes through the validation backend,
@@ -69,6 +69,7 @@ pub fn main(init: std.process.Init) !void {
     // is what `rhi.waitIdle` was added for.
     var field = try SpriteField.init(gpa, engine.gpu, spriteCount(engine));
     defer field.deinit();
+    field.pick_every = everyFrames(engine, "FOUNDRY_SANDBOX_PICK_EVERY");
 
     const frame_limit = frameLimit(engine, headless);
 
@@ -94,12 +95,14 @@ pub fn main(init: std.process.Init) !void {
                 log.info("no native surface; the clear goes to an offscreen target", .{});
             }
         }
+        log.info("WASD or arrows pan; shift pans faster; drag with right or middle", .{});
+        log.info("wheel zooms about the cursor; left-click picks; C recentres", .{});
         log.info("R resizes the window; escape or the close button quits", .{});
     }
 
     var reported_tick: u64 = 0;
     var size_index: usize = 0;
-    const auto_resize_every = autoResizeEvery(engine);
+    const auto_resize_every = everyFrames(engine, "FOUNDRY_SANDBOX_RESIZE_EVERY");
 
     while (!engine.shouldQuit()) {
         engine.beginFrame();
@@ -143,6 +146,7 @@ pub fn main(init: std.process.Init) !void {
         // from simulated time rather than `engine.alpha()`; interpolation arrives with
         // M4's entities, the first thing with two states to interpolate between.
         const seconds = @as(f32, @floatFromInt(engine.elapsed().toMillis())) / 1000.0;
+        field.control(engine, seconds);
         try field.submit(engine, seconds);
 
         engine.renderFrame(.{ .label = "sprites", .clear = clearColor(engine) }, &field.renderer) catch |err| switch (err) {
@@ -164,12 +168,14 @@ pub fn main(init: std.process.Init) !void {
         // roadmap entry asks for statistics at all.
         if (engine.frame_index % 120 == 0) {
             const stats = field.renderer.frameStats();
-            log.debug("frame {d}: {d} sprites, {d} batches, {d} draw calls, {d} KiB of vertices", .{
+            log.debug("frame {d}: {d} sprites, {d} batches, {d} draw calls, {d} KiB of vertices, {d:.1}ms/frame, zoom {d:.2}", .{
                 engine.frame_index,
                 stats.sprites,
                 stats.batches,
                 stats.draw_calls,
                 stats.vertex_bytes / 1024,
+                engine.frameDelta().toSecondsF32() * 1000,
+                field.camera.zoom,
             });
         }
 
@@ -204,11 +210,32 @@ const sprite_sheet_png = @embedFile("assets/sprites.png");
 /// Every sprite's parameters come from one seeded generator run once at startup, so the
 /// same build draws the same field every time (I9). The animation is a pure function of
 /// simulated time, so it is reproducible too.
+///
+/// The camera lives here rather than in `render2d` because **which key pans is input
+/// policy, and policy belongs to the game.** `render2d` owns the camera *maths* — the
+/// projection, `screenToWorld`, `panByScreen`, `zoomAround` — and could not own the
+/// bindings even if that were wanted, because it does not depend on `platform` and the
+/// build graph would refuse the import (I7).
 const SpriteField = struct {
     gpa: std.mem.Allocator,
     renderer: render2d.Renderer,
     sheet: render2d.TextureHandle,
+    /// One white pixel, built in memory rather than loaded. Stretched into thin quads it
+    /// draws the selection outline, and being a *second* texture it also makes the
+    /// batcher break a batch on a texture change — a path that a single-texture sample
+    /// never exercised.
+    blank: render2d.TextureHandle,
     seeds: []Seed,
+
+    /// Driven by input, so it is state rather than something recomputed per frame.
+    camera: render2d.Camera2D,
+    /// Which sprite was last clicked, by index into `seeds`. Presentation only: nothing
+    /// in the simulation reads it.
+    selected: ?usize = null,
+    /// Pick at the window's centre every N frames, or null to only pick on a click.
+    /// Same rationale as `FOUNDRY_SANDBOX_RESIZE_EVERY`: a windowed path that cannot be
+    /// scripted is a path that only gets checked when someone remembers to check it.
+    pick_every: ?u64 = null,
 
     /// What distinguishes one sprite from another, decided once.
     const Seed = struct {
@@ -225,6 +252,16 @@ const SpriteField = struct {
 
     /// The sheet is a 4x4 grid, so a cell is a quarter of the texture in each axis.
     const grid: f32 = 4;
+
+    /// Zoom limits, in pixels per world unit. Policy, and therefore the sample's: the
+    /// camera itself refuses only zooms that are not numbers.
+    const min_zoom: f32 = 0.05;
+    const max_zoom: f32 = 24;
+
+    /// Keyboard pan speed in **screen points per second**, so it feels the same whatever
+    /// the zoom. Panning in world units per second crawls when zoomed out.
+    const pan_speed: f32 = 700;
+    const fast_pan_speed: f32 = 2400;
 
     fn init(gpa: std.mem.Allocator, device: *rhi.Device, count: u32) !SpriteField {
         var renderer = try render2d.Renderer.init(gpa, device, .{
@@ -245,6 +282,13 @@ const SpriteField = struct {
             // default, spelled out because it is the interesting choice.
             .filter = .nearest,
         });
+
+        // A texture from memory, not from a file: `createTexture` takes an `asset.Image`
+        // and does not care where it came from, which is what lets a game generate one.
+        var white = try asset.Image.alloc(gpa, 1, 1);
+        defer white.deinit(gpa);
+        white.pixel(0, 0).* = .{ 255, 255, 255, 255 };
+        const blank = try renderer.createTexture(white, .{ .label = "sandbox white" });
 
         const seeds = try gpa.alloc(Seed, count);
         errdefer gpa.free(seeds);
@@ -272,7 +316,14 @@ const SpriteField = struct {
             };
         }
 
-        return .{ .gpa = gpa, .renderer = renderer, .sheet = sheet, .seeds = seeds };
+        return .{
+            .gpa = gpa,
+            .renderer = renderer,
+            .sheet = sheet,
+            .blank = blank,
+            .seeds = seeds,
+            .camera = .{ .viewport = .init(0, 0, 1280, 720) },
+        };
     }
 
     fn deinit(self: *SpriteField) void {
@@ -280,45 +331,195 @@ const SpriteField = struct {
         self.renderer.deinit();
     }
 
-    /// Builds this frame's draw list. This is the game's half of rendering, and it never
-    /// sees a command buffer or a render pass: `app.Engine.renderFrame` owns those.
-    fn submit(self: *SpriteField, engine: *app.Engine, seconds: f32) !void {
+    /// What one sprite looks like right now.
+    ///
+    /// **One definition, used by both drawing and picking.** Two would agree until the
+    /// day one of them changed, and the symptom would be clicks landing next to sprites
+    /// rather than on them — which is exactly the sort of bug that gets blamed on the
+    /// maths instead of on the duplication.
+    fn spriteAt(self: *const SpriteField, index: usize, seconds: f32) render2d.Sprite {
+        const seed = self.seeds[index];
+        const angle = seed.phase + seconds * seed.speed;
+        const cell_uv = 1.0 / grid;
+        const column: f32 = @floatFromInt(seed.cell % 4);
+        const row: f32 = @floatFromInt(seed.cell / 4);
+
+        return .{
+            .texture = self.sheet,
+            .position = .init(
+                seed.home.x + @cos(angle) * seed.radius,
+                seed.home.y + @sin(angle) * seed.radius,
+            ),
+            .size = .init(seed.size, seed.size),
+            .uv = .init(column * cell_uv, row * cell_uv, cell_uv, cell_uv),
+            .rotation = angle * seed.spin,
+            .tint = seed.tint,
+            .blend = seed.blend,
+            // Four layers, so the sort is doing real work rather than sorting a
+            // constant. Additive sprites ride on top, where they belong.
+            .layer = if (seed.blend == .additive) 3 else @intCast(index % 3),
+        };
+    }
+
+    /// Camera control and picking — the sample's input policy, and the half of "a 2D
+    /// camera with pan and zoom" that is not maths.
+    ///
+    /// Outside the fixed step, like resizing and for the same reason: where the camera
+    /// is looking is presentation, not simulation. That is also why it may use
+    /// `frameDelta` — a wall-clock number that simulation is forbidden to touch (I9).
+    fn control(self: *SpriteField, engine: *app.Engine, seconds: f32) void {
         const info = engine.windowInfo();
         const width: f32 = if (info) |i| @floatFromInt(i.logical_size.width) else 1280;
         const height: f32 = if (info) |i| @floatFromInt(i.logical_size.height) else 720;
-        const scale: f32 = if (info) |i| i.scale else 1;
 
-        try self.renderer.begin(.{
-            .camera = .{
-                .viewport = .init(0, 0, width, height),
-                // Slow drift and a gentle breathing zoom, so a resize is obviously
-                // handled rather than obviously frozen.
-                .center = .init(@sin(seconds * 0.11) * 120, @cos(seconds * 0.09) * 80),
-                .zoom = 0.85 + 0.15 * @sin(seconds * 0.3),
-            },
-            .pixel_scale = scale,
-        });
+        // Refreshed every frame, not just on resize: a camera holding a stale viewport
+        // puts `screenToWorld` out by half the difference, and picking then misses by a
+        // margin that grows the more the window has changed.
+        self.camera.viewport = .init(0, 0, width, height);
 
-        const cell_uv = 1.0 / grid;
-        for (self.seeds, 0..) |seed, i| {
-            const angle = seed.phase + seconds * seed.speed;
-            const column: f32 = @floatFromInt(seed.cell % 4);
-            const row: f32 = @floatFromInt(seed.cell / 4);
+        const in = &engine.input;
+        const dt = engine.frameDelta().toSecondsF32();
 
+        if (in.wasPressed(.c)) {
+            self.camera.center = .zero;
+            self.camera.zoom = 1;
+            self.selected = null;
+            log.info("camera recentred", .{});
+        }
+
+        // Screen-space pan. `w` moves the view up, which is *negative* screen Y, because
+        // screen space is Y-down and `panByScreen` speaks screen space.
+        var direction: core.math.Vec2 = .zero;
+        if (in.isHeld(.a) or in.isHeld(.left)) direction.x -= 1;
+        if (in.isHeld(.d) or in.isHeld(.right)) direction.x += 1;
+        if (in.isHeld(.w) or in.isHeld(.up)) direction.y -= 1;
+        if (in.isHeld(.s) or in.isHeld(.down)) direction.y += 1;
+        if (!direction.eql(.zero)) {
+            const speed = if (in.modifiers.shift) fast_pan_speed else pan_speed;
+            self.pan(direction.normalize().scale(speed * dt));
+        }
+
+        // Drag to pan. The negation is the difference between moving the camera and
+        // moving the content: dragging right should bring what is on the left into view.
+        if (in.mouse.isHeld(.right) or in.mouse.isHeld(.middle)) {
+            self.pan(in.mouse.motion.neg());
+        }
+
+        if (in.mouse.wheel.y != 0) {
+            // Multiplicative, so one notch feels the same at any zoom. Additive steps
+            // are glacial when zoomed out and violent when zoomed in.
+            const wanted = std.math.clamp(
+                self.camera.zoom * @exp(in.mouse.wheel.y * 0.15),
+                min_zoom,
+                max_zoom,
+            );
+            self.camera.zoomAround(in.mouse.position, wanted) catch |err| {
+                log.warn("zoom refused: {t}", .{err});
+            };
+        }
+
+        // A left click, or the scripted stand-in for one. Same code path either way,
+        // which is the point: a check that exercises a *different* path proves nothing
+        // about the one a person uses.
+        const clicked_at: ?core.math.Vec2 = if (in.mouse.wasPressed(.left))
+            in.mouse.position
+        else if (self.pick_every) |every|
+            if (engine.frame_index > 0 and engine.frame_index % every == 0)
+                core.math.Vec2.init(width / 2, height / 2)
+            else
+                null
+        else
+            null;
+
+        if (clicked_at) |at| {
+            const world = self.camera.screenToWorld(at);
+            self.selected = self.pick(world, seconds);
+            if (self.selected) |index| {
+                log.info("picked sprite {d} of {d} at world ({d:.1}, {d:.1}), zoom {d:.2}", .{
+                    index, self.seeds.len, world.x, world.y, self.camera.zoom,
+                });
+            } else {
+                log.info("nothing at world ({d:.1}, {d:.1})", .{ world.x, world.y });
+            }
+        }
+    }
+
+    /// A pan that reports rather than asserts. Only unusable numbers can be refused, and
+    /// those arrive from devices and config files, so this is the "invalid input" case
+    /// rather than the "programmer error" one (`CLAUDE.md` §7).
+    fn pan(self: *SpriteField, delta: core.math.Vec2) void {
+        self.camera.panByScreen(delta) catch |err| log.warn("pan refused: {t}", .{err});
+    }
+
+    /// Which sprite is under a world point, or none.
+    ///
+    /// A linear scan, deliberately. The renderer keeps no sprite list to search — a
+    /// sprite becomes vertices the moment it is drawn — so picking is the game's loop
+    /// over the game's own objects. A spatial index belongs with the thing that owns
+    /// positions, which is M4's world, not M2's renderer.
+    fn pick(self: *const SpriteField, world: core.math.Vec2, seconds: f32) ?usize {
+        var best: ?usize = null;
+        var best_layer: i16 = 0;
+        for (0..self.seeds.len) |index| {
+            const sprite = self.spriteAt(index, seconds);
+            if (!render2d.containsPoint(sprite, world)) continue;
+            // Later in the draw order wins, and the draw order is `(layer, submission
+            // index)` — the batcher's own sort key. So "topmost" means the same thing to
+            // the pick as it does to the GPU, rather than being a second guess at it.
+            if (best == null or sprite.layer >= best_layer) {
+                best = index;
+                best_layer = sprite.layer;
+            }
+        }
+        return best;
+    }
+
+    /// Builds this frame's draw list. This is the game's half of rendering, and it never
+    /// sees a command buffer or a render pass: `app.Engine.renderFrame` owns those.
+    fn submit(self: *SpriteField, engine: *app.Engine, seconds: f32) !void {
+        const scale: f32 = if (engine.windowInfo()) |i| i.scale else 1;
+
+        try self.renderer.begin(.{ .camera = self.camera, .pixel_scale = scale });
+
+        for (0..self.seeds.len) |index| {
+            try self.renderer.drawSprite(self.spriteAt(index, seconds));
+        }
+
+        if (self.selected) |index| try self.outline(self.spriteAt(index, seconds));
+    }
+
+    /// Four thin quads around a sprite, so that picking is visibly working rather than
+    /// only logged.
+    fn outline(self: *SpriteField, sprite: render2d.Sprite) !void {
+        // Two points wide on screen whatever the zoom: a fixed world thickness is
+        // invisible when zoomed out and a slab when zoomed in.
+        const thickness = 2 / self.camera.zoom;
+        const half_w = sprite.size.x / 2;
+        const half_h = sprite.size.y / 2;
+        const c = @cos(sprite.rotation);
+        const s = @sin(sprite.rotation);
+
+        const edges = [4]struct { offset: core.math.Vec2, size: core.math.Vec2 }{
+            .{ .offset = .init(0, half_h), .size = .init(sprite.size.x + thickness, thickness) },
+            .{ .offset = .init(0, -half_h), .size = .init(sprite.size.x + thickness, thickness) },
+            .{ .offset = .init(-half_w, 0), .size = .init(thickness, sprite.size.y + thickness) },
+            .{ .offset = .init(half_w, 0), .size = .init(thickness, sprite.size.y + thickness) },
+        };
+
+        for (edges) |edge| {
             try self.renderer.drawSprite(.{
-                .texture = self.sheet,
+                .texture = self.blank,
+                // The offset turns with the sprite, so the box stays around it rather
+                // than beside it.
                 .position = .init(
-                    seed.home.x + @cos(angle) * seed.radius,
-                    seed.home.y + @sin(angle) * seed.radius,
+                    sprite.position.x + (edge.offset.x * c - edge.offset.y * s),
+                    sprite.position.y + (edge.offset.x * s + edge.offset.y * c),
                 ),
-                .size = .init(seed.size, seed.size),
-                .uv = .init(column * cell_uv, row * cell_uv, cell_uv, cell_uv),
-                .rotation = angle * seed.spin,
-                .tint = seed.tint,
-                .blend = seed.blend,
-                // Four layers, so the sort is doing real work rather than sorting a
-                // constant. Additive sprites ride on top, where they belong.
-                .layer = if (seed.blend == .additive) 3 else @intCast(i % 3),
+                .size = edge.size,
+                .rotation = sprite.rotation,
+                .tint = .srgb8(255, 236, 120, 255),
+                // Above everything, including the additive layer.
+                .layer = std.math.maxInt(i16),
             });
         }
     }
@@ -364,15 +565,17 @@ fn requestResize(engine: *app.Engine, size: platform.Size) void {
     log.info("requested {d}x{d}; watch for the resized event", .{ size.width, size.height });
 }
 
-/// How often to advance `size_cycle` on its own, or null to only do it on `R`.
+/// A "do this every N frames" knob, or null when it is unset or zero.
 ///
 /// Same rationale as `FOUNDRY_SANDBOX_FRAMES`, and read the same way: a windowed run that
 /// cannot be scripted can only be checked by a person remembering to check it, and the
 /// resize path is precisely the one that went unverified for two sessions because of that.
-fn autoResizeEvery(engine: *app.Engine) ?u64 {
-    const raw = engine.os.envVar("FOUNDRY_SANDBOX_RESIZE_EVERY") orelse return null;
+/// `FOUNDRY_SANDBOX_RESIZE_EVERY` drives the resize cycle; `FOUNDRY_SANDBOX_PICK_EVERY`
+/// picks at the window centre, taking exactly the path a click takes.
+fn everyFrames(engine: *app.Engine, name: []const u8) ?u64 {
+    const raw = engine.os.envVar(name) orelse return null;
     const n = std.fmt.parseInt(u64, std.mem.trim(u8, raw, " "), 10) catch {
-        log.warn("FOUNDRY_SANDBOX_RESIZE_EVERY='{s}' is not a number; ignoring", .{raw});
+        log.warn("{s}='{s}' is not a number; ignoring", .{ name, raw });
         return null;
     };
     return if (n == 0) null else n;
