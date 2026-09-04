@@ -5,6 +5,7 @@ const core = @import("core");
 const rhi = @import("rhi");
 const asset = @import("asset");
 
+const atlas_mod = @import("atlas.zig");
 const batch_mod = @import("batch.zig");
 const camera_mod = @import("camera.zig");
 const color_mod = @import("color.zig");
@@ -12,9 +13,13 @@ const sprite_mod = @import("sprite.zig");
 const texture_mod = @import("texture.zig");
 
 const Allocator = std.mem.Allocator;
+const AtlasHandle = atlas_mod.AtlasHandle;
+const AtlasOptions = atlas_mod.AtlasOptions;
 const BlendMode = color_mod.BlendMode;
 const Camera2D = camera_mod.Camera2D;
 const Color = color_mod.Color;
+const Extent2D = texture_mod.Extent2D;
+const Region = atlas_mod.Region;
 const Sprite = sprite_mod.Sprite;
 const TextureHandle = texture_mod.TextureHandle;
 const Vertex = sprite_mod.Vertex;
@@ -32,11 +37,13 @@ const sprite_shader: []const u8 = switch (rhi.backend) {
 pub const Error = error{
     /// A texture handle that never existed, or that has been destroyed.
     InvalidTexture,
+    /// An atlas handle that never existed, or that has been destroyed.
+    InvalidAtlas,
     /// Larger than the device can hold.
     TextureTooLarge,
     /// Drawing outside a `begin`/`record` pair.
     NotRecording,
-} || camera_mod.CameraError || rhi.ResourceError || rhi.MapError ||
+} || atlas_mod.Error || camera_mod.CameraError || rhi.ResourceError || rhi.MapError ||
     rhi.CommandError || Allocator.Error;
 
 pub const Config = struct {
@@ -100,6 +107,14 @@ const Slot = struct {
     buffers: std.ArrayList(SlotBuffer) = .empty,
 };
 
+/// What the renderer keeps for each live atlas: a texture it owns, and where the free
+/// space is. The packer holds no GPU state, which is what makes it testable on its own.
+const AtlasState = struct {
+    texture: TextureHandle,
+    size: Extent2D,
+    packer: atlas_mod.Packer,
+};
+
 pub const Renderer = struct {
     gpa: Allocator,
     device: *rhi.Device,
@@ -115,6 +130,7 @@ pub const Renderer = struct {
     indices: rhi.BufferHandle,
 
     textures: texture_mod.Pool,
+    atlases: core.HandlePool(atlas_mod.Atlas, AtlasState),
     batcher: batch_mod.Batcher,
     slots: []Slot,
 
@@ -212,6 +228,7 @@ pub const Renderer = struct {
             .pipelines = pipelines,
             .indices = indices,
             .textures = .init(config.frames_in_flight),
+            .atlases = .empty,
             .batcher = .init(config.quads_per_buffer),
             .slots = slots,
             .view = .{ .camera = .{ .viewport = .init(0, 0, 1, 1) } },
@@ -243,6 +260,11 @@ pub const Renderer = struct {
         self.gpa.free(self.slots);
 
         self.batcher.deinit(self.gpa);
+        {
+            var it = self.atlases.iterator();
+            while (it.next()) |entry| entry.value.packer.deinit(self.gpa);
+            self.atlases.deinit(self.gpa);
+        }
         self.textures.deinit(self.gpa, self.device);
 
         self.device.destroyBuffer(self.indices);
@@ -270,9 +292,134 @@ pub const Renderer = struct {
             return error.TextureTooLarge;
         }
 
+        const handle = try self.createEmptyTexture(
+            .{ .width = image.width, .height = image.height },
+            options,
+        );
+        errdefer self.destroyTexture(handle);
+
+        const state = self.textures.get(handle).?;
+        try self.uploadRegion(state.gpu, image, .{});
+        return handle;
+    }
+
+    /// Requests destruction. The handle stops resolving immediately; the GPU objects are
+    /// released once no in-flight frame can reference them (`texture.Pool`).
+    pub fn destroyTexture(self: *Self, handle: TextureHandle) void {
+        const frame_index = if (self.frame) |f| f.index else 0;
+        _ = self.textures.destroy(self.gpa, handle, frame_index);
+    }
+
+    pub fn textureSize(self: *Self, handle: TextureHandle) ?Extent2D {
+        const state = self.textures.get(handle) orelse return null;
+        return .{ .width = state.width, .height = state.height };
+    }
+
+    /// The whole texture, addressed as a `Region`.
+    ///
+    /// So that a game can pass a standalone texture wherever a packed one is expected —
+    /// a font, for instance — and moving that image into an atlas later changes the
+    /// creation call and nothing else.
+    pub fn textureRegion(self: *Self, handle: TextureHandle) ?Region {
+        const size = self.textureSize(handle) orelse return null;
+        return .whole(handle, size);
+    }
+
+    // -- atlases ---------------------------------------------------------------------
+
+    /// An empty atlas of `size` pixels, cleared to transparent.
+    ///
+    /// The atlas owns a texture of its own, destroyed with it. Nothing is drawn from an
+    /// empty atlas, so the clear is not decoration: an uninitialised texture samples as
+    /// noise, and the padding between packed images is sampled all the time.
+    pub fn createAtlas(self: *Self, size: Extent2D, options: AtlasOptions) Error!AtlasHandle {
+        const caps = self.device.capabilities();
+        // An atlas size is a number a game or a mod chose, so it is checked and refused.
+        if (size.isEmpty() or
+            size.width > caps.max_texture_dimension or
+            size.height > caps.max_texture_dimension)
+        {
+            log.warn("atlas '{s}' is {d}x{d}, which the device cannot hold (max {d})", .{
+                options.label, size.width, size.height, caps.max_texture_dimension,
+            });
+            return error.TextureTooLarge;
+        }
+
+        const handle = try self.createEmptyTexture(size, .{
+            .filter = options.filter,
+            .wrap = options.wrap,
+            .label = options.label,
+        });
+        errdefer self.destroyTexture(handle);
+        try self.clearTexture(self.textures.get(handle).?.gpu, size);
+
+        return self.atlases.add(self.gpa, .{
+            .texture = handle,
+            .size = size,
+            .packer = .init(size, options.padding),
+        });
+    }
+
+    /// Packs `image` into `atlas` and returns where it landed.
+    ///
+    /// `error.AtlasFull` is a **normal** answer — the caller makes another atlas — and is
+    /// deliberately distinct from `error.RegionTooLarge`, which no atlas of this size will
+    /// ever accept.
+    ///
+    /// Call this outside a frame. It records and submits a copy of its own, and destroys
+    /// the staging buffer immediately afterwards, which is safe exactly because nothing is
+    /// in flight — the same reasoning `createTexture` relies on. Doing it mid-frame is a
+    /// rule 9 violation, which the validation backend names.
+    pub fn atlasAdd(self: *Self, handle: AtlasHandle, image: asset.Image) Error!Region {
+        const state = self.atlases.get(handle) orelse return error.InvalidAtlas;
+        const gpu = self.textures.get(state.texture) orelse return error.InvalidTexture;
+        const gpu_handle = gpu.gpu;
+
+        const placement = try state.packer.add(self.gpa, image.width, image.height);
+        try self.uploadRegion(gpu_handle, image, .{ .x = placement.x, .y = placement.y });
+
+        const whole: Region = .whole(state.texture, state.size);
+        return whole.sub(placement.x, placement.y, image.width, image.height);
+    }
+
+    /// The atlas as one region, which is how a font packed whole into one is addressed.
+    pub fn atlasRegion(self: *Self, handle: AtlasHandle) ?Region {
+        const state = self.atlases.get(handle) orelse return null;
+        return .whole(state.texture, state.size);
+    }
+
+    pub fn atlasTexture(self: *Self, handle: AtlasHandle) ?TextureHandle {
+        const state = self.atlases.get(handle) orelse return null;
+        return state.texture;
+    }
+
+    /// The fraction of the atlas the packed images occupy. A diagnostic: it is the number
+    /// that tells you an atlas is the wrong size.
+    pub fn atlasFill(self: *Self, handle: AtlasHandle) ?f32 {
+        const state = self.atlases.get(handle) orelse return null;
+        return state.packer.fill();
+    }
+
+    /// Destroys the atlas and the texture it owns. Regions handed out from it stop
+    /// resolving with it, because they name that texture (I1).
+    pub fn destroyAtlas(self: *Self, handle: AtlasHandle) void {
+        const state = self.atlases.get(handle) orelse return;
+        self.destroyTexture(state.texture);
+        state.packer.deinit(self.gpa);
+        _ = self.atlases.remove(handle);
+    }
+
+    /// The texture, sampler and bind group, with no pixels written yet.
+    ///
+    /// Shared by `createTexture` and `createAtlas` so that a texture is built one way.
+    fn createEmptyTexture(
+        self: *Self,
+        size: Extent2D,
+        options: texture_mod.TextureOptions,
+    ) Error!TextureHandle {
         const gpu = try self.device.createTexture(.{
             .label = options.label,
-            .size = .{ .width = image.width, .height = image.height },
+            .size = .{ .width = size.width, .height = size.height },
             // sRGB, matching the surface, so sampling returns linear light and the write
             // encodes back. `asset.Image` documents its bytes as sRGB for this reason.
             .format = .rgba8_unorm_srgb,
@@ -301,8 +448,6 @@ pub const Renderer = struct {
         });
         errdefer self.device.destroySampler(sampler);
 
-        try self.uploadTexture(gpu, image);
-
         const group = try self.device.createBindGroup(.{
             .label = options.label,
             .layout = self.group_layout,
@@ -317,24 +462,22 @@ pub const Renderer = struct {
             .gpu = gpu,
             .group = group,
             .sampler = sampler,
-            .width = image.width,
-            .height = image.height,
+            .width = size.width,
+            .height = size.height,
         });
     }
 
-    /// Requests destruction. The handle stops resolving immediately; the GPU objects are
-    /// released once no in-flight frame can reference them (`texture.Pool`).
-    pub fn destroyTexture(self: *Self, handle: TextureHandle) void {
-        const frame_index = if (self.frame) |f| f.index else 0;
-        _ = self.textures.destroy(self.gpa, handle, frame_index);
-    }
-
-    pub fn textureSize(self: *Self, handle: TextureHandle) ?rhi.Extent2D {
-        const state = self.textures.get(handle) orelse return null;
-        return .{ .width = state.width, .height = state.height };
-    }
-
-    fn uploadTexture(self: *Self, gpu: rhi.TextureHandle, image: asset.Image) Error!void {
+    /// Writes `image` into `gpu` at `origin`.
+    ///
+    /// A whole-texture upload is this with the default origin, and packing into an atlas
+    /// is this with a computed one — one path, so an atlas cannot drift from a texture in
+    /// how its pixels get there.
+    fn uploadRegion(
+        self: *Self,
+        gpu: rhi.TextureHandle,
+        image: asset.Image,
+        origin: rhi.Origin2D,
+    ) Error!void {
         const staging = try self.device.createBuffer(.{
             .label = "render2d texture staging",
             .size = image.byteSize(),
@@ -353,11 +496,49 @@ pub const Renderer = struct {
         }
 
         var cmd = try self.device.beginCommandBuffer();
+        // From `undefined` every time, including for an atlas that already has pixels in
+        // it: the region being written has no contents worth preserving, and the texels
+        // outside it are untouched by a copy. Declaring `shader_read` here instead would
+        // be a lie the moment two uploads ran back to back.
         try cmd.textureBarrier(&.{.{ .texture = gpu, .from = .undefined, .to = .copy_dst }});
         try cmd.copyBufferToTexture(.{
             .src = staging,
             .dst = gpu,
+            .dst_origin = origin,
             .size = .{ .width = image.width, .height = image.height },
+        });
+        try cmd.textureBarrier(&.{.{ .texture = gpu, .from = .copy_dst, .to = .shader_read }});
+        try cmd.submit();
+    }
+
+    /// Fills a whole texture with transparent black.
+    ///
+    /// Through a zeroed staging buffer rather than a render pass, which would need
+    /// `render_target` usage and a pipeline for something that happens once per atlas.
+    /// The buffer is the atlas's full size — four megabytes for 1024 squared — and is
+    /// released immediately.
+    fn clearTexture(self: *Self, gpu: rhi.TextureHandle, size: Extent2D) Error!void {
+        const bytes_needed = @as(u64, size.width) * size.height * asset.Image.channels;
+        const staging = try self.device.createBuffer(.{
+            .label = "render2d atlas clear",
+            .size = bytes_needed,
+            .usage = .{ .copy_src = true },
+            .memory = .upload,
+        });
+        defer self.device.destroyBuffer(staging);
+
+        {
+            const bytes = try self.device.mapBuffer(staging);
+            defer self.device.unmapBuffer(staging);
+            @memset(bytes[0..@intCast(bytes_needed)], 0);
+        }
+
+        var cmd = try self.device.beginCommandBuffer();
+        try cmd.textureBarrier(&.{.{ .texture = gpu, .from = .undefined, .to = .copy_dst }});
+        try cmd.copyBufferToTexture(.{
+            .src = staging,
+            .dst = gpu,
+            .size = .{ .width = size.width, .height = size.height },
         });
         try cmd.textureBarrier(&.{.{ .texture = gpu, .from = .copy_dst, .to = .shader_read }});
         try cmd.submit();
@@ -827,4 +1008,115 @@ test "an oversized image is refused rather than truncated" {
     };
     try testing.expectError(error.TextureTooLarge, fx.renderer.createTexture(image, .{}));
     image.width = 1;
+}
+
+test "an atlas packs several images into one texture, and one draw call" {
+    // The whole point of an atlas, stated as the thing that is actually observable: the
+    // batcher breaks on a texture change, and after packing there is no texture change.
+    var fx = try Fixture.init(64);
+    defer fx.deinit();
+
+    const handle = try fx.renderer.createAtlas(.{ .width = 64, .height = 64 }, .{});
+
+    var image = try asset.Image.alloc(testing.allocator, 8, 8);
+    defer image.deinit(testing.allocator);
+    @memset(image.pixels, 0xFF);
+
+    var regions: [4]Region = undefined;
+    for (&regions) |*r| r.* = try fx.renderer.atlasAdd(handle, image);
+
+    // Four regions, one texture.
+    for (regions[1..]) |r| try testing.expectEqual(regions[0].texture, r.texture);
+
+    try fx.renderer.begin(fx.view());
+    for (regions) |r| {
+        try fx.renderer.drawSprite(.{
+            .texture = r.texture,
+            .uv = r.uv,
+            .position = .init(0, 0),
+            .size = .init(8, 8),
+        });
+    }
+    try fx.frame();
+
+    const stats = fx.renderer.frameStats();
+    try testing.expectEqual(@as(u32, 4), stats.sprites);
+    try testing.expectEqual(@as(u32, 1), stats.draw_calls);
+}
+
+test "an atlas reports how full it is, and refuses more than it can hold" {
+    var fx = try Fixture.init(64);
+    defer fx.deinit();
+
+    // No padding, so the arithmetic is the packer's and not the padding's.
+    const handle = try fx.renderer.createAtlas(.{ .width = 32, .height = 32 }, .{ .padding = 0 });
+    try testing.expectEqual(@as(f32, 0), fx.renderer.atlasFill(handle).?);
+
+    var image = try asset.Image.alloc(testing.allocator, 16, 16);
+    defer image.deinit(testing.allocator);
+    @memset(image.pixels, 0xFF);
+
+    for (0..4) |_| _ = try fx.renderer.atlasAdd(handle, image);
+    try testing.expectApproxEqAbs(@as(f32, 1), fx.renderer.atlasFill(handle).?, 1e-6);
+
+    // Full is a normal answer, and different from "no atlas this size will ever take it".
+    try testing.expectError(error.AtlasFull, fx.renderer.atlasAdd(handle, image));
+
+    var huge = try asset.Image.alloc(testing.allocator, 64, 8);
+    defer huge.deinit(testing.allocator);
+    try testing.expectError(error.RegionTooLarge, fx.renderer.atlasAdd(handle, huge));
+}
+
+test "destroying an atlas invalidates the regions cut from it" {
+    // I1's payoff again: a region holds a texture handle, so a sprite still holding one
+    // after the atlas went away is a clean error at the draw that uses it.
+    var fx = try Fixture.init(64);
+    defer fx.deinit();
+
+    const handle = try fx.renderer.createAtlas(.{ .width = 32, .height = 32 }, .{});
+
+    var image = try asset.Image.alloc(testing.allocator, 8, 8);
+    defer image.deinit(testing.allocator);
+    @memset(image.pixels, 0xFF);
+    const region = try fx.renderer.atlasAdd(handle, image);
+
+    fx.renderer.destroyAtlas(handle);
+    try testing.expect(fx.renderer.atlasFill(handle) == null);
+    try testing.expect(fx.renderer.atlasRegion(handle) == null);
+    // Destroying it twice is a no-op, the same as for a texture.
+    fx.renderer.destroyAtlas(handle);
+
+    try fx.renderer.begin(fx.view());
+    try testing.expectError(error.InvalidTexture, fx.renderer.drawSprite(.{
+        .texture = region.texture,
+        .uv = region.uv,
+        .position = .init(0, 0),
+        .size = .init(8, 8),
+    }));
+}
+
+test "an atlas larger than the device can hold is refused" {
+    var fx = try Fixture.init(64);
+    defer fx.deinit();
+
+    const caps = fx.device.capabilities();
+    try testing.expectError(error.TextureTooLarge, fx.renderer.createAtlas(
+        .{ .width = caps.max_texture_dimension + 1, .height = 16 },
+        .{},
+    ));
+    // And an empty one, which would otherwise create a zero-sized texture.
+    try testing.expectError(error.TextureTooLarge, fx.renderer.createAtlas(.{}, .{}));
+}
+
+test "a stale atlas handle is refused rather than resolving to another atlas" {
+    var fx = try Fixture.init(64);
+    defer fx.deinit();
+
+    const first = try fx.renderer.createAtlas(.{ .width = 32, .height = 32 }, .{});
+    fx.renderer.destroyAtlas(first);
+    _ = try fx.renderer.createAtlas(.{ .width = 32, .height = 32 }, .{});
+
+    var image = try asset.Image.alloc(testing.allocator, 4, 4);
+    defer image.deinit(testing.allocator);
+    try testing.expectError(error.InvalidAtlas, fx.renderer.atlasAdd(first, image));
 }

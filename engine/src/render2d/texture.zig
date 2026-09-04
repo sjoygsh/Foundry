@@ -18,6 +18,24 @@ pub const Texture = opaque {};
 /// whose lifetime rules it has no way to see.
 pub const TextureHandle = core.Handle(Texture);
 
+/// A size in pixels.
+///
+/// **`render2d`'s own, deliberately not `rhi.Extent2D`.** This type appears in the
+/// game-facing API — `textureSize`, `createAtlas`, `Region`, `BitmapFont.cell` — and
+/// CLAUDE.md §4.2 says games never touch the RHI. A game that had to name `rhi.Extent2D`
+/// to ask how big its texture is would be touching it.
+pub const Extent2D = struct {
+    width: u32 = 0,
+    height: u32 = 0,
+
+    pub fn eql(a: Extent2D, b: Extent2D) bool {
+        return a.width == b.width and a.height == b.height;
+    }
+    pub fn isEmpty(e: Extent2D) bool {
+        return e.width == 0 or e.height == 0;
+    }
+};
+
 pub const Filter = enum { nearest, linear };
 pub const Wrap = enum { clamp, repeat };
 

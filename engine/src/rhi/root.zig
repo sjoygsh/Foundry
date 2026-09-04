@@ -77,6 +77,7 @@ pub const PipelineLayoutHandle = pipeline.PipelineLayoutHandle;
 pub const RenderPipelineHandle = pipeline.RenderPipelineHandle;
 
 pub const Extent2D = resource.Extent2D;
+pub const Origin2D = resource.Origin2D;
 pub const MemoryIntent = resource.MemoryIntent;
 pub const ResourceState = resource.ResourceState;
 pub const TextureFormat = format.TextureFormat;

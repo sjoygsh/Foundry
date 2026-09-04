@@ -13,6 +13,7 @@
 
 const std = @import("std");
 
+pub const atlas = @import("atlas.zig");
 pub const batch = @import("batch.zig");
 pub const camera = @import("camera.zig");
 pub const color = @import("color.zig");
@@ -20,6 +21,8 @@ pub const renderer = @import("renderer.zig");
 pub const sprite = @import("sprite.zig");
 pub const texture = @import("texture.zig");
 
+pub const AtlasHandle = atlas.AtlasHandle;
+pub const Region = atlas.Region;
 pub const Camera2D = camera.Camera2D;
 pub const CameraError = camera.CameraError;
 pub const Color = color.Color;
@@ -29,12 +32,14 @@ pub const Sprite = sprite.Sprite;
 /// Hit-testing one sprite. Picking is the game's loop over its own objects; see
 /// `sprite.containsPoint` for why the renderer does not own a "what is at this point".
 pub const containsPoint = sprite.containsPoint;
+pub const Extent2D = texture.Extent2D;
 pub const TextureHandle = texture.TextureHandle;
 pub const TextureOptions = texture.TextureOptions;
 pub const Filter = texture.Filter;
 pub const Wrap = texture.Wrap;
 
 test {
+    _ = atlas;
     _ = batch;
     _ = camera;
     _ = color;
