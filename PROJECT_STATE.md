@@ -1,11 +1,10 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-04
-**Updated by:** **M3 has begun with its decisions.** The two postponed decisions M3 comes
-due on are spent — ADR-0020 (Foundry's own `.fdt` authoring format) and ADR-0021 (assets are
-content records; a path derives an ID but never defines identity) — and the two design
-documents they unblock are written: `content-schemas.md` and `assets.md`. No content code
-yet, deliberately
+**Updated by:** **M3, steps 1 to 3.** The two postponed decisions spent as ADR-0020 and
+ADR-0021, the two design documents written, and then `data` itself: identity, schemas and
+the runtime registry, the `.fdt` lexer, the parser and its diagnostics. Text goes in and a
+validated `Document` comes out; nothing is checked against a schema yet
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -42,8 +41,8 @@ under a camera driven by keyboard and mouse, with the batcher's own numbers on s
 space that does not move when the camera does — 4 batches and 4 draw calls, because the
 sheet, the font and the selection outline share one atlas.
 
-**Current milestone: M3 — Content: "it has data."** Started, at the only place it could
-start: its decisions. The first modding-relevant milestone, and it comes due on two of
+**Current milestone: M3 — Content: "it has data."** Three of ten steps done. It started at
+the only place it could: its decisions. The first modding-relevant milestone, and it comes due on two of
 `CLAUDE.md` §9's postponed decisions — both now spent, as **ADR-0020** and **ADR-0021**, and
 struck from the §9 table. The two design documents `docs/design/README.md` has owed since M2
 are written. **No implementation yet**, which is rule 1 working as intended rather than a
@@ -311,6 +310,28 @@ yet. That is the whole of the milestone so far and it is the right amount: `CLAU
 says design before implementation, rule 10 says never make a major architectural decision
 silently, and M3 opens with two decisions §9 has been holding since M0.
 
+**Steps 1 to 3 are built.** `data` exists: identity, schemas, the registry, the lexer, the
+parser and diagnostics. 417 tests, up from 346 at the end of M2; all eight target/backend
+combinations compile; `zig fmt` clean.
+
+Three things worth knowing about how it came out:
+
+* **The layering claim is now verified, not asserted.** Importing `platform` from `data`
+  fails with *"no module named 'platform' available within module 'root'"*, checked by
+  deliberately breaking it. And the predicted payoff is real: the import resolver is a
+  callback, so the cycle, diamond and not-found tests run against a hash map, need no temp
+  directory, and cannot be flaky.
+* **The lexer validates nothing.** It classifies shape — a word is an identifier or a content
+  id by whether it holds a colon — and `id.zig` answers whether it is *valid*. Uppercase,
+  dots, colons and dashes are lexed *into* the word on purpose, so `Foundry:torch` reports
+  "identifiers are lowercase" rather than a stray-character error pointing at the `F`, and
+  every message about a malformed identifier comes from the one place that knows the rules.
+* **Three things implementation forced**, all syntax, all recorded in `content-schemas.md`
+  §4.7 rather than absorbed silently: a record's schema may be written bare and a content id
+  may not; schema attributes are bracketed, because bare ones carried exactly the hazard
+  ADR-0020 spent `@` to remove one level up; and a schema's version is the highest `since`
+  on its fields rather than a declared number that can disagree with them.
+
 **ADR-0020 — the authoring format is Foundry's own, `.fdt`.** Four candidates were weighed
 against ADR-0006's recorded requirements, and three facts settled it. There is no permissive
 Zig parser for TOML or KDL that rule 3 and ADR-0016 would let us adopt, so **we write the
@@ -434,17 +455,21 @@ still has to judge, recorded above: the key and button *bindings*.
 implementation. Ten steps, ordered so each leaves the tree green and the sandbox runnable,
 and so nothing is a rewrite of the one before.
 
-1. **`data` (L1), and identity.** Add the module to `build.zig`'s `layering` table and grant
-   it to `asset`, which ADR-0007 already says it gets. `SchemaId`, the `namespace:name`
-   validator of `content-schemas.md` §2, and the runtime schema registry (I6). No parsing yet
-   — this is the part everything else is checked against.
-2. **The `.fdt` lexer and parser.** Grammar per §4, the resolver callback for `@import`, the
-   `Limits` struct, and multi-error recovery to the next record boundary. Hermetic tests: a
-   resolver backed by a hash map, no disk anywhere in the module.
-3. **Diagnostics.** File, line, column, span, schema, field, expected, found — §4.5. This is
-   what owning the parser was bought for, so it is a step rather than a detail.
-4. **Values and validation.** Typed values, checking against a schema, defaults, the
-   int-literal-in-a-float-field rule, and the versioning behaviour of §3.
+1. ~~**`data` (L1), and identity.**~~ **Done, 2026-09-04.** The module, the `namespace:name`
+   validator, `SchemaId` as a type distinct from `ContentId` over the same hash, and the
+   runtime schema registry. Layering confirmed by breaking it: importing `platform` from
+   `data` fails with "no module named 'platform' available within module 'root'".
+2. ~~**The `.fdt` lexer and parser.**~~ **Done, 2026-09-04.** Grammar per §4, the resolver
+   callback for `@import` with cycle, diamond and depth handling, the `Limits` struct, and
+   recovery to the next top-level item. Every test is hermetic — the import tests use a
+   resolver over a hash map and touch no disk.
+3. ~~**Diagnostics.**~~ **Done, 2026-09-04.** File, line, column, span, the source line and
+   a caret under it, with a cap that counts what it swallows. Errors are collected, not
+   returned: four records with three mistakes produce three errors, which is the test.
+4. **Values and validation.** Wiring a `Document` against a `Registry`: every record checked
+   against its schema, defaults filled, unresolved schema references reported. The type
+   rules themselves already exist — `schema.checkValue` is where they live, so the parser,
+   the registry and `fpack` cannot come to disagree about them.
 5. **`.fpk`, writer and reader.** §5. The reader validates every offset and length against the
    file's own size before dereferencing anything, and a random file is a test.
 6. **Packages and the store.** Ordered merge, replace semantics, provenance, and the two
