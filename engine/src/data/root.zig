@@ -19,6 +19,7 @@
 //!
 //! Design: `docs/design/content-schemas.md`
 
+pub const check = @import("check.zig");
 pub const diagnostic = @import("diagnostic.zig");
 pub const id = @import("id.zig");
 pub const lexer = @import("lexer.zig");
@@ -32,11 +33,14 @@ pub const value = @import("value.zig");
 // rather than a tidy-up (CLAUDE.md §7).
 pub const Diagnostic = diagnostic.Diagnostic;
 pub const Diagnostics = diagnostic.Diagnostics;
+pub const Document = parser.Document;
 pub const Field = schema.Field;
 pub const FieldType = schema.FieldType;
 pub const Limits = limits.Limits;
 pub const NamedValue = value.NamedValue;
+pub const Package = check.Package;
 pub const Presence = schema.Presence;
+pub const Record = check.Record;
 pub const Registry = schema.Registry;
 pub const Schema = schema.Schema;
 pub const SchemaHandle = schema.SchemaHandle;
@@ -47,6 +51,7 @@ pub const Value = value.Value;
 pub const contentId = id.contentId;
 
 test {
+    _ = check;
     _ = diagnostic;
     _ = id;
     _ = lexer;

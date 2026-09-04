@@ -1,8 +1,10 @@
 # Design: `data` — schemas, content, packages
 
-**Status:** §2, §3 and §4 implemented as `engine/src/data/` (2026-09-04) — identity,
-schemas and the registry, the lexer, the parser and diagnostics. §5 onward is still design.
-See §4.7 for what implementation changed.
+**Status:** §2, §3, §4 and the checking half of §6 implemented as `engine/src/data/`
+(2026-09-04) — identity, schemas and the registry, the lexer, the parser, diagnostics, and
+the pass that checks a parsed document against the schemas it names. §5, the merge and the
+store are still design. See §4.7 and the Resolution section at the end for what
+implementation changed.
 **Date:** 2026-09-04, revised 2026-09-04
 **Implements:** I2, I3, I5, I6, I8, I9 · **Informed by:** ADR-0005, ADR-0006, ADR-0007,
 ADR-0020, ADR-0021, CLAUDE.md §6
@@ -103,12 +105,21 @@ pub const Schema = struct {
 };
 
 pub const Field = struct {
-    name: []const u8,       // ASCII identifier, [a-z][a-z0-9_]*
+    name: []const u8,   // ASCII identifier, [a-z][a-z0-9_]*
     type: FieldType,
-    default: ?Value = null, // absent means the field is required
-    since: u32 = 1,         // the schema version that introduced it
+    presence: Presence = .required,
+    since: u32 = 1,     // the schema version that introduced it
 };
+
+/// Whether a field has to be present, and what its absence means.
+pub const Presence = union(enum) { required, optional, default: Value };
 ```
+
+**`optional` and `default` are different things, and collapsing them is not available.** A
+missing optional field reads as *absent*; a missing defaulted field reads as *the default*.
+One `?Value` would make "this item drops nothing" and "this item's drop was never
+specified" the same state, which is the sort of conflation that is free to avoid now and
+impossible to unpick once content depends on it.
 
 ### The type list is closed, and small
 
@@ -156,7 +167,7 @@ mod's `@schema` directive uses. There is no compile-time schema list.
 pub const Registry = struct {
     pub fn register(self: *Registry, gpa: Allocator, schema: Schema) RegisterError!SchemaHandle;
     pub fn find(self: *const Registry, id: SchemaId) ?SchemaHandle;
-    pub fn get(self: *const Registry, handle: SchemaHandle) ?*const Schema;
+    pub fn get(self: *Registry, handle: SchemaHandle) ?*const Schema;
 };
 ```
 
@@ -598,3 +609,59 @@ a habit.
 * **Save files.** They share the identity scheme and the versioning discipline, and they are
   M4's problem, not this document's.
 * **Engine configuration.** Not content. It does not come through here and should not start.
+
+---
+
+## Resolution: checking (implementation, 2026-09-04)
+
+§4.7 records what writing the parser settled about the *format*. This records what writing
+the checker — the step between the parser and the package writer — settled about the
+*pipeline*. Same rule as before: written down rather than absorbed, because each of these
+is visible either to a mod author or to the code that comes next. §3's `Field` sketch was
+also corrected in place: it showed a `?Value` default where the registry has held a
+`Presence` since the day it was written, and leaving the two disagreeing would have made
+the document the less trustworthy of the pair.
+
+**The parse tree carries a location for every field, and every location carries its source
+line.** §4.5's own worked example is a schema type error with a caret under the offending
+value, and the parse tree could not produce one: it held a location per *record*, and by
+the time a record is checked the bytes it was parsed from belong to whoever answered the
+`@import` and may be gone. So a record's fields now carry two locations each — one for the
+name, one for the value, because "no such field" and "wrong type" are complaints about
+different words — and a location carries the text of its line. The cost is one copy of each
+source line that a diagnostic could ever point at, paid in the document's arena during
+compilation; the parser remembers the last line it copied, which collapses the common case
+of a field name and its value written together.
+
+**The rules that decide a type and the walk that names it are different things.** §3 says
+`checkValue` is the one place the typing rules live, and it still is: whether an integer
+literal fits an `f32` is decided there and nowhere else. But `checkValue` can only say
+*that* a value is the wrong type, never *which* value — so the recursive walk over lists
+and inline structs lives in the checker, where the field names are, and calls `checkValue`
+at the leaves. That is what turns "expects f32, found string" into "field `light.falloff`
+of schema `foundry:item` expects f32, found string", and `grid[1][1]` for a list of lists.
+
+**Defaults are filled at every level, and the one place a checked value is not positional
+is an absent optional inside an inline struct.** A checked record's fields are an array
+indexed by schema field index — resolved once, per §8 — and an inline struct's fields come
+out in schema order with its own defaults filled. An optional the author left out is
+*omitted* there rather than given a slot, because a `Value` has no way to spell absence and
+inventing one would put a variant into every switch in the module to serve a handful of
+names inside one value. The top level, where §8's hot path is, keeps its slots. Anything
+walking an inline struct scans it, which is affordable for exactly the reason §3 gives for
+inline structs existing at all.
+
+**`@patch` and `@remove` parse, and are refused with a message that says why.** §7 defers
+both to a later milestone; it did not say what happens to somebody who writes one now. They
+still *parse*, because their syntax is frozen either way and freezing it early is the point,
+and the checker then reports that the semantics do not exist yet. Silently dropping a mod's
+patch would be the one genuinely bad answer: the mod would appear to load and would not
+work.
+
+**A type error names the schema but does not point at it.** §4.5's example carries a note —
+"schema `foundry:item` declared at item.fdt:3:1" — and the checker does not emit one,
+because the registry keeps no declaration sites. It cannot: a schema registered by native
+code or, later, through the ABI has no file to point at, and a diagnostic that appears only
+when the schema happened to be declared in a `.fdt` file would be worse than one that never
+appears. Revisit if schema declarations ever grow a provenance table for the content
+browser, which would make the note free.

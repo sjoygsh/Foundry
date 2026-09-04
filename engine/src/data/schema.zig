@@ -62,6 +62,21 @@ pub const FieldType = union(enum) {
         return null;
     }
 
+    /// The `.fdt` spelling, for diagnostics. `inline else` over the tag names for the
+    /// same reason `keyword` reads them: one table, so a type cannot be spelled one way
+    /// in the parser and another in the message that rejects it.
+    pub fn format(self: FieldType, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        switch (self) {
+            .list => |elem| {
+                try writer.writeByte('[');
+                try elem.format(writer);
+                try writer.writeByte(']');
+            },
+            .nested => try writer.writeAll("{ ... }"),
+            inline else => |_, tag| try writer.writeAll(@tagName(tag)),
+        }
+    }
+
     /// Whether two declared types are the same. Used to check that a schema version bump
     /// is additive rather than a reinterpretation of bytes already written.
     pub fn eql(a: FieldType, b: FieldType) bool {

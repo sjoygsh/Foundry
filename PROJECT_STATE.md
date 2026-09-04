@@ -1,10 +1,10 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-04
-**Updated by:** **M3, steps 1 to 3.** The two postponed decisions spent as ADR-0020 and
-ADR-0021, the two design documents written, and then `data` itself: identity, schemas and
-the runtime registry, the `.fdt` lexer, the parser and its diagnostics. Text goes in and a
-validated `Document` comes out; nothing is checked against a schema yet
+**Updated by:** **M3, step 4.** The checking pass: a parsed `Document` wired against a
+`Registry`, every record checked against the schema it names, defaults filled at every
+level, and the result laid out by schema field index rather than by name. Content goes in
+and a `Package` of checked records comes out; nothing writes or merges one yet
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -41,12 +41,13 @@ under a camera driven by keyboard and mouse, with the batcher's own numbers on s
 space that does not move when the camera does — 4 batches and 4 draw calls, because the
 sheet, the font and the selection outline share one atlas.
 
-**Current milestone: M3 — Content: "it has data."** Three of ten steps done. It started at
+**Current milestone: M3 — Content: "it has data."** Four of ten steps done. It started at
 the only place it could: its decisions. The first modding-relevant milestone, and it comes due on two of
 `CLAUDE.md` §9's postponed decisions — both now spent, as **ADR-0020** and **ADR-0021**, and
 struck from the §9 table. The two design documents `docs/design/README.md` has owed since M2
-are written. **No implementation yet**, which is rule 1 working as intended rather than a
-delay. See `docs/ROADMAP.md`.
+are written, and the front half of `data` is built behind them: text in, checked records
+out. What remains is the binary format, the merge, and the tool that drives both. See
+`docs/ROADMAP.md`.
 
 **M1, for reference.** All five ROADMAP items are done: the Metal backend and its Objective-C shim (1), the
 `xcrun metal` → `.metallib` build step (2), runtime MSL compilation (3), the validation
@@ -218,9 +219,9 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 346 tests** (50 `core`, 70 `platform`, 92 `rhi`, 17 `asset`,
-102 `render2d`, 22 `app`), and **354 under `-Drhi=metal`**, where `rhi` gains the backend's
-own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
+**`zig build test` passes 431 tests** (50 `core`, 70 `platform`, 78 `data`, 92 `rhi`,
+17 `asset`, 102 `render2d`, 22 `app`), and **439 under `-Drhi=metal`**, where `rhi` gains
+the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
 8 exceptions need a real GPU and compile only when Metal is selected.
@@ -310,11 +311,36 @@ yet. That is the whole of the milestone so far and it is the right amount: `CLAU
 says design before implementation, rule 10 says never make a major architectural decision
 silently, and M3 opens with two decisions §9 has been holding since M0.
 
-**Steps 1 to 3 are built.** `data` exists: identity, schemas, the registry, the lexer, the
-parser and diagnostics. 417 tests, up from 346 at the end of M2; all eight target/backend
-combinations compile; `zig fmt` clean.
+**Steps 1 to 4 are built.** `data` exists: identity, schemas, the registry, the lexer, the
+parser, diagnostics, and the pass that checks a document against the schemas it names. 431
+tests, up from 346 at the end of M2; all eight target/backend combinations compile;
+`zig fmt` clean.
 
-Three things worth knowing about how it came out:
+**Step 4 — checking.** `check.Package` holds records whose fields are an array indexed by
+schema field index, with defaults filled at every level, so the name-to-index lookup happens
+once per record and never again. Four things about it are worth carrying forward, all
+recorded in `content-schemas.md`'s closing Resolution section:
+
+* **The parse tree grew locations.** §4.5's own worked example is a type error with a caret
+  under the offending value, and the parse tree could not produce one — it held a location
+  per *record*, and by check time the source bytes belong to whoever answered the `@import`
+  and may be gone. Record fields now carry a location for the name and one for the value,
+  and a location carries the text of its line. The test for that error asserts the design
+  document's example verbatim, line and caret included.
+* **The typing rules and the walk that names them are different things.** `schema.checkValue`
+  is still the only place that decides whether an integer fits an `f32`, but it can only say
+  *that* a value is wrong, never *which* — so the recursive walk lives in the checker, where
+  the names are. That is what turns "expects f32, found string" into "field `light.falloff`
+  of schema `foundry:item` expects f32, found string", and `grid[1][1]` for a list of lists.
+* **`@patch` and `@remove` parse and are then refused, loudly.** Their syntax is frozen
+  either way and freezing it early is the point; their semantics are M3's deliberate
+  omission. Quietly dropping a mod's patch would be the one genuinely bad answer — the mod
+  would appear to load and would not work.
+* **A record that fails is left out, and the pass keeps going.** Five records with three
+  mistakes give three diagnostics and one surviving record, which is the test. A refused
+  `@schema` no longer hides every mistake in the records under it either.
+
+Three things worth knowing about how steps 1 to 3 came out:
 
 * **The layering claim is now verified, not asserted.** Importing `platform` from `data`
   fails with *"no module named 'platform' available within module 'root'"*, checked by
@@ -451,9 +477,9 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 **M2 is done and tagged.** Nothing is outstanding against it except the one thing a person
 still has to judge, recorded above: the key and button *bindings*.
 
-**M3 — Content: "it has data."** Its decisions and its design are done; what remains is
-implementation. Ten steps, ordered so each leaves the tree green and the sandbox runnable,
-and so nothing is a rewrite of the one before.
+**M3 — Content: "it has data."** Its decisions and its design are done, and text now
+compiles to checked records. Ten steps, ordered so each leaves the tree green and the
+sandbox runnable, and so nothing is a rewrite of the one before.
 
 1. ~~**`data` (L1), and identity.**~~ **Done, 2026-09-04.** The module, the `namespace:name`
    validator, `SchemaId` as a type distinct from `ContentId` over the same hash, and the
@@ -466,10 +492,11 @@ and so nothing is a rewrite of the one before.
 3. ~~**Diagnostics.**~~ **Done, 2026-09-04.** File, line, column, span, the source line and
    a caret under it, with a cap that counts what it swallows. Errors are collected, not
    returned: four records with three mistakes produce three errors, which is the test.
-4. **Values and validation.** Wiring a `Document` against a `Registry`: every record checked
-   against its schema, defaults filled, unresolved schema references reported. The type
-   rules themselves already exist — `schema.checkValue` is where they live, so the parser,
-   the registry and `fpack` cannot come to disagree about them.
+4. ~~**Values and validation.**~~ **Done, 2026-09-04.** `check.zig`: schemas registered,
+   every record checked against the one it names, defaults filled at every level, and the
+   result laid out by schema field index. `schema.checkValue` still owns the leaf rules, so
+   the parser, the registry and `fpack` cannot come to disagree about them; the walk that
+   names *which* value is wrong lives in the checker, where the field names are.
 5. **`.fpk`, writer and reader.** §5. The reader validates every offset and length against the
    file's own size before dereferencing anything, and a random file is a test.
 6. **Packages and the store.** Ordered merge, replace semantics, provenance, and the two

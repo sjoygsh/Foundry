@@ -43,6 +43,33 @@ pub const Origin = struct {
     file: []const u8,
     line: u32,
     column: u32,
+    /// How many bytes the thing named covers, so a later pass can draw a caret of the
+    /// right width.
+    length: u32 = 1,
+    /// The text of `line`, without its newline.
+    ///
+    /// Carried rather than looked up, because by the time a record is checked against a
+    /// schema the bytes it was parsed from may be gone — a document is many files once
+    /// imports are spliced, and the resolver owns every one of them. Holding the line is
+    /// what lets a type error render with the same caret a syntax error gets.
+    line_text: []const u8 = "",
+
+    pub fn location(self: Origin) diagnostic.Location {
+        return .{ .file = self.file, .line = self.line, .column = self.column };
+    }
+};
+
+/// One field as written inside a record body.
+///
+/// Two locations, because two different mistakes belong in two different places: an
+/// unknown or repeated field name is about the *name*, and a value of the wrong type is
+/// about the *value*. A record spans lines, so pointing at the record for either leaves
+/// the reader to work out which of its fields was meant.
+pub const FieldDecl = struct {
+    name: []const u8,
+    value: Value,
+    name_origin: Origin,
+    value_origin: Origin,
 };
 
 pub const SchemaDecl = struct {
@@ -63,9 +90,12 @@ pub const RecordDecl = struct {
     /// `.none` for `@patch` and `@remove`, which take their schema from what they target.
     schema: SchemaId,
     schema_text: []const u8,
+    /// Where the schema was named — the directive itself for `@patch` and `@remove`. An
+    /// unknown schema is a complaint about that word and nothing else.
+    schema_origin: Origin,
     id: ContentId,
     text: []const u8,
-    fields: []const NamedValue,
+    fields: []const FieldDecl,
     origin: Origin,
 };
 
@@ -201,6 +231,9 @@ const Parser = struct {
     /// Unclosed brackets before the current token. Recovery uses it to find its way back
     /// to the top level without guessing.
     depth: u32 = 0,
+    /// The last source line copied into the arena, and the slice it was copied from. See
+    /// `lineText`.
+    last_line: ?struct { source: []const u8, copy: []const u8 } = null,
 
     fn deinit(self: *Parser) void {
         self.schemas.deinit(self.gpa);
@@ -236,11 +269,13 @@ const Parser = struct {
             self.lexer = saved_lexer;
             self.token = saved_token;
             self.depth = saved_depth;
+            self.last_line = null;
         }
 
         self.source = .{ .name = owned_name, .bytes = bytes };
         self.lexer = .init(bytes);
         self.depth = 0;
+        self.last_line = null;
         self.advance();
 
         while (self.token.tag != .eof) {
@@ -357,7 +392,7 @@ const Parser = struct {
             .text = text,
             .version = version,
             .fields = try self.arena().dupe(Field, fields.items),
-            .origin = self.originOf(ref),
+            .origin = try self.originOf(ref),
         });
     }
 
@@ -469,6 +504,7 @@ const Parser = struct {
     // --- records --------------------------------------------------------------
 
     fn record(self: *Parser) ParseError!void {
+        const schema_token = self.token;
         const schema_id, const schema_text = try self.schemaRef();
         self.advance();
 
@@ -481,20 +517,22 @@ const Parser = struct {
             .kind = .define,
             .schema = schema_id,
             .schema_text = schema_text,
+            .schema_origin = try self.originOf(schema_token),
             .id = content_id,
             .text = text,
             .fields = fields,
-            .origin = self.originOf(id_token),
+            .origin = try self.originOf(id_token),
         });
     }
 
     fn recordDirective(self: *Parser, kind: RecordDecl.Kind) ParseError!void {
+        const directive_token = self.token;
         self.advance();
         const id_token = self.token;
         const content_id, const text = try self.contentRef();
         self.advance();
 
-        const fields: []const NamedValue = switch (kind) {
+        const fields: []const FieldDecl = switch (kind) {
             .remove => &.{},
             else => try self.recordBody(),
         };
@@ -502,20 +540,42 @@ const Parser = struct {
             .kind = kind,
             .schema = .none,
             .schema_text = "",
+            .schema_origin = try self.originOf(directive_token),
             .id = content_id,
             .text = text,
             .fields = fields,
-            .origin = self.originOf(id_token),
+            .origin = try self.originOf(id_token),
         });
     }
 
-    fn recordBody(self: *Parser) ParseError![]const NamedValue {
+    /// A record's own fields, which carry locations. The fields *inside* a value do not
+    /// (`fieldValues`): an inline struct is a handful of names on a line or two, and a
+    /// complaint about one of them points at the field that contains it.
+    fn recordBody(self: *Parser) ParseError![]const FieldDecl {
         try self.expect(.lbrace);
-        var fields: std.ArrayList(NamedValue) = .empty;
+        var fields: std.ArrayList(FieldDecl) = .empty;
         defer fields.deinit(self.gpa);
-        try self.fieldValues(&fields, 0);
+
+        while (self.token.tag == .identifier or self.token.tag == .content_id) {
+            if (fields.items.len >= self.limits.max_fields_per_record) {
+                try self.errAt(self.token, "more than {d} fields in one record", .{self.limits.max_fields_per_record});
+                return error.Recorded;
+            }
+            const name_token = self.token;
+            const name = try self.fieldName(name_token);
+            self.advance();
+            const value_token = self.token;
+            const v = try self.value(0);
+            try fields.append(self.gpa, .{
+                .name = name,
+                .value = v,
+                .name_origin = try self.originOf(name_token),
+                .value_origin = try self.originOf(value_token),
+            });
+        }
+
         try self.expect(.rbrace);
-        return self.arena().dupe(NamedValue, fields.items);
+        return self.arena().dupe(FieldDecl, fields.items);
     }
 
     fn fieldValues(self: *Parser, out: *std.ArrayList(NamedValue), depth: u32) ParseError!void {
@@ -830,9 +890,32 @@ const Parser = struct {
 
     // --- diagnostics ----------------------------------------------------------
 
-    fn originOf(self: *Parser, token: Token) Origin {
+    fn originOf(self: *Parser, token: Token) Allocator.Error!Origin {
         const loc = self.source.location(token.start);
-        return .{ .file = loc.file, .line = loc.line, .column = loc.column };
+        return .{
+            .file = loc.file,
+            .line = loc.line,
+            .column = loc.column,
+            .length = @max(1, token.len()),
+            .line_text = try self.lineText(token.start),
+        };
+    }
+
+    /// The line containing `offset`, copied into the document's arena.
+    ///
+    /// One line is remembered, which is enough: a field's name and its value are almost
+    /// always written together, so the common case is two origins on one line. The
+    /// remembered slice is compared against the source rather than trusted, and cleared
+    /// when a file's parse begins or ends, so a buffer the resolver reused at the same
+    /// address can never be mistaken for the line it used to hold.
+    fn lineText(self: *Parser, offset: usize) Allocator.Error![]const u8 {
+        const line = self.source.lineText(offset);
+        if (self.last_line) |cached| {
+            if (cached.source.ptr == line.ptr and cached.source.len == line.len) return cached.copy;
+        }
+        const copy = try self.arena().dupe(u8, line);
+        self.last_line = .{ .source = line, .copy = copy };
+        return copy;
     }
 
     fn errAt(self: *Parser, token: Token, comptime fmt: []const u8, args: anytype) Allocator.Error!void {
