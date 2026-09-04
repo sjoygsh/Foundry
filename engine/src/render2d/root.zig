@@ -19,6 +19,7 @@ pub const camera = @import("camera.zig");
 pub const color = @import("color.zig");
 pub const renderer = @import("renderer.zig");
 pub const sprite = @import("sprite.zig");
+pub const text = @import("text.zig");
 pub const texture = @import("texture.zig");
 
 pub const AtlasHandle = atlas.AtlasHandle;
@@ -32,6 +33,10 @@ pub const Sprite = sprite.Sprite;
 /// Hit-testing one sprite. Picking is the game's loop over its own objects; see
 /// `sprite.containsPoint` for why the renderer does not own a "what is at this point".
 pub const containsPoint = sprite.containsPoint;
+pub const BitmapFont = text.BitmapFont;
+pub const TextOptions = text.TextOptions;
+/// The bounding box a string would occupy. Runs the layout the drawing runs.
+pub const measureText = text.measure;
 pub const Extent2D = texture.Extent2D;
 pub const TextureHandle = texture.TextureHandle;
 pub const TextureOptions = texture.TextureOptions;
@@ -45,5 +50,6 @@ test {
     _ = color;
     _ = renderer;
     _ = sprite;
+    _ = text;
     _ = texture;
 }

@@ -10,6 +10,7 @@ const batch_mod = @import("batch.zig");
 const camera_mod = @import("camera.zig");
 const color_mod = @import("color.zig");
 const sprite_mod = @import("sprite.zig");
+const text_mod = @import("text.zig");
 const texture_mod = @import("texture.zig");
 
 const Allocator = std.mem.Allocator;
@@ -20,7 +21,9 @@ const Camera2D = camera_mod.Camera2D;
 const Color = color_mod.Color;
 const Extent2D = texture_mod.Extent2D;
 const Region = atlas_mod.Region;
+const BitmapFont = text_mod.BitmapFont;
 const Sprite = sprite_mod.Sprite;
+const TextOptions = text_mod.TextOptions;
 const TextureHandle = texture_mod.TextureHandle;
 const Vertex = sprite_mod.Vertex;
 const log = core.log.scoped(.render2d);
@@ -70,6 +73,10 @@ pub const FrameView = struct {
 /// Per-frame counters. Outputs only: statistics never feed simulation (I9).
 pub const Stats = struct {
     sprites: u32 = 0,
+    /// Glyphs are sprites too, and are counted in `sprites` as well. Separately here
+    /// because a frame that is mostly text and a frame that is mostly sprites want
+    /// different things done about them.
+    glyphs: u32 = 0,
     batches: u32 = 0,
     draw_calls: u32 = 0,
     vertices: u32 = 0,
@@ -563,6 +570,44 @@ pub const Renderer = struct {
         // error at the call site that caused it — the payoff of I1.
         if (self.textures.get(sprite.texture) == null) return error.InvalidTexture;
         try self.batcher.add(self.gpa, sprite);
+    }
+
+    /// Appends one string's glyphs to this frame's draw list.
+    ///
+    /// A glyph is a sprite, so this is a loop over `drawSprite`'s work and nothing more —
+    /// same batcher, same sort key, same draw call. Text and sprites in one layer from one
+    /// atlas cost one draw call, which is not a special case here but a consequence of
+    /// there being no separate text path to make one.
+    ///
+    /// The bytes are untrusted and are never asserted on: invalid UTF-8 and codepoints the
+    /// font lacks draw the substitution glyph (`text.Layout`).
+    pub fn drawText(
+        self: *Self,
+        font: BitmapFont,
+        string: []const u8,
+        options: TextOptions,
+    ) Error!void {
+        if (!self.recording) return error.NotRecording;
+        // Checked once, not once per glyph: every glyph comes from the same texture, and a
+        // thousand-character line should not pay for a thousand lookups.
+        if (self.textures.get(font.glyphs.texture) == null) return error.InvalidTexture;
+
+        var layout: text_mod.Layout = .init(font, string, options);
+        while (layout.next()) |placed| {
+            const region = placed.region orelse continue;
+            try self.batcher.add(self.gpa, .{
+                .texture = region.texture,
+                .position = placed.position,
+                .size = placed.size,
+                .uv = region.uv,
+                // Top-left, because that is where `TextOptions.position` is measured from.
+                .origin = .init(0, 1),
+                .tint = options.tint,
+                .layer = options.layer,
+                .blend = options.blend,
+            });
+            self.stats.glyphs += 1;
+        }
     }
 
     /// Sorts, writes vertices, and records any copies the memory model needs.
@@ -1119,4 +1164,136 @@ test "a stale atlas handle is refused rather than resolving to another atlas" {
     var image = try asset.Image.alloc(testing.allocator, 4, 4);
     defer image.deinit(testing.allocator);
     try testing.expectError(error.InvalidAtlas, fx.renderer.atlasAdd(first, image));
+}
+
+test "text and sprites from one atlas are one draw call" {
+    // §10's claim, checked rather than asserted in prose. If text ever grows a pipeline of
+    // its own this is the test that fails.
+    var fx = try Fixture.init(256);
+    defer fx.deinit();
+
+    const handle = try fx.renderer.createAtlas(.{ .width = 256, .height = 256 }, .{});
+
+    var sheet = try asset.Image.alloc(testing.allocator, 32, 32);
+    defer sheet.deinit(testing.allocator);
+    @memset(sheet.pixels, 0xFF);
+    const art = try fx.renderer.atlasAdd(handle, sheet);
+
+    var glyphs = try asset.Image.alloc(testing.allocator, 128, 48);
+    defer glyphs.deinit(testing.allocator);
+    @memset(glyphs.pixels, 0xFF);
+    const font: BitmapFont = .{
+        .glyphs = try fx.renderer.atlasAdd(handle, glyphs),
+        .cell = .{ .width = 8, .height = 8 },
+        .columns = 16,
+        .glyph_count = 96,
+    };
+
+    try fx.renderer.begin(fx.view());
+    try fx.renderer.drawSprite(.{
+        .texture = art.texture,
+        .uv = art.uv,
+        .position = .init(0, 0),
+        .size = .init(32, 32),
+    });
+    try fx.renderer.drawText(font, "hello", .{ .position = .init(0, 0) });
+    try fx.frame();
+
+    const stats = fx.renderer.frameStats();
+    try testing.expectEqual(@as(u32, 5), stats.glyphs);
+    // Six things drawn — one sprite and five glyphs — from one texture, so one batch.
+    try testing.expectEqual(@as(u32, 6), stats.sprites);
+    try testing.expectEqual(@as(u32, 1), stats.draw_calls);
+}
+
+test "a font on its own texture works the same way, and costs the batch break" {
+    // The other half of the claim: moving a font into an atlas is a change to how it is
+    // created and to nothing else. Here it is standalone, and the only difference is the
+    // second draw call — which is exactly what the atlas exists to remove.
+    var fx = try Fixture.init(256);
+    defer fx.deinit();
+
+    var glyphs = try asset.Image.alloc(testing.allocator, 128, 48);
+    defer glyphs.deinit(testing.allocator);
+    @memset(glyphs.pixels, 0xFF);
+    const texture = try fx.renderer.createTexture(glyphs, .{ .label = "font" });
+
+    const font: BitmapFont = .{
+        .glyphs = fx.renderer.textureRegion(texture).?,
+        .cell = .{ .width = 8, .height = 8 },
+        .columns = 16,
+        .glyph_count = 96,
+    };
+
+    try fx.renderer.begin(fx.view());
+    try fx.renderer.drawSprite(fx.sprite(fx.texture, 0, .alpha));
+    try fx.renderer.drawText(font, "hi", .{ .position = .init(0, 0) });
+    try fx.frame();
+
+    const stats = fx.renderer.frameStats();
+    try testing.expectEqual(@as(u32, 2), stats.glyphs);
+    try testing.expectEqual(@as(u32, 2), stats.draw_calls);
+}
+
+test "text from a destroyed font is refused at the call that draws it" {
+    var fx = try Fixture.init(64);
+    defer fx.deinit();
+
+    var glyphs = try asset.Image.alloc(testing.allocator, 128, 48);
+    defer glyphs.deinit(testing.allocator);
+    @memset(glyphs.pixels, 0xFF);
+    const texture = try fx.renderer.createTexture(glyphs, .{});
+    const font: BitmapFont = .{
+        .glyphs = fx.renderer.textureRegion(texture).?,
+        .cell = .{ .width = 8, .height = 8 },
+        .columns = 16,
+        .glyph_count = 96,
+    };
+    fx.renderer.destroyTexture(texture);
+
+    try fx.renderer.begin(fx.view());
+    try testing.expectError(error.InvalidTexture, fx.renderer.drawText(font, "x", .{
+        .position = .init(0, 0),
+    }));
+}
+
+test "drawing text outside a begin is a caller error, not a crash" {
+    var fx = try Fixture.init(64);
+    defer fx.deinit();
+
+    const font: BitmapFont = .{
+        .glyphs = .whole(fx.texture, .{ .width = 128, .height = 48 }),
+        .cell = .{ .width = 8, .height = 8 },
+        .columns = 16,
+        .glyph_count = 96,
+    };
+    try testing.expectError(error.NotRecording, fx.renderer.drawText(font, "x", .{
+        .position = .init(0, 0),
+    }));
+}
+
+test "text a font cannot render still costs the frame nothing surprising" {
+    // A font with no substitute draws nothing for a missing codepoint. The glyph count
+    // reports what was actually drawn, which is the number worth having.
+    var fx = try Fixture.init(64);
+    defer fx.deinit();
+
+    var glyphs = try asset.Image.alloc(testing.allocator, 128, 48);
+    defer glyphs.deinit(testing.allocator);
+    @memset(glyphs.pixels, 0xFF);
+    const texture = try fx.renderer.createTexture(glyphs, .{});
+
+    const font: BitmapFont = .{
+        .glyphs = fx.renderer.textureRegion(texture).?,
+        .cell = .{ .width = 8, .height = 8 },
+        .columns = 16,
+        .glyph_count = 96,
+        .substitute = null,
+    };
+
+    try fx.renderer.begin(fx.view());
+    try fx.renderer.drawText(font, "a\u{2603}b", .{ .position = .init(0, 0) });
+    try fx.frame();
+
+    try testing.expectEqual(@as(u32, 2), fx.renderer.frameStats().glyphs);
 }
