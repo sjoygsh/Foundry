@@ -115,6 +115,19 @@ pub fn HandlePool(comptime Tag: type, comptime T: type) type {
             return self.slots.items.len;
         }
 
+        /// Reserves room for `n` more values, so that a run of `add` calls cannot fail
+        /// partway.
+        ///
+        /// For callers that have to be all-or-nothing: a content store merging a package
+        /// either takes all of it or none of it, and "ran out of memory halfway" is not a
+        /// state worth being able to describe. Free slots are reused before the array
+        /// grows, so only the shortfall is reserved.
+        pub fn ensureUnusedCapacity(self: *Self, gpa: std.mem.Allocator, n: u32) std.mem.Allocator.Error!void {
+            const free = self.slots.items.len - self.live;
+            if (free >= n) return;
+            try self.slots.ensureUnusedCapacity(gpa, n - free);
+        }
+
         pub fn add(self: *Self, gpa: std.mem.Allocator, value: T) std.mem.Allocator.Error!Id {
             if (self.free_head != free_list_end) {
                 const index = self.free_head;
@@ -399,4 +412,26 @@ test "capacity only grows; indices stay stable" {
 
     _ = try pool.add(gpa, .{ .n = 3 });
     try testing.expectEqual(@as(usize, 2), pool.capacity()); // reused, not grown
+}
+
+test "reserving counts the free slots it is about to reuse" {
+    const gpa = testing.allocator;
+    var pool: ThingPool = .empty;
+    defer pool.deinit(gpa);
+
+    const a = try pool.add(gpa, .{ .n = 1 });
+    const b = try pool.add(gpa, .{ .n = 2 });
+    try testing.expect(pool.remove(a));
+    try testing.expect(pool.remove(b));
+
+    // Two free slots already cover two more values, so nothing is allocated...
+    try pool.ensureUnusedCapacity(gpa, 2);
+    try testing.expectEqual(@as(usize, 2), pool.capacity());
+
+    // ...and asking for four reserves only the two the free list cannot supply.
+    try pool.ensureUnusedCapacity(gpa, 4);
+    const reserved = pool.slots.capacity;
+    try testing.expect(reserved >= 4);
+    for (0..4) |i| _ = try pool.add(gpa, .{ .n = @intCast(i) });
+    try testing.expectEqual(reserved, pool.slots.capacity);
 }

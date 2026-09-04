@@ -69,8 +69,16 @@ pub const format_version: u32 = 1;
 /// 52  fields_len       u32
 /// 56  strings_offset   u32     every string in the package, deduplicated
 /// 60  strings_len      u32
+/// 64  name_offset      u32     the package's own namespace:name
+/// 68  name_len         u32
 /// ```
-pub const header_size = 64;
+///
+/// The name is in the file because a package that can only state its own id is a package
+/// no diagnostic can name: "foundry:core supplied this record" is an answer, and
+/// "4f2ac91e… supplied this record" is not. The schemas and the records each carry their
+/// spelling for the same reason (§4.5), and the package was the one thing left that did
+/// not.
+pub const header_size = 72;
 
 const schema_entry_size = 24;
 const record_entry_size = 32;
@@ -226,10 +234,12 @@ pub const WriteError = error{
 
 /// Compiles a checked package into `out`.
 ///
-/// `registry` supplies the schemas: the ones the package declares are written into the
-/// file, and every record is laid out by whatever its schema is *now*, which is why a
-/// package should be compiled against a registry holding only what it and its
-/// dependencies put there.
+/// `registry` supplies the schemas: every schema the package carries (§6 — the ones it
+/// declares and the ones its records use) is written into the file at the version the
+/// registry holds *now*, and every record is laid out against that same version. Which is
+/// why a package should be compiled against a registry holding only what it and its
+/// dependencies put there: the file records the shape it was built against, and a store
+/// reading it later trusts that record over its own newer copy.
 pub fn write(
     gpa: Allocator,
     pkg: *const check.Package,
@@ -516,6 +526,10 @@ const Builder = struct {
     // --- assembly -------------------------------------------------------------
 
     fn assemble(self: *Builder, pkg: *const check.Package, out: *std.ArrayList(u8)) WriteError!void {
+        // Interned before the section lengths are taken, because it lands in the strings
+        // section like every other name.
+        const name_ref = try self.intern(pkg.name);
+
         const schemas_len = try cast32(self.schema_entries.items.len + self.schema_decls.items.len);
         const records_len = try cast32(self.records.items.len);
         const fields_len = try cast32(self.fields.items.len);
@@ -546,6 +560,8 @@ const Builder = struct {
         std.mem.writeInt(u32, header[52..56], fields_len, .little);
         std.mem.writeInt(u32, header[56..60], strings_offset, .little);
         std.mem.writeInt(u32, header[60..64], strings_len, .little);
+        std.mem.writeInt(u32, header[64..68], name_ref.offset, .little);
+        std.mem.writeInt(u32, header[68..72], name_ref.len, .little);
         try out.appendSlice(self.gpa, &header);
 
         try out.appendSlice(self.gpa, self.schema_entries.items);
@@ -639,6 +655,8 @@ pub const Reader = struct {
     arena: core.Arena,
     bytes: []const u8,
     id: ContentId,
+    /// The source spelling of `id`, borrowed from the file.
+    name: []const u8 = "",
     version: u32,
     limits: Limits,
 
@@ -695,6 +713,11 @@ pub const Reader = struct {
         };
         errdefer self.arena.deinit();
 
+        self.name = self.string(
+            std.mem.readInt(u32, bytes[64..68], .little),
+            std.mem.readInt(u32, bytes[68..72], .little),
+        ) orelse return error.Malformed;
+
         try self.decodeSchemas(schemas_section, schema_count);
         try self.validateRecordEntries();
         return self;
@@ -737,19 +760,24 @@ pub const Reader = struct {
         return .{ .reader = self, .fields = schema.fields, .block = view.block };
     }
 
-    /// Reads every field of every record whose schema this package declares.
+    /// Reads every field of every record.
     ///
     /// Not required before reading — every accessor is bounds-safe on its own — but it
     /// turns a package that will fail on the tenth field of the thousandth record into one
     /// that fails at load, which is the difference between a diagnosable package and a
     /// mysterious one.
+    ///
+    /// A record naming a schema the package does not carry is `Malformed` rather than a
+    /// record skipped: a package carries every schema its records use (§6), so a record
+    /// whose schema is missing is a file that has been damaged or built wrong, and a
+    /// silent skip would turn that into content that quietly is not there.
     pub fn walk(self: *const Reader, gpa: Allocator) ReadValueError!void {
         var arena: core.Arena = .init(gpa);
         defer arena.deinit();
         var i: u32 = 0;
         while (i < self.record_count) : (i += 1) {
             const view = self.record(i).?;
-            const schema = self.schemaFor(view.schema_id) orelse continue;
+            const schema = self.schemaFor(view.schema_id) orelse return error.Malformed;
             const fields = self.fieldsOf(view, schema.*);
             for (0..schema.fields.len) |index| {
                 _ = try fields.valueAt(arena.allocator(), @intCast(index));
@@ -1250,6 +1278,9 @@ test "every value of every record survives the round trip" {
     defer r.deinit();
 
     try testing.expect(r.id.eql(ContentId.fromString("foundry:core")));
+    // The package says its own name, so a store can answer "who supplied this?" with
+    // something a person can read.
+    try testing.expectEqualStrings("foundry:core", r.name);
     try testing.expectEqual(@as(u32, 3), r.version);
     try testing.expectEqual(@as(u32, 1), r.schemaCount());
     try testing.expectEqual(@as(u32, 2), r.record_count);
@@ -1525,9 +1556,11 @@ test "the sections say where they are, and they are where they say" {
     const bytes = f.bytes.items;
 
     try testing.expectEqualStrings(magic, bytes[0..4]);
+    // The four section refs only: the name ref that follows them points into the strings
+    // section rather than being a section of its own.
     var at: usize = 32;
     var previous_end: u32 = header_size;
-    while (at < header_size) : (at += 8) {
+    while (at < 64) : (at += 8) {
         const offset = std.mem.readInt(u32, bytes[at..][0..4], .little);
         const len = std.mem.readInt(u32, bytes[at + 4 ..][0..4], .little);
         try testing.expectEqual(@as(u32, 0), offset % section_align);

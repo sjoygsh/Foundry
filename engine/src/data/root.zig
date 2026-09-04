@@ -27,6 +27,7 @@ pub const lexer = @import("lexer.zig");
 pub const parser = @import("parser.zig");
 pub const limits = @import("limits.zig");
 pub const schema = @import("schema.zig");
+pub const store = @import("store.zig");
 pub const value = @import("value.zig");
 
 // The names reached for most often. These are seen by people we do not control — mod
@@ -46,6 +47,7 @@ pub const Registry = schema.Registry;
 pub const Schema = schema.Schema;
 pub const SchemaHandle = schema.SchemaHandle;
 pub const SchemaId = id.SchemaId;
+pub const Store = store.Store;
 pub const Value = value.Value;
 
 /// Validates a `namespace:name` string and hashes it to a `core.ContentId`.
@@ -60,5 +62,6 @@ test {
     _ = parser;
     _ = limits;
     _ = schema;
+    _ = store;
     _ = value;
 }

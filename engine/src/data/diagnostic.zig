@@ -40,10 +40,19 @@ pub const Severity = enum {
 /// alternative — carrying an encoding-aware renderer into L1 — does not justify.
 pub const Location = struct {
     file: []const u8,
+    /// Zero for a place inside a file that has no lines — a compiled `.fpk`, which is
+    /// where every complaint the store makes comes from. Such a diagnostic names the file
+    /// and stops, because `torch.fpk:0:0` is worse than `torch.fpk` at pointing anywhere.
     line: u32,
     column: u32,
 
+    /// A whole-file location, for something that went wrong in a file with no text.
+    pub fn whole(file: []const u8) Location {
+        return .{ .file = file, .line = 0, .column = 0 };
+    }
+
     pub fn format(self: Location, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        if (self.line == 0) return writer.print("{s}", .{self.file});
         try writer.print("{s}:{d}:{d}", .{ self.file, self.line, self.column });
     }
 };

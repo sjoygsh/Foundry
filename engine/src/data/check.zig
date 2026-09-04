@@ -106,21 +106,36 @@ pub const Package = struct {
     limits: Limits,
     list: std.ArrayList(Record) = .empty,
     by_id: std.AutoHashMapUnmanaged(u64, u32) = .empty,
-    /// The schemas this package *declares*, in declaration order, each once.
+    /// Every schema this package needs: the ones it declares, in declaration order,
+    /// then the ones its records merely use, in order of first use. Each appears once.
     ///
-    /// A package carries the schemas it declares and not the ones it merely uses: a mod
-    /// adding records of `foundry:item` does not ship a second copy of that schema, which
-    /// is both smaller and the only version of events the registry can accept (§3 refuses
-    /// to re-register a schema at the same version).
-    schemas: std.ArrayList(DeclaredSchema) = .empty,
+    /// **Used, not only declared**, because a package's records are laid out against a
+    /// schema *at a version*, and a package that did not carry that version could not say
+    /// which one its bytes are shaped like. A mod adding `foundry:item` records therefore
+    /// ships a copy of `foundry:item` as it was when the mod was compiled — which is
+    /// exactly what makes the mod survive the base game extending that schema later (§3),
+    /// and what lets a `.fpk` be read with nothing but itself.
+    schemas: std.ArrayList(SchemaRef) = .empty,
 
     /// A schema id and the spelling it was written with. The registry holds only the
     /// hash, and a compiled package has to carry the name: "unknown schema 4f2a…" is not
     /// a thing anyone can act on.
-    pub const DeclaredSchema = struct {
+    pub const SchemaRef = struct {
         id: SchemaId,
         text: []const u8,
     };
+
+    /// Records that this package carries `schema_id`, spelled `text`, if it does not
+    /// already. Called for every declaration and for every record's schema.
+    fn noteSchema(self: *Package, gpa: Allocator, schema_id: SchemaId, text: []const u8) Allocator.Error!void {
+        for (self.schemas.items) |seen| {
+            if (seen.id.eql(schema_id)) return;
+        }
+        try self.schemas.append(gpa, .{
+            .id = schema_id,
+            .text = try self.arena.allocator().dupe(u8, text),
+        });
+    }
 
     pub const InitError = id_mod.Error || Allocator.Error;
 
@@ -202,19 +217,14 @@ pub const Package = struct {
                         decl.origin.length,
                         decl.origin.line_text,
                         "schema '{s}' {s}",
-                        .{ decl.text, describeRegisterError(err) },
+                        .{ decl.text, schema_mod.describeRegisterError(err) },
                     );
                     continue;
                 },
             };
             // Extending a schema declared earlier in the same package is one schema, not
             // two: the file will carry it once, at whatever version it ends up at.
-            for (self.schemas.items) |seen| {
-                if (seen.id.eql(decl.id)) break;
-            } else try self.schemas.append(gpa, .{
-                .id = decl.id,
-                .text = try self.arena.allocator().dupe(u8, decl.text),
-            });
+            try self.noteSchema(gpa, decl.id, decl.text);
         }
         if (failed) return error.ContentInvalid;
     }
@@ -273,24 +283,6 @@ pub const Package = struct {
     }
 };
 
-fn describeRegisterError(err: anyerror) []const u8 {
-    return switch (err) {
-        error.MissingSchemaId => "has no identifier",
-        error.InvalidVersion => "has version 0; versions start at 1",
-        error.InvalidFieldName => "has a field name that is not lowercase letters, digits and underscores starting with a letter",
-        error.DuplicateFieldName => "declares the same field twice",
-        error.TooManyFields => "has more fields than the limit allows",
-        error.NestingTooDeep => "nests deeper than the limit allows",
-        error.InvalidSince => "has a field whose 'since' names a version the schema does not have",
-        error.AddedFieldNeedsDefault => "adds a field that is neither optional nor defaulted, which content written before it existed could not satisfy",
-        error.DefaultTypeMismatch => "has a default whose type is not the field's",
-        error.DuplicateSchema => "is already registered at this version or a higher one; a schema may only be extended, and only upwards",
-        error.NonAdditiveChange => "changes or removes a field an earlier version declared; a version may only append",
-        error.ListTooLong => "has a default list longer than the limit allows",
-        else => "was refused",
-    };
-}
-
 /// The per-document state of one checking run.
 const Checker = struct {
     gpa: Allocator,
@@ -333,6 +325,7 @@ const Checker = struct {
             return self.err(decl.schema_origin, "unknown schema '{s}'", .{decl.schema_text});
         };
         const schema = self.registry.get(handle).?.*;
+        try self.pkg.noteSchema(self.gpa, decl.schema, decl.schema_text);
 
         if (self.pkg.by_id.get(decl.id.hash)) |existing_index| {
             const existing = self.pkg.list.items[existing_index];
@@ -957,6 +950,31 @@ test "records keep the order they were written in, which is the order they merge
     try testing.expect(h.pkg.find(ContentId.fromString("foundry:item.nothing")) == null);
 }
 
+test "a package carries the schemas its records use, not only the ones it declares" {
+    var h = try Harness.init();
+    defer h.deinit();
+
+    // A schema from somewhere else — the base game, as far as this package knows.
+    _ = try h.registry.register(testing.allocator, .{
+        .id = SchemaId.fromStringUnchecked("other:tile"),
+        .version = 1,
+        .fields = &.{.{ .name = "solid", .type = .bool }},
+    });
+
+    try h.compile(
+        \\@schema item { name string }
+        \\item foundry:item.torch { name "Torch" }
+        \\other:tile foundry:tile.wall { solid true }
+    );
+
+    // Both, in declaration order then first-use order: the declared one is what the
+    // package defines, and the used one is what its bytes are laid out against, which the
+    // compiled file has to state for itself (§6).
+    try testing.expectEqual(@as(usize, 2), h.pkg.schemas.items.len);
+    try testing.expectEqualStrings("foundry:item", h.pkg.schemas.items[0].text);
+    try testing.expectEqualStrings("other:tile", h.pkg.schemas.items[1].text);
+}
+
 test "every mistake in a file is reported, not just the first" {
     var h = try Harness.init();
     defer h.deinit();
@@ -985,7 +1003,7 @@ test "a bad schema does not hide the mistakes in the records below it" {
     var buf: [2048]u8 = undefined;
     const rendered = try h.expectFailure(
         \\@schema item { name string }
-        \\@schema item { name string }
+        \\@schema item { label string }
         \\item foundry:item.torch { name 42 }
     , &buf);
 

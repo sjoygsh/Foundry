@@ -154,11 +154,13 @@ pub const RegisterError = error{
     AddedFieldNeedsDefault,
     /// A default whose type is not the field's type.
     DefaultTypeMismatch,
-    /// A schema with this identifier is already registered at the same or a higher
-    /// version. Replacing a schema outright is refused: records already parsed against
-    /// the old one would silently reinterpret their bytes.
+    /// A *different* schema is already registered under this identifier at this version.
+    /// Replacing a schema outright is refused: records already laid out against the old
+    /// one would silently reinterpret their bytes. Re-registering the same one is not
+    /// this error — it is how two packages that both use a schema each carry it (§6).
     DuplicateSchema,
-    /// A higher version that changed or removed an existing field rather than appending.
+    /// A version that disagrees with one already registered about a field they share, or
+    /// that drops a field the other declares. Versions may only append.
     NonAdditiveChange,
 } || value_mod.CloneError;
 
@@ -201,13 +203,24 @@ pub const Registry = struct {
         return self.schemas.getConst(self.find(schema_id) orelse return null);
     }
 
-    /// Registers a schema, or extends one already registered.
+    /// Registers a schema, extends one already registered, or accepts a copy of one.
     ///
-    /// Extension is the only form of schema override permitted, and only when it is
-    /// additive: the existing fields must be unchanged and in the same order, because
-    /// their layout in every already-compiled package depends on it. A later package
-    /// *adding* a field to a schema is a legitimate and important thing for a mod to do;
-    /// a later package *reinterpreting* one is a corruption with a friendly face.
+    /// Three things can arrive under an identifier the registry already holds, and only
+    /// the middle one changes anything:
+    ///
+    /// * **An older or equal version.** A second package carrying the same schema as it
+    ///   was when *that* package was compiled. Accepted if it is a prefix of what is held
+    ///   — which is what additive-only versioning guarantees it will be — and the
+    ///   registry keeps the newer copy. This is the ordinary case for any two packages
+    ///   that share a schema, and it is why the registry holds the *newest* version
+    ///   rather than the first one it saw.
+    /// * **A higher version.** An extension. Permitted only when additive: the existing
+    ///   fields must be unchanged and in the same order, because the layout of every
+    ///   already-compiled package depends on it. A later package *adding* a field is a
+    ///   legitimate and important thing for a mod to do; a later package *reinterpreting*
+    ///   one is a corruption with a friendly face.
+    /// * **A different schema at the same version.** Two packages that disagree about
+    ///   what `foundry:item` is. Refused, because nothing else is safe.
     ///
     /// Extending updates the schema behind the existing handle rather than issuing a new
     /// one, so everything already holding it follows — the same property that makes hot
@@ -215,17 +228,22 @@ pub const Registry = struct {
     pub fn register(self: *Registry, gpa: Allocator, schema: Schema) RegisterError!SchemaHandle {
         try self.validate(schema);
 
-        const owned = try self.clone(schema);
-
         if (self.by_id.get(schema.id.hash)) |existing_handle| {
             const existing = self.schemas.get(existing_handle).?;
-            if (schema.version <= existing.version) return error.DuplicateSchema;
-            try checkAdditive(existing.*, schema);
-            existing.* = owned;
+            if (schema.version > existing.version) {
+                try checkAdditive(existing.*, schema);
+                // Cloned only once the decision to install it is made, so a package that
+                // merely restates a schema costs the registry's arena nothing.
+                existing.* = try self.clone(schema);
+            } else if (schema.version == existing.version) {
+                if (!sameFields(schema.fields, existing.fields)) return error.DuplicateSchema;
+            } else {
+                try checkAdditive(schema, existing.*);
+            }
             return existing_handle;
         }
 
-        const handle = try self.schemas.add(gpa, owned);
+        const handle = try self.schemas.add(gpa, try self.clone(schema));
         try self.by_id.put(gpa, schema.id.hash, handle);
         return handle;
     }
@@ -266,6 +284,24 @@ pub const Registry = struct {
                 else => {},
             }
         }
+    }
+
+    /// Whether two declarations of the same version are the same declaration.
+    ///
+    /// `Field.eql` compares name and type and not presence, because that is what layout
+    /// depends on; here the whole declaration has to match, since two packages disagreeing
+    /// about a default disagree about what content means.
+    fn sameFields(a: []const Field, b: []const Field) bool {
+        if (a.len != b.len) return false;
+        for (a, b) |x, y| {
+            if (!x.eql(y) or x.since != y.since) return false;
+            if (std.meta.activeTag(x.presence) != std.meta.activeTag(y.presence)) return false;
+            switch (x.presence) {
+                .default => |d| if (!d.eql(y.presence.default)) return false,
+                else => {},
+            }
+        }
+        return true;
     }
 
     fn checkAdditive(old: Schema, new: Schema) RegisterError!void {
@@ -320,6 +356,28 @@ pub const Registry = struct {
         };
     }
 };
+
+/// A registration failure as a clause that follows a schema's name — "schema 'foundry:item'
+/// <this>". One table, because the same failures arrive from a `.fdt` being compiled and
+/// from a `.fpk` being loaded, and a mod author should not meet two vocabularies for one
+/// refusal.
+pub fn describeRegisterError(err: RegisterError) []const u8 {
+    return switch (err) {
+        error.MissingSchemaId => "has no identifier",
+        error.InvalidVersion => "has version 0; versions start at 1",
+        error.InvalidFieldName => "has a field name that is not lowercase letters, digits and underscores starting with a letter",
+        error.DuplicateFieldName => "declares the same field twice",
+        error.TooManyFields => "has more fields than the limit allows",
+        error.NestingTooDeep => "nests deeper than the limit allows",
+        error.InvalidSince => "has a field whose 'since' names a version the schema does not have",
+        error.AddedFieldNeedsDefault => "adds a field that is neither optional nor defaulted, which content written before it existed could not satisfy",
+        error.DefaultTypeMismatch => "has a default whose type is not the field's",
+        error.DuplicateSchema => "is already registered at this version with a different declaration; two packages cannot disagree about what one schema is",
+        error.NonAdditiveChange => "disagrees with the version already registered about a field they share, or drops one it declares; a version may only append",
+        error.ListTooLong => "has a default list longer than the limit allows",
+        error.OutOfMemory => "could not be registered: out of memory",
+    };
+}
 
 pub const TypeError = error{
     WrongType,
@@ -516,8 +574,13 @@ test "a later version may append fields, and may not touch the ones already writ
     };
     const handle = try registry.register(gpa, v1);
 
-    // Same version again is a duplicate, not a silent replacement.
-    try testing.expectError(error.DuplicateSchema, registry.register(gpa, v1));
+    // The same schema again is the same schema: two packages that both carry it agree,
+    // and agreeing is not a conflict.
+    try testing.expect(handle.eql(try registry.register(gpa, v1)));
+    try testing.expectEqual(@as(u32, 1), registry.count());
+
+    // A *different* one at the same version is two packages disagreeing about what
+    // `foundry:item` is, and there is no safe answer to that.
     try testing.expectError(error.DuplicateSchema, registry.register(gpa, .{
         .id = item,
         .version = 1,

@@ -1,11 +1,11 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-04
-**Updated by:** **M3, steps 4 and 5.** The checking pass — a parsed `Document` wired
-against a `Registry`, defaults filled at every level, the result laid out by schema field
-index — and then `.fpk`, the runtime format it compiles to. Text goes in, a package file
-comes out, and reading one back is arithmetic on bytes that were never copied. Nothing
-merges packages yet
+**Updated by:** **M3, step 6.** The store: packages merged in load order, records
+addressed by content id, and each one still carrying the package that supplied it. Building
+it reversed a decision from the day before — a package now carries every schema its records
+use, not only the ones it declares, because a record's layout has to be stated by the file
+it lives in
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -42,13 +42,14 @@ under a camera driven by keyboard and mouse, with the batcher's own numbers on s
 space that does not move when the camera does — 4 batches and 4 draw calls, because the
 sheet, the font and the selection outline share one atlas.
 
-**Current milestone: M3 — Content: "it has data."** Five of ten steps done. It started at
+**Current milestone: M3 — Content: "it has data."** Six of ten steps done. It started at
 the only place it could: its decisions. The first modding-relevant milestone, and it comes due on two of
 `CLAUDE.md` §9's postponed decisions — both now spent, as **ADR-0020** and **ADR-0021**, and
 struck from the §9 table. The two design documents `docs/design/README.md` has owed since M2
-are written, and the front half of `data` is built behind them: text in, checked records
-out. What remains is the binary format, the merge, and the tool that drives both. See
-`docs/ROADMAP.md`.
+are written, and `data` is built behind them, front to back: text in, checked records out,
+compiled to a package file, merged with other packages by load order. What remains is the
+tool that drives it from a directory, the asset registry above it, and moving the sandbox's
+own content into `content/core`. See `docs/ROADMAP.md`.
 
 **M1, for reference.** All five ROADMAP items are done: the Metal backend and its Objective-C shim (1), the
 `xcrun metal` → `.metallib` build step (2), runtime MSL compilation (3), the validation
@@ -220,8 +221,8 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 443 tests** (50 `core`, 70 `platform`, 90 `data`, 92 `rhi`,
-17 `asset`, 102 `render2d`, 22 `app`), and **451 under `-Drhi=metal`**, where `rhi` gains
+**`zig build test` passes 456 tests** (51 `core`, 70 `platform`, 102 `data`, 92 `rhi`,
+17 `asset`, 102 `render2d`, 22 `app`), and **464 under `-Drhi=metal`**, where `rhi` gains
 the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
@@ -307,15 +308,41 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M3 — Content: "it has data."** Two decisions and two design documents, and nothing else
-yet. That is the whole of the milestone so far and it is the right amount: `CLAUDE.md` rule 1
-says design before implementation, rule 10 says never make a major architectural decision
-silently, and M3 opens with two decisions §9 has been holding since M0.
+**M3 — Content: "it has data."** It opened with two decisions §9 had been holding since M0
+and the two design documents they needed, per `CLAUDE.md` rule 1 — design before
+implementation — and rule 10, which says never make a major architectural decision silently.
+Both are spent, as ADR-0020 and ADR-0021, and `data` is built behind them.
 
-**Steps 1 to 5 are built.** `data` exists: identity, schemas, the registry, the lexer, the
-parser, diagnostics, the pass that checks a document against the schemas it names, and the
-`.fpk` writer and reader. 443 tests, up from 346 at the end of M2; all eight target/backend
-combinations compile; `zig fmt` clean.
+**Steps 1 to 6 are built.** `data` exists end to end: identity, schemas, the registry, the
+lexer, the parser, diagnostics, the pass that checks a document against the schemas it
+names, the `.fpk` writer and reader, and the store that merges packages. 456 tests, up from
+346 at the end of M2; all eight target/backend combinations compile; `zig fmt` clean.
+
+**Step 6 — packages and the store.** `store.zig`: packages added in an order supplied from
+outside, records merged by content id with replace semantics, and provenance kept for every
+one. Five things worth carrying forward, recorded in `content-schemas.md`'s fourth
+Resolution section:
+
+* **The store reads compiled packages and nothing else** — not a parse tree, not a checked
+  `check.Package`. I3 says the base game loads through the path a mod uses; the strongest
+  reading of that is that there is only one path. Hot reload will compile to bytes in
+  memory and come back through the same call.
+* **A package carries every schema its records use**, which reverses what step 5 concluded
+  a day earlier. A record's block is laid out by field count and field types, so reading it
+  against a schema that has since grown a field is not a stale read but a wrong one — and
+  if the schema belongs to another package, nothing in the file said which version the
+  bytes were shaped like. Now the file says. The registry was relaxed to match: an
+  identical re-declaration changes nothing, an older one is accepted if it is a prefix of
+  what is held, and only a genuine disagreement at one version is still refused.
+* **A record sits where it was first defined.** A later package overriding it replaces the
+  value behind the handle without moving it — the same choice the registry makes for an
+  extended schema, and the same reason: everything holding the handle follows (I1).
+* **Loading a package is all or nothing.** Every fault it can contain is found in a pass
+  that merges nothing, and any of them leaves the store untouched. Half a mod's items is a
+  worse outcome than none of them and a message naming the file.
+* **The `.fpk` header carries the package's own name.** A package that can only state its
+  id cannot be named in the answer to "who supplied this record?", which §8 promises is
+  answerable.
 
 **Step 5 — `.fpk`.** The runtime format, both halves, in `data` — so the round trip is a
 pure function over byte buffers and every test of it is hermetic, the same property the
@@ -330,9 +357,9 @@ parser got for the same reason. Four things worth carrying forward, recorded in
 * **Every tag byte is spelled out rather than taken from a Zig declaration order**, the
   same rule `core/id.zig` follows in specifying FNV-1a by hand. Reordering a union in an
   editor must not be able to change what a byte in a shipped package means.
-* **A package carries the schemas it declares, not the ones it uses.** Otherwise a mod that
-  adds items ships a second copy of `foundry:item`, and loading it is then refused by the
-  rule against re-registering a schema at the same version.
+* ~~**A package carries the schemas it declares, not the ones it uses.**~~ **Reversed by
+  step 6**, which needed a record's layout to be stated by the file it lives in. The
+  registry rule this was working around was the thing that gave way.
 * **The reader is tested by breaking packages, not by reading good ones.** A valid package
   is mutated one byte at a time, four thousand times: about five in eight still open, and
   every accessor on every one either reads a value or returns an error. A byte-for-byte
@@ -524,8 +551,11 @@ sandbox runnable, and so nothing is a rewrite of the one before.
    and re-checks everything it reads out of a record block, because a block's shape depends
    on a schema the file need not agree with. A random file is a test, and so is a valid
    package with one byte changed.
-6. **Packages and the store.** Ordered merge, replace semantics, provenance, and the two
-   documented iteration orders I9 depends on (§6).
+6. ~~**Packages and the store.**~~ **Done, 2026-09-04.** `store.zig`: ordered merge,
+   replace semantics, provenance, and both documented iteration orders (§6) — packages in
+   the order given, records at the position where they were first defined. Loading is all
+   or nothing, a package carries every schema its records use, and each record is read
+   against the copy its own package shipped rather than the registry's newer one.
 7. **`tools/fpack`.** Walks a package directory, derives asset IDs per `assets.md` §3,
    reports collisions naming both files, and emits a `.fpk`.
 8. **`asset` gains its registry.** Loaders registered at runtime, reference counting,

@@ -1,10 +1,12 @@
 # Design: `data` — schemas, content, packages
 
-**Status:** §2, §3, §4, §5 and the checking half of §6 implemented as `engine/src/data/`
-(2026-09-04) — identity, schemas and the registry, the lexer, the parser, diagnostics, the
-pass that checks a parsed document against the schemas it names, and the `.fpk` writer and
-reader. The merge and the store (§6, §7, §8) are still design. See §4.7 and the two
-Resolution sections at the end for what implementation changed.
+**Status:** §2 through §8 implemented as `engine/src/data/` (2026-09-04) — identity,
+schemas and the registry, the lexer, the parser, diagnostics, the pass that checks a parsed
+document against the schemas it names, the `.fpk` writer and reader, and the store that
+merges packages in load order and answers by content id. Still design: `@patch`, `@remove`
+and list-append semantics (§7), which M3 deliberately omits and which parse and are refused
+until they exist. See §4.7 and the three Resolution sections at the end for what
+implementation changed.
 **Date:** 2026-09-04, revised 2026-09-04
 **Implements:** I2, I3, I5, I6, I8, I9 · **Informed by:** ADR-0005, ADR-0006, ADR-0007,
 ADR-0020, ADR-0021, CLAUDE.md §6
@@ -428,7 +430,7 @@ Little-endian, 8-byte aligned sections, designed to be **read in place**: the go
 loading a package is a read (or a map) plus validation, not a parse.
 
 ```
-header      64 bytes
+header      72 bytes
   0   magic            [4]u8   "FPKG"
   4   format_version   u32     bumped when this layout changes (I8)
   8   package_id       u64     ContentId hash of the package's namespace:name
@@ -437,9 +439,11 @@ header      64 bytes
   24  schema_count     u32
   28  record_count     u32
   32  section table    offset+length for each of the four sections below
+  64  name             offset+length of the package's own namespace:name
 
 schemas     schema_count entries of { id, version, name, declaration offset },
-            then the field declarations they point at
+            then the field declarations they point at — every schema the package's
+            records are laid out against, declared here or not
 records     record_count entries of { content_id, schema_id, name, offset, length }
 fields      the packed field data, laid out per each record's schema
 strings     every string in the package, deduplicated; refs carry their own length
@@ -590,9 +594,17 @@ a habit.
 2. **Whether `f64` earns its place.** I9 makes `f32` the simulation type; `f64` may be pure
    surface area. Cheap to remove now, impossible once a package uses it.
 3. **Schema extension across packages.** §3 permits additive version bumps and refuses
-   outright replacement. Whether a mod may add a field to *another* package's schema — and
-   what happens to records already parsed against the shorter one — is the M7 question this
-   leaves open on purpose.
+   outright replacement. Whether a mod *should be permitted* to add a field to another
+   package's schema is still open, and is an M7 question: it is a policy about what a mod
+   may do to content it does not own, not a mechanism.
+
+   The second half of this — *what happens to records already laid out against the shorter
+   version* — was closed by the store, because building one forced it. Each package carries
+   the schemas its records use, at the version they were compiled against, and its records
+   are read against that copy; a field a record's package predates reads as absent and is
+   filled from the newer version's default, which is what §3 already promised. So the
+   mechanism is safe whatever the policy turns out to be, and the policy can still be
+   "no".
 4. **A canonical formatter.** `fdt fmt` would make diffs stable by construction rather than
    by convention, and the format was drawn to make one easy. Not M3.
 5. **Editor support.** ADR-0020 recorded this as the decision's largest real cost. A
@@ -723,6 +735,12 @@ would make a mod that adds items ship a second copy of `foundry:item`, and loadi
 then be refused by §3's rule against re-registering a schema at the same version. So
 `check.Package` records what its documents declared, and `.fpk` carries that.
 
+> **Reversed the next day**, by the store — see the resolution below. A package carries
+> every schema its records use. The premise above was right about the registry rule and
+> wrong about which rule should give way: the alternative was a record whose layout no file
+> states, which is worse than a duplicated schema. The registry now accepts a re-declaration
+> that agrees with what it holds.
+
 **The reader trusts nothing, in two stages.** `open` validates the header, the sections, the
 entry tables, every string in those tables and every record's field-block bounds, then
 decodes the schemas under depth and count limits — believing a count only after finding the
@@ -735,3 +753,65 @@ returns an error. A byte-for-byte random file is refused outright.
 **A package is at most four gigabytes**, because every offset in the format is a `u32`.
 Recorded rather than argued: it is a bound worth knowing before something bumps into it, and
 `format_version` is how it would be raised.
+
+---
+
+## Resolution: the store (implementation, 2026-09-04)
+
+§6 to §8 described a merge, and a merge is the kind of design that looks finished until
+something has to iterate the result. Six things `engine/src/data/store.zig` settled.
+
+**The store reads compiled packages and nothing else.** Not a parse tree, not a checked
+`check.Package` — `.fpk` bytes. §6 says the base game is package zero and loads through the
+path a mod uses; the strongest available reading of that is that there is only one path to
+keep working. A development build hot-reloading a `.fdt` file compiles it to bytes in memory
+and comes back through the same call, which costs a buffer and removes an entire class of
+"works for content, not for mods" bug.
+
+**A package carries every schema its records use**, reversing what writing the writer had
+concluded a day earlier. A record's block is laid out by field count and field types, so
+reading a package with a schema that has since grown a field is not a stale read but a wrong
+one — and if the schema lives in *another* package, nothing in the file says which version
+the bytes were shaped like. So the file states it. The cost is a duplicated schema
+declaration per package, measured in tens of bytes; what it buys is that a `.fpk` can be read
+with nothing but itself, which is also what a tool inspecting one will want.
+
+**Registering a schema twice is not a conflict, and the registry keeps the newest version.**
+The rule that made carrying used schemas look impossible was §3's refusal to re-register a
+schema at the same version. That refusal exists to stop two packages *disagreeing* about
+what `foundry:item` is, and it was doing more than that. Three cases now: an identical
+declaration is accepted and changes nothing; an older one is accepted if it is a prefix of
+what is held, which additive-only versioning guarantees; a different declaration at the same
+version is refused, as it always was.
+
+**A record sits at the position where it was first defined.** §6 pins the two orderings the
+merge depends on and §8 says iteration follows "the documented merge order", which leaves
+one thing unsaid: where a record that two packages define ends up. It stays where the first
+package put it, and a later package overriding it replaces the value behind the handle
+without moving it. Same choice the registry makes for an extended schema, and the same
+reason — everything already holding the handle follows (I1) — with the side benefit that
+installing a mod does not renumber the records it did not touch.
+
+**Loading a package is all or nothing.** Every fault a package can contain — a header that
+does not parse, a schema that conflicts, a record naming a schema the package does not
+carry, a field whose bytes disagree with the schema, one id defined twice inside one package,
+an override that changes a record's schema — is found in a pass that merges nothing, and any
+of them leaves the store exactly as it was. Half a mod's items is a worse outcome than none
+of them and a message saying which file to remove. The one thing not unwound is schema
+registration, and it does not need to be: the registry only ever gains additive definitions,
+and nothing reads a schema no record uses.
+
+**Iteration by schema is a filtered linear pass.** §8 asks for "every record of one schema"
+and does not ask how fast. Content iteration happens at load and in tools, not in a frame:
+a system reading content in a loop holds handles it resolved once, which is the mitigation
+ADR-0005 named. An index per schema would be another structure to keep correct across every
+override, bought for nobody. Revisit when something iterates content per frame — and ask
+first why it is doing that.
+
+**What §8 asked for and did not get:** `Store.get` returns a record whose fields are read
+through the schema its package carries, not a `Record` with typed accessors of its own, and
+resolving a record's `id` fields to handles at load is the *caller's* job rather than a pass
+the store runs. A `.fpk` is read in place and cannot be rewritten, so pre-resolution would
+mean a side table per record per field, built for consumers that do not exist yet. `find`
+makes "resolve once, then use handles" available to anything that wants it; M4 is where
+something will.
