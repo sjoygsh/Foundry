@@ -20,6 +20,7 @@ const data = @import("data");
 const component = @import("component.zig");
 const entity_mod = @import("entity.zig");
 const limits_mod = @import("limits.zig");
+const query_mod = @import("query.zig");
 const store_mod = @import("store.zig");
 
 const Allocator = std.mem.Allocator;
@@ -30,6 +31,7 @@ const ComponentTypes = component.ComponentTypes;
 const Entities = entity_mod.Entities;
 const Entity = entity_mod.Entity;
 const Limits = limits_mod.Limits;
+const Query = query_mod.Query;
 const Registration = component.Registration;
 const log = core.log.scoped(.scene);
 
@@ -299,6 +301,63 @@ pub const World = struct {
     pub fn componentCount(self: *World, t: ComponentType) u32 {
         const store = self.storeFor(t) orelse return 0;
         return store.count();
+    }
+
+    // -- queries -------------------------------------------------------------------
+
+    /// The entities that have every named component.
+    ///
+    /// Iteration is driven by the **first** named type's dense array, so name the most
+    /// selective one first; `query.zig` says why that rather than the smallest. `types` is
+    /// borrowed for the life of the iterator.
+    ///
+    /// The type-erased form, which is what a mod's system will use through the ABI. Native
+    /// code usually wants `queryOf`, which is this with the casts written for it.
+    pub fn query(self: *World, types: []const ComponentType) Query {
+        core.assert.always(
+            types.len <= query_mod.max_components,
+            "a query named {d} components; the limit is {d}",
+            .{ types.len, query_mod.max_components },
+        );
+
+        var q: Query = .{
+            .stores = self.stores.items,
+            .mutation = &self.mutation,
+            .mutation_at_start = self.mutation,
+            .type_count = @intCast(types.len),
+        };
+        for (types, 0..) |t, i| q.types[i] = t;
+
+        if (types.len != 0) {
+            q.driver = for (types) |t| {
+                if (!self.types.contains(t)) {
+                    // Not an error: a system that acts on a mod's component when the mod is
+                    // present should do nothing when it is not, and say so by matching
+                    // nothing.
+                    log.debug("query names an unregistered component type; it matches nothing", .{});
+                    break null;
+                }
+            } else &self.stores.items[types[0].index];
+        }
+        return q;
+    }
+
+    /// `query`, with the component types named as Zig types and the casts written for you.
+    ///
+    /// ```zig
+    /// var it = world.queryOf(.{ Transform, Sprite });
+    /// while (it.next()) |m| m.get(Transform).y += 1;
+    /// ```
+    ///
+    /// Sugar over the same iterator, in the way `componentType` is sugar over the same
+    /// registration: it resolves each type through the ordinary schema lookup, so a native
+    /// system and a mod's system are asking the registry the same question.
+    pub fn queryOf(self: *World, comptime types: anytype) query_mod.TypedQuery(types) {
+        var handles: [types.len]ComponentType = undefined;
+        inline for (types, 0..) |Component, i| {
+            handles[i] = self.findComponent(query_mod.schemaIdOf(Component)) orelse .none;
+        }
+        return .{ .inner = self.query(&handles) };
     }
 };
 

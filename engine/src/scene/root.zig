@@ -26,6 +26,7 @@ pub const component = @import("component.zig");
 pub const derive = @import("derive.zig");
 pub const entity = @import("entity.zig");
 pub const limits = @import("limits.zig");
+pub const query = @import("query.zig");
 pub const store = @import("store.zig");
 pub const world = @import("world.zig");
 
@@ -38,6 +39,7 @@ pub const ComponentTypeInfo = component.ComponentTypeInfo;
 pub const DeserializeError = component.DeserializeError;
 pub const Entity = entity.Entity;
 pub const Limits = limits.Limits;
+pub const Query = query.Query;
 pub const Registration = component.Registration;
 pub const World = world.World;
 
@@ -53,6 +55,7 @@ test {
     _ = derive;
     _ = entity;
     _ = limits;
+    _ = query;
     _ = store;
     _ = world;
 }

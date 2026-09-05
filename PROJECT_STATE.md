@@ -1,8 +1,8 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-05
-**Updated by:** **M4, steps 1 to 3 — `scene` exists, entities have components, and a Zig
-struct becomes one.** Its design was written first
+**Updated by:** **M4, steps 1 to 4 — `scene` exists, entities have components, a Zig struct
+becomes one, and a query finds them.** Its design was written first
 (`docs/design/entity-storage.md`), deciding what ADR-0010 deferred: a component type **is a
 schema**, so identity, versioning, checking and serialization are machinery `data` already
 has; queries will iterate the first named component rather than the smallest, so order is a
@@ -15,7 +15,8 @@ sparse set with dense arrays, where the owner recorded beside each element is wh
 stale entity fail cleanly instead of inheriting whatever reused its slot. Step 3 built the
 `comptime` wrapper: `scene.componentType(T)` derives a schema from a Zig struct and generates
 its deserializer, tested by reading records out of packages `fpk.write` actually produced.
-Queries and systems are steps 4 and 5
+Step 4 built queries, which is where the interface either leaks the storage layout or does
+not — it does not. Systems are step 5
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -38,7 +39,7 @@ are done. **M4 — World: "it has entities" — is under way**, at its design st
 
 ## Current milestone
 
-**M4 — World: "it has entities." In progress, 2026-09-05. Steps 1 to 3 of 6 done.**
+**M4 — World: "it has entities." In progress, 2026-09-05. Steps 1 to 4 of 6 done.**
 `docs/design/entity-storage.md` is the document `docs/design/README.md` has owed since ADR-0010
 was accepted, and M4 started where M3 did — at its decisions, before any code existed to make
 them by accident. It settles six things ADR-0010 left open, names its own open questions
@@ -108,7 +109,7 @@ than by being done.
 under a camera that pans, zooms and picks, and it loads content by content id. `scene` holds
 entities, component types and their storage; it has no queries and no systems yet.**
 
-**M4 steps 1 to 3, new:**
+**M4 steps 1 to 4, new:**
 
 * `engine/src/scene/entity.zig` — `Entity`, a `core.Handle` over an opaque tag. No entity
   object exists anywhere, which is why the type is not called `EntityHandle`.
@@ -131,6 +132,10 @@ entities, component types and their storage; it has no queries and no systems ye
   `deserialize` and `construct` generated over it, and a compile error naming any field that
   does not project onto the closed type list. It **produces** registration data rather than
   being a second registration path, which is what ADR-0010 requires of it.
+* `engine/src/scene/query.zig` — `Query`, driven by the **first** named component's dense
+  array rather than the smallest, so iteration order is a property of the query as written
+  and not of the data (I9); and `TypedQuery`, the same iterator with the casts written for
+  it. A query holds its types by value, so it has no lifetime of its own.
 * `engine/src/scene/limits.zig` — `max_entities` and `max_component_types`. A save file says
   how many entities to create, so the bound is a refusal and not an assertion.
 * `build.zig` — `scene` in the layering table with `core` and `data`. **Not** `asset`, which
@@ -293,8 +298,8 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 543 tests** (52 `core`, 70 `platform`, 102 `data`, 92 `rhi`,
-36 `asset`, 103 `render2d`, 41 `scene`, 28 `app`, 14 `fpack`, 5 integration), and **551 under
+**`zig build test` passes 550 tests** (52 `core`, 70 `platform`, 102 `data`, 92 `rhi`,
+36 `asset`, 103 `render2d`, 48 `scene`, 28 `app`, 14 `fpack`, 5 integration), and **558 under
 `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
@@ -772,8 +777,12 @@ green and the sandbox runnable:
 3. **The `comptime` wrapper.** `scene.componentType(T)`: schema derivation, generated
    serialize/deserialize, the `Entity` and `AssetHandle` field rules, compile errors for what
    does not project onto the closed type list.
-4. **Queries.** One and many components, first-named iteration, the mutation guard. The step
-   where the interface either leaks the storage layout or does not.
+4. ~~**Queries.**~~ **Done, 2026-09-05.** `query.zig`, `World.query` and `World.queryOf`. The
+   order decision is tested by being reversed: the same two components named in both orders
+   yield the same set in different orders, which is what "a property of the query as written"
+   means and what driving from the smallest store would have hidden. A `Query` holds its types
+   by value — borrowing made the typed wrapper self-referential — and the stores slice it
+   borrows is stable because §6 refuses to register a type once a world has entities.
 5. **Systems, and the sandbox gets a world.** Registration and ordered update from `app`'s
    fixed step. The sample stops holding an array of sprites and holds entities, which is the
    first honest test of whether the interface is usable.

@@ -1,8 +1,8 @@
 # Design: `scene` — entities, components, systems and world state
 
-**Status:** M4 in progress. Steps 1 to 3 of §15 are built as `engine/src/scene/` — entities,
-the component type registry, the type-erased storage, and the `comptime` wrapper; the
-Resolution sections at the end record what they settled. Steps 4 to 6 are not written.
+**Status:** M4 in progress. Steps 1 to 4 of §15 are built as `engine/src/scene/` — entities,
+the component type registry, the type-erased storage, the `comptime` wrapper and queries; the
+Resolution sections at the end record what they settled. Steps 5 and 6 are not written.
 **Date:** 2026-09-05
 **Implements:** I1, I2, I3, I5, I6, I8, I9 · **Informed by:** ADR-0005, ADR-0006, ADR-0010,
 ADR-0013, ADR-0020, ADR-0021
@@ -754,3 +754,38 @@ wanted, and refusing it now keeps the round trip trivially lossless.
 text with the derived schema registered, writes a `.fpk` with `fpk.write`, loads it into a
 `data.Store`, and deserializes the record that comes back — so what these tests read is what
 `fpack` actually produces.
+
+---
+
+## Resolution: queries (implementation, 2026-09-05)
+
+Step 4 of §15, built as `engine/src/scene/query.zig` plus `World.query` and `World.queryOf`.
+§5's rules are unchanged; what building it settled is how the iterator is shaped.
+
+**A `Query` holds its component types by value, not as a borrowed slice.** The first attempt
+borrowed, which is the obvious thing — and it makes the typed wrapper self-referential, since
+the wrapper owns the handle array the inner query points at, and a struct returned by value
+has its own address. Holding sixteen handles inline costs 128 bytes on the stack of something
+built once per system per frame, and it buys a query with **no lifetime rule of its own**: it
+can be returned, copied and stored, and the only thing that has to outlive it is the world.
+`max_components` is that array's length, and it is a real limit rather than an arbitrary one.
+
+**The stores slice a query borrows is stable, and §6 is why.** A query holds `[]ComponentStore`
+into the world's array. That array can only grow when a component type is registered, and
+registration is refused once a world has ever created an entity — so the slice cannot be
+invalidated while anything is iterating. That rule was written to stop a type appearing with no
+data for existing entities; it turns out to be what makes the query cheap as well.
+
+**A query naming an unregistered type matches nothing, and is not an error.** A system written
+against a component a mod defines should do nothing when the mod is absent, and say so by
+matching nothing rather than by failing. It logs at `debug` and yields no entities.
+
+**The order decision is tested by being reversed.** Three entities have `pos`; two have `vis`,
+added in the opposite order so the two dense arrays genuinely disagree. `query(.{pos, vis})`
+yields `b, c` and `query(.{vis, pos})` yields `c, b` — the same set, and an order that is a
+property of the query as written. Driving from the smallest store would have made both of those
+the same, and made them change when a mod added a sprite.
+
+**The structural-change guard is an assertion and is therefore not unit-tested.** It panics, and
+a passing test cannot observe a panic. It is stated here and in the module doc instead, along
+with the escape hatch: collect entities into a frame arena, act on them after the loop.
