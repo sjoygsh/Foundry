@@ -24,6 +24,11 @@
     # The map drawn under the field. Where it *goes* is the sample's decision, not this
     # record's: a `foundry:tilemap` says how big a map is, never where it sits.
     map id
+    # The driven thing: how wide its box is, in world units, and how fast it walks, in
+    # world units per second. Both are *feel*, and feel is the game's -- which is why
+    # `physics2d` has no speed anywhere in it (ADR-0022: collision, not dynamics).
+    player_size  f32 (default 12)
+    player_speed f32 (default 84)
 }
 
 settings sandbox:settings.main {
@@ -33,6 +38,9 @@ settings sandbox:settings.main {
     sheet   sandbox:textures.sprites
     font    foundry:fonts.debug
     map     sandbox:map.room
+    # Narrower than the 16-unit cells, so a one-cell gap is a gap the player fits through.
+    player_size  12
+    player_speed 84
 }
 
 # The sample's map. Three engine-owned record types and one asset, none of them declared

@@ -196,6 +196,13 @@ draw order and each layer carries its own `order`, so a floor at `-10` and the p
 tile ID meaning *nothing here* — or it paints an opaque rectangle over everything below. Leave
 it out on the bottom layer: absent means every ID draws, and tile 0 is usually your ground.
 
+**`collides` is a per-layer answer, and it is separate from what a layer looks like.** A layer
+that says `collides true` becomes solid geometry, using its tileset's `solid` list to decide
+which of its tiles block; a layer that leaves it out is drawn and walked straight through. So a
+decoration pass over the same grid is a second layer that simply does not claim to collide, and
+a collision-only layer — solid tiles that draw nothing, using `empty` — is the same trick the
+other way round. Neither needs code to exist.
+
 **Where a map sits is the game's, not yours.** `foundry:tilemap` says how big a map is and how
 big a cell is. It does not say where in the world it goes, because a world holds many maps in
 many places and placing them is what the game does with them.

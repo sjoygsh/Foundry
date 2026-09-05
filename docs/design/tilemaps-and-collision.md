@@ -780,3 +780,88 @@ cannot load one.
 **Step 6 is complete.** Step 7 remains: the sandbox's player colliding with the map it now
 draws.
 
+
+---
+
+## Resolution: the two meeting (step 7, 2026-09-06)
+
+The sandbox's player collides with the map it draws, and §15's sequence is finished.
+
+**The engine gained nothing, and that is the result rather than a shortfall.** Step 7 is
+sample code and one line of build graph. `physics2d` did not learn what an asset is,
+`render2d` did not learn what a body is, and `app` did not acquire a collision world. §11 said
+the three parts meet in the game that uses them; this is that claim being paid rather than
+restated, and the bill came to about two hundred lines in one file.
+
+**`app` owns no `physics2d.World`, and should not.** The module holds no time and integrates
+nothing (§2), so *when* to move a body and what to do about what it hit is gameplay — an
+engine that owned the collision world would own the answer to both. The sandbox holds its own
+and steps it inside its own fixed step. What the engine contributes is the frame that calls
+the game, which is the split `app` has had since M2.
+
+**Moving the player is not a `scene` system, and could not be.** A system is handed the tick
+and the delta and nothing else, precisely so that a simulation cannot read a device
+(`entity-storage.md` §7) — and driving something *is* reading a device. So it is the game's
+own function, running in the game's fixed step, reading the step's frozen input snapshot
+rather than the live one. The rule that made this awkward is the rule that makes the
+simulation reproducible, and the awkwardness is one function in the sample rather than a hole
+in `scene`.
+
+**The sample defines `sandbox:collider`; the engine still defines no `foundry:collider`.**
+§11 committed M5 to adding no engine-owned component types, on the grounds that a component
+name is a compatibility decision (`CLAUDE.md` §7) and M7 is when the mod-facing vocabulary
+gets chosen. Writing the sample's own took four lines and cost nothing, which is the evidence
+that the commitment was cheap to keep. What it holds is half-extents and **not** a
+`BodyHandle`: a handle is runtime identity that a save must never carry (I1), so the durable
+record of "this thing collides" is the component and the body is derived from it — on a fresh
+spawn, on a load, and on a repopulate alike. A save round trip proved it: 4001 entities out
+and back, and the player resumed where it stopped with a body it was given rather than
+restored.
+
+**WASD had to change hands.** It panned the camera, and there is now something to drive; two
+things cannot answer to the same key. Panning moved to the arrows, keeping the drag and the
+wheel exactly as they were, and the camera follows the player until a manual pan drops the
+follow, which `C` picks back up. That is policy, it lives in the sample, and it is the sort of
+decision the engine should never be making — but it also retires half of a carried M2 item:
+"that WASD pans the right way" is no longer a question anyone will ask.
+
+**The two signs disagree, correctly.** `walk` reads `w` as **+y**, because it moves in world
+space, which is Y-up. `control` reads `up` as **−y**, because it pans in screen space through
+`panByScreen`, which is Y-down. Both are right, they sit forty lines apart, and the comment
+saying so is there because the next person to read them will assume one is a bug.
+
+**Which layers collide is content's answer.** `collides true` on the layer record is what puts
+a grid in the collision world; a decoration layer over the same grid simply does not say it.
+The sample reads the flag and never second-guesses it, which means a mod can add a layer that
+is drawn and not solid, or solid and not drawn, without a line of code existing for either
+case.
+
+**One ordering rule, and it is a real hazard.** A grid leaves the collision world **before**
+the arrays it borrows are freed. `addGrid` copies the descriptor and not the tiles — that is
+what keeps `physics2d` at L1 — so a map removed from content and left in the world is a slice
+into memory nobody owns any more. It shows up in three places (a rebuild, a failed plane, and
+teardown) and each of them is written the same way round.
+
+**`FOUNDRY_SANDBOX_WALK` walks the player in a square, as a pure function of the tick.** Same
+rationale as `FOUNDRY_SANDBOX_PICK_EVERY`: collision that can only be exercised by a person
+holding a key is collision that gets checked when somebody remembers to. A 400-frame headless
+run now reports the contacts it accumulated, and the room has a solid border, so zero contacts
+means the player walked through a wall. That number is the check.
+
+**Two things the tests gained.** The map in the drawn-versus-collided test is no longer at the
+origin: where a map sits is the game's decision, the sandbox centres its own, and an origin
+applied on one side of §11's diagram and not the other is a map you collide with several cells
+away from where you see it — which zero could never catch. And §12's Tier 1 claim is now a
+test rather than a paragraph: a second package restates one tileset record with a different
+`solid` list, the map file and the grid asset and the layer record are byte-identical across
+both halves, and a body that was stopped by a wall walks straight through it. Making a wall
+walkable is editing a list in a record, and it needs no code, no new map and no mod system.
+
+**§13's open questions are untouched by this step.** The sample uses no triggers, so question
+4 — whether `sync` belongs in `physics2d` at all — has gained no evidence either way, and
+questions 3 and 5 are about geometry a top-down sample does not have. Questions 1 and 2 were
+settled at step 5.
+
+**Step 7 is complete, and with it the whole of §15.** What remains in M5 is the audio sequence
+(`audio.md` §13) and the sprite-animation sequence (`sprite-animation.md` §10), neither of
+which depends on any of this.

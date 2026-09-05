@@ -236,6 +236,10 @@ pub fn build(b: *std.Build) void {
     // of the layering.
     sandbox_mod.addImport("data", modules.get("data").?);
     sandbox_mod.addImport("platform", platform_module);
+    // Collision is the game's to run, not the engine's: `app` owns the frame, and when to
+    // move a body and what to do about what it hit is gameplay. So the sample names
+    // `physics2d` for itself, exactly as it names `scene`.
+    sandbox_mod.addImport("physics2d", modules.get("physics2d").?);
     sandbox_mod.addImport("render2d", modules.get("render2d").?);
     sandbox_mod.addImport("rhi", modules.get("rhi").?);
     // A game owns its world and defines its own component types, so it names `scene`

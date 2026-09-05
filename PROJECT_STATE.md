@@ -1,8 +1,8 @@
 # Foundry Project State
 
-**Last updated:** 2026-09-05
-**Updated by:** **M5's design phase is complete and its first four implementation steps are
-done — `physics2d` is now a module a character can be moved with.** The two long-held
+**Last updated:** 2026-09-06
+**Updated by:** **M5's collision sequence is complete — a player walks the sandbox's room and
+is stopped by its walls.** The two long-held
 `CLAUDE.md` §9 decisions were made first — physics is **Foundry's own, scoped to collision
 rather than dynamics** (ADR-0022) and audio is **Foundry's own mixer and WAV decoding**
 (ADR-0023), the first decided by I9 rather than by licensing. All three design documents are
@@ -159,9 +159,10 @@ of sprites under a camera that pans, zooms and picks, and it loads content by co
 content, and a whole world can be written to a file and read back with its handles intact.
 `physics2d` holds shapes, bodies and tile grids, and can move a body along a wall without
 catching on the seams between its tiles. A map is content from a hand-written text grid
-onward, and the sandbox draws the one it ships.**
+onward; the sandbox draws the one it ships, and a player walks it and is stopped by its
+walls.**
 
-**M5, new (steps 1 through 6 of `tilemaps-and-collision.md` §15):**
+**M5, new (steps 1 through 7 of `tilemaps-and-collision.md` §15 — the whole sequence):**
 
 * `engine/src/physics2d/shape.zig` — `Shape` (box as **half-extents**, so every test is a
   Minkowski sum rather than four subtractions at the call site; circle), `Bounds`, `Contact`
@@ -254,7 +255,7 @@ onward, and the sandbox draws the one it ships.**
   a directory and creates the dependency but does not put its contents in the Run step's cache
   key, so editing content did not re-run `fpack` and the build installed yesterday's `.fpk`.
 * `samples/sandbox/content/grids/room.grid` and the map records in `sandbox.fdt` — a
-  hand-written 12x10 room, which is what step 7 will walk a character around.
+  hand-written 12x10 room with a solid border, which is what the player now walks around.
 * `engine/src/render2d/tilemap.zig` — `TilemapLayer` and `Tiles`, the pure half of drawing: a
   layer and a visible rectangle in, a run of ordinary `Sprite`s out, with no device, no
   allocation and no renderer state. The span is **half-open** to match `Rect.overlaps`, which
@@ -273,15 +274,39 @@ onward, and the sandbox draws the one it ships.**
   schemas. A texture loader must come from whoever owns a renderer; a grid loader needs
   nothing, and a game that can compile a map should not find it cannot load one.
 * `samples/sandbox/main.zig` — `Map`, which is §11's "the game wires them" written out: records
-  in, two `acquire` calls by content id, a `TilemapLayer` out. Where the map goes is the
-  sample's decision (it centres its own); what is on top of what is content's (`order -10`).
+  in, two `acquire` calls by content id, and **both** consumers out — a `TilemapLayer` for
+  `drawTilemap` and, for any layer whose record says `collides true`, a `physics2d.Grid` over
+  the identical `[]const u16`. Where the map goes is the sample's decision (it centres its
+  own); what is on top of what is content's (`order -10`); which layers are solid is content's
+  too. One ordering rule runs through it: a grid leaves the collision world **before** the
+  arrays it borrows are freed, because `addGrid` copies the descriptor and not the tiles.
+
+  Then the player, and it is not a special case: an entity with a `Transform`, a `Visual` and
+  the sample's own `Collider`, drawn by the same loop as the other four thousand. *Having a
+  collider* is the whole of what makes it the player. The body is **not** on the entity —
+  a `BodyHandle` is runtime identity that I1 forbids serializing — so the component is what a
+  save carries and `adoptPlayer` derives a body from it, on a spawn, on a load and on a
+  repopulate alike. `walk` runs in the fixed step, reads the step's frozen input snapshot and
+  calls `moveAndSlide`; it cannot be a `scene` system, because a system is handed the tick and
+  nothing else precisely so it cannot read a device.
+* `samples/sandbox/content/sandbox.fdt` — `player_size` and `player_speed` on the settings
+  schema. Gameplay numbers come from content; appearance is generated, like every other
+  sprite's. The line I5 draws, in the one file that shows a game where to draw it.
+* `build.zig` — the sandbox imports `physics2d` directly, as it already imports `scene`. `app`
+  owns no collision world and should not: the module holds no time and integrates nothing, so
+  when to move a body and what to do about what it hit is gameplay.
 * `engine/tests/tilemap_pipeline.zig` — the seam no module can test alone: authored text and a
   real grid file, through the registry **by content id and never by path**, into a collision
   world, ending with a body stopped by a tile a file said was solid. It links no renderer,
   which is the placement decision being exercised rather than merely asserted. A second test
   adds the other consumer: the cell `render2d` *draws* at a world position is the cell
   `physics2d` *collides* with there — one slice, two modules that cannot see each other, and a
-  claim neither can check alone.
+  claim neither can check alone, and the map in it is deliberately **not** at the origin,
+  because an origin applied on one side of that diagram and not the other is a map you collide
+  with several cells from where you see it. A third makes §12's Tier 1 claim a test rather than
+  a paragraph: a second package restates one tileset record with a different `solid` list, the
+  map and the grid asset and the layer record are byte-identical across both halves, and a body
+  that was stopped by a wall walks straight through it.
 
 **M4, new:**
 
@@ -516,9 +541,9 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 643 tests** (56 `core`, 70 `platform`, 104 `data`, 53 `physics2d`,
-92 `rhi`, 36 `asset`, 103 `render2d`, 79 `scene`, 28 `app`, 14 `fpack`, 8 integration), and
-**651 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
+**`zig build test` passes 715 tests** (56 `core`, 70 `platform`, 104 `data`, 82 `physics2d`,
+92 `rhi`, 54 `asset`, 116 `render2d`, 79 `scene`, 28 `app`, 21 `fpack`, 13 integration), and
+**723 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
 8 exceptions need a real GPU and compile only when Metal is selected.
@@ -604,8 +629,9 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M5, on the collision sequence.** All three design documents are written and steps 1 through 4
-of `tilemaps-and-collision.md` §15 are implemented. `physics2d` is now complete as a *module*:
+**M5, with the collision sequence finished and audio and sprite animation still ahead.** All
+three design documents are written; all seven steps of `tilemaps-and-collision.md` §15 are
+implemented. `physics2d` is now complete as a *module*:
 shapes and their tests, the tile grid with neighbour-aware face culling, the two-tier spatial
 hash with its determinism sort, and movement — `moveAndSlide` with its four-iteration budget
 and the projection that makes a stop into a slide, `resolveOverlaps` kept deliberately separate
@@ -647,6 +673,42 @@ extra row and column every frame, invisibly. And **`foundry:tilemap.layer` gaine
 version 2**, because the `layers` list has always permitted a second plane and a second plane
 with no way to say *nothing here* paints over the first; without the field that is expressible
 only in Zig, which would make a decoration layer a program rather than a Tier 1 content mod.
+
+**Step 7 is done and the sandbox is a game for about thirty seconds.** A player walks the room
+with WASD, is stopped by its walls, slides along them, and the camera follows it. What that
+took in the engine is **one line of build graph** — the sandbox imports `physics2d`, as it
+already imports `scene` — and nothing else. §11 said the three parts meet in the game that uses
+them, and this is that claim being paid rather than restated: `physics2d` did not learn what an
+asset is, `render2d` did not learn what a body is, and `app` did not acquire a collision world.
+
+`app` owning no `physics2d.World` is the load-bearing part. The module holds no time and
+integrates nothing, so *when* to move a body and what to do about what it hit is gameplay; an
+engine that owned the collision world would own the answer to both. For the same reason, moving
+the player is **not** a `scene` system and could not be: a system is handed the tick and the
+delta and nothing else, precisely so a simulation cannot read a device, and driving something is
+reading a device. So it is the game's own function in the game's own fixed step, reading the
+step's frozen input snapshot.
+
+Four smaller things. The sample defines `sandbox:collider` and the engine still defines no
+`foundry:collider` — §11's commitment kept, and it cost four lines, which is the evidence that
+it was cheap. The collider holds half-extents and **not** a `BodyHandle`, because a handle is
+runtime identity a save must never carry (I1), so the component is what persists and the body
+is derived from it; a 4001-entity save round trip confirmed the player comes back with a body
+it was given rather than restored. **WASD changed hands** — it panned, there is now something
+to drive, and two things cannot answer to the same key; panning moved to the arrows and the
+camera follows the player until a manual pan drops the follow. And `walk` reads `w` as **+y**
+while `control` reads `up` as **−y**, which is correct in both places: one moves in world space,
+the other pans in screen space, and the comment saying so exists because the next reader will
+assume one is a bug.
+
+`FOUNDRY_SANDBOX_WALK` walks the player in a square as a pure function of the tick, so a
+headless run collides with something and reports how often — 400 frames, 145 ticks, 35 contacts,
+and the room's border means zero contacts would mean the player walked through a wall. The
+integration suite gained the same claim twice over: the drawn-versus-collided test now puts its
+map **off** the origin, because an origin applied on one side of §11's diagram and not the other
+is invisible at zero; and §12's Tier 1 claim is a test rather than a paragraph — a second package
+restates one tileset's `solid` list and a body that was stopped by a wall walks straight through
+it, with the map, the grid asset and the layer record byte-identical across both halves.
 
 What follows in this section is the record of the milestones behind it, kept because the
 reasoning is what a future session needs and the commit log is not where reasoning lives.
@@ -1001,7 +1063,8 @@ changed and why (§8's packer, §10's font, §11's counters).
 WASD pans the right way, that dragging carries the world with the cursor, that the wheel
 zooms toward the pointer — the maths under each is unit-tested with exact round-trip
 properties, and picking is confirmed on screen, but which key means which direction can
-only be judged by using it.
+only be judged by using it. (WASD became the player's at M5 step 7 and panning moved to the
+arrows; the question survives with the keys renamed.)
 
 Two decisions M2 forced were taken as ADRs rather than in code: **ADR-0018** (Foundry
 decodes its own PNG) and **ADR-0019** (engine-owned shaders are embedded, content-owned
@@ -1025,12 +1088,11 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**M5 is open, its design is finished, and the next thing is code.** Three independent
-sequences, each with its order written down in its own document:
+**M5 is open, one of its three sequences is finished, and the other two are independent of
+it.** Each has its order written down in its own document:
 
-1. **Collision**, `tilemaps-and-collision.md` §15. **Steps 1 through 6 are done.**
-   Remaining: step 7, the sandbox's player colliding with the map it already draws — the first
-   moment M5 looks like a game rather than like a test.
+1. ~~**Collision**, `tilemaps-and-collision.md` §15.~~ **Complete, all seven steps, 2026-09-06.**
+   A player walks the sandbox's room and is stopped by its walls. Two sequences remain.
 2. **Audio**, `audio.md` §13, six steps, and the first three add no threads at all: the
    `foundry:sound` schema, `Sound` and the WAV decoder in `asset` with its corpus; the device
    in `platform` including the stepped null one; `audio` in the build graph at L3; the rings,
@@ -1047,8 +1109,10 @@ They share only the frame that calls them. Nothing forces the order beyond that.
 **Three things carried forward, and none of them is a bug:**
 
 * The key and button *bindings*, carried from M2 and still needing a person to judge them —
-  that WASD pans the right way, that dragging carries the world with the cursor, that the
-  wheel zooms toward the pointer.
+  that dragging carries the world with the cursor, and that the wheel zooms toward the
+  pointer. Half of this closed itself at step 7: WASD no longer pans at all, it drives the
+  player, and panning moved to the arrows. Whether *that* feels right is the remaining
+  question, and it is the same kind of question.
 * **Shaders are not assets**, which was an M3 roadmap item and was deliberately not built.
   Engine-owned shaders stay embedded (ADR-0019), so the only case is a *content-owned*
   shader, and nothing can reference one until there is a material system. Building an asset
@@ -1234,6 +1298,17 @@ a rewrite of the one before.
 
 ## Known bugs and technical debt
 
+* **A texture hot reload destroys its staging buffer while frames are still in flight.**
+  Found 2026-09-06 while checking that step 7 survived a content reload, and **not caused by
+  it** — the same two lines appear on `main` before that commit, so it dates from step 5 or 6
+  at the latest. The null backend's validation says it plainly: `rule 9 (lifetime): buffer
+  'render2d texture staging' destroyed while frame 120 is in flight (completed: 118)`. Metal
+  would forgive it and a Metal build says nothing, which is exactly what the validating
+  backend exists for. To reproduce: run the sandbox, edit `samples/sandbox/content/sandbox.fdt`
+  and `zig build` while it runs. The fix belongs with `render2d`'s texture loader — the
+  staging buffer has to outlive the frames that reference it, the way every other transient
+  does — and it is a `render2d`/`rhi` job rather than a collision one, which is why it is
+  recorded here rather than folded into step 7.
 * **The log sink has a runtime *level* filter but no timestamps, no scope filtering and no
   destination but stderr.** Timestamps want a monotonic source, which lives on `Platform`,
   and a free logging function has no instance to ask — worth solving when there is a log
@@ -1977,7 +2052,9 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
    *Still open:* whether a separate module is ever wanted. Nothing forecloses one; what is
    settled is that the answer was lower rather than higher. The document's §13 records the
    smaller questions alongside it, including whether trigger enter/exit bookkeeping belongs in
-   `physics2d` at all — deliberately still unanswered, because step 4 did not force it.
+   `physics2d` at all — deliberately still unanswered. The sequence finished at step 7 without
+   the sample ever wanting a trigger, so no evidence has arrived either way, and none was
+   manufactured to close the question.
 7. **How much audio policy the engine owns.** `audio.md` §11 leaves five things open and two
    of them will be asked for early. **Buses or categories** — a music slider and an effects
    slider is the second thing every game wants, and a gain per named category is a few lines

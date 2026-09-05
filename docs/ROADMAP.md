@@ -192,12 +192,14 @@ slopes are out of M5's collision scope.*
 
 *All three design documents are written (2026-09-05). Each carries its own implementation
 order — §15, §13 and §10 respectively — and the three are independent sequences that share
-only the frame that calls them. **Collision steps 1 through 6 are done**: `physics2d` is
-complete as a module — shapes, tile grids, the broadphase, `moveAndSlide`, `resolveOverlaps`
-and the four queries — a map is content, from a hand-written text grid through `fpack` to a
-body that cannot walk through a wall, and the sandbox draws the room it ships, culled to the
-camera and costing one extra batch. Remaining there: the sandbox's player meeting that map.
-Audio and sprite animation have not started.*
+only the frame that calls them. **The collision sequence is complete** (steps 1-7, finished
+2026-09-06): `physics2d` is complete as a module — shapes, tile grids, the broadphase,
+`moveAndSlide`, `resolveOverlaps` and the four queries — a map is content, from a hand-written
+text grid through `fpack` to a body that cannot walk through a wall; the sandbox draws the
+room it ships, culled to the camera; and a player walks that room and is stopped by it. The
+last step added nothing to the engine: a collision world, a `sandbox:collider` and the wiring,
+all of it in the sample, which is what §11 said would happen. Audio and sprite animation have
+not started.*
 
 **Exit criteria:** something a person can play for five minutes without knowing it is a tech
 demo.

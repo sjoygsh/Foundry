@@ -36,12 +36,18 @@ const Stack = struct {
     schemas: data.Registry,
     diags: data.Diagnostics,
     store: data.Store,
-    bytes: std.ArrayList(u8) = .empty,
+    /// One compiled package's bytes per entry, because **the store borrows them**: a
+    /// second package written over the first's buffer would move the ground under a store
+    /// that is still reading it.
+    blobs: std.ArrayList([]u8) = .empty,
     assets: asset.Registry,
     world: physics2d.World = .empty,
     /// The solid bitset the world borrows. A game owns this for as long as it owns the map,
     /// because `physics2d` borrows a grid's arrays and never copies them.
     solid: []u32 = &.{},
+    /// The grid that bitset belongs to, so replacing one takes the other out of the world
+    /// first. A grid left behind is a slice into memory nobody owns.
+    grid: physics2d.GridHandle = .none,
 
     fn init() !*Stack {
         const gpa = testing.allocator;
@@ -83,7 +89,9 @@ const Stack = struct {
         self.store.deinit(self.gpa);
         self.schemas.deinit(self.gpa);
         self.diags.deinit(self.gpa);
-        self.bytes.deinit(self.gpa);
+        // After the store, which was reading them.
+        for (self.blobs.items) |blob| self.gpa.free(blob);
+        self.blobs.deinit(self.gpa);
         self.gpa.free(self.dir);
         self.os.deinit();
         self.gpa.destroy(self);
@@ -113,19 +121,34 @@ const Stack = struct {
         var pkg = try data.check.Package.init(self.gpa, name, 1, .default);
         defer pkg.deinit(self.gpa);
         try pkg.addDocument(self.gpa, &doc, &self.schemas, &self.diags);
-        try data.fpk.write(self.gpa, &pkg, &self.schemas, &self.bytes);
 
-        const handle = try self.store.add(self.gpa, name, self.bytes.items, &self.schemas, &self.diags);
+        var bytes: std.ArrayList(u8) = .empty;
+        errdefer bytes.deinit(self.gpa);
+        try data.fpk.write(self.gpa, &pkg, &self.schemas, &bytes);
+        const blob = try bytes.toOwnedSlice(self.gpa);
+        errdefer self.gpa.free(blob);
+        try self.blobs.append(self.gpa, blob);
+
+        const handle = try self.store.add(self.gpa, name, blob, &self.schemas, &self.diags);
         try self.assets.mount(self.gpa, handle, self.dir);
     }
 
     /// The wiring §11 says the game does, written once here so the test can read as the
     /// thing it is testing: a layer's content becomes a grid in a collision world.
-    fn addLayer(self: *Stack, layer_id: []const u8, map: asset.tilemap.Tilemap) !physics2d.GridHandle {
+    fn addLayer(
+        self: *Stack,
+        layer_id: []const u8,
+        map: asset.tilemap.Tilemap,
+        origin: core.math.Vec2,
+    ) !physics2d.GridHandle {
         const layer = try asset.tilemap.readLayer(self.store.lookup(.fromString(layer_id)).?);
         const set = self.store.lookup(layer.tileset).?;
 
         const solid = try asset.tilemap.solidBitset(self.gpa, set);
+        // Out of the world before its arrays go, and in that order: the world holds them by
+        // reference and would otherwise be left pointing at freed memory.
+        _ = self.world.removeGrid(self.grid);
+        self.gpa.free(self.solid);
         // Borrowed by the world, so it outlives this call by living on the stack struct.
         // A game owns these two arrays exactly as long as it owns the map.
         self.solid = solid;
@@ -133,14 +156,15 @@ const Stack = struct {
         const handle = try self.assets.acquire(self.gpa, layer.grid);
         const grid = asset.tilegrid.fromPayload(self.assets.payloadOf(handle).?);
 
-        return try self.world.addGrid(self.gpa, .{
-            .origin = .zero,
+        self.grid = try self.world.addGrid(self.gpa, .{
+            .origin = origin,
             .cell = .{ .x = map.cell_width, .y = map.cell_height },
             .width = grid.width,
             .height = grid.height,
             .tiles = grid.tiles,
             .solid = solid,
         });
+        return self.grid;
     }
 };
 
@@ -185,7 +209,7 @@ test "a map goes from authored text to a body that cannot walk through a wall" {
     try stack.loadPackage("sandbox:content", content);
 
     const map = try asset.tilemap.readTilemap(stack.store.lookup(.fromString("sandbox:map.town")).?);
-    _ = try stack.addLayer("sandbox:map.town.walls", map);
+    _ = try stack.addLayer("sandbox:map.town.walls", map, .zero);
 
     const mover = try stack.world.addBody(stack.gpa, .{
         .shape = .{ .box = .{ .x = 0.5, .y = 0.5 } },
@@ -201,6 +225,58 @@ test "a map goes from authored text to a body that cannot walk through a wall" {
     try testing.expectEqual([2]u32{ 3, 2 }, hits[0].cell);
     // The wall's left face is at x = 3 and the body is 0.5 wide, so it stops at 2.5.
     try testing.expectApproxEqAbs(@as(f32, 2.5), result.position.x, 2 * physics2d.contact_skin);
+}
+
+test "a package loaded later changes which tiles are solid, and the map is untouched" {
+    // §12's Tier 1 claim, checked rather than asserted in prose: making a wall walkable is
+    // editing a `solid` list in a tileset record, and it needs no code, no new map and no
+    // mod system. The map file, the grid asset and the layer record are all byte-identical
+    // across the two halves of this test; the only difference is a record that arrives
+    // later and wins by id (I2, I3).
+    const stack = try Stack.init();
+    defer stack.deinit();
+
+    try stack.writeGrid("grids/town/walls.fgrid", 4, 4, &.{
+        0, 0, 0, 1,
+        0, 0, 0, 1,
+        0, 0, 0, 1,
+        0, 0, 0, 1,
+    });
+    try stack.loadPackage("sandbox:content", content);
+
+    const map = try asset.tilemap.readTilemap(stack.store.lookup(.fromString("sandbox:map.town")).?);
+    _ = try stack.addLayer("sandbox:map.town.walls", map, .zero);
+
+    const mover = try stack.world.addBody(stack.gpa, .{
+        .shape = .{ .box = .{ .x = 0.5, .y = 0.5 } },
+        .position = .{ .x = 0.5, .y = 2.5 },
+        .kind = .movable,
+    });
+
+    var hits: [4]physics2d.Hit = undefined;
+    const blocked = (try stack.world.moveAndSlide(stack.gpa, mover, .{ .x = 5, .y = 0 }, &hits)).?;
+    try testing.expectEqual(@as(u32, 1), blocked.total_hits);
+
+    // The mod. It restates one record — the tileset — and says a tile id the map does not
+    // contain is the solid one. Nothing else in either package is mentioned.
+    try stack.loadPackage("mod:content",
+        \\foundry:tileset sandbox:tiles.overworld {
+        \\    texture   sandbox:textures.overworld
+        \\    tile      [ 16 16 ]
+        \\    columns   16
+        \\    solid     [ 2 ]
+        \\}
+    );
+
+    // The same layer id, read again: the game rebuilds its grid after a content change, and
+    // this is that rebuild. The `[]const u16` handed to `addGrid` is the identical slice
+    // from the identical asset.
+    _ = try stack.addLayer("sandbox:map.town.walls", map, .zero);
+    _ = try stack.world.setPosition(stack.gpa, mover, .{ .x = 0.5, .y = 2.5 });
+
+    const free = (try stack.world.moveAndSlide(stack.gpa, mover, .{ .x = 5, .y = 0 }, &hits)).?;
+    try testing.expectEqual(@as(u32, 0), free.total_hits);
+    try testing.expectApproxEqAbs(@as(f32, 5.5), free.position.x, 2 * physics2d.contact_skin);
 }
 
 test "the grid is reached by content id, and its path is never asked for" {
@@ -261,7 +337,13 @@ test "the tiles drawn and the tiles collided with are the same tiles" {
     try stack.loadPackage("sandbox:content", content);
 
     const map = try asset.tilemap.readTilemap(stack.store.lookup(.fromString("sandbox:map.town")).?);
-    _ = try stack.addLayer("sandbox:map.town.walls", map);
+
+    // **Not at the origin**, and that is the point of the number. Where a map sits is the
+    // game's decision — a `foundry:tilemap` never says — so the sandbox centres its own, and
+    // an origin applied on one side of the diagram and not the other is a map you collide
+    // with four cells away from where you see it. Zero would not catch that.
+    const origin: core.math.Vec2 = .init(-2, -2);
+    _ = try stack.addLayer("sandbox:map.town.walls", map, origin);
 
     // The other consumer, built from the same records the collision grid was. No device and
     // no GPU: `render2d.Tiles` is the pure half of drawing, and this is the half that
@@ -279,10 +361,10 @@ test "the tiles drawn and the tiles collided with are the same tiles" {
         .map = grid.tiles,
         .width = grid.width,
         .height = grid.height,
-        .origin = .zero,
+        .origin = origin,
         .cell = .init(map.cell_width, map.cell_height),
         .layer = layer.order,
-    }, .init(0, 0, 4, 4));
+    }, .init(origin.x, origin.y, 4, 4));
 
     var drawn: u32 = 0;
     var solid_drawn: u32 = 0;
@@ -297,8 +379,8 @@ test "the tiles drawn and the tiles collided with are the same tiles" {
         const found = try stack.world.overlapPoint(stack.gpa, centre, ~@as(u32, 0), &hits);
 
         // The tile the sprite is showing, read back from the same slice both sides hold.
-        const cx: u32 = @intFromFloat(sprite.position.x);
-        const cy: u32 = @intFromFloat(sprite.position.y);
+        const cx: u32 = @intFromFloat(sprite.position.x - origin.x);
+        const cy: u32 = @intFromFloat(sprite.position.y - origin.y);
         const solid = grid.tileAt(cx, cy).? == 1;
 
         if (solid) {

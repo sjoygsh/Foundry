@@ -23,6 +23,7 @@ const app = @import("app");
 const core = @import("core");
 const asset = @import("asset");
 const data = @import("data");
+const physics2d = @import("physics2d");
 const platform = @import("platform");
 const render2d = @import("render2d");
 const rhi = @import("rhi");
@@ -144,6 +145,7 @@ pub fn main(init: std.process.Init) !void {
     defer field.deinit(engine);
     try field.load(engine);
     field.pick_every = everyFrames(engine, "FOUNDRY_SANDBOX_PICK_EVERY");
+    field.walk_every = everyFrames(engine, "FOUNDRY_SANDBOX_WALK");
 
     const frame_limit = frameLimit(engine, headless);
 
@@ -169,8 +171,8 @@ pub fn main(init: std.process.Init) !void {
                 log.info("no native surface; the clear goes to an offscreen target", .{});
             }
         }
-        log.info("WASD or arrows pan; shift pans faster; drag with right or middle", .{});
-        log.info("wheel zooms about the cursor; left-click picks; C recentres", .{});
+        log.info("WASD walks the player; arrows pan; shift pans faster; drag with right or middle", .{});
+        log.info("wheel zooms about the cursor; left-click picks; C follows the player again", .{});
         log.info("R resizes the window; escape or the close button quits", .{});
         if (field.save_path) |path| {
             log.info("F5 saves the world to '{s}'; F9 loads it back", .{path});
@@ -283,6 +285,14 @@ pub fn main(init: std.process.Init) !void {
     // trip through memory in one process.
     if (field.save_path) |path| field.saveWorld(engine, path);
 
+    // The number that says collision happened rather than compiled. A scripted walk that
+    // reports zero contacts has driven through the walls, and the map is 12x10 with a solid
+    // border — there is nowhere to walk that does not eventually reach one.
+    if (field.player != null) {
+        const at = field.playerAt() orelse core.math.Vec2.zero;
+        log.info("player finished at ({d:.1}, {d:.1}) with {d} contact(s)", .{ at.x, at.y, field.contacts });
+    }
+
     log.info("clean exit after {d} frames, {d} ticks, {d}ms simulated", .{
         engine.frame_index,
         engine.stepper.tick,
@@ -309,6 +319,15 @@ const Settings = struct {
     /// The map to draw under the field. `.none` draws no map, which is what a package
     /// without one means and not a reason to stop.
     map: core.ContentId,
+    /// The player's box, one side in world units, and how fast it walks in world units
+    /// per second.
+    ///
+    /// **Gameplay numbers come from content; appearance is generated.** The field's 4000
+    /// sprites get their size and colour from a seeded generator, and the player is drawn
+    /// the same way; what a record owns is the two numbers a person would tune, which is
+    /// the line I5 draws.
+    player_size: f32,
+    player_speed: f32,
 
     /// Where the record is, and the only content id spelled in this file. Everything else
     /// the sample draws is reached through it.
@@ -321,6 +340,8 @@ const Settings = struct {
         .sheet = .none,
         .font = .none,
         .map = .none,
+        .player_size = 12,
+        .player_speed = 84,
     };
 
     /// Reads the record, falling back field by field.
@@ -342,6 +363,8 @@ const Settings = struct {
             .sheet = idField(record, "sheet"),
             .font = idField(record, "font"),
             .map = idField(record, "map"),
+            .player_size = floatField(record, "player_size", fallback.player_size),
+            .player_speed = floatField(record, "player_speed", fallback.player_speed),
         };
     }
 
@@ -350,6 +373,20 @@ const Settings = struct {
         const value = (record.fields.intAt(index) catch null) orelse return fallback_value;
         if (value < 0 or value > std.math.maxInt(u32)) return fallback_value;
         return @intCast(value);
+    }
+
+    /// A finite, positive number, or the fallback.
+    ///
+    /// Both callers want a length or a speed, and zero and NaN are neither. `physics2d`
+    /// would refuse a degenerate shape anyway — this is the sample answering for its own
+    /// content before handing it down, which is what "validated, never asserted" means at
+    /// the place the value enters the program.
+    fn floatField(record: data.store.Record, name: []const u8, fallback_value: f32) f32 {
+        const index = record.schema.fieldIndex(name) orelse return fallback_value;
+        const value = (record.fields.floatAt(index) catch null) orelse return fallback_value;
+        const narrowed: f32 = @floatCast(value);
+        if (!std.math.isFinite(narrowed) or !(narrowed > 0)) return fallback_value;
+        return narrowed;
     }
 
     fn stringField(record: data.store.Record, name: []const u8, fallback_value: []const u8) []const u8 {
@@ -366,10 +403,14 @@ const Settings = struct {
 /// The map the sample draws beneath its sprites.
 ///
 /// **This is §11's "the game wires them", written out.** Nothing in the engine turns a
-/// `foundry:tilemap` into a drawable: `asset` reads the records, the registry answers for
-/// the grid and the texture, and this joins them into the `render2d.TilemapLayer` that
-/// `drawTilemap` takes. Collision will join the same records to a `physics2d.Grid` in step
-/// 7 without either side learning about the other.
+/// `foundry:tilemap` into a drawable or into a collider: `asset` reads the records, the
+/// registry answers for the grid and the texture, and this joins them into the
+/// `render2d.TilemapLayer` that `drawTilemap` takes **and** the `physics2d.Grid` that
+/// `addGrid` takes. One `[]const u16`, borrowed twice, by two modules that cannot see each
+/// other — §11's diagram, written out in the only place it can be.
+///
+/// Which layers collide is content's answer, not this file's: `collides true` on the layer
+/// record. A decoration layer over the same grid simply does not say it.
 ///
 /// Every failure here is a log line and a smaller map, never a stopped frame. Content is
 /// untrusted, including our own (CLAUDE.md §5), and a sample that refused to start because
@@ -384,12 +425,32 @@ const Map = struct {
         texture: asset.AssetHandle,
         grid: asset.AssetHandle,
         layer: render2d.TilemapLayer,
+        /// The tileset's `solid` list, as the bitset `physics2d.Grid` wants.
+        ///
+        /// **Owned here, borrowed by the collision world.** `addGrid` copies the descriptor
+        /// and not the arrays, so whoever loaded them keeps them alive — which is what lets
+        /// `physics2d` stay at L1 without ever learning what an asset is.
+        solid: []u32,
+        /// The static geometry this layer contributed, or none when it does not collide.
+        collision: physics2d.GridHandle,
     };
 
     planes: std.ArrayList(Plane) = .empty,
-    /// Cells, for the log line and for step 7's collision grid.
+    /// Cells, and where cell (0,0)'s corner sits. Enough to say where the middle is, which
+    /// is where the sample puts the player.
     width: u32 = 0,
     height: u32 = 0,
+    origin: core.math.Vec2 = .zero,
+    cell: core.math.Vec2 = .zero,
+
+    /// The middle of the map in world units, or the world origin when there is no map.
+    fn center(self: *const Map) core.math.Vec2 {
+        if (self.width == 0 or self.height == 0) return .zero;
+        return .init(
+            self.origin.x + @as(f32, @floatFromInt(self.width)) * self.cell.x / 2,
+            self.origin.y + @as(f32, @floatFromInt(self.height)) * self.cell.y / 2,
+        );
+    }
 
     /// Reads `id` and everything it names, replacing whatever was here.
     ///
@@ -398,8 +459,15 @@ const Map = struct {
     /// because a world holds many maps in many places and one of them being at the origin
     /// is a property of this sample rather than of maps. The sandbox centres it, so the
     /// camera starts looking at it.
-    fn build(self: *Map, gpa: std.mem.Allocator, engine: *app.Engine, renderer: *render2d.Renderer, id: core.ContentId) void {
-        self.clear(gpa, engine);
+    fn build(
+        self: *Map,
+        gpa: std.mem.Allocator,
+        engine: *app.Engine,
+        renderer: *render2d.Renderer,
+        physics: *physics2d.World,
+        id: core.ContentId,
+    ) void {
+        self.clear(gpa, engine, physics);
         if (id.isNone()) return;
 
         const record = engine.store.lookup(id) orelse {
@@ -418,23 +486,28 @@ const Map = struct {
 
         self.width = map.width;
         self.height = map.height;
-        const cell: core.math.Vec2 = .init(map.cell_width, map.cell_height);
-        const origin: core.math.Vec2 = .init(
-            -@as(f32, @floatFromInt(map.width)) * cell.x / 2,
-            -@as(f32, @floatFromInt(map.height)) * cell.y / 2,
+        self.cell = .init(map.cell_width, map.cell_height);
+        self.origin = .init(
+            -@as(f32, @floatFromInt(map.width)) * self.cell.x / 2,
+            -@as(f32, @floatFromInt(map.height)) * self.cell.y / 2,
         );
 
+        var solid_layers: usize = 0;
         for (layers) |layer_id| {
-            const plane = self.readPlane(gpa, engine, renderer, layer_id, map, origin, cell) orelse continue;
+            const plane = self.readPlane(gpa, engine, renderer, physics, layer_id, map) orelse continue;
+            if (!plane.collision.isNone()) solid_layers += 1;
             self.planes.append(gpa, plane) catch {
+                _ = physics.removeGrid(plane.collision);
+                gpa.free(plane.solid);
                 engine.assets.release(plane.texture);
                 engine.assets.release(plane.grid);
                 log.warn("out of memory building map '{f}'; drawing {d} of its layers", .{ id, self.planes.items.len });
                 return;
             };
         }
-        log.info("map '{f}': {d}x{d} cells of {d}x{d}, {d} layer(s) drawn", .{
-            id, map.width, map.height, cell.x, cell.y, self.planes.items.len,
+        log.info("map '{f}': {d}x{d} cells of {d}x{d}, {d} layer(s) drawn, {d} of them solid", .{
+            id,          map.width,             map.height,   self.cell.x,
+            self.cell.y, self.planes.items.len, solid_layers,
         });
     }
 
@@ -444,12 +517,10 @@ const Map = struct {
         gpa: std.mem.Allocator,
         engine: *app.Engine,
         renderer: *render2d.Renderer,
+        physics: *physics2d.World,
         layer_id: core.ContentId,
         map: asset.tilemap.Tilemap,
-        origin: core.math.Vec2,
-        cell: core.math.Vec2,
     ) ?Plane {
-        _ = self;
         const layer_record = engine.store.lookup(layer_id) orelse {
             log.warn("map layer '{f}' is not in any loaded package; skipping it", .{layer_id});
             return null;
@@ -480,8 +551,12 @@ const Map = struct {
             return null;
         };
 
+        var solid: []u32 = &.{};
+        var collision: physics2d.GridHandle = .none;
         var ok = false;
         defer if (!ok) {
+            _ = physics.removeGrid(collision);
+            gpa.free(solid);
             engine.assets.release(grid_asset);
             engine.assets.release(texture_asset);
         };
@@ -503,10 +578,33 @@ const Map = struct {
             return null;
         }
 
+        // The other consumer of the very same slice. Nothing is copied and nothing is
+        // converted: `render2d` is handed `grid.tiles` and so is `physics2d`, and the only
+        // thing this code contributes is agreeing about where cell (0,0) is.
+        if (layer.collides) {
+            solid = asset.tilemap.solidBitset(gpa, set_record) catch |err| {
+                log.warn("tileset '{f}' solid list could not be read ({t}); its layer will not collide", .{ layer.tileset, err });
+                return null;
+            };
+            collision = physics.addGrid(gpa, .{
+                .origin = self.origin,
+                .cell = self.cell,
+                .width = grid.width,
+                .height = grid.height,
+                .tiles = grid.tiles,
+                .solid = solid,
+            }) catch |err| {
+                log.warn("map layer '{f}' could not be collided with ({t}); skipping it", .{ layer_id, err });
+                return null;
+            };
+        }
+
         ok = true;
         return .{
             .texture = texture_asset,
             .grid = grid_asset,
+            .solid = solid,
+            .collision = collision,
             .layer = .{
                 .tiles = region,
                 .tile_size = .{ .width = set.tile_width, .height = set.tile_height },
@@ -514,8 +612,8 @@ const Map = struct {
                 .map = grid.tiles,
                 .width = grid.width,
                 .height = grid.height,
-                .origin = origin,
-                .cell = cell,
+                .origin = self.origin,
+                .cell = self.cell,
                 .empty = layer.empty,
                 .layer = layer.order,
             },
@@ -534,19 +632,27 @@ const Map = struct {
         }
     }
 
-    fn clear(self: *Map, gpa: std.mem.Allocator, engine: *app.Engine) void {
+    /// Gives back everything a plane borrowed, in the order it was taken.
+    ///
+    /// The grid leaves the collision world **before** its arrays are freed, because the
+    /// world holds them by reference: a map removed from content and left in the world is a
+    /// slice into memory nobody owns any more.
+    fn clear(self: *Map, gpa: std.mem.Allocator, engine: *app.Engine, physics: *physics2d.World) void {
         for (self.planes.items) |plane| {
+            _ = physics.removeGrid(plane.collision);
+            gpa.free(plane.solid);
             engine.assets.release(plane.grid);
             engine.assets.release(plane.texture);
         }
         self.planes.clearRetainingCapacity();
         self.width = 0;
         self.height = 0;
-        _ = gpa;
+        self.origin = .zero;
+        self.cell = .zero;
     }
 
-    fn deinit(self: *Map, gpa: std.mem.Allocator, engine: *app.Engine) void {
-        self.clear(gpa, engine);
+    fn deinit(self: *Map, gpa: std.mem.Allocator, engine: *app.Engine, physics: *physics2d.World) void {
+        self.clear(gpa, engine, physics);
         self.planes.deinit(gpa);
     }
 };
@@ -592,6 +698,23 @@ const Visual = struct {
     /// `render2d.Sprite.layer` is an `i16`; the content type list has `i32`, and narrowing
     /// at the draw call is cheaper than a type nobody else would want.
     layer: i32 = 0,
+};
+
+/// A box that collides, centred on the entity's transform.
+///
+/// **The engine defines no `foundry:collider`, deliberately** — M5 adds no engine-owned
+/// component types at all (`tilemaps-and-collision.md` §11). A component name is a
+/// compatibility decision (`CLAUDE.md` §7), M7 is when the mod-facing vocabulary is chosen,
+/// and inventing the standard collider before one game has said what belongs on it would
+/// freeze a guess. So the sample defines its own, exactly as it defines `sandbox:transform`.
+///
+/// It holds half-extents and **not** a `physics2d.BodyHandle`: a handle is a runtime
+/// identity that a save must never carry (I1), so what persists is the shape and the body
+/// is rebuilt from it on load.
+const Collider = struct {
+    pub const component = "sandbox:collider";
+    half_x: f32 = 6,
+    half_y: f32 = 6,
 };
 
 /// Advances every orbiting entity's transform. **The sandbox's whole simulation.**
@@ -658,6 +781,30 @@ const SpriteField = struct {
     /// none, which is a package without a map rather than a failure.
     map: Map = .{},
 
+    /// **The collision world is the game's, not the engine's.**
+    ///
+    /// `app` does not own one and is not going to: `physics2d` has no time in it and
+    /// integrates nothing (`tilemaps-and-collision.md` §2), so *when* to move a body and
+    /// what to do about what it hit is gameplay, and an engine that owned that would be an
+    /// engine you fight. The sample runs it inside its own fixed step.
+    physics: physics2d.World = .empty,
+    /// The driven body. Held here rather than on the entity, because a body handle is
+    /// runtime identity and a save carries none (I1) — `adoptPlayer` rebuilds it.
+    player_body: physics2d.BodyHandle = .none,
+    /// The entity that body belongs to, found by asking the world who has a collider.
+    player: ?scene.Entity = null,
+    /// Whether the camera is chasing the player. Any manual pan drops it; `C` picks it
+    /// back up. Two ways to move a view is one too many unless one of them yields.
+    follow: bool = true,
+    /// Ticks per leg of a scripted square walk, or null to be driven by the keyboard.
+    ///
+    /// Same rationale as `FOUNDRY_SANDBOX_PICK_EVERY`: collision that can only be exercised
+    /// by a person holding a key is collision that is checked when somebody remembers to.
+    walk_every: ?u64 = null,
+    /// Contacts the player has accumulated, so a headless run reports a number that says
+    /// whether it ever actually hit anything.
+    contacts: u64 = 0,
+
     /// **The world, and the schema registry it borrows.**
     ///
     /// The registry is the sample's own rather than the engine's, and that is not an
@@ -670,6 +817,7 @@ const SpriteField = struct {
     orbit: scene.ComponentType = .none,
     transform: scene.ComponentType = .none,
     visual: scene.ComponentType = .none,
+    collider: scene.ComponentType = .none,
     /// How many entities the field currently has, kept for the log lines that used to
     /// report the seed count.
     population: u32 = 0,
@@ -784,7 +932,7 @@ const SpriteField = struct {
             .glyph_count = 95,
         };
         self.deriveRegions(engine);
-        self.map.build(gpa, engine, &self.renderer, self.settings.map);
+        self.map.build(gpa, engine, &self.renderer, &self.physics, self.settings.map);
         self.content_generation = engine.contentGeneration();
 
         // An image from memory, not from a file: `createTexture` takes an `asset.Image`
@@ -818,6 +966,11 @@ const SpriteField = struct {
         else
             false;
         if (!restored) try self.populate(count);
+
+        // Either path leaves an entity with a collider in the world; this is what gives it
+        // a body. A restored save brought the entity back and nothing else, which is the
+        // whole reason the two are separate calls.
+        self.adoptPlayer();
     }
 
     /// The component types and systems this sample defines.
@@ -830,6 +983,7 @@ const SpriteField = struct {
         self.orbit = try self.world.registerComponent(scene.componentType(Orbit));
         self.transform = try self.world.registerComponent(scene.componentType(Transform));
         self.visual = try self.world.registerComponent(scene.componentType(Visual));
+        self.collider = try self.world.registerComponent(scene.componentType(Collider));
         _ = try self.world.registerSystem(.{
             .id = try data.contentId("sandbox:system.orbit"),
             .name = "sandbox:system.orbit",
@@ -851,6 +1005,9 @@ const SpriteField = struct {
         try self.registerTypes();
         self.selected = null;
         self.population = 0;
+        // The entity is gone with the world it lived in. Its body outlives it for a moment
+        // and is reclaimed by `adoptPlayer`, which every caller of this reaches next.
+        self.player = null;
     }
 
     /// Writes the world to `path`.
@@ -912,6 +1069,55 @@ const SpriteField = struct {
     /// it reading a device (`entity-storage.md` §7).
     fn step(self: *SpriteField, s: app.Step) void {
         self.world.update(.{ .tick = s.tick, .delta = s.delta });
+        self.walk(s);
+    }
+
+    /// Moves the player, in the fixed step, against the map.
+    ///
+    /// **This is not a `scene` system, and it cannot be.** A system is handed the tick and
+    /// the delta and nothing else, precisely so a simulation cannot read a device
+    /// (`entity-storage.md` §7) — and driving something is reading a device. So it is the
+    /// game's code, running in the game's fixed step, reading the step's frozen input
+    /// snapshot rather than the live one (I9).
+    ///
+    /// The whole of the collision call is three lines in the middle: a vector in, a
+    /// position and a list of contacts out. There is no velocity, no acceleration and no
+    /// `dt` anywhere below this function, which is what ADR-0022's "collision, not
+    /// dynamics" buys — how it feels to walk stays here, where it can be tuned.
+    fn walk(self: *SpriteField, s: app.Step) void {
+        const entity = self.player orelse return;
+
+        var direction: core.math.Vec2 = .zero;
+        if (self.walk_every) |legs| {
+            // A square circuit, a pure function of the tick, so a run nobody is watching
+            // still drives the player into walls — and into the same walls every time.
+            direction = switch ((s.tick / legs) % 4) {
+                0 => .init(1, 0),
+                1 => .init(0, 1),
+                2 => .init(-1, 0),
+                else => .init(0, -1),
+            };
+        } else {
+            const in = &s.input;
+            // World space, so `w` is **+y**. The camera's pan two functions down uses the
+            // opposite sign for the same key, because it moves in screen space, which is
+            // Y-down. The two disagreeing is correct and is worth saying out loud.
+            if (in.isHeld(.a)) direction.x -= 1;
+            if (in.isHeld(.d)) direction.x += 1;
+            if (in.isHeld(.w)) direction.y += 1;
+            if (in.isHeld(.s)) direction.y -= 1;
+        }
+        if (direction.eql(.zero)) return;
+
+        const motion = direction.normalize().scale(self.settings.player_speed * s.delta.toSecondsF32());
+        var hits: [4]physics2d.Hit = undefined;
+        const result = (self.physics.moveAndSlide(self.gpa, self.player_body, motion, &hits) catch |err| {
+            log.warn("the player could not move: {t}", .{err});
+            return;
+        }) orelse return;
+
+        self.contacts += result.total_hits;
+        self.writeBack(entity, result.position);
     }
 
     /// Rebuilds everything **derived** from content, if content has moved since last time.
@@ -941,7 +1147,11 @@ const SpriteField = struct {
         // Rebuilt rather than patched. Everything in a plane is *derived* — a region cut
         // from a texture, a slice into a grid's payload — and a reload is exactly the event
         // that invalidates derived things (`assets.md` §6).
-        self.map.build(self.gpa, engine, &self.renderer, self.settings.map);
+        self.map.build(self.gpa, engine, &self.renderer, &self.physics, self.settings.map);
+        // The map that just replaced the old one may have put a wall where the player was
+        // standing. A sweep cannot undo that — the time of impact is behind it — so this is
+        // the call that can (`tilemaps-and-collision.md` §6).
+        self.settlePlayer();
 
         if (self.settings.sprites != previous.sprites) {
             const count = spriteCount(engine, self.settings.sprites);
@@ -955,6 +1165,8 @@ const SpriteField = struct {
                 // The selection referred to an entity that no longer exists. Clearing it is
                 // tidiness rather than safety — a stale handle already resolves to nothing.
                 self.selected = null;
+                // `populate` destroyed and remade the player along with everything else.
+                self.adoptPlayer();
             }
         }
         log.info("content changed: {d} sprites, grid {d}", .{ self.population, self.settings.grid });
@@ -1063,6 +1275,127 @@ const SpriteField = struct {
         // One step's worth, so the field has positions before the first frame draws it
         // rather than a frame of everything at the origin.
         self.world.update(.{ .tick = 0, .delta = .fromMillis(0) });
+
+        // And the one entity a person drives. Created last so the field's rebuild cannot
+        // destroy it; given a body by `adoptPlayer`, which every caller of this reaches.
+        try self.spawnPlayer();
+    }
+
+    /// Creates the driven entity in the middle of the map.
+    ///
+    /// Three ordinary components and no special case: it is a `Transform` and a `Visual`
+    /// like the other four thousand, plus a `Collider`, and *having a collider* is the
+    /// whole of what makes it the player. Its appearance is chosen here because every
+    /// sprite's appearance is chosen here; its size and speed come from content, because
+    /// those are the numbers somebody would tune.
+    fn spawnPlayer(self: *SpriteField) !void {
+        const half = self.settings.player_size / 2;
+        const at = self.map.center();
+
+        var collider: Collider = .{ .half_x = half, .half_y = half };
+        var transform: Transform = .{ .x = at.x, .y = at.y };
+        var visual: Visual = .{
+            .size = self.settings.player_size,
+            .cell = 0,
+            .tint = .srgb8(255, 240, 170, 255),
+            // Above the field's three layers and its additive fourth, so the thing being
+            // driven is never lost behind the thing being stress-tested.
+            .layer = 5,
+        };
+
+        const entity = try self.world.create();
+        _ = try self.world.addComponent(entity, self.collider, std.mem.asBytes(&collider));
+        _ = try self.world.addComponent(entity, self.visual, std.mem.asBytes(&visual));
+        _ = try self.world.addComponent(entity, self.transform, std.mem.asBytes(&transform));
+    }
+
+    /// Finds whoever has a collider and gives them a body in the collision world.
+    ///
+    /// **Separate from spawning because a save brings the entity back and not the body.**
+    /// A `BodyHandle` is runtime identity, which I1 forbids serializing, so the durable
+    /// record of "this thing collides" is the `Collider` component and the body is derived
+    /// from it — on a fresh spawn, on a load, and on a repopulate alike.
+    ///
+    /// Nothing here can fail the frame. A sample with no body walks through walls and says
+    /// so, which is a worse sample and not a stopped one.
+    fn adoptPlayer(self: *SpriteField) void {
+        if (!self.player_body.isNone()) {
+            _ = self.physics.removeBody(self.gpa, self.player_body);
+            self.player_body = .none;
+        }
+        self.player = null;
+
+        // A world can arrive without one: a save written before this sample had a player
+        // loads perfectly well and simply has nothing to drive. Making one is friendlier
+        // than refusing, and it is the same call a fresh world takes.
+        var probe = self.world.queryOf(.{ Collider, Transform });
+        if (probe.next() == null) {
+            log.info("nothing in the world has a collider; spawning a player", .{});
+            self.spawnPlayer() catch |err| {
+                log.warn("could not spawn a player ({t}); there is nobody to drive", .{err});
+                return;
+            };
+        }
+
+        var it = self.world.queryOf(.{ Collider, Transform });
+        const found = it.next() orelse return;
+        const collider = found.get(Collider);
+        const transform = found.get(Transform);
+
+        self.player_body = self.physics.addBody(self.gpa, .{
+            .shape = .{ .box = .init(collider.half_x, collider.half_y) },
+            .position = .init(transform.x, transform.y),
+            .kind = .movable,
+            // The entire coupling between `physics2d` and the rest of the engine: an opaque
+            // `u64` the module never interprets, holding the entity this body is
+            // (`tilemaps-and-collision.md` §2). It is how a contact names something.
+            .user = found.entity.bits(),
+        }) catch |err| {
+            log.warn("the player could not be given a body ({t}); it will walk through walls", .{err});
+            return;
+        };
+        self.player = found.entity;
+        self.settlePlayer();
+    }
+
+    /// Pushes the player out of anything it is standing inside, and moves the entity with it.
+    ///
+    /// The other half of §6, and deliberately not part of moving: a body that *starts*
+    /// overlapping is not something a sweep can fix, so "I am stuck in a wall" stays a
+    /// state the game is told about rather than a teleport it never sees. The moment it
+    /// matters is a content reload that turns the floor underfoot into a wall.
+    fn settlePlayer(self: *SpriteField) void {
+        const entity = self.player orelse return;
+        var hits: [4]physics2d.Hit = undefined;
+        const result = (self.physics.resolveOverlaps(self.gpa, self.player_body, &hits) catch |err| {
+            log.warn("the player could not be settled: {t}", .{err});
+            return;
+        }) orelse return;
+
+        self.writeBack(entity, result.position);
+        if (result.started_inside) {
+            log.info("the player was inside {d} solid thing(s); pushed out to ({d:.1}, {d:.1})", .{
+                result.total_hits, result.position.x, result.position.y,
+            });
+        }
+    }
+
+    /// Copies a body's position onto its entity's transform.
+    ///
+    /// One direction only, and that is the arrangement rather than a shortcut: the body is
+    /// authoritative while it is being moved, and the transform is what everything else —
+    /// drawing, picking, saving — reads. A second writer would be two truths.
+    fn writeBack(self: *SpriteField, entity: scene.Entity, at: core.math.Vec2) void {
+        const bytes = self.world.getComponent(entity, self.transform) orelse return;
+        const transform: *Transform = @ptrCast(@alignCast(bytes.ptr));
+        transform.x = at.x;
+        transform.y = at.y;
+    }
+
+    /// Where the player is, for the camera and the readout.
+    fn playerAt(self: *SpriteField) ?core.math.Vec2 {
+        const body = self.physics.body(self.player_body) orelse return null;
+        return body.position;
     }
 
     /// **The asset loader goes back before the renderer does.**
@@ -1072,7 +1405,10 @@ const SpriteField = struct {
     /// already been torn down — a teardown-order bug the compiler cannot see, and the
     /// reason that call exists.
     fn deinit(self: *SpriteField, engine: *app.Engine) void {
-        self.map.deinit(self.gpa, engine);
+        // Before the collision world, because a plane's grid is registered in it and the
+        // arrays that grid borrows are the plane's to free.
+        self.map.deinit(self.gpa, engine, &self.physics);
+        self.physics.deinit(self.gpa);
         engine.assets.release(self.sheet_asset);
         engine.assets.release(self.font_asset);
         _ = engine.assets.unregisterLoader(self.gpa, asset.schemas.texture.id);
@@ -1148,37 +1484,50 @@ const SpriteField = struct {
         const dt = engine.frameDelta().toSecondsF32();
 
         if (in.wasPressed(.c)) {
-            self.camera.center = .zero;
+            self.follow = true;
+            self.camera.center = self.playerAt() orelse .zero;
             self.camera.zoom = 1;
             self.selected = null;
-            log.info("camera recentred", .{});
+            log.info("camera recentred, and following the player again", .{});
         }
 
         // The whole world to a file and back, through the same path a scripted run uses.
         if (self.save_path) |path| {
             if (in.wasPressed(.f5)) self.saveWorld(engine, path);
-            if (in.wasPressed(.f9) and !self.loadWorld(engine, path)) {
-                self.populate(spriteCount(engine, self.settings.sprites)) catch |err| {
-                    log.warn("could not rebuild the field: {t}", .{err});
-                };
+            if (in.wasPressed(.f9)) {
+                if (!self.loadWorld(engine, path)) {
+                    self.populate(spriteCount(engine, self.settings.sprites)) catch |err| {
+                        log.warn("could not rebuild the field: {t}", .{err});
+                    };
+                }
+                // Either way the world is a new one, and the body that was pointing into
+                // the old one has to be made again.
+                self.adoptPlayer();
             }
         }
 
-        // Screen-space pan. `w` moves the view up, which is *negative* screen Y, because
-        // screen space is Y-down and `panByScreen` speaks screen space.
+        // Screen-space pan, on the **arrows**. WASD used to do this too and now drives the
+        // player: two things cannot answer to the same key, and once there is something to
+        // drive, driving it is what those four keys mean in a top-down game.
+        //
+        // Up moves the view up, which is *negative* screen Y, because screen space is
+        // Y-down and `panByScreen` speaks screen space. `walk` uses the opposite sign for
+        // the same intent, in world space, and that is not a mistake in either.
         var direction: core.math.Vec2 = .zero;
-        if (in.isHeld(.a) or in.isHeld(.left)) direction.x -= 1;
-        if (in.isHeld(.d) or in.isHeld(.right)) direction.x += 1;
-        if (in.isHeld(.w) or in.isHeld(.up)) direction.y -= 1;
-        if (in.isHeld(.s) or in.isHeld(.down)) direction.y += 1;
+        if (in.isHeld(.left)) direction.x -= 1;
+        if (in.isHeld(.right)) direction.x += 1;
+        if (in.isHeld(.up)) direction.y -= 1;
+        if (in.isHeld(.down)) direction.y += 1;
         if (!direction.eql(.zero)) {
             const speed = if (in.modifiers.shift) fast_pan_speed else pan_speed;
             self.pan(direction.normalize().scale(speed * dt));
+            self.follow = false;
         }
 
         // Drag to pan. The negation is the difference between moving the camera and
         // moving the content: dragging right should bring what is on the left into view.
         if (in.mouse.isHeld(.right) or in.mouse.isHeld(.middle)) {
+            if (!in.mouse.motion.eql(.zero)) self.follow = false;
             self.pan(in.mouse.motion.neg());
         }
 
@@ -1193,6 +1542,14 @@ const SpriteField = struct {
             self.camera.zoomAround(in.mouse.position, wanted) catch |err| {
                 log.warn("zoom refused: {t}", .{err});
             };
+        }
+
+        // The camera follows what is being driven, unless something above said not to.
+        // Applied here rather than when the player moves, because where a camera looks is
+        // presentation and belongs outside the fixed step — and because it must land after
+        // the zoom, which reads the centre it is zooming about.
+        if (self.follow) {
+            if (self.playerAt()) |at| self.camera.center = at;
         }
 
         // A left click, or the scripted stand-in for one. Same code path either way,
@@ -1302,23 +1659,30 @@ const SpriteField = struct {
         const stats = self.renderer.frameStats();
         const info = engine.windowInfo();
         const width: f32 = if (info) |i| @floatFromInt(i.logical_size.width) else 1280;
+        const at = self.playerAt() orelse core.math.Vec2.zero;
 
         var buffer: [512]u8 = undefined;
         const text = std.fmt.bufPrint(
             &buffer,
-            "{d:.1}ms  {d} sprites  {d} glyphs\n" ++
+            "{d:.1}ms  {d} sprites  {d} glyphs  {d} tiles\n" ++
                 "{d} batches  {d} draw calls  {d} views\n" ++
-                "{d} KiB vertices  {d} buffers  zoom {d:.2}",
+                "{d} KiB vertices  {d} buffers  zoom {d:.2}\n" ++
+                "player ({d:.0}, {d:.0})  {d} contacts{s}",
             .{
                 engine.frameDelta().toSecondsF32() * 1000,
                 stats.sprites,
                 stats.glyphs,
+                stats.tiles,
                 stats.batches,
                 stats.draw_calls,
                 stats.views,
                 stats.vertex_bytes / 1024,
                 stats.buffers_used,
                 self.camera.zoom,
+                at.x,
+                at.y,
+                self.contacts,
+                if (self.follow) "  following" else "",
             },
             // A statistics line that cannot be formatted is not worth failing a frame for.
         ) catch return;
@@ -1356,7 +1720,7 @@ const SpriteField = struct {
         // Right-aligned, to show that `measureText` is usable for layout and not only for
         // centring — and that screen space has a right-hand edge, which world space does
         // not.
-        const help = "wasd pan  wheel zoom  click picks  c recentres";
+        const help = "wasd walks  arrows pan  wheel zoom  click picks  c follows";
         const help_options: render2d.TextOptions = .{ .position = .zero, .scale = 1.5 };
         const help_size = render2d.measureText(self.font, help, help_options);
         const help_at: core.math.Vec2 = .init(
@@ -1515,7 +1879,9 @@ fn requestResize(engine: *app.Engine, size: platform.Size) void {
 /// cannot be scripted can only be checked by a person remembering to check it, and the
 /// resize path is precisely the one that went unverified for two sessions because of that.
 /// `FOUNDRY_SANDBOX_RESIZE_EVERY` drives the resize cycle; `FOUNDRY_SANDBOX_PICK_EVERY`
-/// picks at the window centre, taking exactly the path a click takes.
+/// picks at the window centre, taking exactly the path a click takes;
+/// `FOUNDRY_SANDBOX_WALK` gives the player a leg length in **ticks** and walks it in a
+/// square, which is how a headless run collides with anything at all.
 fn everyFrames(engine: *app.Engine, name: []const u8) ?u64 {
     const raw = engine.os.envVar(name) orelse return null;
     const n = std.fmt.parseInt(u64, std.mem.trim(u8, raw, " "), 10) catch {
