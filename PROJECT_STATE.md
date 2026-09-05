@@ -1,16 +1,19 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-05
-**Updated by:** **M5's design phase is complete, and its first two implementation steps are
+**Updated by:** **M5's design phase is complete and its first three implementation steps are
 done.** The two long-held `CLAUDE.md` §9 decisions were made first — physics is **Foundry's
 own, scoped to collision rather than dynamics** (ADR-0022) and audio is **Foundry's own mixer
 and WAV decoding** (ADR-0023), the first decided by I9 rather than by licensing. All three
-design documents are written: `tilemaps-and-collision.md`, `audio.md` and
-`sprite-animation.md`. **`physics2d` now exists** — L1 on `core` alone, with the layering
+design documents are written. **`physics2d` exists** — L1 on `core` alone, with the layering
 confirmed by breaking it — holding shapes, the four static pair tests, the swept box test, the
-body pool and the tile grid, **including the neighbour-aware face culling that is the exact fix
-for the internal-edge snag**. 627 tests pass under `-Drhi=null` and 635 under `-Drhi=metal`;
-the 37 new ones are `physics2d`'s. No broadphase and no movement yet — those are steps 3 and 4.
+body and grid pools, the tile grid with **the neighbour-aware face culling that is the exact
+fix for the internal-edge snag**, and now the **broadphase**: a two-tier uniform spatial hash,
+updated incrementally, whose candidates are sorted by handle index before anything reads them.
+Building it sharpened one claim in the design: a broadphase's contract is *no false negatives*,
+not *the same candidate set*, so the "cell size does not change the answer" property belongs
+one level up at `World.queryBounds`. 643 tests pass under `-Drhi=null` and 651 under
+`-Drhi=metal`; 53 of them are `physics2d`'s. No movement yet — that is step 4.
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
 
@@ -109,7 +112,7 @@ component are the sample's, for the same reason M5 adds no `foundry:collider`.
 **Nothing is owed before the code now.** Three documents, three implementation orders:
 `tilemaps-and-collision.md` §15, `audio.md` §13, `sprite-animation.md` §10.
 
-**Collision steps 1 and 2 are implemented.** `physics2d` is in the build graph at L1 with
+**Collision steps 1, 2 and 3 are implemented.** `physics2d` is in the build graph at L1 with
 `core` as its only dependency, and the layering was confirmed the way ADR-0007 asks — by
 breaking it, with a *referenced* illegal import, since Zig's lazy analysis lets an unused one
 compile clean. The error is `no module named 'data' available within module 'root'`, and the
@@ -124,7 +127,15 @@ it reports nothing, which is the common case in a tile game; *outside a grid is 
 because a grid is a shape source rather than a world boundary and a closed map is a border of
 solid tiles, which is content (I5); and a **`solid` bitset shorter than the tileset leaves the
 rest passable** rather than reading out of bounds, because that array comes from content that
-may predate a tile being added.
+may predate a tile being added. Step 3 added the broadphase and three more:
+the **spill list** for a body too large to bucket, because cell size comes from the first body
+inserted and bodies come from files — a million-unit body arriving after a handful of small
+ones would otherwise ask for a million cells; **`pdq` rather than the insertion sort §5 named**,
+since the key is unique so stability buys nothing and a wide query can return hundreds; and
+**`World.body` returns a `*const Body`**, with every change that moves a body between cells or
+tiers going through a named call, because a caller moving one by assignment would leave the
+broadphase describing where it used to be. All of it is recorded in the design document's
+Resolution section.
 
 **The milestone behind it — M4 — World: "it has entities." Complete, 2026-09-05.** Every item
 on its ROADMAP list is done and both exit criteria are met. `docs/design/entity-storage.md`
@@ -169,9 +180,20 @@ catching on the seams between its tiles.**
   cell, exact rather than a tolerance, and impossible for a pile of static boxes because a box
   does not know its neighbours. Its regression test slides a box twelve half-cells along a
   tiled floor and fails on *any* reported contact.
+* `engine/src/physics2d/broadphase.zig` — a uniform spatial hash in **two tiers**, because
+  most bodies do not move in most ticks: static bodies live in their own hash that is untouched
+  while movable ones move. Updates are incremental and exit early when a body's cell span did
+  not change, which is the common case. `Broadphase.query` collects, **sorts by handle index
+  and deduplicates**, which is the rule that makes the whole file replaceable — a different
+  structure producing the same candidates produces the same results. A body too large to bucket
+  goes in a spill list every query considers, which is a guard against content rather than a
+  tuning knob.
 * `engine/src/physics2d/world.zig` — generational pools for bodies and grids, validation at
   the boundary (a degenerate shape or a malformed grid is refused, never asserted), `setPosition`
-  named as the teleport it is, and iteration in ascending handle-index order.
+  named as the teleport it is, iteration in ascending handle-index order, and `queryBounds`,
+  which narrows the broadphase's candidates by mask and by an exact bounds test. A body is read
+  through a **const pointer** and changed through named calls, so nothing can move one without
+  the broadphase hearing about it.
 * `engine/src/physics2d/root.zig`, and the module in `build.zig` at L1 on `core` alone.
 
 **M4, new:**
@@ -407,9 +429,9 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 627 tests** (56 `core`, 70 `platform`, 104 `data`, 37 `physics2d`,
+**`zig build test` passes 643 tests** (56 `core`, 70 `platform`, 104 `data`, 53 `physics2d`,
 92 `rhi`, 36 `asset`, 103 `render2d`, 79 `scene`, 28 `app`, 14 `fpack`, 8 integration), and
-**635 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
+**651 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
 8 exceptions need a real GPU and compile only when Metal is selected.
@@ -495,15 +517,15 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M5, on the collision sequence.** All three design documents are written and steps 1 and 2
+**M5, on the collision sequence.** All three design documents are written and steps 1, 2 and 3
 of `tilemaps-and-collision.md` §15 are implemented: `physics2d` exists at L1 on `core` alone,
-with shapes, the pair tests, the swept box test, the body and grid pools, and the tile grid
-with neighbour-aware face culling. The next unit is **step 3, the broadphase** — a uniform
-spatial hash over movable and trigger bodies, updated incrementally as bodies move, with
-candidates collected and then **sorted by handle index before use**. That sort is the whole
-point: it is what makes the acceleration structure replaceable without changing a single
-result, and step 3 is the first step where an I9 test is meaningful, because before it there is
-nothing whose order could vary.
+with shapes, the pair tests, the swept box test, the body and grid pools, the tile grid with
+neighbour-aware face culling, and the two-tier spatial hash with its determinism sort. The next
+unit is **step 4, movement** — `moveAndSlide` with its documented four-iteration budget and the
+projection that makes a stop into a slide, `resolveOverlaps` kept deliberately separate so that
+"stuck in a wall" is a state a game can detect rather than a silent teleport, and the four
+queries with their caller-supplied buffers and truncation reporting. It is the step that turns
+everything built so far into something a character can be moved with.
 
 What follows in this section is the record of the milestones behind it, kept because the
 reasoning is what a future session needs and the commit log is not where reasoning lives.
@@ -885,10 +907,7 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 **M5 is open, its design is finished, and the next thing is code.** Three independent
 sequences, each with its order written down in its own document:
 
-1. **Collision**, `tilemaps-and-collision.md` §15. **Steps 1 and 2 are done.** Remaining:
-   step 3, the broadphase — a uniform spatial hash over movable and trigger bodies, updated
-   incrementally on move, with candidates sorted by handle index before use, and the first
-   meaningful I9 test (the same world described in two different insertion orders must agree);
+1. **Collision**, `tilemaps-and-collision.md` §15. **Steps 1, 2 and 3 are done.** Remaining:
    step 4, `moveAndSlide` with its documented four-iteration budget, `resolveOverlaps` kept
    separate so "stuck in a wall" is detectable, and the four queries with their truncation
    reporting; step 5, tilemap content and `fpack`'s text-grid front end; step 6, drawing with

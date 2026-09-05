@@ -29,6 +29,7 @@
 //! Design: `docs/design/tilemaps-and-collision.md`
 
 pub const body = @import("body.zig");
+pub const broadphase = @import("broadphase.zig");
 pub const grid = @import("grid.zig");
 pub const shape = @import("shape.zig");
 pub const world = @import("world.zig");
@@ -40,6 +41,8 @@ pub const Body = body.Body;
 pub const BodyHandle = body.BodyHandle;
 pub const BodyKind = body.BodyKind;
 pub const Bounds = shape.Bounds;
+pub const Broadphase = broadphase.Broadphase;
+pub const Candidates = broadphase.Candidates;
 pub const Contact = shape.Contact;
 pub const Face = shape.Face;
 pub const FaceMask = shape.FaceMask;
@@ -48,7 +51,9 @@ pub const GridHandle = grid.GridHandle;
 pub const GridHit = grid.GridHit;
 pub const Shape = shape.Shape;
 pub const Sweep = shape.Sweep;
+pub const SpatialHash = broadphase.SpatialHash;
 pub const World = world.World;
+pub const WorldOptions = world.Options;
 
 pub const AddBodyError = world.AddBodyError;
 pub const AddGridError = world.AddGridError;
@@ -63,6 +68,7 @@ pub const filtersAdmit = body.filtersAdmit;
 
 test {
     _ = body;
+    _ = broadphase;
     _ = grid;
     _ = shape;
     _ = world;

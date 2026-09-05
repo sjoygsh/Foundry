@@ -504,3 +504,63 @@ milestone rules.
    like a game rather than like a test.
 
 Audio is a separate document and a separate sequence, and it does not block any of this.
+
+---
+
+## Resolution: shapes, the grid and the broadphase (steps 1–3, 2026-09-05)
+
+§15's first three steps are implemented. The specification above was transcribable, which was
+its job; six things it did not have to settle, implementation did.
+
+**The layering was confirmed by breaking it, and the probe had to *reference* the import.**
+`no module named 'data' available within module 'root'`, with `--dep core` and nothing else on
+the failed command line. An unused `@import` compiles clean under Zig's lazy analysis, so a
+probe that only names the module proves nothing — the same nuance `build.zig`'s comment
+records.
+
+**Touching exactly is not an overlap, and a sweep grazing is a miss.** Both fall out of one
+requirement that §6 implies without stating: a body resting flush against a wall must report
+nothing, every tick, forever, and a body sliding along one must report nothing as it goes. So
+`overlap` uses strict inequalities, a sweep whose entry and exit coincide is rejected, and on
+an axis with no motion the slab boundary counts as *outside*. The case given up in exchange —
+motion exactly along a face plane, straight at the wall — is unreachable once `moveAndSlide`
+stops a body an epsilon short of what it hits.
+
+**A sweep that began overlapping reports that distinctly**, with a null face rather than a hit
+at fraction zero. §6 says depenetration is a separate call; this is the value that makes the
+separation visible to a caller instead of a convention it has to remember.
+
+**Outside a grid is not solid.** §4 did not say, and it matters: the answer here is that a grid
+is a shape source rather than a world boundary, so a closed map is a border of solid tiles,
+which is content (I5). The opposite choice would make a grid unusable as a *local* patch of
+geometry — one room, one platform chunk — because everything around it would be a wall.
+Relatedly, a `solid` bitset shorter than the tileset leaves the remaining ids passable rather
+than reading past its end, because that array comes from content that may predate a tile being
+added.
+
+**The broadphase's contract is "no false negatives", and the invariance claim belongs one level
+up.** §5 says a different acceleration structure producing the same candidate set produces the
+same results. Building it showed the first half is too strong: a larger cell size legitimately
+returns *more* candidates, because a candidate is a body sharing a cell rather than a body
+that is really there. What must not vary is the **narrowed** answer, so `World.queryBounds`
+filters by mask and by an exact bounds test, and that is where the "cell size does not change
+the answer" test lives. The broadphase's own test asserts the thing that would actually break a
+result: that no cell size ever *loses* a body.
+
+**`pdq` rather than the insertion sort §5 named.** The sort key is a slot index and is unique
+per body, so stability buys nothing, and a query covering a large region can return hundreds of
+candidates — a size at which an O(n²) sort is a frame rather than a rounding error. §5's
+reasoning was that candidate sets are small, which is true of the common case and guaranteed by
+nothing.
+
+**Two things the design did not anticipate at all.** Cell size is chosen from the first body
+inserted, so a body a million units across arriving after a handful of small ones would ask for
+a million cells and hang the frame — and bodies come from files, which come from mods. Such a
+body goes into a **spill list** that every query considers: correct, slower, and bounded.
+Second, `World.body` returns a `*const Body` and every change that moves a body between cells
+or between tiers goes through a named call. Handing out a `*Body` would let a caller move one
+by assignment and leave the broadphase describing where it used to be, and the symptom of that
+is "things sometimes do not collide" — the worst class of bug this module could ship.
+
+**Still to come, unchanged by any of the above:** `moveAndSlide` and `resolveOverlaps` (step 4)
+and everything from step 5 on.
