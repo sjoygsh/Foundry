@@ -173,16 +173,34 @@ following it verbatim.
 **Exit criteria:** a scene of entities defined in content data, updated by systems, saved and
 reloaded correctly across a restart. A fixed scenario run twice produces identical state.
 
-### M5 — Playable: "it's a game"
+### M5 — Playable: "it's a game" — **in progress, started 2026-09-05**
 
-* Tilemaps with efficient rendering and collision.
-* 2D collision detection and response; spatial partitioning.
-* Sprite animation: clips, state, timing.
-* Audio: device output, sound loading, mixing, playback by content ID.
-* A small but genuinely playable sample game in `samples/`.
+*Both `CLAUDE.md` §9 decisions that came due here were made before any code: physics is
+Foundry's own, scoped to collision rather than dynamics (ADR-0022), and audio is Foundry's own
+mixer and WAV decoding over the device `platform` was already chartered to provide
+(ADR-0023). The sample is **top-down tile movement**, which is what decides that gravity and
+slopes are out of M5's collision scope.*
+
+* Tilemaps with efficient rendering and collision — `docs/design/tilemaps-and-collision.md`.
+* 2D collision detection and response; spatial partitioning — the new **`physics2d`** module,
+  L1 on `core` alone.
+* Sprite animation: clips, state, timing — `docs/design/sprite-animation.md`, owed.
+* Audio: device output, sound loading, mixing, playback by content ID — the new **`audio`**
+  module at L3, plus an audio device in `platform` and WAV decoding in `asset`;
+  `docs/design/audio.md`, owed.
+* A small but genuinely playable sample in `samples/sandbox`.
 
 **Exit criteria:** something a person can play for five minutes without knowing it is a tech
 demo.
+
+*On that last bullet and ADR-0017.* "Playable sample" and "a sample is not a game"
+(`CLAUDE.md` §4.5) pull against each other, and the tension is resolved in favour of the
+engine: the exit criterion is evidence that **Foundry can carry a game**, not that
+`samples/sandbox` is one. It stays the smallest thing that exercises the capabilities — a
+tilemap, a character that collides with it, an animation, a sound, and nothing that exists to
+be impressive. The moment it starts wanting features rather than demonstrating them, it has
+outgrown this repository, and the answer is a game in its own repository (ADR-0017), not a
+bigger sample.
 
 ### M6 — Tools: "it's inspectable"
 

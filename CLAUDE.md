@@ -171,6 +171,8 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Images | Foundry decodes its own PNG; no third-party image library | [0018](docs/adr/0018-image-decoding.md) |
 | Modularity | Layering enforced by the Zig build graph | [0007](docs/adr/0007-module-layering.md) |
 | Entities | Type-erased component storage with runtime-registered types | [0010](docs/adr/0010-entity-component-constraints.md) |
+| Collision | Foundry's own 2D collision, scoped to collision rather than dynamics | [0022](docs/adr/0022-2d-collision-own.md) |
+| Audio | Foundry's own mixer and WAV decoding; `platform` owns the device | [0023](docs/adr/0023-audio-own-mixer.md) |
 | Determinism | Deterministic-friendly, not bit-exact | [0013](docs/adr/0013-determinism.md) |
 | Tooling | Tools are Foundry applications built on the public API | [0011](docs/adr/0011-tooling-architecture.md) |
 | Toolchain | Zig only; no CMake, Ninja, Make or pkg-config | [0014](docs/adr/0014-toolchain.md) |
@@ -211,6 +213,8 @@ L1  platform    -> core.        Window, input, events, filesystem, dynamic libra
                                 *** SDL3 is referenced ONLY here. ***
 L1  data        -> core.        Schemas, records, content packages, load order,
                                 merge/override semantics, serialization.
+L1  physics2d   -> core.        Shapes, tile grids, broadphase, queries, collision
+                                response. No entities, no content, no I/O.
 
 L2  rhi         -> core, platform.  Render hardware interface + backends.
                                 *** Metal/Vulkan/D3D are referenced ONLY here. ***
@@ -219,6 +223,7 @@ L2  asset       -> core, data, platform.  Asset registry, loading, hot reload.
 
 L3  render2d    -> core, rhi, asset.      Sprite/tilemap/text batching, cameras.
 L3  scene       -> core, data, asset.     Entities, components, world, systems.
+L3  audio       -> core, platform, asset. Mixer, voices, playback by content ID.
 
 L4  app         -> all of the above.      Engine loop, subsystem lifecycle, config.
 
@@ -446,8 +451,6 @@ Recorded so they are not made accidentally. Each notes when it comes due.
 
 | Decision | Due | Notes |
 | --- | --- | --- |
-| Physics: own vs. ported | M5 | 2D collision first; 3D physics far later. Must respect I9. |
-| Audio: own mixer vs. library | M5 | SDL3 gives the device either way. |
 | Debug/game UI: own IMGUI vs. cimgui | M6 | We need a UI system regardless; that argues for our own. |
 | Separate editor application | M6+ | In-process debug overlay first. |
 | Scripting language (Lua vs. WASM vs. other) | M8 | WASM: sandboxed, multi-language. Lua: small, easy, hot-reload. |

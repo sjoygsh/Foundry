@@ -1,27 +1,21 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-05
-**Updated by:** **M4 complete — the engine has entities, and a world it can put down and pick
-back up.** Its design was written first (`docs/design/entity-storage.md`), deciding what
-ADR-0010 deferred: a component type **is a schema**, so identity, versioning, checking and
-serialization are machinery `data` already has; queries iterate the first named component
-rather than the smallest, so order is a property of the query and not of the data; a component
-instance in content is its own record, so a mod overrides one component without restating the
-entity; and a save preserves entity identity exactly, which is what lets a handle inside
-component data survive a reload with no remap pass. Six steps, each leaving the tree green and
-the sandbox runnable: the module and the runtime type registry, with the layering confirmed by
-breaking it; the type-erased sparse-set storage under it, where the owner recorded beside each
-element is what makes a stale entity fail cleanly rather than inherit whatever reused its slot;
-the `comptime` wrapper, tested against records `fpk.write` actually produced; queries, which is
-where the interface either leaks the storage layout or does not; systems, and the sandbox
-converted from an array of seeds to a world of entities; and content and saves. **The save
-format is `.fsav`, not a package** — giving every entity a content ID would derive identity
-from position, which is exactly what I2 forbids — but it shares `.fpk`'s field-block layout and
-schema encoding, so the reading code cannot tell the two apart and neither can drift from the
-other. Both exit criteria are met, and demonstrated rather than argued: a scene defined in
-content data, stepped by systems, saved by one process and read by another, with a click
-landing on the same entity handle the run that created it picked.
-
+**Updated by:** **M5 opened — its two long-held decisions are made, and its first design
+document is written.** `CLAUDE.md` §9 had been holding physics and audio for this milestone
+since M0, and both were put to the user before any code existed to make them by accident.
+Physics is **Foundry's own, scoped to collision rather than dynamics** (ADR-0022) — boxes,
+circles, tile grids, swept tests, a spatial hash, queries, sliding response and triggers, and
+explicitly no mass, restitution, friction, joints or rotation. Audio is **Foundry's own mixer
+and WAV decoding** (ADR-0023) over the device `platform` was already chartered to provide, with
+a *stepped* null device so the mixer is testable headlessly and deterministically. Both follow
+ADR-0018's precedent, and in the physics case the deciding argument was I9 rather than
+licensing: a ported solver's contact-resolution order is an implementation detail, and I9 needs
+that order documented and stable. The sample is **top-down tile movement**, which is what puts
+gravity and slopes out of scope. `docs/design/tilemaps-and-collision.md` is written and no
+collision code exists yet; `audio.md` and a short `sprite-animation.md` remain owed. **No
+engine code has changed** — M5 so far is decisions and design, which is where the last three
+milestones started too.
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
 
@@ -39,82 +33,68 @@ is mature enough to need them rather than as decoration.
 ## Current phase
 
 **Phase 2 — A real 2D engine.** Phase 1 (M0, M1) closed with the first pixels; M2, M3 and M4
-are done. **M5 — Playable: "it's a game" — is next**, and starts where the last three did:
-with its design document.
+are done. **M5 — Playable: "it's a game" — is open**, started 2026-09-05, and started where
+the last three did: at the decisions `CLAUDE.md` §9 had been holding for it, then the design
+document, then code.
 
 ## Current milestone
 
-**M4 — World: "it has entities." Complete, 2026-09-05.** Every item on its ROADMAP list is
-done and both exit criteria are met. `docs/design/entity-storage.md` is the document
-`docs/design/README.md` had owed since ADR-0010 was accepted, and M4 started where M3 did — at
-its decisions, before any code existed to make them by accident. It settled six things ADR-0010
-left open, named its own open questions rather than resolving them opportunistically, and laid
-out the six implementation steps it was then built in. What implementation settled is in that
-document's seven Resolution sections; the ones worth carrying forward are that a component type
-is identified by a **handle** rather than an index, so unloading a mod one day cannot leave
-dangling references; that a zero-size component is legal and means a marker; that a component
-referencing an asset holds the **content ID**, never a handle, which is the same fact as `scene`
-needing no `asset` dependency; that a world cannot borrow the engine's schema registry, because
-hot reload replaces it; and that because the world's registry and the content registry are
-therefore separate, a spawn has to **check that a package's schema agrees with the registered
-one** — the deserializer matches by position, so an unchecked mismatch would read `y` into `x`
-and report success.
+**M5 — Playable: "it's a game." In progress, opened 2026-09-05.** Nothing is built yet. What
+exists is the part that has to exist first, and the part the last three milestones showed is
+cheapest to do before there is code arguing for a different answer.
 
-The exit criteria were demonstrated, not argued. `engine/tests/world_pipeline.zig` runs the
-whole chain — `.fdt` text to package to store to entities to systems to a save to a second
-world that has never seen the content — and checks that the two carry on bit-identically and
-save to the same bytes. The sandbox does the same across two processes: 4,000 entities and
-12,000 components written on the way out and read on the way in, with picking landing on the
-handle that entity had in the run that created it.
+**Two `CLAUDE.md` §9 decisions came due and were made, neither silently (rule 10).**
 
-**M0 — Skeleton: "it runs." Complete, 2026-09-03.** Every item on its ROADMAP list is
-done and both exit criteria are met: `zig build run` opens a window on macOS that responds
-to input, and both platform backends cross-compile for Windows and Linux. Nothing is
-drawn, which M0 deliberately excludes.
+* **ADR-0022 — Foundry's own 2D collision, scoped to collision rather than dynamics.**
+  Licensing did not decide this: Box2D v3 and Chipmunk2D are both MIT and both permitted. Two
+  things did. A tile game needs a moving box tested against static geometry with a response
+  that slides — not mass, inertia, restitution, friction solving or joints, which is most of
+  what a rigid-body engine is made of. And **I9 raises the price of a ported solver
+  specifically**: contact-resolution order changes the answer, it is an implementation detail
+  a library is free to change between versions, and verifying it means reading someone else's
+  solver as carefully as writing our own. `physics2d` is **L1 on `core` alone** — no entities,
+  no content, no I/O.
+* **ADR-0023 — Foundry's own mixer, and its own WAV decoding.** `platform` was already
+  chartered with the audio device (§4.3), so the device was never the question. The mixer is
+  ours because SDL3_mixer would leak SDL past `platform` (a §10 non-negotiable) and make its
+  channel/music model the shape of Foundry's audio API, and because miniaudio is device +
+  decode + mix as one stack and would displace that charter entirely. WAV decoding sits beside
+  PNG in `asset`, on ADR-0018's reasoning, with the supported subset stated and everything
+  outside it refused by name. The **null device is stepped rather than threaded**, which is
+  what makes the mixer testable — the same role the null RHI backend plays.
 
-**M1 — First pixels: "it draws." Complete and tagged `m1`, 2026-09-04.** `zig build run
--Drhi=metal` opens a window on macOS and draws a rotating, nearest-filtered textured quad,
-vsync-paced, which survives being resized.
+**One scope decision, also the user's:** the sample is **top-down tile movement**, matching the
+PokeMMO-like yardstick. That is what decides gravity, jump tuning, slopes and one-way platforms
+are out of M5's collision scope rather than merely unbuilt.
 
-**M2 — Sprites: "it draws a lot." Complete, 2026-09-04.** All six steps are done and the
-exit criterion is met and seen: `zig build run -Drhi=metal` draws 4,185 sprites at vsync
-under a camera driven by keyboard and mouse, with the batcher's own numbers on screen in a
-space that does not move when the camera does — 4 batches and 4 draw calls, because the
-sheet, the font and the selection outline share one atlas. *The batch count is M2's. At M3
-step 9 the sample's images became assets, which arrive as standalone textures, so it now
-draws 5; `render2d`'s atlas is unchanged and the sample simply stopped using it.*
+**`docs/design/tilemaps-and-collision.md` is written.** Its load-bearing decisions: three
+separable things get called "tilemap" and it separates them (a grid of numbers, drawing it,
+colliding against it), meeting only in the game that uses them; `physics2d` holds **no time and
+no velocity** and integrates nothing, so a caller says *move this by that* and is told where it
+stopped, which keeps movement feel in the game and leaves the module with no clock to read;
+the tile grid is a **first-class shape source** rather than ten thousand static boxes, which is
+what makes neighbour-aware face culling possible and turns the internal-edge snag into an exact
+fix rather than a tolerance; the spatial hash may bucket however it likes but candidates are
+**sorted by handle before use**, so the acceleration structure is replaceable without changing
+a result; a body carries an opaque `u64` rather than an `Entity`, which is the entire coupling
+to `scene` and is why collision works with no ECS at all; the grid's bulk is an **asset**,
+because ten thousand integers in a `.fdt` file is a binary payload in disguise (§6); and M5
+adds **no engine-owned component types**, because a `foundry:collider` invented now is a name
+every mod is stuck with from M7, and that vocabulary should be chosen when the ABI freezes it.
 
-**M3 — Content: "it has data." Complete, 2026-09-05.** All ten steps done. It started at
-the only place it could: its decisions. The first modding-relevant milestone, and it comes due on two of
-`CLAUDE.md` §9's postponed decisions — both now spent, as **ADR-0020** and **ADR-0021**, and
-struck from the §9 table. The two design documents `docs/design/README.md` has owed since M2
-are written, and `data` is built behind them, front to back: text in, checked records out,
-compiled to a package file, merged with other packages by load order — and `fpack` now
-drives the whole of it from a directory. The asset registry sits above it now, and a
-content id resolves all the way to a GPU texture. `content/core` is package zero, the
-sandbox embeds nothing, a mod dropped in after them overrides by id, and an edit reaches the
-running program without restarting it. **All three exit criteria were met and seen.** One
-roadmap item was deliberately not built: shaders did not become assets, because the engine's
-own stay embedded (ADR-0019) and a content-owned one has nothing to reference it yet. See
-`docs/ROADMAP.md`.
+**Still owed before the code they cover:** `docs/design/audio.md`, and a short
+`docs/design/sprite-animation.md` — small, but it lands in `render2d` and `scene` at once.
 
-**M1, for reference.** All five ROADMAP items are done: the Metal backend and its Objective-C shim (1), the
-`xcrun metal` → `.metallib` build step (2), runtime MSL compilation (3), the validation
-backend (4), and Metal API validation enabled and clean (5).
-
-**The exit criterion is met in full** — *a textured quad on screen, surviving window resize,
-with Metal validation clean and the null backend raising no complaints about the same
-command stream* — and every clause of it was checked rather than inferred. The resize half
-was the last to close and needed a new platform capability to do it; see the decisions
-below.
-
-Xcode GPU frame capture is confirmed as far as a terminal can confirm it: the sandbox runs
-clean under `MTL_CAPTURE_ENABLED=1` alongside both validation layers, so the capture layer
-loads and accepts the command stream. Opening the resulting trace in Xcode and reading MSL
-source in it is a GUI action, and is the one M1 item verified by its prerequisites rather
-than by being done.
-
----
+**The milestone behind it — M4 — World: "it has entities." Complete, 2026-09-05.** Every item
+on its ROADMAP list is done and both exit criteria are met. `docs/design/entity-storage.md`
+settled six things ADR-0010 left open; the ones worth carrying forward are that a component
+type is identified by a **handle** rather than an index, so unloading a mod one day cannot
+leave dangling references; that a zero-size component is legal and means a marker; that a
+component referencing an asset holds the **content ID**, never a handle, which is the same fact
+as `scene` needing no `asset` dependency; that a world cannot borrow the engine's schema
+registry, because hot reload replaces it; and that because the two registries are therefore
+separate, a spawn has to **check that a package's schema agrees with the registered one** —
+the deserializer matches by position, so an unchecked mismatch would read `y` into `x`.
 
 ## What has been implemented
 
@@ -445,12 +425,13 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**Nothing. M4 closed on 2026-09-05, and M5 has not opened.** M5 starts where M3 and M4 did:
-with its design document, and with the decisions `CLAUDE.md` §9 has been holding for it —
-physics (own vs. ported) and audio (own mixer vs. library), both due at M5 and neither to be
-made silently.
+**M5, at its design stage.** The two §9 decisions are made (ADR-0022, ADR-0023),
+`docs/design/tilemaps-and-collision.md` is written, and no engine code has changed. The next
+unit of work is `docs/design/audio.md` and the short `sprite-animation.md`, and after those,
+step 1 of the collision document's §15: `physics2d` in the build graph with `core` as its only
+dependency, with the layering confirmed by breaking it.
 
-What follows in this section is the record of the two milestones behind it, kept because the
+What follows in this section is the record of the milestones behind it, kept because the
 reasoning is what a future session needs and the commit log is not where reasoning lives.
 
 ### M4 — World: "it has entities"
@@ -827,7 +808,19 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**M4 is done.** Three things are outstanding, and none of them is a bug:
+**M5 is open and at its design stage.** In order:
+
+1. **`docs/design/audio.md`** — the device interface in `platform` (including the stepped null
+   device), the mixer and voice model, the SPSC command ring that keeps the callback lock-free
+   and allocation-free, WAV decoding and its stated subset in `asset`, and playback by content
+   ID with the loader registered upward from `audio` (I6).
+2. **`docs/design/sprite-animation.md`** — short. A clip is a content record, its state is a
+   component, its timing is an integer tick count and never a float (I9), and the frame it
+   selects becomes an atlas region.
+3. **Then code**, following `tilemaps-and-collision.md` §15's seven steps, starting with
+   `physics2d` in the build graph and the layering confirmed by breaking it.
+
+**Three things carried forward, and none of them is a bug:**
 
 * The key and button *bindings*, carried from M2 and still needing a person to judge them —
   that WASD pans the right way, that dragging carries the world with the cursor, that the
@@ -1111,6 +1104,31 @@ a rewrite of the one before.
 ---
 
 ## Important decisions made recently
+
+**M5 (2026-09-05), the two decisions `CLAUDE.md` §9 had been holding since M0:**
+
+* **ADR-0022 — own 2D collision, scoped to collision rather than dynamics.** The deciding
+  argument was **I9, not licensing**. Box2D v3 and Chipmunk2D are both MIT and both permitted
+  by ADR-0016; what ruled them out is that a solver's contact-resolution order changes its
+  answers, is an implementation detail it is free to change between versions, and I9 needs that
+  order documented and stable — so resting on one means auditing someone else's solver as
+  carefully as writing our own. Second argument: a tile game needs a swept box against static
+  geometry with a sliding response, and mass, inertia, restitution, friction and joints are
+  most of what a rigid-body engine *is*. `physics2d` is **L1 on `core` alone**, holds no time
+  and no velocity, and integrates nothing.
+* **ADR-0023 — own mixer, own WAV decoding.** `platform` already owned the audio device
+  (§4.3), so the device was never the question. SDL3_mixer would leak SDL past `platform` — a
+  §10 non-negotiable — and its channel/music model would become the shape of Foundry's audio
+  API at a boundary games and mods see. miniaudio is device + decode + mix as one stack and
+  would displace `platform`'s charter; taking a third of it is the worst version of the trade.
+  WAV decoding sits beside PNG in `asset` on ADR-0018's reasoning. The **null device is
+  stepped, not threaded**, which is the whole reason the mixer can have real tests.
+* **The sample is top-down tile movement** — the user's call, and the thing that puts gravity,
+  slopes, jump tuning and one-way platforms out of M5's scope rather than merely unbuilt.
+* **M5 adds no engine-owned component types.** A `foundry:collider` invented now is a name
+  every mod is stuck with from M7, chosen before any game has said what belongs on one. The
+  sample defines its own, exactly as it already defines `transform` and `sprite`. The standard
+  vocabulary is M7's decision, made when the ABI freezes it.
 
 **M4 (2026-09-05), the decisions building it forced:**
 
@@ -1706,6 +1724,14 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 5. **When backend #2 is triggered.** Deliberately unscheduled (ADR-0003). The trigger is a
    reason, not a date — but it is worth noticing if that reason never arrives, since the RHI
    stays unvalidated until it does.
+6. **Where the tilemap content types live.** `tilemaps-and-collision.md` §11 puts the three
+   tilemap schemas and the `foundry:tilegrid` loader in `render2d`, beside the texture loader,
+   because a tilemap is mostly a thing you draw and a module for three hundred lines is worse
+   than the wart. The wart: a consumer wanting map data *without* a renderer would have to link
+   one. Nothing needs that today — the M6 editor is a Foundry application and has a renderer
+   anyway, and networking is indefinite. *Trigger: the first real consumer that wants a grid
+   and not a GPU.* The document's §13 records four smaller ones alongside it, including whether
+   trigger enter/exit bookkeeping belongs in `physics2d` at all.
 
 ---
 
