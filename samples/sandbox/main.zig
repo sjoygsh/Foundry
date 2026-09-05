@@ -26,6 +26,7 @@ const data = @import("data");
 const platform = @import("platform");
 const render2d = @import("render2d");
 const rhi = @import("rhi");
+const scene = @import("scene");
 
 /// Routes Foundry's logging through the engine's sink. One line, in the root source file.
 pub const std_options = app.std_options;
@@ -190,6 +191,9 @@ pub fn main(init: std.process.Init) !void {
             // The only place simulation happens. It reads `step.input`, never the device.
             if (step.input.wasPressed(.escape)) engine.requestQuit();
 
+            // And the world advances here, once per fixed step, for the same reason.
+            field.step(step);
+
             // Once per second of *simulation* time, not wall-clock time.
             if (step.tick - reported_tick >= 60) {
                 reported_tick = step.tick;
@@ -219,12 +223,12 @@ pub fn main(init: std.process.Init) !void {
         }
 
         // Rendering, in two halves that are deliberately different jobs. The game builds
-        // a draw list; the engine owns the frame and the pass. The sprites' motion comes
-        // from simulated time rather than `engine.alpha()`; interpolation arrives with
-        // M4's entities, the first thing with two states to interpolate between.
-        const seconds = @as(f32, @floatFromInt(engine.elapsed().toMillis())) / 1000.0;
-        field.control(engine, seconds);
-        try field.submit(engine, seconds);
+        // a draw list; the engine owns the frame and the pass. What it draws is whatever
+        // the last simulation step left in the world — no interpolation between the two
+        // most recent transforms yet, which is what `engine.alpha()` is for and what the
+        // world now finally has the two states to make possible.
+        field.control(engine);
+        try field.submit(engine);
 
         engine.renderFrame(.{ .label = "sprites", .clear = clearColor(engine) }, &field.renderer) catch |err| switch (err) {
             // No drawable this frame: minimised, occluded, or all of them still in flight.
@@ -343,6 +347,69 @@ const Settings = struct {
     }
 };
 
+/// What the sandbox's entities are made of.
+///
+/// **A game defines its own component types**, and these are the sample's. They are
+/// declared here rather than in the engine because `CLAUDE.md` I5 says so: the engine
+/// provides mechanisms and content provides specifics, and "a thing that orbits a point" is
+/// a specific if anything is.
+///
+/// Each is an ordinary Zig struct with a name. `scene.componentType` derives the schema, the
+/// deserializer and the constructor from it — and produces the same registration data a mod
+/// would fill in through the C ABI (ADR-0010), which is why registering one looks like
+/// nothing special.
+const Orbit = struct {
+    pub const component = "sandbox:orbit";
+    home_x: f32 = 0,
+    home_y: f32 = 0,
+    radius: f32 = 0,
+    speed: f32 = 0,
+    phase: f32 = 0,
+    spin: f32 = 0,
+};
+
+/// Where a thing is. Written by the orbit system every tick, read by the draw code.
+const Transform = struct {
+    pub const component = "sandbox:transform";
+    x: f32 = 0,
+    y: f32 = 0,
+    rotation: f32 = 0,
+};
+
+/// What it looks like. `render2d.Color` derives as an inline struct, which is the shape
+/// `content-schemas.md` §3 prefers over a colour type — four named values with no identity
+/// of their own.
+const Visual = struct {
+    pub const component = "sandbox:visual";
+    size: f32 = 16,
+    cell: u32 = 0,
+    tint: render2d.Color = .{},
+    additive: bool = false,
+    /// `render2d.Sprite.layer` is an `i16`; the content type list has `i32`, and narrowing
+    /// at the draw call is cheaper than a type nobody else would want.
+    layer: i32 = 0,
+};
+
+/// Advances every orbiting entity's transform. **The sandbox's whole simulation.**
+///
+/// It reads no clock and no input, because `scene` cannot: it is handed the tick, and the
+/// angle is a function of the tick number and the fixed delta. That makes the field's motion
+/// reproducible by construction rather than by care (I9) — the same run produces the same
+/// positions, on any machine fast or slow.
+fn orbitSystem(_: ?*anyopaque, world: *scene.World, tick: scene.Tick) void {
+    const seconds = @as(f32, @floatFromInt(tick.tick)) * tick.delta.toSecondsF32();
+
+    var it = world.queryOf(.{ Orbit, Transform });
+    while (it.next()) |m| {
+        const orbit = m.get(Orbit);
+        const transform = m.get(Transform);
+        const angle = orbit.phase + seconds * orbit.speed;
+        transform.x = orbit.home_x + @cos(angle) * orbit.radius;
+        transform.y = orbit.home_y + @sin(angle) * orbit.radius;
+        transform.rotation = angle * orbit.spin;
+    }
+}
+
 /// A field of sprites, which is the thing M2 exists to make possible.
 ///
 /// Every sprite's parameters come from one seeded generator run once at startup, so the
@@ -382,7 +449,22 @@ const SpriteField = struct {
     blank_texture: render2d.TextureHandle,
     blank: render2d.Region,
     font: render2d.BitmapFont,
-    seeds: []Seed,
+
+    /// **The world, and the schema registry it borrows.**
+    ///
+    /// The registry is the sample's own rather than the engine's, and that is not an
+    /// oversight: hot reload builds a whole new content set with a whole new `data.Registry`
+    /// and swaps it (`app-and-frame-loop.md` §8), so a world holding a pointer into the
+    /// engine's would be holding a freed one the moment somebody saved a file. Component
+    /// schemas are declared by code and outlive any reload, which is exactly the difference.
+    schemas: data.Registry,
+    world: scene.World,
+    orbit: scene.ComponentType = .none,
+    transform: scene.ComponentType = .none,
+    visual: scene.ComponentType = .none,
+    /// How many entities the field currently has, kept for the log lines that used to
+    /// report the seed count.
+    population: u32 = 0,
 
     /// The content generation this was last built against.
     ///
@@ -399,26 +481,14 @@ const SpriteField = struct {
 
     /// Driven by input, so it is state rather than something recomputed per frame.
     camera: render2d.Camera2D,
-    /// Which sprite was last clicked, by index into `seeds`. Presentation only: nothing
-    /// in the simulation reads it.
-    selected: ?usize = null,
+    /// Which sprite was last clicked. Presentation only: nothing in the simulation reads
+    /// it. A handle rather than an index, so a stale one fails cleanly — the field can be
+    /// rebuilt under a selection by a content reload (I1).
+    selected: ?scene.Entity = null,
     /// Pick at the window's centre every N frames, or null to only pick on a click.
     /// Same rationale as `FOUNDRY_SANDBOX_RESIZE_EVERY`: a windowed path that cannot be
     /// scripted is a path that only gets checked when someone remembers to check it.
     pick_every: ?u64 = null,
-
-    /// What distinguishes one sprite from another, decided once.
-    const Seed = struct {
-        home: core.math.Vec2,
-        radius: f32,
-        speed: f32,
-        phase: f32,
-        size: f32,
-        spin: f32,
-        cell: u8,
-        tint: render2d.Color,
-        blend: render2d.BlendMode,
-    };
 
     /// Screen points. The HUD is placed in the same units the mouse is reported in, which
     /// is what the screen view buys.
@@ -458,7 +528,10 @@ const SpriteField = struct {
                 .columns = 16,
                 .glyph_count = 95,
             },
-            .seeds = &.{},
+            // Both are placeholders: `World.init` needs the registry's final address, and
+            // this struct is returned by value, so the world is built in `load`.
+            .schemas = undefined,
+            .world = undefined,
             .camera = .{ .viewport = .init(0, 0, 1280, 720) },
         };
     }
@@ -501,6 +574,20 @@ const SpriteField = struct {
         self.blank_texture = try self.renderer.createTexture(white, .{ .label = "sandbox blank" });
         self.blank = self.renderer.textureRegion(self.blank_texture).?.sub(2, 2, 4, 4);
 
+        // The world, and the three component types the sample defines. Registration happens
+        // before any entity exists, which `scene` insists on: storage is allocated per type,
+        // and a type arriving later would have no data for what is already there.
+        self.schemas = .init(gpa, .default);
+        self.world = .init(gpa, &self.schemas, .default);
+        self.orbit = try self.world.registerComponent(scene.componentType(Orbit));
+        self.transform = try self.world.registerComponent(scene.componentType(Transform));
+        self.visual = try self.world.registerComponent(scene.componentType(Visual));
+        _ = try self.world.registerSystem(.{
+            .id = try data.contentId("sandbox:system.orbit"),
+            .name = "sandbox:system.orbit",
+            .update = &orbitSystem,
+        });
+
         const count = spriteCount(engine, self.settings.sprites);
         log.info("content: sheet {d}x{d}, glyphs {d}x{d}, {d} sprites, grid {d}", .{
             self.sheet.size_px.width,       self.sheet.size_px.height,
@@ -508,7 +595,17 @@ const SpriteField = struct {
             count,                          self.settings.grid,
         });
 
-        try self.makeSeeds(count);
+        try self.populate(count);
+    }
+
+    /// One fixed simulation step. The game translates `app`'s step into `scene`'s tick.
+    ///
+    /// The two are deliberately different types. `app.Step` carries the frame's input
+    /// snapshot and the elapsed total; a system is entitled to the tick number and the fixed
+    /// delta and nothing else, which is what makes a simulation reproducible and what stops
+    /// it reading a device (`entity-storage.md` §7).
+    fn step(self: *SpriteField, s: app.Step) void {
+        self.world.update(.{ .tick = s.tick, .delta = s.delta });
     }
 
     /// Rebuilds everything **derived** from content, if content has moved since last time.
@@ -538,17 +635,19 @@ const SpriteField = struct {
 
         if (self.settings.sprites != previous.sprites) {
             const count = spriteCount(engine, self.settings.sprites);
-            if (count != self.seeds.len) {
-                self.makeSeeds(count) catch |err| {
+            if (count != self.population) {
+                self.populate(count) catch |err| {
                     log.warn("could not resize the field to {d} ({t}); keeping {d}", .{
-                        count, err, self.seeds.len,
+                        count, err, self.population,
                     });
                     return;
                 };
+                // The selection referred to an entity that no longer exists. Clearing it is
+                // tidiness rather than safety — a stale handle already resolves to nothing.
                 self.selected = null;
             }
         }
-        log.info("content changed: {d} sprites, grid {d}", .{ self.seeds.len, self.settings.grid });
+        log.info("content changed: {d} sprites, grid {d}", .{ self.population, self.settings.grid });
     }
 
     fn readSettings(self: *SpriteField, engine: *app.Engine) void {
@@ -595,36 +694,65 @@ const SpriteField = struct {
         return payload.asHandle(render2d.TextureHandle);
     }
 
-    fn makeSeeds(self: *SpriteField, count: u32) !void {
-        const gpa = self.gpa;
-        const seeds = try gpa.alloc(Seed, count);
-        errdefer gpa.free(seeds);
-        gpa.free(self.seeds);
+    /// Rebuilds the field: every entity destroyed, `count` fresh ones created.
+    ///
+    /// The parameters come from one seeded generator run here, exactly as they did when
+    /// this was an array of seeds — the difference is where they land. They used to be a
+    /// struct the draw code indexed; they are now three components on an entity, and the
+    /// motion that used to be recomputed from `seconds` at every draw is a system that runs
+    /// once per tick.
+    fn populate(self: *SpriteField, count: u32) !void {
+        // Destroy first, and all of it: `populate` is also the reload path, so it has to
+        // leave nothing of the previous field behind. `destroy` clears every component
+        // store, so this is the whole of it.
+        var old_entities: std.ArrayList(scene.Entity) = .empty;
+        defer old_entities.deinit(self.gpa);
+        {
+            var it = self.world.query(&.{self.transform});
+            while (it.next()) |e| try old_entities.append(self.gpa, e);
+        }
+        for (old_entities.items) |e| _ = self.world.destroy(e);
 
         // Explicit seed and stream, never the clock: the same build draws the same field
         // on every run, which is what makes a visual difference mean something.
         var rng: core.rng.Pcg32 = .init(0x5EED_5A11_D0_1234, 1);
-        for (seeds) |*seed| {
+        for (0..count) |index| {
+            const entity = try self.world.create();
             const cell = rng.below(16);
-            seed.* = .{
-                .home = .init(
-                    (rng.float01() - 0.5) * 1400,
-                    (rng.float01() - 0.5) * 900,
-                ),
+
+            var orbit: Orbit = .{
+                .home_x = (rng.float01() - 0.5) * 1400,
+                .home_y = (rng.float01() - 0.5) * 900,
                 .radius = 10 + rng.float01() * 90,
                 .speed = 0.2 + rng.float01() * 1.1,
                 .phase = rng.float01() * std.math.tau,
-                .size = 14 + rng.float01() * 26,
                 .spin = (rng.float01() - 0.5) * 2.0,
-                .cell = @intCast(cell),
+            };
+            var visual: Visual = .{
+                .size = 14 + rng.float01() * 26,
+                .cell = cell,
                 .tint = .srgb8(255, 255, 255, 160 + @as(u8, @intCast(rng.below(96)))),
                 // A tenth of them additive, so both pipelines are on screen and a
                 // regression in either is visible rather than theoretical.
-                .blend = if (rng.below(10) == 0) .additive else .alpha,
+                .additive = rng.below(10) == 0,
+                .layer = 0,
             };
-        }
+            // Four layers, so the sort is doing real work rather than sorting a constant.
+            // Additive sprites ride on top, where they belong.
+            visual.layer = if (visual.additive) 3 else @intCast(index % 3);
 
-        self.seeds = seeds;
+            _ = try self.world.addComponent(entity, self.orbit, std.mem.asBytes(&orbit));
+            _ = try self.world.addComponent(entity, self.visual, std.mem.asBytes(&visual));
+            // Zeroed until the first tick runs the system. The order the components are
+            // added in is the order the stores hold them, and drawing iterates the
+            // transform store, so this is also the draw order.
+            _ = try self.world.addComponent(entity, self.transform, null);
+        }
+        self.population = count;
+
+        // One step's worth, so the field has positions before the first frame draws it
+        // rather than a frame of everything at the origin.
+        self.world.update(.{ .tick = 0, .delta = .fromMillis(0) });
     }
 
     /// **The asset loader goes back before the renderer does.**
@@ -638,7 +766,8 @@ const SpriteField = struct {
         engine.assets.release(self.font_asset);
         _ = engine.assets.unregisterLoader(self.gpa, asset.schemas.texture.id);
 
-        self.gpa.free(self.seeds);
+        self.world.deinit();
+        self.schemas.deinit(self.gpa);
         self.renderer.deinit();
     }
 
@@ -648,10 +777,7 @@ const SpriteField = struct {
     /// day one of them changed, and the symptom would be clicks landing next to sprites
     /// rather than on them — which is exactly the sort of bug that gets blamed on the
     /// maths instead of on the duplication.
-    fn spriteAt(self: *const SpriteField, index: usize, seconds: f32) render2d.Sprite {
-        const seed = self.seeds[index];
-        const angle = seed.phase + seconds * seed.speed;
-
+    fn spriteOf(self: *const SpriteField, transform: *const Transform, visual: *const Visual) render2d.Sprite {
         // In the sheet's own pixels, not the atlas's. `Region.sub` is what makes that
         // possible, and it is why the sheet being its own texture rather than part of
         // something larger changes nothing here.
@@ -659,27 +785,36 @@ const SpriteField = struct {
         const cell_w = self.sheet.size_px.width / grid;
         const cell_h = self.sheet.size_px.height / grid;
         const cell = self.sheet.sub(
-            (seed.cell % grid) * cell_w,
-            (seed.cell / grid) * cell_h,
+            (visual.cell % grid) * cell_w,
+            (visual.cell / grid) * cell_h,
             cell_w,
             cell_h,
         );
 
         return .{
             .texture = cell.texture,
-            .position = .init(
-                seed.home.x + @cos(angle) * seed.radius,
-                seed.home.y + @sin(angle) * seed.radius,
-            ),
-            .size = .init(seed.size, seed.size),
+            .position = .init(transform.x, transform.y),
+            .size = .init(visual.size, visual.size),
             .uv = cell.uv,
-            .rotation = angle * seed.spin,
-            .tint = seed.tint,
-            .blend = seed.blend,
-            // Four layers, so the sort is doing real work rather than sorting a
-            // constant. Additive sprites ride on top, where they belong.
-            .layer = if (seed.blend == .additive) 3 else @intCast(index % 3),
+            .rotation = transform.rotation,
+            .tint = visual.tint,
+            .blend = if (visual.additive) .additive else .alpha,
+            .layer = @intCast(visual.layer),
         };
+    }
+
+    /// The sprite for one entity, or null if it is not one of the field's.
+    ///
+    /// Used by the selection, which holds an entity rather than an index and therefore has
+    /// to ask. A stale handle answers null, which is exactly the behaviour that makes
+    /// holding one safe across a content reload.
+    fn spriteFor(self: *SpriteField, entity: scene.Entity) ?render2d.Sprite {
+        const transform = self.world.getComponent(entity, self.transform) orelse return null;
+        const visual = self.world.getComponent(entity, self.visual) orelse return null;
+        return self.spriteOf(
+            @ptrCast(@alignCast(transform.ptr)),
+            @ptrCast(@alignCast(visual.ptr)),
+        );
     }
 
     /// Camera control and picking — the sample's input policy, and the half of "a 2D
@@ -688,7 +823,7 @@ const SpriteField = struct {
     /// Outside the fixed step, like resizing and for the same reason: where the camera
     /// is looking is presentation, not simulation. That is also why it may use
     /// `frameDelta` — a wall-clock number that simulation is forbidden to touch (I9).
-    fn control(self: *SpriteField, engine: *app.Engine, seconds: f32) void {
+    fn control(self: *SpriteField, engine: *app.Engine) void {
         const info = engine.windowInfo();
         const width: f32 = if (info) |i| @floatFromInt(i.logical_size.width) else 1280;
         const height: f32 = if (info) |i| @floatFromInt(i.logical_size.height) else 720;
@@ -754,10 +889,11 @@ const SpriteField = struct {
 
         if (clicked_at) |at| {
             const world = self.camera.screenToWorld(at);
-            self.selected = self.pick(world, seconds);
-            if (self.selected) |index| {
-                log.info("picked sprite {d} of {d} at world ({d:.1}, {d:.1}), zoom {d:.2}", .{
-                    index, self.seeds.len, world.x, world.y, self.camera.zoom,
+            self.selected = self.pick(world);
+            if (self.selected) |entity| {
+                log.info("picked entity {d}#{d} of {d} at world ({d:.1}, {d:.1}), zoom {d:.2}", .{
+                    entity.index, entity.generation, self.population,
+                    world.x,      world.y,           self.camera.zoom,
                 });
             } else {
                 log.info("nothing at world ({d:.1}, {d:.1})", .{ world.x, world.y });
@@ -778,18 +914,24 @@ const SpriteField = struct {
     /// sprite becomes vertices the moment it is drawn — so picking is the game's loop
     /// over the game's own objects. A spatial index belongs with the thing that owns
     /// positions, which is M4's world, not M2's renderer.
-    fn pick(self: *const SpriteField, world: core.math.Vec2, seconds: f32) ?usize {
-        var best: ?usize = null;
+    fn pick(self: *SpriteField, world: core.math.Vec2) ?scene.Entity {
+        var best: ?scene.Entity = null;
         var best_layer: i16 = 0;
-        for (0..self.seeds.len) |index| {
-            const sprite = self.spriteAt(index, seconds);
+
+        var it = self.world.queryOf(.{ Transform, Visual });
+        while (it.next()) |m| {
+            const sprite = self.spriteOf(m.get(Transform), m.get(Visual));
             // World space, so `.up` — the sample's picking is of world sprites.
             if (!render2d.containsPoint(sprite, world, .up)) continue;
             // Later in the draw order wins, and the draw order is `(layer, submission
             // index)` — the batcher's own sort key. So "topmost" means the same thing to
             // the pick as it does to the GPU, rather than being a second guess at it.
+            //
+            // This scan and the one in `submit` name the same components in the same order,
+            // which is what keeps "later in the draw order" true: the query's order is a
+            // property of how it is written (`entity-storage.md` §5).
             if (best == null or sprite.layer >= best_layer) {
-                best = index;
+                best = m.entity;
                 best_layer = sprite.layer;
             }
         }
@@ -798,19 +940,21 @@ const SpriteField = struct {
 
     /// Builds this frame's draw list. This is the game's half of rendering, and it never
     /// sees a command buffer or a render pass: `app.Engine.renderFrame` owns those.
-    fn submit(self: *SpriteField, engine: *app.Engine, seconds: f32) !void {
+    fn submit(self: *SpriteField, engine: *app.Engine) !void {
         const scale: f32 = if (engine.windowInfo()) |i| i.scale else 1;
 
         try self.renderer.begin(.{ .camera = self.camera, .pixel_scale = scale });
 
-        for (0..self.seeds.len) |index| {
-            try self.renderer.drawSprite(self.spriteAt(index, seconds));
+        var it = self.world.queryOf(.{ Transform, Visual });
+        while (it.next()) |m| {
+            try self.renderer.drawSprite(self.spriteOf(m.get(Transform), m.get(Visual)));
         }
 
-        if (self.selected) |index| {
-            const sprite = self.spriteAt(index, seconds);
-            try self.outline(sprite);
-            try self.label(index, sprite);
+        if (self.selected) |entity| {
+            if (self.spriteFor(entity)) |sprite| {
+                try self.outline(sprite);
+                try self.label(entity, sprite);
+            }
         }
 
         try self.banner();
@@ -933,9 +1077,9 @@ const SpriteField = struct {
     /// thickness, and for the same reason: a label that shrank to nothing when zoomed out
     /// would stop being a label. `measureText` centres it, and it runs the layout the
     /// drawing runs, so the two cannot disagree about how wide the number is.
-    fn label(self: *SpriteField, index: usize, sprite: render2d.Sprite) !void {
+    fn label(self: *SpriteField, entity: scene.Entity, sprite: render2d.Sprite) !void {
         var buffer: [32]u8 = undefined;
-        const text = std.fmt.bufPrint(&buffer, "#{d}", .{index}) catch return;
+        const text = std.fmt.bufPrint(&buffer, "#{d}", .{entity.index}) catch return;
 
         const options: render2d.TextOptions = .{
             .position = .zero,

@@ -1,8 +1,9 @@
 # Design: `scene` — entities, components, systems and world state
 
-**Status:** M4 in progress. Steps 1 to 4 of §15 are built as `engine/src/scene/` — entities,
-the component type registry, the type-erased storage, the `comptime` wrapper and queries; the
-Resolution sections at the end record what they settled. Steps 5 and 6 are not written.
+**Status:** M4 in progress. Steps 1 to 5 of §15 are built — `engine/src/scene/` in full, and
+`samples/sandbox` holds entities rather than an array of sprites. The Resolution sections at
+the end record what each step settled. Step 6 — entities in content, and saves — is not
+written.
 **Date:** 2026-09-05
 **Implements:** I1, I2, I3, I5, I6, I8, I9 · **Informed by:** ADR-0005, ADR-0006, ADR-0010,
 ADR-0013, ADR-0020, ADR-0021
@@ -789,3 +790,45 @@ the same, and made them change when a mod added a sprite.
 **The structural-change guard is an assertion and is therefore not unit-tested.** It panics, and
 a passing test cannot observe a panic. It is stated here and in the module doc instead, along
 with the escape hatch: collect entities into a frame arena, act on them after the loop.
+
+---
+
+## Resolution: systems, and the sandbox's world (implementation, 2026-09-05)
+
+Step 5 of §15: `engine/src/scene/system.zig`, `World.registerSystem`, `World.update`, and the
+sandbox converted from an array of seeds to a world of entities. The sample is the first
+consumer that is not a test, and it settled two things.
+
+**A world cannot borrow the engine's schema registry.** §13's sixth open question asked
+whether a world should own a `data.Registry` or borrow one, said M4 borrows, and expected a
+tool wanting two worlds to force the answer. Hot reload forced it first: the engine builds a
+**whole new content set with a whole new registry** and swaps it (`app-and-frame-loop.md` §8),
+so a world holding a pointer into the engine's would hold a freed one the moment somebody
+saved a file. The sandbox therefore owns the registry its world borrows. Component schemas are
+declared by code and outlive any reload; content schemas are rebuilt from packages on every
+one, and that difference is the answer.
+
+This leaves a real question for step 6, recorded here rather than resolved: content that
+*defines* component instances is checked against the content registry, which must therefore
+know the component schemas. The mechanism already exists — `asset.schemas.registerAll` puts
+the engine's own asset schemas into each new content registry as it is built — and component
+schemas want the same treatment.
+
+**A system that is a function of the tick needs no context at all.** The sandbox's orbit
+system computes each entity's angle from `tick.tick` and the fixed delta, so its motion is
+reproducible by construction rather than by care: the same run produces the same positions on
+a fast machine and a slow one. The version this replaced computed the same angle from
+`engine.elapsed()`, which was already right for the same reason — the conversion just moved
+where the number comes from.
+
+**§5's order rule paid off in the sample rather than in a test.** Picking and drawing both
+query `.{ Transform, Visual }`, in that order, so "topmost" means the same thing to the pick
+as it does to the batcher's `(layer, submission index)` sort. Had the query driven from the
+smallest store, the two would still have agreed today and could have stopped agreeing the
+first time a mod added a component to some of the sprites.
+
+**Verified by running it**, not by inference: 4,176 sprites headless under the null backend
+and 4,185 with a selection on screen under Metal, both a clean exit; picking returns an entity
+and its outline and label draw; and a mod recompiled *while the program was running* changed
+the field from 250 entities to 600 at the top of a frame, with every entity destroyed and
+respawned through the same path that built them at startup.

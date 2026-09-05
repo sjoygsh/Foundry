@@ -17,8 +17,9 @@ stale entity fail cleanly instead of inheriting whatever reused its slot. Step 3
 its deserializer, tested by reading records out of packages `fpk.write` actually produced.
 Step 4 built queries, which is where the interface either leaks the storage layout or does
 not — it does not. Step 5's engine half is in: systems, registered at runtime and run in
-registration order, with a fixed scenario proving it runs the same way twice. The sandbox
-half of that step is next
+registration order, with a fixed scenario proving it runs the same way twice — and the
+sandbox now holds entities rather than an array of sprites, with its motion a system and its
+picking a query. Content-defined entities and saves are step 6
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -41,7 +42,7 @@ are done. **M4 — World: "it has entities" — is under way**, at its design st
 
 ## Current milestone
 
-**M4 — World: "it has entities." In progress, 2026-09-05. Steps 1 to 4 of 6 done.**
+**M4 — World: "it has entities." In progress, 2026-09-05. Steps 1 to 5 of 6 done.**
 `docs/design/entity-storage.md` is the document `docs/design/README.md` has owed since ADR-0010
 was accepted, and M4 started where M3 did — at its decisions, before any code existed to make
 them by accident. It settles six things ADR-0010 left open, names its own open questions
@@ -111,7 +112,7 @@ than by being done.
 under a camera that pans, zooms and picks, and it loads content by content id. `scene` holds
 entities, component types and their storage; it has no queries and no systems yet.**
 
-**M4 steps 1 to 4, new:**
+**M4 steps 1 to 5, new:**
 
 * `engine/src/scene/entity.zig` — `Entity`, a `core.Handle` over an opaque tag. No entity
   object exists anywhere, which is why the type is not called `EntityHandle`.
@@ -134,6 +135,12 @@ entities, component types and their storage; it has no queries and no systems ye
   `deserialize` and `construct` generated over it, and a compile error naming any field that
   does not project onto the closed type list. It **produces** registration data rather than
   being a second registration path, which is what ADR-0010 requires of it.
+* `samples/sandbox/main.zig` — the sample defines three component types of its own
+  (`sandbox:orbit`, `sandbox:transform`, `sandbox:visual`), registers them and one system,
+  and spawns 4,000 entities. Drawing and picking are both queries over the same two
+  components in the same order, which is what keeps "topmost" meaning the same thing to the
+  pick as to the batcher. **It owns the `data.Registry` its world borrows**, because hot
+  reload replaces the engine's.
 * `engine/src/scene/system.zig` — `System` and `Tick`, runtime-registered like everything
   else here, run in registration order. A system gets the world and the tick and **not**
   input or a clock, because `platform` is not below `scene`; input reaches it as data the
@@ -789,9 +796,13 @@ green and the sandbox runnable:
    means and what driving from the smallest store would have hidden. A `Query` holds its types
    by value — borrowing made the typed wrapper self-referential — and the stores slice it
    borrows is stable because §6 refuses to register a type once a world has entities.
-5. **Systems, and the sandbox gets a world.** Registration and ordered update from `app`'s
-   fixed step. The sample stops holding an array of sprites and holds entities, which is the
-   first honest test of whether the interface is usable.
+5. ~~**Systems, and the sandbox gets a world.**~~ **Done, 2026-09-05.** `system.zig`, and the
+   sandbox converted. The interface survived its first non-test consumer with one correction:
+   **a world cannot borrow the engine's schema registry**, because hot reload builds a whole
+   new one and swaps it, so the sample owns the registry its world borrows. Step 6 has to
+   answer the other half of that — content defining component instances is checked against the
+   *content* registry, which must therefore learn the component schemas, the way
+   `asset.schemas.registerAll` already teaches it the asset ones.
 6. **Content and saves.** `foundry:entity` and `foundry:scene`; spawning from the store; the
    `.fsav` writer and reader. Ends at the exit criteria.
 

@@ -230,6 +230,10 @@ pub fn build(b: *std.Build) void {
     sandbox_mod.addImport("platform", platform_module);
     sandbox_mod.addImport("render2d", modules.get("render2d").?);
     sandbox_mod.addImport("rhi", modules.get("rhi").?);
+    // A game owns its world and defines its own component types, so it names `scene`
+    // directly rather than reaching it through `app` — which does not have it. `app` drives
+    // the frame; what the frame simulates is the game's.
+    sandbox_mod.addImport("scene", modules.get("scene").?);
 
     // The shader the sandbox draws with, compiled by the build and embedded in the
     // executable. Only under Metal: `xcrun` is a macOS toolchain, and a null build must not
