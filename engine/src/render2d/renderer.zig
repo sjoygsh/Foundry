@@ -11,6 +11,7 @@ const camera_mod = @import("camera.zig");
 const color_mod = @import("color.zig");
 const sprite_mod = @import("sprite.zig");
 const text_mod = @import("text.zig");
+const tilemap_mod = @import("tilemap.zig");
 const view_mod = @import("view.zig");
 const texture_mod = @import("texture.zig");
 
@@ -25,6 +26,7 @@ const Region = atlas_mod.Region;
 const BitmapFont = text_mod.BitmapFont;
 const Sprite = sprite_mod.Sprite;
 const TextOptions = text_mod.TextOptions;
+const TilemapLayer = tilemap_mod.TilemapLayer;
 const ViewDesc = view_mod.ViewDesc;
 const ViewId = view_mod.ViewId;
 const TextureHandle = texture_mod.TextureHandle;
@@ -49,8 +51,8 @@ pub const Error = error{
     TextureTooLarge,
     /// Drawing outside a `begin`/`record` pair.
     NotRecording,
-} || atlas_mod.Error || camera_mod.CameraError || view_mod.Error || rhi.ResourceError ||
-    rhi.MapError || rhi.CommandError || Allocator.Error;
+} || atlas_mod.Error || camera_mod.CameraError || tilemap_mod.Error || view_mod.Error ||
+    rhi.ResourceError || rhi.MapError || rhi.CommandError || Allocator.Error;
 
 pub const Config = struct {
     /// Quads per vertex buffer. A frame needing more simply uses more buffers, so this
@@ -80,6 +82,11 @@ pub const Stats = struct {
     /// because a frame that is mostly text and a frame that is mostly sprites want
     /// different things done about them.
     glyphs: u32 = 0,
+    /// Tiles, likewise counted in `sprites` as well. This is the number that decides
+    /// whether a tilemap ever needs a chunk cache, so it is measured from the first day
+    /// there is a tilemap rather than from the day somebody suspects one
+    /// (`tilemaps-and-collision.md` §10).
+    tiles: u32 = 0,
     batches: u32 = 0,
     draw_calls: u32 = 0,
     vertices: u32 = 0,
@@ -630,6 +637,14 @@ pub const Renderer = struct {
         return self.views.items[id.index()].y_axis;
     }
 
+    /// The rectangle of a view's space that it displays. Empty for anything the frame does
+    /// not have, which culls everything rather than reading past the table — same
+    /// reasoning as `viewAxis`, and `setView` already makes it unreachable.
+    fn viewVisible(self: *const Self, id: ViewId) core.math.Rect {
+        if (id.index() >= self.views.items.len) return .{};
+        return self.views.items[id.index()].visible;
+    }
+
     /// Appends one sprite to this frame's draw list. No GPU work happens here.
     pub fn drawSprite(self: *Self, sprite: Sprite) Error!void {
         if (!self.recording) return error.NotRecording;
@@ -680,6 +695,35 @@ pub const Renderer = struct {
                 .blend = options.blend,
             }, self.current_view);
             self.stats.glyphs += 1;
+        }
+    }
+
+    /// Appends one layer of a tilemap to this frame's draw list, culled to the current view.
+    ///
+    /// A tile is a sprite, so this is `drawText`'s shape again: a loop over a pure iterator,
+    /// the same batcher, the same sort key. A layer is one texture at one sort layer and is
+    /// therefore **one batch**, whatever its size — and because the iterator is culled first,
+    /// what it costs is the screenful rather than the map (`tilemap.zig`).
+    ///
+    /// **The space is the current view, not a parameter**, exactly as it is for every other
+    /// draw. `setView` is how the renderer has always been told which space to record in, and
+    /// a per-call view argument on one entry point out of three is the kind of inconsistency
+    /// that a frozen ABI makes permanent (CLAUDE.md §7).
+    ///
+    /// The layer is untrusted — every field of it can come from a content file — so a layer
+    /// that could not be drawn anywhere is refused, while a tile id the sheet does not have
+    /// simply draws nothing.
+    pub fn drawTilemap(self: *Self, layer: TilemapLayer) Error!void {
+        if (!self.recording) return error.NotRecording;
+        // Once, not once per tile: every tile in a layer is from the same texture, and a
+        // ten-thousand-cell map should not pay for ten thousand lookups.
+        if (self.textures.get(layer.tiles.texture) == null) return error.InvalidTexture;
+
+        const id = self.current_view;
+        var tiles: tilemap_mod.Tiles = try .init(layer, self.viewVisible(id));
+        while (tiles.next()) |tile| {
+            try self.batcher.add(self.gpa, tile, id);
+            self.stats.tiles += 1;
         }
     }
 
@@ -1522,4 +1566,98 @@ test "text goes wherever the current view is" {
 
     try testing.expectEqual(@as(u32, 3), fx.renderer.frameStats().glyphs);
     try testing.expectEqual(ViewId.screen, fx.renderer.batcher.batches.items[0].view);
+}
+
+test "a tilemap layer costs one batch and only the tiles the camera can see" {
+    var fx = try Fixture.init(16 * 1024);
+    defer fx.deinit();
+
+    // A thousand cells on a side is a million tiles. The camera is at the origin and so is
+    // the map's corner, so it sees the 40 by 23 cells of the map's bottom-left quadrant that
+    // fit in 640 by 360 points — and not the other 999,080.
+    const map = try testing.allocator.alloc(u16, 1000 * 1000);
+    defer testing.allocator.free(map);
+    @memset(map, 0);
+
+    try fx.renderer.begin(fx.view());
+    try fx.renderer.drawTilemap(.{
+        .tiles = fx.renderer.textureRegion(fx.texture).?,
+        .tile_size = .{ .width = 1, .height = 1 },
+        .columns = 2,
+        .map = map,
+        .width = 1000,
+        .height = 1000,
+        .cell = .init(16, 16),
+    });
+    try fx.frame();
+
+    const stats = fx.renderer.frameStats();
+    try testing.expectEqual(@as(u32, 40 * 23), stats.tiles);
+    // Counted as sprites too, because that is what they are.
+    try testing.expectEqual(stats.tiles, stats.sprites);
+    // One texture, one layer, one view: one batch and one draw call, whatever the map size.
+    try testing.expectEqual(@as(u32, 1), stats.batches);
+    try testing.expectEqual(@as(u32, 1), stats.draw_calls);
+}
+
+test "a tilemap is recorded in the current view, like every other draw" {
+    var fx = try Fixture.init(1024);
+    defer fx.deinit();
+
+    const map = [_]u16{ 0, 1, 2, 3 };
+    const layer: TilemapLayer = .{
+        .tiles = fx.renderer.textureRegion(fx.texture).?,
+        .tile_size = .{ .width = 1, .height = 1 },
+        .columns = 2,
+        .map = &map,
+        .width = 2,
+        .height = 2,
+        .cell = .init(16, 16),
+    };
+
+    try fx.renderer.begin(fx.view());
+    // The world camera is centred on the origin, so all four cells of a map at the origin
+    // are visible; the screen view is 1280x720 with its origin at the top-left, and the
+    // same map placed at the same coordinates is inside it as well.
+    try fx.renderer.drawTilemap(layer);
+    try fx.renderer.setView(.screen);
+    try fx.renderer.drawTilemap(layer);
+    try fx.frame();
+
+    const stats = fx.renderer.frameStats();
+    try testing.expectEqual(@as(u32, 8), stats.tiles);
+    // Two views cannot share a batch, which is the sort key doing its job.
+    try testing.expectEqual(@as(u32, 2), stats.batches);
+}
+
+test "a tilemap is refused the way every other untrusted draw is" {
+    var fx = try Fixture.init(1024);
+    defer fx.deinit();
+
+    const map = [_]u16{ 0, 1, 2, 3 };
+    var layer: TilemapLayer = .{
+        .tiles = fx.renderer.textureRegion(fx.texture).?,
+        .tile_size = .{ .width = 1, .height = 1 },
+        .columns = 2,
+        .map = &map,
+        .width = 2,
+        .height = 2,
+        .cell = .init(16, 16),
+    };
+
+    // Outside a frame.
+    try testing.expectError(error.NotRecording, fx.renderer.drawTilemap(layer));
+
+    try fx.renderer.begin(fx.view());
+    // A texture this renderer never made, or has destroyed — the same check `drawSprite`
+    // makes, and made once rather than once per tile.
+    layer.tiles.texture = .none;
+    try testing.expectError(error.InvalidTexture, fx.renderer.drawTilemap(layer));
+
+    layer.tiles = fx.renderer.textureRegion(fx.texture).?;
+    layer.width = 3; // claims six cells, carries four
+    try testing.expectError(error.InvalidTilemap, fx.renderer.drawTilemap(layer));
+
+    try fx.frame();
+    try testing.expectEqual(@as(u32, 0), fx.renderer.frameStats().tiles);
 }

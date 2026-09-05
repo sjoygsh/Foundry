@@ -160,8 +160,9 @@ foundry:tileset mymod:tiles.cave {
 foundry:tilemap.layer mymod:map.cave.walls {
     tileset  mymod:tiles.cave
     grid     mymod:grids.cave        # the numbers, as an asset
-    order    0                       # draw order
+    order    0                       # draw order: lower is further back
     collides true
+    empty    0                       # optional: this ID draws nothing at all
 }
 
 foundry:tilemap mymod:map.cave {
@@ -188,6 +189,16 @@ because in world space Y points up.
 
 `fpack` compiles it to `grids/cave.fgrid` and derives `mymod:grids.cave` from the path, by the
 same rule §5 gives. You never name either filename anywhere else.
+
+**Layers stack, and `empty` is how they see through each other.** A map's `layers` list is in
+draw order and each layer carries its own `order`, so a floor at `-10` and the props on it at
+`0` need no code to decide which is on top. A layer drawn over another one wants `empty` — the
+tile ID meaning *nothing here* — or it paints an opaque rectangle over everything below. Leave
+it out on the bottom layer: absent means every ID draws, and tile 0 is usually your ground.
+
+**Where a map sits is the game's, not yours.** `foundry:tilemap` says how big a map is and how
+big a cell is. It does not say where in the world it goes, because a world holds many maps in
+many places and placing them is what the game does with them.
 
 **Three things you can change without owning the map.** Making water solid is one line in
 somebody else's `foundry:tileset`, overridden by ID. Replacing the art is overriding a

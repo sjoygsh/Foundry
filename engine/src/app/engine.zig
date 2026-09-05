@@ -295,6 +295,16 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                 .assets = undefined,
             };
             self.assets = .init(gpa, os, &self.store, .{});
+            // The one asset kind the engine can load without help from above. A texture
+            // needs a renderer and therefore has to be registered by whoever has one (I6);
+            // a tile grid is `[]u16` and needs nothing, and registering it here is the same
+            // decision as registering its schemas — a game that can compile a map should
+            // not then find it cannot load one.
+            self.assets.registerLoader(gpa, asset.tilegridLoader()) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                // The registry is one line old and has nothing in it.
+                error.LoaderExists => unreachable,
+            };
             self.stepper.max_steps_per_frame = config.max_steps_per_frame;
 
             errdefer self.deinitOwned();

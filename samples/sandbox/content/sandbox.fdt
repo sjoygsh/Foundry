@@ -21,6 +21,9 @@
     sheet id
     # From `foundry:core`, not from here. A cross-package reference is an ordinary id.
     font id
+    # The map drawn under the field. Where it *goes* is the sample's decision, not this
+    # record's: a `foundry:tilemap` says how big a map is, never where it sits.
+    map id
 }
 
 settings sandbox:settings.main {
@@ -29,6 +32,7 @@ settings sandbox:settings.main {
     banner  "foundry sandbox\nworld origin"
     sheet   sandbox:textures.sprites
     font    foundry:fonts.debug
+    map     sandbox:map.room
 }
 
 # The sample's map. Three engine-owned record types and one asset, none of them declared
@@ -48,7 +52,9 @@ foundry:tileset sandbox:tiles.room {
 foundry:tilemap.layer sandbox:map.room.walls {
     tileset  sandbox:tiles.room
     grid     sandbox:grids.room
-    order    0
+    # Beneath the sprite field, which draws at 0. One number, in content, and no code in
+    # the sample decides what is on top of what.
+    order    -10
     collides true
 }
 

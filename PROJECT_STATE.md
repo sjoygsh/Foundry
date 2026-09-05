@@ -158,9 +158,10 @@ of sprites under a camera that pans, zooms and picks, and it loads content by co
 `scene` holds entities, component types, queries and systems; entities can be described in
 content, and a whole world can be written to a file and read back with its handles intact.
 `physics2d` holds shapes, bodies and tile grids, and can move a body along a wall without
-catching on the seams between its tiles.**
+catching on the seams between its tiles. A map is content from a hand-written text grid
+onward, and the sandbox draws the one it ships.**
 
-**M5, new (steps 1 through 4 of `tilemaps-and-collision.md` §15):**
+**M5, new (steps 1 through 6 of `tilemaps-and-collision.md` §15):**
 
 * `engine/src/physics2d/shape.zig` — `Shape` (box as **half-extents**, so every test is a
   Minkowski sum rather than four subtractions at the call site; circle), `Bounds`, `Contact`
@@ -254,10 +255,33 @@ catching on the seams between its tiles.**
   key, so editing content did not re-run `fpack` and the build installed yesterday's `.fpk`.
 * `samples/sandbox/content/grids/room.grid` and the map records in `sandbox.fdt` — a
   hand-written 12x10 room, which is what step 7 will walk a character around.
+* `engine/src/render2d/tilemap.zig` — `TilemapLayer` and `Tiles`, the pure half of drawing: a
+  layer and a visible rectangle in, a run of ordinary `Sprite`s out, with no device, no
+  allocation and no renderer state. The span is **half-open** to match `Rect.overlaps`, which
+  is what keeps a view whose edge lands on a cell boundary from drawing an extra column and an
+  extra row forever. Public, so a game can have the culled span without drawing it.
+* `engine/src/render2d/renderer.zig` — `drawTilemap`, the loop over `Tiles` with the texture
+  check made once rather than per tile, and `Stats.tiles`. **The signature drops the design's
+  `view` parameter**: `setView` is how every other draw names a space, and an inconsistency on
+  one entry point out of three is one the M7 ABI freeze would make permanent.
+* `engine/src/render2d/view.zig` — `View.visible`, the rectangle of a view's own space that it
+  displays. A camera's bounding box or a screen view's own rectangle, resolved once per frame.
+* `engine/src/asset/tilemap.zig` — `foundry:tilemap.layer` **version 2**, appending optional
+  `empty`: the tile id that draws nothing. `optional` and not defaulted, because absent and
+  zero are different answers and tile 0 is usually a map's ground.
+* `engine/src/app/engine.zig` — registers the `foundry:tilegrid` loader beside the tilemap
+  schemas. A texture loader must come from whoever owns a renderer; a grid loader needs
+  nothing, and a game that can compile a map should not find it cannot load one.
+* `samples/sandbox/main.zig` — `Map`, which is §11's "the game wires them" written out: records
+  in, two `acquire` calls by content id, a `TilemapLayer` out. Where the map goes is the
+  sample's decision (it centres its own); what is on top of what is content's (`order -10`).
 * `engine/tests/tilemap_pipeline.zig` — the seam no module can test alone: authored text and a
   real grid file, through the registry **by content id and never by path**, into a collision
   world, ending with a body stopped by a tile a file said was solid. It links no renderer,
-  which is the placement decision being exercised rather than merely asserted.
+  which is the placement decision being exercised rather than merely asserted. A second test
+  adds the other consumer: the cell `render2d` *draws* at a world position is the cell
+  `physics2d` *collides* with there — one slice, two modules that cannot see each other, and a
+  claim neither can check alone.
 
 **M4, new:**
 
@@ -607,6 +631,22 @@ than expected, and pointing *lower* rather than at a new module. And **`fpack` n
 things**: the `.fpk`, and a `--assets-out` tree holding what it compiled. A tile grid is the
 first asset kind whose authoring and runtime forms are different files, and the sources tree
 is where a person's files live, not a tool's.
+
+**Step 6 is done and the sandbox draws its room.** `drawTilemap` culls to the current view and
+emits ordinary sprites through the existing batcher — no chunk cache, no persistent vertex
+buffer, no dirty rectangles, exactly as §10 asked. A layer is one texture at one sort layer and
+so is **one batch**: the sandbox's frame went from four to five, and 120 tiles joined its 4,176
+other quads. `Stats.tiles` exists from the first day there is a tilemap, because that number is
+the stated trigger for ever caching one.
+
+Three things the design did not settle. **The view is not a parameter** — `setView` already
+names the space for `drawSprite` and `drawText`, and the design's `drawTilemap(view, layer)`
+would have frozen an inconsistency at M7. **Culling is half-open**, matching `Rect.overlaps`;
+with `floor` on both ends a screen-aligned camera at a whole zoom — the common case — draws one
+extra row and column every frame, invisibly. And **`foundry:tilemap.layer` gained `empty` at
+version 2**, because the `layers` list has always permitted a second plane and a second plane
+with no way to say *nothing here* paints over the first; without the field that is expressible
+only in Zig, which would make a decoration layer a program rather than a Tier 1 content mod.
 
 What follows in this section is the record of the milestones behind it, kept because the
 reasoning is what a future session needs and the commit log is not where reasoning lives.
@@ -988,9 +1028,9 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 **M5 is open, its design is finished, and the next thing is code.** Three independent
 sequences, each with its order written down in its own document:
 
-1. **Collision**, `tilemaps-and-collision.md` §15. **Steps 1 through 5 are done.**
-   Remaining: step 6, `drawTilemap` with view culling; step 7, the sandbox's player colliding
-   with the map it already ships.
+1. **Collision**, `tilemaps-and-collision.md` §15. **Steps 1 through 6 are done.**
+   Remaining: step 7, the sandbox's player colliding with the map it already draws — the first
+   moment M5 looks like a game rather than like a test.
 2. **Audio**, `audio.md` §13, six steps, and the first three add no threads at all: the
    `foundry:sound` schema, `Sound` and the WAV decoder in `asset` with its corpus; the device
    in `platform` including the stepped null one; `audio` in the build graph at L3; the rings,
@@ -1926,14 +1966,18 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 5. **When backend #2 is triggered.** Deliberately unscheduled (ADR-0003). The trigger is a
    reason, not a date — but it is worth noticing if that reason never arrives, since the RHI
    stays unvalidated until it does.
-6. **Where the tilemap content types live.** `tilemaps-and-collision.md` §11 puts the three
-   tilemap schemas and the `foundry:tilegrid` loader in `render2d`, beside the texture loader,
-   because a tilemap is mostly a thing you draw and a module for three hundred lines is worse
-   than the wart. The wart: a consumer wanting map data *without* a renderer would have to link
-   one. Nothing needs that today — the M6 editor is a Foundry application and has a renderer
-   anyway, and networking is indefinite. *Trigger: the first real consumer that wants a grid
-   and not a GPU.* The document's §13 records four smaller ones alongside it, including whether
-   trigger enter/exit bookkeeping belongs in `physics2d` at all.
+6. ~~**Where the tilemap content types live.**~~ **Settled 2026-09-05 by M5 step 5**, by its
+   own stated trigger arriving sooner than expected. `tilemaps-and-collision.md` §11 put the
+   three schemas and the `foundry:tilegrid` loader in `render2d` and named the trigger as *the
+   first real consumer that wants a grid and not a GPU*; that consumer is `fpack`, which has to
+   register the record types before it can check a package and cannot link a renderer. So both
+   sit in `asset`, which is the same split `assets.md` already made for `foundry:texture` — the
+   record is not a GPU concept, and for a grid neither is the loader, since `[]const u16` is
+   something `render2d` draws and `physics2d` collides against and *neither* owns.
+   *Still open:* whether a separate module is ever wanted. Nothing forecloses one; what is
+   settled is that the answer was lower rather than higher. The document's §13 records the
+   smaller questions alongside it, including whether trigger enter/exit bookkeeping belongs in
+   `physics2d` at all — deliberately still unanswered, because step 4 did not force it.
 7. **How much audio policy the engine owns.** `audio.md` §11 leaves five things open and two
    of them will be asked for early. **Buses or categories** — a music slider and an effects
    slider is the second thing every game wants, and a gain per named category is a few lines

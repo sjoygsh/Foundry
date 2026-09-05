@@ -252,10 +252,13 @@ pub fn main(init: std.process.Init) !void {
         // roadmap entry asks for statistics at all.
         if (engine.frame_index % 120 == 0) {
             const stats = field.renderer.frameStats();
-            log.debug("frame {d}: {d} sprites ({d} glyphs), {d} batches, {d} draw calls, {d} KiB of vertices, {d:.1}ms/frame, zoom {d:.2}", .{
+            log.debug("frame {d}: {d} sprites ({d} glyphs, {d} tiles), {d} batches, {d} draw calls, {d} KiB of vertices, {d:.1}ms/frame, zoom {d:.2}", .{
                 engine.frame_index,
                 stats.sprites,
                 stats.glyphs,
+                // The number `tilemaps-and-collision.md` §10 names as the trigger for ever
+                // caching a tilemap. Visible from the day there is one to count.
+                stats.tiles,
                 stats.batches,
                 stats.draw_calls,
                 stats.vertex_bytes / 1024,
@@ -303,6 +306,9 @@ const Settings = struct {
     banner: []const u8,
     sheet: core.ContentId,
     font: core.ContentId,
+    /// The map to draw under the field. `.none` draws no map, which is what a package
+    /// without one means and not a reason to stop.
+    map: core.ContentId,
 
     /// Where the record is, and the only content id spelled in this file. Everything else
     /// the sample draws is reached through it.
@@ -314,6 +320,7 @@ const Settings = struct {
         .banner = "",
         .sheet = .none,
         .font = .none,
+        .map = .none,
     };
 
     /// Reads the record, falling back field by field.
@@ -334,6 +341,7 @@ const Settings = struct {
             .banner = stringField(record, "banner", fallback.banner),
             .sheet = idField(record, "sheet"),
             .font = idField(record, "font"),
+            .map = idField(record, "map"),
         };
     }
 
@@ -352,6 +360,194 @@ const Settings = struct {
     fn idField(record: data.store.Record, name: []const u8) core.ContentId {
         const index = record.schema.fieldIndex(name) orelse return .none;
         return (record.fields.idAt(index) catch null) orelse .none;
+    }
+};
+
+/// The map the sample draws beneath its sprites.
+///
+/// **This is §11's "the game wires them", written out.** Nothing in the engine turns a
+/// `foundry:tilemap` into a drawable: `asset` reads the records, the registry answers for
+/// the grid and the texture, and this joins them into the `render2d.TilemapLayer` that
+/// `drawTilemap` takes. Collision will join the same records to a `physics2d.Grid` in step
+/// 7 without either side learning about the other.
+///
+/// Every failure here is a log line and a smaller map, never a stopped frame. Content is
+/// untrusted, including our own (CLAUDE.md §5), and a sample that refused to start because
+/// a mod renamed a tileset would be a bad reference for a game.
+const Map = struct {
+    /// One drawable plane, holding open the two assets its layer borrows from.
+    ///
+    /// The `[]const u16` inside `layer` lives in the grid asset's payload and the region
+    /// was cut from the texture's, so both handles have to outlive the layer — which is the
+    /// same rule as the sheet region, one level up.
+    const Plane = struct {
+        texture: asset.AssetHandle,
+        grid: asset.AssetHandle,
+        layer: render2d.TilemapLayer,
+    };
+
+    planes: std.ArrayList(Plane) = .empty,
+    /// Cells, for the log line and for step 7's collision grid.
+    width: u32 = 0,
+    height: u32 = 0,
+
+    /// Reads `id` and everything it names, replacing whatever was here.
+    ///
+    /// **Where the map goes is the game's decision, not the content's.** `foundry:tilemap`
+    /// says how big a map is and how big a cell is; it does not say where the map sits,
+    /// because a world holds many maps in many places and one of them being at the origin
+    /// is a property of this sample rather than of maps. The sandbox centres it, so the
+    /// camera starts looking at it.
+    fn build(self: *Map, gpa: std.mem.Allocator, engine: *app.Engine, renderer: *render2d.Renderer, id: core.ContentId) void {
+        self.clear(gpa, engine);
+        if (id.isNone()) return;
+
+        const record = engine.store.lookup(id) orelse {
+            log.warn("no map '{f}' in any loaded package; drawing none", .{id});
+            return;
+        };
+        const map = asset.tilemap.readTilemap(record) catch |err| {
+            log.warn("map '{f}' is not a map ({t}); drawing none", .{ id, err });
+            return;
+        };
+        const layers = asset.tilemap.layerIds(gpa, record) catch |err| {
+            log.warn("map '{f}' layers could not be read ({t}); drawing none", .{ id, err });
+            return;
+        };
+        defer gpa.free(layers);
+
+        self.width = map.width;
+        self.height = map.height;
+        const cell: core.math.Vec2 = .init(map.cell_width, map.cell_height);
+        const origin: core.math.Vec2 = .init(
+            -@as(f32, @floatFromInt(map.width)) * cell.x / 2,
+            -@as(f32, @floatFromInt(map.height)) * cell.y / 2,
+        );
+
+        for (layers) |layer_id| {
+            const plane = self.readPlane(gpa, engine, renderer, layer_id, map, origin, cell) orelse continue;
+            self.planes.append(gpa, plane) catch {
+                engine.assets.release(plane.texture);
+                engine.assets.release(plane.grid);
+                log.warn("out of memory building map '{f}'; drawing {d} of its layers", .{ id, self.planes.items.len });
+                return;
+            };
+        }
+        log.info("map '{f}': {d}x{d} cells of {d}x{d}, {d} layer(s) drawn", .{
+            id, map.width, map.height, cell.x, cell.y, self.planes.items.len,
+        });
+    }
+
+    /// One layer, or null with a reason logged. Acquires nothing it does not return.
+    fn readPlane(
+        self: *Map,
+        gpa: std.mem.Allocator,
+        engine: *app.Engine,
+        renderer: *render2d.Renderer,
+        layer_id: core.ContentId,
+        map: asset.tilemap.Tilemap,
+        origin: core.math.Vec2,
+        cell: core.math.Vec2,
+    ) ?Plane {
+        _ = self;
+        const layer_record = engine.store.lookup(layer_id) orelse {
+            log.warn("map layer '{f}' is not in any loaded package; skipping it", .{layer_id});
+            return null;
+        };
+        const layer = asset.tilemap.readLayer(layer_record) catch |err| {
+            log.warn("map layer '{f}' could not be read ({t}); skipping it", .{ layer_id, err });
+            return null;
+        };
+        const set_record = engine.store.lookup(layer.tileset) orelse {
+            log.warn("map layer '{f}' names tileset '{f}', which is not loaded; skipping it", .{ layer_id, layer.tileset });
+            return null;
+        };
+        const set = asset.tilemap.readTileset(set_record) catch |err| {
+            log.warn("tileset '{f}' could not be read ({t}); skipping its layer", .{ layer.tileset, err });
+            return null;
+        };
+
+        // Two acquisitions, and the only two: the art and the numbers. Both are content
+        // ids and neither is a path — the sample could not ask for a path if it wanted to
+        // (ADR-0021).
+        const texture_asset = engine.assets.acquire(gpa, set.texture) catch |err| {
+            log.warn("tileset texture '{f}' did not load ({t}); skipping its layer", .{ set.texture, err });
+            return null;
+        };
+        const grid_asset = engine.assets.acquire(gpa, layer.grid) catch |err| {
+            log.warn("tile grid '{f}' did not load ({t}); skipping its layer", .{ layer.grid, err });
+            engine.assets.release(texture_asset);
+            return null;
+        };
+
+        var ok = false;
+        defer if (!ok) {
+            engine.assets.release(grid_asset);
+            engine.assets.release(texture_asset);
+        };
+
+        const texture_payload = engine.assets.payloadOf(texture_asset) orelse return null;
+        const region = renderer.textureRegion(texture_payload.asHandle(render2d.TextureHandle)) orelse {
+            log.warn("tileset texture '{f}' is not a texture; skipping its layer", .{set.texture});
+            return null;
+        };
+        const grid_payload = engine.assets.payloadOf(grid_asset) orelse return null;
+        const grid = asset.tilegrid.fromPayload(grid_payload);
+
+        // The map says how many cells there are and the grid asset says how many it has.
+        // Two files can disagree, and drawing the smaller of the two would quietly hide it.
+        if (grid.width != map.width or grid.height != map.height) {
+            log.warn("tile grid '{f}' is {d}x{d} but its map is {d}x{d}; skipping the layer", .{
+                layer.grid, grid.width, grid.height, map.width, map.height,
+            });
+            return null;
+        }
+
+        ok = true;
+        return .{
+            .texture = texture_asset,
+            .grid = grid_asset,
+            .layer = .{
+                .tiles = region,
+                .tile_size = .{ .width = set.tile_width, .height = set.tile_height },
+                .columns = set.columns,
+                .map = grid.tiles,
+                .width = grid.width,
+                .height = grid.height,
+                .origin = origin,
+                .cell = cell,
+                .empty = layer.empty,
+                .layer = layer.order,
+            },
+        };
+    }
+
+    /// Draws every plane, in the order content put them in.
+    fn draw(self: *const Map, renderer: *render2d.Renderer) !void {
+        for (self.planes.items) |plane| {
+            renderer.drawTilemap(plane.layer) catch |err| switch (err) {
+                // A layer content made undrawable. Said once at build time is enough; this
+                // is the frame path and it keeps drawing the rest.
+                error.InvalidTilemap, error.InvalidTexture => {},
+                else => return err,
+            };
+        }
+    }
+
+    fn clear(self: *Map, gpa: std.mem.Allocator, engine: *app.Engine) void {
+        for (self.planes.items) |plane| {
+            engine.assets.release(plane.grid);
+            engine.assets.release(plane.texture);
+        }
+        self.planes.clearRetainingCapacity();
+        self.width = 0;
+        self.height = 0;
+        _ = gpa;
+    }
+
+    fn deinit(self: *Map, gpa: std.mem.Allocator, engine: *app.Engine) void {
+        self.clear(gpa, engine);
+        self.planes.deinit(gpa);
     }
 };
 
@@ -457,6 +653,10 @@ const SpriteField = struct {
     blank_texture: render2d.TextureHandle,
     blank: render2d.Region,
     font: render2d.BitmapFont,
+
+    /// The map, rebuilt whenever content changes. Empty when the settings record names
+    /// none, which is a package without a map rather than a failure.
+    map: Map = .{},
 
     /// **The world, and the schema registry it borrows.**
     ///
@@ -584,6 +784,7 @@ const SpriteField = struct {
             .glyph_count = 95,
         };
         self.deriveRegions(engine);
+        self.map.build(gpa, engine, &self.renderer, self.settings.map);
         self.content_generation = engine.contentGeneration();
 
         // An image from memory, not from a file: `createTexture` takes an `asset.Image`
@@ -737,6 +938,10 @@ const SpriteField = struct {
         self.reacquire(engine, &self.sheet_asset, previous.sheet, self.settings.sheet);
         self.reacquire(engine, &self.font_asset, previous.font, self.settings.font);
         self.deriveRegions(engine);
+        // Rebuilt rather than patched. Everything in a plane is *derived* — a region cut
+        // from a texture, a slice into a grid's payload — and a reload is exactly the event
+        // that invalidates derived things (`assets.md` §6).
+        self.map.build(self.gpa, engine, &self.renderer, self.settings.map);
 
         if (self.settings.sprites != previous.sprites) {
             const count = spriteCount(engine, self.settings.sprites);
@@ -867,6 +1072,7 @@ const SpriteField = struct {
     /// already been torn down — a teardown-order bug the compiler cannot see, and the
     /// reason that call exists.
     fn deinit(self: *SpriteField, engine: *app.Engine) void {
+        self.map.deinit(self.gpa, engine);
         engine.assets.release(self.sheet_asset);
         engine.assets.release(self.font_asset);
         _ = engine.assets.unregisterLoader(self.gpa, asset.schemas.texture.id);
@@ -1059,6 +1265,11 @@ const SpriteField = struct {
         const scale: f32 = if (engine.windowInfo()) |i| i.scale else 1;
 
         try self.renderer.begin(.{ .camera = self.camera, .pixel_scale = scale });
+
+        // The ground, before anything standing on it. Which is *under* which is the sort
+        // layer's business — the map's layers carry their own `order` from content — and
+        // submitting first only settles ties.
+        try self.map.draw(&self.renderer);
 
         var it = self.world.queryOf(.{ Transform, Visual });
         while (it.next()) |m| {

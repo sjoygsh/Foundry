@@ -20,6 +20,14 @@
 //!     collides  false
 //! }
 //!
+//! foundry:tilemap.layer sandbox:map.town.walls {
+//!     tileset   sandbox:tiles.overworld
+//!     grid      sandbox:grids.town.walls
+//!     order     1
+//!     collides  true
+//!     empty     0                             # this id draws nothing, so the ground shows
+//! }
+//!
 //! foundry:tilemap sandbox:map.town {
 //!     size      [ 64 48 ]
 //!     cell      [ 16 16 ]                     # world units per cell
@@ -76,14 +84,22 @@ pub const tileset: Schema = .{
 };
 
 /// One drawable, optionally collidable, plane of a map.
+///
+/// **Version 2 appends `empty`.** A map's `layers` list has always allowed several planes,
+/// and a plane drawn over another one needs a way to say "nothing here" or it paints an
+/// opaque rectangle over everything below it. Saying it in content rather than in code is
+/// what keeps a decoration layer a Tier 1 content mod instead of a Zig program (I5). Content
+/// written against version 1 omits the field and reads exactly as it did, which is what
+/// additive-only versioning is for (I8).
 pub const layer: Schema = .{
     .id = SchemaId.fromStringUnchecked(layer_name),
-    .version = 1,
+    .version = 2,
     .fields = &.{
         .{ .name = "tileset", .type = .id },
         .{ .name = "grid", .type = .id },
         .{ .name = "order", .type = .i32, .presence = .{ .default = .{ .int = 0 } } },
         .{ .name = "collides", .type = .bool, .presence = .{ .default = .{ .bool = false } } },
+        .{ .name = "empty", .type = .u32, .presence = .optional, .since = 2 },
     },
 };
 
@@ -139,6 +155,12 @@ pub const Layer = struct {
     /// silently wrapped at draw.
     order: i16,
     collides: bool,
+    /// The tile id that means "nothing here", or null when the layer draws every id.
+    ///
+    /// Absent is *not* zero: on the bottom layer of a map, tile zero is usually the ground
+    /// and must draw. `Presence.optional` is what keeps "draws nothing here" and "was never
+    /// specified" different answers.
+    empty: ?u16,
 };
 
 /// A map, read. Its layers are a list and come back from `layerIds`.
@@ -170,11 +192,20 @@ pub fn readLayer(record: Record) ReadError!Layer {
     const order = intField(record, layer, 2) orelse 0;
     if (order < std.math.minInt(i16) or order > std.math.maxInt(i16)) return error.InvalidRecord;
     const collides = boolField(record, layer, 3) orelse false;
+    var empty: ?u16 = null;
+    if (u32Field(record, 4)) |id| {
+        // A tile id is a `u16` in the grid, so an `empty` above that could never match a
+        // cell. Refused rather than quietly never firing, which is the sort of content bug
+        // that looks like a renderer bug.
+        if (id > std.math.maxInt(u16)) return error.InvalidRecord;
+        empty = @intCast(id);
+    }
     return .{
         .tileset = set,
         .grid = grid,
         .order = @intCast(order),
         .collides = collides,
+        .empty = empty,
     };
 }
 
@@ -377,6 +408,7 @@ const example =
     \\    grid      sandbox:grids.town.walls
     \\    order     1
     \\    collides  true
+    \\    empty     0
     \\}
     \\
     \\foundry:tilemap sandbox:map.town {
@@ -416,10 +448,14 @@ test "a map written the way the design documents it compiles and reads back" {
     try testing.expectEqual(@as(i16, 0), ground.order);
     try testing.expect(!ground.collides);
     try testing.expect(ground.grid.eql(.fromString("sandbox:grids.town.ground")));
+    // Absent, not zero. The bottom layer covers the ground, and tile zero is usually what
+    // it covers it with — a defaulted `empty` would have punched holes in every map.
+    try testing.expectEqual(@as(?u16, null), ground.empty);
 
     const walls = try readLayer(compiled.record("sandbox:map.town.walls"));
     try testing.expectEqual(@as(i16, 1), walls.order);
     try testing.expect(walls.collides);
+    try testing.expectEqual(@as(?u16, 0), walls.empty);
 
     const map = try readTilemap(compiled.record("sandbox:map.town"));
     try testing.expectEqual(@as(u32, 64), map.width);
@@ -519,6 +555,12 @@ test "a record whose numbers do not mean anything is refused rather than trusted
         \\    grid    sandbox:grids.x
         \\    order   900000
         \\}
+        \\
+        \\foundry:tilemap.layer sandbox:layer.nohole {
+        \\    tileset sandbox:tiles.zero
+        \\    grid    sandbox:grids.x
+        \\    empty   70000
+        \\}
     );
     defer compiled.deinit(gpa);
 
@@ -530,6 +572,9 @@ test "a record whose numbers do not mean anything is refused rather than trusted
     // A sort layer that does not fit the renderer's key is told so at load, rather than
     // wrapping silently at draw.
     try testing.expectError(error.InvalidRecord, readLayer(compiled.record("sandbox:layer.loud")));
+    // And an `empty` no tile id could ever equal, which would otherwise be a hole that
+    // never appears and a content bug that reads as a renderer bug.
+    try testing.expectError(error.InvalidRecord, readLayer(compiled.record("sandbox:layer.nohole")));
 }
 
 test "a map with no layers is a map that draws nothing, not an error" {

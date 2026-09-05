@@ -710,3 +710,73 @@ this behaviour had been there since M3; it is now true.
 **Step 5 is complete.** Still to come: step 6, drawing with view culling, and step 7, the
 sandbox's player meeting the map it now ships.
 
+---
+
+## Resolution: drawing (step 6, 2026-09-05)
+
+`drawTilemap`, view culling, and the sandbox showing the map it has been shipping since step 5.
+§10 was almost transcribable; four things it did not settle came up, and one of them changes the
+signature the design wrote down.
+
+**The signature is `drawTilemap(self, layer)`, not `drawTilemap(self, view, layer)`.** §10 wrote
+the view as a parameter. Nothing needed it to be: culling reads the current view's rectangle as
+easily as a named one, and `render2d` already has one way of saying which space a draw belongs
+to — `setView`, chosen because *"this changes per screenful, not per sprite"*. A per-call view
+argument on one entry point out of three is an inconsistency the M7 ABI freeze would make
+permanent, and `CLAUDE.md` §7 says these names are compatibility decisions rather than style
+ones. So it follows `drawSprite` and `drawText`, and the design's version is recorded here as
+the thing that was changed rather than quietly dropped.
+
+**A view now carries the rectangle of its own space that it displays.** Culling needs it, it is
+a property of the space rather than of what is drawn in it, and a rotated camera's answer is a
+bounding box no caller should be re-deriving — `Camera2D.visibleBounds` already existed and had
+no consumer. So `View.resolve` fills in `visible`: a camera's bounds for a camera view, and the
+rectangle itself for a screen view. One field, resolved once per frame, and the first thing
+after this that wants culling gets it for free.
+
+**Culling is half-open, and that is not a detail.** The visible span is
+`[floor((lo - origin) / cell), ceil((hi - origin) / cell) - 1]`, matching `Rect.overlaps`. With
+`floor` on both ends a view whose edge lands exactly on a cell boundary draws one extra column
+and one extra row — forever, in every frame, invisibly. A screen-aligned camera at a whole zoom
+is *exactly* the case that lands on boundaries, so the wrong version would have been wrong
+almost always and looked right always.
+
+**Drawing is a pure iterator plus a loop, which is `drawText`'s shape.** `Tiles` turns a layer
+and a rectangle into a run of `Sprite`s with no device, no allocation and no renderer state, so
+the part with the arithmetic in it is testable on its own — and it is public, because a game
+that wants the culled span without drawing it (a debug overlay counting visible tiles) should
+not have to reimplement the cull. `Renderer.drawTilemap` is the loop, the texture check made
+once rather than per tile, and `Stats.tiles`.
+
+**A layer schema gained `empty`, at version 2.** `foundry:tilemap` has always allowed several
+layers, and a layer drawn over another one needs a way to say *nothing here* or it paints an
+opaque rectangle over everything below it. Without the field that is expressible only in Zig,
+which would have made a decoration layer a program rather than a Tier 1 content mod — a hole
+between what step 5's records promise and what step 6 can draw, rather than a feature for later.
+It is `optional` and not defaulted, because absent and zero are different answers: on the bottom
+layer of a map tile zero is usually the ground, and a defaulted `empty` would have punched holes
+in every map ever written. Old content omits it and reads exactly as it did, which is what
+additive-only versioning is for (I8).
+
+**What was *not* built, deliberately:** no chunk cache, no persistent vertex buffer, no dirty
+rectangles, and no atlas padding for tile bleeding. §10 named the trigger for the first three —
+a tilemap draw appearing in M6's frame profiler — and `Stats.tiles` now exists so that the
+number is on the record from the first day there is a tilemap to count. The sandbox reports it
+every second.
+
+**The sandbox draws its room, and the wiring is the sample's, not the engine's.** Nothing in the
+engine turns a `foundry:tilemap` into something drawable: the sample reads the records, acquires
+the texture and the grid by content id, and builds a `TilemapLayer`. Two decisions in it are
+worth naming. Where a map *goes* is the game's, because `foundry:tilemap` says how big a map is
+and never where it sits — a world holds many maps in many places — so the sample centres its
+own on the origin. And what is on top of what is content's: the room's layer carries
+`order -10`, so it is under the sprite field without a line of Zig deciding that.
+
+One registration moved into `app`: the `foundry:tilegrid` loader, beside the tilemap schemas
+that were already there. A texture loader has to come from whoever owns a renderer; a grid
+loader needs nothing at all, and a game that can *compile* a map should not then discover it
+cannot load one.
+
+**Step 6 is complete.** Step 7 remains: the sandbox's player colliding with the map it now
+draws.
+

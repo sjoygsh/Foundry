@@ -89,6 +89,14 @@ pub const View = struct {
     /// The rectangle to draw into, in **pixels** — `Rect` is in points, and the GPU
     /// viewport is not. `FrameView.pixel_scale` is the one number that bridges them.
     viewport: rhi.Viewport,
+    /// The rectangle of **this view's own space** that it displays. What culling tests
+    /// against.
+    ///
+    /// Resolved here rather than asked for at each draw, because it is a property of the
+    /// space and not of the thing being drawn, and because a rotated camera's answer is a
+    /// bounding box that no caller should be re-deriving. Never smaller than the truth, so
+    /// culling against it can drop a thing but never a visible one.
+    visible: Rect,
 
     /// Resolves a description at the frame's pixel scale.
     pub fn resolve(desc: ViewDesc, pixel_scale: f32) camera_mod.CameraError!View {
@@ -101,6 +109,7 @@ pub const View = struct {
                     .view_projection = try cam.viewProjection(),
                     .y_axis = .up,
                     .viewport = scaled(cam.viewport, pixel_scale),
+                    .visible = cam.visibleBounds(),
                 };
             },
             .screen => |area| {
@@ -117,6 +126,9 @@ pub const View = struct {
                     .view_projection = screenProjection(area),
                     .y_axis = .down,
                     .viewport = scaled(area, pixel_scale),
+                    // A screen space shows exactly the rectangle it is, which is the whole
+                    // reason it is a rectangle and not a camera (`ViewDesc.screen`).
+                    .visible = area,
                 };
             },
         }
@@ -250,4 +262,28 @@ test "a camera space is Y-up and a screen space is Y-down" {
 
     const screen = try View.resolve(.{ .screen = .init(0, 0, 8, 6) }, 1);
     try testing.expectEqual(YAxis.down, screen.y_axis);
+}
+
+test "a view knows the rectangle of its own space that it displays" {
+    // What culling reads. A camera's answer is its bounding box, and a screen view's is
+    // itself — the two are the same question asked of two different kinds of space.
+    const cam = try View.resolve(.{
+        .camera = .{ .viewport = .init(0, 0, 800, 600), .center = .init(100, 50), .zoom = 2 },
+    }, 1);
+    try testing.expectApproxEqAbs(@as(f32, -100), cam.visible.x, 1e-4);
+    try testing.expectApproxEqAbs(@as(f32, -100), cam.visible.y, 1e-4);
+    try testing.expectApproxEqAbs(@as(f32, 400), cam.visible.w, 1e-4);
+    try testing.expectApproxEqAbs(@as(f32, 300), cam.visible.h, 1e-4);
+
+    const screen = try View.resolve(.{ .screen = .init(10, 20, 800, 600) }, 2);
+    try testing.expectApproxEqAbs(@as(f32, 10), screen.visible.x, 1e-4);
+    try testing.expectApproxEqAbs(@as(f32, 800), screen.visible.w, 1e-4);
+
+    // Rotation widens it rather than turning it, which is what makes it safe to cull
+    // against: never smaller than the truth.
+    const turned = try View.resolve(.{
+        .camera = .{ .viewport = .init(0, 0, 800, 600), .rotation = std.math.pi / 4.0 },
+    }, 1);
+    try testing.expect(turned.visible.w > 400);
+    try testing.expect(turned.visible.h > 300);
 }

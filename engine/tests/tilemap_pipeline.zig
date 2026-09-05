@@ -9,12 +9,17 @@
 //! authored `.fdt` compiled and loaded, the grid acquired **by content id and never by
 //! path** (ADR-0021), the tileset's `solid` list turned into the bitset `physics2d` wants,
 //! and a body stopped by a tile that a file said was solid.
+//!
+//! And then the other half of §11's diagram: the same slice handed to `render2d`, checking
+//! that the cell it *draws* at a world position is the cell `physics2d` *collides* with
+//! there. Neither module can make that claim alone, because neither can see the other.
 
 const std = @import("std");
 const asset = @import("asset");
 const core = @import("core");
 const data = @import("data");
 const physics2d = @import("physics2d");
+const render2d = @import("render2d");
 const platform = @import("platform");
 
 const Allocator = std.mem.Allocator;
@@ -237,4 +242,78 @@ test "a grid file that is not a grid fails the load and says which kind of wrong
         error.InvalidAsset,
         stack.assets.acquire(stack.gpa, .fromString("sandbox:grids.broken")),
     );
+}
+
+test "the tiles drawn and the tiles collided with are the same tiles" {
+    // §11's diagram, checked rather than believed: one `[]const u16`, two consumers that
+    // have never heard of each other, and a claim that they agree about where cell (x, y)
+    // is. A map drawn one cell away from where you collide with it is the bug this exists
+    // to catch, and it is invisible in either module's own tests.
+    const stack = try Stack.init();
+    defer stack.deinit();
+
+    try stack.writeGrid("grids/town/walls.fgrid", 4, 4, &.{
+        0, 0, 0, 1,
+        0, 0, 0, 1,
+        0, 0, 0, 1,
+        0, 0, 0, 1,
+    });
+    try stack.loadPackage("sandbox:content", content);
+
+    const map = try asset.tilemap.readTilemap(stack.store.lookup(.fromString("sandbox:map.town")).?);
+    _ = try stack.addLayer("sandbox:map.town.walls", map);
+
+    // The other consumer, built from the same records the collision grid was. No device and
+    // no GPU: `render2d.Tiles` is the pure half of drawing, and this is the half that
+    // decides *where*.
+    const layer = try asset.tilemap.readLayer(stack.store.lookup(.fromString("sandbox:map.town.walls")).?);
+    const set = try asset.tilemap.readTileset(stack.store.lookup(layer.tileset).?);
+    const grid = asset.tilegrid.fromPayload(stack.assets.payloadOf(try stack.assets.acquire(stack.gpa, layer.grid)).?);
+
+    var tiles: render2d.Tiles = try .init(.{
+        // A 16x16 sheet of 16-pixel tiles, which is what the tileset record says. Nothing
+        // here loads an image: where a tile is drawn does not depend on what it looks like.
+        .tiles = .whole(.none, .{ .width = set.columns * set.tile_width, .height = 16 * set.tile_height }),
+        .tile_size = .{ .width = set.tile_width, .height = set.tile_height },
+        .columns = set.columns,
+        .map = grid.tiles,
+        .width = grid.width,
+        .height = grid.height,
+        .origin = .zero,
+        .cell = .init(map.cell_width, map.cell_height),
+        .layer = layer.order,
+    }, .init(0, 0, 4, 4));
+
+    var drawn: u32 = 0;
+    var solid_drawn: u32 = 0;
+    while (tiles.next()) |sprite| {
+        drawn += 1;
+        // The centre of the quad the renderer just placed, asked of the collision world.
+        const centre: core.math.Vec2 = .{
+            .x = sprite.position.x + sprite.size.x / 2,
+            .y = sprite.position.y + sprite.size.y / 2,
+        };
+        var hits: [4]physics2d.QueryHit = undefined;
+        const found = try stack.world.overlapPoint(stack.gpa, centre, ~@as(u32, 0), &hits);
+
+        // The tile the sprite is showing, read back from the same slice both sides hold.
+        const cx: u32 = @intFromFloat(sprite.position.x);
+        const cy: u32 = @intFromFloat(sprite.position.y);
+        const solid = grid.tileAt(cx, cy).? == 1;
+
+        if (solid) {
+            solid_drawn += 1;
+            try testing.expectEqual(@as(u32, 1), found.count);
+            try testing.expect(hits[0].isGrid());
+            // And it is *this* cell, not a neighbour. One cell of drift would still report
+            // a hit; this is the assertion that says which.
+            try testing.expectEqual([2]u32{ cx, cy }, hits[0].cell);
+        } else {
+            try testing.expectEqual(@as(u32, 0), found.count);
+        }
+    }
+
+    // Every cell of a 4x4 map, and the whole of its right-hand column solid.
+    try testing.expectEqual(@as(u32, 16), drawn);
+    try testing.expectEqual(@as(u32, 4), solid_drawn);
 }
