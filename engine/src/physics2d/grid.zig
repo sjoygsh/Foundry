@@ -23,8 +23,10 @@ const core = @import("core");
 const shape_mod = @import("shape.zig");
 
 const Bounds = shape_mod.Bounds;
+const Contact = shape_mod.Contact;
 const Face = shape_mod.Face;
 const FaceMask = shape_mod.FaceMask;
+const Rounded = shape_mod.Rounded;
 const Vec2 = core.math.Vec2;
 
 /// Phantom tag for `GridHandle`. Never instantiated (I1).
@@ -100,6 +102,27 @@ pub const Grid = struct {
         return self.isSolidTile(self.tileAt(x, y) orelse return false);
     }
 
+    /// A cell's centre, and the half-extents every cell shares.
+    ///
+    /// Computed straight from the origin rather than by halving `cellBounds`, because every
+    /// test in the module is centre-and-half-extents and a round trip through corners is a
+    /// rounding step for nothing.
+    pub fn cellCenter(self: Grid, x: u32, y: u32) Vec2 {
+        return .{
+            .x = self.origin.x + (@as(f32, @floatFromInt(x)) + 0.5) * self.cell.x,
+            .y = self.origin.y + (@as(f32, @floatFromInt(y)) + 0.5) * self.cell.y,
+        };
+    }
+
+    pub fn cellHalf(self: Grid) Vec2 {
+        return self.cell.scale(0.5);
+    }
+
+    /// A cell as an obstacle: a box with no rounding.
+    pub fn cellShape(self: Grid) Rounded {
+        return .{ .half = self.cellHalf(), .radius = 0 };
+    }
+
     pub fn cellBounds(self: Grid, x: u32, y: u32) Bounds {
         const min: Vec2 = .{
             .x = self.origin.x + @as(f32, @floatFromInt(x)) * self.cell.x,
@@ -156,69 +179,127 @@ pub const Grid = struct {
         };
     }
 
-    /// Whether a box overlaps any solid cell.
+    /// Whether a shape overlaps any solid cell.
     ///
     /// Face culling deliberately does **not** apply: an interior face is irrelevant to the
     /// question of whether something is inside the wall.
-    pub fn overlapsBox(self: Grid, half: Vec2, at: Vec2) bool {
-        const area = Bounds.fromCenter(at, half);
-        const range = self.cellRange(area);
+    pub fn overlapsShape(self: Grid, mover: Rounded, at: Vec2) bool {
+        const range = self.cellRange(Bounds.fromCenter(at, mover.halfExtents()));
         if (range.is_empty) return false;
 
+        const cell_shape = self.cellShape();
         var y = range.min_y;
         while (y <= range.max_y) : (y += 1) {
             var x = range.min_x;
             while (x <= range.max_x) : (x += 1) {
                 if (!self.isSolidAt(x, y)) continue;
-                if (self.cellBounds(x, y).overlaps(area)) return true;
+                const obstacle = mover.sum(cell_shape);
+                if (shape_mod.overlapRounded(obstacle, at, self.cellCenter(x, y), .all) != null) {
+                    return true;
+                }
             }
         }
         return false;
     }
 
-    /// Sweeps a box against the grid and returns the earliest legitimate contact.
+    pub fn overlapsBox(self: Grid, half: Vec2, at: Vec2) bool {
+        return self.overlapsShape(.{ .half = half }, at);
+    }
+
+    /// The deepest way out of the wall, or null when the shape is not in one.
+    ///
+    /// **Face culling applies here and it is the whole reason this is not a loop the caller
+    /// writes.** Pushing out of the middle of a wall along an interior face moves the body
+    /// further in; restricting the escape directions to the faces `facesAt` admits is what
+    /// makes depenetration against a tile grid converge instead of oscillate.
+    ///
+    /// Cells are visited in row-major order and a later cell replaces the incumbent only on a
+    /// strictly greater depth, so ties resolve to the first cell in that order (§8 rule 2).
+    pub fn deepestOverlap(self: Grid, mover: Rounded, at: Vec2) ?GridContact {
+        const range = self.cellRange(Bounds.fromCenter(at, mover.halfExtents()));
+        if (range.is_empty) return null;
+
+        const cell_shape = self.cellShape();
+        var best: ?GridContact = null;
+        var y = range.min_y;
+        while (y <= range.max_y) : (y += 1) {
+            var x = range.min_x;
+            while (x <= range.max_x) : (x += 1) {
+                if (!self.isSolidAt(x, y)) continue;
+                const obstacle = mover.sum(cell_shape);
+                const contact = shape_mod.overlapRounded(
+                    obstacle,
+                    at,
+                    self.cellCenter(x, y),
+                    self.facesAt(x, y),
+                ) orelse continue;
+                if (best == null or contact.depth > best.?.depth) {
+                    best = .{
+                        .cell = .{ x, y },
+                        .normal = contact.normal,
+                        .depth = contact.depth,
+                    };
+                }
+            }
+        }
+        return best;
+    }
+
+    /// Sweeps a shape against the grid and returns the earliest legitimate contact.
     ///
     /// Cells are visited in **row-major order** and a later cell replaces the incumbent only
     /// on a strictly smaller fraction, so ties resolve to the first cell in that order — which
     /// is I9's "stable and documented iteration order" for this walk (§8 rule 2).
     ///
-    /// A box that begins inside a solid cell is reported as such — `GridHit.face` is null and
-    /// the walk stops there — because a sweep cannot resolve a penetration that is behind it.
-    /// Depenetration is `World.resolveOverlaps`, deliberately a separate call.
-    pub fn sweepBox(self: Grid, half: Vec2, from: Vec2, motion: Vec2) ?GridHit {
-        const start = Bounds.fromCenter(from, half);
+    /// A cell the shape *began* inside contributes no contact — a sweep cannot resolve a
+    /// penetration behind it — but it does set `started_inside`, and the walk carries on. It
+    /// carries on because stopping there would let a body overlapping one tile pass through
+    /// every tile beyond it; the flag is what `moveAndSlide` reports so that a game can call
+    /// `resolveOverlaps`, and the walk is what still stops the body at the next wall.
+    pub fn sweepShape(self: Grid, mover: Rounded, from: Vec2, motion: Vec2) GridSweep {
+        const start = Bounds.fromCenter(from, mover.halfExtents());
         const range = self.cellRange(start.sweptBy(motion));
-        if (range.is_empty) return null;
+        if (range.is_empty) return .{};
 
-        var best: ?GridHit = null;
+        const cell_shape = self.cellShape();
+        var result: GridSweep = .{};
         var y = range.min_y;
         while (y <= range.max_y) : (y += 1) {
             var x = range.min_x;
             while (x <= range.max_x) : (x += 1) {
                 if (!self.isSolidAt(x, y)) continue;
 
-                const hit = shape_mod.sweepBox(half, from, motion, self.cellBounds(x, y)) orelse continue;
-                const face = hit.face orelse return .{
-                    .cell = .{ x, y },
-                    .normal = .zero,
-                    .fraction = 0,
-                    .face = null,
-                };
-                // The internal-edge fix. A face with a solid neighbour behind it is inside the
-                // wall, so a contact on it is the artefact rather than the geometry.
-                if (!self.facesAt(x, y).has(face)) continue;
+                // The internal-edge fix travels with the mask: a face whose neighbour is also
+                // solid is interior to the wall, so a contact on it is the artefact rather
+                // than the geometry, and a rounded corner needs both of its faces.
+                const obstacle = mover.sum(cell_shape);
+                const hit = shape_mod.sweepRounded(
+                    obstacle,
+                    from,
+                    motion,
+                    self.cellCenter(x, y),
+                    self.facesAt(x, y),
+                ) orelse continue;
 
-                if (best == null or hit.fraction < best.?.fraction) {
-                    best = .{
+                if (hit.startedInside()) {
+                    result.started_inside = true;
+                    continue;
+                }
+                if (result.hit == null or hit.fraction < result.hit.?.fraction) {
+                    result.hit = .{
                         .cell = .{ x, y },
                         .normal = hit.normal,
                         .fraction = hit.fraction,
-                        .face = face,
+                        .face = hit.face,
                     };
                 }
             }
         }
-        return best;
+        return result;
+    }
+
+    pub fn sweepBox(self: Grid, half: Vec2, from: Vec2, motion: Vec2) GridSweep {
+        return self.sweepShape(.{ .half = half }, from, motion);
     }
 };
 
@@ -241,12 +322,25 @@ pub const GridHit = struct {
     cell: [2]u32,
     normal: Vec2,
     fraction: f32,
-    /// Null when the sweep began already inside this cell. See `Grid.sweepBox`.
+    /// The axis-aligned face entered, or null for a **rounded corner** — which happens only
+    /// when the moving shape is a circle. See `Sweep`.
     face: ?Face,
+};
 
-    pub fn startedInside(self: GridHit) bool {
-        return self.face == null;
-    }
+/// What a walk of the grid found: the earliest contact, and whether the shape started out
+/// already in a wall. The two are independent answers and a caller needs both — the first to
+/// stop at, the second to know that stopping will not be enough.
+pub const GridSweep = struct {
+    hit: ?GridHit = null,
+    started_inside: bool = false,
+};
+
+/// A resolved penetration into one cell, in the same convention as `Contact`: the normal
+/// points out of the cell, and moving the shape by `normal.scale(depth)` separates them.
+pub const GridContact = struct {
+    cell: [2]u32,
+    normal: Vec2,
+    depth: f32,
 };
 
 // -- tests -----------------------------------------------------------------------------
@@ -405,11 +499,12 @@ test "a swept box stops at the first solid cell" {
 
     // A 0.5-radius box at y = 2 travelling right. The wall's left face is at x = 3, so the
     // box's centre stops at 2.5 -- half of a 5-unit journey from x = 0.
-    const hit = grid.sweepBox(v(0.5, 0.5), v(0, 2), v(5, 0)).?;
+    const sweep = grid.sweepBox(v(0.5, 0.5), v(0, 2), v(5, 0));
+    const hit = sweep.hit.?;
     try testing.expectEqual(v(-1, 0), hit.normal);
     try testing.expectApproxEqAbs(@as(f32, 0.5), hit.fraction, 1e-6);
     try testing.expectEqual(@as(u32, 3), hit.cell[0]);
-    try testing.expect(!hit.startedInside());
+    try testing.expect(!sweep.started_inside);
 }
 
 test "a sweep through open ground finds nothing" {
@@ -423,7 +518,7 @@ test "a sweep through open ground finds nothing" {
 
     try testing.expectEqual(
         @as(?GridHit, null),
-        grid.sweepBox(v(0.4, 0.4), v(0.5, 2.5), v(3, 0)),
+        grid.sweepBox(v(0.4, 0.4), v(0.5, 2.5), v(3, 0)).hit,
     );
 }
 
@@ -444,8 +539,8 @@ test "sliding along a tiled wall never catches on an internal edge" {
     var step: u32 = 0;
     while (step < 12) : (step += 1) {
         const motion = v(0.5, 0);
-        const hit = grid.sweepBox(half, at, motion);
-        if (hit) |h| {
+        const sweep = grid.sweepBox(half, at, motion);
+        if (sweep.hit) |h| {
             // A hit here is the artefact: nothing is in the way, and any contact reported
             // would have a horizontal normal produced by an interior face.
             std.debug.print(
@@ -469,7 +564,7 @@ test "culling does not hide the wall's real surface" {
         "########",
     }, &tiles);
 
-    const hit = grid.sweepBox(v(0.5, 0.5), v(3.5, 3.5), v(0, -3)).?;
+    const hit = grid.sweepBox(v(0.5, 0.5), v(3.5, 3.5), v(0, -3)).hit.?;
     try testing.expectEqual(v(0, 1), hit.normal);
     // The floor's top is y = 1, so the centre stops at 1.5: two of the three units.
     try testing.expectApproxEqAbs(@as(f32, 2.0 / 3.0), hit.fraction, 1e-6);
@@ -487,7 +582,7 @@ test "the earliest contact wins regardless of walk order" {
     // Travelling up and to the right from the bottom-left. The cell at (0,1) is nearer than
     // the one at (3,3), and it is also visited first -- so this asserts the fraction rather
     // than the visit order, which is the property that has to hold.
-    const hit = grid.sweepBox(v(0.25, 0.25), v(0.5, 0.4), v(0, 4)).?;
+    const hit = grid.sweepBox(v(0.25, 0.25), v(0.5, 0.4), v(0, 4)).hit.?;
     try testing.expectEqual(@as(u32, 1), hit.cell[1]);
     try testing.expectEqual(v(0, -1), hit.normal);
 }
@@ -499,10 +594,29 @@ test "a box already inside a wall says so instead of reporting a contact" {
         "##",
     }, &tiles);
 
-    const hit = grid.sweepBox(v(0.25, 0.25), v(0.5, 0.5), v(1, 0)).?;
-    try testing.expect(hit.startedInside());
-    try testing.expectEqual(@as(f32, 0), hit.fraction);
-    try testing.expectEqual(Vec2.zero, hit.normal);
+    const sweep = grid.sweepBox(v(0.25, 0.25), v(0.5, 0.5), v(1, 0));
+    try testing.expect(sweep.started_inside);
+    // No contact, because every contact this walk could report is behind the shape. The way
+    // out is `resolveOverlaps`, which is a separate call for exactly this reason.
+    try testing.expectEqual(@as(?GridHit, null), sweep.hit);
+}
+
+test "starting inside one tile does not let a shape through the next wall" {
+    // The reason the walk carries on past a cell it began inside rather than stopping there.
+    var tiles: [16]u16 = undefined;
+    const grid = gridOf(&.{
+        "....",
+        "....",
+        "#..#",
+        "....",
+    }, &tiles);
+
+    // The box straddles cell (0,1) and travels right into cell (3,1).
+    const sweep = grid.sweepBox(v(0.4, 0.4), v(0.9, 1.5), v(3, 0));
+    try testing.expect(sweep.started_inside);
+    const hit = sweep.hit.?;
+    try testing.expectEqual(@as(u32, 3), hit.cell[0]);
+    try testing.expectEqual(v(-1, 0), hit.normal);
 }
 
 test "overlap ignores face culling, because being inside a wall is not about faces" {
@@ -535,4 +649,90 @@ test "a grid with a non-square cell and a shifted origin walks correctly" {
     try testing.expectEqual(v(-6, 13), b.max);
     try testing.expect(grid.overlapsBox(v(0.5, 0.5), v(-7, 11)));
     try testing.expect(!grid.overlapsBox(v(0.5, 0.5), v(-9, 11)));
+}
+
+test "a circle slides along a tiled floor without catching on a seam" {
+    // The internal-edge test again, for the shape that has corners to snag on as well as
+    // faces. Every cell boundary the circle crosses offers a vertical face and a quarter disc,
+    // and both are interior to the wall.
+    var tiles: [32]u16 = undefined;
+    const grid = gridOf(&.{
+        "........",
+        "........",
+        "........",
+        "########",
+    }, &tiles);
+
+    const mover: Rounded = .{ .radius = 0.5 };
+    var at = v(0.5, 1.5);
+    var step: u32 = 0;
+    while (step < 12) : (step += 1) {
+        const motion = v(0.5, 0);
+        const sweep = grid.sweepShape(mover, at, motion);
+        if (sweep.hit) |h| {
+            std.debug.print(
+                "spurious contact at x={d} cell=({d},{d}) normal=({d},{d})\n",
+                .{ at.x, h.cell[0], h.cell[1], h.normal.x, h.normal.y },
+            );
+            return error.CaughtOnInternalEdge;
+        }
+        try testing.expect(!sweep.started_inside);
+        at = at.add(motion);
+    }
+}
+
+test "a circle rounds the exposed corner at the end of a wall" {
+    // The other half: culling must remove the seams and leave the wall's real corner, or a
+    // circle would cut it.
+    var tiles: [16]u16 = undefined;
+    const grid = gridOf(&.{
+        "....",
+        "....",
+        "##..",
+        "....",
+    }, &tiles);
+
+    // Cell (1,1) is the end of the wall, so its corner at (2,2) is real geometry.
+    const mover: Rounded = .{ .radius = 0.5 };
+    const sweep = grid.sweepShape(mover, v(3.5, 3.5), v(-2, -2));
+    const hit = sweep.hit.?;
+    try testing.expectEqual(@as(u32, 1), hit.cell[0]);
+    try testing.expectEqual(@as(u32, 1), hit.cell[1]);
+    try testing.expectEqual(@as(?Face, null), hit.face);
+    try testing.expectApproxEqAbs(@as(f32, 0.70710677), hit.normal.x, 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 0.70710677), hit.normal.y, 1e-5);
+}
+
+test "escaping a wall goes out through a face the wall actually has" {
+    // Depenetration's version of the internal-edge problem: the shortest way out of the middle
+    // cell of a horizontal wall is sideways, and sideways is further into the wall.
+    var tiles: [9]u16 = undefined;
+    const grid = gridOf(&.{
+        "...",
+        "###",
+        "...",
+    }, &tiles);
+
+    const mover: Rounded = .{ .half = v(0.25, 0.25) };
+    const contact = grid.deepestOverlap(mover, v(1.5, 1.5)).?;
+    try testing.expectEqual(@as(u32, 1), contact.cell[0]);
+    // Up or down, never left or right. Ties go to +Y, as `overlapRounded` documents.
+    try testing.expectEqual(v(0, 1), contact.normal);
+    try testing.expectApproxEqAbs(@as(f32, 0.75), contact.depth, 1e-6);
+
+    // And applying it leaves the shape outside.
+    const escaped = v(1.5, 1.5).add(contact.normal.scale(contact.depth));
+    try testing.expect(!grid.overlapsShape(mover, escaped));
+}
+
+test "a shape outside every wall has nothing to escape" {
+    var tiles: [9]u16 = undefined;
+    const grid = gridOf(&.{
+        "...",
+        "###",
+        "...",
+    }, &tiles);
+
+    const mover: Rounded = .{ .half = v(0.25, 0.25) };
+    try testing.expectEqual(@as(?GridContact, null), grid.deepestOverlap(mover, v(1.5, 2.5)));
 }

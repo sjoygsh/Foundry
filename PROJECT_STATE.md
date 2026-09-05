@@ -1,19 +1,21 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-05
-**Updated by:** **M5's design phase is complete and its first three implementation steps are
-done.** The two long-held `CLAUDE.md` §9 decisions were made first — physics is **Foundry's
-own, scoped to collision rather than dynamics** (ADR-0022) and audio is **Foundry's own mixer
-and WAV decoding** (ADR-0023), the first decided by I9 rather than by licensing. All three
-design documents are written. **`physics2d` exists** — L1 on `core` alone, with the layering
-confirmed by breaking it — holding shapes, the four static pair tests, the swept box test, the
-body and grid pools, the tile grid with **the neighbour-aware face culling that is the exact
-fix for the internal-edge snag**, and now the **broadphase**: a two-tier uniform spatial hash,
-updated incrementally, whose candidates are sorted by handle index before anything reads them.
-Building it sharpened one claim in the design: a broadphase's contract is *no false negatives*,
-not *the same candidate set*, so the "cell size does not change the answer" property belongs
-one level up at `World.queryBounds`. 643 tests pass under `-Drhi=null` and 651 under
-`-Drhi=metal`; 53 of them are `physics2d`'s. No movement yet — that is step 4.
+**Updated by:** **M5's design phase is complete and its first four implementation steps are
+done — `physics2d` is now a module a character can be moved with.** The two long-held
+`CLAUDE.md` §9 decisions were made first — physics is **Foundry's own, scoped to collision
+rather than dynamics** (ADR-0022) and audio is **Foundry's own mixer and WAV decoding**
+(ADR-0023), the first decided by I9 rather than by licensing. All three design documents are
+written. **`physics2d` exists** — L1 on `core` alone, with the layering confirmed by breaking
+it — holding shapes, the tile grid with **the neighbour-aware face culling that is the exact
+fix for the internal-edge snag**, the two-tier spatial hash whose candidates are sorted by
+handle index before anything reads them, and now **`moveAndSlide`, `resolveOverlaps` and the
+four queries**. Step 4 collapsed the four pair tests into **one**: every pair reduces to a
+*rounded box*, the reduction composes, and so box-box, circle-circle, box-circle and a raycast
+are all one static test and one swept test asked different questions — which also removed the
+`flip` helper that existed to stop two of them disagreeing. Face culling extended with it: a
+rounded corner is admitted only when both of its adjacent faces are. The whole suite passes
+under `-Drhi=null` and `-Drhi=metal`; 80 of the tests are `physics2d`'s, up from 53.
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
 
@@ -155,31 +157,44 @@ the deserializer matches by position, so an unchecked mismatch would read `y` in
 of sprites under a camera that pans, zooms and picks, and it loads content by content id.
 `scene` holds entities, component types, queries and systems; entities can be described in
 content, and a whole world can be written to a file and read back with its handles intact.
-`physics2d` holds shapes, bodies and tile grids, and can sweep a box against a wall without
+`physics2d` holds shapes, bodies and tile grids, and can move a body along a wall without
 catching on the seams between its tiles.**
 
-**M5, new (steps 1 and 2 of `tilemaps-and-collision.md` §15):**
+**M5, new (steps 1 through 4 of `tilemaps-and-collision.md` §15):**
 
 * `engine/src/physics2d/shape.zig` — `Shape` (box as **half-extents**, so every test is a
   Minkowski sum rather than four subtractions at the call site; circle), `Bounds`, `Contact`
   with the convention *the normal points from `b` toward `a`, and moving `a` by
-  `normal * depth` separates them exactly*, the four static pair tests, and `sweepBox`: one
-  slab test against a Minkowski-expanded box, no iteration. Its two conventions both exist so
-  a body sliding flush along a wall reports nothing — a graze is a miss, and on a zero-motion
-  axis the slab boundary counts as outside. A sweep that **began** overlapping says so with a
-  null face rather than pretending to hit at fraction zero, because a sweep cannot resolve a
+  `normal * depth` separates them exactly*, and **`Rounded`, the one shape the module actually
+  computes with**: an axis-aligned box grown by a disc. Every pair reduces to one and the
+  reduction *composes* — the Minkowski sum of two rounded boxes is a rounded box whose
+  half-extents and radius are the sums — so box-box is a rounded box of radius zero,
+  circle-circle is one with no box left, and a raycast is the target's own form because a point
+  adds nothing. That leaves **one static test** (`overlapRounded`) and **one swept test**
+  (`sweepRounded`) answering every combination, and it removed the `flip` helper that existed
+  to stop the box-circle and circle-box cases disagreeing.
+
+  The swept test is the union of two overlapping boxes and four corner discs, because entering
+  a union happens at the earliest entry into any part. Its two conventions both exist so a body
+  sliding flush along a wall reports nothing — a graze is a miss, and on a zero-motion axis the
+  slab boundary counts as outside. A sweep that **began** overlapping says so with a zero
+  normal rather than pretending to hit at fraction zero, because a sweep cannot resolve a
   penetration that is behind it.
 * `engine/src/physics2d/body.zig` — `Body`, `BodyHandle`, `BodyKind`, and the **symmetric**
   layer/mask filter: both sides must admit the pair, so the situation where A is pushed by B
   but B is not pushed by A cannot arise. `user` is an opaque `u64` and is the entire coupling
   to the rest of the engine.
 * `engine/src/physics2d/grid.zig` — `Grid` (borrowed `tiles` and `solid`, so the module never
-  learns what an asset is), the clamped cell range, the row-major cell walk, `overlapsBox`,
-  `sweepBox`, and **`facesAt`, which is the internal-edge fix**: a face whose neighbouring cell
-  is also solid is interior to the wall and cannot legitimately be hit. Four bit tests per
-  cell, exact rather than a tolerance, and impossible for a pile of static boxes because a box
-  does not know its neighbours. Its regression test slides a box twelve half-cells along a
-  tiled floor and fails on *any* reported contact.
+  learns what an asset is), the clamped cell range, the row-major cell walk, `overlapsShape`,
+  `sweepShape`, `deepestOverlap`, and **`facesAt`, which is the internal-edge fix**: a face
+  whose neighbouring cell is also solid is interior to the wall and cannot legitimately be hit.
+  Four bit tests per cell, exact rather than a tolerance, and impossible for a pile of static
+  boxes because a box does not know its neighbours. The rule extends to a **rounded corner**,
+  which is admitted only when both of its adjacent faces are — the neighbour's own expansion
+  covers it otherwise. Two regression tests slide a box and then a circle twelve half-cells
+  along a tiled floor and fail on *any* reported contact. A walk records a cell it began inside
+  and **carries on**, because stopping there would let a body overlapping one tile pass through
+  every tile beyond it.
 * `engine/src/physics2d/broadphase.zig` — a uniform spatial hash in **two tiers**, because
   most bodies do not move in most ticks: static bodies live in their own hash that is untouched
   while movable ones move. Updates are incremental and exit early when a body's cell span did
@@ -194,6 +209,25 @@ catching on the seams between its tiles.**
   which narrows the broadphase's candidates by mask and by an exact bounds test. A body is read
   through a **const pointer** and changed through named calls, so nothing can move one without
   the broadphase hearing about it.
+
+  And, from step 4, the movement: **`moveAndSlide`** — iterative swept resolution against grids
+  first and then bodies, holding the body a `contact_skin` clear of what it hits and projecting
+  what is left onto the contact plane, which is what makes a stop into a slide, within a
+  `max_slide_iterations` budget of four that is documented because a caller can observe it. It
+  **commits** the move and updates the broadphase, because a call that returned an answer and
+  left the bookkeeping to the caller is one every caller eventually forgets to finish.
+  **`resolveOverlaps`** is deliberately separate: a penetration is behind the sweep and cannot
+  be swept out of, and keeping it apart makes "stuck in a wall" a state a game can detect
+  rather than a silent teleport. Then **`overlapPoint`, `overlapShape`, `raycast` and
+  `shapeCast`**, all with caller-supplied buffers that report how many hits there *would* have
+  been — the shape ADR-0004 will need at M7, adopted now because it costs nothing. No query
+  takes a callback. `Hit` and `QueryHit` use the **null handle** rather than an optional, for
+  the same ABI reason.
+
+  **`sync` is not implemented**, and that is the standing rule about open questions being
+  honoured rather than an omission: design question 4 asks whether trigger enter/exit belongs
+  in this module at all, and step 4 did not force the answer. Triggers block nothing and
+  `overlapShape` finds them exactly.
 * `engine/src/physics2d/root.zig`, and the module in `build.zig` at L1 on `core` alone.
 
 **M4, new:**
@@ -517,15 +551,23 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M5, on the collision sequence.** All three design documents are written and steps 1, 2 and 3
-of `tilemaps-and-collision.md` §15 are implemented: `physics2d` exists at L1 on `core` alone,
-with shapes, the pair tests, the swept box test, the body and grid pools, the tile grid with
-neighbour-aware face culling, and the two-tier spatial hash with its determinism sort. The next
-unit is **step 4, movement** — `moveAndSlide` with its documented four-iteration budget and the
-projection that makes a stop into a slide, `resolveOverlaps` kept deliberately separate so that
-"stuck in a wall" is a state a game can detect rather than a silent teleport, and the four
-queries with their caller-supplied buffers and truncation reporting. It is the step that turns
-everything built so far into something a character can be moved with.
+**M5, on the collision sequence.** All three design documents are written and steps 1 through 4
+of `tilemaps-and-collision.md` §15 are implemented. `physics2d` is now complete as a *module*:
+shapes and their tests, the tile grid with neighbour-aware face culling, the two-tier spatial
+hash with its determinism sort, and movement — `moveAndSlide` with its four-iteration budget
+and the projection that makes a stop into a slide, `resolveOverlaps` kept deliberately separate
+so that "stuck in a wall" is a state a game can detect rather than a silent teleport, and
+`overlapPoint`, `overlapShape`, `raycast` and `shapeCast` with caller-supplied buffers that
+report how many hits there *would* have been.
+
+**`sync` is deliberately absent.** The design's open question 4 asks whether trigger enter/exit
+belongs in this module at all, and step 4 did not force the answer, so it was not settled
+opportunistically. Triggers block nothing and `overlapShape` finds them exactly, which is what
+a game needs to diff two overlap sets for itself — the shape the open question contemplates.
+
+The next unit is **step 5, tilemap content**: the three schemas, the `foundry:tilegrid` asset
+and its runtime format, the loader registered from `render2d`, and `fpack`'s text-grid front
+end. It is where collision stops being a library and starts being something a mod can author.
 
 What follows in this section is the record of the milestones behind it, kept because the
 reasoning is what a future session needs and the commit log is not where reasoning lives.
@@ -907,11 +949,10 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 **M5 is open, its design is finished, and the next thing is code.** Three independent
 sequences, each with its order written down in its own document:
 
-1. **Collision**, `tilemaps-and-collision.md` §15. **Steps 1, 2 and 3 are done.** Remaining:
-   step 4, `moveAndSlide` with its documented four-iteration budget, `resolveOverlaps` kept
-   separate so "stuck in a wall" is detectable, and the four queries with their truncation
-   reporting; step 5, tilemap content and `fpack`'s text-grid front end; step 6, drawing with
-   view culling; step 7, the sandbox's player colliding with the map.
+1. **Collision**, `tilemaps-and-collision.md` §15. **Steps 1 through 4 are done.** Remaining:
+   step 5, tilemap content — the three schemas, the `foundry:tilegrid` asset and its runtime
+   format, the loader registered from `render2d`, and `fpack`'s text-grid front end; step 6,
+   drawing with view culling; step 7, the sandbox's player colliding with the map.
 2. **Audio**, `audio.md` §13, six steps, and the first three add no threads at all: the
    `foundry:sound` schema, `Sound` and the WAV decoder in `asset` with its corpus; the device
    in `platform` including the stepped null one; `audio` in the build graph at L3; the rings,

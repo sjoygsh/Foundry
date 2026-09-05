@@ -47,13 +47,25 @@ pub const Contact = shape.Contact;
 pub const Face = shape.Face;
 pub const FaceMask = shape.FaceMask;
 pub const Grid = grid.Grid;
+pub const GridContact = grid.GridContact;
 pub const GridHandle = grid.GridHandle;
 pub const GridHit = grid.GridHit;
+pub const GridSweep = grid.GridSweep;
+pub const Hit = world.Hit;
+pub const MoveResult = world.MoveResult;
+pub const QueryHit = world.QueryHit;
+pub const QueryResult = world.QueryResult;
+pub const Rounded = shape.Rounded;
 pub const Shape = shape.Shape;
 pub const Sweep = shape.Sweep;
 pub const SpatialHash = broadphase.SpatialHash;
 pub const World = world.World;
 pub const WorldOptions = world.Options;
+
+/// How far a body is held off what it stopped against, and the sliding budget. Both are
+/// interface, not tuning: a caller can observe either.
+pub const contact_skin = world.contact_skin;
+pub const max_slide_iterations = world.max_slide_iterations;
 
 pub const AddBodyError = world.AddBodyError;
 pub const AddGridError = world.AddGridError;
@@ -61,6 +73,8 @@ pub const GridError = grid.GridError;
 
 /// The static test between any two shapes.
 pub const overlap = shape.overlap;
+/// The swept test between any two shapes.
+pub const sweepShape = shape.sweepShape;
 /// The swept test of a box against an axis-aligned box.
 pub const sweepBox = shape.sweepBox;
 /// Whether two bodies' layer/mask filters admit the pair. Symmetric.

@@ -562,5 +562,76 @@ or between tiers goes through a named call. Handing out a `*Body` would let a ca
 by assignment and leave the broadphase describing where it used to be, and the symptom of that
 is "things sometimes do not collide" — the worst class of bug this module could ship.
 
-**Still to come, unchanged by any of the above:** `moveAndSlide` and `resolveOverlaps` (step 4)
-and everything from step 5 on.
+**Still to come, unchanged by any of the above:** everything from step 5 on.
+
+---
+
+## Resolution: movement and queries (step 4, 2026-09-05)
+
+§15's fourth step is implemented: `moveAndSlide`, `resolveOverlaps`, the four queries, the
+truncation reporting, and the documented iteration budget. §6's algorithm transcribed as
+written. Seven things it did not settle, implementation did.
+
+**The four pair tests became one.** §3 counted "four pair tests and one grid test", and the
+count was a description of the problem rather than of the code that had to solve it. Every
+pair reduces to a **rounded box** — an axis-aligned box grown by a disc — and the reduction
+*composes*: the Minkowski sum of two rounded boxes is a rounded box whose half-extents and
+radius are the sums. So box-box is a rounded box with radius zero, circle-circle is one with
+no box left, and a raycast is the target's own rounded form because a point adds nothing. One
+static test and one swept test now answer every combination, the `flip` helper that guarded
+against the box-circle and circle-box cases disagreeing is gone along with the thing it
+guarded, and a convex polygon still changes no signature.
+
+The swept test against a rounded box is the union of two overlapping boxes and four corner
+discs, because entering a union happens at the earliest entry into any of its parts — so the
+minimum over the parts is the answer and no part has to be clipped to the arc it actually
+contributes.
+
+**Face culling extends to corners, and the rule is that a corner needs both of its faces.**
+§4's fix was stated for faces because the moving shape it imagined was a box. A circle
+sliding along a tiled floor meets a quarter disc at every seam as well as a vertical face,
+and the disc at a cell's corner is interior to the wall exactly when the neighbour in *either*
+of its two directions is solid — the neighbour's own rounded expansion covers it. So a corner
+is admitted only when both of its adjacent faces are, which for a box mover degenerates to the
+face rule and changes nothing.
+
+**The grid walk no longer stops at a cell it began inside; it records that and carries on.**
+Step 2 returned the penetration immediately, which was right for a primitive and wrong for
+movement: a body overlapping one tile would have passed through every tile beyond it. `Grid`
+now returns a `GridSweep` — the earliest legitimate contact *and* whether the shape started in
+a wall — because those are two independent answers and a caller needs both, the first to stop
+at and the second to know that stopping will not be enough.
+
+**`fraction` is a share of the requested motion's length.** §6 said "0..1 along the motion that
+was requested", which is exact for one contact and undefined after a slide has turned the
+direction. The reading implemented is distance travelled over the requested length: it agrees
+with the obvious meaning in the single-hit case, it rises across contacts so a caller can
+compare them, and it cannot exceed one because the projection never lengthens what is left.
+
+**`moveAndSlide` commits the move**, rather than returning a position for the caller to apply.
+The body is in the world, the broadphase has to be told, and a call that returned the answer
+and left the bookkeeping to the caller would be a call every caller eventually forgets to
+finish. It therefore takes an allocator, as everything that touches the broadphase does. The
+first pass runs even for zero motion, because `started_inside` is an answer a caller wants
+whether or not it asked to move.
+
+**`Hit` uses null handles rather than optionals.** §6 wrote `body: ?BodyHandle` and
+`grid: ?GridHandle`. `Hit` is a plain struct a caller allocates and it crosses the C ABI at M7
+(I4), where `?BodyHandle` is not a type; the null handle is already the module's word for "no
+such thing" (I1), and it is what `isGrid()` reads. The same applies to `QueryHit`.
+
+**Depenetration needs the culling too, and the queries needed a second walk.** Pushing out of
+the middle cell of a wall along its shortest axis is a push *further into* the wall, so
+`Grid.deepestOverlap` restricts the escape to admitted faces — the same `facesAt`, doing the
+same job for a different question. And `raycast` and `shapeCast` report *all* their hits
+sorted, not the earliest, so they walk cells themselves and collect rather than keeping a
+running minimum; ties are broken by the order contacts were found in, which makes the
+comparison total and so makes an unstable sort deterministic anyway.
+
+**`sync` and triggers.** §2's `sync` is **not** implemented, because open question 4 asks
+whether it belongs in this module at all and step 4 does not force the answer. Triggers block
+nothing and are not reported by `moveAndSlide`; `overlapShape` finds them exactly, which is
+what a game needs in order to diff two overlap sets for itself — the shape the open question
+contemplates. Nothing here forecloses either answer.
+
+**Still to come, unchanged by any of the above:** everything from step 5 on.
