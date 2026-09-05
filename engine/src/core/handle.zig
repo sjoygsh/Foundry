@@ -261,6 +261,127 @@ pub fn HandlePool(comptime Tag: type, comptime T: type) type {
         pub fn iterator(self: *Self) Iterator {
             return .{ .pool = self };
         }
+
+        // -- snapshot and restore ----------------------------------------------
+
+        /// One slot exactly as the pool holds it: the generation it will hand out next,
+        /// and its value when it is occupied.
+        ///
+        /// Not "an optional slot". A **free** slot's generation is meaningful — it is the
+        /// generation the slot will be reused at, and it is the whole mechanism by which
+        /// a stale handle stays stale — so a snapshot that dropped it would produce a pool
+        /// that reissues handles somebody is still holding.
+        pub const Snapshot = struct { generation: u32, value: ?T };
+
+        pub const RestoreError = error{
+            /// The slots and the free list are not a pool: a generation of zero, a
+            /// free-list entry out of range, repeated, or naming an occupied slot, or a
+            /// free list that does not account for every unoccupied slot.
+            InvalidSnapshot,
+        } || std.mem.Allocator.Error;
+
+        /// Every slot in index order, occupied or not. Null past the end.
+        ///
+        /// The saving half of `restore`, and deliberately a slot-indexed read rather than
+        /// an iterator: what a save writes is one entry per slot, including the free ones,
+        /// which is precisely what `iterator` skips.
+        pub fn slotAt(self: *const Self, index: u32) ?Snapshot {
+            if (index >= self.slots.items.len) return null;
+            const slot = &self.slots.items[index];
+            return .{
+                .generation = slot.generation,
+                .value = if (slot.occupied) slot.value else null,
+            };
+        }
+
+        /// The free list in the order `add` will consume it, head first.
+        pub const FreeIterator = struct {
+            pool: *const Self,
+            next_index: u32,
+
+            pub fn next(self: *FreeIterator) ?u32 {
+                if (self.next_index == free_list_end) return null;
+                const index = self.next_index;
+                self.next_index = self.pool.slots.items[index].next_free;
+                return index;
+            }
+        };
+
+        pub fn freeSlots(self: *const Self) FreeIterator {
+            return .{ .pool = self, .next_index = self.free_head };
+        }
+
+        /// Rebuilds a pool's exact state from a snapshot.
+        ///
+        /// **The only way to make a pool hand out a handle it did not issue**, and
+        /// therefore the only way a save can preserve identity across a reload: a world
+        /// reloaded from disk answers for the same entity handles the original would have,
+        /// so a handle stored inside saved data needs no remapping pass
+        /// (`entity-storage.md` §9).
+        ///
+        /// It is also the one entry point whose input is not the pool's own — a save is a
+        /// file somebody else can write — so it **validates rather than asserts**, and a
+        /// refused snapshot leaves the pool untouched. Restoring over a populated pool is
+        /// a different matter and is a caller bug: it asserts.
+        pub fn restore(
+            self: *Self,
+            gpa: std.mem.Allocator,
+            slots: []const Snapshot,
+            free_list: []const u32,
+        ) RestoreError!void {
+            assert.always(
+                self.slots.items.len == 0,
+                "restore into a pool holding {d} slots; restore is for a fresh pool",
+                .{self.slots.items.len},
+            );
+            if (slots.len >= free_list_end) return error.InvalidSnapshot;
+            if (free_list.len > slots.len) return error.InvalidSnapshot;
+
+            var live: u32 = 0;
+            for (slots) |s| {
+                // Generation 0 is `none`. A slot holding it would answer a null handle.
+                if (s.generation == 0) return error.InvalidSnapshot;
+                if (s.value != null) live += 1;
+            }
+            if (slots.len - free_list.len != live) return error.InvalidSnapshot;
+
+            // Every free-list entry has to be a distinct unoccupied slot. With the count
+            // above agreeing, that is enough to know the list is exactly the free slots.
+            const seen = try gpa.alloc(bool, slots.len);
+            defer gpa.free(seen);
+            @memset(seen, false);
+            for (free_list) |index| {
+                if (index >= slots.len) return error.InvalidSnapshot;
+                if (slots[index].value != null) return error.InvalidSnapshot;
+                if (seen[index]) return error.InvalidSnapshot;
+                seen[index] = true;
+            }
+
+            // Nothing is written until everything has been checked, so a refusal leaves
+            // the pool as it was.
+            var built: std.ArrayList(Slot) = .empty;
+            errdefer built.deinit(gpa);
+            try built.ensureTotalCapacityPrecise(gpa, slots.len);
+            for (slots) |s| built.appendAssumeCapacity(.{
+                .generation = s.generation,
+                .next_free = free_list_end,
+                .occupied = s.value != null,
+                .value = if (s.value) |v| v else undefined,
+            });
+
+            // Walked backwards so each entry can point at the one after it.
+            var head = free_list_end;
+            var i = free_list.len;
+            while (i > 0) {
+                i -= 1;
+                built.items[free_list[i]].next_free = head;
+                head = free_list[i];
+            }
+
+            self.slots = built;
+            self.free_head = head;
+            self.live = live;
+        }
     };
 }
 
@@ -463,4 +584,112 @@ test "reserving counts the free slots it is about to reuse" {
     try testing.expect(reserved >= 4);
     for (0..4) |i| _ = try pool.add(gpa, .{ .n = @intCast(i) });
     try testing.expectEqual(reserved, pool.slots.capacity);
+}
+
+// -- snapshot and restore ----------------------------------------------------------
+
+/// Copies a pool's whole state out, the way a save writes it.
+fn snapshotOf(gpa: std.mem.Allocator, pool: *const ThingPool) !struct {
+    slots: []ThingPool.Snapshot,
+    free: []u32,
+} {
+    const slots = try gpa.alloc(ThingPool.Snapshot, pool.capacity());
+    for (slots, 0..) |*s, i| s.* = pool.slotAt(@intCast(i)).?;
+
+    var free: std.ArrayList(u32) = .empty;
+    var it = pool.freeSlots();
+    while (it.next()) |index| try free.append(gpa, index);
+    return .{ .slots = slots, .free = try free.toOwnedSlice(gpa) };
+}
+
+test "a restored pool answers for exactly the handles the original did" {
+    const gpa = testing.allocator;
+    var pool: ThingPool = .empty;
+    defer pool.deinit(gpa);
+
+    const a = try pool.add(gpa, .{ .n = 1 });
+    const b = try pool.add(gpa, .{ .n = 2 });
+    const c = try pool.add(gpa, .{ .n = 3 });
+    try testing.expect(pool.remove(b));
+    const d = try pool.add(gpa, .{ .n = 4 }); // reuses b's slot at a new generation
+
+    const snap = try snapshotOf(gpa, &pool);
+    defer gpa.free(snap.slots);
+    defer gpa.free(snap.free);
+
+    var copy: ThingPool = .empty;
+    defer copy.deinit(gpa);
+    try copy.restore(gpa, snap.slots, snap.free);
+
+    try testing.expectEqual(pool.count(), copy.count());
+    try testing.expectEqual(pool.capacity(), copy.capacity());
+    for ([_]ThingPool.Id{ a, c, d }) |id| {
+        try testing.expectEqual(pool.getConst(id).?.n, copy.getConst(id).?.n);
+    }
+    // And the stale one is still stale, which is the half a naive copy loses.
+    try testing.expect(copy.getConst(b) == null);
+}
+
+test "a restored pool hands out the next handle the original would have" {
+    const gpa = testing.allocator;
+    var pool: ThingPool = .empty;
+    defer pool.deinit(gpa);
+
+    const a = try pool.add(gpa, .{ .n = 1 });
+    _ = try pool.add(gpa, .{ .n = 2 });
+    try testing.expect(pool.remove(a));
+
+    const snap = try snapshotOf(gpa, &pool);
+    defer gpa.free(snap.slots);
+    defer gpa.free(snap.free);
+
+    var copy: ThingPool = .empty;
+    defer copy.deinit(gpa);
+    try copy.restore(gpa, snap.slots, snap.free);
+
+    const next_original = try pool.add(gpa, .{ .n = 9 });
+    const next_copy = try copy.add(gpa, .{ .n = 9 });
+    try testing.expect(next_original.eql(next_copy));
+}
+
+test "restore refuses a snapshot that is not a pool" {
+    const gpa = testing.allocator;
+
+    const cases = [_]struct { slots: []const ThingPool.Snapshot, free: []const u32 }{
+        // Generation zero would answer a `none` handle.
+        .{ .slots = &.{.{ .generation = 0, .value = .{ .n = 1 } }}, .free = &.{} },
+        // A free-list entry past the end.
+        .{ .slots = &.{.{ .generation = 1, .value = null }}, .free = &.{7} },
+        // A free-list entry naming an occupied slot.
+        .{ .slots = &.{.{ .generation = 1, .value = .{ .n = 1 } }}, .free = &.{0} },
+        // One free slot named twice, which would make the free list a cycle.
+        .{ .slots = &.{
+            .{ .generation = 1, .value = null },
+            .{ .generation = 1, .value = null },
+        }, .free = &.{ 0, 0 } },
+        // A free slot the list does not account for: `add` would never reuse it.
+        .{ .slots = &.{
+            .{ .generation = 1, .value = null },
+            .{ .generation = 1, .value = null },
+        }, .free = &.{0} },
+    };
+
+    for (cases) |case| {
+        var pool: ThingPool = .empty;
+        defer pool.deinit(gpa);
+        try testing.expectError(error.InvalidSnapshot, pool.restore(gpa, case.slots, case.free));
+        // Refused leaves the pool as it was, so a caller can report and carry on.
+        try testing.expectEqual(@as(usize, 0), pool.capacity());
+    }
+}
+
+test "an empty pool round-trips" {
+    const gpa = testing.allocator;
+    var pool: ThingPool = .empty;
+    defer pool.deinit(gpa);
+    try pool.restore(gpa, &.{}, &.{});
+    try testing.expectEqual(@as(u32, 0), pool.count());
+    const first = try pool.add(gpa, .{ .n = 1 });
+    try testing.expectEqual(@as(u32, 0), first.index);
+    try testing.expectEqual(@as(u32, 1), first.generation);
 }
