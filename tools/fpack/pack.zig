@@ -19,6 +19,7 @@ const std = @import("std");
 const core = @import("core");
 const data = @import("data");
 const asset = @import("asset");
+const scene = @import("scene");
 const platform = @import("platform");
 
 const Allocator = std.mem.Allocator;
@@ -91,6 +92,16 @@ pub fn compile(
         // package being compiled, and saying so is the only honest report.
         else => {
             try diags.addFmt(gpa, .err, .whole("<engine>"), 1, "", "the engine's asset schemas did not register: {s}", .{data.schema.describeRegisterError(err)});
+            return error.ContentInvalid;
+        },
+    };
+
+    // `foundry:entity` and `foundry:scene`, for the same reason: an author describing a
+    // scene must not have to declare an engine-owned record type themselves.
+    scene.schemas.registerAll(gpa, registry) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            try diags.addFmt(gpa, .err, .whole("<engine>"), 1, "", "the engine's entity schemas did not register: {s}", .{data.schema.describeRegisterError(err)});
             return error.ContentInvalid;
         },
     };

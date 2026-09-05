@@ -1,9 +1,9 @@
 # Design: `scene` — entities, components, systems and world state
 
-**Status:** M4 in progress. Steps 1 to 5 of §15 are built — `engine/src/scene/` in full, and
-`samples/sandbox` holds entities rather than an array of sprites. The Resolution sections at
-the end record what each step settled. Step 6 — entities in content, and saves — is not
-written.
+**Status:** M4 in progress. Steps 1 to 5 of §15 are built, and step 6's first half — entities
+described in content. `samples/sandbox` holds entities rather than an array of sprites. The
+Resolution sections at the end record what each step settled. What is left of M4 is the save
+format.
 **Date:** 2026-09-05
 **Implements:** I1, I2, I3, I5, I6, I8, I9 · **Informed by:** ADR-0005, ADR-0006, ADR-0010,
 ADR-0013, ADR-0020, ADR-0021
@@ -832,3 +832,42 @@ and 4,185 with a selection on screen under Metal, both a clean exit; picking ret
 and its outline and label draw; and a mod recompiled *while the program was running* changed
 the field from 250 entities to 600 at the top of a frame, with every entity destroyed and
 respawned through the same path that built them at startup.
+
+---
+
+## Resolution: entities in content (implementation, 2026-09-05)
+
+The first half of step 6: `engine/src/scene/schemas.zig`, `World.spawn`, `World.spawnScene`,
+and `fpack` registering the two schemas. §8's shape is unchanged — a template is `[id]` of
+component records and a scene is `[id]` of templates, with no new `.fdt` syntax. What building
+it settled:
+
+**The world checks that a package's schema agrees with the registered one.** This is the
+consequence of step 5's finding, and it is the important one. The world's registry and the
+content registry are separate — they must be, because hot reload replaces the latter — so
+nothing before the spawn has an opportunity to notice that a package declaring `test:pos`
+ordered its fields differently from the Zig struct. The deserializer matches by *position*,
+so an unchecked mismatch would read `y` into `x` and report a successful load. `attach`
+therefore compares the shared prefix of the record's schema against the registered one and
+refuses a disagreement, which is exactly the rule a version bump already lives under
+(`content-schemas.md` §3). There is a test that swaps two fields and expects the refusal.
+
+**Both spawns are all-or-nothing.** A template that fails partway destroys the half-built
+entity; a scene that fails partway destroys everything it spawned. The same bargain
+`data.Store` makes when merging a package, for the same reason: a partially applied template
+is a shape nothing downstream is written to reason about, and content is untrusted.
+
+**`data.fpk.List` gained `idAt`.** Reading a list of references is what every one of these
+records is, and `valueAt` — the only accessor a list had — takes an arena it does not use for
+a scalar. Three lines, mirroring `Fields.idAt`.
+
+**`fpack` registers the two schemas**, so an author writing a scene never declares an
+engine-owned record type. It already did this for `asset.schemas`; the tool now imports
+`scene` for the same reason it imports `asset` — that is where the record types live.
+
+**Still open, and it is the interesting one:** a component type registered by *code* is
+invisible to `fpack`, so content using one must declare its schema by hand — which is exactly
+what the tests here do, and exactly what a mod author would do. The alternative is for a game
+to hand `fpack` its component schemas, which is a build-time question (how does a content
+compiler learn what a game's code declares?) rather than a runtime one. It is not M4's, and
+the schema-agreement check above is what makes hand-declaring safe in the meantime.

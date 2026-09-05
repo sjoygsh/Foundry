@@ -267,6 +267,10 @@ pub fn build(b: *std.Build) void {
     fpack_mod.addImport("core", modules.get("core").?);
     fpack_mod.addImport("data", modules.get("data").?);
     fpack_mod.addImport("platform", platform_module);
+    // And `scene`, for the same reason it gets `asset`: that is where the record types for
+    // entity templates and scenes are declared, and content using one must not have to
+    // declare an engine-owned schema itself.
+    fpack_mod.addImport("scene", modules.get("scene").?);
 
     const fpack = b.addExecutable(.{ .name = "fpack", .root_module = fpack_mod });
     b.installArtifact(fpack);

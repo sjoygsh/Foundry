@@ -21,6 +21,7 @@ const component = @import("component.zig");
 const entity_mod = @import("entity.zig");
 const limits_mod = @import("limits.zig");
 const query_mod = @import("query.zig");
+const schemas_mod = @import("schemas.zig");
 const store_mod = @import("store.zig");
 const system_mod = @import("system.zig");
 
@@ -90,6 +91,24 @@ pub const SystemError = error{
     /// profiler, or a mod that wants to replace it.
     MissingSystemId,
 } || Allocator.Error;
+
+pub const SpawnError = error{
+    /// No record with that content id in the store.
+    NoSuchRecord,
+    /// The record is not `foundry:entity`.
+    NotAnEntityTemplate,
+    /// The record is not `foundry:scene`.
+    NotAScene,
+    /// A component type registered with no `deserialize`, so it cannot be built from data.
+    NotConstructibleFromData,
+    /// The template names two records of the same component type. An entity has at most
+    /// one of each, so this is refused rather than resolved by order.
+    DuplicateComponent,
+    /// The package's schema for a component disagrees with the registered one about a field
+    /// they share. Deserializing anyway would read the right bytes into the wrong field —
+    /// the failure that looks like a physics bug three days later.
+    ComponentSchemaMismatch,
+} || CreateError || ComponentError || component.DeserializeError;
 
 pub const World = struct {
     gpa: Allocator,
@@ -421,6 +440,95 @@ pub const World = struct {
         }
     }
 
+    // -- entities from content -----------------------------------------------------
+
+    /// Spawns one entity from a `foundry:entity` template.
+    ///
+    /// Everything here is untrusted: the template, the component records it names, and the
+    /// schemas their packages carry. A failure destroys the half-built entity rather than
+    /// leaving one behind — a partially applied template is a shape nothing downstream
+    /// knows how to reason about.
+    ///
+    /// The spawned entity is a **copy**, independent of the records it came from. A content
+    /// reload does not respawn it; re-applying a template to a live entity means deciding
+    /// what happens to state a system has since changed, which is an editor question and
+    /// not a loading one (`entity-storage.md` §8).
+    pub fn spawn(self: *World, store: *const data.Store, template_id: core.ContentId) SpawnError!Entity {
+        const record = store.lookup(template_id) orelse return error.NoSuchRecord;
+        if (!record.schema_id.eql(schemas_mod.entity.id)) return error.NotAnEntityTemplate;
+
+        const entity = try self.create();
+        errdefer _ = self.destroy(entity);
+
+        const index = record.schema.fieldIndex("components") orelse return entity;
+        const list = (try record.fields.listAt(index)) orelse return entity;
+        for (0..list.len) |i| {
+            const component_id = (try list.idAt(@intCast(i))) orelse return error.Malformed;
+            try self.attach(store, entity, component_id);
+        }
+        return entity;
+    }
+
+    /// Spawns every template a `foundry:scene` names, in the order it names them. Returns
+    /// how many.
+    ///
+    /// **All or nothing.** A scene that fails halfway destroys what it already spawned, the
+    /// same bargain `data.Store` makes when merging a package: a half-loaded world is a
+    /// state nothing is written to handle, and "ran out of memory partway" is not worth
+    /// being able to describe.
+    pub fn spawnScene(self: *World, store: *const data.Store, scene_id: core.ContentId) SpawnError!u32 {
+        const record = store.lookup(scene_id) orelse return error.NoSuchRecord;
+        if (!record.schema_id.eql(schemas_mod.scene.id)) return error.NotAScene;
+
+        const index = record.schema.fieldIndex("entities") orelse return 0;
+        const list = (try record.fields.listAt(index)) orelse return 0;
+
+        var spawned: std.ArrayList(Entity) = .empty;
+        defer spawned.deinit(self.gpa);
+        errdefer for (spawned.items) |e| {
+            _ = self.destroy(e);
+        };
+
+        for (0..list.len) |i| {
+            const template_id = (try list.idAt(@intCast(i))) orelse return error.Malformed;
+            try spawned.ensureUnusedCapacity(self.gpa, 1);
+            spawned.appendAssumeCapacity(try self.spawn(store, template_id));
+        }
+        return @intCast(spawned.items.len);
+    }
+
+    /// Adds one component to `entity` from the record `component_id` names.
+    fn attach(
+        self: *World,
+        store: *const data.Store,
+        entity: Entity,
+        component_id: core.ContentId,
+    ) SpawnError!void {
+        const record = store.lookup(component_id) orelse return error.NoSuchRecord;
+        const t = self.findComponent(record.schema_id) orelse return error.UnknownComponentType;
+
+        const info = self.types.getConst(t).?;
+        const registered = self.schemas.get(info.schema) orelse return error.UnknownComponentType;
+        // The record was laid out against the schema its own package shipped, and the
+        // deserializer matches fields by position. If the two disagree about a field they
+        // share, position matching would put the right bytes in the wrong field — so the
+        // shared prefix has to agree, which is exactly the rule a schema version bump lives
+        // under (`content-schemas.md` §3).
+        if (!prefixAgrees(record.schema, registered.*)) return error.ComponentSchemaMismatch;
+
+        const ctx = info.ctx;
+        const deserialize = info.deserialize orelse return error.NotConstructibleFromData;
+
+        const bytes = self.addComponent(entity, t, null) catch |err| switch (err) {
+            // Two records of the same component type in one template. The distinction from
+            // `ComponentExists` matters: this one came from a file and is a mod author's
+            // mistake, so it gets its own name.
+            error.ComponentExists => return error.DuplicateComponent,
+            else => |e| return e,
+        };
+        try deserialize(ctx, record.fields, bytes.ptr);
+    }
+
     /// `query`, with the component types named as Zig types and the casts written for you.
     ///
     /// ```zig
@@ -439,6 +547,18 @@ pub const World = struct {
         return .{ .inner = self.query(&handles) };
     }
 };
+
+/// Whether two versions of a schema agree about every field they both have.
+///
+/// `Field.eql` compares name and type and not presence, which is the right comparison here:
+/// a later version may change a field's default, and it may not move or reinterpret one.
+fn prefixAgrees(a: data.Schema, b: data.Schema) bool {
+    const n = @min(a.fields.len, b.fields.len);
+    for (a.fields[0..n], b.fields[0..n]) |x, y| {
+        if (!x.eql(y)) return false;
+    }
+    return true;
+}
 
 // -- tests -------------------------------------------------------------------------
 
@@ -869,4 +989,273 @@ test "adding and removing a component moves the mutation counter" {
     const after_remove = f.world.mutation;
     try testing.expect(!f.world.removeComponent(e, transform));
     try testing.expectEqual(after_remove, f.world.mutation);
+}
+
+// -- entities from content ---------------------------------------------------------
+
+const derive = @import("derive.zig");
+
+const Pos = struct {
+    pub const component = "test:pos";
+    x: f32 = 0,
+    y: f32 = 0,
+};
+
+const Tag = struct {
+    pub const component = "test:tag";
+    value: u32 = 7,
+};
+
+/// A world, and a content store built the way `fpack` builds one. The two registries are
+/// separate on purpose: that is the arrangement step 5 forced, and it is what makes the
+/// schema-agreement check in `attach` load-bearing rather than decorative.
+const ContentFixture = struct {
+    gpa: Allocator,
+    world_schemas: data.Registry,
+    world: World,
+
+    content_schemas: data.Registry,
+    diags: data.Diagnostics,
+    store: data.Store,
+    bytes: std.ArrayList(u8) = .empty,
+
+    fn init(gpa: Allocator) !*ContentFixture {
+        const f = try gpa.create(ContentFixture);
+        f.* = .{
+            .gpa = gpa,
+            .world_schemas = .init(gpa, .default),
+            .world = undefined,
+            .content_schemas = .init(gpa, .default),
+            .diags = .init(gpa, .default),
+            .store = .init(gpa, .default),
+        };
+        f.world = .init(gpa, &f.world_schemas, .default);
+        try schemas_mod.registerAll(gpa, &f.content_schemas);
+        return f;
+    }
+
+    fn deinit(self: *ContentFixture) void {
+        const gpa = self.gpa;
+        self.store.deinit(gpa);
+        self.diags.deinit(gpa);
+        self.content_schemas.deinit(gpa);
+        self.bytes.deinit(gpa);
+        self.world.deinit();
+        self.world_schemas.deinit(gpa);
+        gpa.destroy(self);
+    }
+
+    fn load(self: *ContentFixture, source: []const u8) !void {
+        var doc = try data.parser.parse(self.gpa, "test.fdt", source, .{ .namespace = "test" }, &self.diags);
+        defer doc.deinit(self.gpa);
+
+        var pkg = try data.check.Package.init(self.gpa, "test:content", 1, .default);
+        defer pkg.deinit(self.gpa);
+        try pkg.addDocument(self.gpa, &doc, &self.content_schemas, &self.diags);
+        try data.fpk.write(self.gpa, &pkg, &self.content_schemas, &self.bytes);
+
+        _ = try self.store.add(self.gpa, "test:content", self.bytes.items, &self.content_schemas, &self.diags);
+    }
+
+    fn id(_: *ContentFixture, text: []const u8) core.ContentId {
+        return data.id.contentId(text) catch unreachable;
+    }
+};
+
+/// The schemas content declares for the two component types above. Written out rather than
+/// derived, because a mod author writes them by hand and this is what they would write.
+const component_source =
+    \\@schema test:pos { x f32 (default 0.0)  y f32 (default 0.0) }
+    \\@schema test:tag { value u32 (default 7) }
+    \\
+;
+
+test "a template spawns an entity carrying the values content gave it" {
+    const gpa = testing.allocator;
+    const f = try ContentFixture.init(gpa);
+    defer f.deinit();
+
+    const pos = try f.world.registerComponent(derive.componentType(Pos));
+    const tag = try f.world.registerComponent(derive.componentType(Tag));
+
+    try f.load(component_source ++
+        \\test:pos test:player.pos { x 3.0  y 4.0 }
+        \\test:tag test:player.tag { value 42 }
+        \\
+        \\foundry:entity test:entity.player {
+        \\    components [ test:player.pos  test:player.tag ]
+        \\}
+    );
+
+    const entity = try f.world.spawn(&f.store, f.id("test:entity.player"));
+    try testing.expectEqual(@as(u32, 1), f.world.entityCount());
+
+    const p: *const Pos = @ptrCast(@alignCast(f.world.getComponent(entity, pos).?.ptr));
+    try testing.expectEqual(@as(f32, 3), p.x);
+    try testing.expectEqual(@as(f32, 4), p.y);
+
+    const t: *const Tag = @ptrCast(@alignCast(f.world.getComponent(entity, tag).?.ptr));
+    try testing.expectEqual(@as(u32, 42), t.value);
+}
+
+test "a scene spawns its templates in order, and twice means two" {
+    const gpa = testing.allocator;
+    const f = try ContentFixture.init(gpa);
+    defer f.deinit();
+
+    const pos = try f.world.registerComponent(derive.componentType(Pos));
+
+    try f.load(component_source ++
+        \\test:pos test:a.pos { x 1.0 }
+        \\test:pos test:b.pos { x 2.0 }
+        \\
+        \\foundry:entity test:entity.a { components [ test:a.pos ] }
+        \\foundry:entity test:entity.b { components [ test:b.pos ] }
+        \\
+        \\foundry:scene test:scene.main {
+        \\    entities [ test:entity.a  test:entity.b  test:entity.b ]
+        \\}
+    );
+
+    const count = try f.world.spawnScene(&f.store, f.id("test:scene.main"));
+    try testing.expectEqual(@as(u32, 3), count);
+    try testing.expectEqual(@as(u32, 3), f.world.entityCount());
+
+    // The order is the order the author wrote, which is what I9 asks of anything a result
+    // can depend on. Components were added in that order, so the store holds them in it.
+    var seen: [3]f32 = undefined;
+    var i: usize = 0;
+    var it = f.world.query(&.{pos});
+    while (it.next()) |_| : (i += 1) {
+        seen[i] = @as(*const Pos, @ptrCast(@alignCast(it.bytes(0).ptr))).x;
+    }
+    try testing.expectEqualSlices(f32, &.{ 1, 2, 2 }, &seen);
+}
+
+test "a record that is not a template, and one that is not a scene" {
+    const gpa = testing.allocator;
+    const f = try ContentFixture.init(gpa);
+    defer f.deinit();
+
+    _ = try f.world.registerComponent(derive.componentType(Pos));
+    try f.load(component_source ++
+        \\test:pos test:loose.pos { x 1.0 }
+        \\foundry:entity test:entity.a { components [ test:loose.pos ] }
+    );
+
+    try testing.expectError(
+        error.NotAnEntityTemplate,
+        f.world.spawn(&f.store, f.id("test:loose.pos")),
+    );
+    try testing.expectError(
+        error.NotAScene,
+        f.world.spawnScene(&f.store, f.id("test:entity.a")),
+    );
+    try testing.expectError(
+        error.NoSuchRecord,
+        f.world.spawn(&f.store, f.id("test:entity.missing")),
+    );
+    try testing.expectEqual(@as(u32, 0), f.world.entityCount());
+}
+
+test "a template naming two of one component type is refused, and leaves nothing behind" {
+    const gpa = testing.allocator;
+    const f = try ContentFixture.init(gpa);
+    defer f.deinit();
+
+    _ = try f.world.registerComponent(derive.componentType(Pos));
+    try f.load(component_source ++
+        \\test:pos test:one.pos { x 1.0 }
+        \\test:pos test:two.pos { x 2.0 }
+        \\foundry:entity test:entity.greedy { components [ test:one.pos  test:two.pos ] }
+    );
+
+    try testing.expectError(
+        error.DuplicateComponent,
+        f.world.spawn(&f.store, f.id("test:entity.greedy")),
+    );
+    // The half-built entity is gone. A partially applied template is a shape nothing
+    // downstream knows how to reason about.
+    try testing.expectEqual(@as(u32, 0), f.world.entityCount());
+}
+
+test "a component type the world does not have is refused" {
+    const gpa = testing.allocator;
+    const f = try ContentFixture.init(gpa);
+    defer f.deinit();
+
+    // Only `pos` is registered; the template names a `tag` as well.
+    _ = try f.world.registerComponent(derive.componentType(Pos));
+    try f.load(component_source ++
+        \\test:pos test:p.pos { x 1.0 }
+        \\test:tag test:p.tag { value 3 }
+        \\foundry:entity test:entity.p { components [ test:p.pos  test:p.tag ] }
+    );
+
+    try testing.expectError(
+        error.UnknownComponentType,
+        f.world.spawn(&f.store, f.id("test:entity.p")),
+    );
+    try testing.expectEqual(@as(u32, 0), f.world.entityCount());
+}
+
+test "a package whose schema disagrees about a field is refused, not misread" {
+    const gpa = testing.allocator;
+    const f = try ContentFixture.init(gpa);
+    defer f.deinit();
+
+    _ = try f.world.registerComponent(derive.componentType(Pos));
+
+    // The same schema id, the same two fields — in the other order. Position matching would
+    // put `y` into `x` and call it a successful load, which is the failure that looks like a
+    // physics bug three days later. The two registries are separate, so nothing before this
+    // point had the chance to notice.
+    try f.load(
+        \\@schema test:pos { y f32 (default 0.0)  x f32 (default 0.0) }
+        \\test:pos test:swapped.pos { x 3.0  y 4.0 }
+        \\foundry:entity test:entity.swapped { components [ test:swapped.pos ] }
+    );
+
+    try testing.expectError(
+        error.ComponentSchemaMismatch,
+        f.world.spawn(&f.store, f.id("test:entity.swapped")),
+    );
+    try testing.expectEqual(@as(u32, 0), f.world.entityCount());
+}
+
+test "a scene that fails halfway spawns nothing at all" {
+    const gpa = testing.allocator;
+    const f = try ContentFixture.init(gpa);
+    defer f.deinit();
+
+    _ = try f.world.registerComponent(derive.componentType(Pos));
+    try f.load(component_source ++
+        \\test:pos test:a.pos { x 1.0 }
+        \\test:tag test:b.tag { value 3 }
+        \\foundry:entity test:entity.a { components [ test:a.pos ] }
+        \\foundry:entity test:entity.b { components [ test:b.tag ] }
+        \\foundry:scene test:scene.mixed { entities [ test:entity.a  test:entity.b ] }
+    );
+
+    try testing.expectError(
+        error.UnknownComponentType,
+        f.world.spawnScene(&f.store, f.id("test:scene.mixed")),
+    );
+    // Not one, not one-and-a-half: none. The same bargain the store makes when it merges a
+    // package.
+    try testing.expectEqual(@as(u32, 0), f.world.entityCount());
+}
+
+test "a template with no components spawns a bare entity" {
+    const gpa = testing.allocator;
+    const f = try ContentFixture.init(gpa);
+    defer f.deinit();
+
+    try f.load(
+        \\foundry:entity test:entity.bare { }
+    );
+
+    const entity = try f.world.spawn(&f.store, f.id("test:entity.bare"));
+    try testing.expect(f.world.contains(entity));
+    try testing.expectEqual(@as(u32, 1), f.world.entityCount());
 }

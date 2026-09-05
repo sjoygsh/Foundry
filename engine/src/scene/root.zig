@@ -27,6 +27,7 @@ pub const derive = @import("derive.zig");
 pub const entity = @import("entity.zig");
 pub const limits = @import("limits.zig");
 pub const query = @import("query.zig");
+pub const schemas = @import("schemas.zig");
 pub const store = @import("store.zig");
 pub const system = @import("system.zig");
 pub const world = @import("world.zig");
@@ -52,6 +53,7 @@ pub const ComponentError = world.ComponentError;
 /// Produces registration data for a component type from a Zig struct (ADR-0010).
 pub const componentType = derive.componentType;
 pub const CreateError = world.CreateError;
+pub const SpawnError = world.SpawnError;
 pub const SystemError = world.SystemError;
 pub const RegisterError = world.RegisterError;
 
@@ -61,6 +63,7 @@ test {
     _ = entity;
     _ = limits;
     _ = query;
+    _ = schemas;
     _ = store;
     _ = system;
     _ = world;

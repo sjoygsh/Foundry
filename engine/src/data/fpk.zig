@@ -1027,6 +1027,20 @@ pub const List = struct {
         return try self.reader.readValue(arena, self.elem, self.bytes, strideOf(self.elem) * index);
     }
 
+    /// A content id element, without an allocator.
+    ///
+    /// `valueAt` can already read one, and needs an arena it will not use — an `id` is a
+    /// scalar. A list of references is the shape every "this entity has these components"
+    /// record has (`entity-storage.md` §8), so it is worth the three lines not to hand an
+    /// allocator to a loop that allocates nothing.
+    pub fn idAt(self: List, index: u32) ReadError!?ContentId {
+        if (index >= self.len) return null;
+        if (self.elem != .id) return error.WrongType;
+        const at = strideOf(self.elem) * index;
+        if (@as(u64, at) + 8 > self.bytes.len) return error.Malformed;
+        return .{ .hash = std.mem.readInt(u64, self.bytes[at..][0..8], .little) };
+    }
+
     pub fn nestedAt(self: List, index: u32) ReadError!?Fields {
         if (index >= self.len) return null;
         if (self.elem != .nested) return error.WrongType;

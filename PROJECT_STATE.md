@@ -1,8 +1,9 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-05
-**Updated by:** **M4, steps 1 to 4 — `scene` exists, entities have components, a Zig struct
-becomes one, and a query finds them.** Its design was written first
+**Updated by:** **M4, steps 1 to 5 and half of 6 — `scene` exists, entities have components,
+a Zig struct becomes one, a query finds them, systems run them, the sandbox uses all of it,
+and content can describe an entity.** Its design was written first
 (`docs/design/entity-storage.md`), deciding what ADR-0010 deferred: a component type **is a
 schema**, so identity, versioning, checking and serialization are machinery `data` already
 has; queries will iterate the first named component rather than the smallest, so order is a
@@ -19,7 +20,9 @@ Step 4 built queries, which is where the interface either leaks the storage layo
 not — it does not. Step 5's engine half is in: systems, registered at runtime and run in
 registration order, with a fixed scenario proving it runs the same way twice — and the
 sandbox now holds entities rather than an array of sprites, with its motion a system and its
-picking a query. Content-defined entities and saves are step 6
+picking a query. Step 6 is half done: **entities can be defined in content** —
+`foundry:entity` is a list of component records and `foundry:scene` a list of templates,
+neither needing any new `.fdt` syntax. Saves are what is left of M4
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -42,7 +45,8 @@ are done. **M4 — World: "it has entities" — is under way**, at its design st
 
 ## Current milestone
 
-**M4 — World: "it has entities." In progress, 2026-09-05. Steps 1 to 5 of 6 done.**
+**M4 — World: "it has entities." In progress, 2026-09-05. Steps 1 to 5 done, step 6 half
+done.**
 `docs/design/entity-storage.md` is the document `docs/design/README.md` has owed since ADR-0010
 was accepted, and M4 started where M3 did — at its decisions, before any code existed to make
 them by accident. It settles six things ADR-0010 left open, names its own open questions
@@ -112,7 +116,7 @@ than by being done.
 under a camera that pans, zooms and picks, and it loads content by content id. `scene` holds
 entities, component types and their storage; it has no queries and no systems yet.**
 
-**M4 steps 1 to 5, new:**
+**M4 steps 1 to 5, and half of 6, new:**
 
 * `engine/src/scene/entity.zig` — `Entity`, a `core.Handle` over an opaque tag. No entity
   object exists anywhere, which is why the type is not called `EntityHandle`.
@@ -145,6 +149,17 @@ entities, component types and their storage; it has no queries and no systems ye
   else here, run in registration order. A system gets the world and the tick and **not**
   input or a clock, because `platform` is not below `scene`; input reaches it as data the
   game wrote down, which is the shape replay wants anyway.
+* `engine/src/scene/schemas.zig` — `foundry:entity` (a list of component records) and
+  `foundry:scene` (a list of templates). **No new `.fdt` syntax**: the closed type list
+  already has `[id]`, and a component instance being its own record is what lets a mod
+  override one component without restating the entity. `fpack` registers both, so an author
+  never declares an engine-owned record type — the same treatment `asset.schemas` gets.
+* `engine/src/scene/world.zig` — `spawn` and `spawnScene`, both all-or-nothing, both
+  checking that the package's schema for a component agrees with the registered one about
+  every field they share. Position matching would otherwise read the right bytes into the
+  wrong field.
+* `engine/src/data/fpk.zig` — `List.idAt`, so reading a list of references needs no
+  allocator. A list of ids is the shape every "this has these" record has.
 * `engine/src/scene/query.zig` — `Query`, driven by the **first** named component's dense
   array rather than the smallest, so iteration order is a property of the query as written
   and not of the data (I9); and `TypedQuery`, the same iterator with the casts written for
@@ -311,8 +326,8 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 555 tests** (52 `core`, 70 `platform`, 102 `data`, 92 `rhi`,
-36 `asset`, 103 `render2d`, 53 `scene`, 28 `app`, 14 `fpack`, 5 integration), and **563 under
+**`zig build test` passes 564 tests** (52 `core`, 70 `platform`, 102 `data`, 92 `rhi`,
+36 `asset`, 103 `render2d`, 62 `scene`, 28 `app`, 14 `fpack`, 5 integration), and **572 under
 `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
@@ -803,8 +818,13 @@ green and the sandbox runnable:
    answer the other half of that — content defining component instances is checked against the
    *content* registry, which must therefore learn the component schemas, the way
    `asset.schemas.registerAll` already teaches it the asset ones.
-6. **Content and saves.** `foundry:entity` and `foundry:scene`; spawning from the store; the
-   `.fsav` writer and reader. Ends at the exit criteria.
+6. **Content and saves.** *Half done, 2026-09-05.* `foundry:entity` and `foundry:scene` are
+   built, `fpack` registers them, and `World.spawn`/`spawnScene` build entities from a store
+   — all-or-nothing, and refusing a package whose schema disagrees with the registered one
+   about a field they share. **What is left is the save format**: `serialize` in
+   `ComponentTypeInfo` and generated by the wrapper, the `.fsav` writer and reader with §9's
+   trust rules, and the `data` refactor that makes the record-block writer callable on its
+   own. Ends at the exit criteria.
 
 **What M4 must not quietly break.** I6 above all: component types and systems are
 runtime-registered, and the `comptime` wrapper *produces* registration data rather than
