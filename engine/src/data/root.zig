@@ -50,6 +50,12 @@ pub const SchemaId = id.SchemaId;
 pub const Store = store.Store;
 pub const Value = value.Value;
 
+// The field-block layout, which `.fpk` is a container around and a save is another
+// (`entity-storage.md` §9).
+pub const Block = fpk.Block;
+pub const BlockWriter = fpk.BlockWriter;
+pub const Blocks = fpk.Blocks;
+
 /// Validates a `namespace:name` string and hashes it to a `core.ContentId`.
 pub const contentId = id.contentId;
 

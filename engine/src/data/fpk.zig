@@ -20,6 +20,14 @@
 //! **`data` cannot open a file**, so this writes into a byte buffer and reads out of one.
 //! The same discipline as the parser, with the same payoff: the round trip is a pure
 //! function and every test here is hermetic.
+//!
+//! **The field-block layout is shared, and a package is not its only user.** A save writes
+//! each component's fields against the schema its component type declares, laid out exactly
+//! the way a record is (`entity-storage.md` §9) — so `BlockWriter` and `Blocks` below are
+//! the layout on its own, and `.fpk`'s header, schema section and record index are the
+//! container this file wraps around it. Two implementations of one layout would be two
+//! things that drift apart, and that drift reads as a field returning zero rather than as
+//! an error.
 
 const std = @import("std");
 const core = @import("core");
@@ -217,58 +225,172 @@ fn alignUp(v: u32, a: u32) u32 {
 }
 
 // ---------------------------------------------------------------------------
-// Writer
+// Blocks
 // ---------------------------------------------------------------------------
+//
+// A field block is not only a record's shape. A save writes each component's fields
+// against the schema its component type declares, and lays them out exactly the way a
+// package lays out a record (`entity-storage.md` §9) — deliberately, so that one schema,
+// one versioning rule and one piece of reading code serve both formats. Two
+// implementations of one layout are two things that drift apart, and that drift shows up
+// as a field reading zero rather than as an error.
+//
+// So the layout lives here, once, over the two buffers it needs — the packed fields and
+// the strings they refer to — and each format assembles its own container around what it
+// produces. `.fpk` writes records into it; a save writes components into it; neither can
+// tell the difference from the inside.
+
+pub const BlockError = error{
+    /// A value whose shape is not the one its field declares. The checker cannot produce
+    /// this; a caller assembling a block by hand can, and the writer is the last place
+    /// that can still say so.
+    ValueTypeMismatch,
+    /// Past the format's 32-bit offsets — four gigabytes in one file.
+    TooLarge,
+} || Allocator.Error;
 
 pub const WriteError = error{
     /// A record whose schema is not registered. The writer cannot lay out fields it
     /// cannot see.
     UnknownSchema,
-    /// A value whose shape is not the one its field declares. The checker cannot produce
-    /// this; a caller assembling a `Package` by hand can, and the writer is the last place
-    /// that can still say so.
-    ValueTypeMismatch,
-    /// A package past the format's 32-bit offsets — four gigabytes of one package.
-    PackageTooLarge,
-} || Allocator.Error;
+} || BlockError;
 
-/// Compiles a checked package into `out`.
+/// A reference into the strings section: where it starts, and how long it is.
+pub const Ref = struct { offset: u32, len: u32 };
+
+/// Lays out field blocks, and the strings they refer to.
 ///
-/// `registry` supplies the schemas: every schema the package carries (§6 — the ones it
-/// declares and the ones its records use) is written into the file at the version the
-/// registry holds *now*, and every record is laid out against that same version. Which is
-/// why a package should be compiled against a registry holding only what it and its
-/// dependencies put there: the file records the shape it was built against, and a store
-/// reading it later trusts that record over its own newer copy.
-pub fn write(
+/// Owns the two buffers and nothing else: a caller writes blocks into it, then takes
+/// `fields` and `strings` and assembles whatever container it is building. Offsets are
+/// relative to each buffer's start, which is what makes them portable between formats.
+pub const BlockWriter = struct {
     gpa: Allocator,
-    pkg: *const check.Package,
-    registry: *Registry,
-    out: *std.ArrayList(u8),
-) WriteError!void {
-    var b: Builder = .{ .gpa = gpa };
-    defer b.deinit();
+    fields: std.ArrayList(u8) = .empty,
+    strings: std.ArrayList(u8) = .empty,
+    interned: std.StringHashMapUnmanaged(u32) = .empty,
 
-    for (pkg.schemas.items) |decl| {
-        const schema = registry.lookup(decl.id) orelse return error.UnknownSchema;
-        try b.addSchema(schema.*, decl.text);
-    }
-    for (pkg.records()) |rec| {
-        const schema = registry.get(rec.schema) orelse return error.UnknownSchema;
-        try b.addRecord(rec, schema.*);
+    pub fn deinit(self: *BlockWriter) void {
+        self.fields.deinit(self.gpa);
+        self.strings.deinit(self.gpa);
+        self.interned.deinit(self.gpa);
+        self.* = undefined;
     }
 
-    try b.assemble(pkg, out);
-}
+    /// Adds a string, or finds the one already there.
+    ///
+    /// The interning table borrows its keys from the caller's strings, which outlive the
+    /// writer in every current caller: they are schema field names and checked content.
+    pub fn intern(self: *BlockWriter, s: []const u8) BlockError!Ref {
+        const len = try cast32(s.len);
+        if (self.interned.get(s)) |offset| return .{ .offset = offset, .len = len };
+        const offset = try cast32(self.strings.items.len);
+        try self.strings.appendSlice(self.gpa, s);
+        try self.interned.put(self.gpa, s, offset);
+        return .{ .offset = offset, .len = len };
+    }
 
-const Ref = struct { offset: u32, len: u32 };
+    /// Reserves a zeroed block for `fields` and returns a handle that fills it in.
+    ///
+    /// Zeroed is what "nothing present" looks like — the presence bitmap goes down with
+    /// the rest — so a block whose fields are never set reads back as a record that
+    /// omitted every one of them.
+    pub fn begin(self: *BlockWriter, fields: []const Field) BlockError!Block {
+        try self.pad();
+        const base = try cast32(self.fields.items.len);
+        try self.fields.appendNTimes(self.gpa, 0, blockSize(fields));
+        return .{ .writer = self, .base = base, .fields = fields };
+    }
+
+    /// Starts the next block on a section boundary, so a block's alignment is a property
+    /// of the buffer rather than of what happens to precede it.
+    pub fn pad(self: *BlockWriter) Allocator.Error!void {
+        const pad_len = alignUp(@intCast(self.fields.items.len), section_align) - self.fields.items.len;
+        try self.fields.appendNTimes(self.gpa, 0, pad_len);
+    }
+
+    fn writeSlot(self: *BlockWriter, t: FieldType, v: Value, at: u32) BlockError!void {
+        switch (t) {
+            .bool => {
+                if (v != .bool) return error.ValueTypeMismatch;
+                self.fields.items[at] = @intFromBool(v.bool);
+            },
+            .i32 => try self.putInt(i32, at, v),
+            .i64 => try self.putInt(i64, at, v),
+            .u32 => try self.putInt(u32, at, v),
+            .u64 => try self.putInt(u64, at, v),
+            .f32 => try self.putFloat(f32, at, v),
+            .f64 => try self.putFloat(f64, at, v),
+            .string => {
+                if (v != .string) return error.ValueTypeMismatch;
+                const ref = try self.intern(v.string);
+                self.putU32(at, ref.offset);
+                self.putU32(at + 4, ref.len);
+            },
+            .id => {
+                if (v != .id) return error.ValueTypeMismatch;
+                self.putU64(at, v.id.hash);
+            },
+            .list => |elem| {
+                if (v != .list) return error.ValueTypeMismatch;
+                const count = try cast32(v.list.len);
+                const offset = try self.appendArray(elem.*, v.list);
+                self.putU32(at, offset);
+                self.putU32(at + 4, count);
+            },
+            .nested => |fields| {
+                if (v != .nested) return error.ValueTypeMismatch;
+                const block: Block = .{ .writer = self, .base = at, .fields = fields };
+                try block.fill(.{ .named = v.nested });
+            },
+        }
+    }
+
+    fn appendArray(self: *BlockWriter, elem: FieldType, items: []const Value) BlockError!u32 {
+        if (items.len == 0) return 0;
+        try self.pad();
+        const base = try cast32(self.fields.items.len);
+        const stride = strideOf(elem);
+        try self.fields.appendNTimes(self.gpa, 0, stride * try cast32(items.len));
+        for (items, 0..) |item, i| {
+            try self.writeSlot(elem, item, base + stride * @as(u32, @intCast(i)));
+        }
+        return base;
+    }
+
+    fn putInt(self: *BlockWriter, comptime T: type, at: u32, v: Value) BlockError!void {
+        if (v != .int) return error.ValueTypeMismatch;
+        const n = std.math.cast(T, v.int) orelse return error.ValueTypeMismatch;
+        std.mem.writeInt(T, self.fields.items[at..][0..@sizeOf(T)], n, .little);
+    }
+
+    fn putFloat(self: *BlockWriter, comptime F: type, at: u32, v: Value) BlockError!void {
+        // An integer literal in a float field is what the checker leaves behind when the
+        // conversion is exact (§4.3), so the widening happens here rather than being a
+        // second thing content authors have to know about.
+        const f: F = switch (v) {
+            .float => |x| @floatCast(x),
+            .int => |x| @floatFromInt(x),
+            else => return error.ValueTypeMismatch,
+        };
+        const Bits = std.meta.Int(.unsigned, @bitSizeOf(F));
+        std.mem.writeInt(Bits, self.fields.items[at..][0..@sizeOf(F)], @bitCast(f), .little);
+    }
+
+    fn putU32(self: *BlockWriter, at: u32, v: u32) void {
+        std.mem.writeInt(u32, self.fields.items[at..][0..4], v, .little);
+    }
+
+    fn putU64(self: *BlockWriter, at: u32, v: u64) void {
+        std.mem.writeInt(u64, self.fields.items[at..][0..8], v, .little);
+    }
+};
 
 /// Where a field's value comes from while a block is being filled.
 ///
 /// Two shapes because a record's fields are indexed by the schema and an inline struct's
-/// are named — the one place the checked representation is not positional (§3), and the
-/// only place that difference is visible.
-const Source = union(enum) {
+/// are named — the one place the checked representation is not positional
+/// (`content-schemas.md` §3), and the only place that difference is visible.
+pub const Source = union(enum) {
     slots: []const ?Value,
     named: []const NamedValue,
 
@@ -284,36 +406,218 @@ const Source = union(enum) {
     }
 };
 
+/// One reserved block, and the schema that says where its fields go.
+///
+/// A handle rather than a buffer: writing a string or a list appends to the writer, which
+/// may move the block's bytes, so a block keeps an offset and re-derives the pointer at
+/// every write. **Setting a field marks it present**; a field never set stays absent,
+/// which is what an omitted optional and a field a later schema version added both look
+/// like on the way back in.
+pub const Block = struct {
+    writer: *BlockWriter,
+    base: u32,
+    fields: []const Field,
+
+    /// Writes one field, by position.
+    ///
+    /// Position, because a schema may only ever append (`content-schemas.md` §3), so
+    /// field *i* is field *i* in every version that has it.
+    pub fn set(self: Block, index: usize, v: Value) BlockError!void {
+        const offset = slotOffset(self.fields, index) orelse return error.ValueTypeMismatch;
+        // The presence bit goes down before the slot, because writing the slot may grow
+        // the buffer and every index has to be taken against the current one.
+        self.markPresent(index);
+        try self.writer.writeSlot(self.fields[index].type, v, self.base + offset);
+    }
+
+    /// An inline struct field, as a block of its own.
+    ///
+    /// Returned rather than built from a `Value`, because a `.nested` value is a slice of
+    /// named values somebody has to allocate — and a serializer walking a Zig struct has
+    /// the fields already.
+    pub fn nested(self: Block, index: usize) BlockError!Block {
+        const offset = slotOffset(self.fields, index) orelse return error.ValueTypeMismatch;
+        const t = self.fields[index].type;
+        if (t != .nested) return error.ValueTypeMismatch;
+        self.markPresent(index);
+        return .{ .writer = self.writer, .base = self.base + offset, .fields = t.nested };
+    }
+
+    fn fill(self: Block, src: Source) BlockError!void {
+        for (self.fields, 0..) |_, i| {
+            const v = src.get(self.fields, i) orelse continue;
+            try self.set(i, v);
+        }
+    }
+
+    fn markPresent(self: Block, index: usize) void {
+        self.writer.fields.items[self.base + index / 8] |= @as(u8, 1) << @intCast(index % 8);
+    }
+};
+
+/// The sections a field block's references point into, and the one bound that reading
+/// them needs.
+///
+/// A block is not self-contained: a string field holds an offset into the strings section
+/// and a list field an offset into the fields section, so reading either needs both
+/// buffers. This is that pair — and it is what lets `Fields` read a save's blocks as
+/// readily as a package's, because the reading code has no idea which file it is looking
+/// at. That is the point of it.
+pub const Blocks = struct {
+    fields: []const u8 = &.{},
+    strings: []const u8 = &.{},
+    /// A list's element count comes out of the file, so it is bounded before it is
+    /// believed. The only limit a block read consults.
+    max_list_elements: usize = Limits.default.max_list_elements,
+
+    /// A block's fields, ready to be read against `schema_fields`.
+    pub fn view(self: Blocks, schema_fields: []const Field, block: []const u8) Fields {
+        return .{ .blocks = self, .fields = schema_fields, .block = block };
+    }
+
+    /// A block at `offset` in the fields section, bounds-checked against it.
+    pub fn blockAt(self: Blocks, offset: u32, schema_fields: []const Field) ?Fields {
+        const size = blockSize(schema_fields);
+        if (@as(u64, offset) + size > self.fields.len) return null;
+        return self.view(schema_fields, self.fields[offset..][0..size]);
+    }
+
+    fn string(self: Blocks, offset: u32, len: u32) ?[]const u8 {
+        const end = @as(u64, offset) + len;
+        if (end > self.strings.len) return null;
+        if (!onCodepointBoundary(self.strings, offset)) return null;
+        if (!onCodepointBoundary(self.strings, @intCast(end))) return null;
+        return self.strings[offset..][0..len];
+    }
+
+    fn stringRef(self: Blocks, bytes: []const u8, at: u32) ReadError![]const u8 {
+        const offset = std.mem.readInt(u32, bytes[at..][0..4], .little);
+        const len = std.mem.readInt(u32, bytes[at + 4 ..][0..4], .little);
+        return self.string(offset, len) orelse error.Malformed;
+    }
+
+    fn makeList(self: Blocks, elem: FieldType, offset: u32, count: u32) ReadError!List {
+        if (count == 0) return .{ .blocks = self, .elem = elem, .bytes = &.{}, .len = 0 };
+        if (count > self.max_list_elements) return error.Malformed;
+        const total = @as(u64, strideOf(elem)) * count;
+        if (@as(u64, offset) + total > self.fields.len) return error.Malformed;
+        return .{
+            .blocks = self,
+            .elem = elem,
+            .bytes = self.fields[offset..][0..@intCast(total)],
+            .len = count,
+        };
+    }
+
+    fn readValue(
+        self: Blocks,
+        arena: Allocator,
+        t: FieldType,
+        bytes: []const u8,
+        at: u32,
+    ) ReadValueError!Value {
+        if (@as(u64, at) + sizeOf(t) > bytes.len) return error.Malformed;
+        return switch (t) {
+            .bool => .{ .bool = bytes[at] != 0 },
+            .i32 => .{ .int = std.mem.readInt(i32, bytes[at..][0..4], .little) },
+            .i64 => .{ .int = std.mem.readInt(i64, bytes[at..][0..8], .little) },
+            .u32 => .{ .int = std.mem.readInt(u32, bytes[at..][0..4], .little) },
+            .u64 => .{ .int = std.mem.readInt(u64, bytes[at..][0..8], .little) },
+            .f32 => .{ .float = @as(f32, @bitCast(std.mem.readInt(u32, bytes[at..][0..4], .little))) },
+            .f64 => .{ .float = @bitCast(std.mem.readInt(u64, bytes[at..][0..8], .little)) },
+            .string => .{ .string = try self.stringRef(bytes, at) },
+            .id => .{ .id = .{ .hash = std.mem.readInt(u64, bytes[at..][0..8], .little) } },
+            .list => |elem| blk: {
+                const list = try self.makeList(
+                    elem.*,
+                    std.mem.readInt(u32, bytes[at..][0..4], .little),
+                    std.mem.readInt(u32, bytes[at + 4 ..][0..4], .little),
+                );
+                const items = try arena.alloc(Value, list.len);
+                const stride = strideOf(elem.*);
+                for (items, 0..) |*item, i| {
+                    item.* = try self.readValue(arena, elem.*, list.bytes, stride * @as(u32, @intCast(i)));
+                }
+                break :blk .{ .list = items };
+            },
+            .nested => |fields| blk: {
+                const block = bytes[at..][0..sizeOf(t)];
+                const nested_view = self.view(fields, block);
+                // Absent optionals are left out, which is how the checker represents an
+                // inline struct — so a value read back compares equal to the one written.
+                const buf = try arena.alloc(NamedValue, fields.len);
+                var n: usize = 0;
+                for (fields, 0..) |field, i| {
+                    if (!nested_view.present(@intCast(i))) continue;
+                    const offset = slotOffset(fields, i) orelse return error.Malformed;
+                    buf[n] = .{
+                        .name = field.name,
+                        .value = try self.readValue(arena, field.type, block, offset),
+                    };
+                    n += 1;
+                }
+                break :blk .{ .nested = buf[0..n] };
+            },
+        };
+    }
+};
+
+// ---------------------------------------------------------------------------
+// Writer
+// ---------------------------------------------------------------------------
+
+/// Compiles a checked package into `out`.
+///
+/// `registry` supplies the schemas: every schema the package carries (§6 — the ones it
+/// declares and the ones its records use) is written into the file at the version the
+/// registry holds *now*, and every record is laid out against that same version. Which is
+/// why a package should be compiled against a registry holding only what it and its
+/// dependencies put there: the file records the shape it was built against, and a store
+/// reading it later trusts that record over its own newer copy.
+pub fn write(
+    gpa: Allocator,
+    pkg: *const check.Package,
+    registry: *Registry,
+    out: *std.ArrayList(u8),
+) WriteError!void {
+    var b: Builder = .{ .gpa = gpa, .blocks = .{ .gpa = gpa } };
+    defer b.deinit();
+
+    for (pkg.schemas.items) |decl| {
+        const schema = registry.lookup(decl.id) orelse return error.UnknownSchema;
+        try b.addSchema(schema.*, decl.text);
+    }
+    for (pkg.records()) |rec| {
+        const schema = registry.get(rec.schema) orelse return error.UnknownSchema;
+        try b.addRecord(rec, schema.*);
+    }
+
+    try b.assemble(pkg, out);
+}
+
 const Builder = struct {
     gpa: Allocator,
-    strings: std.ArrayList(u8) = .empty,
-    interned: std.StringHashMapUnmanaged(u32) = .empty,
+    /// The record blocks and the strings, laid out by the shared writer above. A package
+    /// is that pair plus a header, a schema section and a record index.
+    blocks: BlockWriter,
     schema_entries: std.ArrayList(u8) = .empty,
     schema_decls: std.ArrayList(u8) = .empty,
     records: std.ArrayList(u8) = .empty,
-    fields: std.ArrayList(u8) = .empty,
     /// Scratch, refilled per record: the record's values widened to the schema's current
     /// field count, so a record checked against an older version writes its successor's
     /// defaults rather than a short block.
     slots: std.ArrayList(?Value) = .empty,
 
     fn deinit(self: *Builder) void {
-        self.strings.deinit(self.gpa);
-        self.interned.deinit(self.gpa);
+        self.blocks.deinit();
         self.schema_entries.deinit(self.gpa);
         self.schema_decls.deinit(self.gpa);
         self.records.deinit(self.gpa);
-        self.fields.deinit(self.gpa);
         self.slots.deinit(self.gpa);
     }
 
     fn intern(self: *Builder, s: []const u8) WriteError!Ref {
-        const len = try cast32(s.len);
-        if (self.interned.get(s)) |offset| return .{ .offset = offset, .len = len };
-        const offset = try cast32(self.strings.items.len);
-        try self.strings.appendSlice(self.gpa, s);
-        try self.interned.put(self.gpa, s, offset);
-        return .{ .offset = offset, .len = len };
+        return self.blocks.intern(s);
     }
 
     // --- schemas --------------------------------------------------------------
@@ -413,114 +717,16 @@ const Builder = struct {
         try self.slots.resize(self.gpa, schema.fields.len);
         for (self.slots.items, 0..) |*slot, i| slot.* = rec.value(schema, @intCast(i));
 
-        const block_offset = try self.appendBlock(schema.fields, .{ .slots = self.slots.items });
+        const block = try self.blocks.begin(schema.fields);
+        try block.fill(.{ .slots = self.slots.items });
         const name_ref = try self.intern(rec.text);
 
         try appendU64(self.gpa, &self.records, rec.id.hash);
         try appendU64(self.gpa, &self.records, rec.schema_id.hash);
         try appendU32(self.gpa, &self.records, name_ref.offset);
         try appendU32(self.gpa, &self.records, name_ref.len);
-        try appendU32(self.gpa, &self.records, block_offset);
+        try appendU32(self.gpa, &self.records, block.base);
         try appendU32(self.gpa, &self.records, blockSize(schema.fields));
-    }
-
-    fn appendBlock(self: *Builder, fields: []const Field, src: Source) WriteError!u32 {
-        try self.padFields();
-        const base = try cast32(self.fields.items.len);
-        try self.fields.appendNTimes(self.gpa, 0, blockSize(fields));
-        try self.fillBlock(base, fields, src);
-        return base;
-    }
-
-    fn fillBlock(self: *Builder, base: u32, fields: []const Field, src: Source) WriteError!void {
-        for (fields, 0..) |f, i| {
-            const v = src.get(fields, i) orelse continue;
-            const offset = slotOffset(fields, i).?;
-            // The presence bit goes down before the slot, because writing the slot may
-            // grow the buffer and every index has to be taken against the current one.
-            self.fields.items[base + i / 8] |= @as(u8, 1) << @intCast(i % 8);
-            try self.writeSlot(f.type, v, base + offset);
-        }
-    }
-
-    fn writeSlot(self: *Builder, t: FieldType, v: Value, at: u32) WriteError!void {
-        switch (t) {
-            .bool => {
-                if (v != .bool) return error.ValueTypeMismatch;
-                self.fields.items[at] = @intFromBool(v.bool);
-            },
-            .i32 => try self.putInt(i32, at, v),
-            .i64 => try self.putInt(i64, at, v),
-            .u32 => try self.putInt(u32, at, v),
-            .u64 => try self.putInt(u64, at, v),
-            .f32 => try self.putFloat(f32, at, v),
-            .f64 => try self.putFloat(f64, at, v),
-            .string => {
-                if (v != .string) return error.ValueTypeMismatch;
-                const ref = try self.intern(v.string);
-                self.putU32(at, ref.offset);
-                self.putU32(at + 4, ref.len);
-            },
-            .id => {
-                if (v != .id) return error.ValueTypeMismatch;
-                self.putU64(at, v.id.hash);
-            },
-            .list => |elem| {
-                if (v != .list) return error.ValueTypeMismatch;
-                const count = try cast32(v.list.len);
-                const offset = try self.appendArray(elem.*, v.list);
-                self.putU32(at, offset);
-                self.putU32(at + 4, count);
-            },
-            .nested => |fields| {
-                if (v != .nested) return error.ValueTypeMismatch;
-                try self.fillBlock(at, fields, .{ .named = v.nested });
-            },
-        }
-    }
-
-    fn appendArray(self: *Builder, elem: FieldType, items: []const Value) WriteError!u32 {
-        if (items.len == 0) return 0;
-        try self.padFields();
-        const base = try cast32(self.fields.items.len);
-        const stride = strideOf(elem);
-        try self.fields.appendNTimes(self.gpa, 0, stride * try cast32(items.len));
-        for (items, 0..) |item, i| {
-            try self.writeSlot(elem, item, base + stride * @as(u32, @intCast(i)));
-        }
-        return base;
-    }
-
-    fn putInt(self: *Builder, comptime T: type, at: u32, v: Value) WriteError!void {
-        if (v != .int) return error.ValueTypeMismatch;
-        const n = std.math.cast(T, v.int) orelse return error.ValueTypeMismatch;
-        std.mem.writeInt(T, self.fields.items[at..][0..@sizeOf(T)], n, .little);
-    }
-
-    fn putFloat(self: *Builder, comptime F: type, at: u32, v: Value) WriteError!void {
-        // An integer literal in a float field is what the checker leaves behind when the
-        // conversion is exact (§4.3), so the widening happens here rather than being a
-        // second thing content authors have to know about.
-        const f: F = switch (v) {
-            .float => |x| @floatCast(x),
-            .int => |x| @floatFromInt(x),
-            else => return error.ValueTypeMismatch,
-        };
-        const Bits = std.meta.Int(.unsigned, @bitSizeOf(F));
-        std.mem.writeInt(Bits, self.fields.items[at..][0..@sizeOf(F)], @bitCast(f), .little);
-    }
-
-    fn putU32(self: *Builder, at: u32, v: u32) void {
-        std.mem.writeInt(u32, self.fields.items[at..][0..4], v, .little);
-    }
-
-    fn putU64(self: *Builder, at: u32, v: u64) void {
-        std.mem.writeInt(u64, self.fields.items[at..][0..8], v, .little);
-    }
-
-    fn padFields(self: *Builder) Allocator.Error!void {
-        const pad = alignUp(@intCast(self.fields.items.len), section_align) - self.fields.items.len;
-        try self.fields.appendNTimes(self.gpa, 0, pad);
     }
 
     // --- assembly -------------------------------------------------------------
@@ -532,8 +738,8 @@ const Builder = struct {
 
         const schemas_len = try cast32(self.schema_entries.items.len + self.schema_decls.items.len);
         const records_len = try cast32(self.records.items.len);
-        const fields_len = try cast32(self.fields.items.len);
-        const strings_len = try cast32(self.strings.items.len);
+        const fields_len = try cast32(self.blocks.fields.items.len);
+        const strings_len = try cast32(self.blocks.strings.items.len);
 
         const schemas_offset: u32 = header_size;
         const records_offset = alignUp(try addU32(schemas_offset, schemas_len), section_align);
@@ -569,9 +775,9 @@ const Builder = struct {
         try padTo(self.gpa, out, start, records_offset);
         try out.appendSlice(self.gpa, self.records.items);
         try padTo(self.gpa, out, start, fields_offset);
-        try out.appendSlice(self.gpa, self.fields.items);
+        try out.appendSlice(self.gpa, self.blocks.fields.items);
         try padTo(self.gpa, out, start, strings_offset);
-        try out.appendSlice(self.gpa, self.strings.items);
+        try out.appendSlice(self.gpa, self.blocks.strings.items);
     }
 };
 
@@ -592,13 +798,13 @@ fn appendU64(gpa: Allocator, out: *std.ArrayList(u8), v: u64) Allocator.Error!vo
     try out.appendSlice(gpa, &buf);
 }
 
-fn cast32(v: usize) WriteError!u32 {
-    return std.math.cast(u32, v) orelse error.PackageTooLarge;
+fn cast32(v: usize) BlockError!u32 {
+    return std.math.cast(u32, v) orelse error.TooLarge;
 }
 
-fn addU32(a: u32, b: u32) WriteError!u32 {
+fn addU32(a: u32, b: u32) BlockError!u32 {
     const sum, const overflow = @addWithOverflow(a, b);
-    if (overflow != 0) return error.PackageTooLarge;
+    if (overflow != 0) return error.TooLarge;
     return sum;
 }
 
@@ -665,8 +871,9 @@ pub const Reader = struct {
     schema_names: []const []const u8 = &.{},
 
     records_section: []const u8 = &.{},
-    fields_section: []const u8 = &.{},
-    strings_section: []const u8 = &.{},
+    /// The record blocks and their strings, in the shape any format that lays fields out
+    /// this way hands to `Fields`.
+    blocks: Blocks = .{},
     record_count: u32 = 0,
 
     /// Validates the file's structure and decodes its schemas.
@@ -707,8 +914,11 @@ pub const Reader = struct {
             .version = std.mem.readInt(u32, bytes[16..20], .little),
             .limits = limits,
             .records_section = records_section,
-            .fields_section = fields_section,
-            .strings_section = strings_section,
+            .blocks = .{
+                .fields = fields_section,
+                .strings = strings_section,
+                .max_list_elements = limits.max_list_elements,
+            },
             .record_count = record_count,
         };
         errdefer self.arena.deinit();
@@ -751,13 +961,13 @@ pub const Reader = struct {
             .schema_id = .{ .hash = std.mem.readInt(u64, e[8..16], .little) },
             // Both were checked in `validateRecordEntries`, which is why this cannot fail.
             .name = self.string(name_offset, name_len).?,
-            .block = self.fields_section[block_offset..][0..block_len],
+            .block = self.blocks.fields[block_offset..][0..block_len],
         };
     }
 
     /// A record's fields, ready to be read against `schema`.
     pub fn fieldsOf(self: *const Reader, view: RecordView, schema: Schema) Fields {
-        return .{ .reader = self, .fields = schema.fields, .block = view.block };
+        return self.blocks.view(schema.fields, view.block);
     }
 
     /// Reads every field of every record.
@@ -806,7 +1016,7 @@ pub const Reader = struct {
                 .bytes = decls,
                 .pos = decl_offset,
                 .arena = arena,
-                .strings = self.strings_section,
+                .strings = self.blocks.strings,
                 .limits = self.limits,
             };
             const field_count = try decoder.u32v();
@@ -831,87 +1041,12 @@ pub const Reader = struct {
             const block_offset = std.mem.readInt(u32, e[24..28], .little);
             const block_len = std.mem.readInt(u32, e[28..32], .little);
             if (self.string(name_offset, name_len) == null) return error.Malformed;
-            if (@as(u64, block_offset) + block_len > self.fields_section.len) return error.Malformed;
+            if (@as(u64, block_offset) + block_len > self.blocks.fields.len) return error.Malformed;
         }
     }
 
     fn string(self: *const Reader, offset: u32, len: u32) ?[]const u8 {
-        const end = @as(u64, offset) + len;
-        if (end > self.strings_section.len) return null;
-        if (!onCodepointBoundary(self.strings_section, offset)) return null;
-        if (!onCodepointBoundary(self.strings_section, @intCast(end))) return null;
-        return self.strings_section[offset..][0..len];
-    }
-
-    fn stringRef(self: *const Reader, bytes: []const u8, at: u32) ReadError![]const u8 {
-        const offset = std.mem.readInt(u32, bytes[at..][0..4], .little);
-        const len = std.mem.readInt(u32, bytes[at + 4 ..][0..4], .little);
-        return self.string(offset, len) orelse error.Malformed;
-    }
-
-    fn makeList(self: *const Reader, elem: FieldType, offset: u32, count: u32) ReadError!List {
-        if (count == 0) return .{ .reader = self, .elem = elem, .bytes = &.{}, .len = 0 };
-        if (count > self.limits.max_list_elements) return error.Malformed;
-        const total = @as(u64, strideOf(elem)) * count;
-        if (@as(u64, offset) + total > self.fields_section.len) return error.Malformed;
-        return .{
-            .reader = self,
-            .elem = elem,
-            .bytes = self.fields_section[offset..][0..@intCast(total)],
-            .len = count,
-        };
-    }
-
-    fn readValue(
-        self: *const Reader,
-        arena: Allocator,
-        t: FieldType,
-        bytes: []const u8,
-        at: u32,
-    ) ReadValueError!Value {
-        if (@as(u64, at) + sizeOf(t) > bytes.len) return error.Malformed;
-        return switch (t) {
-            .bool => .{ .bool = bytes[at] != 0 },
-            .i32 => .{ .int = std.mem.readInt(i32, bytes[at..][0..4], .little) },
-            .i64 => .{ .int = std.mem.readInt(i64, bytes[at..][0..8], .little) },
-            .u32 => .{ .int = std.mem.readInt(u32, bytes[at..][0..4], .little) },
-            .u64 => .{ .int = std.mem.readInt(u64, bytes[at..][0..8], .little) },
-            .f32 => .{ .float = @as(f32, @bitCast(std.mem.readInt(u32, bytes[at..][0..4], .little))) },
-            .f64 => .{ .float = @bitCast(std.mem.readInt(u64, bytes[at..][0..8], .little)) },
-            .string => .{ .string = try self.stringRef(bytes, at) },
-            .id => .{ .id = .{ .hash = std.mem.readInt(u64, bytes[at..][0..8], .little) } },
-            .list => |elem| blk: {
-                const list = try self.makeList(
-                    elem.*,
-                    std.mem.readInt(u32, bytes[at..][0..4], .little),
-                    std.mem.readInt(u32, bytes[at + 4 ..][0..4], .little),
-                );
-                const items = try arena.alloc(Value, list.len);
-                const stride = strideOf(elem.*);
-                for (items, 0..) |*item, i| {
-                    item.* = try self.readValue(arena, elem.*, list.bytes, stride * @as(u32, @intCast(i)));
-                }
-                break :blk .{ .list = items };
-            },
-            .nested => |fields| blk: {
-                const block = bytes[at..][0..sizeOf(t)];
-                const view: Fields = .{ .reader = self, .fields = fields, .block = block };
-                // Absent optionals are left out, which is how the checker represents an
-                // inline struct — so a value read back compares equal to the one written.
-                const buf = try arena.alloc(NamedValue, fields.len);
-                var n: usize = 0;
-                for (fields, 0..) |field, i| {
-                    if (!view.present(@intCast(i))) continue;
-                    const offset = slotOffset(fields, i) orelse return error.Malformed;
-                    buf[n] = .{
-                        .name = field.name,
-                        .value = try self.readValue(arena, field.type, block, offset),
-                    };
-                    n += 1;
-                }
-                break :blk .{ .nested = buf[0..n] };
-            },
-        };
+        return self.blocks.string(offset, len);
     }
 };
 
@@ -921,7 +1056,7 @@ pub const Reader = struct {
 /// it is about to read against the block it was given, so a file whose blocks disagree with
 /// the schema returns `Malformed` rather than whatever happened to be next in memory.
 pub const Fields = struct {
-    reader: *const Reader,
+    blocks: Blocks,
     fields: []const Field,
     block: []const u8,
 
@@ -965,7 +1100,7 @@ pub const Fields = struct {
 
     pub fn stringAt(self: Fields, index: u32) ReadError!?[]const u8 {
         const s = try self.slot(index, &.{.string}) orelse return null;
-        return try self.reader.stringRef(self.block, s);
+        return try self.blocks.stringRef(self.block, s);
     }
 
     pub fn idAt(self: Fields, index: u32) ReadError!?ContentId {
@@ -976,12 +1111,12 @@ pub const Fields = struct {
     pub fn nestedAt(self: Fields, index: u32) ReadError!?Fields {
         const s = try self.slot(index, &.{.nested}) orelse return null;
         const t = self.fields[index].type;
-        return .{ .reader = self.reader, .fields = t.nested, .block = self.block[s..][0..sizeOf(t)] };
+        return .{ .blocks = self.blocks, .fields = t.nested, .block = self.block[s..][0..sizeOf(t)] };
     }
 
     pub fn listAt(self: Fields, index: u32) ReadError!?List {
         const s = try self.slot(index, &.{.list}) orelse return null;
-        return try self.reader.makeList(
+        return try self.blocks.makeList(
             self.fields[index].type.list.*,
             std.mem.readInt(u32, self.block[s..][0..4], .little),
             std.mem.readInt(u32, self.block[s + 4 ..][0..4], .little),
@@ -995,7 +1130,7 @@ pub const Fields = struct {
         if (index >= self.fields.len) return null;
         if (!self.present(index)) return null;
         const at = try self.slotIn(index);
-        return try self.reader.readValue(arena, self.fields[index].type, self.block, at);
+        return try self.blocks.readValue(arena, self.fields[index].type, self.block, at);
     }
 
     fn slot(self: Fields, index: u32, kinds: []const TypeTag) ReadError!?u32 {
@@ -1017,14 +1152,14 @@ pub const Fields = struct {
 
 /// A list field's elements, in place.
 pub const List = struct {
-    reader: *const Reader,
+    blocks: Blocks,
     elem: FieldType,
     bytes: []const u8,
     len: u32,
 
     pub fn valueAt(self: List, arena: Allocator, index: u32) ReadValueError!?Value {
         if (index >= self.len) return null;
-        return try self.reader.readValue(arena, self.elem, self.bytes, strideOf(self.elem) * index);
+        return try self.blocks.readValue(arena, self.elem, self.bytes, strideOf(self.elem) * index);
     }
 
     /// A content id element, without an allocator.
@@ -1047,7 +1182,7 @@ pub const List = struct {
         const at = strideOf(self.elem) * index;
         const size = sizeOf(self.elem);
         if (@as(u64, at) + size > self.bytes.len) return error.Malformed;
-        return .{ .reader = self.reader, .fields = self.elem.nested, .block = self.bytes[at..][0..size] };
+        return .{ .blocks = self.blocks, .fields = self.elem.nested, .block = self.bytes[at..][0..size] };
     }
 };
 
@@ -1448,7 +1583,7 @@ test "strings are stored once no matter how often they are written" {
     defer r.deinit();
 
     // "same" appears four times in the content and once in the file.
-    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, r.strings_section, "same"));
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, r.blocks.strings, "same"));
 
     const a = r.fieldsOf(r.record(0).?, r.schemas[0]);
     const b = r.fieldsOf(r.record(1).?, r.schemas[0]);
@@ -1583,4 +1718,72 @@ test "the sections say where they are, and they are where they say" {
         previous_end = offset + len;
     }
     try testing.expectEqual(bytes.len, previous_end);
+}
+
+// -- the block layout on its own ---------------------------------------------------
+
+test "blocks round-trip without a package around them" {
+    // What a save does: lay out blocks against a schema, keep the two buffers, and read
+    // them back with nothing but the schema that wrote them. No header, no record index,
+    // no `Reader` — which is the whole point of the layout being separable.
+    const gpa = testing.allocator;
+    const fields = [_]Field{
+        .{ .name = "x", .type = .f32, .presence = .optional },
+        .{ .name = "label", .type = .string, .presence = .optional },
+        .{ .name = "where", .type = .{ .nested = &.{
+            .{ .name = "row", .type = .i32, .presence = .optional },
+            .{ .name = "col", .type = .i32, .presence = .optional },
+        } }, .presence = .optional },
+        .{ .name = "absent", .type = .u64, .presence = .optional },
+    };
+
+    var w: BlockWriter = .{ .gpa = gpa };
+    defer w.deinit();
+
+    var offsets: [2]u32 = undefined;
+    for (0..2) |i| {
+        const block = try w.begin(&fields);
+        offsets[i] = block.base;
+        try block.set(0, .{ .float = @as(f64, @floatFromInt(i)) * 0.5 });
+        try block.set(1, .{ .string = "shared" });
+        const where = try block.nested(2);
+        try where.set(0, .{ .int = @as(i64, @intCast(i)) });
+        try where.set(1, .{ .int = 9 });
+        // Field 3 is never set, so it reads back absent.
+    }
+
+    const blocks: Blocks = .{ .fields = w.fields.items, .strings = w.strings.items };
+    for (0..2) |i| {
+        const view = blocks.blockAt(offsets[i], &fields).?;
+        try testing.expectEqual(@as(f64, @floatFromInt(i)) * 0.5, (try view.floatAt(0)).?);
+        try testing.expectEqualStrings("shared", (try view.stringAt(1)).?);
+        const where = (try view.nestedAt(2)).?;
+        try testing.expectEqual(@as(i128, @intCast(i)), (try where.intAt(0)).?);
+        try testing.expectEqual(@as(i128, 9), (try where.intAt(1)).?);
+        try testing.expect(!view.present(3));
+        try testing.expect((try view.intAt(3)) == null);
+    }
+
+    // One copy of the string, because interning is part of the layout rather than of the
+    // package writer that used to own it.
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, w.strings.items, "shared"));
+}
+
+test "a block refuses a value its field cannot hold" {
+    const gpa = testing.allocator;
+    const fields = [_]Field{
+        .{ .name = "small", .type = .u32, .presence = .optional },
+        .{ .name = "flat", .type = .i32, .presence = .optional },
+    };
+
+    var w: BlockWriter = .{ .gpa = gpa };
+    defer w.deinit();
+    const block = try w.begin(&fields);
+
+    try testing.expectError(error.ValueTypeMismatch, block.set(0, .{ .int = 5_000_000_000 }));
+    try testing.expectError(error.ValueTypeMismatch, block.set(0, .{ .bool = true }));
+    // Not a nested field, and asking for it as one is a mistake in the writing code.
+    try testing.expectError(error.ValueTypeMismatch, block.nested(1));
+    // Past the schema's fields.
+    try testing.expectError(error.ValueTypeMismatch, block.set(2, .{ .int = 0 }));
 }
