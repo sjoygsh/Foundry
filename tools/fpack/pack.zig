@@ -96,6 +96,17 @@ pub fn compile(
         },
     };
 
+    // The tilemap record types. They live in `asset` rather than in `render2d` precisely so
+    // that this line can exist: `fpack` has to check a map without linking a renderer
+    // (`tilemaps-and-collision.md` §11).
+    asset.tilemap.registerAll(gpa, registry) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            try diags.addFmt(gpa, .err, .whole("<engine>"), 1, "", "the engine's tilemap schemas did not register: {s}", .{data.schema.describeRegisterError(err)});
+            return error.ContentInvalid;
+        },
+    };
+
     // `foundry:entity` and `foundry:scene`, for the same reason: an author describing a
     // scene must not have to declare an engine-owned record type themselves.
     scene.schemas.registerAll(gpa, registry) catch |err| switch (err) {
@@ -814,4 +825,82 @@ test "a package name that is not an id is refused before anything is read" {
     var buf: [1024]u8 = undefined;
     const text = try f.rendered(&buf);
     try testing.expect(std.mem.containsAtLeast(u8, text, 1, "is not a valid package name"));
+}
+
+test "a grid file derives a tilegrid record, and a map compiles against schemas nobody declared" {
+    var f = try Fixture.init();
+    defer f.deinit();
+
+    // Real grid bytes, written by the engine's own writer -- which is the point of the
+    // writer living in `asset` beside the reader rather than here.
+    const grid = try asset.tilegrid.write(testing.allocator, 2, 2, &.{ 0, 1, 1, 0 });
+    defer testing.allocator.free(grid);
+    try f.write("grids/town/walls.fgrid", grid);
+
+    // None of these three record types is declared anywhere in the package. They are
+    // engine-owned and registered before the compile, which is why `fpack` has to be able
+    // to see them without linking a renderer (`tilemaps-and-collision.md` §11).
+    try f.write("map.fdt",
+        \\foundry:tileset sandbox:tiles.overworld {
+        \\    texture sandbox:textures.overworld
+        \\    tile    [ 16 16 ]
+        \\    columns 16
+        \\    solid   [ 1 ]
+        \\}
+        \\
+        \\foundry:tilemap.layer sandbox:map.town.walls {
+        \\    tileset  sandbox:tiles.overworld
+        \\    grid     sandbox:grids.town.walls
+        \\    collides true
+        \\}
+        \\
+        \\foundry:tilemap sandbox:map.town {
+        \\    size   [ 2 2 ]
+        \\    cell   [ 16 16 ]
+        \\    layers [ sandbox:map.town.walls ]
+        \\}
+    );
+
+    try f.compileIt("sandbox:content");
+
+    var r = try f.open();
+    defer r.deinit();
+
+    // Three authored records and one derived grid.
+    try testing.expectEqual(@as(u32, 4), r.record_count);
+
+    const tilegrid_schema = r.schemaFor(data.SchemaId.fromStringUnchecked("foundry:tilegrid")).?;
+    var found = false;
+    for (0..r.record_count) |i| {
+        const view = r.record(@intCast(i)).?;
+        if (!view.schema_id.eql(tilegrid_schema.id)) continue;
+        found = true;
+        // The id comes from the path and the path alone (ADR-0021).
+        try testing.expectEqualStrings("sandbox:grids.town.walls", view.name);
+        const fields = r.fieldsOf(view, tilegrid_schema.*);
+        try testing.expectEqualStrings("grids/town/walls.fgrid", (try fields.stringAt(0)).?);
+    }
+    try testing.expect(found);
+}
+
+test "an authored tilegrid record beats the one its path would derive" {
+    var f = try Fixture.init();
+    defer f.deinit();
+
+    const grid = try asset.tilegrid.write(testing.allocator, 1, 1, &.{7});
+    defer testing.allocator.free(grid);
+    try f.write("grids/town/walls.fgrid", grid);
+    try f.write("map.fdt",
+        \\foundry:tilegrid sandbox:maps.the_town { source "grids/town/walls.fgrid" }
+    );
+
+    try f.compileIt("sandbox:content");
+
+    var r = try f.open();
+    defer r.deinit();
+
+    // One record, not two: explicit always beats implicit and never silently duplicates it,
+    // which is the rule assets already had and which a new kind inherits for free.
+    try testing.expectEqual(@as(u32, 1), r.record_count);
+    try testing.expectEqualStrings("sandbox:maps.the_town", r.record(0).?.name);
 }

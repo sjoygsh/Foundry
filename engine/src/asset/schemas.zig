@@ -81,12 +81,30 @@ pub const texture: Schema = .{
     },
 };
 
+pub const tilegrid_name = "foundry:tilegrid";
+
+/// A grid of tile ids: the bulk of a tilemap, kept out of content text.
+///
+/// The record is nothing but a `source`, because everything else about a grid — its width,
+/// its height, its numbers — is in the file the source names, where a hundred thousand
+/// integers belong (`tilemaps-and-collision.md` §9). What the grid *means* is a
+/// `foundry:tilemap.layer`'s business, not this record's: the same grid drawn with two
+/// tilesets is two layers over one asset.
+pub const tilegrid: Schema = .{
+    .id = SchemaId.fromStringUnchecked(tilegrid_name),
+    .version = 1,
+    .fields = &.{
+        .{ .name = source_field, .type = .string },
+    },
+};
+
 /// Every asset kind the engine itself defines, in a fixed order.
 ///
 /// Fixed because `fpack` walks it to decide what a file becomes, and I9 wants that answer to
 /// depend on the package and nothing else.
 pub const kinds = [_]Kind{
     .{ .name = texture_name, .schema = texture, .extensions = &.{"png"} },
+    .{ .name = tilegrid_name, .schema = tilegrid, .extensions = &.{"fgrid"} },
 };
 
 /// The kind a file extension derives, or null if that extension is not an asset.
@@ -166,9 +184,24 @@ test "a field added after version 1 carries a default, or old content could not 
 
 test "extensions map to kinds, and nothing else does" {
     try testing.expect(kindForExtension("png") == &kinds[0]);
+    try testing.expect(kindForExtension("fgrid") == &kinds[1]);
     try testing.expect(kindForExtension("PNG") == null);
     try testing.expect(kindForExtension("txt") == null);
     try testing.expect(kindForExtension("") == null);
+}
+
+test "no two asset kinds claim the same extension" {
+    // A file would otherwise become whichever kind is listed first, which is a coin toss
+    // decided by the order of a table nobody thinks about.
+    for (&kinds, 0..) |kind, i| {
+        for (kind.extensions) |extension| {
+            for (kinds[i + 1 ..]) |other| {
+                for (other.extensions) |candidate| {
+                    try testing.expect(!std.mem.eql(u8, extension, candidate));
+                }
+            }
+        }
+    }
 }
 
 test "a kind's name and its id are the same fact twice" {

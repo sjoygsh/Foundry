@@ -635,3 +635,50 @@ what a game needs in order to diff two overlap sets for itself — the shape the
 contemplates. Nothing here forecloses either answer.
 
 **Still to come, unchanged by any of the above:** everything from step 5 on.
+
+---
+
+## Resolution: the tilemap content model (step 5, part one, 2026-09-05)
+
+The three record types, the `foundry:tilegrid` asset and its runtime format, and the loader.
+`fpack`'s text-grid front end is the second half of the step and is not yet built. Four things
+§9 and §11 did not settle.
+
+**The schemas live in `asset`, not in `render2d`, and `fpack` is what forced it.** §11 put them
+beside the texture loader and recorded the wart in open question 1: *"a consumer wanting map
+data without a renderer — a headless server, a validating tool — must link `render2d`"*, with
+the trigger being *"the first real consumer that wants a grid and not a GPU."* That consumer is
+`fpack`, and it exists today: §9 requires the three record types to be registered before a
+package is compiled, and `fpack` cannot link a renderer. So the schemas sit in `asset`, which
+is exactly the split `assets.md` already made for `foundry:texture` — the record is not a GPU
+concept, the loader is, and the dependency points down while the capability points up.
+
+The open question stays open as to whether a *separate module* is ever wanted; nothing here
+forecloses one. What is settled is that the answer was lower, not higher.
+
+**The grid loader is in `asset` too, and that goes one step further than the texture.** A
+loaded texture is a GPU object and only `render2d` can make one. A loaded grid is `[]const
+u16`, which `render2d` draws and `physics2d` collides against and *neither* owns — so there is
+nothing above `asset` that has to be involved. It is still registered at runtime by whoever
+wants grids (I6); nothing self-registers, and a game that never draws a map never pays for one.
+
+**Tiles are copied at load, not aliased.** §9 says the array is read in place. The array in the
+file is little-endian by specification and the bytes the registry hands a loader are neither
+guaranteed two-byte aligned nor guaranteed to outlive the call, so a consumer wanting `[]const
+u16` in host order gets one pass at load time. That buys a format that means the same thing on
+every machine, which is what I8 asks a versioned format to be worth; "read in place" survives
+as the property that matters — no decompression, no per-tile parsing, one `memcpy`-shaped loop.
+
+**Two things the schemas needed that the checker cannot hold.** `tile [ 16 16 ]` and
+`cell [ 16 16 ]` are lists, and the type list has no fixed-length list; `order` is a `render2d`
+sort layer, which is an `i16`, and `data` has no `i16`. Both domains are the reader's to check,
+which is the precedent `assets.md` set for `filter` and `wrap` — and the reason `readTileset`,
+`readLayer` and `readTilemap` exist at all rather than every consumer reading fields itself.
+Adding a fixed-length list type would cost a text form, a binary form and a validator
+(`content-schemas.md` §3) for a case two records use.
+
+One small addition to `data` fell out: `List.intAt` and `List.floatAt`, which are `List.idAt`'s
+three lines for the other scalar kinds. Reading `[ 16 16 ]` through `valueAt` means handing an
+allocator to a loop that allocates nothing, which is the exact complaint `idAt`'s own comment
+records.
+

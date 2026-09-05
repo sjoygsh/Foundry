@@ -25,6 +25,8 @@ pub const image = @import("image.zig");
 pub const png = @import("png.zig");
 pub const registry = @import("registry.zig");
 pub const schemas = @import("schemas.zig");
+pub const tilegrid = @import("tilegrid.zig");
+pub const tilemap = @import("tilemap.zig");
 
 pub const Image = image.Image;
 pub const DecodeError = png.DecodeError;
@@ -38,6 +40,11 @@ pub const Loader = registry.Loader;
 pub const Payload = registry.Payload;
 pub const Registry = registry.Registry;
 
+pub const TileGrid = tilegrid.TileGrid;
+/// The loader for `foundry:tilegrid`. Registered by whoever wants grids (I6); it needs no
+/// renderer, because a grid of tile ids is not a GPU object.
+pub const tilegridLoader = tilegrid.tilegridLoader;
+
 /// One merged content record, as a loader is handed it.
 ///
 /// Re-exported because `render2d` is granted `asset` and not `data` (ADR-0007), and a
@@ -49,4 +56,6 @@ test {
     _ = png;
     _ = registry;
     _ = schemas;
+    _ = tilegrid;
+    _ = tilemap;
 }

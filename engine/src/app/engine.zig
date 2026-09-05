@@ -412,6 +412,15 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                     return error.ContentUnavailable;
                 },
             };
+            // The tilemap record types, for the same reason: an author describing a map must
+            // not have to declare an engine-owned record type themselves.
+            asset.tilemap.registerAll(gpa, &out.schemas) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    log.warn("the engine's own tilemap schemas were refused: {t}", .{err});
+                    return error.ContentUnavailable;
+                },
+            };
 
             var diags: data.Diagnostics = .init(gpa, .default);
             defer diags.deinit(gpa);

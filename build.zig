@@ -390,7 +390,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    for ([_][]const u8{ "core", "data", "platform", "rhi", "asset", "render2d", "scene" }) |name| {
+    for ([_][]const u8{ "core", "data", "platform", "physics2d", "rhi", "asset", "render2d", "scene" }) |name| {
         integration_mod.addImport(name, modules.get(name).?);
     }
 

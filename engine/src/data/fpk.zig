@@ -1241,6 +1241,35 @@ pub const List = struct {
         return .{ .hash = std.mem.readInt(u64, self.bytes[at..][0..8], .little) };
     }
 
+    /// An integer element, without an allocator.
+    ///
+    /// The same three lines `idAt` earns, for the same reason: a scalar allocates nothing,
+    /// and a list of numbers is as common a shape as a list of references — a tile size, a
+    /// list of solid tile ids, a palette index (`tilemaps-and-collision.md` §9).
+    pub fn intAt(self: List, index: u32) ReadError!?i128 {
+        if (index >= self.len) return null;
+        const at = strideOf(self.elem) * index;
+        if (@as(u64, at) + sizeOf(self.elem) > self.bytes.len) return error.Malformed;
+        return switch (self.elem) {
+            .i32 => std.mem.readInt(i32, self.bytes[at..][0..4], .little),
+            .i64 => std.mem.readInt(i64, self.bytes[at..][0..8], .little),
+            .u32 => std.mem.readInt(u32, self.bytes[at..][0..4], .little),
+            .u64 => std.mem.readInt(u64, self.bytes[at..][0..8], .little),
+            else => error.WrongType,
+        };
+    }
+
+    pub fn floatAt(self: List, index: u32) ReadError!?f64 {
+        if (index >= self.len) return null;
+        const at = strideOf(self.elem) * index;
+        if (@as(u64, at) + sizeOf(self.elem) > self.bytes.len) return error.Malformed;
+        return switch (self.elem) {
+            .f32 => @as(f32, @bitCast(std.mem.readInt(u32, self.bytes[at..][0..4], .little))),
+            .f64 => @bitCast(std.mem.readInt(u64, self.bytes[at..][0..8], .little)),
+            else => error.WrongType,
+        };
+    }
+
     pub fn nestedAt(self: List, index: u32) ReadError!?Fields {
         if (index >= self.len) return null;
         if (self.elem != .nested) return error.WrongType;
