@@ -172,6 +172,9 @@ pub fn main(init: std.process.Init) !void {
         log.info("WASD or arrows pan; shift pans faster; drag with right or middle", .{});
         log.info("wheel zooms about the cursor; left-click picks; C recentres", .{});
         log.info("R resizes the window; escape or the close button quits", .{});
+        if (field.save_path) |path| {
+            log.info("F5 saves the world to '{s}'; F9 loads it back", .{path});
+        }
     }
 
     var reported_tick: u64 = 0;
@@ -271,6 +274,11 @@ pub fn main(init: std.process.Init) !void {
             if (engine.frame_index >= limit) break;
         }
     }
+
+    // On the way out, so a scripted run leaves a save behind for the next one to read.
+    // That is the only honest check that a world survives a *restart* rather than a round
+    // trip through memory in one process.
+    if (field.save_path) |path| field.saveWorld(engine, path);
 
     log.info("clean exit after {d} frames, {d} ticks, {d}ms simulated", .{
         engine.frame_index,
@@ -490,6 +498,14 @@ const SpriteField = struct {
     /// scripted is a path that only gets checked when someone remembers to check it.
     pick_every: ?u64 = null,
 
+    /// Where F5 writes and F9 reads, from `FOUNDRY_SANDBOX_SAVE`.
+    ///
+    /// Borrowed from the environment, which outlives the field. When it is set the sample
+    /// also saves on the way out, so one scripted run writes a world and the next reads it
+    /// — which is the only honest way to check that a save survives a *restart* rather
+    /// than merely a round trip in memory.
+    save_path: ?[]const u8 = null,
+
     /// Screen points. The HUD is placed in the same units the mouse is reported in, which
     /// is what the screen view buys.
     const hud_margin: f32 = 12;
@@ -504,6 +520,10 @@ const SpriteField = struct {
     /// the zoom. Panning in world units per second crawls when zoomed out.
     const pan_speed: f32 = 700;
     const fast_pan_speed: f32 = 2400;
+
+    /// A bound on a save this sample will read. Untrusted input is bounded at the
+    /// boundary: `readFile` insists on a number, and this is the sample's.
+    const max_save_bytes: usize = 64 * 1024 * 1024;
 
     /// The renderer and nothing else. Content arrives in `load`, which needs this struct
     /// to already be where it is going to live.
@@ -579,14 +599,8 @@ const SpriteField = struct {
         // and a type arriving later would have no data for what is already there.
         self.schemas = .init(gpa, .default);
         self.world = .init(gpa, &self.schemas, .default);
-        self.orbit = try self.world.registerComponent(scene.componentType(Orbit));
-        self.transform = try self.world.registerComponent(scene.componentType(Transform));
-        self.visual = try self.world.registerComponent(scene.componentType(Visual));
-        _ = try self.world.registerSystem(.{
-            .id = try data.contentId("sandbox:system.orbit"),
-            .name = "sandbox:system.orbit",
-            .update = &orbitSystem,
-        });
+        try self.registerTypes();
+        self.save_path = engine.os.envVar("FOUNDRY_SANDBOX_SAVE");
 
         const count = spriteCount(engine, self.settings.sprites);
         log.info("content: sheet {d}x{d}, glyphs {d}x{d}, {d} sprites, grid {d}", .{
@@ -595,7 +609,98 @@ const SpriteField = struct {
             count,                          self.settings.grid,
         });
 
-        try self.populate(count);
+        // A save is a whole world, so it replaces the generated field rather than adding
+        // to it. Absent, unreadable or refused, the sample builds the field it always did
+        // — a missing save is a first run, not a failure.
+        const restored = if (engine.os.envVar("FOUNDRY_SANDBOX_LOAD")) |path|
+            self.loadWorld(engine, path)
+        else
+            false;
+        if (!restored) try self.populate(count);
+    }
+
+    /// The component types and systems this sample defines.
+    ///
+    /// Its own file would be the game's; here it is three structs and one function. Split
+    /// out because a load rebuilds the world, and registration is refused once a world has
+    /// entities — so this is the part that has to happen again and `populate` is the part
+    /// that must not.
+    fn registerTypes(self: *SpriteField) !void {
+        self.orbit = try self.world.registerComponent(scene.componentType(Orbit));
+        self.transform = try self.world.registerComponent(scene.componentType(Transform));
+        self.visual = try self.world.registerComponent(scene.componentType(Visual));
+        _ = try self.world.registerSystem(.{
+            .id = try data.contentId("sandbox:system.orbit"),
+            .name = "sandbox:system.orbit",
+            .update = &orbitSystem,
+        });
+    }
+
+    /// Throws the world away and builds an empty one with the same types registered.
+    ///
+    /// A save carries absolute entity handles and loads into a **fresh** world
+    /// (`entity-storage.md` §9), so reloading at runtime is a rebuild rather than a merge.
+    /// Merging one into a populated world is a different operation with different rules,
+    /// and it is not owed anything yet.
+    fn rebuildWorld(self: *SpriteField) !void {
+        self.world.deinit();
+        self.schemas.deinit(self.gpa);
+        self.schemas = .init(self.gpa, .default);
+        self.world = .init(self.gpa, &self.schemas, .default);
+        try self.registerTypes();
+        self.selected = null;
+        self.population = 0;
+    }
+
+    /// Writes the world to `path`.
+    ///
+    /// **`scene` cannot open a file**, so it produces bytes and the sample writes them.
+    /// That is the same split `data` lives under and it is why every test of the save
+    /// format is hermetic.
+    fn saveWorld(self: *SpriteField, engine: *app.Engine, path: []const u8) void {
+        var bytes: std.ArrayList(u8) = .empty;
+        defer bytes.deinit(self.gpa);
+        self.world.save(&bytes) catch |err| {
+            log.warn("could not build a save: {t}", .{err});
+            return;
+        };
+        engine.os.writeFile(path, bytes.items) catch |err| {
+            log.warn("could not write '{s}': {t}", .{ path, err });
+            return;
+        };
+        log.info("saved {d} entities to '{s}' ({d} bytes)", .{
+            self.world.entityCount(), path, bytes.items.len,
+        });
+    }
+
+    /// Replaces the world with the one in `path`. False if there was nothing to load.
+    ///
+    /// The file is read **before** the world is torn down, so a missing or unreadable save
+    /// leaves what is on screen alone. Once the rebuild has happened a refused save leaves
+    /// an empty world, and the caller repopulates.
+    fn loadWorld(self: *SpriteField, engine: *app.Engine, path: []const u8) bool {
+        const bytes = engine.os.readFile(self.gpa, path, max_save_bytes) catch |err| {
+            if (err != error.FileNotFound) log.warn("could not read '{s}': {t}", .{ path, err });
+            return false;
+        };
+        defer self.gpa.free(bytes);
+
+        self.rebuildWorld() catch |err| {
+            log.warn("could not rebuild the world: {t}", .{err});
+            return false;
+        };
+        const summary = self.world.load(bytes, .default) catch |err| {
+            log.warn("'{s}' was refused: {t}", .{ path, err });
+            return false;
+        };
+        self.population = summary.entities;
+        log.info("loaded {d} entities and {d} components from '{s}'{s}", .{
+            summary.entities,
+            summary.components,
+            path,
+            if (summary.skipped_types == 0) "" else " (some component types were skipped)",
+        });
+        return true;
     }
 
     /// One fixed simulation step. The game translates `app`'s step into `scene`'s tick.
@@ -841,6 +946,16 @@ const SpriteField = struct {
             self.camera.zoom = 1;
             self.selected = null;
             log.info("camera recentred", .{});
+        }
+
+        // The whole world to a file and back, through the same path a scripted run uses.
+        if (self.save_path) |path| {
+            if (in.wasPressed(.f5)) self.saveWorld(engine, path);
+            if (in.wasPressed(.f9) and !self.loadWorld(engine, path)) {
+                self.populate(spriteCount(engine, self.settings.sprites)) catch |err| {
+                    log.warn("could not rebuild the field: {t}", .{err});
+                };
+            }
         }
 
         // Screen-space pan. `w` moves the view up, which is *negative* screen Y, because
