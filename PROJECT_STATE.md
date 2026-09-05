@@ -1,28 +1,26 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-05
-**Updated by:** **M4, steps 1 to 5 and half of 6 — `scene` exists, entities have components,
-a Zig struct becomes one, a query finds them, systems run them, the sandbox uses all of it,
-and content can describe an entity.** Its design was written first
-(`docs/design/entity-storage.md`), deciding what ADR-0010 deferred: a component type **is a
-schema**, so identity, versioning, checking and serialization are machinery `data` already
-has; queries will iterate the first named component rather than the smallest, so order is a
-property of the query and not of the data; a component instance in content is its own record,
-so a mod overrides one component without restating the entity; and a save preserves entity
-identity exactly, which is what lets a handle inside component data survive a reload with no
-remap pass. Step 1 built the module, entities and the runtime component type registry, and
-confirmed the layering by breaking it. Step 2 built the type-erased storage under it — a
-sparse set with dense arrays, where the owner recorded beside each element is what makes a
-stale entity fail cleanly instead of inheriting whatever reused its slot. Step 3 built the
-`comptime` wrapper: `scene.componentType(T)` derives a schema from a Zig struct and generates
-its deserializer, tested by reading records out of packages `fpk.write` actually produced.
-Step 4 built queries, which is where the interface either leaks the storage layout or does
-not — it does not. Step 5's engine half is in: systems, registered at runtime and run in
-registration order, with a fixed scenario proving it runs the same way twice — and the
-sandbox now holds entities rather than an array of sprites, with its motion a system and its
-picking a query. Step 6 is half done: **entities can be defined in content** —
-`foundry:entity` is a list of component records and `foundry:scene` a list of templates,
-neither needing any new `.fdt` syntax. Saves are what is left of M4
+**Updated by:** **M4 complete — the engine has entities, and a world it can put down and pick
+back up.** Its design was written first (`docs/design/entity-storage.md`), deciding what
+ADR-0010 deferred: a component type **is a schema**, so identity, versioning, checking and
+serialization are machinery `data` already has; queries iterate the first named component
+rather than the smallest, so order is a property of the query and not of the data; a component
+instance in content is its own record, so a mod overrides one component without restating the
+entity; and a save preserves entity identity exactly, which is what lets a handle inside
+component data survive a reload with no remap pass. Six steps, each leaving the tree green and
+the sandbox runnable: the module and the runtime type registry, with the layering confirmed by
+breaking it; the type-erased sparse-set storage under it, where the owner recorded beside each
+element is what makes a stale entity fail cleanly rather than inherit whatever reused its slot;
+the `comptime` wrapper, tested against records `fpk.write` actually produced; queries, which is
+where the interface either leaks the storage layout or does not; systems, and the sandbox
+converted from an array of seeds to a world of entities; and content and saves. **The save
+format is `.fsav`, not a package** — giving every entity a content ID would derive identity
+from position, which is exactly what I2 forbids — but it shares `.fpk`'s field-block layout and
+schema encoding, so the reading code cannot tell the two apart and neither can drift from the
+other. Both exit criteria are met, and demonstrated rather than argued: a scene defined in
+content data, stepped by systems, saved by one process and read by another, with a click
+landing on the same entity handle the run that created it picked.
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -40,25 +38,34 @@ is mature enough to need them rather than as decoration.
 
 ## Current phase
 
-**Phase 2 — A real 2D engine.** Phase 1 (M0, M1) closed with the first pixels; M2 and M3
-are done. **M4 — World: "it has entities" — is under way**, at its design stage.
+**Phase 2 — A real 2D engine.** Phase 1 (M0, M1) closed with the first pixels; M2, M3 and M4
+are done. **M5 — Playable: "it's a game" — is next**, and starts where the last three did:
+with its design document.
 
 ## Current milestone
 
-**M4 — World: "it has entities." In progress, 2026-09-05. Steps 1 to 5 done, step 6 half
-done.**
-`docs/design/entity-storage.md` is the document `docs/design/README.md` has owed since ADR-0010
-was accepted, and M4 started where M3 did — at its decisions, before any code existed to make
-them by accident. It settles six things ADR-0010 left open, names its own open questions
-rather than resolving them opportunistically, and ends with the six implementation steps
-below. **Step 1 is built**: `scene` is in the layering table with `core` and `data`, entities
-are handles out of `core.HandlePool`, and component types register at runtime with their
-schemas going into the store's own registry (I6). **Step 2** built the storage beneath it:
-one type-erased sparse set per component type, proven against a component type written by
-hand rather than through the `comptime` sugar that arrives at step 3. 32 tests. What
-implementation settled is in that document's two Resolution sections — chiefly that a
-component type is identified by a *handle* rather than an index, so unloading a mod one day
-cannot leave dangling references, and that a zero-size component is legal and means a marker.
+**M4 — World: "it has entities." Complete, 2026-09-05.** Every item on its ROADMAP list is
+done and both exit criteria are met. `docs/design/entity-storage.md` is the document
+`docs/design/README.md` had owed since ADR-0010 was accepted, and M4 started where M3 did — at
+its decisions, before any code existed to make them by accident. It settled six things ADR-0010
+left open, named its own open questions rather than resolving them opportunistically, and laid
+out the six implementation steps it was then built in. What implementation settled is in that
+document's seven Resolution sections; the ones worth carrying forward are that a component type
+is identified by a **handle** rather than an index, so unloading a mod one day cannot leave
+dangling references; that a zero-size component is legal and means a marker; that a component
+referencing an asset holds the **content ID**, never a handle, which is the same fact as `scene`
+needing no `asset` dependency; that a world cannot borrow the engine's schema registry, because
+hot reload replaces it; and that because the world's registry and the content registry are
+therefore separate, a spawn has to **check that a package's schema agrees with the registered
+one** — the deserializer matches by position, so an unchecked mismatch would read `y` into `x`
+and report success.
+
+The exit criteria were demonstrated, not argued. `engine/tests/world_pipeline.zig` runs the
+whole chain — `.fdt` text to package to store to entities to systems to a save to a second
+world that has never seen the content — and checks that the two carry on bit-identically and
+save to the same bytes. The sandbox does the same across two processes: 4,000 entities and
+12,000 components written on the way out and read on the way in, with picking landing on the
+handle that entity had in the run that created it.
 
 **M0 — Skeleton: "it runs." Complete, 2026-09-03.** Every item on its ROADMAP list is
 done and both exit criteria are met: `zig build run` opens a window on macOS that responds
@@ -114,9 +121,10 @@ than by being done.
 **`core` (L0), `platform` and `data` (L1), `rhi` (L2) with two backends, `asset` (L2),
 `render2d` and `scene` (L3), `app` (L4), plus `tools/fpack`. It draws thousands of sprites
 under a camera that pans, zooms and picks, and it loads content by content id. `scene` holds
-entities, component types and their storage; it has no queries and no systems yet.**
+entities, component types, queries and systems; entities can be described in content, and a
+whole world can be written to a file and read back with its handles intact.**
 
-**M4 steps 1 to 5, and half of 6, new:**
+**M4, new:**
 
 * `engine/src/scene/entity.zig` — `Entity`, a `core.Handle` over an opaque tag. No entity
   object exists anywhere, which is why the type is not called `EntityHandle`.
@@ -139,12 +147,30 @@ entities, component types and their storage; it has no queries and no systems ye
   `deserialize` and `construct` generated over it, and a compile error naming any field that
   does not project onto the closed type list. It **produces** registration data rather than
   being a second registration path, which is what ADR-0010 requires of it.
+* `engine/src/scene/save.zig` — `.fsav`, the save format. Not a package: giving every
+  entity a content id would derive identity from position, which is what I2 forbids. It
+  carries the entity pool's exact state, so a reloaded world hands out the same handles and
+  an `Entity` inside component data needs no remapping pass; every component type's full
+  schema, so an older file is read against the shape it was written with; and each store's
+  dense array in dense order, so iteration order survives. A type this build does not know
+  is reported and skipped. The reader validates everything before applying anything, and
+  every single-byte change to a save is a test.
+* `engine/src/core/handle.zig` — `slotAt`, `freeSlots` and `restore`. The only way to make
+  a pool hand out a handle it did not issue, and therefore the only way the above works;
+  the one entry point in `core` whose input is not the pool's own, so it validates rather
+  than asserts.
+* `engine/tests/world_pipeline.zig` — M4's exit criterion as one chain: `.fdt` text to
+  package to store to entities to systems to a save to a second world that has never seen
+  the content, checked to carry on bit-identically and save to the same bytes.
 * `samples/sandbox/main.zig` — the sample defines three component types of its own
   (`sandbox:orbit`, `sandbox:transform`, `sandbox:visual`), registers them and one system,
   and spawns 4,000 entities. Drawing and picking are both queries over the same two
   components in the same order, which is what keeps "topmost" meaning the same thing to the
   pick as to the batcher. **It owns the `data.Registry` its world borrows**, because hot
-  reload replaces the engine's.
+  reload replaces the engine's. F5 writes the world and F9 reads it back, and
+  `FOUNDRY_SANDBOX_SAVE` / `_LOAD` do the same from a script — so one run can leave a world
+  behind and the next can start from it, which is the only honest check that a save survives
+  a restart rather than a round trip in one process.
 * `engine/src/scene/system.zig` — `System` and `Tick`, runtime-registered like everything
   else here, run in registration order. A system gets the world and the tick and **not**
   input or a clock, because `platform` is not below `scene`; input reaches it as data the
@@ -159,7 +185,12 @@ entities, component types and their storage; it has no queries and no systems ye
   every field they share. Position matching would otherwise read the right bytes into the
   wrong field.
 * `engine/src/data/fpk.zig` — `List.idAt`, so reading a list of references needs no
-  allocator. A list of ids is the shape every "this has these" record has.
+  allocator; and then the larger change M4 needed from `data`: the field-block layout and
+  the self-describing schema encoding became their own types — `BlockWriter`, `Block`,
+  `Blocks`, `SchemaWriter`, `SchemaDecoder` — with `.fpk` a container around them rather
+  than their owner. `Fields` and `List` hold a `Blocks` instead of a `*fpk.Reader`, so the
+  **reading** code cannot tell a save from a package. `PackageTooLarge` became `TooLarge`,
+  since the writer is no longer only a package's.
 * `engine/src/scene/query.zig` — `Query`, driven by the **first** named component's dense
   array rather than the smallest, so iteration order is a property of the query as written
   and not of the data (I9); and `TypedQuery`, the same iterator with the casts written for
@@ -326,8 +357,8 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 564 tests** (52 `core`, 70 `platform`, 102 `data`, 92 `rhi`,
-36 `asset`, 103 `render2d`, 62 `scene`, 28 `app`, 14 `fpack`, 5 integration), and **572 under
+**`zig build test` passes 590 tests** (56 `core`, 70 `platform`, 104 `data`, 92 `rhi`,
+36 `asset`, 103 `render2d`, 79 `scene`, 28 `app`, 14 `fpack`, 8 integration), and **598 under
 `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
@@ -414,17 +445,48 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M3 — Content: "it has data."** It opened with two decisions §9 had been holding since M0
-and the two design documents they needed, per `CLAUDE.md` rule 1 — design before
-implementation — and rule 10, which says never make a major architectural decision silently.
-Both are spent, as ADR-0020 and ADR-0021, and `data` is built behind them.
+**Nothing. M4 closed on 2026-09-05, and M5 has not opened.** M5 starts where M3 and M4 did:
+with its design document, and with the decisions `CLAUDE.md` §9 has been holding for it —
+physics (own vs. ported) and audio (own mixer vs. library), both due at M5 and neither to be
+made silently.
+
+What follows in this section is the record of the two milestones behind it, kept because the
+reasoning is what a future session needs and the commit log is not where reasoning lives.
+
+### M4 — World: "it has entities"
+
+All six steps of `entity-storage.md` §15 are built and both exit criteria are met. The
+per-step account is under **Immediate next steps** below, and what each step settled is in
+that document's seven Resolution sections. Three things are worth having in front of you
+without opening it:
+
+* **A component type is a schema, and that is what made the save cheap.** Identity,
+  versioning, additive-only evolution, defaults and the field-block layout are all machinery
+  `data` already had and already tested. The save format is a container around them, not a
+  second serialization system — and the schema-carrying discipline that lets an older `.fpk`
+  be read correctly is the same code that lets an older `.fsav` be.
+* **Two registries, not one.** A world's schemas are declared by code and outlive any
+  reload; a content set's are rebuilt from packages on every one. They therefore cannot be
+  the same registry, and because they are not, nothing before a spawn notices that a package
+  ordered a component's fields differently from the Zig struct — so `attach` checks, and the
+  test that proves it swaps two fields and expects the refusal.
+* **Iteration order is a property of the query as written.** Driving from the first named
+  component rather than the smallest is the slower and less conventional choice, taken so
+  that order cannot change when a mod adds a component to some of the entities (I9). It is
+  tested by being reversed, and the save preserves dense order so a reload keeps it.
+
+### M3 — Content: "it has data"
+
+It opened with two decisions §9 had been holding since M0 and the two design documents they
+needed, per `CLAUDE.md` rule 1 — design before implementation — and rule 10, which says never
+make a major architectural decision silently. Both are spent, as ADR-0020 and ADR-0021, and
+`data` is built behind them.
 
 **All ten steps are built.** `data` exists end to end — identity, schemas, the registry, the
 lexer, the parser, diagnostics, the checking pass, the `.fpk` writer and reader, and the
 store that merges packages — `tools/fpack` drives all of it from a directory, and the asset
 registry above it turns a content id into a loaded payload, `content/core` is package zero,
-and content reloads under a running program. 502 tests, up from 346 at the end of M2; all
-eight target/backend combinations compile; `zig fmt` clean.
+and content reloads under a running program.
 
 **Step 10 — hot reload, and `docs/modding/`.** The watcher lives in `app` and runs at the
 top of `beginFrame`; the swapping lives in `asset.Registry`. Six things worth carrying
@@ -687,7 +749,7 @@ recorded in the ADR: a derived ID is only as stable as its path until someone wr
 and the ledger that would catch a rename is designed for and deliberately not built.
 
 **`docs/design/content-schemas.md`** (560 lines) and **`docs/design/assets.md`** (272 lines)
-are written, and the design README's owed table is now down to `entity-storage.md` for M4.
+are written, and `entity-storage.md` joined them at M4; the design README owes nothing.
 
 Two things in them are worth carrying forward:
 
@@ -765,7 +827,7 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**M3 is done and tagged.** Two things are outstanding, and neither is a bug:
+**M4 is done.** Three things are outstanding, and none of them is a bug:
 
 * The key and button *bindings*, carried from M2 and still needing a person to judge them —
   that WASD pans the right way, that dragging carries the world with the cursor, that the
@@ -777,10 +839,12 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
   requirement rule 7 warns about. Due with the material system, or the first time a sample
   wants its own shader. Adding it is a schema and a runtime-registered loader; nothing has
   to be reshaped.
+* The GitHub repository description still says the engine implementation has not started,
+  which four complete milestones have made false. Outward-facing, so it is the user's call.
 
-**M4 — World: "it has entities"** is under way. Its design is written
-(`docs/design/entity-storage.md` §15), and these are its six steps, each leaving the tree
-green and the sandbox runnable:
+**M4 — World: "it has entities"** is complete. Its design was written first
+(`docs/design/entity-storage.md` §15), and these were its six steps, each of which left the
+tree green and the sandbox runnable:
 
 1. ~~**The module, entities, and the type registry.**~~ **Done, 2026-09-05.** `scene` in the
    build graph with `core` and `data`; `Entity`; `World` with entity create/destroy;
@@ -802,9 +866,6 @@ green and the sandbox runnable:
    because the `Fields` it is given already carries the one it was read against. Fields match
    by **position**, since a schema may only append; that plus a generated `construct` is the
    whole of I8's forward compatibility for components.
-3. **The `comptime` wrapper.** `scene.componentType(T)`: schema derivation, generated
-   serialize/deserialize, the `Entity` and `AssetHandle` field rules, compile errors for what
-   does not project onto the closed type list.
 4. ~~**Queries.**~~ **Done, 2026-09-05.** `query.zig`, `World.query` and `World.queryOf`. The
    order decision is tested by being reversed: the same two components named in both orders
    yield the same set in different orders, which is what "a property of the query as written"
@@ -818,13 +879,22 @@ green and the sandbox runnable:
    answer the other half of that — content defining component instances is checked against the
    *content* registry, which must therefore learn the component schemas, the way
    `asset.schemas.registerAll` already teaches it the asset ones.
-6. **Content and saves.** *Half done, 2026-09-05.* `foundry:entity` and `foundry:scene` are
-   built, `fpack` registers them, and `World.spawn`/`spawnScene` build entities from a store
-   — all-or-nothing, and refusing a package whose schema disagrees with the registered one
-   about a field they share. **What is left is the save format**: `serialize` in
-   `ComponentTypeInfo` and generated by the wrapper, the `.fsav` writer and reader with §9's
-   trust rules, and the `data` refactor that makes the record-block writer callable on its
-   own. Ends at the exit criteria.
+6. ~~**Content and saves.**~~ **Done, 2026-09-05.** `foundry:entity` and `foundry:scene`,
+   `fpack` registering them, `World.spawn`/`spawnScene` — all-or-nothing, and refusing a
+   package whose schema disagrees with the registered one about a field they share. Then the
+   save: `serialize` beside `deserialize` in the wrapper, `.fsav` with §9's trust rules,
+   `World.save`/`load`/`clear`, and the `data` factoring — which turned out to be two things
+   rather than one, since a save carries schemas for exactly the reason a package does.
+   `core.HandlePool` also had to learn `slotAt`, `freeSlots` and `restore`, because forcing a
+   slot to a particular generation through the public interface would take 2^32 calls.
+
+**What M5 opens with.** Two `CLAUDE.md` §9 decisions come due — physics (own vs. ported) and
+audio (own mixer vs. library) — and both need an ADR before code, the way ADR-0020 and
+ADR-0021 preceded `data`. M5's design document comes first either way, and the two open
+questions `entity-storage.md` §13 expects M5 to force are worth reading before it is written:
+per-instance overrides in a scene (`@patch`, frozen in syntax and unimplemented) and spatial
+queries, which arrive with the tilemap and collision because that is where there is something
+to accelerate.
 
 **What M4 must not quietly break.** I6 above all: component types and systems are
 runtime-registered, and the `comptime` wrapper *produces* registration data rather than
@@ -833,9 +903,13 @@ by making the ergonomic path the only one. Also §5's iteration rule — driving
 the smallest store is the faster and more conventional choice, and it is rejected on purpose
 (I9), so switching to it is reversing a decision rather than finding an oversight.
 
-**One thing M4 needs from `data`:** the record-block writer inside `fpk.write` becomes
-callable on its own, so a save lays out a component block exactly as a package lays out a
-record. Two copies of that code is how the two formats would drift apart.
+**What M4 took from `data`, and left behind:** the field-block layout and the schema encoding
+are now their own types — `BlockWriter`, `Block`, `Blocks`, `SchemaWriter`, `SchemaDecoder` —
+and `.fpk` is a container around them rather than their owner. `Fields` and `List` hold a
+`Blocks` instead of a `*fpk.Reader`, so the reading code cannot tell a save from a package.
+That is what stops the two formats drifting apart, and it is worth more than the writer-side
+sharing §15 originally asked for, because the save now inherits `.fpk`'s mutate-one-byte
+discipline rather than needing its own.
 
 **M3, for reference.** Ten steps, ordered so each left the tree green and the sandbox
 runnable, and so nothing was a rewrite of the one before.
@@ -1038,7 +1112,35 @@ a rewrite of the one before.
 
 ## Important decisions made recently
 
-**This session (M3, the decisions it comes due on):**
+**M4 (2026-09-05), the decisions building it forced:**
+
+* **A save is its own format, not a package.** `.fsav`, with its own magic and its version in
+  a field. Reusing `.fpk` would require giving every entity a content ID, and a generated
+  `save:entity.00417` is an identity derived from position — the precise anti-pattern I2
+  exists to forbid. Content IDs name authored things; entities are not authored. What the two
+  formats *do* share is everything below the container, which is the next entry.
+* **The field-block layout and the schema encoding left `.fpk` and became their own types.**
+  `BlockWriter`, `Block`, `Blocks`, `SchemaWriter`, `SchemaDecoder`. `Fields` and `List` hold
+  a `Blocks` rather than a `*fpk.Reader`, so the reading code cannot tell a save from a
+  package. The design asked only for the writer to be shared; sharing the *reader* turned out
+  to matter more, because the save inherits `.fpk`'s mutate-one-byte discipline rather than
+  needing a second one of its own.
+* **A save carries every component type's full schema**, and a build whose component has
+  gained a field reads an older file against the shape it was written with. Same guarantee a
+  package gives, reached the same way — carry the schema, never assume the reader's (I8). A
+  type the build does not know is **reported and skipped**, so a save made with a mod loaded
+  opens without it.
+* **`core.HandlePool` learned to be restored**, because nothing else could preserve entity
+  identity: forcing a slot to a particular generation through `add` and `remove` would take
+  2^32 calls. It is the one entry point in `core` whose input is not the pool's own, so it
+  validates rather than asserts — and a save states each slot's occupancy *and* its free
+  list, when either implies the other, precisely so the two can be cross-checked.
+* **`serialize` is optional and its absence means "not saved".** A derived cache or a
+  frame-local marker should not be in a save, and that is the type's decision rather than the
+  format's. Both halves are required together: a type that writes and cannot read back would
+  produce a file this build cannot open.
+
+**M3, the decisions it came due on:**
 
 * **Foundry gets its own authoring text format, `.fdt` (ADR-0020).** Not taste — three facts.
   There is no permissive Zig parser for TOML or KDL that rule 3 and ADR-0016 would let us

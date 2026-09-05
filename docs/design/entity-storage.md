@@ -1,9 +1,10 @@
 # Design: `scene` — entities, components, systems and world state
 
-**Status:** M4 in progress. Steps 1 to 5 of §15 are built, and step 6's first half — entities
-described in content. `samples/sandbox` holds entities rather than an array of sprites. The
-Resolution sections at the end record what each step settled. What is left of M4 is the save
-format.
+**Status:** M4 complete. All six steps of §15 are built, and the exit criteria are met: a
+scene defined in content data, updated by systems, saved and reloaded across a restart, and a
+fixed scenario run twice producing identical state. `samples/sandbox` holds entities rather
+than an array of sprites, and saves and reloads its world. The Resolution sections at the end
+record what each step settled.
 **Date:** 2026-09-05
 **Implements:** I1, I2, I3, I5, I6, I8, I9 · **Informed by:** ADR-0005, ADR-0006, ADR-0010,
 ADR-0013, ADR-0020, ADR-0021
@@ -871,3 +872,83 @@ what the tests here do, and exactly what a mod author would do. The alternative 
 to hand `fpack` its component schemas, which is a build-time question (how does a content
 compiler learn what a game's code declares?) rather than a runtime one. It is not M4's, and
 the schema-agreement check above is what makes hand-declaring safe in the meantime.
+
+---
+
+## Resolution: the save format (implementation, 2026-09-05)
+
+The second half of step 6, and the end of M4: `engine/src/scene/save.zig`, `serialize` in
+the type info and the wrapper, `World.save`, `World.load`, `World.clear`, the `data`
+factoring §15 asked for, and `core.HandlePool` learning to come back from a snapshot.
+§9's shape is unchanged. What building it settled:
+
+**A pool had to learn to be restored.** §9 says a save carries the entity pool's exact
+state and did not say how it gets back in. There is no way through the public interface:
+forcing a slot to a particular generation would take 2^32 `add`/`remove` pairs. So
+`HandlePool` gained `slotAt`, `freeSlots` and `restore` — the last of which is the only
+entry point in `core` whose input is not the pool's own, and therefore the only one that
+**validates rather than asserts**. A zero generation, a free-list entry out of range or
+repeated, and a free list that does not account for every unoccupied slot are all refusals,
+and a refused restore leaves the pool untouched.
+
+That is also why a save states each slot's occupancy *and* its free list, when either
+implies the other. Stated independently, they can be cross-checked, and a file whose two
+halves disagree is refused rather than producing a pool that hands out a handle somebody
+is still holding.
+
+**`.fpk` was not factored so much as opened up.** §15 asked for "the record-block writer
+inside `fpk.write`" to become callable on its own. It turned out that two things had to
+come out, not one, because a save carries schemas for exactly the reason a package does:
+
+* `BlockWriter`, `Block` and `Blocks` — the field layout, its two buffers, and the pair of
+  sections a block's references point into. `Fields` and `List` now hold that pair instead
+  of a `*fpk.Reader`, so the *reading* code cannot tell a save from a package either. That
+  half was not in §15 and is the more valuable one: a serializer and a deserializer sharing
+  a layout is worth much less than both of them sharing it with the format that already has
+  a mutate-one-byte test.
+* `SchemaWriter` and `SchemaDecoder` — the self-describing schema encoding, so "carry the
+  schema, do not assume the reader's" is one implementation rather than two.
+
+`PackageTooLarge` became `TooLarge` in the move, since the writer is no longer only a
+package's.
+
+**`serialize` and `deserialize` are generated together, in one function, over one struct.**
+Not two independent derivations that happen to agree. Two functions that disagree about
+which slot a field lives in produce a file that loads without complaint and is wrong, which
+is the worst available outcome and the hardest to notice.
+
+**`serialize` is optional, and its absence means the type is not saved.** A derived cache
+or a frame-local marker should not be in a save, and `Registration.savable` requires *both*
+halves — a type that can be written and not read back would produce a file this build
+cannot open, which is worse than a type that is quietly absent. The sandbox has no such
+type; the test that proves it does.
+
+**The reader validates everything before it applies anything.** Two passes: the first
+decodes the type table, bounds every block and checks every owner entity against the pool
+the file itself describes; the second restores the pool and adds components. A corrupt file
+therefore leaves the world exactly as it was. The honest exception is an allocation failure
+during the second pass, which leaves a partly populated world the caller should discard;
+there is no way to reserve the whole of it up front and pretending otherwise would be worse
+than saying so.
+
+**A save's iteration order is dense order, and that is what is written.** §5's rule is only
+worth something if it survives a reload, so the owners and blocks go out in dense order and
+`addComponent` puts them back in the same sequence — including the shuffle a swap-removal
+left behind. There is a test that walks both worlds' queries in step.
+
+**§12's error table gained the save's own.** `SaveCorrupt` and `SaveUnsupportedVersion` were
+already there; implementation added `NotASave` (told apart from an unreadable one, so
+`versionOf` can say "format 3, this build understands 1"), `SaveUnsupportedFlags`, and
+`WorldNotEmpty` — the last being a caller mistake rather than a bad file, and the reachable
+form of the assertion `restore` makes.
+
+**Two open questions are now answered by having built it.** §13's fifth — merging a save
+into a live world — is still open and is still not owed anything, but the type table is
+exactly what a remap pass would need, so nothing has been designed out. §13's sixth was
+already settled at step 5 by hot reload rather than by a tool.
+
+**Verified by running it, not by inference.** 4,000 entities and 12,000 components written
+by one process and read by another, with a click landing on entity `2632#1` — the same
+handle the run that created it picked. Two saves of the same world are byte-identical, a
+save-load-save round trip is byte-identical, and every single-byte change to a save file is
+a test.

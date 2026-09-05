@@ -157,7 +157,7 @@ means re-uploading the whole thing; rule 10 in `rhi.md` §11 grew to match, befo
 exists — and `docs/modding/content-mods.md` is written by doing it, then verified by
 following it verbatim.
 
-### M4 — World: "it has entities"
+### M4 — World: "it has entities" — **complete (2026-09-05)**
 
 * Entity storage: generational handles, sparse set with dense per-component arrays.
 * Type-erased component storage with runtime-registered `ComponentTypeInfo` (ADR-0010).
@@ -165,7 +165,10 @@ following it verbatim.
 * Queries and iteration that do not leak storage layout, with **stable documented iteration
   order** (I9).
 * System registration and ordered update.
-* Save/load of world state through the record system, by content ID.
+* Save/load of world state in its own versioned format, sharing the field-block layout and
+  schema encoding with the package format. **Not** through the record system: giving every
+  entity a content ID would derive identity from position, which is what I2 forbids
+  (`docs/design/entity-storage.md` §9).
 
 **Exit criteria:** a scene of entities defined in content data, updated by systems, saved and
 reloaded correctly across a restart. A fixed scenario run twice produces identical state.

@@ -815,3 +815,34 @@ the store runs. A `.fpk` is read in place and cannot be rewritten, so pre-resolu
 mean a side table per record per field, built for consumers that do not exist yet. `find`
 makes "resolve once, then use handles" available to anything that wants it; M4 is where
 something will.
+
+---
+
+## Resolution: the block layout leaves `.fpk` (M4, 2026-09-05)
+
+Not a change to either format — a change to who owns the layout of a record's fields.
+
+M4's save format lays out a component's fields against the component type's schema, exactly
+the way §5.3 lays out a record's (`entity-storage.md` §9). Two implementations of one layout
+are two things that drift apart, and the drift reads as a field returning zero rather than as
+an error, so the layout came out of `fpk.write` and `fpk.Reader` and became its own types:
+
+* **`BlockWriter` and `Block`** — the writing half. `BlockWriter` owns the two buffers a
+  block needs, the packed fields and the strings they refer to; `Block` is one reserved block
+  and sets its fields by position, marking each present as it goes. `beginArray` reserves a
+  run of them at `blockSize` stride, which is what `blockSize` was already rounded for.
+* **`Blocks`** — the reading half, and the more valuable one. It is the pair of sections a
+  block's references point into, plus the one bound reading them needs. `Fields` and `List`
+  now hold a `Blocks` rather than a `*fpk.Reader`, so **the reading code cannot tell a save
+  from a package** — which means the save inherits this format's mutate-one-byte discipline
+  instead of growing a second one of its own.
+* **`SchemaWriter` and `SchemaDecoder`** — the self-describing schema encoding. A save
+  carries every component type's schema for exactly the reason §6 makes a package carry every
+  schema its records use, so "carry the schema, do not assume the reader's" is now one
+  implementation rather than two.
+
+`.fpk` is a container around these: a header, a schema entry table, a record index, and the
+two buffers `BlockWriter` produced. Nothing about the format on disk changed, and no version
+was bumped, because nothing about the bytes changed — only where the code that writes and
+reads them lives. `WriteError.PackageTooLarge` became `BlockError.TooLarge` in the move,
+since the writer is no longer only a package's.
