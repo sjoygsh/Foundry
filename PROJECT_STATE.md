@@ -1,20 +1,16 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-05
-**Updated by:** **M5's design phase is complete.** Its two long-held `CLAUDE.md` §9
-decisions were made first — physics is **Foundry's own, scoped to collision rather than
-dynamics** (ADR-0022) and audio is **Foundry's own mixer and WAV decoding** (ADR-0023), both
-put to the user before any code existed to make them by accident, and in the physics case
-decided by I9 rather than by licensing. All three design documents are now written:
-`tilemaps-and-collision.md`, `audio.md` and `sprite-animation.md`. Audio's is the substantial
-one, because audio is the first subsystem with **a second thread Foundry did not create**, and
-every decision in it is downstream of that — state split by owning thread, two SPSC rings, no
-lock anywhere, and a stepped null device that makes the mixer testable while being honest that
-it does not exercise the ring under concurrency. Sprite animation's conclusion is that the
-`scene`/`render2d` crossing it was written to resolve **dissolves once the state is an
-integer**, leaving the engine two pure functions and a region cut. **No engine code has
-changed** — M5 so far is decisions and design, which is where the last three milestones
-started too.
+**Updated by:** **M5's design phase is complete, and its first two implementation steps are
+done.** The two long-held `CLAUDE.md` §9 decisions were made first — physics is **Foundry's
+own, scoped to collision rather than dynamics** (ADR-0022) and audio is **Foundry's own mixer
+and WAV decoding** (ADR-0023), the first decided by I9 rather than by licensing. All three
+design documents are written: `tilemaps-and-collision.md`, `audio.md` and
+`sprite-animation.md`. **`physics2d` now exists** — L1 on `core` alone, with the layering
+confirmed by breaking it — holding shapes, the four static pair tests, the swept box test, the
+body pool and the tile grid, **including the neighbour-aware face culling that is the exact fix
+for the internal-edge snag**. 627 tests pass under `-Drhi=null` and 635 under `-Drhi=metal`;
+the 37 new ones are `physics2d`'s. No broadphase and no movement yet — those are steps 3 and 4.
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
 
@@ -113,6 +109,23 @@ component are the sample's, for the same reason M5 adds no `foundry:collider`.
 **Nothing is owed before the code now.** Three documents, three implementation orders:
 `tilemaps-and-collision.md` §15, `audio.md` §13, `sprite-animation.md` §10.
 
+**Collision steps 1 and 2 are implemented.** `physics2d` is in the build graph at L1 with
+`core` as its only dependency, and the layering was confirmed the way ADR-0007 asks — by
+breaking it, with a *referenced* illegal import, since Zig's lazy analysis lets an unused one
+compile clean. The error is `no module named 'data' available within module 'root'`, and the
+failed command line shows `--dep core` and nothing else. What exists: `Shape` (box as
+half-extents, circle), `Bounds`, the four static pair tests with a stated normal convention,
+the swept box-versus-box test, `Body` with its symmetric layer/mask filter and its opaque
+`user` word, `World` with generational body and grid pools, and `Grid` with the cell walk and
+**neighbour-aware face culling**. Three decisions implementation had to make that the document
+did not settle: *touching exactly is not an overlap*, and on a zero-motion axis being exactly
+on the boundary counts as outside — both so that a body flush against a wall and sliding along
+it reports nothing, which is the common case in a tile game; *outside a grid is not solid*,
+because a grid is a shape source rather than a world boundary and a closed map is a border of
+solid tiles, which is content (I5); and a **`solid` bitset shorter than the tileset leaves the
+rest passable** rather than reading out of bounds, because that array comes from content that
+may predate a tile being added.
+
 **The milestone behind it — M4 — World: "it has entities." Complete, 2026-09-05.** Every item
 on its ROADMAP list is done and both exit criteria are met. `docs/design/entity-storage.md`
 settled six things ADR-0010 left open; the ones worth carrying forward are that a component
@@ -126,11 +139,40 @@ the deserializer matches by position, so an unchecked mismatch would read `y` in
 
 ## What has been implemented
 
-**`core` (L0), `platform` and `data` (L1), `rhi` (L2) with two backends, `asset` (L2),
-`render2d` and `scene` (L3), `app` (L4), plus `tools/fpack`. It draws thousands of sprites
-under a camera that pans, zooms and picks, and it loads content by content id. `scene` holds
-entities, component types, queries and systems; entities can be described in content, and a
-whole world can be written to a file and read back with its handles intact.**
+**`core` (L0), `platform`, `data` and `physics2d` (L1), `rhi` (L2) with two backends,
+`asset` (L2), `render2d` and `scene` (L3), `app` (L4), plus `tools/fpack`. It draws thousands
+of sprites under a camera that pans, zooms and picks, and it loads content by content id.
+`scene` holds entities, component types, queries and systems; entities can be described in
+content, and a whole world can be written to a file and read back with its handles intact.
+`physics2d` holds shapes, bodies and tile grids, and can sweep a box against a wall without
+catching on the seams between its tiles.**
+
+**M5, new (steps 1 and 2 of `tilemaps-and-collision.md` §15):**
+
+* `engine/src/physics2d/shape.zig` — `Shape` (box as **half-extents**, so every test is a
+  Minkowski sum rather than four subtractions at the call site; circle), `Bounds`, `Contact`
+  with the convention *the normal points from `b` toward `a`, and moving `a` by
+  `normal * depth` separates them exactly*, the four static pair tests, and `sweepBox`: one
+  slab test against a Minkowski-expanded box, no iteration. Its two conventions both exist so
+  a body sliding flush along a wall reports nothing — a graze is a miss, and on a zero-motion
+  axis the slab boundary counts as outside. A sweep that **began** overlapping says so with a
+  null face rather than pretending to hit at fraction zero, because a sweep cannot resolve a
+  penetration that is behind it.
+* `engine/src/physics2d/body.zig` — `Body`, `BodyHandle`, `BodyKind`, and the **symmetric**
+  layer/mask filter: both sides must admit the pair, so the situation where A is pushed by B
+  but B is not pushed by A cannot arise. `user` is an opaque `u64` and is the entire coupling
+  to the rest of the engine.
+* `engine/src/physics2d/grid.zig` — `Grid` (borrowed `tiles` and `solid`, so the module never
+  learns what an asset is), the clamped cell range, the row-major cell walk, `overlapsBox`,
+  `sweepBox`, and **`facesAt`, which is the internal-edge fix**: a face whose neighbouring cell
+  is also solid is interior to the wall and cannot legitimately be hit. Four bit tests per
+  cell, exact rather than a tolerance, and impossible for a pile of static boxes because a box
+  does not know its neighbours. Its regression test slides a box twelve half-cells along a
+  tiled floor and fails on *any* reported contact.
+* `engine/src/physics2d/world.zig` — generational pools for bodies and grids, validation at
+  the boundary (a degenerate shape or a malformed grid is refused, never asserted), `setPosition`
+  named as the teleport it is, and iteration in ascending handle-index order.
+* `engine/src/physics2d/root.zig`, and the module in `build.zig` at L1 on `core` alone.
 
 **M4, new:**
 
@@ -365,9 +407,9 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 590 tests** (56 `core`, 70 `platform`, 104 `data`, 92 `rhi`,
-36 `asset`, 103 `render2d`, 79 `scene`, 28 `app`, 14 `fpack`, 8 integration), and **598 under
-`-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
+**`zig build test` passes 627 tests** (56 `core`, 70 `platform`, 104 `data`, 37 `physics2d`,
+92 `rhi`, 36 `asset`, 103 `render2d`, 79 `scene`, 28 `app`, 14 `fpack`, 8 integration), and
+**635 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
 8 exceptions need a real GPU and compile only when Metal is selected.
@@ -453,13 +495,15 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M5, with its design phase complete and implementation not begun.** The two §9 decisions
-are made (ADR-0022, ADR-0023), all three design documents are written, and no engine code has
-changed. The next unit of work is **step 1 of `tilemaps-and-collision.md` §15**: `physics2d`
-in the build graph with `core` as its only dependency, with the layering confirmed by breaking
-it. Collision and audio are independent sequences that share only the frame that calls both,
-so either could go first; collision goes first because it is what the milestone's exit
-criterion is about.
+**M5, on the collision sequence.** All three design documents are written and steps 1 and 2
+of `tilemaps-and-collision.md` §15 are implemented: `physics2d` exists at L1 on `core` alone,
+with shapes, the pair tests, the swept box test, the body and grid pools, and the tile grid
+with neighbour-aware face culling. The next unit is **step 3, the broadphase** — a uniform
+spatial hash over movable and trigger bodies, updated incrementally as bodies move, with
+candidates collected and then **sorted by handle index before use**. That sort is the whole
+point: it is what makes the acceleration structure replaceable without changing a single
+result, and step 3 is the first step where an I9 test is meaningful, because before it there is
+nothing whose order could vary.
 
 What follows in this section is the record of the milestones behind it, kept because the
 reasoning is what a future session needs and the commit log is not where reasoning lives.
@@ -841,12 +885,14 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 **M5 is open, its design is finished, and the next thing is code.** Three independent
 sequences, each with its order written down in its own document:
 
-1. **Collision**, `tilemaps-and-collision.md` §15, seven steps: `physics2d` in the build graph
-   with `core` as its only dependency and the layering confirmed by breaking it; the tile grid
-   with neighbour-aware face culling; the broadphase and its determinism sort; movement and
-   queries; tilemap content and the `fpack` front end; drawing with view culling; the
-   sandbox's player colliding with the map. **This is where to start** — it is what the
-   milestone's exit criterion is about.
+1. **Collision**, `tilemaps-and-collision.md` §15. **Steps 1 and 2 are done.** Remaining:
+   step 3, the broadphase — a uniform spatial hash over movable and trigger bodies, updated
+   incrementally on move, with candidates sorted by handle index before use, and the first
+   meaningful I9 test (the same world described in two different insertion orders must agree);
+   step 4, `moveAndSlide` with its documented four-iteration budget, `resolveOverlaps` kept
+   separate so "stuck in a wall" is detectable, and the four queries with their truncation
+   reporting; step 5, tilemap content and `fpack`'s text-grid front end; step 6, drawing with
+   view culling; step 7, the sandbox's player colliding with the map.
 2. **Audio**, `audio.md` §13, six steps, and the first three add no threads at all: the
    `foundry:sound` schema, `Sound` and the WAV decoder in `asset` with its corpus; the device
    in `platform` including the stepped null one; `audio` in the build graph at L3; the rings,

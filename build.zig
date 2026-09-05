@@ -37,6 +37,14 @@ const layering = [_]Module{
     // wondering what it might read. That fell out of ADR-0007 rather than being designed.
     .{ .name = "data", .deps = &.{"core"} },
 
+    // L1 — collision, not dynamics (ADR-0022, docs/design/tilemaps-and-collision.md).
+    // `core` alone, and the shortness of that list is the design: no entities, because
+    // `scene` is above it; no content, because a grid's arrays are borrowed from whoever
+    // loaded them; no `platform`, so there is no clock to read (I9 rule 4) and nothing to
+    // open. A collision module that needed any of the three would be announcing that it had
+    // grown into a physics engine.
+    .{ .name = "physics2d", .deps = &.{"core"} },
+
     // L2 — Metal/Vulkan/D3D live ONLY here (ADR-0003).
     .{ .name = "rhi", .deps = &.{ "core", "platform" } },
 
