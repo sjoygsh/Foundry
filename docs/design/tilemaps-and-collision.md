@@ -638,11 +638,10 @@ contemplates. Nothing here forecloses either answer.
 
 ---
 
-## Resolution: the tilemap content model (step 5, part one, 2026-09-05)
+## Resolution: tilemap content (step 5, 2026-09-05)
 
-The three record types, the `foundry:tilegrid` asset and its runtime format, and the loader.
-`fpack`'s text-grid front end is the second half of the step and is not yet built. Four things
-§9 and §11 did not settle.
+The three record types, the `foundry:tilegrid` asset and its runtime format, the loader, and
+`fpack`'s text-grid front end. Six things §9 and §11 did not settle.
 
 **The schemas live in `asset`, not in `render2d`, and `fpack` is what forced it.** §11 put them
 beside the texture loader and recorded the wart in open question 1: *"a consumer wanting map
@@ -681,4 +680,33 @@ One small addition to `data` fell out: `List.intAt` and `List.floatAt`, which ar
 three lines for the other scalar kinds. Reading `[ 16 16 ]` through `valueAt` means handing an
 allocator to a loop that allocates nothing, which is the exact complaint `idAt`'s own comment
 records.
+
+**`fpack` now emits two things, and open question 2 is answered by building it.** The design
+said the grid's authoring format is "a plain text grid of numbers, compiled by `fpack`" and
+did not say where the compiled file goes — and `fpack` until now emitted exactly one file, the
+`.fpk`, with the package's *sources* installed beside it for the registry to read assets from.
+An authoring format that compiles to a different file is the first asset kind where those
+diverge, so the tool gained `--assets-out`: a directory receiving only what it generated, kept
+apart from the sources so that what a person wrote and what a tool produced never share a tree.
+The build installs both over `content/<stem>`, and they are disjoint — a `.grid` stays a
+source, and the `.fgrid` beside it is what a record names.
+
+The emitted path is the authored path with the runtime extension, which means **both derive the
+same content id** and derivation needs no special case at all: a compiled grid joins
+`walk.assets` and is minted exactly like a `.png` someone dropped in, collision check included.
+The authoring format itself is deliberately dull — decimal ids, `#` comments, rows the same
+width — with one rule that is not: **rows are written top first and stored bottom first**,
+reversed once in the parser, because world Y is up and a map that looked upside down in exactly
+one of the two things that read it would be the worst possible outcome.
+
+**A build bug fell out of testing it, and it was not new.** `addDirectoryArg` passes a
+directory's path and creates the step dependency; it does *not* put the directory's contents in
+the Run step's cache key. So editing content did not re-run `fpack`, and the build installed a
+stale `.fpk` — silently, and for as long as nothing else in the graph changed. The fix is to
+walk the package at configure time and add every file with `addFileInput`, which also picks up
+files added since the last build, because `build.zig` runs every time. The comment claiming
+this behaviour had been there since M3; it is now true.
+
+**Step 5 is complete.** Still to come: step 6, drawing with view culling, and step 7, the
+sandbox's player meeting the map it now ships.
 

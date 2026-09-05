@@ -30,3 +30,30 @@ settings sandbox:settings.main {
     sheet   sandbox:textures.sprites
     font    foundry:fonts.debug
 }
+
+# The sample's map. Three engine-owned record types and one asset, none of them declared
+# here: `foundry:tileset`, `foundry:tilemap.layer` and `foundry:tilemap` are registered
+# before this file is compiled, exactly as `foundry:texture` is.
+
+foundry:tileset sandbox:tiles.room {
+    # The same sheet the sprites use, read as a 4x4 grid of 16-pixel tiles.
+    texture sandbox:textures.sprites
+    tile    [ 16 16 ]
+    columns 4
+    # Which tile ids block. Everything else is floor. This one list is the whole of the
+    # map's collision, and a mod can change it without touching the map.
+    solid   [ 1 ]
+}
+
+foundry:tilemap.layer sandbox:map.room.walls {
+    tileset  sandbox:tiles.room
+    grid     sandbox:grids.room
+    order    0
+    collides true
+}
+
+foundry:tilemap sandbox:map.room {
+    size   [ 12 10 ]
+    cell   [ 16 16 ]
+    layers [ sandbox:map.room.walls ]
+}

@@ -8,8 +8,15 @@
 //! same `data` every consumer will.
 //!
 //! ```
-//! fpack --name foundry:core --out zig-out/content/core.fpk content/core
+//! fpack --name foundry:core --out zig-out/content/core.fpk \
+//!       --assets-out zig-out/content/core content/core
 //! ```
+//!
+//! Two outputs, because a package has two kinds of thing in it. The `.fpk` is the compiled
+//! records; `--assets-out` receives the assets that had an authoring format of their own and
+//! had to be compiled too — a tile grid, today. It is kept separate from the package
+//! directory so that what a person wrote and what a tool produced are never mixed, and it is
+//! only needed by a package that contains something requiring compilation.
 //!
 //! The package's name and version are arguments rather than a file in the directory. `data`
 //! consumes a load order and does not compute one, and mod manifests are M7
@@ -32,6 +39,7 @@ const usage =
     \\
     \\  --name <namespace:name>   the package's content id (required)
     \\  --out <file.fpk>          where to write the compiled package (required)
+    \\  --assets-out <dir>        where to write compiled assets (required if any)
     \\  --version <n>             the package's version (default 1)
     \\  --quiet                   report nothing on success
     \\  --help                    this text
@@ -41,6 +49,7 @@ const usage =
 const Args = struct {
     name: []const u8 = "",
     out: []const u8 = "",
+    assets_out: []const u8 = "",
     version: u32 = 1,
     quiet: bool = false,
     dir: []const u8 = "",
@@ -93,6 +102,7 @@ pub fn main(init: std.process.Init) !u8 {
     const result = pack.compile(gpa, os, args.dir, .{
         .name = args.name,
         .version = args.version,
+        .assets_out = if (args.assets_out.len == 0) null else args.assets_out,
     }, &registry, &diags, &bytes);
 
     // Diagnostics are rendered whatever happened: a package can compile and still have
@@ -140,6 +150,8 @@ fn parseArgs(argv: []const []const u8, err_writer: *std.Io.Writer) ArgError!Args
             args.name = try value(argv, &i, err_writer);
         } else if (std.mem.eql(u8, arg, "--out")) {
             args.out = try value(argv, &i, err_writer);
+        } else if (std.mem.eql(u8, arg, "--assets-out")) {
+            args.assets_out = try value(argv, &i, err_writer);
         } else if (std.mem.eql(u8, arg, "--version")) {
             const text = try value(argv, &i, err_writer);
             args.version = std.fmt.parseInt(u32, text, 10) catch {
@@ -195,9 +207,16 @@ test "arguments are read, and a missing one is a usage error rather than a defau
     try testing.expectEqual(@as(u32, 1), args.version);
     try testing.expect(!args.quiet);
 
-    const with_version = try parseArgs(&.{ "content/core", "--name", "a:b", "--out", "o", "--version", "7", "--quiet" }, &writer);
+    // Absent rather than defaulted: a package with nothing to compile needs no output
+    // directory, and inventing one would create a directory nobody asked for.
+    try testing.expectEqualStrings("", args.assets_out);
+
+    const with_version = try parseArgs(&.{ "content/core", "--name", "a:b", "--out", "o", "--version", "7", "--quiet", "--assets-out", "gen" }, &writer);
     try testing.expectEqual(@as(u32, 7), with_version.version);
     try testing.expect(with_version.quiet);
+    try testing.expectEqualStrings("gen", with_version.assets_out);
+
+    try testing.expectError(error.BadUsage, parseArgs(&.{ "--name", "a:b", "--out", "o", "--assets-out" }, &writer));
 
     try testing.expectError(error.BadUsage, parseArgs(&.{"content/core"}, &writer));
     try testing.expectError(error.BadUsage, parseArgs(&.{ "--name", "a:b", "--out", "o" }, &writer));

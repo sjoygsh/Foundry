@@ -145,7 +145,56 @@ Three things to know about it:
 default to `nearest` and `clamp`. A spelling neither of them recognises is a warning naming
 what is legal, and the default is used — a typo should not make your texture disappear.
 
-## 6. Hot reload
+## 6. Maps
+
+A tilemap is three records over one asset, and the split is what makes it moddable in pieces.
+
+```fdt
+foundry:tileset mymod:tiles.cave {
+    texture mymod:textures.cave      # a foundry:texture, by ID
+    tile    [ 16 16 ]                # pixels per tile in that image
+    columns 16                       # tiles per row in it
+    solid   [ 1 2 3 ]                # which tile IDs block. Everything else is floor.
+}
+
+foundry:tilemap.layer mymod:map.cave.walls {
+    tileset  mymod:tiles.cave
+    grid     mymod:grids.cave        # the numbers, as an asset
+    order    0                       # draw order
+    collides true
+}
+
+foundry:tilemap mymod:map.cave {
+    size   [ 40 30 ]                 # cells
+    cell   [ 16 16 ]                 # world units per cell
+    layers [ mymod:map.cave.walls ]
+}
+```
+
+**The numbers live in a `.grid` file, not in your `.fdt`.** A map is thousands of integers,
+and a thousand integers in a content file is a binary payload wearing a disguise. Write it
+the way it looks:
+
+```
+# grids/cave.grid
+1 1 1 1
+1 0 0 1
+1 1 1 1
+```
+
+Whitespace separates, `#` runs to the end of the line, and every row needs the same number of
+columns as the first. **The top row here is the top row on screen** — the compiler flips it,
+because in world space Y points up.
+
+`fpack` compiles it to `grids/cave.fgrid` and derives `mymod:grids.cave` from the path, by the
+same rule §5 gives. You never name either filename anywhere else.
+
+**Three things you can change without owning the map.** Making water solid is one line in
+somebody else's `foundry:tileset`, overridden by ID. Replacing the art is overriding a
+`foundry:texture`. Adding a layer to one map is overriding one `foundry:tilemap`. None of them
+means restating the map, and that is why these are three records and not one.
+
+## 7. Hot reload
 
 In a development build the engine watches what it loaded. Recompile your package, or just
 save an image, and the running program picks it up at the start of the next frame:
@@ -166,7 +215,7 @@ packages declaring the same record type at the same version must agree about it,
 could read either one's records. Add a field, raise the version, give the field a default —
 content written against the old version keeps working, which is what versioning is for.
 
-## 7. Types
+## 8. Types
 
 The list is closed. There are no others, on purpose: every type costs three implementations
 that have to agree, and a type that reaches a compiled package can never be removed.
@@ -185,7 +234,7 @@ An inline struct composes, which is why there is no colour type and no vector ty
 a mod might want to override *on its own* should be a record with a content ID instead;
 that choice is the most consequential one a schema author makes.
 
-## 8. When something is wrong
+## 9. When something is wrong
 
 `fpack` prints the file, the line, the column and the line itself with a caret under the
 problem. It reports every mistake it can rather than stopping at the first, and it exits
@@ -196,7 +245,7 @@ different fixes — an asset that is *missing* is a different sentence from one 
 *corrupt*, and a record that is not the type you asked for is a third. That distinction is
 deliberate and tested.
 
-## 9. What this does not cover yet
+## 10. What this does not cover yet
 
 See [`README.md`](README.md) for the honest list. The short version: no mod manager, no
 dependency resolution, no manifests, no partial edits, no scripting, no native mods.

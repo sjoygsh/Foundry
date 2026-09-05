@@ -54,6 +54,16 @@ pub const Options = struct {
     /// Cap on one source file, so a directory full of something else is refused rather
     /// than read.
     max_source_bytes: usize = 16 * 1024 * 1024,
+    /// Where compiled assets go, or null if the caller is not expecting any.
+    ///
+    /// **The one thing `fpack` writes that the package directory did not contain.** An
+    /// authoring format compiles to a runtime one (`CLAUDE.md` §6), and a tile grid is the
+    /// first asset kind where those are different files — so the output is the `.fpk` *and*
+    /// a small tree of generated assets, kept apart from the sources so that what a person
+    /// wrote and what a tool produced are never confused for one another. A package
+    /// containing something that needs compiling and no place to put it is a usage error,
+    /// reported as one.
+    assets_out: ?[]const u8 = null,
 };
 
 /// Compiles the package rooted at `dir` and appends the `.fpk` bytes to `out`.
@@ -167,6 +177,15 @@ pub fn compile(
         };
     }
 
+    // 3b. Authoring-format assets, compiled into the output tree. Their emitted paths join
+    //     `walk.assets`, so derivation treats them exactly as it treats a `.png` an author
+    //     dropped in — one derivation rule, one collision check, no special case.
+    compileGrids(gpa, arena.allocator(), os, dir, options, &walk, &loader, diags) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.IoFailed => return error.IoFailed,
+        error.ContentInvalid => failed = true,
+    };
+
     // 4. Derived asset records, materialised as text and compiled by the same parser and
     //    the same checker the authored ones went through.
     const derived_source = derive(gpa, arena.allocator(), &walk, &pkg, registry, diags) catch |err| switch (err) {
@@ -219,10 +238,17 @@ pub const Walk = struct {
     sources: std.ArrayList([]const u8) = .empty,
     /// Package-relative paths of files whose extension names an asset kind, sorted.
     assets: std.ArrayList([]const u8) = .empty,
+    /// Package-relative paths of authoring-format files that compile to an asset, sorted.
+    ///
+    /// A third list rather than a flag on `assets`, because these are *sources*: nothing
+    /// downstream may reference one, and the file that ends up in the package is the one
+    /// this compiles to.
+    grids: std.ArrayList([]const u8) = .empty,
 
     pub fn deinit(self: *Walk, gpa: Allocator) void {
         self.sources.deinit(gpa);
         self.assets.deinit(gpa);
+        self.grids.deinit(gpa);
         self.* = undefined;
     }
 
@@ -288,6 +314,8 @@ pub const Walk = struct {
                     const ext = extensionOf(entry.name);
                     if (std.mem.eql(u8, ext, source_extension)) {
                         try self.sources.append(gpa, rel);
+                    } else if (std.mem.eql(u8, ext, asset.tilegrid.text_extension)) {
+                        try self.grids.append(gpa, rel);
                     } else if (asset.schemas.kindForExtension(ext) != null) {
                         try self.assets.append(gpa, rel);
                     }
@@ -408,6 +436,91 @@ fn normalize(arena: Allocator, path: []const u8) Allocator.Error!?[]const u8 {
 /// sure of that is for it to go through the same parser and the same checker. A derived
 /// record that collides with an authored one then reports itself with the note the checker
 /// already writes, instead of with a second implementation of the same complaint.
+/// Compiles every authoring-format asset into the output tree, and adds what it wrote to
+/// the walk so that derivation mints a record for it.
+///
+/// **The emitted path is the authored path with the runtime extension.** Both derive the
+/// same content id, which is what makes this invisible to everything downstream: an author
+/// writes `grids/town/walls.grid`, the engine loads `grids/town/walls.fgrid`, and the id is
+/// `<ns>:grids.town.walls` either way (ADR-0021). A package that ships both is caught by
+/// derivation's existing collision check, which names both files.
+fn compileGrids(
+    gpa: Allocator,
+    arena: Allocator,
+    os: *Os,
+    dir: []const u8,
+    options: Options,
+    walk: *Walk,
+    loader: *Loader,
+    diags: *Diagnostics,
+) Error!void {
+    if (walk.grids.items.len == 0) return;
+
+    const out_root = options.assets_out orelse {
+        // A usage error rather than a content one: the package is fine and the caller did
+        // not say where compiled assets go.
+        try diags.addFmt(gpa, .err, .whole(dir), 1, "", "this package contains {d} '.{s}' file(s) that compile to assets, but no output directory was given; pass --assets-out", .{ walk.grids.items.len, asset.tilegrid.text_extension });
+        return error.ContentInvalid;
+    };
+
+    var failed = false;
+    for (walk.grids.items) |rel| {
+        const text = loader.read(rel) catch |err| {
+            failed = true;
+            try diags.addFmt(gpa, .err, .whole(rel), 1, "", "could not be read: {s}", .{@errorName(err)});
+            continue;
+        };
+
+        var failure: asset.tilegrid.ParseFailure = undefined;
+        var grid = asset.tilegrid.parseText(gpa, text, &failure) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {
+                failed = true;
+                const line = if (failure.line == 0) 1 else failure.line;
+                try diags.addFmt(gpa, .err, .whole(rel), line, failure.token, "{s}", .{asset.tilegrid.describeParseError(failure.err)});
+                continue;
+            },
+        };
+        defer grid.deinit(gpa);
+
+        const bytes = asset.tilegrid.write(gpa, grid.width, grid.height, grid.tiles) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            // Unreachable in practice — the parser only produces rectangles — but a compiler
+            // that trusted that would be one assertion away from a crash on a mod's file.
+            error.InvalidGrid => {
+                failed = true;
+                try diags.addFmt(gpa, .err, .whole(rel), 1, "", "is not a grid this compiler can write", .{});
+                continue;
+            },
+        };
+        defer gpa.free(bytes);
+
+        const emitted = try std.fmt.allocPrint(arena, "{s}.{s}", .{
+            rel[0 .. rel.len - asset.tilegrid.text_extension.len - 1],
+            asset.schemas.tilegrid_extension,
+        });
+        const absolute = platform.os.joinPath(arena, &.{ out_root, emitted }) catch return error.IoFailed;
+        if (std.fs.path.dirname(absolute)) |parent| {
+            os.createDirPath(parent) catch return error.IoFailed;
+        }
+        os.writeFile(absolute, bytes) catch |err| {
+            try diags.addFmt(gpa, .err, .whole(emitted), 1, "", "could not be written: {s}", .{@errorName(err)});
+            return error.IoFailed;
+        };
+
+        try walk.assets.append(gpa, emitted);
+    }
+
+    // Sorted, because derivation walks this list and I9 wants the answer to depend on the
+    // package rather than on which pass appended last.
+    std.mem.sort([]const u8, walk.assets.items, {}, lessByPath);
+    if (failed) return error.ContentInvalid;
+}
+
+fn lessByPath(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.lessThan(u8, a, b);
+}
+
 fn derive(
     gpa: Allocator,
     arena: Allocator,
@@ -575,6 +688,11 @@ const Fixture = struct {
     registry: data.Registry,
     diags: Diagnostics,
     bytes: std.ArrayList(u8) = .empty,
+    /// Where compiled assets go. Dot-prefixed, so the walk skips it — which also means the
+    /// tests prove that a generated tree sitting inside the package is not mistaken for
+    /// content, and the real build keeps it outside anyway.
+    gen: []const u8 = "",
+    gen_buf: [std.Io.Dir.max_path_bytes]u8 = undefined,
 
     fn init() !*Fixture {
         const gpa = testing.allocator;
@@ -589,6 +707,7 @@ const Fixture = struct {
         };
         const n = try self.tmp.dir.realPath(testing.io, &self.root_buf);
         self.root = self.root_buf[0..n];
+        self.gen = try std.fmt.bufPrint(&self.gen_buf, "{s}/.gen", .{self.root});
         return self;
     }
 
@@ -613,7 +732,25 @@ const Fixture = struct {
 
     fn compileIt(self: *Fixture, name: []const u8) Error!void {
         self.bytes.clearRetainingCapacity();
+        return compile(testing.allocator, self.os, self.root, .{
+            .name = name,
+            .assets_out = self.gen,
+        }, &self.registry, &self.diags, &self.bytes);
+    }
+
+    /// The same compile with nowhere to put generated assets, which is what a caller that
+    /// forgot `--assets-out` does.
+    fn compileWithNoAssetOutput(self: *Fixture, name: []const u8) Error!void {
+        self.bytes.clearRetainingCapacity();
         return compile(testing.allocator, self.os, self.root, .{ .name = name }, &self.registry, &self.diags, &self.bytes);
+    }
+
+    /// A file `fpack` generated, read back from disk.
+    fn readGenerated(self: *Fixture, rel: []const u8) ![]u8 {
+        const gpa = testing.allocator;
+        const path = try platform.os.joinPath(gpa, &.{ self.gen, rel });
+        defer gpa.free(path);
+        return self.os.readFile(gpa, path, 1 << 20);
     }
 
     fn open(self: *Fixture) !data.fpk.Reader {
@@ -903,4 +1040,101 @@ test "an authored tilegrid record beats the one its path would derive" {
     // which is the rule assets already had and which a new kind inherits for free.
     try testing.expectEqual(@as(u32, 1), r.record_count);
     try testing.expectEqualStrings("sandbox:maps.the_town", r.record(0).?.name);
+}
+
+test "a text grid compiles to an asset the package did not contain" {
+    var f = try Fixture.init();
+    defer f.deinit();
+
+    try f.write("grids/town/walls.grid",
+        \\# the town's walls, as they look on screen
+        \\1 1 1
+        \\1 0 1
+        \\1 1 1
+    );
+
+    try f.compileIt("sandbox:content");
+
+    // The emitted file is the authored path with the runtime extension, and it is a real
+    // grid the engine's own reader accepts.
+    const bytes = try f.readGenerated("grids/town/walls.fgrid");
+    defer testing.allocator.free(bytes);
+    var grid = try asset.tilegrid.read(testing.allocator, bytes);
+    defer grid.deinit(testing.allocator);
+    try testing.expectEqual(@as(u32, 3), grid.width);
+    try testing.expectEqual(@as(u32, 3), grid.height);
+    try testing.expectEqual(@as(?u16, 0), grid.tileAt(1, 1));
+
+    // And the package holds one record for it, with the id the *authored* path derives --
+    // the two extensions mint the same id, which is what makes this invisible downstream.
+    var r = try f.open();
+    defer r.deinit();
+    try testing.expectEqual(@as(u32, 1), r.record_count);
+    const view = r.record(0).?;
+    try testing.expectEqualStrings("sandbox:grids.town.walls", view.name);
+
+    const schema = r.schemaFor(data.SchemaId.fromStringUnchecked("foundry:tilegrid")).?;
+    const fields = r.fieldsOf(view, schema.*);
+    try testing.expectEqualStrings("grids/town/walls.fgrid", (try fields.stringAt(0)).?);
+}
+
+test "a map with a bad row names the line, and the package does not compile" {
+    var f = try Fixture.init();
+    defer f.deinit();
+
+    try f.write("grids/broken.grid",
+        \\0 0 0
+        \\0 0
+    );
+
+    try testing.expectError(error.ContentInvalid, f.compileIt("sandbox:content"));
+
+    var buf: [1024]u8 = undefined;
+    const text = try f.rendered(&buf);
+    try testing.expect(std.mem.indexOf(u8, text, "grids/broken.grid") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "same number of columns") != null);
+}
+
+test "a package that needs an asset output directory and is not given one says so" {
+    var f = try Fixture.init();
+    defer f.deinit();
+
+    try f.write("grids/town.grid", "1 1\n1 1");
+
+    try testing.expectError(error.ContentInvalid, f.compileWithNoAssetOutput("sandbox:content"));
+
+    var buf: [1024]u8 = undefined;
+    const text = try f.rendered(&buf);
+    try testing.expect(std.mem.indexOf(u8, text, "--assets-out") != null);
+}
+
+test "a package with nothing to compile writes no asset output at all" {
+    var f = try Fixture.init();
+    defer f.deinit();
+
+    try f.write("items.fdt", "@schema item { name string }\nitem foundry:item.torch { name \"Torch\" }");
+
+    // No `.grid` file, so the output directory is never created -- a build step that
+    // produces an empty directory nobody asked for is a build step nobody trusts.
+    try f.compileWithNoAssetOutput("foundry:core");
+    try f.compileIt("foundry:core");
+    try testing.expectError(error.FileNotFound, f.readGenerated("anything.fgrid"));
+}
+
+test "a text grid and a compiled one at the same path collide rather than one winning" {
+    var f = try Fixture.init();
+    defer f.deinit();
+
+    const compiled = try asset.tilegrid.write(testing.allocator, 1, 1, &.{1});
+    defer testing.allocator.free(compiled);
+    try f.write("grids/town.fgrid", compiled);
+    try f.write("grids/town.grid", "1");
+
+    try testing.expectError(error.ContentInvalid, f.compileIt("sandbox:content"));
+
+    var buf: [1024]u8 = undefined;
+    const text = try f.rendered(&buf);
+    // Derivation's existing collision check catches it, and names both files rather than
+    // the second one it happened to reach.
+    try testing.expect(std.mem.indexOf(u8, text, "derives the same content id") != null);
 }

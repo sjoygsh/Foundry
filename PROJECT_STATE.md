@@ -229,7 +229,9 @@ catching on the seams between its tiles.**
   in this module at all, and step 4 did not force the answer. Triggers block nothing and
   `overlapShape` finds them exactly.
 * `engine/src/physics2d/root.zig`, and the module in `build.zig` at L1 on `core` alone.
-* `engine/src/asset/tilegrid.zig` — the `foundry:tilegrid` runtime format (`"FGRD"`, the
+* `engine/src/asset/tilegrid.zig` — the authoring format (decimal ids, `#` comments, rows
+  **written top first and stored bottom first**, reversed once here because world Y is up) and
+  the `foundry:tilegrid` runtime format (`"FGRD"`, the
   version in a **field** rather than in the magic, a little-endian `u16` array, row 0 at the
   bottom because world Y is up), its reader, its writer and its loader. Reader and writer are
   one file so the round trip is a test rather than a hope, and `fpack` uses the writer rather
@@ -242,6 +244,16 @@ catching on the seams between its tiles.**
   `fpack` must register them without linking a renderer; the readers exist because the two
   domains the checker cannot hold — a list of exactly two, and a sort layer that fits an
   `i16` — have to be checked somewhere, and once rather than in every consumer.
+* `tools/fpack/pack.zig` — a third walk category for authoring-format assets, and
+  `compileGrids`, which turns each `.grid` into a `.fgrid` under `--assets-out` and appends
+  the emitted path to `walk.assets`. Derivation then mints its record with **no special
+  case**, because the authored path and the emitted one derive the same content id.
+* `build.zig` — `--assets-out` wired through, installed over `content/<stem>`; and
+  `addDirectoryInputs`, which fixes a **pre-existing staleness bug**: `addDirectoryArg` passes
+  a directory and creates the dependency but does not put its contents in the Run step's cache
+  key, so editing content did not re-run `fpack` and the build installed yesterday's `.fpk`.
+* `samples/sandbox/content/grids/room.grid` and the map records in `sandbox.fdt` — a
+  hand-written 12x10 room, which is what step 7 will walk a character around.
 * `engine/tests/tilemap_pipeline.zig` — the seam no module can test alone: authored text and a
   real grid file, through the registry **by content id and never by path**, into a collision
   world, ending with a body stopped by a tile a file said was solid. It links no renderer,
@@ -582,21 +594,19 @@ belongs in this module at all, and step 4 did not force the answer, so it was no
 opportunistically. Triggers block nothing and `overlapShape` finds them exactly, which is what
 a game needs to diff two overlap sets for itself — the shape the open question contemplates.
 
-**Step 5 is half done.** The content model exists: `foundry:tileset`, `foundry:tilemap.layer`
-and `foundry:tilemap` as record types, `foundry:tilegrid` as an asset with a versioned binary
-format, and a loader that turns one into `[]const u16`. An integration test carries a map from
-authored text and a real grid file all the way to a body that cannot walk through a wall.
+**Step 5 is done and a map is content.** `foundry:tileset`, `foundry:tilemap.layer` and
+`foundry:tilemap` as record types, `foundry:tilegrid` as an asset with a versioned binary
+format, a loader that turns one into `[]const u16`, and `fpack`'s text-grid front end. The
+sandbox ships a hand-written 12x10 room; the build compiles it; an integration test carries a
+map from authored text to a body that cannot walk through a wall.
 
-The placement moved: **the schemas and the grid loader live in `asset`, not in `render2d`**,
-because `fpack` has to register the record types before it can check a package and cannot link
-a renderer. That is design question 1's own stated trigger — "the first real consumer that
-wants a grid and not a GPU" — arriving earlier than expected, and the answer it points to is
-*lower*, not a new module. The question of whether a separate module is ever wanted stays open.
-
-The remaining half is **`fpack`'s text-grid front end**, which is design question 2 and which
-brings a structural consequence with it: `fpack` today emits exactly one file, and compiling a
-text grid into a binary one means it has to emit an asset the package directory did not
-contain.
+Two things moved from where the design put them. **The schemas and the grid loader live in
+`asset`, not `render2d`**, because `fpack` has to register the record types before it can check
+a package and cannot link a renderer — design question 1's own stated trigger arriving earlier
+than expected, and pointing *lower* rather than at a new module. And **`fpack` now emits two
+things**: the `.fpk`, and a `--assets-out` tree holding what it compiled. A tile grid is the
+first asset kind whose authoring and runtime forms are different files, and the sources tree
+is where a person's files live, not a tool's.
 
 What follows in this section is the record of the milestones behind it, kept because the
 reasoning is what a future session needs and the commit log is not where reasoning lives.
@@ -978,11 +988,9 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 **M5 is open, its design is finished, and the next thing is code.** Three independent
 sequences, each with its order written down in its own document:
 
-1. **Collision**, `tilemaps-and-collision.md` §15. **Steps 1 through 4 are done, and step 5
-   is half done** — the three record types, the `foundry:tilegrid` asset and its format, and
-   the loader all exist in `asset`. Remaining: the other half of step 5, `fpack`'s text-grid
-   front end; step 6, drawing with view culling; step 7, the sandbox's player colliding with
-   the map.
+1. **Collision**, `tilemaps-and-collision.md` §15. **Steps 1 through 5 are done.**
+   Remaining: step 6, `drawTilemap` with view culling; step 7, the sandbox's player colliding
+   with the map it already ships.
 2. **Audio**, `audio.md` §13, six steps, and the first three add no threads at all: the
    `foundry:sound` schema, `Sound` and the WAV decoder in `asset` with its corpus; the device
    in `platform` including the stepped null one; `audio` in the build graph at L3; the rings,

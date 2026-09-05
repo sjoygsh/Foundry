@@ -151,6 +151,121 @@ pub fn write(
     return bytes;
 }
 
+pub const text_extension = "grid";
+
+pub const ParseError = error{
+    /// No rows, or a row with no numbers.
+    Empty,
+    /// A row with a different number of columns than the first.
+    RaggedRow,
+    /// Something that is not a decimal number, or a number no tile can hold.
+    BadNumber,
+};
+
+/// Where a parse went wrong, so `fpack` can point at a line rather than at a file.
+pub const ParseFailure = struct {
+    err: ParseError,
+    /// 1-based. Zero when the failure is the file as a whole.
+    line: u32 = 0,
+    /// The offending token, borrowed from the input. Empty when there is none.
+    token: []const u8 = "",
+};
+
+/// The authoring format: a rectangle of decimal tile ids.
+///
+/// ```
+/// # town/walls.grid
+/// 0 0 0 1
+/// 0 0 0 1
+/// 1 1 1 1
+/// ```
+///
+/// Whitespace separates, `#` runs to the end of a line, and blank lines are ignored. Every
+/// row must have the same number of columns as the first, because a ragged map is a mistake
+/// every time and guessing which end to pad is a specification nobody would agree on.
+///
+/// **Rows are written top first and stored bottom first.** A picture of a map has its highest
+/// row at the top; the grid addresses cell (0,0) at the world origin and world Y is up
+/// (`render2d.md` §4). So this reverses, once, here — and that is why `physics2d`'s own test
+/// helper reverses too. Doing it anywhere else would mean a map that looks upside down in
+/// exactly one of the two things that read it.
+///
+/// **Here rather than in `fpack`, beside the binary form it compiles to.** A shipped build
+/// never parses this (`CLAUDE.md` §6) and nothing in the engine calls it today; it lives here
+/// so that text, binary and reader are one file and the round trip is one test, and so that
+/// the hot-reload path §6 leaves open does not have to link a compiler to take it.
+///
+/// The caller owns the returned tiles.
+pub fn parseText(
+    gpa: Allocator,
+    text: []const u8,
+    failure: *ParseFailure,
+) (ParseError || Allocator.Error)!TileGrid {
+    var tiles: std.ArrayList(u16) = .empty;
+    errdefer tiles.deinit(gpa);
+
+    var width: u32 = 0;
+    var height: u32 = 0;
+    var line_number: u32 = 0;
+
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |raw| {
+        line_number += 1;
+        const line = std.mem.trimEnd(u8, raw, "\r");
+        const body = line[0 .. std.mem.indexOfScalar(u8, line, '#') orelse line.len];
+
+        var columns: u32 = 0;
+        var fields = std.mem.tokenizeAny(u8, body, " \t");
+        while (fields.next()) |token| {
+            const value = std.fmt.parseInt(u16, token, 10) catch {
+                failure.* = .{ .err = error.BadNumber, .line = line_number, .token = token };
+                return error.BadNumber;
+            };
+            try tiles.append(gpa, value);
+            columns += 1;
+        }
+        if (columns == 0) continue;
+
+        if (height == 0) {
+            width = columns;
+        } else if (columns != width) {
+            failure.* = .{ .err = error.RaggedRow, .line = line_number };
+            return error.RaggedRow;
+        }
+        height += 1;
+    }
+
+    if (width == 0 or height == 0) {
+        failure.* = .{ .err = error.Empty };
+        return error.Empty;
+    }
+
+    // Top-first in, bottom-first out. One reversal, in one place.
+    const rows = try tiles.toOwnedSlice(gpa);
+    errdefer gpa.free(rows);
+    var y: u32 = 0;
+    while (y < height / 2) : (y += 1) {
+        const top = (height - 1 - y) * width;
+        const bottom = y * width;
+        var x: u32 = 0;
+        while (x < width) : (x += 1) {
+            const swap = rows[top + x];
+            rows[top + x] = rows[bottom + x];
+            rows[bottom + x] = swap;
+        }
+    }
+    return .{ .width = width, .height = height, .tiles = rows };
+}
+
+/// A one-line explanation of a parse failure, for a diagnostic.
+pub fn describeParseError(err: ParseError) []const u8 {
+    return switch (err) {
+        error.Empty => "a grid needs at least one row of at least one number",
+        error.RaggedRow => "every row must have the same number of columns as the first",
+        error.BadNumber => "expected a decimal tile id that fits in 16 bits",
+    };
+}
+
 /// The loader to hand `Registry.registerLoader`.
 ///
 /// It needs no context, because a grid of numbers needs nothing but an allocator to become
@@ -287,4 +402,94 @@ test "the payload is a pointer the loader owns, and unloading frees it" {
     try testing.expectEqual(@as(u32, 2), grid.width);
     try testing.expectEqualSlices(u16, &tiles, grid.tiles);
     loader.unload(loader.ctx, gpa, payload);
+}
+
+test "a text grid is stored bottom row first, whatever it looked like on screen" {
+    const gpa = testing.allocator;
+    var failure: ParseFailure = undefined;
+
+    var grid = try parseText(gpa,
+        \\# the top of the map, as it looks
+        \\1 2
+        \\3 4
+        \\5 6
+    , &failure);
+    defer grid.deinit(gpa);
+
+    try testing.expectEqual(@as(u32, 2), grid.width);
+    try testing.expectEqual(@as(u32, 3), grid.height);
+    // Row 0 is the *last* line written, because world Y is up.
+    try testing.expectEqualSlices(u16, &.{ 5, 6, 3, 4, 1, 2 }, grid.tiles);
+    try testing.expectEqual(@as(?u16, 5), grid.tileAt(0, 0));
+    try testing.expectEqual(@as(?u16, 2), grid.tileAt(1, 2));
+}
+
+test "comments, blank lines and stray whitespace are not part of the map" {
+    const gpa = testing.allocator;
+    var failure: ParseFailure = undefined;
+
+    var grid = try parseText(gpa,
+        \\
+        \\   # a heading
+        \\  0   1  # the first row
+        \\
+        \\  2   3
+        \\
+    , &failure);
+    defer grid.deinit(gpa);
+
+    try testing.expectEqual(@as(u32, 2), grid.width);
+    try testing.expectEqual(@as(u32, 2), grid.height);
+    try testing.expectEqualSlices(u16, &.{ 2, 3, 0, 1 }, grid.tiles);
+}
+
+test "a map that is not a rectangle is refused, with the line that made it one" {
+    const gpa = testing.allocator;
+    var failure: ParseFailure = undefined;
+
+    try testing.expectError(error.RaggedRow, parseText(gpa,
+        \\0 0 0
+        \\0 0
+    , &failure));
+    try testing.expectEqual(@as(u32, 2), failure.line);
+
+    try testing.expectError(error.Empty, parseText(gpa, "# nothing but a comment", &failure));
+    try testing.expectError(error.Empty, parseText(gpa, "", &failure));
+
+    try testing.expectError(error.BadNumber, parseText(gpa,
+        \\0 1
+        \\2 wall
+    , &failure));
+    try testing.expectEqual(@as(u32, 2), failure.line);
+    try testing.expectEqualStrings("wall", failure.token);
+
+    // A tile id a `u16` cannot hold is the same kind of wrong as a word.
+    try testing.expectError(error.BadNumber, parseText(gpa, "70000", &failure));
+    try testing.expectEqualStrings("70000", failure.token);
+}
+
+test "text compiles to bytes that read back as the same map" {
+    // The round trip the three forms exist in one file for: what an author writes, what
+    // `fpack` emits, and what the engine loads.
+    const gpa = testing.allocator;
+    var failure: ParseFailure = undefined;
+
+    var authored = try parseText(gpa,
+        \\0 0 1
+        \\0 1 1
+    , &failure);
+    defer authored.deinit(gpa);
+
+    const bytes = try write(gpa, authored.width, authored.height, authored.tiles);
+    defer gpa.free(bytes);
+
+    var loaded = try read(gpa, bytes);
+    defer loaded.deinit(gpa);
+
+    try testing.expectEqual(authored.width, loaded.width);
+    try testing.expectEqual(authored.height, loaded.height);
+    try testing.expectEqualSlices(u16, authored.tiles, loaded.tiles);
+    // Bottom-left is the second row of the text, first column.
+    try testing.expectEqual(@as(?u16, 0), loaded.tileAt(0, 0));
+    try testing.expectEqual(@as(?u16, 1), loaded.tileAt(2, 1));
 }

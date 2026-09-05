@@ -192,11 +192,11 @@ slopes are out of M5's collision scope.*
 
 *All three design documents are written (2026-09-05). Each carries its own implementation
 order — §15, §13 and §10 respectively — and the three are independent sequences that share
-only the frame that calls them. **Collision steps 1 through 4 are done**: `physics2d` is
-complete as a module, with shapes, tile grids, the broadphase, `moveAndSlide`,
-`resolveOverlaps` and the four queries. Remaining there: tilemap content and `fpack`'s
-text-grid front end, drawing with view culling, and the sandbox's player meeting the map.
-Audio and sprite animation have not started.*
+only the frame that calls them. **Collision steps 1 through 5 are done**: `physics2d` is
+complete as a module — shapes, tile grids, the broadphase, `moveAndSlide`, `resolveOverlaps`
+and the four queries — and a map is content, from a hand-written text grid through `fpack` to
+a body that cannot walk through a wall. Remaining there: drawing with view culling, and the
+sandbox's player meeting the map it now ships. Audio and sprite animation have not started.*
 
 **Exit criteria:** something a person can play for five minutes without knowing it is a tech
 demo.

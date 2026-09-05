@@ -1,0 +1,19 @@
+# The sandbox's map, written the way it looks: the top row here is the top row on screen.
+#
+# Tile 0 is floor and tile 1 is wall, and which of those blocks is the tileset's business
+# rather than this file's -- `sandbox:tiles.room` names 1 in its `solid` list, and a package
+# loaded after it could name a different one without touching this map.
+#
+# `fpack` compiles this to `grids/room.fgrid` and mints `sandbox:grids.room` from the path.
+# Nothing at runtime ever asks for either filename (ADR-0021).
+
+1 1 1 1 1 1 1 1 1 1 1 1
+1 0 0 0 0 0 0 0 0 0 0 1
+1 0 0 0 0 0 0 0 0 0 0 1
+1 0 0 1 1 0 0 0 0 0 0 1
+1 0 0 1 1 0 0 0 1 1 0 1
+1 0 0 0 0 0 0 0 1 1 0 1
+1 0 0 0 0 0 0 0 0 0 0 1
+1 0 1 1 1 1 0 0 0 0 0 1
+1 0 0 0 0 0 0 0 0 0 0 1
+1 1 1 1 1 1 1 1 1 1 1 1

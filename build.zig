@@ -318,9 +318,18 @@ pub fn build(b: *std.Build) void {
             const compile_content = b.addRunArtifact(fpack);
             compile_content.addArgs(&.{ "--quiet", "--name", pkg.id, "--out" });
             const compiled = compile_content.addOutputFileArg(b.fmt("{s}.fpk", .{pkg.stem}));
-            // As a directory argument, so the build re-runs `fpack` exactly when something
-            // in the package changes and not otherwise.
+            // Assets with an authoring format of their own — a tile grid — are compiled too,
+            // and land here rather than in the package directory: what a person wrote and
+            // what a tool produced never share a tree (`tilemaps-and-collision.md` §9).
+            compile_content.addArg("--assets-out");
+            const generated = compile_content.addOutputDirectoryArg(b.fmt("{s}-assets", .{pkg.stem}));
             compile_content.addDirectoryArg(b.path(pkg.dir));
+            // And every file under it as an input, which is what actually makes the build
+            // re-run `fpack` when a package changes. A directory argument creates the
+            // dependency and passes the path; it does **not** put the directory's contents
+            // in the Run step's cache key, so without this an edited `.fdt` leaves a stale
+            // `.fpk` installed and the game loads yesterday's content.
+            addDirectoryInputs(b, compile_content, pkg.dir);
 
             b.getInstallStep().dependOn(&b.addInstallFileWithDir(
                 compiled,
@@ -333,6 +342,16 @@ pub fn build(b: *std.Build) void {
             // 10's hot reload will watch.
             b.getInstallStep().dependOn(&b.addInstallDirectory(.{
                 .source_dir = b.path(pkg.dir),
+                .install_dir = .prefix,
+                .install_subdir = b.fmt("content/{s}", .{pkg.stem}),
+            }).step);
+
+            // And the compiled assets over the top of them, into the one tree the registry
+            // mounts. They are disjoint from the sources — a `.grid` stays a source and the
+            // `.fgrid` beside it is what an asset record names — so the two installs never
+            // write the same file.
+            b.getInstallStep().dependOn(&b.addInstallDirectory(.{
+                .source_dir = generated,
                 .install_dir = .prefix,
                 .install_subdir = b.fmt("content/{s}", .{pkg.stem}),
             }).step);
@@ -397,6 +416,26 @@ pub fn build(b: *std.Build) void {
     const integration_tests = b.addTest(.{ .root_module = integration_mod });
     check_step.dependOn(&integration_tests.step);
     test_step.dependOn(&b.addRunArtifact(integration_tests).step);
+}
+
+/// Adds every file under `dir` as an input to `run`, so that editing one re-runs it.
+///
+/// Walked at configure time, which happens on every build, so a file *added* since the last
+/// build is picked up as well as a file changed. A directory that cannot be read is left
+/// with no inputs rather than failing the configure: the step itself will report the
+/// problem, with the path, in the one place that knows why it was reading it.
+fn addDirectoryInputs(b: *std.Build, run: *std.Build.Step.Run, dir: []const u8) void {
+    const io = b.graph.io;
+    var handle = b.build_root.handle.openDir(io, dir, .{ .iterate = true }) catch return;
+    defer handle.close(io);
+
+    var walker = handle.walk(b.allocator) catch return;
+    defer walker.deinit();
+
+    while (walker.next(io) catch null) |entry| {
+        if (entry.kind != .file) continue;
+        run.addFileInput(b.path(b.pathJoin(&.{ dir, entry.path })));
+    }
 }
 
 /// Compiles MSL into a `.metallib`, per ADR-0015: `xcrun metal` turns each source into an

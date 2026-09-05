@@ -83,6 +83,11 @@ pub const texture: Schema = .{
 
 pub const tilegrid_name = "foundry:tilegrid";
 
+/// The runtime form's extension. Named, because the content compiler has to spell it when
+/// it emits one and reading it out of the `kinds` table by index would make the table's
+/// order load-bearing.
+pub const tilegrid_extension = "fgrid";
+
 /// A grid of tile ids: the bulk of a tilemap, kept out of content text.
 ///
 /// The record is nothing but a `source`, because everything else about a grid — its width,
@@ -104,7 +109,7 @@ pub const tilegrid: Schema = .{
 /// depend on the package and nothing else.
 pub const kinds = [_]Kind{
     .{ .name = texture_name, .schema = texture, .extensions = &.{"png"} },
-    .{ .name = tilegrid_name, .schema = tilegrid, .extensions = &.{"fgrid"} },
+    .{ .name = tilegrid_name, .schema = tilegrid, .extensions = &.{tilegrid_extension} },
 };
 
 /// The kind a file extension derives, or null if that extension is not an asset.
