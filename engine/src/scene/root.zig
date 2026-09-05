@@ -25,11 +25,13 @@
 pub const component = @import("component.zig");
 pub const entity = @import("entity.zig");
 pub const limits = @import("limits.zig");
+pub const store = @import("store.zig");
 pub const world = @import("world.zig");
 
 // The names reached for most often. These are seen by people we do not control — a game
 // today, compiled mods from M7 — and component type names reach save files, so renaming
 // one is a compatibility decision rather than a tidy-up (ADR-0010, CLAUDE.md §7).
+pub const ComponentStore = store.ComponentStore;
 pub const ComponentType = component.ComponentType;
 pub const ComponentTypeInfo = component.ComponentTypeInfo;
 pub const Entity = entity.Entity;
@@ -37,6 +39,7 @@ pub const Limits = limits.Limits;
 pub const Registration = component.Registration;
 pub const World = world.World;
 
+pub const ComponentError = world.ComponentError;
 pub const CreateError = world.CreateError;
 pub const RegisterError = world.RegisterError;
 
@@ -44,5 +47,6 @@ test {
     _ = component;
     _ = entity;
     _ = limits;
+    _ = store;
     _ = world;
 }

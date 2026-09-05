@@ -20,8 +20,10 @@ const data = @import("data");
 const component = @import("component.zig");
 const entity_mod = @import("entity.zig");
 const limits_mod = @import("limits.zig");
+const store_mod = @import("store.zig");
 
 const Allocator = std.mem.Allocator;
+const ComponentStore = store_mod.ComponentStore;
 const ComponentType = component.ComponentType;
 const ComponentTypeInfo = component.ComponentTypeInfo;
 const ComponentTypes = component.ComponentTypes;
@@ -56,6 +58,20 @@ pub const RegisterError = error{
     WorldNotEmpty,
 } || data.schema.RegisterError;
 
+pub const ComponentError = error{
+    /// The handle names no registered type. Reachable from content and from a save, both
+    /// of which can name a component type this build does not have.
+    UnknownComponentType,
+    /// The entity is stale or was never created. Resolving a stale handle is not an error
+    /// (§12) — but *adding* to one is, because there is no sensible thing to do instead.
+    NoSuchEntity,
+    /// The entity already has a component of that type. An entity has at most one.
+    ComponentExists,
+    /// The supplied bytes are not the type's size. A caller passing the wrong type's
+    /// component would otherwise write past the slot.
+    ComponentSizeMismatch,
+} || Allocator.Error;
+
 pub const World = struct {
     gpa: Allocator,
     /// Holds component type names. Never reset: registration happens at startup and what
@@ -75,6 +91,10 @@ pub const World = struct {
     /// removal.
     types: core.HandlePool(ComponentTypes, Registration) = .empty,
     by_schema: std.AutoHashMapUnmanaged(u64, ComponentType) = .empty,
+    /// One store per registered type, at the position of that type's handle index. Kept
+    /// beside the registry rather than inside it, so the registry stays a description and
+    /// the storage stays a thing with a lifetime.
+    stores: std.ArrayList(ComponentStore) = .empty,
 
     /// Bumped by every structural change: an entity created or destroyed, and from step 2
     /// a component added or removed. Query iterators capture it and assert it has not
@@ -92,6 +112,8 @@ pub const World = struct {
     }
 
     pub fn deinit(self: *World) void {
+        for (self.stores.items) |*store| store.deinit(self.gpa);
+        self.stores.deinit(self.gpa);
         self.by_schema.deinit(self.gpa);
         self.types.deinit(self.gpa);
         self.entities.deinit(self.gpa);
@@ -125,6 +147,10 @@ pub const World = struct {
     /// a `destruct` running during teardown still sees a live entity.
     pub fn destroy(self: *World, entity: Entity) bool {
         if (!self.entities.contains(entity)) return false;
+        // Components first, while the entity is still live: a `destruct` running here is
+        // entitled to look the entity up. O(registered types), each a bounds check and an
+        // array read — §4's stated cost, and §13's third open question.
+        for (self.stores.items) |*store| _ = store.remove(entity);
         std.debug.assert(self.entities.remove(entity));
         self.mutation +%= 1;
         return true;
@@ -161,6 +187,7 @@ pub const World = struct {
         // one both carry it.
         try self.types.ensureUnusedCapacity(self.gpa, 1);
         try self.by_schema.ensureUnusedCapacity(self.gpa, 1);
+        try self.stores.ensureUnusedCapacity(self.gpa, 1);
         const name = try self.arena.allocator().dupe(u8, info.name);
 
         const schema_handle = try self.schemas.register(self.gpa, info.schema);
@@ -177,6 +204,11 @@ pub const World = struct {
             .destruct = info.destruct,
         });
         self.by_schema.putAssumeCapacity(info.schema.id.hash, handle);
+        // Nothing is ever unregistered, so `handle.index` is the next position and the
+        // stores stay parallel to the types. An unregister would have to break that, which
+        // is half of why removing a type is not a removal.
+        std.debug.assert(handle.index == self.stores.items.len);
+        self.stores.appendAssumeCapacity(.init(self.types.getConst(handle).?));
 
         log.debug("component type '{s}' registered: {d} bytes, align {d}, schema version {d}", .{
             name,
@@ -203,6 +235,69 @@ pub const World = struct {
     pub fn componentSchema(self: *World, t: ComponentType) ?*const data.Schema {
         const info = self.types.getConst(t) orelse return null;
         return self.schemas.get(info.schema);
+    }
+
+    // -- components ----------------------------------------------------------------
+
+    /// The store for a registered type, or null if the handle names none. Private: the
+    /// three arrays behind it are exactly what no caller may learn about (§4).
+    fn storeFor(self: *World, t: ComponentType) ?*ComponentStore {
+        if (!self.types.contains(t)) return null;
+        return &self.stores.items[t.index];
+    }
+
+    /// Adds a component to an entity and returns its bytes.
+    ///
+    /// `initial` is either exactly the type's `size` bytes, which are copied, or null —
+    /// in which case the type's constructor runs, or the bytes are zeroed if it has none.
+    ///
+    /// The returned slice is a **borrow, valid until the next mutation of this world**.
+    pub fn addComponent(
+        self: *World,
+        entity: Entity,
+        t: ComponentType,
+        initial: ?[]const u8,
+    ) ComponentError![]u8 {
+        const store = self.storeFor(t) orelse return error.UnknownComponentType;
+        // Arguments before state. Bytes of the wrong size mean the caller has the wrong
+        // type entirely, which is a more fundamental mistake than adding a component
+        // twice — and hearing "already has one" while holding the wrong struct sends
+        // somebody to look in the wrong place.
+        if (initial) |src| {
+            if (src.len != store.size) return error.ComponentSizeMismatch;
+        }
+        if (!self.entities.contains(entity)) return error.NoSuchEntity;
+        if (store.has(entity)) return error.ComponentExists;
+
+        const bytes = try store.add(self.gpa, entity, initial);
+        self.mutation +%= 1;
+        return bytes;
+    }
+
+    /// An entity's component bytes, or null if it does not have one — which includes a
+    /// stale entity and an unregistered type. Both are normal conditions.
+    pub fn getComponent(self: *World, entity: Entity, t: ComponentType) ?[]u8 {
+        const store = self.storeFor(t) orelse return null;
+        return store.get(entity);
+    }
+
+    pub fn hasComponent(self: *World, entity: Entity, t: ComponentType) bool {
+        const store = self.storeFor(t) orelse return false;
+        return store.has(entity);
+    }
+
+    /// Removes a component. False if the entity did not have one, which is not an error.
+    pub fn removeComponent(self: *World, entity: Entity, t: ComponentType) bool {
+        const store = self.storeFor(t) orelse return false;
+        if (!store.remove(entity)) return false;
+        self.mutation +%= 1;
+        return true;
+    }
+
+    /// How many entities have a component of this type. The number a query would visit.
+    pub fn componentCount(self: *World, t: ComponentType) u32 {
+        const store = self.storeFor(t) orelse return 0;
+        return store.count();
     }
 };
 
@@ -476,4 +571,163 @@ test "a refused registration leaves the world unchanged" {
     // And the good one still registers afterwards.
     _ = try f.world.registerComponent(transformInfo());
     try testing.expectEqual(@as(u32, 1), f.world.componentTypeCount());
+}
+
+// -- component storage, through the world ------------------------------------------
+
+fn spriteInfo() ComponentTypeInfo {
+    return .{
+        .schema = .{
+            .id = data.SchemaId.fromStringUnchecked("foundry:sprite"),
+            .version = 1,
+            .fields = &.{
+                .{ .name = "texture", .type = .id, .presence = .optional },
+            },
+        },
+        .name = "foundry:sprite",
+        .size = 4,
+        .alignment = 4,
+    };
+}
+
+const Transform = extern struct { x: f32, y: f32 };
+
+fn transformOf(bytes: []u8) *Transform {
+    return @ptrCast(@alignCast(bytes.ptr));
+}
+
+test "a component is added to an entity and read back" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa, .default);
+    defer f.deinit(gpa);
+
+    const transform = try f.world.registerComponent(transformInfo());
+    const e = try f.world.create();
+
+    var value: Transform = .{ .x = 3, .y = 4 };
+    const bytes = try f.world.addComponent(e, transform, std.mem.asBytes(&value));
+    try testing.expectEqual(@as(f32, 3), transformOf(bytes).x);
+
+    try testing.expect(f.world.hasComponent(e, transform));
+    try testing.expectEqual(@as(f32, 4), transformOf(f.world.getComponent(e, transform).?).y);
+    try testing.expectEqual(@as(u32, 1), f.world.componentCount(transform));
+
+    // The borrow is writable, and the world is where the value lives.
+    transformOf(f.world.getComponent(e, transform).?).x = 9;
+    try testing.expectEqual(@as(f32, 9), transformOf(f.world.getComponent(e, transform).?).x);
+
+    try testing.expect(f.world.removeComponent(e, transform));
+    try testing.expect(!f.world.hasComponent(e, transform));
+    try testing.expect(f.world.getComponent(e, transform) == null);
+    try testing.expect(!f.world.removeComponent(e, transform));
+}
+
+test "component types are independent of each other" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa, .default);
+    defer f.deinit(gpa);
+
+    const transform = try f.world.registerComponent(transformInfo());
+    const sprite = try f.world.registerComponent(spriteInfo());
+
+    const both = try f.world.create();
+    const only_transform = try f.world.create();
+
+    var value: Transform = .{ .x = 1, .y = 2 };
+    _ = try f.world.addComponent(both, transform, std.mem.asBytes(&value));
+    _ = try f.world.addComponent(both, sprite, null);
+    _ = try f.world.addComponent(only_transform, transform, std.mem.asBytes(&value));
+
+    try testing.expect(f.world.hasComponent(both, sprite));
+    try testing.expect(!f.world.hasComponent(only_transform, sprite));
+    try testing.expectEqual(@as(u32, 2), f.world.componentCount(transform));
+    try testing.expectEqual(@as(u32, 1), f.world.componentCount(sprite));
+
+    // Removing one leaves the other alone.
+    try testing.expect(f.world.removeComponent(both, sprite));
+    try testing.expect(f.world.hasComponent(both, transform));
+}
+
+test "adding a component refuses what it cannot do" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa, .default);
+    defer f.deinit(gpa);
+
+    const transform = try f.world.registerComponent(transformInfo());
+    const e = try f.world.create();
+    var value: Transform = .{ .x = 0, .y = 0 };
+
+    _ = try f.world.addComponent(e, transform, std.mem.asBytes(&value));
+    try testing.expectError(
+        error.ComponentExists,
+        f.world.addComponent(e, transform, std.mem.asBytes(&value)),
+    );
+
+    // A handle naming no registered type — which is what content or a save can hand over.
+    const foreign: ComponentType = .{ .index = 99, .generation = 1 };
+    try testing.expectError(error.UnknownComponentType, f.world.addComponent(e, foreign, null));
+    try testing.expect(f.world.getComponent(e, foreign) == null);
+    try testing.expect(!f.world.hasComponent(e, foreign));
+    try testing.expect(!f.world.removeComponent(e, foreign));
+
+    // A stale entity.
+    const dead = try f.world.create();
+    try testing.expect(f.world.destroy(dead));
+    try testing.expectError(error.NoSuchEntity, f.world.addComponent(dead, transform, null));
+    try testing.expectError(error.NoSuchEntity, f.world.addComponent(Entity.none, transform, null));
+
+    // Bytes that are not the type's size — a transform is eight — which would otherwise
+    // write past the slot.
+    var wrong: u32 = 0;
+    try testing.expectError(
+        error.ComponentSizeMismatch,
+        f.world.addComponent(e, transform, std.mem.asBytes(&wrong)),
+    );
+}
+
+test "destroying an entity takes its components with it" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa, .default);
+    defer f.deinit(gpa);
+
+    const transform = try f.world.registerComponent(transformInfo());
+    const sprite = try f.world.registerComponent(spriteInfo());
+
+    const e = try f.world.create();
+    var value: Transform = .{ .x = 5, .y = 6 };
+    _ = try f.world.addComponent(e, transform, std.mem.asBytes(&value));
+    _ = try f.world.addComponent(e, sprite, null);
+    try testing.expectEqual(@as(u32, 1), f.world.componentCount(transform));
+
+    try testing.expect(f.world.destroy(e));
+    try testing.expectEqual(@as(u32, 0), f.world.componentCount(transform));
+    try testing.expectEqual(@as(u32, 0), f.world.componentCount(sprite));
+
+    // And the entity that reuses the slot starts empty rather than inheriting them.
+    const reused = try f.world.create();
+    try testing.expectEqual(e.index, reused.index);
+    try testing.expect(!f.world.hasComponent(reused, transform));
+    try testing.expect(!f.world.hasComponent(reused, sprite));
+}
+
+test "adding and removing a component moves the mutation counter" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa, .default);
+    defer f.deinit(gpa);
+
+    const transform = try f.world.registerComponent(transformInfo());
+    const e = try f.world.create();
+
+    const before = f.world.mutation;
+    _ = try f.world.addComponent(e, transform, null);
+    try testing.expect(f.world.mutation != before);
+
+    const after_add = f.world.mutation;
+    try testing.expect(f.world.removeComponent(e, transform));
+    try testing.expect(f.world.mutation != after_add);
+
+    // A removal that removed nothing changed nothing.
+    const after_remove = f.world.mutation;
+    try testing.expect(!f.world.removeComponent(e, transform));
+    try testing.expectEqual(after_remove, f.world.mutation);
 }

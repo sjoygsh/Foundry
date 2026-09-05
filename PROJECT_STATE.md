@@ -1,7 +1,7 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-05
-**Updated by:** **M4, step 1 — `scene` exists.** Its design was written first
+**Updated by:** **M4, steps 1 and 2 — `scene` exists, and entities have components.** Its design was written first
 (`docs/design/entity-storage.md`), deciding what ADR-0010 deferred: a component type **is a
 schema**, so identity, versioning, checking and serialization are machinery `data` already
 has; queries will iterate the first named component rather than the smallest, so order is a
@@ -9,7 +9,10 @@ property of the query and not of the data; a component instance in content is it
 so a mod overrides one component without restating the entity; and a save preserves entity
 identity exactly, which is what lets a handle inside component data survive a reload with no
 remap pass. Step 1 built the module, entities and the runtime component type registry, and
-confirmed the layering by breaking it. Storage, queries and systems are steps 2 to 5
+confirmed the layering by breaking it. Step 2 built the type-erased storage under it — a
+sparse set with dense arrays, where the owner recorded beside each element is what makes a
+stale entity fail cleanly instead of inheriting whatever reused its slot. Queries and systems
+are steps 4 and 5
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -32,17 +35,19 @@ are done. **M4 — World: "it has entities" — is under way**, at its design st
 
 ## Current milestone
 
-**M4 — World: "it has entities." In progress, 2026-09-05. Step 1 of 6 done.**
+**M4 — World: "it has entities." In progress, 2026-09-05. Steps 1 and 2 of 6 done.**
 `docs/design/entity-storage.md` is the document `docs/design/README.md` has owed since ADR-0010
 was accepted, and M4 started where M3 did — at its decisions, before any code existed to make
 them by accident. It settles six things ADR-0010 left open, names its own open questions
 rather than resolving them opportunistically, and ends with the six implementation steps
 below. **Step 1 is built**: `scene` is in the layering table with `core` and `data`, entities
 are handles out of `core.HandlePool`, and component types register at runtime with their
-schemas going into the store's own registry (I6). 18 tests. Three things implementation
-settled are in that document's Resolution section — chiefly that a component type is
-identified by a *handle* rather than an index, so that unloading a mod one day cannot leave
-dangling references.
+schemas going into the store's own registry (I6). **Step 2** built the storage beneath it:
+one type-erased sparse set per component type, proven against a component type written by
+hand rather than through the `comptime` sugar that arrives at step 3. 32 tests. What
+implementation settled is in that document's two Resolution sections — chiefly that a
+component type is identified by a *handle* rather than an index, so unloading a mod one day
+cannot leave dangling references, and that a zero-size component is legal and means a marker.
 
 **M0 — Skeleton: "it runs." Complete, 2026-09-03.** Every item on its ROADMAP list is
 done and both exit criteria are met: `zig build run` opens a window on macOS that responds
@@ -98,9 +103,9 @@ than by being done.
 **`core` (L0), `platform` and `data` (L1), `rhi` (L2) with two backends, `asset` (L2),
 `render2d` and `scene` (L3), `app` (L4), plus `tools/fpack`. It draws thousands of sprites
 under a camera that pans, zooms and picks, and it loads content by content id. `scene` holds
-entities and component types; it has no storage, no queries and no systems yet.**
+entities, component types and their storage; it has no queries and no systems yet.**
 
-**M4 step 1, new:**
+**M4 steps 1 and 2, new:**
 
 * `engine/src/scene/entity.zig` — `Entity`, a `core.Handle` over an opaque tag. No entity
   object exists anywhere, which is why the type is not called `EntityHandle`.
@@ -113,6 +118,12 @@ entities and component types; it has no storage, no queries and no systems yet.*
   component type registration with every check in the design's §6, and the mutation counter
   step 4's query iterators will capture. It borrows the schema registry rather than owning
   one, so a component type and the record defining an instance of it cannot disagree.
+* `engine/src/scene/store.zig` — `ComponentStore`, the type-erased sparse set: `sparse` by
+  entity index, dense `owners` and dense bytes. Every lookup compares the **whole** handle
+  against the owner recorded beside the data, which is what stops a reused slot inheriting a
+  component. Swap-removal, `construct`/`destruct` including on teardown, and a dense block
+  that over-allocates so it can align its own base — `Allocator.alloc` cannot express a
+  runtime alignment and `rawAlloc` says it is not for callers.
 * `engine/src/scene/limits.zig` — `max_entities` and `max_component_types`. A save file says
   how many entities to create, so the bound is a refusal and not an assertion.
 * `build.zig` — `scene` in the layering table with `core` and `data`. **Not** `asset`, which
@@ -275,8 +286,8 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 520 tests** (52 `core`, 70 `platform`, 102 `data`, 92 `rhi`,
-36 `asset`, 103 `render2d`, 18 `scene`, 28 `app`, 14 `fpack`, 5 integration), and **528 under
+**`zig build test` passes 534 tests** (52 `core`, 70 `platform`, 102 `data`, 92 `rhi`,
+36 `asset`, 103 `render2d`, 32 `scene`, 28 `app`, 14 `fpack`, 5 integration), and **542 under
 `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
@@ -738,9 +749,12 @@ green and the sandbox runnable:
    *references* the illegal import, because Zig analyses top-level declarations lazily. Two
    things changed from the design and are recorded in its Resolution: a component type is a
    handle rather than an index, and a zero-size component is legal and means a marker.
-2. **Type-erased storage.** The sparse set with dense arrays, tested against a component
-   type built by hand — so the storage is proven before the `comptime` sugar exists to hide
-   it.
+2. ~~**Type-erased storage.**~~ **Done, 2026-09-05.** `store.zig`: sparse by entity index,
+   dense owners and dense bytes, swap-removal, `construct` and `destruct` including on
+   teardown, and markers. `World` gained `addComponent`, `getComponent`, `hasComponent`,
+   `removeComponent`, and a `destroy` that clears every store before freeing the slot — so a
+   `destruct` running there can still look the entity up. Tested against a component type
+   built by hand, so the storage is proven before the `comptime` sugar exists to hide it.
 3. **The `comptime` wrapper.** `scene.componentType(T)`: schema derivation, generated
    serialize/deserialize, the `Entity` and `AssetHandle` field rules, compile errors for what
    does not project onto the closed type list.

@@ -1,8 +1,8 @@
 # Design: `scene` — entities, components, systems and world state
 
-**Status:** M4 in progress. Step 1 of §15 is built as `engine/src/scene/` — entities and the
-component type registry; the Resolution section at the end records what it settled. Steps 2 to
-6 are not written.
+**Status:** M4 in progress. Steps 1 and 2 of §15 are built as `engine/src/scene/` — entities,
+the component type registry, and the type-erased storage; the Resolution sections at the end
+record what they settled. Steps 3 to 6 are not written.
 **Date:** 2026-09-05
 **Implements:** I1, I2, I3, I5, I6, I8, I9 · **Informed by:** ADR-0005, ADR-0006, ADR-0010,
 ADR-0013, ADR-0020, ADR-0021
@@ -528,6 +528,8 @@ a programmer error asserts, untrusted input is validated and returns.
 | `UnknownComponentType` | No type registered for that schema ID | yes — content or a save |
 | `ComponentTypeExists` | Registered twice, incompatibly | no — registration is engine or mod startup code |
 | `ComponentExists` | The entity already has one of that type | no |
+| `NoSuchEntity` | The entity is stale or was never created | yes |
+| `ComponentSizeMismatch` | The supplied bytes are not the type's size | no |
 | `DuplicateComponent` | A template names two records of the same type | yes — content |
 | `EntityLimit` / `ComponentLimit` | A bound was exceeded | yes |
 | `NotAnEntityTemplate` / `NotAScene` | The record is not the schema asked for | yes |
@@ -656,3 +658,46 @@ the same message `data`'s check produced — and, as with `data`, only once some
 *references* the import, because Zig analyses top-level declarations lazily. `scene` therefore
 cannot read a clock, cannot read input, and cannot open a file, by construction rather than by
 convention (I7).
+
+---
+
+## Resolution: storage (implementation, 2026-09-05)
+
+Step 2 of §15, built as `engine/src/scene/store.zig` and wired into `World`. The sparse set is
+§4's, unchanged in shape. What building it settled:
+
+**The dense byte array over-allocates and aligns its own base.** A component's alignment is a
+runtime value and `Allocator.alloc` cannot express one — `alignedAlloc` takes it at `comptime`,
+and `rawAlloc`, which does take it at runtime, says in its own doc comment that it is not for
+callers. So the block allocates `bytes + alignment - 1` through the ordinary interface and
+keeps an aligned pointer into it. The waste is at most fifteen bytes per store for any
+component anyone has yet wanted, and it stays inside the public API. There is a test that walks
+64 additions of a 16-byte-aligned type through several reallocations and checks the alignment
+of every one.
+
+**`addComponent` checks its arguments before it checks the world's state.** Bytes of the wrong
+size mean the caller is holding the wrong type entirely, which is a more fundamental mistake
+than adding a component twice — and being told "already has one" while holding the wrong struct
+sends somebody to look in the wrong place. The order is `UnknownComponentType`,
+`ComponentSizeMismatch`, `NoSuchEntity`, `ComponentExists`.
+
+**Supplied bytes are copied *instead of* constructing, never over a construction.** The
+constructor runs only when no initial value is given. Running it first and then overwriting
+would be a double initialisation, which is exactly what a component type that owns memory
+cannot survive — and the whole point of `construct` and `destruct` existing is that such types
+are allowed.
+
+**§12's table gained two errors.** `NoSuchEntity`, because resolving a stale entity returns
+null (which the table already said) but *adding a component to one* has no sensible alternative
+to an error; and `ComponentSizeMismatch`, which is the check that stops a caller writing past a
+component slot.
+
+**A marker's `at()` returns a valid empty slice**, not a null pointer. The block keeps a
+non-null, correctly-aligned address it never dereferences, so `ptr[0..0]` is a legal empty
+slice at every stride including zero. Swap-removal still moves the owner for a marker — there
+is simply nothing to copy beside it.
+
+**Confirmed rather than decided:** the owner check is what makes a stale entity safe, and the
+test that proves it reuses a slot deliberately — entity `3#1` has a component, is removed, and
+`3#2` is given its own. The sparse array answers for index 3 either way, and only comparing the
+generation separates them.
