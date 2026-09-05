@@ -11,6 +11,9 @@
 //! * the `data.Schema` — field names, types and defaults, so content and saves describe the
 //!   component the same way the Zig type does;
 //! * `deserialize`, which fills the struct from a record's fields;
+//! * `serialize`, which writes it back into a field block — generated **beside**
+//!   `deserialize` rather than separately, because two functions that disagree about which
+//!   slot a field lives in produce a save that loads without complaint and is wrong;
 //! * `construct`, when every field has a Zig default, so a component created without a value
 //!   starts at those defaults rather than at zero.
 //!
@@ -31,6 +34,7 @@ const ComponentTypeInfo = component.ComponentTypeInfo;
 const Entity = entity_mod.Entity;
 
 pub const DeserializeError = component.DeserializeError;
+pub const SerializeError = component.SerializeError;
 
 /// Produces the registration data for a component type from a Zig struct.
 ///
@@ -77,6 +81,7 @@ fn Info(comptime T: type) type {
             .alignment = @alignOf(T),
             .construct = if (allDefaulted(T)) &Codec(T).construct else null,
             .deserialize = &Codec(T).deserialize,
+            .serialize = &Codec(T).serialize,
         };
     };
 }
@@ -217,7 +222,44 @@ fn Codec(comptime T: type) type {
             const value: *T = @ptrCast(@alignCast(out));
             try readStruct(T, value, fields);
         }
+
+        fn serialize(_: ?*anyopaque, bytes: [*]const u8, block: data.fpk.Block) SerializeError!void {
+            const value: *const T = @ptrCast(@alignCast(bytes));
+            try writeStruct(T, value.*, block);
+        }
     };
+}
+
+/// Writes every field of `value` into `block`, matching by **position**.
+///
+/// The exact mirror of `readStruct`, and the reason the pair is generated together: a
+/// serializer and a deserializer that disagree about which slot a field lives in produce a
+/// file that loads without complaint and is wrong. Here neither can drift, because both
+/// walk the same struct in the same order against the same derived schema.
+///
+/// A block laid out for a **later** version of the schema has fields this struct does not:
+/// they are left unset, which reads back as absent, which is what the reader already
+/// treats as "keep the default".
+fn writeStruct(comptime S: type, value: S, block: data.fpk.Block) SerializeError!void {
+    const count = block.fields.len;
+    inline for (@typeInfo(S).@"struct".fields, 0..) |f, i| {
+        if (i < count) try writeField(f.type, @field(value, f.name), block, i);
+    }
+}
+
+fn writeField(comptime F: type, value: F, block: data.fpk.Block, index: usize) SerializeError!void {
+    if (F == core.ContentId) return block.set(index, .{ .id = value });
+    // The published 64-bit packing, and it survives a reload only because a save preserves
+    // entity identity exactly (§9). `readField` unpacks the same way.
+    if (F == Entity) return block.set(index, .{ .int = value.bits() });
+
+    switch (@typeInfo(F)) {
+        .bool => try block.set(index, .{ .bool = value }),
+        .int => try block.set(index, .{ .int = value }),
+        .float => try block.set(index, .{ .float = value }),
+        .@"struct" => try writeStruct(F, value, try block.nested(index)),
+        else => unreachable,
+    }
 }
 
 /// Fills `out` from `fields`, matching by **position**.
@@ -565,4 +607,115 @@ test "a derived type registers and constructs through the world" {
     // And the registration is the ordinary one: its schema is in the same registry content
     // is checked against.
     try testing.expect(registry.lookup(try data.id.SchemaId.parse("test:body")) != null);
+}
+
+// -- serialize ---------------------------------------------------------------------
+
+/// Writes `value` into a block and reads it straight back, which is what a save does with
+/// a file in between. The block writer and the block reader are `data`'s, so what this
+/// exercises is the generated pair rather than a stand-in for it.
+fn roundTrip(gpa: std.mem.Allocator, comptime T: type, value: T) !T {
+    const info = componentType(T);
+
+    var w: data.BlockWriter = .{ .gpa = gpa };
+    defer w.deinit();
+    const block = try w.begin(info.schema.fields);
+    try info.serialize.?(null, @ptrCast(&value), block);
+
+    const blocks: data.Blocks = .{ .fields = w.fields.items, .strings = w.strings.items };
+    var out: T = undefined;
+    if (info.construct) |construct| construct(null, @ptrCast(&out)) else out = std.mem.zeroes(T);
+    try info.deserialize.?(null, blocks.blockAt(block.base, info.schema.fields).?, @ptrCast(&out));
+    return out;
+}
+
+test "a component survives a round trip through its own generated pair" {
+    const gpa = testing.allocator;
+    const value: Body = .{
+        .position = .{ .x = 1.5, .y = -2.25 },
+        .mass = 12.5,
+        .solid = false,
+        .texture = try data.id.contentId("test:tex.stone"),
+        .target = .{ .index = 41, .generation = 7 },
+    };
+    const back = try roundTrip(gpa, Body, value);
+
+    try testing.expectEqual(value.position.x, back.position.x);
+    try testing.expectEqual(value.position.y, back.position.y);
+    try testing.expectEqual(value.mass, back.mass);
+    try testing.expectEqual(value.solid, back.solid);
+    try testing.expect(value.texture.eql(back.texture));
+    // The one that matters most: an entity reference is a number that only means anything
+    // because a save preserves identity exactly (§9), so it has to come back bit-identical.
+    try testing.expect(value.target.eql(back.target));
+}
+
+test "the extremes of every scalar type survive the round trip" {
+    const gpa = testing.allocator;
+    const Wide = struct {
+        pub const component = "test:wide.scalars";
+        a: i32 = 0,
+        b: i64 = 0,
+        c: u32 = 0,
+        d: u64 = 0,
+        e: f32 = 0,
+        f: f64 = 0,
+        g: bool = false,
+    };
+    const value: Wide = .{
+        .a = std.math.minInt(i32),
+        .b = std.math.minInt(i64),
+        .c = std.math.maxInt(u32),
+        .d = std.math.maxInt(u64),
+        .e = 3.4028235e38,
+        .f = -1.7976931348623157e308,
+        .g = true,
+    };
+    const back = try roundTrip(gpa, Wide, value);
+    try testing.expectEqual(value, back);
+}
+
+test "a marker component round-trips as an empty block" {
+    const gpa = testing.allocator;
+    const Marker = struct {
+        pub const component = "test:marker.player";
+    };
+    _ = try roundTrip(gpa, Marker, .{});
+    // What matters is that a type with no fields is not a special case anywhere: it lays
+    // out a zero-length block and reads nothing back out of it.
+    try testing.expectEqual(@as(usize, 0), componentType(Marker).schema.fields.len);
+}
+
+test "a component written by an older build keeps its defaults for the new fields" {
+    const gpa = testing.allocator;
+    // Version 1 of a component type, as an older build had it...
+    const V1 = struct {
+        pub const component = "test:grown";
+        x: f32 = 0,
+    };
+    // ...and version 2, which appended a field with a default that is not zero.
+    const V2 = struct {
+        pub const component = "test:grown";
+        pub const component_version: u32 = 2;
+        x: f32 = 0,
+        solid: bool = true,
+    };
+
+    var w: data.BlockWriter = .{ .gpa = gpa };
+    defer w.deinit();
+    const old = componentType(V1);
+    const block = try w.begin(old.schema.fields);
+    try old.serialize.?(null, @ptrCast(&V1{ .x = 4 }), block);
+
+    // The new build reads the old block against the old schema the file carries — which is
+    // what §9's type table is for — and the field the file predates keeps the *type's*
+    // default rather than falling to zero.
+    const blocks: data.Blocks = .{ .fields = w.fields.items, .strings = w.strings.items };
+    const new = componentType(V2);
+    var out: V2 = undefined;
+    new.construct.?(null, @ptrCast(&out));
+    try new.deserialize.?(null, blocks.blockAt(block.base, old.schema.fields).?, @ptrCast(&out));
+
+    try testing.expectEqual(@as(f32, 4), out.x);
+    try testing.expectEqual(true, out.solid);
 }

@@ -19,6 +19,27 @@ const std = @import("std");
 const core = @import("core");
 const data = @import("data");
 
+/// What writing a component's fields can fail with.
+///
+/// A serializer is writing bytes the engine itself produced, so `ValueTypeMismatch` means
+/// the component type's schema disagrees with the struct behind it — a registration bug,
+/// not a data one. It is returned rather than asserted because a mod supplies both halves
+/// and neither is ours to assert about.
+pub const SerializeError = data.fpk.BlockError;
+
+/// Writes a component's bytes into a field block.
+///
+/// The mirror of `DeserializeFn`, and deliberately the same shape: `block` is laid out by
+/// the component type's own schema, so what this writes is what that reads. A field left
+/// unset reads back absent, which is exactly what an older schema version's missing field
+/// looks like — so the two directions agree about "not there" without either having to
+/// know the other's version.
+pub const SerializeFn = *const fn (
+    ctx: ?*anyopaque,
+    component: [*]const u8,
+    block: data.fpk.Block,
+) SerializeError!void;
+
 pub const DeserializeError = error{
     /// A value the record holds that the component's field cannot represent — a `u32`
     /// field whose record says 5,000,000,000. Untrusted input, so it is refused rather
@@ -60,10 +81,6 @@ pub const ComponentType = core.Handle(ComponentTypes);
 ///
 /// Deliberately C-ABI-shaped ahead of M7 (ADR-0004): `ctx` rather than a closure, plain
 /// function pointers, no Zig-only types in the fields a mod would have to fill in.
-///
-/// **`serialize` is not here yet.** §3 of the design gives it, and it arrives with the save
-/// format at step 6, because until there is a field writer for it to speak to, a signature
-/// here would be a guess written into a struct that mods will implement.
 pub const ComponentTypeInfo = struct {
     /// Identity and serialized shape, in one value so a component type cannot disagree
     /// with itself. Registration hands this to `data.Registry`, where the ordinary rules
@@ -91,6 +108,11 @@ pub const ComponentTypeInfo = struct {
     /// refused rather than silently producing a zeroed component. `componentType` always
     /// supplies one; a hand-written registration for something purely internal need not.
     deserialize: ?DeserializeFn = null,
+    /// Optional. Absent means the type is **not saved**: a world written to a file leaves
+    /// it out, and reloading produces entities without it. That is the right default for
+    /// a derived cache or a frame-local marker, and it is a decision the type makes rather
+    /// than one the save format makes for it.
+    serialize: ?SerializeFn = null,
 };
 
 /// A component type as the world holds it, after registration.
@@ -115,6 +137,14 @@ pub const Registration = struct {
     construct: ?*const fn (ctx: ?*anyopaque, out: [*]u8) void,
     destruct: ?*const fn (ctx: ?*anyopaque, component: [*]u8) void,
     deserialize: ?DeserializeFn,
+    serialize: ?SerializeFn,
+
+    /// Whether a save carries this type. Both halves are required: a type that can be
+    /// written and not read back would produce a file this build cannot open, which is a
+    /// worse outcome than not saving it.
+    pub fn savable(self: Registration) bool {
+        return self.serialize != null and self.deserialize != null;
+    }
 };
 
 /// The stride a dense array of this type uses.
