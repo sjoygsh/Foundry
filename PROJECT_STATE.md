@@ -1,11 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-05
-**Updated by:** **M3, step 10 — and M3 closed and tagged `m3`.** Content reloads under a
-running program: an edit compiled by `fpack` reaches the sandbox at the top of the next
-frame, and a replaced `.png` reloads behind its handle with no package recompile at all.
-`docs/modding/` begins, with the content-mod guide written by doing it and then verified by
-following it verbatim
+**Updated by:** **M4 begins — with its design document, before any of it is written.**
+`docs/design/entity-storage.md` decides what ADR-0010 deferred: a component type **is a
+schema**, so identity, versioning, checking and serialization are machinery `data` already
+has; queries iterate the first named component rather than the smallest, so order is a
+property of the query and not of the data; a component instance in content is its own
+record, so a mod overrides one component without restating the entity; and a save preserves
+entity identity exactly, which is what lets a handle inside component data survive a reload
+with no remap pass. Nothing in `engine/src/scene/` exists yet
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -24,9 +27,16 @@ is mature enough to need them rather than as decoration.
 ## Current phase
 
 **Phase 2 — A real 2D engine.** Phase 1 (M0, M1) closed with the first pixels; M2 and M3
-are done. Next is **M4 — World: "it has entities."**
+are done. **M4 — World: "it has entities" — is under way**, at its design stage.
 
 ## Current milestone
+
+**M4 — World: "it has entities." Design written, 2026-09-05. Nothing implemented.**
+`docs/design/entity-storage.md` is the document `docs/design/README.md` has owed since ADR-0010
+was accepted, and M4 starts where M3 did — at its decisions, before any code exists to make
+them by accident. It settles six things ADR-0010 left open, names its own open questions
+rather than resolving them opportunistically, and ends with the six implementation steps
+below. The module `scene` is not yet in the build graph.
 
 **M0 — Skeleton: "it runs." Complete, 2026-09-03.** Every item on its ROADMAP list is
 done and both exit criteria are met: `zig build run` opens a window on macOS that responds
@@ -688,9 +698,37 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
   wants its own shader. Adding it is a schema and a runtime-registered loader; nothing has
   to be reshaped.
 
-**M4 — World: "it has entities"** is next, and its decisions come first as M3's did: ADR-0010
-already constrains the component model, and `docs/design/` owes a document before any of it
-is written.
+**M4 — World: "it has entities"** is under way. Its design is written
+(`docs/design/entity-storage.md` §15), and these are its six steps, each leaving the tree
+green and the sandbox runnable:
+
+1. **The module, entities, and the type registry.** `scene` in the build graph with `core`
+   and `data`; `Entity`; `World` with entity create/destroy; `ComponentTypeInfo` and
+   registration. Layering confirmed by breaking it, as `data`'s was.
+2. **Type-erased storage.** The sparse set with dense arrays, tested against a component
+   type built by hand — so the storage is proven before the `comptime` sugar exists to hide
+   it.
+3. **The `comptime` wrapper.** `scene.componentType(T)`: schema derivation, generated
+   serialize/deserialize, the `Entity` and `AssetHandle` field rules, compile errors for what
+   does not project onto the closed type list.
+4. **Queries.** One and many components, first-named iteration, the mutation guard. The step
+   where the interface either leaks the storage layout or does not.
+5. **Systems, and the sandbox gets a world.** Registration and ordered update from `app`'s
+   fixed step. The sample stops holding an array of sprites and holds entities, which is the
+   first honest test of whether the interface is usable.
+6. **Content and saves.** `foundry:entity` and `foundry:scene`; spawning from the store; the
+   `.fsav` writer and reader. Ends at the exit criteria.
+
+**What M4 must not quietly break.** I6 above all: component types and systems are
+runtime-registered, and the `comptime` wrapper *produces* registration data rather than
+becoming a second registration path. A future session could undo ADR-0010 by accident simply
+by making the ergonomic path the only one. Also §5's iteration rule — driving a query from
+the smallest store is the faster and more conventional choice, and it is rejected on purpose
+(I9), so switching to it is reversing a decision rather than finding an oversight.
+
+**One thing M4 needs from `data`:** the record-block writer inside `fpk.write` becomes
+callable on its own, so a save lays out a component block exactly as a package lays out a
+record. Two copies of that code is how the two formats would drift apart.
 
 **M3, for reference.** Ten steps, ordered so each left the tree green and the sandbox
 runnable, and so nothing was a rewrite of the one before.
@@ -1433,14 +1471,18 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
    transient or persistent, how much the validation backend should model cost rather than
    just correctness, whether `frames_in_flight` should adapt, and what happens on device
    loss.
-2. **What "package zero" means for the engine itself.** Does the engine ship content of its
-   own — default font, error texture — as a real content package? Probably yes, and it is a
-   good early test of Invariant I3. Decide during M3. **Narrowed 2026-09-04 by ADR-0019**:
-   the fallback *shader* is no longer part of this question, because engine-owned shaders are
-   engine machinery rather than content. The font still is, and M2 deliberately dodges it by
-   having the sample supply one. **Sharpened 2026-09-04 by ADR-0021**: the question is no
-   longer *how* engine content would be identified — it is a record with a content ID like
-   everything else — only *whether* the engine ships any. M3 step 9 forces the answer.
+2. ~~**What "package zero" means for the engine itself.**~~ **Settled 2026-09-05 by M3
+   step 9**, after being narrowed by ADR-0019 (engine-owned shaders are machinery, not
+   content) and sharpened by ADR-0021 (the question was never *how* engine content is
+   identified, only *whether* the engine ships any). The answer is yes: `content/core` is a
+   real package holding the debug font, compiled by `fpack` and loaded through the same call
+   a mod's package uses. What the question did not anticipate is where the *sample's* sheet
+   went — into the sample's own package, not the engine's, because a sample is the reference
+   for what a game looks like and a game's content is its own.
+   *Still open:* whether an **error texture** belongs in `content/core`. It is the
+   development-build placeholder `assets.md` §4 leaves undecided, and the case for it —
+   a missing texture should be visibly wrong rather than absent — is not yet strong enough to
+   pick what it looks like.
 3. ~~**Authoring format syntax.**~~ **Settled 2026-09-04 by ADR-0020**: Foundry's own
    `.fdt`, specified in `docs/design/content-schemas.md` §4. *Still open, and recorded in
    that document's §10:* multi-line strings (deliberately absent until it is known whether
