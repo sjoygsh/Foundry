@@ -301,6 +301,28 @@ pub const BlockWriter = struct {
         return .{ .writer = self, .base = base, .fields = fields };
     }
 
+    /// Reserves `count` blocks end to end and returns where the run starts.
+    ///
+    /// `blockSize` is rounded to the block's own alignment precisely so that an array of
+    /// them strides evenly, which is what lets a save address a component store's dense
+    /// array by index rather than by a per-element offset table. Writing a string or a
+    /// list from inside one of these appends *after* the run, so the stride holds.
+    pub fn beginArray(self: *BlockWriter, fields: []const Field, count: u32) BlockError!u32 {
+        try self.pad();
+        const base = try cast32(self.fields.items.len);
+        if (count != 0) {
+            const size = blockSize(fields);
+            const total = std.math.mul(u32, size, count) catch return error.TooLarge;
+            try self.fields.appendNTimes(self.gpa, 0, total);
+        }
+        return base;
+    }
+
+    /// The `index`-th block of a run reserved by `beginArray`.
+    pub fn blockIn(self: *BlockWriter, base: u32, fields: []const Field, index: u32) Block {
+        return .{ .writer = self, .base = base + blockSize(fields) * index, .fields = fields };
+    }
+
     /// Starts the next block on a section boundary, so a block's alignment is a property
     /// of the buffer rather than of what happens to precede it.
     pub fn pad(self: *BlockWriter) Allocator.Error!void {
@@ -382,6 +404,110 @@ pub const BlockWriter = struct {
 
     fn putU64(self: *BlockWriter, at: u32, v: u64) void {
         std.mem.writeInt(u64, self.fields.items[at..][0..8], v, .little);
+    }
+};
+
+/// Encodes schemas self-describingly: field names, types, `since` and defaults.
+///
+/// Shared for the same reason the block layout is. A save carries the full schema of every
+/// component type it holds (`entity-storage.md` §9), because that is what lets a build whose
+/// component has gained a field read an older file against the shape it was *written* with
+/// rather than against its own — which is exactly what a package does and exactly what I8
+/// asks for. One encoder, so the two cannot disagree about what a byte means.
+pub const SchemaWriter = struct {
+    gpa: Allocator,
+    /// Field names and string defaults are interned here: they land in the strings section
+    /// beside everything else, because both halves end up in one file.
+    blocks: *BlockWriter,
+    decls: std.ArrayList(u8) = .empty,
+
+    pub fn deinit(self: *SchemaWriter) void {
+        self.decls.deinit(self.gpa);
+        self.* = undefined;
+    }
+
+    /// Appends one schema's field declarations, and returns where they start in `decls`.
+    pub fn add(self: *SchemaWriter, fields: []const Field) BlockError!u32 {
+        const offset = try cast32(self.decls.items.len);
+        try appendU32(self.gpa, &self.decls, try cast32(fields.len));
+        try self.writeFieldDecls(fields);
+        return offset;
+    }
+
+    fn writeFieldDecls(self: *SchemaWriter, fields: []const Field) BlockError!void {
+        for (fields) |f| {
+            const name_ref = try self.blocks.intern(f.name);
+            try appendU32(self.gpa, &self.decls, name_ref.offset);
+            try appendU32(self.gpa, &self.decls, name_ref.len);
+            try appendU32(self.gpa, &self.decls, f.since);
+            try self.decls.append(self.gpa, @intFromEnum(@as(PresenceTag, switch (f.presence) {
+                .required => .required,
+                .optional => .optional,
+                .default => .default,
+            })));
+            try self.writeType(f.type);
+            switch (f.presence) {
+                .default => |d| try self.writeValueBlob(d),
+                else => {},
+            }
+        }
+    }
+
+    fn writeType(self: *SchemaWriter, t: FieldType) BlockError!void {
+        try self.decls.append(self.gpa, @intFromEnum(TypeTag.of(t)));
+        switch (t) {
+            .list => |elem| try self.writeType(elem.*),
+            .nested => |fields| {
+                try appendU32(self.gpa, &self.decls, try cast32(fields.len));
+                try self.writeFieldDecls(fields);
+            },
+            else => {},
+        }
+    }
+
+    fn writeValueBlob(self: *SchemaWriter, v: Value) BlockError!void {
+        const out = &self.decls;
+        switch (v) {
+            .bool => |x| {
+                try out.append(self.gpa, @intFromEnum(ValueTag.bool));
+                try out.append(self.gpa, @intFromBool(x));
+            },
+            .int => |x| {
+                try out.append(self.gpa, @intFromEnum(ValueTag.int));
+                var buf: [16]u8 = undefined;
+                std.mem.writeInt(i128, &buf, x, .little);
+                try out.appendSlice(self.gpa, &buf);
+            },
+            .float => |x| {
+                try out.append(self.gpa, @intFromEnum(ValueTag.float));
+                try appendU64(self.gpa, out, @bitCast(x));
+            },
+            .string => |str| {
+                try out.append(self.gpa, @intFromEnum(ValueTag.string));
+                const ref = try self.blocks.intern(str);
+                try appendU32(self.gpa, out, ref.offset);
+                try appendU32(self.gpa, out, ref.len);
+            },
+            .id => |x| {
+                try out.append(self.gpa, @intFromEnum(ValueTag.id));
+                try appendU64(self.gpa, out, x.hash);
+            },
+            .list => |items| {
+                try out.append(self.gpa, @intFromEnum(ValueTag.list));
+                try appendU32(self.gpa, out, try cast32(items.len));
+                for (items) |item| try self.writeValueBlob(item);
+            },
+            .nested => |named| {
+                try out.append(self.gpa, @intFromEnum(ValueTag.nested));
+                try appendU32(self.gpa, out, try cast32(named.len));
+                for (named) |nv| {
+                    const ref = try self.blocks.intern(nv.name);
+                    try appendU32(self.gpa, out, ref.offset);
+                    try appendU32(self.gpa, out, ref.len);
+                    try self.writeValueBlob(nv.value);
+                }
+            },
+        }
     }
 };
 
@@ -482,6 +608,13 @@ pub const Blocks = struct {
         return self.view(schema_fields, self.fields[offset..][0..size]);
     }
 
+    /// The `index`-th block of a run written by `BlockWriter.beginArray`.
+    pub fn blockInArray(self: Blocks, base: u32, schema_fields: []const Field, index: u32) ?Fields {
+        const size = blockSize(schema_fields);
+        const at = std.math.add(u32, base, std.math.mul(u32, size, index) catch return null) catch return null;
+        return self.blockAt(at, schema_fields);
+    }
+
     fn string(self: Blocks, offset: u32, len: u32) ?[]const u8 {
         const end = @as(u64, offset) + len;
         if (end > self.strings.len) return null;
@@ -580,7 +713,12 @@ pub fn write(
     registry: *Registry,
     out: *std.ArrayList(u8),
 ) WriteError!void {
-    var b: Builder = .{ .gpa = gpa, .blocks = .{ .gpa = gpa } };
+    var b: Builder = .{
+        .gpa = gpa,
+        .blocks = .{ .gpa = gpa },
+        .schemas = undefined,
+    };
+    b.schemas = .{ .gpa = gpa, .blocks = &b.blocks };
     defer b.deinit();
 
     for (pkg.schemas.items) |decl| {
@@ -601,7 +739,8 @@ const Builder = struct {
     /// is that pair plus a header, a schema section and a record index.
     blocks: BlockWriter,
     schema_entries: std.ArrayList(u8) = .empty,
-    schema_decls: std.ArrayList(u8) = .empty,
+    /// The self-describing field declarations, encoded by the shared writer above.
+    schemas: SchemaWriter,
     records: std.ArrayList(u8) = .empty,
     /// Scratch, refilled per record: the record's values widened to the schema's current
     /// field count, so a record checked against an older version writes its successor's
@@ -611,7 +750,7 @@ const Builder = struct {
     fn deinit(self: *Builder) void {
         self.blocks.deinit();
         self.schema_entries.deinit(self.gpa);
-        self.schema_decls.deinit(self.gpa);
+        self.schemas.deinit();
         self.records.deinit(self.gpa);
         self.slots.deinit(self.gpa);
     }
@@ -624,91 +763,13 @@ const Builder = struct {
 
     fn addSchema(self: *Builder, schema: Schema, name: []const u8) WriteError!void {
         const name_ref = try self.intern(name);
-        const decl_offset = try cast32(self.schema_decls.items.len);
-        try appendU32(self.gpa, &self.schema_decls, try cast32(schema.fields.len));
-        try self.writeFieldDecls(schema.fields);
+        const decl_offset = try self.schemas.add(schema.fields);
 
         try appendU64(self.gpa, &self.schema_entries, schema.id.hash);
         try appendU32(self.gpa, &self.schema_entries, schema.version);
         try appendU32(self.gpa, &self.schema_entries, name_ref.offset);
         try appendU32(self.gpa, &self.schema_entries, name_ref.len);
         try appendU32(self.gpa, &self.schema_entries, decl_offset);
-    }
-
-    fn writeFieldDecls(self: *Builder, fields: []const Field) WriteError!void {
-        for (fields) |f| {
-            const name_ref = try self.intern(f.name);
-            try appendU32(self.gpa, &self.schema_decls, name_ref.offset);
-            try appendU32(self.gpa, &self.schema_decls, name_ref.len);
-            try appendU32(self.gpa, &self.schema_decls, f.since);
-            try self.schema_decls.append(self.gpa, @intFromEnum(@as(PresenceTag, switch (f.presence) {
-                .required => .required,
-                .optional => .optional,
-                .default => .default,
-            })));
-            try self.writeType(f.type);
-            switch (f.presence) {
-                .default => |d| try self.writeValueBlob(d),
-                else => {},
-            }
-        }
-    }
-
-    fn writeType(self: *Builder, t: FieldType) WriteError!void {
-        try self.schema_decls.append(self.gpa, @intFromEnum(TypeTag.of(t)));
-        switch (t) {
-            .list => |elem| try self.writeType(elem.*),
-            .nested => |fields| {
-                try appendU32(self.gpa, &self.schema_decls, try cast32(fields.len));
-                try self.writeFieldDecls(fields);
-            },
-            else => {},
-        }
-    }
-
-    fn writeValueBlob(self: *Builder, v: Value) WriteError!void {
-        const out = &self.schema_decls;
-        switch (v) {
-            .bool => |x| {
-                try out.append(self.gpa, @intFromEnum(ValueTag.bool));
-                try out.append(self.gpa, @intFromBool(x));
-            },
-            .int => |x| {
-                try out.append(self.gpa, @intFromEnum(ValueTag.int));
-                var buf: [16]u8 = undefined;
-                std.mem.writeInt(i128, &buf, x, .little);
-                try out.appendSlice(self.gpa, &buf);
-            },
-            .float => |x| {
-                try out.append(self.gpa, @intFromEnum(ValueTag.float));
-                try appendU64(self.gpa, out, @bitCast(x));
-            },
-            .string => |s| {
-                try out.append(self.gpa, @intFromEnum(ValueTag.string));
-                const ref = try self.intern(s);
-                try appendU32(self.gpa, out, ref.offset);
-                try appendU32(self.gpa, out, ref.len);
-            },
-            .id => |x| {
-                try out.append(self.gpa, @intFromEnum(ValueTag.id));
-                try appendU64(self.gpa, out, x.hash);
-            },
-            .list => |items| {
-                try out.append(self.gpa, @intFromEnum(ValueTag.list));
-                try appendU32(self.gpa, out, try cast32(items.len));
-                for (items) |item| try self.writeValueBlob(item);
-            },
-            .nested => |named| {
-                try out.append(self.gpa, @intFromEnum(ValueTag.nested));
-                try appendU32(self.gpa, out, try cast32(named.len));
-                for (named) |nv| {
-                    const ref = try self.intern(nv.name);
-                    try appendU32(self.gpa, out, ref.offset);
-                    try appendU32(self.gpa, out, ref.len);
-                    try self.writeValueBlob(nv.value);
-                }
-            },
-        }
     }
 
     // --- records --------------------------------------------------------------
@@ -736,7 +797,7 @@ const Builder = struct {
         // section like every other name.
         const name_ref = try self.intern(pkg.name);
 
-        const schemas_len = try cast32(self.schema_entries.items.len + self.schema_decls.items.len);
+        const schemas_len = try cast32(self.schema_entries.items.len + self.schemas.decls.items.len);
         const records_len = try cast32(self.records.items.len);
         const fields_len = try cast32(self.blocks.fields.items.len);
         const strings_len = try cast32(self.blocks.strings.items.len);
@@ -771,7 +832,7 @@ const Builder = struct {
         try out.appendSlice(self.gpa, &header);
 
         try out.appendSlice(self.gpa, self.schema_entries.items);
-        try out.appendSlice(self.gpa, self.schema_decls.items);
+        try out.appendSlice(self.gpa, self.schemas.decls.items);
         try padTo(self.gpa, out, start, records_offset);
         try out.appendSlice(self.gpa, self.records.items);
         try padTo(self.gpa, out, start, fields_offset);
@@ -812,6 +873,15 @@ fn addU32(a: u32, b: u32) BlockError!u32 {
 // Reader
 // ---------------------------------------------------------------------------
 
+/// What decoding a schema's declarations can fail with. Shared, because a save carries
+/// schemas the same way a package does.
+pub const SchemaReadError = error{
+    /// An offset, a length or a count that the file's own size contradicts.
+    Malformed,
+    TooManyFields,
+    NestingTooDeep,
+} || Allocator.Error;
+
 pub const OpenError = error{
     /// Too short, or the magic is not `FPKG`. Ask `versionOf` before reporting this: a
     /// package from a future Foundry is a different problem with a different fix.
@@ -820,12 +890,8 @@ pub const OpenError = error{
     /// A flag bit this build does not know. Flags change how bytes are read, so an
     /// unknown one is refused rather than ignored.
     UnsupportedFlags,
-    /// An offset, a length or a count that the file's own size contradicts.
-    Malformed,
     InvalidUtf8,
-    TooManyFields,
-    NestingTooDeep,
-} || Allocator.Error;
+} || SchemaReadError;
 
 pub const ReadError = error{
     /// The file disagrees with itself, or with the schema it names.
@@ -1012,18 +1078,17 @@ pub const Reader = struct {
             const decl_offset = std.mem.readInt(u32, e[20..24], .little);
             if (decl_offset > decls.len) return error.Malformed;
 
-            var decoder: Decoder = .{
+            var decoder: SchemaDecoder = .{
                 .bytes = decls,
                 .pos = decl_offset,
                 .arena = arena,
                 .strings = self.blocks.strings,
                 .limits = self.limits,
             };
-            const field_count = try decoder.u32v();
             schemas[i] = .{
                 .id = .{ .hash = std.mem.readInt(u64, e[0..8], .little) },
                 .version = std.mem.readInt(u32, e[8..12], .little),
-                .fields = try decoder.fields(field_count, 0),
+                .fields = try decoder.readFields(),
             };
             names[i] = self.string(name_offset, name_len) orelse return error.Malformed;
         }
@@ -1199,35 +1264,37 @@ fn onCodepointBoundary(bytes: []const u8, at: u32) bool {
     return bytes[at] & 0xC0 != 0x80;
 }
 
-/// Decodes the self-describing half of a package: schemas, their field declarations, and
-/// their defaults. Depth-bounded and count-bounded, because everything it reads came out
-/// of a file somebody else wrote.
-const Decoder = struct {
+/// Decodes what `SchemaWriter` encodes: field declarations and their defaults.
+///
+/// Depth-bounded and count-bounded, because everything it reads came out of a file
+/// somebody else wrote. Public because a save's component type table is this encoding —
+/// see `SchemaWriter` for why the two formats share it.
+pub const SchemaDecoder = struct {
     bytes: []const u8,
     pos: usize,
     arena: Allocator,
     strings: []const u8,
     limits: Limits,
 
-    fn take(self: *Decoder, n: usize) OpenError![]const u8 {
+    fn take(self: *SchemaDecoder, n: usize) SchemaReadError![]const u8 {
         if (self.pos + n > self.bytes.len) return error.Malformed;
         defer self.pos += n;
         return self.bytes[self.pos..][0..n];
     }
 
-    fn u8v(self: *Decoder) OpenError!u8 {
+    fn u8v(self: *SchemaDecoder) SchemaReadError!u8 {
         return (try self.take(1))[0];
     }
 
-    fn u32v(self: *Decoder) OpenError!u32 {
+    fn u32v(self: *SchemaDecoder) SchemaReadError!u32 {
         return std.mem.readInt(u32, (try self.take(4))[0..4], .little);
     }
 
-    fn u64v(self: *Decoder) OpenError!u64 {
+    fn u64v(self: *SchemaDecoder) SchemaReadError!u64 {
         return std.mem.readInt(u64, (try self.take(8))[0..8], .little);
     }
 
-    fn strv(self: *Decoder) OpenError![]const u8 {
+    fn strv(self: *SchemaDecoder) SchemaReadError![]const u8 {
         const offset = try self.u32v();
         const len = try self.u32v();
         const end = @as(u64, offset) + len;
@@ -1240,9 +1307,16 @@ const Decoder = struct {
     /// The smallest a field declaration can be: two u32 for the name, one for `since`,
     /// one byte of presence and one of type. Believing a count before checking it against
     /// this is how a four-byte file asks for a gigabyte.
-    const min_field_bytes = 4 + 4 + 4 + 1 + 1;
+    pub const min_field_bytes = 4 + 4 + 4 + 1 + 1;
 
-    fn fields(self: *Decoder, count: u32, depth: u32) OpenError![]const Field {
+    /// One schema's fields, at the decoder's current position — the shape `SchemaWriter.add`
+    /// writes: a field count, then that many declarations.
+    pub fn readFields(self: *SchemaDecoder) SchemaReadError![]const Field {
+        const count = try self.u32v();
+        return self.fields(count, 0);
+    }
+
+    fn fields(self: *SchemaDecoder, count: u32, depth: u32) SchemaReadError![]const Field {
         if (depth >= self.limits.max_nesting_depth) return error.NestingTooDeep;
         if (count > self.limits.max_fields_per_schema) return error.TooManyFields;
         if (@as(u64, count) * min_field_bytes > self.bytes.len - self.pos) return error.Malformed;
@@ -1268,7 +1342,7 @@ const Decoder = struct {
         return out;
     }
 
-    fn fieldType(self: *Decoder, depth: u32) OpenError!FieldType {
+    fn fieldType(self: *SchemaDecoder, depth: u32) SchemaReadError!FieldType {
         if (depth >= self.limits.max_nesting_depth) return error.NestingTooDeep;
         return switch (try self.u8v()) {
             @intFromEnum(TypeTag.bool) => .bool,
@@ -1293,7 +1367,7 @@ const Decoder = struct {
         };
     }
 
-    fn value(self: *Decoder, depth: u32) OpenError!Value {
+    fn value(self: *SchemaDecoder, depth: u32) SchemaReadError!Value {
         if (depth >= self.limits.max_nesting_depth) return error.NestingTooDeep;
         return switch (try self.u8v()) {
             @intFromEnum(ValueTag.bool) => .{ .bool = (try self.u8v()) != 0 },

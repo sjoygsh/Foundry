@@ -55,6 +55,8 @@ pub const Value = value.Value;
 pub const Block = fpk.Block;
 pub const BlockWriter = fpk.BlockWriter;
 pub const Blocks = fpk.Blocks;
+pub const SchemaDecoder = fpk.SchemaDecoder;
+pub const SchemaWriter = fpk.SchemaWriter;
 
 /// Validates a `namespace:name` string and hashes it to a `core.ContentId`.
 pub const contentId = id.contentId;

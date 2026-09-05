@@ -27,6 +27,7 @@ pub const derive = @import("derive.zig");
 pub const entity = @import("entity.zig");
 pub const limits = @import("limits.zig");
 pub const query = @import("query.zig");
+pub const save = @import("save.zig");
 pub const schemas = @import("schemas.zig");
 pub const store = @import("store.zig");
 pub const system = @import("system.zig");
@@ -43,8 +44,10 @@ pub const Entity = entity.Entity;
 pub const Limits = limits.Limits;
 pub const Query = query.Query;
 pub const Registration = component.Registration;
+pub const SerializeError = component.SerializeError;
 pub const System = system.System;
 pub const SystemHandle = system.SystemHandle;
+pub const SaveSummary = save.Summary;
 pub const Tick = system.Tick;
 pub const World = world.World;
 
@@ -56,6 +59,8 @@ pub const CreateError = world.CreateError;
 pub const SpawnError = world.SpawnError;
 pub const SystemError = world.SystemError;
 pub const RegisterError = world.RegisterError;
+pub const SaveReadError = save.ReadError;
+pub const SaveWriteError = save.WriteError;
 
 test {
     _ = component;
@@ -63,6 +68,7 @@ test {
     _ = entity;
     _ = limits;
     _ = query;
+    _ = save;
     _ = schemas;
     _ = store;
     _ = system;

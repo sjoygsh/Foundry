@@ -21,6 +21,7 @@ const component = @import("component.zig");
 const entity_mod = @import("entity.zig");
 const limits_mod = @import("limits.zig");
 const query_mod = @import("query.zig");
+const save_mod = @import("save.zig");
 const schemas_mod = @import("schemas.zig");
 const store_mod = @import("store.zig");
 const system_mod = @import("system.zig");
@@ -540,6 +541,33 @@ pub const World = struct {
     /// Sugar over the same iterator, in the way `componentType` is sugar over the same
     /// registration: it resolves each type through the ordinary schema lookup, so a native
     /// system and a mod's system are asking the registry the same question.
+    // -- saving --------------------------------------------------------------------
+
+    /// Destroys every entity, keeping registered component types and systems.
+    ///
+    /// Through the ordinary path, so a `destruct` runs and every slot's generation
+    /// advances: handles held from before a clear stay stale, which is what makes this
+    /// safe to expose at all.
+    pub fn clear(self: *World) void {
+        var it = self.entities.iterator();
+        while (it.next()) |entry| {
+            for (self.stores.items) |*store| _ = store.remove(entry.id);
+            std.debug.assert(self.entities.remove(entry.id));
+        }
+        self.mutation +%= 1;
+    }
+
+    /// Writes this world into `out` as an `.fsav` (§9). See `save.write`.
+    pub fn save(self: *World, out: *std.ArrayList(u8)) save_mod.WriteError!void {
+        return save_mod.write(self, self.gpa, out);
+    }
+
+    /// Loads an `.fsav` into this world, which must be fresh and must already have its
+    /// component types registered. See `save.read`.
+    pub fn load(self: *World, bytes: []const u8, limits: data.Limits) save_mod.ReadError!save_mod.Summary {
+        return save_mod.read(self, self.gpa, bytes, limits);
+    }
+
     pub fn queryOf(self: *World, comptime types: anytype) query_mod.TypedQuery(types) {
         var handles: [types.len]ComponentType = undefined;
         inline for (types, 0..) |Component, i| {
