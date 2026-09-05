@@ -50,6 +50,17 @@ const layering = [_]Module{
     // hands it decoded images and the game hands it draw calls.
     .{ .name = "render2d", .deps = &.{ "core", "rhi", "asset" } },
 
+    // L3 — entities, components, systems and world state (docs/design/entity-storage.md).
+    // ADR-0007 allows `asset` as well; it is not taken, because nothing here acquires one
+    // — a `sprite` component holds a texture's content id and the rendering system above
+    // resolves it. A dependency a module does not use is a claim the build cannot check.
+    //
+    // What it does *not* get is the interesting part again: no `platform`, so a simulation
+    // can read neither a clock nor an input device, and no filesystem to save a world
+    // through. Both fall out of the layering, and both are what I9 would have asked for
+    // anyway.
+    .{ .name = "scene", .deps = &.{ "core", "data" } },
+
     // L4 — the engine loop and subsystem lifecycle. Gains dependencies as the layers
     // between it and `platform` arrive; it is allowed to see all of them (ADR-0007).
     // `data` and `asset` joined at M3 step 9: the engine loads package zero and mounts it
@@ -58,7 +69,6 @@ const layering = [_]Module{
     .{ .name = "app", .deps = &.{ "core", "data", "platform", "rhi", "asset" } },
 
     // Added as each is implemented. The rest of the graph from ADR-0007 is:
-    //   L3  scene      -> core, data, asset
     //   L5  abi        -> app             (M7)
 };
 

@@ -1,7 +1,8 @@
 # Design: `scene` — entities, components, systems and world state
 
-**Status:** Design only. Nothing in `engine/src/scene/` exists yet; this document is what M4
-implements.
+**Status:** M4 in progress. Step 1 of §15 is built as `engine/src/scene/` — entities and the
+component type registry; the Resolution section at the end records what it settled. Steps 2 to
+6 are not written.
 **Date:** 2026-09-05
 **Implements:** I1, I2, I3, I5, I6, I8, I9 · **Informed by:** ADR-0005, ADR-0006, ADR-0010,
 ADR-0013, ADR-0020, ADR-0021
@@ -99,7 +100,8 @@ pub const ComponentTypeInfo = struct {
     /// Identity, and the schema its serialized form is laid out against. One ID, so a
     /// component type cannot be two things.
     schema: data.Schema,
-    /// The authored spelling, for diagnostics. Borrowed; the registrant outlives the world.
+    /// The authored spelling, for diagnostics. Copied at registration — a mod's string
+    /// does not outlive the call that hands it over.
     name: []const u8,
 
     size: u32,
@@ -303,11 +305,18 @@ Zig error unions at the boundary.
 * The schema goes into the world's `data.Registry`, so the existing rules apply unchanged — a
   second registration of the same ID at the same version must be identical, and a version bump
   must be additive.
-* `size` and `alignment` must be non-zero and alignment a power of two, and a native type's
-  must match its Zig type's.
-* Registering after the world holds entities is refused. Storage is allocated per type at
-  registration, and a type appearing mid-run would silently have no data for entities that
-  already exist. Every registration happens during startup, which is also when a mod's would.
+* `alignment` must be a power of two and at least 1, and a native type's must match its Zig
+  type's. **`size` may be zero**, which means a marker: a component that records only that an
+  entity has it, stores no bytes, and ordinarily declares an empty schema because there is
+  nothing to save.
+* `name` must parse as a `namespace:name` and must hash to `schema.id`. The spelling exists so
+  a diagnostic can print something a person can grep for, and an unchecked one would eventually
+  print a name the schema does not have.
+* Registering after the world has *ever* created an entity is refused — slots used, not live
+  entities. Storage is allocated per type at registration, and a type appearing mid-run would
+  silently have no data for entities that already exist, an emptiness indistinguishable from
+  "none of them has this component". Every registration happens during startup, which is also
+  when a mod's would.
 
 ---
 
@@ -606,3 +615,44 @@ The factoring this needs from `data`: **the record-block writer inside `fpk.writ
 callable on its own**, so a save can lay out a component block exactly as a package lays out a
 record. It is the same code with the same schema, and having two of it is the way the two
 formats would drift apart.
+
+---
+
+## Resolution: entities and the type registry (implementation, 2026-09-05)
+
+Step 1 of §15, built as `engine/src/scene/` — `entity.zig`, `component.zig`, `limits.zig`,
+`world.zig`. 18 tests. What building it settled or changed:
+
+**A registered component type is a `core.Handle`, not an index.** The document did not say,
+and an index was the obvious choice: nothing unregisters a type, so nothing can go stale, and
+the generation would always be 1. A handle was taken anyway, for a reason worth recording
+because it will not be obvious later — **unloading a mod unregisters its component types**,
+and on that day every index held anywhere becomes a dangling reference with no way to detect
+it. The generation is four bytes now and a rewrite of every holder afterwards. Because nothing
+is removed today, `handle.index` is dense and is exactly the position of the type's storage,
+which is what step 2's flat array of stores indexes by.
+
+**The world keeps the schema *handle*, never a copy of the schema.** `data.Registry` updates a
+schema in place behind its handle when a later package extends it, so a component type
+registered before a mod loads follows that mod's added field without being re-registered. A
+copy taken at registration would have been the one thing in the engine that quietly did not,
+and it is the sort of divergence that shows up as a field reading zero rather than as an
+error. There is a test for exactly that.
+
+**Size zero is legal and means a marker.** §6 originally required a non-zero size. Marker
+components — "is player", "is dead" — are ordinary ECS practice, `@sizeOf(struct {})` is 0 in
+Zig, and a sparse set stores presence in `sparse` and `owners` whether or not there are bytes
+to go with it. Refusing them would have been a limitation discovered by the first person who
+wanted one, in exchange for nothing.
+
+**`serialize` and `deserialize` are not in `ComponentTypeInfo` yet.** They arrive with the
+`comptime` wrapper at step 3, because until there is a field writer for them to speak to, a
+signature would be a guess written into a struct that mods will implement. Nothing else in the
+file moves when they land.
+
+**What was confirmed rather than decided.** The layering was checked by breaking it: `scene`
+importing `platform` fails with *"no module named 'platform' available within module 'root'"*,
+the same message `data`'s check produced — and, as with `data`, only once something
+*references* the import, because Zig analyses top-level declarations lazily. `scene` therefore
+cannot read a clock, cannot read input, and cannot open a file, by construction rather than by
+convention (I7).

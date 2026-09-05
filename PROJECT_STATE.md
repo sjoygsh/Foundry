@@ -1,14 +1,15 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-05
-**Updated by:** **M4 begins — with its design document, before any of it is written.**
-`docs/design/entity-storage.md` decides what ADR-0010 deferred: a component type **is a
+**Updated by:** **M4, step 1 — `scene` exists.** Its design was written first
+(`docs/design/entity-storage.md`), deciding what ADR-0010 deferred: a component type **is a
 schema**, so identity, versioning, checking and serialization are machinery `data` already
-has; queries iterate the first named component rather than the smallest, so order is a
-property of the query and not of the data; a component instance in content is its own
-record, so a mod overrides one component without restating the entity; and a save preserves
-entity identity exactly, which is what lets a handle inside component data survive a reload
-with no remap pass. Nothing in `engine/src/scene/` exists yet
+has; queries will iterate the first named component rather than the smallest, so order is a
+property of the query and not of the data; a component instance in content is its own record,
+so a mod overrides one component without restating the entity; and a save preserves entity
+identity exactly, which is what lets a handle inside component data survive a reload with no
+remap pass. Step 1 built the module, entities and the runtime component type registry, and
+confirmed the layering by breaking it. Storage, queries and systems are steps 2 to 5
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -31,12 +32,17 @@ are done. **M4 — World: "it has entities" — is under way**, at its design st
 
 ## Current milestone
 
-**M4 — World: "it has entities." Design written, 2026-09-05. Nothing implemented.**
+**M4 — World: "it has entities." In progress, 2026-09-05. Step 1 of 6 done.**
 `docs/design/entity-storage.md` is the document `docs/design/README.md` has owed since ADR-0010
-was accepted, and M4 starts where M3 did — at its decisions, before any code exists to make
+was accepted, and M4 started where M3 did — at its decisions, before any code existed to make
 them by accident. It settles six things ADR-0010 left open, names its own open questions
 rather than resolving them opportunistically, and ends with the six implementation steps
-below. The module `scene` is not yet in the build graph.
+below. **Step 1 is built**: `scene` is in the layering table with `core` and `data`, entities
+are handles out of `core.HandlePool`, and component types register at runtime with their
+schemas going into the store's own registry (I6). 18 tests. Three things implementation
+settled are in that document's Resolution section — chiefly that a component type is
+identified by a *handle* rather than an index, so that unloading a mod one day cannot leave
+dangling references.
 
 **M0 — Skeleton: "it runs." Complete, 2026-09-03.** Every item on its ROADMAP list is
 done and both exit criteria are met: `zig build run` opens a window on macOS that responds
@@ -90,11 +96,34 @@ than by being done.
 ## What has been implemented
 
 **`core` (L0), `platform` and `data` (L1), `rhi` (L2) with two backends, `asset` (L2),
-`render2d` (L3), `app` (L4), plus `tools/fpack`. `scene` does not exist yet. It draws
-thousands of sprites under a camera that pans, zooms and picks, and it loads content by
-content id.**
+`render2d` and `scene` (L3), `app` (L4), plus `tools/fpack`. It draws thousands of sprites
+under a camera that pans, zooms and picks, and it loads content by content id. `scene` holds
+entities and component types; it has no storage, no queries and no systems yet.**
 
-New this session:
+**M4 step 1, new:**
+
+* `engine/src/scene/entity.zig` — `Entity`, a `core.Handle` over an opaque tag. No entity
+  object exists anywhere, which is why the type is not called `EntityHandle`.
+* `engine/src/scene/component.zig` — `ComponentTypeInfo`, the runtime description ADR-0010
+  requires, carrying a `data.Schema` as its identity and shape; `ComponentType`, a handle
+  rather than an index because unloading a mod will one day unregister a type; and
+  `Registration`, what the world keeps, which holds the schema **handle** so a later
+  package's extension is followed rather than shadowed.
+* `engine/src/scene/world.zig` — `World`: entity create and destroy over `core.HandlePool`,
+  component type registration with every check in the design's §6, and the mutation counter
+  step 4's query iterators will capture. It borrows the schema registry rather than owning
+  one, so a component type and the record defining an instance of it cannot disagree.
+* `engine/src/scene/limits.zig` — `max_entities` and `max_component_types`. A save file says
+  how many entities to create, so the bound is a refusal and not an assertion.
+* `build.zig` — `scene` in the layering table with `core` and `data`. **Not** `asset`, which
+  ADR-0007 allows: nothing here acquires one, and a dependency a module does not use is a
+  claim the build cannot check. Confirmed by breaking it — importing `platform` fails with
+  *"no module named 'platform' available within module 'root'"*.
+
+The lists below are older, kept as the record of when each piece landed; italic notes mark
+what a later milestone changed.
+
+From M2, when this list was last rebuilt:
 
 * `engine/src/render2d/atlas.zig` — `Packer` (a shelf packer, best fit by height, no GPU
   and no allocator beyond its own list) and `Region`, whose `sub` cuts in the region's own
@@ -246,8 +275,8 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 502 tests** (52 `core`, 70 `platform`, 102 `data`, 92 `rhi`,
-36 `asset`, 103 `render2d`, 28 `app`, 14 `fpack`, 5 integration), and **510 under
+**`zig build test` passes 520 tests** (52 `core`, 70 `platform`, 102 `data`, 92 `rhi`,
+36 `asset`, 103 `render2d`, 18 `scene`, 28 `app`, 14 `fpack`, 5 integration), and **528 under
 `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
@@ -702,9 +731,13 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 (`docs/design/entity-storage.md` §15), and these are its six steps, each leaving the tree
 green and the sandbox runnable:
 
-1. **The module, entities, and the type registry.** `scene` in the build graph with `core`
-   and `data`; `Entity`; `World` with entity create/destroy; `ComponentTypeInfo` and
-   registration. Layering confirmed by breaking it, as `data`'s was.
+1. ~~**The module, entities, and the type registry.**~~ **Done, 2026-09-05.** `scene` in the
+   build graph with `core` and `data`; `Entity`; `World` with entity create/destroy;
+   `ComponentTypeInfo` and registration, with every check the design's §6 asks for. Layering
+   confirmed by breaking it, as `data`'s was — and, as with `data`, only once something
+   *references* the illegal import, because Zig analyses top-level declarations lazily. Two
+   things changed from the design and are recorded in its Resolution: a component type is a
+   handle rather than an index, and a zero-size component is legal and means a marker.
 2. **Type-erased storage.** The sparse set with dense arrays, tested against a component
    type built by hand — so the storage is proven before the `comptime` sugar exists to hide
    it.
