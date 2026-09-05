@@ -9,7 +9,9 @@
 const std = @import("std");
 
 pub const asset_pipeline = @import("asset_pipeline.zig");
+pub const world_pipeline = @import("world_pipeline.zig");
 
 test {
     _ = asset_pipeline;
+    _ = world_pipeline;
 }
