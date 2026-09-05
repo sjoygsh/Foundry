@@ -28,6 +28,7 @@ pub const entity = @import("entity.zig");
 pub const limits = @import("limits.zig");
 pub const query = @import("query.zig");
 pub const store = @import("store.zig");
+pub const system = @import("system.zig");
 pub const world = @import("world.zig");
 
 // The names reached for most often. These are seen by people we do not control — a game
@@ -41,6 +42,9 @@ pub const Entity = entity.Entity;
 pub const Limits = limits.Limits;
 pub const Query = query.Query;
 pub const Registration = component.Registration;
+pub const System = system.System;
+pub const SystemHandle = system.SystemHandle;
+pub const Tick = system.Tick;
 pub const World = world.World;
 
 pub const ComponentError = world.ComponentError;
@@ -48,6 +52,7 @@ pub const ComponentError = world.ComponentError;
 /// Produces registration data for a component type from a Zig struct (ADR-0010).
 pub const componentType = derive.componentType;
 pub const CreateError = world.CreateError;
+pub const SystemError = world.SystemError;
 pub const RegisterError = world.RegisterError;
 
 test {
@@ -57,5 +62,6 @@ test {
     _ = limits;
     _ = query;
     _ = store;
+    _ = system;
     _ = world;
 }

@@ -16,7 +16,9 @@ stale entity fail cleanly instead of inheriting whatever reused its slot. Step 3
 `comptime` wrapper: `scene.componentType(T)` derives a schema from a Zig struct and generates
 its deserializer, tested by reading records out of packages `fpk.write` actually produced.
 Step 4 built queries, which is where the interface either leaks the storage layout or does
-not — it does not. Systems are step 5
+not — it does not. Step 5's engine half is in: systems, registered at runtime and run in
+registration order, with a fixed scenario proving it runs the same way twice. The sandbox
+half of that step is next
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -132,6 +134,10 @@ entities, component types and their storage; it has no queries and no systems ye
   `deserialize` and `construct` generated over it, and a compile error naming any field that
   does not project onto the closed type list. It **produces** registration data rather than
   being a second registration path, which is what ADR-0010 requires of it.
+* `engine/src/scene/system.zig` — `System` and `Tick`, runtime-registered like everything
+  else here, run in registration order. A system gets the world and the tick and **not**
+  input or a clock, because `platform` is not below `scene`; input reaches it as data the
+  game wrote down, which is the shape replay wants anyway.
 * `engine/src/scene/query.zig` — `Query`, driven by the **first** named component's dense
   array rather than the smallest, so iteration order is a property of the query as written
   and not of the data (I9); and `TypedQuery`, the same iterator with the casts written for
@@ -298,8 +304,8 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 550 tests** (52 `core`, 70 `platform`, 102 `data`, 92 `rhi`,
-36 `asset`, 103 `render2d`, 48 `scene`, 28 `app`, 14 `fpack`, 5 integration), and **558 under
+**`zig build test` passes 555 tests** (52 `core`, 70 `platform`, 102 `data`, 92 `rhi`,
+36 `asset`, 103 `render2d`, 53 `scene`, 28 `app`, 14 `fpack`, 5 integration), and **563 under
 `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The

@@ -22,5 +22,8 @@ pub const Limits = struct {
     /// that per-type work in `destroy` stays trivial.
     max_component_types: u32 = 1024,
 
+    /// Registered systems. Engine, game and mod systems in one world.
+    max_systems: u32 = 256,
+
     pub const default: Limits = .{};
 };

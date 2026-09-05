@@ -22,6 +22,7 @@ const entity_mod = @import("entity.zig");
 const limits_mod = @import("limits.zig");
 const query_mod = @import("query.zig");
 const store_mod = @import("store.zig");
+const system_mod = @import("system.zig");
 
 const Allocator = std.mem.Allocator;
 const ComponentStore = store_mod.ComponentStore;
@@ -33,6 +34,10 @@ const Entity = entity_mod.Entity;
 const Limits = limits_mod.Limits;
 const Query = query_mod.Query;
 const Registration = component.Registration;
+const System = system_mod.System;
+const SystemHandle = system_mod.SystemHandle;
+const Systems = system_mod.Systems;
+const Tick = system_mod.Tick;
 const log = core.log.scoped(.scene);
 
 pub const CreateError = error{
@@ -74,6 +79,18 @@ pub const ComponentError = error{
     ComponentSizeMismatch,
 } || Allocator.Error;
 
+pub const SystemError = error{
+    /// A system is already registered under that id. Adding is not replacing — the same
+    /// rule component types and asset loaders live under, for the same reason: resolving
+    /// the ambiguous case by arrival order would make the winner depend on load order.
+    SystemExists,
+    /// `Limits.max_systems`.
+    SystemLimit,
+    /// The id is `none`. A system without an identity cannot be named by a constraint, a
+    /// profiler, or a mod that wants to replace it.
+    MissingSystemId,
+} || Allocator.Error;
+
 pub const World = struct {
     gpa: Allocator,
     /// Holds component type names. Never reset: registration happens at startup and what
@@ -98,6 +115,16 @@ pub const World = struct {
     /// the storage stays a thing with a lifetime.
     stores: std.ArrayList(ComponentStore) = .empty,
 
+    /// Registered systems, and the order they run in.
+    ///
+    /// The order is kept explicitly rather than taken from the pool's iteration, which is
+    /// ascending slot index and would silently reorder the schedule the first time a system
+    /// was unregistered and another registered — the same reason `data.Store` keeps a load
+    /// order beside its package pool.
+    systems: core.HandlePool(Systems, System) = .empty,
+    schedule: std.ArrayList(SystemHandle) = .empty,
+    by_system_id: std.AutoHashMapUnmanaged(u64, SystemHandle) = .empty,
+
     /// Bumped by every structural change: an entity created or destroyed, and from step 2
     /// a component added or removed. Query iterators capture it and assert it has not
     /// moved, because mutating storage during iteration invalidates the pointers already
@@ -114,6 +141,9 @@ pub const World = struct {
     }
 
     pub fn deinit(self: *World) void {
+        self.by_system_id.deinit(self.gpa);
+        self.schedule.deinit(self.gpa);
+        self.systems.deinit(self.gpa);
         for (self.stores.items) |*store| store.deinit(self.gpa);
         self.stores.deinit(self.gpa);
         self.by_schema.deinit(self.gpa);
@@ -340,6 +370,55 @@ pub const World = struct {
             } else &self.stores.items[types[0].index];
         }
         return q;
+    }
+
+    // -- systems -------------------------------------------------------------------
+
+    /// Registers a system. It runs after everything already registered.
+    ///
+    /// Unlike a component type, this is allowed at any time — a system holds no per-entity
+    /// storage, so one arriving mid-run has nothing to be missing. A system registered
+    /// during `update` first runs on the following tick.
+    pub fn registerSystem(self: *World, system: System) SystemError!SystemHandle {
+        if (system.id.isNone()) return error.MissingSystemId;
+        if (self.systems.count() >= self.limits.max_systems) return error.SystemLimit;
+        if (self.by_system_id.contains(system.id.hash)) return error.SystemExists;
+
+        try self.systems.ensureUnusedCapacity(self.gpa, 1);
+        try self.schedule.ensureUnusedCapacity(self.gpa, 1);
+        try self.by_system_id.ensureUnusedCapacity(self.gpa, 1);
+        const name = try self.arena.allocator().dupe(u8, system.name);
+
+        var owned = system;
+        owned.name = name;
+        const handle = try self.systems.add(self.gpa, owned);
+        self.schedule.appendAssumeCapacity(handle);
+        self.by_system_id.putAssumeCapacity(system.id.hash, handle);
+
+        log.debug("system '{s}' registered at position {d}", .{ name, self.schedule.items.len - 1 });
+        return handle;
+    }
+
+    pub fn systemCount(self: *const World) u32 {
+        return self.systems.count();
+    }
+
+    pub fn findSystem(self: *const World, id: core.ContentId) ?SystemHandle {
+        return self.by_system_id.get(id.hash);
+    }
+
+    /// Runs every registered system once, in registration order.
+    ///
+    /// The schedule is read by index against the length it had on entry, so a system that
+    /// registers another does not run it in the same tick and does not iterate a slice that
+    /// has moved underneath it. Each system's record is copied before the call for the same
+    /// reason: the pool may reallocate while it runs.
+    pub fn update(self: *World, tick: Tick) void {
+        const count = self.schedule.items.len;
+        for (0..count) |i| {
+            const system = self.systems.getConst(self.schedule.items[i]).?.*;
+            system.update(system.ctx, self, tick);
+        }
     }
 
     /// `query`, with the component types named as Zig types and the casts written for you.
