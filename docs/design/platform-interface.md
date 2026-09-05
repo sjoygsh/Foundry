@@ -261,13 +261,17 @@ saying so. It is not interchangeable with the monotonic clock and is not the sam
 
 ## 8. Audio device
 
-Not designed yet. The audio decision (own mixer versus a library) is postponed to M5, and SDL3
-supplies the device either way.
+**Designed 2026-09-05, in [`audio.md`](audio.md) §3.** ADR-0023 settled the question this
+section was holding open — Foundry mixes its own audio, and `platform` owns the device — and
+what was written here in anticipation turned out to be right: device access is a resource like
+a window, it needed no restructuring to fit, and the mixing above it is not `platform`'s
+concern.
 
-What is owed *now* is only that nothing here precludes it: audio device enumeration and
-callback-driven output need to fit this interface later without restructuring it. They do —
-device access is a resource like a window, and the mixing that sits above it is not
-`platform`'s concern.
+Four functions (`openAudio`, `closeAudio`, `audioInfo`, `setAudioPaused`), a handle rather
+than a singleton because an output device is closed and reopened in normal use, and a
+device-owned thread calling a callback that Foundry must treat as a real-time context. The
+null backend's device is **stepped rather than threaded** — the same role its synthetic clock
+plays in §9, for the same reason.
 
 ---
 

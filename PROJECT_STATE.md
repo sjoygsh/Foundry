@@ -1,21 +1,20 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-05
-**Updated by:** **M5 opened — its two long-held decisions are made, and its first design
-document is written.** `CLAUDE.md` §9 had been holding physics and audio for this milestone
-since M0, and both were put to the user before any code existed to make them by accident.
-Physics is **Foundry's own, scoped to collision rather than dynamics** (ADR-0022) — boxes,
-circles, tile grids, swept tests, a spatial hash, queries, sliding response and triggers, and
-explicitly no mass, restitution, friction, joints or rotation. Audio is **Foundry's own mixer
-and WAV decoding** (ADR-0023) over the device `platform` was already chartered to provide, with
-a *stepped* null device so the mixer is testable headlessly and deterministically. Both follow
-ADR-0018's precedent, and in the physics case the deciding argument was I9 rather than
-licensing: a ported solver's contact-resolution order is an implementation detail, and I9 needs
-that order documented and stable. The sample is **top-down tile movement**, which is what puts
-gravity and slopes out of scope. `docs/design/tilemaps-and-collision.md` is written and no
-collision code exists yet; `audio.md` and a short `sprite-animation.md` remain owed. **No
-engine code has changed** — M5 so far is decisions and design, which is where the last three
-milestones started too.
+**Updated by:** **M5's design phase is complete.** Its two long-held `CLAUDE.md` §9
+decisions were made first — physics is **Foundry's own, scoped to collision rather than
+dynamics** (ADR-0022) and audio is **Foundry's own mixer and WAV decoding** (ADR-0023), both
+put to the user before any code existed to make them by accident, and in the physics case
+decided by I9 rather than by licensing. All three design documents are now written:
+`tilemaps-and-collision.md`, `audio.md` and `sprite-animation.md`. Audio's is the substantial
+one, because audio is the first subsystem with **a second thread Foundry did not create**, and
+every decision in it is downstream of that — state split by owning thread, two SPSC rings, no
+lock anywhere, and a stepped null device that makes the mixer testable while being honest that
+it does not exercise the ring under concurrency. Sprite animation's conclusion is that the
+`scene`/`render2d` crossing it was written to resolve **dissolves once the state is an
+integer**, leaving the engine two pure functions and a region cut. **No engine code has
+changed** — M5 so far is decisions and design, which is where the last three milestones
+started too.
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
 
@@ -82,8 +81,37 @@ because ten thousand integers in a `.fdt` file is a binary payload in disguise (
 adds **no engine-owned component types**, because a `foundry:collider` invented now is a name
 every mod is stuck with from M7, and that vocabulary should be chosen when the ABI freezes it.
 
-**Still owed before the code they cover:** `docs/design/audio.md`, and a short
-`docs/design/sprite-animation.md` — small, but it lands in `render2d` and `scene` at once.
+**`docs/design/audio.md` is written**, and it is M5's longest document because audio is the
+first subsystem in Foundry with a second thread. Its load-bearing decisions: mixer state is
+**split by which thread owns it**, so no field is written by both, and **two SPSC rings** carry
+commands out and retirements back — which is why no lock appears in the module. The device
+speaks **`f32` interleaved and that is not negotiated** (a sample-format enum would put a
+`switch` in the mixer's inner loop for a case that exists only because a driver is old); sample
+rate and channel count *are* negotiated, because they change what the mixer computes. A
+`VoiceHandle`'s generation is the answer to the oldest bug in game audio — stopping a footstep
+that already ended and silencing the door that took its slot. **Two lifetime hazards get two
+mechanisms**: the mixer holds the asset reference for a voice's life, and it keeps *its own*
+retirement, the same answer `render2d` gave for GPU resources, so hot reload cannot free
+samples out from under the callback. The document is explicit that the stepped null device
+proves the arithmetic and the protocol but **not** the ring under real concurrency. Two things
+it settled that ADR-0023 left implicit: **the mixer opens the device**, so `app` gains no
+dependency on `audio` at all; and `scene` and `audio` are both L3 with no dependency between
+them, so a system *cannot* reach the mixer — I9's emit-never-observe rule enforced by the build
+graph rather than by documentation.
+
+**`docs/design/sprite-animation.md` is written**, and short, because its answer is that the
+crossing it was written to resolve is not one. Once animation state is an **integer tick
+count**, `scene` holds a tick and a frame index and never learns what a texture is, `render2d`
+turns an index into a region and never learns what an entity is, and I7 would not have let them
+meet anyway. A float accumulator is refused on three grounds and the deciding one is that it
+makes "which frame at tick 700?" only *nearly* answerable. The component stores a frame
+**index, not a `Region`**, because a `Region` carries a `TextureHandle` and a component is
+serialized — the rule ADR-0021 already set for textures. The engine's whole contribution is
+`frameAt`, `frameAtVarying` and a `Region.cell` grid cut; the clip schema and the animation
+component are the sample's, for the same reason M5 adds no `foundry:collider`.
+
+**Nothing is owed before the code now.** Three documents, three implementation orders:
+`tilemaps-and-collision.md` §15, `audio.md` §13, `sprite-animation.md` §10.
 
 **The milestone behind it — M4 — World: "it has entities." Complete, 2026-09-05.** Every item
 on its ROADMAP list is done and both exit criteria are met. `docs/design/entity-storage.md`
@@ -425,11 +453,13 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M5, at its design stage.** The two §9 decisions are made (ADR-0022, ADR-0023),
-`docs/design/tilemaps-and-collision.md` is written, and no engine code has changed. The next
-unit of work is `docs/design/audio.md` and the short `sprite-animation.md`, and after those,
-step 1 of the collision document's §15: `physics2d` in the build graph with `core` as its only
-dependency, with the layering confirmed by breaking it.
+**M5, with its design phase complete and implementation not begun.** The two §9 decisions
+are made (ADR-0022, ADR-0023), all three design documents are written, and no engine code has
+changed. The next unit of work is **step 1 of `tilemaps-and-collision.md` §15**: `physics2d`
+in the build graph with `core` as its only dependency, with the layering confirmed by breaking
+it. Collision and audio are independent sequences that share only the frame that calls both,
+so either could go first; collision goes first because it is what the milestone's exit
+criterion is about.
 
 What follows in this section is the record of the milestones behind it, kept because the
 reasoning is what a future session needs and the commit log is not where reasoning lives.
@@ -808,17 +838,27 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**M5 is open and at its design stage.** In order:
+**M5 is open, its design is finished, and the next thing is code.** Three independent
+sequences, each with its order written down in its own document:
 
-1. **`docs/design/audio.md`** — the device interface in `platform` (including the stepped null
-   device), the mixer and voice model, the SPSC command ring that keeps the callback lock-free
-   and allocation-free, WAV decoding and its stated subset in `asset`, and playback by content
-   ID with the loader registered upward from `audio` (I6).
-2. **`docs/design/sprite-animation.md`** — short. A clip is a content record, its state is a
-   component, its timing is an integer tick count and never a float (I9), and the frame it
-   selects becomes an atlas region.
-3. **Then code**, following `tilemaps-and-collision.md` §15's seven steps, starting with
-   `physics2d` in the build graph and the layering confirmed by breaking it.
+1. **Collision**, `tilemaps-and-collision.md` §15, seven steps: `physics2d` in the build graph
+   with `core` as its only dependency and the layering confirmed by breaking it; the tile grid
+   with neighbour-aware face culling; the broadphase and its determinism sort; movement and
+   queries; tilemap content and the `fpack` front end; drawing with view culling; the
+   sandbox's player colliding with the map. **This is where to start** — it is what the
+   milestone's exit criterion is about.
+2. **Audio**, `audio.md` §13, six steps, and the first three add no threads at all: the
+   `foundry:sound` schema, `Sound` and the WAV decoder in `asset` with its corpus; the device
+   in `platform` including the stepped null one; `audio` in the build graph at L3; the rings,
+   the voice table and the mixer under the stepped device; the loader registered upward and
+   `play(ContentId)`; the sandbox making a sound.
+3. **Sprite animation**, `sprite-animation.md` §10, three steps: `frameAt`, `frameAtVarying`
+   and `Region.cell` in `render2d`; the sample's clip schema and animation component; an
+   animated sprite that reloads onto the frame it was saved on — which is the check that makes
+   the integer-tick argument something the suite holds rather than something a document
+   asserts.
+
+They share only the frame that calls them. Nothing forces the order beyond that.
 
 **Three things carried forward, and none of them is a bug:**
 
@@ -1129,6 +1169,24 @@ a rewrite of the one before.
   every mod is stuck with from M7, chosen before any game has said what belongs on one. The
   sample defines its own, exactly as it already defines `transform` and `sprite`. The standard
   vocabulary is M7's decision, made when the ABI freezes it.
+* **The mixer opens the audio device**, which ADR-0023 left implicit. The device cannot be
+  opened before a callback exists and the callback is the mixer's, so `Mixer.init` opens it and
+  `deinit` closes it. The consequence is the useful part: **`app` gains no dependency on
+  `audio`** and keeps the same shape it already has with `render2d`, where it owns the
+  `rhi.Device` and the game owns the `Renderer`.
+* **Audio's real-time discipline is a design property, not a rule to remember.** Everything
+  that can fail was moved to the game thread — `play` acquires the asset, claims the voice and
+  returns the error — so the callback has nothing left to report and no reason to reach for an
+  allocation, a lock or a log. ADR-0023 named the permanent cost; this is what reduces it.
+* **A non-finite sample in a float WAV refuses the whole file.** Stricter than the texture
+  path, which prefers a wrong-looking sprite to a missing one, and deliberately asymmetric: a
+  NaN entering the mixer propagates through the accumulator and silences *everything* for the
+  rest of the session, which is the least diagnosable failure available.
+* **Animation state is an integer tick count, and the component stores a frame index rather
+  than a `Region`.** The first because a float accumulator drifts, does not survive a save, and
+  makes "which frame at tick 700?" only nearly answerable; the second because a `Region`
+  carries a `TextureHandle` and a component is serialized — the rule ADR-0021 and
+  `entity-storage.md` §8 already set for textures, applied unchanged.
 
 **M4 (2026-09-05), the decisions building it forced:**
 
@@ -1732,6 +1790,17 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
    anyway, and networking is indefinite. *Trigger: the first real consumer that wants a grid
    and not a GPU.* The document's §13 records four smaller ones alongside it, including whether
    trigger enter/exit bookkeeping belongs in `physics2d` at all.
+7. **How much audio policy the engine owns.** `audio.md` §11 leaves five things open and two
+   of them will be asked for early. **Buses or categories** — a music slider and an effects
+   slider is the second thing every game wants, and a gain per named category is a few lines
+   where a real bus graph is a subsystem; *trigger: the first time the sandbox wants two
+   sliders.* **Voice stealing** — M5's `play` returns `error.NoFreeVoice` and lets the game
+   decide, which is right until something actually exhausts the pool and wants an
+   oldest-or-quietest policy; *trigger: exactly that.* Alongside them: streaming (which arrives
+   with music, and with it WAV's size), device-change handling, and whether `foundry:sound`
+   grows loop points. `sprite-animation.md` §8 adds one of the same shape — whether the engine
+   owns the clip schema and animation component at M7, *triggered by a second consumer or by
+   the ABI freeze*, not by convenience.
 
 ---
 
@@ -1757,6 +1826,11 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
   reached through a test block, so `os.zig` importing `library.zig` for `Library` did *not*
   pull in its tests — they silently never ran. Every file gets an explicit `_ =` line in its
   module root's test block. This is the same lazy-analysis family as the layering nuance.
+* **`failed command:` in a test run does not mean a test failed.** A test step whose binary
+  writes to stderr — most of ours do, deliberately, because refusal paths log warnings — has
+  the command echoed under a `failed command:` line even when it passed. Read the exit code
+  and the `Build Summary` line, never that line. `--summary all` also prints nothing at all
+  when every step is cached, so a pass count is only visible after a real rebuild.
 * **Lazy analysis makes negative tests lie.** A function body is only analysed when something
   reaches it, and an *undeclared identifier* is caught earlier than a *type error*, so a
   probe using the former proves nothing about branch analysis. Break things with a genuine

@@ -184,11 +184,15 @@ slopes are out of M5's collision scope.*
 * Tilemaps with efficient rendering and collision — `docs/design/tilemaps-and-collision.md`.
 * 2D collision detection and response; spatial partitioning — the new **`physics2d`** module,
   L1 on `core` alone.
-* Sprite animation: clips, state, timing — `docs/design/sprite-animation.md`, owed.
+* Sprite animation: clips, state, timing — `docs/design/sprite-animation.md`.
 * Audio: device output, sound loading, mixing, playback by content ID — the new **`audio`**
   module at L3, plus an audio device in `platform` and WAV decoding in `asset`;
-  `docs/design/audio.md`, owed.
+  `docs/design/audio.md`.
 * A small but genuinely playable sample in `samples/sandbox`.
+
+*All three design documents are written (2026-09-05) and no implementation has begun. Each
+carries its own implementation order — §15, §13 and §10 respectively — and the three are
+independent sequences that share only the frame that calls them.*
 
 **Exit criteria:** something a person can play for five minutes without knowing it is a tech
 demo.

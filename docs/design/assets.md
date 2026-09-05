@@ -283,8 +283,10 @@ itself.
   `content-schemas.md`.
 * **Mod discovery and load order.** M7. `asset` consumes a merged store; it does not assemble
   one.
-* **Audio decoding.** M5. `foundry:sound` is named here so the shape is uniform, not because
-  anything decodes one yet.
+* **Audio decoding.** `foundry:sound`, `Sound` and the WAV decoder land beside `foundry:texture`,
+  `Image` and the PNG decoder, and for the same reasons — designed in [`audio.md`](audio.md)
+  §6, not yet implemented. The loader is registered upward from `audio`, exactly as §5
+  describes for textures.
 
 ---
 
