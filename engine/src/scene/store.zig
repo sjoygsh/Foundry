@@ -243,6 +243,7 @@ fn pairRegistration() Registration {
         .ctx = null,
         .construct = null,
         .destruct = null,
+        .deserialize = null,
     };
 }
 
@@ -377,6 +378,7 @@ test "the dense array stays aligned as it grows" {
         .ctx = null,
         .construct = null,
         .destruct = null,
+        .deserialize = null,
     });
     defer store.deinit(gpa);
 
@@ -408,6 +410,7 @@ test "a marker component stores presence and no bytes" {
         .ctx = null,
         .construct = null,
         .destruct = null,
+        .deserialize = null,
     });
     defer store.deinit(gpa);
 
@@ -454,6 +457,7 @@ const Counted = struct {
             .ctx = null,
             .construct = &construct,
             .destruct = &destruct,
+            .deserialize = null,
         };
     }
 };

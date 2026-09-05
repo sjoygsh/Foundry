@@ -1,8 +1,8 @@
 # Design: `scene` — entities, components, systems and world state
 
-**Status:** M4 in progress. Steps 1 and 2 of §15 are built as `engine/src/scene/` — entities,
-the component type registry, and the type-erased storage; the Resolution sections at the end
-record what they settled. Steps 3 to 6 are not written.
+**Status:** M4 in progress. Steps 1 to 3 of §15 are built as `engine/src/scene/` — entities,
+the component type registry, the type-erased storage, and the `comptime` wrapper; the
+Resolution sections at the end record what they settled. Steps 4 to 6 are not written.
 **Date:** 2026-09-05
 **Implements:** I1, I2, I3, I5, I6, I8, I9 · **Informed by:** ADR-0005, ADR-0006, ADR-0010,
 ADR-0013, ADR-0020, ADR-0021
@@ -701,3 +701,56 @@ is simply nothing to copy beside it.
 test that proves it reuses a slot deliberately — entity `3#1` has a component, is removed, and
 `3#2` is given its own. The sparse array answers for index 3 either way, and only comparing the
 generation separates them.
+
+---
+
+## Resolution: the `comptime` wrapper (implementation, 2026-09-05)
+
+Step 3 of §15, built as `engine/src/scene/derive.zig`. `scene.componentType(T)` derives a
+schema from a Zig struct and generates `deserialize` and, where the struct allows it,
+`construct`. What building it settled:
+
+**An asset reference in a component is a `core.ContentId`, not an `AssetHandle`.** §3 said
+both `Entity` and `AssetHandle` fields would be recognised specially, with an asset
+serializing as its content ID. Implementation showed that cannot be what the sentence means:
+an `AssetHandle` does not carry a content ID, so serializing one as an `id` would need the
+asset registry — which `scene` does not have and, per §8, deliberately does not take. The
+resolution is simpler and was already implicit: **a component that references an asset holds
+the content ID**, which is what an asset's identity actually is (ADR-0021), and the runtime
+handle is the rendering system's business. So the wrapper needs no `AssetHandle` case at all,
+which is the same fact as `scene` needing no `asset` dependency.
+
+**`deserialize` does not take the schema; the fields already carry it.** §3's signature passed
+both `data.fpk.Fields` and a `data.Schema`. `Fields` holds the field list it was read against,
+so the second argument could only ever agree with the first or be a bug. It is gone.
+
+**Fields match by position, not by name.** A schema may only append (`content-schemas.md` §3),
+so field *i* is field *i* in every version that has it. A record written against an older
+version simply has fewer fields, and the ones beyond it keep whatever `construct` left there.
+That is the whole of I8's forward compatibility for components, and it costs one comparison
+per field rather than a name lookup per field per entity.
+
+**`construct` is generated when every field has a Zig default**, and that is what makes the
+paragraph above work: a field the record predates has to fall back to the *type's* default,
+not to zero. A component whose `solid: bool = true` came back false after loading old content
+would be a silent, plausible-looking bug. There is a test for exactly that.
+
+**Components hold no strings and no slices.** The deserialize signature has no allocator —
+deliberately, since it writes into storage the world already owns — so a component cannot
+acquire memory while being read. Variable-length data is referenced by content ID instead.
+The compile error for a pointer field says so.
+
+**Arrays are refused for now**, with an error explaining why: a list's elements live outside
+the block holding the rest of the component, and where they live is part of the save format
+(step 6). A fixed set of named values is an inline struct today, which is what
+`content-schemas.md` §3 prefers anyway — it is why there is no colour type and no vector type.
+
+**The integer and float types are exactly the closed list.** A `u8` field is a compile error
+rather than a silent widening to `u32`. Widening would mean the schema saying one thing and
+the struct another, with a range check on the way back in; it is additive if it is ever
+wanted, and refusing it now keeps the round trip trivially lossless.
+
+**Tested through the real pipeline, not a stub.** Every deserialization test compiles `.fdt`
+text with the derived schema registered, writes a `.fpk` with `fpk.write`, loads it into a
+`data.Store`, and deserializes the record that comes back — so what these tests read is what
+`fpack` actually produces.

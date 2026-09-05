@@ -1,7 +1,8 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-05
-**Updated by:** **M4, steps 1 and 2 — `scene` exists, and entities have components.** Its design was written first
+**Updated by:** **M4, steps 1 to 3 — `scene` exists, entities have components, and a Zig
+struct becomes one.** Its design was written first
 (`docs/design/entity-storage.md`), deciding what ADR-0010 deferred: a component type **is a
 schema**, so identity, versioning, checking and serialization are machinery `data` already
 has; queries will iterate the first named component rather than the smallest, so order is a
@@ -11,8 +12,10 @@ identity exactly, which is what lets a handle inside component data survive a re
 remap pass. Step 1 built the module, entities and the runtime component type registry, and
 confirmed the layering by breaking it. Step 2 built the type-erased storage under it — a
 sparse set with dense arrays, where the owner recorded beside each element is what makes a
-stale entity fail cleanly instead of inheriting whatever reused its slot. Queries and systems
-are steps 4 and 5
+stale entity fail cleanly instead of inheriting whatever reused its slot. Step 3 built the
+`comptime` wrapper: `scene.componentType(T)` derives a schema from a Zig struct and generates
+its deserializer, tested by reading records out of packages `fpk.write` actually produced.
+Queries and systems are steps 4 and 5
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -35,7 +38,7 @@ are done. **M4 — World: "it has entities" — is under way**, at its design st
 
 ## Current milestone
 
-**M4 — World: "it has entities." In progress, 2026-09-05. Steps 1 and 2 of 6 done.**
+**M4 — World: "it has entities." In progress, 2026-09-05. Steps 1 to 3 of 6 done.**
 `docs/design/entity-storage.md` is the document `docs/design/README.md` has owed since ADR-0010
 was accepted, and M4 started where M3 did — at its decisions, before any code existed to make
 them by accident. It settles six things ADR-0010 left open, names its own open questions
@@ -105,7 +108,7 @@ than by being done.
 under a camera that pans, zooms and picks, and it loads content by content id. `scene` holds
 entities, component types and their storage; it has no queries and no systems yet.**
 
-**M4 steps 1 and 2, new:**
+**M4 steps 1 to 3, new:**
 
 * `engine/src/scene/entity.zig` — `Entity`, a `core.Handle` over an opaque tag. No entity
   object exists anywhere, which is why the type is not called `EntityHandle`.
@@ -124,6 +127,10 @@ entities, component types and their storage; it has no queries and no systems ye
   component. Swap-removal, `construct`/`destruct` including on teardown, and a dense block
   that over-allocates so it can align its own base — `Allocator.alloc` cannot express a
   runtime alignment and `rawAlloc` says it is not for callers.
+* `engine/src/scene/derive.zig` — `componentType(T)`: the schema derived from a Zig struct,
+  `deserialize` and `construct` generated over it, and a compile error naming any field that
+  does not project onto the closed type list. It **produces** registration data rather than
+  being a second registration path, which is what ADR-0010 requires of it.
 * `engine/src/scene/limits.zig` — `max_entities` and `max_component_types`. A save file says
   how many entities to create, so the bound is a refusal and not an assertion.
 * `build.zig` — `scene` in the layering table with `core` and `data`. **Not** `asset`, which
@@ -286,8 +293,8 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 534 tests** (52 `core`, 70 `platform`, 102 `data`, 92 `rhi`,
-36 `asset`, 103 `render2d`, 32 `scene`, 28 `app`, 14 `fpack`, 5 integration), and **542 under
+**`zig build test` passes 543 tests** (52 `core`, 70 `platform`, 102 `data`, 92 `rhi`,
+36 `asset`, 103 `render2d`, 41 `scene`, 28 `app`, 14 `fpack`, 5 integration), and **551 under
 `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
@@ -755,6 +762,13 @@ green and the sandbox runnable:
    `removeComponent`, and a `destroy` that clears every store before freeing the slot — so a
    `destruct` running there can still look the entity up. Tested against a component type
    built by hand, so the storage is proven before the `comptime` sugar exists to hide it.
+3. ~~**The `comptime` wrapper.**~~ **Done, 2026-09-05.** `derive.zig`. Two things the design
+   did not have right: an asset reference in a component is a `core.ContentId` and never an
+   `AssetHandle` — a handle carries no content id, so serializing one would need the asset
+   registry `scene` deliberately does not have — and `deserialize` does not take a schema,
+   because the `Fields` it is given already carries the one it was read against. Fields match
+   by **position**, since a schema may only append; that plus a generated `construct` is the
+   whole of I8's forward compatibility for components.
 3. **The `comptime` wrapper.** `scene.componentType(T)`: schema derivation, generated
    serialize/deserialize, the `Entity` and `AssetHandle` field rules, compile errors for what
    does not project onto the closed type list.

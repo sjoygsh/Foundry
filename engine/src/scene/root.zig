@@ -23,6 +23,7 @@
 //! Design: `docs/design/entity-storage.md`
 
 pub const component = @import("component.zig");
+pub const derive = @import("derive.zig");
 pub const entity = @import("entity.zig");
 pub const limits = @import("limits.zig");
 pub const store = @import("store.zig");
@@ -34,17 +35,22 @@ pub const world = @import("world.zig");
 pub const ComponentStore = store.ComponentStore;
 pub const ComponentType = component.ComponentType;
 pub const ComponentTypeInfo = component.ComponentTypeInfo;
+pub const DeserializeError = component.DeserializeError;
 pub const Entity = entity.Entity;
 pub const Limits = limits.Limits;
 pub const Registration = component.Registration;
 pub const World = world.World;
 
 pub const ComponentError = world.ComponentError;
+
+/// Produces registration data for a component type from a Zig struct (ADR-0010).
+pub const componentType = derive.componentType;
 pub const CreateError = world.CreateError;
 pub const RegisterError = world.RegisterError;
 
 test {
     _ = component;
+    _ = derive;
     _ = entity;
     _ = limits;
     _ = store;

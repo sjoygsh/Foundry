@@ -202,6 +202,7 @@ pub const World = struct {
             .ctx = info.ctx,
             .construct = info.construct,
             .destruct = info.destruct,
+            .deserialize = info.deserialize,
         });
         self.by_schema.putAssumeCapacity(info.schema.id.hash, handle);
         // Nothing is ever unregistered, so `handle.index` is the next position and the

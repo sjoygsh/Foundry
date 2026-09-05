@@ -19,6 +19,25 @@ const std = @import("std");
 const core = @import("core");
 const data = @import("data");
 
+pub const DeserializeError = error{
+    /// A value the record holds that the component's field cannot represent — a `u32`
+    /// field whose record says 5,000,000,000. Untrusted input, so it is refused rather
+    /// than truncated.
+    ValueOutOfRange,
+} || data.fpk.ReadError;
+
+/// Fills a component's bytes from a record's fields.
+///
+/// **Untrusted:** the fields came from a package or a save, and a field the schema says is
+/// there may be absent, out of range, or a shape the block does not actually hold. Absence
+/// is not an error — an omitted optional field and a field added in a later schema version
+/// both arrive that way, and the value already in `out` is the right answer for both.
+pub const DeserializeFn = *const fn (
+    ctx: ?*anyopaque,
+    fields: data.fpk.Fields,
+    out: [*]u8,
+) DeserializeError!void;
+
 /// Phantom tag for `ComponentType` (I1).
 pub const ComponentTypes = opaque {};
 
@@ -42,10 +61,9 @@ pub const ComponentType = core.Handle(ComponentTypes);
 /// Deliberately C-ABI-shaped ahead of M7 (ADR-0004): `ctx` rather than a closure, plain
 /// function pointers, no Zig-only types in the fields a mod would have to fill in.
 ///
-/// **`serialize` and `deserialize` are not here yet.** §3 of the design gives them, and
-/// they arrive with the `comptime` wrapper at step 3, because until there is a field writer
-/// for them to speak to, a signature here would be a guess written down. Their absence is
-/// staging, not a change of design: nothing else in this file has to move when they land.
+/// **`serialize` is not here yet.** §3 of the design gives it, and it arrives with the save
+/// format at step 6, because until there is a field writer for it to speak to, a signature
+/// here would be a guess written into a struct that mods will implement.
 pub const ComponentTypeInfo = struct {
     /// Identity and serialized shape, in one value so a component type cannot disagree
     /// with itself. Registration hands this to `data.Registry`, where the ordinary rules
@@ -69,6 +87,10 @@ pub const ComponentTypeInfo = struct {
     construct: ?*const fn (ctx: ?*anyopaque, out: [*]u8) void = null,
     /// Optional. Absent means the component owns nothing that needs releasing.
     destruct: ?*const fn (ctx: ?*anyopaque, component: [*]u8) void = null,
+    /// Optional. Absent means the type cannot be built from data: content naming it is
+    /// refused rather than silently producing a zeroed component. `componentType` always
+    /// supplies one; a hand-written registration for something purely internal need not.
+    deserialize: ?DeserializeFn = null,
 };
 
 /// A component type as the world holds it, after registration.
@@ -92,6 +114,7 @@ pub const Registration = struct {
     ctx: ?*anyopaque,
     construct: ?*const fn (ctx: ?*anyopaque, out: [*]u8) void,
     destruct: ?*const fn (ctx: ?*anyopaque, component: [*]u8) void,
+    deserialize: ?DeserializeFn,
 };
 
 /// The stride a dense array of this type uses.
