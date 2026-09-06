@@ -4,7 +4,17 @@
 **Updated by:** **M6 has opened, and it opened where the last four did: at a decision.**
 `CLAUDE.md` §9 had held "Debug/game UI: own IMGUI vs. cimgui" since the project started and
 ADR-0011 had deferred it here by name. **ADR-0024 answers it: Foundry writes its own
-immediate-mode UI**, and `docs/design/ui.md` is written against it. No UI code exists yet.
+immediate-mode UI**, and `docs/design/ui.md` is written against it. **Step 1 of its §16 is
+implemented**: `engine/src/ui/` is seven files and 36 tests, all of them headless — no renderer,
+no device, no window, no `app` change and nothing on screen. 832 tests under `-Drhi=null`, 840
+under `-Drhi=metal`.
+
+**The bug step 1's tests caught is the shape of bug this design is arranged to make findable.**
+The safety net that ends a drag when the pointer is released outside the window was written in
+`begin`, where it cleared `active` *before* any widget ran — so the release every button was
+waiting for had already been consumed, and no button in the system could ever report a click.
+Six tests failed at once and said so in one run, on a machine with nothing rendering. A UI that
+could only be checked by clicking it would have shipped that.
 
 The decision was taken on I4 and I5 rather than on taste. Dear ImGui is explicitly not a game
 UI toolkit, so cimgui would not remove the obligation to write one — it would add a second
@@ -77,7 +87,7 @@ reading it. §10's Tier 1 claim was paid the same way the other two sequences pa
 replaced a sound the sandbox never wrote a record for, from a file under its own directory
 layout, with nothing rebuilt but the mod.
 
-796 tests under `-Drhi=null`, 804 under `-Drhi=metal`. **M5's remaining work is its exit
+796 tests under `-Drhi=null`, 804 under `-Drhi=metal` (832 and 840 as of M6 step 1). **M5's remaining work is its exit
 criterion, not its bullet list**: five minutes of play.
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
@@ -1570,10 +1580,11 @@ and judged to read as a place, and the mixer was listened to.
 and **the next thing to do is step 1 of its §16.** The steps, each ending in something that runs
 and something that is tested:
 
-1. **The kernel's spine.** `Id`, `Context`, `begin`/`end`, `Input`, hot/active/focus, the draw
-   list and its per-frame arena, `Style`, `FontMetrics`. One widget — `button` — to prove the
-   loop. **No renderer, no `app` change, nothing on screen**, and that is the point: this step
-   is the whole argument for `ui` being L1, and if it needs a device the layering was wrong.
+1. ~~**The kernel's spine.**~~ **Complete, 2026-09-06** — `engine/src/ui/`, seven files, **36
+   tests and every one of them headless**. No renderer, no device, no window, no `app` change
+   and nothing on screen, which was the point: a step 1 that had needed a device would have
+   meant the layering was wrong. See `ui.md`'s Resolution section for what it settled and for
+   the two things that document had said wrong.
 2. **Layout and the rest of the interaction model.** Regions, panels, rows, capture,
    `clip_push`/`clip_pop`, plus `label`, `separator`, `spacer`, `checkbox`.
 3. **`render2d` gains `setClip` and `blankRegion`**, with batch-break tests against the null
@@ -1587,6 +1598,9 @@ and something that is tested:
    `textField`, `plot`.
 6. **`samples/room` checks capture**, because a game that walks with WASD and opens a panel over
    the hall is where getting it wrong is visible, and the room is the sample that plays.
+
+**Next is step 2**: regions, panels, rows, capture, `clip_push`/`clip_pop`, and `label`,
+`separator`, `spacer`, `checkbox`.
 
 **A second M6 design document is owed after these**: the overlay itself — the entity inspector,
 the content browser, the log console, the frame profiler and the introspection APIs beneath

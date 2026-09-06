@@ -45,6 +45,13 @@ const layering = [_]Module{
     // grown into a physics engine.
     .{ .name = "physics2d", .deps = &.{"core"} },
 
+    // L1 — the immediate-mode UI kernel (ADR-0024, docs/design/ui.md). `platform` for the
+    // input snapshot it is handed; `core` for maths and logging. **No `render2d`**, which
+    // is the decision rather than an omission: the kernel emits a draw list and something
+    // above walks it, so the whole interaction model tests with no device, no window and
+    // no frame. A `ui` that could see a renderer would be a `ui` nobody could test.
+    .{ .name = "ui", .deps = &.{ "core", "platform" } },
+
     // L2 — Metal/Vulkan/D3D live ONLY here (ADR-0003).
     .{ .name = "rhi", .deps = &.{ "core", "platform" } },
 
@@ -461,7 +468,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    for ([_][]const u8{ "core", "data", "platform", "physics2d", "rhi", "asset", "render2d", "scene", "audio" }) |name| {
+    for ([_][]const u8{ "core", "data", "platform", "physics2d", "ui", "rhi", "asset", "render2d", "scene", "audio" }) |name| {
         integration_mod.addImport(name, modules.get(name).?);
     }
 

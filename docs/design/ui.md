@@ -1,7 +1,8 @@
 # Design: ui — an immediate-mode kernel that draws nothing
 
-**Status:** Designed, not implemented. Written before any UI code exists, so implementation is
-transcription rather than invention.
+**Status:** **Step 1 implemented 2026-09-06** (`engine/src/ui/`). Written before any UI code
+existed, so implementation was transcription rather than invention; see the Resolution section
+at the end for the two things it corrected and what it settled. Steps 2-6 of §16 remain.
 **Date:** 2026-09-06
 **Implements:** I1, I4, I5, I6, I8, I9 · **Informed by:** ADR-0004, ADR-0007, ADR-0011,
 ADR-0021, ADR-0024
@@ -69,11 +70,17 @@ ui.end(&ctx)                         // resolve capture, finalise the draw list
 ```
 
 **`hot` is decided from the previous frame's rectangles, not this one's.** This is the one piece
-of an immediate-mode UI that surprises people, and it is not a compromise: a widget's rectangle
-is only known once it has been described, which is *after* the caller has already asked whether
-it was clicked. So hit-testing runs against what was on screen when the user aimed at it, which
-is also the only answer that is correct. One frame of latency on hover is the honest cost, and
-it is invisible at any frame rate a game runs at.
+of an immediate-mode UI that surprises people, and **the reason is overlap.** Widgets are
+described back to front, so whether a given widget is the topmost one under the pointer is not
+known until every widget has been described — which is long after the first of them asked
+whether it was clicked. Resolving `hot` at `end` and reading it during the next frame buys two
+things at once: a widget's hot state is consistent for the whole frame it draws in, and the
+topmost widget wins regardless of description order.
+
+One frame of latency between the pointer arriving and the control accepting a press is the
+honest cost. With a physical pointer it is invisible — a person cannot see a button and press it
+inside 16ms — and it is what every immediate-mode UI that handles overlap correctly pays. §14
+records the case where it is not free.
 
 ## 3. Identity, and the mistake Foundry will not make
 
@@ -125,8 +132,9 @@ loop over two hundred entities uses `childIndex(i)` without inventing two hundre
 
 **Collisions are reported, not asserted.** Two widgets with the same id in one frame is a caller
 bug, and the caller may be a mod (I4: untrusted input is validated, not asserted). The kernel
-logs it once per frame with both call sites' ids and lets the second widget be inert, rather
-than silently giving one widget's clicks to another.
+names the id in a log line, counts the collisions, and lets the second widget be **inert but
+still drawn** — rather than silently giving one widget's clicks to another. Drawn, because an
+inert control is easier to find than a missing one.
 
 ## 4. Input, and who took it
 
@@ -428,6 +436,12 @@ break.
 
 ## 14. Open questions
 
+* **Input that arrives already inside a control.** The one frame `hot` costs is invisible to a
+  physical pointer, which is over a button for many frames before a person presses it. It is not
+  free for a touch that lands on a control, or for a synthesised or scripted click, both of
+  which can be inside and pressed on their very first frame — and the press is dropped. The fix
+  is a same-frame path for a press whose position had no previous frame to be hot in, and it
+  needs a case that actually exists before it is written.
 * **Culling.** A scrolling list of ten thousand log lines emits ten thousand text commands, of
   which forty are visible. The kernel knows the clip rectangle and could skip them. It is not
   done at M6 because the honest answer needs the profiler M6 is building, and guessing at it now
@@ -479,3 +493,68 @@ Each step ends with something that runs and something that is tested.
 
 M6's remaining bullets — the inspector, the browser, the console, the profiler and the
 introspection APIs under them — follow in their own design document, on top of this one.
+
+---
+
+## Resolution: the kernel's spine (step 1, 2026-09-06)
+
+`engine/src/ui/` — `id.zig`, `style.zig`, `draw.zig`, `input.zig`, `context.zig`, `widget.zig`,
+`root.zig`. **36 tests, all of them headless**: 832 under `-Drhi=null` and 840 under
+`-Drhi=metal`, up from 796 and 804. No renderer, no device, no window, no `app` change, and
+nothing on screen — which was the point of the step, because a step 1 that had needed a device
+would have meant the layering was wrong.
+
+**Two things this document said were wrong, and are corrected above rather than left standing.**
+
+**§2's justification for deferring `hot` was muddled.** It claimed a widget's rectangle is not
+known until after the caller has asked whether it was clicked. That is false for the widget's
+*own* rectangle: a widget computes its bounds inside its own call, before it returns anything.
+The real reason is **overlap** — whether *this* widget is the topmost one under the pointer
+depends on every widget described after it, which is not known until `end`. The mechanism was
+right and the sentence explaining it was not, which is the more dangerous of the two failures: a
+future session simplifying away a mechanism whose stated reason is visibly wrong would have been
+doing the obvious thing.
+
+**§3 said collisions are logged "with both call sites' ids".** There is one id, by definition —
+that is what makes it a collision. The kernel names the id, counts them, and reports the count
+at `end`.
+
+**The bug the tests caught is worth recording, because it is the shape of bug this whole design
+is arranged to make findable.** The safety net that ends a drag when the pointer is released
+outside the window was written in `begin`, where it cleared `active` *before* any widget ran —
+so the release every button was waiting for had already been consumed, and no button in the
+system could ever report a click. Six tests failed at once and said so in one run. It belongs in
+`end`, after the widgets have had their chance, and it is now commented there with the reason.
+A UI that could only be tested by clicking it would have shipped this.
+
+**What implementation settled:**
+
+* **`Input.keys` is by value, not `*const`.** `platform.InputSnapshot` documents itself as
+  containing no pointers and no allocation precisely so it can be copied, and a by-value field
+  removes a lifetime question from a struct a caller synthesises in tests constantly. `Input.at`
+  is that synthesiser, and it lives beside the type rather than in each test file.
+* **`ui.Color` deliberately has no `srgb8`.** Duplicating the sRGB transfer function would be a
+  second thing that can silently disagree with the renderer, and the kernel has no need for one:
+  whoever builds a `Style` is above the seam and can convert there. `withAlpha` is the one
+  operation a widget genuinely needs, because dimming a disabled control at each call site is
+  how a style stops being one value.
+* **The text arena is an `ArrayList(u8)` cleared each frame, not a `core.mem.Arena`.** It gives
+  the same per-frame lifetime with offsets that survive the storage reallocating mid-frame,
+  which a pointer into an arena would not. `TextRef` is therefore an offset and a length, and a
+  test appends 256 strings after taking a reference to prove the reference still resolves.
+* **The one-frame latency is pinned by a test**, not only by a comment: a button hovered for the
+  first time still draws cold, and the frame after draws hot. A future session moving where
+  `hot` resolves finds out from the suite rather than from a user.
+* **A truncated UTF-8 sequence substitutes per byte**, so `"\xe4\xb8"` measures two glyphs and
+  not one. This is not a choice — it is what `render2d.text.Layout.decode` already does, for the
+  stated reason that a stray lead byte must not swallow what follows it. The measurement code
+  here mirrors that decode exactly, including `\r` being skipped without advancing a column and
+  a trailing `\n` counting as a line. §8's drift test at step 4 is what will keep it mirrored.
+* **Duplicate detection is always on**, costing one hash insert per widget. Gating it behind
+  `runtime_safety` was considered and refused: that would be optimising before the profiler this
+  milestone is building exists to measure it (rule 2). The comment in `context.zig` says what
+  the fix is if it ever shows up there.
+* **`button` takes explicit bounds**, because layout is step 2 and a cursor invented in
+  `widget.zig` would have put layout in the wrong file.
+* **`ui` reaches the integration test module** in `build.zig` already, so §8's drift test has
+  somewhere to live at step 4 without another build change.
