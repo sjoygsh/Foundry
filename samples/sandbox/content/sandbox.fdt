@@ -36,6 +36,12 @@
     # What the four thousand play. One clip shared by all of them, each at its own phase,
     # because the phase is per-entity state and the clip is not.
     field_clip  id
+    # The sounds. Three ids and no gains: what a mix bus is and where its slider lives is
+    # deliberately still an open question (`audio.md` §11), and a per-sound gain field
+    # here would be answering it by accident.
+    step_sound id
+    bump_sound id
+    hum_sound  id
 }
 
 settings sandbox:settings.main {
@@ -51,6 +57,13 @@ settings sandbox:settings.main {
     player_walk  sandbox:clip.walk
     player_idle  sandbox:clip.idle
     field_clip   sandbox:clip.drift
+    # **No records declare these.** A `.wav` in the package becomes a `foundry:sound` from
+    # its own path, exactly as a `.png` becomes a `foundry:texture` — `sounds/step.wav` in
+    # package `sandbox` is `sandbox:sounds.step`. Naming them here is the only place the
+    # sample says anything about them at all.
+    step_sound   sandbox:sounds.step
+    bump_sound   sandbox:sounds.bump
+    hum_sound    sandbox:sounds.hum
 }
 
 # An animation clip: a run of cells from a sheet, and how long each is held.

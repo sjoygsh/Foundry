@@ -119,6 +119,10 @@ const Stack = struct {
     }
 
     fn deinit(self: *Stack) void {
+        // The order the module documents, and what the sandbox does: `shutdown` closes
+        // the device and hands back the asset reference every playing voice held, then the
+        // registry unloads through a loader that is still valid, then the mixer goes.
+        self.mixer.shutdown();
         self.assets.deinit(self.gpa);
         self.mixer.deinit();
         self.plat.deinit();

@@ -22,6 +22,7 @@ const builtin = @import("builtin");
 const app = @import("app");
 const core = @import("core");
 const asset = @import("asset");
+const audio = @import("audio");
 const data = @import("data");
 const physics2d = @import("physics2d");
 const platform = @import("platform");
@@ -233,6 +234,7 @@ pub fn main(init: std.process.Init) !void {
         // most recent transforms yet, which is what `engine.alpha()` is for and what the
         // world now finally has the two states to make possible.
         field.control(engine);
+        field.audioFrame();
         try field.submit(engine);
 
         engine.renderFrame(.{ .label = "sprites", .clear = clearColor(engine) }, &field.renderer) catch |err| switch (err) {
@@ -307,10 +309,11 @@ pub fn main(init: std.process.Init) !void {
         });
     }
 
-    log.info("clean exit after {d} frames, {d} ticks, {d}ms simulated", .{
+    log.info("clean exit after {d} frames, {d} ticks, {d}ms simulated, {d} sound(s) started", .{
         engine.frame_index,
         engine.stepper.tick,
         engine.elapsed().toMillis(),
+        field.sounds_played,
     });
 }
 
@@ -352,6 +355,12 @@ const Settings = struct {
     player_walk: core.ContentId,
     player_idle: core.ContentId,
     field_clip: core.ContentId,
+    /// What the sample plays: a tick while walking, a thud on a contact, and a loop that
+    /// never stops. Ids, so a package after this one can replace any of them with its own
+    /// `.wav` and no code here learns that it happened.
+    step_sound: core.ContentId,
+    bump_sound: core.ContentId,
+    hum_sound: core.ContentId,
 
     /// Where the record is, and the only content id spelled in this file. Everything else
     /// the sample draws is reached through it.
@@ -369,6 +378,9 @@ const Settings = struct {
         .player_walk = .none,
         .player_idle = .none,
         .field_clip = .none,
+        .step_sound = .none,
+        .bump_sound = .none,
+        .hum_sound = .none,
     };
 
     /// Reads the record, falling back field by field.
@@ -395,6 +407,9 @@ const Settings = struct {
             .player_walk = idField(record, "player_walk"),
             .player_idle = idField(record, "player_idle"),
             .field_clip = idField(record, "field_clip"),
+            .step_sound = idField(record, "step_sound"),
+            .bump_sound = idField(record, "bump_sound"),
+            .hum_sound = idField(record, "hum_sound"),
         };
     }
 
@@ -1006,6 +1021,23 @@ const SpriteField = struct {
     /// whether it ever actually hit anything.
     contacts: u64 = 0,
 
+    /// The mixer, and the one voice the sample keeps a handle to.
+    ///
+    /// **Optional, because a machine with no output device is a configuration rather than
+    /// a failure** (`audio.md` §9). A sample that refused to start on a build machine with
+    /// no sound card would be a bad reference for a game.
+    mixer: ?*audio.Mixer = null,
+    /// The ambience, panned by where the player is. `.none` when the package names no
+    /// hum, which is a package without one rather than a failure.
+    hum: audio.VoiceHandle = .none,
+    /// Ticks since the last footstep. **Simulation state, so it counts ticks and not
+    /// seconds** (I9) — and it is a cause of sound, never a reading of one.
+    since_step: u64 = 0,
+    /// Sounds started, so a headless run reports a number that says whether the sample
+    /// ever asked for one. It cannot report what was *heard*: nothing above the device
+    /// may observe where a sound got to (`audio.md` §8).
+    sounds_played: u64 = 0,
+
     /// **The world, and the schema registry it borrows.**
     ///
     /// The registry is the sample's own rather than the engine's, and that is not an
@@ -1066,6 +1098,10 @@ const SpriteField = struct {
     const min_zoom: f32 = 0.05;
     const max_zoom: f32 = 24;
 
+    /// Ticks between footsteps while walking. At 60 Hz this is a step every third of a
+    /// second, which is a walk rather than a sprint.
+    const step_interval: u64 = 20;
+
     /// Keyboard pan speed in **screen points per second**, so it feels the same whatever
     /// the zoom. Panning in world units per second crawls when zoomed out.
     const pan_speed: f32 = 700;
@@ -1122,6 +1158,18 @@ const SpriteField = struct {
         // asset kind the engine has never heard of makes exactly this call.
         try engine.assets.registerLoader(gpa, render2d.textureLoader(&self.renderer));
 
+        // The mixer opens the device and registers its own loader the same way, for the
+        // same reason: `app` has neither `render2d` nor `audio`, so both capabilities are
+        // handed up from the game (I6). It is also why the engine gains no dependency on
+        // a mixer it does not own.
+        self.mixer = audio.Mixer.init(gpa, engine.platform, &engine.assets, .{}) catch |err| blk: {
+            // Reported and carried on, because a machine with no output device is a
+            // configuration and not a bug (`audio.md` §9).
+            log.warn("no audio device ({t}); the sandbox runs silent", .{err});
+            break :blk null;
+        };
+        if (self.mixer) |mixer| try engine.assets.registerLoader(gpa, mixer.soundLoader());
+
         self.readSettings(engine);
 
         self.sheet_asset = try engine.assets.acquire(gpa, self.settings.sheet);
@@ -1175,6 +1223,74 @@ const SpriteField = struct {
         // whole reason the two are separate calls.
         self.adoptPlayer();
         if (restored) self.reportAnimation("resumed");
+
+        // Last, because it wants the settings the record named and the map the player
+        // stands in the middle of.
+        self.startHum();
+    }
+
+    /// Starts the looping ambience, or leaves the sample quiet.
+    ///
+    /// Nothing here is a reason to stop: no mixer, no hum in the package, or no free voice
+    /// each mean one fewer sound, and a sample that refused to run over any of them would
+    /// be a bad reference.
+    fn startHum(self: *SpriteField) void {
+        const mixer = self.mixer orelse return;
+        if (self.settings.hum_sound.isNone()) return;
+
+        self.hum = mixer.play(self.settings.hum_sound, .{ .looping = true, .gain = 0.4 }) catch |err| {
+            log.warn("the ambience did not start ({t})", .{err});
+            return;
+        };
+        self.sounds_played += 1;
+    }
+
+    /// Starts a one-shot, or does nothing.
+    ///
+    /// **A sound that could not play is not a failure**: `play` refusing when every voice
+    /// is busy is the design working — the mixer steals nothing and the game decides
+    /// (`audio.md` §11) — and what this sample decides is that a footstep it could not
+    /// afford is a footstep nobody misses.
+    fn emit(self: *SpriteField, id: core.ContentId, params: audio.PlayParams) void {
+        // **A headless build has a device that never runs**, so a command queued here
+        // would sit in the ring until it filled and every one after it was refused. That
+        // is the mixer behaving correctly and the sample asking for something pointless;
+        // not asking is the honest version. The ambience still starts, so a headless run
+        // still decodes a `.wav` through the real path.
+        if (platform.backend == .null) return;
+        const mixer = self.mixer orelse return;
+        if (id.isNone()) return;
+        _ = mixer.play(id, params) catch |err| {
+            // Debug, because a footstep losing a race for the last voice would otherwise
+            // write sixty log lines a second.
+            log.debug("sound {f} did not play: {t}", .{ id, err });
+            return;
+        };
+        self.sounds_played += 1;
+    }
+
+    /// The mixer's frame: retire what finished, and put the ambience where the player is.
+    ///
+    /// **Not in the fixed step, and that is structural.** Where a sound is panned is
+    /// presentation, derived from where the player is drawn; `update` is a once-per-frame
+    /// call by definition (`audio.md` §7); and nothing in a simulation may read a mixer at
+    /// all — `scene` cannot see `audio`, so nothing here could be a system even if someone
+    /// wanted it to be (§8).
+    fn audioFrame(self: *SpriteField) void {
+        const mixer = self.mixer orelse return;
+        // Retirements come back here and nowhere else. Skip it and voices never return to
+        // the free list, which is a loud failure the moment the pool runs out rather than
+        // a slow leak — the right way round.
+        mixer.update();
+
+        if (self.hum.isNone() or !mixer.isPlaying(self.hum)) return;
+        const at = self.playerAt() orelse return;
+
+        // The ambience sits at the middle of the map, so walking left moves it right.
+        // Half the map's width is the whole pan range; the mixer clamps the rest.
+        const centre = self.map.center();
+        const span = @max(1.0, @as(f32, @floatFromInt(self.map.width)) * self.map.cell.x * 0.5);
+        mixer.setPan(self.hum, (centre.x - at.x) / span);
     }
 
     /// The component types and systems this sample defines.
@@ -1347,7 +1463,21 @@ const SpriteField = struct {
         // machine, and nothing in the engine that had to be told about walking.
         const standing = direction.eql(.zero);
         self.play(entity, if (standing) self.settings.player_idle else self.settings.player_walk);
-        if (standing) return;
+        if (standing) {
+            // Primed, so the first step after standing still lands on the tick the player
+            // starts moving rather than a third of a second into it.
+            self.since_step = step_interval;
+            return;
+        }
+
+        // **The simulation may cause a sound and may never observe one** (`audio.md` §8).
+        // This is the causing half: a count of ticks, in the fixed step, deciding to emit.
+        // Nothing below reads back where any sound has got to, and nothing could.
+        self.since_step += 1;
+        if (self.since_step >= step_interval) {
+            self.since_step = 0;
+            self.emit(self.settings.step_sound, .{ .gain = 0.5 });
+        }
 
         const motion = direction.normalize().scale(self.settings.player_speed * s.delta.toSecondsF32());
         var hits: [4]physics2d.Hit = undefined;
@@ -1356,6 +1486,7 @@ const SpriteField = struct {
             return;
         }) orelse return;
 
+        if (result.total_hits > 0) self.emit(self.settings.bump_sound, .{ .gain = 0.55 });
         self.contacts += result.total_hits;
         self.writeBack(entity, result.position);
     }
@@ -1393,6 +1524,15 @@ const SpriteField = struct {
         // their elapsed counts across it, so retiming a clip in a file changes the speed of
         // an animation that is already playing without restarting it.
         self.clips.build(self.gpa, engine);
+        // A package placed after this one can point the ambience at a different `.wav`.
+        // Only a *different id* restarts it: a hum whose bytes changed keeps its handle
+        // and its position, which is the whole point of the reload rule holding one layer
+        // down (`assets.md` §6).
+        if (!self.settings.hum_sound.eql(previous.hum_sound)) {
+            if (self.mixer) |mixer| mixer.stop(self.hum);
+            self.hum = .none;
+            self.startHum();
+        }
         // The map that just replaced the old one may have put a wall where the player was
         // standing. A sweep cannot undo that — the time of impact is behind it — so this is
         // the call that can (`tilemaps-and-collision.md` §6).
@@ -1694,6 +1834,16 @@ const SpriteField = struct {
         engine.assets.release(self.sheet_asset);
         engine.assets.release(self.font_asset);
         _ = engine.assets.unregisterLoader(self.gpa, asset.schemas.texture.id);
+        // The same shape as the texture loader above, with one extra step in the middle.
+        // `shutdown` closes the device and hands back the asset reference every playing
+        // voice held; only then may the loader go, or the registry would rightly report
+        // that the ambience is still holding the sound it is unloading.
+        if (self.mixer) |mixer| {
+            mixer.shutdown();
+            _ = engine.assets.unregisterLoader(self.gpa, asset.schemas.sound.id);
+            mixer.deinit();
+            self.mixer = null;
+        }
 
         self.world.deinit();
         self.schemas.deinit(self.gpa);

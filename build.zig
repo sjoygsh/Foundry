@@ -238,6 +238,9 @@ pub fn build(b: *std.Build) void {
     });
     sandbox_mod.addImport("app", modules.get("app").?);
     sandbox_mod.addImport("asset", modules.get("asset").?);
+    // The mixer is the game's, exactly as the renderer is: `app` owns the frame and the
+    // device, and what a frame *plays* is the game's. `app` has no `audio` at all.
+    sandbox_mod.addImport("audio", modules.get("audio").?);
     sandbox_mod.addImport("core", modules.get("core").?);
     // A game reads its own content, which means naming `data`'s types. It gets the module
     // the same way it gets every other one: as a consumer of the engine, not as a member

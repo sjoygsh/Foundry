@@ -255,6 +255,36 @@ pub fn MixerOf(comptime P: type) type {
             return self;
         }
 
+        /// Stops the device and gives back everything the mixer borrowed from the registry.
+        ///
+        /// **The step between a running mixer and a torn-down one**, and it exists because
+        /// the two things that have to happen at teardown want opposite orders. The
+        /// registry unloads through a loader that borrows this object, so the loader has to
+        /// go before `deinit`; but the mixer holds a reference per playing voice, so those
+        /// have to come back *before* the loader goes or the registry rightly complains
+        /// that something is still holding an asset it is unloading.
+        ///
+        /// So: `shutdown`, then unregister the loader, then `deinit`. Closing the device
+        /// here is what makes the middle step safe — no callback can be reading a sound
+        /// afterwards. Skipping it costs a warning per still-playing sound and nothing
+        /// worse; calling it twice is a no-op.
+        pub fn shutdown(self: *Self) void {
+            self.plat.closeAudio(self.device);
+            self.device = .none;
+            self.ready.store(false, .monotonic);
+
+            // The device thread is gone, so this is the one place a voice may be ended
+            // without a round trip through the retirement ring.
+            for (self.slots) |*slot| {
+                if (!slot.playing) continue;
+                slot.playing = false;
+                const held = slot.held;
+                slot.held = .none;
+                slot.sound = .none;
+                if (!held.isNone()) self.assets.release(held);
+            }
+        }
+
         pub fn deinit(self: *Self) void {
             const gpa = self.gpa;
 
@@ -262,7 +292,14 @@ pub fn MixerOf(comptime P: type) type {
             // anything below while a callback is in flight is the one ordering mistake
             // here that would be a crash rather than a wrong sound.
             self.plat.closeAudio(self.device);
+            self.device = .none;
             self.ready.store(false, .monotonic);
+
+            // **Deliberately not `shutdown`.** This has to be safe after the registry has
+            // already gone — which is the order a caller reaches for when the mixer is one
+            // field among many — and handing a reference back to a freed registry would be
+            // the worst available way to end a program. A caller that skipped `shutdown`
+            // has left reference counts high on a registry that is on its way out anyway.
 
             var it = self.sounds.iterator();
             while (it.next()) |entry| entry.value.sound.deinit(gpa);
