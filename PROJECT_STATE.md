@@ -1664,9 +1664,9 @@ below the M5 record.
 **M5 is closed.** The exit criterion was met the only way it could be: `samples/room` was played
 and judged to read as a place, and the mixer was listened to.
 
-**M6 is open and its decision is made.** ADR-0024 is accepted, `docs/design/ui.md` is written,
-and **the next thing to do is step 1 of its §16.** The steps, each ending in something that runs
-and something that is tested:
+**M6 is open and its first document is finished.** ADR-0024 is accepted, `docs/design/ui.md` is
+written, and **all six steps of its §16 are implemented**. The steps, each ending in something
+that runs and something that is tested:
 
 1. ~~**The kernel's spine.**~~ **Complete, 2026-09-06** — `engine/src/ui/`, seven files, **36
    tests and every one of them headless**. No renderer, no device, no window, no `app` change
