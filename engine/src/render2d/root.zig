@@ -40,6 +40,9 @@ pub const CameraError = camera.CameraError;
 pub const Color = color.Color;
 pub const BlendMode = color.BlendMode;
 pub const Renderer = renderer.Renderer;
+/// Everything a renderer call can fail with. Named here so a caller above — the UI walker
+/// in `app` is the first — can declare it without reaching into the file it lives in.
+pub const RendererError = renderer.Error;
 /// The `foundry:texture` loader, to register with an `asset.Registry` at startup (I6).
 pub const textureLoader = loader.textureLoader;
 pub const Sprite = sprite.Sprite;

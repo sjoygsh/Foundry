@@ -29,6 +29,10 @@ const platform = @import("platform");
 const render2d = @import("render2d");
 const rhi = @import("rhi");
 const scene = @import("scene");
+// A game owns its overlay the same way it owns its world: `app` supplies the walker that
+// turns a described frame into draw calls, and the widgets themselves are the game's to
+// call. So the sample names `ui` directly, exactly as it names `scene` and `physics2d`.
+const ui = @import("ui");
 
 /// Routes Foundry's logging through the engine's sink. One line, in the root source file.
 pub const std_options = app.std_options;
@@ -233,6 +237,9 @@ pub fn main(init: std.process.Init) !void {
         // the last simulation step left in the world — no interpolation between the two
         // most recent transforms yet, which is what `engine.alpha()` is for and what the
         // world now finally has the two states to make possible.
+        // Described before anything else reads the pointer, so `wantsPointer` is
+        // answerable by the time `control` decides whether a click was the world's.
+        try field.describeUi(engine);
         field.control(engine);
         field.audioFrame();
         try field.submit(engine);
@@ -1079,10 +1086,14 @@ const SpriteField = struct {
     /// than merely a round trip in memory.
     save_path: ?[]const u8 = null,
 
+    /// The debug overlay's kernel: what the user was pointing at a frame ago, the widget
+    /// ids it has seen, and the draw list this frame described. Described in `describeUi`
+    /// at the top of the frame and walked into the renderer in `hud`.
+    ui: ui.Context,
+
     /// Screen points. The HUD is placed in the same units the mouse is reported in, which
     /// is what the screen view buys.
     const hud_margin: f32 = 12;
-    const hud_padding: f32 = 8;
 
     /// Zoom limits, in pixels per world unit. Policy, and therefore the sample's: the
     /// camera itself refuses only zooms that are not numbers.
@@ -1110,6 +1121,16 @@ const SpriteField = struct {
         });
         errdefer renderer.deinit();
 
+        // Named once because the overlay's style is built from it: the metrics the kernel
+        // measures with and the font the walker draws with must be the same value, which
+        // is the whole reason `app.UiFont` exists (`ui.md` §8).
+        const font: render2d.BitmapFont = .{
+            .glyphs = .{ .texture = .none, .uv = .{}, .size_px = .{} },
+            .cell = .{ .width = 8, .height = 8 },
+            .columns = 16,
+            .glyph_count = 95,
+        };
+
         return .{
             .gpa = gpa,
             .renderer = renderer,
@@ -1117,12 +1138,8 @@ const SpriteField = struct {
             .sheet_asset = .none,
             .font_asset = .none,
             .sheet = .{ .texture = .none, .uv = .{}, .size_px = .{} },
-            .font = .{
-                .glyphs = .{ .texture = .none, .uv = .{}, .size_px = .{} },
-                .cell = .{ .width = 8, .height = 8 },
-                .columns = 16,
-                .glyph_count = 95,
-            },
+            .font = font,
+            .ui = .init(gpa, hudStyle(uiFontOf(font))),
             // Both are placeholders: `World.init` needs the registry's final address, and
             // this struct is returned by value, so the world is built in `load`.
             .schemas = undefined,
@@ -1828,6 +1845,7 @@ const SpriteField = struct {
 
         self.world.deinit();
         self.schemas.deinit(self.gpa);
+        self.ui.deinit();
         self.renderer.deinit();
     }
 
@@ -1974,7 +1992,18 @@ const SpriteField = struct {
             self.pan(in.mouse.motion.neg());
         }
 
-        if (in.mouse.wheel.y != 0) {
+        // **The overlay gets first refusal on the pointer.** It was described at the top of
+        // the frame, so this is answerable now rather than one frame late, and without it a
+        // click on the panel would toggle the checkbox *and* pick whatever sprite happened
+        // to be behind it. Capture is advisory by design (`ui.Context.wantsPointer`): the
+        // kernel does not sit between the game and `platform`, so it is the game that
+        // decides which of its own inputs to hold back.
+        const ui_wants_pointer = self.ui.wantsPointer();
+
+        // A drag already in progress is deliberately **not** gated. It began outside the
+        // panel, and a pan that stopped halfway across the screen because the cursor passed
+        // over the overlay would be a worse bug than the one this prevents.
+        if (in.mouse.wheel.y != 0 and !ui_wants_pointer) {
             // Multiplicative, so one notch feels the same at any zoom. Additive steps
             // are glacial when zoomed out and violent when zoomed in.
             const wanted = std.math.clamp(
@@ -1998,7 +2027,7 @@ const SpriteField = struct {
         // A left click, or the scripted stand-in for one. Same code path either way,
         // which is the point: a check that exercises a *different* path proves nothing
         // about the one a person uses.
-        const clicked_at: ?core.math.Vec2 = if (in.mouse.wasPressed(.left))
+        const clicked_at: ?core.math.Vec2 = if (in.mouse.wasPressed(.left) and !ui_wants_pointer)
             in.mouse.position
         else if (self.pick_every) |every|
             if (engine.frame_index > 0 and engine.frame_index % every == 0)
@@ -2090,109 +2119,147 @@ const SpriteField = struct {
         }
 
         try self.banner();
-        try self.hud(engine);
+        try self.hud();
     }
 
-    /// The statistics readout, in **screen space**, which is what views are for.
+    /// The debug overlay, **described** — no renderer, no draw call, nothing on screen yet.
     ///
-    /// `setView` once and then draw: the panel and every glyph after it are in screen
-    /// points, the same units the mouse is reported in, and none of it moves when the
-    /// camera does. Nothing here converts a coordinate, which is the whole gain — before
-    /// views, a HUD meant running every position through `screenToWorld` and dividing
-    /// every size by the zoom, and it was still wrong under camera rotation.
-    ///
-    /// The numbers are **last frame's**, because this frame's are not known until the
-    /// batcher has planned — which happens after the game has finished submitting. One
-    /// frame of lag in a diagnostic is not worth a second pass to remove.
-    fn hud(self: *SpriteField, engine: *app.Engine) !void {
-        const stats = self.renderer.frameStats();
+    /// Called at the top of the frame, before `control` reads the pointer, and that order
+    /// is the point rather than a convenience. The kernel resolves what the user is
+    /// pointing at while there is still time for the game to keep its hands off it; the
+    /// draw list it leaves behind is walked into the renderer later, in `hud`, when there
+    /// is a frame to draw into. Splitting the two is what `ui` being below the renderer
+    /// buys (ADR-0024), and this is the shape a game uses it in.
+    fn describeUi(self: *SpriteField, engine: *app.Engine) !void {
         const info = engine.windowInfo();
         const width: f32 = if (info) |i| @floatFromInt(i.logical_size.width) else 1280;
+        const height: f32 = if (info) |i| @floatFromInt(i.logical_size.height) else 720;
+
+        // Rebuilt from the font every frame rather than cached. A content reload can put a
+        // different font underneath the sample between one frame and the next, and a style
+        // is a value the kernel only ever reads — so the cheap thing is also the correct
+        // one.
+        self.ui.style = hudStyle(self.uiFont());
+        const style = self.ui.style;
+
+        // The input the simulation saw, in the units the pointer is reported in. One
+        // snapshot, two consumers, so the UI and the world cannot disagree about what the
+        // user did this frame (I9).
+        self.ui.begin(.{
+            .keys = engine.input,
+            .pointer = engine.input.mouse.position,
+            .wheel = engine.input.mouse.wheel,
+            .frame = engine.frame_index,
+        }, .init(0, 0, width, height));
+        defer self.ui.end();
+
+        const stats = self.renderer.frameStats();
         const at = self.playerAt() orelse core.math.Vec2.zero;
 
-        var buffer: [512]u8 = undefined;
-        const text = std.fmt.bufPrint(
-            &buffer,
-            "{d:.1}ms  {d} sprites  {d} glyphs  {d} tiles\n" ++
-                "{d} batches  {d} draw calls  {d} views\n" ++
-                "{d} KiB vertices  {d} buffers  zoom {d:.2}\n" ++
-                "player ({d:.0}, {d:.0})  {d} contacts  frame {d}{s}",
-            .{
-                engine.frameDelta().toSecondsF32() * 1000,
-                stats.sprites,
-                stats.glyphs,
-                stats.tiles,
-                stats.batches,
-                stats.draw_calls,
-                stats.views,
-                stats.vertex_bytes / 1024,
-                stats.buffers_used,
-                self.camera.zoom,
-                at.x,
-                at.y,
-                self.contacts,
-                if (self.player) |e| (if (self.animationOf(e)) |a| a.frame else 0) else 0,
-                if (self.follow) "  following" else "",
-            },
-            // A statistics line that cannot be formatted is not worth failing a frame for.
-        ) catch return;
+        // Four rows where this used to be one string with newlines in it. The gap between
+        // them is now the region's spacing — a style decision — rather than a `\n` and a
+        // `line_spacing` the call site had to keep in step with each other.
+        //
+        // The buffers are on the stack and go away at the end of this function, which is
+        // exactly the case `ui.TextRef` exists for: the kernel copies what it is given, so
+        // the walker three functions later is not reading a dead frame's memory.
+        var buffers: [4][128]u8 = undefined;
+        var lines: [4][]const u8 = undefined;
+        lines[0] = std.fmt.bufPrint(&buffers[0], "{d:.1}ms  {d} sprites  {d} glyphs  {d} tiles", .{
+            engine.frameDelta().toSecondsF32() * 1000,
+            stats.sprites,
+            stats.glyphs,
+            stats.tiles,
+        }) catch "";
+        lines[1] = std.fmt.bufPrint(&buffers[1], "{d} batches  {d} draw calls  {d} views", .{
+            stats.batches,
+            stats.draw_calls,
+            stats.views,
+        }) catch "";
+        lines[2] = std.fmt.bufPrint(&buffers[2], "{d} KiB vertices  {d} buffers  zoom {d:.2}", .{
+            stats.vertex_bytes / 1024,
+            stats.buffers_used,
+            self.camera.zoom,
+        }) catch "";
+        lines[3] = std.fmt.bufPrint(&buffers[3], "player ({d:.0}, {d:.0})  {d} contacts  frame {d}", .{
+            at.x,
+            at.y,
+            self.contacts,
+            if (self.player) |e| (if (self.animationOf(e)) |a| a.frame else 0) else 0,
+        }) catch "";
 
-        try self.renderer.setView(.screen);
-        defer self.renderer.setView(.world) catch {};
+        // **A cursor layout does not size its container**, so whoever opens a panel adds
+        // its contents up. `Region.placed` reports what actually landed, but only after
+        // the fact, and a panel has to be the right size the first time it is drawn.
+        var widest: f32 = 0;
+        for (lines) |line| widest = @max(widest, style.font.measure(line, style.text_scale).x);
 
-        const options: render2d.TextOptions = .{
-            .position = .init(hud_margin + hud_padding, hud_margin + hud_padding),
-            .scale = 2,
-            .line_spacing = 4,
-            .tint = .srgb8(190, 235, 255, 255),
-        };
-        const size = render2d.measureText(self.font, text, options);
+        // Four statistics rows and the toggle, a separator between them, and a gap after
+        // each of the six but the last.
+        const rows: f32 = 5;
+        const content = rows * style.line_height +
+            (style.separator_thickness + style.spacing * 2) +
+            5 * style.spacing;
 
-        // A panel behind it, so the readout is legible over whatever it lands on, from
-        // the renderer's own white patch rather than from a texture this sample builds.
-        const blank = self.renderer.blankRegion();
-        try self.renderer.drawSprite(.{
-            .texture = blank.texture,
-            .uv = blank.uv,
-            .position = .init(hud_margin, hud_margin),
-            .size = .init(size.x + hud_padding * 2, size.y + hud_padding * 2),
-            .origin = .init(0, 0),
-            .tint = .srgb8(0, 0, 0, 150),
-            .layer = 0,
-        });
-        try self.renderer.drawText(self.font, text, .{
-            .position = options.position,
-            .scale = options.scale,
-            .line_spacing = options.line_spacing,
-            .tint = options.tint,
-            .layer = 1,
-        });
+        // Three paddings, not two: the panel insets its region by one, and a `label`
+        // insets its text by another so that a label and a button line up in a column.
+        // Two would put the last glyph exactly on the panel's clipped edge.
+        try ui.beginPanel(&self.ui, ui.Id.root.child("stats"), .init(
+            hud_margin,
+            hud_margin,
+            widest + style.padding.x * 3,
+            content + style.padding.y * 2,
+        ));
+        for (lines) |line| try ui.label(&self.ui, line);
+        try ui.separator(&self.ui);
+        // The flag lives here, in the sample, and the kernel holds no copy of it — which
+        // is the immediate-mode bargain and the reason a debug toggle cannot drift from
+        // the thing it toggles. `control` may clear it later in the same frame when the
+        // camera is dragged, and the box will say so on the next one.
+        if (try ui.checkbox(&self.ui, self.ui.childId("follow"), "follow player", &self.follow)) {
+            log.info("camera {s} the player", .{
+                if (self.follow) "is following" else "no longer follows",
+            });
+        }
+        try ui.endPanel(&self.ui);
 
-        // Right-aligned, to show that `measureText` is usable for layout and not only for
-        // centring — and that screen space has a right-hand edge, which world space does
-        // not.
-        const help = "wasd walks  arrows pan  wheel zoom  click picks  c follows";
-        const help_options: render2d.TextOptions = .{ .position = .zero, .scale = 1.5 };
-        const help_size = render2d.measureText(self.font, help, help_options);
-        const help_at: core.math.Vec2 = .init(
-            width - help_size.x - hud_margin - hud_padding,
-            hud_margin + hud_padding,
-        );
-        try self.renderer.drawSprite(.{
-            .texture = blank.texture,
-            .uv = blank.uv,
-            .position = .init(help_at.x - hud_padding, hud_margin),
-            .size = .init(help_size.x + hud_padding * 2, help_size.y + hud_padding * 2),
-            .origin = .init(0, 0),
-            .tint = .srgb8(0, 0, 0, 150),
-            .layer = 0,
-        });
-        try self.renderer.drawText(self.font, help, .{
-            .position = help_at,
-            .scale = help_options.scale,
-            .tint = .srgb8(180, 180, 200, 230),
-            .layer = 1,
-        });
+        // Anchored to the **bottom right**, which is a measurement in both directions and
+        // therefore the thing worth demonstrating: screen space has corners, and the
+        // kernel's measurement is what finds them.
+        const help = "wasd walks  arrows pan  wheel zooms  click picks  c follows";
+        const help_size = style.font.measure(help, style.text_scale);
+        const help_w = help_size.x + style.padding.x * 3;
+        const help_h = style.line_height + style.padding.y * 2;
+        try ui.beginPanel(&self.ui, ui.Id.root.child("help"), .init(
+            width - help_w - hud_margin,
+            height - help_h - hud_margin,
+            help_w,
+            help_h,
+        ));
+        try ui.label(&self.ui, help);
+        try ui.endPanel(&self.ui);
+    }
+
+    /// The overlay, **drawn**: one call, and the only line in the sample that knows the UI
+    /// and the renderer are two different things.
+    ///
+    /// `ViewId.screen` because the kernel's rectangles are in screen points with the origin
+    /// at the top-left, which is exactly what that view is. Nothing here converts a
+    /// coordinate, and nothing here mentions a colour, a font size or a margin: those were
+    /// all decided in `describeUi`, where they are style rather than drawing.
+    fn hud(self: *SpriteField) !void {
+        try app.drawUi(&self.ui.list, &self.renderer, self.uiFont(), .screen, .{});
+    }
+
+    /// The font, paired with the spacing it is laid out with. **One value**, so the metrics
+    /// the kernel measures with and the font the walker draws with cannot be given
+    /// different numbers (`ui.md` §8).
+    ///
+    /// Line spacing is zero because the overlay no longer draws multi-line strings: the gap
+    /// between rows is the region's, which is what moving the statistics into widgets
+    /// actually changed.
+    fn uiFont(self: *const SpriteField) app.UiFont {
+        return uiFontOf(self.font);
     }
 
     /// Text at the world origin, in **world** units.
@@ -2279,6 +2346,52 @@ const SpriteField = struct {
         }
     }
 };
+
+/// A `render2d` font paired with the spacing the overlay lays it out with.
+///
+/// The **only** sanctioned way to build the kernel's metrics is `app.UiFont.metrics`, and
+/// this is the sample's single producer of one, so there is one place where the overlay's
+/// text arithmetic is decided. `engine/tests/ui_text.zig` is what stops the two sides of
+/// that conversion drifting apart.
+fn uiFontOf(font: render2d.BitmapFont) app.UiFont {
+    return .{ .font = font };
+}
+
+/// What the debug overlay looks like.
+///
+/// **All of it is data the sample owns.** The kernel contains no colour, no metric and no
+/// string of its own (ADR-0024), which is what lets a game hand it a theme built from
+/// content later without any of this changing shape. A debug overlay's theme being written
+/// here, in the game, is that rule working rather than an exception to it.
+fn hudStyle(font: app.UiFont) ui.Style {
+    return .{
+        .font = font.metrics(),
+        .text_scale = 2,
+        .line_height = 22,
+        .padding = .init(8, 6),
+        .spacing = 4,
+        .separator_thickness = 1,
+
+        .text = uiColor(190, 235, 255, 255),
+        .text_dim = uiColor(120, 150, 170, 255),
+        .surface = uiColor(0, 0, 0, 150),
+        .control = uiColor(30, 40, 55, 220),
+        .control_hot = uiColor(50, 70, 95, 235),
+        .control_active = uiColor(80, 110, 145, 255),
+        .accent = uiColor(120, 200, 255, 255),
+    };
+}
+
+/// sRGB in, linear out — **above the seam, which is where the conversion belongs**.
+///
+/// `ui.Color` deliberately has no `srgb8` of its own: duplicating the transfer function
+/// below the renderer would be a second implementation that can silently disagree with it
+/// (`ui/style.zig`). So the kernel takes linear light, and whoever writes a style in the
+/// numbers a colour picker produces converts here, with the renderer's own function.
+fn uiColor(r: u8, g: u8, b: u8, a: u8) ui.Color {
+    const c = render2d.Color.srgb8(r, g, b, a);
+    return .{ .r = c.r, .g = c.g, .b = c.b, .a = c.a };
+}
 
 /// The background, which drifts slowly so that a frozen frame is obvious at a glance.
 ///

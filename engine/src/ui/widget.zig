@@ -153,8 +153,12 @@ pub fn checkbox(ctx: *Context, id: Id, text: []const u8, value: *bool) Allocator
     try ctx.list.addRect(ctx.gpa, tick, fillFor(style, state));
     if (value.*) {
         // The mark is the box inset by the same padding everything else uses, clamped so a
-        // generous padding cannot turn it inside out.
-        const mark = @min(style.padding.x, side / 2);
+        // generous padding cannot swallow it. **A quarter of the box, not a half**: half
+        // insets the rectangle to zero width, which prevents an inside-out mark by drawing
+        // an invisible one instead — a checkbox that could never be seen to be ticked. Any
+        // style whose padding reaches half the box hits it, and the sandbox's first one
+        // did.
+        const mark = @min(style.padding.x, side / 4);
         try ctx.list.addRect(ctx.gpa, inset(tick, .init(mark, mark)), style.accent);
     }
 
@@ -461,6 +465,27 @@ test "a checkbox toggles the caller's flag and reports the frame it changed" {
     try testing.expectEqual(@as(usize, 3), items.len);
     try testing.expectEqual(testStyle().accent, items[1].rect.color);
     try testing.expectEqualStrings("vsync", ctx.list.textOf(items[2].text.text));
+}
+
+test "a tick is visible however generous the padding is" {
+    // Found by looking at one: a style with padding half the box's height insets the mark
+    // to nothing, and the checkbox draws a rectangle nobody can see. The clamp exists to
+    // stop the mark turning inside out, and at a half it does that by deleting it.
+    var style = testStyle();
+    style.padding = .init(20, 4);
+    var ctx: Context = .init(testing.allocator, style);
+    defer ctx.deinit();
+    var value = true;
+
+    ctx.begin(.at(away, .up), viewport);
+    _ = try checkbox(&ctx, Id.root.child("vsync"), "vsync", &value);
+    ctx.end();
+
+    // Box, mark, label — and the mark has area.
+    const items = ctx.list.items();
+    try testing.expectEqual(@as(usize, 3), items.len);
+    try testing.expect(!items[1].rect.bounds.isEmpty());
+    try testing.expectEqual(style.accent, items[1].rect.color);
 }
 
 test "a widget past the bottom of its panel still occupies space and still draws" {

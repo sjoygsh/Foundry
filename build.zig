@@ -87,9 +87,13 @@ const layering = [_]Module{
     // L4 — the engine loop and subsystem lifecycle. Gains dependencies as the layers
     // between it and `platform` arrive; it is allowed to see all of them (ADR-0007).
     // `data` and `asset` joined at M3 step 9: the engine loads package zero and mounts it
-    // (I3). Not `render2d` — the game owns its renderer and registers the texture loader
-    // from there, so the engine needs no opinion about what a texture is.
-    .{ .name = "app", .deps = &.{ "core", "data", "platform", "rhi", "asset" } },
+    // (I3). `ui` and `render2d` joined at M6 step 4, and only for the walker: `ui` emits a
+    // draw list and cannot see a renderer, so *something* has to be able to see both, and
+    // this is the only layer that may (ADR-0024). It remains true that the game owns its
+    // renderer — `app.Engine` still has no field for one and still registers no texture
+    // loader — so what the engine gained is a function, not an opinion about what a
+    // texture is.
+    .{ .name = "app", .deps = &.{ "core", "data", "platform", "ui", "rhi", "asset", "render2d" } },
 
     // Added as each is implemented. The rest of the graph from ADR-0007 is:
     //   L5  abi        -> app             (M7)
@@ -264,6 +268,9 @@ pub fn build(b: *std.Build) void {
     // directly rather than reaching it through `app` — which does not have it. `app` drives
     // the frame; what the frame simulates is the game's.
     sandbox_mod.addImport("scene", modules.get("scene").?);
+    // And its overlay, for the same reason: `app` supplies the walker that turns a
+    // described frame into draw calls, and the widgets are the game's to call (ADR-0024).
+    sandbox_mod.addImport("ui", modules.get("ui").?);
 
     // The shader the sandbox draws with, compiled by the build and embedded in the
     // executable. Only under Metal: `xcrun` is a macOS toolchain, and a null build must not
@@ -468,7 +475,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    for ([_][]const u8{ "core", "data", "platform", "physics2d", "ui", "rhi", "asset", "render2d", "scene", "audio" }) |name| {
+    for ([_][]const u8{ "core", "data", "platform", "physics2d", "ui", "rhi", "asset", "render2d", "scene", "audio", "app" }) |name| {
         integration_mod.addImport(name, modules.get(name).?);
     }
 

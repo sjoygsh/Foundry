@@ -1,9 +1,9 @@
 # Design: ui — an immediate-mode kernel that draws nothing
 
-**Status:** **Steps 1-3 implemented 2026-09-06** (`engine/src/ui/`, and `render2d` for step 3).
-Written before any UI code existed, so implementation was transcription rather than invention;
-see the Resolution sections at the end for what each step corrected and settled. Steps 4-6 of
-§16 remain.
+**Status:** **Steps 1-4 implemented 2026-09-06** (`engine/src/ui/`, `render2d` for step 3, and
+`engine/src/app/ui_draw.zig` for step 4). Written before any UI code existed, so implementation
+was transcription rather than invention; see the Resolution sections at the end for what each
+step corrected and settled. Steps 5-6 of §16 remain.
 **Date:** 2026-09-06
 **Implements:** I1, I4, I5, I6, I8, I9 · **Informed by:** ADR-0004, ADR-0007, ADR-0011,
 ADR-0021, ADR-0024
@@ -281,9 +281,9 @@ The walker turns a `ui.DrawList` into `render2d` calls. **It lives in `app`**, w
 layer that can see both, exactly as §4.3 describes. Roughly:
 
 ```zig
-// app/ui_draw.zig
-pub fn draw(list: *const ui.DrawList, r: *render2d.Renderer, font: render2d.BitmapFont,
-            blank: render2d.Region, view: render2d.ViewId) !void
+// app/ui_draw.zig — as implemented; see the step 4 Resolution for the two changes.
+pub fn draw(list: *const ui.DrawList, r: *render2d.Renderer, font: Font,
+            view: render2d.ViewId, options: Options) render2d.RendererError!void
 ```
 
 It is small — a switch over four cases, a clip stack, and a colour conversion — and it is the
@@ -674,3 +674,77 @@ texture from an image made in memory rather than loaded from a file. The capabil
 and `Renderer.createBlank` now exercises it on every startup, but a reader of the sandbox no
 longer sees it. If a future step wants it demonstrated again it should be demonstrated on
 purpose, not by putting the hand-rolled white texture back.
+
+
+## Resolution: the walker, and the drift test (step 4, 2026-09-06)
+
+**First pixels from the UI**, on both backends. Eleven more tests: 877 under `-Drhi=null`, 885
+under `-Drhi=metal`. `engine/src/app/ui_draw.zig` is 160 lines of which the walk itself is
+forty; the rest is why.
+
+**`app` gained `ui` and `render2d`, and that is the step's one build-graph change.** ADR-0007
+always allowed it — L4 may see everything below it — and the comment in `build.zig` that said
+`app` deliberately did *not* have `render2d` has been corrected rather than deleted, because
+the reason it gave is still true: the game owns its renderer, `Engine` still has no field for
+one and still registers no texture loader. What `app` gained is a function, not an opinion
+about what a texture is.
+
+**The signature §8 sketched changed in two places, both because step 3 had already happened.**
+`blank` is gone — the walker asks `r.blankRegion()` itself, which is the whole point of step 3
+putting it there — and the font parameter is not a `render2d.BitmapFont` but a `Font`.
+
+**`Font` is the mitigation §8 did not think of, and it is stronger than the test.** A
+`BitmapFont` has no spacing fields, because spacing is a property of how a font is *used*. So
+the kernel's `FontMetrics` needs two numbers the renderer's font does not carry, and the walker
+needs those same two numbers on every `TextOptions` it builds. Passing them separately to both
+sides is a drift bug waiting for someone to update one call site: `Font` holds the font and the
+spacing as one value, produces the metrics from it, and is what the walker draws with, so the
+two **cannot be given different numbers**. The test then covers what is left, which is the
+arithmetic being written twice.
+
+**The drift test compares exactly, not approximately** (`engine/tests/ui_text.zig`, 6,528
+comparisons across four cell shapes, six scales, sixteen spacing pairs and seventeen strings).
+The two implementations do the same operations in the same order on the same values, so a
+difference of one ULP would not be rounding — it would be a structural change, and finding out
+here is the entire point. `engine/tests/` gained `app` as an import to reach the conversion,
+which is consistent with what those tests are for: they stand where `app` and a game stand.
+
+**What implementation settled:**
+
+* **One sort layer for the whole list.** The kernel's order *is* paint order and the batcher
+  breaks ties on submission order, so walking in order reproduces it exactly; spreading
+  commands across layers would sort the UI against itself. The layer is a parameter because the
+  UI shares a view with whatever else the caller draws in screen space.
+* **The walker restores the renderer's view and clip on the way out**, so it composes with a
+  caller in the middle of its own frame rather than being something a frame must end with.
+* **The view must be a Y-down screen-space one, as a documented precondition rather than a
+  check.** The renderer does not expose a view's axis, and adding an API to guard one caller
+  is worse than the failure being a UI that is visibly upside down.
+* **Clip nesting is tracked in a fixed array of 16 and *counted* past that.** Too little
+  clipping is cosmetic; losing the balance would clip the rest of the frame to a panel.
+* **An unbalanced list is walked anyway.** The kernel warns about one and the widget set cannot
+  produce one, but a draw list is data, and from M7 it is data a mod described.
+
+**Running it found a real bug in step 2's code, which is what this step was for.** `checkbox`
+clamped its tick mark to half the box's height to stop a generous padding turning the rectangle
+inside out — and at exactly half, the inset leaves zero width, so the mark is prevented from
+being wrong by being invisible. The sandbox's first style hit it on the first frame. The clamp
+is now a quarter, and a test pins a padding that reaches the old boundary. Step 2's tests used
+a padding a third of the box and passed happily; only drawing it showed the edge.
+
+**The sandbox's statistics are four labels now, not one string with newlines in it.** The gap
+between rows is the region's spacing — a style value — rather than a `\n` in a format string
+paired with a `line_spacing` on the draw call that someone had to keep in step with it. The
+sample also gates picking and zooming on `wantsPointer`, which was not in step 4's brief but
+became true the moment the panel existed: without it, clicking the overlay would toggle the
+checkbox *and* pick the sprite behind it. A drag already in progress is deliberately not
+gated — it began outside the panel, and stopping a pan because the cursor crossed the overlay
+would be the worse bug.
+
+**The overlay costs four more draw calls than the hand-drawn HUD did** — 10 batches against 6,
+measured on the same frame of the same scene. The cause is not the UI: it is that panel
+rectangles come from the blank texture and labels from the font, so every alternation between
+a surface and its text is a texture break. Packing the blank patch into the font's atlas would
+collapse them, which is a `render2d` question rather than a `ui` one and is not worth answering
+before there is a profiler to show it mattering (rule 2). Recorded so the number is not a
+surprise later.
