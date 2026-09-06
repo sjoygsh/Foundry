@@ -30,6 +30,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 
+pub const audio = @import("audio.zig");
 pub const event = @import("event.zig");
 pub const input = @import("input.zig");
 pub const interface = @import("interface.zig");
@@ -81,6 +82,9 @@ pub const Platform = selected.Platform;
 
 // The types a caller reaches for, re-exported so `platform.Event` reads better than
 // `platform.event.Event` at every call site.
+pub const AudioConfig = audio.AudioConfig;
+pub const AudioDeviceHandle = audio.AudioDeviceHandle;
+pub const AudioInfo = audio.AudioInfo;
 pub const Event = event.Event;
 pub const InputSnapshot = input.InputSnapshot;
 pub const Key = key.Key;
@@ -94,6 +98,7 @@ pub const WindowConfig = window.WindowConfig;
 pub const WindowHandle = window.WindowHandle;
 pub const WindowInfo = window.WindowInfo;
 
+pub const AudioError = interface.AudioError;
 pub const InitError = interface.InitError;
 pub const InitOptions = interface.InitOptions;
 pub const WindowError = interface.WindowError;
@@ -106,6 +111,7 @@ test {
     // no tests: Zig collects tests from files reached through a test block, and
     // `os.zig` importing `library.zig` for `Library` does not reach it. Discovered by
     // breaking the Windows loader on purpose and watching the suite stay green.
+    _ = audio;
     _ = event;
     _ = input;
     _ = interface;

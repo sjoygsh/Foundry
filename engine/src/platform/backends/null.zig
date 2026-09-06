@@ -25,6 +25,7 @@
 const std = @import("std");
 const core = @import("core");
 
+const audio = @import("../audio.zig");
 const event = @import("../event.zig");
 const input = @import("../input.zig");
 const interface = @import("../interface.zig");
@@ -57,9 +58,21 @@ const WindowState = struct {
     }
 };
 
+/// A device that never runs. Nothing here has a thread, and that is the point: the
+/// callback is invoked by `stepAudio`, synchronously, on the caller's thread.
+const AudioState = struct {
+    config: audio.AudioConfig,
+    info: audio.AudioInfo,
+    paused: bool,
+    /// Sized on demand by `stepAudio`. The device owns the buffer, exactly as a real one
+    /// does, so a test never has to supply the memory the OS would have supplied.
+    buffer: std.ArrayList(f32) = .empty,
+};
+
 pub const Platform = struct {
     gpa: Allocator,
     windows: core.HandlePool(win.Window, WindowState) = .empty,
+    audio_devices: core.HandlePool(audio.AudioDevice, AudioState) = .empty,
 
     /// Events a test has queued but that have not been "delivered by the OS" yet.
     /// Separate from `ready` so that pushing an event mid-frame behaves the way a real
@@ -84,6 +97,11 @@ pub const Platform = struct {
     pub fn deinit(self: *Platform) void {
         const gpa = self.gpa;
         self.windows.deinit(gpa);
+
+        var devices = self.audio_devices.iterator();
+        while (devices.next()) |entry| entry.value.buffer.deinit(gpa);
+        self.audio_devices.deinit(gpa);
+
         self.incoming.deinit(gpa);
         self.ready.deinit(gpa);
         gpa.destroy(self);
@@ -173,6 +191,42 @@ pub const Platform = struct {
         return self.accumulator.capture();
     }
 
+    /// **A headless device gives you exactly what you asked for**, which is what makes
+    /// it a test instrument. A real backend answers with the device's own rate; this one
+    /// has no device to disagree, so `AudioInfo` is the config back, and a test that
+    /// pulls 512 frames gets 512 frames.
+    pub fn openAudio(self: *Platform, config: audio.AudioConfig) interface.AudioError!audio.AudioDeviceHandle {
+        if (!audio.supportable(config)) return error.AudioFormatUnsupported;
+        return self.audio_devices.add(self.gpa, .{
+            .config = config,
+            .info = .{
+                .sample_rate = config.sample_rate,
+                .channels = config.channels,
+                .buffer_frames = config.buffer_frames,
+            },
+            // A device opens running. `setAudioPaused` is for a game that wants silence,
+            // not a step every backend has to remember — a device that opened paused
+            // would be an engine that ships with no sound until someone noticed.
+            .paused = false,
+        });
+    }
+
+    pub fn closeAudio(self: *Platform, device: audio.AudioDeviceHandle) void {
+        const state = self.audio_devices.get(device) orelse return;
+        state.buffer.deinit(self.gpa);
+        _ = self.audio_devices.remove(device);
+    }
+
+    pub fn audioInfo(self: *Platform, device: audio.AudioDeviceHandle) ?audio.AudioInfo {
+        const state = self.audio_devices.getConst(device) orelse return null;
+        return state.info;
+    }
+
+    pub fn setAudioPaused(self: *Platform, device: audio.AudioDeviceHandle, paused: bool) void {
+        const state = self.audio_devices.get(device) orelse return;
+        state.paused = paused;
+    }
+
     /// The synthetic monotonic clock. Advances by exactly `clock_step_ns` per reading,
     /// so a loop driven by it runs the same number of steps on every machine.
     pub fn now(self: *Platform) core.time.Instant {
@@ -206,6 +260,41 @@ pub const Platform = struct {
     /// `pumpEvents`, exactly as a real event would be.
     pub fn pushEvent(self: *Platform, ev: event.Event) Allocator.Error!void {
         try self.incoming.append(self.gpa, ev);
+    }
+
+    /// Pulls `frames` frames from a device, synchronously, on the calling thread, and
+    /// returns what the callback wrote.
+    ///
+    /// **Deliberately not on the interface** (`audio.md` §3): there is nothing sensible
+    /// for a real backend to do with it, because the device thread is already calling
+    /// the callback and cannot be asked to do it again on demand. A test that wants
+    /// deterministic audio names `platform.null_backend` directly, exactly as `app`'s
+    /// loop tests already name it for the synthetic clock.
+    ///
+    /// **What this proves and what it does not.** It proves the mixer's arithmetic, the
+    /// command protocol's semantics and the voice lifecycle. It does *not* exercise a
+    /// ring under real concurrency, because producer and consumer are this one thread.
+    ///
+    /// The returned slice is owned by the device and is valid until the next call.
+    pub fn stepAudio(
+        self: *Platform,
+        device: audio.AudioDeviceHandle,
+        frames: u32,
+    ) Allocator.Error![]const f32 {
+        const state = self.audio_devices.get(device) orelse return &.{};
+
+        const samples = @as(usize, frames) * state.info.channels;
+        try state.buffer.resize(self.gpa, samples);
+
+        // A paused device does not call its callback at all; the hardware plays silence.
+        // Emulating that rather than calling anyway is what lets a test tell "the mixer
+        // produced nothing" apart from "the device was not running".
+        if (state.paused) {
+            @memset(state.buffer.items, 0);
+        } else {
+            state.config.callback(state.config.ctx, state.buffer.items);
+        }
+        return state.buffer.items;
     }
 
     /// Sets how far the synthetic clock moves per reading.
@@ -482,4 +571,129 @@ test "a frame length that does not divide the step loses nothing over time" {
     // Rounding the frame length up instead recovers the step, deterministically.
     const rounded = try runLoop(@divTrunc(std.time.ns_per_s, 120) + 1, 120);
     try testing.expectEqual(@as(u32, 60), rounded.steps);
+}
+
+// -- audio ---------------------------------------------------------------------------
+
+/// A callback that counts what it was asked for and writes a ramp, so a test can tell
+/// which call produced which samples.
+const Recorder = struct {
+    calls: u32 = 0,
+    last_len: usize = 0,
+    next: f32 = 1.0,
+
+    fn fill(ctx: ?*anyopaque, out: []f32) void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx.?));
+        self.calls += 1;
+        self.last_len = out.len;
+        for (out) |*sample| sample.* = self.next;
+        self.next += 1.0;
+    }
+
+    fn config(self: *Recorder, channels: u8, frames: u32) audio.AudioConfig {
+        return .{ .channels = channels, .buffer_frames = frames, .callback = fill, .ctx = self };
+    }
+};
+
+test "a headless device answers with exactly what it was asked for" {
+    const p = try open(testing.allocator);
+    defer p.deinit();
+
+    var rec: Recorder = .{};
+    const d = try p.openAudio(rec.config(2, 512));
+    defer p.closeAudio(d);
+
+    const info = p.audioInfo(d).?;
+    try testing.expectEqual(@as(u32, 48_000), info.sample_rate);
+    try testing.expectEqual(@as(u8, 2), info.channels);
+    try testing.expectEqual(@as(u32, 512), info.buffer_frames);
+    try testing.expectEqual(@as(usize, 1024), info.bufferSamples());
+}
+
+test "stepping a device calls the callback with the buffer it was promised" {
+    const p = try open(testing.allocator);
+    defer p.deinit();
+
+    var rec: Recorder = .{};
+    const d = try p.openAudio(rec.config(2, 4));
+    defer p.closeAudio(d);
+
+    const first = try p.stepAudio(d, 4);
+    try testing.expectEqual(@as(u32, 1), rec.calls);
+    // Samples, not frames: the length a mono/stereo mixing bug gets wrong.
+    try testing.expectEqual(@as(usize, 8), rec.last_len);
+    try testing.expectEqualSlices(f32, &[_]f32{1.0} ** 8, first);
+
+    // And a second pull is a second callback, with the buffer reused.
+    const second = try p.stepAudio(d, 4);
+    try testing.expectEqual(@as(u32, 2), rec.calls);
+    try testing.expectEqualSlices(f32, &[_]f32{2.0} ** 8, second);
+
+    // The same number of steps produces the same samples every run, which is the whole
+    // reason this device exists rather than a real one (I9, `audio.md` §8).
+    var again: Recorder = .{};
+    const e = try p.openAudio(again.config(2, 4));
+    defer p.closeAudio(e);
+    try testing.expectEqualSlices(f32, &[_]f32{1.0} ** 8, try p.stepAudio(e, 4));
+}
+
+test "a paused device plays silence and does not call back" {
+    const p = try open(testing.allocator);
+    defer p.deinit();
+
+    var rec: Recorder = .{};
+    const d = try p.openAudio(rec.config(1, 4));
+    defer p.closeAudio(d);
+
+    // A device opens running: nothing has to remember to start it.
+    _ = try p.stepAudio(d, 4);
+    try testing.expectEqual(@as(u32, 1), rec.calls);
+
+    p.setAudioPaused(d, true);
+    const quiet = try p.stepAudio(d, 4);
+    try testing.expectEqual(@as(u32, 1), rec.calls);
+    try testing.expectEqualSlices(f32, &[_]f32{0.0} ** 4, quiet);
+
+    p.setAudioPaused(d, false);
+    _ = try p.stepAudio(d, 4);
+    try testing.expectEqual(@as(u32, 2), rec.calls);
+}
+
+test "a closed device's handle names nothing, and a reopen does not revive it" {
+    const p = try open(testing.allocator);
+    defer p.deinit();
+
+    var rec: Recorder = .{};
+    const stale = try p.openAudio(rec.config(2, 4));
+    p.closeAudio(stale);
+    try testing.expect(p.audioInfo(stale) == null);
+
+    // The oldest bug in game audio, at the device level: unplugging headphones closes a
+    // device and the next open takes its slot. A bare index would let a `setAudioPaused`
+    // issued for the old one silence the new one (I1).
+    const fresh = try p.openAudio(rec.config(1, 8));
+    defer p.closeAudio(fresh);
+    try testing.expectEqual(@as(u8, 1), p.audioInfo(fresh).?.channels);
+    try testing.expect(p.audioInfo(stale) == null);
+
+    // And every operation on the stale handle is a no-op rather than a hit on the slot.
+    p.setAudioPaused(stale, true);
+    try testing.expectEqual(@as(usize, 8), (try p.stepAudio(fresh, 8)).len);
+    try testing.expectEqual(@as(u32, 1), rec.calls);
+    p.closeAudio(stale);
+}
+
+test "a config no device could serve is refused rather than opened" {
+    const p = try open(testing.allocator);
+    defer p.deinit();
+
+    var rec: Recorder = .{};
+    // Untrusted input: these numbers come from a settings file, so they are validated at
+    // the boundary rather than asserted, and refused before anything is allocated.
+    try testing.expectError(error.AudioFormatUnsupported, p.openAudio(rec.config(0, 512)));
+    try testing.expectError(error.AudioFormatUnsupported, p.openAudio(rec.config(2, 0)));
+    try testing.expectError(
+        error.AudioFormatUnsupported,
+        p.openAudio(.{ .sample_rate = 0, .callback = Recorder.fill, .ctx = &rec }),
+    );
 }

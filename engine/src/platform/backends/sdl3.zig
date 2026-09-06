@@ -21,6 +21,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const core = @import("core");
 
+const audio = @import("../audio.zig");
 const event = @import("../event.zig");
 const input = @import("../input.zig");
 const interface = @import("../interface.zig");
@@ -89,9 +90,21 @@ fn scaleOf(logical: win.Size, pixels: win.Size) f32 {
     return @as(f32, @floatFromInt(pixels.width)) / @as(f32, @floatFromInt(logical.width));
 }
 
+/// One open output device: SDL's stream, and the scratch buffer Foundry's callback fills.
+///
+/// The scratch is allocated once, at open, on the game thread — because the only thread
+/// that touches it afterwards is the device's, and that one may not allocate.
+const AudioState = struct {
+    stream: *c.SDL_AudioStream,
+    config: audio.AudioConfig,
+    info: audio.AudioInfo,
+    scratch: []f32,
+};
+
 pub const Platform = struct {
     gpa: Allocator,
     windows: core.HandlePool(win.Window, WindowState) = .empty,
+    audio_devices: core.HandlePool(audio.AudioDevice, AudioState) = .empty,
 
     ready: std.ArrayList(event.Event) = .empty,
     cursor: usize = 0,
@@ -126,6 +139,12 @@ pub const Platform = struct {
 
         // Windows first, then SDL: no platform resource may require another subsystem
         // to still be alive in order to be destroyed, and that applies within this one.
+        // Audio first: a stream still bound to a device is a thread still calling into
+        // memory this function is about to free.
+        var devices = self.audio_devices.iterator();
+        while (devices.next()) |entry| destroyAudio(gpa, entry.value);
+        self.audio_devices.deinit(gpa);
+
         var it = self.windows.iterator();
         while (it.next()) |entry| destroyWindow(entry.value);
         self.windows.deinit(gpa);
@@ -401,6 +420,116 @@ pub const Platform = struct {
         return self.accumulator.capture();
     }
 
+    /// Opens the default output device and starts it.
+    ///
+    /// **The subsystem is initialised here rather than in `init`**, because a game that
+    /// never plays a sound should not cost a device and a thread. `SDL_InitSubSystem` is
+    /// reference counted, so opening a second device is not a second initialisation.
+    ///
+    /// **The device's own sample rate wins over the requested one.** Foundry's voices
+    /// already resample — that machinery exists for pitch and cannot be avoided
+    /// (ADR-0023) — so adopting the hardware rate costs nothing and removes SDL's
+    /// resampler from the path entirely. The channel count is the requested one: SDL
+    /// maps two channels onto whatever the hardware has, and a mixer that had to know
+    /// about 5.1 to be heard on a 5.1 machine would be a worse trade.
+    pub fn openAudio(self: *Platform, config: audio.AudioConfig) interface.AudioError!audio.AudioDeviceHandle {
+        if (!audio.supportable(config)) return error.AudioFormatUnsupported;
+
+        if (!c.SDL_InitSubSystem(c.SDL_INIT_AUDIO)) {
+            log.err("SDL_InitSubSystem(AUDIO) failed: {s}", .{sdlError()});
+            return error.AudioUnavailable;
+        }
+        errdefer c.SDL_QuitSubSystem(c.SDL_INIT_AUDIO);
+
+        var device_spec: c.SDL_AudioSpec = undefined;
+        const rate: u32 = if (c.SDL_GetAudioDeviceFormat(
+            c.SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,
+            &device_spec,
+            null,
+        ) and device_spec.freq > 0)
+            @intCast(device_spec.freq)
+        else
+            // No device to ask, or SDL declined to say. The request is as good an answer
+            // as exists, and `SDL_OpenAudioDeviceStream` below will fail if there is
+            // genuinely nothing there.
+            config.sample_rate;
+
+        const info: audio.AudioInfo = .{
+            .sample_rate = rate,
+            .channels = config.channels,
+            .buffer_frames = config.buffer_frames,
+        };
+
+        const scratch = try self.gpa.alloc(f32, info.bufferSamples());
+        errdefer self.gpa.free(scratch);
+
+        // Reserved before the stream is opened, so that the pointer the callback is
+        // handed is stable before there is any thread to hand it to.
+        const handle = try self.audio_devices.add(self.gpa, .{
+            .stream = undefined,
+            .config = config,
+            .info = info,
+            .scratch = scratch,
+        });
+        errdefer _ = self.audio_devices.remove(handle);
+        const state = self.audio_devices.get(handle).?;
+
+        // The source spec, which is what Foundry produces. SDL converts to whatever the
+        // hardware wants, which is how `f32` interleaved stays a promise rather than a
+        // switch in the mixer.
+        var spec: c.SDL_AudioSpec = .{
+            .format = c.SDL_AUDIO_F32,
+            .channels = @intCast(info.channels),
+            .freq = @intCast(info.sample_rate),
+        };
+        const stream = c.SDL_OpenAudioDeviceStream(
+            c.SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,
+            &spec,
+            streamCallback,
+            state,
+        ) orelse {
+            log.err("SDL_OpenAudioDeviceStream failed: {s}", .{sdlError()});
+            return error.AudioUnavailable;
+        };
+        state.stream = stream;
+
+        // A device opens running. SDL's streams start paused, and a backend that left it
+        // that way would be an engine that ships with no sound until someone noticed.
+        if (!c.SDL_ResumeAudioStreamDevice(stream)) {
+            log.warn("SDL_ResumeAudioStreamDevice failed: {s}", .{sdlError()});
+        }
+
+        log.info("audio device: {d} Hz, {d} channel(s), {d}-frame buffer", .{
+            info.sample_rate,
+            info.channels,
+            info.buffer_frames,
+        });
+        return handle;
+    }
+
+    pub fn closeAudio(self: *Platform, device: audio.AudioDeviceHandle) void {
+        const state = self.audio_devices.get(device) orelse return;
+        destroyAudio(self.gpa, state);
+        _ = self.audio_devices.remove(device);
+        c.SDL_QuitSubSystem(c.SDL_INIT_AUDIO);
+    }
+
+    pub fn audioInfo(self: *Platform, device: audio.AudioDeviceHandle) ?audio.AudioInfo {
+        const state = self.audio_devices.getConst(device) orelse return null;
+        return state.info;
+    }
+
+    pub fn setAudioPaused(self: *Platform, device: audio.AudioDeviceHandle, paused: bool) void {
+        const state = self.audio_devices.getConst(device) orelse return;
+        const ok = if (paused)
+            c.SDL_PauseAudioStreamDevice(state.stream)
+        else
+            c.SDL_ResumeAudioStreamDevice(state.stream);
+        // Nothing above can act on this, and a game asking twice for the same state is
+        // not an error. Said once, in the log, rather than pushed into a signature.
+        if (!ok) log.warn("audio pause({}) failed: {s}", .{ paused, sdlError() });
+    }
+
     /// Monotonic time since SDL was initialised.
     ///
     /// `SDL_GetTicksNS` and not the wall clock: the origin is arbitrary and it never
@@ -412,6 +541,43 @@ pub const Platform = struct {
         return .{ .ns = @intCast(c.SDL_GetTicksNS()) };
     }
 };
+
+/// Destroys a stream and frees what was allocated for it. **The stream goes first**: it
+/// is what the device thread holds, and `SDL_DestroyAudioStream` does not return until
+/// that thread is no longer inside the callback.
+fn destroyAudio(gpa: Allocator, state: *AudioState) void {
+    c.SDL_DestroyAudioStream(state.stream);
+    gpa.free(state.scratch);
+}
+
+/// SDL asking for more audio. **This is the device thread**, and everything
+/// `audio.AudioCallback` forbids is forbidden from here down: no allocation, no lock, no
+/// logging, no error return.
+///
+/// Foundry's callback always receives exactly the buffer it was promised, whatever SDL
+/// asks for, because a stream is a queue: filling one whole block and handing it over
+/// costs at most one block of extra latency, and buys the mixer a block size that never
+/// changes. Overshoot is not waste — it is simply what the next callback does not have
+/// to ask for.
+fn streamCallback(
+    userdata: ?*anyopaque,
+    stream: ?*c.SDL_AudioStream,
+    additional_amount: c_int,
+    total_amount: c_int,
+) callconv(.c) void {
+    _ = total_amount;
+    if (additional_amount <= 0) return;
+
+    const state: *AudioState = @ptrCast(@alignCast(userdata.?));
+    const block_bytes: c_int = @intCast(state.scratch.len * @sizeOf(f32));
+
+    var remaining = additional_amount;
+    while (remaining > 0) {
+        state.config.callback(state.config.ctx, state.scratch);
+        _ = c.SDL_PutAudioStreamData(stream, state.scratch.ptr, block_bytes);
+        remaining -= block_bytes;
+    }
+}
 
 /// Whether this build can produce a `CAMetalLayer`. Compile-time, because the answer is
 /// a property of the target rather than of the machine.

@@ -23,6 +23,7 @@
 const std = @import("std");
 const core = @import("core");
 
+const audio = @import("audio.zig");
 const event = @import("event.zig");
 const input = @import("input.zig");
 const window = @import("window.zig");
@@ -53,6 +54,18 @@ pub const WindowError = error{
     /// a window that never existed, and from `InvalidWindowSize`, where the caller was at
     /// fault rather than the environment.
     WindowResizeRefused,
+};
+
+pub const AudioError = error{
+    OutOfMemory,
+    /// No output device, or the OS declined to open one. **Not a programmer error**: a
+    /// machine with no sound card is a configuration, and a game may carry on in silence.
+    AudioUnavailable,
+    /// The device exists but cannot produce anything Foundry can use — including a
+    /// config asking for a buffer no device could fill (`audio.supportable`).
+    AudioFormatUnsupported,
+    /// The handle does not name a live device — closed, or from before a reopen (I1).
+    InvalidAudioDevice,
 };
 
 /// Options common to every backend. Empty today; present so that adding one later is
@@ -99,6 +112,18 @@ pub fn check(comptime Impl: type, comptime label: []const u8) void {
         expectFn(P, label, "pumpEvents", &.{*P}, void);
         expectFn(P, label, "nextEvent", &.{*P}, ?event.Event);
         expectFn(P, label, "captureInput", &.{*P}, input.InputSnapshot);
+
+        // Audio output. **The only place in Foundry where a backend calls upward**, on a
+        // thread it owns and under a deadline — see `audio.AudioCallback` for the rule
+        // that applies inside it.
+        //
+        // Opened on request rather than at `init`, because a game that never plays a
+        // sound should not cost a device and a thread. `audio.Mixer` is what opens one
+        // (`audio.md` §7), which is why `app` needs no dependency on the mixer at all.
+        expectFn(P, label, "openAudio", &.{ *P, audio.AudioConfig }, AudioError!audio.AudioDeviceHandle);
+        expectFn(P, label, "closeAudio", &.{ *P, audio.AudioDeviceHandle }, void);
+        expectFn(P, label, "audioInfo", &.{ *P, audio.AudioDeviceHandle }, ?audio.AudioInfo);
+        expectFn(P, label, "setAudioPaused", &.{ *P, audio.AudioDeviceHandle, bool }, void);
 
         // The monotonic clock. Backend-provided because the null backend's is
         // synthetic, which is what makes loop tests reproducible.
@@ -201,6 +226,25 @@ test "the check accepts a conforming implementation" {
                 _ = self;
                 return .{};
             }
+            pub fn openAudio(self: *@This(), config: audio.AudioConfig) AudioError!audio.AudioDeviceHandle {
+                _ = self;
+                _ = config;
+                return .none;
+            }
+            pub fn closeAudio(self: *@This(), device: audio.AudioDeviceHandle) void {
+                _ = self;
+                _ = device;
+            }
+            pub fn audioInfo(self: *@This(), device: audio.AudioDeviceHandle) ?audio.AudioInfo {
+                _ = self;
+                _ = device;
+                return null;
+            }
+            pub fn setAudioPaused(self: *@This(), device: audio.AudioDeviceHandle, paused: bool) void {
+                _ = self;
+                _ = device;
+                _ = paused;
+            }
             pub fn now(self: *@This()) core.time.Instant {
                 _ = self;
                 return .{ .ns = 0 };
@@ -216,9 +260,10 @@ test "the interface names every call a frame makes" {
     // A change to the frame's shape should be a deliberate edit here, not something
     // that drifts in one backend at a time.
     const required = [_][]const u8{
-        "init",          "deinit",     "openWindow", "closeWindow",  "windowInfo",
-        "nativeSurface", "pumpEvents", "nextEvent",  "captureInput", "now",
-        "setWindowSize",
+        "init",         "deinit",        "openWindow",     "closeWindow",
+        "windowInfo",   "nativeSurface", "pumpEvents",     "nextEvent",
+        "captureInput", "now",           "setWindowSize",  "openAudio",
+        "closeAudio",   "audioInfo",     "setAudioPaused",
     };
-    try testing.expectEqual(@as(usize, 11), required.len);
+    try testing.expectEqual(@as(usize, 15), required.len);
 }
