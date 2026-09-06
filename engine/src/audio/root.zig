@@ -64,6 +64,7 @@ pub const Options = mixer.Options;
 pub const PlayParams = mixer.PlayParams;
 pub const InitError = mixer.InitError;
 pub const PlayError = mixer.PlayError;
+pub const VoiceError = mixer.VoiceError;
 pub const SoundHandle = mixer.SoundHandle;
 pub const Sounds = mixer.Sounds;
 

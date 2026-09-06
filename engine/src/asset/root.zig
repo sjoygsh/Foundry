@@ -60,6 +60,13 @@ pub const tilegridLoader = tilegrid.tilegridLoader;
 /// module that registers a loader has to be able to name what its `load` receives.
 pub const Record = data.store.Record;
 
+/// The merged content store a registry reads records from.
+///
+/// Re-exported for the same reason and one step further: `Registry.init` takes one, so
+/// without this a module granted `asset` and not `data` cannot name a parameter of this
+/// module's own public constructor.
+pub const Store = data.store.Store;
+
 test {
     _ = image;
     _ = png;

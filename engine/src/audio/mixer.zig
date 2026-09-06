@@ -58,7 +58,7 @@ pub const InitError = platform.AudioError || error{
     UnsupportedChannelCount,
 };
 
-pub const PlayError = error{
+pub const VoiceError = error{
     /// Every voice is in use. The game decides what to do; the mixer does not steal one.
     NoFreeVoice,
     /// No such sound, or one a hot reload has retired.
@@ -68,6 +68,12 @@ pub const PlayError = error{
     /// retirement is ever coming for, so the claim is undone and the caller told.
     CommandQueueFull,
 };
+
+/// What `play` can fail with: everything about a voice, plus everything about resolving a
+/// content id. **The registry's own set, unflattened**, because a sound that is missing, a
+/// sound whose file is gone and a sound that is really a texture send an author to three
+/// different places, and collapsing them into one `UnknownSound` would throw that away.
+pub const PlayError = VoiceError || asset.AcquireError;
 
 /// A command, game thread to callback thread. One way, always.
 const Command = union(enum) {
@@ -106,6 +112,11 @@ const Slot = struct {
     generation: u32 = 0,
     playing: bool = false,
     sound: SoundHandle = .none,
+    /// **Held for the voice's lifetime**, which is hazard one of `audio.md` §7: `play`
+    /// acquires and the retirement drain releases, so a game cannot drop the last
+    /// reference to something it can still hear. `.none` for a voice started from a
+    /// sound the mixer was handed directly rather than through content.
+    held: asset.AssetHandle = .none,
 };
 
 /// A decoded sound and what keeps it alive.
@@ -124,6 +135,10 @@ pub fn MixerOf(comptime P: type) type {
 
         gpa: Allocator,
         plat: *P,
+        /// Borrowed. **The registry is torn down before the mixer**, exactly as it is
+        /// before the renderer that registers the texture loader: the registry's `deinit`
+        /// unloads through `soundLoader`, which calls back into this object.
+        assets: *asset.Registry,
 
         /// The device this mixer opened. Public because a game that wants to silence
         /// output entirely does it through `platform`, and because the null backend's
@@ -151,7 +166,12 @@ pub fn MixerOf(comptime P: type) type {
         to_audio: ring.Ring(Command),
         from_audio: ring.Ring(Retired),
 
-        pub fn init(gpa: Allocator, plat: *P, options: Options) InitError!*Self {
+        pub fn init(
+            gpa: Allocator,
+            plat: *P,
+            assets: *asset.Registry,
+            options: Options,
+        ) InitError!*Self {
             const voice_count = @max(1, options.voices);
 
             const self = try gpa.create(Self);
@@ -190,6 +210,7 @@ pub fn MixerOf(comptime P: type) type {
             self.* = .{
                 .gpa = gpa,
                 .plat = plat,
+                .assets = assets,
                 .info = .{
                     .sample_rate = options.sample_rate,
                     .channels = options.channels,
@@ -286,9 +307,86 @@ pub fn MixerOf(comptime P: type) type {
             return self.sounds.count();
         }
 
+        /// The `foundry:sound` loader, to register with an `asset.Registry` at startup.
+        ///
+        /// **Registered from above, at runtime** (I6): `asset` is L2 and knows nothing
+        /// about mixing, `audio` is L3 and does. The record type lives down there — a
+        /// source path is not a mixer concept, and `fpack` reads one without linking a
+        /// mixer — while the capability that turns it into playable samples is registered
+        /// upward. The dependency points down, the capability points up, and a mod adding
+        /// an asset kind the engine has never heard of does exactly the same thing.
+        ///
+        /// **The payload is a `SoundHandle`, not a pointer to the samples.** That
+        /// indirection is what hazard two of `audio.md` §7 needs: a reload can retire the
+        /// old sound while a voice is still reading it, and the voice's slot holds the
+        /// handle it started with rather than whatever the record now names.
+        ///
+        /// `self` is borrowed for as long as the loader is registered, so the registry
+        /// must be torn down before the mixer is.
+        pub fn soundLoader(self: *Self) asset.Loader {
+            return .{
+                .schema = asset.schemas.sound.id,
+                .ctx = self,
+                .load = soundLoad,
+                .unload = soundUnload,
+            };
+        }
+
+        fn soundLoad(
+            ctx: ?*anyopaque,
+            gpa: Allocator,
+            record: asset.Record,
+            bytes: []const u8,
+        ) asset.LoadError!asset.Payload {
+            _ = record;
+            const self: *Self = @ptrCast(@alignCast(ctx.?));
+
+            var decoded = asset.wav.decode(gpa, bytes, .{}) catch |err| return switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                // A valid WAV this decoder does not handle. The file is fine and the
+                // answer for the author is different: transcode, do not debug.
+                error.UnsupportedSound => error.UnsupportedVersion,
+                error.SoundTooLarge => error.LoadFailed,
+                error.InvalidSound => error.InvalidAsset,
+            };
+            errdefer decoded.deinit(gpa);
+
+            return .fromHandle(try self.insertSound(decoded));
+        }
+
+        fn soundUnload(ctx: ?*anyopaque, gpa: Allocator, payload: asset.Payload) void {
+            // Not freed here, and not with this allocator's knowledge: the samples belong
+            // to the mixer and may be under a device thread's cursor right now.
+            _ = gpa;
+            const self: *Self = @ptrCast(@alignCast(ctx.?));
+            self.releaseSound(payload.asHandle(SoundHandle));
+        }
+
         // -- the game-thread API --------------------------------------------------
 
-        pub fn play(self: *Self, sound: SoundHandle, params: PlayParams) PlayError!VoiceHandle {
+        /// Starts a sound by content id.
+        ///
+        /// **This is where everything that can fail, fails** — which is precisely what
+        /// leaves the mix callback with nothing to report (`audio.md` §5).
+        pub fn play(self: *Self, id: core.ContentId, params: PlayParams) PlayError!VoiceHandle {
+            // Refused here rather than at the payload cast: starting a voice on something
+            // that turned out to be a texture is a mistake worth catching where the id
+            // was written.
+            const held = try self.assets.acquireOf(self.gpa, id, asset.schemas.sound.id);
+            errdefer self.assets.release(held);
+
+            const payload = self.assets.payloadOf(held) orelse return error.AssetNotFound;
+            const handle = try self.playSound(payload.asHandle(SoundHandle), params);
+            self.slots[handle.index].held = held;
+            return handle;
+        }
+
+        /// Starts a sound the mixer already holds, bypassing content resolution.
+        ///
+        /// What the loader's product is played through, and the entry point for a caller
+        /// that generated its own samples. **Not part of what the public ABI will expose**
+        /// (`audio.md` §10): across that boundary a sound is a content id and nothing else.
+        pub fn playSound(self: *Self, sound: SoundHandle, params: PlayParams) VoiceError!VoiceHandle {
             const stored = self.sounds.get(sound) orelse return error.UnknownSound;
             // A sound on its way out is not a sound to start something new on.
             if (stored.retired) return error.UnknownSound;
@@ -386,7 +484,9 @@ pub fn MixerOf(comptime P: type) type {
 
                 slot.playing = false;
                 const sound = slot.sound;
+                const held = slot.held;
                 slot.sound = .none;
+                slot.held = .none;
                 self.free_list.appendAssumeCapacity(retired.slot);
 
                 if (self.sounds.get(sound)) |stored| {
@@ -395,6 +495,9 @@ pub fn MixerOf(comptime P: type) type {
                     // free samples the device thread was reading.
                     self.collect(sound, stored);
                 }
+                // And only now may the game's last reference to the asset go, which is
+                // hazard one: `play` acquired it and this is the other end of that.
+                if (!held.isNone()) self.assets.release(held);
             }
         }
 
@@ -573,17 +676,45 @@ const TestMixer = MixerOf(null_backend.Platform);
 const Fixture = struct {
     gpa: Allocator,
     plat: *null_backend.Platform,
+    os: *platform.os.Os,
+    store: asset.Store,
+    assets: asset.Registry,
     mixer: *TestMixer,
 
-    fn init(gpa: Allocator, options: Options) !Fixture {
+    /// The registry is real but its store is empty, which is exactly right for these:
+    /// everything here is below `play(ContentId)`, and resolving a content id is the
+    /// integration suite's job because it needs a package on a disk.
+    fn init(gpa: Allocator, options: Options) !*Fixture {
         const plat = try null_backend.Platform.init(gpa, .{});
         errdefer plat.deinit();
-        return .{ .gpa = gpa, .plat = plat, .mixer = try TestMixer.init(gpa, plat, options) };
+
+        const os = try platform.os.Os.init(gpa, .{ .app_name = "foundry-audio", .env = &.{} });
+        errdefer os.deinit();
+
+        const self = try gpa.create(Fixture);
+        errdefer gpa.destroy(self);
+        self.* = .{
+            .gpa = gpa,
+            .plat = plat,
+            .os = os,
+            .store = .init(gpa, .default),
+            .assets = undefined,
+            .mixer = undefined,
+        };
+        self.assets = .init(gpa, os, &self.store, .{});
+        self.mixer = try TestMixer.init(gpa, plat, &self.assets, options);
+        return self;
     }
 
     fn deinit(self: *Fixture) void {
+        // The order the module documents: the registry unloads through the mixer's
+        // loader, so it goes first.
+        self.assets.deinit(self.gpa);
         self.mixer.deinit();
+        self.store.deinit(self.gpa);
+        self.os.deinit();
         self.plat.deinit();
+        self.gpa.destroy(self);
     }
 
     /// One device callback of exactly `frames`, returning what it produced.
@@ -603,7 +734,7 @@ fn expectAllZero(samples: []const f32) !void {
 }
 
 test "with nothing playing the device gets silence, every time" {
-    var f = try Fixture.init(testing.allocator, .{ .channels = 2, .buffer_frames = 4 });
+    const f = try Fixture.init(testing.allocator, .{ .channels = 2, .buffer_frames = 4 });
     defer f.deinit();
 
     // The buffer arrives holding whatever the driver last put in it, so this is a real
@@ -616,31 +747,31 @@ test "with nothing playing the device gets silence, every time" {
 test "a voice at the device's own rate reproduces its samples exactly" {
     // A mono device, so nothing is scaled by a pan gain and the comparison can be exact.
     // An approximate check here would pass for a resampler half a frame out of step.
-    var f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 4 });
+    const f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 4 });
     defer f.deinit();
 
     const source = [_]f32{ 0.25, -0.5, 0.75, -1.0 };
     const sound = try f.add(&source, 1, 48_000);
-    _ = try f.mixer.play(sound, .{});
+    _ = try f.mixer.playSound(sound, .{});
 
     try testing.expectEqualSlices(f32, &source, try f.step(4));
 }
 
 test "gain scales, master gain scales everything, and the sum is clamped" {
-    var f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 1, .voices = 4 });
+    const f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 1, .voices = 4 });
     defer f.deinit();
 
     const source = [_]f32{0.8};
     const sound = try f.add(&source, 1, 48_000);
 
-    _ = try f.mixer.play(sound, .{ .gain = 0.5, .looping = true });
+    _ = try f.mixer.playSound(sound, .{ .gain = 0.5, .looping = true });
     try testing.expectEqualSlices(f32, &[_]f32{0.4}, try f.step(1));
 
     // Two more voices at full gain: 0.4 + 0.8 + 0.8 is over one, and the clamp catches
     // it. Not a limiter — an `f32` above 1 handed to a driver that converts to `s16`
     // without clamping *wraps*, which is the worst sound a program can make.
-    _ = try f.mixer.play(sound, .{ .looping = true });
-    _ = try f.mixer.play(sound, .{ .looping = true });
+    _ = try f.mixer.playSound(sound, .{ .looping = true });
+    _ = try f.mixer.playSound(sound, .{ .looping = true });
     try testing.expectEqualSlices(f32, &[_]f32{1.0}, try f.step(1));
 
     f.mixer.setMasterGain(0.0);
@@ -648,11 +779,11 @@ test "gain scales, master gain scales everything, and the sum is clamped" {
 }
 
 test "pan splits a mono source across a stereo device with constant power" {
-    var f = try Fixture.init(testing.allocator, .{ .channels = 2, .buffer_frames = 1 });
+    const f = try Fixture.init(testing.allocator, .{ .channels = 2, .buffer_frames = 1 });
     defer f.deinit();
 
     const sound = try f.add(&[_]f32{1.0}, 1, 48_000);
-    const v = try f.mixer.play(sound, .{ .pan = -1.0, .looping = true });
+    const v = try f.mixer.playSound(sound, .{ .pan = -1.0, .looping = true });
 
     var out = try f.step(1);
     try testing.expectApproxEqAbs(@as(f32, 1.0), out[0], 1e-6);
@@ -666,12 +797,12 @@ test "pan splits a mono source across a stereo device with constant power" {
 }
 
 test "a sound at half the device's rate is resampled by the voice" {
-    var f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 4, .sample_rate = 48_000 });
+    const f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 4, .sample_rate = 48_000 });
     defer f.deinit();
 
     // 24 kHz into 48 kHz: one source frame per two output frames, interpolated between.
     const sound = try f.add(&[_]f32{ 0.0, 1.0 }, 1, 24_000);
-    _ = try f.mixer.play(sound, .{});
+    _ = try f.mixer.playSound(sound, .{});
 
     const out = try f.step(4);
     try testing.expectEqual(@as(f32, 0.0), out[0]);
@@ -680,7 +811,7 @@ test "a sound at half the device's rate is resampled by the voice" {
 
     // Pitch is the same operation, so it reaches the same machinery.
     const doubled = try f.add(&[_]f32{ 0.0, 1.0 }, 1, 24_000);
-    const v = try f.mixer.play(doubled, .{});
+    const v = try f.mixer.playSound(doubled, .{});
     f.mixer.setPitch(v, 2.0);
     const fast = try f.step(2);
     try testing.expectEqual(@as(f32, 0.0), fast[0]);
@@ -688,40 +819,40 @@ test "a sound at half the device's rate is resampled by the voice" {
 }
 
 test "a one-shot retires, and update is what gives its slot back" {
-    var f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 4, .voices = 1 });
+    const f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 4, .voices = 1 });
     defer f.deinit();
 
     const sound = try f.add(&[_]f32{ 1.0, 1.0 }, 1, 48_000);
-    const v = try f.mixer.play(sound, .{});
+    const v = try f.mixer.playSound(sound, .{});
     try testing.expect(f.mixer.isPlaying(v));
 
     _ = try f.step(4);
     // The voice ended on the device thread, but the game thread has not heard yet —
     // which is exactly why `isPlaying` is documented as presentation-only.
     try testing.expect(f.mixer.isPlaying(v));
-    try testing.expectError(error.NoFreeVoice, f.mixer.play(sound, .{}));
+    try testing.expectError(error.NoFreeVoice, f.mixer.playSound(sound, .{}));
 
     f.mixer.update();
     try testing.expect(!f.mixer.isPlaying(v));
     try testing.expectEqual(@as(u32, 0), f.mixer.activeVoices());
-    _ = try f.mixer.play(sound, .{});
+    _ = try f.mixer.playSound(sound, .{});
 }
 
 test "a stale handle's stop leaves the voice that took its slot alone" {
     // The oldest bug in game audio: a footstep's handle, kept for 400 ms and stopped
     // after the door that reused its slot started playing. With a bare index the door
     // goes silent for no reason anyone can reproduce.
-    var f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 2, .voices = 1 });
+    const f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 2, .voices = 1 });
     defer f.deinit();
 
     const footstep = try f.add(&[_]f32{ 0.5, 0.5 }, 1, 48_000);
     const door = try f.add(&[_]f32{1.0}, 1, 48_000);
 
-    const stale = try f.mixer.play(footstep, .{});
+    const stale = try f.mixer.playSound(footstep, .{});
     _ = try f.step(2);
     f.mixer.update();
 
-    const fresh = try f.mixer.play(door, .{ .looping = true });
+    const fresh = try f.mixer.playSound(door, .{ .looping = true });
     // The same slot, a different generation. Without the generation these would be equal.
     try testing.expectEqual(stale.index, fresh.index);
     try testing.expect(!stale.eql(fresh));
@@ -738,11 +869,11 @@ test "a stale handle's stop leaves the voice that took its slot alone" {
 }
 
 test "a loop keeps playing past its own length, in phase" {
-    var f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 3 });
+    const f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 3 });
     defer f.deinit();
 
     const sound = try f.add(&[_]f32{ 0.1, 0.2, 0.3 }, 1, 48_000);
-    _ = try f.mixer.play(sound, .{ .looping = true });
+    _ = try f.mixer.playSound(sound, .{ .looping = true });
 
     // Three buffers of three frames over a three-frame sound: the seam falls on a buffer
     // boundary each time, which is where an off-by-one in the wrap would show.
@@ -753,11 +884,11 @@ test "a loop keeps playing past its own length, in phase" {
 }
 
 test "stopAll silences everything and returns every slot" {
-    var f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 1, .voices = 8 });
+    const f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 1, .voices = 8 });
     defer f.deinit();
 
     const sound = try f.add(&[_]f32{0.1}, 1, 48_000);
-    for (0..8) |_| _ = try f.mixer.play(sound, .{ .looping = true });
+    for (0..8) |_| _ = try f.mixer.playSound(sound, .{ .looping = true });
     try testing.expectEqual(@as(u32, 8), f.mixer.activeVoices());
 
     const before = try f.step(1);
@@ -777,13 +908,13 @@ test "the same commands produce the same samples, run after run" {
     var first: [16]f32 = undefined;
 
     for (0..2) |run| {
-        var f = try Fixture.init(gpa, .{ .channels = 2, .buffer_frames = 8, .voices = 4 });
+        const f = try Fixture.init(gpa, .{ .channels = 2, .buffer_frames = 8, .voices = 4 });
         defer f.deinit();
 
         const a = try f.add(&[_]f32{ 0.1, 0.2, 0.3 }, 1, 44_100);
         const b = try f.add(&[_]f32{ -0.4, 0.5 }, 1, 32_000);
-        _ = try f.mixer.play(a, .{ .pan = -0.3, .looping = true });
-        _ = try f.mixer.play(b, .{ .gain = 0.7, .pitch = 1.3, .looping = true });
+        _ = try f.mixer.playSound(a, .{ .pan = -0.3, .looping = true });
+        _ = try f.mixer.playSound(b, .{ .gain = 0.7, .pitch = 1.3, .looping = true });
 
         _ = try f.step(8);
         const out = try f.step(8);
@@ -792,23 +923,23 @@ test "the same commands produce the same samples, run after run" {
 }
 
 test "a full command ring refuses a play instead of stranding its slot" {
-    var f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 1, .voices = 8, .command_capacity = 2 });
+    const f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 1, .voices = 8, .command_capacity = 2 });
     defer f.deinit();
 
     const sound = try f.add(&[_]f32{0.1}, 1, 48_000);
-    _ = try f.mixer.play(sound, .{ .looping = true });
-    _ = try f.mixer.play(sound, .{ .looping = true });
+    _ = try f.mixer.playSound(sound, .{ .looping = true });
+    _ = try f.mixer.playSound(sound, .{ .looping = true });
 
     // The third command has nowhere to go. A dropped `play` would leave a slot no
     // retirement is ever coming for, so the claim is undone and the caller told —
     // unlike a dropped `set_gain`, which is simply counted.
-    try testing.expectError(error.CommandQueueFull, f.mixer.play(sound, .{}));
+    try testing.expectError(error.CommandQueueFull, f.mixer.playSound(sound, .{}));
     try testing.expectEqual(@as(u32, 2), f.mixer.activeVoices());
     try testing.expectEqual(@as(u32, 1), f.mixer.commandsDropped());
 
     // And the slot really did come back: once the ring drains, a play succeeds.
     _ = try f.step(1);
-    _ = try f.mixer.play(sound, .{});
+    _ = try f.mixer.playSound(sound, .{});
     try testing.expectEqual(@as(u32, 3), f.mixer.activeVoices());
 }
 
@@ -816,16 +947,16 @@ test "a sound released while it is playing is freed only once nothing is reading
     // Hot reload's hazard, in miniature. `testing.allocator` is the actual assertion:
     // freeing early would be a use-after-free on the device thread, and never freeing
     // would be a leak, and it fails on both.
-    var f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 2, .voices = 2 });
+    const f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 2, .voices = 2 });
     defer f.deinit();
 
     const sound = try f.add(&[_]f32{ 0.5, 0.5 }, 1, 48_000);
-    const v = try f.mixer.play(sound, .{ .looping = true });
+    const v = try f.mixer.playSound(sound, .{ .looping = true });
 
     f.mixer.releaseSound(sound);
     try testing.expectEqual(@as(u32, 1), f.mixer.soundCount());
     // And it cannot be started again while it is on its way out.
-    try testing.expectError(error.UnknownSound, f.mixer.play(sound, .{}));
+    try testing.expectError(error.UnknownSound, f.mixer.playSound(sound, .{}));
 
     // Still audible, because the samples are still there.
     try testing.expectEqualSlices(f32, &[_]f32{ 0.5, 0.5 }, try f.step(2));
@@ -840,33 +971,39 @@ test "a device with more than two channels is refused by name" {
     const gpa = testing.allocator;
     const plat = try null_backend.Platform.init(gpa, .{});
     defer plat.deinit();
+    const os = try platform.os.Os.init(gpa, .{ .app_name = "foundry-audio", .env = &.{} });
+    defer os.deinit();
+    var store: asset.Store = .init(gpa, .default);
+    defer store.deinit(gpa);
+    var assets: asset.Registry = .init(gpa, os, &store, .{});
+    defer assets.deinit(gpa);
 
     // Silently mixing into the first two would ship a 5.1 game that plays out of the
     // front-left pair and nobody would know why (`audio.md` §5).
     try testing.expectError(
         error.UnsupportedChannelCount,
-        TestMixer.init(gpa, plat, .{ .channels = 6 }),
+        TestMixer.init(gpa, plat, &assets, .{ .channels = 6 }),
     );
 }
 
 test "an unknown sound is refused rather than played as silence" {
-    var f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 1 });
+    const f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 1 });
     defer f.deinit();
 
-    try testing.expectError(error.UnknownSound, f.mixer.play(.none, .{}));
+    try testing.expectError(error.UnknownSound, f.mixer.playSound(.none, .{}));
     try testing.expectError(
         error.UnknownSound,
-        f.mixer.play(.{ .index = 7, .generation = 3 }, .{}),
+        f.mixer.playSound(.{ .index = 7, .generation = 3 }, .{}),
     );
     try testing.expectEqual(@as(u32, 0), f.mixer.activeVoices());
 }
 
 test "commands for a voice that never existed change nothing" {
-    var f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 1 });
+    const f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 1 });
     defer f.deinit();
 
     const sound = try f.add(&[_]f32{1.0}, 1, 48_000);
-    _ = try f.mixer.play(sound, .{ .looping = true });
+    _ = try f.mixer.playSound(sound, .{ .looping = true });
 
     const nowhere: VoiceHandle = .{ .index = 999, .generation = 4 };
     f.mixer.stop(nowhere);
