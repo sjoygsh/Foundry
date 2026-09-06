@@ -301,3 +301,85 @@ quotient cannot exceed `elapsed`.
 clip is asserted in phase 32,000 ticks out, and at `maxInt(u32) - 7`. The *save* claim is
 step 3's, and that is where it stays until an animated entity reloads onto the frame it was
 saved on.
+
+---
+
+## Resolution: a clip playing, and surviving a restart (steps 2–3, 2026-09-06)
+
+*What implementing §5 and §6 settled. The sample's `clip` schema and `sandbox:animation`
+component exist, the system advances them, the draw code joins them, and
+`engine/tests/sprite_animation.zig` holds the claim §4 makes.*
+
+**How a clip's numbers reach a system, which §6's diagram does not show.** A `scene` system
+is handed the tick and the delta and nothing else — that is `entity-storage.md` §7, and it is
+what stops a simulation reading a device — so it cannot look a `clip` record up. The game
+resolves every clip record **once per content generation** and hands the table down as the
+system's context. Content is read by the game, on the frame content changed, and reaches the
+simulation as plain numbers.
+
+That is also the answer to why advancing a clip *is* a system where moving the player is not:
+one wants the tick and nothing else, and the other wants a keyboard.
+
+**The table is built by iterating the store, not by naming the clips the sample plays.** A
+component can carry a clip id that came from a save written before a package existed, or from
+a mod. Resolving whatever id is on the component keeps all of those working; resolving only
+the two ids the settings record names would have made a save the only thing that could break.
+
+**Three things about `elapsed_ticks` the document did not decide.**
+
+* **A looping clip wraps its own count by the clip's duration; a one-shot saturates.** §4
+  says `elapsed_ticks` is advanced by `+= 1` and stops there, which leaves 2³² unanswered.
+  Wrapping keeps the number small in a save, makes it exactly comparable across a reload, and
+  lets a looping animation run for as long as anyone leaves it running. Saturating the
+  one-shot is not symmetry-breaking for its own sake: wrapping a non-looping clip would
+  replay it. The wrap is asserted to be **invisible** — the frame after 100,000 ticks is the
+  same whether the count kept climbing or came back round — which is what makes it safe.
+* **Switching clips restarts, and switching to the same clip does not.** The movement code
+  calls `play` every tick with whichever clip matches what the player is doing; a `play` that
+  reset unconditionally would hold frame zero forever and look exactly like an animation that
+  is not playing. This is the whole of §8's "transitions are game policy" at this scale: one
+  comparison, no state machine.
+* **A clip that is not loaded holds its frame rather than resetting it**, and the draw falls
+  back to the `Visual` cell the entity was authored with. Content is untrusted including our
+  own, a package can be edited between one tick and the next, and a sprite that was mid-walk
+  should not blink to frame zero and back.
+
+**The clip's grid is clamped at read time, not at draw time.** `Region.cell` answering an
+out-of-range *index* with an empty region is right — that is a clip running off the end of
+its sheet, and it should be visible — but a `columns 0` would make every frame of the clip
+invisible, which says nothing about which number is wrong. So `columns` and `rows` are
+clamped to at least one where the record is read, and the index is left to fail loudly.
+
+**§3's grid cut had a caller waiting for it.** The sample's `spriteOf` had been slicing its
+sheet by hand — a modulo, a divide and a `sub` — since M2. That is now one `Region.cell`
+call, and the duplicate arithmetic is gone. A function whose first consumer deletes code is
+the sign the abstraction was already there.
+
+**The reload check is an integration test, and it had to be.** `scene` and `render2d` are
+both L3 and neither can reach the other's tests, so the only place the chain is visible is a
+consumer that has both — the same reason the tilemap and world pipelines live there.
+`engine/tests/sprite_animation.zig` steps three entities on three clips of different periods
+to a tick that is a multiple of none of them, saves, loads into a fresh world, and compares
+**the UVs a draw call would carry, bit-exactly**. An epsilon there would pass for a float
+accumulator too, which is precisely the comparison §4 says is right in nineteen tests out of
+twenty. It then runs both worlds four hundred ticks further and compares again, because a
+save that restored the frame but lost the elapsed count passes the first check and fails on
+the very next tick.
+
+Seen end to end as well, which is M5's rule: `player saved on frame 3 of sandbox:clip.walk,
+22 tick(s) in` and, from a second process reading that file, `player resumed on frame 3 of
+sandbox:clip.walk, 22 tick(s) in`.
+
+**§7's Tier 1 claim was checked by doing it rather than by asserting it.** A package
+compiled with `fpack` and placed after the sample's, restating `sandbox:clip.walk` with
+`first 12` and `hold 2`, reskinned the player's walk onto another row of the sheet and made
+it three times faster — with no rebuild and no code that knew it had happened. It changed
+where nothing: same finishing position, same contact count. A presentational override that
+moved the simulation would have been the bug worth finding.
+
+**Left open, because nothing forced them.** Questions 2 (playback speed), 3 (frame events),
+4 (transitions and blending) and 5 (non-uniform holds in content) are untouched. In
+particular `frameAtVarying` has **no consumer** — the sample's schema exposes a single
+`hold`, exactly as §5 wrote it, and inventing a list field for a case nothing has asked for
+is the guess §8 refuses. It exists, it is tested, and it agrees with `frameAt` on the uniform
+case so that the schema can grow one later without changing what an existing clip shows.

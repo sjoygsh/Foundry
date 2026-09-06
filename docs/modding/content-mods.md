@@ -28,25 +28,33 @@ mymod/
 # changes.fdt — everything after '#' is a comment.
 
 # The record type. A package carries every schema its records use, so this one is
-# yours to declare — or it comes from the package you are modifying.
-@schema sandbox:settings {
-    sprites u32 (default 4000)
-    grid    u32 (default 4)
-    banner  string (default "")
+# yours to declare — copy it from the package you are modifying.
+@schema sandbox:clip {
     sheet   id
-    font    id
+    columns u32
+    rows    u32
+    first   u32 (default 0)
+    count   u32
+    hold    u32 (default 6)
+    loops   bool (default true)
 }
 
 # Overriding a record: name the same content id, and yours wins if your package is
-# loaded after theirs.
-sandbox:settings sandbox:settings.main {
-    sprites 250
-    grid    4
-    banner  "modded"
+# loaded after theirs. This one is the sandbox player's walk animation, moved to a
+# different row of the sheet and run three times faster.
+sandbox:clip sandbox:clip.walk {
     sheet   sandbox:textures.sprites
-    font    foundry:fonts.debug
+    columns 4
+    rows    4
+    first   12
+    count   4
+    hold    2
 }
 ```
+
+**Note the schema name is spelled in full.** A bare `clip` would mean `mymod:clip` — a
+schema written without a namespace belongs to the package it is written in — and that is a
+different record type from the one you are trying to override.
 
 Compile it:
 
@@ -64,8 +72,13 @@ manager, and does not yet:
 FOUNDRY_SANDBOX_PACKAGES=mymod zig build run -Drhi=metal
 ```
 
-The sandbox loads `foundry:core`, then its own package, then yours. Two of the values it
-draws with change, and nothing was rebuilt but your mod.
+The sandbox loads `foundry:core`, then its own package, then yours. Walk the player around
+with WASD: the animation is a different colour and three times faster, and nothing was
+rebuilt but your mod.
+
+**Overriding replaces the whole record**, so every field you want has to be in yours — a
+field you leave out takes its schema default, it does not keep the original's value. §4 says
+what that means in general.
 
 ## 3. Names
 
@@ -212,7 +225,60 @@ somebody else's `foundry:tileset`, overridden by ID. Replacing the art is overri
 `foundry:texture`. Adding a layer to one map is overriding one `foundry:tilemap`. None of them
 means restating the map, and that is why these are three records and not one.
 
-## 7. Hot reload
+## 7. Animations
+
+A sprite that animates is a **clip**: a run of cells from a sheet, and how long each is held.
+The sandbox's looks like this, and yours will look like whatever the game you are modding
+declared — there is no engine-wide clip type yet, deliberately.
+
+```fdt
+@schema sandbox:clip {
+    sheet   id
+    columns u32
+    rows    u32
+    first   u32 (default 0)
+    count   u32
+    hold    u32 (default 6)
+    loops   bool (default true)
+}
+
+sandbox:clip sandbox:clip.walk {
+    sheet   sandbox:textures.sprites
+    # The sheet read as a grid of cells, and the run this clip plays, row-major from
+    # `first`. Cell 4 of a four-column sheet is the start of the second row.
+    columns 4
+    rows    4
+    first   4
+    count   4
+    # Ticks each frame is held. The simulation runs at 60 Hz, so 6 is ten frames a second
+    # and 2 is thirty.
+    hold    6
+    loops   true
+}
+```
+
+**Retiming and reskinning are both one override.** Change `hold` and the animation runs
+faster or slower; change `sheet` and `first` and it plays from somewhere else entirely.
+Neither needs code, and neither changes anything but what is on screen — an override that
+made the character move differently would be a bug in the game, not a feature of the format.
+
+**Timing is in ticks, not seconds, and that is on purpose.** The frame showing at any moment
+is `elapsed / hold`, computed in whole numbers, so it is the same on a fast machine and a slow
+one, the same in a replay, and the same after a save is reloaded. A `hold` of zero is a
+mistake rather than an instant animation: the clip shows its first frame and stays there.
+
+**A run that leaves the sheet shows nothing.** If `first + count` reaches past the last cell,
+the frames past the end draw as empty rather than as whatever is next to them — in a packed
+atlas, "next to them" is somebody else's sprite. An animation that disappears partway through
+is this, and the fix is in `first`, `count`, `columns` or `rows`.
+
+**Which clip plays is the game's**, the same way where a map sits is the game's. The sandbox
+names its walk and idle clips in `sandbox:settings.main`, so pointing the player at a
+different clip is an override of that record; a game with a proper character sheet will have
+somewhere better to say it. What you can always do without owning any of that is change the
+clip the game already names.
+
+## 8. Hot reload
 
 In a development build the engine watches what it loaded. Recompile your package, or just
 save an image, and the running program picks it up at the start of the next frame:
@@ -233,7 +299,7 @@ packages declaring the same record type at the same version must agree about it,
 could read either one's records. Add a field, raise the version, give the field a default —
 content written against the old version keeps working, which is what versioning is for.
 
-## 8. Types
+## 9. Types
 
 The list is closed. There are no others, on purpose: every type costs three implementations
 that have to agree, and a type that reaches a compiled package can never be removed.
@@ -252,7 +318,7 @@ An inline struct composes, which is why there is no colour type and no vector ty
 a mod might want to override *on its own* should be a record with a content ID instead;
 that choice is the most consequential one a schema author makes.
 
-## 9. When something is wrong
+## 10. When something is wrong
 
 `fpack` prints the file, the line, the column and the line itself with a caret under the
 problem. It reports every mistake it can rather than stopping at the first, and it exits
@@ -263,7 +329,7 @@ different fixes — an asset that is *missing* is a different sentence from one 
 *corrupt*, and a record that is not the type you asked for is a third. That distinction is
 deliberate and tested.
 
-## 10. What this does not cover yet
+## 11. What this does not cover yet
 
 See [`README.md`](README.md) for the honest list. The short version: no mod manager, no
 dependency resolution, no manifests, no partial edits, no scripting, no native mods.

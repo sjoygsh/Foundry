@@ -181,10 +181,12 @@ mixer and WAV decoding over the device `platform` was already chartered to provi
 (ADR-0023). The sample is **top-down tile movement**, which is what decides that gravity and
 slopes are out of M5's collision scope.*
 
-* Tilemaps with efficient rendering and collision — `docs/design/tilemaps-and-collision.md`.
-* 2D collision detection and response; spatial partitioning — the new **`physics2d`** module,
-  L1 on `core` alone.
-* Sprite animation: clips, state, timing — `docs/design/sprite-animation.md`.
+* ~~Tilemaps with efficient rendering and collision~~ — `docs/design/tilemaps-and-collision.md`.
+  *Done 2026-09-06.*
+* ~~2D collision detection and response; spatial partitioning~~ — the new **`physics2d`**
+  module, L1 on `core` alone. *Done 2026-09-06.*
+* ~~Sprite animation: clips, state, timing~~ — `docs/design/sprite-animation.md`.
+  *Done 2026-09-06.*
 * Audio: device output, sound loading, mixing, playback by content ID — the new **`audio`**
   module at L3, plus an audio device in `platform` and WAV decoding in `asset`;
   `docs/design/audio.md`.
@@ -198,8 +200,14 @@ only the frame that calls them. **The collision sequence is complete** (steps 1-
 text grid through `fpack` to a body that cannot walk through a wall; the sandbox draws the
 room it ships, culled to the camera; and a player walks that room and is stopped by it. The
 last step added nothing to the engine: a collision world, a `sandbox:collider` and the wiring,
-all of it in the sample, which is what §11 said would happen. Audio and sprite animation have
-not started.*
+all of it in the sample, which is what §11 said would happen. **The sprite-animation sequence
+is complete too** (steps 1-3, finished 2026-09-06): `frameAt`, `frameAtVarying` and
+`Region.cell` are the engine's whole contribution, the clip schema and the animation component
+are the sample's, and an animated sprite saved mid-clip reloads onto the frame it was drawing
+— compared as the UVs a draw call would carry, because an epsilon there would pass for the
+float accumulator §4 refuses. A package placed after the sample retimed and reskinned the
+player's walk with no rebuild, which is §7's Tier 1 claim paid. **Audio has not started**, and
+it is the last of the three.*
 
 **Exit criteria:** something a person can play for five minutes without knowing it is a tech
 demo.

@@ -1,21 +1,24 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-06
-**Updated by:** **M5's collision sequence is complete — a player walks the sandbox's room and
-is stopped by its walls.** The two long-held
-`CLAUDE.md` §9 decisions were made first — physics is **Foundry's own, scoped to collision
-rather than dynamics** (ADR-0022) and audio is **Foundry's own mixer and WAV decoding**
-(ADR-0023), the first decided by I9 rather than by licensing. All three design documents are
-written. **`physics2d` exists** — L1 on `core` alone, with the layering confirmed by breaking
-it — holding shapes, the tile grid with **the neighbour-aware face culling that is the exact
-fix for the internal-edge snag**, the two-tier spatial hash whose candidates are sorted by
-handle index before anything reads them, and now **`moveAndSlide`, `resolveOverlaps` and the
-four queries**. Step 4 collapsed the four pair tests into **one**: every pair reduces to a
-*rounded box*, the reduction composes, and so box-box, circle-circle, box-circle and a raycast
-are all one static test and one swept test asked different questions — which also removed the
-`flip` helper that existed to stop two of them disagreeing. Face culling extended with it: a
-rounded corner is admitted only when both of its adjacent faces are. The whole suite passes
-under `-Drhi=null` and `-Drhi=metal`; 80 of the tests are `physics2d`'s, up from 53.
+**Updated by:** **M5's sprite-animation sequence is complete — the sandbox's player walks
+with a walk cycle, and an animation saved mid-clip reloads onto the frame it was drawing.**
+That closes the second of M5's three sequences; the collision sequence closed yesterday, and
+**audio is the only one left**. The engine's whole contribution to animation is three pure
+functions — `render2d.frameAt`, `frameAtVarying` and `Region.cell` — because
+`sprite-animation.md` §3 said it would be and implementation found no reason to add a fourth.
+Everything above them is the sample's: the `sandbox:clip` schema, the `sandbox:animation`
+component, the system that advances it and the three lines that join a frame number to a
+region. The crossing the design was written to resolve stayed dissolved — `scene` holds a clip
+id, a tick count and a frame index and never learns what a texture is; `render2d` cuts a
+region and never learns what an entity is; neither gained a dependency, and both being L3
+means the build graph would have refused one. §4's claim that an integer state survives a
+restart where a float accumulator does not is now **held by the suite**, comparing the UVs a
+draw call would carry, bit-exactly, across a save and a reload and then four hundred ticks
+further. §7's Tier 1 claim was paid the same way collision's was: a package placed after the
+sample retimed and reskinned the player's walk with no rebuild, and changed nothing about
+where the player ended up. 732 tests under `-Drhi=null`, 740 under `-Drhi=metal`.
+
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
 
@@ -39,9 +42,11 @@ document, then code.
 
 ## Current milestone
 
-**M5 — Playable: "it's a game." In progress, opened 2026-09-05.** Nothing is built yet. What
-exists is the part that has to exist first, and the part the last three milestones showed is
-cheapest to do before there is code arguing for a different answer.
+**M5 — Playable: "it's a game." In progress, opened 2026-09-05.** Two of its three sequences
+are finished — collision (2026-09-06) and sprite animation (2026-09-06) — and **audio is the
+one that remains**. What follows in this section is what M5 opened with, because the decisions
+and the design are what a future session needs and they have not changed; what has been built
+against them is under "What is being worked on".
 
 **Two `CLAUDE.md` §9 decisions came due and were made, neither silently (rule 10).**
 
@@ -114,30 +119,11 @@ component are the sample's, for the same reason M5 adds no `foundry:collider`.
 **Nothing is owed before the code now.** Three documents, three implementation orders:
 `tilemaps-and-collision.md` §15, `audio.md` §13, `sprite-animation.md` §10.
 
-**Collision steps 1, 2 and 3 are implemented.** `physics2d` is in the build graph at L1 with
-`core` as its only dependency, and the layering was confirmed the way ADR-0007 asks — by
-breaking it, with a *referenced* illegal import, since Zig's lazy analysis lets an unused one
-compile clean. The error is `no module named 'data' available within module 'root'`, and the
-failed command line shows `--dep core` and nothing else. What exists: `Shape` (box as
-half-extents, circle), `Bounds`, the four static pair tests with a stated normal convention,
-the swept box-versus-box test, `Body` with its symmetric layer/mask filter and its opaque
-`user` word, `World` with generational body and grid pools, and `Grid` with the cell walk and
-**neighbour-aware face culling**. Three decisions implementation had to make that the document
-did not settle: *touching exactly is not an overlap*, and on a zero-motion axis being exactly
-on the boundary counts as outside — both so that a body flush against a wall and sliding along
-it reports nothing, which is the common case in a tile game; *outside a grid is not solid*,
-because a grid is a shape source rather than a world boundary and a closed map is a border of
-solid tiles, which is content (I5); and a **`solid` bitset shorter than the tileset leaves the
-rest passable** rather than reading out of bounds, because that array comes from content that
-may predate a tile being added. Step 3 added the broadphase and three more:
-the **spill list** for a body too large to bucket, because cell size comes from the first body
-inserted and bodies come from files — a million-unit body arriving after a handful of small
-ones would otherwise ask for a million cells; **`pdq` rather than the insertion sort §5 named**,
-since the key is unique so stability buys nothing and a wide query can return hundreds; and
-**`World.body` returns a `*const Body`**, with every change that moves a body between cells or
-tiers going through a named call, because a caller moving one by assignment would leave the
-broadphase describing where it used to be. All of it is recorded in the design document's
-Resolution section.
+**All three sequences' implementation orders are in their own documents**, and two are
+struck through: `tilemaps-and-collision.md` §15 (steps 1-7, done), `sprite-animation.md` §10
+(steps 1-3, done) and `audio.md` §13 (six steps, not started). Each document's Resolution
+sections carry what implementation settled that the design did not; those are the record, and
+this file does not duplicate them.
 
 **The milestone behind it — M4 — World: "it has entities." Complete, 2026-09-05.** Every item
 on its ROADMAP list is done and both exit criteria are met. `docs/design/entity-storage.md`
@@ -307,6 +293,43 @@ walls.**
   a paragraph: a second package restates one tileset record with a different `solid` list, the
   map and the grid asset and the layer record are byte-identical across both halves, and a body
   that was stopped by a wall walks straight through it.
+* `engine/src/render2d/animation.zig` — `frameAt` and `frameAtVarying`, and **that is the
+  engine's whole contribution to sprite animation** besides the grid cut below. Pure integer
+  functions of a tick count, so the same tick yields the same frame on every machine, in a
+  replay and after a reload (I9). A zero `frame_ticks`, a zero `frame_count` and an empty or
+  all-zero hold list all yield frame 0 rather than dividing by it, because every one of those
+  numbers came out of a file. Their own file rather than `atlas.zig`: the module surface puts
+  them beside `Region`, which is what §3 asked for, and `atlas.zig` is about packing.
+* `engine/src/render2d/atlas.zig` — `Region.cell`, the grid a sprite sheet is, built on `sub`
+  so a sheet in a shared atlas slices identically to one with a texture of its own. **Out of
+  range is empty rather than clamped** — a zero grid dimension, an index past the last cell, or
+  a region too small to divide — because a clip running off its sheet should vanish and send
+  its author to the clip, where a clamped one shows a *stuck* animation indistinguishable from
+  a non-looping clip working correctly.
+* `samples/sandbox/content/sandbox.fdt` — the `clip` schema and three clip records, plus
+  `player_walk`, `player_idle` and `field_clip` on the settings record. **The engine defines no
+  `foundry:clip`**, for the reason it defines no `foundry:collider`: a schema name is a
+  compatibility decision, M7 is when the mod-facing vocabulary is chosen, and nothing in the
+  engine reads a clip. Which clip plays is content too, not only the clip itself.
+* `samples/sandbox/main.zig` — `Clip` and `Clips`, the table resolved once per content
+  generation and handed to the system as its context, because a `scene` system is given the
+  tick and nothing else and so cannot read a record. `Animation`, three integers, holding a
+  content id rather than a handle or a table index because it is serialized. `animationSystem`,
+  which *is* a system where `walk` could not be. `play`, which restarts a clip only when it is
+  a different one. And `cellOf`, which is §6's diagram written out — and which replaced the
+  hand-rolled sheet slicing `spriteOf` had carried since M2 with one `Region.cell` call.
+* `engine/tests/sprite_animation.zig` — the check step 3 exists for, and it had to stand above
+  two modules that cannot see each other: three entities on three clips of different periods,
+  stepped to a tick that is a multiple of none of them, saved, loaded into a fresh world, and
+  compared as **the UVs a draw call would carry, bit-exactly**. An epsilon there would pass for
+  the float accumulator §4 refuses. Then four hundred more ticks on both, because a save that
+  restored the frame but lost the elapsed count passes the first check and fails on the next
+  tick. Also: a clip still in phase after a hundred thousand ticks, a one-shot pinning across a
+  reload, and one cycle visiting every cell in order and wrapping onto the first.
+* `docs/modding/content-mods.md` — a §7 for animations, and a "your first mod" that **is** a
+  clip override, verified by following it verbatim. It replaced a settings-override example
+  that had gone stale: a shorter settings schema now silently turns off the map and every
+  animation, which is a bad first experience and a worse first document.
 
 **M4, new:**
 
@@ -541,9 +564,9 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 715 tests** (56 `core`, 70 `platform`, 104 `data`, 82 `physics2d`,
-92 `rhi`, 54 `asset`, 116 `render2d`, 79 `scene`, 28 `app`, 21 `fpack`, 13 integration), and
-**723 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
+**`zig build test` passes 732 tests** (56 `core`, 70 `platform`, 104 `data`, 82 `physics2d`,
+92 `rhi`, 54 `asset`, 129 `render2d`, 79 `scene`, 28 `app`, 21 `fpack`, 17 integration), and
+**740 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
 8 exceptions need a real GPU and compile only when Metal is selected.
@@ -570,6 +593,28 @@ statistics panel and the help line in screen space, the world-space banner, and 
 *and* GPU validation on and **zero messages**. That capture is also what caught the Y-axis
 bug: the first windowed run drew the whole readout upside down, which no unit test had
 asked about because until then every space was Y-up.
+
+**The sandbox is a small game now, and the whole of it was watched running.** Under Metal,
+900 frames at vsync with no validation message from either backend: a 12x10 room drawn from a
+hand-written text grid, a player walked around it by a scripted circuit, stopped and slid by
+its walls, 283 contacts, and — new today — a walk cycle while it moves and an idle pose while
+it does not, over four thousand field sprites each playing one shared clip at its own phase.
+The animation survives a restart exactly:
+
+```
+info(sandbox): 3 clip(s) loaded
+info(sandbox): player saved on frame 3 of sandbox:clip.walk, 22 tick(s) in
+info(sandbox): saved 4001 entities to 'anim.fsav' (593238 bytes)
+--- second process ---
+info(sandbox): loaded 4001 entities and 16004 components from 'anim.fsav'
+info(sandbox): player resumed on frame 3 of sandbox:clip.walk, 22 tick(s) in
+```
+
+**And a mod changed the animation without a rebuild.** A package compiled with `fpack` and
+placed after the sample's, restating `sandbox:clip.walk` with `first 12` and `hold 2`,
+reskinned the walk onto another row of the sheet and ran it three times faster — while
+leaving the player's finishing position and contact count identical, which is the right
+answer for a change to how something looks.
 
 **What the M1 record below describes is the quad**, kept because each row is a separate
 property that was checked once and has not been rechecked since.
@@ -709,6 +754,62 @@ map **off** the origin, because an origin applied on one side of §11's diagram 
 is invisible at zero; and §12's Tier 1 claim is a test rather than a paragraph — a second package
 restates one tileset's `solid` list and a body that was stopped by a wall walks straight through
 it, with the map, the grid asset and the layer record byte-identical across both halves.
+
+**The sprite-animation sequence is done, all three steps.** The engine gained
+`render2d.frameAt`, `frameAtVarying` and `Region.cell` and nothing else — `sprite-animation.md`
+§3 said that would be the whole surface and implementation found no fourth thing to add. The
+sample gained a `sandbox:clip` schema, three clip records, a `sandbox:animation` component, the
+system that advances one, and a `cellOf` that is §6's diagram written out. The player walks
+with a walk cycle and stands with an idle one; the four thousand field sprites each play one
+shared clip at their own phase, which is the split the component exists to express.
+
+Step 1 settled three things reachable from a file. **An out-of-range grid cut is empty rather
+than clamped** — a clip running off its sheet should vanish, because clamping shows a *stuck*
+animation and a stuck animation is indistinguishable from a non-looping clip working. **A frame
+held for zero ticks is never shown**, which falls out of the walk rather than being
+special-cased. And **pinning clamps the tick rather than the index**, so looping and pinning are
+one walk and a one-shot settles on the last frame actually displayed rather than on a trailing
+zero-hold entry no playthrough would have reached.
+
+Steps 2 and 3 settled how a clip's numbers reach a system, which §6's diagram does not show. A
+`scene` system is handed the tick and the delta and nothing else, so it **cannot read a
+record**: the game resolves every clip once per content generation and hands the table down as
+the system's context. That is also why advancing a clip *is* a system where moving the player is
+not — one wants the tick and nothing else, and the other wants a keyboard. The table is built by
+iterating the store rather than by naming the clips the sample plays, so an id from a save or a
+mod resolves. A looping clip **wraps its own elapsed count by the clip's duration** and a
+one-shot saturates, with the wrap asserted to be invisible; `play` restarts a clip only when it
+is a different one, because calling it every tick otherwise pins frame zero and looks exactly
+like an animation that does not play; and a clip that is not loaded holds its frame rather than
+resetting it, because a package can be edited between one tick and the next.
+
+**§3's grid cut had a caller waiting for it.** The sample's `spriteOf` had been slicing its
+sheet by hand since M2 — a modulo, a divide and a `sub`. That is one `Region.cell` call now.
+
+**The reload check is an integration test, and had to be.** `scene` and `render2d` are both L3
+and neither can reach the other's tests, so `engine/tests/sprite_animation.zig` is the consumer
+that has both. It steps three entities on three clips of different periods to a tick that is a
+multiple of none of them, saves, loads into a fresh world, and compares **the UVs a draw call
+would carry, bit-exactly** — an epsilon there would pass for the float accumulator §4 refuses —
+then runs both worlds four hundred ticks further, because a save that restored the frame but
+lost the elapsed count passes the first check and fails on the next tick. Seen end to end as
+well: `player saved on frame 3 of sandbox:clip.walk, 22 tick(s) in`, and from a second process
+reading that file, `player resumed on frame 3 of sandbox:clip.walk, 22 tick(s) in`.
+
+**§7's Tier 1 claim was checked by doing it.** A package compiled with `fpack` and placed after
+the sample's, restating `sandbox:clip.walk` with `first 12` and `hold 2`, reskinned the walk
+onto another row of the sheet and made it three times faster — no rebuild, no code that knew.
+It changed nothing about where the player ended up or how many walls it hit, which is the right
+answer for a purely presentational override. `docs/modding/content-mods.md` gained a §7 for
+animations, and its "your first mod" example **is** that override, verified by following it
+verbatim; the settings example it replaced had gone stale, since a shorter settings schema now
+silently turns off the map and every animation.
+
+**Open questions 2, 3, 4 and 5 are untouched**, because nothing forced them. `frameAtVarying`
+has no consumer at all: the sample's schema exposes a single `hold`, exactly as §5 wrote it, and
+a list field for a case nothing has asked for is the guess §8 refuses. It exists, it is tested,
+and it agrees with `frameAt` on the uniform case so the schema can grow one later without
+changing what an existing clip shows.
 
 What follows in this section is the record of the milestones behind it, kept because the
 reasoning is what a future session needs and the commit log is not where reasoning lives.
@@ -1088,23 +1189,26 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**M5 is open, one of its three sequences is finished, and the other two are independent of
-it.** Each has its order written down in its own document:
+**M5 is open, two of its three sequences are finished, and audio is the one that remains.**
+Each has its order written down in its own document:
 
 1. ~~**Collision**, `tilemaps-and-collision.md` §15.~~ **Complete, all seven steps, 2026-09-06.**
-   A player walks the sandbox's room and is stopped by its walls. Two sequences remain.
-2. **Audio**, `audio.md` §13, six steps, and the first three add no threads at all: the
+   A player walks the sandbox's room and is stopped by its walls.
+2. ~~**Sprite animation**, `sprite-animation.md` §10.~~ **Complete, all three steps,
+   2026-09-06.** An animated sprite reloads onto the frame it was drawing, compared as the UVs
+   a draw call would carry — the check that makes the integer-tick argument something the suite
+   holds rather than something a document asserts.
+3. **Audio**, `audio.md` §13, six steps, and the first three add no threads at all: the
    `foundry:sound` schema, `Sound` and the WAV decoder in `asset` with its corpus; the device
    in `platform` including the stepped null one; `audio` in the build graph at L3; the rings,
    the voice table and the mixer under the stepped device; the loader registered upward and
    `play(ContentId)`; the sandbox making a sound.
-3. **Sprite animation**, `sprite-animation.md` §10, three steps: `frameAt`, `frameAtVarying`
-   and `Region.cell` in `render2d`; the sample's clip schema and animation component; an
-   animated sprite that reloads onto the frame it was saved on — which is the check that makes
-   the integer-tick argument something the suite holds rather than something a document
-   asserts.
 
-They share only the frame that calls them. Nothing forces the order beyond that.
+**Audio is the largest of the three and the only one with a second thread in it**, so it is
+worth starting on a session that can give the rings and the callback deadline its whole
+attention rather than the back half of one. `audio.md` is M5's longest document for that
+reason. When it lands, M5's exit criterion — five minutes that do not feel like a tech demo —
+is the only thing left in the milestone.
 
 **Three things carried forward, and none of them is a bug:**
 

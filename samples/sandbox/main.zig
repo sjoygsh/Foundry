@@ -283,7 +283,10 @@ pub fn main(init: std.process.Init) !void {
     // On the way out, so a scripted run leaves a save behind for the next one to read.
     // That is the only honest check that a world survives a *restart* rather than a round
     // trip through memory in one process.
-    if (field.save_path) |path| field.saveWorld(engine, path);
+    if (field.save_path) |path| {
+        field.reportAnimation("saved");
+        field.saveWorld(engine, path);
+    }
 
     // The number that says collision happened rather than compiled. A scripted walk that
     // reports zero contacts has driven through the walls, and the map is 12x10 with a solid
@@ -1171,6 +1174,7 @@ const SpriteField = struct {
         // a body. A restored save brought the entity back and nothing else, which is the
         // whole reason the two are separate calls.
         self.adoptPlayer();
+        if (restored) self.reportAnimation("resumed");
     }
 
     /// The component types and systems this sample defines.
@@ -1270,6 +1274,25 @@ const SpriteField = struct {
             if (summary.skipped_types == 0) "" else " (some component types were skipped)",
         });
         return true;
+    }
+
+    /// What the player is showing, for the log line either side of a save.
+    ///
+    /// **`sprite-animation.md` §10 step 3's check, at the sample's scale.** The suite holds
+    /// the claim properly — `engine/tests/sprite_animation.zig` compares the actual UVs
+    /// across a reload and then runs both worlds four hundred ticks further — and this is
+    /// the same fact where a person can see it: run once with a save path, run again with a
+    /// load path, and the two lines say the same clip, the same elapsed count and the same
+    /// frame.
+    fn reportAnimation(self: *SpriteField, what: []const u8) void {
+        const entity = self.player orelse return;
+        const animation = self.animationOf(entity) orelse return;
+        log.info("player {s} on frame {d} of {f}, {d} tick(s) in", .{
+            what,
+            animation.frame,
+            animation.clip,
+            animation.elapsed_ticks,
+        });
     }
 
     /// One fixed simulation step. The game translates `app`'s step into `scene`'s tick.
@@ -1791,6 +1814,7 @@ const SpriteField = struct {
                 // Either way the world is a new one, and the body that was pointing into
                 // the old one has to be made again.
                 self.adoptPlayer();
+                self.reportAnimation("resumed");
             }
         }
 
