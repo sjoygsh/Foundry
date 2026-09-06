@@ -36,9 +36,13 @@ const core = @import("core");
 const platform = @import("platform");
 const asset = @import("asset");
 
+pub const mixer = @import("mixer.zig");
+pub const ring = @import("ring.zig");
+pub const voice = @import("voice.zig");
+
 /// Phantom tag for `VoiceHandle`. Never instantiated; it exists so a voice handle cannot
 /// be confused with any other handle type (I1).
-pub const Voices = opaque {};
+pub const Voices = mixer.Voices;
 
 /// One playing sound, addressed by generational handle.
 ///
@@ -50,7 +54,18 @@ pub const Voices = opaque {};
 ///
 /// This is the same reason `Entity` and `AssetHandle` are generational, applied to the
 /// one subsystem where slots recycle fast enough that a person will actually hit it.
-pub const VoiceHandle = core.Handle(Voices);
+pub const VoiceHandle = mixer.VoiceHandle;
+
+pub const Mixer = mixer.Mixer;
+/// The mixer against an arbitrary platform backend, so a test can drive the stepped null
+/// device whichever backend the build selected — the shape `app.EngineOf` already has.
+pub const MixerOf = mixer.MixerOf;
+pub const Options = mixer.Options;
+pub const PlayParams = mixer.PlayParams;
+pub const InitError = mixer.InitError;
+pub const PlayError = mixer.PlayError;
+pub const SoundHandle = mixer.SoundHandle;
+pub const Sounds = mixer.Sounds;
 
 /// Re-exported so a game can name what it is configuring without also importing
 /// `platform` (`audio.md` §7: the game constructs the mixer, and `app` never sees it).
@@ -68,6 +83,12 @@ comptime {
 }
 
 const testing = std.testing;
+
+test {
+    _ = mixer;
+    _ = ring;
+    _ = voice;
+}
 
 test "a zeroed voice handle is none" {
     const h: VoiceHandle = std.mem.zeroes(VoiceHandle);
