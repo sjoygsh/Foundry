@@ -1,7 +1,27 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-06
-**Updated by:** **M5's audio sequence is complete, and with it all three of M5's sequences.**
+**Updated by:** **`samples/room` exists, and M5 has a game in it.** The three sequences —
+collision, sprite animation, audio — were finished earlier the same day; this is the last
+bullet, and it is the one that turned out to be about the *shape of the repository* rather
+than about the engine.
+
+**The sandbox could not be the playable sample, and saying why is the finding.** By M5 it was
+2,424 lines carrying M0 through M5's evidence at once: four thousand orbiting sprites, a
+frame-statistics readout, entity picking, world save and load, a resize key. Every one of
+those is load-bearing for an earlier milestone and every one of them is exactly what "without
+knowing it is a tech demo" rules out, so the roadmap was asking one artifact to satisfy two
+requirements that contradict each other. **The answer is that `samples/` was always plural**:
+a sample that demonstrates and a sample that plays are two different smallest things.
+
+`samples/room` is the second. A dim stone hall, thirty-two cells by twenty-four, six unlit
+lamps, a door that will not open until they are all burning, and a way out beyond it. It has
+no statistics, nothing to click and no debug keys. **The engine gained nothing for it** — not
+one line under `engine/`, and `tools/fpack` did not change either — which is the strongest
+form the exit criterion's evidence can take: what M5 is really claiming is that Foundry can
+carry a game, and a second consumer that needed no engine change is the proof of it.
+
+*(Previously: M5's audio sequence completed, and with it all three of M5's sequences.)*
 The sandbox walks a room it ships, animates as it goes, and now makes a noise doing it: a
 footstep every third of a second, a thud against a wall, and an ambience panned by where the
 player stands — all three from `.wav` files in its own content package, none of which has a
@@ -47,16 +67,19 @@ is mature enough to need them rather than as decoration.
 **Phase 2 — A real 2D engine.** Phase 1 (M0, M1) closed with the first pixels; M2, M3 and M4
 are done. **M5 — Playable: "it's a game" — is open**, started 2026-09-05, and started where
 the last three did: at the decisions `CLAUDE.md` §9 had been holding for it, then the design
-document, then code. All three of its sequences are built; what is left is the exit criterion
-— a sample somebody would play for five minutes — which is a different kind of work from the
-three that preceded it.
+document, then code. **Every bullet is now built, `samples/room` included.** What is left is
+the exit criterion itself, and it is the one thing that cannot be established by building
+anything: somebody has to play the room for five minutes. On autopilot it is finished in 1,542
+ticks — about twenty-six seconds of simulated time — which is a lower bound and not an answer,
+because the autopilot knows where the lamps are and a person does not.
 
 ## Current milestone
 
-**M5 — Playable: "it's a game." In progress, opened 2026-09-05.** **All three of its sequences
-are finished** — collision, sprite animation and audio, all 2026-09-06 — and what remains is
-the milestone's *exit criterion* rather than any of its bullets: something a person can play
-for five minutes without knowing it is a tech demo. What follows in this section is what M5
+**M5 — Playable: "it's a game." In progress, opened 2026-09-05.** **Every bullet is finished**
+— collision, sprite animation, audio and the playable sample, all 2026-09-06 — and what
+remains is the milestone's *exit criterion* rather than any of its bullets: something a person
+can play for five minutes without knowing it is a tech demo. `samples/room` is that thing and
+nobody has played it yet. What follows in this section is what M5
 opened with, because the decisions and the design are what a future session needs and they have
 not changed; what has been built against them is under "What is being worked on".
 
@@ -158,7 +181,27 @@ content, and a whole world can be written to a file and read back with its handl
 `physics2d` holds shapes, bodies and tile grids, and can move a body along a wall without
 catching on the seams between its tiles. A map is content from a hand-written text grid
 onward; the sandbox draws the one it ships, and a player walks it and is stopped by its
-walls.**
+walls. There are **two samples**: `samples/sandbox` demonstrates the capabilities and
+`samples/room` is a small game built out of them.**
+
+**M5, newest — `samples/room` and its content package.** A second consumer of the engine,
+built from the engine exactly as it already was:
+
+* `samples/room/main.zig` — the sample. Its own `Settings`, `Map`, `Clip`/`Clips`, six
+  component types (`room:transform`, `room:visual`, `room:solid`, `room:animation`,
+  `room:lamp`, `room:doorway`), one system, and `Place.of` — the only function that knows the
+  authoring grid is top-down, the runtime grid is Y-up and the world origin is the middle of
+  the map.
+* `samples/room/content/room.fdt` — four schemas the room defines (`settings`, `clip`, `lamp`,
+  `door`, `way_out`), and every record the hall is made of. Nothing the sample draws, says,
+  plays or places is in the source.
+* `samples/room/content/grids/hall.grid` — 32x24, written the way it looks.
+* `samples/room/content/textures/room.png` and five `.wav`s — generated by
+  `scripts/gen-room-assets.py`, committed so the sample decodes them through the engine's own
+  decoders, generated by a script so the binaries in the tree are reproducible.
+* `build.zig` — a `room` module and executable, `room:content` in the load order, a `room`
+  run step, and the sample added to the `check` step so it carries the portability obligation
+  like the sandbox does.
 
 **M5, new (steps 1 through 7 of `tilemaps-and-collision.md` §15 — the whole sequence):**
 
@@ -654,7 +697,11 @@ and the published repository.
 23 integration), and **804 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
-8 exceptions need a real GPU and compile only when Metal is selected.
+8 exceptions need a real GPU and compile only when Metal is selected. **`samples/room` adds
+no tests and neither does `samples/sandbox`**: a sample is a consumer, what it exercises is the
+engine's, and the engine's tests are where that is held. What the room contributes to the suite
+is the `check` step — it cross-compiles for Windows and Linux every milestone like everything
+else.
 
 **It draws thousands of sprites, under a camera, with text.** `platform` (SDL3, `cocoa`
 driver) hands an opaque `CAMetalLayer` to `rhi`, which brings up a real Metal device:
@@ -670,6 +717,28 @@ info(sandbox): window: 1280x720 points, 2560x1440 pixels, scale 2.00
 debug(sandbox): frame 120: 4177 sprites (175 glyphs), 5 batches, 5 draw calls, 326 KiB of vertices, 17.0ms/frame, zoom 1.00
 info(sandbox): clean exit after 180 frames, 178 ticks, 2966ms simulated
 ```
+
+**And there is a hall somebody can walk.** `zig build room` opens `samples/room`; the same
+binary built headless finishes it by itself and says so:
+
+```
+info(room): map 'content(0xce1cb76a47671773)': 32x24 cells of 16x16, 1 layer(s)
+info(room): 6 lamp(s) in the hall, 0 already lit
+info(room): headless build (null backend): running 60000 frames on autopilot
+info(room): a lamp catches: 6 of 6
+info(room): the way out is open
+info(room): the walker steps out of the hall, after 1542 tick(s)
+info(room): finished at (2, 128) after 25700 frames, 1542 ticks: 6 of 6 lamps lit, door open, 436 contact(s), 1 sound(s) started
+```
+
+`finished` rather than `stopped` is the whole point of that line: it is a scripted run
+answering the question a sample can otherwise only assert about itself. **The windowed build
+was looked at, not inferred** — screen captures of the room's own window show the hall filling
+the frame with the camera clamped to it, the unlit lamps readable against the floor, the
+counter and the hint on their panels, the sign over the rug, and the door across the north
+doorway. Two of those captures changed the sample: the first showed the void past the west wall
+(the camera now clamps) and the second showed unlit lamps four shades from the floor they stand
+on (the sprite now has a cold halo).
 
 **The text was looked at, not inferred**, the same way M1's quad was. A capture of the
 sandbox's own window (by window id, so nothing else on the screen is read) shows the
@@ -787,9 +856,74 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M5, with all three sequences finished and only the exit criterion left.** All three design
-documents are written and all three are fully implemented; what remains is a sample somebody
-would play for five minutes, which is a different kind of work from the three that preceded it.
+**M5, with every bullet finished and only the exit criterion left.** All three design
+documents are written and all three are fully implemented, and the fourth bullet — a playable
+sample — is `samples/room`.
+
+### `samples/room`, and what a second consumer proved
+
+**It is 1,834 lines — three quarters of the sandbox's 2,424, doing far less, because the
+comment density is the project's — and it changed nothing under `engine/`.** That is the claim M5's exit
+criterion is really making, paid: a hall, a walker that collides with it, six lamps that light
+when walked into, a door that despawns when the last one catches, and a way out — built from
+`render2d`, `physics2d`, `scene`, `asset` and `audio` exactly as they already were. `fpack`
+did not change either; the room's `.png`, its five `.wav`s and its `.grid` all became content
+by the rules the compiler already had.
+
+**Four things the second sample settled that one sample could not.**
+
+* **`samples/` is plural, and the roadmap's contradiction is resolved.** The M5 entry asked
+  for a playable `samples/sandbox` in one line and insisted the sandbox stay a demonstration a
+  paragraph later. Two samples, two smallest things.
+* **Every game rewrites `Map`.** Two hundred lines that turn a `foundry:tilemap` into a
+  `render2d.TilemapLayer` and a `physics2d.Grid` are now written twice, near-identically,
+  because nothing in the engine joins them — `tilemaps-and-collision.md` §11 says the game
+  wires them, which was a *claim* when one sample had paid it and is now *evidence* that every
+  consumer will pay it. This is the argument for a `render2d`-side helper, and it is
+  deliberately **not acted on here**: what shape it takes is a decision for the milestone that
+  makes it, not a thing to slip into a sample commit.
+* **Two samples independently defined the same `clip` schema.** Seven fields, arrived at twice,
+  with no engine-owned `foundry:clip` to share (`sprite-animation.md` §5 deferred that name to
+  M7 on purpose). That is the evidence the deferral was waiting for.
+* **`@patch` is not implemented, and a mod meets that by name.** Writing the room's mod hit
+  `'@patch' is not implemented yet; until it is, a later package overrides a record by
+  restating it in full` — a designed-but-unbuilt directive refusing with the workaround in the
+  message, which is the right way for an unfinished feature to behave and worth recording as
+  the first time anybody hit it from outside.
+
+**What implementation decided that the design of the sample did not.**
+
+* **Content places things by column and row of the map *as written*.** Three coordinate
+  conventions meet in this sample — the `.grid` file is top-down, the runtime grid is Y-up with
+  row 0 at the bottom because `asset.tilegrid` reverses once at compile time, and the world
+  origin is the middle of the map because the sample put it there. An author should meet
+  exactly one of them, so `Place.of` is the only function that knows about the other two.
+* **The door is an entity, not a tile.** A tile is a number in a grid that two subsystems are
+  reading, and changing one means telling both; an entity that stops existing stops being drawn
+  and stops being solid by the same call. That is the whole reason the room has a `scene`.
+* **Lamps are trigger bodies**, so lighting one is an `overlapShape` against the broadphase
+  rather than a loop measuring the distance to every lamp. It is also the first use of
+  `BodyKind.trigger` anywhere — the sandbox never needed one.
+* **The camera is clamped to the map.** Without it the walk shows the void past the west wall,
+  and a room you can see the outside of is a rectangle of tiles rather than a place. Ten lines,
+  and leaving them out was the single most noticeable way the room stopped looking like one —
+  caught by screenshotting it, not by any test.
+* **The autopilot is why the loop is checkable at all.** `FOUNDRY_ROOM_AUTOPILOT`, and on by
+  default in a headless build, walks to the nearest unlit lamp and then to the way out; a
+  headless run reports `finished` or it does not. It has no path-finding — `moveAndSlide`
+  slides around the pillars, and a progress check strafes when it stops improving — because the
+  question being answered is "can the hall be finished", not "can a sample play itself well".
+  Its one real bug was found by that check: the progress measurement was not reset when the
+  target changed from a lamp to the exit, so the walker arrived at the last lamp with `best`
+  near zero, could never improve on it again, and strafed in place for the rest of the run.
+
+**A mod paid Tier 1 on the second consumer too.** A package outside the repository added a
+seventh lamp — a record of `room:lamp`, a schema the mod re-declares because `@import` is
+confined to a package root — and replaced `room:tiles.hall` so the rug became solid. Nothing
+was rebuilt but the mod, the hall went from six lamps to seven, and the door held out until all
+seven were lit.
+
+**What nobody has done is play it.**
 All seven steps of `tilemaps-and-collision.md` §15 are implemented. `physics2d` is now complete as a *module*:
 shapes and their tests, the tile grid with neighbour-aware face culling, the two-tier spatial
 hash with its determinism sort, and movement — `moveAndSlide` with its four-iteration budget
@@ -1369,7 +1503,7 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**M5's three sequences are all finished, and its exit criterion is what remains.**
+**M5's four bullets are all finished, and its exit criterion is what remains.**
 
 1. ~~**Collision**, `tilemaps-and-collision.md` §15.~~ **Complete, all seven steps, 2026-09-06.**
    A player walks the sandbox's room and is stopped by its walls.
@@ -1381,17 +1515,24 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
    its footsteps, its thud and its ambience from `.wav`s in its own package, through a device
    the mixer opened on a thread Foundry did not create.
 
-**What is left in M5 is the exit criterion, not a bullet: something a person can play for five
-minutes without knowing it is a tech demo.** That is a different kind of work from the three
-sequences, and it is worth being explicit about what it is *not*. It is not more engine: the
-sandbox already has a map, collision, animation, sound, a camera, saves and hot reload. It is
-the question of whether the sample should become that, or whether five playable minutes belongs
-in a game repository and the sample stays a demonstration (ADR-0017 draws that line, and
-`samples/` holding "the smallest thing that exercises a capability" is the standard the sandbox
-is already at the edge of). **That is a decision for the user, not one to make while
-implementing.**
+4. ~~**A small but genuinely playable sample.**~~ **Complete, 2026-09-06** — `samples/room`,
+   a second sample that is a small game rather than a demonstration of one. The engine gained
+   nothing for it.
 
-**One deliberate gap worth knowing about.** The mixer has no *audible* verification: the
+**What is left in M5 is the exit criterion, not a bullet: something a person can play for five
+minutes without knowing it is a tech demo.** The artifact exists; the judgment does not. Run
+`zig build room -Dplatform=sdl3 -Drhi=metal` and walk the hall. What is being judged is not
+whether it works — a headless run finishes it every time — but whether it reads as a place
+rather than as a demonstration, and that is a question only a person looking at it can answer.
+**Twenty-six seconds is what the autopilot takes; it knows where the lamps are.**
+
+**Two deliberate gaps worth knowing about, and they are the same shape.** Neither can be
+closed by writing anything; both need a person with a sense.
+
+The first is the exit criterion above: `samples/room` has been screenshotted, walked by an
+autopilot and finished headlessly, and nobody has *played* it.
+
+The second is that the mixer has no *audible* verification: the
 callback counts, the sample counts and the bit-exact tests all say the right numbers reach the
 device, and nobody has listened to it. A person putting on headphones for thirty seconds is the
 only check that catches a stereo channel swapped or an envelope that clicks, and it costs
@@ -1411,9 +1552,9 @@ almost nothing next to what it would catch.
   requirement rule 7 warns about. Due with the material system, or the first time a sample
   wants its own shader. Adding it is a schema and a runtime-registered loader; nothing has
   to be reshaped.
-* **Nothing is pushed.** Ten commits sit on `main` ahead of `origin/main` — three from the
-  sprite-animation sequence and seven from the audio one, including this document. Pushing is
-  outward-facing, so it is the user's call.
+* **Nothing is pushed.** Commits sit on `main` ahead of `origin/main` — three from the
+  sprite-animation sequence, seven from the audio one, and the room's, including this
+  document. Pushing is outward-facing, so it is the user's call.
 * The GitHub repository description still says the engine implementation has not started,
   which four complete milestones have made false. Outward-facing, so it is the user's call.
 

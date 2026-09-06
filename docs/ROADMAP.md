@@ -175,6 +175,12 @@ reloaded correctly across a restart. A fixed scenario run twice produces identic
 
 ### M5 — Playable: "it's a game" — **in progress, started 2026-09-05**
 
+*Every bullet is done (2026-09-06). What is left is the exit criterion, and it is the one
+thing that cannot be established by building anything: somebody has to play `samples/room`
+for five minutes. On autopilot it is finished in 1,542 ticks — about twenty-six seconds of
+simulated time — which is a lower bound and not an answer, because the autopilot knows where
+the lamps are and a person does not.*
+
 *Both `CLAUDE.md` §9 decisions that came due here were made before any code: physics is
 Foundry's own, scoped to collision rather than dynamics (ADR-0022), and audio is Foundry's own
 mixer and WAV decoding over the device `platform` was already chartered to provide
@@ -190,7 +196,8 @@ slopes are out of M5's collision scope.*
 * ~~Audio: device output, sound loading, mixing, playback by content ID~~ — the new **`audio`**
   module at L3, plus an audio device in `platform` and WAV decoding in `asset`;
   `docs/design/audio.md`. *Done 2026-09-06.*
-* A small but genuinely playable sample in `samples/sandbox`.
+* ~~A small but genuinely playable sample~~ — the new **`samples/room`**, a second sample
+  that *is* a small game rather than a demonstration of one. *Done 2026-09-06.*
 
 *All three design documents are written (2026-09-05). Each carries its own implementation
 order — §15, §13 and §10 respectively — and the three are independent sequences that share
@@ -219,14 +226,23 @@ file under its own directory layout, with nothing rebuilt but the mod.*
 **Exit criteria:** something a person can play for five minutes without knowing it is a tech
 demo.
 
-*On that last bullet and ADR-0017.* "Playable sample" and "a sample is not a game"
-(`CLAUDE.md` §4.5) pull against each other, and the tension is resolved in favour of the
-engine: the exit criterion is evidence that **Foundry can carry a game**, not that
-`samples/sandbox` is one. It stays the smallest thing that exercises the capabilities — a
-tilemap, a character that collides with it, an animation, a sound, and nothing that exists to
-be impressive. The moment it starts wanting features rather than demonstrating them, it has
-outgrown this repository, and the answer is a game in its own repository (ADR-0017), not a
-bigger sample.
+*On that last bullet and ADR-0017.* This entry used to ask for a playable
+`samples/sandbox` in one line and insist a paragraph later that the sandbox stay a
+demonstration, which is two requirements that cannot both be met by one artifact — by M5 the
+sandbox carried four thousand orbiting sprites, a frame-statistics readout, entity picking,
+world save and load and a resize key, every one of them evidence for an earlier milestone and
+all of them exactly what "without knowing it is a tech demo" rules out. **The answer is that
+`samples/` was always plural.** `CLAUDE.md` §4.5 says a sample is the smallest thing that
+exercises a capability; being playable is a capability like any other, and it gets its own
+smallest thing. `samples/sandbox` keeps demonstrating M0–M5 and `samples/room` is the game.
+
+The line ADR-0017 draws is unmoved and is what keeps `samples/room` honest: it is the
+smallest thing that can be called a game — a hall, a walker, six lamps, a door and a way out
+— and the moment it starts wanting features rather than being one, it has outgrown this
+repository and the answer is a game in its own repository, not a bigger sample. The exit
+criterion is evidence that **Foundry can carry a game**, and the strongest form that evidence
+takes is what the engine had to gain for the room to run, which is **nothing**: not one line
+under `engine/` changed, and `tools/fpack` did not either.
 
 ### M6 — Tools: "it's inspectable"
 

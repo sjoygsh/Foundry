@@ -287,8 +287,10 @@ Foundry/
     (editor/)            Later. A Foundry application, not a special case.
 
   samples/
-    sandbox/             The runnable app every milestone must keep working.
-      content/           Its own content package, as a game has one.
+    sandbox/             Capabilities, demonstrated. The runnable app every milestone must
+      content/           keep working. Its own content package, as a game has one.
+    room/                A small game, built out of them. Playability is a capability too,
+      content/           and it needs a sample whose HUD is not full of frame times.
 
   content/
     core/                Base content package. Package zero (I3). Engine content
@@ -305,8 +307,10 @@ repositories** and consume Foundry as a dependency (ADR-0017). A game developed 
 engine tree would leak its assumptions into the engine silently, which is precisely what I4
 and I5 exist to prevent.
 
-`samples/` holds the smallest thing that exercises a capability. A sample is not a game. When
-a sample starts wanting features rather than demonstrating them, it has outgrown this
+`samples/` holds the smallest thing that exercises a capability, and there may be more than
+one of them: a sample that demonstrates and a sample that plays are different smallest
+things, and asking one artifact to be both produces neither. A sample is still not a game.
+When a sample starts wanting features rather than demonstrating them, it has outgrown this
 repository. A sample does, however, ship its **own** content package, because that is the
 shape a real consumer has and the sample is the reference for one.
 
