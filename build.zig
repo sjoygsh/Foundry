@@ -69,6 +69,14 @@ const layering = [_]Module{
     // anyway.
     .{ .name = "scene", .deps = &.{ "core", "data" } },
 
+    // L3 — the mixer, its voices, and sounds as content (ADR-0023, docs/design/audio.md).
+    // `platform` because the device is down there and the mixer is what opens it; `asset`
+    // because a sound is decoded content. What it does *not* get is the point: no `scene`
+    // and no `render2d`, both of which are L3 beside it, so a system cannot reach the
+    // mixer even by accident — which is how audio's nondeterminism is kept out of the
+    // simulation structurally rather than by a rule someone has to remember (I9).
+    .{ .name = "audio", .deps = &.{ "core", "platform", "asset" } },
+
     // L4 — the engine loop and subsystem lifecycle. Gains dependencies as the layers
     // between it and `platform` arrive; it is allowed to see all of them (ADR-0007).
     // `data` and `asset` joined at M3 step 9: the engine loads package zero and mounts it
