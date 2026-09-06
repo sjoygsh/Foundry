@@ -1,7 +1,14 @@
 # ADR-0024: Foundry's own immediate-mode UI, one kernel and two widget sets
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-06
+
+> **Revision, 2026-09-06.** Accepted, and the open question below is resolved in place — no
+> code depends on this yet, which is the window the ADR process leaves for exactly this. **`ui`
+> depends on `core` and `platform` only, and emits a renderer-agnostic draw list.** The reason
+> the balance tipped is recorded with the question itself, at the end. The section is kept
+> rather than deleted, because the alternative it rejected is the one a future session will
+> reach for first.
 
 ## Context
 
@@ -165,7 +172,7 @@ game and mods use, in the same language, behind the same versioned surface.
   expensive, subtle part, and writing it twice means the second one is written under deadline
   by someone who has forgotten why the first one made its choices.
 
-## Open question, left open
+## The module edge (resolved 2026-09-06)
 
 **Whether `ui` draws through `render2d` or emits a renderer-agnostic draw list.** Both keep the
 kernel free of `rhi`; they differ in where the module sits.
@@ -180,11 +187,22 @@ kernel free of `rhi`; they differ in where the module sits.
   keeps the kernel testable with nothing linked at all, and lets `render3d` or a standalone
   tool draw the same UI later.
 
-The second is the current lean, for the same "Foundry owns its abstractions" reason that put a
-draw-list boundary between `render2d` and `rhi`. It is **not decided here.** This is a module-
-edge question that the design document (`docs/design/ui.md`) should answer with the layering
-written out, and resolving it inside this ADR would be exactly the opportunistic resolution the
-standing instruction on ADR-0003 forbids.
+**The second is chosen.** The deciding argument was not the layering or the reuse — it was
+found by reading `render2d.BitmapFont`, which has six fields of which exactly one, `glyphs:
+Region`, is a renderer thing. `cell`, `columns`, `first_codepoint`, `glyph_count` and
+`substitute` are arithmetic. **The split this option needs is already drawn inside the struct**,
+so "measurement must be injected" is not a callback into the renderer but a small metrics value,
+and the texture handle stays behind in the draw walker where it belongs. The cost that made the
+option look expensive turned out not to be there.
+
+What the option genuinely costs, stated plainly: **two draw vocabularies and a walker between
+them.** Roughly fifty lines turning a `DrawList` into `drawSprite`/`drawText` calls, plus the
+standing discipline of keeping the two in sync whenever one gains a feature. That is the trade
+for a kernel that unit-tests with nothing linked, and for the option — not the obligation — of
+ever drawing this UI with something that is not `render2d`.
+
+The layering, the draw-list vocabulary, and where the walker lives are the design document's
+work (`docs/design/ui.md`).
 
 ## Revisit if
 

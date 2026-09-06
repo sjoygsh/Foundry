@@ -173,6 +173,7 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Entities | Type-erased component storage with runtime-registered types | [0010](docs/adr/0010-entity-component-constraints.md) |
 | Collision | Foundry's own 2D collision, scoped to collision rather than dynamics | [0022](docs/adr/0022-2d-collision-own.md) |
 | Audio | Foundry's own mixer and WAV decoding; `platform` owns the device | [0023](docs/adr/0023-audio-own-mixer.md) |
+| UI | Foundry's own immediate-mode UI; one kernel, a debug widget set now, a content-driven game one later | [0024](docs/adr/0024-ui-own-immediate-mode.md) |
 | Determinism | Deterministic-friendly, not bit-exact | [0013](docs/adr/0013-determinism.md) |
 | Tooling | Tools are Foundry applications built on the public API | [0011](docs/adr/0011-tooling-architecture.md) |
 | Toolchain | Zig only; no CMake, Ninja, Make or pkg-config | [0014](docs/adr/0014-toolchain.md) |
@@ -215,6 +216,9 @@ L1  data        -> core.        Schemas, records, content packages, load order,
                                 merge/override semantics, serialization.
 L1  physics2d   -> core.        Shapes, tile grids, broadphase, queries, collision
                                 response. No entities, no content, no I/O.
+L1  ui          -> core, platform.  Immediate-mode UI kernel: widget identity, input
+                                routing, layout, clipping. Emits a draw list; draws
+                                nothing itself and never sees a renderer.
 
 L2  rhi         -> core, platform.  Render hardware interface + backends.
                                 *** Metal/Vulkan/D3D are referenced ONLY here. ***
@@ -231,6 +235,12 @@ L5  abi         -> app.                   The public C ABI. (Added at M7.)
 ```
 
 Games, samples and tools depend on `app` (and on `abi` when acting as mods).
+
+**The UI draw seam.** `ui` sits at L1 and below the renderer on purpose (ADR-0024). It reads
+input, decides what is hot, lays out, clips — and then *describes* what should appear as a list
+of rectangles, text runs and clip rectangles. It never calls a renderer, so it unit-tests with
+no device, no window and no frame. Something above walks that list into `render2d` calls; the
+walker is the only piece that knows both vocabularies, and it is the price of the seam.
 
 **The native surface seam.** `platform` exposes an opaque `NativeSurfaceHandle` — a tagged
 pointer whose tag names the surface kind — and `rhi` interprets it per backend. On macOS that
@@ -455,7 +465,6 @@ Recorded so they are not made accidentally. Each notes when it comes due.
 
 | Decision | Due | Notes |
 | --- | --- | --- |
-| Debug/game UI: own IMGUI vs. cimgui | M6 | We need a UI system regardless; that argues for our own. |
 | Separate editor application | M6+ | In-process debug overlay first. |
 | Scripting language (Lua vs. WASM vs. other) | M8 | WASM: sandboxed, multi-language. Lua: small, easy, hot-reload. |
 | Second graphics backend (Vulkan / D3D12) | Unscheduled | Triggered by a reason — shipping Windows or Linux, or validating the RHI. Linux implies Vulkan; Windows could be either. |

@@ -1,7 +1,38 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-06
-**Updated by:** **M5 is complete.** `samples/room` was played and judged, and the mixer was
+**Updated by:** **M6 has opened, and it opened where the last four did: at a decision.**
+`CLAUDE.md` §9 had held "Debug/game UI: own IMGUI vs. cimgui" since the project started and
+ADR-0011 had deferred it here by name. **ADR-0024 answers it: Foundry writes its own
+immediate-mode UI**, and `docs/design/ui.md` is written against it. No UI code exists yet.
+
+The decision was taken on I4 and I5 rather than on taste. Dear ImGui is explicitly not a game
+UI toolkit, so cimgui would not remove the obligation to write one — it would add a second
+system that never shares a line with the first. And at M7 it forces a choice between mods
+getting no UI while the first-party overlay has one, which is the private back door I4 forbids
+and ADR-0011 exists to prevent, and re-exporting a third party's API through an ABI Foundry has
+promised to version and not break. The argument usually decisive for cimgui — that it saves the
+work — is weak here: Dear ImGui ships no renderer, Foundry's graphics API is its own, and the
+`ImDrawData` bridge and the input bridge would be ours to write either way. **What it buys is
+the widget set, not the plumbing.**
+
+**The part neither prior document had settled is the substance: one kernel, two widget sets.**
+A debug panel and a game's HUD differ in presentation and authoring, not in mechanism, so the
+identity / hot-active / layout / clip core is written once, M6 layers a debug widget set on it,
+and the content-driven skinnable game layer is designed for and postponed — paid for now only
+by the rule that **no colour, font, metric or string in the kernel is a literal.**
+
+**The module edge was the open question, and it is resolved: `ui` is L1 on `core` and
+`platform`, and emits a renderer-agnostic draw list.** It never sees `render2d`. The deciding
+argument was found by reading `render2d.BitmapFont`, which has six fields of which exactly one
+— `glyphs: Region` — is a renderer thing; the rest is arithmetic. The split the draw-list option
+needed was already drawn inside the struct, so "measurement must be injected" is a small metrics
+value rather than a callback into the renderer. The cost that made the option look expensive was
+not there. What it does cost is two draw vocabularies and a walker in `app`, and the walker's
+one real hazard — the kernel measuring text differently from the renderer drawing it — is
+answered by a single sanctioned conversion function and a test that measures a corpus both ways.
+
+*(Previously: M5 is complete.)* `samples/room` was played and judged, and the mixer was
 listened to — the two things no amount of building could establish, both answered by a person,
 which is the only way either of them can be. The three sequences — collision, sprite animation,
 audio — were finished earlier the same day; the playable sample was the last bullet, and it is
@@ -68,8 +99,9 @@ is mature enough to need them rather than as decoration.
 **Phase 2 — A real 2D engine.** Phase 1 (M0, M1) closed with the first pixels; M2, M3 and M4
 are done, and **M5 — Playable: "it's a game" — closed 2026-09-06**, having started where the
 last three did: at the decisions `CLAUDE.md` §9 had been holding for it, then the design
-document, then code. Phase 2 is finished. **M6 — Tools: "it's inspectable" — has not started**,
-and it opens at a `CLAUDE.md` §9 decision that is now due: the debug/game UI toolkit.
+document, then code. Phase 2 is finished. **M6 — Tools: "it's inspectable" — opened 2026-09-06**
+at the `CLAUDE.md` §9 decision that was due, and has reached the same place its predecessors
+did after a day: the ADR is accepted, the design document is written, and no code exists yet.
 
 ## Current milestone
 
@@ -85,11 +117,14 @@ being the smallest thing that is a game, which is the point at which ADR-0017 sa
 in its own repository. **The load-bearing half of the criterion was "without knowing it is a
 tech demo", and that half was met.**
 
-**The next milestone is M6 — Tools: "it's inspectable"**, not started. It opens at a §9
-decision that is due — the debug/game UI toolkit, own IMGUI versus cimgui — and its first
-roadmap bullet says so outright, so the order is ADR, then design document, then code. What follows in this section is what M5
-opened with, because the decisions and the design are what a future session needs and they have
-not changed; what has been built against them is under "What is being worked on".
+**M6 — Tools: "it's inspectable" is the current milestone, opened 2026-09-06.** Its first
+roadmap bullet said the UI toolkit decision is made here, and it was: **ADR-0024, accepted**,
+with `docs/design/ui.md` written against it. Implementation has not begun. §16 of that document
+is the step list, and it is under "Immediate next steps" below.
+
+What follows in this section is what **M5** opened with, kept because the decisions and the
+design are what a future session needs and they have not changed; what was built against them is
+under "What is being worked on".
 
 **Two `CLAUDE.md` §9 decisions came due and were made, neither silently (rule 10).**
 
@@ -1511,7 +1546,8 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**M5 is complete — four bullets and the exit criterion.**
+**M5 is complete — four bullets and the exit criterion — and M6 is open.** The M6 steps are
+below the M5 record.
 
 1. ~~**Collision**, `tilemaps-and-collision.md` §15.~~ **Complete, all seven steps, 2026-09-06.**
    A player walks the sandbox's room and is stopped by its walls.
@@ -1530,14 +1566,49 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 **M5 is closed.** The exit criterion was met the only way it could be: `samples/room` was played
 and judged to read as a place, and the mixer was listened to.
 
-**Next is M6 — Tools: "it's inspectable"**, and it opens at a decision rather than at code. Its
-first roadmap bullet says "UI toolkit decision made here", `CLAUDE.md` §9 has that decision due
-at M6, and the order M5 followed and this should too is **ADR, then design document, then
-code**. The lean already recorded is "we need a UI system regardless; that argues for our own",
-but the lean is not the decision — the question inside the ADR is whether the debug overlay and
-the eventual *game* UI are one system or two, because if they are one it is a game-facing API
-whose names are a compatibility decision under §7, and cimgui would put a third-party model in
-the middle of it.
+**M6 is open and its decision is made.** ADR-0024 is accepted, `docs/design/ui.md` is written,
+and **the next thing to do is step 1 of its §16.** The steps, each ending in something that runs
+and something that is tested:
+
+1. **The kernel's spine.** `Id`, `Context`, `begin`/`end`, `Input`, hot/active/focus, the draw
+   list and its per-frame arena, `Style`, `FontMetrics`. One widget — `button` — to prove the
+   loop. **No renderer, no `app` change, nothing on screen**, and that is the point: this step
+   is the whole argument for `ui` being L1, and if it needs a device the layering was wrong.
+2. **Layout and the rest of the interaction model.** Regions, panels, rows, capture,
+   `clip_push`/`clip_pop`, plus `label`, `separator`, `spacer`, `checkbox`.
+3. **`render2d` gains `setClip` and `blankRegion`**, with batch-break tests against the null
+   backend. **`samples/sandbox` and `samples/room` delete their hand-rolled white textures** —
+   this step is visible only as a diff that gets smaller, and that deletion is the evidence the
+   addition was right.
+4. **The walker in `app`**, plus the `BitmapFont` → `FontMetrics` conversion and the drift test
+   that measures a fixed corpus both ways. `samples/sandbox` draws one real panel — its existing
+   frame statistics, moved out of `drawText` calls and into widgets. **First pixels from the UI.**
+5. **The rest of the debug widget set:** `slider`, `collapsingHeader`, `scrollRegion`,
+   `textField`, `plot`.
+6. **`samples/room` checks capture**, because a game that walks with WASD and opens a panel over
+   the hall is where getting it wrong is visible, and the room is the sample that plays.
+
+**A second M6 design document is owed after these**: the overlay itself — the entity inspector,
+the content browser, the log console, the frame profiler and the introspection APIs beneath
+them. `ui.md` §10 stops short of it deliberately, because what an inspector may ask `scene` for
+and how per-subsystem timing is collected are a different subject, and because it is better
+written once the shape of a panel is known rather than imagined. **M6's fourth bullet — the
+introspection APIs — is where the milestone's lasting value is**, not the widgets.
+
+**The two things `ui.md` asks a future session not to quietly undo**, both of which look like
+harmless simplifications:
+
+* **Identity and display text are separate parameters** (§3). Every immediate-mode UI in
+  existence derives the id from the label, and it is the right trade for a debug tool that is
+  never translated. Foundry's game UI is translated content, and deriving ids from on-screen
+  strings resets every scroll position and focus the moment the language changes — a bug that
+  appears only in the language nobody tests, and is unfixable later without touching every call
+  site. The debug widget set may offer a label-derived helper; **the kernel must not.**
+* **A UI id is not a `ContentId`** (§3). Both are 64-bit FNV values and the resemblance is a
+  trap. One is frozen, reaches compiled packages and save files, and `core/id.zig` says so; the
+  other is runtime-only and free to change whenever a layout does. `ui` uses a seeded variant of
+  its own rather than calling `core.id.fnv1a64`, because sharing the function would invite
+  sharing the guarantees.
 
 **One other §9 decision has come due and should not drift silently: the job system / threading
 model, dated "Post-M5".** M5 is now past, and the audio sequence already put a second thread in

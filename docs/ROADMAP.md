@@ -257,14 +257,24 @@ criterion is evidence that **Foundry can carry a game**, and the strongest form 
 takes is what the engine had to gain for the room to run, which is **nothing**: not one line
 under `engine/` changed, and `tools/fpack` did not either.
 
-### M6 — Tools: "it's inspectable"
+### M6 — Tools: "it's inspectable" — **in progress (opened 2026-09-06)**
 
-* In-process immediate-mode debug overlay — UI toolkit decision made here.
+* ~~In-process immediate-mode debug overlay — UI toolkit decision made here.~~ **Decision made,
+  [ADR-0024](adr/0024-ui-own-immediate-mode.md): Foundry writes its own immediate-mode UI, one
+  kernel with two widget sets. Designed in [`design/ui.md`](design/ui.md); §16 is the step list.
+  Not implemented.**
 * Entity inspector, content browser, log console.
 * Frame profiler with per-subsystem timing; memory reporting per allocator.
 * Introspection APIs designed with the future public ABI in mind (ADR-0004, ADR-0011).
 
 **Exit criteria:** a performance problem can be diagnosed from inside the running game.
+
+The last three bullets get their **own** design document, written after `ui.md` is implemented
+rather than beside it: what an inspector may ask `scene` for and how per-subsystem timing is
+collected are a different subject with different invariants, and the document is better written
+once the shape of a panel is known rather than imagined. The fourth bullet is where this
+milestone's lasting value is — the widgets are replaceable, the introspection APIs reach the ABI
+at M7.
 
 ---
 
