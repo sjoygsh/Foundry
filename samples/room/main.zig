@@ -805,8 +805,6 @@ const Room = struct {
     sheet_asset: asset.AssetHandle,
     font_asset: asset.AssetHandle,
     sheet: render2d.Region,
-    blank_texture: render2d.TextureHandle,
-    blank: render2d.Region,
     font: render2d.BitmapFont,
 
     map: Map = .{},
@@ -910,8 +908,6 @@ const Room = struct {
             .sheet_asset = .none,
             .font_asset = .none,
             .sheet = .{ .texture = .none, .uv = .{}, .size_px = .{} },
-            .blank_texture = .none,
-            .blank = .{ .texture = .none, .uv = .{}, .size_px = .{} },
             .font = .{
                 .glyphs = .{ .texture = .none, .uv = .{}, .size_px = .{} },
                 .cell = .{ .width = 8, .height = 8 },
@@ -951,16 +947,6 @@ const Room = struct {
         self.map.build(gpa, engine, &self.renderer, &self.physics, self.settings.map);
         self.clips.build(gpa, engine);
         self.content_generation = engine.contentGeneration();
-
-        // An image from memory, not from a file: `createTexture` takes an `asset.Image` and
-        // does not care what made it, which is what lets a game generate one. The sheet has
-        // a white cell too — this is here so the panels keep working when a mod replaces
-        // the sheet with one that does not.
-        var white = try asset.Image.alloc(gpa, 8, 8);
-        defer white.deinit(gpa);
-        @memset(white.pixels, 0xFF);
-        self.blank_texture = try self.renderer.createTexture(white, .{ .label = "room panel" });
-        self.blank = self.renderer.textureRegion(self.blank_texture).?.sub(2, 2, 4, 4);
 
         self.schemas = .init(gpa, .default);
         self.world = .init(gpa, &self.schemas, .default);
@@ -1702,9 +1688,12 @@ const Room = struct {
     ) !void {
         const options: render2d.TextOptions = .{ .position = at, .scale = scale, .line_spacing = 8 };
         const size = render2d.measureText(self.font, text, options);
+        // The renderer's own white patch. The panel keeps working when a mod replaces the
+        // sheet with one that has no white cell, because it never came from the sheet.
+        const blank = self.renderer.blankRegion();
         try self.renderer.drawSprite(.{
-            .texture = self.blank.texture,
-            .uv = self.blank.uv,
+            .texture = blank.texture,
+            .uv = blank.uv,
             .position = .init(at.x - hud_padding, at.y - hud_padding),
             .size = .init(size.x + hud_padding * 2, size.y + hud_padding * 2),
             .origin = .init(0, 0),

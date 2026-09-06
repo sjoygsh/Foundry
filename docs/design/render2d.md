@@ -3,7 +3,9 @@
 **Status:** Implemented as `engine/src/render2d/`, except the screen-space overlay M2's
 last step needs. The batcher, camera, textures and blending 2026-09-04; the atlas, text and
 `Region` the same day, which is when the resolutions in §8, §10 and §11 were written.
-**Date:** 2026-09-04, revised 2026-09-04
+**Clipping and the blank region were added 2026-09-06** for M6's UI (ADR-0024,
+`ui.md` §9); they are §7's *Clipping* and §8's *The blank region*.
+**Date:** 2026-09-04, revised 2026-09-06
 **Implements:** I1, I5, I8, I9 · **Informed by:** ADR-0003, ADR-0007, ADR-0015, CLAUDE.md §4.2
 
 `render2d` is layer L3. It depends on `core`, `rhi` and `asset`. It is the **first
@@ -311,9 +313,39 @@ Because the key includes `submission_index`, it is a **total order**, so the res
 depend on the sort algorithm's stability. That is an I9 requirement discharged by
 construction rather than by choosing a stable sort and hoping nobody swaps it.
 
-A batch breaks when the next sprite differs in **view**, **texture** or **blend mode**, or
-when the current vertex buffer is full (§8). With a well-packed atlas and a couple of layers, a
-typical frame is a handful of draw calls regardless of sprite count.
+A batch breaks when the next sprite differs in **view**, **texture**, **blend mode** or
+**clip** (below), or when the current vertex buffer is full (§8). With a well-packed atlas and a
+couple of layers, a typical frame is a handful of draw calls regardless of sprite count.
+
+### Clipping
+
+```zig
+pub fn setClip(self: *Renderer, rect: ?core.math.Rect) Error!void
+pub fn currentClip(self: *const Renderer) ?core.math.Rect
+```
+
+Renderer state, like the view, and for the same reason: a clip changes per panel, not per
+sprite. It resets to `null` with `begin`, so it cannot leak into the next frame.
+
+**The rectangle is in screen points**, the space `ViewId.screen` uses and the space the mouse
+is reported in. The recorder scales it to framebuffer pixels, because the pixel scale is a
+frame property the renderer holds and the caller should not have to apply. Every other public
+rectangle here is in points; one in pixels would put a scale factor at every call site.
+
+**A clip is carried on the item, not read at record time.** The sort moves sprites around, so a
+clip resolved during recording would belong to whatever happened to be submitted last — the
+same bug `view` living on `Item` already exists to prevent. It is deliberately *not* part of the
+sort key, for the reason the sort refuses texture: grouping by clip would reorder overlapping
+translucent sprites.
+
+The scissor is **clamped to the viewport it is recorded in**, which is not tidiness — a scissor
+reaching outside the render target is a validation error on Metal, and a clip rectangle is
+exactly the number a content-driven layout gets slightly wrong. A non-finite rectangle collapses
+to an empty one and is logged: the caller is a game today and a mod from M7, so it is validated
+rather than asserted.
+
+`Stats` gains nothing. A clip change shows up as one more batch, which is the number anyone
+tuning a frame is already reading.
 
 ### Buffers, and the frame ring
 
@@ -355,6 +387,25 @@ forbids, and would also be holding something whose lifetime rules it cannot see.
 **The default filter is `nearest`.** Linear filtering silently blurs upscaled pixel art and
 nothing in the API tells you why; nearest is visibly wrong for photographic content, which
 sends you to look for the setting. Defaults should fail loudly.
+
+### The blank region
+
+```zig
+pub fn blankRegion(self: *const Renderer) Region
+```
+
+Solid white, created with the renderer, for drawing filled rectangles: panels, outlines, bars,
+and every `rect` in a UI draw list. **Engine-owned rather than content**, the same category as
+ADR-0019's built-in shaders. A game may still draw a filled rectangle from its own sheet and
+nothing stops it; this exists so that no game *has* to.
+
+It is here because both samples had already written it — an eight-pixel white `Image`, a
+`createTexture`, and a `sub(2, 2, 4, 4)` inset to keep a filtered sample off the edge —
+independently and identically, down to the same two numbers. Both deleted that code when this
+landed, and the deletion is the evidence the addition was right.
+
+`destroyTexture` refuses its handle. The caller is a game today and a mod from M7, and
+destroying it would break every other consumer's panels rather than only the one that asked.
 
 An **atlas** is a texture plus a rectangle packer:
 

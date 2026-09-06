@@ -4,10 +4,19 @@
 **Updated by:** **M6 has opened, and it opened where the last four did: at a decision.**
 `CLAUDE.md` §9 had held "Debug/game UI: own IMGUI vs. cimgui" since the project started and
 ADR-0011 had deferred it here by name. **ADR-0024 answers it: Foundry writes its own
-immediate-mode UI**, and `docs/design/ui.md` is written against it. **Steps 1 and 2 of its §16
+immediate-mode UI**, and `docs/design/ui.md` is written against it. **Steps 1 to 3 of its §16
 are implemented**: `engine/src/ui/` is eight files and 60 tests, all of them headless — no
-renderer, no device, no window, no `app` change and nothing on screen. 856 tests under
-`-Drhi=null`, 864 under `-Drhi=metal`.
+renderer, no device, no window and nothing on screen — and step 3 has now given `render2d` the
+two things any UI needs from it. 866 tests under `-Drhi=null`, 874 under `-Drhi=metal`.
+
+**Step 3's evidence is a deletion.** `samples/sandbox` and `samples/room` had each written an
+eight-pixel white `asset.Image`, a `createTexture` and a `sub(2, 2, 4, 4)` inset — independently,
+identically, down to the same two numbers. `Renderer.blankRegion()` replaced both, and
+`destroyTexture` refuses its handle because a game destroying it would break every other
+consumer's panels rather than only the one that asked. Clipping went in beside it: `setClip`
+takes screen **points**, not the pixels `ui.md` §9 had written, because every other public
+rectangle in `render2d` is in points and the pixel scale is a frame property the renderer
+already holds.
 
 **Step 2 changed the design rather than transcribing it, in one place.** `ui.md` §4 defines
 capture as "a widget is hot or active", and that is right for a control and wrong for the thing
@@ -97,7 +106,7 @@ reading it. §10's Tier 1 claim was paid the same way the other two sequences pa
 replaced a sound the sandbox never wrote a record for, from a file under its own directory
 layout, with nothing rebuilt but the mod.
 
-796 tests under `-Drhi=null`, 804 under `-Drhi=metal` (856 and 864 as of M6 step 2). **M5's remaining work is its exit
+796 tests under `-Drhi=null`, 804 under `-Drhi=metal` (866 and 874 as of M6 step 3). **M5's remaining work is its exit
 criterion, not its bullet list**: five minutes of play.
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
@@ -121,7 +130,7 @@ are done, and **M5 — Playable: "it's a game" — closed 2026-09-06**, having s
 last three did: at the decisions `CLAUDE.md` §9 had been holding for it, then the design
 document, then code. Phase 2 is finished. **M6 — Tools: "it's inspectable" — opened 2026-09-06**
 at the `CLAUDE.md` §9 decision that was due: the ADR is accepted, the design document is
-written, and the first two of its six steps are implemented.
+written, and the first three of its six steps are implemented.
 
 ## Current milestone
 
@@ -140,7 +149,7 @@ tech demo", and that half was met.**
 **M6 — Tools: "it's inspectable" is the current milestone, opened 2026-09-06.** Its first
 roadmap bullet said the UI toolkit decision is made here, and it was: **ADR-0024, accepted**,
 with `docs/design/ui.md` written against it. §16 of that document is the step list, it is under
-"Immediate next steps" below, and steps 1 and 2 of six are done.
+"Immediate next steps" below, and steps 1 to 3 of six are done.
 
 What follows in this section is what **M5** opened with, kept because the decisions and the
 design are what a future session needs and they have not changed; what was built against them is
@@ -1603,10 +1612,12 @@ and something that is tested:
    Every unbalanced case — an extra `endRegion`, an extra `popClip`, a frame that ends with
    either open — is reported and survivable rather than asserted, because from M7 the caller may
    be a mod.
-3. **`render2d` gains `setClip` and `blankRegion`**, with batch-break tests against the null
-   backend. **`samples/sandbox` and `samples/room` delete their hand-rolled white textures** —
-   this step is visible only as a diff that gets smaller, and that deletion is the evidence the
-   addition was right.
+3. ~~**`render2d` gains `setClip` and `blankRegion`.**~~ **Complete, 2026-09-06** — ten more
+   tests, and both samples deleted the white texture they had each written by hand. A clip is
+   carried on the batcher's item rather than read at record time, because the sort moves sprites
+   around and a clip resolved during recording would belong to whatever was submitted last —
+   the same bug that put `view` on `Item`. The scissor is clamped to the viewport it is recorded
+   in, which is a Metal validation error rather than a nicety.
 4. **The walker in `app`**, plus the `BitmapFont` → `FontMetrics` conversion and the drift test
    that measures a fixed corpus both ways. `samples/sandbox` draws one real panel — its existing
    frame statistics, moved out of `drawText` calls and into widgets. **First pixels from the UI.**
@@ -1615,9 +1626,9 @@ and something that is tested:
 6. **`samples/room` checks capture**, because a game that walks with WASD and opens a panel over
    the hall is where getting it wrong is visible, and the room is the sample that plays.
 
-**Next is step 3**: `render2d` gains `setClip` and `blankRegion`, and both samples delete the
-white texture they each hand-rolled. It is the first M6 step that touches anything outside
-`engine/src/ui/`.
+**Next is step 4**: the walker in `app`, the `BitmapFont` → `FontMetrics` conversion and the
+drift test that measures a fixed corpus both ways, and `samples/sandbox`'s frame statistics
+moved out of `drawText` calls and into widgets. **First pixels from the UI.**
 
 **A second M6 design document is owed after these**: the overlay itself — the entity inspector,
 the content browser, the log console, the frame profiler and the introspection APIs beneath

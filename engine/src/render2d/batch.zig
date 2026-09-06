@@ -1,6 +1,7 @@
 //! The batcher: what turns thousands of draw calls into a handful.
 
 const std = @import("std");
+const core = @import("core");
 
 const color_mod = @import("color.zig");
 const sprite_mod = @import("sprite.zig");
@@ -8,6 +9,7 @@ const texture_mod = @import("texture.zig");
 const view_mod = @import("view.zig");
 
 const Allocator = std.mem.Allocator;
+const Rect = core.math.Rect;
 const BlendMode = color_mod.BlendMode;
 const Sprite = sprite_mod.Sprite;
 const TextureHandle = texture_mod.TextureHandle;
@@ -22,6 +24,15 @@ const ViewId = view_mod.ViewId;
 pub const Item = struct {
     sprite: Sprite,
     view: ViewId,
+    /// The scissor rectangle in force when this sprite was submitted, in screen points, or
+    /// `null` for unclipped.
+    ///
+    /// Carried per item for the same reason `view` is: it is renderer state at submission
+    /// and the sort moves items around, so a clip read at record time would belong to
+    /// whatever happened to be submitted last. It is deliberately **not** part of the sort
+    /// key — sorting by clip would reorder overlapping translucent sprites, which is the
+    /// same trade `plan` refuses for texture.
+    clip: ?Rect = null,
 };
 
 /// One `drawIndexed` call.
@@ -33,10 +44,25 @@ pub const Batch = struct {
     view: ViewId,
     texture: TextureHandle,
     blend: BlendMode,
+    /// The scissor for this batch, in screen points, or `null` for the view's whole
+    /// viewport. Resolved to pixels by the recorder, which is the only place that knows
+    /// the pixel scale.
+    clip: ?Rect = null,
     /// Quad offset within `buffer`, not within the frame.
     first_quad: u32,
     quad_count: u32,
 };
+
+/// Two clips are the same batch when they are both absent or numerically equal. A plain
+/// `==` on `?Rect` does not compile for a struct payload, and `std.meta.eql` would compare
+/// NaN as unequal — which is right, but the renderer rejects non-finite clips before they
+/// reach here, so it never arises.
+pub fn clipEql(a: ?Rect, b: ?Rect) bool {
+    if (a == null and b == null) return true;
+    const x = a orelse return false;
+    const y = b orelse return false;
+    return x.x == y.x and x.y == y.y and x.w == y.w and x.h == y.h;
+}
 
 /// Accumulates a frame's sprites, orders them, and works out the draw calls.
 ///
@@ -72,8 +98,14 @@ pub const Batcher = struct {
         self.batches.clearRetainingCapacity();
     }
 
-    pub fn add(self: *Batcher, gpa: Allocator, sprite: Sprite, view: ViewId) Allocator.Error!void {
-        try self.items.append(gpa, .{ .sprite = sprite, .view = view });
+    pub fn add(
+        self: *Batcher,
+        gpa: Allocator,
+        sprite: Sprite,
+        view: ViewId,
+        clip: ?Rect,
+    ) Allocator.Error!void {
+        try self.items.append(gpa, .{ .sprite = sprite, .view = view, .clip = clip });
     }
 
     pub fn count(self: *const Batcher) u32 {
@@ -121,7 +153,8 @@ pub const Batcher = struct {
                 if (last.buffer == buffer and
                     last.view == item.view and
                     last.texture.eql(item.sprite.texture) and
-                    last.blend == item.sprite.blend)
+                    last.blend == item.sprite.blend and
+                    clipEql(last.clip, item.clip))
                 {
                     last.quad_count += 1;
                     continue;
@@ -133,6 +166,7 @@ pub const Batcher = struct {
                 .view = item.view,
                 .texture = item.sprite.texture,
                 .blend = item.sprite.blend,
+                .clip = item.clip,
                 .first_quad = quad,
                 .quad_count = 1,
             });
@@ -163,7 +197,7 @@ fn at(layer: i16, texture_index: u32, blend: BlendMode) Sprite {
 fn planned(gpa: Allocator, quads_per_buffer: u32, sprites: []const Sprite) !Batcher {
     var b: Batcher = .init(quads_per_buffer);
     errdefer b.deinit(gpa);
-    for (sprites) |s| try b.add(gpa, s, .world);
+    for (sprites) |s| try b.add(gpa, s, .world, null);
     try b.plan(gpa);
     return b;
 }
@@ -171,7 +205,7 @@ fn planned(gpa: Allocator, quads_per_buffer: u32, sprites: []const Sprite) !Batc
 fn plannedInViews(gpa: Allocator, items: []const Item) !Batcher {
     var b: Batcher = .init(1024);
     errdefer b.deinit(gpa);
-    for (items) |it| try b.add(gpa, it.sprite, it.view);
+    for (items) |it| try b.add(gpa, it.sprite, it.view, it.clip);
     try b.plan(gpa);
     return b;
 }
@@ -279,7 +313,7 @@ test "reset keeps capacity so a steady frame does not allocate" {
     var b: Batcher = .init(64);
     defer b.deinit(gpa);
 
-    for (0..100) |_| try b.add(gpa, at(0, 0, .alpha), .world);
+    for (0..100) |_| try b.add(gpa, at(0, 0, .alpha), .world, null);
     try b.plan(gpa);
     const capacity = b.items.capacity;
 
@@ -357,4 +391,41 @@ test "views past the named two order by their id" {
     defer b.deinit(gpa);
 
     try testing.expectEqualSlices(u32, &.{ 2, 1, 0 }, b.order.items);
+}
+
+test "a clip change breaks a batch, and the same clip does not" {
+    const gpa = testing.allocator;
+    const panel: Rect = .init(0, 0, 100, 100);
+    // Same texture, same blend, same layer, same view: the only difference is the scissor,
+    // and a scissor is pass state, so it cannot share a draw call.
+    var b = try plannedInViews(gpa, &.{
+        .{ .sprite = at(0, 1, .alpha), .view = .screen, .clip = null },
+        .{ .sprite = at(0, 1, .alpha), .view = .screen, .clip = panel },
+        .{ .sprite = at(0, 1, .alpha), .view = .screen, .clip = panel },
+        .{ .sprite = at(0, 1, .alpha), .view = .screen, .clip = null },
+    });
+    defer b.deinit(gpa);
+
+    try testing.expectEqual(@as(usize, 3), b.batches.items.len);
+    try testing.expectEqual(@as(u32, 1), b.batches.items[0].quad_count);
+    try testing.expectEqual(@as(u32, 2), b.batches.items[1].quad_count);
+    try testing.expectEqual(panel, b.batches.items[1].clip.?);
+    try testing.expectEqual(@as(?Rect, null), b.batches.items[2].clip);
+}
+
+test "the clip travels with the sprite, not with the submission position" {
+    const gpa = testing.allocator;
+    const a: Rect = .init(0, 0, 10, 10);
+    // Layer puts the second submission first. If the clip were read at record time rather
+    // than carried on the item, the sorted order would pair each sprite with the wrong
+    // rectangle — the same bug carrying `view` on the item exists to prevent.
+    var b = try plannedInViews(gpa, &.{
+        .{ .sprite = at(5, 1, .alpha), .view = .world, .clip = a },
+        .{ .sprite = at(0, 1, .alpha), .view = .world, .clip = null },
+    });
+    defer b.deinit(gpa);
+
+    try testing.expectEqual(@as(usize, 2), b.batches.items.len);
+    try testing.expectEqual(@as(?Rect, null), b.batches.items[0].clip);
+    try testing.expectEqual(a, b.batches.items[1].clip.?);
 }

@@ -974,15 +974,6 @@ const SpriteField = struct {
     /// *region's* pixel space — so this code is identical whether the sheet is standalone
     /// or packed into something larger later.
     sheet: render2d.Region,
-    /// An 8-pixel white patch, built in memory rather than loaded, stretched into thin
-    /// quads to draw the selection outline and the HUD panels.
-    ///
-    /// **Not content, and that is the point.** A game generating an image at runtime is a
-    /// capability worth keeping exercised, and `createTexture` takes an `asset.Image`
-    /// whatever made it. The sample addresses the middle four pixels of the eight rather
-    /// than the whole thing, so a sample that strays lands on more white.
-    blank_texture: render2d.TextureHandle,
-    blank: render2d.Region,
     font: render2d.BitmapFont,
 
     /// The map, rebuilt whenever content changes. Empty when the settings record names
@@ -1126,8 +1117,6 @@ const SpriteField = struct {
             .sheet_asset = .none,
             .font_asset = .none,
             .sheet = .{ .texture = .none, .uv = .{}, .size_px = .{} },
-            .blank_texture = .none,
-            .blank = .{ .texture = .none, .uv = .{}, .size_px = .{} },
             .font = .{
                 .glyphs = .{ .texture = .none, .uv = .{}, .size_px = .{} },
                 .cell = .{ .width = 8, .height = 8 },
@@ -1185,14 +1174,6 @@ const SpriteField = struct {
         self.map.build(gpa, engine, &self.renderer, &self.physics, self.settings.map);
         self.clips.build(gpa, engine);
         self.content_generation = engine.contentGeneration();
-
-        // An image from memory, not from a file: `createTexture` takes an `asset.Image`
-        // and does not care what made it, which is what lets a game generate one.
-        var white = try asset.Image.alloc(gpa, 8, 8);
-        defer white.deinit(gpa);
-        @memset(white.pixels, 0xFF);
-        self.blank_texture = try self.renderer.createTexture(white, .{ .label = "sandbox blank" });
-        self.blank = self.renderer.textureRegion(self.blank_texture).?.sub(2, 2, 4, 4);
 
         // The world, and the three component types the sample defines. Registration happens
         // before any entity exists, which `scene` insists on: storage is allocated per type,
@@ -2167,11 +2148,12 @@ const SpriteField = struct {
         };
         const size = render2d.measureText(self.font, text, options);
 
-        // A panel behind it, so the readout is legible over whatever it lands on. Drawn
-        // from the same atlas as the glyphs, so it costs no draw call of its own.
+        // A panel behind it, so the readout is legible over whatever it lands on, from
+        // the renderer's own white patch rather than from a texture this sample builds.
+        const blank = self.renderer.blankRegion();
         try self.renderer.drawSprite(.{
-            .texture = self.blank.texture,
-            .uv = self.blank.uv,
+            .texture = blank.texture,
+            .uv = blank.uv,
             .position = .init(hud_margin, hud_margin),
             .size = .init(size.x + hud_padding * 2, size.y + hud_padding * 2),
             .origin = .init(0, 0),
@@ -2197,8 +2179,8 @@ const SpriteField = struct {
             hud_margin + hud_padding,
         );
         try self.renderer.drawSprite(.{
-            .texture = self.blank.texture,
-            .uv = self.blank.uv,
+            .texture = blank.texture,
+            .uv = blank.uv,
             .position = .init(help_at.x - hud_padding, hud_margin),
             .size = .init(help_size.x + hud_padding * 2, help_size.y + hud_padding * 2),
             .origin = .init(0, 0),
@@ -2277,10 +2259,11 @@ const SpriteField = struct {
             .{ .offset = .init(half_w, 0), .size = .init(thickness, sprite.size.y + thickness) },
         };
 
+        const blank = self.renderer.blankRegion();
         for (edges) |edge| {
             try self.renderer.drawSprite(.{
-                .texture = self.blank.texture,
-                .uv = self.blank.uv,
+                .texture = blank.texture,
+                .uv = blank.uv,
                 // The offset turns with the sprite, so the box stays around it rather
                 // than beside it.
                 .position = .init(

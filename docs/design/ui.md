@@ -1,8 +1,9 @@
 # Design: ui — an immediate-mode kernel that draws nothing
 
-**Status:** **Steps 1-2 implemented 2026-09-06** (`engine/src/ui/`). Written before any UI code
-existed, so implementation was transcription rather than invention; see the two Resolution
-sections at the end for what each step corrected and settled. Steps 3-6 of §16 remain.
+**Status:** **Steps 1-3 implemented 2026-09-06** (`engine/src/ui/`, and `render2d` for step 3).
+Written before any UI code existed, so implementation was transcription rather than invention;
+see the Resolution sections at the end for what each step corrected and settled. Steps 4-6 of
+§16 remain.
 **Date:** 2026-09-06
 **Implements:** I1, I4, I5, I6, I8, I9 · **Informed by:** ADR-0004, ADR-0007, ADR-0011,
 ADR-0021, ADR-0024
@@ -313,10 +314,11 @@ Two additions, both named in ADR-0024, both needed by any UI regardless of who w
 implement it, so this is exposure and batching, not invention:
 
 ```zig
-pub fn setClip(self: *Renderer, rect: ?Rect) void
+pub fn setClip(self: *Renderer, rect: ?Rect) Error!void
 ```
 
-Screen-space pixels, `null` to disable. A change of clip is a **batch break**, alongside the
+Screen **points** — corrected at implementation, see the step 3 Resolution — with `null` to
+disable. A change of clip is a **batch break**, alongside the
 existing texture and blend breaks, and it is recorded into the pass with `setScissor` before the
 draw call it guards. `Stats` gains nothing; a clip change shows up as one more batch, which is
 the number a person tuning this would already be reading.
@@ -622,3 +624,53 @@ who walked into a wall while closing a panel. There is now a test saying so.
 * **Every unbalanced case is reported and survivable**, never asserted: an extra `endRegion`, an
   extra `popClip`, a frame that ends with either still open. All of them are caller bugs, and
   from M7 the caller may be a mod (CLAUDE.md §7).
+
+---
+
+## Resolution: what `render2d` owed the UI (step 3, 2026-09-06)
+
+The first M6 step outside `engine/src/ui/`, and the one whose evidence is a deletion. Ten more
+tests: 866 under `-Drhi=null`, 874 under `-Drhi=metal`, the Metal figure mattering more than
+usual here because a scissor rectangle is something a real backend validates and a null one
+cannot.
+
+**Both samples deleted their white texture, and the deletion is the argument.** `samples/sandbox`
+and `samples/room` had each written an eight-pixel white `asset.Image`, a `createTexture`, and a
+`sub(2, 2, 4, 4)` inset — independently, identically, down to the same two numbers. `Renderer`
+now creates one at `init` and hands it out as `blankRegion()`; both samples lost the field, the
+initialiser and the image. `destroyTexture` refuses its handle, because the caller is a game
+today and a mod from M7, and destroying it would break every other consumer's panels rather than
+only the one that asked.
+
+**§9 said "screen-space pixels" and that is wrong.** `setClip` takes screen **points** — the
+space `ViewId.screen` uses and the space the mouse is reported in — and the recorder scales it to
+framebuffer pixels, because the pixel scale is a frame property the renderer already holds. Every
+other public rectangle in `render2d` is in points; making this one the exception would have put a
+scale factor at every call site, including the walker's at step 4.
+
+**What implementation settled:**
+
+* **A clip is carried on the item, not read at record time.** The sort moves sprites around, so a
+  clip resolved during recording would belong to whatever happened to be submitted last — exactly
+  the bug that put `view` on `Item` rather than on the renderer. It is deliberately not part of
+  the sort key, for the reason `batch.zig` already refuses texture: grouping by clip would
+  reorder overlapping translucent sprites.
+* **The scissor is clamped to the viewport it is recorded in**, and re-sent when the view changes
+  even if the rectangle did not. That is not tidiness: a scissor reaching outside the render
+  target is a validation error on Metal, and the same clip means a different pixel rectangle in a
+  different space.
+* **`setClip` returns `Error!void`,** matching `setView`, rather than the plain `void` §9 wrote.
+  Both fail the same way and for the same reason — drawing outside a `begin`/`record` pair — and
+  one of the two being infallible would be an inconsistency a frozen ABI makes permanent.
+* **A non-finite clip collapses to an empty rectangle and is logged.** Untrusted input is
+  validated, not asserted, and an empty clip fails visibly rather than leaking a panel across the
+  screen.
+* **`Stats` gained nothing**, as §9 said it should. A clip change is one more batch, which is the
+  number anyone tuning a frame is already reading.
+
+**One thing the deletion cost, recorded rather than overlooked.** `samples/sandbox` is the sample
+that demonstrates capabilities, and the code that went is the only place either sample built a
+texture from an image made in memory rather than loaded from a file. The capability is unchanged
+and `Renderer.createBlank` now exercises it on every startup, but a reader of the sandbox no
+longer sees it. If a future step wants it demonstrated again it should be demonstrated on
+purpose, not by putting the hand-rolled white texture back.

@@ -42,6 +42,12 @@ const sprite_shader: []const u8 = switch (rhi.backend) {
     .null => "null-backend-shader",
 };
 
+/// The blank patch is larger than the region taken out of it so that filtering at the
+/// edge of a drawn rectangle samples white on both sides. Both samples had independently
+/// picked the same two numbers, which is the strongest argument that they belong here.
+const blank_size: u32 = 8;
+const blank_inset: u32 = 2;
+
 pub const Error = error{
     /// A texture handle that never existed, or that has been destroyed.
     InvalidTexture,
@@ -156,6 +162,13 @@ pub const Renderer = struct {
     /// derived from.
     views: std.ArrayList(view_mod.View),
     current_view: ViewId,
+    /// The scissor in force for subsequent draws, in screen points, or `null` for none.
+    /// Renderer state rather than a parameter on every draw, for the same reason the view
+    /// is: it changes per panel, not per sprite.
+    current_clip: ?core.math.Rect,
+    /// A white patch the renderer owns, so that no game has to build one to draw a filled
+    /// rectangle. See `blankRegion`.
+    blank: Region,
     slots: []Slot,
 
     view: FrameView,
@@ -240,7 +253,7 @@ pub const Renderer = struct {
             if (caps.unified_memory) "unified" else "discrete",
         });
 
-        return .{
+        var self: Self = .{
             .gpa = gpa,
             .device = device,
             .config = config,
@@ -255,6 +268,10 @@ pub const Renderer = struct {
             .batcher = .init(config.quads_per_buffer),
             .views = .empty,
             .current_view = .world,
+            .current_clip = null,
+            // Filled in below. `.none` rather than `undefined` because `destroyTexture`
+            // compares against it, and it is called from inside the creation that sets it.
+            .blank = .{ .texture = .none, .uv = .{}, .size_px = .{} },
             .slots = slots,
             .view = .{ .camera = .{ .viewport = .init(0, 0, 1, 1) } },
             .recording = false,
@@ -262,6 +279,10 @@ pub const Renderer = struct {
             .stats = .{},
             .last_stats = .{},
         };
+        errdefer self.textures.deinit(gpa, device);
+
+        self.blank = try self.createBlank();
+        return self;
     }
 
     /// Releases everything.
@@ -331,8 +352,30 @@ pub const Renderer = struct {
     /// Requests destruction. The handle stops resolving immediately; the GPU objects are
     /// released once no in-flight frame can reference them (`texture.Pool`).
     pub fn destroyTexture(self: *Self, handle: TextureHandle) void {
+        // The blank texture is the renderer's, not the caller's. Refused rather than
+        // asserted: the caller is a game today and a mod from M7, and destroying it would
+        // break every other consumer's panels rather than only the one that asked.
+        if (handle.eql(self.blank.texture)) {
+            log.warn("refusing to destroy the renderer's own blank texture", .{});
+            return;
+        }
         const frame_index = if (self.frame) |f| f.index else 0;
         _ = self.textures.destroy(self.gpa, handle, frame_index);
+    }
+
+    /// A region of solid white the renderer owns, for drawing filled rectangles: panels,
+    /// outlines, bars, and everything the UI's draw list calls a `rect`.
+    ///
+    /// Engine-owned rather than content, the same category as ADR-0019's built-in shaders.
+    /// A game may still draw a filled rectangle from its own sheet and nothing stops it;
+    /// this exists so that no game *has* to — `samples/sandbox` and `samples/room` had each
+    /// written the identical eight-pixel image, upload and inset by hand.
+    ///
+    /// It is the middle of a larger patch rather than the whole of a one-pixel texture, so
+    /// that a filtered sample straying off the rectangle's edge lands on more white instead
+    /// of on the clamp boundary.
+    pub fn blankRegion(self: *const Self) Region {
+        return self.blank;
     }
 
     pub fn textureSize(self: *Self, handle: TextureHandle) ?Extent2D {
@@ -593,6 +636,7 @@ pub const Renderer = struct {
             view.pixel_scale,
         ));
         self.current_view = .world;
+        self.current_clip = null;
 
         self.batcher.reset();
         self.stats = .{};
@@ -629,6 +673,44 @@ pub const Renderer = struct {
         return self.current_view;
     }
 
+    /// Clips subsequent draws to `rect`, or to nothing at all with `null`.
+    ///
+    /// **In screen points**, the same space `ViewId.screen` uses and the same space the
+    /// mouse is reported in, converted to framebuffer pixels by the recorder — which is the
+    /// only place that knows the pixel scale. Every other public rectangle in `render2d` is
+    /// in points, and one API in pixels would put a scale factor at the call site.
+    ///
+    /// A scissor is a property of the render target rather than of a space, so a clip set
+    /// while drawing in the world view still names a rectangle of the window. It is
+    /// intersected with the view's viewport when recorded, so it can never reach outside
+    /// what the frame is allowed to touch.
+    ///
+    /// A batch cannot span a clip change, so this costs one draw call per change — the
+    /// number a person tuning a frame is already reading, which is why `Stats` gains
+    /// nothing for it.
+    pub fn setClip(self: *Self, rect: ?core.math.Rect) Error!void {
+        if (!self.recording) return error.NotRecording;
+        self.current_clip = if (rect) |r| sanitizeClip(r) else null;
+    }
+
+    pub fn currentClip(self: *const Self) ?core.math.Rect {
+        return self.current_clip;
+    }
+
+    /// A clip may come from a content-driven layout and, from M7, from a mod, so a
+    /// non-finite component is **rejected rather than asserted on** (CLAUDE.md §7). It
+    /// collapses to an empty rectangle, which draws nothing — a failure that is visible
+    /// immediately rather than one that leaks a panel over the rest of the screen.
+    fn sanitizeClip(r: core.math.Rect) core.math.Rect {
+        if (!std.math.isFinite(r.x) or !std.math.isFinite(r.y) or
+            !std.math.isFinite(r.w) or !std.math.isFinite(r.h))
+        {
+            log.warn("clip rectangle is not finite; clipping everything away instead", .{});
+            return .{};
+        }
+        return .init(r.x, r.y, @max(0, r.w), @max(0, r.h));
+    }
+
     /// Which way `+y` points in a view. `.up` for anything the frame does not have, which
     /// cannot happen — `setView` refuses an unknown id — but is answered rather than
     /// asserted because the alternative is an out-of-bounds read.
@@ -651,7 +733,7 @@ pub const Renderer = struct {
         // Validated at submission rather than at draw time, so a stale handle is a clean
         // error at the call site that caused it — the payoff of I1.
         if (self.textures.get(sprite.texture) == null) return error.InvalidTexture;
-        try self.batcher.add(self.gpa, sprite, self.current_view);
+        try self.batcher.add(self.gpa, sprite, self.current_view, self.current_clip);
     }
 
     /// Appends one string's glyphs to this frame's draw list.
@@ -693,7 +775,7 @@ pub const Renderer = struct {
                 .tint = options.tint,
                 .layer = options.layer,
                 .blend = options.blend,
-            }, self.current_view);
+            }, self.current_view, self.current_clip);
             self.stats.glyphs += 1;
         }
     }
@@ -722,7 +804,7 @@ pub const Renderer = struct {
         const id = self.current_view;
         var tiles: tilemap_mod.Tiles = try .init(layer, self.viewVisible(id));
         while (tiles.next()) |tile| {
-            try self.batcher.add(self.gpa, tile, id);
+            try self.batcher.add(self.gpa, tile, id, self.current_clip);
             self.stats.tiles += 1;
         }
     }
@@ -805,6 +887,11 @@ pub const Renderer = struct {
         var bound_texture: ?TextureHandle = null;
         var bound_buffer: ?u32 = null;
         var bound_view: ?ViewId = null;
+        var bound_clip: ?core.math.Rect = null;
+        // A `?Rect` cannot say "nothing bound yet" on its own, since `null` already means
+        // "no clip". The first batch of every frame therefore sets the scissor explicitly
+        // rather than inheriting whatever the pass began with.
+        var clip_bound = false;
 
         for (self.batcher.batches.items) |item| {
             const state = self.textures.get(item.texture) orelse continue;
@@ -820,6 +907,15 @@ pub const Renderer = struct {
             if (view_changed) {
                 pass.setViewport(view.viewport);
                 bound_view = item.view;
+            }
+
+            // After the viewport, and re-sent when the view changes even if the rectangle
+            // did not: the scissor is clamped to the viewport, so the same clip means a
+            // different pixel rectangle in a different space.
+            if (!clip_bound or view_changed or !batch_mod.clipEql(bound_clip, item.clip)) {
+                pass.setScissor(self.scissorFor(view.viewport, item.clip));
+                bound_clip = item.clip;
+                clip_bound = true;
             }
 
             if (bound_pipeline == null or bound_pipeline.? != item.blend) {
@@ -857,6 +953,66 @@ pub const Renderer = struct {
     }
 
     // -- internals -------------------------------------------------------------------
+
+    /// A clip in screen points, resolved to framebuffer pixels and clamped to the viewport
+    /// it will be applied inside. `null` is the viewport itself, which is what "no clip"
+    /// means once a scissor has to be set to something.
+    ///
+    /// Clamping is not tidiness: a scissor reaching outside the render target is a
+    /// validation error on Metal, and a clip rectangle is exactly the kind of number a
+    /// content-driven layout gets slightly wrong.
+    fn scissorFor(
+        self: *const Self,
+        viewport: rhi.command.Viewport,
+        clip: ?core.math.Rect,
+    ) rhi.command.ScissorRect {
+        const left = viewport.x;
+        const top = viewport.y;
+        const right = viewport.x + viewport.width;
+        const bottom = viewport.y + viewport.height;
+
+        var x0 = left;
+        var y0 = top;
+        var x1 = right;
+        var y1 = bottom;
+        if (clip) |c| {
+            const scale = self.view.pixel_scale;
+            // Outward-rounded, so a rectangle on a half-pixel boundary keeps the pixel it
+            // partly covers rather than clipping a column off its own edge.
+            x0 = @max(left, @floor(c.x * scale));
+            y0 = @max(top, @floor(c.y * scale));
+            x1 = @min(right, @ceil((c.x + c.w) * scale));
+            y1 = @min(bottom, @ceil((c.y + c.h) * scale));
+        }
+
+        return .{
+            .x = toPixels(x0),
+            .y = toPixels(y0),
+            .width = toPixels(@max(0, x1 - x0)),
+            .height = toPixels(@max(0, y1 - y0)),
+        };
+    }
+
+    fn toPixels(v: f32) u32 {
+        return @intFromFloat(@max(0, v));
+    }
+
+    /// The white patch behind `blankRegion`, built in memory rather than loaded: it is not
+    /// content, and making it an asset would give the engine a content dependency for four
+    /// pixels of white.
+    fn createBlank(self: *Self) Error!Region {
+        var image = try asset.Image.alloc(self.gpa, blank_size, blank_size);
+        defer image.deinit(self.gpa);
+        @memset(image.pixels, 0xFF);
+
+        const handle = try self.createTexture(image, .{ .label = "render2d blank" });
+        return self.textureRegion(handle).?.sub(
+            blank_inset,
+            blank_inset,
+            blank_size - blank_inset * 2,
+            blank_size - blank_inset * 2,
+        );
+    }
 
     fn createSlotBuffer(self: *Self, slot_index: u32) Error!SlotBuffer {
         const size = @as(u64, self.config.quads_per_buffer) *
@@ -1080,7 +1236,8 @@ test "sprites sharing a texture and blend mode become a single draw call" {
     try testing.expectEqual(@as(u32, 1), stats.batches);
     try testing.expectEqual(@as(u32, 1), stats.draw_calls);
     try testing.expectEqual(@as(u32, 2000), stats.vertices);
-    try testing.expectEqual(@as(u32, 2), stats.textures_resident);
+    // Two from the fixture and the renderer's own blank patch, which every renderer has.
+    try testing.expectEqual(@as(u32, 3), stats.textures_resident);
 }
 
 test "a second texture and a second blend mode each cost a draw call" {
@@ -1660,4 +1817,135 @@ test "a tilemap is refused the way every other untrusted draw is" {
 
     try fx.frame();
     try testing.expectEqual(@as(u32, 0), fx.renderer.frameStats().tiles);
+}
+
+test "the renderer owns a blank region, so no game has to build one" {
+    var fx = try Fixture.init(1024);
+    defer fx.deinit();
+
+    const blank = fx.renderer.blankRegion();
+    try testing.expect(!blank.texture.isNone());
+    // The middle of a larger patch, so filtering at a drawn rectangle's edge samples white
+    // on both sides: four pixels out of eight.
+    try testing.expectEqual(@as(u32, 4), blank.size_px.width);
+    try testing.expectEqual(@as(u32, 4), blank.size_px.height);
+
+    // And it draws like any other region.
+    try fx.renderer.begin(fx.view());
+    try fx.renderer.drawSprite(.{
+        .texture = blank.texture,
+        .uv = blank.uv,
+        .position = .init(0, 0),
+        .size = .init(100, 20),
+    });
+    try fx.frame();
+    try testing.expectEqual(@as(u32, 1), fx.renderer.frameStats().draw_calls);
+}
+
+test "a game cannot destroy the renderer's blank texture" {
+    var fx = try Fixture.init(1024);
+    defer fx.deinit();
+
+    const blank = fx.renderer.blankRegion();
+    fx.renderer.destroyTexture(blank.texture);
+
+    // Still resolvable, and still drawable: the request was refused, not deferred.
+    try testing.expect(fx.renderer.textureRegion(blank.texture) != null);
+}
+
+test "a clip change costs a draw call and clearing it costs another" {
+    var fx = try Fixture.init(1024);
+    defer fx.deinit();
+
+    try fx.renderer.begin(fx.view());
+    try fx.renderer.drawSprite(fx.sprite(fx.texture, 0, .alpha));
+    try fx.renderer.setClip(.init(10, 10, 100, 100));
+    try fx.renderer.drawSprite(fx.sprite(fx.texture, 0, .alpha));
+    try fx.renderer.drawSprite(fx.sprite(fx.texture, 0, .alpha));
+    try fx.renderer.setClip(null);
+    try fx.renderer.drawSprite(fx.sprite(fx.texture, 0, .alpha));
+    try fx.frame();
+
+    const stats = fx.renderer.frameStats();
+    try testing.expectEqual(@as(u32, 4), stats.sprites);
+    // One texture, one blend, one view: the scissor is the only thing that changed, and it
+    // shows up as batches rather than as a counter of its own.
+    try testing.expectEqual(@as(u32, 3), stats.batches);
+    try testing.expectEqual(@as(u32, 3), stats.draw_calls);
+}
+
+test "the clip resets with the frame, so it cannot leak into the next one" {
+    var fx = try Fixture.init(1024);
+    defer fx.deinit();
+
+    try fx.renderer.begin(fx.view());
+    try fx.renderer.setClip(.init(0, 0, 10, 10));
+    try testing.expect(fx.renderer.currentClip() != null);
+    try fx.frame();
+
+    try fx.renderer.begin(fx.view());
+    try testing.expectEqual(@as(?core.math.Rect, null), fx.renderer.currentClip());
+    try fx.frame();
+}
+
+test "a clip cannot be set outside a frame" {
+    var fx = try Fixture.init(1024);
+    defer fx.deinit();
+    try testing.expectError(error.NotRecording, fx.renderer.setClip(.init(0, 0, 1, 1)));
+}
+
+test "a clip that is not a finite rectangle clips everything away" {
+    // Untrusted input: a layout driven by content, and from M7 by a mod, can produce one.
+    // It collapses to an empty rectangle rather than being asserted on, so the failure is
+    // visible immediately instead of leaking a panel across the screen.
+    var fx = try Fixture.init(1024);
+    defer fx.deinit();
+
+    try fx.renderer.begin(fx.view());
+    try fx.renderer.setClip(.init(std.math.nan(f32), 0, 100, 100));
+    try testing.expect(fx.renderer.currentClip().?.isEmpty());
+    try fx.renderer.drawSprite(fx.sprite(fx.texture, 0, .alpha));
+    try fx.frame();
+
+    // The sprite is still submitted and still drawn — clipping is the pass's business, not
+    // the batcher's — but the scissor it is drawn under is empty.
+    try testing.expectEqual(@as(u32, 1), fx.renderer.frameStats().draw_calls);
+}
+
+test "a clip is clamped to the viewport it is recorded in" {
+    var fx = try Fixture.init(1024);
+    defer fx.deinit();
+    const viewport: rhi.command.Viewport = .{ .x = 0, .y = 0, .width = 1280, .height = 720 };
+
+    // Hanging off the right and the bottom: clamped, never larger than the target.
+    const over = fx.renderer.scissorFor(viewport, .init(1200, 700, 400, 400));
+    try testing.expectEqual(@as(u32, 1200), over.x);
+    try testing.expectEqual(@as(u32, 80), over.width);
+    try testing.expectEqual(@as(u32, 20), over.height);
+
+    // Entirely outside: empty rather than inverted.
+    const away = fx.renderer.scissorFor(viewport, .init(4000, 4000, 10, 10));
+    try testing.expectEqual(@as(u32, 0), away.width);
+    try testing.expectEqual(@as(u32, 0), away.height);
+
+    // No clip is the viewport itself, which is what a scissor has to be set to when the
+    // answer is "none".
+    const none = fx.renderer.scissorFor(viewport, null);
+    try testing.expectEqual(@as(u32, 1280), none.width);
+    try testing.expectEqual(@as(u32, 720), none.height);
+}
+
+test "a clip is in screen points and is scaled to pixels when recorded" {
+    var fx = try Fixture.init(1024);
+    defer fx.deinit();
+    // A retina window: the viewport is in pixels, the clip is in the points the mouse is
+    // reported in, and the pixel scale is the only thing that bridges them.
+    fx.renderer.view = .{ .camera = .{ .viewport = .init(0, 0, 640, 480) }, .pixel_scale = 2 };
+    const viewport: rhi.command.Viewport = .{ .x = 0, .y = 0, .width = 1280, .height = 960 };
+
+    const scissor = fx.renderer.scissorFor(viewport, .init(10, 20, 100, 50));
+    try testing.expectEqual(@as(u32, 20), scissor.x);
+    try testing.expectEqual(@as(u32, 40), scissor.y);
+    try testing.expectEqual(@as(u32, 200), scissor.width);
+    try testing.expectEqual(@as(u32, 100), scissor.height);
 }
