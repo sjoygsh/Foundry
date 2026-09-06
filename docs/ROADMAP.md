@@ -262,15 +262,17 @@ under `engine/` changed, and `tools/fpack` did not either.
 * ~~In-process immediate-mode debug overlay — UI toolkit decision made here.~~ **Decision made,
   [ADR-0024](adr/0024-ui-own-immediate-mode.md): Foundry writes its own immediate-mode UI, one
   kernel with two widget sets. Designed in [`design/ui.md`](design/ui.md); §16 is the step list.
-  Not implemented.**
+  **Implemented in full, steps 1-6, 2026-09-06/07** — the kernel, the debug widget set, the
+  walker in `app`, the overlay in `samples/sandbox` and the card `samples/room` opens over its
+  live hall, which is where §4's capture rules are proven by a game rather than by a test.**
 * Entity inspector, content browser, log console.
 * Frame profiler with per-subsystem timing; memory reporting per allocator.
 * Introspection APIs designed with the future public ABI in mind (ADR-0004, ADR-0011).
 
 **Exit criteria:** a performance problem can be diagnosed from inside the running game.
 
-The last three bullets get their **own** design document, written after `ui.md` is implemented
-rather than beside it: what an inspector may ask `scene` for and how per-subsystem timing is
+The last three bullets get their **own** design document, **owed now that `ui.md` is
+implemented** rather than written beside it: what an inspector may ask `scene` for and how per-subsystem timing is
 collected are a different subject with different invariants, and the document is better written
 once the shape of a panel is known rather than imagined. The fourth bullet is where this
 milestone's lasting value is — the widgets are replaceable, the introspection APIs reach the ABI

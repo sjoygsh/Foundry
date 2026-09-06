@@ -1,14 +1,46 @@
 # Foundry Project State
 
-**Last updated:** 2026-09-06
+**Last updated:** 2026-09-07
 **Updated by:** **M6 has opened, and it opened where the last four did: at a decision.**
 `CLAUDE.md` §9 had held "Debug/game UI: own IMGUI vs. cimgui" since the project started and
 ADR-0011 had deferred it here by name. **ADR-0024 answers it: Foundry writes its own
-immediate-mode UI**, and `docs/design/ui.md` is written against it. **Steps 1 to 5 of its §16
-are implemented and its §10 widget set is complete**: `engine/src/ui/` is nine files of kernel
-that never sees a renderer, `engine/src/app/ui_draw.zig` is the forty-line walk that turns what
-it described into draw calls, and `samples/sandbox` draws every widget in the set on both
-backends. 900 tests under `-Drhi=null`, 908 under `-Drhi=metal`.
+immediate-mode UI**, and `docs/design/ui.md` is written against it. **All six steps of its §16
+are implemented**: `engine/src/ui/` is nine files of kernel that never sees a renderer,
+`engine/src/app/ui_draw.zig` is the forty-line walk that turns what it described into draw
+calls, `samples/sandbox` draws every widget in the set, and `samples/room` opens a card over a
+live hall and holds back the input the card took. 900 tests under `-Drhi=null`, 908 under
+`-Drhi=metal`.
+
+**Step 6 found the contract `ui.md` §4 had stated and the kernel had not kept.**
+`wantsKeyboard` returned "something has focus", and focus is set by a press on *any* widget —
+so dragging the room's volume slider took the keyboard away from the hall and did not give it
+back until the player clicked the world again, WASD dead with nothing on screen to say why.
+What §4 always said is "has focus **and consumes typing**". A widget now declares that it is
+eating characters (`Context.blockKeyboard`), `textField` is the only one that does, and the
+flag is per-frame like every other, so a field the caller stopped describing consumes nothing
+whatever `focus` still says. **This was found by building the game, not by testing the
+kernel**: every test that could have caught it would have had to know that a slider is not a
+text field, and only the design document knew that.
+
+**The second finding is an ordering rule with a bug behind it.** The card's close button cannot
+close the card where it stands — `clearInteraction` mid-frame clears the capture that very click
+was consumed by, and the click then reaches the hall as a place to walk to, which is exactly the
+"player who walked into a wall because they closed a panel" the kernel's own comment warns
+about. The button records and the game acts after `end`. The same reordering had to happen in
+`samples/sandbox`, whose overlay was described *after* the fixed step: its filter box could only
+ever have gated the next frame's movement, and the comment there claimed a check that did not
+exist. Both samples now describe the UI before they simulate, and the sandbox holds back `r`,
+`c` and the arrows while its filter box has the keyboard — but not escape, and not its save and
+load keys, because what a game holds back is the bindings a keyboard **types**.
+
+**The room proves capture the way it proves the hall can be finished: with a scripted run.** It
+gained one thing in the world that wants the pointer — a click sends the walker there — because
+a check guarding nothing proves nothing. The autopilot opens the card, clicks the name field,
+types the walker's name a codepoint at a time, presses the card's empty half (the
+`pointer_blocked` case step 2 left as an argument), and clicks its way out. The device and the
+script produce the *same* `Pointer` value, read by both the kernel and the game, so a scripted
+click cannot take a path a real one does not. A full headless run: **29 card visits, 87 clicks
+taken, 0 capture failures**, 6 of 6 lamps lit, the walker out of the hall in 1,542 ticks.
 
 **Step 5's one structural addition is a per-widget state store, and the rule for what goes in
 it is the interesting part.** A checkbox's flag, a slider's value and a plot's samples all stay
@@ -1669,16 +1701,17 @@ and something that is tested:
    frame-time plot over a ring the sample owns, a zoom slider over the value the wheel already
    changes, a collapsing detail section, and a second panel that is the log console's shape —
    a filter field over a scrolling list of the sample's key bindings.
-6. **`samples/room` checks capture**, because a game that walks with WASD and opens a panel over
-   the hall is where getting it wrong is visible, and the room is the sample that plays.
+6. ~~**`samples/room` checks capture.**~~ **Done, 2026-09-07** — the room opens a card over the
+   live hall on tab (the walker's name, the volume, a way out), gained click-to-go so that
+   there is something in the world the pointer competes for, and holds back what the card took.
+   It found that `wantsKeyboard` reported focus rather than consumption, and that a panel
+   closing itself mid-frame hands the click back to the game. `samples/sandbox` now describes
+   its overlay before it simulates and gates its typed bindings too.
 
-**Next is step 6**, the last of `ui.md` §16: `samples/room` checks capture. A game that walks
-with WASD and opens a panel over the hall is the smallest case where getting capture wrong is
-visible, and the room is the sample that plays. The sandbox already gates picking and zooming on
-`wantsPointer` and has a text field that takes the keyboard; what the room adds is the case
-where the *game* loses if the check is missing.
+**§16 is finished, and `ui.md` with it.** The next M6 work is its second design document, not
+another step of this one.
 
-**A second M6 design document is owed after these**: the overlay itself — the entity inspector,
+**A second M6 design document is owed next**: the overlay itself — the entity inspector,
 the content browser, the log console, the frame profiler and the introspection APIs beneath
 them. `ui.md` §10 stops short of it deliberately, because what an inspector may ask `scene` for
 and how per-subsystem timing is collected are a different subject, and because it is better

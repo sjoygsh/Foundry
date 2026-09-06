@@ -220,6 +220,13 @@ pub fn main(init: std.process.Init) !void {
             report(ev);
         }
 
+        // **Before the simulation reads a key, not after.** The overlay has a filter box in
+        // it, and a frame that walked the player and then discovered the keyboard had been
+        // taken would have walked them anyway. `describeUi` draws nothing; it decides what
+        // the user is pointing at and typing into, which is what everything below needs to
+        // know before it acts.
+        try field.describeUi(engine);
+
         while (engine.nextStep()) |step| {
             // The only place simulation happens. It reads `step.input`, never the device.
             if (step.input.wasPressed(.escape)) engine.requestQuit();
@@ -245,7 +252,9 @@ pub fn main(init: std.process.Init) !void {
         // frame's input snapshot, which is the same value every step of this frame saw, so
         // it cannot disagree with them (I9).
         if (!headless) {
-            const advance = engine.input.wasPressed(.r) or blk: {
+            // `r` is a letter before it is a binding: while the overlay's filter box has
+            // the keyboard, typing one must not resize the window.
+            const advance = (engine.input.wasPressed(.r) and !field.ui.wantsKeyboard()) or blk: {
                 const every = auto_resize_every orelse break :blk false;
                 break :blk engine.frame_index > 0 and engine.frame_index % every == 0;
             };
@@ -260,9 +269,6 @@ pub fn main(init: std.process.Init) !void {
         // the last simulation step left in the world — no interpolation between the two
         // most recent transforms yet, which is what `engine.alpha()` is for and what the
         // world now finally has the two states to make possible.
-        // Described before anything else reads the pointer, so `wantsPointer` is
-        // answerable by the time `control` decides whether a click was the world's.
-        try field.describeUi(engine);
         field.control(engine);
         field.audioFrame();
         try field.submit(engine);
@@ -1480,7 +1486,11 @@ const SpriteField = struct {
                 2 => .init(-1, 0),
                 else => .init(0, -1),
             };
-        } else {
+        } else if (!self.ui.wantsKeyboard()) {
+            // Held back while the overlay's filter box is taking typing: "w" is a letter
+            // in a text field, and a sample that walked on it anyway would be the bug
+            // `ui.Context.wantsKeyboard` exists to prevent. Answerable here because the
+            // overlay was described at the top of the frame, before this step ran.
             const in = &s.input;
             // World space, so `w` is **+y**. The camera's pan two functions down uses the
             // opposite sign for the same key, because it moves in screen space, which is
@@ -1978,7 +1988,13 @@ const SpriteField = struct {
         const in = &engine.input;
         const dt = engine.frameDelta().toSecondsF32();
 
-        if (in.wasPressed(.c)) {
+        // **What a game holds back is the bindings a keyboard types.** A text field
+        // consumes characters and the keys that edit them — letters and the arrows — and
+        // consumes neither escape nor a function key, so the save and load bindings below
+        // stay live while the filter box has focus and the recentre and the pan do not.
+        const ui_wants_keyboard = self.ui.wantsKeyboard();
+
+        if (in.wasPressed(.c) and !ui_wants_keyboard) {
             self.follow = true;
             self.camera.center = self.playerAt() orelse .zero;
             self.camera.zoom = 1;
@@ -2010,10 +2026,12 @@ const SpriteField = struct {
         // Y-down and `panByScreen` speaks screen space. `walk` uses the opposite sign for
         // the same intent, in world space, and that is not a mistake in either.
         var direction: core.math.Vec2 = .zero;
-        if (in.isHeld(.left)) direction.x -= 1;
-        if (in.isHeld(.right)) direction.x += 1;
-        if (in.isHeld(.up)) direction.y -= 1;
-        if (in.isHeld(.down)) direction.y += 1;
+        if (!ui_wants_keyboard) {
+            if (in.isHeld(.left)) direction.x -= 1;
+            if (in.isHeld(.right)) direction.x += 1;
+            if (in.isHeld(.up)) direction.y -= 1;
+            if (in.isHeld(.down)) direction.y += 1;
+        }
         if (!direction.eql(.zero)) {
             const speed = if (in.modifiers.shift) fast_pan_speed else pan_speed;
             self.pan(direction.normalize().scale(speed * dt));
@@ -2354,8 +2372,9 @@ const SpriteField = struct {
         );
 
         try ui.beginPanel(&self.ui, ui.Id.root.child("bindings"), panel);
-        // Typing here must not also walk the player, which is what `wantsKeyboard` is for
-        // and what `control` checks.
+        // Typing here must not also walk the player, resize the window or recentre the
+        // camera — which is what `wantsKeyboard` is for, and what `walk`, the resize key
+        // and `control` each check.
         _ = try ui.textField(&self.ui, self.ui.childId("filter"), &self.filter, &self.filter_len);
         try ui.beginScroll(&self.ui, self.ui.childId("list"), self.ui.region().remaining(), listed);
         for (bindings) |line| {

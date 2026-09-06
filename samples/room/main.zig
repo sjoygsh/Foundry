@@ -7,11 +7,20 @@
 //! can play for five minutes without knowing it is a tech demo." The two requirements pull
 //! against each other and both are worth keeping, so they are kept in two places.
 //!
-//! This one has no statistics, nothing to click, no debug keys and no stress test. It has a
-//! hall with the lights out, six lamps, a door and a way out. What it is evidence *for* is
-//! the claim M5's exit criterion is really making: **that Foundry can carry a game.** The
-//! measure of that is not what this sample does, it is what the engine had to gain for it
-//! to — which is nothing. Not one line of `engine/` changed to make this run.
+//! This one has no statistics, no frame times and no stress test. It has a hall with the
+//! lights out, six lamps, a door and a way out. What it is evidence *for* is the claim M5's
+//! exit criterion is really making: **that Foundry can carry a game.** The measure of that
+//! is not what this sample does, it is what the engine had to gain for it to — which is
+//! nothing. Not one line of `engine/` changed to make this run.
+//!
+//! **The card is the exception, and it is here to prove one thing.** Tab opens a small
+//! panel over the hall — who is walking, how loud it is, and a way to close it again — and
+//! the hall keeps running behind it. That is the arrangement `ui.md` §4 says a game has to
+//! get right: a click on the card must not also send the walker at it, and a "w" typed into
+//! the name must not also be a step. Capture is **advisory** by design — the kernel refuses
+//! to sit between the game and the device — so getting it right is the game's job, and this
+//! is the smallest game where getting it wrong is visible. The autopilot opens the card and
+//! clicks it too, so a scripted run answers the question rather than a person having to.
 //!
 //! **Everything is content.** The map, the art, the sounds, the six lamp placements, the
 //! walker's speed, the camera's zoom and every string on screen live in
@@ -43,6 +52,9 @@ const platform = @import("platform");
 const render2d = @import("render2d");
 const rhi = @import("rhi");
 const scene = @import("scene");
+// The kernel, named directly. A game reaches `ui` for the same reason it reaches `scene`:
+// `app` composes the engine, it does not stand in front of it (CLAUDE.md §4.3).
+const ui = @import("ui");
 
 const log = core.log.scoped(.room);
 
@@ -163,7 +175,7 @@ pub fn main(init: std.process.Init) !void {
             info.pixel_size.width,   info.pixel_size.height,
             info.scale,
         });
-        log.info("light every lamp in the hall. wasd or the arrows walk; escape quits", .{});
+        log.info("light every lamp in the hall. wasd or the arrows walk, a click sends the walker there, tab opens the card; escape closes it, or quits", .{});
         if (room.autopilot) log.info("autopilot is on; the walker finds them itself", .{});
     }
 
@@ -174,13 +186,22 @@ pub fn main(init: std.process.Init) !void {
         // sample derived from content is derived again here, before the frame reads it.
         room.refresh(engine);
 
-        // Drained so the window keeps answering; the room has no use for any of them.
-        while (engine.nextEvent()) |_| {}
+        // Text is the one event the room reads. The rest are drained so the window keeps
+        // answering, which is what they were always for.
+        room.typed_len = 0;
+        while (engine.nextEvent()) |ev| room.noteEvent(ev);
 
-        while (engine.nextStep()) |step| {
-            if (step.input.wasPressed(.escape)) engine.requestQuit();
-            room.step(step);
-        }
+        // **Described before anything else looks at the pointer**, so that by the time the
+        // hall is asked whether a click was meant for it, the card has already answered.
+        // That order is the whole of what a game has to get right here, and it is why
+        // these two lines are next to each other rather than one at each end of the frame.
+        try room.describeUi(engine);
+        room.command(engine);
+
+        while (engine.nextStep()) |step| room.step(step);
+
+        // After the steps, because the keyboard half of the rule is decided inside one.
+        room.auditCapture();
 
         // A finished headless run has nothing left to prove, and the frame cap is a bound
         // on how long the walk may take rather than how long it must.
@@ -224,6 +245,18 @@ pub fn main(init: std.process.Init) !void {
         room.contacts,
         room.sounds_played,
     });
+
+    // The other thing a scripted run is for. "0 failures" is the line that says the hall
+    // never acted on an input the card had taken (`auditCapture`); the counts either side
+    // of it are how much of a chance it had to.
+    log.info("card: opened {d} time(s), took {d} click(s), name '{s}'; hall took {d} walk command(s), {d} capture failure(s)", .{
+        room.card_opens,
+        room.clicks_taken,
+        room.name[0..room.name_len],
+        room.walk_commands,
+        room.capture_failures,
+    });
+    if (room.capture_failures != 0) log.err("capture is broken: see the lines above", .{});
 }
 
 /// Which surface kind the platform is asked for. macOS is the only one with a backend.
@@ -266,6 +299,11 @@ const Settings = struct {
     hint: []const u8,
     won: []const u8,
     lamp_label: []const u8,
+    card_title: []const u8,
+    name_label: []const u8,
+    volume_label: []const u8,
+    close_label: []const u8,
+    walker_name: []const u8,
 
     const id = "room:settings.main";
 
@@ -296,6 +334,11 @@ const Settings = struct {
         .hint = "",
         .won = "",
         .lamp_label = "lamps lit",
+        .card_title = "",
+        .name_label = "",
+        .volume_label = "",
+        .close_label = "",
+        .walker_name = "",
     };
 
     fn read(engine: *app.Engine) Settings {
@@ -327,6 +370,11 @@ const Settings = struct {
             .hint = stringField(record, "hint", ""),
             .won = stringField(record, "won", ""),
             .lamp_label = stringField(record, "lamp_label", fallback.lamp_label),
+            .card_title = stringField(record, "card_title", ""),
+            .name_label = stringField(record, "name_label", ""),
+            .volume_label = stringField(record, "volume_label", ""),
+            .close_label = stringField(record, "close_label", ""),
+            .walker_name = stringField(record, "walker_name", ""),
         };
     }
 
@@ -380,6 +428,123 @@ const Settings = struct {
         return out;
     }
 };
+
+/// One frame of pointer, whoever produced it.
+///
+/// The device fills this in for a played run and `Script` fills it in for a scripted one,
+/// and everything downstream — the kernel, the capture check, the walk command — reads only
+/// this. A scripted click that took a shortcut past the kernel would prove nothing about
+/// the click a person makes.
+const Pointer = struct {
+    /// Screen points, +Y down, the same space `render2d.ViewId.screen` draws in.
+    at: core.math.Vec2 = .zero,
+    pressed: bool = false,
+    held: bool = false,
+    released: bool = false,
+};
+
+/// What a scripted run does with the card.
+///
+/// **A capture check nobody performs is a capture check nobody has.** The room already
+/// answers "can this hall be finished" without a person holding a key; capture is the same
+/// kind of claim, so the autopilot opens the card, types into it, presses its empty half
+/// and clicks its way out again — and the run reports what the card took and whether the
+/// hall ever acted on any of it.
+///
+/// The frame numbers are a schedule and nothing more. They are spaced so that a control is
+/// hot before it is pressed, and so the card is open long enough to type a name into it at
+/// a character every other frame.
+const Script = struct {
+    /// The first visit, and how often one comes round again. Far enough apart that most of
+    /// the run is a walk with no card on it at all.
+    const first: u64 = 240;
+    const period: u64 = 900;
+    const length: u64 = 150;
+
+    /// Where the pointer waits between presses: outside the window, which is where a
+    /// pointer nobody is holding is.
+    const parked: core.math.Vec2 = .init(-1, -1);
+
+    const Aim = enum { name, surface, close };
+
+    const presses = [_]struct { at: u64, aim: Aim }{
+        // The name field, so what is typed next has somewhere to go.
+        .{ .at = 12, .aim = .name },
+        // The card's own empty half. Nothing there is a widget, which is the case a game
+        // gets wrong first and the reason `Context.pointer_blocked` exists.
+        .{ .at = 62, .aim = .surface },
+        // And out again, through the button.
+        .{ .at = 104, .aim = .close },
+    };
+
+    const clears_at: u64 = 18;
+    const types_from: u64 = 20;
+    const types_every: u64 = 2;
+
+    /// How far into a visit `frame` is, or null when there is no visit on.
+    fn phase(frame: u64) ?u64 {
+        if (frame < first) return null;
+        const f = (frame - first) % period;
+        return if (f < length) f else null;
+    }
+};
+
+/// The rectangle the next widget in a vertical region will occupy.
+///
+/// A cursor layout knows where a widget went by putting it there, so this is the same
+/// arithmetic `Region.takeSize` is about to do. Only the script reads the result.
+fn nextRow(remaining: core.math.Rect, line_height: f32) core.math.Rect {
+    return .init(remaining.x, remaining.y, remaining.w, line_height);
+}
+
+/// A `render2d` font paired with the spacing the card lays it out with.
+///
+/// The **only** sanctioned way to build the kernel's metrics is `app.UiFont.metrics`, and
+/// this is the sample's single producer of one, so the text the kernel measures and the
+/// text the walker draws cannot be given different numbers (`ui.md` §8).
+fn uiFontOf(font: render2d.BitmapFont) app.UiFont {
+    return .{ .font = font };
+}
+
+/// What the card looks like.
+///
+/// **All of it is the game's**, because the kernel contains no colour, no metric and no
+/// string of its own (ADR-0024). Warm and dim, like the hall: a card that looked like a
+/// debug overlay would be the first thing to tell a person this was a tech demo, which is
+/// what this sample exists not to be.
+///
+/// The colours are written here rather than read from content only because they are the
+/// one thing on the card that is not text; when the content-driven widget layer arrives
+/// this is the function that goes away.
+fn cardStyle(font: app.UiFont) ui.Style {
+    return .{
+        .font = font.metrics(),
+        .text_scale = 1.5,
+        .line_height = 20,
+        .padding = .init(10, 8),
+        .spacing = 5,
+        .separator_thickness = 1,
+
+        .text = uiColor(255, 226, 180, 240),
+        .text_dim = uiColor(150, 130, 110, 200),
+        .surface = uiColor(10, 8, 6, 225),
+        .control = uiColor(46, 38, 30, 235),
+        .control_hot = uiColor(74, 60, 44, 245),
+        .control_active = uiColor(110, 88, 60, 255),
+        .accent = uiColor(255, 190, 110, 255),
+    };
+}
+
+/// sRGB in, linear out — **above the seam, which is where the conversion belongs**.
+///
+/// `ui.Color` deliberately has no `srgb8` of its own: a second implementation of the
+/// transfer function below the renderer is one that can silently disagree with it. So the
+/// kernel takes linear light, and whoever writes a style converts here with the renderer's
+/// own function.
+fn uiColor(r: u8, g: u8, b: u8, a: u8) ui.Color {
+    const c = render2d.Color.srgb8(r, g, b, a);
+    return .{ .r = c.r, .g = c.g, .b = c.b, .a = c.a };
+}
 
 /// The one place that knows the map is upside down relative to the file that draws it.
 ///
@@ -848,6 +1013,63 @@ const Room = struct {
     sounds_played: u64 = 0,
     contacts: u64 = 0,
 
+    // -- the card, and what it takes ----------------------------------------------------
+
+    /// The kernel. Below the renderer and blind to it (ADR-0024): this describes a frame,
+    /// and `hud` walks what it described into draw calls one function later.
+    ui: ui.Context,
+    /// Characters committed by the OS this frame. **Input is state; text is a stream** — a
+    /// snapshot cannot tell two presses of a key from one held one, and a name typed from
+    /// the snapshot would work in English and nowhere else.
+    typed: [8]platform.event.TextInput = undefined,
+    typed_len: usize = 0,
+
+    /// The pointer this frame, from the device or from the script. **One value**, read by
+    /// the kernel and by the game, so a scripted click cannot take a path a real one does
+    /// not (`drivePointer`).
+    pointer: Pointer = .{},
+
+    card_open: bool = false,
+    /// Set by the card's own close button and acted on **after** the frame it was clicked
+    /// in. Closing the card inside the frame would clear the capture that click was
+    /// consumed by, and the hall would then be handed the same click.
+    close_requested: bool = false,
+
+    /// What the card holds. **The values live here, in the game**, and the kernel keeps no
+    /// copy of either that could drift from the one in use — which is the whole of the
+    /// immediate-mode bargain (`ui/state.zig`).
+    volume: f32 = 1,
+    name: [24]u8 = undefined,
+    name_len: usize = 0,
+    /// Once somebody renames the walker, a content reload stops overwriting it.
+    name_edited: bool = false,
+
+    /// What the card took this frame, asked once after it was described and before the
+    /// hall acts on anything.
+    took_pointer: bool = false,
+    took_keyboard: bool = false,
+    /// What the hall did with what was left, so `auditCapture` can check the rule rather
+    /// than the sample only obeying it.
+    walked_from_pointer: bool = false,
+    walked_from_keys: bool = false,
+
+    /// Where a click told the walker to go, in world space. Cleared on arrival, when a key
+    /// overrides it, and when the walker can get no closer.
+    walk_to: ?core.math.Vec2 = null,
+
+    /// What a scripted run has to say about capture.
+    card_opens: u64 = 0,
+    clicks_taken: u64 = 0,
+    walk_commands: u64 = 0,
+    capture_failures: u64 = 0,
+
+    /// Rectangles the scripted pointer aims at, recorded as the card is described. A
+    /// layout that is a cursor knows where a widget went only by placing it, so this is
+    /// read a frame later — which is exact, because the card does not move.
+    card_rect: core.math.Rect = .init(0, 0, 0, 0),
+    name_rect: core.math.Rect = .init(0, 0, 0, 0),
+    close_rect: core.math.Rect = .init(0, 0, 0, 0),
+
     autopilot: bool = false,
     /// How close the autopilot has ever got to what it is walking at, and how long since
     /// that improved. A walker that has stopped making progress is one wedged on a corner.
@@ -879,6 +1101,14 @@ const Room = struct {
         won_len: usize = 0,
         label: [64]u8 = undefined,
         label_len: usize = 0,
+        card_title: [64]u8 = undefined,
+        card_title_len: usize = 0,
+        name_label: [32]u8 = undefined,
+        name_label_len: usize = 0,
+        volume_label: [32]u8 = undefined,
+        volume_label_len: usize = 0,
+        close_label: [32]u8 = undefined,
+        close_label_len: usize = 0,
     };
 
     const hud_margin: f32 = 16;
@@ -900,6 +1130,15 @@ const Room = struct {
         var renderer = try render2d.Renderer.init(gpa, device, .{ .frames_in_flight = 2 });
         errdefer renderer.deinit();
 
+        // Until content arrives. Hoisted because the kernel needs metrics to exist before
+        // a font does, and there must be exactly one place the two are paired (`ui.md` §8).
+        const font: render2d.BitmapFont = .{
+            .glyphs = .{ .texture = .none, .uv = .{}, .size_px = .{} },
+            .cell = .{ .width = 8, .height = 8 },
+            .columns = 16,
+            .glyph_count = 95,
+        };
+
         return .{
             .gpa = gpa,
             .renderer = renderer,
@@ -908,12 +1147,8 @@ const Room = struct {
             .sheet_asset = .none,
             .font_asset = .none,
             .sheet = .{ .texture = .none, .uv = .{}, .size_px = .{} },
-            .font = .{
-                .glyphs = .{ .texture = .none, .uv = .{}, .size_px = .{} },
-                .cell = .{ .width = 8, .height = 8 },
-                .columns = 16,
-                .glyph_count = 95,
-            },
+            .font = font,
+            .ui = .init(gpa, cardStyle(uiFontOf(font))),
             // `World.init` needs the registry's final address and this struct is returned
             // by value, so both are built in `load`.
             .schemas = undefined,
@@ -1218,13 +1453,23 @@ const Room = struct {
         const entity = self.player orelse return;
 
         var direction = if (self.autopilot) self.autoDirection() else blk: {
-            const in = &s.input;
             var d: core.math.Vec2 = .zero;
-            // World space, so `w` is **+y**.
-            if (in.isHeld(.a) or in.isHeld(.left)) d.x -= 1;
-            if (in.isHeld(.d) or in.isHeld(.right)) d.x += 1;
-            if (in.isHeld(.w) or in.isHeld(.up)) d.y += 1;
-            if (in.isHeld(.s) or in.isHeld(.down)) d.y -= 1;
+            // **Held back while the card is taking typing.** In a name field "w" is a
+            // letter and the arrows move a caret; a hall that walked on them anyway would
+            // wander off while its owner was being renamed. `took_keyboard` was decided at
+            // the top of the frame, before any of this ran (`command`).
+            if (!self.took_keyboard) {
+                const in = &s.input;
+                // World space, so `w` is **+y**.
+                if (in.isHeld(.a) or in.isHeld(.left)) d.x -= 1;
+                if (in.isHeld(.d) or in.isHeld(.right)) d.x += 1;
+                if (in.isHeld(.w) or in.isHeld(.up)) d.y += 1;
+                if (in.isHeld(.s) or in.isHeld(.down)) d.y -= 1;
+            }
+            if (d.eql(.zero)) break :blk self.towardClick();
+            self.walked_from_keys = true;
+            // A hand on the keys outranks where a click was pointing.
+            self.walk_to = null;
             break :blk d;
         };
 
@@ -1249,11 +1494,20 @@ const Room = struct {
 
         direction = direction.normalize();
         const motion = direction.scale(self.settings.player_speed * s.delta.toSecondsF32());
+        const started_at = self.playerAt() orelse core.math.Vec2.zero;
         var hits: [4]physics2d.Hit = undefined;
         const result = (self.physics.moveAndSlide(self.gpa, self.player_body, motion, &hits) catch |err| {
             log.warn("the walker could not move: {t}", .{err});
             return;
         }) orelse return;
+
+        // A walk that is going nowhere gives up on where it was going. `moveAndSlide`
+        // slides along what it meets, so a wall between the walker and a clicked point
+        // usually resolves itself; a corner it cannot slide out of would otherwise leave
+        // the walker pressing into stone until somebody clicked somewhere else.
+        if (self.walk_to != null and result.position.sub(started_at).length() < motion.length() * 0.25) {
+            self.walk_to = null;
+        }
 
         if (result.total_hits > 0) {
             self.contacts += result.total_hits;
@@ -1593,6 +1847,7 @@ const Room = struct {
         }
 
         try self.sign();
+        try self.nameplate();
         try self.hud(engine);
     }
 
@@ -1664,6 +1919,11 @@ const Room = struct {
             );
         }
 
+        // The card, **drawn**: one call, and the only line in the sample that knows the
+        // kernel and the renderer are two different things. Above the room's own panels,
+        // because it is over the hall and they are part of it.
+        try app.drawUi(&self.ui.list, &self.renderer, uiFontOf(self.font), .screen, .{ .layer = 2 });
+
         if (self.finished and self.text.won_len > 0) {
             const won = self.text.won[0..self.text.won_len];
             const options: render2d.TextOptions = .{ .position = .zero, .scale = 3, .line_spacing = 8 };
@@ -1709,6 +1969,345 @@ const Room = struct {
         });
     }
 
+    // -- the card -----------------------------------------------------------------------------
+
+    /// Collects what the OS committed as text this frame.
+    ///
+    /// Separate from the input snapshot on purpose: **input is state and text is a
+    /// stream.** A snapshot says which keys are down, which cannot tell two presses of a
+    /// key from one held one, and cannot represent a dead key or an input method composing
+    /// a character out of several (`platform.event.TextInput`).
+    fn noteEvent(self: *Room, ev: platform.Event) void {
+        switch (ev) {
+            .text_input => |typed| {
+                if (self.typed_len == self.typed.len) return;
+                self.typed[self.typed_len] = typed;
+                self.typed_len += 1;
+            },
+            else => {},
+        }
+    }
+
+    /// The card, **described** — no renderer, no draw call, nothing on screen yet.
+    ///
+    /// The kernel resolves what the user is pointing at while there is still time for the
+    /// hall to keep its hands off it, and leaves a draw list behind for `hud` to walk into
+    /// the renderer later. Splitting the two is what `ui` sitting below the renderer buys
+    /// (ADR-0024); this is the shape a game uses it in.
+    fn describeUi(self: *Room, engine: *app.Engine) !void {
+        const info = engine.windowInfo();
+        const width: f32 = if (info) |i| @floatFromInt(i.logical_size.width) else 1280;
+        const height: f32 = if (info) |i| @floatFromInt(i.logical_size.height) else 720;
+
+        // Rebuilt from the font every frame rather than cached: a content reload can put a
+        // different font underneath the sample between one frame and the next, and a style
+        // is a value the kernel only ever reads.
+        self.ui.style = cardStyle(uiFontOf(self.font));
+
+        self.pointer = self.drivePointer(engine);
+
+        // One snapshot, two consumers, so the card and the hall cannot disagree about what
+        // the user did this frame (I9). The mouse in it is overwritten with the pointer the
+        // frame decided on, which for a played run is the same thing it already held and
+        // for a scripted one is the script — so both go through this single path.
+        var keys = engine.input;
+        keys.mouse.position = self.pointer.at;
+        platform.key.setButton(&keys.mouse.buttons_pressed, .left, self.pointer.pressed);
+        platform.key.setButton(&keys.mouse.buttons_held, .left, self.pointer.held);
+        platform.key.setButton(&keys.mouse.buttons_released, .left, self.pointer.released);
+
+        self.ui.begin(.{
+            .keys = keys,
+            .pointer = self.pointer.at,
+            .wheel = engine.input.mouse.wheel,
+            .text = self.typed[0..self.typed_len],
+            .frame = engine.frame_index,
+        }, .init(0, 0, width, height));
+        defer self.ui.end();
+
+        // A frame that describes nothing wants nothing, and the hall keeps every input it
+        // has. The card being closed is not a special case anywhere else in this file.
+        if (!self.card_open) return;
+        try self.describeCard(width, height);
+    }
+
+    /// Who is walking, how loud it is, and a way out of the card.
+    ///
+    /// **Deliberately the debug widget set and not a HUD.** The room's counter and its
+    /// closing line are centred, scaled, hand-placed text, which is what a game's widget
+    /// layer is for and what `ui.md` postpones; a card of rows and controls is what the set
+    /// that exists today actually is. Building the counter out of labels would be
+    /// pretending the second widget set had arrived.
+    fn describeCard(self: *Room, width: f32, height: f32) !void {
+        const style = self.ui.style;
+        const id = ui.Id.root.child("card");
+
+        const title = self.text.card_title[0..self.text.card_title_len];
+        const name_label = self.text.name_label[0..self.text.name_label_len];
+        const close_label = self.text.close_label[0..self.text.close_label_len];
+
+        var volume_text: [48]u8 = undefined;
+        const volume_label = std.fmt.bufPrint(&volume_text, "{s} {d:.2}", .{
+            self.text.volume_label[0..self.text.volume_label_len],
+            self.volume,
+        }) catch self.text.volume_label[0..self.text.volume_label_len];
+
+        // **A cursor layout does not size its container**, so whoever opens a panel adds
+        // its contents up. Five rows and a separator between them.
+        var widest: f32 = style.line_height * 8;
+        for ([_][]const u8{ title, name_label, volume_label, close_label }) |line| {
+            widest = @max(widest, style.font.measure(line, style.text_scale).x);
+        }
+        const rows: f32 = 5;
+        const items: f32 = 6;
+        const content = rows * style.line_height +
+            (style.separator_thickness + style.spacing * 2) +
+            (items - 1) * style.spacing;
+
+        // Over the hall rather than in a corner, because a card tucked out of the way is
+        // one a click never has to be held back from.
+        const panel: core.math.Rect = .init(
+            @round((width - (widest + style.padding.x * 3)) / 2),
+            @round(height * 0.22),
+            widest + style.padding.x * 3,
+            content + style.padding.y * 2,
+        );
+        self.card_rect = panel;
+
+        try ui.beginPanel(&self.ui, id, panel);
+        try ui.label(&self.ui, title);
+        try ui.separator(&self.ui);
+        try ui.label(&self.ui, name_label);
+
+        // Where the next widget will land, taken before it lands there. The scripted
+        // pointer aims at this on a later frame, which is exact because the card does not
+        // move; a person aims with their hand and never reads it.
+        self.name_rect = nextRow(self.ui.region().remaining(), style.line_height);
+        if (try ui.textField(&self.ui, self.ui.childId("name"), &self.name, &self.name_len)) {
+            self.name_edited = true;
+        }
+
+        // A slider over a value the game already had. There is one volume, the card writes
+        // it, and the mixer is told — so the number on screen and the number the ears hear
+        // cannot be two different numbers.
+        if (try ui.slider(&self.ui, self.ui.childId("volume"), volume_label, &self.volume, 0, 1)) {
+            if (self.mixer) |mixer| mixer.setMasterGain(self.volume);
+        }
+
+        self.close_rect = nextRow(self.ui.region().remaining(), style.line_height);
+        // **Recorded, not acted on.** Closing the card here would clear the capture that
+        // this very click was consumed by, and the hall would then be handed it as a place
+        // to walk to — the "player who walked into a wall because they closed a panel" the
+        // kernel's own comment warns about. So the button reports, and `command` acts once
+        // the frame it belongs to is over.
+        if (try ui.button(&self.ui, self.ui.childId("close"), close_label)) {
+            self.close_requested = true;
+        }
+        try ui.endPanel(&self.ui);
+    }
+
+    /// What the game does with the input the card left it.
+    ///
+    /// **Every capture decision in this sample is in this function**, which is the point of
+    /// it. Input becomes a *command* here — a place to walk to, a card to open — and
+    /// nothing below reads a device, so there is exactly one place to get it wrong and
+    /// exactly one place to check.
+    fn command(self: *Room, engine: *app.Engine) void {
+        self.took_pointer = self.ui.wantsPointer();
+        self.took_keyboard = self.ui.wantsKeyboard();
+
+        if (self.close_requested) {
+            self.close_requested = false;
+            self.closeCard();
+        }
+
+        const in = &engine.input;
+
+        // **Escape is never held back.** A text field consumes characters and the keys that
+        // edit them; it does not consume the way out, and a game that gave up its quit key
+        // while a field had focus would be a game you could get stuck in a text box in.
+        if (in.wasPressed(.escape)) {
+            if (self.card_open) self.closeCard() else engine.requestQuit();
+        }
+        // Tab is held back, because tab is a key a field could want.
+        if (in.wasPressed(.tab) and !self.took_keyboard) {
+            if (self.card_open) self.closeCard() else self.openCard();
+        }
+
+        if (!self.pointer.pressed) return;
+        if (self.took_pointer) {
+            self.clicks_taken += 1;
+            return;
+        }
+
+        // Refreshed here rather than trusted from last frame, because a camera holding a
+        // stale viewport puts `screenToWorld` out by half of whatever the window changed
+        // by — and a click that lands somewhere else is worse than one that lands nowhere.
+        const info = engine.windowInfo();
+        self.camera.viewport = .init(
+            0,
+            0,
+            if (info) |i| @floatFromInt(i.logical_size.width) else 1280,
+            if (info) |i| @floatFromInt(i.logical_size.height) else 720,
+        );
+
+        // Click to go. The walker heads for the point and stops when it arrives, when a
+        // hand lands on the keys, or when it can get no closer (`walk`).
+        self.walk_to = self.camera.screenToWorld(self.pointer.at);
+        self.walked_from_pointer = true;
+        self.walk_commands += 1;
+    }
+
+    /// The rule, **checked rather than only obeyed**.
+    ///
+    /// It asks the kernel again at the end of the frame instead of trusting the answers
+    /// `command` cached, so an edit that moved the question to the wrong place — asking
+    /// before the card has been described, say — reports a line here rather than quietly
+    /// walking the player into a wall. Nothing fires while the order above is right, which
+    /// is exactly what it is here to assert.
+    fn auditCapture(self: *Room) void {
+        if (self.walked_from_pointer and self.ui.wantsPointer()) {
+            self.capture_failures += 1;
+            log.err("the hall walked on a click the card had taken", .{});
+        }
+        if (self.walked_from_keys and self.ui.wantsKeyboard()) {
+            self.capture_failures += 1;
+            log.err("the hall walked on keys the card was typing with", .{});
+        }
+        self.walked_from_pointer = false;
+        self.walked_from_keys = false;
+    }
+
+    fn openCard(self: *Room) void {
+        self.card_open = true;
+        self.card_opens += 1;
+    }
+
+    /// Closing gives back the pointer and the keyboard in the same breath.
+    ///
+    /// Without `clearInteraction` a field that had focus when the card closed would still
+    /// have it when the card came back, and a drag the card was closed in the middle of
+    /// would still be active with nothing left to drag.
+    fn closeCard(self: *Room) void {
+        self.card_open = false;
+        self.ui.clearInteraction();
+    }
+
+    /// Which way a clicked point is, or nothing when there is no point or it is reached.
+    fn towardClick(self: *Room) core.math.Vec2 {
+        const target = self.walk_to orelse return .zero;
+        const at = self.playerAt() orelse return .zero;
+        const to = target.sub(at);
+        const distance = to.length();
+        // Half a world unit, which is well inside the walker's own box: arrived means
+        // arrived, and a target it can never be exactly on would jitter forever.
+        if (distance < 0.5) {
+            self.walk_to = null;
+            return .zero;
+        }
+        return to.scale(1 / distance);
+    }
+
+    /// The pointer this frame: the device's, or the script's.
+    ///
+    /// **One value and one path.** The kernel and the game both read what this returns, so
+    /// a scripted click cannot exercise a path a real one does not — the same rule
+    /// `samples/sandbox` states about its scripted picks, kept here by construction rather
+    /// than by care.
+    fn drivePointer(self: *Room, engine: *app.Engine) Pointer {
+        if (!self.autopilot) {
+            const mouse = engine.input.mouse;
+            return .{
+                .at = mouse.position,
+                .pressed = mouse.wasPressed(.left),
+                .held = mouse.isHeld(.left),
+                .released = mouse.wasReleased(.left),
+            };
+        }
+
+        const f = Script.phase(engine.frame_index) orelse {
+            if (self.card_open) self.closeCard();
+            return .{ .at = Script.parked };
+        };
+
+        if (f == 0 and !self.card_open) self.openCard();
+        self.driveTyping(f);
+
+        for (Script.presses) |press| {
+            // Over the target for a moment either side of the press, because a widget is
+            // hot only from the frame after the pointer arrives (`ui.Context.hot`) and a
+            // click is a press *and* a release on the same control.
+            if (f + 2 < press.at or f > press.at + 3) continue;
+            return .{
+                .at = self.aimAt(press.aim),
+                .pressed = f == press.at,
+                .held = f == press.at or f == press.at + 1,
+                .released = f == press.at + 2,
+            };
+        }
+        return .{ .at = Script.parked };
+    }
+
+    /// The middle of what the script is aiming at, from where the card last put it.
+    fn aimAt(self: *const Room, aim: Script.Aim) core.math.Vec2 {
+        const target: core.math.Rect = switch (aim) {
+            .name => self.name_rect,
+            .close => self.close_rect,
+            // The card's own top edge. Nothing there is a widget, so a press on it is the
+            // case `Context.pointer_blocked` exists for: the card is not a control and
+            // still must not let a click through to the hall behind it.
+            .surface => .init(self.card_rect.x, self.card_rect.y, self.card_rect.w, 4),
+        };
+        return .init(target.x + target.w / 2, target.y + target.h / 2);
+    }
+
+    /// The script typing the walker's name, one codepoint at a time.
+    ///
+    /// It clears the buffer first, which is the sample rewriting a field's storage under
+    /// it — documented as allowed by `ui.textField`, and worth actually doing rather than
+    /// only being told.
+    fn driveTyping(self: *Room, f: u64) void {
+        if (f == Script.clears_at) {
+            self.name_len = 0;
+            self.name_edited = false;
+        }
+        if (f < Script.types_from) return;
+        if ((f - Script.types_from) % Script.types_every != 0) return;
+
+        const wanted = (f - Script.types_from) / Script.types_every;
+        const view = std.unicode.Utf8View.init(self.settings.walker_name) catch return;
+        var it = view.iterator();
+        var index: u64 = 0;
+        while (it.nextCodepointSlice()) |slice| : (index += 1) {
+            if (index != wanted) continue;
+            // Through the same constructor the platform layer builds a real keystroke
+            // with, so a scripted character is a character and not a shortcut past one.
+            if (platform.event.TextInput.fromSlice(slice)) |typed| {
+                self.typed[0] = typed;
+                self.typed_len = 1;
+            }
+            return;
+        }
+    }
+
+    /// The walker's name, over their head, in **world** units.
+    ///
+    /// This is what makes the text field's effect visible in the hall rather than only on
+    /// the card: type a name and it is over the walker, on the same frame, with no second
+    /// copy of the string anywhere between the two.
+    fn nameplate(self: *Room) !void {
+        if (self.name_len == 0) return;
+        const at = self.playerAt() orelse return;
+        const text = self.name[0..self.name_len];
+        const size = render2d.measureText(self.font, text, .{ .position = .zero, .scale = 0.5 });
+        try self.renderer.drawText(self.font, text, .{
+            .position = .init(at.x - size.x / 2, at.y + self.settings.player_size),
+            .scale = 0.5,
+            .tint = .srgb8(210, 190, 160, 190),
+            .layer = 4,
+        });
+    }
+
     // -- content reload -----------------------------------------------------------------------
 
     /// Rebuilds everything **derived** from content, if content has moved since last time.
@@ -1746,6 +2345,14 @@ const Room = struct {
         copyInto(&self.text.hint, &self.text.hint_len, self.settings.hint);
         copyInto(&self.text.won, &self.text.won_len, self.settings.won);
         copyInto(&self.text.label, &self.text.label_len, self.settings.lamp_label);
+        copyInto(&self.text.card_title, &self.text.card_title_len, self.settings.card_title);
+        copyInto(&self.text.name_label, &self.text.name_label_len, self.settings.name_label);
+        copyInto(&self.text.volume_label, &self.text.volume_label_len, self.settings.volume_label);
+        copyInto(&self.text.close_label, &self.text.close_label_len, self.settings.close_label);
+        // Content names the walker until somebody renames them, and then it stops: a
+        // reload that overwrote a name the player had typed would be the sample taking
+        // something back that it had given away.
+        if (!self.name_edited) copyInto(&self.name, &self.name_len, self.settings.walker_name);
     }
 
     fn copyInto(buffer: []u8, length: *usize, text: []const u8) void {
@@ -1818,6 +2425,7 @@ const Room = struct {
 
         self.world.deinit();
         self.schemas.deinit(self.gpa);
+        self.ui.deinit();
         self.renderer.deinit();
     }
 };

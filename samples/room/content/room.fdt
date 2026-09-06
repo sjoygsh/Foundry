@@ -59,6 +59,18 @@
     # a way for a package to crash the game, so content supplies the noun and the sample
     # supplies the shape.
     lamp_label string (default "lamps lit")
+
+    # The card the walker opens over the hall, with tab. Five more strings for the same
+    # reason as the three above: a translated package is a package rather than a patch,
+    # and a card whose words were in the source would be the one thing in this sample that
+    # a mod could not change.
+    card_title   string (default "")
+    name_label   string (default "")
+    volume_label string (default "")
+    close_label  string (default "")
+    # What the walker is called before anyone renames them. Drawn over their head, and
+    # what the card's name field starts out holding.
+    walker_name  string (default "")
 }
 
 # An animation clip: a run of cells from a sheet, and how long each is held.
@@ -143,9 +155,15 @@ settings room:settings.main {
     hum_sound    room:sounds.hum
 
     title "the long hall"
-    hint  "wasd walks"
+    hint  "wasd walks. click to go. tab opens the card"
     won   "the hall is lit.\nthe way out is open."
     lamp_label "lamps lit"
+
+    card_title   "the walker"
+    name_label   "name"
+    volume_label "volume"
+    close_label  "close"
+    walker_name  "the lamplighter"
 }
 
 # The sheet's first row is the tileset and the rest is everything drawn as a sprite, which

@@ -1,10 +1,11 @@
 # Design: ui — an immediate-mode kernel that draws nothing
 
-**Status:** **Steps 1-5 implemented 2026-09-06** (`engine/src/ui/`, `render2d` for step 3, and
-`engine/src/app/ui_draw.zig` for step 4). §10's widget set is complete. Written before any UI
-code existed, so implementation was transcription rather than invention; see the Resolution
-sections at the end for what each step corrected and settled. Step 6 of §16 remains.
-**Date:** 2026-09-06
+**Status:** **Fully implemented, steps 1-6, 2026-09-07** (`engine/src/ui/`, `render2d` for
+step 3, `engine/src/app/ui_draw.zig` for step 4, and both samples for steps 4-6). §10's widget
+set is complete and §4's capture is proven by a game rather than only by a test. Written before
+any UI code existed, so implementation was transcription rather than invention; see the
+Resolution sections at the end for what each step corrected and settled.
+**Date:** 2026-09-07
 **Implements:** I1, I4, I5, I6, I8, I9 · **Informed by:** ADR-0004, ADR-0007, ADR-0011,
 ADR-0021, ADR-0024
 
@@ -167,6 +168,17 @@ A game that does not check these will move its player while the user drags a sli
 overlay is the first consumer and will check them; **`samples/room` is where this gets proven**,
 because a game that walks with WASD and opens a panel over the hall is the smallest case where
 getting it wrong is visible.
+
+**"Consumes typing" is the load-bearing half of `wantsKeyboard`, and it is not the same as
+"has focus".** A press focuses whatever it lands on, a slider included, so a game that asked
+only whether something had focus would lose its movement keys the moment the user dragged one
+and would not get them back until they clicked the world again. Only a control that treats a
+keystroke as a *character* takes the keyboard, and it says so itself — the kernel cannot know
+which of a caller's controls read a key as a letter and which read it as a shortcut. The
+consequence for a game is a rule about which of its own bindings it holds back: **the ones a
+keyboard types.** Letters, digits and the keys that edit them; not escape, and not a function
+key. A game that gave up its quit key while a text field had focus would be a game you can get
+stuck in a text box in.
 
 Capture is deliberately **advisory, not enforced.** The kernel cannot filter the game's input
 without sitting between the game and `platform`, which would invert the layering and make the
@@ -838,3 +850,73 @@ one step 4 recorded and has not changed: panel rectangles come from the blank te
 labels from the font, so every alternation is a texture break, and there are more alternations
 now. Still a `render2d` question, still not worth answering before there is something to
 measure with.
+
+---
+
+## Resolution: the room checks capture (step 6, 2026-09-07)
+
+`samples/room` opens a card over the live hall — a title, the walker's name, the volume, and a
+way out of it — on tab. `samples/sandbox` gained the keyboard half of the same check.
+**900 tests under `-Drhi=null` and 908 under `-Drhi=metal`**, unchanged in number: two kernel
+tests were rewritten rather than added, because what step 6 found was a contract this document
+had stated and the implementation had not kept.
+
+**`wantsKeyboard` reported focus, and focus is not consumption.** §4 has always said "a widget
+has focus **and consumes typing**"; `context.zig` returned `!focus.isNone()`. A press focuses
+whatever it lands on, so dragging the volume slider took the keyboard away from the hall and
+did not give it back until the player clicked the world again — WASD dead, with nothing on
+screen to say why. The fix is the shape `pointer_blocked` already had: a widget *declares* it is
+eating typing (`Context.blockKeyboard`), `textField` is the only one that does, and the flag is
+cleared every frame like every other per-frame fact. A field the caller has stopped describing —
+the panel holding it was closed — consumes nothing, whatever `focus` still says. **This was
+found by building the game, not by testing the kernel**, which is what step 6 was for: every
+kernel test that could have caught it would have had to know that a slider is not a text field,
+and the design document is the only place that knew.
+
+**Capture lasts one frame longer than focus, deliberately.** On the frame a press lands outside
+a focused field, `edit` has already run and taken that frame's characters, so the field still
+reports that it consumed them; focus goes now and the keyboard on the next frame. A game that
+read those characters too would read them twice. This is the same asymmetry `wantsPointer`
+already documents, and it errs the same way round.
+
+**Closing a panel from inside the frame gives the click back to the game.** The card's close
+button cannot call `clearInteraction` where it stands: that clears `next_hot` and
+`pointer_blocked` before `end` resolves them, capture reports nothing for the frame, and the
+click that closed the card also becomes a place to walk to — which is precisely the "player who
+walked into a wall because they closed a panel" this document's own comment warns about. The
+button records; the game acts after `end`. **A widget returns what happened and the caller
+decides when**, and this is the first case where the difference is a bug rather than a style.
+
+**What the sample proves, and how a scripted run proves it.** The room now has one thing in the
+world that wants the pointer — a click sends the walker there — because a capture check guarding
+nothing proves nothing. The autopilot drives the card too: it opens it, clicks the name field,
+types the walker's name a codepoint at a time through `platform.event.TextInput.fromSlice`,
+presses the card's empty half (the `pointer_blocked` case step 2 left as an argument), and
+clicks its way out. The device and the script produce the *same* `Pointer` value, which the
+kernel and the game both read, so a scripted click cannot take a path a real one does not. A run
+reports what the card took and whether the hall ever acted on any of it: **29 visits, 87 clicks
+taken, 0 capture failures**, and the hall still finishes — 6 of 6 lamps in 1,542 ticks with the
+card opening across the walk.
+
+**The audit re-asks the kernel rather than trusting the answer the game cached.** Nothing it
+checks can fire while the order in `main` is right, which is the point: it is the assertion that
+the order is what makes it right. An edit that moved the capture question before the card was
+described would report a line instead of quietly walking the player into a wall.
+
+**What implementation settled:**
+
+* **Every capture decision in the room is in one function.** Input becomes a *command* in
+  `command` — a place to walk to, a card to open — and nothing below it reads a device. One
+  place to get it wrong, and one place to check.
+* **Escape is never held back and tab always is.** The dividing line is not importance, it is
+  whether a text field would want the key: tab is what a focus order would move with, escape is
+  not a character and is the way out of the field.
+* **The card is described before the fixed step, in both samples.** `samples/sandbox` had it
+  after, which meant its filter box could only have gated the *next* frame's movement; the
+  reorder is what makes `walk` able to ask at all. Its `r`, `c` and arrow bindings are held back
+  now, and its save and load keys are not.
+* **The card uses the debug widget set and the room's HUD does not.** The counter and the
+  closing line are centred, scaled, hand-placed text — what the game widget layer is for and
+  what §15 postpones. Rebuilding them out of labels would be pretending that set had arrived.
+* **The card's five strings are content**, like every other string the room draws. A card whose
+  words lived in the source would be the one thing in that sample a package could not change.

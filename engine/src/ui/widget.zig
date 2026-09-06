@@ -435,7 +435,14 @@ pub fn textField(ctx: *Context, id: Id, buffer: []u8, len: *usize) Allocator.Err
     state.caret = @intCast(alignBoundary(buffer[0..len.*], state.caret));
 
     var changed = false;
-    if (ctx.isFocused(id)) changed = edit(ctx, buffer, len, state);
+    if (ctx.isFocused(id)) {
+        // **The one widget that eats typing, and the only thing that says so.** A game
+        // reads `wantsKeyboard` to decide whether "w" was a step or a letter, and the
+        // answer is this call rather than "something has focus" — a slider with focus is
+        // not eating anything (`Context.blockKeyboard`).
+        ctx.blockKeyboard();
+        changed = edit(ctx, buffer, len, state);
+    }
 
     try ctx.list.addRect(ctx.gpa, bounds, fillFor(style, interaction));
     const text = buffer[0..len.*];
@@ -1399,7 +1406,17 @@ test "a press that reaches nothing takes the keyboard away" {
     ctx.end();
     try testing.expect(ctx.wantsKeyboard());
 
+    // The frame of the press is still the field's: `edit` ran with the old focus and has
+    // already taken this frame's characters, so a game reading them too would read them
+    // twice. Focus goes now; the keyboard goes on the next frame the field is described
+    // without it.
     ctx.begin(frameOf(away, .pressed), viewport);
+    _ = try textField(&ctx, id, &buffer, &len);
+    ctx.end();
+    try testing.expect(!ctx.isFocused(id));
+    try testing.expect(ctx.wantsKeyboard());
+
+    ctx.begin(frameOf(away, .up), viewport);
     _ = try textField(&ctx, id, &buffer, &len);
     ctx.end();
     try testing.expect(!ctx.wantsKeyboard());

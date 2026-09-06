@@ -103,6 +103,17 @@ pub const Context = struct {
     /// at step 6 is where it stops being theoretical.
     pointer_blocked: bool = false,
 
+    /// A widget is **consuming typing** this frame. Set by `blockKeyboard`, cleared every
+    /// frame, and read by `wantsKeyboard`.
+    ///
+    /// Separate from `focus`, and that separation is the whole of what this field is for.
+    /// Focus is set by a press on *any* widget, so a game that asked "does something have
+    /// focus" would stop answering its own movement keys the moment the user dragged a
+    /// slider, and would go on ignoring them until they clicked the world again. What a
+    /// game needs to know is narrower: is a control eating the characters I am about to
+    /// read. Only a text field says yes.
+    keyboard_blocked: bool = false,
+
     in_frame: bool = false,
 
     pub fn init(gpa: Allocator, style: Style) Context {
@@ -136,6 +147,7 @@ pub const Context = struct {
         self.duplicates = 0;
         self.next_hot = .none;
         self.pointer_blocked = false;
+        self.keyboard_blocked = false;
         self.states.sweep(input.frame);
     }
 
@@ -225,9 +237,19 @@ pub const Context = struct {
         return self.pointer_blocked or !self.hot.isNone() or !self.active.isNone();
     }
 
-    /// True when a widget has keyboard focus and will consume typing.
+    /// True when a widget has keyboard focus **and will consume typing**, meaning the game
+    /// should not read its own typed bindings this frame.
+    ///
+    /// Answered from what was described this frame, like `wantsPointer` and for the same
+    /// reason. A field that is no longer described — the panel holding it was closed —
+    /// wants nothing, whatever `focus` still says.
+    ///
+    /// **What a game holds back is the bindings a keyboard *types*.** A text field consumes
+    /// characters and the keys that edit them; it does not consume escape, and a game that
+    /// gave up its quit key while a field had focus would be a game with no way out of its
+    /// own text box. `samples/room` is where that line is drawn in practice.
     pub fn wantsKeyboard(self: *const Context) bool {
-        return !self.focus.isNone();
+        return self.keyboard_blocked;
     }
 
     pub fn isHot(self: *const Context, id: Id) bool {
@@ -257,6 +279,7 @@ pub const Context = struct {
         self.focus = .none;
         self.next_hot = .none;
         self.pointer_blocked = false;
+        self.keyboard_blocked = false;
     }
 
     // -- layout ----------------------------------------------------------------------
@@ -325,6 +348,16 @@ pub const Context = struct {
     /// onto — but a click on its empty half still must not reach the world behind it.
     pub fn blockPointer(self: *Context, bounds: Rect) void {
         if (bounds.contains(self.input.pointer)) self.pointer_blocked = true;
+    }
+
+    /// Declare that this widget is consuming typing. What a text field does while it has
+    /// focus, and the only thing `wantsKeyboard` reports.
+    ///
+    /// A widget declares this rather than the kernel inferring it, for the same reason
+    /// `blockPointer` exists: the kernel cannot know which of the controls a caller wrote
+    /// treats a keystroke as a character and which treats it as a shortcut.
+    pub fn blockKeyboard(self: *Context) void {
+        self.keyboard_blocked = true;
     }
 
     /// False when this id has already been used this frame. Allocation failure is treated
@@ -508,20 +541,34 @@ test "capture is true over a control and false over empty space" {
     try testing.expect(ctx.wantsPointer());
 }
 
-test "keyboard capture follows focus, and a press takes it" {
+test "focus alone does not take the keyboard; consuming typing does" {
+    // The distinction `samples/room` exists to prove. A press focuses whatever it lands on,
+    // including a slider — and a game whose movement keys died until the user clicked the
+    // world again would be a game the overlay broke.
     var ctx: Context = .init(testing.allocator, testStyle());
     defer ctx.deinit();
-    const id = Id.root.child("field");
+    const id = Id.root.child("slider");
 
     try testing.expect(!ctx.wantsKeyboard());
 
     _ = step(&ctx, id, box, .at(over_it, .up));
     _ = step(&ctx, id, box, .at(over_it, .pressed));
     try testing.expect(ctx.isFocused(id));
+    try testing.expect(ctx.wantsKeyboard() == false);
+
+    // What a text field does inside its own call, while it has focus.
+    ctx.begin(.at(over_it, .held), screen);
+    _ = ctx.interact(id, box);
+    ctx.blockKeyboard();
+    ctx.end();
     try testing.expect(ctx.wantsKeyboard());
 
-    ctx.clearInteraction();
+    // And it lasts exactly one frame: a field that is no longer described — the panel
+    // holding it was closed — consumes nothing, whatever `focus` still says.
+    ctx.begin(.at(over_it, .held), screen);
+    ctx.end();
     try testing.expect(!ctx.wantsKeyboard());
+    try testing.expect(ctx.isFocused(id));
 }
 
 test "a release the UI never saw does not strand an active widget" {

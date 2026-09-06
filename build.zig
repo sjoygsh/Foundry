@@ -315,6 +315,7 @@ pub fn build(b: *std.Build) void {
     room_mod.addImport("render2d", modules.get("render2d").?);
     room_mod.addImport("rhi", modules.get("rhi").?);
     room_mod.addImport("scene", modules.get("scene").?);
+    room_mod.addImport("ui", modules.get("ui").?);
 
     const room = b.addExecutable(.{ .name = "room", .root_module = room_mod });
     b.installArtifact(room);
