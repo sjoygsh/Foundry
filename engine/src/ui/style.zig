@@ -137,6 +137,14 @@ pub const Style = struct {
     /// because ADR-0024 asks the kernel to contain neither, and because a HUD's divider and
     /// a debug panel's are not the same weight.
     separator_thickness: f32 = 1,
+    /// How wide a scroll region's bar is, and therefore how much width its contents lose.
+    scrollbar: f32 = 12,
+    /// How many frames a text field's caret spends visible, and then hidden.
+    ///
+    /// **Frames, not milliseconds.** The kernel reads no clock (I9), so anything that has
+    /// to animate counts the frame number the caller passes in — which is what makes a
+    /// hundred frames of a test blink the same way on every machine.
+    caret_blink_frames: u32 = 30,
 
     text: Color,
     text_dim: Color,

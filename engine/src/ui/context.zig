@@ -23,6 +23,7 @@ const Id = @import("id.zig").Id;
 const Input = @import("input.zig").Input;
 const draw = @import("draw.zig");
 const layout = @import("layout.zig");
+const state_mod = @import("state.zig");
 const style_mod = @import("style.zig");
 const Style = style_mod.Style;
 const Region = layout.Region;
@@ -87,6 +88,11 @@ pub const Context = struct {
     seen: std.AutoHashMapUnmanaged(Id, void) = .empty,
     duplicates: u32 = 0,
 
+    /// What the kernel remembers between frames for the few widgets that need anything
+    /// remembered: a scroll offset, a header's open flag, a caret (`state.zig`). Swept in
+    /// `begin`, so a panel nobody has described for ten seconds gives its bytes back.
+    states: state_mod.Store = .{},
+
     /// The pointer is over a container that swallows it, whether or not it reached a
     /// control. Set by `blockPointer`, cleared every frame, and read by `wantsPointer`.
     ///
@@ -107,6 +113,7 @@ pub const Context = struct {
         self.list.deinit(self.gpa);
         self.regions.deinit(self.gpa);
         self.seen.deinit(self.gpa);
+        self.states.deinit(self.gpa);
         self.* = undefined;
     }
 
@@ -129,6 +136,7 @@ pub const Context = struct {
         self.duplicates = 0;
         self.next_hot = .none;
         self.pointer_blocked = false;
+        self.states.sweep(input.frame);
     }
 
     /// Resolve what the frame described. After this the draw list is complete and the
@@ -156,6 +164,12 @@ pub const Context = struct {
         // pointer released outside the window leaves a widget active forever and the next
         // click anywhere goes to it.
         if (self.input.pointerReleased()) self.active = .none;
+
+        // A press that reached no widget takes the keyboard away from whatever had it.
+        // Without this a text field goes on consuming typing after the user has clicked
+        // somewhere else, which is the one focus rule a mouse-driven overlay needs — the
+        // rest of focus handling is tab order, and `ui.md` §14 leaves that out of M6.
+        if (self.input.pointerPressed() and self.next_hot.isNone()) self.focus = .none;
 
         // An active widget keeps the pointer even when it wanders off — that is what makes
         // a slider drag. Otherwise the topmost widget the pointer reached becomes hot.
@@ -224,6 +238,15 @@ pub const Context = struct {
     }
     pub fn isFocused(self: *const Context, id: Id) bool {
         return self.focus == id and !id.isNone();
+    }
+
+    /// What the kernel remembers about `id`, created at its default the first time.
+    ///
+    /// **Never fails**, and the pointer is valid only until the next widget asks for one —
+    /// widgets read it and write it inside a single call and never keep it. Anything a
+    /// caller owns belongs with the caller instead; see `state.zig` for where that line is.
+    pub fn stateOf(self: *Context, id: Id) *state_mod.State {
+        return self.states.entry(self.gpa, id, self.input.frame);
     }
 
     /// Give up focus and any drag in progress. What a caller does when the overlay closes,

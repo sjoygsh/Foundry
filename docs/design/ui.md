@@ -1,9 +1,9 @@
 # Design: ui — an immediate-mode kernel that draws nothing
 
-**Status:** **Steps 1-4 implemented 2026-09-06** (`engine/src/ui/`, `render2d` for step 3, and
-`engine/src/app/ui_draw.zig` for step 4). Written before any UI code existed, so implementation
-was transcription rather than invention; see the Resolution sections at the end for what each
-step corrected and settled. Steps 5-6 of §16 remain.
+**Status:** **Steps 1-5 implemented 2026-09-06** (`engine/src/ui/`, `render2d` for step 3, and
+`engine/src/app/ui_draw.zig` for step 4). §10's widget set is complete. Written before any UI
+code existed, so implementation was transcription rather than invention; see the Resolution
+sections at the end for what each step corrected and settled. Step 6 of §16 remains.
 **Date:** 2026-09-06
 **Implements:** I1, I4, I5, I6, I8, I9 · **Informed by:** ADR-0004, ADR-0007, ADR-0011,
 ADR-0021, ADR-0024
@@ -748,3 +748,93 @@ a surface and its text is a texture break. Packing the blank patch into the font
 collapse them, which is a `render2d` question rather than a `ui` one and is not worth answering
 before there is a profiler to show it mattering (rule 2). Recorded so the number is not a
 surprise later.
+
+
+## Resolution: the rest of the widget set (step 5, 2026-09-06)
+
+§10's table is complete. Twenty-three more tests: 900 under `-Drhi=null`, 908 under
+`-Drhi=metal`, and `samples/sandbox` draws every one of the five.
+
+**The step's one structural addition is a per-widget state store**, and §12 named it before it
+existed — "the arena for text, the command array, and the per-widget state map all grow" — so
+this is the design being cashed rather than extended. What decides whether something belongs in
+it is not convenience: a checkbox's flag, a slider's value and a plot's samples all stay with
+the caller, because a kernel holding a second copy of gravity is a kernel that can be wrong
+about gravity. What lands in the store is the state that **has no owner anywhere else** —
+how far a list is scrolled, whether a tree node is open, where the caret is — because it is a
+property of *looking at* a widget rather than of the thing displayed. A caller could own those
+too, and for one panel that would be better; an inspector with a header per entity would then
+need an array of bools parallel to the world, which is the second copy immediate mode exists to
+avoid.
+
+**Entries age in frames, not seconds** (`state.zig`). The kernel reads no clock (I9), so the
+sweep counts the frame number the caller passes in, which also makes it a no-op for a caller
+that never sets one rather than a sweep that evicts everything. It is rate-limited to
+sixty-four entries every three hundred frames: a bound rather than a limit, since what a sweep
+misses the next one takes, and the alternative was an unbounded pass or an allocation inside the
+one function whose job is to give memory back.
+
+**What implementation settled, per widget:**
+
+* **`slider` formats nothing.** A debug slider wants to show its value, and the caller formats
+  that into the label it passes. A format string in the kernel would be the string literal
+  ADR-0024 asked it not to contain, in the one place it would look harmless.
+* **`sliderInt` is a second function, not a generic one.** The rounding is the whole difference,
+  and a float slider handed whole numbers stops on values it cannot represent as one.
+* **`collapsingHeader` does not indent.** Indenting needs a region and a metric, a debug tree
+  reads without one, and a caller who wants it opens a region.
+* **A scroll region describes its bar *before* its contents.** Paint order would put the bar
+  underneath, which is harmless because the contents' region is narrowed by exactly the bar's
+  width — and it saves carrying the viewport from `beginScroll` to `endScroll` in a third
+  stack beside the regions and the clips. The bar also stores its grab offset in the region's
+  own entry rather than one of its own, so a scroll region is one lookup.
+* **`textField` allocates nothing.** The buffer and its length belong to the caller, which is
+  what a fixed `[48]u8` filter box wants and what makes the widget reachable from the ABI
+  without an ownership rule. Editing is insert, backspace, delete and caret movement, all by
+  whole codepoints; selection and clipboard remain out (§15).
+* **`plot` takes the caller's ring where it starts.** `PlotOptions.first` means a frame
+  profiler passes its buffer as stored rather than rotating a copy every frame. The line is one
+  rectangle per sample spanning from the previous sample's height, because the draw list has
+  rectangles and text in it and nothing else (§6); a flat run is one `separator_thickness` tall
+  rather than nothing.
+
+**One rule was added to `end` that step 1 should have had.** A press that reaches no widget
+now clears `focus`. Without it a text field goes on consuming typing after the user has clicked
+elsewhere, which is the single focus rule a mouse-driven overlay needs — the rest is tab order,
+and §14 leaves that out of M6 deliberately.
+
+**The text field found a bug in `platform`, three layers down.** `event.TextInput.fromSlice`
+ran its truncation back-off on every slice rather than only on one it had actually cut, so any
+committed text whose last character was not ASCII lost that character — and a two-byte string
+became an empty event. Typing an accented character would have inserted nothing. Dead keys and
+input-method composition are the *reason* that type exists, and its own tests were all ASCII.
+Fixed with the guard it should have had, and a test for the case that matters.
+
+**Two style metrics were added and no colours:** `scrollbar` and `caret_blink_frames`. The
+second is the one worth noticing — a blink period is a metric like any other, and having it in
+the style is what keeps the kernel's one animation counted in frames the caller supplies.
+
+**`samples/sandbox` draws all five**, which is the point of the sample existing. The
+statistics panel gained a frame-time plot over a ring the sample owns, a collapsing "detail"
+section, and a zoom slider over `camera.zoom` — the same value the wheel changes, so the two
+cannot disagree. The help line became a second panel: a filter field over a scrolling list of
+the sample's key bindings, which is **the log console's shape** built from strings that already
+existed as three `log.info` lines. Those bindings now have one definition instead of two.
+
+**Sizing a panel around a collapsing section needs `Context.stateOf`**, because a cursor layout
+does not know its contents' height until it has placed them and a panel must be the right size
+the first time it is drawn. That is a real wart and it is the caller's, not the kernel's; the
+alternative — sizing from the previous frame's `Region.placed` — is the standard immediate-mode
+trick and is one frame late. Recorded rather than solved, because the overlay's own document is
+where a panel that sizes itself will actually be wanted.
+
+**Culling now has a consumer** (§14). The bindings list emits a text command for every binding
+whether or not it is inside the scroll region's clip, which is visible in a dump of the frame.
+Eleven lines is nothing; ten thousand log lines is the case, and the answer still waits for the
+profiler rather than being guessed at now.
+
+**The overlay costs fifteen batches where the hand-drawn HUD cost six.** The cause is the same
+one step 4 recorded and has not changed: panel rectangles come from the blank texture and
+labels from the font, so every alternation is a texture break, and there are more alternations
+now. Still a `render2d` question, still not worth answering before there is something to
+measure with.

@@ -34,6 +34,7 @@ pub const draw = @import("draw.zig");
 pub const id = @import("id.zig");
 pub const input = @import("input.zig");
 pub const layout = @import("layout.zig");
+pub const state = @import("state.zig");
 pub const style = @import("style.zig");
 pub const widget = @import("widget.zig");
 
@@ -53,20 +54,31 @@ pub const Input = input.Input;
 pub const Interaction = context.Interaction;
 pub const Region = layout.Region;
 pub const Style = style.Style;
+/// What the kernel remembers between frames for the few widgets that need it. Not a
+/// caller's storage: see `state.zig` for where that line is drawn and why.
+pub const WidgetState = state.State;
 pub const TextRef = draw.TextRef;
 
-// The widget set so far. `slider`, `collapsingHeader`, `scrollRegion`, `textField` and
-// `plot` arrive at step 5 of `ui.md` §16.
+// The debug widget set of `ui.md` §10, complete. These are names a game sees today and a
+// mod sees from M7, so renaming one is a compatibility decision (CLAUDE.md §7).
 pub const beginPanel = widget.beginPanel;
 pub const endPanel = widget.endPanel;
 pub const beginRow = widget.beginRow;
 pub const endRow = widget.endRow;
+pub const beginScroll = widget.beginScroll;
+pub const endScroll = widget.endScroll;
 pub const button = widget.button;
 pub const buttonIn = widget.buttonIn;
 pub const checkbox = widget.checkbox;
+pub const collapsingHeader = widget.collapsingHeader;
 pub const label = widget.label;
+pub const plot = widget.plot;
+pub const PlotOptions = widget.PlotOptions;
 pub const separator = widget.separator;
+pub const slider = widget.slider;
+pub const sliderInt = widget.sliderInt;
 pub const spacer = widget.spacer;
+pub const textField = widget.textField;
 
 test {
     _ = context;
@@ -74,6 +86,7 @@ test {
     _ = id;
     _ = input;
     _ = layout;
+    _ = state;
     _ = style;
     _ = widget;
 }

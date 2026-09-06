@@ -53,6 +53,25 @@ const content_packages = [_]app.ContentPackage{
     .{ .file = "sandbox.fpk", .root = "sandbox" },
 };
 
+/// What the sample's keys do.
+///
+/// Logged once at startup and listed in the overlay's second panel, which is what the
+/// scroll region and the filter field are demonstrated on: a list long enough to need
+/// scrolling and worth filtering, made of strings that already existed.
+const bindings = [_][]const u8{
+    "wasd - walk the player",
+    "arrows - pan the camera",
+    "shift - pan faster",
+    "right or middle drag - pan",
+    "wheel - zoom about the cursor",
+    "left click - pick a sprite",
+    "c - follow the player again",
+    "r - resize the window",
+    "f5 - save the world",
+    "f9 - load the world",
+    "escape - quit",
+};
+
 /// The built-ins, plus whatever `FOUNDRY_SANDBOX_PACKAGES` names, in that order.
 ///
 /// **This is the mod path, with no mod manager in front of it.** Compile a package with
@@ -176,11 +195,11 @@ pub fn main(init: std.process.Init) !void {
                 log.info("no native surface; the clear goes to an offscreen target", .{});
             }
         }
-        log.info("WASD walks the player; arrows pan; shift pans faster; drag with right or middle", .{});
-        log.info("wheel zooms about the cursor; left-click picks; C follows the player again", .{});
-        log.info("R resizes the window; escape or the close button quits", .{});
+        // One list, logged here and listed in the overlay. Two copies of a key map is how
+        // a sample ends up documenting a binding it no longer has.
+        for (bindings) |line| log.info("{s}", .{line});
         if (field.save_path) |path| {
-            log.info("F5 saves the world to '{s}'; F9 loads it back", .{path});
+            log.info("f5 and f9 use '{s}'", .{path});
         }
     }
 
@@ -195,7 +214,11 @@ pub fn main(init: std.process.Init) !void {
         // sample derived from content is derived again here, before the frame reads it.
         field.refresh(engine);
 
-        while (engine.nextEvent()) |ev| report(ev);
+        field.typed_len = 0;
+        while (engine.nextEvent()) |ev| {
+            field.noteEvent(ev);
+            report(ev);
+        }
 
         while (engine.nextStep()) |step| {
             // The only place simulation happens. It reads `step.input`, never the device.
@@ -1090,6 +1113,18 @@ const SpriteField = struct {
     /// ids it has seen, and the draw list this frame described. Described in `describeUi`
     /// at the top of the frame and walked into the renderer in `hud`.
     ui: ui.Context,
+    /// Frame times, newest last, as a ring. **The sample owns it**, which is the whole
+    /// bargain: `ui.plot` draws a caller's samples and keeps no copy that could disagree
+    /// with them.
+    frame_ms: [96]f32 = @splat(0),
+    frame_head: usize = 0,
+    /// What the overlay's filter box holds. A fixed buffer, because a debug filter is
+    /// thirty bytes and `ui.textField` allocates nothing.
+    filter: [48]u8 = undefined,
+    filter_len: usize = 0,
+    /// Characters the OS committed this frame, drained from the frame's events.
+    typed: [8]platform.event.TextInput = undefined,
+    typed_len: usize = 0,
 
     /// Screen points. The HUD is placed in the same units the mouse is reported in, which
     /// is what the screen view buys.
@@ -2122,6 +2157,24 @@ const SpriteField = struct {
         try self.hud();
     }
 
+    /// Collects what the OS committed as text this frame.
+    ///
+    /// Separate from the input snapshot on purpose: **input is state and text is a
+    /// stream.** A snapshot says which keys are down, which cannot distinguish two presses
+    /// of the same key in one frame, and cannot represent a dead key or an input method
+    /// composing a character out of several (`platform.event.TextInput`). A field that read
+    /// the snapshot would work in English and fail everywhere else.
+    fn noteEvent(self: *SpriteField, ev: platform.Event) void {
+        switch (ev) {
+            .text_input => |typed| {
+                if (self.typed_len == self.typed.len) return;
+                self.typed[self.typed_len] = typed;
+                self.typed_len += 1;
+            },
+            else => {},
+        }
+    }
+
     /// The debug overlay, **described** — no renderer, no draw call, nothing on screen yet.
     ///
     /// Called at the top of the frame, before `control` reads the pointer, and that order
@@ -2149,12 +2202,22 @@ const SpriteField = struct {
             .keys = engine.input,
             .pointer = engine.input.mouse.position,
             .wheel = engine.input.mouse.wheel,
+            // Text is the exception: it is a *stream*, and a snapshot cannot carry it — two
+            // presses of the same key in one frame are two characters and one held key. So
+            // it is collected from the frame's events instead (`noteEvent`).
+            .text = self.typed[0..self.typed_len],
             .frame = engine.frame_index,
         }, .init(0, 0, width, height));
         defer self.ui.end();
 
         const stats = self.renderer.frameStats();
         const at = self.playerAt() orelse core.math.Vec2.zero;
+
+        // The overlay keeps its own history of what it is about to plot, because the plot
+        // draws a caller's samples and holds none of its own (`ui.plot`). A ring, written
+        // at the head and read from it, which is what `PlotOptions.first` is for.
+        self.frame_ms[self.frame_head] = engine.frameDelta().toSecondsF32() * 1000;
+        self.frame_head = (self.frame_head + 1) % self.frame_ms.len;
 
         // Four rows where this used to be one string with newlines in it. The gap between
         // them is now the region's spacing — a style decision — rather than a `\n` and a
@@ -2176,10 +2239,10 @@ const SpriteField = struct {
             stats.draw_calls,
             stats.views,
         }) catch "";
-        lines[2] = std.fmt.bufPrint(&buffers[2], "{d} KiB vertices  {d} buffers  zoom {d:.2}", .{
+        lines[2] = std.fmt.bufPrint(&buffers[2], "{d} KiB vertices  {d} buffers  {d} textures", .{
             stats.vertex_bytes / 1024,
             stats.buffers_used,
-            self.camera.zoom,
+            stats.textures_resident,
         }) catch "";
         lines[3] = std.fmt.bufPrint(&buffers[3], "player ({d:.0}, {d:.0})  {d} contacts  frame {d}", .{
             at.x,
@@ -2194,23 +2257,41 @@ const SpriteField = struct {
         var widest: f32 = 0;
         for (lines) |line| widest = @max(widest, style.font.measure(line, style.text_scale).x);
 
-        // Four statistics rows and the toggle, a separator between them, and a gap after
-        // each of the six but the last.
-        const rows: f32 = 5;
-        const content = rows * style.line_height +
+        // A panel around a collapsing section has to know whether it is open before it can
+        // be sized, and the kernel is what remembers that. The id is the one the header
+        // will ask for: seeded by the panel's region, which is `stats_id`.
+        const stats_id = ui.Id.root.child("stats");
+        const detail_id = stats_id.child("detail");
+        const detail_open = self.ui.stateOf(detail_id).open;
+
+        const plot_height = style.line_height * 2;
+        const rows: f32 = if (detail_open) 7 else 5;
+        const items: f32 = if (detail_open) 9 else 7;
+        const content = rows * style.line_height + plot_height +
             (style.separator_thickness + style.spacing * 2) +
-            5 * style.spacing;
+            (items - 1) * style.spacing;
 
         // Three paddings, not two: the panel insets its region by one, and a `label`
         // insets its text by another so that a label and a button line up in a column.
         // Two would put the last glyph exactly on the panel's clipped edge.
-        try ui.beginPanel(&self.ui, ui.Id.root.child("stats"), .init(
+        try ui.beginPanel(&self.ui, stats_id, .init(
             hud_margin,
             hud_margin,
             widest + style.padding.x * 3,
             content + style.padding.y * 2,
         ));
-        for (lines) |line| try ui.label(&self.ui, line);
+        try ui.label(&self.ui, lines[0]);
+        try ui.label(&self.ui, lines[1]);
+        // Newest last, oldest first, straight out of the ring the sample keeps.
+        try ui.plot(&self.ui, &self.frame_ms, .{
+            .height = plot_height,
+            .first = self.frame_head,
+            .min = 0,
+        });
+        if (try ui.collapsingHeader(&self.ui, detail_id, "detail")) {
+            try ui.label(&self.ui, lines[2]);
+            try ui.label(&self.ui, lines[3]);
+        }
         try ui.separator(&self.ui);
         // The flag lives here, in the sample, and the kernel holds no copy of it — which
         // is the immediate-mode bargain and the reason a debug toggle cannot drift from
@@ -2221,22 +2302,66 @@ const SpriteField = struct {
                 if (self.follow) "is following" else "no longer follows",
             });
         }
+
+        // A slider over a value the sample already had, rather than one invented for it:
+        // dragging this is the same zoom the wheel changes, and the two never disagree
+        // because there is only one of them.
+        var zoom_label: [32]u8 = undefined;
+        const zoom_text = std.fmt.bufPrint(&zoom_label, "zoom {d:.2}", .{self.camera.zoom}) catch "zoom";
+        _ = try ui.slider(
+            &self.ui,
+            self.ui.childId("zoom"),
+            zoom_text,
+            &self.camera.zoom,
+            min_zoom,
+            max_zoom,
+        );
         try ui.endPanel(&self.ui);
 
-        // Anchored to the **bottom right**, which is a measurement in both directions and
-        // therefore the thing worth demonstrating: screen space has corners, and the
-        // kernel's measurement is what finds them.
-        const help = "wasd walks  arrows pan  wheel zooms  click picks  c follows";
-        const help_size = style.font.measure(help, style.text_scale);
-        const help_w = help_size.x + style.padding.x * 3;
-        const help_h = style.line_height + style.padding.y * 2;
-        try ui.beginPanel(&self.ui, ui.Id.root.child("help"), .init(
-            width - help_w - hud_margin,
-            height - help_h - hud_margin,
-            help_w,
-            help_h,
-        ));
-        try ui.label(&self.ui, help);
+        try self.describeBindings(width, height);
+    }
+
+    /// The second panel: a filter box over a scrolling list.
+    ///
+    /// **This is the log console's shape**, which is what `ui.md` §10 says the scroll
+    /// region and the text field are for — built here on strings the sample already had,
+    /// so the two widgets are drawn by something rather than only tested. The overlay's
+    /// own document turns this shape into a real console over the log sink.
+    fn describeBindings(self: *SpriteField, width: f32, height: f32) !void {
+        const style = self.ui.style;
+        const filter = self.filter[0..self.filter_len];
+
+        var widest: f32 = 0;
+        var matches: usize = 0;
+        for (bindings) |line| {
+            if (!matchesFilter(line, filter)) continue;
+            matches += 1;
+            widest = @max(widest, style.font.measure(line, style.text_scale).x);
+        }
+
+        const row = style.line_height + style.spacing;
+        const list_height = row * 5;
+        const listed = @as(f32, @floatFromInt(matches)) * row;
+
+        const panel_w = @max(widest, style.line_height * 8) +
+            style.padding.x * 3 + style.scrollbar;
+        const panel_h = style.line_height + style.spacing + list_height + style.padding.y * 2;
+        const panel: core.math.Rect = .init(
+            width - panel_w - hud_margin,
+            height - panel_h - hud_margin,
+            panel_w,
+            panel_h,
+        );
+
+        try ui.beginPanel(&self.ui, ui.Id.root.child("bindings"), panel);
+        // Typing here must not also walk the player, which is what `wantsKeyboard` is for
+        // and what `control` checks.
+        _ = try ui.textField(&self.ui, self.ui.childId("filter"), &self.filter, &self.filter_len);
+        try ui.beginScroll(&self.ui, self.ui.childId("list"), self.ui.region().remaining(), listed);
+        for (bindings) |line| {
+            if (matchesFilter(line, filter)) try ui.label(&self.ui, line);
+        }
+        try ui.endScroll(&self.ui);
         try ui.endPanel(&self.ui);
     }
 
@@ -2380,6 +2505,15 @@ fn hudStyle(font: app.UiFont) ui.Style {
         .control_active = uiColor(80, 110, 145, 255),
         .accent = uiColor(120, 200, 255, 255),
     };
+}
+
+/// Whether a binding survives the overlay's filter box.
+///
+/// Case-sensitive substring, which is what a debug filter over eleven lines needs. Anything
+/// cleverer is a decision about text that belongs with the localisation the game widget
+/// layer will bring, not in a sample.
+fn matchesFilter(line: []const u8, filter: []const u8) bool {
+    return filter.len == 0 or std.mem.indexOf(u8, line, filter) != null;
 }
 
 /// sRGB in, linear out — **above the seam, which is where the conversion belongs**.

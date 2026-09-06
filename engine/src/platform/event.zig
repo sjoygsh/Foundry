@@ -47,12 +47,19 @@ pub const TextInput = struct {
         if (!std.unicode.utf8ValidateSlice(utf8)) return null;
 
         var end = @min(utf8.len, max_text_bytes);
-        // Back off to the last codepoint boundary so a truncated event is still valid
-        // UTF-8 rather than a broken sequence someone downstream has to cope with.
-        while (end > 0 and (utf8[end - 1] & 0b1100_0000) == 0b1000_0000) end -= 1;
-        if (end > 0 and end < utf8.len) {
-            const seq_len = std.unicode.utf8ByteSequenceLength(utf8[end - 1]) catch 1;
-            if (seq_len > 1) end -= 1;
+        // **Only when the slice was actually cut.** Backing off unconditionally drops a
+        // trailing multi-byte codepoint from text that fitted perfectly well — so typing
+        // an accented character would commit nothing at all, which is what `ui`'s text
+        // field found. The slice is already valid here; there is nothing to repair unless
+        // this truncated it.
+        if (end < utf8.len) {
+            // Back off to the last codepoint boundary so a truncated event is still valid
+            // UTF-8 rather than a broken sequence someone downstream has to cope with.
+            while (end > 0 and (utf8[end - 1] & 0b1100_0000) == 0b1000_0000) end -= 1;
+            if (end > 0) {
+                const seq_len = std.unicode.utf8ByteSequenceLength(utf8[end - 1]) catch 1;
+                if (seq_len > 1) end -= 1;
+            }
         }
 
         var self: TextInput = .{ .len = @intCast(end) };
@@ -145,6 +152,27 @@ test "text input carries its bytes by value" {
 test "text input rejects invalid UTF-8 rather than passing it on" {
     // OS text is external input: validated, not asserted.
     try testing.expectEqual(@as(?TextInput, null), TextInput.fromSlice("\xff\xfe"));
+}
+
+test "text ending in a multi-byte codepoint keeps it" {
+    // The bug `ui`'s text field found: the truncation back-off ran on every slice, so any
+    // committed text whose last character was not ASCII lost that character — and a
+    // two-byte string became an empty event. Dead keys and accent composition are the
+    // *reason* this type exists, so this is the case that matters most.
+    const accent = TextInput.fromSlice("é").?;
+    try testing.expectEqualStrings("é", accent.text());
+
+    const mixed = TextInput.fromSlice("abé").?;
+    try testing.expectEqualStrings("abé", mixed.text());
+
+    // Truncation still repairs what it cuts: a slice that ends mid-sequence loses the
+    // whole character rather than half of it.
+    var long: [max_text_bytes + 1]u8 = @splat('a');
+    long[max_text_bytes - 1] = 0xC3;
+    long[max_text_bytes] = 0xA9;
+    const cut = TextInput.fromSlice(&long).?;
+    try testing.expectEqual(@as(u8, max_text_bytes - 1), cut.len);
+    try testing.expect(std.unicode.utf8ValidateSlice(cut.text()));
 }
 
 test "over-long text truncates on a codepoint boundary" {
