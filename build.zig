@@ -275,6 +275,36 @@ pub fn build(b: *std.Build) void {
     const sandbox = b.addExecutable(.{ .name = "sandbox", .root_module = sandbox_mod });
     b.installArtifact(sandbox);
 
+    // `samples/room` — the second sample, and a different kind of thing from the first.
+    //
+    // The sandbox demonstrates capabilities; this one is a small game built out of them,
+    // which is what M5's exit criterion asks for and what a sample full of frame statistics
+    // structurally cannot be. Two samples is also the first time anything has checked that
+    // the engine is usable by a consumer that is not the one it grew up next to.
+    //
+    // Its imports are the sandbox's minus `rhi`: the room never touches a device directly,
+    // which is the arrangement `CLAUDE.md` §4.2 says a game should have. It is here as
+    // evidence that the arrangement holds, not as a rule the build enforces — `render2d`
+    // needs `rhi` to exist, and hiding it from a sample would only hide it.
+    const room_mod = b.createModule(.{
+        .root_source_file = b.path("samples/room/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    room_mod.addImport("app", modules.get("app").?);
+    room_mod.addImport("asset", modules.get("asset").?);
+    room_mod.addImport("audio", modules.get("audio").?);
+    room_mod.addImport("core", modules.get("core").?);
+    room_mod.addImport("data", modules.get("data").?);
+    room_mod.addImport("platform", platform_module);
+    room_mod.addImport("physics2d", modules.get("physics2d").?);
+    room_mod.addImport("render2d", modules.get("render2d").?);
+    room_mod.addImport("rhi", modules.get("rhi").?);
+    room_mod.addImport("scene", modules.get("scene").?);
+
+    const room = b.addExecutable(.{ .name = "room", .root_module = room_mod });
+    b.installArtifact(room);
+
     // `tools/fpack` — the content compiler (ADR-0011). A consumer of the engine's modules
     // like a sample is, not a privileged member of the layering: it gets `data` because it
     // compiles content, `platform` because `data` cannot open a file, and `asset` because
@@ -321,6 +351,7 @@ pub fn build(b: *std.Build) void {
     const content_packages = [_]ContentPackage{
         .{ .id = "foundry:core", .dir = "content/core", .stem = "core" },
         .{ .id = "sandbox:content", .dir = "samples/sandbox/content", .stem = "sandbox" },
+        .{ .id = "room:content", .dir = "samples/room/content", .stem = "room" },
     };
 
     // **Only when the build target can run here.** `fpack` is built for the target like
@@ -378,6 +409,11 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run_sandbox.addArgs(args);
     b.step("run", "Build and run samples/sandbox").dependOn(&run_sandbox.step);
 
+    const run_room = b.addRunArtifact(room);
+    run_room.step.dependOn(b.getInstallStep());
+    if (b.args) |args| run_room.addArgs(args);
+    b.step("room", "Build and run samples/room").dependOn(&run_room.step);
+
     const run_fpack = b.addRunArtifact(fpack);
     run_fpack.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_fpack.addArgs(args);
@@ -397,6 +433,7 @@ pub fn build(b: *std.Build) void {
     // stopped cross-compiling would be a milestone rule broken (ROADMAP), and finding
     // that out at release time is the expensive way.
     check_step.dependOn(&sandbox.step);
+    check_step.dependOn(&room.step);
     check_step.dependOn(&fpack.step);
 
     for (layering) |spec| {

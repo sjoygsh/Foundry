@@ -1,0 +1,250 @@
+# The room's content package.
+#
+# **Everything the sample is** is in this file and the four it points at. There is no
+# level in the source, no item table, no tuning constant: the map, the art, the sounds,
+# where the lamps stand, how fast the walker walks and what the sign over the rug says are
+# all content, and a package loaded after this one changes any of them without a rebuild.
+#
+# That is not a demonstration of the content system -- `samples/sandbox` is that. It is
+# what a game looks like when the content system is doing its job, which is the thing M5's
+# exit criterion actually asks for.
+
+# ---------------------------------------------------------------------------------------
+# What the room is made of.
+
+@schema settings {
+    # The two textures, by content id. The sample names no path and no file and could not
+    # ask for one if it wanted to (ADR-0021).
+    sheet id
+    # From `foundry:core`, not from here. A cross-package reference is an ordinary id.
+    font  id
+    map   id
+    # The sheet is a square grid; these are its dimensions in cells.
+    columns u32 (default 4)
+    rows    u32 (default 4)
+
+    # Where the walker starts, as a **column and a row of the map as written** -- row 0 is
+    # the first row of `hall.grid`, the one at the top of the screen. Author coordinates,
+    # not world coordinates: the person placing this is looking at the grid file, and
+    # asking them to convert to a Y-up world whose origin is the middle of the map would be
+    # asking them to do arithmetic the sample can do once and correctly.
+    start [u32]
+
+    # How far in the camera sits. The map is deliberately larger than the window at this
+    # zoom, so the camera has to follow.
+    zoom f32 (default 3)
+
+    # The walker's box, in world units, and how fast it moves, in world units per second.
+    # Both are *feel*, and feel is the game's -- which is why `physics2d` has no speed
+    # anywhere in it (ADR-0022: collision, not dynamics).
+    player_size  f32 (default 11)
+    player_speed f32 (default 74)
+    player_walk id
+    player_idle id
+
+    step_sound  id
+    bump_sound  id
+    chime_sound id
+    open_sound  id
+    # The door's own note, looping, panned by where the walker is standing relative to it.
+    # It stops when the door does.
+    hum_sound   id
+
+    # What the room says. Three strings, because a game that says nothing is a demo with a
+    # character in it -- and because a translated package is then a package, not a patch.
+    title string (default "")
+    hint  string (default "")
+    won   string (default "")
+    # Completed by the sample as "3 of 6 <lamp_label>". A format string in content would be
+    # a way for a package to crash the game, so content supplies the noun and the sample
+    # supplies the shape.
+    lamp_label string (default "lamps lit")
+}
+
+# An animation clip: a run of cells from a sheet, and how long each is held.
+#
+# **The second sample to define this schema, independently, and that is the finding.** The
+# engine still owns no `foundry:clip` (`sprite-animation.md` §5): a schema name is a
+# compatibility decision and M7 is when the mod-facing vocabulary gets chosen. Two samples
+# arriving at the same seven fields is the evidence that argument was waiting for.
+@schema clip {
+    sheet   id
+    columns u32
+    rows    u32
+    first u32 (default 0)
+    count u32
+    hold  u32 (default 6)
+    loops bool (default true)
+}
+
+# A lamp. Walk into it and it lights.
+#
+# The whole of it is a place and two clips. Nothing here says what lighting one *does* --
+# that is the sample counting, and counting six of something is not a thing content should
+# have to describe.
+@schema lamp {
+    at [u32]
+    dark id
+    lit  id
+    # How close counts, in world units, measured from the walker's centre. Content, because
+    # "how close is close" is feel.
+    radius f32 (default 11)
+}
+
+# The door in the north wall. Content says where it is and what it looks like; the sample
+# says it goes away when every lamp is lit.
+#
+# **It is an entity and not a tile**, and the reason is the whole of why this sample has a
+# `scene` at all: a tile is a number in a grid two other subsystems are reading, and a door
+# has to be able to stop existing. Despawning an entity removes its sprite from the draw
+# list and its body from the collision world in one call, and neither the map nor the
+# tileset has to know a door was ever there.
+@schema door {
+    # Column and row of its **top-left** cell, as written, and how many cells it covers.
+    at   [u32]
+    span [u32]
+    clip id
+}
+
+# The way out. Standing on it ends the sample.
+@schema way_out {
+    at   [u32]
+    span [u32]
+}
+
+# ---------------------------------------------------------------------------------------
+# What the room is.
+
+settings room:settings.main {
+    sheet   room:textures.room
+    font    foundry:fonts.debug
+    map     room:map.hall
+    columns 4
+    rows    4
+
+    # On the rug, in the middle of the hall.
+    start   [ 15 15 ]
+    zoom    3
+
+    # Narrower than the 16-unit cells, so a two-cell doorway is comfortably a doorway.
+    player_size  11
+    player_speed 74
+    player_walk  room:clip.walk
+    player_idle  room:clip.idle
+
+    # **No records declare these.** A `.wav` in the package becomes a `foundry:sound` from
+    # its own path, exactly as the `.png` becomes a `foundry:texture` -- `sounds/step.wav`
+    # in package `room` is `room:sounds.step`. Naming them here is the only place the
+    # sample says anything about them at all.
+    step_sound   room:sounds.step
+    bump_sound   room:sounds.bump
+    chime_sound  room:sounds.chime
+    open_sound   room:sounds.open
+    hum_sound    room:sounds.hum
+
+    title "the long hall"
+    hint  "wasd walks"
+    won   "the hall is lit.\nthe way out is open."
+    lamp_label "lamps lit"
+}
+
+# The sheet's first row is the tileset and the rest is everything drawn as a sprite, which
+# is why one texture serves both and there is only one to load.
+
+clip room:clip.walk {
+    sheet   room:textures.room
+    columns 4
+    rows    4
+    first   4
+    count   4
+    hold    7
+}
+
+# Standing still: the walk's first frame, held. One frame is a legal clip and means a still
+# pose, which is why `count` has no lower bound worth writing down.
+clip room:clip.idle {
+    sheet   room:textures.room
+    columns 4
+    rows    4
+    first   4
+    count   1
+    hold    30
+}
+
+clip room:clip.lamp.dark {
+    sheet   room:textures.room
+    columns 4
+    rows    4
+    first   8
+    count   1
+    hold    30
+}
+
+# Three frames of widening glow, slowly. A lit lamp has to be readable from the far end of
+# the hall, which is what the halo in the sheet is for and what makes this a clip rather
+# than a second still.
+clip room:clip.lamp.lit {
+    sheet   room:textures.room
+    columns 4
+    rows    4
+    first   9
+    count   3
+    hold    14
+}
+
+clip room:clip.door {
+    sheet   room:textures.room
+    columns 4
+    rows    4
+    first   12
+    count   1
+    hold    30
+}
+
+# The map. Three engine-owned record types and one asset, none of them declared here.
+
+foundry:tileset room:tiles.hall {
+    texture room:textures.room
+    tile    [ 16 16 ]
+    columns 4
+    # Only the wall blocks. The threshold and the rug are floor that looks different, which
+    # is the point of keeping collision in the tileset rather than in the grid.
+    solid   [ 1 ]
+}
+
+foundry:tilemap.layer room:map.hall.floor {
+    tileset  room:tiles.hall
+    grid     room:grids.hall
+    # Beneath everything the sample draws, which all sits at 0 or above.
+    order    -10
+    collides true
+}
+
+foundry:tilemap room:map.hall {
+    size   [ 32 24 ]
+    cell   [ 16 16 ]
+    layers [ room:map.hall.floor ]
+}
+
+# Six lamps, at the ends of the hall the walker has to go and find. Six records and no
+# code: adding a seventh is an edit to this file, and so is moving one.
+
+lamp room:lamp.north.west { at [  2 11 ] dark room:clip.lamp.dark lit room:clip.lamp.lit }
+lamp room:lamp.north.east { at [ 29 11 ] dark room:clip.lamp.dark lit room:clip.lamp.lit }
+lamp room:lamp.south.west { at [  2 18 ] dark room:clip.lamp.dark lit room:clip.lamp.lit }
+lamp room:lamp.south.east { at [ 29 18 ] dark room:clip.lamp.dark lit room:clip.lamp.lit }
+lamp room:lamp.north       { at [ 15  8 ] dark room:clip.lamp.dark lit room:clip.lamp.lit }
+lamp room:lamp.south       { at [ 16 21 ] dark room:clip.lamp.dark lit room:clip.lamp.lit }
+
+# The door, filling the two-cell gap in row 6.
+door room:door.north {
+    at   [ 15 6 ]
+    span [ 2 1 ]
+    clip room:clip.door
+}
+
+# The threshold beyond it.
+way_out room:way.out {
+    at   [ 14 2 ]
+    span [ 4 2 ]
+}
