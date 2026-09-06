@@ -25,12 +25,21 @@ pub const image = @import("image.zig");
 pub const png = @import("png.zig");
 pub const registry = @import("registry.zig");
 pub const schemas = @import("schemas.zig");
+pub const sound = @import("sound.zig");
 pub const tilegrid = @import("tilegrid.zig");
 pub const tilemap = @import("tilemap.zig");
+pub const wav = @import("wav.zig");
 
 pub const Image = image.Image;
 pub const DecodeError = png.DecodeError;
 pub const Limits = png.Limits;
+
+pub const Sound = sound.Sound;
+/// Prefixed, because `png` already owns the unqualified names at this level. The two are
+/// deliberately separate sets: a corrupt image and a corrupt sound have nothing in common
+/// but the sentence they produce.
+pub const SoundDecodeError = wav.DecodeError;
+pub const SoundLimits = wav.Limits;
 
 pub const AcquireError = registry.AcquireError;
 pub const Asset = registry.Asset;
@@ -56,6 +65,8 @@ test {
     _ = png;
     _ = registry;
     _ = schemas;
+    _ = sound;
     _ = tilegrid;
     _ = tilemap;
+    _ = wav;
 }

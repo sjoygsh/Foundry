@@ -103,6 +103,26 @@ pub const tilegrid: Schema = .{
     },
 };
 
+pub const sound_name = "foundry:sound";
+
+/// A decoded sound, loaded into the mixer's pool.
+///
+/// **Version 1, `source` only** — the shape `foundry:texture` started with, and for the same
+/// reason: a field is added when the thing that reads it exists, appended with a default, and
+/// packages compiled before it keep loading (I8). Loop points are the likely second field and
+/// are named as an open question rather than guessed at now (`audio.md` §11).
+///
+/// The schema is here and the loader is in `audio`, by the split this file's header states:
+/// `fpack` must know the record type without linking a mixer, and what a sound *is* to the
+/// mixer is not a content concept.
+pub const sound: Schema = .{
+    .id = SchemaId.fromStringUnchecked(sound_name),
+    .version = 1,
+    .fields = &.{
+        .{ .name = source_field, .type = .string },
+    },
+};
+
 /// Every asset kind the engine itself defines, in a fixed order.
 ///
 /// Fixed because `fpack` walks it to decide what a file becomes, and I9 wants that answer to
@@ -110,6 +130,7 @@ pub const tilegrid: Schema = .{
 pub const kinds = [_]Kind{
     .{ .name = texture_name, .schema = texture, .extensions = &.{"png"} },
     .{ .name = tilegrid_name, .schema = tilegrid, .extensions = &.{tilegrid_extension} },
+    .{ .name = sound_name, .schema = sound, .extensions = &.{"wav"} },
 };
 
 /// The kind a file extension derives, or null if that extension is not an asset.
@@ -190,6 +211,7 @@ test "a field added after version 1 carries a default, or old content could not 
 test "extensions map to kinds, and nothing else does" {
     try testing.expect(kindForExtension("png") == &kinds[0]);
     try testing.expect(kindForExtension("fgrid") == &kinds[1]);
+    try testing.expect(kindForExtension("wav") == &kinds[2]);
     try testing.expect(kindForExtension("PNG") == null);
     try testing.expect(kindForExtension("txt") == null);
     try testing.expect(kindForExtension("") == null);

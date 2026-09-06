@@ -776,6 +776,44 @@ const one_pixel_png = [_]u8{
     0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
 };
 
+/// One frame of 16-bit mono silence, in the smallest legal RIFF/WAVE container. Never
+/// decoded here either, for the same reason the PNG above is not.
+const silent_wav = [_]u8{
+    0x52, 0x49, 0x46, 0x46, 0x26, 0x00, 0x00, 0x00, 0x57, 0x41, 0x56, 0x45,
+    0x66, 0x6D, 0x74, 0x20, 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00,
+    0x80, 0xBB, 0x00, 0x00, 0x00, 0x77, 0x01, 0x00, 0x02, 0x00, 0x10, 0x00,
+    0x64, 0x61, 0x74, 0x61, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+
+test "a sound derives from its path exactly as an image does" {
+    var f = try Fixture.init();
+    defer f.deinit();
+
+    try f.write("sounds/ui/step.wav", &silent_wav);
+    try f.write("textures/sprites.png", &one_pixel_png);
+
+    try f.compileIt("foundry:core");
+
+    var r = try f.open();
+    defer r.deinit();
+
+    // Two derived records and no authoring at all. Nothing about the asset kind is
+    // special-cased: `fpack` reads the extension table and a new kind costs it nothing.
+    try testing.expectEqual(@as(u32, 2), r.record_count);
+
+    const sound_schema = r.schemaFor(data.SchemaId.fromStringUnchecked("foundry:sound")).?;
+    var found = false;
+    for (0..r.record_count) |i| {
+        const view = r.record(@intCast(i)).?;
+        if (!view.schema_id.eql(sound_schema.id)) continue;
+        found = true;
+        try testing.expectEqualStrings("foundry:sounds.ui.step", view.name);
+        const fields = r.fieldsOf(view, sound_schema.*);
+        try testing.expectEqualStrings("sounds/ui/step.wav", (try fields.stringAt(0)).?);
+    }
+    try testing.expect(found);
+}
+
 test "a directory of text and images compiles to a package that reads back" {
     var f = try Fixture.init();
     defer f.deinit();
