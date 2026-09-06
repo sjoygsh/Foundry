@@ -29,6 +29,13 @@
     # `physics2d` has no speed anywhere in it (ADR-0022: collision, not dynamics).
     player_size  f32 (default 12)
     player_speed f32 (default 84)
+    # Which clips play. The *choice* is content too, not just the clips: a package after
+    # this one can point the player at a different animation without any code knowing.
+    player_walk id
+    player_idle id
+    # What the four thousand play. One clip shared by all of them, each at its own phase,
+    # because the phase is per-entity state and the clip is not.
+    field_clip  id
 }
 
 settings sandbox:settings.main {
@@ -41,6 +48,64 @@ settings sandbox:settings.main {
     # Narrower than the 16-unit cells, so a one-cell gap is a gap the player fits through.
     player_size  12
     player_speed 84
+    player_walk  sandbox:clip.walk
+    player_idle  sandbox:clip.idle
+    field_clip   sandbox:clip.drift
+}
+
+# An animation clip: a run of cells from a sheet, and how long each is held.
+#
+# **The engine defines no `foundry:clip`, deliberately** — M5 adds no engine-owned schemas
+# for the same reason it adds no `foundry:collider` (`sprite-animation.md` §5). A schema
+# name is a compatibility decision, M7 is when the mod-facing vocabulary gets chosen, and
+# nothing in the engine reads a clip: `render2d.frameAt` takes four integers and never
+# learns where they came from. So this is the sample's, and it is also the reference for
+# what an engine-owned one would look like.
+@schema clip {
+    # Where the frames live. A content id, never a path (ADR-0021).
+    sheet id
+    # The sheet is a grid; these are its dimensions in cells.
+    columns u32
+    rows    u32
+    # The run of cells this clip plays, row-major from `first`.
+    first u32 (default 0)
+    count u32
+    # Ticks each frame is held. At 60 Hz, 6 is a ten-frames-per-second animation.
+    hold u32 (default 6)
+    # Whether it wraps or pins to its last frame.
+    loops bool (default true)
+}
+
+# The sheet is a 4x4 grid where a row is one colour in four shapes, so a row is a clip.
+
+clip sandbox:clip.walk {
+    sheet   sandbox:textures.sprites
+    columns 4
+    rows    4
+    first   4
+    count   4
+    hold    6
+}
+
+# Standing still: the walk's first frame, held. One frame is a legal clip and means a
+# still pose, which is why `count` has no lower bound worth writing down.
+clip sandbox:clip.idle {
+    sheet   sandbox:textures.sprites
+    columns 4
+    rows    4
+    first   4
+    count   1
+    hold    30
+}
+
+# The field's, which runs the whole sheet. Every sprite plays this one at its own phase.
+clip sandbox:clip.drift {
+    sheet   sandbox:textures.sprites
+    columns 4
+    rows    4
+    first   0
+    count   16
+    hold    12
 }
 
 # The sample's map. Three engine-owned record types and one asset, none of them declared

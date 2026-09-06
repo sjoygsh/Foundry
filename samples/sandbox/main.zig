@@ -288,9 +288,20 @@ pub fn main(init: std.process.Init) !void {
     // The number that says collision happened rather than compiled. A scripted walk that
     // reports zero contacts has driven through the walls, and the map is 12x10 with a solid
     // border — there is nowhere to walk that does not eventually reach one.
-    if (field.player != null) {
+    if (field.player) |entity| {
         const at = field.playerAt() orelse core.math.Vec2.zero;
-        log.info("player finished at ({d:.1}, {d:.1}) with {d} contact(s)", .{ at.x, at.y, field.contacts });
+        // The animation reported the same way and for the same reason: a run nobody
+        // watched should say whether the clip actually advanced, and a `frame 0` after
+        // three hundred ticks of walking is a system that was registered and never ran.
+        const showing = field.animationOf(entity);
+        log.info("player finished at ({d:.1}, {d:.1}) with {d} contact(s), on frame {d} of {f} after {d} tick(s)", .{
+            at.x,
+            at.y,
+            field.contacts,
+            if (showing) |a| a.frame else 0,
+            if (showing) |a| a.clip else core.ContentId.none,
+            if (showing) |a| a.elapsed_ticks else 0,
+        });
     }
 
     log.info("clean exit after {d} frames, {d} ticks, {d}ms simulated", .{
@@ -328,6 +339,16 @@ const Settings = struct {
     /// the line I5 draws.
     player_size: f32,
     player_speed: f32,
+    /// Which clip the player plays while moving and while standing still, and which one
+    /// the field plays.
+    ///
+    /// **The choice of clip is content, not only the clip itself.** A package placed after
+    /// this one can retime the walk, reskin it onto another sheet, or point the player at
+    /// an entirely different animation, and no code here learns that it happened — which
+    /// is the whole of what §7 claims sprite animation exposes to Tier 1.
+    player_walk: core.ContentId,
+    player_idle: core.ContentId,
+    field_clip: core.ContentId,
 
     /// Where the record is, and the only content id spelled in this file. Everything else
     /// the sample draws is reached through it.
@@ -342,6 +363,9 @@ const Settings = struct {
         .map = .none,
         .player_size = 12,
         .player_speed = 84,
+        .player_walk = .none,
+        .player_idle = .none,
+        .field_clip = .none,
     };
 
     /// Reads the record, falling back field by field.
@@ -365,6 +389,9 @@ const Settings = struct {
             .map = idField(record, "map"),
             .player_size = floatField(record, "player_size", fallback.player_size),
             .player_speed = floatField(record, "player_speed", fallback.player_speed),
+            .player_walk = idField(record, "player_walk"),
+            .player_idle = idField(record, "player_idle"),
+            .field_clip = idField(record, "field_clip"),
         };
     }
 
@@ -387,6 +414,11 @@ const Settings = struct {
         const narrowed: f32 = @floatCast(value);
         if (!std.math.isFinite(narrowed) or !(narrowed > 0)) return fallback_value;
         return narrowed;
+    }
+
+    fn boolField(record: data.store.Record, name: []const u8, fallback_value: bool) bool {
+        const index = record.schema.fieldIndex(name) orelse return fallback_value;
+        return (record.fields.boolAt(index) catch null) orelse fallback_value;
     }
 
     fn stringField(record: data.store.Record, name: []const u8, fallback_value: []const u8) []const u8 {
@@ -657,6 +689,90 @@ const Map = struct {
     }
 };
 
+/// One animation clip, read out of a `sandbox:clip` record.
+///
+/// A plain copy rather than a borrowed `Record`, for the reason the banner string is a
+/// copy: a content reload frees the package bytes a record reads from, and this outlives a
+/// reload by exactly as long as it takes `refresh` to notice. Seven numbers is nothing to
+/// copy, and copying is the difference between a rebuild and a use-after-free.
+const Clip = struct {
+    id: core.ContentId,
+    columns: u32,
+    rows: u32,
+    first: u32,
+    count: u32,
+    hold: u32,
+    loops: bool,
+
+    /// How long one pass takes, widened because `hold * count` comes from a file.
+    fn duration(self: *const Clip) u64 {
+        return @as(u64, self.hold) * @as(u64, self.count);
+    }
+};
+
+/// Every clip the loaded packages define, resolved once per content generation.
+///
+/// **Built by iterating the store rather than by naming the clips the sample uses**, so a
+/// component carrying an id from a save, or from a package that arrived after this build,
+/// still resolves. A mod adding `sandbox:clip.sprint` gets a clip that works the moment
+/// something references it.
+///
+/// The lookup is a linear scan, and that is honest for three clips rather than a decision
+/// worth defending: a real game's table is a map keyed by id, and swapping this for one
+/// changes nothing above it.
+const Clips = struct {
+    list: std.ArrayList(Clip) = .empty,
+
+    /// The sample's own schema, in its own package's namespace. A bare `clip` in a package
+    /// named `sandbox:content` is the schema `sandbox:clip` (`content-schemas.md` §4).
+    const schema_name = "sandbox:clip";
+
+    fn build(self: *Clips, gpa: std.mem.Allocator, engine: *app.Engine) void {
+        self.list.clearRetainingCapacity();
+
+        const schema_id = data.SchemaId.parse(schema_name) catch {
+            log.err("'{s}' is not a valid schema id; nothing will animate", .{schema_name});
+            return;
+        };
+
+        // The store's iteration order is documented and stable (`content-schemas.md` §6),
+        // which is what lets the field below pick a clip by index and get the same field
+        // twice (I9).
+        var it = engine.store.iterate(schema_id);
+        while (it.next()) |record| {
+            const clip: Clip = .{
+                .id = record.id,
+                // Clamped at read time rather than at draw time. `Region.cell` answers a
+                // zero grid with an empty region, which is right for an index past the
+                // last cell — that is a clip running off its sheet and it should show —
+                // but a `columns 0` would make every frame of the clip invisible, which
+                // says nothing about which number is wrong.
+                .columns = @max(Settings.intField(record, "columns", 1), 1),
+                .rows = @max(Settings.intField(record, "rows", 1), 1),
+                .first = Settings.intField(record, "first", 0),
+                .count = Settings.intField(record, "count", 1),
+                .hold = Settings.intField(record, "hold", 6),
+                .loops = Settings.boolField(record, "loops", true),
+            };
+            self.list.append(gpa, clip) catch |err| {
+                log.warn("could not hold clip {f} ({t}); stopping at {d}", .{ record.id, err, self.list.items.len });
+                return;
+            };
+        }
+        log.info("{d} clip(s) loaded", .{self.list.items.len});
+    }
+
+    fn find(self: *const Clips, id: core.ContentId) ?*const Clip {
+        if (id.isNone()) return null;
+        for (self.list.items) |*clip| if (clip.id.eql(id)) return clip;
+        return null;
+    }
+
+    fn deinit(self: *Clips, gpa: std.mem.Allocator) void {
+        self.list.deinit(gpa);
+    }
+};
+
 /// What the sandbox's entities are made of.
 ///
 /// **A game defines its own component types**, and these are the sample's. They are
@@ -717,6 +833,35 @@ const Collider = struct {
     half_y: f32 = 6,
 };
 
+/// Where an entity is in a clip.
+///
+/// **All three fields are integers, and that is the whole design** (`sprite-animation.md`
+/// §4). A float accumulator drifts, so two things started together fall visibly out of
+/// step; it does not survive a save, reloading to a value that is nearly the same and
+/// selecting a frame that is sometimes not; and it makes "which frame at tick 700?" only
+/// *nearly* answerable, which is I9's promise broken in the way that is right in nineteen
+/// tests out of twenty. `elapsed_ticks` is exact, `frame` is a pure function of it, and
+/// the reload check in `main` is what holds this claim rather than this comment.
+///
+/// `elapsed_ticks` rather than a start tick, because pausing and restarting are then
+/// ordinary arithmetic instead of fixups, and because four bytes beats eight in a save.
+const Animation = struct {
+    pub const component = "sandbox:animation";
+    /// The clip being played, **by content id and never by a handle or an index** — this
+    /// is serialized, and a runtime identity in a save file is what I1 and ADR-0021 refuse
+    /// (`entity-storage.md` §8). It is also what makes a mod's new clip playable by a save
+    /// written before that mod existed.
+    clip: core.ContentId = .none,
+    elapsed_ticks: u32 = 0,
+    /// Which frame of the clip is showing, written by the system and read by the draw
+    /// code. Clip-relative, so the sheet cell is `clip.first + frame`.
+    ///
+    /// Cached so drawing does not repeat the arithmetic for an entity that did not tick —
+    /// and **not** a `render2d.Region`, because a `Region` carries a `TextureHandle` and
+    /// this is serialized. The same rule as the clip id, reached by the same argument.
+    frame: u32 = 0,
+};
+
 /// Advances every orbiting entity's transform. **The sandbox's whole simulation.**
 ///
 /// It reads no clock and no input, because `scene` cannot: it is handed the tick, and the
@@ -734,6 +879,51 @@ fn orbitSystem(_: ?*anyopaque, world: *scene.World, tick: scene.Tick) void {
         transform.x = orbit.home_x + @cos(angle) * orbit.radius;
         transform.y = orbit.home_y + @sin(angle) * orbit.radius;
         transform.rotation = angle * orbit.spin;
+    }
+}
+
+/// Advances every animated entity by one tick and records which frame that lands on.
+///
+/// **This one is a `scene` system where `walk` could not be**, and the difference is the
+/// whole of `entity-storage.md` §7: a system is handed the tick and the delta and nothing
+/// else, so it cannot read a device — and advancing a clip does not want to. Driving a
+/// character does, which is why that is the game's own function and this is not.
+///
+/// It reaches `render2d` for the arithmetic, and that is not a layering violation nor even
+/// a crossing: `frameAt` is four integers in and one out, `scene` never sees it, and the
+/// *game* is what joins the two (`sprite-animation.md` §6). Both modules are L3 and the
+/// build graph would refuse the import in either direction.
+///
+/// Its context is the clip table, resolved once per content generation. Nothing here reads
+/// the store: content is resolved by the game, on the frame content changed, and handed to
+/// the simulation as plain numbers.
+fn animationSystem(ctx: ?*anyopaque, world: *scene.World, tick: scene.Tick) void {
+    _ = tick;
+    const clips: *const Clips = @ptrCast(@alignCast(ctx orelse return));
+
+    var it = world.queryOf(.{Animation});
+    while (it.next()) |m| {
+        const animation = m.get(Animation);
+        // A clip that is not loaded holds its frame rather than resetting it. Content is
+        // untrusted, including our own: a package can be edited between one tick and the
+        // next, and the sprite that was mid-walk should not blink to frame zero and back.
+        const clip = clips.find(animation.clip) orelse continue;
+
+        // A looping clip wraps its own elapsed count, which keeps the number small in a
+        // save and means it can run for as long as anybody leaves it running. A one-shot
+        // saturates instead, because wrapping it would replay it.
+        const total = clip.duration();
+        animation.elapsed_ticks = if (clip.loops and total > 0)
+            @intCast((@as(u64, animation.elapsed_ticks) + 1) % total)
+        else
+            animation.elapsed_ticks +| 1;
+
+        animation.frame = render2d.frameAt(
+            animation.elapsed_ticks,
+            clip.hold,
+            clip.count,
+            clip.loops,
+        );
     }
 }
 
@@ -781,6 +971,14 @@ const SpriteField = struct {
     /// none, which is a package without a map rather than a failure.
     map: Map = .{},
 
+    /// Every clip the packages define, rebuilt with the map and for the same reason.
+    ///
+    /// The animation system holds a pointer to this, which is why it lives here rather
+    /// than being passed down: a system's context is set at registration and the table has
+    /// to outlive every tick that reads it. Its *contents* are replaced on a reload; its
+    /// address is not.
+    clips: Clips = .{},
+
     /// **The collision world is the game's, not the engine's.**
     ///
     /// `app` does not own one and is not going to: `physics2d` has no time in it and
@@ -818,6 +1016,7 @@ const SpriteField = struct {
     transform: scene.ComponentType = .none,
     visual: scene.ComponentType = .none,
     collider: scene.ComponentType = .none,
+    animation: scene.ComponentType = .none,
     /// How many entities the field currently has, kept for the log lines that used to
     /// report the seed count.
     population: u32 = 0,
@@ -933,6 +1132,7 @@ const SpriteField = struct {
         };
         self.deriveRegions(engine);
         self.map.build(gpa, engine, &self.renderer, &self.physics, self.settings.map);
+        self.clips.build(gpa, engine);
         self.content_generation = engine.contentGeneration();
 
         // An image from memory, not from a file: `createTexture` takes an `asset.Image`
@@ -984,10 +1184,21 @@ const SpriteField = struct {
         self.transform = try self.world.registerComponent(scene.componentType(Transform));
         self.visual = try self.world.registerComponent(scene.componentType(Visual));
         self.collider = try self.world.registerComponent(scene.componentType(Collider));
+        self.animation = try self.world.registerComponent(scene.componentType(Animation));
         _ = try self.world.registerSystem(.{
             .id = try data.contentId("sandbox:system.orbit"),
             .name = "sandbox:system.orbit",
             .update = &orbitSystem,
+        });
+        // Registered after the orbit, which is also the order they run in. Nothing here
+        // depends on that — one writes a transform and the other a frame index — but the
+        // order is a property of the registration rather than of the data, which is what
+        // `entity-storage.md` §7 asks systems to be.
+        _ = try self.world.registerSystem(.{
+            .id = try data.contentId("sandbox:system.animation"),
+            .name = "sandbox:system.animation",
+            .ctx = &self.clips,
+            .update = &animationSystem,
         });
     }
 
@@ -1107,7 +1318,13 @@ const SpriteField = struct {
             if (in.isHeld(.w)) direction.y += 1;
             if (in.isHeld(.s)) direction.y -= 1;
         }
-        if (direction.eql(.zero)) return;
+        // Which clip plays is the game's decision, made every tick from what the game
+        // already knows. That is the whole of `sprite-animation.md` §8's "transitions are
+        // game policy built on this" at the sample's scale: one comparison, no state
+        // machine, and nothing in the engine that had to be told about walking.
+        const standing = direction.eql(.zero);
+        self.play(entity, if (standing) self.settings.player_idle else self.settings.player_walk);
+        if (standing) return;
 
         const motion = direction.normalize().scale(self.settings.player_speed * s.delta.toSecondsF32());
         var hits: [4]physics2d.Hit = undefined;
@@ -1148,6 +1365,11 @@ const SpriteField = struct {
         // from a texture, a slice into a grid's payload — and a reload is exactly the event
         // that invalidates derived things (`assets.md` §6).
         self.map.build(self.gpa, engine, &self.renderer, &self.physics, self.settings.map);
+        // Rebuilt for the map's reason: a `Clip` is a copy of numbers a package owns, and
+        // a reload frees the bytes they were read from. Entities keep their `clip` ids and
+        // their elapsed counts across it, so retiming a clip in a file changes the speed of
+        // an animation that is already playing without restarting it.
+        self.clips.build(self.gpa, engine);
         // The map that just replaced the old one may have put a wall where the player was
         // standing. A sweep cannot undo that — the time of impact is behind it — so this is
         // the call that can (`tilemaps-and-collision.md` §6).
@@ -1263,8 +1485,22 @@ const SpriteField = struct {
             // Additive sprites ride on top, where they belong.
             visual.layer = if (visual.additive) 3 else @intCast(index % 3);
 
+            // **The phase is per-entity state; the clip is not.** Four thousand sprites
+            // share one `sandbox:clip.drift` record and each starts somewhere else in it,
+            // which is exactly the split the component exists to express — and the reason
+            // `elapsed_ticks` is on the entity rather than the clip being duplicated.
+            //
+            // From the same seeded generator as everything else above, so the field looks
+            // identical on every run (I9).
+            var animation: Animation = .{ .clip = self.settings.field_clip };
+            if (self.clips.find(self.settings.field_clip)) |clip| {
+                const total = clip.duration();
+                if (total > 0) animation.elapsed_ticks = @intCast(rng.below(@intCast(@min(total, std.math.maxInt(u32)))));
+            }
+
             _ = try self.world.addComponent(entity, self.orbit, std.mem.asBytes(&orbit));
             _ = try self.world.addComponent(entity, self.visual, std.mem.asBytes(&visual));
+            _ = try self.world.addComponent(entity, self.animation, std.mem.asBytes(&animation));
             // Zeroed until the first tick runs the system. The order the components are
             // added in is the order the stores hold them, and drawing iterates the
             // transform store, so this is also the draw order.
@@ -1303,9 +1539,15 @@ const SpriteField = struct {
             .layer = 5,
         };
 
+        // Standing still until something drives it. Which clip plays is `walk`'s decision
+        // every tick, and a still pose is a clip like any other rather than a fifth state
+        // for the absence of one.
+        var animation: Animation = .{ .clip = self.settings.player_idle };
+
         const entity = try self.world.create();
         _ = try self.world.addComponent(entity, self.collider, std.mem.asBytes(&collider));
         _ = try self.world.addComponent(entity, self.visual, std.mem.asBytes(&visual));
+        _ = try self.world.addComponent(entity, self.animation, std.mem.asBytes(&animation));
         _ = try self.world.addComponent(entity, self.transform, std.mem.asBytes(&transform));
     }
 
@@ -1385,6 +1627,20 @@ const SpriteField = struct {
     /// One direction only, and that is the arrangement rather than a shortcut: the body is
     /// authoritative while it is being moved, and the transform is what everything else —
     /// drawing, picking, saving — reads. A second writer would be two truths.
+    /// Points an entity at a clip, restarting it only when it is a different one.
+    ///
+    /// The "only when different" is what makes this callable every tick: a walk that reset
+    /// its elapsed count on every frame it was still walking would hold frame zero forever
+    /// and look like an animation that does not play.
+    fn play(self: *SpriteField, entity: scene.Entity, clip: core.ContentId) void {
+        const found = self.world.getComponent(entity, self.animation) orelse return;
+        const animation: *Animation = @ptrCast(@alignCast(found.ptr));
+        if (animation.clip.eql(clip)) return;
+        animation.clip = clip;
+        animation.elapsed_ticks = 0;
+        animation.frame = 0;
+    }
+
     fn writeBack(self: *SpriteField, entity: scene.Entity, at: core.math.Vec2) void {
         const bytes = self.world.getComponent(entity, self.transform) orelse return;
         const transform: *Transform = @ptrCast(@alignCast(bytes.ptr));
@@ -1409,6 +1665,9 @@ const SpriteField = struct {
         // arrays that grid borrows are the plane's to free.
         self.map.deinit(self.gpa, engine, &self.physics);
         self.physics.deinit(self.gpa);
+        // After the world, in effect: the system holding a pointer to this stops running
+        // when `world.deinit` below runs, and nothing between here and there ticks.
+        self.clips.deinit(self.gpa);
         engine.assets.release(self.sheet_asset);
         engine.assets.release(self.font_asset);
         _ = engine.assets.unregisterLoader(self.gpa, asset.schemas.texture.id);
@@ -1424,19 +1683,13 @@ const SpriteField = struct {
     /// day one of them changed, and the symptom would be clicks landing next to sprites
     /// rather than on them — which is exactly the sort of bug that gets blamed on the
     /// maths instead of on the duplication.
-    fn spriteOf(self: *const SpriteField, transform: *const Transform, visual: *const Visual) render2d.Sprite {
-        // In the sheet's own pixels, not the atlas's. `Region.sub` is what makes that
-        // possible, and it is why the sheet being its own texture rather than part of
-        // something larger changes nothing here.
-        const grid = @max(self.settings.grid, 1);
-        const cell_w = self.sheet.size_px.width / grid;
-        const cell_h = self.sheet.size_px.height / grid;
-        const cell = self.sheet.sub(
-            (visual.cell % grid) * cell_w,
-            (visual.cell / grid) * cell_h,
-            cell_w,
-            cell_h,
-        );
+    fn spriteOf(
+        self: *const SpriteField,
+        transform: *const Transform,
+        visual: *const Visual,
+        animation: ?*const Animation,
+    ) render2d.Sprite {
+        const cell = self.cellOf(visual, animation);
 
         return .{
             .texture = cell.texture,
@@ -1450,6 +1703,40 @@ const SpriteField = struct {
         };
     }
 
+    /// Which piece of the sheet an entity is showing.
+    ///
+    /// **This is `sprite-animation.md` §6's join, and it is three lines.** The entity side
+    /// knows a clip id and a frame number and has never heard of a texture; the renderer
+    /// side turns a grid position into a region and has never heard of an entity; the game
+    /// is where they meet, in the same function that already turned a transform and a
+    /// visual into a sprite. Neither module gained a dependency, and the layering would
+    /// have refused one in either direction — both are L3 (I7).
+    ///
+    /// `Region.cell` cuts in the *sheet's* pixel space rather than the atlas's, which is
+    /// why none of this changes if the sheet is packed into something larger later.
+    ///
+    /// An entity with no animation, or one naming a clip no package defines, falls back to
+    /// the cell its `Visual` was authored with. That is what keeps the four thousand
+    /// drawable while a mid-run content edit is halfway through replacing their clip.
+    fn cellOf(self: *const SpriteField, visual: *const Visual, animation: ?*const Animation) render2d.Region {
+        if (animation) |current| {
+            if (self.clips.find(current.clip)) |clip| {
+                // Saturating: a clip whose `first + count` runs past its sheet is a content
+                // mistake, and `Region.cell` answers an out-of-range index with an empty
+                // region rather than with a neighbouring sprite's pixels.
+                return self.sheet.cell(clip.columns, clip.rows, clip.first +| current.frame);
+            }
+        }
+        const grid = @max(self.settings.grid, 1);
+        return self.sheet.cell(grid, grid, visual.cell);
+    }
+
+    /// The animation on an entity, or null when it has none.
+    fn animationOf(self: *SpriteField, entity: scene.Entity) ?*const Animation {
+        const found = self.world.getComponent(entity, self.animation) orelse return null;
+        return @ptrCast(@alignCast(found.ptr));
+    }
+
     /// The sprite for one entity, or null if it is not one of the field's.
     ///
     /// Used by the selection, which holds an entity rather than an index and therefore has
@@ -1461,6 +1748,7 @@ const SpriteField = struct {
         return self.spriteOf(
             @ptrCast(@alignCast(transform.ptr)),
             @ptrCast(@alignCast(visual.ptr)),
+            self.animationOf(entity),
         );
     }
 
@@ -1598,7 +1886,9 @@ const SpriteField = struct {
 
         var it = self.world.queryOf(.{ Transform, Visual });
         while (it.next()) |m| {
-            const sprite = self.spriteOf(m.get(Transform), m.get(Visual));
+            // The same sprite `submit` drew, animation and all: picking has to hit-test
+            // what is on screen, and an animated sprite's cell is what is on screen.
+            const sprite = self.spriteOf(m.get(Transform), m.get(Visual), self.animationOf(m.entity));
             // World space, so `.up` — the sample's picking is of world sprites.
             if (!render2d.containsPoint(sprite, world, .up)) continue;
             // Later in the draw order wins, and the draw order is `(layer, submission
@@ -1630,7 +1920,11 @@ const SpriteField = struct {
 
         var it = self.world.queryOf(.{ Transform, Visual });
         while (it.next()) |m| {
-            try self.renderer.drawSprite(self.spriteOf(m.get(Transform), m.get(Visual)));
+            // Asked for per entity rather than named in the query, because an animation is
+            // **optional**: a query naming it would silently stop drawing anything that
+            // does not have one, which for a sample that spawns un-animated entities is a
+            // regression that looks like a content bug.
+            try self.renderer.drawSprite(self.spriteOf(m.get(Transform), m.get(Visual), self.animationOf(m.entity)));
         }
 
         if (self.selected) |entity| {
@@ -1667,7 +1961,7 @@ const SpriteField = struct {
             "{d:.1}ms  {d} sprites  {d} glyphs  {d} tiles\n" ++
                 "{d} batches  {d} draw calls  {d} views\n" ++
                 "{d} KiB vertices  {d} buffers  zoom {d:.2}\n" ++
-                "player ({d:.0}, {d:.0})  {d} contacts{s}",
+                "player ({d:.0}, {d:.0})  {d} contacts  frame {d}{s}",
             .{
                 engine.frameDelta().toSecondsF32() * 1000,
                 stats.sprites,
@@ -1682,6 +1976,7 @@ const SpriteField = struct {
                 at.x,
                 at.y,
                 self.contacts,
+                if (self.player) |e| (if (self.animationOf(e)) |a| a.frame else 0) else 0,
                 if (self.follow) "  following" else "",
             },
             // A statistics line that cannot be formatted is not worth failing a frame for.
