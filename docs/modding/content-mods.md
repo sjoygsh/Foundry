@@ -134,6 +134,25 @@ foundry:texture foundry:fonts.debug {
 Nothing at runtime can look an asset up by path, so where you keep your files is your
 business alone.
 
+**Your files have to travel with your package.** The engine reads an asset's bytes at load,
+from a directory named for your package beside the `.fpk` — so a mod with files is two steps
+rather than one:
+
+```sh
+zig build fpack -- --name mymod:changes --out zig-out/content/mymod.fpk mymod
+cp -R mymod zig-out/content/mymod
+```
+
+§2's mod needed only the first line because it had no files at all. An ordinary file — a
+`.png`, a `.wav` — is read exactly as you wrote it, which is what the copy is for. The one
+kind `fpack` *compiles* is a tile grid (§6), and that needs `--assets-out` pointed at the same
+directory, so the `.fgrid` lands over the top of the sources:
+
+```sh
+zig build fpack -- --name mymod:changes --out zig-out/content/mymod.fpk \
+    --assets-out zig-out/content/mymod mymod
+```
+
 ### Derived IDs
 
 Authoring five thousand sprites must not mean writing five thousand records, so a file with
@@ -278,7 +297,66 @@ different clip is an override of that record; a game with a proper character she
 somewhere better to say it. What you can always do without owning any of that is change the
 clip the game already names.
 
-## 8. Hot reload
+## 8. Sounds
+
+**A `.wav` is an asset like any other**, so the shortest sound mod is a file:
+
+```
+mymod/
+  drone.wav
+```
+
+That derives `mymod:drone` by §5's rule, and a game that lets you name a sound in content
+can be pointed at it with no `.fdt` at all. Replacing a sound the game already has is one
+record:
+
+```fdt
+foundry:sound sandbox:sounds.hum {
+    source "drone.wav"
+}
+```
+
+`foundry:sound` is the engine's record type, so you do not declare it — the same as
+`foundry:texture` and `foundry:tileset`. `source` is relative to your package, and the file
+can be called and filed however you like: nothing at runtime looks a sound up by path.
+
+**Overriding works even when the original had no record.** The sandbox's `sounds/hum.wav`
+was never written down anywhere; its id was derived from its path. Yours names the same id
+and wins, and the file it points at is yours.
+
+### What the engine will play
+
+| Accepted |
+| --- |
+| PCM, 8-bit unsigned or 16-, 24- or 32-bit signed |
+| IEEE float, 32-bit |
+| `WAVE_FORMAT_EXTENSIBLE` wrapping either of those |
+| Mono or stereo |
+
+**Anything else is refused with a sentence naming what your file actually is** — ADPCM,
+mu-law and A-law included. That is deliberate: a mod author gets told to transcode rather
+than left with silence. So is the distinction between a file that is *corrupt* and one that
+is merely *unsupported*: the second one is fine and just needs converting.
+
+Two more refusals worth knowing:
+
+* **A NaN or an infinity in a float WAV refuses the whole file.** This is stricter than the
+  image path, which prefers a wrong-looking sprite to a missing one, and the asymmetry is
+  on purpose: one non-finite sample silences *everything* for the rest of the session,
+  which is the least diagnosable failure audio has.
+* **Any sample rate is fine**, and it does not have to match the device's. A voice
+  resamples as it plays, which is the same machinery that plays a sound at a different
+  pitch, so a 22 kHz file and a 48 kHz one both work and neither is converted at load.
+
+### Loops
+
+Whether a sound loops is the *game's* decision, not the file's — there is no loop flag in a
+`foundry:sound`. What is yours is making a loop that does not click: end the file at the
+same point in the waveform it started at. A tone whose frequency completes a whole number
+of cycles inside the file wraps silently; one that does not puts a click on every pass, and
+no amount of engine is going to hide it.
+
+## 9. Hot reload
 
 In a development build the engine watches what it loaded. Recompile your package, or just
 save an image, and the running program picks it up at the start of the next frame:
@@ -299,7 +377,7 @@ packages declaring the same record type at the same version must agree about it,
 could read either one's records. Add a field, raise the version, give the field a default —
 content written against the old version keeps working, which is what versioning is for.
 
-## 9. Types
+## 10. Types
 
 The list is closed. There are no others, on purpose: every type costs three implementations
 that have to agree, and a type that reaches a compiled package can never be removed.
@@ -318,7 +396,7 @@ An inline struct composes, which is why there is no colour type and no vector ty
 a mod might want to override *on its own* should be a record with a content ID instead;
 that choice is the most consequential one a schema author makes.
 
-## 10. When something is wrong
+## 11. When something is wrong
 
 `fpack` prints the file, the line, the column and the line itself with a caret under the
 problem. It reports every mistake it can rather than stopping at the first, and it exits
@@ -329,7 +407,7 @@ different fixes — an asset that is *missing* is a different sentence from one 
 *corrupt*, and a record that is not the type you asked for is a third. That distinction is
 deliberate and tested.
 
-## 11. What this does not cover yet
+## 12. What this does not cover yet
 
 See [`README.md`](README.md) for the honest list. The short version: no mod manager, no
 dependency resolution, no manifests, no partial edits, no scripting, no native mods.

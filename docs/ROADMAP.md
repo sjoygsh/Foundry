@@ -187,9 +187,9 @@ slopes are out of M5's collision scope.*
   module, L1 on `core` alone. *Done 2026-09-06.*
 * ~~Sprite animation: clips, state, timing~~ — `docs/design/sprite-animation.md`.
   *Done 2026-09-06.*
-* Audio: device output, sound loading, mixing, playback by content ID — the new **`audio`**
+* ~~Audio: device output, sound loading, mixing, playback by content ID~~ — the new **`audio`**
   module at L3, plus an audio device in `platform` and WAV decoding in `asset`;
-  `docs/design/audio.md`.
+  `docs/design/audio.md`. *Done 2026-09-06.*
 * A small but genuinely playable sample in `samples/sandbox`.
 
 *All three design documents are written (2026-09-05). Each carries its own implementation
@@ -206,8 +206,15 @@ is complete too** (steps 1-3, finished 2026-09-06): `frameAt`, `frameAtVarying` 
 are the sample's, and an animated sprite saved mid-clip reloads onto the frame it was drawing
 — compared as the UVs a draw call would carry, because an epsilon there would pass for the
 float accumulator §4 refuses. A package placed after the sample retimed and reskinned the
-player's walk with no rebuild, which is §7's Tier 1 claim paid. **Audio has not started**, and
-it is the last of the three.*
+player's walk with no rebuild, which is §7's Tier 1 claim paid. **The audio sequence is
+complete** as well (steps 1-6, finished 2026-09-06), and it is the one that brought a second
+thread into the project: the device calls Foundry on a thread it owns and under a deadline, so
+the mixer's state is split by which thread owns it, two single-producer/single-consumer rings
+carry commands out and retirements back, and no lock appears anywhere. A `.wav` in a package
+becomes a `foundry:sound` from its path with no code at all; the sandbox walks, and the
+footsteps, the thud against a wall and the ambience panned by where the player stands all come
+from the package it ships. A mod replaced a sound the sample never wrote a record for, from a
+file under its own directory layout, with nothing rebuilt but the mod.*
 
 **Exit criteria:** something a person can play for five minutes without knowing it is a tech
 demo.

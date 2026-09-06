@@ -1,23 +1,32 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-06
-**Updated by:** **M5's sprite-animation sequence is complete — the sandbox's player walks
-with a walk cycle, and an animation saved mid-clip reloads onto the frame it was drawing.**
-That closes the second of M5's three sequences; the collision sequence closed yesterday, and
-**audio is the only one left**. The engine's whole contribution to animation is three pure
-functions — `render2d.frameAt`, `frameAtVarying` and `Region.cell` — because
-`sprite-animation.md` §3 said it would be and implementation found no reason to add a fourth.
-Everything above them is the sample's: the `sandbox:clip` schema, the `sandbox:animation`
-component, the system that advances it and the three lines that join a frame number to a
-region. The crossing the design was written to resolve stayed dissolved — `scene` holds a clip
-id, a tick count and a frame index and never learns what a texture is; `render2d` cuts a
-region and never learns what an entity is; neither gained a dependency, and both being L3
-means the build graph would have refused one. §4's claim that an integer state survives a
-restart where a float accumulator does not is now **held by the suite**, comparing the UVs a
-draw call would carry, bit-exactly, across a save and a reload and then four hundred ticks
-further. §7's Tier 1 claim was paid the same way collision's was: a package placed after the
-sample retimed and reskinned the player's walk with no rebuild, and changed nothing about
-where the player ended up. 732 tests under `-Drhi=null`, 740 under `-Drhi=metal`.
+**Updated by:** **M5's audio sequence is complete, and with it all three of M5's sequences.**
+The sandbox walks a room it ships, animates as it goes, and now makes a noise doing it: a
+footstep every third of a second, a thud against a wall, and an ambience panned by where the
+player stands — all three from `.wav` files in its own content package, none of which has a
+record, because a `.wav` becomes a `foundry:sound` from its path exactly as a `.png` becomes a
+`foundry:texture`.
+
+**This is the first second thread in the project**, and every decision in `audio` is downstream
+of that one fact: the device calls Foundry on a thread it did not create, under a deadline
+measured in milliseconds, where a mistake is an audible click rather than a dropped frame. So
+the mixer's state is split by *which thread owns it* — no field is written by both — two
+single-producer/single-consumer rings carry commands out and retirements back, and there is no
+lock anywhere in the module. The one memory-ordering argument in Foundry is written down in
+`ring.zig` where a future session will find it before simplifying it away.
+
+**`scene` still cannot see `audio`**, which is what keeps audio's nondeterminism out of the
+simulation structurally rather than by a rule someone has to remember (I9): the sample *causes*
+sounds from the fixed step and *observes* none, and nothing could observe one even if it wanted
+to. Both lifetime hazards `audio.md` §7 names are tested by doing them — the game dropping its
+last asset reference mid-voice, and a hot reload replacing a sound while the device thread is
+reading it. §10's Tier 1 claim was paid the same way the other two sequences paid theirs: a mod
+replaced a sound the sandbox never wrote a record for, from a file under its own directory
+layout, with nothing rebuilt but the mod.
+
+796 tests under `-Drhi=null`, 804 under `-Drhi=metal`. **M5's remaining work is its exit
+criterion, not its bullet list**: five minutes of play.
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
 decisions live in `docs/adr/`; milestone definitions live in `docs/ROADMAP.md`.
@@ -38,15 +47,18 @@ is mature enough to need them rather than as decoration.
 **Phase 2 — A real 2D engine.** Phase 1 (M0, M1) closed with the first pixels; M2, M3 and M4
 are done. **M5 — Playable: "it's a game" — is open**, started 2026-09-05, and started where
 the last three did: at the decisions `CLAUDE.md` §9 had been holding for it, then the design
-document, then code.
+document, then code. All three of its sequences are built; what is left is the exit criterion
+— a sample somebody would play for five minutes — which is a different kind of work from the
+three that preceded it.
 
 ## Current milestone
 
-**M5 — Playable: "it's a game." In progress, opened 2026-09-05.** Two of its three sequences
-are finished — collision (2026-09-06) and sprite animation (2026-09-06) — and **audio is the
-one that remains**. What follows in this section is what M5 opened with, because the decisions
-and the design are what a future session needs and they have not changed; what has been built
-against them is under "What is being worked on".
+**M5 — Playable: "it's a game." In progress, opened 2026-09-05.** **All three of its sequences
+are finished** — collision, sprite animation and audio, all 2026-09-06 — and what remains is
+the milestone's *exit criterion* rather than any of its bullets: something a person can play
+for five minutes without knowing it is a tech demo. What follows in this section is what M5
+opened with, because the decisions and the design are what a future session needs and they have
+not changed; what has been built against them is under "What is being worked on".
 
 **Two `CLAUDE.md` §9 decisions came due and were made, neither silently (rule 10).**
 
@@ -331,6 +343,79 @@ walls.**
   that had gone stale: a shorter settings schema now silently turns off the map and every
   animation, which is a bad first experience and a worse first document.
 
+**M5, also new (steps 1 through 6 of `audio.md` §13 — the whole sequence):**
+
+* `engine/src/asset/sound.zig` — `Sound`: interleaved `f32`, one or two channels, and the
+  rate the file declared. `image.zig`'s counterpart, and the symmetry is the argument — one
+  layout every decoder expands to, so the consumer that matters never switches on a format
+  enum in its inner loop. Nothing here is resampled: a voice converts as it plays, which is
+  the same operation as pitch.
+* `engine/src/asset/wav.zig` — the decoder, written rather than depended on (ADR-0023, and
+  ADR-0018's reasoning): PCM at 8, 16, 24 and 32 bits, IEEE float at 32,
+  `WAVE_FORMAT_EXTENSIBLE` resolved through its sub-format GUID, mono and stereo. Everything
+  else is refused **by name** — ADPCM, mu-law and A-law get a sentence saying what the file
+  is. **The format is asked before the bit depth**, because four bits is nonsense for PCM and
+  correct for ADPCM, and a decoder that asks the other way tells an author their file is
+  corrupt when it is merely compressed. A non-finite sample in a float WAV refuses the file:
+  one NaN in the mix accumulator silences everything for the rest of the session. The frame
+  limit is *proved* to precede the allocation by a failing allocator, not asserted to.
+* `engine/src/asset/schemas.zig` — `foundry:sound`, version 1, `source` only, with `wav` in
+  the extension table. `fpack` needed no change at all: it already walks that table, so a
+  `.wav` in a package becomes a record with no code and no authoring.
+* `engine/src/platform/audio.zig` and the two backends — `AudioDeviceHandle` (generational,
+  because an output device is closed and reopened in normal use when headphones are
+  unplugged), `AudioConfig`, `AudioInfo`, and the callback rule written on the function
+  pointer type where an implementer will read it. **The device speaks `f32` interleaved and
+  that is not negotiated.** The null backend's device is **stepped, not threaded**: a
+  synchronous pull of exactly the frames asked for, returning what the callback wrote, which
+  is what makes every mixer test reproducible. SDL3 adopts the device's own sample rate —
+  Foundry's voices resample anyway, so this removes SDL's resampler from the path — and fills
+  whole blocks into the stream's queue, so Foundry's callback always gets the block size it
+  was promised.
+* `engine/src/audio/ring.zig` — the single-producer/single-consumer queue, twice over, and
+  **the whole of Foundry's concurrency design**. Push writes the slot then stores the tail
+  with release; pop loads the tail with acquire then reads the slot. For the retirement ring
+  that pair is what makes the device thread's last read of a sound's samples happen-before the
+  game thread's free of them. A full ring drops and counts, because it cannot block, cannot
+  grow and cannot report to a caller on the other thread.
+* `engine/src/audio/voice.zig` — one playing sound as the device thread sees it, plus the
+  arithmetic separated out so it can be argued with rather than merely observed:
+  constant-power pan (`cos`/`sin` of `(pan+1)·π/4`, computed once per command), the resample
+  step as one multiplication of a rate ratio by a pitch, an `f64` cursor, and linear
+  interpolation. A loop **wraps** its cursor rather than resetting it, so it does not
+  accumulate a fractional-frame error every pass. Pan is ignored on a mono device rather than
+  summed, which would make a centred sound quieter than a hard-panned one.
+* `engine/src/audio/mixer.zig` — the voice table split by which thread owns it, the command
+  and retirement rings, the callback, and the game-thread API. **No field is written by both
+  threads**, which is why there is no lock. A `VoiceHandle`'s generation is the answer to
+  stopping a footstep that ended 300 ms ago and killing the door that took its slot. Three
+  things implementation forced: a dropped `play` **returns an error and undoes its claim**
+  where every other dropped command is merely counted, because a `play` that vanished would
+  strand a slot no retirement is coming for; the retirement ring is sized to the voice count,
+  which makes dropping one structurally impossible rather than unlikely; and a one-shot ends
+  in the buffer it runs out in rather than the one after. `soundLoader` registers upward into
+  `asset.Registry` (I6) with a `SoundHandle` payload rather than a pointer, which is what lets
+  a reload retire a sound a voice is still reading. `shutdown` is the third teardown call the
+  design did not have, and §7's two requirements wanting opposite orders is why.
+* `engine/tests/sound_pipeline.zig` — `.fdt` and a `.wav` on disk to samples in a device
+  buffer, and the two lifetime hazards done rather than described: the game dropping its last
+  asset reference mid-voice, and a reload saving a quieter take over a playing loop while two
+  sounds live at once. `testing.allocator` is half of each assertion — early is a
+  use-after-free on the device thread, late is a leak.
+* `scripts/gen-sandbox-sounds.py` and `samples/sandbox/content/sounds/` — three WAVs, each
+  exercising something different: 22050 Hz so the voice resamples, 48000 Hz so it does not,
+  and a half-second ambience whose partials complete a whole number of cycles so the loop
+  wraps silently. Generated by a script for the reason the sprite sheet is: a binary in the
+  tree should be reproducible rather than mysterious.
+* `samples/sandbox/main.zig` — the mixer created by the game, its loader handed up, and three
+  sound ids read from the settings record. A footstep is a tick count in the fixed step, a
+  thud is a contact, and the ambience is panned once a frame from where the player is drawn —
+  the simulation causing sounds and observing none, which is structural rather than a rule
+  (`scene` cannot see `audio`).
+* `docs/modding/content-mods.md` — a §8 for sounds: the accepted subset, why an unsupported
+  format is a different sentence from a corrupt one, that any sample rate is fine because a
+  voice resamples, and that overriding works even when the original had no record.
+
 **M4, new:**
 
 * `engine/src/scene/entity.zig` — `Entity`, a `core.Handle` over an opaque tag. No entity
@@ -564,9 +649,9 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 732 tests** (56 `core`, 70 `platform`, 104 `data`, 82 `physics2d`,
-92 `rhi`, 54 `asset`, 129 `render2d`, 79 `scene`, 28 `app`, 21 `fpack`, 17 integration), and
-**740 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
+**`zig build test` passes 796 tests** (56 `core`, 78 `platform`, 104 `data`, 82 `physics2d`,
+92 `rhi`, 70 `asset`, 129 `render2d`, 79 `scene`, 33 `audio`, 28 `app`, 22 `fpack`,
+23 integration), and **804 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
 8 exceptions need a real GPU and compile only when Metal is selected.
@@ -615,6 +700,34 @@ placed after the sample's, restating `sandbox:clip.walk` with `first 12` and `ho
 reskinned the walk onto another row of the sheet and ran it three times faster — while
 leaving the player's finishing position and contact count identical, which is the right
 answer for a change to how something looks.
+
+**And it makes a noise, from its own package.** Under Metal the device is real and the
+sandbox drives it:
+
+```
+info(platform): audio device: 48000 Hz, 2 channel(s), 512-frame buffer
+info(audio): mixer: 32 voice(s) at 48000 Hz, 2 channel(s)
+info(sandbox): player finished at (17.6, 35.0) with 6 contact(s), on frame 3 of ... after 22 tick(s)
+info(sandbox): clean exit after 900 frames, 455 ticks, 7583ms simulated, 29 sound(s) started
+```
+
+Three `.wav`s, none of which has a record — a `.wav` in a package becomes a `foundry:sound`
+from its path, so the settings record naming three ids is the only place the sample mentions
+them. The footstep is 22050 Hz so the voice resamples it on the real path, the thud is at the
+device's own rate so the same path runs with no resampling, and the ambience completes a whole
+number of cycles in its half second so the loop wraps silently.
+
+**The real device was verified by hand once**, because a unit test that opened one would fail
+on a machine with no sound card — which is precisely the configuration `audio.md` §9 says must
+keep working. A temporary probe reported 48000 Hz, 2 channels, a 512-frame buffer, 36 callbacks
+in 400 ms at **exactly 1024 samples each** (which is the property the backend's whole-block
+fill exists to guarantee), pausing stopping them, resuming restarting them, and closing stopping
+them for good.
+
+**And a mod replaced a sound the sandbox never wrote a record for.** A package declaring
+`foundry:sound sandbox:sounds.hum { source "drone.wav" }` pointed the ambience at its own file,
+under its own directory layout, at 16 kHz — a rate neither the device nor the original uses, so
+the voice resampled it. Nothing was rebuilt but the mod.
 
 **What the M1 record below describes is the quad**, kept because each row is a separate
 property that was checked once and has not been rechecked since.
@@ -674,9 +787,10 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M5, with the collision sequence finished and audio and sprite animation still ahead.** All
-three design documents are written; all seven steps of `tilemaps-and-collision.md` §15 are
-implemented. `physics2d` is now complete as a *module*:
+**M5, with all three sequences finished and only the exit criterion left.** All three design
+documents are written and all three are fully implemented; what remains is a sample somebody
+would play for five minutes, which is a different kind of work from the three that preceded it.
+All seven steps of `tilemaps-and-collision.md` §15 are implemented. `physics2d` is now complete as a *module*:
 shapes and their tests, the tile grid with neighbour-aware face culling, the two-tier spatial
 hash with its determinism sort, and movement — `moveAndSlide` with its four-iteration budget
 and the projection that makes a stop into a slide, `resolveOverlaps` kept deliberately separate
@@ -810,6 +924,72 @@ has no consumer at all: the sample's schema exposes a single `hold`, exactly as 
 a list field for a case nothing has asked for is the guess §8 refuses. It exists, it is tested,
 and it agrees with `frameAt` on the uniform case so the schema can grow one later without
 changing what an existing clip shows.
+
+**The audio sequence is done, all six steps, and it brought the project's first second
+thread.** Everything in `audio` is downstream of one sentence: the device calls Foundry on a
+thread it did not create, under a deadline, where a mistake is an audible click rather than a
+dropped frame. So the mixer's state is split by which thread owns it — no field is written by
+both — two SPSC rings carry commands out and retirements back, and there is no lock in the
+module. The one memory-ordering argument in Foundry lives in `ring.zig`, written down because
+it is invisible and a later session would otherwise simplify it away, and it was run against
+two real threads once: 100,000 values in order, none missing, none duplicated. That is not
+proof of the ordering and the file says so.
+
+**Step 1 needed nothing from `fpack`.** A `.wav` becomes a `foundry:sound` from its path
+because the compiler already walks the asset extension table rather than knowing about PNG.
+That is what the table was for and this is the first time anything proved it. The decoder added
+two refusals the design's list did not have: **the format is asked before the bit depth**,
+because four bits is nonsense for PCM and correct for ADPCM and a decoder that asks the other
+way tells an author their file is corrupt when it is merely compressed; and a sound with **no
+frames** is refused, because a looping voice wraps its cursor by the source length and
+admitting one would put a division by zero in the one place that must never branch on a special
+case. Two header fields — `nAvgBytesPerSec` and `nBlockAlign` — are read by nothing, because
+both are derivable and both are wrong in a great many real files.
+
+**Step 2's `comptime` interface check earned its keep the moment the four functions landed**:
+adding them failed the build with the SDL3 backend named. Three things it settled. A device
+**opens running**, because SDL's streams start paused and a backend that left it that way would
+be an engine that ships silent until somebody investigates. The SDL3 backend **adopts the
+device's own sample rate**, since Foundry's voices resample anyway and taking the hardware rate
+removes SDL's resampler from the path entirely; the channel count goes the other way, because a
+mixer that had to know about 5.1 to be heard on a 5.1 machine would be a worse trade. And
+Foundry's callback **always gets the block size it was promised**, whatever SDL asks for, by
+filling whole blocks into the stream's queue — overshoot is what the next callback does not have
+to ask for.
+
+**Step 4 forced three decisions §4 did not make.** A dropped `play` **returns an error and
+undoes its claim**, unlike every other dropped command, because the game thread has already
+taken a slot and a `play` that vanished would strand it forever. The retirement ring is **sized
+to the voice count**, which makes dropping a retirement structurally impossible — a voice
+retires at most once and cannot play again until `update` returns its slot — so the push
+asserts rather than ignoring its result. And a one-shot **ends in the buffer it runs out in**,
+not the one after, which is what makes the lifetime rule sayable. Two smaller ones: pan is
+ignored on a mono device rather than summed, and `init` opens the device last behind an
+acquire/release flag, because the device may call back the instant it exists and `AudioInfo` is
+not known until after that call returns.
+
+**Steps 5 and 6 found one thing the design had not: teardown wants two opposite orders.** The
+registry unloads through a loader that borrows the mixer, so the loader has to go before
+`deinit`; but the mixer holds an asset reference per playing voice, so those have to come back
+*before* the loader goes. `Mixer.shutdown` is the call between them — it closes the device,
+which is what makes the release safe, and hands the references back. `deinit` deliberately does
+not call it, because `deinit` has to stay safe after the registry has already gone.
+
+**The two lifetime hazards are tested by doing them**, in an integration test because nothing
+below can stand above both modules: the game dropping its last asset reference mid-voice, and a
+reload saving a quieter take over a playing loop with two sounds alive at once until the voice
+holding the old one stops. `testing.allocator` is half of each assertion — early is a
+use-after-free on the device thread, late is a leak, and it fails on both.
+
+**A headless build does not emit one-shots**, and the reason is worth keeping: its device never
+runs, so a command queued there sits in the ring until it fills and every one after it is
+refused. That is the mixer behaving exactly correctly and the sample asking for something
+pointless. The ambience still starts, so a headless run still decodes a `.wav` through the real
+path.
+
+**Audio's open questions 1 through 5 are all still open**, and step 6 was written to keep them
+that way: the sample names three sound ids and **no gains**, because a per-sound gain field
+would have answered question 2 — buses and category sliders — by accident.
 
 What follows in this section is the record of the milestones behind it, kept because the
 reasoning is what a future session needs and the commit log is not where reasoning lives.
@@ -1189,8 +1369,7 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**M5 is open, two of its three sequences are finished, and audio is the one that remains.**
-Each has its order written down in its own document:
+**M5's three sequences are all finished, and its exit criterion is what remains.**
 
 1. ~~**Collision**, `tilemaps-and-collision.md` §15.~~ **Complete, all seven steps, 2026-09-06.**
    A player walks the sandbox's room and is stopped by its walls.
@@ -1198,19 +1377,27 @@ Each has its order written down in its own document:
    2026-09-06.** An animated sprite reloads onto the frame it was drawing, compared as the UVs
    a draw call would carry — the check that makes the integer-tick argument something the suite
    holds rather than something a document asserts.
-3. **Audio**, `audio.md` §13, six steps, and the first three add no threads at all: the
-   `foundry:sound` schema, `Sound` and the WAV decoder in `asset` with its corpus; the device
-   in `platform` including the stepped null one; `audio` in the build graph at L3; the rings,
-   the voice table and the mixer under the stepped device; the loader registered upward and
-   `play(ContentId)`; the sandbox making a sound.
+3. ~~**Audio**, `audio.md` §13.~~ **Complete, all six steps, 2026-09-06.** The sandbox makes
+   its footsteps, its thud and its ambience from `.wav`s in its own package, through a device
+   the mixer opened on a thread Foundry did not create.
 
-**Audio is the largest of the three and the only one with a second thread in it**, so it is
-worth starting on a session that can give the rings and the callback deadline its whole
-attention rather than the back half of one. `audio.md` is M5's longest document for that
-reason. When it lands, M5's exit criterion — five minutes that do not feel like a tech demo —
-is the only thing left in the milestone.
+**What is left in M5 is the exit criterion, not a bullet: something a person can play for five
+minutes without knowing it is a tech demo.** That is a different kind of work from the three
+sequences, and it is worth being explicit about what it is *not*. It is not more engine: the
+sandbox already has a map, collision, animation, sound, a camera, saves and hot reload. It is
+the question of whether the sample should become that, or whether five playable minutes belongs
+in a game repository and the sample stays a demonstration (ADR-0017 draws that line, and
+`samples/` holding "the smallest thing that exercises a capability" is the standard the sandbox
+is already at the edge of). **That is a decision for the user, not one to make while
+implementing.**
 
-**Three things carried forward, and none of them is a bug:**
+**One deliberate gap worth knowing about.** The mixer has no *audible* verification: the
+callback counts, the sample counts and the bit-exact tests all say the right numbers reach the
+device, and nobody has listened to it. A person putting on headphones for thirty seconds is the
+only check that catches a stereo channel swapped or an envelope that clicks, and it costs
+almost nothing next to what it would catch.
+
+**Four things carried forward, and none of them is a bug:**
 
 * The key and button *bindings*, carried from M2 and still needing a person to judge them —
   that dragging carries the world with the cursor, and that the wheel zooms toward the
@@ -1224,6 +1411,9 @@ is the only thing left in the milestone.
   requirement rule 7 warns about. Due with the material system, or the first time a sample
   wants its own shader. Adding it is a schema and a runtime-registered loader; nothing has
   to be reshaped.
+* **Nothing is pushed.** Ten commits sit on `main` ahead of `origin/main` — three from the
+  sprite-animation sequence and seven from the audio one, including this document. Pushing is
+  outward-facing, so it is the user's call.
 * The GitHub repository description still says the engine implementation has not started,
   which four complete milestones have made false. Outward-facing, so it is the user's call.
 
@@ -1428,9 +1618,19 @@ a rewrite of the one before.
 * **The handle pool is sparse and iterates dead slots.** Fine for its intended use — lookup
   by identity, rare iteration. Deliberately not optimised, and deliberately not generalised
   toward component storage (ADR-0010, M4).
-* **`platform` has no gamepad support, file watching, IME preedit or audio.** Each is
-  deferred with a recorded reason in the design doc's Resolution; none requires the
-  interface to change to accommodate it later.
+* **`platform` has no gamepad support, file watching or IME preedit.** Each is deferred with
+  a recorded reason in the design doc's Resolution; none requires the interface to change to
+  accommodate it later. Audio was the fourth item on this list and arrived 2026-09-06, adding
+  four functions and needing no reshaping of anything already there — which is the evidence
+  that the deferral was the right kind.
+* **Nothing has listened to the mixer.** The arithmetic is tested bit-exactly, the device is
+  confirmed to call back with the block it was promised, and the sandbox reports how many
+  sounds it started; none of that would catch a swapped stereo pair or an envelope that
+  clicks. Thirty seconds with headphones is the check, and it has not been done.
+* **A device that disappears mid-run is whatever SDL3 does about it.** `audio.md`'s open
+  question 4: unplugging headphones today produces no event and no reopen. Owed when someone
+  unplugs something and the answer is unsatisfying; `platform`'s interface has room for a
+  device-changed event beside the window events, so nothing has to be reshaped.
 * **Text input is enabled for a window's whole lifetime.** SDL3 requires
   `SDL_StartTextInput` explicitly, and without it `text_input` events never arrive at all.
   Per-window IME control belongs with the UI system (M6).
@@ -1532,6 +1732,28 @@ a rewrite of the one before.
   every mod is stuck with from M7, chosen before any game has said what belongs on one. The
   sample defines its own, exactly as it already defines `transform` and `sprite`. The standard
   vocabulary is M7's decision, made when the ABI freezes it.
+
+**Audio (2026-09-06), decided while implementing and recorded in `audio.md`'s four Resolution
+sections rather than as ADRs, because each is an implementation choice inside a decision
+ADR-0023 already made:**
+
+* **A dropped `play` is an error; every other dropped command is only counted.** The design
+  said a full ring drops and counts, which is right for a `set_gain` and catastrophic for a
+  `play`: the slot is already claimed and the retirement that frees it can only come from a
+  voice that started. So `play` undoes its claim and returns `CommandQueueFull`.
+* **The retirement ring is sized to the voice count**, which turns "a dropped retirement would
+  strand a slot forever" from a risk into an impossibility — a voice retires at most once and
+  cannot play again until `update` returns its slot. The push therefore asserts rather than
+  ignoring its result.
+* **The SDL3 backend takes the device's sample rate and gives back the requested channel
+  count.** Foundry resamples in the voice anyway, so adopting the hardware rate removes SDL's
+  resampler; a mixer that had to understand 5.1 to be heard on a 5.1 machine would be the
+  worse trade in the other direction.
+* **`Mixer.shutdown` exists because teardown wants two opposite orders** — the loader must go
+  before `deinit`, and the mixer's asset references must come back before the loader goes.
+  `deinit` does not call it, so `deinit` stays safe after the registry has already gone.
+* **The sample names sound ids and no gains**, deliberately, so that `audio.md`'s open
+  question 2 — buses and category sliders — is not answered by accident.
 * **The mixer opens the audio device**, which ADR-0023 left implicit. The device cannot be
   opened before a callback exists and the callback is the mixer's, so `Mixer.init` opens it and
   `deinit` closes it. The consequence is the useful part: **`app` gains no dependency on
@@ -2214,6 +2436,12 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 * **`.lazy = true` still extracts a dependency into `zig-pkg/`** on every build; it governs
   how `build.zig` must ask for it (`b.lazyDependency`, returning an optional), not whether it
   is materialised. `zig-pkg/` is build output and is gitignored.
+* **`std.Thread.sleep` is gone.** Sleeping is `std.Io`'s now (`io.sleep`), which is the same
+  move `std.fs` made. Nothing in the engine needed one — `Os` has its own — but a throwaway
+  probe will reach for it and find nothing.
+* **`std.testing.FailingAllocator`** takes `.{ .fail_index = n }` and exposes `.allocations`,
+  which is how `wav.zig` proves its frame limit is checked *before* the allocation rather
+  than merely asserting that it is.
 * Modules are created with `b.addModule` / `b.createModule` and wired through `.imports`;
   `addExecutable` and `addTest` take a `.root_module`; `build.zig.zon` requires `.fingerprint`
   and its `.name` is an enum literal. `b.addOptions()` emits its *own* definition of any enum

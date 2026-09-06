@@ -1,7 +1,8 @@
 # Design: audio — the device, the mixer, and sounds as content
 
-**Status:** Design only. Nothing here is implemented. Written before any audio code exists,
-so that implementation is transcription rather than invention.
+**Status:** Fully implemented, steps 1-6, 2026-09-06. Written before any audio code existed,
+so that implementation was transcription rather than invention; see the four Resolution
+sections at the end for what it settled.
 **Date:** 2026-09-05
 **Implements:** I1, I2, I5, I6, I7, I8, I9 · **Informed by:** ADR-0002, ADR-0007, ADR-0013,
 ADR-0018, ADR-0023
@@ -610,3 +611,195 @@ Each step leaves the suite green, and the first three add no threads at all.
 
 Collision is a separate document and a separate sequence. Neither blocks the other, and the
 only thing they share is the frame that calls both.
+
+---
+
+## Resolution: sounds as content (step 1, 2026-09-06)
+
+*What implementing §6 settled. `foundry:sound` in `asset/schemas.zig`, `Sound` in
+`asset/sound.zig`, the decoder in `asset/wav.zig`, with 16 tests, plus one in `fpack`.*
+
+**No changes to §6, and one addition to `fpack`: none.** A `.wav` becomes a
+`foundry:sound` by path with no code at all, because `fpack` already walks the extension
+table rather than knowing about PNG. That is what the table was for, and this is the first
+time anything proved it.
+
+**Two refusals the document's list did not have.**
+
+* **The format is asked before the bit depth.** §6's table is keyed by depth, which reads
+  as though depth is checked first. It cannot be: four bits per sample is nonsense for PCM
+  and correct for IMA ADPCM, so a decoder that checks depth first tells an author their
+  file is corrupt when it is merely compressed. Format, then channels, then rate, then
+  depth — each refusal naming the thing that is actually wrong.
+* **A sound with no frames is refused.** Not in §6's list, and added because a looping
+  voice wraps its cursor by the source length: admitting a zero-frame sound would put a
+  division by zero in the one place that must never branch on a special case. A `data`
+  chunk of length zero is a broken export in every case anyone has met.
+
+**`nAvgBytesPerSec` and `nBlockAlign` are read by nothing.** Both are derivable from the
+rest, both are wrong in a great many real files, and refusing over a redundant field would
+refuse sounds that decode perfectly. The same reasoning applies one level up to the `RIFF`
+chunk's own size, which is not trusted for bounds: every sub-chunk is separately checked
+against the buffer, which is the bound that is actually true.
+
+**A final odd-sized chunk may omit its pad byte.** The format says chunks are padded to an
+even length; enough writers skip the last one that refusing them would be refusing real
+files. A pad that would run past the end ends the walk instead of failing it.
+
+**The frame limit is proved to precede the allocation, not asserted to.** The test decodes
+with an allocator that fails on its first request and expects `SoundTooLarge` rather than
+`OutOfMemory`. That is the difference between the bound working and the bound being
+written down.
+
+---
+
+## Resolution: the device (step 2, 2026-09-06)
+
+*What implementing §3 settled. `platform/audio.zig`, four entries on the backend
+interface, the stepped null device, and the SDL3 backend, with 8 tests.*
+
+**§3's four functions are exactly the four**, and the `comptime` check earned its keep
+immediately: adding them broke the SDL3 backend with a compile error naming the missing
+function, which is what that check exists to do.
+
+**A device opens running.** §3 did not say, and the alternative is worse in a way that is
+hard to notice: SDL's streams start paused, and a backend that left it that way would be an
+engine that ships with no sound until somebody investigates. `setAudioPaused` is for a game
+that wants silence, not a step every backend has to remember.
+
+**The SDL3 backend adopts the device's own sample rate rather than the requested one.**
+§3 said the rate is negotiated without saying which way it resolves. Foundry's voices
+already resample — that machinery exists for pitch and cannot be turned off (ADR-0023) — so
+taking the hardware rate costs nothing and removes SDL's resampler from the path entirely.
+The channel count goes the other way: the request wins, and SDL maps two channels onto
+whatever the hardware has, because a mixer that had to know about 5.1 in order to be heard
+on a 5.1 machine would be a worse trade than one that never learns.
+
+**Foundry's callback always receives the block size it was promised.** SDL asks for a
+number of bytes that need not match, and the backend fills whole blocks into the stream's
+queue until the request is covered. Overshoot is not waste — it is what the next callback
+does not have to ask for — and it buys the mixer a block size that never changes, which
+§8's determinism claim leans on.
+
+**`stepAudio` returns the buffer it filled**, where §3 wrote `void`. It is a test
+affordance rather than interface, so this is not an architectural change; returning the
+samples is what lets a mixer test assert on what was produced without a recording shim in
+between, and every step-4 test uses it that way. A paused stepped device writes silence and
+does not call the callback, which is what a paused device does and what lets a test tell
+"the mixer produced nothing" apart from "the device was not running".
+
+**The real device was verified once, by hand, and not by a unit test.** A test that opened
+an output device would fail on a machine that has none, which is precisely the
+configuration §9 says must keep working. A temporary probe reported 48000 Hz, 2 channels,
+a 512-frame buffer, 36 callbacks in 400 ms at exactly 1024 samples each, pausing stopping
+them, resuming restarting them, and closing stopping them for good.
+
+---
+
+## Resolution: the rings, voices and the mixer (steps 3-4, 2026-09-06)
+
+*What implementing §4 and §5 settled. `audio/ring.zig`, `audio/voice.zig` and
+`audio/mixer.zig`, with 32 tests through the stepped null device.*
+
+**The layering claim was checked by breaking it.** Adding `@import("render2d")` to the
+module and *referencing* it fails the build with "no module named 'render2d' available
+within module 'root'". The reference is the load-bearing part: Zig analyses lazily, and an
+illegal import nothing uses compiles clean.
+
+**Three things §4 did not decide, all forced by the first implementation.**
+
+* **A dropped `play` returns an error; every other dropped command is only counted.** §4
+  said a full ring drops and counts, which is right for a `set_gain` and catastrophic for a
+  `play`: the game thread has already claimed a slot, and a `play` that vanished would
+  strand it forever, because the retirement that frees it can only come from a voice that
+  actually started. So `play` undoes its claim and returns `CommandQueueFull`, which is a
+  fourth member of `PlayError` the document did not have.
+* **The retirement ring is sized to the voice count**, which makes dropping a retirement
+  structurally impossible rather than merely unlikely. A voice retires at most once and
+  cannot play again until `update` returns its slot, so at most `voices` retirements can
+  ever be outstanding. The push therefore asserts rather than ignoring its result: the
+  impossible case says so instead of vanishing into a stranded slot.
+* **A one-shot ends in the buffer it runs out in**, not the one after. Checking the cursor
+  before writing a frame is the obvious loop and holds a finished slot for an extra
+  callback; checking after advancing costs nothing and makes the lifetime rule sayable —
+  "the voice ended during this buffer" — which is the sentence §5 step 5 already used.
+
+**Pan is ignored on a mono device**, where §5 says a mono source feeds both channels
+through the pan gains. Applying constant-power gains and then summing to one channel makes
+a centred sound 3 dB quieter than a hard-panned one, which is a strange thing for panning
+to do to a listener who has one speaker. The device's channel count is fixed for the
+mixer's life, so this is one branch outside the per-frame loop, not inside it.
+
+**Pitch is clamped to [1/64, 64].** §5 did not bound it, and zero would make a voice
+immortal while a negative one would read backwards — neither being a thing to discover from
+a sound that will not stop.
+
+**`init` opens the device last and gates the callback on a flag.** The device may call back
+the instant it is opened, and `AudioInfo` is not known until after that call returns, so
+there is a window in which the callback would read a half-built mixer. An acquire/release
+`ready` flag closes it, and the callback writes silence until it is set — which also means
+a mixer that fails the channel-count check leaves a device writing zeroes rather than
+reading a partly-torn-down object.
+
+**The threads were run against each other once**, in `ring.zig`: a producer and a consumer
+on two real threads passing 100,000 values, checked in order with none missing and none
+duplicated. §3 is right that this is not proof of the memory ordering. It is the difference
+between reasoning that was reviewed and reasoning nobody ran.
+
+---
+
+## Resolution: content, and the sandbox (steps 5-6, 2026-09-06)
+
+*What implementing §6, §7 and §10 settled. `soundLoader` and `play(ContentId)` in
+`audio/mixer.zig`, `engine/tests/sound_pipeline.zig` with 6 tests, and the wiring plus
+three generated `.wav`s in `samples/sandbox/`.*
+
+**`play` keeps the registry's own error set rather than flattening it.** §7 named four
+failures and one of them was `WrongAssetKind`; what the registry already distinguishes is
+richer — a record that is missing, a record that is the wrong type, a `source` that is not
+there, and a `source` a package is not allowed to name — and each sends an author somewhere
+different. `PlayError` is therefore `VoiceError || asset.AcquireError`, and the acquire is
+`acquireOf`, so a sound that turned out to be a texture is refused where the id was written
+rather than where the payload is cast.
+
+**`Mixer.shutdown` is new, and teardown is why.** §7 says the mixer is deinitialised before
+the engine; what implementation found is that two requirements want opposite orders. The
+registry unloads through a loader that borrows the mixer, so the loader has to go before
+`deinit` — the same rule `render2d.textureLoader` already documents. But the mixer holds an
+asset reference per playing voice, so those have to come back *before* the loader goes, or
+the registry rightly reports that something is still holding an asset it is unloading. The
+answer is a third call between them: `shutdown` closes the device — which is what makes the
+release safe, since no callback can be reading afterwards — and hands the references back.
+`deinit` deliberately does **not** call it: `deinit` has to stay safe after the registry has
+already gone, and handing a reference back to a freed registry would be the worst available
+way to end a program.
+
+**The two hazards are tested by doing them, in an integration test, because nothing else
+can.** Hazard one releases the asset around the mixer's back and evicts, and the sound is
+still audible. Hazard two saves a quieter take over a playing loop and watches two sounds
+live at once — the old one still playing, the new one waiting for the next voice — until
+the voice holding the old one stops. `testing.allocator` is half of each assertion: an
+early free is a use-after-free on the device thread, a late one is a leak, and it fails on
+both.
+
+**The sample's three sounds each exercise something different**, which is what a sample is
+for: the footstep is 22050 Hz so the voice resamples on the real path, the thud is at the
+device's own rate so the same path runs with no resampling at all, and the ambience
+completes a whole number of cycles inside its half second so the loop wraps silently.
+None of them has a record: a `.wav` becomes a `foundry:sound` from its path, so the
+settings record naming three ids is the only place the sample mentions them.
+
+**A headless build does not emit one-shots.** Its device never runs, so a command queued
+there sits in the ring until it fills and every one after it is refused — the mixer
+behaving exactly correctly and the sample asking for something pointless. The ambience
+still starts, so a headless run still decodes a `.wav` through the real path.
+
+**§10's Tier 1 claim was checked rather than asserted.** A package declaring
+`foundry:sound sandbox:sounds.hum { source "drone.wav" }` replaced a sound the sandbox
+never wrote a record for, from a file under a directory layout of the mod's own choosing,
+at a sample rate neither the device nor the original uses — with nothing rebuilt but the
+mod.
+
+**Open questions 1 through 5 are all still open**, and step 6 was written to keep them
+that way: the sample names three sound ids and no gains, because a per-sound gain field
+would have answered question 2 by accident.
