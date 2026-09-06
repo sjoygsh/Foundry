@@ -100,6 +100,36 @@ pub const Region = struct {
             .size_px = .{ .width = cw, .height = ch },
         };
     }
+
+    /// Cell `index` of a `columns` x `rows` grid cut from this region, row-major.
+    ///
+    /// The unit a sprite sheet is authored in: an animation names a run of cells and
+    /// `frameAt` says which one is showing. Built on `sub`, so a sheet packed into a
+    /// shared atlas slices identically to one that got a texture of its own — which is
+    /// what makes moving it into an atlas a change to one creation call and to nothing
+    /// else (`docs/design/render2d.md` §8).
+    ///
+    /// Cell size is integer division, so a sheet whose pixels do not divide evenly leaves
+    /// a strip at the right or bottom unused. That is the honest answer: the alternative
+    /// is cells of two different sizes, which is worse and harder to notice.
+    ///
+    /// **Everything out of range yields an empty region rather than a neighbouring cell**
+    /// — a zero grid dimension, an `index` past the last cell, or a region too small to
+    /// divide. All three come from content (a clip's `first + count` is a number in a
+    /// file), and `sub` already refuses to read past a region's edge for the same reason:
+    /// in an atlas, the texels next door are somebody else's sprite. An animation that
+    /// vanishes sends its author to the clip; one that silently shows the wrong cell does
+    /// not.
+    pub fn cell(self: Region, columns: u32, rows: u32, index: u32) Region {
+        const nothing: Region = .{ .texture = self.texture, .uv = .{}, .size_px = .{} };
+        if (columns == 0 or rows == 0) return nothing;
+        // Widened, because a 65,536-square grid is a content mistake rather than a crash.
+        if (index >= @as(u64, columns) * @as(u64, rows)) return nothing;
+
+        const cw = self.size_px.width / columns;
+        const ch = self.size_px.height / rows;
+        return self.sub((index % columns) * cw, (index / columns) * ch, cw, ch);
+    }
 };
 
 /// Where the packer decided an image goes, in texels from the atlas's top-left.
@@ -259,6 +289,88 @@ test "a sub-rectangle past the edge is clamped, not wrapped onto a neighbour" {
 
     const outside = region.sub(64, 64, 8, 8);
     try testing.expect(outside.size_px.isEmpty());
+}
+
+test "a grid cut names cells row-major, and cell zero is the top-left" {
+    const sheet: Region = .whole(.none, .{ .width = 64, .height = 64 });
+
+    const first = sheet.cell(4, 4, 0);
+    try testing.expectApproxEqAbs(@as(f32, 0), first.uv.x, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0), first.uv.y, 1e-6);
+    try testing.expectEqual(@as(u32, 16), first.size_px.width);
+    try testing.expectEqual(@as(u32, 16), first.size_px.height);
+
+    // Row-major: index 5 is column 1 of row 1, not column 1 of row 0 read down.
+    const fifth = sheet.cell(4, 4, 5);
+    try testing.expectApproxEqAbs(@as(f32, 0.25), fifth.uv.x, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.25), fifth.uv.y, 1e-6);
+
+    // The same cell reached the long way, to pin the arithmetic to `sub` rather than to
+    // itself.
+    try testing.expectApproxEqAbs(sheet.sub(16, 16, 16, 16).uv.x, fifth.uv.x, 1e-6);
+    try testing.expectApproxEqAbs(sheet.sub(16, 16, 16, 16).uv.y, fifth.uv.y, 1e-6);
+
+    const last = sheet.cell(4, 4, 15);
+    try testing.expectApproxEqAbs(@as(f32, 0.75), last.uv.x, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.75), last.uv.y, 1e-6);
+}
+
+test "a grid cut of a region in an atlas gives the same cells as one on its own texture" {
+    // The `sub` property, restated for `cell`, because this is the call a sprite sheet
+    // actually makes and it is the one that has to survive being packed.
+    const standalone: Region = .whole(.none, .{ .width = 64, .height = 64 });
+    const packed_in: Region = .{
+        .texture = .none,
+        .uv = .{ .x = 0.5, .y = 0.25, .w = 0.25, .h = 0.25 },
+        .size_px = .{ .width = 64, .height = 64 },
+    };
+
+    for (0..16) |i| {
+        const index: u32 = @intCast(i);
+        const a = standalone.cell(4, 4, index);
+        const b = packed_in.cell(4, 4, index);
+        try testing.expectEqual(a.size_px.width, b.size_px.width);
+        try testing.expectEqual(a.size_px.height, b.size_px.height);
+        // The atlas region occupies a quarter of the texture in each axis, so every cell
+        // is a quarter the size and offset to where the region begins.
+        try testing.expectApproxEqAbs(a.uv.w * 0.25, b.uv.w, 1e-6);
+        try testing.expectApproxEqAbs(0.5 + a.uv.x * 0.25, b.uv.x, 1e-6);
+        try testing.expectApproxEqAbs(0.25 + a.uv.y * 0.25, b.uv.y, 1e-6);
+    }
+}
+
+test "an out-of-range grid cut is empty rather than a neighbour" {
+    const sheet: Region = .whole(.none, .{ .width = 64, .height = 64 });
+
+    // One past the last cell of a 4x4 grid. A clip whose `first + count` runs off the end
+    // of its sheet reaches exactly this.
+    try testing.expect(sheet.cell(4, 4, 16).size_px.isEmpty());
+    try testing.expect(sheet.cell(4, 4, 999).size_px.isEmpty());
+
+    // Both grid dimensions come from a file, so both can be zero, and neither may divide.
+    try testing.expect(sheet.cell(0, 4, 0).size_px.isEmpty());
+    try testing.expect(sheet.cell(4, 0, 0).size_px.isEmpty());
+
+    // The widened bound: `columns * rows` overflows a u32 here, and the last cell of a
+    // grid that large is still out of range for any u32 index.
+    try testing.expect(sheet.cell(65_536, 65_536, 4_294_967_295).size_px.isEmpty());
+
+    // A region too small to divide yields empty cells rather than zero-width slivers of
+    // the wrong place.
+    const tiny: Region = .whole(.none, .{ .width = 2, .height = 2 });
+    try testing.expect(tiny.cell(4, 4, 0).size_px.isEmpty());
+}
+
+test "a sheet whose pixels do not divide evenly leaves the remainder unused" {
+    // 30 / 4 is 7, so the grid covers 28 pixels and the last two are not in any cell.
+    // Stated as a test because the alternative — cells of two different sizes — is the
+    // kind of thing a future session might add as a "fix".
+    const sheet: Region = .whole(.none, .{ .width = 30, .height = 30 });
+
+    const last = sheet.cell(4, 4, 15);
+    try testing.expectEqual(@as(u32, 7), last.size_px.width);
+    try testing.expectEqual(@as(u32, 7), last.size_px.height);
+    try testing.expectApproxEqAbs(@as(f32, 21.0 / 30.0), last.uv.x, 1e-6);
 }
 
 test "same-height images pack into full rows" {

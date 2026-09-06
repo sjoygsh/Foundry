@@ -249,3 +249,55 @@ engine-owned, which §8 leaves open.
    milestone — and, with the save path `scene` already has, a reload that resumes on the frame
    it was saved on. That last check is what makes §4's argument something the suite holds
    rather than something this document asserts.
+
+---
+
+## Resolution: the engine's contribution (step 1, 2026-09-06)
+
+*What implementing §3 settled. The two functions and the grid cut exist, in
+`engine/src/render2d/animation.zig` and `Region.cell` in `atlas.zig`, with 13 tests.*
+
+**The functions are their own file, and that does not contradict §3.** The document said a
+reader looks for `frameAt` next to `Region`, and that is satisfied by the **module surface**:
+`render2d.frameAt` and `render2d.frameAtVarying` sit beside `render2d.Region` in `root.zig`,
+which is what a consumer sees. Putting them *in* `atlas.zig` would have been reading the
+sentence as a claim about files — and `atlas.zig` opens by saying it is about packing many
+images into one texture, which frame selection is not. `Region.cell` does belong there,
+because it is a `sub` in a hat.
+
+**Three things the document did not decide, all reachable from a file.**
+
+* **An out-of-range grid cut is empty, not clamped.** Zero columns, zero rows, an index past
+  the last cell, or a region too small to divide all yield an empty region. This follows
+  `sub`, which already refuses to read past a region's edge because in an atlas the texels
+  next door are somebody else's sprite — but the deciding argument here is diagnostic. A
+  clip whose `first + count` runs off its sheet is an ordinary content mistake, and clamping
+  to the last cell would show a *stuck* animation, which is indistinguishable from a
+  non-looping clip working correctly. An animation that vanishes sends its author to the
+  clip.
+* **A frame held for zero ticks is never shown**, and it is not special-cased: a zero hold
+  advances the running total by nothing, so no tick can land inside it. This extends to
+  pinning, which is the second decision.
+* **Pinning clamps the tick, not the index.** A non-looping clip computes
+  `@min(elapsed, total - 1)` and then runs the same walk a looping one runs on
+  `elapsed % total`. One walk covers both, and the last frame it settles on is the last
+  frame *actually displayed* rather than a trailing zero-hold entry no playthrough would
+  have reached. Clamping the index would have got that wrong and looked right.
+
+**The uniform and varying forms agreeing is a test rather than a remark.** §8's question 5
+says a hold list is additive when it arrives (I8), and additive means an existing uniform
+clip must not change what it shows on the tick the schema grows. So `frameAtVarying` with
+every hold equal is asserted to equal `frameAt`, across two hundred consecutive ticks, in
+both looping modes. Two functions that disagreed about the uniform case would be a seam
+between "the clip has a hold" and "the clip has a hold list", discovered by a mod author.
+
+**Arithmetic is widened where content can overflow it.** `columns * rows` is computed in
+`u64` because a grid that large is a content mistake rather than a crash, and
+`frameAtVarying` sums and wraps in `u64` because 65,535 ticks per frame across a long clip
+passes a `u32` easily. `frameAt` needs neither: `frame_ticks` is at least one there, so the
+quotient cannot exceed `elapsed`.
+
+**§4's argument is not yet held by the suite.** The drift and wrap claims are — a looping
+clip is asserted in phase 32,000 ticks out, and at `maxInt(u32) - 7`. The *save* claim is
+step 3's, and that is where it stays until an animated entity reloads onto the frame it was
+saved on.

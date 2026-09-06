@@ -13,6 +13,7 @@
 
 const std = @import("std");
 
+pub const animation = @import("animation.zig");
 pub const atlas = @import("atlas.zig");
 pub const batch = @import("batch.zig");
 pub const camera = @import("camera.zig");
@@ -26,7 +27,14 @@ pub const tilemap = @import("tilemap.zig");
 pub const view = @import("view.zig");
 
 pub const AtlasHandle = atlas.AtlasHandle;
+/// A rectangle of a texture. `Region.cell` cuts one into the grid a sprite sheet is, which
+/// is what turns the frame index the two below return into something drawable.
 pub const Region = atlas.Region;
+/// Which frame of a clip is showing after so many ticks, when every frame is held the same
+/// length. Pure integer arithmetic; see `animation` for why it is not a float accumulator.
+pub const frameAt = animation.frameAt;
+/// The same, when frames are held for different lengths.
+pub const frameAtVarying = animation.frameAtVarying;
 pub const Camera2D = camera.Camera2D;
 pub const CameraError = camera.CameraError;
 pub const Color = color.Color;
@@ -56,6 +64,7 @@ pub const Filter = texture.Filter;
 pub const Wrap = texture.Wrap;
 
 test {
+    _ = animation;
     _ = atlas;
     _ = batch;
     _ = camera;
