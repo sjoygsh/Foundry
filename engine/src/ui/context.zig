@@ -18,11 +18,14 @@ const core = @import("core");
 
 const Allocator = std.mem.Allocator;
 const Rect = core.math.Rect;
+const Vec2 = core.math.Vec2;
 const Id = @import("id.zig").Id;
 const Input = @import("input.zig").Input;
 const draw = @import("draw.zig");
+const layout = @import("layout.zig");
 const style_mod = @import("style.zig");
 const Style = style_mod.Style;
+const Region = layout.Region;
 
 const log = core.log.scoped(.ui);
 
@@ -49,6 +52,9 @@ pub const Context = struct {
     style: Style,
     input: Input = .{},
     list: draw.DrawList = .{},
+    /// The open regions, outermost first (`layout.zig`). Reset every frame to one region
+    /// covering the viewport, so there is always somewhere to put a widget.
+    regions: layout.Stack = .{},
 
     /// The widget under the pointer, **resolved at the end of the previous frame**.
     ///
@@ -81,6 +87,16 @@ pub const Context = struct {
     seen: std.AutoHashMapUnmanaged(Id, void) = .empty,
     duplicates: u32 = 0,
 
+    /// The pointer is over a container that swallows it, whether or not it reached a
+    /// control. Set by `blockPointer`, cleared every frame, and read by `wantsPointer`.
+    ///
+    /// Without this, clicking the empty part of a debug panel would walk the player: the
+    /// panel is not a widget, so nothing would be hot, so capture would say the UI did not
+    /// want the click. `ui.md` §4 describes capture in terms of hot and active only; a
+    /// container blocking the pointer is the part implementation added, and `samples/room`
+    /// at step 6 is where it stops being theoretical.
+    pointer_blocked: bool = false,
+
     in_frame: bool = false,
 
     pub fn init(gpa: Allocator, style: Style) Context {
@@ -89,12 +105,17 @@ pub const Context = struct {
 
     pub fn deinit(self: *Context) void {
         self.list.deinit(self.gpa);
+        self.regions.deinit(self.gpa);
         self.seen.deinit(self.gpa);
         self.* = undefined;
     }
 
     /// Adopt this frame's input and clear last frame's description.
-    pub fn begin(self: *Context, input: Input) void {
+    ///
+    /// `viewport` is the whole area the UI may use, in the same screen points the pointer
+    /// is reported in. It becomes the outermost region, so a widget described without a
+    /// panel around it still lands somewhere sensible and `begin` never has to allocate.
+    pub fn begin(self: *Context, input: Input, viewport: Rect) void {
         if (self.in_frame) {
             // Reported, not asserted: a caller that lost track of its frames still gets a
             // working UI, and the message says which rule was broken.
@@ -103,9 +124,11 @@ pub const Context = struct {
         self.in_frame = true;
         self.input = input;
         self.list.reset();
+        self.regions.reset(.init(viewport, .vertical, self.style.spacing, .root));
         self.seen.clearRetainingCapacity();
         self.duplicates = 0;
         self.next_hot = .none;
+        self.pointer_blocked = false;
     }
 
     /// Resolve what the frame described. After this the draw list is complete and the
@@ -117,8 +140,11 @@ pub const Context = struct {
         }
         self.in_frame = false;
 
-        if (self.list.clip_depth != 0) {
-            log.warn("frame ended with {d} clip rectangle(s) unpopped", .{self.list.clip_depth});
+        if (self.list.clipDepth() != 0) {
+            log.warn("frame ended with {d} clip rectangle(s) unpopped", .{self.list.clipDepth()});
+        }
+        if (self.regions.depth() != 0) {
+            log.warn("frame ended with {d} region(s) unclosed", .{self.regions.depth()});
         }
         if (self.duplicates != 0) {
             log.warn("{d} widget id(s) were used more than once this frame", .{self.duplicates});
@@ -175,8 +201,14 @@ pub const Context = struct {
     /// mandatory part of every frame — the same rule `app-and-frame-loop.md` already applies
     /// to events, and for the same reason: what is obviously the overlay's click today is a
     /// game's binding tomorrow.
+    /// Answered from the rectangles described **this** frame, not last frame's: `hot` has
+    /// already been resolved by the time a caller asks, so a pointer arriving over a
+    /// control is captured on the frame it arrives even though the control itself will not
+    /// accept a press until the next one. Erring that way round is deliberate — a frame
+    /// where neither the UI nor the game acts is a missed click; a frame where both act is
+    /// a player who walked into a wall because they closed a panel.
     pub fn wantsPointer(self: *const Context) bool {
-        return !self.hot.isNone() or !self.active.isNone();
+        return self.pointer_blocked or !self.hot.isNone() or !self.active.isNone();
     }
 
     /// True when a widget has keyboard focus and will consume typing.
@@ -201,6 +233,75 @@ pub const Context = struct {
         self.active = .none;
         self.focus = .none;
         self.next_hot = .none;
+        self.pointer_blocked = false;
+    }
+
+    // -- layout ----------------------------------------------------------------------
+
+    /// The region widgets are currently placing themselves in. Never null: the outermost
+    /// one covers the viewport `begin` was given.
+    pub fn region(self: *Context) *Region {
+        return self.regions.current();
+    }
+
+    /// Reserve the next rectangle for a widget that wants to be `desired` big. The region's
+    /// axis decides which component of `desired` is honoured and which is stretched, so one
+    /// widget stacks in a panel and sits side by side in a row without knowing which.
+    pub fn take(self: *Context, desired: Vec2) Rect {
+        return self.regions.current().takeSize(desired);
+    }
+
+    /// Place widgets inside `bounds` until the matching `endRegion`. `seed` names the
+    /// region for id purposes; `.none` keeps the enclosing seed.
+    pub fn beginRegion(
+        self: *Context,
+        bounds: Rect,
+        axis: layout.Axis,
+        spacing: f32,
+        seed: Id,
+    ) Allocator.Error!void {
+        const inherited = if (seed.isNone()) self.regions.seed() else seed;
+        try self.regions.push(self.gpa, .init(bounds, axis, spacing, inherited));
+    }
+
+    /// False when there was no nested region to close — reported rather than asserted, and
+    /// the outermost region survives it, so a caller that miscounted still gets a frame.
+    pub fn endRegion(self: *Context) bool {
+        if (!self.regions.pop()) {
+            log.warn("endRegion without a matching beginRegion", .{});
+            return false;
+        }
+        return true;
+    }
+
+    /// Ids seeded by the current region, so the same call inside two panels names two
+    /// widgets. Display text is never a source of identity — see `id.zig`.
+    pub fn childId(self: *const Context, name: []const u8) Id {
+        return self.regions.seed().child(name);
+    }
+
+    pub fn childIndex(self: *const Context, index: usize) Id {
+        return self.regions.seed().childIndex(index);
+    }
+
+    // -- clipping --------------------------------------------------------------------
+
+    pub fn pushClip(self: *Context, bounds: Rect) Allocator.Error!void {
+        try self.list.pushClip(self.gpa, bounds);
+    }
+
+    pub fn popClip(self: *Context) Allocator.Error!void {
+        if (!try self.list.popClip(self.gpa)) {
+            log.warn("popClip without a matching pushClip", .{});
+        }
+    }
+
+    /// Take the pointer away from the game while it is inside `bounds`, without competing
+    /// for `hot`. What a container does: a panel is not a widget and must not be one — if
+    /// it claimed `hot` it would take the press meant for the control the pointer moved
+    /// onto — but a click on its empty half still must not reach the world behind it.
+    pub fn blockPointer(self: *Context, bounds: Rect) void {
+        if (bounds.contains(self.input.pointer)) self.pointer_blocked = true;
     }
 
     /// False when this id has already been used this frame. Allocation failure is treated
@@ -235,9 +336,11 @@ fn testStyle() Style {
     };
 }
 
+const screen: Rect = .init(0, 0, 800, 600);
+
 /// One widget occupying `bounds`, described for one frame of `input`.
 fn step(ctx: *Context, id: Id, bounds: Rect, input: Input) Interaction {
-    ctx.begin(input);
+    ctx.begin(input, screen);
     const result = ctx.interact(id, bounds);
     ctx.end();
     return result;
@@ -308,7 +411,7 @@ test "the topmost widget wins the pointer, whatever order it was described in" {
     const over = Id.root.child("over");
 
     // Both cover the pointer. `over` is described second, so it is painted on top.
-    ctx.begin(.at(over_it, .up));
+    ctx.begin(.at(over_it, .up), screen);
     _ = ctx.interact(under, box);
     _ = ctx.interact(over, box);
     ctx.end();
@@ -317,7 +420,7 @@ test "the topmost widget wins the pointer, whatever order it was described in" {
     try testing.expect(!ctx.isHot(under));
 
     // And the click goes to the one on top, not to the one described first.
-    ctx.begin(.at(over_it, .pressed));
+    ctx.begin(.at(over_it, .pressed), screen);
     const under_result = ctx.interact(under, box);
     const over_result = ctx.interact(over, box);
     ctx.end();
@@ -353,7 +456,7 @@ test "a duplicate id is reported and inert, and the first widget still works" {
 
     _ = step(&ctx, id, box, .at(over_it, .up));
 
-    ctx.begin(.at(over_it, .pressed));
+    ctx.begin(.at(over_it, .pressed), screen);
     const first = ctx.interact(id, box);
     const second = ctx.interact(id, box);
     ctx.end();
@@ -410,9 +513,9 @@ test "a release the UI never saw does not strand an active widget" {
     try testing.expect(ctx.isActive(id));
 
     // Frames where the widget is not described at all.
-    ctx.begin(.at(off_it, .held));
+    ctx.begin(.at(off_it, .held), screen);
     ctx.end();
-    ctx.begin(.at(off_it, .released));
+    ctx.begin(.at(off_it, .released), screen);
     ctx.end();
 
     try testing.expect(!ctx.isActive(id));
@@ -426,4 +529,90 @@ test "a widget with no id does nothing at all" {
     try testing.expect(!result.pressed);
     try testing.expect(!result.duplicate);
     try testing.expect(ctx.hot.isNone());
+}
+
+test "a widget described with nothing open lands in the viewport" {
+    var ctx: Context = .init(testing.allocator, testStyle());
+    defer ctx.deinit();
+
+    ctx.begin(.at(off_it, .up), screen);
+    // No panel, no row: the outermost region is the viewport, so this is a full-width row
+    // at the top of the screen. There is deliberately no way to have no region at all.
+    try testing.expectEqual(Rect.init(0, 0, 800, 20), ctx.take(.init(0, 20)));
+    ctx.end();
+}
+
+test "regions nest, unwind, and survive being closed too often" {
+    var ctx: Context = .init(testing.allocator, testStyle());
+    defer ctx.deinit();
+
+    ctx.begin(.at(off_it, .up), screen);
+    try ctx.beginRegion(.init(10, 10, 100, 100), .horizontal, 0, ctx.childId("inner"));
+    try testing.expectEqual(@as(u32, 1), ctx.regions.depth());
+    try testing.expectEqual(Rect.init(10, 10, 20, 100), ctx.take(.init(20, 20)));
+
+    try testing.expect(ctx.endRegion());
+    // One too many: reported, and the viewport region is still there to place widgets in.
+    try testing.expect(!ctx.endRegion());
+    try testing.expectEqual(Rect.init(0, 0, 800, 20), ctx.take(.init(0, 20)));
+    ctx.end();
+}
+
+test "ids are seeded by the region they are asked for in" {
+    var ctx: Context = .init(testing.allocator, testStyle());
+    defer ctx.deinit();
+
+    ctx.begin(.at(off_it, .up), screen);
+    const outer = ctx.childId("save");
+
+    try ctx.beginRegion(screen, .vertical, 0, Id.root.child("panel_a"));
+    const in_a = ctx.childId("save");
+    _ = ctx.endRegion();
+
+    try ctx.beginRegion(screen, .vertical, 0, Id.root.child("panel_b"));
+    const in_b = ctx.childId("save");
+    _ = ctx.endRegion();
+    ctx.end();
+
+    // The same call in two panels names two widgets, which is what makes a panel reusable.
+    try testing.expect(in_a != in_b);
+    try testing.expect(in_a != outer);
+    // And an empty seed inherits rather than resetting to the root.
+    ctx.begin(.at(off_it, .up), screen);
+    try ctx.beginRegion(screen, .vertical, 0, Id.root.child("panel_a"));
+    try ctx.beginRegion(screen, .vertical, 0, .none);
+    try testing.expectEqual(in_a, ctx.childId("save"));
+    _ = ctx.endRegion();
+    _ = ctx.endRegion();
+    ctx.end();
+}
+
+test "capture is answered from this frame's rectangles, not last frame's" {
+    // `ui.md` §11: capture must be right "on the frame it matters and not one frame late".
+    // `hot` is resolved in `end`, which runs before a caller asks, so the very first frame
+    // the pointer is over a control the game is already told to keep off it — even though
+    // the control itself will not accept a press until the frame after.
+    var ctx: Context = .init(testing.allocator, testStyle());
+    defer ctx.deinit();
+    const id = Id.root.child("ok");
+
+    _ = step(&ctx, id, box, .at(off_it, .up));
+    try testing.expect(!ctx.wantsPointer());
+
+    _ = step(&ctx, id, box, .at(over_it, .up));
+    try testing.expect(ctx.wantsPointer());
+}
+
+test "clipping is a draw concern and leaves layout alone" {
+    var ctx: Context = .init(testing.allocator, testStyle());
+    defer ctx.deinit();
+
+    ctx.begin(.at(off_it, .up), screen);
+    try ctx.pushClip(.init(0, 0, 10, 10));
+    // The clip does not shrink the region: the row is still the viewport's full width.
+    try testing.expectEqual(Rect.init(0, 0, 800, 20), ctx.take(.init(0, 20)));
+    try ctx.popClip();
+    ctx.end();
+
+    try testing.expectEqual(@as(u32, 0), ctx.list.clipDepth());
 }

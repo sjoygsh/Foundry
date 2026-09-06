@@ -1,8 +1,8 @@
 # Design: ui — an immediate-mode kernel that draws nothing
 
-**Status:** **Step 1 implemented 2026-09-06** (`engine/src/ui/`). Written before any UI code
-existed, so implementation was transcription rather than invention; see the Resolution section
-at the end for the two things it corrected and what it settled. Steps 2-6 of §16 remain.
+**Status:** **Steps 1-2 implemented 2026-09-06** (`engine/src/ui/`). Written before any UI code
+existed, so implementation was transcription rather than invention; see the two Resolution
+sections at the end for what each step corrected and settled. Steps 3-6 of §16 remain.
 **Date:** 2026-09-06
 **Implements:** I1, I4, I5, I6, I8, I9 · **Informed by:** ADR-0004, ADR-0007, ADR-0011,
 ADR-0021, ADR-0024
@@ -558,3 +558,67 @@ A UI that could only be tested by clicking it would have shipped this.
   `widget.zig` would have put layout in the wrong file.
 * **`ui` reaches the integration test module** in `build.zig` already, so §8's drift test has
   somewhere to live at step 4 without another build change.
+
+---
+
+## Resolution: layout, clipping and capture (step 2, 2026-09-06)
+
+`engine/src/ui/layout.zig` joins the seven files from step 1, and `context.zig`, `draw.zig`,
+`style.zig` and `widget.zig` grow into it. **24 more tests, still all headless**: 856 under
+`-Drhi=null` and 864 under `-Drhi=metal`. No renderer, no device, no window and no `app` change
+— the same claim step 1 made, and it is worth repeating because layout and clipping are where a
+UI usually starts needing one.
+
+**Capture is the part this step changed, and the change is not what §4 describes.** §4 defines
+capture as "a widget is hot or active". That is right for a control and wrong for the thing
+around it: **a panel is not a widget**, so clicking its empty half would have found nothing hot,
+reported that the UI did not want the pointer, and walked the player through the wall behind the
+panel. `beginPanel` therefore calls `Context.blockPointer`, which takes the pointer for the
+frame without entering the hot/active model at all.
+
+Making the panel a widget instead was the obvious alternative and it is wrong. A container that
+competed for `hot` would take the press meant for a control the pointer had just moved onto,
+because `hot` is a frame old and the container is described first. Blocking without competing is
+the only version that does not create a new bug while fixing one. `samples/room` at step 6 is
+where this stops being an argument.
+
+**What §11 asked for in capture was already true.** It requires capture to be right "on the frame
+it matters and not one frame late", and `hot` is resolved in `end`, which runs before any caller
+asks — so a pointer arriving over a control is captured on the frame it arrives, even though the
+control will not accept a press until the next one. Erring that way round is deliberate: a frame
+where neither the UI nor the game acts is a missed click, and a frame where both act is a player
+who walked into a wall while closing a panel. There is now a test saying so.
+
+**What implementation settled:**
+
+* **`begin` takes a viewport, and the outermost region is a field rather than the first element
+  of the stack.** There is therefore always somewhere to put a widget, `begin` cannot fail for
+  want of memory, and a widget described with no panel open lands in the viewport instead of
+  being dropped or asserted on.
+* **Clip rectangles are intersected when pushed, not when walked.** The recorded command carries
+  the resolved rectangle, so the walker hands it straight to a scissor and the "intersected with
+  whatever is already on the stack" promise in §6 is kept in one place rather than in every
+  consumer. `core.math.Rect.intersect` was added for it — the first thing in Foundry to need one.
+* **A widget that does not fit keeps the size it asked for**, running past its region's edge
+  rather than being squashed into what is left. Clipping is a draw concern (§11), and a widget
+  that silently changed height when a panel filled up would be far harder to explain than one
+  that is visibly cut off.
+* **Ids are seeded by the region they are asked in.** That is what the `id` parameter on
+  `beginPanel` and `beginRow` is for, and it is §3's id stack without a second stack to keep in
+  step: `ctx.childId("save")` inside two panels names two widgets. A region opened with `.none`
+  inherits its parent's seed rather than resetting to the root.
+* **`Style` gained `separator_thickness`.** A separator needs a line weight, and ADR-0024 does
+  not let the kernel invent one. It is defaulted, so no existing style literal had to change.
+* **`button` is now two functions.** `button` is placed by the current region and sized to its
+  text; `buttonIn` takes an explicit rectangle. The second is not legacy: a debug overlay is not
+  always inside a panel, and every layout test wants a form that does not also exercise the
+  cursor.
+* **A vertical region gives a widget the region's full width**, exactly as §5 says, which means a
+  button in a panel is a full-width bar and side-by-side buttons need a row. That is the first
+  visible consequence of "layout is a cursor, not a solver", and it is recorded here because it
+  looks like a bug until the sentence in §5 is read.
+* **`row`/`endRow` are spelled `beginRow`/`endRow`**, matching `beginPanel`/`endPanel` and
+  `beginRegion`/`endRegion`. A bare `row` reads like a widget that draws one.
+* **Every unbalanced case is reported and survivable**, never asserted: an extra `endRegion`, an
+  extra `popClip`, a frame that ends with either still open. All of them are caller bugs, and
+  from M7 the caller may be a mod (CLAUDE.md §7).

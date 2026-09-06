@@ -18,6 +18,7 @@ const Allocator = std.mem.Allocator;
 const Rect = core.math.Rect;
 const Vec2 = core.math.Vec2;
 const Color = @import("style.zig").Color;
+const layout = @import("layout.zig");
 
 /// Where a string lives in the list's own text storage.
 ///
@@ -64,20 +65,23 @@ pub const DrawList = struct {
     /// The per-frame text storage `TextRef` indexes into. Cleared, not freed, each frame,
     /// so a steady-state UI stops allocating after its first few frames.
     text_bytes: std.ArrayList(u8) = .empty,
-    /// Depth of the clip stack, so an unbalanced frame is caught rather than handed to a
-    /// walker that would then clip everything after it.
-    clip_depth: u32 = 0,
+    /// The clip rectangles currently open, innermost last and **already intersected**. Kept
+    /// so an unbalanced frame is caught rather than handed to a walker that would then clip
+    /// everything after it, and so each pushed command carries a rectangle the walker can
+    /// hand straight to a scissor without doing the arithmetic again.
+    clip_stack: std.ArrayList(Rect) = .empty,
 
     pub fn deinit(self: *DrawList, gpa: Allocator) void {
         self.commands.deinit(gpa);
         self.text_bytes.deinit(gpa);
+        self.clip_stack.deinit(gpa);
         self.* = .{};
     }
 
     pub fn reset(self: *DrawList) void {
         self.commands.clearRetainingCapacity();
         self.text_bytes.clearRetainingCapacity();
-        self.clip_depth = 0;
+        self.clip_stack.clearRetainingCapacity();
     }
 
     pub fn addRect(self: *DrawList, gpa: Allocator, bounds: Rect, color: Color) Allocator.Error!void {
@@ -102,19 +106,37 @@ pub const DrawList = struct {
         });
     }
 
+    /// Clip to `bounds` **intersected with whatever is already open**, so a scrolling list
+    /// inside a panel clips to both and no caller computes the intersection itself. The
+    /// command carries the resolved rectangle, not the requested one.
     pub fn pushClip(self: *DrawList, gpa: Allocator, bounds: Rect) Allocator.Error!void {
-        try self.commands.append(gpa, .{ .clip_push = bounds });
-        self.clip_depth += 1;
+        const requested = layout.sanitize(bounds);
+        const resolved = if (self.currentClip()) |open| open.intersect(requested) else requested;
+        // Both or neither: a command recorded without its stack entry would unbalance every
+        // pop after it, and a stack entry without its command would clip nothing.
+        try self.clip_stack.ensureUnusedCapacity(gpa, 1);
+        try self.commands.append(gpa, .{ .clip_push = resolved });
+        self.clip_stack.appendAssumeCapacity(resolved);
     }
 
     /// Popping an empty stack is a caller bug — from M7 possibly a mod's — so it is
     /// reported by returning false rather than asserted (CLAUDE.md §7). The command is not
     /// recorded, which keeps the list walkable whatever the caller did.
     pub fn popClip(self: *DrawList, gpa: Allocator) Allocator.Error!bool {
-        if (self.clip_depth == 0) return false;
+        if (self.clip_stack.items.len == 0) return false;
         try self.commands.append(gpa, .clip_pop);
-        self.clip_depth -= 1;
+        _ = self.clip_stack.pop();
         return true;
+    }
+
+    /// The rectangle currently in force, or null when nothing is clipped.
+    pub fn currentClip(self: *const DrawList) ?Rect {
+        if (self.clip_stack.items.len == 0) return null;
+        return self.clip_stack.items[self.clip_stack.items.len - 1];
+    }
+
+    pub fn clipDepth(self: *const DrawList) u32 {
+        return @intCast(self.clip_stack.items.len);
     }
 
     /// The bytes a `TextRef` names. Valid until the next `reset`.
@@ -191,13 +213,38 @@ test "clips balance, and an unbalanced pop is reported rather than fatal" {
     defer list.deinit(testing.allocator);
 
     try list.pushClip(testing.allocator, .init(0, 0, 10, 10));
-    try testing.expectEqual(@as(u32, 1), list.clip_depth);
+    try testing.expectEqual(@as(u32, 1), list.clipDepth());
     try testing.expect(try list.popClip(testing.allocator));
-    try testing.expectEqual(@as(u32, 0), list.clip_depth);
+    try testing.expectEqual(@as(u32, 0), list.clipDepth());
 
     try testing.expect(!try list.popClip(testing.allocator));
     // The stray pop recorded nothing, so the list is still walkable.
     try testing.expectEqual(@as(usize, 2), list.items().len);
+}
+
+test "a nested clip is intersected with the one already open" {
+    var list: DrawList = .{};
+    defer list.deinit(testing.allocator);
+
+    try list.pushClip(testing.allocator, .init(0, 0, 100, 100));
+    // A list inside a panel, hanging off its right edge and its bottom.
+    try list.pushClip(testing.allocator, .init(50, 50, 100, 100));
+
+    try testing.expectEqual(Rect.init(50, 50, 50, 50), list.currentClip().?);
+    try testing.expectEqual(Rect.init(50, 50, 50, 50), list.items()[1].clip_push);
+
+    // And popping restores the outer one rather than clearing the clip entirely.
+    _ = try list.popClip(testing.allocator);
+    try testing.expectEqual(Rect.init(0, 0, 100, 100), list.currentClip().?);
+}
+
+test "a clip that misses its parent entirely shows nothing, and says so" {
+    var list: DrawList = .{};
+    defer list.deinit(testing.allocator);
+
+    try list.pushClip(testing.allocator, .init(0, 0, 100, 100));
+    try list.pushClip(testing.allocator, .init(500, 500, 10, 10));
+    try testing.expect(list.currentClip().?.isEmpty());
 }
 
 test "reset keeps capacity and drops content" {
@@ -209,6 +256,7 @@ test "reset keeps capacity and drops content" {
     list.reset();
 
     try testing.expectEqual(@as(usize, 0), list.items().len);
-    try testing.expectEqual(@as(u32, 0), list.clip_depth);
+    try testing.expectEqual(@as(u32, 0), list.clipDepth());
+    try testing.expectEqual(@as(?Rect, null), list.currentClip());
     try testing.expectEqual(@as(usize, 0), list.text_bytes.items.len);
 }

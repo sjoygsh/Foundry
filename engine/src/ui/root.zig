@@ -33,12 +33,14 @@ pub const context = @import("context.zig");
 pub const draw = @import("draw.zig");
 pub const id = @import("id.zig");
 pub const input = @import("input.zig");
+pub const layout = @import("layout.zig");
 pub const style = @import("style.zig");
 pub const widget = @import("widget.zig");
 
 // The names reached for most often. These are seen by people we do not control — a game
 // today, compiled mods from M7 — so renaming one is a compatibility decision rather than a
 // tidy-up (CLAUDE.md §7).
+pub const Axis = layout.Axis;
 pub const Color = style.Color;
 pub const Command = draw.Command;
 pub const Context = context.Context;
@@ -49,18 +51,29 @@ pub const FontMetrics = style.FontMetrics;
 pub const Id = id.Id;
 pub const Input = input.Input;
 pub const Interaction = context.Interaction;
+pub const Region = layout.Region;
 pub const Style = style.Style;
 pub const TextRef = draw.TextRef;
 
-/// A clickable rectangle with a centred label. The only widget at step 1; the rest of the
-/// debug set arrives at step 5 of `ui.md` §16.
+// The widget set so far. `slider`, `collapsingHeader`, `scrollRegion`, `textField` and
+// `plot` arrive at step 5 of `ui.md` §16.
+pub const beginPanel = widget.beginPanel;
+pub const endPanel = widget.endPanel;
+pub const beginRow = widget.beginRow;
+pub const endRow = widget.endRow;
 pub const button = widget.button;
+pub const buttonIn = widget.buttonIn;
+pub const checkbox = widget.checkbox;
+pub const label = widget.label;
+pub const separator = widget.separator;
+pub const spacer = widget.spacer;
 
 test {
     _ = context;
     _ = draw;
     _ = id;
     _ = input;
+    _ = layout;
     _ = style;
     _ = widget;
 }

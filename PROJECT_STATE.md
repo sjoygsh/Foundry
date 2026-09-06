@@ -4,10 +4,20 @@
 **Updated by:** **M6 has opened, and it opened where the last four did: at a decision.**
 `CLAUDE.md` §9 had held "Debug/game UI: own IMGUI vs. cimgui" since the project started and
 ADR-0011 had deferred it here by name. **ADR-0024 answers it: Foundry writes its own
-immediate-mode UI**, and `docs/design/ui.md` is written against it. **Step 1 of its §16 is
-implemented**: `engine/src/ui/` is seven files and 36 tests, all of them headless — no renderer,
-no device, no window, no `app` change and nothing on screen. 832 tests under `-Drhi=null`, 840
-under `-Drhi=metal`.
+immediate-mode UI**, and `docs/design/ui.md` is written against it. **Steps 1 and 2 of its §16
+are implemented**: `engine/src/ui/` is eight files and 60 tests, all of them headless — no
+renderer, no device, no window, no `app` change and nothing on screen. 856 tests under
+`-Drhi=null`, 864 under `-Drhi=metal`.
+
+**Step 2 changed the design rather than transcribing it, in one place.** `ui.md` §4 defines
+capture as "a widget is hot or active", and that is right for a control and wrong for the thing
+around it: **a panel is not a widget**, so a click on its empty half would have found nothing
+hot, reported that the UI did not want the pointer, and walked the player through the wall
+behind the panel. A container now takes the pointer without entering the hot/active model at
+all. Making the panel a widget instead is the obvious alternative and it is wrong — a container
+competing for `hot` would take the press meant for a control the pointer had just moved onto,
+because `hot` is a frame old and the container is described first. `samples/room` at step 6 is
+where that stops being an argument.
 
 **The bug step 1's tests caught is the shape of bug this design is arranged to make findable.**
 The safety net that ends a drag when the pointer is released outside the window was written in
@@ -87,7 +97,7 @@ reading it. §10's Tier 1 claim was paid the same way the other two sequences pa
 replaced a sound the sandbox never wrote a record for, from a file under its own directory
 layout, with nothing rebuilt but the mod.
 
-796 tests under `-Drhi=null`, 804 under `-Drhi=metal` (832 and 840 as of M6 step 1). **M5's remaining work is its exit
+796 tests under `-Drhi=null`, 804 under `-Drhi=metal` (856 and 864 as of M6 step 2). **M5's remaining work is its exit
 criterion, not its bullet list**: five minutes of play.
 
 This document changes every session. Durable principles live in `CLAUDE.md`; individual
@@ -110,8 +120,8 @@ is mature enough to need them rather than as decoration.
 are done, and **M5 — Playable: "it's a game" — closed 2026-09-06**, having started where the
 last three did: at the decisions `CLAUDE.md` §9 had been holding for it, then the design
 document, then code. Phase 2 is finished. **M6 — Tools: "it's inspectable" — opened 2026-09-06**
-at the `CLAUDE.md` §9 decision that was due, and has reached the same place its predecessors
-did after a day: the ADR is accepted, the design document is written, and no code exists yet.
+at the `CLAUDE.md` §9 decision that was due: the ADR is accepted, the design document is
+written, and the first two of its six steps are implemented.
 
 ## Current milestone
 
@@ -129,8 +139,8 @@ tech demo", and that half was met.**
 
 **M6 — Tools: "it's inspectable" is the current milestone, opened 2026-09-06.** Its first
 roadmap bullet said the UI toolkit decision is made here, and it was: **ADR-0024, accepted**,
-with `docs/design/ui.md` written against it. Implementation has not begun. §16 of that document
-is the step list, and it is under "Immediate next steps" below.
+with `docs/design/ui.md` written against it. §16 of that document is the step list, it is under
+"Immediate next steps" below, and steps 1 and 2 of six are done.
 
 What follows in this section is what **M5** opened with, kept because the decisions and the
 design are what a future session needs and they have not changed; what was built against them is
@@ -1585,8 +1595,14 @@ and something that is tested:
    and nothing on screen, which was the point: a step 1 that had needed a device would have
    meant the layering was wrong. See `ui.md`'s Resolution section for what it settled and for
    the two things that document had said wrong.
-2. **Layout and the rest of the interaction model.** Regions, panels, rows, capture,
-   `clip_push`/`clip_pop`, plus `label`, `separator`, `spacer`, `checkbox`.
+2. ~~**Layout and the rest of the interaction model.**~~ **Complete, 2026-09-06** —
+   `engine/src/ui/layout.zig` joins the seven, and **24 more headless tests**. Regions, panels,
+   rows, capture, `clip_push`/`clip_pop`, `label`, `separator`, `spacer`, `checkbox`, and a
+   `button` that places itself. Clip rectangles are intersected when they are pushed, so the
+   walker hands each command straight to a scissor; `core.math.Rect.intersect` was added for it.
+   Every unbalanced case — an extra `endRegion`, an extra `popClip`, a frame that ends with
+   either open — is reported and survivable rather than asserted, because from M7 the caller may
+   be a mod.
 3. **`render2d` gains `setClip` and `blankRegion`**, with batch-break tests against the null
    backend. **`samples/sandbox` and `samples/room` delete their hand-rolled white textures** —
    this step is visible only as a diff that gets smaller, and that deletion is the evidence the
@@ -1599,8 +1615,9 @@ and something that is tested:
 6. **`samples/room` checks capture**, because a game that walks with WASD and opens a panel over
    the hall is where getting it wrong is visible, and the room is the sample that plays.
 
-**Next is step 2**: regions, panels, rows, capture, `clip_push`/`clip_pop`, and `label`,
-`separator`, `spacer`, `checkbox`.
+**Next is step 3**: `render2d` gains `setClip` and `blankRegion`, and both samples delete the
+white texture they each hand-rolled. It is the first M6 step that touches anything outside
+`engine/src/ui/`.
 
 **A second M6 design document is owed after these**: the overlay itself — the entity inspector,
 the content browser, the log console, the frame profiler and the introspection APIs beneath

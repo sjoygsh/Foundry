@@ -11,9 +11,9 @@ depended on by several others, or will be hard to change later.
 
 Written documents move to the table below. This one is a schedule, not an index.
 
-M6's UI document is written and not yet implemented. **One more is owed inside M6**: the debug
-overlay itself — the entity inspector, the content browser, the log console, the frame profiler
-and the introspection APIs beneath them. `ui.md` §10 deliberately stops short of it, because
+M6's UI document is written and half implemented — steps 1 and 2 of its six. **One more is owed
+inside M6**: the debug overlay itself — the entity inspector, the content browser, the log
+console, the frame profiler and the introspection APIs beneath them. `ui.md` §10 deliberately stops short of it, because
 what an inspector may ask `scene` for and how per-subsystem timing is collected are a different
 subject with different invariants, and because that document is better written once the shape of
 a panel is known rather than imagined.

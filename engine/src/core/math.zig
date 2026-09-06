@@ -254,6 +254,16 @@ pub const Rect = extern struct {
         if (a.isEmpty() or b.isEmpty()) return false;
         return a.x < b.x + b.w and b.x < a.x + a.w and a.y < b.y + b.h and b.y < a.y + a.h;
     }
+    /// The rectangle covered by both. Disjoint inputs give an empty rectangle placed at the
+    /// overlap's corner rather than at the origin, so a caller that goes on to nest another
+    /// intersection inside it stays where it was rather than jumping to (0, 0).
+    pub fn intersect(a: Rect, b: Rect) Rect {
+        const x = @max(a.x, b.x);
+        const y = @max(a.y, b.y);
+        const right = @min(a.x + a.w, b.x + b.w);
+        const bottom = @min(a.y + a.h, b.y + b.h);
+        return .init(x, y, @max(0, right - x), @max(0, bottom - y));
+    }
 };
 
 // -- tests -------------------------------------------------------------------------
@@ -343,4 +353,20 @@ test "rect containment and overlap" {
     try testing.expect(r.overlaps(Rect.init(5, 5, 10, 10)));
     try testing.expect(!r.overlaps(Rect.init(10, 0, 5, 5))); // touching is not overlapping
     try testing.expect(!r.overlaps(Rect.init(0, 0, 0, 10))); // empty overlaps nothing
+}
+
+test "rect intersection" {
+    const r = Rect.init(0, 0, 10, 10);
+    try testing.expectEqual(Rect.init(5, 5, 5, 5), r.intersect(Rect.init(5, 5, 10, 10)));
+    // Fully contained gives the inner rectangle back unchanged.
+    try testing.expectEqual(Rect.init(2, 2, 3, 3), r.intersect(Rect.init(2, 2, 3, 3)));
+    // Disjoint is empty, and sits at the corner it was asked about rather than the origin.
+    const away = r.intersect(Rect.init(20, 20, 5, 5));
+    try testing.expect(away.isEmpty());
+    try testing.expectEqual(@as(f32, 20), away.x);
+    // Intersection is commutative.
+    try testing.expectEqual(
+        r.intersect(Rect.init(-5, 3, 8, 2)),
+        Rect.init(-5, 3, 8, 2).intersect(r),
+    );
 }

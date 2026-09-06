@@ -133,6 +133,10 @@ pub const Style = struct {
     padding: Vec2,
     /// Between one widget and the next.
     spacing: f32,
+    /// How thick a separator's line is. A metric rather than a literal in `separator`,
+    /// because ADR-0024 asks the kernel to contain neither, and because a HUD's divider and
+    /// a debug panel's are not the same weight.
+    separator_thickness: f32 = 1,
 
     text: Color,
     text_dim: Color,
