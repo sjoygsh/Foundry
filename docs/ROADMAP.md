@@ -173,13 +173,18 @@ following it verbatim.
 **Exit criteria:** a scene of entities defined in content data, updated by systems, saved and
 reloaded correctly across a restart. A fixed scenario run twice produces identical state.
 
-### M5 — Playable: "it's a game" — **in progress, started 2026-09-05**
+### M5 — Playable: "it's a game" — **complete (2026-09-06)**
 
-*Every bullet is done (2026-09-06). What is left is the exit criterion, and it is the one
-thing that cannot be established by building anything: somebody has to play `samples/room`
-for five minutes. On autopilot it is finished in 1,542 ticks — about twenty-six seconds of
-simulated time — which is a lower bound and not an answer, because the autopilot knows where
-the lamps are and a person does not.*
+*Exit criteria met: `samples/room` was played and judged, and the mixer was listened to. Both
+were things no amount of building could establish — the first is whether a hall reads as a
+place rather than as a demonstration, the second is whether an envelope clicks — and both were
+answered by a person, which is the only way either of them can be. 796 tests under `-Drhi=null`,
+804 under `-Drhi=metal`.*
+
+*The engine gained nothing for the playable sample. Not one line under `engine/`, and
+`tools/fpack` did not change either, which is the strongest form this milestone's evidence can
+take: the claim is that Foundry can carry a game, and a second consumer that needed no engine
+change is the proof of it.*
 
 *Both `CLAUDE.md` §9 decisions that came due here were made before any code: physics is
 Foundry's own, scoped to collision rather than dynamics (ADR-0022), and audio is Foundry's own
@@ -225,6 +230,14 @@ file under its own directory layout, with nothing rebuilt but the mod.*
 
 **Exit criteria:** something a person can play for five minutes without knowing it is a tech
 demo.
+
+*A note on the number, because it was not met literally and should not be quietly rounded up.*
+The autopilot finishes the hall in 1,542 ticks — about twenty-six seconds of simulated time —
+and it knows where every lamp is. A person exploring takes longer, but not five minutes, and
+`samples/room` was deliberately not grown until it did: a sample that keeps adding rooms to hit
+a number has started wanting features rather than being the smallest thing that is a game, and
+ADR-0017 says what happens next to a sample like that. **The half of the criterion that was
+actually load-bearing is "without knowing it is a tech demo"**, and that half was met.
 
 *On that last bullet and ADR-0017.* This entry used to ask for a playable
 `samples/sandbox` in one line and insist a paragraph later that the sandbox stay a

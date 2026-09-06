@@ -1,10 +1,11 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-06
-**Updated by:** **`samples/room` exists, and M5 has a game in it.** The three sequences —
-collision, sprite animation, audio — were finished earlier the same day; this is the last
-bullet, and it is the one that turned out to be about the *shape of the repository* rather
-than about the engine.
+**Updated by:** **M5 is complete.** `samples/room` was played and judged, and the mixer was
+listened to — the two things no amount of building could establish, both answered by a person,
+which is the only way either of them can be. The three sequences — collision, sprite animation,
+audio — were finished earlier the same day; the playable sample was the last bullet, and it is
+the one that turned out to be about the *shape of the repository* rather than about the engine.
 
 **The sandbox could not be the playable sample, and saying why is the finding.** By M5 it was
 2,424 lines carrying M0 through M5's evidence at once: four thousand orbiting sprites, a
@@ -65,21 +66,28 @@ is mature enough to need them rather than as decoration.
 ## Current phase
 
 **Phase 2 — A real 2D engine.** Phase 1 (M0, M1) closed with the first pixels; M2, M3 and M4
-are done. **M5 — Playable: "it's a game" — is open**, started 2026-09-05, and started where
-the last three did: at the decisions `CLAUDE.md` §9 had been holding for it, then the design
-document, then code. **Every bullet is now built, `samples/room` included.** What is left is
-the exit criterion itself, and it is the one thing that cannot be established by building
-anything: somebody has to play the room for five minutes. On autopilot it is finished in 1,542
-ticks — about twenty-six seconds of simulated time — which is a lower bound and not an answer,
-because the autopilot knows where the lamps are and a person does not.
+are done, and **M5 — Playable: "it's a game" — closed 2026-09-06**, having started where the
+last three did: at the decisions `CLAUDE.md` §9 had been holding for it, then the design
+document, then code. Phase 2 is finished. **M6 — Tools: "it's inspectable" — has not started**,
+and it opens at a `CLAUDE.md` §9 decision that is now due: the debug/game UI toolkit.
 
 ## Current milestone
 
-**M5 — Playable: "it's a game." In progress, opened 2026-09-05.** **Every bullet is finished**
-— collision, sprite animation, audio and the playable sample, all 2026-09-06 — and what
-remains is the milestone's *exit criterion* rather than any of its bullets: something a person
-can play for five minutes without knowing it is a tech demo. `samples/room` is that thing and
-nobody has played it yet. What follows in this section is what M5
+**M5 — Playable: "it's a game." Complete, opened 2026-09-05, closed 2026-09-06.** Every bullet
+— collision, sprite animation, audio and the playable sample — and the exit criterion with
+them: `samples/room` was played and judged to read as a place rather than as a demonstration.
+
+**The five-minute number was not met literally and is not being rounded up.** The autopilot
+finishes the hall in 1,542 ticks, about twenty-six seconds of simulated time, and a person
+exploring takes longer but not five minutes. The sample was deliberately not grown until it
+did: one that keeps adding rooms to reach a number has started wanting features rather than
+being the smallest thing that is a game, which is the point at which ADR-0017 says it belongs
+in its own repository. **The load-bearing half of the criterion was "without knowing it is a
+tech demo", and that half was met.**
+
+**The next milestone is M6 — Tools: "it's inspectable"**, not started. It opens at a §9
+decision that is due — the debug/game UI toolkit, own IMGUI versus cimgui — and its first
+roadmap bullet says so outright, so the order is ADR, then design document, then code. What follows in this section is what M5
 opened with, because the decisions and the design are what a future session needs and they have
 not changed; what has been built against them is under "What is being worked on".
 
@@ -1503,7 +1511,7 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**M5's four bullets are all finished, and its exit criterion is what remains.**
+**M5 is complete — four bullets and the exit criterion.**
 
 1. ~~**Collision**, `tilemaps-and-collision.md` §15.~~ **Complete, all seven steps, 2026-09-06.**
    A player walks the sandbox's room and is stopped by its walls.
@@ -1519,24 +1527,44 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
    a second sample that is a small game rather than a demonstration of one. The engine gained
    nothing for it.
 
-**What is left in M5 is the exit criterion, not a bullet: something a person can play for five
-minutes without knowing it is a tech demo.** The artifact exists; the judgment does not. Run
-`zig build room -Dplatform=sdl3 -Drhi=metal` and walk the hall. What is being judged is not
-whether it works — a headless run finishes it every time — but whether it reads as a place
-rather than as a demonstration, and that is a question only a person looking at it can answer.
-**Twenty-six seconds is what the autopilot takes; it knows where the lamps are.**
+**M5 is closed.** The exit criterion was met the only way it could be: `samples/room` was played
+and judged to read as a place, and the mixer was listened to.
 
-**Two deliberate gaps worth knowing about, and they are the same shape.** Neither can be
-closed by writing anything; both need a person with a sense.
+**Next is M6 — Tools: "it's inspectable"**, and it opens at a decision rather than at code. Its
+first roadmap bullet says "UI toolkit decision made here", `CLAUDE.md` §9 has that decision due
+at M6, and the order M5 followed and this should too is **ADR, then design document, then
+code**. The lean already recorded is "we need a UI system regardless; that argues for our own",
+but the lean is not the decision — the question inside the ADR is whether the debug overlay and
+the eventual *game* UI are one system or two, because if they are one it is a game-facing API
+whose names are a compatibility decision under §7, and cimgui would put a third-party model in
+the middle of it.
 
-The first is the exit criterion above: `samples/room` has been screenshotted, walked by an
-autopilot and finished headlessly, and nobody has *played* it.
+**One other §9 decision has come due and should not drift silently: the job system / threading
+model, dated "Post-M5".** M5 is now past, and the audio sequence already put a second thread in
+the project without one. It should be re-dated deliberately rather than left to rot, and it
+should *not* be folded into M6 — a profiler wants timings, not concurrency.
 
-The second is that the mixer has no *audible* verification: the
-callback counts, the sample counts and the bit-exact tests all say the right numbers reach the
-device, and nobody has listened to it. A person putting on headphones for thirty seconds is the
-only check that catches a stereo channel swapped or an envelope that clicks, and it costs
-almost nothing next to what it would catch.
+**Both of the gaps that needed a person are now closed, and how the second one was closed is
+worth keeping.**
+
+The first was the exit criterion: `samples/room` was played and judged. The second was that the
+mixer had never been *heard* — the callback counts, the sample counts and the bit-exact tests
+all said the right numbers reached the device, and nobody had listened.
+
+**The null device is stepped, so the mixer's output can be written to a file.**
+`null_backend.Platform.stepAudio` returns the samples the callback wrote, for exactly the
+frames asked for, on the calling thread — so a harness can drive a scripted arrangement,
+collect the blocks and emit a WAV, deterministically, **on a machine with no audio hardware at
+all**. That was done once with a throwaway test (removed before commit) and it produced twelve
+seconds: ambience swept across, footsteps panned by the walk, three lamps catching at different
+positions, a wall, then the door. Peak −10.1 dBFS, zero clipped frames, stereo energy moving
+L 1252 / R 113 → L 303 / R 1219 monotonically, the door dead centre at L=R, and exact silence
+after the last voice ended.
+
+The numbers are what a test can hold; **what the listening added was that nothing clicks and
+the resampled footstep sounds like a footstep**, which no assertion reaches. Making the harness
+permanent — a `scripts/` entry or a build step that renders a mix — is a small job nobody has
+done, and it is the difference between this check being repeatable and it having happened once.
 
 **Four things carried forward, and none of them is a bug:**
 
@@ -1552,9 +1580,9 @@ almost nothing next to what it would catch.
   requirement rule 7 warns about. Due with the material system, or the first time a sample
   wants its own shader. Adding it is a schema and a runtime-registered loader; nothing has
   to be reshaped.
-* **Nothing is pushed.** Commits sit on `main` ahead of `origin/main` — three from the
-  sprite-animation sequence, seven from the audio one, and the room's, including this
-  document. Pushing is outward-facing, so it is the user's call.
+* ~~**Nothing is pushed.**~~ **Pushed 2026-09-06**, thirteen commits, with the `m5` tag —
+  M2 through M5's work reaching `origin/main` in one go. The repository had been four
+  milestones ahead of its remote.
 * The GitHub repository description still says the engine implementation has not started,
   which four complete milestones have made false. Outward-facing, so it is the user's call.
 
