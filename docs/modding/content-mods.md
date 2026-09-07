@@ -21,7 +21,8 @@ Anything else in the directory is ignored, and names beginning with `.` are skip
 
 ```
 mymod/
-  changes.fdt
+  mod.fdt        # what your package is called — every package has one
+  changes.fdt    # what it changes
 ```
 
 ```fdt
@@ -56,23 +57,44 @@ sandbox:clip sandbox:clip.walk {
 schema written without a namespace belongs to the package it is written in — and that is a
 different record type from the one you are trying to override.
 
+**Every package names itself**, in a `mod.fdt` at its root ([ADR-0027](../adr/0027-mods-are-content-packages.md)).
+It is the first file to write and the shortest:
+
+```
+# mymod/mod.fdt
+foundry:mod  mymod:changes {
+    name     "Brighter Walk"
+    version  1
+    license  "MIT"
+    requires [ { id foundry:core } ]
+}
+```
+
+The record's content ID **is your package's ID**. Pick a namespace nobody else will use — it
+is what keeps your record types from colliding with someone else's. `foundry:mod` is spelled
+in full here for a reason: the compiler reads this file before it knows your namespace, so a
+bare `mod` would not resolve.
+
 Compile it:
 
 ```sh
-zig build fpack -- --name mymod:changes --out zig-out/content/mymod.fpk mymod
+zig build fpack -- --out zig-out/content/mymod.fpk mymod
 ```
 
-`--name` is your package's own content ID. Pick a namespace nobody else will use — it is
-what keeps your record types from colliding with someone else's.
+There is no `--name` and no `--version`: both come out of your `mod.fdt`, so there is
+nowhere for a second answer to disagree from.
 
-Then load it. The sandbox reads a list from the environment; a real game will have a mod
-manager, and does not yet:
+Then load it. The sandbox is handed a list of **content IDs**, not filenames — where your
+file sits stopped mattering the moment your package started naming itself. A real game will
+have a mod manager, and does not yet:
 
 ```sh
-FOUNDRY_SANDBOX_PACKAGES=mymod zig build run -Drhi=metal
+FOUNDRY_SANDBOX_PACKAGES=mymod:changes zig build run -Drhi=metal
 ```
 
-The sandbox loads `foundry:core`, then its own package, then yours. Walk the player around
+The sandbox discovers every package in its content directory, resolves the order from what
+the manifests say, and loads `foundry:core`, then its own package, then yours. Your
+`requires` line is what guarantees the first of those is underneath you. Walk the player around
 with WASD: the animation is a different colour and three times faster, and nothing was
 rebuilt but your mod.
 
@@ -139,7 +161,7 @@ from a directory named for your package beside the `.fpk` — so a mod with file
 rather than one:
 
 ```sh
-zig build fpack -- --name mymod:changes --out zig-out/content/mymod.fpk mymod
+zig build fpack -- --out zig-out/content/mymod.fpk mymod
 cp -R mymod zig-out/content/mymod
 ```
 
@@ -149,7 +171,7 @@ kind `fpack` *compiles* is a tile grid (§6), and that needs `--assets-out` poin
 directory, so the `.fgrid` lands over the top of the sources:
 
 ```sh
-zig build fpack -- --name mymod:changes --out zig-out/content/mymod.fpk \
+zig build fpack -- --out zig-out/content/mymod.fpk \
     --assets-out zig-out/content/mymod mymod
 ```
 
@@ -362,7 +384,7 @@ In a development build the engine watches what it loaded. Recompile your package
 save an image, and the running program picks it up at the start of the next frame:
 
 ```sh
-zig build fpack -- --name mymod:changes --out zig-out/content/mymod.fpk mymod
+zig build fpack -- --out zig-out/content/mymod.fpk mymod
 ```
 
 Two rules worth relying on:

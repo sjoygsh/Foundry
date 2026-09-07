@@ -1,9 +1,39 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-07
-**Updated by:** **M7 — Moddable: "others can extend it" — is open, at its decisions.** Two ADRs
-are written and both are `Proposed`; no code and no design document exist against either yet,
-which is the same place M6 stood the morning ADR-0025 was written.
+**Updated by:** **M7 is open, and step 1 of seven is done.** Both ADRs are accepted,
+`docs/design/public-abi.md` is written, and **`engine/src/mod/` exists**: a new L2 module holding
+manifests, discovery, dependency resolution and a stable topological sort. **1005 tests**, up from
+981.
+
+**What step 1 actually finished is M3's claim.** Tier 1 content modding has worked since
+2026-09-05; what it lacked was a way for a package to be *found*. Now every package in this
+repository — the engine's own first — carries a `foundry:mod` record naming itself, `fpack` reads
+a package's name and version out of that record and has lost `--name` and `--version`,
+`build.zig`'s content table has lost its `id` column, and **both samples compute their load order
+instead of writing it**. Each names two content ids: the package it cannot run without and the
+package it is. `FOUNDRY_SANDBOX_PACKAGES` takes **content ids** rather than filename stems, which
+is the visible half of ADR-0027 — a mod is identified by what it calls itself, and where its file
+sits stopped mattering. `docs/modding/content-mods.md` was updated and then followed verbatim: a
+package compiled with no `--name`, discovered by its manifest, enabled by id, loading third behind
+`foundry:core` and the sandbox's own.
+
+**Five things the implementation settled that the design had not**, recorded in
+`public-abi.md`'s Resolution section and worth two of them here. **The manifest schema is
+engine-declared, not content-declared** — the design said "declared in `content/core`" and that
+cannot work: `fpack` must know the record type to *check* a manifest, and a package zero that had
+to be compiled before anything else could be checked would be a privileged path in the compiler,
+which is the shape I3 refuses. And **the manifest has a fixed filename**, `mod.fdt` at the package
+root, forced by an ordering nobody had looked at: the parser expands a bare schema name using the
+package's namespace, and the namespace now comes from inside the package, so the pre-pass has to
+read one file before it knows anything and therefore has to know which file. The rule it costs an
+author is one: write `foundry:mod` out in full.
+
+**Next is step 2** — `foundry.h`, the type layer, and the agreement test that compiles it.
+
+---
+
+**M7 opened at its decisions, and one of them was a correction.**
 
 **[ADR-0026](docs/adr/0026-abi-module-and-host.md) is a correction, and the build graph is what
 found it.** ADR-0007 recorded `L5 abi -> app` on the project's second day and ADR-0025 copied
@@ -1854,11 +1884,9 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 `docs/design/public-abi.md`.~~ **All done 2026-09-07.** What is left is code, and
 [`docs/design/public-abi.md`](docs/design/public-abi.md) §19 is the order:
 
-1. **`mod`** — the manifest schema in `content/core`, `discover`, `resolve`, the diagnostics.
-   Headless: no table, no library, no window. Ends with all three packages in this repository
-   carrying manifests, `fpack` reading name and version from them, `build.zig` losing its `id`
-   column, and both samples' load order **computed rather than written by hand**. This is Tier 1
-   finished, and it is the step that pays off M3.
+~~1. **`mod`**~~ — **done 2026-09-07.** All three packages carry manifests, `fpack` reads name
+   and version from them, `build.zig` lost its `id` column, and both samples' load order is
+   computed rather than written by hand. 24 new tests.
 2. **The type layer and `foundry.h`** — results, strings, handles, cursors, and the agreement
    test: a C translation unit that `_Static_assert`s every size and offset, compiled by `zig cc`
    inside `zig build test`, so a header that disagrees with the engine fails the build.

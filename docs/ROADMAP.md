@@ -353,6 +353,17 @@ engine or game code, not untrusted input" — that the ABI falsifies. That is th
 predicted and named as its own falsification test, and the reasoning being written down is what
 made checking it one paragraph instead of an audit.
 
+**Step 1 of §19 is done (2026-09-07): the `mod` module.** `engine/src/mod/` is a new L2 module —
+manifests, discovery, dependency resolution, a stable topological sort — and every package in the
+repository, the engine's own included, now carries a `foundry:mod` record naming itself. `fpack`
+reads a package's name and version from that record and lost `--name` and `--version`;
+`build.zig`'s content table lost its `id` column, so a package's identity is stated in exactly one
+place. **Both samples compute their load order rather than writing it**, naming only the package
+they cannot run without and the package they are, and `FOUNDRY_SANDBOX_PACKAGES` now takes
+**content ids** instead of filenames — which is the visible half of ADR-0027. `docs/modding/content-mods.md`
+was updated and then followed verbatim. **1005 tests**, up from 981. Tier 1 modding, which has
+worked since M3, stopped needing a hand-written list.
+
 ### M8 — Scriptable: "modders can extend it"
 
 * Scripting language decision (`CLAUDE.md` §9).

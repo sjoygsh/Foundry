@@ -1,0 +1,20 @@
+# The engine's own content package — package zero (I3).
+#
+# **This file is why package zero is not merely *like* a mod.** Its identity, its version
+# and its license are stated here, in a `foundry:mod` record, exactly as a mod's are; the
+# compiler reads the package's name and version out of it rather than off a command line;
+# and discovery, ordering and loading run over it through the same code a mod goes through
+# (ADR-0027). There is no privileged path, and this is the file that says so.
+#
+# The schema is `foundry:mod`, declared by the engine and registered at runtime like
+# `foundry:texture` and `foundry:entity` (I6). It is written out in full rather than as a
+# bare `mod` because the compiler reads this file before it knows the package's namespace,
+# which is the one rule the manifest costs an author.
+
+foundry:mod  foundry:core {
+    name    "Foundry"
+    version 1
+    license "Apache-2.0"
+    summary "The engine's own content: the debug font, and the record types it ships."
+    url     "https://github.com/sjoygsh/Foundry"
+}

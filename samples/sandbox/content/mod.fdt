@@ -1,0 +1,14 @@
+# The sandbox's manifest.
+#
+# A sample ships its own package because that is the shape a real consumer has
+# (`CLAUDE.md` §4.5), and from here it also has the shape a real consumer's *manifest* has:
+# it names itself, it states its licence, and it says out loud that it needs the engine's
+# package underneath it. Nothing about it is special-cased by the build.
+
+foundry:mod  sandbox:content {
+    name     "Foundry Sandbox"
+    version  1
+    license  "Apache-2.0"
+    summary  "Capabilities, demonstrated: sprites, content, entities, collision, audio, UI."
+    requires [ { id foundry:core } ]
+}

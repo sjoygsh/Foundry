@@ -55,17 +55,13 @@ written against the older one.
 
 Being honest about this is more useful than a feature list.
 
-* **No mod manager, no discovery, no dependency resolution — but they are designed.**
-  [ADR-0027](../adr/0027-mods-are-content-packages.md) and
-  [`design/public-abi.md`](../design/public-abi.md) §12 settle it: a mod is a content package,
-  discovery reads each candidate's manifest from its own `.fpk`, and load order is a stable
-  topological sort that keeps your ordering wherever dependencies permit. **Not implemented.**
-  Today an application names its packages; the sandbox reads an environment variable so you can
+* **Discovery, manifests and load order work; a mod *manager* does not.** Every package
+  carries a `foundry:mod` record naming itself ([ADR-0027](../adr/0027-mods-are-content-packages.md)),
+  a host reads every package in its content directory, and the order is computed from what the
+  manifests say — a stable topological sort that keeps your ordering wherever the dependencies
+  permit. What is missing is the *interface*: nothing yet lists your mods on screen or lets you
+  drag them around. The sandbox reads an environment variable of content IDs, which is enough to
   try one.
-* **No manifests yet.** A package's name and version are still arguments to the compiler.
-  ADR-0027 makes the manifest a `foundry:mod` record inside the package, so identity, version,
-  dependencies and your license live in the package they describe — one file, nothing to keep in
-  sync. **Designed, not built.**
 * **`@patch` and `@remove` parse and are then refused.** Their syntax is frozen, deliberately
   and early, so that content written later does not have to change. Their semantics are not
   implemented, and a mod using one is told so rather than having it quietly ignored —

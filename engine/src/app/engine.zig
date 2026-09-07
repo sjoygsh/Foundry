@@ -350,7 +350,7 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
 
             // Resolved before anything owns it, so a bad `content_dir` fails before the
             // window opens rather than after.
-            const content_dir = try resolveContentDir(gpa, os, config);
+            const content_dir = try contentDirOf(gpa, os, config.content_dir);
             const content = dupePackages(gpa, config.content) catch |err| {
                 gpa.free(content_dir);
                 return err;
@@ -759,23 +759,6 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         /// Beside the executable rather than beside the working directory, because a game
         /// is launched from anywhere and its content is part of its installation. `zig
         /// build` installs to exactly this shape.
-        fn resolveContentDir(gpa: Allocator, os: *platform.Os, config: Config) InitError![]u8 {
-            if (config.content_dir) |dir| return gpa.dupe(u8, dir);
-
-            const exe_dir = os.executableDirAlloc(gpa) catch |err| {
-                log.warn("cannot locate the executable to find content beside it: {t}", .{err});
-                return error.ContentUnavailable;
-            };
-            defer gpa.free(exe_dir);
-
-            // `<prefix>/bin/..` rather than a literal "..", so the path in a log line is
-            // one a person can read back to us.
-            const prefix = std.fs.path.dirname(exe_dir) orelse exe_dir;
-            return platform.os.joinPath(gpa, &.{ prefix, "content" }) catch |err| switch (err) {
-                error.OutOfMemory => error.OutOfMemory,
-                else => error.ContentUnavailable,
-            };
-        }
 
         // -- the frame -------------------------------------------------------------
 
@@ -1161,6 +1144,34 @@ pub const Engine = EngineOf(platform.Platform, rhi.Device);
 /// the entry point, so this is where the OS's idea of a process meets Foundry's. Caller
 /// owns the returned slice; the names and values inside it are borrowed from `init` and
 /// live as long as the process does.
+/// Where content lives: `override`, or `<prefix>/content` beside the executable.
+///
+/// **Public because a host needs it before an engine exists.** Discovering what is
+/// installed is `mod`'s job and happens before `Engine.init` is called
+/// (`public-abi.md` §13, phase 1), so the directory to search has to be answerable without
+/// one. The engine calls this with `Config.content_dir` and a host that discovers should
+/// call it once and pass the result back as `content_dir`, so that both look in the same
+/// place by construction rather than by both computing the same thing.
+///
+/// The caller owns the result.
+pub fn contentDirOf(gpa: Allocator, os: *platform.Os, override: ?[]const u8) InitError![]u8 {
+    if (override) |dir| return gpa.dupe(u8, dir);
+
+    const exe_dir = os.executableDirAlloc(gpa) catch |err| {
+        log.warn("cannot locate the executable to find content beside it: {t}", .{err});
+        return error.ContentUnavailable;
+    };
+    defer gpa.free(exe_dir);
+
+    // `<prefix>/bin/..` rather than a literal "..", so the path in a log line is one a
+    // person can read back to us.
+    const prefix = std.fs.path.dirname(exe_dir) orelse exe_dir;
+    return platform.os.joinPath(gpa, &.{ prefix, "content" }) catch |err| switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.ContentUnavailable,
+    };
+}
+
 pub fn environment(gpa: Allocator, init: std.process.Init) Allocator.Error![]platform.os.EnvVar {
     var out: std.ArrayList(platform.os.EnvVar) = .empty;
     errdefer out.deinit(gpa);

@@ -19,6 +19,7 @@ const std = @import("std");
 const core = @import("core");
 const data = @import("data");
 const asset = @import("asset");
+const mod = @import("mod");
 const scene = @import("scene");
 const platform = @import("platform");
 
@@ -43,13 +44,26 @@ pub const Error = error{
     IoFailed,
 } || Allocator.Error;
 
-pub const Options = struct {
-    /// The package's `namespace:name`. Supplied from outside rather than read from a
-    /// manifest in the directory: `data` consumes a load order and does not compute one,
-    /// and mod manifests are M7 (`content-schemas.md` §11). The namespace half also
-    /// expands bare schema names in the package's own text.
+/// Where a package's manifest is written.
+///
+/// **One fixed name**, so that a tool with only the source tree can find a package's
+/// identity without compiling it, and so that the pre-pass below has one file to read
+/// rather than a directory to scan.
+pub const manifest_file = "mod.fdt";
+
+/// What a package says it is.
+///
+/// **The caller owns `name`**, allocated with the `gpa` it passed to `compile`. It cannot
+/// borrow: it is read out of a parse tree that is gone before the compile finishes, and
+/// pointing at the compiled bytes instead would tie a two-word answer to a buffer the
+/// caller may already have written out and freed.
+pub const Identity = struct {
+    /// The package's `namespace:name`, which is the content id of its manifest record.
     name: []const u8,
-    version: u32 = 1,
+    version: u32,
+};
+
+pub const Options = struct {
     limits: Limits = .default,
     /// Cap on one source file, so a directory full of something else is refused rather
     /// than read.
@@ -80,14 +94,20 @@ pub fn compile(
     registry: *Registry,
     diags: *Diagnostics,
     out: *std.ArrayList(u8),
-) Error!void {
+) Error!Identity {
     var arena: core.Arena = .init(gpa);
     defer arena.deinit();
 
-    var pkg = data.Package.init(gpa, options.name, options.version, options.limits) catch |err| switch (err) {
+    // **Before anything else**, because the package's namespace decides what a bare schema
+    // name in its own text expands to, and the namespace now comes from inside the package
+    // (ADR-0027). This is the pre-pass that decision named as its cost.
+    const identity = try readIdentity(gpa, os, dir, options, diags);
+    errdefer gpa.free(identity.name);
+
+    var pkg = data.Package.init(gpa, identity.name, identity.version, options.limits) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
-            try diags.addFmt(gpa, .err, .whole(dir), 1, "", "'{s}' is not a valid package name: {s}", .{ options.name, @errorName(err) });
+            try diags.addFmt(gpa, .err, .whole(manifest_file), 1, "", "'{s}' is not a valid package name: {s}", .{ identity.name, @errorName(err) });
             return error.ContentInvalid;
         },
     };
@@ -95,6 +115,18 @@ pub fn compile(
 
     var walk = try Walk.run(gpa, arena.allocator(), os, dir, diags);
     defer walk.deinit(gpa);
+
+    // `foundry:mod` — the manifest this package's identity was just read out of. It is
+    // registered like any other engine-declared record type, so the manifest is checked by
+    // the ordinary checker against the ordinary schema and is not a special case anywhere
+    // past this line.
+    mod.schemas.registerAll(gpa, registry) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            try diags.addFmt(gpa, .err, .whole("<engine>"), 1, "", "the engine's manifest schema did not register: {s}", .{data.schema.describeRegisterError(err)});
+            return error.ContentInvalid;
+        },
+    };
 
     asset.schemas.registerAll(gpa, registry) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -216,6 +248,76 @@ pub fn compile(
         error.OutOfMemory => return error.OutOfMemory,
         else => {
             try diags.addFmt(gpa, .err, .whole(dir), 1, "", "could not be written: {s}", .{@errorName(err)});
+            return error.ContentInvalid;
+        },
+    };
+
+    return identity;
+}
+
+/// Reads `mod.fdt` and takes the package's id and version from the manifest record in it.
+///
+/// **Parsed with a placeholder namespace**, which is safe for exactly the reason the format
+/// makes it safe: content ids are always fully qualified, so nothing in a manifest is
+/// expanded except a bare schema name — and the manifest's own schema reference must be
+/// written out as `foundry:mod`, which is the one rule this pre-pass costs an author.
+///
+/// The file is parsed again in the ordinary pass, where the record is checked against the
+/// schema like every other record. Nothing here checks anything: it reads two values and
+/// gets out of the way.
+fn readIdentity(
+    gpa: Allocator,
+    os: *Os,
+    dir: []const u8,
+    options: Options,
+    diags: *Diagnostics,
+) Error!Identity {
+    const path = platform.os.joinPath(gpa, &.{ dir, manifest_file }) catch return error.IoFailed;
+    defer gpa.free(path);
+
+    const source = os.readFile(gpa, path, options.max_source_bytes) catch |err| {
+        try diags.addFmt(gpa, .err, .whole(manifest_file), 0, "", "every package states its own identity here and this one could not be read: {s}", .{@errorName(err)});
+        return error.ContentInvalid;
+    };
+    defer gpa.free(source);
+
+    var doc = data.parser.parse(gpa, manifest_file, source, .{
+        .namespace = "package",
+        .limits = options.limits,
+    }, diags) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.ContentInvalid,
+    };
+    defer doc.deinit(gpa);
+
+    var found: ?data.parser.RecordDecl = null;
+    for (doc.records) |record| {
+        if (record.kind != .define) continue;
+        if (!record.schema.eql(mod.schemas.manifest.id)) continue;
+        if (found != null) {
+            try diags.addFmt(gpa, .err, .whole(manifest_file), 0, "", "a package describes itself once, and this one has two '{s}' records", .{mod.schemas.manifest_name});
+            return error.ContentInvalid;
+        }
+        found = record;
+    }
+    const record = found orelse {
+        try diags.addFmt(gpa, .err, .whole(manifest_file), 0, "", "no '{s}' record: a package's id and version are the content id and the version field of the manifest record here, and the schema must be written out in full", .{mod.schemas.manifest_name});
+        return error.ContentInvalid;
+    };
+
+    var version: ?u32 = null;
+    for (record.fields) |field| {
+        if (!std.mem.eql(u8, field.name, mod.schemas.version_field)) continue;
+        version = switch (field.value) {
+            .int => |n| if (n >= 1 and n <= std.math.maxInt(u32)) @intCast(n) else null,
+            else => null,
+        };
+    }
+
+    return .{
+        .name = try gpa.dupe(u8, record.text),
+        .version = version orelse {
+            try diags.addFmt(gpa, .err, .whole(manifest_file), 0, "", "'{s}' needs a '{s}' field holding a whole number one or greater", .{ record.text, mod.schemas.version_field });
             return error.ContentInvalid;
         },
     };
@@ -680,6 +782,22 @@ test "an import path is resolved textually, and cannot climb out of the package"
 /// The one thing in the pipeline that is not hermetic, and deliberately tested against a
 /// real filesystem for exactly that reason: `data` is proven on byte buffers already, and
 /// what is left to prove is what happens when the bytes come from a disk.
+/// Every package carries its own manifest record now (ADR-0027), so a package with two
+/// authored records has three. Spelled out rather than folded into each number, because a
+/// count that silently included it would hide the one thing these tests are counting.
+const manifest_records: u32 = 1;
+
+/// The record with this name, or null. Tests that care *which* records a package holds
+/// should not also be asserting where `mod.fdt` sorts among the sources.
+fn recordNamed(r: *const data.fpk.Reader, name: []const u8) ?data.fpk.RecordView {
+    var i: u32 = 0;
+    while (i < r.record_count) : (i += 1) {
+        const view = r.record(i) orelse return null;
+        if (std.mem.eql(u8, view.name, name)) return view;
+    }
+    return null;
+}
+
 const Fixture = struct {
     tmp: std.testing.TmpDir,
     os: *Os,
@@ -730,19 +848,34 @@ const Fixture = struct {
         try self.os.writeFile(path, contents);
     }
 
+    /// Every package has a manifest (ADR-0027), including a two-line one in a test. The
+    /// fixture writes it so that a test naming its package still reads as one line, and so
+    /// that forgetting it is impossible rather than merely unlikely.
+    fn writeManifest(self: *Fixture, name: []const u8) !void {
+        const gpa = testing.allocator;
+        const text = try std.fmt.allocPrint(gpa,
+            \\foundry:mod {s} {{ name "test" version 1 license "Apache-2.0" }}
+        , .{name});
+        defer gpa.free(text);
+        try self.write(manifest_file, text);
+    }
+
     fn compileIt(self: *Fixture, name: []const u8) Error!void {
+        self.writeManifest(name) catch return error.IoFailed;
         self.bytes.clearRetainingCapacity();
-        return compile(testing.allocator, self.os, self.root, .{
-            .name = name,
+        const identity = try compile(testing.allocator, self.os, self.root, .{
             .assets_out = self.gen,
         }, &self.registry, &self.diags, &self.bytes);
+        testing.allocator.free(identity.name);
     }
 
     /// The same compile with nowhere to put generated assets, which is what a caller that
     /// forgot `--assets-out` does.
     fn compileWithNoAssetOutput(self: *Fixture, name: []const u8) Error!void {
+        self.writeManifest(name) catch return error.IoFailed;
         self.bytes.clearRetainingCapacity();
-        return compile(testing.allocator, self.os, self.root, .{ .name = name }, &self.registry, &self.diags, &self.bytes);
+        const identity = try compile(testing.allocator, self.os, self.root, .{}, &self.registry, &self.diags, &self.bytes);
+        testing.allocator.free(identity.name);
     }
 
     /// A file `fpack` generated, read back from disk.
@@ -799,7 +932,7 @@ test "a sound derives from its path exactly as an image does" {
 
     // Two derived records and no authoring at all. Nothing about the asset kind is
     // special-cased: `fpack` reads the extension table and a new kind costs it nothing.
-    try testing.expectEqual(@as(u32, 2), r.record_count);
+    try testing.expectEqual(@as(u32, 2 + manifest_records), r.record_count);
 
     const sound_schema = r.schemaFor(data.SchemaId.fromStringUnchecked("foundry:sound")).?;
     var found = false;
@@ -837,7 +970,7 @@ test "a directory of text and images compiles to a package that reads back" {
     try testing.expectEqualStrings("foundry:core", r.name);
     // One item and two derived textures. The `.txt` is not an asset kind and the
     // dot-prefixed directory was never walked into.
-    try testing.expectEqual(@as(u32, 3), r.record_count);
+    try testing.expectEqual(@as(u32, 3 + manifest_records), r.record_count);
 
     const texture_schema = r.schemaFor(data.SchemaId.fromStringUnchecked("foundry:texture")).?;
     var seen: std.ArrayList(u8) = .empty;
@@ -854,9 +987,12 @@ test "a directory of text and images compiles to a package that reads back" {
     }
 
     // Authored records first, in file order; derived ones after, in walk order — which is
-    // sorted, so it is the same on any machine (I9).
+    // sorted, so it is the same on any machine (I9). `foundry:core` is the manifest, which
+    // is an authored record in `mod.fdt` like any other and sorts where its filename puts
+    // it — there is no special case for it anywhere in the pipeline (ADR-0027).
     try testing.expectEqualStrings(
         \\foundry:item.torch
+        \\foundry:core
         \\foundry:textures.sprites=textures/sprites.png
         \\foundry:textures.ui.panel=textures/ui/panel.png
         \\
@@ -901,9 +1037,9 @@ test "an authored record beats derivation, and is not duplicated by it" {
 
     // Two records: the authored one under the name its author chose, and one derived for
     // the file nobody spoke for.
-    try testing.expectEqual(@as(u32, 2), r.record_count);
-    try testing.expectEqualStrings("foundry:texture.sprites", r.record(0).?.name);
-    try testing.expectEqualStrings("foundry:textures.other", r.record(1).?.name);
+    try testing.expectEqual(@as(u32, 2 + manifest_records), r.record_count);
+    try testing.expect(recordNamed(&r, "foundry:texture.sprites") != null);
+    try testing.expect(recordNamed(&r, "foundry:textures.other") != null);
 }
 
 test "two files that derive one id are an error naming both" {
@@ -921,7 +1057,7 @@ test "two files that derive one id are an error naming both" {
     {
         var r = try f.open();
         defer r.deinit();
-        try testing.expectEqual(@as(u32, 2), r.record_count);
+        try testing.expectEqual(@as(u32, 2 + manifest_records), r.record_count);
     }
 
     // Now one that does: an authored record claiming the id derivation would mint.
@@ -987,19 +1123,75 @@ test "an empty directory is a package with nothing in it, not a failure" {
 
     var r = try f.open();
     defer r.deinit();
-    try testing.expectEqual(@as(u32, 0), r.record_count);
+    try testing.expectEqual(@as(u32, 0 + manifest_records), r.record_count);
     try testing.expectEqualStrings("foundry:empty", r.name);
 }
 
-test "a package name that is not an id is refused before anything is read" {
+test "a package that does not name itself is refused before anything is read" {
     var f = try Fixture.init();
     defer f.deinit();
 
-    try testing.expectError(error.ContentInvalid, f.compileIt("not an id"));
+    // No `mod.fdt` at all. Written directly rather than through the fixture, because the
+    // fixture's whole job is to make sure there is one.
+    f.bytes.clearRetainingCapacity();
+    try testing.expectError(error.ContentInvalid, compile(
+        testing.allocator,
+        f.os,
+        f.root,
+        .{ .assets_out = f.gen },
+        &f.registry,
+        &f.diags,
+        &f.bytes,
+    ));
 
     var buf: [1024]u8 = undefined;
     const text = try f.rendered(&buf);
-    try testing.expect(std.mem.containsAtLeast(u8, text, 1, "is not a valid package name"));
+    try testing.expect(std.mem.containsAtLeast(u8, text, 1, "could not be read"));
+}
+
+test "a manifest naming something that is not an id is refused, and the parser is what refuses it" {
+    var f = try Fixture.init();
+    defer f.deinit();
+
+    // The id is now written in content rather than passed on a command line, so the format's
+    // own rules are what catch it — which is strictly better than a tool-specific check, and
+    // is the same diagnostic a mod author gets for a bad id anywhere else.
+    try f.write(manifest_file, "foundry:mod not_an_id { name \"x\" version 1 license \"MIT\" }");
+    f.bytes.clearRetainingCapacity();
+    try testing.expectError(error.ContentInvalid, compile(
+        testing.allocator,
+        f.os,
+        f.root,
+        .{ .assets_out = f.gen },
+        &f.registry,
+        &f.diags,
+        &f.bytes,
+    ));
+    try testing.expect(f.diags.failed);
+}
+
+test "a package that says two different things about itself is refused" {
+    var f = try Fixture.init();
+    defer f.deinit();
+
+    try f.write(manifest_file,
+        \\foundry:mod a:one { name "one" version 1 license "MIT" }
+        \\foundry:mod b:two { name "two" version 1 license "MIT" }
+    );
+    f.bytes.clearRetainingCapacity();
+    try testing.expectError(error.ContentInvalid, compile(
+        testing.allocator,
+        f.os,
+        f.root,
+        .{ .assets_out = f.gen },
+        &f.registry,
+        &f.diags,
+        &f.bytes,
+    ));
+
+    var buf: [1024]u8 = undefined;
+    const text = try f.rendered(&buf);
+    try testing.expect(std.mem.containsAtLeast(u8, text, 1, "describes itself once"));
 }
 
 test "a grid file derives a tilegrid record, and a map compiles against schemas nobody declared" {
@@ -1042,7 +1234,7 @@ test "a grid file derives a tilegrid record, and a map compiles against schemas 
     defer r.deinit();
 
     // Three authored records and one derived grid.
-    try testing.expectEqual(@as(u32, 4), r.record_count);
+    try testing.expectEqual(@as(u32, 4 + manifest_records), r.record_count);
 
     const tilegrid_schema = r.schemaFor(data.SchemaId.fromStringUnchecked("foundry:tilegrid")).?;
     var found = false;
@@ -1076,7 +1268,7 @@ test "an authored tilegrid record beats the one its path would derive" {
 
     // One record, not two: explicit always beats implicit and never silently duplicates it,
     // which is the rule assets already had and which a new kind inherits for free.
-    try testing.expectEqual(@as(u32, 1), r.record_count);
+    try testing.expectEqual(@as(u32, 1 + manifest_records), r.record_count);
     try testing.expectEqualStrings("sandbox:maps.the_town", r.record(0).?.name);
 }
 
@@ -1107,9 +1299,8 @@ test "a text grid compiles to an asset the package did not contain" {
     // the two extensions mint the same id, which is what makes this invisible downstream.
     var r = try f.open();
     defer r.deinit();
-    try testing.expectEqual(@as(u32, 1), r.record_count);
-    const view = r.record(0).?;
-    try testing.expectEqualStrings("sandbox:grids.town.walls", view.name);
+    try testing.expectEqual(@as(u32, 1 + manifest_records), r.record_count);
+    const view = recordNamed(&r, "sandbox:grids.town.walls").?;
 
     const schema = r.schemaFor(data.SchemaId.fromStringUnchecked("foundry:tilegrid")).?;
     const fields = r.fieldsOf(view, schema.*);
@@ -1175,4 +1366,93 @@ test "a text grid and a compiled one at the same path collide rather than one wi
     // Derivation's existing collision check catches it, and names both files rather than
     // the second one it happened to reach.
     try testing.expect(std.mem.indexOf(u8, text, "derives the same content id") != null);
+}
+
+test "a compiled package's manifest reads back through the reader a mod manager uses" {
+    var f = try Fixture.init();
+    defer f.deinit();
+
+    // The manifest written by hand rather than by the fixture, because this is the test
+    // that the *whole* record survives the pipeline — not just the two fields the compiler
+    // reads out of it before it starts.
+    try f.write(manifest_file,
+        \\foundry:mod brighter:content {
+        \\    name     "Brighter Lamps"
+        \\    version  3
+        \\    license  "MIT"
+        \\    summary  "Turns the lamps up."
+        \\    authors  [ "someone" "someone else" ]
+        \\    url      "https://example.invalid/brighter"
+        \\    requires [ { id foundry:core } { id room:content min 2 max 4 } ]
+        \\    abi      { min 1 }
+        \\    native   "brighter"
+        \\}
+    );
+    f.bytes.clearRetainingCapacity();
+    const identity = try compile(
+        testing.allocator,
+        f.os,
+        f.root,
+        .{ .assets_out = f.gen },
+        &f.registry,
+        &f.diags,
+        &f.bytes,
+    );
+
+    // The compiler took the package's id and version from the record, which is the whole of
+    // what `--name` and `--version` used to be (ADR-0027).
+    defer testing.allocator.free(identity.name);
+    try testing.expectEqualStrings("brighter:content", identity.name);
+    try testing.expectEqual(@as(u32, 3), identity.version);
+
+    var r = try f.open();
+    defer r.deinit();
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const m = try mod.manifest.read(arena.allocator(), &r);
+
+    try testing.expectEqualStrings("brighter:content", m.id_name);
+    try testing.expectEqual(@as(u32, 3), m.version);
+    try testing.expectEqualStrings("Brighter Lamps", m.name);
+    try testing.expectEqualStrings("MIT", m.license);
+    try testing.expectEqualStrings("Turns the lamps up.", m.summary.?);
+    try testing.expectEqualStrings("https://example.invalid/brighter", m.url.?);
+    try testing.expectEqual(@as(usize, 2), m.authors.len);
+    try testing.expectEqualStrings("someone else", m.authors[1]);
+
+    try testing.expectEqual(@as(usize, 2), m.requires.len);
+    try testing.expect(m.requires[0].id.eql(try data.contentId("foundry:core")));
+    // The default the schema carries, not something the reader invented.
+    try testing.expectEqual(@as(u32, 1), m.requires[0].range.min);
+    try testing.expectEqual(@as(?u32, null), m.requires[0].range.max);
+    try testing.expectEqual(@as(u32, 2), m.requires[1].range.min);
+    try testing.expectEqual(@as(?u32, 4), m.requires[1].range.max);
+
+    try testing.expectEqual(@as(u32, 1), m.abi.?.min);
+    try testing.expect(m.hasCode());
+    try testing.expectEqualStrings("brighter", m.native.?);
+}
+
+test "a manifest naming a library outside its own directory is refused at the manifest" {
+    var f = try Fixture.init();
+    defer f.deinit();
+
+    // Refused where it is *written*, not carefully attempted later. A `native` that is a
+    // path is a package to decline, and the loader never sees it (`public-abi.md` §11.1).
+    try f.write(manifest_file,
+        \\foundry:mod evil:content { name "e" version 1 license "MIT" native "../../../etc/passwd" }
+    );
+    f.bytes.clearRetainingCapacity();
+    const identity = try compile(testing.allocator, f.os, f.root, .{ .assets_out = f.gen }, &f.registry, &f.diags, &f.bytes);
+    defer testing.allocator.free(identity.name);
+
+    // The *compiler* has no opinion — `native` is a string like any other, and the checker
+    // has no reason to refuse it. The reader does, which is where the rule belongs: a
+    // package that was compiled elsewhere gets checked here too.
+    var r = try f.open();
+    defer r.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectError(error.InvalidNativeName, mod.manifest.read(arena.allocator(), &r));
 }

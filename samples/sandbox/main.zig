@@ -28,6 +28,7 @@ const data = @import("data");
 // else (ADR-0025). Nothing in the engine depends on it; this sample does.
 const debug = @import("debug");
 const physics2d = @import("physics2d");
+const mod = @import("mod");
 const platform = @import("platform");
 const render2d = @import("render2d");
 const rhi = @import("rhi");
@@ -41,20 +42,6 @@ const ui = @import("ui");
 pub const std_options = app.std_options;
 
 const log = core.log.scoped(.sandbox);
-
-/// What the sandbox loads, **in load order**.
-///
-/// Package zero first (I3): Foundry's own content, through the same call and the same
-/// format the sample's package uses. Then the sample's own, which is what a game ships —
-/// and where anything the sample draws is described.
-///
-/// Both are compiled by `fpack` during the build and installed under `<prefix>/content`,
-/// which is where the engine looks by default. A third package placed after these
-/// overrides either of them by content id, without knowing where their files are.
-const content_packages = [_]app.ContentPackage{
-    .{ .file = "core.fpk", .root = "core" },
-    .{ .file = "sandbox.fpk", .root = "sandbox" },
-};
 
 /// What the sample's keys do.
 ///
@@ -75,47 +62,78 @@ const bindings = [_][]const u8{
     "escape - quit",
 };
 
-/// The built-ins, plus whatever `FOUNDRY_SANDBOX_PACKAGES` names, in that order.
+/// **What loads, and in what order — discovered rather than written down.**
 ///
-/// **This is the mod path, with no mod manager in front of it.** Compile a package with
-/// `fpack` into `<prefix>/content`, name it here, and it loads after the base game and
-/// overrides by content id — which is the whole of Tier 1 modding working long before the
-/// mod system exists (CLAUDE.md §5). Discovering packages rather than being told about
-/// them is M7's job, and a sample inventing a discovery rule would be answering it early.
+/// The sample names two things: the package it cannot run without (`foundry:core`, package
+/// zero) and the package it *is*. Everything else comes from the content directory, and the
+/// order comes from the manifests those packages carry (ADR-0027). Nothing here knows a
+/// filename; `mod` reads each candidate's manifest out of its own `.fpk`, resolves the
+/// dependencies and hands back the list `app.Config.content` takes.
 ///
-/// The result borrows nothing from the caller and is freed by it. `Engine.init` copies
-/// what it keeps.
-fn contentPackages(gpa: std.mem.Allocator, env: []const platform.os.EnvVar) ![]app.ContentPackage {
+/// **`FOUNDRY_SANDBOX_PACKAGES` is now a list of content ids**, not of filenames — enable
+/// `brighter:content`, not `brighter`. That is the change worth noticing: a mod is
+/// identified by what it calls itself, and where its file sits stopped mattering.
+///
+/// The result borrows nothing from the caller and is freed by it. `Engine.init` copies what
+/// it keeps.
+fn contentPackages(
+    gpa: std.mem.Allocator,
+    os: *platform.os.Os,
+    content_dir: []const u8,
+    env: []const platform.os.EnvVar,
+) ![]app.ContentPackage {
+    var diags: data.Diagnostics = .init(gpa, .default);
+    defer diags.deinit(gpa);
+
+    var found = try mod.discover(gpa, os, content_dir, .{}, &diags);
+    defer found.deinit();
+
+    var enabled: std.ArrayList(core.ContentId) = .empty;
+    defer enabled.deinit(gpa);
+    try enabled.append(gpa, try data.contentId("sandbox:content"));
+
+    if (envValue(env, "FOUNDRY_SANDBOX_PACKAGES")) |extra| {
+        var it = std.mem.splitScalar(u8, extra, ',');
+        while (it.next()) |raw| {
+            const name = std.mem.trim(u8, raw, " ");
+            if (name.len == 0) continue;
+            const id = data.contentId(name) catch {
+                log.warn("FOUNDRY_SANDBOX_PACKAGES: '{s}' is not a content id", .{name});
+                continue;
+            };
+            log.info("enabling '{s}'", .{name});
+            try enabled.append(gpa, id);
+        }
+    }
+
+    var resolution = try mod.resolve(gpa, found.candidates, .{
+        .required = &.{try data.contentId("foundry:core")},
+        .enabled = enabled.items,
+    }, &diags);
+    defer resolution.deinit();
+
+    // Everything `mod` had to say about what it found. A skipped mod is a message, not a
+    // failure to start, and the message is the whole point of it being one.
+    for (diags.items.items) |d| log.warn("content: {s}", .{d.message});
+
     var list: std.ArrayList(app.ContentPackage) = .empty;
     errdefer freePackages(gpa, list.items);
     errdefer list.deinit(gpa);
-
-    for (content_packages) |pkg| try list.append(gpa, .{
-        .file = try gpa.dupe(u8, pkg.file),
-        .root = try gpa.dupe(u8, pkg.root),
-    });
-
-    const extra = for (env) |v| {
-        if (std.mem.eql(u8, v.name, "FOUNDRY_SANDBOX_PACKAGES")) break v.value;
-    } else return list.toOwnedSlice(gpa);
-
-    var it = std.mem.splitScalar(u8, extra, ',');
-    while (it.next()) |raw| {
-        const name = std.mem.trim(u8, raw, " ");
-        if (name.len == 0) continue;
-        // A location, not an identity, and therefore checked as one: a stem that could
-        // climb out of the content directory is refused rather than joined.
-        if (!platform.os.isSafeRelativePath(name)) {
-            log.warn("FOUNDRY_SANDBOX_PACKAGES: '{s}' is not a package name", .{name});
-            continue;
-        }
-        log.info("extra content package: '{s}'", .{name});
+    for (resolution.order) |entry| {
+        log.info("load order: {s} version {d}", .{ entry.name, entry.version });
         try list.append(gpa, .{
-            .file = try std.fmt.allocPrint(gpa, "{s}.fpk", .{name}),
-            .root = try gpa.dupe(u8, name),
+            .file = try gpa.dupe(u8, entry.file),
+            .root = try gpa.dupe(u8, entry.root),
         });
     }
     return list.toOwnedSlice(gpa);
+}
+
+fn envValue(env: []const platform.os.EnvVar, name: []const u8) ?[]const u8 {
+    for (env) |v| {
+        if (std.mem.eql(u8, v.name, name)) return v.value;
+    }
+    return null;
 }
 
 fn freePackages(gpa: std.mem.Allocator, packages: []const app.ContentPackage) void {
@@ -143,7 +161,18 @@ pub fn main(init: std.process.Init) !void {
     // was built against rather than discovering it by failing.
     const headless = platform.backend == .null;
 
-    const packages = try contentPackages(gpa, env);
+    // **Discovery happens before the engine exists**, which is not an accident of ordering:
+    // finding out what is installed must not require deciding what to load, because what to
+    // load is the answer (`public-abi.md` §13, phase 1). So the sample opens its own `Os`,
+    // asks where content lives, discovers, resolves — and only then builds an engine, which
+    // is handed both the directory and the order so the two cannot disagree.
+    var discovery_os = try platform.os.Os.init(gpa, .{ .env = env });
+    defer discovery_os.deinit();
+
+    const content_dir = try app.contentDirOf(gpa, discovery_os, null);
+    defer gpa.free(content_dir);
+
+    const packages = try contentPackages(gpa, discovery_os, content_dir, env);
     defer {
         freePackages(gpa, packages);
         gpa.free(packages);
@@ -176,6 +205,7 @@ pub fn main(init: std.process.Init) !void {
             .logical_height = 720,
             .surface = wanted_surface,
         },
+        .content_dir = content_dir,
         .content = packages,
     });
     defer engine.deinit();

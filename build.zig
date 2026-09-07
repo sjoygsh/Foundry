@@ -60,6 +60,17 @@ const layering = [_]Module{
     // opening files on content's behalf is this module's job (docs/design/assets.md).
     .{ .name = "asset", .deps = &.{ "core", "data", "platform" } },
 
+    // L2 — what is installed, and in what order it loads (ADR-0027,
+    // docs/design/public-abi.md §12). `data` to read a manifest out of a compiled package,
+    // `platform` to list a directory and read a file — the same pair `asset` has, for the
+    // same reason: `data` cannot open a file and the answer is in files.
+    //
+    // **Below `app`, not above it**, which is the decision rather than an accident: a Tier 1
+    // mod list must be computable by a game that loads no code at all, and its output is
+    // exactly the ordered list `app.Config.content` already takes. No `abi` and no library
+    // loading — this module says which library a manifest names and never opens one.
+    .{ .name = "mod", .deps = &.{ "core", "data", "platform" } },
+
     // L3 — the game-facing 2D renderer (docs/design/render2d.md). Note what it does
     // *not* get: `platform`. The renderer neither opens files nor reads input; `asset`
     // hands it decoded images and the game hands it draw calls.
@@ -290,6 +301,7 @@ pub fn build(b: *std.Build) void {
     // The debug overlay, which a game opts into by importing it and by nothing else
     // (ADR-0025). The sandbox is its first consumer and registers a panel of its own
     // through the same call a mod will use at M7.
+    sandbox_mod.addImport("mod", modules.get("mod").?);
     sandbox_mod.addImport("debug", modules.get("debug").?);
 
     // The shader the sandbox draws with, compiled by the build and embedded in the
@@ -340,6 +352,7 @@ pub fn build(b: *std.Build) void {
     // second consumer needed**: one import and a key, with no engine change between them —
     // which is the claim ADR-0025 makes about a game getting an overlay by importing a
     // module, checked by a game that is not the one the overlay grew up next to.
+    room_mod.addImport("mod", modules.get("mod").?);
     room_mod.addImport("debug", modules.get("debug").?);
 
     const room = b.addExecutable(.{ .name = "room", .root_module = room_mod });
@@ -360,6 +373,10 @@ pub fn build(b: *std.Build) void {
     fpack_mod.addImport("core", modules.get("core").?);
     fpack_mod.addImport("data", modules.get("data").?);
     fpack_mod.addImport("platform", platform_module);
+    // And `mod`, because a package now states its own id and version in a `foundry:mod`
+    // record and the compiler reads it from there (ADR-0027). That is the whole of what
+    // `--name` and `--version` used to be.
+    fpack_mod.addImport("mod", modules.get("mod").?);
     // And `scene`, for the same reason it gets `asset`: that is where the record types for
     // entity templates and scenes are declared, and content using one must not have to
     // declare an engine-owned schema itself.
@@ -376,22 +393,25 @@ pub fn build(b: *std.Build) void {
     // because a game has its own package and `samples/sandbox` is the reference for what a
     // game looks like (ADR-0017).
     //
-    // The order here is the load order, which is what the engine is handed. Discovering
-    // one — mod manifests, dependency resolution — is M7; `data` consumes a load order and
-    // does not compute one.
+    // The order here is only the order they are *compiled* in, which is nothing: what a
+    // game loads and in what order is `mod`'s answer now, computed from the manifests
+    // these packages carry (ADR-0027). `data` still consumes a load order and does not
+    // compute one.
     const ContentPackage = struct {
-        /// The package's content id, which is its identity.
-        id: []const u8,
         /// Where its sources are in this repository.
         dir: []const u8,
         /// What it is called under `<prefix>/content`. A location, never identity
         /// (ADR-0021) — the compiled package states its own id and the store checks it.
         stem: []const u8,
     };
+    //
+    // **There is no `id` here any more.** A package's identity is in its own `mod.fdt`
+    // (ADR-0027), and the build used to state it a second time — two places to keep in
+    // agreement, for a fact only one of them owns.
     const content_packages = [_]ContentPackage{
-        .{ .id = "foundry:core", .dir = "content/core", .stem = "core" },
-        .{ .id = "sandbox:content", .dir = "samples/sandbox/content", .stem = "sandbox" },
-        .{ .id = "room:content", .dir = "samples/room/content", .stem = "room" },
+        .{ .dir = "content/core", .stem = "core" },
+        .{ .dir = "samples/sandbox/content", .stem = "sandbox" },
+        .{ .dir = "samples/room/content", .stem = "room" },
     };
 
     // **Only when the build target can run here.** `fpack` is built for the target like
@@ -402,7 +422,7 @@ pub fn build(b: *std.Build) void {
     if (target.query.isNative()) {
         for (content_packages) |pkg| {
             const compile_content = b.addRunArtifact(fpack);
-            compile_content.addArgs(&.{ "--quiet", "--name", pkg.id, "--out" });
+            compile_content.addArgs(&.{ "--quiet", "--out" });
             const compiled = compile_content.addOutputFileArg(b.fmt("{s}.fpk", .{pkg.stem}));
             // Assets with an authoring format of their own — a tile grid — are compiled too,
             // and land here rather than in the package directory: what a person wrote and

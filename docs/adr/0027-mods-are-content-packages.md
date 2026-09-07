@@ -44,6 +44,16 @@ one level up.
 
 **2. The manifest is a record inside the package**, of a schema `foundry:mod` declared in
 `content/core` — package zero declaring the vocabulary, which is what package zero is for (I3).
+
+> **Clarified 2026-09-07, by the implementation.** "Declared in `content/core`" is wrong, and
+> `public-abi.md` §11 carries the correction: the schema is **engine-declared**, in
+> `engine/src/mod/schemas.zig`, registered at runtime beside `foundry:texture` — because `fpack`
+> must know the record type to check a manifest, and a package zero that had to be compiled
+> before anything else could be checked would be a privileged path in the compiler, which is the
+> exact shape I3 exists to refuse. `content/core` carries a *record* of it, as every package
+> does, which is what this decision was actually reaching for. The implementation also fixed the
+> manifest's filename at `mod.fdt`; see that document's Resolution section.
+
 It needs no new syntax, no new parser and no new versioning scheme, because a record is already
 all three:
 

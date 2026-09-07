@@ -1,0 +1,13 @@
+# The room's manifest.
+#
+# The room needs the debug font from `foundry:core` and says so, which is the whole of what
+# a dependency is: not a build-order hint, but a statement that this package's records refer
+# to another package's and are wrong without it.
+
+foundry:mod  room:content {
+    name     "The Room"
+    version  1
+    license  "Apache-2.0"
+    summary  "A hall, a walker, six lamps, a door and a way out."
+    requires [ { id foundry:core } ]
+}

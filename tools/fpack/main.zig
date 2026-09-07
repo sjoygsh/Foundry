@@ -8,8 +8,7 @@
 //! same `data` every consumer will.
 //!
 //! ```
-//! fpack --name foundry:core --out zig-out/content/core.fpk \
-//!       --assets-out zig-out/content/core content/core
+//! fpack --out zig-out/content/core.fpk --assets-out zig-out/content/core content/core
 //! ```
 //!
 //! Two outputs, because a package has two kinds of thing in it. The `.fpk` is the compiled
@@ -18,10 +17,10 @@
 //! directory so that what a person wrote and what a tool produced are never mixed, and it is
 //! only needed by a package that contains something requiring compilation.
 //!
-//! The package's name and version are arguments rather than a file in the directory. `data`
-//! consumes a load order and does not compute one, and mod manifests are M7
-//! (`content-schemas.md` §11): inventing a manifest format here would be answering that
-//! question early and in the wrong place.
+//! **The package's name and version come from its own `mod.fdt`**, not from the command
+//! line (ADR-0027). A package is identified by exactly one thing and the manifest is where
+//! that thing is written down, so there is nowhere for a second answer to disagree from —
+//! which is what `--name` and `--version` used to be.
 //!
 //! Everything it compiles is untrusted input — a package directory may be a mod's — so a bad
 //! file is a diagnostic and a non-zero exit, never a crash.
@@ -35,22 +34,20 @@ const pack = @import("pack.zig");
 const usage =
     \\fpack — compile a Foundry content package
     \\
-    \\usage: fpack --name <namespace:name> --out <file.fpk> <package-dir>
+    \\usage: fpack --out <file.fpk> <package-dir>
     \\
-    \\  --name <namespace:name>   the package's content id (required)
     \\  --out <file.fpk>          where to write the compiled package (required)
     \\  --assets-out <dir>        where to write compiled assets (required if any)
-    \\  --version <n>             the package's version (default 1)
     \\  --quiet                   report nothing on success
+    \\
+    \\The package's id and version are read from its mod.fdt (ADR-0027).
     \\  --help                    this text
     \\
 ;
 
 const Args = struct {
-    name: []const u8 = "",
     out: []const u8 = "",
     assets_out: []const u8 = "",
-    version: u32 = 1,
     quiet: bool = false,
     dir: []const u8 = "",
 };
@@ -100,8 +97,6 @@ pub fn main(init: std.process.Init) !u8 {
     defer bytes.deinit(gpa);
 
     const result = pack.compile(gpa, os, args.dir, .{
-        .name = args.name,
-        .version = args.version,
         .assets_out = if (args.assets_out.len == 0) null else args.assets_out,
     }, &registry, &diags, &bytes);
 
@@ -111,10 +106,11 @@ pub fn main(init: std.process.Init) !u8 {
 
     // Both failures already said what went wrong, as a diagnostic, in the same shape a
     // content mistake gets. A second message here would be the tool talking over itself.
-    result catch |err| switch (err) {
+    const identity = result catch |err| switch (err) {
         error.ContentInvalid, error.IoFailed => return 1,
         error.OutOfMemory => return err,
     };
+    defer gpa.free(identity.name);
 
     if (std.fs.path.dirname(args.out)) |parent| {
         os.createDirPath(parent) catch |err| {
@@ -129,8 +125,8 @@ pub fn main(init: std.process.Init) !u8 {
 
     if (!args.quiet) {
         try stderr.interface.print(
-            "fpack: {s} -> {s} ({d} bytes)\n",
-            .{ args.name, args.out, bytes.items.len },
+            "fpack: {s} version {d} -> {s} ({d} bytes)\n",
+            .{ identity.name, identity.version, args.out, bytes.items.len },
         );
     }
     return 0;
@@ -146,18 +142,10 @@ fn parseArgs(argv: []const []const u8, err_writer: *std.Io.Writer) ArgError!Args
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) return error.HelpRequested;
         if (std.mem.eql(u8, arg, "--quiet")) {
             args.quiet = true;
-        } else if (std.mem.eql(u8, arg, "--name")) {
-            args.name = try value(argv, &i, err_writer);
         } else if (std.mem.eql(u8, arg, "--out")) {
             args.out = try value(argv, &i, err_writer);
         } else if (std.mem.eql(u8, arg, "--assets-out")) {
             args.assets_out = try value(argv, &i, err_writer);
-        } else if (std.mem.eql(u8, arg, "--version")) {
-            const text = try value(argv, &i, err_writer);
-            args.version = std.fmt.parseInt(u32, text, 10) catch {
-                try err_writer.print("fpack: '{s}' is not a version number\n", .{text});
-                return error.BadUsage;
-            };
         } else if (std.mem.startsWith(u8, arg, "-")) {
             try err_writer.print("fpack: unknown option '{s}'\n", .{arg});
             return error.BadUsage;
@@ -170,10 +158,6 @@ fn parseArgs(argv: []const []const u8, err_writer: *std.Io.Writer) ArgError!Args
     }
 
     if (args.dir.len == 0) return error.BadUsage;
-    if (args.name.len == 0) {
-        try err_writer.writeAll("fpack: --name is required\n");
-        return error.BadUsage;
-    }
     if (args.out.len == 0) {
         try err_writer.writeAll("fpack: --out is required\n");
         return error.BadUsage;
@@ -200,27 +184,28 @@ test "arguments are read, and a missing one is a usage error rather than a defau
     var buf: [256]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buf);
 
-    const args = try parseArgs(&.{ "--name", "foundry:core", "--out", "core.fpk", "content/core" }, &writer);
-    try testing.expectEqualStrings("foundry:core", args.name);
+    const args = try parseArgs(&.{ "--out", "core.fpk", "content/core" }, &writer);
     try testing.expectEqualStrings("core.fpk", args.out);
     try testing.expectEqualStrings("content/core", args.dir);
-    try testing.expectEqual(@as(u32, 1), args.version);
     try testing.expect(!args.quiet);
 
     // Absent rather than defaulted: a package with nothing to compile needs no output
     // directory, and inventing one would create a directory nobody asked for.
     try testing.expectEqualStrings("", args.assets_out);
 
-    const with_version = try parseArgs(&.{ "content/core", "--name", "a:b", "--out", "o", "--version", "7", "--quiet", "--assets-out", "gen" }, &writer);
-    try testing.expectEqual(@as(u32, 7), with_version.version);
-    try testing.expect(with_version.quiet);
-    try testing.expectEqualStrings("gen", with_version.assets_out);
+    const full = try parseArgs(&.{ "content/core", "--out", "o", "--quiet", "--assets-out", "gen" }, &writer);
+    try testing.expect(full.quiet);
+    try testing.expectEqualStrings("gen", full.assets_out);
 
-    try testing.expectError(error.BadUsage, parseArgs(&.{ "--name", "a:b", "--out", "o", "--assets-out" }, &writer));
+    // `--name` and `--version` are gone: a package states its own identity (ADR-0027), and
+    // an option that used to be accepted must fail loudly rather than be ignored, or a
+    // stale build script would silently compile the wrong thing.
+    try testing.expectError(error.BadUsage, parseArgs(&.{ "--name", "a:b", "--out", "o", "d" }, &writer));
+    try testing.expectError(error.BadUsage, parseArgs(&.{ "--version", "7", "--out", "o", "d" }, &writer));
 
+    try testing.expectError(error.BadUsage, parseArgs(&.{ "--out", "o", "--assets-out" }, &writer));
     try testing.expectError(error.BadUsage, parseArgs(&.{"content/core"}, &writer));
-    try testing.expectError(error.BadUsage, parseArgs(&.{ "--name", "a:b", "--out", "o" }, &writer));
-    try testing.expectError(error.BadUsage, parseArgs(&.{ "--name", "a:b", "--out" }, &writer));
+    try testing.expectError(error.BadUsage, parseArgs(&.{"--out"}, &writer));
     try testing.expectError(error.BadUsage, parseArgs(&.{ "--nope", "x" }, &writer));
     try testing.expectError(error.HelpRequested, parseArgs(&.{"--help"}, &writer));
 }

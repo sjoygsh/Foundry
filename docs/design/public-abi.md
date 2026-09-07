@@ -330,11 +330,19 @@ truncating, because silent truncation of a name is how a mod ships with a bug no
 
 ## 11. The manifest
 
-A `foundry:mod` record, of a schema declared in `content/core`, in the package it describes
-(ADR-0027).
+A `foundry:mod` record in the package it describes (ADR-0027). The schema is **engine-declared
+and registered at runtime**, beside `foundry:texture` and `foundry:entity` and for the same
+reason `assets.md` gives for those: `fpack` must know the record type to check a package, and
+whoever consumes the record is somewhere else entirely. `content/core` carries a record of it,
+like every other package.
+
+> **Corrected 2026-09-07 by step 1.** This section first said the schema was "declared in
+> `content/core`". It cannot be: a mod's package does not declare it either, and a schema no
+> compiler knows is a record no compiler can check. `content/core` declaring it would have made
+> the engine's package a prerequisite for *compiling* rather than for loading.
 
 ```
-# content/core/mod.fdt
+// engine/src/mod/schemas.zig, in Zig; spelled here as the .fdt it is equivalent to
 @schema mod {
     name        string                          # display name, shown to a player
     version     u32                             # the mod's own version, monotonic
@@ -668,3 +676,66 @@ Each step ends with something that runs and something that is tested.
 7. **The exit criterion** — a mod built outside the tree that adds a component type, content and
    behaviour, and `docs/modding/` written by doing it and then verified by following it verbatim,
    which is how `content-mods.md` was written and the only way that document stayed true.
+
+---
+
+## Resolution: `mod` (implementation, 2026-09-07)
+
+§19 step 1, built. What writing it settled that the design had not.
+
+**The manifest schema is engine-declared, not content-declared**, and §11 is corrected in place
+above. The design said "a schema declared in `content/core`", which cannot work: `fpack` has to
+know the record type to *check* a manifest, a mod's own package does not declare it either, and
+a package zero that had to be compiled before anything else could be checked would be a
+privileged path in the compiler — the exact shape I3 exists to refuse. It lives in
+`engine/src/mod/schemas.zig` beside `foundry:texture`, and `content/core` carries a record of it
+like every other package does.
+
+**The manifest source has a fixed filename: `mod.fdt` at the package root.** Not stated in §11,
+and forced by an ordering the design did not look at: the parser expands a bare schema name using
+the *package's namespace*, and the package's namespace now comes from inside the package. The
+pre-pass therefore has to read one file before it knows anything, so it has to know which file.
+Two consequences worth having anyway — a tool with only the source tree can find a package's
+identity without compiling it, and the manifest is the first file a mod author sees in their own
+directory listing. The cost is one rule: **a manifest's schema reference must be written out as
+`foundry:mod`**, because a bare `mod` would expand against a namespace nobody knows yet.
+
+**The pre-pass parses with a placeholder namespace, and that is safe for a reason the format
+already guaranteed.** Content ids are always fully qualified, so nothing in a manifest is
+expanded except a bare schema name — which the rule above forbids. The file is parsed again in
+the ordinary pass, where the record is checked against the schema like any other; the pre-pass
+reads two values and checks nothing, which is what keeps it from being a second, weaker checker.
+
+**A dependency's id has no spelling, and one diagnostic is worse for it.** An `id`-typed field is
+eight bytes in a compiled package — the format working as designed — so `requires` carries hashes.
+`resolve` recovers the name from whichever candidate has it, which covers every case except a
+dependency *nobody* has installed; that one prints a number. Keeping the field an `id` was
+chosen over a string: the compile-time-checking argument that makes bare ids right elsewhere does
+not apply to a package reference (nothing can check it at compile time either way), but a format
+with two spellings for an identifier is a worse thing to explain than one bad diagnostic. Recorded
+as a known limitation rather than worked around.
+
+**The manifest record's content id is the package's content id**, and the two are checked against
+each other at read time. The header already carries the package id, so a package whose manifest
+disagrees with its own header has been edited by hand and nothing else it says can be believed —
+`ManifestIdMismatch`, with `ManifestVersionMismatch` beside it for the same reason.
+
+**`compile` returns the identity, and the caller owns the string.** It cannot borrow: it is read
+out of a parse tree that is gone before the compile finishes, and pointing into the compiled bytes
+would tie a two-word answer to a buffer the caller may already have written out. Found by a
+segfault in the first test that asserted it, which is the null-backend argument in miniature — the
+test that reads a value is the one that discovers who owns it.
+
+**`app.contentDirOf` is public now.** Discovery happens before an engine exists (§13 phase 1), so
+the directory to search has to be answerable without one, and the two samples were about to
+compute `<prefix>/content` themselves — which is how a default becomes two defaults that drift.
+The engine calls it with `Config.content_dir`; a host that discovers calls it once and passes the
+answer back, so both look in the same place by construction.
+
+**What the samples show now.** Neither names a file. Each names two content ids — the package it
+cannot run without and the package it *is* — and everything else comes from the manifests. The
+environment variable that used to take filename stems takes **content ids**, which is the visible
+half of ADR-0027: a mod is identified by what it calls itself, and where its file sits stopped
+mattering. `docs/modding/content-mods.md` was updated and then followed verbatim: a package
+compiled with no `--name`, discovered by manifest, enabled by id, loading third behind
+`foundry:core` and the sandbox's own.

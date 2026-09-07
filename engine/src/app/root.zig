@@ -26,6 +26,9 @@ pub const MemoryReport = engine.MemoryReport;
 /// The names the engine gives its own timing spans (`debug-overlay.md` §4.3).
 pub const span = engine.span;
 pub const environment = engine.environment;
+/// Where content lives, answerable before an `Engine` exists — which is when a host that
+/// discovers its packages needs it (`public-abi.md` §13).
+pub const contentDirOf = engine.contentDirOf;
 
 /// The UI walker (ADR-0024, `docs/design/ui.md` §8). `ui` describes a frame and cannot see
 /// a renderer; this is the only thing that sees both, and `UiFont` is the only sanctioned
