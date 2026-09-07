@@ -15,6 +15,7 @@
 
 const std = @import("std");
 const core = @import("core");
+const data = @import("data");
 
 const log = core.log.scoped(.abi);
 
@@ -274,6 +275,117 @@ pub const Voice = Opaque("voice");
 
 /// `physics2d` — a collision body.
 pub const Body = Opaque("body");
+
+/// A memory counter a mod reports its own numbers into. The boundary's own handle rather
+/// than a subsystem's: the engine issues an `app.MemoryHandle` for the counter it was
+/// handed, and this names the counter `abi` holds on the mod's behalf, because a mod has no
+/// place to keep a `core.mem.Counted` of its own.
+pub const MemoryCounter = Opaque("memory counter");
+
+// == Enumerations ======================================================================
+
+/// How severe a log line is, as it crosses.
+///
+/// **Not `@intFromEnum(core.log.Level)`.** The numbers here are written down because they
+/// are what a compiled mod holds; `core.log.Level` is free to be reordered, and the mapping
+/// below is what makes that true rather than a hope.
+pub const LogLevel = enum(i32) {
+    err = 0,
+    warn = 1,
+    info = 2,
+    debug = 3,
+    trace = 4,
+
+    pub fn toCore(self: LogLevel) core.log.Level {
+        return switch (self) {
+            .err => .err,
+            .warn => .warn,
+            .info => .info,
+            .debug => .debug,
+            .trace => .trace,
+        };
+    }
+
+    pub fn fromCore(level: core.log.Level) LogLevel {
+        return switch (level) {
+            .err => .err,
+            .warn => .warn,
+            .info => .info,
+            .debug => .debug,
+            .trace => .trace,
+        };
+    }
+
+    /// From the other side, and therefore untrusted: null for a number this build has never
+    /// published rather than an illegal enum value.
+    pub fn fromCode(code: i32) ?LogLevel {
+        return switch (code) {
+            0 => .err,
+            1 => .warn,
+            2 => .info,
+            3 => .debug,
+            4 => .trace,
+            else => null,
+        };
+    }
+};
+
+/// What a schema says a field is. Written down for the same reason as `LogLevel`, and with
+/// more at stake: `data.FieldType` is a union whose tag order is an implementation detail,
+/// and a mod reading a record type it has never heard of branches on these numbers.
+pub const FieldType = enum(i32) {
+    bool = 0,
+    i32 = 1,
+    i64 = 2,
+    u32 = 3,
+    u64 = 4,
+    f32 = 5,
+    f64 = 6,
+    string = 7,
+    id = 8,
+    list = 9,
+    nested = 10,
+
+    pub fn fromData(t: data.FieldType) FieldType {
+        return switch (t) {
+            .bool => .bool,
+            .i32 => .i32,
+            .i64 => .i64,
+            .u32 => .u32,
+            .u64 => .u64,
+            .f32 => .f32,
+            .f64 => .f64,
+            .string => .string,
+            .id => .id,
+            .list => .list,
+            .nested => .nested,
+        };
+    }
+};
+
+// == Structs that cross ================================================================
+
+/// One line from the engine's log ring.
+pub const LogRecord = extern struct {
+    level: LogLevel = .info,
+    /// Explicit, so the padding is part of the specification rather than the compiler's
+    /// opinion.
+    reserved: u32 = 0,
+    frame: u64 = 0,
+    sequence: u64 = 0,
+    scope: Str = .empty,
+    text: Str = .empty,
+};
+
+/// What a mod reports about its own allocations. The engine cannot wrap a mod's allocator,
+/// so a mod that wants to be visible in the memory panel writes its own numbers.
+pub const MemoryStats = extern struct {
+    live_bytes: u64 = 0,
+    peak_bytes: u64 = 0,
+    allocations: u64 = 0,
+    frees: u64 = 0,
+    failures: u64 = 0,
+};
 
 // == Cursors ===========================================================================
 

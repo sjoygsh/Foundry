@@ -16,6 +16,8 @@
 
 const std = @import("std");
 const core = @import("core");
+
+const api = @import("api.zig");
 const types = @import("types.zig");
 
 const testing = std.testing;
@@ -28,6 +30,10 @@ extern fn foundry_agreement_str_byte(s: types.Str, index: u64) u8;
 extern fn foundry_agreement_entity_bits(entity: types.Entity) u64;
 extern fn foundry_agreement_entity_from_bits(bits: u64) types.Entity;
 extern fn foundry_agreement_cursor_begin() types.Cursor;
+extern fn foundry_agreement_api_v1_size() u64;
+extern fn foundry_agreement_api_v1_count() u64;
+extern fn foundry_agreement_api_v1_offset(index: u64) u64;
+extern fn foundry_agreement_api_v1_name(index: u64) ?[*:0]const u8;
 
 test "the scalars are the widths the header states" {
     try testing.expectEqual(@as(usize, 4), @sizeOf(types.Result));
@@ -117,4 +123,71 @@ test "a handle survives being passed by value in both directions" {
 test "the header's cursor initialiser is the engine's begin" {
     try testing.expectEqual(types.Cursor.begin.bits, foundry_agreement_cursor_begin().bits);
     try testing.expect(foundry_agreement_cursor_begin().isBegin());
+}
+
+test "the enumerations are the numbers the header states" {
+    try testing.expectEqual(@as(usize, 4), @sizeOf(types.LogLevel));
+    try testing.expectEqual(@as(i32, 0), @intFromEnum(types.LogLevel.err));
+    try testing.expectEqual(@as(i32, 4), @intFromEnum(types.LogLevel.trace));
+
+    try testing.expectEqual(@as(usize, 4), @sizeOf(types.FieldType));
+    try testing.expectEqual(@as(i32, 0), @intFromEnum(types.FieldType.bool));
+    try testing.expectEqual(@as(i32, 7), @intFromEnum(types.FieldType.string));
+    try testing.expectEqual(@as(i32, 8), @intFromEnum(types.FieldType.id));
+    try testing.expectEqual(@as(i32, 10), @intFromEnum(types.FieldType.nested));
+
+    // Every field type `data` can describe has a number here. Adding one to the union
+    // without publishing it would otherwise be discovered by a mod.
+    inline for (@typeInfo(@import("data").FieldType).@"union".fields) |f| {
+        _ = std.meta.stringToEnum(types.FieldType, f.name) orelse {
+            std.debug.print("data.FieldType.{s} has no number at the boundary\n", .{f.name});
+            return error.TestUnexpectedResult;
+        };
+    }
+}
+
+test "FoundryLogRecord and FoundryMemoryStats are the shapes the header states" {
+    try testing.expectEqual(@as(usize, 56), @sizeOf(types.LogRecord));
+    try testing.expectEqual(@as(usize, 0), @offsetOf(types.LogRecord, "level"));
+    try testing.expectEqual(@as(usize, 4), @offsetOf(types.LogRecord, "reserved"));
+    try testing.expectEqual(@as(usize, 8), @offsetOf(types.LogRecord, "frame"));
+    try testing.expectEqual(@as(usize, 16), @offsetOf(types.LogRecord, "sequence"));
+    try testing.expectEqual(@as(usize, 24), @offsetOf(types.LogRecord, "scope"));
+    try testing.expectEqual(@as(usize, 40), @offsetOf(types.LogRecord, "text"));
+
+    try testing.expectEqual(@as(usize, 40), @sizeOf(types.MemoryStats));
+    try testing.expectEqual(@as(usize, 0), @offsetOf(types.MemoryStats, "live_bytes"));
+    try testing.expectEqual(@as(usize, 32), @offsetOf(types.MemoryStats, "failures"));
+
+    try testing.expectEqual(@as(usize, 8), @sizeOf(types.MemoryCounter));
+}
+
+test "the table has the same members, in the same places, in both languages" {
+    const fields = @typeInfo(api.Api_v1).@"struct".fields;
+
+    // A capability in one and not the other is a different count, which is the cheap half.
+    try testing.expectEqual(@as(u64, fields.len), foundry_agreement_api_v1_count());
+    try testing.expectEqual(@as(u64, @sizeOf(api.Api_v1)), foundry_agreement_api_v1_size());
+
+    // The expensive half: every member is where the other language thinks it is. Every entry
+    // is eight bytes wide, so two swapped in the header keep the same *set* of offsets —
+    // comparing them position by position is what makes a reordering fail rather than pass.
+    inline for (fields, 0..) |field, i| {
+        const from_header = foundry_agreement_api_v1_offset(i);
+        testing.expectEqual(@as(u64, @offsetOf(api.Api_v1, field.name)), from_header) catch |err| {
+            std.debug.print(
+                "the table disagrees about '{s}': Zig puts it at {d}, the header at {d}\n",
+                .{ field.name, @offsetOf(api.Api_v1, field.name), from_header },
+            );
+            return err;
+        };
+
+        const spelled = foundry_agreement_api_v1_name(i) orelse return error.TestUnexpectedResult;
+        try testing.expectEqualStrings(field.name, std.mem.span(spelled));
+    }
+
+    // Out of range is answered rather than read past, in the file whose whole subject is
+    // what happens when two sides disagree about a length.
+    try testing.expectEqual(@as(u64, std.math.maxInt(u64)), foundry_agreement_api_v1_offset(fields.len));
+    try testing.expectEqual(@as(?[*:0]const u8, null), foundry_agreement_api_v1_name(fields.len));
 }

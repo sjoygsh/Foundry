@@ -20,15 +20,20 @@
 //! not asserted, not assumed, not documented as a precondition. The boundary never panics
 //! and never propagates a Zig error.
 //!
-//! **What is built so far:** the type layer (`public-abi.md` §19 step 2). The table itself,
-//! the host, and the native loader are steps 3 to 6.
+//! **What is built so far:** the type layer and the skeleton (`public-abi.md` §19 steps 2
+//! and 3) — `Host`, `get_api`, and a `FoundryApi_v1` carrying what `app` and `data` already
+//! answer. The `scene`, `render2d`, `ui`, `audio` and `physics2d` groups are steps 4 and 5;
+//! the native loader is step 6.
 //!
 //! Design: `docs/design/public-abi.md`. The header is `foundry.h`, beside this file, and it
 //! is the specification rather than a description of what is here.
 
+pub const api = @import("api.zig");
+pub const host = @import("host.zig");
 pub const types = @import("types.zig");
 
 const agreement = @import("agreement.zig");
+const calls_engine = @import("calls_engine.zig");
 
 // The vocabulary of the boundary. Named here because a host writing a `get_api` and a loader
 // reading a mod's symbols both need them, and neither should be reaching into a file.
@@ -54,6 +59,21 @@ pub const Texture = types.Texture;
 pub const View = types.View;
 pub const Voice = types.Voice;
 
+/// What the host hands over, and what it gets back.
+///
+/// `Host` is the concrete one a game wants; `HostOf` is what makes a test able to bind a
+/// fake engine and run every entry point with no window, no device and no frame.
+pub const Host = host.HostOf(@import("app").Engine);
+pub const HostOf = host.HostOf;
+
+/// The table itself, and the enumerations and structs that cross with it.
+pub const Api_v1 = api.Api_v1;
+pub const FieldType = types.FieldType;
+pub const LogLevel = types.LogLevel;
+pub const LogRecord = types.LogRecord;
+pub const MemoryCounter = types.MemoryCounter;
+pub const MemoryStats = types.MemoryStats;
+
 /// What a native mod exports, and the version of the table this build publishes.
 pub const GetApi = types.GetApi;
 pub const ModInit = types.ModInit;
@@ -63,6 +83,10 @@ pub const init_symbol = types.init_symbol;
 pub const shutdown_symbol = types.shutdown_symbol;
 
 test {
-    _ = types;
     _ = agreement;
+    _ = api;
+    _ = calls_engine;
+    _ = host;
+    _ = types;
+    _ = @import("sweep.zig");
 }

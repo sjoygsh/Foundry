@@ -1,0 +1,207 @@
+//! What the host hands `abi`, and the one place a table's functions find it.
+//!
+//! **The host supplies the subsystems** (ADR-0026). `abi` creates no engine, no world, no
+//! renderer, no mixer and no collision world — a game hands it the ones it has, and a
+//! capability whose subsystem is absent answers `unavailable` rather than being a null
+//! function pointer. That is not a convenience: `app` owns none of them either, which is the
+//! whole reason this module is a peer of `debug` rather than a layer over `app`.
+//!
+//! **Generic over the engine's type, for the reason `EngineOf` is generic over its ports.**
+//! `app.Engine` is `EngineOf(platform.Platform, rhi.Device)`, and a `Host` that named it
+//! would drag a window and a device into every test of a call that reads a record. A test
+//! binds a fake engine instead, and `abi`'s unit tests run with no window, no device and no
+//! frame — the same argument the null RHI backend makes one layer down.
+//!
+//! **The binding is ambient, because the table has no context parameter.** `FoundryApi_v1`'s
+//! functions take handles and values and nothing else (`public-abi.md` §4), so there is one
+//! host per process and these functions find it here. That is the same shape `app.log_sink`
+//! already has and for the same reason: `std.log` reaches it from code with no pointer to
+//! ask. §18's fourth open question — a table per mod, so that policy could differ per
+//! consumer — stays open; `_v1` being shared does not foreclose it.
+//!
+//! Design: `docs/design/public-abi.md` §4, §9 and §13.
+
+const std = @import("std");
+const core = @import("core");
+
+const types = @import("types.zig");
+
+const Allocator = std.mem.Allocator;
+const log = core.log.scoped(.abi);
+
+/// The most counters one host will open for mods, and the longest name one may carry.
+///
+/// Fixed rather than allocated, and that is the decision. A counter is registered with the
+/// engine **by pointer** and its name is borrowed by the report that prints it, so both have
+/// to outlive every frame that reads them; storing them inline in the host makes that true
+/// by construction instead of by an allocator nobody would think to check. The cost is a
+/// bound, and a bound that is hit is a refusal with a name (`limit`) rather than a surprise.
+pub const max_counters: u32 = 16;
+pub const max_counter_name: u32 = 48;
+
+/// How deeply a mod may nest profiler spans before the boundary stops counting.
+///
+/// `core.profile` already survives an unbalanced span — it closes what is open at the frame
+/// boundary — so this is not what protects the recorder. It is what lets `scope_end` refuse
+/// to close a span the *engine or the game* opened, which the recorder cannot tell apart.
+pub const max_scope_depth: u32 = 32;
+
+/// A `Host` bound to a particular engine type.
+pub fn HostOf(comptime E: type) type {
+    return struct {
+        const Self = @This();
+
+        /// The engine: the frame, the profiler, the memory report, the content store, the
+        /// schema registry and the asset registry. Optional like everything else, because a
+        /// tool that only wants to read a package is a legitimate host.
+        engine: ?*E = null,
+
+        // Steps 4 and 5 add `world`, `renderer`, `mixer` and `collision` here. Each is
+        // optional and each absence is an `unavailable` answer, never a missing entry.
+
+        /// Counters opened by mods, and registered with the engine on their behalf.
+        counters: [max_counters]Counter = @splat(.{}),
+        counter_count: u32 = 0,
+
+        /// How many profiler spans this boundary has open. Not the recorder's depth — the
+        /// recorder counts the engine's and the game's too, and this must not close one of
+        /// those.
+        scope_depth: u32 = 0,
+
+        /// The bound host, which is what a table's functions find. One per process and per
+        /// engine type; binding a second replaces the first and says so.
+        var bound: ?*Self = null;
+
+        pub const Counter = struct {
+            open: bool = false,
+            /// The engine holds a **pointer** to this, so the host must not move after
+            /// `bind`. `bind` takes `*Self`, which is what makes that visible at the call
+            /// site rather than only here.
+            counted: core.mem.Counted = .{ .name = "", .child = noAllocator() },
+            name_buffer: [max_counter_name]u8 = @splat(0),
+            /// What the engine gave back, so `unbind` can take it away again.
+            registration: ?RegistrationOf(E) = null,
+            /// Which mod opened it. Diagnostics for now; the seed of what would be
+            /// unregistered if a mod ever became unloadable (§14).
+            owner: types.Mod = .none,
+        };
+
+        /// Publishes this host to the table. **The host must outlive the binding and must
+        /// not be moved**, because the engine holds pointers into its counters.
+        pub fn bind(self: *Self) void {
+            if (bound) |previous| {
+                if (previous != self) log.warn("a second host was bound; the first is replaced", .{});
+            }
+            bound = self;
+        }
+
+        /// Takes the host away and hands back everything it registered on a mod's behalf.
+        ///
+        /// Unregistering here rather than leaving it to teardown is the point: the counters
+        /// are the host's memory, and an engine still holding pointers into a host that has
+        /// gone is exactly the failure this whole module exists to make impossible.
+        pub fn unbind(self: *Self) void {
+            self.releaseCounters();
+            if (bound == self) bound = null;
+        }
+
+        /// Forgets whatever is bound, without needing it. For a teardown path that has lost
+        /// track of the host, and for a test that has to prove what an unbound table does.
+        pub fn unbindAny() void {
+            bound = null;
+        }
+
+        /// The bound host, or null when nothing has been bound. Every entry point starts
+        /// here, and a null answer is `unavailable` rather than a crash: a mod's library
+        /// stays loaded for the life of the process (§14), so a call after teardown is a
+        /// case that can actually happen.
+        pub fn current() ?*Self {
+            return bound;
+        }
+
+        /// Opens a counter for `owner`, copying the name.
+        pub fn openCounter(self: *Self, owner: types.Mod, name: []const u8) error{ Limit, Unavailable, OutOfMemory }!types.MemoryCounter {
+            if (name.len == 0 or name.len > max_counter_name) return error.Limit;
+            const engine = self.engine orelse return error.Unavailable;
+
+            const slot = for (self.counters[0..], 0..) |*c, i| {
+                if (!c.open) break @as(u32, @intCast(i));
+            } else return error.Limit;
+
+            const entry = &self.counters[slot];
+            @memcpy(entry.name_buffer[0..name.len], name);
+            entry.counted = .{ .name = entry.name_buffer[0..name.len], .child = noAllocator() };
+            entry.owner = owner;
+            entry.registration = try engine.registerMemory(&entry.counted);
+            entry.open = true;
+            self.counter_count += 1;
+
+            // Generation 1 for every counter, because a counter is never released
+            // individually in `_v1` — `unbind` releases all of them at once. The field is
+            // still there, and the day a counter can be closed is the day it starts moving.
+            return .{ .bits = (core.Handle(Counter){ .index = slot, .generation = 1 }).bits() };
+        }
+
+        /// Resolves a counter handle. Null for anything that was never issued, which is what
+        /// makes a handle from a mod safe to receive.
+        pub fn counter(self: *Self, handle: types.MemoryCounter) ?*Counter {
+            const unpacked = handle.unwrap(core.Handle(Counter));
+            if (unpacked.generation != 1) return null;
+            if (unpacked.index >= max_counters) return null;
+            const c = &self.counters[unpacked.index];
+            if (!c.open) return null;
+            return c;
+        }
+
+        fn releaseCounters(self: *Self) void {
+            for (self.counters[0..]) |*c| {
+                if (!c.open) continue;
+                if (c.registration) |handle| {
+                    if (self.engine) |engine| engine.unregisterMemory(handle);
+                }
+                c.* = .{};
+            }
+            self.counter_count = 0;
+        }
+    };
+}
+
+/// The type `E.registerMemory` hands back, named without naming `app`.
+///
+/// `abi` does import `app`, so this could have been `app.MemoryHandle` — but writing it this
+/// way is what lets a test bind a fake engine whose handle type is its own, and a `Host` that
+/// only worked for one engine type would have defeated the reason it is generic at all.
+fn RegistrationOf(comptime E: type) type {
+    return @typeInfo(@typeInfo(@TypeOf(E.registerMemory)).@"fn".return_type.?).error_union.payload;
+}
+
+/// An allocator that allocates nothing, for a `core.mem.Counted` nobody allocates through.
+///
+/// A mod's counter is a *report*, not a wrapper: the ABI cannot wrap a mod's allocator,
+/// because a native mod allocates however its own language does. So the `Counted` here is
+/// only ever written to by `memory_counter_set` and read by the memory report, and the child
+/// allocator exists to satisfy the type. Making it refuse rather than leaving it undefined
+/// means a mistake is a null return instead of a jump through uninitialised memory.
+fn noAllocator() Allocator {
+    const vtable: Allocator.VTable = .{
+        .alloc = struct {
+            fn f(_: *anyopaque, _: usize, _: std.mem.Alignment, _: usize) ?[*]u8 {
+                return null;
+            }
+        }.f,
+        .resize = struct {
+            fn f(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) bool {
+                return false;
+            }
+        }.f,
+        .remap = struct {
+            fn f(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) ?[*]u8 {
+                return null;
+            }
+        }.f,
+        .free = struct {
+            fn f(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize) void {}
+        }.f,
+    };
+    return .{ .ptr = undefined, .vtable = &vtable };
+}

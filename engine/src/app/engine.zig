@@ -934,6 +934,17 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             }
         };
 
+        /// Closes the innermost open span, for a caller with nowhere to keep a `Scope`.
+        ///
+        /// `Scope` is the form to use in Zig, because a value cannot be forgotten on an
+        /// early return. A C ABI has no such value to hand across — the public table's
+        /// `scope_begin` and `scope_end` are two calls with nothing between them — so the
+        /// pairing has to be counted by the caller instead. `abi` counts its own depth and
+        /// refuses an unbalanced close rather than closing a span the game opened.
+        pub fn endScope(self: *Self) void {
+            self.closeScope();
+        }
+
         /// This frame's timing, read-only. Null when the profiler is off.
         ///
         /// **An output, never an input** — `render2d.Stats` carries the same sentence.

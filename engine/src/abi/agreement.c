@@ -164,3 +164,134 @@ FoundryCursor foundry_agreement_cursor_begin(void)
     FoundryCursor cursor = FOUNDRY_CURSOR_BEGIN;
     return cursor;
 }
+
+/* -- Enumerations -------------------------------------------------------------------- */
+
+FOUNDRY_AGREE(sizeof(FoundryLogLevel) == 4);
+FOUNDRY_AGREE(FOUNDRY_LOG_ERROR == 0);
+FOUNDRY_AGREE(FOUNDRY_LOG_WARN == 1);
+FOUNDRY_AGREE(FOUNDRY_LOG_INFO == 2);
+FOUNDRY_AGREE(FOUNDRY_LOG_DEBUG == 3);
+FOUNDRY_AGREE(FOUNDRY_LOG_TRACE == 4);
+
+FOUNDRY_AGREE(sizeof(FoundryFieldType) == 4);
+FOUNDRY_AGREE(FOUNDRY_FIELD_BOOL == 0);
+FOUNDRY_AGREE(FOUNDRY_FIELD_I32 == 1);
+FOUNDRY_AGREE(FOUNDRY_FIELD_I64 == 2);
+FOUNDRY_AGREE(FOUNDRY_FIELD_U32 == 3);
+FOUNDRY_AGREE(FOUNDRY_FIELD_U64 == 4);
+FOUNDRY_AGREE(FOUNDRY_FIELD_F32 == 5);
+FOUNDRY_AGREE(FOUNDRY_FIELD_F64 == 6);
+FOUNDRY_AGREE(FOUNDRY_FIELD_STRING == 7);
+FOUNDRY_AGREE(FOUNDRY_FIELD_ID == 8);
+FOUNDRY_AGREE(FOUNDRY_FIELD_LIST == 9);
+FOUNDRY_AGREE(FOUNDRY_FIELD_NESTED == 10);
+
+/* -- Structs that cross -------------------------------------------------------------- */
+
+FOUNDRY_AGREE(sizeof(FoundryMemoryCounter) == 8);
+FOUNDRY_AGREE(offsetof(FoundryMemoryCounter, bits) == 0);
+
+FOUNDRY_AGREE(sizeof(FoundryLogRecord) == 56);
+FOUNDRY_AGREE(offsetof(FoundryLogRecord, level) == 0);
+FOUNDRY_AGREE(offsetof(FoundryLogRecord, reserved) == 4);
+FOUNDRY_AGREE(offsetof(FoundryLogRecord, frame) == 8);
+FOUNDRY_AGREE(offsetof(FoundryLogRecord, sequence) == 16);
+FOUNDRY_AGREE(offsetof(FoundryLogRecord, scope) == 24);
+FOUNDRY_AGREE(offsetof(FoundryLogRecord, text) == 40);
+
+FOUNDRY_AGREE(sizeof(FoundryMemoryStats) == 40);
+FOUNDRY_AGREE(offsetof(FoundryMemoryStats, live_bytes) == 0);
+FOUNDRY_AGREE(offsetof(FoundryMemoryStats, peak_bytes) == 8);
+FOUNDRY_AGREE(offsetof(FoundryMemoryStats, allocations) == 16);
+FOUNDRY_AGREE(offsetof(FoundryMemoryStats, frees) == 24);
+FOUNDRY_AGREE(offsetof(FoundryMemoryStats, failures) == 32);
+
+/* -- The table ----------------------------------------------------------------------- */
+
+/*
+ * Every member of `FoundryApi_v1`, in the order the header declares them, and where each one
+ * actually is. A member that does not exist is a compile error rather than a stale entry.
+ *
+ * `agreement.zig` walks the offsets against the Zig struct's own fields, positionally — which
+ * is what makes the check sensitive to a **reordering** and not only to an addition. Every
+ * entry in the table is eight bytes wide, so two members swapped in the header keep the same
+ * *set* of offsets; what changes is which member reports which, and comparing position by
+ * position is exactly what catches that. The names carry no check of their own: they are
+ * there so a failure says which capability moved instead of only which index.
+ *
+ * Appending a capability is therefore three edits, and missing any one of them fails: the
+ * header, this list, and the Zig struct.
+ */
+static const char *const api_v1_names[] = {
+    "version",
+    "size",
+    "result_name",
+    "log_write",
+    "log_next",
+    "id_from_string",
+    "id_to_string",
+    "id_copy_string",
+    "frame_index",
+    "frame_delta_ns",
+    "elapsed_ns",
+    "tick_delta_ns",
+    "scope_begin",
+    "scope_end",
+    "memory_counter_open",
+    "memory_counter_set"
+};
+
+static const uint64_t api_v1_offsets[] = {
+    (uint64_t)offsetof(FoundryApi_v1, version),
+    (uint64_t)offsetof(FoundryApi_v1, size),
+    (uint64_t)offsetof(FoundryApi_v1, result_name),
+    (uint64_t)offsetof(FoundryApi_v1, log_write),
+    (uint64_t)offsetof(FoundryApi_v1, log_next),
+    (uint64_t)offsetof(FoundryApi_v1, id_from_string),
+    (uint64_t)offsetof(FoundryApi_v1, id_to_string),
+    (uint64_t)offsetof(FoundryApi_v1, id_copy_string),
+    (uint64_t)offsetof(FoundryApi_v1, frame_index),
+    (uint64_t)offsetof(FoundryApi_v1, frame_delta_ns),
+    (uint64_t)offsetof(FoundryApi_v1, elapsed_ns),
+    (uint64_t)offsetof(FoundryApi_v1, tick_delta_ns),
+    (uint64_t)offsetof(FoundryApi_v1, scope_begin),
+    (uint64_t)offsetof(FoundryApi_v1, scope_end),
+    (uint64_t)offsetof(FoundryApi_v1, memory_counter_open),
+    (uint64_t)offsetof(FoundryApi_v1, memory_counter_set)
+};
+
+/* The two lists are one list, and this is what says so. */
+FOUNDRY_AGREE(sizeof(api_v1_names) / sizeof(api_v1_names[0]) ==
+              sizeof(api_v1_offsets) / sizeof(api_v1_offsets[0]));
+
+/* A table of nothing but `version`, `size` and eight-byte pointers. If this fails, something
+ * in the table is not a function pointer, which is a change the whole design forbids. */
+FOUNDRY_AGREE(sizeof(FoundryApi_v1) ==
+              8 + 8 * (sizeof(api_v1_offsets) / sizeof(api_v1_offsets[0]) - 2));
+
+uint64_t foundry_agreement_api_v1_size(void);
+uint64_t foundry_agreement_api_v1_size(void)
+{
+    return (uint64_t)sizeof(FoundryApi_v1);
+}
+
+uint64_t foundry_agreement_api_v1_count(void);
+uint64_t foundry_agreement_api_v1_count(void)
+{
+    return (uint64_t)(sizeof(api_v1_offsets) / sizeof(api_v1_offsets[0]));
+}
+
+uint64_t foundry_agreement_api_v1_offset(uint64_t index);
+uint64_t foundry_agreement_api_v1_offset(uint64_t index)
+{
+    if (index >= foundry_agreement_api_v1_count()) return UINT64_MAX;
+    return api_v1_offsets[index];
+}
+
+const char *foundry_agreement_api_v1_name(uint64_t index);
+const char *foundry_agreement_api_v1_name(uint64_t index)
+{
+    if (index >= foundry_agreement_api_v1_count()) return NULL;
+    return api_v1_names[index];
+}

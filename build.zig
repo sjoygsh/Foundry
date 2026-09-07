@@ -130,13 +130,13 @@ const layering = [_]Module{
     // sits beside `debug` and is *handed* its subsystems by the host, exactly as
     // `debug.Sources` is.
     //
-    // `core` alone today, which is the type layer (public-abi.md §19 step 2) and no
-    // capabilities. It gains a module as each group of capabilities lands, and the list it
-    // is growing towards is ADR-0026's: everything except `rhi`, which it will **never**
-    // have — §4.2's two boundaries, where the renderer API is game-facing and the RHI is
+    // `data`, `asset` and `app` join at step 3, which is what `app` and `data` already
+    // answer: the log, the frame, the profiler, the memory report, content and assets.
+    // `scene`, `render2d`, `ui`, `audio` and `physics2d` follow at steps 4 and 5, and
+    // `platform` at step 6 for `Library` alone. The one module it will **never** have is
+    // `rhi` — §4.2's two boundaries, where the renderer API is game-facing and the RHI is
     // not, so this module does not merely decline to publish the RHI, it cannot see it.
-    // `platform` will arrive for `Library` alone, at step 6.
-    .{ .name = "abi", .deps = &.{"core"} },
+    .{ .name = "abi", .deps = &.{ "core", "data", "asset", "app" } },
 };
 
 /// Which platform backend to build against.
