@@ -1,7 +1,52 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-07
-**Updated by:** **M6 has opened, and it opened where the last four did: at a decision.**
+**Updated by:** **M6's second and last design document is written, and it is the one carrying
+the milestone's actual value.** `docs/design/debug-overlay.md` (852 lines, §17 is the step list)
+covers the remaining three roadmap bullets — the entity inspector, the content browser and the
+log console; the frame profiler and per-allocator memory reporting; and the introspection APIs
+beneath all of them. **No code is written against it yet.**
+
+**[ADR-0025](docs/adr/0025-debug-overlay-module.md) is `Proposed` and needs a decision before
+step 1**, because it adds a node to the layering graph and sets a rule on every call the
+milestone adds. The overlay is a module `debug` **above `app`** — not in `app`, which would make
+the engine loop claim a dependency on `scene` that is not true, and not in a sample, which would
+make the exit criterion true of our sample rather than of a game. And it may use **no call the
+public ABI could not expose**: I3's argument moved to tooling, so the editor at M6+ is a re-host
+rather than a rewrite, and a mod gets the same panels' calls at M7 instead of watching the
+first-party overlay use a back door I4 forbids.
+
+**Four decisions in that document are worth knowing without reading it.**
+
+* **The clock stays above the subsystems.** The tempting profiler hands a recorder carrying a
+  clock down to every subsystem so each can time itself — and that quietly undoes the ADR-0007
+  property I9 leans on, that `scene` and `physics2d` cannot read a clock because `platform` is
+  not below them. Timing is collected at call sites by callers that already have a clock; a
+  subsystem is never handed one. Per-system ECS detail stays an **open question** with two
+  honest answers rather than being bought by perforating the layering.
+* **A component is read the way a save reads it.** A component's in-memory layout is a Zig
+  struct's; only its *schema* is public, and that describes the serialized shape. Casting the
+  bytes would look right for the whole of M6 and start lying at M7, so the inspector serializes
+  through the type's own function into a block and reads the values back. It therefore works for
+  a mod-defined type the engine has never heard of, and cannot disagree with what a reload
+  restores. A type with no serializer is not inspectable and says so — `Registration.savable()`
+  already names that condition.
+* **The override chain is reconstructed, not stored.** `data.Store` overwrites four fields on an
+  override and keeps no trace of what it replaced, and its own comment defends that. Every
+  package's bytes are retained anyway, so "who else defines this id" is a linear walk of the
+  packages' record tables, on demand, for one id, when a person clicks it. No index, no
+  bookkeeping, no cost until asked.
+* **`ui.md`'s open culling question is answered, by a convention rather than by the kernel.** The
+  caller emits only the visible rows — `stateOf(id).scroll` is readable before `beginScroll`, and
+  two `spacer`s stand in for the rows above and below. The kernel could not have done it: a
+  "row" is a fiction only the caller maintains, and kernel-side culling would skip the drawing
+  after the formatting had already been paid, which for a log console *is* the cost.
+
+**Five modules gain nothing at all** from the introspection bullet — `platform`, `ui`,
+`render2d`, `audio` and `physics2d`. That is the strongest thing the document says: the
+subsystems were mostly built inspectable, and what is missing is what nobody had a reader for.
+
+**M6 opened where the last four did: at a decision.**
 `CLAUDE.md` §9 had held "Debug/game UI: own IMGUI vs. cimgui" since the project started and
 ADR-0011 had deferred it here by name. **ADR-0024 answers it: Foundry writes its own
 immediate-mode UI**, and `docs/design/ui.md` is written against it. **All six steps of its §16
@@ -198,8 +243,10 @@ is mature enough to need them rather than as decoration.
 are done, and **M5 — Playable: "it's a game" — closed 2026-09-06**, having started where the
 last three did: at the decisions `CLAUDE.md` §9 had been holding for it, then the design
 document, then code. Phase 2 is finished. **M6 — Tools: "it's inspectable" — opened 2026-09-06**
-at the `CLAUDE.md` §9 decision that was due: the ADR is accepted, the design document is
-written, and the first three of its six steps are implemented.
+at the `CLAUDE.md` §9 decision that was due. Its first bullet is finished — ADR-0024 accepted,
+`ui.md` written, all six steps implemented — and **both of its design documents are now written**:
+`debug-overlay.md` specifies the remaining three bullets, with ADR-0025 `Proposed` beneath it and
+no code written against either yet.
 
 ## Current milestone
 
@@ -217,8 +264,10 @@ tech demo", and that half was met.**
 
 **M6 — Tools: "it's inspectable" is the current milestone, opened 2026-09-06.** Its first
 roadmap bullet said the UI toolkit decision is made here, and it was: **ADR-0024, accepted**,
-with `docs/design/ui.md` written against it. §16 of that document is the step list, it is under
-"Immediate next steps" below, and steps 1 to 5 of six are done.
+with `docs/design/ui.md` written against it and **all six steps of its §16 implemented**. Its
+remaining three bullets are specified by `docs/design/debug-overlay.md`, whose §17 is the step
+list; **nothing is implemented against it**, and **ADR-0025 is `Proposed` rather than accepted**,
+which is the one thing standing between this milestone and its next line of code.
 
 What follows in this section is what **M5** opened with, kept because the decisions and the
 design are what a future session needs and they have not changed; what was built against them is
@@ -1708,15 +1757,30 @@ that runs and something that is tested:
    closing itself mid-frame hands the click back to the game. `samples/sandbox` now describes
    its overlay before it simulates and gates its typed bindings too.
 
-**§16 is finished, and `ui.md` with it.** The next M6 work is its second design document, not
-another step of this one.
+**§16 is finished, and `ui.md` with it.**
 
-**A second M6 design document is owed next**: the overlay itself — the entity inspector,
-the content browser, the log console, the frame profiler and the introspection APIs beneath
-them. `ui.md` §10 stops short of it deliberately, because what an inspector may ask `scene` for
-and how per-subsystem timing is collected are a different subject, and because it is better
-written once the shape of a panel is known rather than imagined. **M6's fourth bullet — the
-introspection APIs — is where the milestone's lasting value is**, not the widgets.
+**The second M6 design document is written**: `docs/design/debug-overlay.md`, 2026-09-07 — the
+overlay itself, and the introspection under it. `ui.md` §10 stopped short of it deliberately, and
+waiting was right rather than merely tidy: its §11 answers `ui.md`'s open culling question with a
+convention the *finished* widget set already supports, which could not have been written before
+that set existed. **M6's fourth bullet — the introspection APIs — is where the milestone's lasting
+value is**, not the widgets.
+
+**What happens next, in order:**
+
+1. **Accept or reject [ADR-0025](docs/adr/0025-debug-overlay-module.md).** It is `Proposed`. It
+   adds `debug` to the layering graph above `app` and binds every introspection call added in
+   this milestone to "shaped so the ABI could expose it". Both halves are cheap now and expensive
+   later, and rule 10 says neither is decided silently.
+2. Then `debug-overlay.md` §17, six steps, each ending in something that runs and something that
+   is tested: the profiler's storage and the engine's own spans; counted allocators and the frame
+   arena's high-water; the log ring; the introspection calls in `scene`, `data` and `asset`; the
+   `debug` module and its five panels; and `samples/room` adopting it.
+3. **Step 6 is also the exit criterion**, and it has a target already: diagnose the overlay's own
+   batch cost *with* the overlay, and settle whether panel rectangles and glyphs coming from two
+   different textures is what inflates it. A milestone about diagnosing a performance problem
+   should close on one that was written down and never understood, rather than on a synthetic
+   case.
 
 **The two things `ui.md` asks a future session not to quietly undo**, both of which look like
 harmless simplifications:
@@ -1970,7 +2034,20 @@ a rewrite of the one before.
   destination but stderr.** Timestamps want a monotonic source, which lives on `Platform`,
   and a free logging function has no instance to ask — worth solving when there is a log
   *file* to correlate against, at M9. Scope filtering is compile-time only for now
-  (`std.Options.log_scope_levels`), and there are three scopes.
+  (`std.Options.log_scope_levels`), and there are three scopes. **`debug-overlay.md` §6
+  discharges two thirds of this at M6**: a second destination (an in-memory ring, never a
+  replacement for stderr) with its own level, and filtering by scope, level and substring in
+  the console. Timestamps stay open, and the design proposes the cheaper correlation instead —
+  each record carries the **frame index**, written by `beginFrame` into an atomic the sink
+  reads, which lines a log line up against a profiler span without giving the sink a clock.
+* **The overlay costs fifteen batches where the hand-drawn HUD cost six**, recorded twice in
+  `ui.md`'s step 4 and step 5 Resolutions and never measured. The suspected cause is that panel
+  rectangles come from the blank texture and labels from the font atlas, so every alternation is
+  a texture break; the candidate fix is packing the blank patch into the font's atlas. It is
+  deliberately not fixed before there is a profiler to show it mattering (rule 2), and
+  `debug-overlay.md` §17 step 6 makes diagnosing it the way M6's exit criterion is met — a
+  milestone about diagnosing a performance problem closing on a real one rather than a
+  synthetic one.
 * **Frame pacing exists only on Metal.** A windowed Metal build is paced by the display,
   because the layer has vsync enabled and acquiring a drawable blocks. The null backend has
   no swapchain to wait on, so that path still sleeps 2ms per frame to avoid pegging a core.
@@ -2755,6 +2832,19 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
    grows loop points. `sprite-animation.md` §8 adds one of the same shape — whether the engine
    owns the clip schema and animation component at M7, *triggered by a second consumer or by
    the ABI freeze*, not by convenience.
+8. **What the profiler is allowed to see.** `debug-overlay.md` §15 leaves five open and two
+   of them are structural. **GPU timing** — the profiler is CPU-only, because attributing time
+   to passes needs a timestamp facility in `rhi` that each backend owes a version of; *trigger:
+   the CPU spans say the frame is mostly waiting and nobody can say what the GPU was doing.*
+   **Per-system timing inside `scene`** — refused deliberately, because the only way to time a
+   system from inside is to give `scene` a clock, which would undo the ADR-0007 property I9
+   leans on; the two honest answers are a sampling profiler or a caller-driven schedule, and
+   *the choice belongs to whoever actually has the slow world.* Alongside them: **threading**
+   (the counters and the recorder are single-threaded because Foundry has one thread that
+   allocates — a job system owes atomics or per-thread shadows and a merge, recorded now so its
+   design knows), persisting a profile to a file (which needs a version, I8), and whether the
+   overlay may **pause and single-step** the simulation, which is a mutation and therefore the
+   editor's, by the same reasoning that keeps the inspector read-only.
 
 ---
 

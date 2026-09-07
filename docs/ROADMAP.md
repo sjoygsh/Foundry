@@ -271,12 +271,14 @@ under `engine/` changed, and `tools/fpack` did not either.
 
 **Exit criteria:** a performance problem can be diagnosed from inside the running game.
 
-The last three bullets get their **own** design document, **owed now that `ui.md` is
-implemented** rather than written beside it: what an inspector may ask `scene` for and how per-subsystem timing is
-collected are a different subject with different invariants, and the document is better written
-once the shape of a panel is known rather than imagined. The fourth bullet is where this
-milestone's lasting value is — the widgets are replaceable, the introspection APIs reach the ABI
-at M7.
+The last three bullets have their **own** design document, [`design/debug-overlay.md`](design/debug-overlay.md),
+**written 2026-09-07** after `ui.md` was implemented rather than beside it — which is what let §11
+answer `ui.md`'s open culling question with a convention the finished widget set already supports.
+§17 is the step list. [ADR-0025](adr/0025-debug-overlay-module.md) carries the structural decision
+it rests on: the overlay is a module above `app`, and it may use **no call the public ABI could
+not expose**, so that the editor at M6+ is a re-host rather than a rewrite and a mod gets tooling
+at M7 through the same calls. The fourth bullet is where this milestone's lasting value is — the
+widgets are replaceable, the introspection APIs reach the ABI at M7.
 
 ---
 

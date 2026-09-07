@@ -376,6 +376,9 @@ introspection APIs designed with the future ABI in mind — and what an entity i
 `scene` for, what a content browser may ask `data` for, and how per-subsystem timing is
 collected are a different subject with different invariants. They get their own design document
 once this one is implemented and the shape of a panel is known rather than imagined.
+**That document is [`debug-overlay.md`](debug-overlay.md), written 2026-09-07** once this one
+was — and waiting paid: its §11 answers §14's culling question below with a convention this
+finished widget set already supports, which could not have been written before the set existed.
 
 **The overlay's font comes from `content/core`.** `foundry:fonts.debug` has been there since M3
 for exactly this, acquired as an ordinary `foundry:texture` by content ID — the call
@@ -460,6 +463,13 @@ break.
   which forty are visible. The kernel knows the clip rectangle and could skip them. It is not
   done at M6 because the honest answer needs the profiler M6 is building, and guessing at it now
   would be optimising before measuring (rule 2).
+  **Answered 2026-09-07 by `debug-overlay.md` §11, and not in the kernel.** The caller emits only
+  the visible rows: `stateOf(id).scroll` is readable *before* `beginScroll`, and two `spacer`s
+  stand in for the rows above and below. The kernel could not have done it — a "row" is a
+  fiction only the caller maintains, so the kernel could only skip commands after they were
+  built, which saves the drawing and not the formatting, and for a log console the formatting is
+  the cost. A cheap reject of commands wholly outside the clip rectangle may still be wanted one
+  day for a caller that genuinely cannot know; that case has not appeared.
 * **Keyboard navigation and tab order.** Deliberately absent from M6. It needs a notion of
   focus order that the flat id model does not have, and a debug overlay driven by a mouse does
   not need it. It is the first thing a game UI will.
