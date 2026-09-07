@@ -12,6 +12,7 @@ pub const id = @import("id.zig");
 pub const log = @import("log.zig");
 pub const math = @import("math.zig");
 pub const mem = @import("mem.zig");
+pub const profile = @import("profile.zig");
 pub const rng = @import("rng.zig");
 pub const time = @import("time.zig");
 
@@ -30,6 +31,7 @@ test {
     _ = log;
     _ = math;
     _ = mem;
+    _ = profile;
     _ = rng;
     _ = time;
 }

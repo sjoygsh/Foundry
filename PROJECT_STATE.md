@@ -5,11 +5,15 @@
 the milestone's actual value.** `docs/design/debug-overlay.md` (852 lines, §17 is the step list)
 covers the remaining three roadmap bullets — the entity inspector, the content browser and the
 log console; the frame profiler and per-allocator memory reporting; and the introspection APIs
-beneath all of them. **No code is written against it yet.**
+beneath all of them. **Step 1 of its §17 is implemented**: `engine/src/core/profile.zig`,
+`Engine.beginScope`, the engine's seven named spans, and both samples' worth of reading — the
+sandbox plots the profiler's own frame totals, lists the frame's spans under `detail`, and logs
+a median/p95/max summary at exit. **926 tests**, up from 900.
 
-**[ADR-0025](docs/adr/0025-debug-overlay-module.md) is `Proposed` and needs a decision before
-step 1**, because it adds a node to the layering graph and sets a rule on every call the
-milestone adds. The overlay is a module `debug` **above `app`** — not in `app`, which would make
+**[ADR-0025](docs/adr/0025-debug-overlay-module.md) is still `Proposed`, and nothing yet depends
+on it**, which is deliberate: steps 1-4 add calls to modules that already exist and only step 5
+creates the `debug` module. It adds a node to the layering graph and sets a rule on every call
+the milestone adds. The overlay is a module `debug` **above `app`** — not in `app`, which would make
 the engine loop claim a dependency on `scene` that is not true, and not in a sample, which would
 make the exit criterion true of our sample rather than of a game. And it may use **no call the
 public ABI could not expose**: I3's argument moved to tooling, so the editor at M6+ is a re-host
@@ -1773,9 +1777,29 @@ value is**, not the widgets.
    this milestone to "shaped so the ABI could expose it". Both halves are cheap now and expensive
    later, and rule 10 says neither is decided silently.
 2. Then `debug-overlay.md` §17, six steps, each ending in something that runs and something that
-   is tested: the profiler's storage and the engine's own spans; counted allocators and the frame
-   arena's high-water; the log ring; the introspection calls in `scene`, `data` and `asset`; the
-   `debug` module and its five panels; and `samples/room` adopting it.
+   is tested. **Step 1 is done, 2026-09-07**: `core/profile.zig` (storage and arithmetic, holding
+   no clock), `Engine.beginScope`/`profiler`, the seven engine spans, and the sandbox reading
+   them. The rest: counted allocators and the frame arena's high-water; the log ring; the
+   introspection calls in `scene`, `data` and `asset`; the `debug` module and its five panels;
+   and `samples/room` adopting it.
+
+   **Step 1's three findings**, all in the document's Resolution. The design named six engine
+   spans and there are **seven** — on Metal the vsync wait is at *drawable acquisition* inside
+   `Device.beginFrame`, not at present, so a profile built on the document's list would have
+   shown the wait as time that vanished between frames. **The profiler perturbs a synthetic
+   clock**: the null backend's advances per *reading*, which broke an existing loop test
+   immediately (60 steps became 304), so clock readings are now shared where the frame already
+   makes one, the test helper turns the profiler off, and a headless sandbox run does not get an
+   observer that moves what it observes. And **a dropped span needs a stack sentinel** so its
+   `close` does not close its parent — without it an 890µs span reports 10µs and nothing says
+   why.
+
+   **The first profile raised a suspicion and an optimised build killed it**, which is the
+   clearest possible argument for the milestone. Debug: `render.prepare` is 63% of an 11.4ms
+   frame. ReleaseFast: `render.prepare` is 1.07ms and `render.acquire` is 6.88ms of 8.43ms —
+   the sandbox is **display-bound at about 120Hz with the CPU idle**, and the debug build's
+   dominant cost was the debug build. The exit summary logs at `info` for exactly this reason:
+   `core.log.compiled_level` drops `debug` in the build whose numbers are worth reading.
 3. **Step 6 is also the exit criterion**, and it has a target already: diagnose the overlay's own
    batch cost *with* the overlay, and settle whether panel rectangles and glyphs coming from two
    different textures is what inflates it. A milestone about diagnosing a performance problem

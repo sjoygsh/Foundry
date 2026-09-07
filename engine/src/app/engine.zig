@@ -113,6 +113,48 @@ pub const Config = struct {
     /// Frames between checks. Thirty is twice a second at 60Hz, which is faster than
     /// anyone can alt-tab and cheap enough not to think about.
     hot_reload_frames: u32 = 30,
+
+    /// Record per-frame timing spans.
+    ///
+    /// **Development builds only by default**, the same shape and the same argument as
+    /// `hot_reload`: a shipped game paying for a profile nobody opens is paying for
+    /// nothing. Overridable either way, because a release build being profiled is exactly
+    /// when the number matters, and "development" is a judgement the application makes.
+    ///
+    /// When off, `beginScope` reads no clock at all — the recorder answers `enabled()`
+    /// false and the call returns before it would have asked `platform` the time.
+    profiler: bool = builtin.mode == .Debug,
+
+    /// Capacity for the above. Allocated once, at `init`, and never grown: a profiler
+    /// that allocated mid-frame could fail inside the thing it was measuring.
+    profiler_options: core.profile.Options = .{},
+};
+
+/// The names the engine gives its own timing spans.
+///
+/// **Named once and never renamed.** A span name is what a person recognises across
+/// builds and what one saved profile is compared against, so these are treated like the
+/// content and component names `CLAUDE.md` §7 calls compatibility decisions rather than
+/// style ones — and from M7 a mod reads them.
+///
+/// Everything else in a frame is the game's, opened through `Engine.beginScope`. `app`
+/// cannot know what a step of this game is made of, and guessing would produce a profile
+/// that describes the engine rather than the program.
+pub const span = struct {
+    /// Pumping the OS, draining events and freezing the frame's input.
+    pub const input = "input";
+    /// The hot-reload watcher's pass. Only present on the frames it runs.
+    pub const content = "content";
+    /// Waiting for the ring slot and for the display's next drawable.
+    pub const render_acquire = "render.acquire";
+    /// Sorting, uploads and copies, before the pass opens.
+    pub const render_prepare = "render.prepare";
+    /// The render pass, and the draw calls recorded into it.
+    pub const render_record = "render.record";
+    /// Handing the command buffer to the queue.
+    pub const render_submit = "render.submit";
+    /// Scheduling the present and closing the frame.
+    pub const render_present = "render.present";
 };
 
 /// One fixed simulation step.
@@ -192,6 +234,17 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         /// records **in place** out of them rather than copying (`content-schemas.md`
         /// §5.3). Freeing one would leave the store pointing at nothing.
         package_bytes: std.ArrayList([]u8),
+        /// Per-frame timing, or `.off`. **The engine's spans are the frame's skeleton**;
+        /// everything inside `simulate` is the game's, opened through `beginScope`.
+        ///
+        /// It lives here rather than being handed downward, and that is the decision
+        /// rather than the convenience: `scene` and `physics2d` have no `platform`
+        /// dependency and therefore cannot read a clock, which is what makes I9's fourth
+        /// rule structural. A recorder carrying a clock, passed down so each subsystem
+        /// could time itself, would be a clock inside `scene` with a polite interface
+        /// (`debug-overlay.md` §4.1).
+        profile: core.profile.Recorder,
+
         /// Every record type the engine and its content know about, registered at runtime
         /// through the same call a mod's `@schema` uses (I6).
         schemas: data.Registry,
@@ -244,6 +297,12 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             });
             errdefer gpu.deinit();
 
+            var profile: core.profile.Recorder = if (config.profiler)
+                try .init(gpa, config.profiler_options)
+            else
+                .off;
+            errdefer profile.deinit(gpa);
+
             // Resolved before anything owns it, so a bad `content_dir` fails before the
             // window opens rather than after.
             const content_dir = try resolveContentDir(gpa, os, config);
@@ -288,12 +347,17 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                 .hot_reload_frames = @max(config.hot_reload_frames, 1),
                 .max_package_bytes = config.max_package_bytes,
                 .package_bytes = .empty,
+                .profile = profile,
                 .schemas = .init(gpa, .default),
                 .store = .init(gpa, .default),
                 // Assigned below: it borrows `&self.store`, which has no address until
                 // the struct is in its final home.
                 .assets = undefined,
             };
+            // From here the struct owns the recorder, so the `errdefer` above must not
+            // free it a second time. Disarmed by emptying the local — the same handover
+            // `content_dir` and `content` make by not being guarded at all.
+            profile = .off;
             self.assets = .init(gpa, os, &self.store, .{});
             // The one asset kind the engine can load without help from above. A texture
             // needs a renderer and therefore has to be registered by whoever has one (I6);
@@ -346,6 +410,7 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         fn deinitOwned(self: *Self) void {
             const gpa = self.gpa;
 
+            self.profile.deinit(gpa);
             self.assets.deinit(gpa);
             self.store.deinit(gpa);
             self.schemas.deinit(gpa);
@@ -673,6 +738,16 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         /// in the frame. That is what lets the rest of the frame be a pure function of
         /// values.
         pub fn beginFrame(self: *Self) void {
+            // **Clock readings are shared, not repeated**, and this is the same argument
+            // `frameDelta` already makes: a second read of the same moment gives a second,
+            // slightly different answer. It matters more than tidiness here, because the
+            // null backend's synthetic clock advances *per reading* — so a profiler that
+            // read it freely would change the number of simulation steps a headless frame
+            // produces, which is a measurement altering what it measures.
+            const profiling = self.profile.enabled();
+            var mark: core.time.Instant = if (profiling) self.platform.now() else .{ .ns = 0 };
+            if (profiling) self.profile.beginFrame(self.frame_index, mark);
+
             // **Before anything else in the frame** (`assets.md` §6, rule 1). A texture
             // replaced between two draws of one frame is a class of bug worth never having,
             // so the swap happens here, before events, before input, before simulation.
@@ -681,9 +756,15 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             // destroyed texture behind the frames that could still reference it, so an
             // unload at the top of a frame does not free something in flight.
             if (self.hot_reload and self.frame_index % self.hot_reload_frames == 0) {
+                if (profiling) self.profile.open(span.content, mark);
                 self.pollContent();
+                if (profiling) {
+                    mark = self.platform.now();
+                    self.profile.close(mark);
+                }
             }
 
+            if (profiling) self.profile.open(span.input, mark);
             self.platform.pumpEvents();
 
             // Drained into our own list rather than read straight through, so that
@@ -704,6 +785,7 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             self.input = self.platform.captureInput();
 
             const current = self.platform.now();
+            if (profiling) self.profile.close(current);
             self.frame_delta = current.since(self.previous);
             self.stepper.advance(self.frame_delta);
             self.previous = current;
@@ -778,8 +860,62 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
 
         /// Ends the frame and invalidates everything allocated from the frame arena.
         pub fn endFrame(self: *Self) void {
+            // Before the arena is reset, because the frame's total is the last thing the
+            // frame contains and a reader wants a *finished* frame to look at. The panel
+            // drawn next frame therefore shows this one, which is the only honest order.
+            if (self.profile.enabled()) self.profile.endFrame(self.platform.now());
             self.frame_arena.reset();
             self.frame_index += 1;
+        }
+
+        // -- profiling -----------------------------------------------------------------
+
+        /// Opens a named timing span, closed by the returned value's `end`.
+        ///
+        ///     var s = engine.beginScope("simulate");
+        ///     defer s.end();
+        ///
+        /// **The game times what the game owns.** `app` opens the frame's skeleton — the
+        /// spans in `span` below — and everything inside them is the caller's, because
+        /// `app` cannot know what a step of *this* game is made of. A subsystem is never
+        /// handed a recorder and never times itself: `scene` and `physics2d` cannot read a
+        /// clock at all, and that is I9's fourth rule made structural rather than
+        /// remembered (`debug-overlay.md` §4.1).
+        ///
+        /// Costs one branch when the profiler is off — the clock is not read.
+        pub fn beginScope(self: *Self, name: []const u8) Scope {
+            self.openScope(name);
+            return .{ .engine = self };
+        }
+
+        /// What `beginScope` hands back. A value, so an early return cannot leave a span
+        /// open — and if one does anyway, `core.profile` counts it and closes it at the
+        /// frame boundary rather than losing the frame.
+        pub const Scope = struct {
+            engine: *Self,
+
+            pub fn end(self: Scope) void {
+                self.engine.closeScope();
+            }
+        };
+
+        /// This frame's timing, read-only. Null when the profiler is off.
+        ///
+        /// **An output, never an input** — `render2d.Stats` carries the same sentence.
+        /// Nothing in a simulation may branch on a number from here (I9).
+        pub fn profiler(self: *const Self) ?*const core.profile.Recorder {
+            if (!self.profile.enabled()) return null;
+            return &self.profile;
+        }
+
+        fn openScope(self: *Self, name: []const u8) void {
+            if (!self.profile.enabled()) return;
+            self.profile.open(name, self.platform.now());
+        }
+
+        fn closeScope(self: *Self) void {
+            if (!self.profile.enabled()) return;
+            self.profile.close(self.platform.now());
         }
 
         // -- accessors ---------------------------------------------------------------
@@ -849,11 +985,32 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         /// The game calls this and never sees either argument, which is what keeps the
         /// RHI out of the game-facing surface (CLAUDE.md §4.2).
         pub fn renderFrame(self: *Self, options: FrameOptions, recorder: anytype) !void {
-            const frame = try self.gpu.beginFrame();
+            // **`acquire` is where a windowed build waits**, and it is worth knowing which
+            // end of the frame that is: the Metal backend's `beginFrame` both waits on the
+            // command buffer that last used this ring slot and asks the layer for the next
+            // drawable, which is what vsync blocks. `present` merely schedules and commits.
+            // A frame that is mostly `acquire` is a frame waiting for the display or for
+            // the GPU; a frame that is mostly the other three is one this program is
+            // spending.
+            //
+            // Closed explicitly on the error path, unlike the three below: a lost surface
+            // is the *routine* answer for a minimised or occluded window, so leaving this
+            // span open on every one of those frames would report a nonsense span rather
+            // than a fault. A genuine failure in the other three is rare enough to be worth
+            // seeing as the unbalanced count `core.profile` keeps.
+            self.openScope(span.render_acquire);
+            const frame = self.gpu.beginFrame() catch |err| {
+                self.closeScope();
+                return err;
+            };
+            self.closeScope();
 
+            self.openScope(span.render_prepare);
             const cmd = try self.gpu.beginCommandBuffer();
             try recorder.prepare(cmd, frame);
+            self.closeScope();
 
+            self.openScope(span.render_record);
             const pass = try cmd.beginRenderPass(.{
                 .label = options.label,
                 .color = &.{.{
@@ -868,9 +1025,15 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             });
             try recorder.record(pass);
             pass.end();
+            self.closeScope();
 
+            self.openScope(span.render_submit);
             try cmd.submit();
+            self.closeScope();
+
+            self.openScope(span.render_present);
             try self.gpu.endFrame();
+            self.closeScope();
         }
     };
 }
@@ -911,6 +1074,19 @@ const TestEngine = EngineOf(NullPlatform, NullDevice);
 fn testEngine(config: Config) !*TestEngine {
     var c = config;
     c.headless = true;
+    // **Off, for the same class of reason `headless` is on**: the null backend's clock
+    // advances per reading, so a profiler reading it changes how much simulated time a
+    // frame carries. A test measuring the loop should measure the loop. `profiledEngine`
+    // is what the tests that want it use, and they assert exactly what it costs.
+    c.profiler = false;
+    return TestEngine.init(testing.allocator, c);
+}
+
+/// A headless engine with the profiler on, and a clock step a test can reason about.
+fn profiledEngine(config: Config) !*TestEngine {
+    var c = config;
+    c.headless = true;
+    c.profiler = true;
     return TestEngine.init(testing.allocator, c);
 }
 
@@ -1344,6 +1520,125 @@ test "the same frame timings produce the same simulation, twice" {
     const b = try run();
     try testing.expectEqual(a.ticks, b.ticks);
     try testing.expectEqual(a.elapsed, b.elapsed);
+}
+
+test "with the profiler off, a frame reads the clock exactly once" {
+    // The property every loop test above depends on, pinned so that adding a clock read
+    // to the frame is a failing test rather than a slow drift in simulated time. The null
+    // backend's clock advances per reading, so "how many readings" *is* "how much time".
+    const engine = try testEngine(.{});
+    defer engine.deinit();
+    engine.platform.setClockStep(.fromMillis(1));
+
+    const before = engine.platform.clock_ns;
+    engine.beginFrame();
+    engine.endFrame();
+
+    try testing.expectEqual(before + std.time.ns_per_ms, engine.platform.clock_ns);
+    try testing.expect(engine.profiler() == null);
+}
+
+test "the profiler records the frame's own spans, nested and in order" {
+    // Hot reload off, so the frame is only `input`: the watcher's span has a test of its
+    // own below and would otherwise be the first thing in this one.
+    const engine = try profiledEngine(.{ .hot_reload = false });
+    defer engine.deinit();
+    engine.platform.setClockStep(.fromMillis(1));
+
+    engine.beginFrame();
+    {
+        var outer = engine.beginScope("simulate");
+        defer outer.end();
+        var inner = engine.beginScope("physics");
+        inner.end();
+    }
+    engine.endFrame();
+
+    const recorder = engine.profiler().?;
+    const frame = recorder.latest().?;
+    try testing.expectEqual(@as(u64, 0), frame.index);
+    try testing.expectEqual(@as(u16, 0), frame.dropped);
+    try testing.expectEqual(@as(u16, 0), frame.unbalanced);
+
+    // `input` is the engine's; the other two are the game's, and they nest inside the
+    // frame without either side knowing about the other.
+    try testing.expectEqual(@as(usize, 3), frame.spans.len);
+    try testing.expectEqualStrings(span.input, recorder.nameOf(frame.spans[0].name));
+    try testing.expectEqual(@as(u16, 0), frame.spans[0].depth);
+    try testing.expectEqualStrings("simulate", recorder.nameOf(frame.spans[1].name));
+    try testing.expectEqual(@as(u16, 0), frame.spans[1].depth);
+    try testing.expectEqualStrings("physics", recorder.nameOf(frame.spans[2].name));
+    try testing.expectEqual(@as(u16, 1), frame.spans[2].depth);
+}
+
+test "the content watcher's pass is a span, and only on the frames it runs" {
+    var fixture = try ContentFixture.init(content_source);
+    defer fixture.deinit();
+
+    const engine = try profiledEngine(.{
+        .content_dir = fixture.dir,
+        .content = &.{.{ .file = "core.fpk", .root = "." }},
+        .hot_reload = true,
+        .hot_reload_frames = 3,
+    });
+    defer engine.deinit();
+
+    var with_content: u32 = 0;
+    for (0..6) |_| {
+        engine.beginFrame();
+        engine.endFrame();
+    }
+
+    const recorder = engine.profiler().?;
+    var it = recorder.frames();
+    while (it.next()) |frame| {
+        for (frame.spans) |s| {
+            if (std.mem.eql(u8, recorder.nameOf(s.name), span.content)) with_content += 1;
+        }
+    }
+    // Frames 0 and 3 of six, and no others.
+    try testing.expectEqual(@as(u32, 2), with_content);
+}
+
+test "a render frame is four named spans, and acquire is one of them" {
+    const engine = try profiledEngine(.{ .hot_reload = false });
+    defer engine.deinit();
+
+    engine.beginFrame();
+    try engine.renderFrame(.{}, NothingRecorder{});
+    engine.endFrame();
+
+    const recorder = engine.profiler().?;
+    const frame = recorder.latest().?;
+
+    var seen: [4]bool = @splat(false);
+    for (frame.spans) |s| {
+        const name = recorder.nameOf(s.name);
+        if (std.mem.eql(u8, name, span.render_acquire)) seen[0] = true;
+        if (std.mem.eql(u8, name, span.render_prepare)) seen[1] = true;
+        if (std.mem.eql(u8, name, span.render_record)) seen[2] = true;
+        if (std.mem.eql(u8, name, span.render_submit)) seen[3] = true;
+    }
+    for (seen) |ok| try testing.expect(ok);
+    try testing.expectEqual(@as(u16, 0), frame.unbalanced);
+}
+
+/// A recorder that records nothing, which is all `renderFrame` requires of one. It exists
+/// to prove `renderFrame` takes `anytype` for a reason (`render2d.md` §3).
+const NothingRecorder = struct {
+    pub fn prepare(_: NothingRecorder, _: *rhi.CommandBuffer, _: rhi.FrameContext) !void {}
+    pub fn record(_: NothingRecorder, _: *rhi.RenderPass) !void {}
+};
+
+test "a disabled profiler is not a null pointer the caller has to guard twice" {
+    const engine = try testEngine(.{});
+    defer engine.deinit();
+
+    // A scope opened against a disabled profiler is legal and does nothing, so a game
+    // does not write `if (engine.profiler()) |_|` around its own instrumentation.
+    var s = engine.beginScope("simulate");
+    s.end();
+    try testing.expect(engine.profiler() == null);
 }
 
 test "the gpu device comes up and goes down with the engine" {

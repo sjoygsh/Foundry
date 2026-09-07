@@ -867,3 +867,86 @@ that composes everything is built last, when everything it composes is already t
 
 Each step's Resolution goes at the end of this document, as `ui.md` and every design document
 before it does: what implementation settled, and what this document said wrong.
+
+
+---
+
+## Resolution: the profiler's storage and the engine's spans (step 1, 2026-09-07)
+
+`engine/src/core/profile.zig`, `Config.profiler`, `Engine.beginScope`/`profiler`, the engine's
+own spans in `beginFrame`, `endFrame` and `renderFrame`, and the sandbox reading all of it.
+**926 tests**, up from 900: 21 in `core.profile` and 5 in `app`, every one of them headless and
+driven by a clock the test hands in.
+
+**§4.3 named six engine spans and there are seven.** The missing one is `render.acquire`, and
+where it sits is the point: the document assumed a vsynced frame waits in `render.present`, and
+on Metal it does not. `Device.beginFrame` both waits on the command buffer that last used this
+ring slot *and* asks the layer for the next drawable, which is what blocks; `endFrame` only
+schedules the present and commits. A profile built on the document's six spans would have shown
+the wait as time that vanished between frames. It is closed explicitly on its error path too,
+unlike the three after it, because `SurfaceLost` is the *routine* answer for a minimised window
+rather than a fault, and a span left open on every minimised frame would be noise rather than a
+signal.
+
+**The profiler perturbs a synthetic clock, and this is not a small footnote.** The null
+backend's clock advances by a fixed step *per reading* — deliberately, so a headless loop runs
+identically on every machine — so a profiler that read it freely changes how much simulated time
+a frame carries. It showed up immediately as an existing test failing: a thousand frames that
+should produce 60 simulation steps produced 304. Three things came out of it, and the first is
+an improvement the design did not ask for:
+
+* **Clock readings are shared where the frame already makes one.** The `input` span now closes
+  on the very instant `frameDelta` is computed from, rather than reading the clock again a line
+  later. This is `frameDelta`'s own argument — *"a second clock read would give a second,
+  slightly different answer"* — and applying it leaves a profiled frame reading the clock three
+  times instead of five.
+* **The test helper turns the profiler off**, for the same class of reason it forces `headless`:
+  a test measuring the loop should measure the loop. The tests that want the profiler use a
+  second helper and say so.
+* **The sandbox turns it off when headless.** The headless run is the deterministic one, and it
+  does not get an observer that moves the thing it observes. A windowed build reads a real
+  monotonic clock, where a reading costs time but does not create it.
+
+**A dropped span's `close` must not close the span underneath it**, and that took two mechanisms
+rather than one. A span dropped because the frame's budget is full still pushes a **sentinel**
+onto the open stack, so its `close` pops the sentinel instead of its parent; an `open` deeper
+than the stack itself cannot push at all, so those are counted in a separate overflow depth that
+`close` unwinds first. Both are correct only because nesting is LIFO, and both have a test named
+after the bug they prevent — without the sentinel, an `outer` span that ran 890µs reports 10µs
+and nothing anywhere says why.
+
+**§4.2's size argument was wrong and was corrected before any code was written.** It claimed
+absolute `Instant`s would cost sixteen bytes against relative offsets' eight; two `i64` offsets
+are also sixteen. What relative offsets actually buy is that 32 bits is *enough* — a span longer
+than the 4.29 seconds a `u32` of nanoseconds holds is a hang rather than a measurement, and
+saturating says so — which takes a span to twelve bytes and makes a frame self-contained.
+
+**The first profile raised a suspicion and then killed it, which is the whole point.** Four
+hundred frames of the windowed sandbox, 4,603 sprites, debug build:
+
+```
+frame 239 spent 11.44ms: input 0.05  describe ui 0.24  simulate 1.42  step 1.42
+  audio 0.00  submit 2.37  render.acquire 0.02  render.prepare 7.24
+  render.record 0.06  render.submit 0.02  render.present 0.01
+```
+
+`render.acquire` is two hundredths of a millisecond, so this build is **not** waiting for the
+display, and `render.prepare` — the batcher's sort and its vertex upload — is 63% of the frame on
+its own. That reads like a finding. It is not one. The same run, `-Doptimize=ReleaseFast`:
+
+```
+last 240 frames: median 8.37ms, p95 9.57ms, max 9.88ms
+frame 299 at 8.43ms went mostly to: render.acquire 6.88ms, render.prepare 1.07ms,
+  render.record 0.15ms
+```
+
+**`render.prepare` collapses from 4.4ms to 1.07ms and the frame becomes 82% waiting for the
+display.** The optimised sandbox is display-bound at about 120Hz with the CPU idle most of the
+frame; the debug build's dominant cost was the debug build. A profiler that only ran in the mode
+where everything is slow would have sent somebody to optimise a sort that was never the problem —
+which is why the exit summary logs at `info`, since `core.log.compiled_level` drops `debug` in
+exactly the build whose numbers are worth reading.
+
+The spans also sum to the frame: 11.49 against a measured 11.44, with `step` nested inside
+`simulate` and therefore not double-counted. That agreement is the cheapest possible check that
+the spans are in the right places, and it is the one to run first after moving any of them.

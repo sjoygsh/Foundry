@@ -151,6 +151,13 @@ pub fn main(init: std.process.Init) !void {
         .app_name = "foundry-sandbox",
         .log_level = .debug,
         .headless = headless,
+        // **Off for a headless run**, which is not a performance decision. The null
+        // platform's clock advances per *reading*, so a profiler reading it changes how
+        // much simulated time each frame carries and therefore how many steps a fixed
+        // frame count produces. The headless run is the deterministic one, so it does not
+        // get an observer that moves the thing it observes. A windowed build reads a real
+        // monotonic clock, where a reading costs time but does not create it.
+        .profiler = !headless,
         .tick_rate_hz = 60,
         .window = .{
             .title = "Foundry Sandbox",
@@ -225,14 +232,27 @@ pub fn main(init: std.process.Init) !void {
         // taken would have walked them anyway. `describeUi` draws nothing; it decides what
         // the user is pointing at and typing into, which is what everything below needs to
         // know before it acts.
-        try field.describeUi(engine);
+        {
+            // **The game times what the game owns**, and this is the first of four such
+            // scopes. The engine's spans are the frame's skeleton; nothing inside one of
+            // these is measured by a subsystem timing itself, because `scene` and
+            // `physics2d` cannot read a clock at all (`debug-overlay.md` §4.1).
+            var s = engine.beginScope("describe ui");
+            defer s.end();
+            try field.describeUi(engine);
+        }
 
+        var simulate = engine.beginScope("simulate");
         while (engine.nextStep()) |step| {
             // The only place simulation happens. It reads `step.input`, never the device.
             if (step.input.wasPressed(.escape)) engine.requestQuit();
 
             // And the world advances here, once per fixed step, for the same reason.
+            // Nested one deep inside `simulate`, so a frame that ran several steps shows
+            // several of these and the sum is visibly the parent's.
+            var stepped = engine.beginScope("step");
             field.step(step);
+            stepped.end();
 
             // Once per second of *simulation* time, not wall-clock time.
             if (step.tick - reported_tick >= 60) {
@@ -245,6 +265,7 @@ pub fn main(init: std.process.Init) !void {
                 });
             }
         }
+        simulate.end();
 
         // Resizing, deliberately **outside** the step loop: which shape a window is is a
         // presentation concern, not simulation, and a simulation step that resized a window
@@ -270,8 +291,20 @@ pub fn main(init: std.process.Init) !void {
         // most recent transforms yet, which is what `engine.alpha()` is for and what the
         // world now finally has the two states to make possible.
         field.control(engine);
-        field.audioFrame();
-        try field.submit(engine);
+        {
+            var s = engine.beginScope("audio");
+            defer s.end();
+            field.audioFrame();
+        }
+        {
+            // The draw list, built by the game. What the engine does with it afterwards is
+            // `render.prepare` and `render.record`, which are the engine's own spans — so
+            // the profile separates "deciding what to draw" from "drawing it", which are
+            // the two answers a person needs to tell apart.
+            var s = engine.beginScope("submit");
+            defer s.end();
+            try field.submit(engine);
+        }
 
         engine.renderFrame(.{ .label = "sprites", .clear = clearColor(engine) }, &field.renderer) catch |err| switch (err) {
             // No drawable this frame: minimised, occluded, or all of them still in flight.
@@ -305,6 +338,7 @@ pub fn main(init: std.process.Init) !void {
                 engine.frameDelta().toSecondsF32() * 1000,
                 field.camera.zoom,
             });
+            reportProfile(engine);
         }
 
         // A windowed Metal build is paced by the display: the layer has vsync enabled, so
@@ -350,6 +384,64 @@ pub fn main(init: std.process.Init) !void {
         engine.stepper.tick,
         engine.elapsed().toMillis(),
         field.sounds_played,
+    });
+    summariseProfile(engine);
+}
+
+/// One `info` line at exit: what the frames cost, and the three spans that cost the most.
+///
+/// At `info` rather than `debug` on purpose. `core.log.compiled_level` drops `debug` in a
+/// release build, and a release build is exactly the one whose numbers are worth reading —
+/// a profile that only exists in the mode where everything is slow is a profile of the
+/// wrong program.
+fn summariseProfile(engine: *app.Engine) void {
+    const recorder = engine.profiler() orelse return;
+
+    var totals: [240]i64 = undefined;
+    var scratch: [240]i64 = undefined;
+    var count: usize = 0;
+    var it = recorder.frames();
+    while (it.next()) |frame| : (count += 1) {
+        if (count == totals.len) break;
+        totals[count] = frame.total_ns;
+    }
+    if (count == 0) return;
+    const summary = core.profile.summarise(totals[0..count], &scratch);
+
+    log.info("last {d} frames: median {d:.2}ms, p95 {d:.2}ms, max {d:.2}ms", .{
+        summary.count,
+        SpriteField.millis(summary.median_ns),
+        SpriteField.millis(summary.p95_ns),
+        SpriteField.millis(summary.max_ns),
+    });
+
+    // The most recent frame's spans, largest first, which is the order a person reads a
+    // profile in. Three, because the fourth is never the answer.
+    const frame = recorder.latest() orelse return;
+    var top: [3]core.profile.Span = @splat(.{ .name = core.profile.unnamed, .depth = 0, .begin_ns = 0, .end_ns = 0 });
+    for (frame.spans) |s| {
+        // Depth 0 only: a nested span's time is already inside its parent's, and a list
+        // that mixed the two would double-count and read as though the frame took twice
+        // as long as it did.
+        if (s.depth != 0) continue;
+        var carry = s;
+        for (&top) |*slot| {
+            if (carry.durationNs() > slot.durationNs()) {
+                const displaced = slot.*;
+                slot.* = carry;
+                carry = displaced;
+            }
+        }
+    }
+    log.info("frame {d} at {d:.2}ms went mostly to: {s} {d:.2}ms, {s} {d:.2}ms, {s} {d:.2}ms", .{
+        frame.index,
+        SpriteField.millis(frame.total_ns),
+        recorder.nameOf(top[0].name),
+        SpriteField.millis(@intCast(top[0].durationNs())),
+        recorder.nameOf(top[1].name),
+        SpriteField.millis(@intCast(top[1].durationNs())),
+        recorder.nameOf(top[2].name),
+        SpriteField.millis(@intCast(top[2].durationNs())),
     });
 }
 
@@ -2234,8 +2326,20 @@ const SpriteField = struct {
         // The overlay keeps its own history of what it is about to plot, because the plot
         // draws a caller's samples and holds none of its own (`ui.plot`). A ring, written
         // at the head and read from it, which is what `PlotOptions.first` is for.
-        self.frame_ms[self.frame_head] = engine.frameDelta().toSecondsF32() * 1000;
-        self.frame_head = (self.frame_head + 1) % self.frame_ms.len;
+        //
+        // **When the profiler is on, the samples are its frame totals instead**, which is
+        // the better number: `frameDelta` is how long the *previous* frame took to come
+        // round, while a recorded frame is what this program spent, measured by the engine
+        // that owns the frame. `totalsMs` hands back the most recent samples that fit, in
+        // order, so the ring's head goes to zero and the plot needs no other change.
+        var plot_count: usize = self.frame_ms.len;
+        if (engine.profiler()) |recorder| {
+            plot_count = recorder.totalsMs(&self.frame_ms).len;
+            self.frame_head = 0;
+        } else {
+            self.frame_ms[self.frame_head] = engine.frameDelta().toSecondsF32() * 1000;
+            self.frame_head = (self.frame_head + 1) % self.frame_ms.len;
+        }
 
         // Four rows where this used to be one string with newlines in it. The gap between
         // them is now the region's spacing — a style decision — rather than a `\n` and a
@@ -2272,8 +2376,16 @@ const SpriteField = struct {
         // **A cursor layout does not size its container**, so whoever opens a panel adds
         // its contents up. `Region.placed` reports what actually landed, but only after
         // the fact, and a panel has to be the right size the first time it is drawn.
+        // The frame's spans, formatted before anything is sized, because they are the
+        // widest lines in the panel and the panel has to be the right size the first time
+        // it is drawn.
+        var span_buffers: [max_span_lines][96]u8 = undefined;
+        var span_lines: [max_span_lines][]const u8 = undefined;
+        const spans = self.profileLines(engine, &span_buffers, &span_lines);
+
         var widest: f32 = 0;
         for (lines) |line| widest = @max(widest, style.font.measure(line, style.text_scale).x);
+        for (spans) |line| widest = @max(widest, style.font.measure(line, style.text_scale).x);
 
         // A panel around a collapsing section has to know whether it is open before it can
         // be sized, and the kernel is what remembers that. The id is the one the header
@@ -2283,8 +2395,9 @@ const SpriteField = struct {
         const detail_open = self.ui.stateOf(detail_id).open;
 
         const plot_height = style.line_height * 2;
-        const rows: f32 = if (detail_open) 7 else 5;
-        const items: f32 = if (detail_open) 9 else 7;
+        const extra: f32 = if (detail_open) @floatFromInt(spans.len) else 0;
+        const rows: f32 = (if (detail_open) @as(f32, 7) else 5) + extra;
+        const items: f32 = (if (detail_open) @as(f32, 9) else 7) + extra;
         const content = rows * style.line_height + plot_height +
             (style.separator_thickness + style.spacing * 2) +
             (items - 1) * style.spacing;
@@ -2301,7 +2414,7 @@ const SpriteField = struct {
         try ui.label(&self.ui, lines[0]);
         try ui.label(&self.ui, lines[1]);
         // Newest last, oldest first, straight out of the ring the sample keeps.
-        try ui.plot(&self.ui, &self.frame_ms, .{
+        try ui.plot(&self.ui, self.frame_ms[0..plot_count], .{
             .height = plot_height,
             .first = self.frame_head,
             .min = 0,
@@ -2309,6 +2422,12 @@ const SpriteField = struct {
         if (try ui.collapsingHeader(&self.ui, detail_id, "detail")) {
             try ui.label(&self.ui, lines[2]);
             try ui.label(&self.ui, lines[3]);
+            // **Where the frame went.** The engine's spans are the skeleton — `input`,
+            // `render.acquire` and the rest — and `simulate` and `physics` below them are
+            // this sample's, opened around the code it owns. Nothing here is measured by a
+            // subsystem timing itself: `scene` and `physics2d` cannot read a clock at all
+            // (`debug-overlay.md` §4.1), so the caller times the call.
+            for (spans) |line| try ui.label(&self.ui, line);
         }
         try ui.separator(&self.ui);
         // The flag lives here, in the sample, and the kernel holds no copy of it — which
@@ -2337,6 +2456,70 @@ const SpriteField = struct {
         try ui.endPanel(&self.ui);
 
         try self.describeBindings(width, height);
+    }
+
+    /// How many profile lines the panel will show: a summary, then one span each.
+    const max_span_lines = 12;
+
+    /// Nanoseconds as milliseconds, for display only.
+    fn millis(ns: i64) f32 {
+        return @as(f32, @floatFromInt(ns)) / @as(f32, @floatFromInt(core.time.ns_per_ms));
+    }
+
+    /// Formats the latest frame's spans, deepest nesting indented, plus one summary line
+    /// over the whole history.
+    ///
+    /// Returns a slice of `out`, which borrows `buffers`; both are the caller's stack and
+    /// go away at the end of the frame, which is exactly what `ui.TextRef` copies for.
+    fn profileLines(
+        self: *SpriteField,
+        engine: *app.Engine,
+        buffers: *[max_span_lines][96]u8,
+        out: *[max_span_lines][]const u8,
+    ) [][]const u8 {
+        _ = self;
+        const recorder = engine.profiler() orelse {
+            out[0] = "profiler off";
+            return out[0..1];
+        };
+        const frame = recorder.latest() orelse {
+            out[0] = "profiler on, no frame yet";
+            return out[0..1];
+        };
+
+        // p95 over the history rather than the last frame, because the number a person is
+        // hunting is the hitch and the last frame is almost never it. The scratch buffer
+        // is the stack's: `core.profile.summarise` allocates nothing.
+        var totals: [240]i64 = undefined;
+        var scratch: [240]i64 = undefined;
+        var count: usize = 0;
+        var it = recorder.frames();
+        while (it.next()) |f| : (count += 1) {
+            if (count == totals.len) break;
+            totals[count] = f.total_ns;
+        }
+        const summary = core.profile.summarise(totals[0..count], &scratch);
+
+        var n: usize = 0;
+        out[n] = std.fmt.bufPrint(&buffers[n], "frame {d}: {d:.2}ms  p95 {d:.2}ms  max {d:.2}ms", .{
+            frame.index,
+            millis(frame.total_ns),
+            millis(summary.p95_ns),
+            millis(summary.max_ns),
+        }) catch "";
+        n += 1;
+
+        for (frame.spans) |s| {
+            if (n == out.len) break;
+            const indent = @min(s.depth, 3) * 2;
+            out[n] = std.fmt.bufPrint(&buffers[n], "{s}{s} {d:.2}ms", .{
+                "      "[0..indent],
+                recorder.nameOf(s.name),
+                millis(@intCast(s.durationNs())),
+            }) catch "";
+            n += 1;
+        }
+        return out[0..n];
     }
 
     /// The second panel: a filter box over a scrolling list.
@@ -2632,6 +2815,33 @@ fn frameLimit(engine: *app.Engine, headless: bool) ?u64 {
         }
     }
     return if (headless) default_headless_frames else null;
+}
+
+/// Logs where the last frame went, one line, alongside the batcher's numbers.
+///
+/// The panel shows the same thing and is the point of the profiler; this is here because a
+/// log line survives a run nobody was watching, and because the first check that a profile
+/// is *plausible* is reading one — a `render.acquire` that is not most of a vsynced frame
+/// would mean the spans are in the wrong places.
+fn reportProfile(engine: *app.Engine) void {
+    const recorder = engine.profiler() orelse return;
+    const frame = recorder.latest() orelse return;
+
+    var line: [512]u8 = undefined;
+    var at: usize = 0;
+    for (frame.spans) |s| {
+        const written = std.fmt.bufPrint(line[at..], "{s}{s} {d:.2}", .{
+            if (at == 0) "" else "  ",
+            recorder.nameOf(s.name),
+            @as(f32, @floatFromInt(s.durationNs())) / @as(f32, @floatFromInt(core.time.ns_per_ms)),
+        }) catch break;
+        at += written.len;
+    }
+    log.debug("frame {d} spent {d:.2}ms: {s}", .{
+        frame.index,
+        @as(f32, @floatFromInt(frame.total_ns)) / @as(f32, @floatFromInt(core.time.ns_per_ms)),
+        line[0..at],
+    });
 }
 
 /// Logs what happened, which is the whole of M0's "responds to input".
