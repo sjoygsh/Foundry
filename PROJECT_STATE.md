@@ -1,7 +1,64 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-07
-**Updated by:** **M6 is complete.** `docs/design/debug-overlay.md` §17 is implemented end to
+**Updated by:** **M7 — Moddable: "others can extend it" — is open, at its decisions.** Two ADRs
+are written and both are `Proposed`; no code and no design document exist against either yet,
+which is the same place M6 stood the morning ADR-0025 was written.
+
+**[ADR-0026](docs/adr/0026-abi-module-and-host.md) is a correction, and the build graph is what
+found it.** ADR-0007 recorded `L5 abi -> app` on the project's second day and ADR-0025 copied
+the line forward. It cannot work, for two independent reasons:
+
+* **`app` cannot see three of the modules the ABI must publish.** Its dependencies are `core`,
+  `data`, `platform`, `ui`, `rhi`, `asset`, `render2d` — not `scene`, not `audio`, not
+  `physics2d`, each absence deliberate and each with a comment in `build.zig` saying why.
+  Meanwhile `entity-storage.md` §11, `audio.md` §10, `tilemaps-and-collision.md` §12,
+  `render2d.md` §12, `ui.md` §13 and `debug-overlay.md` §14 have all committed to what they
+  publish at M7, and three of those six live behind modules `app` does not import. `abi -> app`
+  would publish the frame loop, the log, the profiler and the memory counters — and nothing a
+  gameplay mod is for, while the exit criterion asks for a new component type and new behaviour.
+* **`app` does not own the subsystems either.** No world, no renderer, no mixer, no collision
+  world; the game owns them, and the two samples own different sets. So even for `render2d`,
+  which `app` *can* see, there would be nothing to hand a mod.
+
+The answer is the one M6 already found: `abi` becomes a **peer of `debug` at L5**, and the
+**host supplies its subsystems** — `debug.Sources` one milestone later, for the same reason. A
+capability whose subsystem is absent answers `Unavailable` rather than being a null pointer, and
+the table's shape never changes within a version. `rhi` stays out permanently (§4.2: a module
+that can see it is one line from publishing it); `platform` is in for exactly one type,
+`Library`. `abi` holds no engine state of its own — validate, call, return a code — which is the
+rule that keeps the widest module in the project from becoming the fattest.
+
+**[ADR-0027](docs/adr/0027-mods-are-content-packages.md): a mod is a content package**, and its
+manifest is a `foundry:mod` record inside it, of a schema `content/core` declares. Every tier is
+a package with something optional attached — Tier 1 is a package and nothing else, and it has
+worked since M3 — so identity, version, dependencies, engine range and ADR-0016's license field
+are a record like any other. No second format, no sidecar that can disagree with the package, no
+identity derived from a folder name (I2's anti-pattern one level up). `fpack` reads the name and
+version from the manifest and loses `--name` and `--version`. Discovery, resolution and load
+order become a **new L2 module `mod`**, below `app` rather than above it, because a Tier 1 mod
+list must be computable by a game that loads no code at all and because its output is exactly
+the ordered list `app.Config.content` already consumes — so `content-schemas.md` §6 stands
+unchanged and `data` still consumes an order it does not compute. Load order is a topological
+sort with a documented tie-break, **by content id ascending**, which is the only one available
+that does not depend on directory enumeration or hash-map iteration (I9).
+
+**One thing deliberately not decided, because two documents deferred to this milestone by
+name.** `tilemaps-and-collision.md` §11 and `sprite-animation.md` §8 both named "the ABI freeze"
+as the trigger for choosing standard component types. What M7 freezes is the **registration
+mechanism**, not a vocabulary: a component type is a schema, a schema is content, and a standard
+vocabulary — if one is ever wanted — belongs in `content/core` where a mod can override it, not
+in engine source, which I5 forbids. Two samples exist and chose different components; no second
+consumer has asked for a shared one, and none was manufactured to close the question.
+
+**Owed next:** `docs/design/public-abi.md`, written once both ADRs are accepted, covering the
+table and the mod lifecycle together — a manifest naming a library the table could not receive
+would be two designs that only look like one. `CLAUDE.md` §4.1 and §4.3 are **not** updated yet,
+because nothing is accepted; that edit lands with acceptance, as ADR-0025's did.
+
+---
+
+**The milestone behind it — M6 — is complete.** `docs/design/debug-overlay.md` §17 is implemented end to
 end, [ADR-0025](docs/adr/0025-debug-overlay-module.md) is accepted, and the milestone's exit
 criterion was met by diagnosing the overlay's own cost with the overlay. `engine/src/debug/` is a
 new L5 module — above `app`, depended on by nothing, opted into by importing it — holding
@@ -286,16 +343,32 @@ is mature enough to need them rather than as decoration.
 
 ## Current phase
 
-**Phase 2 — A real 2D engine.** Phase 1 (M0, M1) closed with the first pixels; M2, M3 and M4
-are done, and **M5 — Playable: "it's a game" — closed 2026-09-06**, having started where the
-last three did: at the decisions `CLAUDE.md` §9 had been holding for it, then the design
-document, then code. Phase 2 is finished. **M6 — Tools: "it's inspectable" — opened 2026-09-06**
-at the `CLAUDE.md` §9 decision that was due. Its first bullet is finished — ADR-0024 accepted,
-`ui.md` written, all six steps implemented — and **both of its design documents are now written**:
-`debug-overlay.md` specifies the remaining three bullets, with ADR-0025 `Proposed` beneath it and
-no code written against either yet.
+**Phase 3 — Modding and shipping**, entered 2026-09-07. Phase 1 (M0, M1) closed with the first
+pixels; Phase 2 closed with M6, and every milestone in it is complete: sprites, content,
+entities, a playable sample, and an overlay that diagnosed its own cost. **M7 — Moddable:
+"others can extend it" — opened 2026-09-07** at two `Proposed` ADRs, 0026 and 0027, with no code
+and no design document against either yet. This is the milestone the last four have been paying
+for: I1 through I9 exist so that it is possible, and nothing about it should require retrofitting
+anything below.
 
 ## Current milestone
+
+**M7 — Moddable: "others can extend it." Open, 2026-09-07.** Six roadmap bullets — the
+`FoundryApi_v1` table, manifests, discovery and load order, native mod loading, untrusted-input
+validation across the whole boundary, and `docs/modding/`. **Nothing is implemented.** What
+exists is the pair of decisions above; `docs/design/public-abi.md` is owed before the first line
+of code, and neither ADR is accepted.
+
+The exit criterion is the sharpest one the roadmap holds: *a mod built outside the engine tree
+adds a new component type, new content, and new behaviour, without engine source changes.* Note
+what each third of it tests — a component type is `scene` through the ABI, content is Tier 1
+which already works, and new behaviour is a native library through `platform.Library`. Note also
+"outside the engine tree", which ADR-0017 makes a real constraint rather than a phrasing: where
+that mod lives is a question this milestone has to answer and has not yet.
+
+**The milestone behind it — M6 — is complete**; its record is the header of this file. What
+follows in this section is what **M5** opened with, kept because the decisions and the design are
+what a future session needs and they have not changed.
 
 **M5 — Playable: "it's a game." Complete, opened 2026-09-05, closed 2026-09-06.** Every bullet
 — collision, sprite animation, audio and the playable sample — and the exit criterion with
@@ -308,17 +381,6 @@ did: one that keeps adding rooms to reach a number has started wanting features 
 being the smallest thing that is a game, which is the point at which ADR-0017 says it belongs
 in its own repository. **The load-bearing half of the criterion was "without knowing it is a
 tech demo", and that half was met.**
-
-**M6 — Tools: "it's inspectable" is the current milestone, opened 2026-09-06.** Its first
-roadmap bullet said the UI toolkit decision is made here, and it was: **ADR-0024, accepted**,
-with `docs/design/ui.md` written against it and **all six steps of its §16 implemented**. Its
-remaining three bullets are specified by `docs/design/debug-overlay.md`, whose §17 is the step
-list; **nothing is implemented against it**, and **ADR-0025 is `Proposed` rather than accepted**,
-which is the one thing standing between this milestone and its next line of code.
-
-What follows in this section is what **M5** opened with, kept because the decisions and the
-design are what a future session needs and they have not changed; what was built against them is
-under "What is being worked on".
 
 **Two `CLAUDE.md` §9 decisions came due and were made, neither silently (rule 10).**
 
@@ -1740,8 +1802,34 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**M5 is complete — four bullets and the exit criterion — and M6 is open.** The M6 steps are
-below the M5 record.
+**M7 is open, and everything below the next four lines is the record of M5 and M6.**
+
+1. **Accept or amend [ADR-0026](docs/adr/0026-abi-module-and-host.md) and
+   [ADR-0027](docs/adr/0027-mods-are-content-packages.md).** Both are `Proposed`. They are the
+   one thing standing between this milestone and its design document, exactly as ADR-0025 was
+   for M6. Amending either in place is still free — no code depends on them (`CLAUDE.md` §8).
+2. **On acceptance:** update `CLAUDE.md` §4.1 (two rows), §4.3 (the layering block gains `mod`
+   at L2 and corrects `abi` at L5), and §4.5 if the module list is touched. ADR-0007 and
+   ADR-0025 both carry the `abi -> app` line and need a dated pointer to ADR-0026 — a pointer,
+   not an edit, since code depends on both.
+3. **Write `docs/design/public-abi.md`**, with a §-numbered implementation order at the end, the
+   way every design document since `rhi.md` has carried one. It covers the table, the mod
+   lifecycle, discovery and load order together.
+4. **Then, and only then, code.** The first step should be the one that is provable headlessly:
+   `mod` — discovery, manifests, ordering — needs no table, no library and no window, and it is
+   what Tier 1 has been missing since M3.
+
+**Open, and owed an answer inside this milestone, not before it:** where the exit criterion's
+mod lives. It must be "built outside the engine tree" and ADR-0017 keeps games out of this
+repository, but a mod is not a game and `samples/` is where the smallest thing that exercises a
+capability goes. The three candidates are a `samples/mod/` built as its own artifact, a
+directory built by a separate `build.zig` invocation, and a genuinely separate repository. The
+criterion is what it proves, not where it sits.
+
+---
+
+**M5 is complete — four bullets and the exit criterion — and M6 is complete too.** The M6 steps
+are below the M5 record.
 
 1. ~~**Collision**, `tilemaps-and-collision.md` §15.~~ **Complete, all seven steps, 2026-09-06.**
    A player walks the sandbox's room and is stopped by its walls.

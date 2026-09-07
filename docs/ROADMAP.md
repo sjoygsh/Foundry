@@ -300,7 +300,7 @@ widgets are replaceable, the introspection APIs reach the ABI at M7.
 
 ## Phase 3 — Modding and shipping
 
-### M7 — Moddable: "others can extend it"
+### M7 — Moddable: "others can extend it" — **opened 2026-09-07**
 
 * The public C ABI: `FoundryApi_v1` table, opaque handles, versioning (ADR-0004).
 * Mod manifests: ID, version, dependencies, compatibility range, **license field** (ADR-0016).
@@ -311,6 +311,35 @@ widgets are replaceable, the introspection APIs reach the ABI at M7.
 
 **Exit criteria:** a mod built outside the engine tree adds a new component type, new content,
 and new behaviour, without engine source changes.
+
+**It opened where the last five did: at the decisions, before the design document.** Two, both
+`Proposed`, and the first is a correction rather than a new question.
+
+[**ADR-0026**](adr/0026-abi-module-and-host.md) — **`abi -> app` is wrong and the build graph
+says so.** ADR-0007 wrote that line on the project's second day and ADR-0025 copied it forward;
+`app` depends on `core`, `data`, `platform`, `ui`, `rhi`, `asset` and `render2d`, and **not** on
+`scene`, `audio` or `physics2d`, each absence deliberate and each with a comment saying why. Six
+design documents have meanwhile committed, in the "what this exposes to mods" sections
+`CLAUDE.md` §5 requires, to publishing entities, systems, queries, voices, bodies and contacts —
+three of those modules. `app` does not *own* the subsystems either: no world, no renderer, no
+mixer, no collision world, because the game owns them. So `abi` becomes a peer of `debug` at L5
+and the **host supplies its subsystems**, which is `debug.Sources` one milestone later and for
+the same reason. A capability whose subsystem is absent answers `Unavailable`; the table's shape
+never changes, because that is most of what a version means.
+
+[**ADR-0027**](adr/0027-mods-are-content-packages.md) — **a mod is a content package**, and its
+manifest is a `foundry:mod` record inside it, declared by `content/core`. Every tier is a
+package with something optional attached, so identity, version, dependencies and the license
+field ADR-0016 asks for are a record like any other — no second format, no sidecar to keep in
+sync, no identity derived from a folder name. `fpack` reads the name and version from the
+manifest instead of the command line. Discovery, resolution and load order become a new L2
+module `mod`, **below `app`**, because a Tier 1 mod list has to be computable by a game that
+loads no code at all, and because its output is exactly the ordered list `app.Config.content`
+already takes — so `data` still consumes an order and does not compute one.
+
+`docs/design/public-abi.md` is written against both once they are accepted, and covers the table
+and the mod lifecycle together: a manifest naming a library the table could not receive would be
+two designs that only look like one.
 
 ### M8 — Scriptable: "modders can extend it"
 

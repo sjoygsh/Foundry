@@ -11,16 +11,24 @@ depended on by several others, or will be hard to change later.
 
 Written documents move to the table below. This one is a schedule, not an index.
 
-**Nothing is owed.** M6's two documents are both written: `ui.md`, implemented in full, and
-`debug-overlay.md`, written 2026-09-07 and implemented in full the same day. The second was written after
-the first rather than beside it, because what an inspector may ask `scene` for and how
-per-subsystem timing is collected are a different subject with different invariants, and because
-that document is better written once the shape of a panel is known rather than imagined — which
-is exactly how it turned out: §11 answers `ui.md`'s open culling question with a convention the
-implemented widget set already supports, and could not have been written before it existed.
+**One document is owed: `public-abi.md`.** M7 opened 2026-09-07 at the two decisions it could
+not be written without — [ADR-0026](../adr/0026-abi-module-and-host.md), where the `abi` module
+sits and what supplies its subsystems, and [ADR-0027](../adr/0027-mods-are-content-packages.md),
+what a mod is made of. Both are `Proposed`; the document is written against them once they are
+accepted, and it covers the ABI table, the mod lifecycle, discovery and load order together,
+because a manifest that named a library the table could not receive would be two designs that
+only look like one.
 
-The next document is owed by whatever M7 opens with, and by the job system whenever
-`CLAUDE.md` §9's overdue entry is re-dated.
+M6's two documents are both written and both implemented: `ui.md`, and `debug-overlay.md`,
+written 2026-09-07 and implemented in full the same day. The second was written after the first
+rather than beside it, because what an inspector may ask `scene` for and how per-subsystem
+timing is collected are a different subject with different invariants, and because that document
+is better written once the shape of a panel is known rather than imagined — which is exactly how
+it turned out: §11 answers `ui.md`'s open culling question with a convention the implemented
+widget set already supports, and could not have been written before it existed.
+
+Also owed, and unchanged: the job system's document, whenever `CLAUDE.md` §9's overdue entry is
+re-dated.
 
 ## Written
 
