@@ -1144,3 +1144,103 @@ references mean *evictable, not freed*, and nothing evicts on a schedule; until 
 see the state. The test walks an asset from two references to zero to evicted, and the middle
 step — resident, resolving, referenced by nobody — is the answer to "why is this still in
 memory" that no existing call could give.
+
+
+---
+
+## Resolution: the `debug` module and its five panels (step 5, 2026-09-07)
+
+`engine/src/debug/` — `Overlay`, `Panel`, `View`, `Frame`, `Sources`, the panel registry,
+§11's windowing convention and the profiler, memory, log, entity and content panels — plus
+`samples/sandbox` deleting its hand-built ones and registering one of its own through
+`addPanel`. **974 tests**, up from 951: 23 in `debug` and one integration test in
+`engine/tests/debug_overlay.zig`.
+
+**ADR-0025's dependency list was three modules too long, and the ADR's own rule is what
+trimmed it.** `platform` and `rhi` were listed and neither was needed: the overlay reads the
+*engine's answers* rather than the devices underneath them — `app.Engine` owns the window and
+the device, `render2d.Stats` is a value, and no signature in the module names a platform or
+graphics type. With `physics2d` already excluded for the same reason, three of the original
+eleven are absent because `build.zig`'s rule says a dependency a module does not use is a
+claim the build cannot check. The ADR carries a dated revision note; it was written before any
+code depended on it, which is exactly the window §8 of `CLAUDE.md` allows one in.
+
+**§10.2's `Sources` had two answers to "which store", and the fix is a rule.** It listed
+`?*const data.Store` and `?*asset.Registry` beside the `*Engine` — but the engine *has* a
+store and an asset registry, so a content panel handed both would have had to pick one.
+`Sources` now carries exactly what the engine does **not** own: the world, the renderer and
+the mixer, which is precisely the set `app.Engine` has no field for and the set `build.zig`
+already says a game owns. It is a shorter struct and a sentence rather than a convention.
+
+**Panels are handed a `Frame`, not the engine, and that turned out to be the important
+decision in the module.** A panel written against a snapshot of public answers is a panel that
+ports to M7 by changing where the snapshot comes from, which is the claim ADR-0025 makes in
+Consequences and could otherwise only assert. Three things fell out of it that the design did
+not predict:
+
+* **Every panel is non-generic**, so the five of them read as ordinary code rather than as
+  `fn PanelOf(comptime E: type) type`. Only `Overlay.describe` is generic, and it is generic
+  the way `Engine.renderFrame`'s recorder already is — `anytype`, because the engine is
+  generic over its platform and its device and a test drives a headless one.
+* **Every panel test needs no engine at all.** A test builds a `Frame` by hand and asserts on
+  the draw list; `debug`'s unit tests open no window, touch no device and construct no engine,
+  which is a stronger version of the headlessness §13 asked for.
+* **`Engine.reloadContent` became a bound pointer pair** — a context and a function — because
+  a non-generic `Frame` cannot hold a method. That is six lines, and it is *literally* the
+  shape the ABI will hand a mod at M7, arrived at by the type system rather than by intent.
+
+**`beginScroll` places itself where it is told and never moves the cursor**, which is a real
+trap and had already been fallen into. The console at `ui.md` step 5 read
+`region().remaining()`, opened a scroll region over it, and then described its footer — at a
+cursor the scroll had not advanced, so the footer drew on top of the list's first row. Every
+list in this module reserves its area with `region().take(height)` first. The kernel is right
+not to advance: `beginScroll` takes an explicit rectangle precisely so a caller can put one
+anywhere. But "takes a rectangle" and "is placed by the layout" are different contracts and
+the call reads like the second.
+
+**The log ring is only reachable when the *root* source file installs `std_options`.** A
+`debug` unit test's root is `debug/root.zig`, so `std.log` in one of its tests goes to the
+default handler and never reaches the ring — the console tests would have passed vacuously if
+they had asserted the wrong way round. They write through `app.log_sink.logFn` instead, which
+is the same call the installed hook makes. `engine/tests/root.zig` *did* gain
+`pub const std_options = app.std_options;`, because an integration test binary is a root and a
+game's is too: the point of that test is that a running engine's own lines land in the ring the
+console reads.
+
+**Two numbers came out of the first windowed run, and one of them is step 6's whole subject.**
+Five panels open, 4,908 sprites, `-Drhi=metal -Doptimize=Debug`:
+
+```
+frame 239 spent 7.69ms: input 0.01  describe ui 0.21  debug.overlay 0.21
+  simulate 0.00  audio 0.00  submit 0.97  render.acquire 3.42  render.prepare 3.05
+  render.record 0.02  render.submit 0.01  render.present 0.00
+```
+
+* **`debug.overlay` is 0.21ms**, and it is *inside* `describe ui` rather than beside it — the
+  overlay's own cost is in the profile it is drawing, which is §10.3's requirement met rather
+  than asserted. Describing five panels is 2.7% of a debug frame.
+* **31 batches**, against six for the hand-drawn HUD and fifteen at the end of `ui` step 5.
+  The suspicion is still the one `ui.md` recorded twice — panel rectangles come from the blank
+  texture and glyphs from the font atlas, so every alternation is a texture break — and it is
+  still a suspicion. **Step 6 diagnoses it with the overlay**, which is what M6's exit
+  criterion asks for and why the number was left alone here.
+
+**The frame arena finally has a real user.** Step 2 measured its high-water at zero, step 3
+took it to 696 bytes, and the overlay takes it to **11,802**: every formatted line, the memory
+snapshot and each inspected component's fields are the frame's and are thrown away with it.
+That is the arena working as designed rather than growth to worry about — `live_bytes` is
+unchanged and the number resets every frame.
+
+**The sandbox kept its controls by registering a panel**, which is the part of §10.1 that
+needed demonstrating rather than arguing. `follow`, the zoom slider and the player's position
+are the game's, not the overlay's; they now arrive through the same `addPanel` a mod calls at
+M7, with a `*anyopaque` context that is the sample's own struct. Nothing in `debug` knows the
+difference between that panel and the five built-in ones, which is I3's discipline in a small
+place.
+
+**One thing this step did not fix and should not have.** `zig build check -Drhi=metal` fails to
+compile `app`'s *test* binary — `NothingRecorder.prepare` names `rhi.CommandBuffer`, which is
+Metal's under that flag, while `TestEngine` is built on the null device. It fails identically
+at the commit before this one, so it predates the overlay; it is recorded in
+`PROJECT_STATE.md` rather than repaired here, because a milestone's steps are not the place to
+fix a neighbouring module's test wiring.

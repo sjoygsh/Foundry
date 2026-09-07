@@ -1,6 +1,6 @@
 # ADR-0025: The debug overlay is an engine module above `app`, with no private path
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-07
 
 ## Context
@@ -46,13 +46,21 @@ on it ourselves*. The overlay is the same shape of problem and deserves the same
 **1. The overlay is a Foundry module named `debug`, above `app` in the layering.**
 
 ```
-L5  debug   -> core, data, platform, ui, rhi, asset, render2d, scene, audio, app
+L5  debug   -> core, data, ui, asset, render2d, scene, audio, app
 L5  abi     -> app                                                       (M7)
 ```
 
 `physics2d` is deliberately absent: nothing in M6 asks it a question, and `build.zig` already
 states the rule that a dependency a module does not use is a claim about the architecture the
 build cannot check. It joins the day a panel wants body and broadphase counts.
+
+> **Revision, 2026-09-07 (before any code depended on this).** The list above originally also
+> carried `platform` and `rhi`. Implementing the five panels needed neither, and by this
+> paragraph's own rule they had to go: the overlay reads the *engine's answers* rather than the
+> devices underneath them — `app.Engine` owns the window and the device, `render2d.Stats` is a
+> value, and no signature here names a platform or graphics type. Three of the eleven modules
+> in the original list are absent for one reason, which is a better statement of what the
+> overlay is than the longer list was.
 
 Nothing in the engine depends on `debug`. A game opts in by importing it, exactly as it opts into
 `render2d` or `audio` today, and a game that does not import it does not build it.

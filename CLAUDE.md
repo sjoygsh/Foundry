@@ -174,6 +174,7 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Collision | Foundry's own 2D collision, scoped to collision rather than dynamics | [0022](docs/adr/0022-2d-collision-own.md) |
 | Audio | Foundry's own mixer and WAV decoding; `platform` owns the device | [0023](docs/adr/0023-audio-own-mixer.md) |
 | UI | Foundry's own immediate-mode UI; one kernel, a debug widget set now, a content-driven game one later | [0024](docs/adr/0024-ui-own-immediate-mode.md) |
+| Debug overlay | A module `debug` above `app`, reaching only for calls the public ABI could expose | [0025](docs/adr/0025-debug-overlay-module.md) |
 | Determinism | Deterministic-friendly, not bit-exact | [0013](docs/adr/0013-determinism.md) |
 | Tooling | Tools are Foundry applications built on the public API | [0011](docs/adr/0011-tooling-architecture.md) |
 | Toolchain | Zig only; no CMake, Ninja, Make or pkg-config | [0014](docs/adr/0014-toolchain.md) |
@@ -231,10 +232,23 @@ L3  audio       -> core, platform, asset. Mixer, voices, playback by content ID.
 
 L4  app         -> all of the above.      Engine loop, subsystem lifecycle, config.
 
+L5  debug       -> core, data, ui, asset, render2d, scene, audio, app.
+                The in-process debug overlay: profiler, memory, log console, entity
+                inspector, content browser. Nothing in the engine depends on it; a game
+                opts in by importing it. No `platform`, no `rhi`, no `physics2d` — it
+                reads the engine's answers, not the devices under them.
 L5  abi         -> app.                   The public C ABI. (Added at M7.)
 ```
 
 Games, samples and tools depend on `app` (and on `abi` when acting as mods).
+
+**The overlay is not privileged.** `debug` is engine code and gets no private path (I4,
+ADR-0025): every call it makes must be one the public ABI could expose, which means handle or
+content-ID identity, a documented iteration order, read-only answers, frame-lifetime borrows,
+and validation rather than assertion on anything a mod could have supplied. The introspection
+itself lives in the subsystem being introspected, never in the overlay. This is I3's argument
+applied to tooling — the overlay is package zero for the introspection API, and the editor
+(§9, M6+) is a re-host of it rather than a rewrite.
 
 **The UI draw seam.** `ui` sits at L1 and below the renderer on purpose (ADR-0024). It reads
 input, decides what is hot, lays out, clips — and then *describes* what should appear as a list
@@ -288,7 +302,8 @@ Foundry/
 
   engine/
     src/
-      core/  platform/  data/  rhi/  asset/  render2d/  scene/  app/  abi/
+      core/  platform/  data/  physics2d/  ui/  rhi/  asset/  render2d/  scene/
+      audio/  app/  debug/  abi/
       rhi/backends/      null/  metal/ (Zig backend + Objective-C shim)
     tests/               Integration tests. Unit tests are colocated with source.
 

@@ -24,6 +24,9 @@ const core = @import("core");
 const asset = @import("asset");
 const audio = @import("audio");
 const data = @import("data");
+// The in-process debug overlay, which a game opts into by importing it and by nothing
+// else (ADR-0025). Nothing in the engine depends on it; this sample does.
+const debug = @import("debug");
 const physics2d = @import("physics2d");
 const platform = @import("platform");
 const render2d = @import("render2d");
@@ -437,9 +440,9 @@ fn summariseResources(engine: *app.Engine) void {
 
     log.info("last {d} frames: median {d:.2}ms, p95 {d:.2}ms, max {d:.2}ms", .{
         summary.count,
-        SpriteField.millis(summary.median_ns),
-        SpriteField.millis(summary.p95_ns),
-        SpriteField.millis(summary.max_ns),
+        millis(summary.median_ns),
+        millis(summary.p95_ns),
+        millis(summary.max_ns),
     });
 
     // The most recent frame's spans, largest first, which is the order a person reads a
@@ -462,14 +465,20 @@ fn summariseResources(engine: *app.Engine) void {
     }
     log.info("frame {d} at {d:.2}ms went mostly to: {s} {d:.2}ms, {s} {d:.2}ms, {s} {d:.2}ms", .{
         frame.index,
-        SpriteField.millis(frame.total_ns),
+        millis(frame.total_ns),
         recorder.nameOf(top[0].name),
-        SpriteField.millis(@intCast(top[0].durationNs())),
+        millis(@intCast(top[0].durationNs())),
         recorder.nameOf(top[1].name),
-        SpriteField.millis(@intCast(top[1].durationNs())),
+        millis(@intCast(top[1].durationNs())),
         recorder.nameOf(top[2].name),
-        SpriteField.millis(@intCast(top[2].durationNs())),
+        millis(@intCast(top[2].durationNs())),
     });
+}
+
+/// Nanoseconds as milliseconds, for display only. Never fed back into anything: statistics
+/// are outputs, and a simulation that read one would stop being reproducible (I9).
+fn millis(ns: i64) f32 {
+    return @as(f32, @floatFromInt(ns)) / @as(f32, @floatFromInt(core.time.ns_per_ms));
 }
 
 /// Everything the sample draws with, read from content rather than written here.
@@ -1238,15 +1247,10 @@ const SpriteField = struct {
     /// ids it has seen, and the draw list this frame described. Described in `describeUi`
     /// at the top of the frame and walked into the renderer in `hud`.
     ui: ui.Context,
-    /// Frame times, newest last, as a ring. **The sample owns it**, which is the whole
-    /// bargain: `ui.plot` draws a caller's samples and keeps no copy that could disagree
-    /// with them.
-    frame_ms: [96]f32 = @splat(0),
-    frame_head: usize = 0,
-    /// What the overlay's filter box holds. A fixed buffer, because a debug filter is
-    /// thirty bytes and `ui.textField` allocates nothing.
-    filter: [48]u8 = undefined,
-    filter_len: usize = 0,
+    /// The panels, and the sample's own among them. Heap-allocated because the built-in
+    /// panels hold pointers into it, which is also why it survives this struct being
+    /// returned by value from `init`.
+    overlay: *debug.Overlay,
     /// Characters the OS committed this frame, drained from the frame's events.
     typed: [8]platform.event.TextInput = undefined,
     typed_len: usize = 0,
@@ -1300,6 +1304,7 @@ const SpriteField = struct {
             .sheet = .{ .texture = .none, .uv = .{}, .size_px = .{} },
             .font = font,
             .ui = .init(gpa, hudStyle(uiFontOf(font))),
+            .overlay = try .init(gpa, .{}),
             // Both are placeholders: `World.init` needs the registry's final address, and
             // this struct is returned by value, so the world is built in `load`.
             .schemas = undefined,
@@ -1385,6 +1390,57 @@ const SpriteField = struct {
         // Last, because it wants the settings the record named and the map the player
         // stands in the middle of.
         self.startHum();
+
+        // The sample's own panel, registered here rather than in `init` for the reason the
+        // texture loader is: it holds `self`, and a struct returned by value has not reached
+        // its final address yet.
+        _ = try self.overlay.addPanel(.{
+            .id = ui.Id.root.child("sandbox"),
+            .title = "sandbox",
+            .ctx = self,
+            .describe = describePanel,
+            .open = true,
+        });
+    }
+
+    /// The sample's controls, as a panel of the overlay's.
+    ///
+    /// **This is `addPanel`'s whole point, demonstrated rather than asserted.** The five
+    /// built-in panels register through this same call and get nothing this one does not, so
+    /// the path a game takes today — and a mod at M7 — is the path the engine is already on
+    /// (ADR-0025, I3). Nothing about this panel is a special case anywhere in `debug`.
+    fn describePanel(ctx: ?*anyopaque, view: *debug.View) anyerror!void {
+        const self: *SpriteField = @ptrCast(@alignCast(ctx.?));
+
+        const at = self.playerAt() orelse core.math.Vec2.zero;
+        try view.line("player ({d:.0}, {d:.0})  {d} contacts  frame {d}", .{
+            at.x,
+            at.y,
+            self.contacts,
+            if (self.player) |e| (if (self.animationOf(e)) |a| a.frame else 0) else 0,
+        });
+
+        // The flag lives here, in the sample, and the kernel holds no copy of it — which is
+        // the immediate-mode bargain and the reason a debug toggle cannot drift from the
+        // thing it toggles. `control` may clear it later in the same frame when the camera
+        // is dragged, and the box will say so on the next one.
+        if (try ui.checkbox(view.ui, view.ui.childId("follow"), "follow player", &self.follow)) {
+            log.info("camera {s} the player", .{
+                if (self.follow) "is following" else "no longer follows",
+            });
+        }
+
+        // A slider over a value the sample already had, rather than one invented for it:
+        // dragging this is the same zoom the wheel changes, and the two never disagree
+        // because there is only one of them.
+        _ = try ui.slider(
+            view.ui,
+            view.ui.childId("zoom"),
+            view.text("zoom {d:.2}", .{self.camera.zoom}),
+            &self.camera.zoom,
+            min_zoom,
+            max_zoom,
+        );
     }
 
     /// Starts the looping ambience, or leaves the sample quiet.
@@ -2014,6 +2070,7 @@ const SpriteField = struct {
         self.world.deinit();
         self.schemas.deinit(self.gpa);
         self.ui.deinit();
+        self.overlay.deinit();
         self.renderer.deinit();
     }
 
@@ -2334,7 +2391,6 @@ const SpriteField = struct {
         // is a value the kernel only ever reads — so the cheap thing is also the correct
         // one.
         self.ui.style = hudStyle(self.uiFont());
-        const style = self.ui.style;
 
         // The input the simulation saw, in the units the pointer is reported in. One
         // snapshot, two consumers, so the UI and the world cannot disagree about what the
@@ -2351,352 +2407,19 @@ const SpriteField = struct {
         }, .init(0, 0, width, height));
         defer self.ui.end();
 
-        const stats = self.renderer.frameStats();
-        const at = self.playerAt() orelse core.math.Vec2.zero;
-
-        // The overlay keeps its own history of what it is about to plot, because the plot
-        // draws a caller's samples and holds none of its own (`ui.plot`). A ring, written
-        // at the head and read from it, which is what `PlotOptions.first` is for.
+        // **The overlay, in one call.** Everything this used to build by hand — the frame
+        // profile, the memory counters, the log console — is `debug`'s now, and the sample
+        // is a consumer of it exactly as a game in its own repository would be (ADR-0025).
+        // What is left here is the sample's own panel, registered through the same
+        // `addPanel` a mod uses at M7.
         //
-        // **When the profiler is on, the samples are its frame totals instead**, which is
-        // the better number: `frameDelta` is how long the *previous* frame took to come
-        // round, while a recorded frame is what this program spent, measured by the engine
-        // that owns the frame. `totalsMs` hands back the most recent samples that fit, in
-        // order, so the ring's head goes to zero and the plot needs no other change.
-        var plot_count: usize = self.frame_ms.len;
-        if (engine.profiler()) |recorder| {
-            plot_count = recorder.totalsMs(&self.frame_ms).len;
-            self.frame_head = 0;
-        } else {
-            self.frame_ms[self.frame_head] = engine.frameDelta().toSecondsF32() * 1000;
-            self.frame_head = (self.frame_head + 1) % self.frame_ms.len;
-        }
-
-        // Four rows where this used to be one string with newlines in it. The gap between
-        // them is now the region's spacing — a style decision — rather than a `\n` and a
-        // `line_spacing` the call site had to keep in step with each other.
-        //
-        // The buffers are on the stack and go away at the end of this function, which is
-        // exactly the case `ui.TextRef` exists for: the kernel copies what it is given, so
-        // the walker three functions later is not reading a dead frame's memory.
-        var buffers: [4][128]u8 = undefined;
-        var lines: [4][]const u8 = undefined;
-        lines[0] = std.fmt.bufPrint(&buffers[0], "{d:.1}ms  {d} sprites  {d} glyphs  {d} tiles", .{
-            engine.frameDelta().toSecondsF32() * 1000,
-            stats.sprites,
-            stats.glyphs,
-            stats.tiles,
-        }) catch "";
-        lines[1] = std.fmt.bufPrint(&buffers[1], "{d} batches  {d} draw calls  {d} views", .{
-            stats.batches,
-            stats.draw_calls,
-            stats.views,
-        }) catch "";
-        lines[2] = std.fmt.bufPrint(&buffers[2], "{d} KiB vertices  {d} buffers  {d} textures", .{
-            stats.vertex_bytes / 1024,
-            stats.buffers_used,
-            stats.textures_resident,
-        }) catch "";
-        lines[3] = std.fmt.bufPrint(&buffers[3], "player ({d:.0}, {d:.0})  {d} contacts  frame {d}", .{
-            at.x,
-            at.y,
-            self.contacts,
-            if (self.player) |e| (if (self.animationOf(e)) |a| a.frame else 0) else 0,
-        }) catch "";
-
-        // **A cursor layout does not size its container**, so whoever opens a panel adds
-        // its contents up. `Region.placed` reports what actually landed, but only after
-        // the fact, and a panel has to be the right size the first time it is drawn.
-        // The frame's spans, formatted before anything is sized, because they are the
-        // widest lines in the panel and the panel has to be the right size the first time
-        // it is drawn.
-        var span_buffers: [max_span_lines][96]u8 = undefined;
-        var span_lines: [max_span_lines][]const u8 = undefined;
-        const spans = self.profileLines(engine, &span_buffers, &span_lines);
-        const memory = self.memoryLines(engine, span_buffers[spans.len..], span_lines[spans.len..]);
-
-        var widest: f32 = 0;
-        for (lines) |line| widest = @max(widest, style.font.measure(line, style.text_scale).x);
-        for (spans) |line| widest = @max(widest, style.font.measure(line, style.text_scale).x);
-        for (memory) |line| widest = @max(widest, style.font.measure(line, style.text_scale).x);
-
-        // A panel around a collapsing section has to know whether it is open before it can
-        // be sized, and the kernel is what remembers that. The id is the one the header
-        // will ask for: seeded by the panel's region, which is `stats_id`.
-        const stats_id = ui.Id.root.child("stats");
-        const detail_id = stats_id.child("detail");
-        const detail_open = self.ui.stateOf(detail_id).open;
-
-        const plot_height = style.line_height * 2;
-        const extra: f32 = if (detail_open) @floatFromInt(spans.len + memory.len) else 0;
-        const rows: f32 = (if (detail_open) @as(f32, 7) else 5) + extra;
-        const items: f32 = (if (detail_open) @as(f32, 9) else 7) + extra;
-        const content = rows * style.line_height + plot_height +
-            (style.separator_thickness + style.spacing * 2) +
-            (items - 1) * style.spacing;
-
-        // Three paddings, not two: the panel insets its region by one, and a `label`
-        // insets its text by another so that a label and a button line up in a column.
-        // Two would put the last glyph exactly on the panel's clipped edge.
-        try ui.beginPanel(&self.ui, stats_id, .init(
-            hud_margin,
-            hud_margin,
-            widest + style.padding.x * 3,
-            content + style.padding.y * 2,
-        ));
-        try ui.label(&self.ui, lines[0]);
-        try ui.label(&self.ui, lines[1]);
-        // Newest last, oldest first, straight out of the ring the sample keeps.
-        try ui.plot(&self.ui, self.frame_ms[0..plot_count], .{
-            .height = plot_height,
-            .first = self.frame_head,
-            .min = 0,
+        // The world, the renderer and the mixer are handed over because the engine owns
+        // none of them; the store, the assets and the profiler are not, because it does.
+        try self.overlay.describe(&self.ui, engine, .{
+            .world = &self.world,
+            .renderer = &self.renderer,
+            .mixer = self.mixer,
         });
-        if (try ui.collapsingHeader(&self.ui, detail_id, "detail")) {
-            try ui.label(&self.ui, lines[2]);
-            try ui.label(&self.ui, lines[3]);
-            // **Where the frame went.** The engine's spans are the skeleton — `input`,
-            // `render.acquire` and the rest — and `simulate` and `physics` below them are
-            // this sample's, opened around the code it owns. Nothing here is measured by a
-            // subsystem timing itself: `scene` and `physics2d` cannot read a clock at all
-            // (`debug-overlay.md` §4.1), so the caller times the call.
-            for (spans) |line| try ui.label(&self.ui, line);
-            // **Only what somebody registered**, which for this sample is the engine's
-            // allocator and its own. The engine does not wrap the one it was handed, so
-            // the split between these two rows is a decision `main` made rather than one
-            // the engine imposed (`debug-overlay.md` §5).
-            for (memory) |line| try ui.label(&self.ui, line);
-        }
-        try ui.separator(&self.ui);
-        // The flag lives here, in the sample, and the kernel holds no copy of it — which
-        // is the immediate-mode bargain and the reason a debug toggle cannot drift from
-        // the thing it toggles. `control` may clear it later in the same frame when the
-        // camera is dragged, and the box will say so on the next one.
-        if (try ui.checkbox(&self.ui, self.ui.childId("follow"), "follow player", &self.follow)) {
-            log.info("camera {s} the player", .{
-                if (self.follow) "is following" else "no longer follows",
-            });
-        }
-
-        // A slider over a value the sample already had, rather than one invented for it:
-        // dragging this is the same zoom the wheel changes, and the two never disagree
-        // because there is only one of them.
-        var zoom_label: [32]u8 = undefined;
-        const zoom_text = std.fmt.bufPrint(&zoom_label, "zoom {d:.2}", .{self.camera.zoom}) catch "zoom";
-        _ = try ui.slider(
-            &self.ui,
-            self.ui.childId("zoom"),
-            zoom_text,
-            &self.camera.zoom,
-            min_zoom,
-            max_zoom,
-        );
-        try ui.endPanel(&self.ui);
-
-        try self.describeConsole(engine, width, height);
-    }
-
-    /// How many detail lines the panel will show: a frame summary, then one span each,
-    /// then one per registered allocator and one for the frame arena.
-    const max_span_lines = 18;
-
-    /// Nanoseconds as milliseconds, for display only.
-    fn millis(ns: i64) f32 {
-        return @as(f32, @floatFromInt(ns)) / @as(f32, @floatFromInt(core.time.ns_per_ms));
-    }
-
-    /// Formats the latest frame's spans, deepest nesting indented, plus one summary line
-    /// over the whole history.
-    ///
-    /// Returns a slice of `out`, which borrows `buffers`; both are the caller's stack and
-    /// go away at the end of the frame, which is exactly what `ui.TextRef` copies for.
-    fn profileLines(
-        self: *SpriteField,
-        engine: *app.Engine,
-        buffers: *[max_span_lines][96]u8,
-        out: *[max_span_lines][]const u8,
-    ) [][]const u8 {
-        _ = self;
-        const recorder = engine.profiler() orelse {
-            out[0] = "profiler off";
-            return out[0..1];
-        };
-        const frame = recorder.latest() orelse {
-            out[0] = "profiler on, no frame yet";
-            return out[0..1];
-        };
-
-        // p95 over the history rather than the last frame, because the number a person is
-        // hunting is the hitch and the last frame is almost never it. The scratch buffer
-        // is the stack's: `core.profile.summarise` allocates nothing.
-        var totals: [240]i64 = undefined;
-        var scratch: [240]i64 = undefined;
-        var count: usize = 0;
-        var it = recorder.frames();
-        while (it.next()) |f| : (count += 1) {
-            if (count == totals.len) break;
-            totals[count] = f.total_ns;
-        }
-        const summary = core.profile.summarise(totals[0..count], &scratch);
-
-        var n: usize = 0;
-        out[n] = std.fmt.bufPrint(&buffers[n], "frame {d}: {d:.2}ms  p95 {d:.2}ms  max {d:.2}ms", .{
-            frame.index,
-            millis(frame.total_ns),
-            millis(summary.p95_ns),
-            millis(summary.max_ns),
-        }) catch "";
-        n += 1;
-
-        for (frame.spans) |s| {
-            if (n == out.len) break;
-            const indent = @min(s.depth, 3) * 2;
-            out[n] = std.fmt.bufPrint(&buffers[n], "{s}{s} {d:.2}ms", .{
-                "      "[0..indent],
-                recorder.nameOf(s.name),
-                millis(@intCast(s.durationNs())),
-            }) catch "";
-            n += 1;
-        }
-        return out[0..n];
-    }
-
-    /// One line per registered allocator, plus the frame arena's peak.
-    ///
-    /// **Only what somebody registered.** There is no global allocator in Foundry and so
-    /// no global to enumerate; this sample registers two — the engine's and its own — and
-    /// a report that listed anything else would be reporting a fiction.
-    fn memoryLines(
-        self: *SpriteField,
-        engine: *app.Engine,
-        buffers: [][96]u8,
-        out: [][]const u8,
-    ) [][]const u8 {
-        _ = self;
-        var n: usize = 0;
-        var it = engine.memory();
-        while (it.next()) |counter| {
-            if (n == out.len) break;
-            out[n] = std.fmt.bufPrint(&buffers[n], "{s} {d} KiB live, {d} peak, {d} allocs", .{
-                counter.name,
-                counter.live_bytes / 1024,
-                counter.peak_bytes / 1024,
-                counter.allocations,
-            }) catch "";
-            n += 1;
-        }
-        if (n < out.len) {
-            // The arena is a different question from a counter: it holds nothing between
-            // frames, so what it costs is its peak.
-            //
-            // **Zero here is the right answer, not a broken instrument.** Nothing in this
-            // sample calls `engine.frameAllocator()` — the UI kernel keeps an arena of its
-            // own (counted under `sample`, because the sample built it) and everything
-            // else formats into stack buffers. The engine's frame arena is available and
-            // unused, and the report says so rather than hiding it.
-            out[n] = std.fmt.bufPrint(&buffers[n], "frame arena peak {d} B", .{
-                engine.frameArenaHighWater(),
-            }) catch "";
-            n += 1;
-        }
-        return out[0..n];
-    }
-
-    /// The second panel: a filter box over a scrolling list.
-    ///
-    /// **This is the log console's shape**, which is what `ui.md` §10 says the scroll
-    /// region and the text field are for — built here on strings the sample already had,
-    /// so the two widgets are drawn by something rather than only tested. The overlay's
-    /// own document turns this shape into a real console over the log sink.
-    /// The rows the console draws at once. The scroll region shows five; one more is read
-    /// so that a half-scrolled row is there to draw.
-    const console_rows = 6;
-
-    /// The log console: a filter box over the last lines the engine logged.
-    ///
-    /// **This panel was the log console's *shape* at `ui.md` step 5** — the same filter box
-    /// over the same scrolling list, filled with the sample's key bindings because there was
-    /// nothing else to put in it. This is the step where it stops being a shape.
-    ///
-    /// It is also the first user of `debug-overlay.md` §11's windowing convention, and the
-    /// case that convention was written for: the ring holds up to a thousand lines and six
-    /// are on screen. **The caller emits only the visible rows**, with two `spacer`s
-    /// standing in for the rest, because a row is a fiction only the caller maintains — and
-    /// the work skipped is the formatting, not merely the drawing.
-    fn describeConsole(self: *SpriteField, engine: *app.Engine, width: f32, height: f32) !void {
-        const style = self.ui.style;
-        const filter = self.filter[0..self.filter_len];
-
-        const row = style.line_height + style.spacing;
-        const list_height = row * 5;
-
-        const list_id = ui.Id.root.child("console").child("list");
-        // Last frame's offset, which is this frame's: the kernel clamped it when it drew,
-        // and reading it *before* `beginScroll` is what makes the window computable at all.
-        const scroll = @max(0, self.ui.stateOf(list_id).scroll);
-        const first: usize = @intFromFloat(@floor(scroll / row));
-
-        var records: [console_rows]app.LogRecord = undefined;
-        const view = app.log_sink.readView(
-            engine.frameAllocator(),
-            &records,
-            .{ .contains = filter },
-            first,
-        ) catch app.LogView{ .total = 0, .records = records[0..0] };
-
-        // Formatted before anything is sized, because the panel has to be the right width
-        // the first time it is drawn and these are the widest lines in it.
-        var buffers: [console_rows][160]u8 = undefined;
-        var lines: [console_rows][]const u8 = undefined;
-        for (view.records, 0..) |record, i| {
-            lines[i] = std.fmt.bufPrint(&buffers[i], "{d} {t} {s}: {s}", .{
-                record.frame,
-                record.level,
-                record.scope,
-                record.text,
-            }) catch "";
-        }
-
-        var footer_buffer: [64]u8 = undefined;
-        const footer = std.fmt.bufPrint(&footer_buffer, "{d} lines, {d} dropped", .{
-            view.total,
-            app.log_sink.dropped(),
-        }) catch "";
-
-        var widest: f32 = style.font.measure(footer, style.text_scale).x;
-        for (lines[0..view.records.len]) |line| {
-            widest = @max(widest, style.font.measure(line, style.text_scale).x);
-        }
-
-        const panel_w = @min(
-            @max(widest, style.line_height * 8) + style.padding.x * 3 + style.scrollbar,
-            width * 0.6,
-        );
-        const panel_h = (style.line_height + style.spacing) * 2 + list_height + style.padding.y * 2;
-        const panel: core.math.Rect = .init(
-            width - panel_w - hud_margin,
-            height - panel_h - hud_margin,
-            panel_w,
-            panel_h,
-        );
-
-        try ui.beginPanel(&self.ui, ui.Id.root.child("console"), panel);
-        // Typing here must not also walk the player, resize the window or recentre the
-        // camera — which is what `wantsKeyboard` is for, and what `walk`, the resize key
-        // and `control` each check.
-        _ = try ui.textField(&self.ui, self.ui.childId("filter"), &self.filter, &self.filter_len);
-
-        const listed = @as(f32, @floatFromInt(view.total)) * row;
-        try ui.beginScroll(&self.ui, list_id, self.ui.region().remaining(), listed);
-        // The rows above and below, as two gaps. Ten thousand lines cost two `spacer`s.
-        ui.spacer(&self.ui, @as(f32, @floatFromInt(first)) * row);
-        for (lines[0..view.records.len]) |line| try ui.label(&self.ui, line);
-        const after = view.total -| (first + view.records.len);
-        ui.spacer(&self.ui, @as(f32, @floatFromInt(after)) * row);
-        try ui.endScroll(&self.ui);
-
-        try ui.label(&self.ui, footer);
-        try ui.endPanel(&self.ui);
     }
 
     /// The overlay, **drawn**: one call, and the only line in the sample that knows the UI

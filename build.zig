@@ -95,6 +95,22 @@ const layering = [_]Module{
     // texture is.
     .{ .name = "app", .deps = &.{ "core", "data", "platform", "ui", "rhi", "asset", "render2d" } },
 
+    // L5 — the in-process debug overlay (ADR-0025, docs/design/debug-overlay.md). Above
+    // `app` rather than inside it, because it needs `scene` and the engine loop does not:
+    // an `app` that imported the ECS in order to inspect it would be making a false claim
+    // about the architecture in the one place the layering is supposed to be
+    // self-describing. **Nothing in the engine depends on this.** A game opts in by
+    // importing it, exactly as it opts into `render2d` or `audio`.
+    //
+    // What it does *not* get is the interesting part, again. No `platform` and no `rhi`:
+    // ADR-0025 listed both and the implementation needed neither, because the overlay reads
+    // the engine's answers rather than the devices underneath them — `app.Engine` already
+    // owns the window and the device, and a `Stats` is a value. No `physics2d` either,
+    // until a panel wants body and broadphase counts. The rule above is the reason all
+    // three are absent: a dependency a module does not use is a claim about the
+    // architecture the build cannot check.
+    .{ .name = "debug", .deps = &.{ "core", "data", "ui", "asset", "render2d", "scene", "audio", "app" } },
+
     // Added as each is implemented. The rest of the graph from ADR-0007 is:
     //   L5  abi        -> app             (M7)
 };
@@ -271,6 +287,10 @@ pub fn build(b: *std.Build) void {
     // And its overlay, for the same reason: `app` supplies the walker that turns a
     // described frame into draw calls, and the widgets are the game's to call (ADR-0024).
     sandbox_mod.addImport("ui", modules.get("ui").?);
+    // The debug overlay, which a game opts into by importing it and by nothing else
+    // (ADR-0025). The sandbox is its first consumer and registers a panel of its own
+    // through the same call a mod will use at M7.
+    sandbox_mod.addImport("debug", modules.get("debug").?);
 
     // The shader the sandbox draws with, compiled by the build and embedded in the
     // executable. Only under Metal: `xcrun` is a macOS toolchain, and a null build must not
@@ -476,7 +496,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    for ([_][]const u8{ "core", "data", "platform", "physics2d", "ui", "rhi", "asset", "render2d", "scene", "audio", "app" }) |name| {
+    for ([_][]const u8{ "core", "data", "platform", "physics2d", "ui", "rhi", "asset", "render2d", "scene", "audio", "app", "debug" }) |name| {
         integration_mod.addImport(name, modules.get(name).?);
     }
 

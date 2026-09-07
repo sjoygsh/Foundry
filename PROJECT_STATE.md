@@ -1,28 +1,48 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-07
-**Updated by:** **M6's second and last design document is written, and it is the one carrying
-the milestone's actual value.** `docs/design/debug-overlay.md` (852 lines, §17 is the step list)
-covers the remaining three roadmap bullets — the entity inspector, the content browser and the
-log console; the frame profiler and per-allocator memory reporting; and the introspection APIs
-beneath all of them. **Steps 1 to 4 of its §17 are implemented**: `engine/src/core/profile.zig`
-and `Engine.beginScope` with the engine's seven named spans; `core.mem.Counted`,
+**Updated by:** **M6 step 5 is done: `engine/src/debug/` exists and the sandbox's hand-built
+panels are gone.** [ADR-0025](docs/adr/0025-debug-overlay-module.md) is **accepted**, so the
+layering has a new node — `debug` at L5, above `app`, which nothing in the engine depends on and
+a game opts into by importing. `docs/design/debug-overlay.md` §17 steps 1 to 5 are implemented:
+`core/profile.zig` and `Engine.beginScope` with the engine's seven named spans; `core.mem.Counted`,
 `Arena.highWater` and the engine's memory registry; the in-memory log ring behind
-`app/log_sink.zig`; and the introspection calls themselves — `World.liveEntities`,
-`World.componentTypes`, `World.describeComponent`, `data.Registry.all`, `Store.definitions` and
-`asset.Registry.assets`. The sandbox plots the profiler's own frame totals, lists the frame's
-spans and its two allocators under `detail`, logs both at exit, and its second panel is now **an
-actual log console** rather than the shape of one. **951 tests**, up from 900.
+`app/log_sink.zig`; the introspection calls — `World.liveEntities`, `World.componentTypes`,
+`World.describeComponent`, `data.Registry.all`, `Store.definitions`, `asset.Registry.assets`; and
+now the overlay itself: `Overlay`, `Panel`, `View`, `Frame`, `Sources`, the panel registry and
+five panels (profiler, memory, log, entities, content). `samples/sandbox` deleted `describeConsole`,
+`profileLines` and `memoryLines` and **registers a panel of its own through the same `addPanel` a
+mod uses at M7**. **974 tests**, up from 951.
 
-**[ADR-0025](docs/adr/0025-debug-overlay-module.md) is still `Proposed`, and nothing yet depends
-on it**, which is deliberate: steps 1-4 add calls to modules that already exist and only step 5
-creates the `debug` module. It adds a node to the layering graph and sets a rule on every call
-the milestone adds. The overlay is a module `debug` **above `app`** — not in `app`, which would make
-the engine loop claim a dependency on `scene` that is not true, and not in a sample, which would
-make the exit criterion true of our sample rather than of a game. And it may use **no call the
-public ABI could not expose**: I3's argument moved to tooling, so the editor at M6+ is a re-host
-rather than a rewrite, and a mod gets the same panels' calls at M7 instead of watching the
-first-party overlay use a back door I4 forbids.
+**Three things the implementation settled that the design had not.**
+
+* **`debug` depends on eight modules, not eleven.** ADR-0025 listed `platform` and `rhi` and
+  neither was needed — the overlay reads the *engine's answers*, not the devices underneath
+  them — so both were dropped by the ADR's own rule, the one `build.zig` states: a dependency a
+  module does not use is a claim the build cannot check. `physics2d` was already out for the
+  same reason. The ADR carries a dated revision note, written in the window `CLAUDE.md` §8
+  allows one.
+* **Panels are handed a `Frame` — a snapshot of the engine's public answers — rather than the
+  engine.** That is what a panel will get at M7, so a panel ports by changing where the
+  snapshot comes from. It also makes every panel non-generic and every panel test engine-free:
+  `debug`'s 23 unit tests open no window, touch no device and build no engine.
+* **`Sources` carries what the engine does *not* own.** §10.2 listed a store and an asset
+  registry beside the `*Engine`, which would have given the content panel two answers to "which
+  store". The engine has both; it has no world, no renderer and no mixer. Those three are the
+  struct.
+
+**What is left of M6 is step 6**, and it is the exit criterion rather than more building:
+`samples/room` adopts the overlay behind a key, and then **the overlay diagnoses its own batch
+cost**. The number to explain is already on the board — six batches for the hand-drawn HUD, ten
+once the overlay existed, fifteen at the end of `ui` step 5, and **31** with five panels open —
+against a suspicion (`ui.md` recorded it twice) that alternating between the blank texture and
+the font atlas is what breaks a batch. Confirming or refuting it with the tool is a better
+closing argument than any synthetic case.
+
+**Known, pre-existing, and not step 5's to fix:** `zig build check -Drhi=metal` fails to compile
+`app`'s *test* binary — `NothingRecorder.prepare` names `rhi.CommandBuffer`, which is Metal's
+under that flag, while `TestEngine` is built on the null device. It fails identically at the
+commit before this one. The Metal *executables* build and run.
 
 **Four decisions in that document are worth knowing without reading it.**
 
