@@ -203,6 +203,16 @@ pub const Str = extern struct {
 /// boundary one day; this is that day, and there is nothing to convert.
 pub const ContentId = core.ContentId;
 
+/// `data`'s, unchanged, and **a different type from `ContentId` on purpose**.
+///
+/// Schemas and content occupy separate identifier spaces, so the schema `foundry:item` and a
+/// record named `foundry:item` coexist without either shadowing the other. `data` made that
+/// a type difference rather than a convention specifically so the most confusable pair of
+/// values in the content system could not be swapped by accident — and said, in 2026-09, that
+/// it was `extern struct` "which is why", meaning here. Collapsing them at the boundary would
+/// have thrown away the one place the distinction is hardest to keep by eye.
+pub const SchemaId = data.SchemaId;
+
 // == Handles ===========================================================================
 
 /// Sixty-four opaque bits, one distinct type per kind.

@@ -132,11 +132,15 @@ const layering = [_]Module{
     //
     // `data`, `asset` and `app` join at step 3, which is what `app` and `data` already
     // answer: the log, the frame, the profiler, the memory report, content and assets.
-    // `scene`, `render2d`, `ui`, `audio` and `physics2d` follow at steps 4 and 5, and
-    // `platform` at step 6 for `Library` alone. The one module it will **never** have is
+    // `platform` joins with them and earlier than ADR-0026 expected — not for `Library`,
+    // which is step 6, but because a test engine has to build a real `asset.Registry` and a
+    // registry takes an `Os`. Being able to bind a fake engine is the whole reason `Host` is
+    // generic, so the alternative was an asset surface with no unit tests at all.
+    // `scene`, `render2d`, `ui`, `audio` and `physics2d` follow at steps 4 and 5.
+    // The one module it will **never** have is
     // `rhi` — §4.2's two boundaries, where the renderer API is game-facing and the RHI is
     // not, so this module does not merely decline to publish the RHI, it cannot see it.
-    .{ .name = "abi", .deps = &.{ "core", "data", "asset", "app" } },
+    .{ .name = "abi", .deps = &.{ "core", "data", "platform", "asset", "app" } },
 };
 
 /// Which platform backend to build against.

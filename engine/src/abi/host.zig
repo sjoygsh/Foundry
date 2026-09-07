@@ -23,6 +23,7 @@
 
 const std = @import("std");
 const core = @import("core");
+const data = @import("data");
 
 const types = @import("types.zig");
 
@@ -38,6 +39,19 @@ const log = core.log.scoped(.abi);
 /// bound, and a bound that is hit is a refusal with a name (`limit`) rather than a surprise.
 pub const max_counters: u32 = 16;
 pub const max_counter_name: u32 = 48;
+
+/// How many nested blocks a mod may have open views on at once.
+///
+/// A `FoundryRecord` for a top-level record is the store's own handle and needs no storage.
+/// A **nested** block has no identity of its own — that is what nested means — and its view
+/// is three slices into a package's bytes, which does not fit in sixty-four bits. So the
+/// boundary keeps a ring of them and hands out generational handles into it.
+///
+/// The consequence is a rule worth stating plainly: **a nested view stays valid until this
+/// many more are opened**, and one that has been recycled answers `invalid_handle` rather
+/// than reading whatever now occupies the slot. That is I1's promise applied to a view rather
+/// than an object, and sixty-four is far more than reading one record needs.
+pub const max_nested_views: u32 = 64;
 
 /// How deeply a mod may nest profiler spans before the boundary stops counting.
 ///
@@ -63,6 +77,10 @@ pub fn HostOf(comptime E: type) type {
         counters: [max_counters]Counter = @splat(.{}),
         counter_count: u32 = 0,
 
+        /// Open views on nested blocks, as a ring.
+        nested: [max_nested_views]NestedView = @splat(.{}),
+        nested_next: u32 = 0,
+
         /// How many profiler spans this boundary has open. Not the recorder's depth — the
         /// recorder counts the engine's and the game's too, and this must not close one of
         /// those.
@@ -71,6 +89,73 @@ pub fn HostOf(comptime E: type) type {
         /// The bound host, which is what a table's functions find. One per process and per
         /// engine type; binding a second replaces the first and says so.
         var bound: ?*Self = null;
+
+        /// One borrowed view of a nested block.
+        pub const NestedView = struct {
+            /// Bumped every time the slot is reused, so a handle to a recycled view fails to
+            /// resolve. Zero means the slot has never been used.
+            generation: u32 = 0,
+            /// What the content generation was when the view was opened. A reload rebuilds
+            /// the store and the package bytes underneath, so a view that survived one is
+            /// pointing at memory that has been freed — and this is what notices.
+            content_generation: u64 = 0,
+            fields: data.fpk.Fields = undefined,
+            /// The schema the block is laid out against: the parent field's `nested` list.
+            schema: data.Schema = undefined,
+        };
+
+        /// Set on a record handle's index to say the handle names a nested view rather than
+        /// a record in the store.
+        ///
+        /// The store's own indices come from a pool that grows one slot at a time, so
+        /// reaching two billion records is not a thing that happens; the top bit is free and
+        /// using it keeps `FoundryRecord` sixty-four opaque bits, which is what every other
+        /// handle at this boundary is.
+        pub const nested_flag: u32 = 0x8000_0000;
+
+        /// Opens a view on a nested block and hands back the handle that names it.
+        pub fn openNested(
+            self: *Self,
+            content_generation: u64,
+            fields: data.fpk.Fields,
+            schema: data.Schema,
+        ) types.Record {
+            const slot = self.nested_next;
+            self.nested_next = (slot + 1) % max_nested_views;
+
+            const view = &self.nested[slot];
+            view.generation +%= 1;
+            if (view.generation == 0) view.generation = 1;
+            view.content_generation = content_generation;
+            view.fields = fields;
+            view.schema = schema;
+
+            const handle: core.Handle(NestedView) = .{
+                .index = slot | nested_flag,
+                .generation = view.generation,
+            };
+            return .{ .bits = handle.bits() };
+        }
+
+        /// Whether a record handle names a nested view at all.
+        pub fn namesNested(handle: types.Record) bool {
+            return handle.unwrap(core.Handle(NestedView)).index & nested_flag != 0;
+        }
+
+        /// Resolves one, or null for a view that was recycled, never issued, or opened
+        /// against content that has since been reloaded.
+        pub fn nestedView(self: *Self, handle: types.Record, content_generation: u64) ?*const NestedView {
+            const unpacked = handle.unwrap(core.Handle(NestedView));
+            if (unpacked.index & nested_flag == 0) return null;
+
+            const slot = unpacked.index & ~nested_flag;
+            if (slot >= max_nested_views) return null;
+
+            const view = &self.nested[slot];
+            if (view.generation == 0 or view.generation != unpacked.generation) return null;
+            if (view.content_generation != content_generation) return null;
+            return view;
+        }
 
         pub const Counter = struct {
             open: bool = false,
@@ -102,6 +187,8 @@ pub fn HostOf(comptime E: type) type {
         /// gone is exactly the failure this whole module exists to make impossible.
         pub fn unbind(self: *Self) void {
             self.releaseCounters();
+            self.nested = @splat(.{});
+            self.nested_next = 0;
             if (bound == self) bound = null;
         }
 

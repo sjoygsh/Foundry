@@ -364,7 +364,8 @@ const Fixture = struct {
 
     fn init() !*Fixture {
         const self = try testing.allocator.create(Fixture);
-        self.* = .{ .engine = .init(testing.allocator), .host = .{} };
+        self.* = .{ .engine = try .init(testing.allocator), .host = .{} };
+        self.engine.settle();
         self.host.engine = &self.engine;
         self.host.bind();
         return self;
@@ -492,7 +493,7 @@ test "an id is hashed only if it is one" {
 test "an id spells itself back, from the package that supplied it" {
     const f = try Fixture.init();
     defer f.deinit();
-    try f.engine.loadPackage("mymod:content", package_source);
+    _ = try f.engine.loadPackage("mymod:content", package_source);
 
     var text: Str = .empty;
     const record_id = core.ContentId.fromString("mymod:item.lantern");
@@ -511,7 +512,7 @@ test "an id spells itself back, from the package that supplied it" {
 test "a copied id reports the length it needed rather than truncating" {
     const f = try Fixture.init();
     defer f.deinit();
-    try f.engine.loadPackage("mymod:content", package_source);
+    _ = try f.engine.loadPackage("mymod:content", package_source);
 
     const id = core.ContentId.fromString("mymod:item.lantern");
     var buffer: [64]u8 = undefined;
@@ -657,8 +658,9 @@ test "a name too long for a counter is refused, and so is the counter after the 
 }
 
 test "unbinding hands back everything the boundary registered" {
-    var engine: TestEngine = .init(testing.allocator);
+    var engine: TestEngine = try .init(testing.allocator);
     defer engine.deinit();
+    engine.settle();
 
     var host: Host = .{ .engine = &engine };
     host.bind();

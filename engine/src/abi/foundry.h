@@ -184,6 +184,21 @@ static inline FoundryContentId foundry_content_id(const void *bytes, size_t len)
     return id;
 }
 
+/*
+ * A hashed schema identifier — and **a different type from a content id on purpose**.
+ *
+ * Schemas and content occupy separate identifier spaces, so the schema `foundry:item` and a
+ * record named `foundry:item` coexist without either shadowing the other. Same algorithm,
+ * same bytes hashed, different C type: the two most confusable values in the content system
+ * cannot be passed to each other's calls by mistake.
+ *
+ * A schema keeps no spelling at runtime, so there is no `schema_name`. That is the format
+ * working as designed rather than an omission: what a compiled package carries is the hash.
+ */
+typedef struct FoundrySchemaId {
+    uint64_t hash;
+} FoundrySchemaId;
+
 /* == Handles =========================================================================== */
 
 /*
@@ -451,6 +466,135 @@ typedef struct FoundryApi_v1 {
     /* Publishes a mod's own numbers into a counter it opened. */
     FoundryResult (*memory_counter_set)(FoundryMemoryCounter counter,
                                         const FoundryMemoryStats *stats);
+
+    /* -- Content ----------------------------------------------------------------------- */
+
+    /* Bumped whenever content changes under the program — a hot reload, a package added.
+     * **The one signal a mod needs**: anything derived from content, including every record
+     * handle and every borrowed string, is derived again when this moves. */
+    FoundryResult (*content_generation)(uint64_t *out);
+
+    /* The record a content id names, after every package has been merged and every override
+     * applied. What a mod gets is the definition that *won*, which is the same one the game
+     * sees — there is no privileged view. */
+    FoundryResult (*content_find)(FoundryContentId id, FoundryRecord *out);
+
+    /* Every record, in merge order. */
+    FoundryResult (*content_next)(FoundryCursor *cursor, FoundryRecord *out);
+
+    /* Every record of one schema, in merge order. How a mod finds "all the items" without
+     * knowing what any package called them. */
+    FoundryResult (*content_next_of_schema)(FoundrySchemaId schema, FoundryCursor *cursor,
+                                            FoundryRecord *out);
+
+    /* -- Reading a record -------------------------------------------------------------- */
+
+    /*
+     * A record is read by asking its schema what each field is and then calling the matching
+     * reader. That is how a mod reads a record type it has never heard of — including one
+     * another mod declared — and it is what the debug overlay's inspector already does.
+     *
+     * A field a record does not carry answers FOUNDRY_ERR_NOT_FOUND, which is different from
+     * a field that is not in the schema at all (FOUNDRY_ERR_INVALID_ARGUMENT) and different
+     * again from asking for it with the wrong reader (also INVALID_ARGUMENT). A record
+     * written against an older version of its schema answers newer fields with their
+     * declared defaults, which is what makes a schema able to grow.
+     */
+
+    /* A nested block has no identity of its own — that is what nested means — so `record_id`,
+     * `record_name` and `record_package` answer FOUNDRY_ERR_NOT_FOUND for one. */
+    FoundryResult (*record_id)(FoundryRecord record, FoundryContentId *out);
+    FoundryResult (*record_name)(FoundryRecord record, FoundryStr *out);
+    FoundryResult (*record_schema)(FoundryRecord record, FoundrySchemaId *out);
+    FoundryResult (*record_package)(FoundryRecord record, FoundryPackage *out);
+
+    FoundryResult (*record_field_count)(FoundryRecord record, uint32_t *out);
+    FoundryResult (*record_field_index)(FoundryRecord record, FoundryStr name, uint32_t *out);
+    FoundryResult (*record_field_name)(FoundryRecord record, uint32_t field, FoundryStr *out);
+    FoundryResult (*record_field_type)(FoundryRecord record, uint32_t field,
+                                       FoundryFieldType *out);
+    /* Whether the record actually carries a value for the field, as opposed to the field
+     * being absent. A missing optional field and a field set to its default are different
+     * things, and collapsing them would make "this item drops nothing" and "this item's drop
+     * was never specified" indistinguishable. */
+    FoundryResult (*record_field_present)(FoundryRecord record, uint32_t field,
+                                          FoundryBool *out);
+
+    FoundryResult (*record_get_bool)(FoundryRecord record, uint32_t field, FoundryBool *out);
+    /* Every signed integer field, widened. What the file stores is what the schema declared;
+     * this is what covers all of them. */
+    FoundryResult (*record_get_i64)(FoundryRecord record, uint32_t field, int64_t *out);
+    FoundryResult (*record_get_u64)(FoundryRecord record, uint32_t field, uint64_t *out);
+    FoundryResult (*record_get_f32)(FoundryRecord record, uint32_t field, float *out);
+    /* Borrowed from the package's own bytes, and not NUL-terminated. */
+    FoundryResult (*record_get_string)(FoundryRecord record, uint32_t field, FoundryStr *out);
+    /* The second of the two calls in `_v1` that copy rather than borrow. Same rules as
+     * `id_copy_string`: `needed` is always written, and too small is a refusal. */
+    FoundryResult (*record_copy_string)(FoundryRecord record, uint32_t field, uint8_t *buffer,
+                                        uint64_t capacity, uint64_t *needed);
+    FoundryResult (*record_get_id)(FoundryRecord record, uint32_t field, FoundryContentId *out);
+
+    /* An inline struct, as something that answers the same field calls one level down. This
+     * composes to any depth and needs no path language invented for the boundary.
+     *
+     * The view it hands back is borrowed like everything else here, and it is borrowed from a
+     * ring: it stays valid until enough further views have been opened to recycle its slot,
+     * and a recycled one answers FOUNDRY_ERR_INVALID_HANDLE rather than reading whatever now
+     * sits there. Reading a record never needs more than a few at once. */
+    FoundryResult (*record_nested)(FoundryRecord record, uint32_t field, FoundryRecord *out);
+
+    FoundryResult (*record_list_len)(FoundryRecord record, uint32_t field, uint32_t *out);
+    FoundryResult (*record_list_get_i64)(FoundryRecord record, uint32_t field, uint32_t index,
+                                         int64_t *out);
+    FoundryResult (*record_list_get_f32)(FoundryRecord record, uint32_t field, uint32_t index,
+                                         float *out);
+    FoundryResult (*record_list_get_string)(FoundryRecord record, uint32_t field,
+                                            uint32_t index, FoundryStr *out);
+    FoundryResult (*record_list_get_id)(FoundryRecord record, uint32_t field, uint32_t index,
+                                        FoundryContentId *out);
+    FoundryResult (*record_list_nested)(FoundryRecord record, uint32_t field, uint32_t index,
+                                        FoundryRecord *out);
+
+    /* -- Packages ---------------------------------------------------------------------- */
+
+    FoundryResult (*package_count)(uint32_t *out);
+    /* Every loaded package, **in load order**, which is the order overrides were applied in
+     * and therefore the only order worth walking them in. */
+    FoundryResult (*package_next)(FoundryCursor *cursor, FoundryPackage *out);
+    FoundryResult (*package_find)(FoundryContentId id, FoundryPackage *out);
+    FoundryResult (*package_id)(FoundryPackage package, FoundryContentId *out);
+    FoundryResult (*package_name)(FoundryPackage package, FoundryStr *out);
+    FoundryResult (*package_version)(FoundryPackage package, uint32_t *out);
+    /* Position in the load order. Zero is package zero — the engine's own content, loaded
+     * through the same path a mod's is. */
+    FoundryResult (*package_order)(FoundryPackage package, uint32_t *out);
+
+    /* -- Schemas ----------------------------------------------------------------------- */
+
+    FoundryResult (*schema_count)(uint32_t *out);
+    FoundryResult (*schema_next)(FoundryCursor *cursor, FoundrySchema *out);
+    FoundryResult (*schema_find)(FoundrySchemaId id, FoundrySchema *out);
+    FoundryResult (*schema_id)(FoundrySchema schema, FoundrySchemaId *out);
+    FoundryResult (*schema_version)(FoundrySchema schema, uint32_t *out);
+    FoundryResult (*schema_field_count)(FoundrySchema schema, uint32_t *out);
+    FoundryResult (*schema_field_name)(FoundrySchema schema, uint32_t field, FoundryStr *out);
+    FoundryResult (*schema_field_type)(FoundrySchema schema, uint32_t field,
+                                       FoundryFieldType *out);
+
+    /* -- Assets ------------------------------------------------------------------------ */
+
+    /* Loads an asset if it is not loaded, and adds a reference either way. **This is the one
+     * reference count a mod owns**, and the one thing in `_v1` a mod must balance: an asset
+     * acquired and never released stays in memory for the life of the process. */
+    FoundryResult (*asset_acquire)(FoundryContentId id, FoundryAsset *out);
+    FoundryResult (*asset_release)(FoundryAsset asset);
+    /* Finds one already loaded, without acquiring it. */
+    FoundryResult (*asset_find)(FoundryContentId id, FoundryAsset *out);
+    FoundryResult (*asset_next)(FoundryCursor *cursor, FoundryAsset *out);
+    FoundryResult (*asset_content_id)(FoundryAsset asset, FoundryContentId *out);
+    FoundryResult (*asset_schema)(FoundryAsset asset, FoundrySchemaId *out);
+    /* Zero means evictable, not freed — a real answer to "why is this still in memory". */
+    FoundryResult (*asset_refcount)(FoundryAsset asset, uint32_t *out);
 } FoundryApi_v1;
 
 /* == The entry point =================================================================== */

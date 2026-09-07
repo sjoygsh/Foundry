@@ -14,11 +14,20 @@
 
 const std = @import("std");
 
+const asset_calls = @import("calls_asset.zig");
+const content_calls = @import("calls_content.zig");
 const engine_calls = @import("calls_engine.zig");
 const types = @import("types.zig");
 
+const Asset = types.Asset;
+const Bool = types.Bool;
 const ContentId = types.ContentId;
 const Cursor = types.Cursor;
+const FieldType = types.FieldType;
+const Package = types.Package;
+const Record = types.Record;
+const Schema = types.Schema;
+const SchemaId = types.SchemaId;
 const LogRecord = types.LogRecord;
 const MemoryCounter = types.MemoryCounter;
 const MemoryStats = types.MemoryStats;
@@ -67,11 +76,80 @@ pub const Api_v1 = extern struct {
 
     memory_counter_open: *const fn (self: Mod, name: Str, out: ?*MemoryCounter) callconv(.c) Result,
     memory_counter_set: *const fn (counter: MemoryCounter, stats: ?*const MemoryStats) callconv(.c) Result,
+
+    // -- Content -----------------------------------------------------------------------
+
+    content_generation: *const fn (out: ?*u64) callconv(.c) Result,
+    content_find: *const fn (id: ContentId, out: ?*Record) callconv(.c) Result,
+    content_next: *const fn (cursor: ?*Cursor, out: ?*Record) callconv(.c) Result,
+    content_next_of_schema: *const fn (schema: SchemaId, cursor: ?*Cursor, out: ?*Record) callconv(.c) Result,
+
+    // -- Reading a record --------------------------------------------------------------
+
+    record_id: *const fn (record: Record, out: ?*ContentId) callconv(.c) Result,
+    record_name: *const fn (record: Record, out: ?*Str) callconv(.c) Result,
+    record_schema: *const fn (record: Record, out: ?*SchemaId) callconv(.c) Result,
+    record_package: *const fn (record: Record, out: ?*Package) callconv(.c) Result,
+
+    record_field_count: *const fn (record: Record, out: ?*u32) callconv(.c) Result,
+    record_field_index: *const fn (record: Record, name: Str, out: ?*u32) callconv(.c) Result,
+    record_field_name: *const fn (record: Record, field: u32, out: ?*Str) callconv(.c) Result,
+    record_field_type: *const fn (record: Record, field: u32, out: ?*FieldType) callconv(.c) Result,
+    record_field_present: *const fn (record: Record, field: u32, out: ?*Bool) callconv(.c) Result,
+
+    record_get_bool: *const fn (record: Record, field: u32, out: ?*Bool) callconv(.c) Result,
+    record_get_i64: *const fn (record: Record, field: u32, out: ?*i64) callconv(.c) Result,
+    record_get_u64: *const fn (record: Record, field: u32, out: ?*u64) callconv(.c) Result,
+    record_get_f32: *const fn (record: Record, field: u32, out: ?*f32) callconv(.c) Result,
+    record_get_string: *const fn (record: Record, field: u32, out: ?*Str) callconv(.c) Result,
+    record_copy_string: *const fn (record: Record, field: u32, buffer: ?[*]u8, capacity: u64, needed: ?*u64) callconv(.c) Result,
+    record_get_id: *const fn (record: Record, field: u32, out: ?*ContentId) callconv(.c) Result,
+    record_nested: *const fn (record: Record, field: u32, out: ?*Record) callconv(.c) Result,
+
+    record_list_len: *const fn (record: Record, field: u32, out: ?*u32) callconv(.c) Result,
+    record_list_get_i64: *const fn (record: Record, field: u32, index: u32, out: ?*i64) callconv(.c) Result,
+    record_list_get_f32: *const fn (record: Record, field: u32, index: u32, out: ?*f32) callconv(.c) Result,
+    record_list_get_string: *const fn (record: Record, field: u32, index: u32, out: ?*Str) callconv(.c) Result,
+    record_list_get_id: *const fn (record: Record, field: u32, index: u32, out: ?*ContentId) callconv(.c) Result,
+    record_list_nested: *const fn (record: Record, field: u32, index: u32, out: ?*Record) callconv(.c) Result,
+
+    // -- Packages ----------------------------------------------------------------------
+
+    package_count: *const fn (out: ?*u32) callconv(.c) Result,
+    package_next: *const fn (cursor: ?*Cursor, out: ?*Package) callconv(.c) Result,
+    package_find: *const fn (id: ContentId, out: ?*Package) callconv(.c) Result,
+    package_id: *const fn (package: Package, out: ?*ContentId) callconv(.c) Result,
+    package_name: *const fn (package: Package, out: ?*Str) callconv(.c) Result,
+    package_version: *const fn (package: Package, out: ?*u32) callconv(.c) Result,
+    package_order: *const fn (package: Package, out: ?*u32) callconv(.c) Result,
+
+    // -- Schemas -----------------------------------------------------------------------
+
+    schema_count: *const fn (out: ?*u32) callconv(.c) Result,
+    schema_next: *const fn (cursor: ?*Cursor, out: ?*Schema) callconv(.c) Result,
+    schema_find: *const fn (id: SchemaId, out: ?*Schema) callconv(.c) Result,
+    schema_id: *const fn (schema: Schema, out: ?*SchemaId) callconv(.c) Result,
+    schema_version: *const fn (schema: Schema, out: ?*u32) callconv(.c) Result,
+    schema_field_count: *const fn (schema: Schema, out: ?*u32) callconv(.c) Result,
+    schema_field_name: *const fn (schema: Schema, field: u32, out: ?*Str) callconv(.c) Result,
+    schema_field_type: *const fn (schema: Schema, field: u32, out: ?*FieldType) callconv(.c) Result,
+
+    // -- Assets ------------------------------------------------------------------------
+
+    asset_acquire: *const fn (id: ContentId, out: ?*Asset) callconv(.c) Result,
+    asset_release: *const fn (handle: Asset) callconv(.c) Result,
+    asset_find: *const fn (id: ContentId, out: ?*Asset) callconv(.c) Result,
+    asset_next: *const fn (cursor: ?*Cursor, out: ?*Asset) callconv(.c) Result,
+    asset_content_id: *const fn (handle: Asset, out: ?*ContentId) callconv(.c) Result,
+    asset_schema: *const fn (handle: Asset, out: ?*SchemaId) callconv(.c) Result,
+    asset_refcount: *const fn (handle: Asset, out: ?*u32) callconv(.c) Result,
 };
 
 /// The table for one host type, and the `get_api` that hands it out.
 pub fn TableOf(comptime H: type) type {
     const engine = engine_calls.Of(H);
+    const content = content_calls.Of(H);
+    const assets = asset_calls.Of(H);
 
     return struct {
         pub const v1: Api_v1 = .{
@@ -96,6 +174,63 @@ pub fn TableOf(comptime H: type) type {
 
             .memory_counter_open = engine.memoryCounterOpen,
             .memory_counter_set = engine.memoryCounterSet,
+
+            .content_generation = content.contentGeneration,
+            .content_find = content.contentFind,
+            .content_next = content.contentNext,
+            .content_next_of_schema = content.contentNextOfSchema,
+
+            .record_id = content.recordId,
+            .record_name = content.recordName,
+            .record_schema = content.recordSchema,
+            .record_package = content.recordPackage,
+
+            .record_field_count = content.recordFieldCount,
+            .record_field_index = content.recordFieldIndex,
+            .record_field_name = content.recordFieldName,
+            .record_field_type = content.recordFieldType,
+            .record_field_present = content.recordFieldPresent,
+
+            .record_get_bool = content.recordGetBool,
+            .record_get_i64 = content.recordGetI64,
+            .record_get_u64 = content.recordGetU64,
+            .record_get_f32 = content.recordGetF32,
+            .record_get_string = content.recordGetString,
+            .record_copy_string = content.recordCopyString,
+            .record_get_id = content.recordGetId,
+            .record_nested = content.recordNested,
+
+            .record_list_len = content.recordListLen,
+            .record_list_get_i64 = content.recordListGetI64,
+            .record_list_get_f32 = content.recordListGetF32,
+            .record_list_get_string = content.recordListGetString,
+            .record_list_get_id = content.recordListGetId,
+            .record_list_nested = content.recordListNested,
+
+            .package_count = content.packageCount,
+            .package_next = content.packageNext,
+            .package_find = content.packageFind,
+            .package_id = content.packageId,
+            .package_name = content.packageName,
+            .package_version = content.packageVersion,
+            .package_order = content.packageOrder,
+
+            .schema_count = content.schemaCount,
+            .schema_next = content.schemaNext,
+            .schema_find = content.schemaFind,
+            .schema_id = content.schemaId,
+            .schema_version = content.schemaVersion,
+            .schema_field_count = content.schemaFieldCount,
+            .schema_field_name = content.schemaFieldName,
+            .schema_field_type = content.schemaFieldType,
+
+            .asset_acquire = assets.assetAcquire,
+            .asset_release = assets.assetRelease,
+            .asset_find = assets.assetFind,
+            .asset_next = assets.assetNext,
+            .asset_content_id = assets.assetContentId,
+            .asset_schema = assets.assetSchema,
+            .asset_refcount = assets.assetRefcount,
         };
 
         /// What a native mod is handed (§3). **Never a crash and never a Zig error** — a
@@ -109,5 +244,7 @@ pub fn TableOf(comptime H: type) type {
 }
 
 test {
+    _ = asset_calls;
+    _ = content_calls;
     _ = engine_calls;
 }

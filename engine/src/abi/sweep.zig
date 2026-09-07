@@ -18,10 +18,12 @@
 //! they are written this way: a hand-written list of forty calls is a list that is wrong
 //! within a milestone.
 //!
-//! The order the checks run in is itself a decision. **Arguments are validated before the
-//! host is looked up**, so a null out-parameter is `invalid_argument` even on a host with
-//! nothing bound: a null pointer is a mistake in the mod whatever the host has, and
-//! answering `unavailable` would send its author looking in the wrong place.
+//! The order the checks run in is itself a decision, and it has two halves. **A pointer
+//! argument is validated before the host is looked up**, so a null out-parameter is
+//! `invalid_argument` even on a host with nothing bound: a null pointer is a mistake in the
+//! mod whatever the host has, and answering `unavailable` would send its author looking in
+//! the wrong place. **A value argument is validated after**, because whether an id or a
+//! handle is meaningful is the subsystem's question and there is no subsystem to ask.
 
 const std = @import("std");
 const core = @import("core");
@@ -140,8 +142,9 @@ test "every entry point refuses a zeroed call when nothing is bound" {
 }
 
 test "every entry point refuses a zeroed call when everything is bound" {
-    var engine: TestEngine = .init(testing.allocator);
+    var engine: TestEngine = try .init(testing.allocator);
     defer engine.deinit();
+    engine.settle();
 
     var host: Host = .{ .engine = &engine };
     host.bind();

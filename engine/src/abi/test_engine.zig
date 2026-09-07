@@ -11,8 +11,10 @@
 //! the engine fails to compile here first.
 
 const std = @import("std");
+const asset = @import("asset");
 const core = @import("core");
 const data = @import("data");
+const platform = @import("platform");
 
 const Allocator = std.mem.Allocator;
 
@@ -32,7 +34,17 @@ pub const TestEngine = struct {
 
     store: data.Store,
     schemas: data.Registry,
+    assets: asset.Registry,
     diags: data.Diagnostics,
+    /// The registry needs one, and a headless `Os` costs a heap allocation and nothing else:
+    /// no window, no display server, no environment beyond what it is handed.
+    os: *platform.os.Os,
+    /// A directory of this engine's own, for the tests that need an asset to have bytes.
+    /// Created lazily, because most of them do not.
+    dir: ?[]u8 = null,
+    /// Bumped by `reloadContent`, so a test can prove that a view opened before a reload
+    /// fails to resolve after one.
+    content_generation: u64 = 0,
     /// The compiled bytes of every package added, kept alive because the store reads records
     /// **in place** out of them — the same reason `app.Engine` keeps its own.
     blobs: std.ArrayList([]u8) = .empty,
@@ -47,20 +59,46 @@ pub const TestEngine = struct {
 
     gpa: Allocator,
 
-    pub fn init(gpa: Allocator) Self {
-        return .{
+    pub fn init(gpa: Allocator) !Self {
+        const os = try platform.os.Os.init(gpa, .{ .app_name = "foundry-abi-test", .env = &.{} });
+        errdefer os.deinit();
+
+        var self: Self = .{
             .store = .init(gpa, .default),
             .schemas = .init(gpa, .default),
+            .assets = undefined,
             .diags = .init(gpa, .default),
+            .os = os,
             .arena = .init(gpa),
             .gpa = gpa,
         };
+        self.assets = .init(gpa, os, &self.store, .{});
+        return self;
+    }
+
+    /// The registry borrows a pointer to the store, so a `TestEngine` that has been moved
+    /// since `init` is holding one into wherever it used to be. Every fixture allocates it
+    /// and leaves it there; this is the call that fixes up a value built on the stack.
+    pub fn settle(self: *Self) void {
+        self.assets = .init(self.gpa, self.os, &self.store, .{});
+    }
+
+    pub fn contentGeneration(self: *const Self) u64 {
+        return self.content_generation;
+    }
+
+    /// What a hot reload does to everything derived from content: invalidates it.
+    pub fn reloadContent(self: *Self) void {
+        self.content_generation += 1;
     }
 
     pub fn deinit(self: *Self) void {
         self.scope_names.deinit(self.gpa);
         self.counters.deinit(self.gpa);
         self.arena.deinit();
+        self.assets.deinit(self.gpa);
+        if (self.dir) |d| self.gpa.free(d);
+        self.os.deinit();
         self.store.deinit(self.gpa);
         self.schemas.deinit(self.gpa);
         self.diags.deinit(self.gpa);
@@ -74,7 +112,7 @@ pub const TestEngine = struct {
     /// what they answer about a record somebody wrote — and the whole pipeline from text to
     /// merged record is already hermetic (`data` cannot open a file), so there is nothing to
     /// fake.
-    pub fn loadPackage(self: *Self, name: []const u8, source: []const u8) !void {
+    pub fn loadPackage(self: *Self, name: []const u8, source: []const u8) !data.store.PackageHandle {
         const colon = std.mem.indexOfScalar(u8, name, ':').?;
 
         var doc = try data.parser.parse(self.gpa, "test.fdt", source, .{
@@ -94,7 +132,33 @@ pub const TestEngine = struct {
         errdefer self.gpa.free(owned);
         try self.blobs.append(self.gpa, owned);
 
-        _ = try self.store.add(self.gpa, name, owned, &self.schemas, &self.diags);
+        return self.store.add(self.gpa, name, owned, &self.schemas, &self.diags);
+    }
+
+    /// A directory of this engine's own, made on first use.
+    pub fn contentDir(self: *Self) ![]const u8 {
+        if (self.dir) |d| return d;
+
+        const temp = try self.os.tempDirAlloc(self.gpa);
+        defer self.gpa.free(temp);
+
+        var name_buf: [64]u8 = undefined;
+        const unique = std.fmt.bufPrint(&name_buf, "foundry-abi-{d}", .{std.testing.random_seed}) catch unreachable;
+        const dir = try platform.os.joinPath(self.gpa, &.{ temp, unique });
+        errdefer self.gpa.free(dir);
+        try self.os.createDirPath(dir);
+
+        self.dir = dir;
+        return dir;
+    }
+
+    /// Writes a file a record's `source` can name, and mounts the package over it.
+    pub fn writeSource(self: *Self, package: data.store.PackageHandle, rel: []const u8, bytes: []const u8) !void {
+        const dir = try self.contentDir();
+        const path = try platform.os.joinPath(self.gpa, &.{ dir, rel });
+        defer self.gpa.free(path);
+        try self.os.writeFile(path, bytes);
+        try self.assets.mount(self.gpa, package, dir);
     }
 
     pub fn frameDelta(self: *const Self) core.time.Duration {
