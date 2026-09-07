@@ -336,6 +336,11 @@ pub fn build(b: *std.Build) void {
     room_mod.addImport("rhi", modules.get("rhi").?);
     room_mod.addImport("scene", modules.get("scene").?);
     room_mod.addImport("ui", modules.get("ui").?);
+    // The overlay, on the same terms the sandbox gets it. **This is the whole of what the
+    // second consumer needed**: one import and a key, with no engine change between them —
+    // which is the claim ADR-0025 makes about a game getting an overlay by importing a
+    // module, checked by a game that is not the one the overlay grew up next to.
+    room_mod.addImport("debug", modules.get("debug").?);
 
     const room = b.addExecutable(.{ .name = "room", .root_module = room_mod });
     b.installArtifact(room);

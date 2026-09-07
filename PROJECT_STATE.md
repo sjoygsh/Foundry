@@ -1,18 +1,40 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-07
-**Updated by:** **M6 step 5 is done: `engine/src/debug/` exists and the sandbox's hand-built
-panels are gone.** [ADR-0025](docs/adr/0025-debug-overlay-module.md) is **accepted**, so the
-layering has a new node — `debug` at L5, above `app`, which nothing in the engine depends on and
-a game opts into by importing. `docs/design/debug-overlay.md` §17 steps 1 to 5 are implemented:
-`core/profile.zig` and `Engine.beginScope` with the engine's seven named spans; `core.mem.Counted`,
-`Arena.highWater` and the engine's memory registry; the in-memory log ring behind
-`app/log_sink.zig`; the introspection calls — `World.liveEntities`, `World.componentTypes`,
-`World.describeComponent`, `data.Registry.all`, `Store.definitions`, `asset.Registry.assets`; and
-now the overlay itself: `Overlay`, `Panel`, `View`, `Frame`, `Sources`, the panel registry and
-five panels (profiler, memory, log, entities, content). `samples/sandbox` deleted `describeConsole`,
-`profileLines` and `memoryLines` and **registers a panel of its own through the same `addPanel` a
-mod uses at M7**. **974 tests**, up from 951.
+**Updated by:** **M6 is complete.** `docs/design/debug-overlay.md` §17 is implemented end to
+end, [ADR-0025](docs/adr/0025-debug-overlay-module.md) is accepted, and the milestone's exit
+criterion was met by diagnosing the overlay's own cost with the overlay. `engine/src/debug/` is a
+new L5 module — above `app`, depended on by nothing, opted into by importing it — holding
+`Overlay`, `Panel`, `View`, `Frame`, `Sources`, the panel registry and five panels (profiler,
+memory, log, entities, content). `samples/sandbox` deleted its hand-built panels and registers
+one of its own through `addPanel`; `samples/room` adopted the whole thing behind F1 for the cost
+of **one import and one key**. **981 tests**, up from 951 at the start of the day.
+
+**The exit criterion, and what it found.** `ui.md` recorded the overlay's batch count three times
+— six for the hand-drawn HUD, ten once the overlay existed, fifteen at the end of its step 5 —
+each time with the same suspected cause and no measurement. With five panels open it is **32**.
+`engine/tests/overlay_batches.zig` attributes every break by walking the draw list the way the
+walker does and counting runs of identical `(texture, clip)`, and **asserts that the count equals
+`frameStats().batches` exactly** — which is what makes the split below arithmetic rather than a
+story:
+
+| panels open | batches | texture only | clip only | both |
+| --- | --- | --- | --- | --- |
+| none (the bar) | 11 | 9 | 1 | 0 |
+| one | 16 | 12 | 1 | 2 |
+| five | 32 | 20 | 2 | 9 |
+
+**The suspicion was right and incomplete.** Twenty-nine of the thirty-one breaks involve a
+texture change — panel rectangles come from the renderer's blank patch and glyphs from the font
+atlas, and the batcher preserves submission order rather than sorting by texture, deliberately.
+The two the document never named are clip changes: a batch cannot span one, so a panel pays for
+its own clipped region whatever it contains. **One texture behind both would leave 12**, and that
+counterfactual is computed by the same walk and asserted, so it moves with the panels rather than
+being a constant somebody typed. The fix — packing the blank patch into the font's atlas — is a
+`render2d` change and is **not** made here: the milestone's obligation was to find out which
+cause it was, and its value is now measured rather than hoped for. The other half of the answer
+is that describing five panels costs **0.21ms of a 7.7ms debug frame**, so what the overlay costs
+is draw calls and not CPU time — which is what decides whether the fix is worth making at all.
 
 **Three things the implementation settled that the design had not.**
 
@@ -31,20 +53,17 @@ mod uses at M7**. **974 tests**, up from 951.
   store". The engine has both; it has no world, no renderer and no mixer. Those three are the
   struct.
 
-**What is left of M6 is step 6**, and it is the exit criterion rather than more building:
-`samples/room` adopts the overlay behind a key, and then **the overlay diagnoses its own batch
-cost**. The number to explain is already on the board — six batches for the hand-drawn HUD, ten
-once the overlay existed, fifteen at the end of `ui` step 5, and **31** with five panels open —
-against a suspicion (`ui.md` recorded it twice) that alternating between the blank texture and
-the font atlas is what breaks a batch. Confirming or refuting it with the tool is a better
-closing argument than any synthetic case.
+**What comes next is M7**, and nothing in M6 is left over. The postponed decisions in
+`CLAUDE.md` §9 that came due are recorded there; the job system's re-dating is still owed and is
+deliberately not folded into a milestone that had a different subject.
 
-**Known, pre-existing, and not step 5's to fix:** `zig build check -Drhi=metal` fails to compile
+**Known, pre-existing, and not this milestone's to fix:** `zig build check -Drhi=metal` fails to compile
 `app`'s *test* binary — `NothingRecorder.prepare` names `rhi.CommandBuffer`, which is Metal's
-under that flag, while `TestEngine` is built on the null device. It fails identically at the
-commit before this one. The Metal *executables* build and run.
+under that flag, while `TestEngine` is built on the null device. It fails identically at
+`90deed6`, before the overlay existed. The Metal *executables* build and run, and the sandbox and
+the room were both exercised windowed with the overlay open.
 
-**Four decisions in that document are worth knowing without reading it.**
+**Four decisions in `debug-overlay.md` are worth knowing without reading it.**
 
 * **The clock stays above the subsystems.** The tempting profiler hands a recorder carrying a
   clock down to every subsystem so each can time itself — and that quietly undoes the ADR-0007

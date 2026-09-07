@@ -1153,7 +1153,7 @@ memory" that no existing call could give.
 `engine/src/debug/` — `Overlay`, `Panel`, `View`, `Frame`, `Sources`, the panel registry,
 §11's windowing convention and the profiler, memory, log, entity and content panels — plus
 `samples/sandbox` deleting its hand-built ones and registering one of its own through
-`addPanel`. **974 tests**, up from 951: 23 in `debug` and one integration test in
+`addPanel`. **976 tests**, up from 951: 23 in `debug` and two in the integration test
 `engine/tests/debug_overlay.zig`.
 
 **ADR-0025's dependency list was three modules too long, and the ADR's own rule is what
@@ -1244,3 +1244,77 @@ Metal's under that flag, while `TestEngine` is built on the null device. It fail
 at the commit before this one, so it predates the overlay; it is recorded in
 `PROJECT_STATE.md` rather than repaired here, because a milestone's steps are not the place to
 fix a neighbouring module's test wiring.
+
+
+---
+
+## Resolution: the room adopts it, and the batch cost is diagnosed (step 6, 2026-09-07)
+
+`samples/room` gains the overlay behind F1, and `engine/tests/overlay_batches.zig` answers the
+question `ui.md` asked three times and never measured. **981 tests**, up from 976.
+
+**The second consumer cost one import and one key**, which is the claim ADR-0025 makes in
+Consequences and could not check with one sample. `room_mod.addImport("debug", ...)`, a
+`*debug.Overlay` field, `overlay.describe` before the card is described, and `f1` in the one
+function where the room makes every capture decision. **No engine change of any kind**, and the
+room hands over the same three things the sandbox does — world, renderer, mixer — because those
+are what the engine does not own. `FOUNDRY_ROOM_OVERLAY` starts it open, for the reason the
+autopilot exists: a path a scripted run cannot reach is a path a scripted run proves nothing
+about.
+
+### The exit criterion: the overlay's own batch cost
+
+`ui.md` recorded the number three times — **six** batches for the hand-drawn HUD, **ten** once
+the overlay existed, **fifteen** at the end of its step 5 — with the same suspected cause each
+time and no measurement behind it: *panel rectangles come from the blank texture and glyphs from
+the font atlas, so every alternation is a texture break.* With this milestone's five panels open
+it is **32**.
+
+**The suspicion was right, and it was not the whole story.** The batcher breaks on a change of
+buffer, view, texture, blend **or clip**, and texture is deliberately not in the sort key —
+sorting by it would reorder overlapping translucent sprites. So a described frame has *two*
+independent reasons to break and `ui.md` named one of them. Attributing every break in the
+overlay's own frame:
+
+| panels open | batches | texture only | clip only | both | clips pushed |
+| --- | --- | --- | --- | --- | --- |
+| none (the bar) | 11 | 9 | 1 | 0 | 1 |
+| one | 16 | 12 | 1 | 2 | 2 |
+| five | 32 | 20 | 2 | 9 | 6 |
+
+Twenty-nine of the thirty-one breaks in the five-panel frame involve a texture change; two are a
+clip change with the same texture on both sides. **Texture alternation is the dominant cost, by
+roughly ten to one.**
+
+**What makes this a diagnosis rather than a plausible story** is that the model is checked
+against the mechanism. The test walks the draw list the way `app.drawUi` walks it, tracks the
+`(texture, clip)` pair each command would draw with, counts the runs — and asserts that the
+count *equals* `frameStats().batches`, exactly, for every configuration. When the model
+reproduces the number there is no third cause hiding inside it, and the split above is arithmetic
+rather than inference. Three isolated cases pin each half first: sixty-four rectangles are one
+batch, sixty-four text runs are one batch, sixteen alternations are seventeen batches, and eight
+clipped regions of rectangles from one texture are eight.
+
+**The fix is worth 32 → 12, measured before anybody writes it.** One texture behind both
+rectangles and glyphs — packing the renderer's blank patch into the font's atlas, which
+`ui.md` named as the candidate and `render2d` already has a test for ("the batcher breaks on a
+texture change, and after packing there is no texture change") — removes every texture break and
+leaves only the clip changes. The counterfactual is computed by the same walk and asserted, so
+the number moves with the panels rather than being a constant somebody typed. **It is not done
+here**: it is a `render2d` change, the milestone's obligation was to find out which cause it was,
+and rule 2 says measure first. The remaining twelve is one per clipped region boundary and is
+irreducible without a different clipping strategy, which nothing yet needs.
+
+**Two smaller things fell out.** `render2d.Stats` was not exported from the module root —
+every reader so far took it from `frameStats()` without naming the type, and a test that names
+it found the gap; it is a game-facing answer and a mod's at M7, so it is exported now. And the
+overlay's own span makes the *other* half of the cost visible in the same panel: describing five
+panels is 0.21ms of a 7.7ms debug frame, so what the overlay costs is thirty-two draw calls
+rather than any measurable CPU time — which is the finding that decides whether the fix is worth
+making at all, and it says: only for a game already close to its draw-call budget.
+
+**M6's exit criterion is met, and by the shape of thing it asked for.** A performance problem
+was diagnosed from inside the running game: the overlay reported the number, toggling its own
+panels moved it, and the tool that produced the question produced the answer. That the answer
+confirms a two-milestone-old suspicion *and* corrects it — a second cause nobody had written
+down — is the argument for having built the instrument rather than reasoning about the number.

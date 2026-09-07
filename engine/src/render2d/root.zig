@@ -40,6 +40,13 @@ pub const CameraError = camera.CameraError;
 pub const Color = color.Color;
 pub const BlendMode = color.BlendMode;
 pub const Renderer = renderer.Renderer;
+/// What a frame cost, as `Renderer.frameStats` returns it.
+///
+/// Exported here because it is a **game-facing** answer, not an internal one: a HUD reads
+/// it, the debug overlay's profiler panel reads it, and at M7 a mod's panel will. It went
+/// unexported until M6 step 6 only because every reader so far took it from `frameStats`
+/// without naming the type.
+pub const Stats = renderer.Stats;
 /// Everything a renderer call can fail with. Named here so a caller above — the UI walker
 /// in `app` is the first — can declare it without reaching into the file it lives in.
 pub const RendererError = renderer.Error;

@@ -38,6 +38,11 @@
 //! be established by a person holding a key is a sample nobody establishes anything about.
 //! Set `FOUNDRY_ROOM_AUTOPILOT`, or run a headless build, and the walker goes and finds the
 //! lamps itself — so "can this actually be finished" is a question a scripted run answers.
+//!
+//! **F1 shows the debug overlay** (`FOUNDRY_ROOM_OVERLAY` starts it open). That is the whole
+//! of what the second consumer needed: one import and a key, with no engine change between
+//! them — which is the claim ADR-0025 makes, checked by a game that is not the one the
+//! overlay grew up next to.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -47,6 +52,9 @@ const asset = @import("asset");
 const audio = @import("audio");
 const core = @import("core");
 const data = @import("data");
+// The in-process debug overlay (ADR-0025). A game opts in by importing it; nothing in the
+// engine depends on it, and the key that shows it is this sample's to choose.
+const debug = @import("debug");
 const physics2d = @import("physics2d");
 const platform = @import("platform");
 const render2d = @import("render2d");
@@ -161,6 +169,12 @@ pub fn main(init: std.process.Init) !void {
     // Nobody can hold a key in a headless run, so it drives itself. A windowed run can opt
     // in, which is what makes the scripted path and the played path the same path.
     room.autopilot = headless or engine.os.envVar("FOUNDRY_ROOM_AUTOPILOT") != null;
+
+    // The overlay starts hidden and F1 shows it. `FOUNDRY_ROOM_OVERLAY` starts it open, for
+    // the same reason the autopilot exists: a path nobody can reach in a scripted run is a
+    // path a scripted run proves nothing about, and this one is the second consumer's — the
+    // whole point of the room adopting it.
+    room.overlay_open = engine.os.envVar("FOUNDRY_ROOM_OVERLAY") != null;
 
     const frame_limit = frameLimit(engine, headless);
 
@@ -1018,6 +1032,13 @@ const Room = struct {
     /// The kernel. Below the renderer and blind to it (ADR-0024): this describes a frame,
     /// and `hud` walks what it described into draw calls one function later.
     ui: ui.Context,
+    /// The debug overlay's panels. Heap-allocated, because the built-in panels hold
+    /// pointers into it and this struct is returned by value from `init`.
+    overlay: *debug.Overlay,
+    /// Whether the overlay is being described this frame. **The overlay declares no key**
+    /// and the engine intercepts none, so the binding is the game's — F1 here, and content
+    /// in a game that has a key map (`debug-overlay.md` §10.2).
+    overlay_open: bool = false,
     /// Characters committed by the OS this frame. **Input is state; text is a stream** — a
     /// snapshot cannot tell two presses of a key from one held one, and a name typed from
     /// the snapshot would work in English and nowhere else.
@@ -1149,6 +1170,7 @@ const Room = struct {
             .sheet = .{ .texture = .none, .uv = .{}, .size_px = .{} },
             .font = font,
             .ui = .init(gpa, cardStyle(uiFontOf(font))),
+            .overlay = try .init(gpa, .{}),
             // `World.init` needs the registry's final address and this struct is returned
             // by value, so both are built in `load`.
             .schemas = undefined,
@@ -2025,6 +2047,23 @@ const Room = struct {
         }, .init(0, 0, width, height));
         defer self.ui.end();
 
+        // **Described before the card and before `command` reads a key**, which is the same
+        // order the sandbox uses and for the reason `ui.md` step 6 nailed down: capture is
+        // advisory, so the game can only hold an input back if the overlay has already said
+        // it wants one.
+        //
+        // The world, the renderer and the mixer are handed over because the engine owns
+        // none of them. Everything else the panels show — the profile, the counters, the log
+        // ring, the content store — the engine already has, and the room says nothing about
+        // any of it.
+        if (self.overlay_open) {
+            try self.overlay.describe(&self.ui, engine, .{
+                .world = &self.world,
+                .renderer = &self.renderer,
+                .mixer = self.mixer,
+            });
+        }
+
         // A frame that describes nothing wants nothing, and the hall keeps every input it
         // has. The card being closed is not a special case anywhere else in this file.
         if (!self.card_open) return;
@@ -2128,6 +2167,13 @@ const Room = struct {
         // while a field had focus would be a game you could get stuck in a text box in.
         if (in.wasPressed(.escape)) {
             if (self.card_open) self.closeCard() else engine.requestQuit();
+        }
+        // F1 shows the overlay. Held back like tab, because the overlay has a filter box in
+        // it and a function key is still a key a field could one day want — and because the
+        // rule "the game decides what the overlay costs it" is the same rule either way.
+        if (in.wasPressed(.f1) and !self.took_keyboard) {
+            self.overlay_open = !self.overlay_open;
+            log.info("debug overlay {s}", .{if (self.overlay_open) "shown" else "hidden"});
         }
         // Tab is held back, because tab is a key a field could want.
         if (in.wasPressed(.tab) and !self.took_keyboard) {
@@ -2426,6 +2472,7 @@ const Room = struct {
         self.world.deinit();
         self.schemas.deinit(self.gpa);
         self.ui.deinit();
+        self.overlay.deinit();
         self.renderer.deinit();
     }
 };

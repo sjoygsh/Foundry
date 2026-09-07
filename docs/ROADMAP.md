@@ -257,7 +257,7 @@ criterion is evidence that **Foundry can carry a game**, and the strongest form 
 takes is what the engine had to gain for the room to run, which is **nothing**: not one line
 under `engine/` changed, and `tools/fpack` did not either.
 
-### M6 — Tools: "it's inspectable" — **in progress (opened 2026-09-06)**
+### M6 — Tools: "it's inspectable" — **complete (2026-09-06 to 2026-09-07)**
 
 * ~~In-process immediate-mode debug overlay — UI toolkit decision made here.~~ **Decision made,
   [ADR-0024](adr/0024-ui-own-immediate-mode.md): Foundry writes its own immediate-mode UI, one
@@ -265,11 +265,27 @@ under `engine/` changed, and `tools/fpack` did not either.
   **Implemented in full, steps 1-6, 2026-09-06/07** — the kernel, the debug widget set, the
   walker in `app`, the overlay in `samples/sandbox` and the card `samples/room` opens over its
   live hall, which is where §4's capture rules are proven by a game rather than by a test.**
-* Entity inspector, content browser, log console.
-* Frame profiler with per-subsystem timing; memory reporting per allocator.
-* Introspection APIs designed with the future public ABI in mind (ADR-0004, ADR-0011).
+* ~~Entity inspector, content browser, log console.~~ **Done** — three of `debug`'s five panels.
+* ~~Frame profiler with per-subsystem timing; memory reporting per allocator.~~ **Done** —
+  `core.profile` and `Engine.beginScope` with seven engine spans; `core.mem.Counted` and the
+  engine's counter registry. The clock stays above the subsystems, which is what keeps I9's
+  ADR-0007 property intact.
+* ~~Introspection APIs designed with the future public ABI in mind (ADR-0004, ADR-0011).~~
+  **Done** — `World.liveEntities`, `World.componentTypes`, `World.describeComponent`,
+  `data.Registry.all`, `Store.definitions`, `asset.Registry.assets`, and the rule
+  ([ADR-0025](adr/0025-debug-overlay-module.md)) that the overlay may use no call the ABI could
+  not expose.
 
-**Exit criteria:** a performance problem can be diagnosed from inside the running game.
+**Exit criteria:** a performance problem can be diagnosed from inside the running game. **Met,
+and on the overlay itself.** `ui.md` had recorded the overlay's batch count three times — six,
+ten, fifteen — with a suspected cause and no measurement; with five panels open it is 32. The
+overlay reported the number, toggling its own panels moved it, and
+`engine/tests/overlay_batches.zig` attributed every break: **29 of 31 involve a texture change**
+(the blank patch and the font atlas are two textures, and the batcher preserves submission order
+rather than sorting by texture), and 2 are a clip change alone — a second cause nobody had
+written down. One texture behind both would leave **12**. The model is asserted to reproduce
+`frameStats().batches` exactly, so the split is arithmetic rather than inference, and the fix is
+left to `render2d` with its value measured first (rule 2).
 
 The last three bullets have their **own** design document, [`design/debug-overlay.md`](design/debug-overlay.md),
 **written 2026-09-07** after `ui.md` was implemented rather than beside it — which is what let §11

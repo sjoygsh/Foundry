@@ -861,6 +861,13 @@ labels from the font, so every alternation is a texture break, and there are mor
 now. Still a `render2d` question, still not worth answering before there is something to
 measure with.
 
+> **Measured 2026-09-07, and the suspicion was right** — `debug-overlay.md`'s step-6 Resolution
+> and `engine/tests/overlay_batches.zig` carry the numbers. With the overlay's five panels open
+> the frame costs 32 batches, of which 29 breaks involve a texture change and 2 are a clip
+> change alone; one texture behind both rectangles and glyphs would leave **12**. The one thing
+> this paragraph did not name is that a clip change breaks a batch too, which the panels pay
+> whatever they contain — it is simply the smaller half.
+
 ---
 
 ## Resolution: the room checks capture (step 6, 2026-09-07)
