@@ -157,6 +157,27 @@ pub const span = struct {
     pub const render_present = "render.present";
 };
 
+/// Phantom tag for `MemoryHandle` (I1).
+pub const Memories = opaque {};
+
+/// A registered memory counter.
+pub const MemoryHandle = core.Handle(Memories);
+
+/// One counter, as a reader sees it.
+///
+/// A **snapshot**, not a pointer into the registry: what crosses this boundary is a value,
+/// because at M7 the same answer crosses a C ABI and a borrow into engine storage is what
+/// I1 exists to refuse. Cheap enough that copying it is not worth thinking about.
+pub const MemoryReport = struct {
+    handle: MemoryHandle,
+    name: []const u8,
+    live_bytes: usize,
+    peak_bytes: usize,
+    allocations: u64,
+    frees: u64,
+    failures: u64,
+};
+
 /// One fixed simulation step.
 pub const Step = struct {
     /// Monotonically increasing from 1. Simulation time is this integer, never a float.
@@ -234,6 +255,19 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         /// records **in place** out of them rather than copying (`content-schemas.md`
         /// §5.3). Freeing one would leave the store pointing at nothing.
         package_bytes: std.ArrayList([]u8),
+        /// Named allocators someone asked to be reported, in registration order.
+        ///
+        /// **Runtime-populated, and that is I6 rather than convenience.** There is no
+        /// global allocator in Foundry, so there is no global to enumerate — the owner of
+        /// an allocator is the only one who can answer for it, and this is where they say
+        /// so. The engine's own is registered by whoever built the engine, because the
+        /// engine does not own the allocator it was handed; a game registers its
+        /// renderer's and its world's through the same call a mod will use at M7.
+        ///
+        /// Each entry is **borrowed**: a counter must outlive its registration, or be
+        /// unregistered first. Every current caller keeps one for the process's life.
+        memories: core.HandlePool(Memories, *core.mem.Counted),
+
         /// Per-frame timing, or `.off`. **The engine's spans are the frame's skeleton**;
         /// everything inside `simulate` is the game's, opened through `beginScope`.
         ///
@@ -347,6 +381,7 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                 .hot_reload_frames = @max(config.hot_reload_frames, 1),
                 .max_package_bytes = config.max_package_bytes,
                 .package_bytes = .empty,
+                .memories = .empty,
                 .profile = profile,
                 .schemas = .init(gpa, .default),
                 .store = .init(gpa, .default),
@@ -410,6 +445,7 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         fn deinitOwned(self: *Self) void {
             const gpa = self.gpa;
 
+            self.memories.deinit(gpa);
             self.profile.deinit(gpa);
             self.assets.deinit(gpa);
             self.store.deinit(gpa);
@@ -906,6 +942,67 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         pub fn profiler(self: *const Self) ?*const core.profile.Recorder {
             if (!self.profile.enabled()) return null;
             return &self.profile;
+        }
+
+        // -- memory --------------------------------------------------------------------
+
+        /// Adds a named counter to the memory report.
+        ///
+        /// **The engine does not wrap its own allocator**, and that is the decision rather
+        /// than an omission: it was *handed* one, so counting it is the caller's choice to
+        /// make and the caller's to name. A game that wants the engine in its report does
+        ///
+        ///     var engine_memory = core.mem.Counted.init("engine", gpa);
+        ///     const engine = try app.Engine.init(engine_memory.allocator(), .{ ... });
+        ///     _ = try engine.registerMemory(&engine_memory);
+        ///
+        /// which counts everything the engine allocates, including the engine struct
+        /// itself, with no allocation crossing between a counted and an uncounted path.
+        ///
+        /// `counter` is borrowed and must outlive the registration or be unregistered.
+        pub fn registerMemory(self: *Self, counter: *core.mem.Counted) Allocator.Error!MemoryHandle {
+            return self.memories.add(self.gpa, counter);
+        }
+
+        /// Removes one. Safe with a handle that is already gone.
+        pub fn unregisterMemory(self: *Self, handle: MemoryHandle) void {
+            _ = self.memories.remove(handle);
+        }
+
+        /// Every registered counter, in registration order.
+        ///
+        /// **Outputs only: statistics never feed simulation (I9)** — the same sentence
+        /// `render2d.Stats` carries, and it applies to every number here.
+        pub fn memory(self: *Self) MemoryIterator {
+            return .{ .inner = self.memories.iterator() };
+        }
+
+        pub const MemoryIterator = struct {
+            inner: core.HandlePool(Memories, *core.mem.Counted).Iterator,
+
+            pub fn next(self: *MemoryIterator) ?MemoryReport {
+                const entry = self.inner.next() orelse return null;
+                const counter = entry.value.*;
+                return .{
+                    .handle = entry.id,
+                    .name = counter.name,
+                    .live_bytes = counter.live_bytes,
+                    .peak_bytes = counter.peak_bytes,
+                    .allocations = counter.allocations,
+                    .frees = counter.frees,
+                    .failures = counter.failures,
+                };
+            }
+        };
+
+        /// The most the frame arena has ever held at a reset.
+        ///
+        /// Reported separately from the counters because it is a different question: a
+        /// counter answers "how much is this subsystem holding", and an arena that is
+        /// emptied every frame holds nothing between them. What it costs is its **peak**,
+        /// which is the number that says what per-frame garbage is actually worth.
+        pub fn frameArenaHighWater(self: *const Self) usize {
+            return self.frame_arena.highWater();
         }
 
         fn openScope(self: *Self, name: []const u8) void {
@@ -1639,6 +1736,77 @@ test "a disabled profiler is not a null pointer the caller has to guard twice" {
     var s = engine.beginScope("simulate");
     s.end();
     try testing.expect(engine.profiler() == null);
+}
+
+test "the memory report is what somebody registered, and nothing else" {
+    var counter = core.mem.Counted.init("sample", testing.allocator);
+
+    const engine = try testEngine(.{});
+    defer engine.deinit();
+
+    // Empty until asked. There is no global allocator, so there is nothing to discover —
+    // an engine that reported allocators it found would be reporting a fiction.
+    var empty = engine.memory();
+    try testing.expect(empty.next() == null);
+
+    const handle = try engine.registerMemory(&counter);
+    const bytes = try counter.allocator().alloc(u8, 512);
+
+    var it = engine.memory();
+    const report = it.next().?;
+    try testing.expectEqualStrings("sample", report.name);
+    try testing.expectEqual(@as(usize, 512), report.live_bytes);
+    try testing.expectEqual(@as(u64, 1), report.allocations);
+    try testing.expect(it.next() == null);
+
+    counter.allocator().free(bytes);
+    var after = engine.memory();
+    const freed = after.next().?;
+    try testing.expectEqual(@as(usize, 0), freed.live_bytes);
+    // The peak outlives the free, which is the whole reason a report has two numbers.
+    try testing.expectEqual(@as(usize, 512), freed.peak_bytes);
+
+    engine.unregisterMemory(handle);
+    var gone = engine.memory();
+    try testing.expect(gone.next() == null);
+    // Removing a handle twice is a caller mistake that costs nothing to survive.
+    engine.unregisterMemory(handle);
+}
+
+test "an engine handed a counted allocator counts all of itself" {
+    // The composition `registerMemory`'s doc comment recommends, checked rather than
+    // asserted: nothing the engine allocates escapes the counter, including the engine
+    // struct, so `live_bytes` returns to zero only after `deinit`.
+    var engine_memory = core.mem.Counted.init("engine", testing.allocator);
+
+    const engine = try TestEngine.init(engine_memory.allocator(), .{ .headless = true, .profiler = false });
+    try testing.expect(engine_memory.live_bytes > 0);
+    try testing.expect(engine_memory.allocations > 0);
+    try testing.expectEqual(@as(u64, 0), engine_memory.failures);
+
+    engine.deinit();
+    try testing.expectEqual(@as(usize, 0), engine_memory.live_bytes);
+    try testing.expectEqual(engine_memory.allocations, engine_memory.frees);
+}
+
+test "the frame arena's high-water mark survives the reset that empties it" {
+    const engine = try testEngine(.{});
+    defer engine.deinit();
+
+    try testing.expectEqual(@as(usize, 0), engine.frameArenaHighWater());
+
+    engine.beginFrame();
+    _ = try engine.frameAllocator().alloc(u8, 8192);
+    engine.endFrame();
+
+    const peak = engine.frameArenaHighWater();
+    try testing.expect(peak >= 8192);
+
+    // A quiet frame does not lower it: the question is what per-frame garbage costs at its
+    // worst, not what the last frame happened to want.
+    engine.beginFrame();
+    engine.endFrame();
+    try testing.expectEqual(peak, engine.frameArenaHighWater());
 }
 
 test "the gpu device comes up and goes down with the engine" {

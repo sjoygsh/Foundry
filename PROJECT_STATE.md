@@ -5,10 +5,11 @@
 the milestone's actual value.** `docs/design/debug-overlay.md` (852 lines, §17 is the step list)
 covers the remaining three roadmap bullets — the entity inspector, the content browser and the
 log console; the frame profiler and per-allocator memory reporting; and the introspection APIs
-beneath all of them. **Step 1 of its §17 is implemented**: `engine/src/core/profile.zig`,
-`Engine.beginScope`, the engine's seven named spans, and both samples' worth of reading — the
-sandbox plots the profiler's own frame totals, lists the frame's spans under `detail`, and logs
-a median/p95/max summary at exit. **926 tests**, up from 900.
+beneath all of them. **Steps 1 and 2 of its §17 are implemented**: `engine/src/core/profile.zig`
+and `Engine.beginScope` with the engine's seven named spans; `core.mem.Counted`,
+`Arena.highWater` and the engine's memory registry. The sandbox plots the profiler's own frame
+totals, lists the frame's spans and its two allocators under `detail`, and logs both at exit.
+**935 tests**, up from 900.
 
 **[ADR-0025](docs/adr/0025-debug-overlay-module.md) is still `Proposed`, and nothing yet depends
 on it**, which is deliberate: steps 1-4 add calls to modules that already exist and only step 5
@@ -1777,11 +1778,11 @@ value is**, not the widgets.
    this milestone to "shaped so the ABI could expose it". Both halves are cheap now and expensive
    later, and rule 10 says neither is decided silently.
 2. Then `debug-overlay.md` §17, six steps, each ending in something that runs and something that
-   is tested. **Step 1 is done, 2026-09-07**: `core/profile.zig` (storage and arithmetic, holding
-   no clock), `Engine.beginScope`/`profiler`, the seven engine spans, and the sandbox reading
-   them. The rest: counted allocators and the frame arena's high-water; the log ring; the
-   introspection calls in `scene`, `data` and `asset`; the `debug` module and its five panels;
-   and `samples/room` adopting it.
+   is tested. **Steps 1 and 2 are done, 2026-09-07**: `core/profile.zig` (storage and arithmetic,
+   holding no clock), `Engine.beginScope`/`profiler` and the seven engine spans; then
+   `core.mem.Counted`, `Arena.highWater()` and the engine's memory registry. The rest: the log
+   ring; the introspection calls in `scene`, `data` and `asset`; the `debug` module and its five
+   panels; and `samples/room` adopting it.
 
    **Step 1's three findings**, all in the document's Resolution. The design named six engine
    spans and there are **seven** — on Metal the vsync wait is at *drawable acquisition* inside
@@ -1800,6 +1801,21 @@ value is**, not the widgets.
    the sandbox is **display-bound at about 120Hz with the CPU idle**, and the debug build's
    dominant cost was the debug build. The exit summary logs at `info` for exactly this reason:
    `core.log.compiled_level` drops `debug` in the build whose numbers are worth reading.
+
+   **Step 2's findings**, also in the Resolution. **The engine does not wrap its own allocator**
+   and the document was wrong to say it would: a wrapper made inside `init` arrives after the
+   engine struct has already allocated through the raw one, so the frees on the way down
+   subtract bytes the counter never added. Counting the engine is one line at the *call site* —
+   `Engine.init(engine_memory.allocator(), ...)` — which counts every byte including the struct,
+   and the test pins `live_bytes` back to **exactly zero** after `deinit`. **Counting revealed
+   which allocator a shared container belongs to**: the sandbox was passing its own allocator
+   into `engine.assets.*`, which grows engine-owned containers, so bytes were allocated under
+   `sample` and freed under `engine` — harmless for memory, wrong for the report, and invisible
+   until something counted. And the report explained a **thirteen-fold** difference between two
+   builds on its first run: engine memory is 5,534 KiB headless against 401 KiB on Metal,
+   because the null RHI backend keeps real CPU storage for every buffer, while the sample's
+   1,356 KiB is identical in both — which is the cross-check that the attribution is right
+   rather than merely plausible.
 3. **Step 6 is also the exit criterion**, and it has a target already: diagnose the overlay's own
    batch cost *with* the overlay, and settle whether panel rectangles and glyphs coming from two
    different textures is what inflates it. A milestone about diagnosing a performance problem

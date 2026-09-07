@@ -302,10 +302,17 @@ pub fn unregisterMemory(self: *Engine, handle: MemoryHandle) void;
 pub fn memory(self: *const Engine) MemoryIterator;
 ```
 
-Runtime-populated on purpose (I6): the engine registers its own — the store, the asset registry,
-the package bytes — and a game registers its renderer's and its world's with the same call a mod
-would use at M7. A registry a mod cannot add to would be a report that goes stale the first time
-somebody extends the engine.
+Runtime-populated on purpose (I6): a game registers its renderer's and its world's with the same
+call a mod would use at M7. A registry a mod cannot add to would be a report that goes stale the
+first time somebody extends the engine.
+
+> **Revised at step 2.** This paragraph originally said *the engine registers its own — the
+> store, the asset registry, the package bytes*. It does not, and cannot sensibly: the engine is
+> **handed** an allocator, so wrapping one inside `init` would leave everything allocated before
+> the wrapper existed — the engine struct itself among them — being freed through it, which is a
+> counter that underflows on the way down. Counting the engine is the caller's choice, made by
+> handing `Engine.init` an already-counted allocator, which counts every byte the engine takes
+> with nothing crossing between a counted and an uncounted path. See the step 2 Resolution.
 
 **The frame arena gets a high-water mark.** It is the single most informative number about
 per-frame garbage, and it is currently invisible because `Arena.reset` in a safe build frees
@@ -950,3 +957,63 @@ exactly the build whose numbers are worth reading.
 The spans also sum to the frame: 11.49 against a measured 11.44, with `step` nested inside
 `simulate` and therefore not double-counted. That agreement is the cheapest possible check that
 the spans are in the right places, and it is the one to run first after moving any of them.
+
+
+---
+
+## Resolution: counted allocators and the arena's high-water (step 2, 2026-09-07)
+
+`core.mem.Counted`, `Arena.highWater()`, `Engine.registerMemory`/`unregisterMemory`/`memory` and
+`frameArenaHighWater`, and the sandbox reporting two counters and the arena in its panel and at
+exit. **935 tests**, up from 926.
+
+**§5 had the engine wrapping its own allocator, and it cannot.** The engine does not own the
+allocator it is handed, and a wrapper created inside `init` would arrive *after* the engine
+struct and its content paths had already allocated through the raw one — so the frees on the way
+down would subtract bytes the counter never added. Saturating subtraction would hide it and lie.
+What works instead is one line at the call site:
+
+```zig
+var engine_memory = core.mem.Counted.init("engine", gpa);
+const engine = try app.Engine.init(engine_memory.allocator(), .{ ... });
+_ = try engine.registerMemory(&engine_memory);
+```
+
+Every byte the engine takes, including its own struct, goes through the counter, and the test
+that pins it asserts `live_bytes` returns to **exactly zero** after `deinit` with `allocations ==
+frees`. This is the better answer for the reason §5 was written around in the first place: there
+is no global allocator, so the owner of one is the only one who can answer for it — and the
+engine's owner is `main`, not the engine.
+
+**Counting revealed which allocator a shared container actually belongs to.** `samples/sandbox`
+passed *its* allocator into `engine.assets.registerLoader`, `acquire` and `unregisterLoader`,
+which grow containers the engine's registry owns. Memory-wise that was harmless — both counters
+forward to the same child — but the attribution crossed: bytes allocated under `sample` and
+freed under `engine`. Foundry's per-call allocator style (`CLAUDE.md` §7) makes ownership
+implicit exactly where two owners meet, and a counter is what makes it visible. The fix is to
+pass `engine.gpa` at those call sites, and it had a pleasing side effect: `reacquire` lost its
+last use of `self` and became a free function, because once the allocator belonged to the engine
+there was nothing of the sample's left in it.
+
+**The report explained a thirteen-fold difference between two builds on its first run.**
+
+```
+headless (-Drhi=null)   engine 5,534 KiB live    sample 1,356 KiB live
+windowed (-Drhi=metal)  engine   401 KiB live    sample 1,356 KiB live
+```
+
+The null RHI backend allocates real CPU storage for every buffer — it models what Metal hands to
+the GPU, which is the whole reason it can validate a command stream — so the renderer's vertex
+and staging buffers are five megabytes of host memory in a headless build and nearly none in a
+Metal one. **The sample's number is identical in both**, which is the cross-check that the
+attribution is right rather than merely plausible: the sample's allocations do not depend on the
+backend, and the counters agree.
+
+**The frame arena's high-water mark is zero, and that is the right answer.** Nothing calls
+`engine.frameAllocator()` — the UI kernel keeps an arena of its own (counted under `sample`,
+because the sample built it) and everything else formats into stack buffers. The engine's frame
+arena is available and unused, and the panel says so rather than hiding a zero. `highWater`
+samples `queryCapacity` *before* the reset, which is the only moment the number exists in a safe
+build, and it means slightly different things in the two reset modes — the worst single frame
+under `free_all`, the largest the arena ever grew under `retain_capacity` — which are the same
+high-water mark reached from opposite sides.

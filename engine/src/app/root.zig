@@ -21,6 +21,8 @@ pub const Config = engine.Config;
 pub const ContentPackage = engine.ContentPackage;
 pub const InitError = engine.InitError;
 pub const Step = engine.Step;
+pub const MemoryHandle = engine.MemoryHandle;
+pub const MemoryReport = engine.MemoryReport;
 /// The names the engine gives its own timing spans (`debug-overlay.md` §4.3).
 pub const span = engine.span;
 pub const environment = engine.environment;

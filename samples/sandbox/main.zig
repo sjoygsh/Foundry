@@ -146,7 +146,15 @@ pub fn main(init: std.process.Init) !void {
         gpa.free(packages);
     }
 
-    var engine = try app.Engine.init(gpa, .{
+    // **Two counted allocators, and the split is the report.** The engine does not wrap
+    // the allocator it was handed — it does not own it — so counting it is the caller's
+    // choice to make and the caller's to name (`debug-overlay.md` §5). Everything the
+    // engine allocates goes through the first of these, including the engine struct
+    // itself, and everything this sample allocates goes through the second.
+    var engine_memory = core.mem.Counted.init("engine", gpa);
+    var sample_memory = core.mem.Counted.init("sample", gpa);
+
+    var engine = try app.Engine.init(engine_memory.allocator(), .{
         .env = env,
         .app_name = "foundry-sandbox",
         .log_level = .debug,
@@ -168,11 +176,13 @@ pub fn main(init: std.process.Init) !void {
         .content = packages,
     });
     defer engine.deinit();
+    _ = try engine.registerMemory(&engine_memory);
+    _ = try engine.registerMemory(&sample_memory);
 
     // The renderer and its sprites, created once and torn down explicitly. Unlike M1's
     // quad, this *does* have a teardown: `Renderer.deinit` idles the device first, which
     // is what `rhi.waitIdle` was added for.
-    var field = try SpriteField.init(gpa, engine.gpu);
+    var field = try SpriteField.init(sample_memory.allocator(), engine.gpu);
     defer field.deinit(engine);
     try field.load(engine);
     field.pick_every = everyFrames(engine, "FOUNDRY_SANDBOX_PICK_EVERY");
@@ -385,16 +395,32 @@ pub fn main(init: std.process.Init) !void {
         engine.elapsed().toMillis(),
         field.sounds_played,
     });
-    summariseProfile(engine);
+    summariseResources(engine);
 }
 
-/// One `info` line at exit: what the frames cost, and the three spans that cost the most.
+/// A handful of `info` lines at exit: what memory was held, and what the frames cost.
 ///
 /// At `info` rather than `debug` on purpose. `core.log.compiled_level` drops `debug` in a
 /// release build, and a release build is exactly the one whose numbers are worth reading —
 /// a profile that only exists in the mode where everything is slow is a profile of the
 /// wrong program.
-fn summariseProfile(engine: *app.Engine) void {
+fn summariseResources(engine: *app.Engine) void {
+    // Memory first, and **not** behind the profiler: counting allocations and timing a
+    // frame are separate opt-ins, and a headless run that reports its memory while
+    // declining to profile itself is exactly the combination this sample uses.
+    var it_mem = engine.memory();
+    while (it_mem.next()) |counter| {
+        log.info("memory '{s}': {d} KiB live, {d} KiB peak, {d} allocations, {d} frees, {d} refused", .{
+            counter.name,
+            counter.live_bytes / 1024,
+            counter.peak_bytes / 1024,
+            counter.allocations,
+            counter.frees,
+            counter.failures,
+        });
+    }
+    log.info("frame arena peak: {d} bytes", .{engine.frameArenaHighWater()});
+
     const recorder = engine.profiler() orelse return;
 
     var totals: [240]i64 = undefined;
@@ -719,11 +745,11 @@ const Map = struct {
         // Two acquisitions, and the only two: the art and the numbers. Both are content
         // ids and neither is a path — the sample could not ask for a path if it wanted to
         // (ADR-0021).
-        const texture_asset = engine.assets.acquire(gpa, set.texture) catch |err| {
+        const texture_asset = engine.assets.acquire(engine.gpa, set.texture) catch |err| {
             log.warn("tileset texture '{f}' did not load ({t}); skipping its layer", .{ set.texture, err });
             return null;
         };
-        const grid_asset = engine.assets.acquire(gpa, layer.grid) catch |err| {
+        const grid_asset = engine.assets.acquire(engine.gpa, layer.grid) catch |err| {
             log.warn("tile grid '{f}' did not load ({t}); skipping its layer", .{ layer.grid, err });
             engine.assets.release(texture_asset);
             return null;
@@ -1295,7 +1321,7 @@ const SpriteField = struct {
         // The capability points up, the dependency points down (I6). `app` has no
         // `render2d`, so the engine could not have done this itself — and a mod adding an
         // asset kind the engine has never heard of makes exactly this call.
-        try engine.assets.registerLoader(gpa, render2d.textureLoader(&self.renderer));
+        try engine.assets.registerLoader(engine.gpa, render2d.textureLoader(&self.renderer));
 
         // The mixer opens the device and registers its own loader the same way, for the
         // same reason: `app` has neither `render2d` nor `audio`, so both capabilities are
@@ -1307,12 +1333,12 @@ const SpriteField = struct {
             log.warn("no audio device ({t}); the sandbox runs silent", .{err});
             break :blk null;
         };
-        if (self.mixer) |mixer| try engine.assets.registerLoader(gpa, mixer.soundLoader());
+        if (self.mixer) |mixer| try engine.assets.registerLoader(engine.gpa, mixer.soundLoader());
 
         self.readSettings(engine);
 
-        self.sheet_asset = try engine.assets.acquire(gpa, self.settings.sheet);
-        self.font_asset = try engine.assets.acquire(gpa, self.settings.font);
+        self.sheet_asset = try engine.assets.acquire(engine.gpa, self.settings.sheet);
+        self.font_asset = try engine.assets.acquire(engine.gpa, self.settings.font);
         self.font = .{
             .glyphs = .{ .texture = .none, .uv = .{}, .size_px = .{} },
             .cell = .{ .width = 8, .height = 8 },
@@ -1647,8 +1673,8 @@ const SpriteField = struct {
 
         // Only if the record now names a *different* asset. An asset whose bytes changed
         // keeps its handle, which is the whole point of holding one.
-        self.reacquire(engine, &self.sheet_asset, previous.sheet, self.settings.sheet);
-        self.reacquire(engine, &self.font_asset, previous.font, self.settings.font);
+        reacquire(engine, &self.sheet_asset, previous.sheet, self.settings.sheet);
+        reacquire(engine, &self.font_asset, previous.font, self.settings.font);
         self.deriveRegions(engine);
         // Rebuilt rather than patched. Everything in a plane is *derived* — a region cut
         // from a texture, a slice into a grid's payload — and a reload is exactly the event
@@ -1710,15 +1736,19 @@ const SpriteField = struct {
         }
     }
 
+    /// Swaps one asset handle for another when content renamed what it points at.
+    ///
+    /// Takes no `self`: the registry's memory is the *engine's*, so the allocator this
+    /// passes is the engine's too, and once that was true there was nothing of the
+    /// sample's left to reach for.
     fn reacquire(
-        self: *SpriteField,
         engine: *app.Engine,
         handle: *asset.AssetHandle,
         before: core.ContentId,
         after: core.ContentId,
     ) void {
         if (before.eql(after)) return;
-        const fresh = engine.assets.acquire(self.gpa, after) catch |err| {
+        const fresh = engine.assets.acquire(engine.gpa, after) catch |err| {
             log.warn("content now asks for {f}, which did not load ({t}); keeping the old one", .{ after, err });
             return;
         };
@@ -1968,14 +1998,14 @@ const SpriteField = struct {
         self.clips.deinit(self.gpa);
         engine.assets.release(self.sheet_asset);
         engine.assets.release(self.font_asset);
-        _ = engine.assets.unregisterLoader(self.gpa, asset.schemas.texture.id);
+        _ = engine.assets.unregisterLoader(engine.gpa, asset.schemas.texture.id);
         // The same shape as the texture loader above, with one extra step in the middle.
         // `shutdown` closes the device and hands back the asset reference every playing
         // voice held; only then may the loader go, or the registry would rightly report
         // that the ambience is still holding the sound it is unloading.
         if (self.mixer) |mixer| {
             mixer.shutdown();
-            _ = engine.assets.unregisterLoader(self.gpa, asset.schemas.sound.id);
+            _ = engine.assets.unregisterLoader(engine.gpa, asset.schemas.sound.id);
             mixer.deinit();
             self.mixer = null;
         }
@@ -2382,10 +2412,12 @@ const SpriteField = struct {
         var span_buffers: [max_span_lines][96]u8 = undefined;
         var span_lines: [max_span_lines][]const u8 = undefined;
         const spans = self.profileLines(engine, &span_buffers, &span_lines);
+        const memory = self.memoryLines(engine, span_buffers[spans.len..], span_lines[spans.len..]);
 
         var widest: f32 = 0;
         for (lines) |line| widest = @max(widest, style.font.measure(line, style.text_scale).x);
         for (spans) |line| widest = @max(widest, style.font.measure(line, style.text_scale).x);
+        for (memory) |line| widest = @max(widest, style.font.measure(line, style.text_scale).x);
 
         // A panel around a collapsing section has to know whether it is open before it can
         // be sized, and the kernel is what remembers that. The id is the one the header
@@ -2395,7 +2427,7 @@ const SpriteField = struct {
         const detail_open = self.ui.stateOf(detail_id).open;
 
         const plot_height = style.line_height * 2;
-        const extra: f32 = if (detail_open) @floatFromInt(spans.len) else 0;
+        const extra: f32 = if (detail_open) @floatFromInt(spans.len + memory.len) else 0;
         const rows: f32 = (if (detail_open) @as(f32, 7) else 5) + extra;
         const items: f32 = (if (detail_open) @as(f32, 9) else 7) + extra;
         const content = rows * style.line_height + plot_height +
@@ -2428,6 +2460,11 @@ const SpriteField = struct {
             // subsystem timing itself: `scene` and `physics2d` cannot read a clock at all
             // (`debug-overlay.md` §4.1), so the caller times the call.
             for (spans) |line| try ui.label(&self.ui, line);
+            // **Only what somebody registered**, which for this sample is the engine's
+            // allocator and its own. The engine does not wrap the one it was handed, so
+            // the split between these two rows is a decision `main` made rather than one
+            // the engine imposed (`debug-overlay.md` §5).
+            for (memory) |line| try ui.label(&self.ui, line);
         }
         try ui.separator(&self.ui);
         // The flag lives here, in the sample, and the kernel holds no copy of it — which
@@ -2458,8 +2495,9 @@ const SpriteField = struct {
         try self.describeBindings(width, height);
     }
 
-    /// How many profile lines the panel will show: a summary, then one span each.
-    const max_span_lines = 12;
+    /// How many detail lines the panel will show: a frame summary, then one span each,
+    /// then one per registered allocator and one for the frame arena.
+    const max_span_lines = 18;
 
     /// Nanoseconds as milliseconds, for display only.
     fn millis(ns: i64) f32 {
@@ -2516,6 +2554,47 @@ const SpriteField = struct {
                 "      "[0..indent],
                 recorder.nameOf(s.name),
                 millis(@intCast(s.durationNs())),
+            }) catch "";
+            n += 1;
+        }
+        return out[0..n];
+    }
+
+    /// One line per registered allocator, plus the frame arena's peak.
+    ///
+    /// **Only what somebody registered.** There is no global allocator in Foundry and so
+    /// no global to enumerate; this sample registers two — the engine's and its own — and
+    /// a report that listed anything else would be reporting a fiction.
+    fn memoryLines(
+        self: *SpriteField,
+        engine: *app.Engine,
+        buffers: [][96]u8,
+        out: [][]const u8,
+    ) [][]const u8 {
+        _ = self;
+        var n: usize = 0;
+        var it = engine.memory();
+        while (it.next()) |counter| {
+            if (n == out.len) break;
+            out[n] = std.fmt.bufPrint(&buffers[n], "{s} {d} KiB live, {d} peak, {d} allocs", .{
+                counter.name,
+                counter.live_bytes / 1024,
+                counter.peak_bytes / 1024,
+                counter.allocations,
+            }) catch "";
+            n += 1;
+        }
+        if (n < out.len) {
+            // The arena is a different question from a counter: it holds nothing between
+            // frames, so what it costs is its peak.
+            //
+            // **Zero here is the right answer, not a broken instrument.** Nothing in this
+            // sample calls `engine.frameAllocator()` — the UI kernel keeps an arena of its
+            // own (counted under `sample`, because the sample built it) and everything
+            // else formats into stack buffers. The engine's frame arena is available and
+            // unused, and the report says so rather than hiding it.
+            out[n] = std.fmt.bufPrint(&buffers[n], "frame arena peak {d} B", .{
+                engine.frameArenaHighWater(),
             }) catch "";
             n += 1;
         }
