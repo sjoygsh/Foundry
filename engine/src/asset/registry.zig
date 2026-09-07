@@ -508,6 +508,49 @@ pub const Registry = struct {
     }
 
     /// How many assets are loaded, evictable ones included.
+    /// One loaded asset, as a reader sees it.
+    ///
+    /// A snapshot: `Payload` is an opaque word whose meaning belongs to the loader that
+    /// made it, and handing one to a reader would be handing out something only its owner
+    /// can interpret. What a browser wants is identity, kind and cost.
+    pub const AssetInfo = struct {
+        handle: AssetHandle,
+        id: ContentId,
+        schema_id: SchemaId,
+        /// Zero means **evictable, not freed** (§4). The first time this is visible to
+        /// anybody, and it is a real answer to "why is this still in memory".
+        refs: u32,
+    };
+
+    /// Every loaded asset, **in handle-slot order**.
+    ///
+    /// Stable for as long as nothing is loaded or evicted, which is what a stable order can
+    /// mean for a pool whose contents come and go. A reader that wants a fixed order sorts
+    /// its own copy (`debug-overlay.md` §3).
+    pub fn assets(self: *const Registry) Iterator {
+        return .{ .registry = self };
+    }
+
+    pub const Iterator = struct {
+        registry: *const Registry,
+        slot: u32 = 0,
+
+        pub fn next(self: *Iterator) ?AssetInfo {
+            while (self.registry.entries.slotAt(self.slot)) |state| {
+                const index = self.slot;
+                self.slot += 1;
+                const entry = state.value orelse continue;
+                return .{
+                    .handle = .{ .index = index, .generation = state.generation },
+                    .id = entry.id,
+                    .schema_id = entry.schema_id,
+                    .refs = entry.refs,
+                };
+            }
+            return null;
+        }
+    };
+
     pub fn count(self: *const Registry) u32 {
         return self.entries.count();
     }
@@ -849,6 +892,42 @@ test "acquiring twice loads once, and the second release makes it evictable" {
     // Zero is evictable, not freed: still resident, still resolving.
     try testing.expectEqual(@as(u32, 0), fx.texture_loader.unloads);
     try testing.expect(fx.registry.get(first) != null);
+}
+
+test "every loaded asset can be listed, with the reference count nobody could see before" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+
+    try fx.writeFile("textures/sprites.png", &one_pixel_png);
+    _ = try fx.addPackage("foundry:core", one_texture);
+    try fx.registerTextureLoader();
+
+    // Nothing loaded is an empty listing, not an absent one.
+    var empty = fx.registry.assets();
+    try testing.expect(empty.next() == null);
+
+    const handle = try fx.registry.acquire(fx.gpa, sprites_id);
+    _ = try fx.registry.acquire(fx.gpa, sprites_id);
+
+    var it = fx.registry.assets();
+    const info = it.next().?;
+    try testing.expect(info.handle.eql(handle));
+    try testing.expect(info.id.eql(sprites_id));
+    try testing.expect(info.schema_id.eql(schemas.texture.id));
+    try testing.expectEqual(@as(u32, 2), info.refs);
+    try testing.expect(it.next() == null);
+
+    // Zero references is **evictable, not freed** — and this is the first time that state
+    // is visible to anybody, which is the answer to "why is this still in memory".
+    fx.registry.release(handle);
+    fx.registry.release(handle);
+    var still = fx.registry.assets();
+    try testing.expectEqual(@as(u32, 0), still.next().?.refs);
+
+    // Eviction is what removes it from the listing.
+    try testing.expectEqual(@as(u32, 1), fx.registry.evictUnused(fx.gpa));
+    var gone = fx.registry.assets();
+    try testing.expect(gone.next() == null);
 }
 
 test "a count that reaches zero is not a reload, and eviction is what frees it" {

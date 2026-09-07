@@ -558,9 +558,15 @@ The whole of the "introspection APIs" bullet, in one table. **These names reach 
 | `core` | `profile.Recorder`, `profile.Span`, `profile.Frame`, `profile.summarise` | Storage and arithmetic for spans; holds no clock, by §4.1 |
 | `core` | `mem.Counted`, `Arena.highWater()` | Per-allocator accounting, opt-in; the arena's peak exists only before a reset |
 | `platform` | **nothing** | It already has `now()`, and that is the whole of its part |
-| `data` | `Registry.schemas()`, `Store.definitions(id, out)` | Enumeration, and the override chain §8.1 reconstructs rather than stores |
+| `data` | `Registry.all()`, `Store.definitions(id, out)` | Enumeration, and the override chain §8.1 reconstructs rather than stores |
 | `asset` | `Registry.assets()` | Enumeration over entries; every field of one is public already |
-| `scene` | `World.entities()`, `World.componentTypes()`, `World.describeComponent()` | The orders `save.zig` already uses, and the serialize round-trip of §7.2 |
+| `scene` | `World.liveEntities()`, `World.componentTypes()`, `World.describeComponent()` | The orders `save.zig` already uses, and the serialize round-trip of §7.2 |
+
+> **Named at step 4.** Two of these read `entities()` and `schemas()` above, and both collide
+> with a field of the very struct they hang off — `World.entities` and `Registry.schemas` are
+> where the things being enumerated actually live. `liveEntities` is the better name anyway,
+> since it yields only the live ones, and `all()` matches `data.Store.all`, the other
+> enumeration in that module.
 | `ui` | **nothing** | §11's windowing is `stateOf`, `spacer` and `beginScroll`, all shipped at step 5 |
 | `render2d` | **nothing** | `Stats` was built for this from M2 |
 | `audio` | **nothing** | `activeVoices`, `commandsDropped`, `soundCount` exist |
@@ -1084,3 +1090,57 @@ which is per-frame arena traffic being visible rather than a leak — `live_byte
 bindings from a hardcoded array; it now lists them because `main` *logs* them at startup and the
 console reads the ring. `matchesFilter` was deleted with the array's reader, and the sample is
 one fewer place where a key map can go stale.
+
+
+---
+
+## Resolution: the introspection calls (step 4, 2026-09-07)
+
+`World.liveEntities`, `World.componentTypes` and `World.describeComponent`; `data.Registry.all`
+and `Store.definitions`; `asset.Registry.assets`. **951 tests**, up from 943, and **nothing new
+on screen** — which is what §17 said this step's output would be, since its output is an API and
+step 5 is its first consumer.
+
+**Two of the five names collided with the field they enumerate.** `World.entities` and
+`data.Registry.schemas` are where the entities and the schemas actually live, so a method cannot
+share the name. `liveEntities` is the better name regardless — it yields the live ones and skips
+free slots, which is a promise worth making in the name — and `all()` matches `data.Store.all`,
+the other enumeration in that module. §9's table is corrected.
+
+**`describeComponent` compiled with a field that does not exist.** It read
+`self.limits.max_list_elements`, and `scene.Limits` has no such field: it has `max_entities`,
+`max_component_types` and `max_systems`. `zig build check` passed anyway, because Zig analyses a
+function body only when something reaches it and nothing called this one yet. This is the hazard
+`PROJECT_STATE.md` already records under "lazy analysis makes negative tests lie", met from the
+other direction — **a green check on code that cannot compile** — and the only defence is the
+one that caught it: a test that calls the thing. The limit was wrong to reach for in any case,
+and the bound is now `data`'s default with a sentence saying why: these bytes were produced a
+line earlier by the type's own serializer, so a list bound is a formality here rather than the
+defence it is on input from a file.
+
+**Three calls became `*const World` on the way through.** `hasComponent` and `componentCount`
+did not need a mutable world and only took one because `storeFor` returns a mutable store; a
+`storeOf` beside it made all three of the new calls read-only in the type system as well as in
+fact. Widening like this is safe — a `*World` still coerces — and it is worth doing, because
+"everything introspection does is a read" is a claim the compiler can hold rather than a
+sentence in a document.
+
+**The override chain cost nothing to add**, which is the part of §8.1 that had to be checked
+rather than argued. `definitions` walks each package's own record table on demand, for one id,
+into a caller's buffer: no index, no bookkeeping, no allocation, and no cost until somebody
+clicks. The test asserts the shape a mod author actually wants — both packages, in load order,
+winner last, agreeing with `provenance` — and that an id nobody defines is an **empty slice**
+rather than an error, because a content id with no definitions is the answer to the most common
+content bug.
+
+**`data.Registry.Entry` carries no name, and that is a real finding for the browser.** A schema
+knows its id and its version and not its spelling: the spelling lives in the packages that carry
+it, because that is where somebody wrote it down. A schema browser therefore has to ask the store
+for a name, which §8's "a hash can be shown as a name" already depends on — it is just true one
+level further down than that paragraph implies.
+
+**The asset listing made reference counts visible for the first time.** `assets.md` made zero
+references mean *evictable, not freed*, and nothing evicts on a schedule; until now nobody could
+see the state. The test walks an asset from two references to zero to evicted, and the middle
+step — resident, resolving, referenced by nobody — is the answer to "why is this still in
+memory" that no existing call could give.

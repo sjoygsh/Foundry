@@ -199,6 +199,50 @@ pub const Registry = struct {
         return self.schemas.getConst(handle);
     }
 
+    /// One registered schema, as a reader sees it.
+    ///
+    /// Identity and shape, and no borrow: at M7 this crosses a C ABI, where a
+    /// `*const Schema` cannot go and a handle can (I1, ADR-0025). `get` is still there for
+    /// the fields themselves.
+    ///
+    /// **No name.** A schema knows its id and not its spelling — the spelling lives in the
+    /// packages that carry it, because that is where somebody wrote it down. A browser that
+    /// wants one asks the store.
+    pub const Entry = struct {
+        handle: SchemaHandle,
+        id: SchemaId,
+        version: u32,
+        field_count: u32,
+    };
+
+    /// Every registered schema, **in registration order**.
+    ///
+    /// Called `all` rather than `schemas` only because the field is called that, and it
+    /// matches `data.Store.all`, which is the other enumeration in this module.
+    pub fn all(self: *const Registry) Iterator {
+        return .{ .registry = self };
+    }
+
+    pub const Iterator = struct {
+        registry: *const Registry,
+        slot: u32 = 0,
+
+        pub fn next(self: *Iterator) ?Entry {
+            while (self.registry.schemas.slotAt(self.slot)) |state| {
+                const index = self.slot;
+                self.slot += 1;
+                const schema = state.value orelse continue;
+                return .{
+                    .handle = .{ .index = index, .generation = state.generation },
+                    .id = schema.id,
+                    .version = schema.version,
+                    .field_count = @intCast(schema.fields.len),
+                };
+            }
+            return null;
+        }
+    };
+
     pub fn lookup(self: *Registry, schema_id: SchemaId) ?*const Schema {
         return self.schemas.getConst(self.find(schema_id) orelse return null);
     }

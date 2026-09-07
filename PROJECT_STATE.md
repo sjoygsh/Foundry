@@ -5,12 +5,14 @@
 the milestone's actual value.** `docs/design/debug-overlay.md` (852 lines, §17 is the step list)
 covers the remaining three roadmap bullets — the entity inspector, the content browser and the
 log console; the frame profiler and per-allocator memory reporting; and the introspection APIs
-beneath all of them. **Steps 1, 2 and 3 of its §17 are implemented**:
-`engine/src/core/profile.zig` and `Engine.beginScope` with the engine's seven named spans;
-`core.mem.Counted`, `Arena.highWater` and the engine's memory registry; and the in-memory log
-ring behind `app/log_sink.zig`. The sandbox plots the profiler's own frame totals, lists the
-frame's spans and its two allocators under `detail`, logs both at exit, and its second panel is
-now **an actual log console** rather than the shape of one. **943 tests**, up from 900.
+beneath all of them. **Steps 1 to 4 of its §17 are implemented**: `engine/src/core/profile.zig`
+and `Engine.beginScope` with the engine's seven named spans; `core.mem.Counted`,
+`Arena.highWater` and the engine's memory registry; the in-memory log ring behind
+`app/log_sink.zig`; and the introspection calls themselves — `World.liveEntities`,
+`World.componentTypes`, `World.describeComponent`, `data.Registry.all`, `Store.definitions` and
+`asset.Registry.assets`. The sandbox plots the profiler's own frame totals, lists the frame's
+spans and its two allocators under `detail`, logs both at exit, and its second panel is now **an
+actual log console** rather than the shape of one. **951 tests**, up from 900.
 
 **[ADR-0025](docs/adr/0025-debug-overlay-module.md) is still `Proposed`, and nothing yet depends
 on it**, which is deliberate: steps 1-4 add calls to modules that already exist and only step 5
@@ -1779,11 +1781,12 @@ value is**, not the widgets.
    this milestone to "shaped so the ABI could expose it". Both halves are cheap now and expensive
    later, and rule 10 says neither is decided silently.
 2. Then `debug-overlay.md` §17, six steps, each ending in something that runs and something that
-   is tested. **Steps 1, 2 and 3 are done, 2026-09-07**: `core/profile.zig` (storage and
+   is tested. **Steps 1 to 4 are done, 2026-09-07**: `core/profile.zig` (storage and
    arithmetic, holding no clock), `Engine.beginScope`/`profiler` and the seven engine spans;
    then `core.mem.Counted`, `Arena.highWater()` and the engine's memory registry; then the log
-   ring and the sandbox's console over it. The rest: the introspection calls in `scene`, `data`
-   and `asset`; the `debug` module and its five panels; and `samples/room` adopting it.
+   ring and the sandbox's console over it; then the introspection calls themselves. **The rest
+   is the `debug` module and its five panels, and `samples/room` adopting it — and step 5 is
+   the first thing that depends on ADR-0025.**
 
    **Step 1's three findings**, all in the document's Resolution. The design named six engine
    spans and there are **seven** — on Metal the vsync wait is at *drawable acquisition* inside
@@ -1838,6 +1841,20 @@ value is**, not the widgets.
    kept its contents by losing its copy of them: it listed the sample's key bindings from a
    hardcoded array, and now lists them because `main` logs them at startup and the console
    reads the ring.
+
+   **Step 4's findings**, also in the Resolution. Two of the five names collided with the field
+   they enumerate — `World.entities` and `data.Registry.schemas` are where those things live —
+   so they are `liveEntities()` and `all()`, both of which are better names anyway. **A green
+   `zig build check` covered code that could not compile**: `describeComponent` read
+   `self.limits.max_list_elements`, which `scene.Limits` does not have, and Zig analysed the
+   body only once a test called it — the lazy-analysis hazard already in the notes below, met
+   from the other direction, and the only defence is a test that calls the thing. Three calls
+   became `*const World` on the way through, so "everything introspection does is a read" is a
+   claim the compiler holds rather than a sentence in a document. `data.Registry.Entry` carries
+   **no name**, because a schema knows its id and not its spelling — the spelling lives in the
+   packages that carry it, which a schema browser has to go and ask. And the asset listing made
+   **reference counts visible for the first time**: zero means evictable, not freed, and until
+   now nobody could see that state.
 3. **Step 6 is also the exit criterion**, and it has a target already: diagnose the overlay's own
    batch cost *with* the overlay, and settle whether panel rectangles and glyphs coming from two
    different textures is what inflates it. A milestone about diagnosing a performance problem

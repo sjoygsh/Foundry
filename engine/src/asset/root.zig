@@ -48,6 +48,7 @@ pub const LoadError = registry.LoadError;
 pub const Loader = registry.Loader;
 pub const Payload = registry.Payload;
 pub const Registry = registry.Registry;
+pub const AssetInfo = registry.Registry.AssetInfo;
 
 pub const TileGrid = tilegrid.TileGrid;
 /// The loader for `foundry:tilegrid`. Registered by whoever wants grids (I6); it needs no

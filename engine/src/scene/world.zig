@@ -300,6 +300,13 @@ pub const World = struct {
         return &self.stores.items[t.index];
     }
 
+    /// The same lookup, for readers. Everything introspection does is a read, and a
+    /// `*const World` is how that is said out loud (`debug-overlay.md` §3).
+    fn storeOf(self: *const World, t: ComponentType) ?*const ComponentStore {
+        if (!self.types.contains(t)) return null;
+        return &self.stores.items[t.index];
+    }
+
     /// Adds a component to an entity and returns its bytes.
     ///
     /// `initial` is either exactly the type's `size` bytes, which are copied, or null —
@@ -335,8 +342,8 @@ pub const World = struct {
         return store.get(entity);
     }
 
-    pub fn hasComponent(self: *World, entity: Entity, t: ComponentType) bool {
-        const store = self.storeFor(t) orelse return false;
+    pub fn hasComponent(self: *const World, entity: Entity, t: ComponentType) bool {
+        const store = self.storeOf(t) orelse return false;
         return store.has(entity);
     }
 
@@ -349,9 +356,141 @@ pub const World = struct {
     }
 
     /// How many entities have a component of this type. The number a query would visit.
-    pub fn componentCount(self: *World, t: ComponentType) u32 {
-        const store = self.storeFor(t) orelse return 0;
+    pub fn componentCount(self: *const World, t: ComponentType) u32 {
+        const store = self.storeOf(t) orelse return 0;
         return store.count();
+    }
+
+    // -- introspection -----------------------------------------------------------------
+    //
+    // What an inspector may ask a world, and nothing more. Every call here is a **read**,
+    // returns a **value** rather than a pointer into storage (I1), and iterates in an order
+    // that is documented and stable (I9) — because at M7 the same answers cross a C ABI and
+    // a mod asks them (ADR-0025).
+
+    /// Every live entity, **in slot-index order**.
+    ///
+    /// The same order `save.zig` writes and therefore the order a reloaded world comes back
+    /// in, which is what makes the promise free: the list you were looking at is the list
+    /// that gets saved. Free slots are skipped; a generation is carried, so a handle taken
+    /// from here is a handle, not an index.
+    ///
+    /// Called `liveEntities` rather than `entities` only because the field is called that.
+    pub fn liveEntities(self: *const World) EntityIterator {
+        return .{ .world = self };
+    }
+
+    pub const EntityIterator = struct {
+        world: *const World,
+        slot: u32 = 0,
+
+        pub fn next(self: *EntityIterator) ?Entity {
+            while (self.world.entities.slotAt(self.slot)) |state| {
+                const index = self.slot;
+                self.slot += 1;
+                if (state.value != null) return .{ .index = index, .generation = state.generation };
+            }
+            return null;
+        }
+    };
+
+    /// One registered component type, as a reader sees it.
+    ///
+    /// A snapshot rather than a `*const Registration`: handing out a pointer into a live
+    /// pool is exactly what I1 refuses, and at M7 this crosses a C ABI. `name` is borrowed
+    /// from the world's arena, which is never reset, so it outlives any frame.
+    pub const TypeInfo = struct {
+        type: ComponentType,
+        id: data.SchemaId,
+        name: []const u8,
+        size: u32,
+        alignment: u32,
+        /// How many entities have one. The number a query over this type would visit.
+        count: u32,
+        /// Whether a save carries it — and therefore whether `describeComponent` can show
+        /// it, since both go through the same serializer.
+        savable: bool,
+    };
+
+    /// Every registered component type, **in registration order**.
+    pub fn componentTypes(self: *const World) TypeIterator {
+        return .{ .world = self };
+    }
+
+    pub const TypeIterator = struct {
+        world: *const World,
+        slot: u32 = 0,
+
+        pub fn next(self: *TypeIterator) ?TypeInfo {
+            while (self.world.types.slotAt(self.slot)) |state| {
+                const index = self.slot;
+                self.slot += 1;
+                const registration = state.value orelse continue;
+                const t: ComponentType = .{ .index = index, .generation = state.generation };
+                return .{
+                    .type = t,
+                    .id = registration.id,
+                    .name = registration.name,
+                    .size = registration.size,
+                    .alignment = registration.alignment,
+                    .count = self.world.componentCount(t),
+                    .savable = registration.savable(),
+                };
+            }
+            return null;
+        }
+    };
+
+    pub const DescribeError = error{
+        /// The type has no serializer, so there is nothing to read it *through*. The same
+        /// condition `Registration.savable` names: a type a save leaves out is a type an
+        /// inspector cannot show, and saying so is better than showing an empty row.
+        NotSavable,
+    } || component.SerializeError || Allocator.Error;
+
+    /// One entity's component, **read the way a save reads it**.
+    ///
+    /// Null when the entity is gone, the type is unregistered, or the entity does not have
+    /// one — all three are ordinary answers for an inspector whose selection moved.
+    ///
+    /// **Not a cast of the component's bytes.** A component's in-memory shape is a Zig
+    /// struct's layout and is nobody's business; only its *schema* is public, and a schema
+    /// describes the serialized form. Casting would work for a type the caller was compiled
+    /// against and produce garbage for a mod's — an answer that looks right for the whole of
+    /// M6 and starts lying at M7. So this serializes through the type's own function and
+    /// reads the result back, which means it works for a type the engine has never heard of
+    /// and cannot disagree with what a reload would restore.
+    ///
+    /// Everything is allocated from `arena` and borrowed from it: the returned `Fields`
+    /// points into memory the arena owns, and lives exactly as long as the arena does. In a
+    /// frame that is the frame's.
+    pub fn describeComponent(
+        self: *const World,
+        arena: Allocator,
+        entity: Entity,
+        t: ComponentType,
+    ) DescribeError!?data.fpk.Fields {
+        const registration = self.types.getConst(t) orelse return null;
+        const store = self.storeOf(t) orelse return null;
+        const bytes = store.get(entity) orelse return null;
+        const serialize = registration.serialize orelse return error.NotSavable;
+        const schema = self.schemas.get(registration.schema) orelse return null;
+
+        // Not `deinit`ed: every buffer here belongs to the arena, and the `Fields` returned
+        // borrows them. Handing them back one at a time would be undoing what the arena is
+        // for, and freeing them would be freeing the answer.
+        var writer: data.fpk.BlockWriter = .{ .gpa = arena };
+        const block = try writer.begin(schema.fields);
+        try serialize(registration.ctx, bytes.ptr, block);
+
+        // The list bound is `data`'s default rather than the world's: these bytes were
+        // produced a line ago by the type's own serializer, not read from a file, so the
+        // limit is a formality here rather than the defence it is on untrusted input.
+        const blocks: data.fpk.Blocks = .{
+            .fields = writer.fields.items,
+            .strings = writer.strings.items,
+        };
+        return blocks.blockAt(block.base, schema.fields);
     }
 
     // -- queries -------------------------------------------------------------------
@@ -1018,6 +1157,145 @@ test "adding and removing a component moves the mutation counter" {
     const after_remove = f.world.mutation;
     try testing.expect(!f.world.removeComponent(e, transform));
     try testing.expectEqual(after_remove, f.world.mutation);
+}
+
+// -- introspection -------------------------------------------------------------------
+
+test "entities iterate in slot order, and only the live ones" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa, .default);
+    defer f.deinit(gpa);
+
+    const a = try f.world.create();
+    const b = try f.world.create();
+    const c = try f.world.create();
+    try testing.expect(f.world.destroy(b));
+
+    var it = f.world.liveEntities();
+    try testing.expect(it.next().?.eql(a));
+    // `b`'s slot is skipped, not reported as a dead handle.
+    try testing.expect(it.next().?.eql(c));
+    try testing.expect(it.next() == null);
+
+    // A recreated entity reuses the slot with a new generation, and comes back in the
+    // middle rather than at the end — slot order, which is what a save writes.
+    const d = try f.world.create();
+    try testing.expectEqual(b.index, d.index);
+    try testing.expect(!d.eql(b));
+
+    var again = f.world.liveEntities();
+    try testing.expect(again.next().?.eql(a));
+    try testing.expect(again.next().?.eql(d));
+    try testing.expect(again.next().?.eql(c));
+    try testing.expect(again.next() == null);
+}
+
+test "component types iterate in registration order and carry their counts" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa, .default);
+    defer f.deinit(gpa);
+
+    const transform = try f.world.registerComponent(transformInfo());
+    const pos = try f.world.registerComponent(derive.componentType(Pos));
+
+    const e = try f.world.create();
+    var value: Transform = .{ .x = 1, .y = 2 };
+    _ = try f.world.addComponent(e, transform, std.mem.asBytes(&value));
+
+    var it = f.world.componentTypes();
+
+    const first = it.next().?;
+    try testing.expect(first.type.eql(transform));
+    try testing.expectEqualStrings("foundry:transform", first.name);
+    try testing.expectEqual(@as(u32, 8), first.size);
+    try testing.expectEqual(@as(u32, 1), first.count);
+    // Hand-written registrations carry no serializer, so a save leaves this type out.
+    try testing.expect(!first.savable);
+
+    const second = it.next().?;
+    try testing.expect(second.type.eql(pos));
+    try testing.expectEqualStrings("test:pos", second.name);
+    try testing.expectEqual(@as(u32, 0), second.count);
+    // `componentType` always supplies both halves, which is what makes it savable.
+    try testing.expect(second.savable);
+
+    try testing.expect(it.next() == null);
+}
+
+test "a component reads back as the values a save would write" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa, .default);
+    defer f.deinit(gpa);
+
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+
+    const pos = try f.world.registerComponent(derive.componentType(Pos));
+    const e = try f.world.create();
+    var value: Pos = .{ .x = 1.5, .y = -2.25 };
+    _ = try f.world.addComponent(e, pos, std.mem.asBytes(&value));
+
+    const fields = (try f.world.describeComponent(arena.allocator(), e, pos)).?;
+    try testing.expectEqual(@as(u32, 2), fields.count());
+    try testing.expectEqual(@as(f64, 1.5), (try fields.floatAt(0)).?);
+    try testing.expectEqual(@as(f64, -2.25), (try fields.floatAt(1)).?);
+
+    // It follows the component rather than a copy of it: change the world, ask again.
+    const bytes = f.world.getComponent(e, pos).?;
+    std.mem.bytesAsValue(Pos, bytes[0..@sizeOf(Pos)]).x = 40;
+    const again = (try f.world.describeComponent(arena.allocator(), e, pos)).?;
+    try testing.expectEqual(@as(f64, 40), (try again.floatAt(0)).?);
+}
+
+test "a type with no serializer says so rather than showing nothing" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa, .default);
+    defer f.deinit(gpa);
+
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+
+    const transform = try f.world.registerComponent(transformInfo());
+    const e = try f.world.create();
+    var value: Transform = .{ .x = 1, .y = 2 };
+    _ = try f.world.addComponent(e, transform, std.mem.asBytes(&value));
+
+    // The same condition `savable` names, reported by name rather than as an empty answer —
+    // a panel that silently omitted a component would hide exactly the one being hunted.
+    try testing.expectError(
+        error.NotSavable,
+        f.world.describeComponent(arena.allocator(), e, transform),
+    );
+}
+
+test "introspection answers null for what is gone" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa, .default);
+    defer f.deinit(gpa);
+
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+
+    const pos = try f.world.registerComponent(derive.componentType(Pos));
+    const e = try f.world.create();
+    var value: Pos = .{ .x = 1, .y = 2 };
+    _ = try f.world.addComponent(e, pos, std.mem.asBytes(&value));
+
+    // An entity without the component.
+    const bare = try f.world.create();
+    try testing.expect((try f.world.describeComponent(arena.allocator(), bare, pos)) == null);
+
+    // An entity a system destroyed while a panel was pointing at it — the ordinary case
+    // for an inspector, and the reason every panel re-resolves from a handle each frame.
+    try testing.expect(f.world.destroy(e));
+    try testing.expect((try f.world.describeComponent(arena.allocator(), e, pos)) == null);
+    try testing.expect(!f.world.hasComponent(e, pos));
+
+    // A component type from another world.
+    const other = try Fixture.init(gpa, .default);
+    defer other.deinit(gpa);
+    const elsewhere = try other.world.registerComponent(derive.componentType(Tag));
+    try testing.expect((try f.world.describeComponent(arena.allocator(), bare, elsewhere)) == null);
 }
 
 // -- entities from content ---------------------------------------------------------

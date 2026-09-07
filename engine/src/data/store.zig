@@ -322,6 +322,40 @@ pub const Store = struct {
     }
 
     /// Which package supplied the definition that won (§7).
+    /// Every package that defines `content_id`, **in load order**. The last one won.
+    ///
+    /// The question a mod author asks first, and the store does not keep the answer: an
+    /// override writes four fields over four fields, and §6's comment defends not keeping
+    /// an index that every override would have to maintain. It is still answerable, because
+    /// nothing was thrown away — every package's bytes are retained for the store's life,
+    /// and every package can walk its own record table.
+    ///
+    /// So this is a linear pass over each package, on demand, for one id, when somebody
+    /// asks. No index, no bookkeeping, and no cost until then. `out` is the caller's, which
+    /// is what makes the call allocation-free and its C version the same signature; a full
+    /// `out` truncates, and the load order is short enough that nobody will notice.
+    pub fn definitions(
+        self: *const Store,
+        content_id: ContentId,
+        out: []PackageHandle,
+    ) []PackageHandle {
+        var found: usize = 0;
+        for (self.load_order.items) |handle| {
+            if (found == out.len) break;
+            const loaded = self.packages.getConst(handle) orelse continue;
+            var index: u32 = 0;
+            while (index < loaded.reader.record_count) : (index += 1) {
+                const view = loaded.reader.record(index) orelse continue;
+                if (!view.id.eql(content_id)) continue;
+                out[found] = handle;
+                found += 1;
+                // A package defines an id at most once: `add` refuses one that does not.
+                break;
+            }
+        }
+        return out[0..found];
+    }
+
     pub fn provenance(self: *const Store, handle: RecordHandle) ?PackageHandle {
         return (self.entries.getConst(handle) orelse return null).package;
     }
@@ -647,6 +681,72 @@ test "a later package overrides by id, and the store remembers who won" {
     const rope = h.store.lookup(try id_mod.contentId("foundry:item.rope")).?;
     try testing.expect(h.store.provenance(rope.handle).?.eql(core_pkg));
     try testing.expectEqualStrings("foundry:core", h.store.package(rope.package).?.name);
+}
+
+test "who else defines this: the override chain, reconstructed from the packages" {
+    var h: Harness = .init();
+    defer h.deinit();
+
+    const core_pkg = try h.add("foundry:core", core_source);
+
+    var mod_bytes: std.ArrayList(u8) = .empty;
+    defer mod_bytes.deinit(h.gpa);
+    {
+        var registry: Registry = .init(h.gpa, .default);
+        defer registry.deinit(h.gpa);
+        var diags: Diagnostics = .init(h.gpa, .default);
+        defer diags.deinit(h.gpa);
+        try compileWith(h.gpa, "foundry:core", core_source, &registry, &diags, &mod_bytes);
+        mod_bytes.clearRetainingCapacity();
+        try compileWith(h.gpa, "heavy:mod",
+            \\foundry:item foundry:item.torch { name "Torch"  weight 9.0 }
+        , &registry, &diags, &mod_bytes);
+        try testing.expect(!diags.failed);
+    }
+    const mod_pkg = try h.load("heavy:mod", mod_bytes.items);
+
+    var out: [8]PackageHandle = undefined;
+
+    // Both packages define the torch, in load order, and the winner is last — which is the
+    // whole shape of the answer a mod author is after.
+    const torch = h.store.definitions(try id_mod.contentId("foundry:item.torch"), &out);
+    try testing.expectEqual(@as(usize, 2), torch.len);
+    try testing.expect(torch[0].eql(core_pkg));
+    try testing.expect(torch[1].eql(mod_pkg));
+    try testing.expect(h.store.provenance(h.store.find(try id_mod.contentId("foundry:item.torch")).?).?.eql(torch[1]));
+
+    // One that only package zero defines.
+    const rope = h.store.definitions(try id_mod.contentId("foundry:item.rope"), &out);
+    try testing.expectEqual(@as(usize, 1), rope.len);
+    try testing.expect(rope[0].eql(core_pkg));
+
+    // And one nobody does. A content id with no definitions is the answer to the most
+    // common content bug, which is why it is an empty slice rather than an error.
+    const absent = h.store.definitions(try id_mod.contentId("foundry:item.lantern"), &out);
+    try testing.expectEqual(@as(usize, 0), absent.len);
+
+    // A caller's buffer that is too small truncates rather than failing.
+    var one: [1]PackageHandle = undefined;
+    try testing.expectEqual(@as(usize, 1), h.store.definitions(try id_mod.contentId("foundry:item.torch"), &one).len);
+}
+
+test "every registered schema can be listed, in registration order" {
+    var h: Harness = .init();
+    defer h.deinit();
+
+    _ = try h.add("foundry:core", core_source);
+
+    var it = h.registry.all();
+    const first = it.next().?;
+    try testing.expect(first.id.eql(try SchemaId.parse("foundry:item")));
+    try testing.expectEqual(@as(u32, 1), first.version);
+    try testing.expectEqual(@as(u32, 2), first.field_count);
+    // The handle the iterator hands back is the handle `get` takes.
+    try testing.expectEqualStrings("name", h.registry.get(first.handle).?.fields[0].name);
+    try testing.expect(h.registry.find(first.id).?.eql(first.handle));
+
+    try testing.expect(it.next() == null);
+    try testing.expectEqual(@as(u32, 1), h.registry.count());
 }
 
 test "an override keeps the record's handle and its place in the merge order" {
