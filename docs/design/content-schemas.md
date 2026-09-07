@@ -593,10 +593,17 @@ a habit.
    Due when the first content that wants a paragraph appears.
 2. **Whether `f64` earns its place.** I9 makes `f32` the simulation type; `f64` may be pure
    surface area. Cheap to remove now, impossible once a package uses it.
-3. **Schema extension across packages.** §3 permits additive version bumps and refuses
-   outright replacement. Whether a mod *should be permitted* to add a field to another
-   package's schema is still open, and is an M7 question: it is a policy about what a mod
-   may do to content it does not own, not a mechanism.
+3. ~~**Schema extension across packages.**~~ **Answered 2026-09-07 by
+   [`public-abi.md`](public-abi.md) §11.3**, at the milestone this entry named: **yes,
+   additively and only additively** — new fields, all optional or defaulted, nothing removed,
+   retyped or reordered, which is the rule the registry already enforces. Refusing it does not
+   prevent it; it forces a mod to fork the schema, which produces two incompatible
+   `foundry:item`s and breaks every other mod at once. The cost is that a schema's shape becomes
+   a function of the enabled set, which is already true of records. The original question, kept
+   because the reasoning is still what justifies the answer: §3 permits additive version bumps
+   and refuses outright replacement, and whether a mod *should be permitted* to add a field to
+   another package's schema was a policy about what a mod may do to content it does not own, not
+   a mechanism.
 
    The second half of this — *what happens to records already laid out against the shorter
    version* — was closed by the store, because building one forced it. Each package carries

@@ -20,7 +20,7 @@ they grant.
 | --- | --- | --- |
 | **1 — Content mods** | Data only: items, entities, rules, text, assets. No code, no compiler, no sandbox. | **Works.** See [`content-mods.md`](content-mods.md). |
 | **2 — Script mods** | Sandboxed, hot-reloadable code against the public API. Cannot crash the host. | Not built. The language is an M8 decision (`CLAUDE.md` §9). |
-| **3 — Native mods** | Dynamic libraries through the C ABI. Full speed, full power, no sandbox. | Not built. The ABI is M7 (ADR-0004). |
+| **3 — Native mods** | Dynamic libraries through the C ABI. Full speed, full power, no sandbox. | Not built. **Designed** — M7 opened 2026-09-07; see [`design/public-abi.md`](../design/public-abi.md). |
 
 Tier 1 is first on purpose. It is where most mod value actually lives, and its requirements
 constrain the content model and the serialization format in ways that are impossible to add
@@ -55,12 +55,17 @@ written against the older one.
 
 Being honest about this is more useful than a feature list.
 
-* **No mod manager, no discovery, no dependency resolution.** The engine is *handed* a load
-  order and does not compute one. That is an M7 decision and inventing it early would answer
-  it in the wrong place. Today an application names its packages; the sandbox reads an
-  environment variable so you can try one.
-* **No manifests.** A package's name and version are arguments to the compiler, not a file
-  in the directory. Same reason.
+* **No mod manager, no discovery, no dependency resolution — but they are designed.**
+  [ADR-0027](../adr/0027-mods-are-content-packages.md) and
+  [`design/public-abi.md`](../design/public-abi.md) §12 settle it: a mod is a content package,
+  discovery reads each candidate's manifest from its own `.fpk`, and load order is a stable
+  topological sort that keeps your ordering wherever dependencies permit. **Not implemented.**
+  Today an application names its packages; the sandbox reads an environment variable so you can
+  try one.
+* **No manifests yet.** A package's name and version are still arguments to the compiler.
+  ADR-0027 makes the manifest a `foundry:mod` record inside the package, so identity, version,
+  dependencies and your license live in the package they describe — one file, nothing to keep in
+  sync. **Designed, not built.**
 * **`@patch` and `@remove` parse and are then refused.** Their syntax is frozen, deliberately
   and early, so that content written later does not have to change. Their semantics are not
   implemented, and a mod using one is told so rather than having it quietly ignored —

@@ -50,6 +50,13 @@ L5  debug   -> core, data, ui, asset, render2d, scene, audio, app
 L5  abi     -> app                                                       (M7)
 ```
 
+> **The `abi` line was copied from ADR-0007 and is wrong**, corrected 2026-09-07 by
+> [ADR-0026](0026-abi-module-and-host.md): `abi` is a *peer* of `debug`, not a layer over
+> `app`, for the same two reasons this ADR gives for `debug` being where it is. Recorded rather
+> than edited, since code depends on this one. Nothing about `debug` changes — and the fact
+> that the ABI needed the same answer one milestone later is the strongest evidence this
+> decision was right.
+
 `physics2d` is deliberately absent: nothing in M6 asks it a question, and `build.zig` already
 states the rule that a dependency a module does not use is a claim about the architecture the
 build cannot check. It joins the day a panel wants body and broadphase counts.

@@ -337,9 +337,21 @@ module `mod`, **below `app`**, because a Tier 1 mod list has to be computable by
 loads no code at all, and because its output is exactly the ordered list `app.Config.content`
 already takes — so `data` still consumes an order and does not compute one.
 
-`docs/design/public-abi.md` is written against both once they are accepted, and covers the table
-and the mod lifecycle together: a manifest naming a library the table could not receive would be
-two designs that only look like one.
+**Both accepted 2026-09-07, and [`design/public-abi.md`](design/public-abi.md) is written
+against them the same day** — the table and the mod lifecycle together, because a manifest naming
+a library the table could not receive would be two designs that only look like one. §19 is the
+implementation order, seven steps, and nothing is implemented against it yet.
+
+The document settles three things worth knowing without reading it. **The only signature frozen
+forever is `foundry_mod_init(get_api, self)`** — a *query function* rather than the table itself,
+which is what makes ADR-0004's "added alongside, never replacing" implementable at all rather
+than a matrix of entry points. **Every pointer the API hands out is borrowed until the mod returns
+control**, so no call in `_v1` transfers ownership in either direction and there is nothing to
+explain per call. And **the one engine change the boundary forces** is `scene`'s mutation guard,
+which asserts on a premise `entity-storage.md` §5 stated explicitly — "a programmer error in
+engine or game code, not untrusted input" — that the ABI falsifies. That is the instance ADR-0025
+predicted and named as its own falsification test, and the reasoning being written down is what
+made checking it one paragraph instead of an audit.
 
 ### M8 — Scriptable: "modders can extend it"
 

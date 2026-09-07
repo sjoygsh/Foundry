@@ -164,10 +164,12 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Shaders | MSL now; shaders are assets with per-backend variants | [0015](docs/adr/0015-shader-strategy.md) |
 | Shader ownership | Engine-owned shaders embedded; content-owned shaders are assets | [0019](docs/adr/0019-builtin-versus-content-shaders.md) |
 | Public API | One versioned C ABI table shared by mods, scripts and tools | [0004](docs/adr/0004-public-c-abi.md) |
+| ABI placement | `abi` is a peer of `debug` at L5; the host supplies its subsystems | [0026](docs/adr/0026-abi-module-and-host.md) |
 | Identity | Generational handles internally; stable namespaced string IDs for content | [0005](docs/adr/0005-handles-and-content-ids.md) |
 | Content | Engine is a library; content is data; two representations (authoring / runtime) | [0006](docs/adr/0006-content-model.md) |
 | Authoring format | Foundry's own `.fdt` text format; IDs are bare tokens, directives are `@`-prefixed | [0020](docs/adr/0020-authoring-text-format.md) |
 | Asset identity | Assets are content records; a path derives an ID but never defines identity | [0021](docs/adr/0021-asset-identity.md) |
+| Mods | A mod is a content package; its manifest is a record inside it; discovery and load order are `mod` at L2 | [0027](docs/adr/0027-mods-are-content-packages.md) |
 | Images | Foundry decodes its own PNG; no third-party image library | [0018](docs/adr/0018-image-decoding.md) |
 | Modularity | Layering enforced by the Zig build graph | [0007](docs/adr/0007-module-layering.md) |
 | Entities | Type-erased component storage with runtime-registered types | [0010](docs/adr/0010-entity-component-constraints.md) |
@@ -225,6 +227,10 @@ L2  rhi         -> core, platform.  Render hardware interface + backends.
                                 *** Metal/Vulkan/D3D are referenced ONLY here. ***
                                 backends/null, backends/metal (+ its ObjC shim).
 L2  asset       -> core, data, platform.  Asset registry, loading, hot reload.
+L2  mod         -> core, data, platform.  Mod discovery, manifests, dependency
+                                resolution, deterministic load order. Produces the
+                                order `data` consumes; opens no library and loads no
+                                code, so a content-only host needs nothing above it.
 
 L3  render2d    -> core, rhi, asset.      Sprite/tilemap/text batching, cameras.
 L3  scene       -> core, data, asset.     Entities, components, world, systems.
@@ -237,10 +243,14 @@ L5  debug       -> core, data, ui, asset, render2d, scene, audio, app.
                 inspector, content browser. Nothing in the engine depends on it; a game
                 opts in by importing it. No `platform`, no `rhi`, no `physics2d` — it
                 reads the engine's answers, not the devices under them.
-L5  abi         -> app.                   The public C ABI. (Added at M7.)
+L5  abi         -> core, data, physics2d, platform, ui, asset, render2d, scene,
+                audio, app, mod.  The public C ABI, and the native mod loader.
+                A peer of `debug`, not a layer over `app` (ADR-0026). No `rhi`,
+                ever; `platform` for `Library` alone. Holds no engine state.
 ```
 
-Games, samples and tools depend on `app` (and on `abi` when acting as mods).
+Games, samples and tools depend on `app`. A host that loads mods also imports `abi`; a
+native mod itself depends on the C header and never on a Zig module.
 
 **The overlay is not privileged.** `debug` is engine code and gets no private path (I4,
 ADR-0025): every call it makes must be one the public ABI could expose, which means handle or
@@ -249,6 +259,15 @@ and validation rather than assertion on anything a mod could have supplied. The 
 itself lives in the subsystem being introspected, never in the overlay. This is I3's argument
 applied to tooling — the overlay is package zero for the introspection API, and the editor
 (§9, M6+) is a re-host of it rather than a rewrite.
+
+**The ABI is not a layer over the engine; it is a peer of the overlay** (ADR-0026). Two
+facts force it. `app` cannot see `scene`, `audio` or `physics2d` — each absence deliberate —
+and it *owns* no world, renderer, mixer or collision world, because the game does. So the
+module that publishes those capabilities has to sit beside `debug` and be **handed** its
+subsystems by the host, exactly as `debug.Sources` is. A capability whose subsystem is absent
+answers `Unavailable`; the table's shape never varies within a version. And `abi` may only
+translate — validate, call one subsystem, return a code — because a module that can see the
+whole engine will otherwise accumulate the whole engine.
 
 **The UI draw seam.** `ui` sits at L1 and below the renderer on purpose (ADR-0024). It reads
 input, decides what is hot, lays out, clips — and then *describes* what should appear as a list
@@ -302,8 +321,8 @@ Foundry/
 
   engine/
     src/
-      core/  platform/  data/  physics2d/  ui/  rhi/  asset/  render2d/  scene/
-      audio/  app/  debug/  abi/
+      core/  platform/  data/  physics2d/  ui/  rhi/  asset/  mod/  render2d/
+      scene/  audio/  app/  debug/  abi/
       rhi/backends/      null/  metal/ (Zig backend + Objective-C shim)
     tests/               Integration tests. Unit tests are colocated with source.
 
@@ -368,18 +387,36 @@ One narrow, versioned C ABI (I4):
 * Explicit ownership and allocation rules on every call that transfers memory.
 * Result codes, not Zig error unions.
 * All input from the other side is **untrusted**: validated, never asserted.
+* **The host supplies the subsystems** (ADR-0026). `abi` creates no world, renderer, mixer or
+  collision world; a game hands it the ones it has, and a capability whose subsystem is absent
+  answers `Unavailable` rather than being a null pointer.
 
 **Consequence to remember:** if a capability is not reachable through the public API, mods
 cannot use it. Therefore **adding a subsystem includes deciding what, if anything, it exposes**
 — even if the answer is "nothing yet."
 
-### Keeping mod compatibility without building the mod system
+### What a mod is made of
 
-The mod system is postponed to M7. The *disciplines* that make it possible are in force from
-day one, and they are exactly Invariants I1–I9. Nothing more is required now. We do **not** yet
-build: mod manifests, dependency resolution, sandboxing, a mod manager UI, or the ABI itself.
+**A mod is a content package** (ADR-0027), and its manifest — id, version, dependencies,
+engine range, license (ADR-0016) — is a record inside it, of a schema `content/core` declares.
+Every tier is that package with something optional attached: Tier 1 is the package alone, Tier 3
+adds a native library the manifest names, Tier 2 adds scripts. So there is one identity (the
+package's content ID, I2), one version, one file, and no second format that can disagree with
+the package it describes.
 
-The Metal shim (ADR-0012) is a small, low-risk C ABI boundary inside the engine that exercises
+Discovery, dependency resolution and load order are `mod` at L2, **below** the engine loop,
+because a Tier 1 mod list has to be computable by a game that loads no code at all. `data` still
+consumes an order and does not compute one. Order is a topological sort with a documented
+tie-break — by content ID, ascending — so the same packages and the same enabled set produce the
+same order on every machine (I9).
+
+### Keeping mod compatibility ahead of the mod system
+
+The *disciplines* that make modding possible were in force from day one, before any of the above
+was built, and they are exactly Invariants I1–I9. That is why M7 required no retrofit below it.
+Sandboxing and a mod manager UI are still unbuilt (M8 and later).
+
+The Metal shim (ADR-0012) is a small, low-risk C ABI boundary inside the engine that exercised
 the same discipline early.
 
 Known future problem, recorded so it is not a surprise: **mod-authored shaders** will require

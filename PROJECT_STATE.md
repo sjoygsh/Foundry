@@ -51,10 +51,56 @@ vocabulary — if one is ever wanted — belongs in `content/core` where a mod c
 in engine source, which I5 forbids. Two samples exist and chose different components; no second
 consumer has asked for a shared one, and none was manufactured to close the question.
 
-**Owed next:** `docs/design/public-abi.md`, written once both ADRs are accepted, covering the
-table and the mod lifecycle together — a manifest naming a library the table could not receive
-would be two designs that only look like one. `CLAUDE.md` §4.1 and §4.3 are **not** updated yet,
-because nothing is accepted; that edit lands with acceptance, as ADR-0025's did.
+**Both ADRs were accepted the same day, `CLAUDE.md` §4.1, §4.3, §4.5 and §5 updated with them,
+and [`docs/design/public-abi.md`](docs/design/public-abi.md) is written.** ADR-0007 and ADR-0025
+each carry the wrong `abi -> app` line and code depends on both, so each gained a dated pointer
+to ADR-0026 rather than an edit (`CLAUDE.md` §8). **Nothing is implemented**; §19 of the design
+document is the seven-step order.
+
+**Four things the document settles that the ADRs did not.**
+
+* **The only signature frozen forever is `foundry_mod_init(get_api, self)`** — a *query
+  function*, `const void *(*)(uint32_t version)`, rather than the table itself. If the entry
+  point took a `FoundryApi_v1 *`, a host could never hand a v2-aware mod a v2 table without a
+  second entry point, and ADR-0004's "added alongside, never replacing" would be unimplementable.
+  One indirection buys additive versioning forever and lets a mod ship one binary for two engine
+  generations.
+* **Every pointer the API hands out is borrowed until the mod returns control to the engine**,
+  and no call in `_v1` transfers ownership in either direction. That is the strongest form
+  ADR-0004's "explicit ownership rules on every call" can take: there is nothing to explain per
+  call because there is nothing to own. It is affordable only because the frame arena, the
+  overlay's borrows and `MemoryReport` being a snapshot already made it how the engine works.
+* **A component is read through its schema — except for a type the calling mod registered
+  itself**, where raw bytes are handed over, because the mod supplied the size and alignment and
+  therefore owns the layout. Any other type returns `REFUSED`. This is `debug-overlay.md` §7's
+  finding — that casting component bytes "would look right for the whole of M6 and start lying at
+  M7" — paid forward, with the one case where casting is actually correct carved out and checked.
+* **Load order is a *stable* topological sort.** Order is how overrides resolve, so the player's
+  order is real intent and must survive everywhere the dependency graph does not constrain it;
+  content id ascending is the final tie-break, and it is the only one available that does not
+  depend on directory enumeration or hash-map iteration (I9).
+
+**The one engine change the boundary forces, and it is worth reading the reason.**
+`entity-storage.md` §5 says the world carries a mutation counter and the query iterator
+**asserts** it is unchanged — "an assertion rather than a validation because it is a programmer
+error in engine or game code, not untrusted input." That was correct when written and the ABI
+falsifies its premise: at M7 the caller is a mod, and untrusted input reaching an assertion is a
+crash a mod triggers from outside this repository. The iterator gains a validating form for `abi`
+to use; the internal one keeps asserting, because for engine and game code the premise still
+holds. **This is the instance ADR-0025 predicted and named as its own falsification test** — and
+what made it cheap is that the document had written down exactly which assumption it rested on,
+so checking whether the assumption still held took one paragraph rather than an audit. The
+mechanical half — auditing every `core.assert` reachable from a published entry point — is the
+largest single piece of engine work in the milestone.
+
+**One question `content-schemas.md` §10.3 deferred to this milestone by name is answered.**
+May a mod add a field to another package's schema? **Yes, additively and only additively** —
+new fields, all optional or defaulted, nothing removed, retyped or reordered. The mechanism has
+been safe since the store was built (each package carries the schemas its records use at the
+version they were compiled against), the registry already implements exactly this rule, and
+refusing it does not prevent it: it forces a mod to fork the schema, which produces two
+incompatible `foundry:item`s and breaks every other mod at once. The cost, stated so it is not
+discovered later, is that a schema's shape becomes a function of the enabled set.
 
 ---
 
@@ -1804,20 +1850,28 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 **M7 is open, and everything below the next four lines is the record of M5 and M6.**
 
-1. **Accept or amend [ADR-0026](docs/adr/0026-abi-module-and-host.md) and
-   [ADR-0027](docs/adr/0027-mods-are-content-packages.md).** Both are `Proposed`. They are the
-   one thing standing between this milestone and its design document, exactly as ADR-0025 was
-   for M6. Amending either in place is still free — no code depends on them (`CLAUDE.md` §8).
-2. **On acceptance:** update `CLAUDE.md` §4.1 (two rows), §4.3 (the layering block gains `mod`
-   at L2 and corrects `abi` at L5), and §4.5 if the module list is touched. ADR-0007 and
-   ADR-0025 both carry the `abi -> app` line and need a dated pointer to ADR-0026 — a pointer,
-   not an edit, since code depends on both.
-3. **Write `docs/design/public-abi.md`**, with a §-numbered implementation order at the end, the
-   way every design document since `rhi.md` has carried one. It covers the table, the mod
-   lifecycle, discovery and load order together.
-4. **Then, and only then, code.** The first step should be the one that is provable headlessly:
-   `mod` — discovery, manifests, ordering — needs no table, no library and no window, and it is
-   what Tier 1 has been missing since M3.
+~~1. Accept ADR-0026 and ADR-0027.~~ ~~2. Update `CLAUDE.md`.~~ ~~3. Write
+`docs/design/public-abi.md`.~~ **All done 2026-09-07.** What is left is code, and
+[`docs/design/public-abi.md`](docs/design/public-abi.md) §19 is the order:
+
+1. **`mod`** — the manifest schema in `content/core`, `discover`, `resolve`, the diagnostics.
+   Headless: no table, no library, no window. Ends with all three packages in this repository
+   carrying manifests, `fpack` reading name and version from them, `build.zig` losing its `id`
+   column, and both samples' load order **computed rather than written by hand**. This is Tier 1
+   finished, and it is the step that pays off M3.
+2. **The type layer and `foundry.h`** — results, strings, handles, cursors, and the agreement
+   test: a C translation unit that `_Static_assert`s every size and offset, compiled by `zig cc`
+   inside `zig build test`, so a header that disagrees with the engine fails the build.
+3. **`abi`'s skeleton** — `Host`, `get_api`, and only what `app` and `data` already answer. The
+   validation discipline and the garbage sweep land here, with the smallest surface to be wrong
+   about.
+4. **`scene` through the ABI**, including the mutation-guard change and the assertion audit.
+5. **The rest** — `render2d`, `ui`, `audio`, `physics2d`. Mechanical, which is the test of
+   whether steps 2 and 3 were right.
+6. **Native loading** — the library, `foundry_mod_init`, the lifecycle phases, every refusal
+   path, and `engine/tests/mod_pipeline.zig`.
+7. **The exit criterion**, and `docs/modding/` written by doing it and verified by following it
+   verbatim, which is how `content-mods.md` stayed true.
 
 **Open, and owed an answer inside this milestone, not before it:** where the exit criterion's
 mod lives. It must be "built outside the engine tree" and ADR-0017 keeps games out of this
@@ -3004,9 +3058,10 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
    `.fdt`, specified in `docs/design/content-schemas.md` §4. *Still open, and recorded in
    that document's §10:* multi-line strings (deliberately absent until it is known whether
    prose lives in `.fdt` at all, or in string tables keyed by ID), whether `f64` earns its
-   place given that I9 makes `f32` the simulation type, whether a mod may extend another
-   package's schema, a canonical formatter, and the editor grammar ADR-0020 names as the
-   decision's largest real cost.
+   place given that I9 makes `f32` the simulation type, a canonical formatter, and the editor
+   grammar ADR-0020 names as the decision's largest real cost. **Whether a mod may extend
+   another package's schema was answered 2026-09-07** by `public-abi.md` §11.3 — yes, additively
+   and only additively, because refusing it does not prevent it, it forces a fork.
 4. **Zig upgrade cadence.** ADR-0001 says between milestones, never during. Whether that
    means *every* milestone boundary or only when there is a reason is still unresolved. Two
    concrete inputs now: each upgrade must re-verify the SDL3 port, and 0.16 showed that a

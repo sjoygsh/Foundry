@@ -1,6 +1,6 @@
 # ADR-0026: The `abi` module is a peer of the overlay, and the host supplies its subsystems
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-07
 
 ## Context

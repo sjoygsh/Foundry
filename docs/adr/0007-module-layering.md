@@ -31,6 +31,13 @@ L4  app        -> all of the above
 L5  abi        -> app             (added at M7)
 ```
 
+> **Superseded in one line, 2026-09-07, by [ADR-0026](0026-abi-module-and-host.md).** `abi ->
+> app` is wrong and this ADR is append-only, so the correction is recorded here rather than
+> made here. `app` does not depend on `scene`, `audio` or `physics2d` — each absence deliberate
+> — and it owns no world, renderer, mixer or collision world, because the game does. `abi` is a
+> **peer of `debug`** at L5 and the host hands it its subsystems. Everything else in this block
+> stands; the layering itself was right, and the graph in `CLAUDE.md` §4.3 is the current one.
+
 Dependencies point downward only. If a new subsystem does not fit, that is a signal to
 re-examine the subsystem or the layering explicitly with the user, not to add a sideways
 dependency.

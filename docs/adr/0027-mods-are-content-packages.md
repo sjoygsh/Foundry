@@ -1,6 +1,6 @@
 # ADR-0027: A mod is a content package, and its manifest is a record inside it
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-07
 
 ## Context
