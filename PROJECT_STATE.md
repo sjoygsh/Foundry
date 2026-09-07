@@ -1,12 +1,12 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-07
-**Updated by:** **M7 is open, and two of its seven steps are done.** Both ADRs are accepted,
+**Updated by:** **M7 is open, and three of its seven steps are done.** Both ADRs are accepted,
 `docs/design/public-abi.md` is written, **`engine/src/mod/` exists** — a new L2 module holding
 manifests, discovery, dependency resolution and a stable topological sort — and **`engine/src/abi/`
-exists**, holding the types that cross the public boundary, the hand-written `foundry.h` that
-specifies them, and the agreement that keeps the two the same. **1026 tests**, up from 981 at the
-start of the milestone.
+exists**: the types that cross the public boundary, the hand-written `foundry.h` that specifies
+them, the agreement that keeps the two the same, and **`FoundryApi_v1` — sixty-three calls a mod
+can make**. **1070 tests**, up from 981 at the start of the milestone.
 
 **What step 1 actually finished is M3's claim.** Tier 1 content modding has worked since
 2026-09-05; what it lacked was a way for a package to be *found*. Now every package in this
@@ -55,8 +55,33 @@ as `core.ContentId` because it was made an `extern struct` for this, and a handl
 compiles `-std=c99 -pedantic -Werror` for macOS and for `x86_64-linux-gnu`, exports both entry
 points, and the header compiles clean as C++17 as well.
 
-**Next is step 3** — `abi`'s skeleton: `Host`, `get_api`, and a `FoundryApi_v1` carrying only what
-`app` and `data` already answer. The validation discipline and the garbage sweep land there.
+**Step 3 is the skeleton, and it is what `app` and `data` already answer**: result names,
+logging, content identity, the frame, the profiler, the memory report, content, records,
+packages, schemas and assets. A mod can already read a record type it has never heard of —
+ask the schema what each field is, call the matching reader — which is the overlay's inspector
+made public, one milestone after ADR-0025 required it be built as if it had to cross a C ABI.
+
+**Two properties are checked by walking the table rather than by remembering.** Every entry
+called with zeroed arguments returns an error and does not fault; every entry on a host with
+nothing bound answers `unavailable` rather than `not_found`. Both use `inline for` over
+`Api_v1`'s fields, so **a capability added without a refusal path fails rather than ships** —
+which is the only version of that guarantee that survives a table of sixty-three calls.
+
+**`Host` is generic over the engine's type**, and that is the decision the rest of the step
+rests on. `app.Engine` is `EngineOf(platform.Platform, rhi.Device)`, so a host that named it
+would have dragged a window and a device into every test of a call that reads a record. A test
+binds a **fake engine with a real content store and a real asset registry** instead, and every
+boundary test runs headless. It is the null-backend argument one layer up, and it is why
+`platform` joined `abi` here rather than at step 6: an `asset.Registry` takes an `Os`.
+
+**Where the design had not looked** is `record_nested`. A sub-record "answers the same field
+calls one level down" — right, but a view into a compiled block is three slices and a handle is
+sixty-four bits. So the host keeps a **ring of views** with generational handles: one stays
+valid until enough further ones are opened, and a recycled view, or one that survived a content
+reload, answers `invalid_handle` rather than reading freed memory.
+
+**Next is step 4** — `scene` through the ABI, including §15's mutation-guard change and the
+assertion audit. Two thirds of the exit criterion.
 
 ---
 
@@ -596,10 +621,15 @@ both are the shape the capabilities have to fit.
   enabled list into a load order: a stable topological sort tie-broken by content id ascending,
   where a package that cannot load is **skipped with a diagnostic** rather than refusing the
   game (ADR-0027).
-* `engine/src/abi/` (L5, `core` alone so far) — `foundry.h`, hand-written and installed to
-  `<prefix>/include/foundry.h`; `types.zig`, holding every type that crosses and nothing that
-  uses one; and the two halves of the agreement, `agreement.c` and `agreement.zig`, which fail
-  the build when the header and the engine stop matching (ADR-0004, ADR-0026).
+* `engine/src/abi/` (L5, `core` + `data` + `platform` + `asset` + `app`) — `foundry.h`,
+  hand-written and installed to `<prefix>/include/foundry.h`; `types.zig`, holding every type
+  that crosses and nothing that uses one; `host.zig`, the subsystems a host supplies plus the
+  ring of nested-record views; `api.zig`, the sixty-five-member table and `get_api`;
+  `calls_engine.zig`, `calls_content.zig` and `calls_asset.zig`, one shape each — validate,
+  call one subsystem, translate; `sweep.zig`, the two properties that hold of every entry;
+  `test_engine.zig`, the fake the boundary tests bind; and the two halves of the agreement,
+  `agreement.c` and `agreement.zig`, which fail the build when the header and the engine stop
+  matching (ADR-0004, ADR-0026).
 
 **M5, newest — `samples/room` and its content package.** A second consumer of the engine,
 built from the engine exactly as it already was:
@@ -1934,9 +1964,10 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
    and a hand-written C99 header installed to `<prefix>/include/foundry.h`. The agreement is a C
    translation unit attached to the *module*, so it compiles on `zig build check` for every
    target, plus a Zig test that pushes four values through the boundary. 21 new tests.
-3. **`abi`'s skeleton** — `Host`, `get_api`, and only what `app` and `data` already answer. The
-   validation discipline and the garbage sweep land here, with the smallest surface to be wrong
-   about.
+~~3. **`abi`'s skeleton**~~ — **done 2026-09-07.** `Host` (generic over the engine's type),
+   `get_api`, and `FoundryApi_v1` with sixty-three calls: log, ids, frame, profiler, memory,
+   content, records, packages, schemas, assets. The validation discipline and both sweeps walk
+   the table's fields, so a capability without a refusal path fails. 44 new tests.
 4. **`scene` through the ABI**, including the mutation-guard change and the assertion audit.
 5. **The rest** — `render2d`, `ui`, `audio`, `physics2d`. Mechanical, which is the test of
    whether steps 2 and 3 were right.

@@ -808,3 +808,89 @@ and the crossing test independently — which is what a second, differently-shap
 **Verified beyond the suite:** a stub mod including only `<foundry.h>` from the install tree
 compiles `-std=c99 -pedantic -Werror` for macOS and for `x86_64-linux-gnu`, exports
 `foundry_mod_init` and `foundry_mod_shutdown`, and the header also compiles clean as C++17.
+
+---
+
+## Resolution: the skeleton (implementation, 2026-09-07)
+
+§19 step 3, built. `FoundryApi_v1` is **sixty-three calls** — everything `app` and `data`
+already answer — plus `version` and `size`, and `abi` gains `data`, `asset`, `platform` and
+`app`.
+
+**The table has no context parameter, so the host is ambient.** §4's signatures settle this
+without saying so: `content_find(id, out)` has nowhere to carry a host. So there is one bound
+host per process, found by every entry point through a container-level variable — the shape
+`app.log_sink` already has, and for the same reason. §18's fourth question, a table per
+consumer, stays open and is not foreclosed by it.
+
+**`Host` is generic over the engine's type**, which was not in the design and is the decision
+the rest of the step rests on. `app.Engine` is `EngineOf(platform.Platform, rhi.Device)`; a
+`Host` that named it would have dragged a window and a device into every test of a call that
+reads a record. Instead a test binds a fake engine with a real content store and a real asset
+registry, and every one of the boundary's tests runs headless. It is the null-backend argument
+one layer up, and it is also why `platform` joined `abi` at this step rather than at step 6:
+an `asset.Registry` takes an `Os`, and the alternative was an asset surface with no unit tests.
+
+**The order of checks needed a rule, and it has two halves.** A *pointer* argument is
+validated before the host is looked up — a null out-parameter is `invalid_argument` even on a
+bare host, because a null pointer is a mistake in the mod whatever the host has, and
+`unavailable` would send its author looking in the wrong place. A *value* argument is
+validated after, because whether an id or a handle is meaningful is the subsystem's question
+and on a bare host there is no subsystem to ask. Both sweeps in §17 depend on the distinction:
+the garbage sweep passes zeroed arguments and expects an error; the empty-host sweep passes
+well-formed ones and expects `unavailable`. Both walk `Api_v1`'s fields with `inline for`, so
+a capability added without a refusal path fails rather than ships.
+
+**Enumerations cross as `i32` and are looked up, never cast.** A Zig enum holding a value the
+enum does not have is illegal behaviour *before* any validation could run, so an enum-typed
+parameter would be a hole the boundary opened for itself. Values leaving are enums, because
+those the engine produces. The numbers are written down rather than taken from declaration
+order, and a test asserts every `data.FieldType` has one — so adding a field type without
+publishing it fails here rather than at a mod author's desk.
+
+**`record_nested` is the one place §9 asked for something it had not costed.** A sub-record
+"answers the same field calls one level down", which is right — but a view into a compiled
+block is three slices and a handle is sixty-four bits. The answer is a **ring of views in the
+host**, generational: `record_nested` and `record_list_nested` open one, a view stays valid
+until enough further ones are opened to recycle its slot, and a recycled view — or one that
+survived a content reload — answers `invalid_handle` rather than reading freed memory. That
+is I1's promise applied to a view rather than to an object, and the reload case is the one
+that would otherwise be a use-after-free rather than a wrong answer.
+
+**A cursor's generation is the container's size folded with the content generation.** §7 asked
+for mutation to be detected and did not say against what; there is no walk counter in `data`
+or `asset` to compare against, and adding one would be an interface change §15 rules out. The
+fold detects a reload, a package added, and an asset loaded or evicted, which is every
+mutation a walk realistically survives into. Two changes that cancel exactly are not
+distinguishable in thirty-two bits, and the code says so rather than implying otherwise.
+
+**`FoundrySchemaId` had to exist.** §9 wrote `record_schema` and `content_next_of_schema`
+without saying which identifier space they use, and `data` made schema ids a distinct type
+precisely so the two most confusable values in the content system could not be swapped —
+saying, in the same paragraph, that it is `extern struct` "which is why", meaning here.
+Collapsing them at the boundary would have thrown that away at the one place it is hardest to
+catch by eye. It has one consequence worth stating: **a schema keeps no spelling at runtime**,
+so there is no `schema_name`, exactly as a dependency id in a manifest has no spelling.
+
+**`tick_rate` became `tick_delta_ns`.** The engine's timestep is an exact rational, so a rate
+rounded to an integer would not reproduce it, and a mod that recomputed the step from a
+rounded rate would drift away from the simulation it is part of. §9's names are "illustrative
+in shape and exact in prefix", and this is the shape being wrong.
+
+**`app` gained one function**, which §15 had not foreseen: `endScope`. `Scope` is the right
+form in Zig because a value cannot be forgotten on an early return, and a C ABI has no such
+value to hand across — `scope_begin` and `scope_end` are two calls with nothing between them.
+So the pairing is counted by the caller, and `abi` counts its own depth and refuses to close a
+span the game opened, because the recorder cannot tell them apart.
+
+**Two small things the design's rules forced into the open.** `log_write` refuses an empty
+message, because the garbage sweep's zeroed call would otherwise write an empty `err` line —
+and a line with nothing in it is a mistake rather than a message. And an `f64` content field
+is **narrowed** by `record_get_f32`: §5 says `double` never crosses, `f32` is the precision
+the simulation computes at (I9), and a schema needing more holds a value the engine itself
+could not use. Both are in the header rather than only here.
+
+**Verified beyond the suite:** a stub mod including only `<foundry.h>` from the install tree —
+querying the table, writing a log line, walking the packages, and reading a record field by
+field through its schema — compiles `-std=c99 -pedantic -Werror` for macOS and for
+`x86_64-linux-gnu`, and as C++17.
