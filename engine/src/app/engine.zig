@@ -80,6 +80,16 @@ pub const Config = struct {
     /// is *built* (`log_sink`).
     log_level: core.log.Level = .info,
 
+    /// Verbosity kept in the in-memory ring a log console reads, or null to keep nothing.
+    ///
+    /// **Independent of `log_level` on purpose.** Quietening the terminal must not blind
+    /// the console you opened to find out what happened, which is why a shipped build
+    /// still keeps warnings and errors: a player's report is worth more when the last
+    /// hundred warnings are in it. The cost of the two being separate is that a line
+    /// formatted for the ring and not printed is work done for a reader who may never
+    /// look, so a build that wants neither says `null`.
+    log_capture: ?core.log.Level = if (builtin.mode == .Debug) core.log.compiled_level else .warn,
+
     /// Where compiled content packages and their files live. Null means beside the
     /// executable, in `../content` — which is where `zig build` installs them.
     content_dir: ?[]const u8 = null,
@@ -291,6 +301,7 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
 
         pub fn init(gpa: Allocator, config: Config) InitError!*Self {
             log_sink.setLevel(config.log_level);
+            log_sink.setCaptureLevel(config.log_capture);
 
             const timestep: core.time.Timestep = .fromHz(config.tick_rate_hz);
 
@@ -780,6 +791,11 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             // null backend's synthetic clock advances *per reading* — so a profiler that
             // read it freely would change the number of simulation steps a headless frame
             // produces, which is a measurement altering what it measures.
+            // Stamped before anything can log, so every line this frame produces carries
+            // the frame it belongs to. One relaxed store, and it is what lets a log line be
+            // lined up against a profiler span.
+            log_sink.setFrame(self.frame_index);
+
             const profiling = self.profile.enabled();
             var mark: core.time.Instant = if (profiling) self.platform.now() else .{ .ns = 0 };
             if (profiling) self.profile.beginFrame(self.frame_index, mark);

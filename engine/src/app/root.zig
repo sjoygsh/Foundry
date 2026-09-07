@@ -34,6 +34,13 @@ pub const drawUi = ui_draw.draw;
 pub const UiFont = ui_draw.Font;
 pub const UiDrawOptions = ui_draw.Options;
 
+/// One line from the in-memory log ring (`debug-overlay.md` §6), and what a reader asks
+/// for. The ring itself is `log_sink`, which is ambient because `std.log` reaches it from
+/// code that has no engine pointer to ask.
+pub const LogRecord = log_sink.Record;
+pub const LogFilter = log_sink.Filter;
+pub const LogView = log_sink.View;
+
 /// Drop this into a game's root source file to route Foundry's logging:
 ///
 ///     pub const std_options = app.std_options;

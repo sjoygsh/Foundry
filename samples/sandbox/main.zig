@@ -212,8 +212,9 @@ pub fn main(init: std.process.Init) !void {
                 log.info("no native surface; the clear goes to an offscreen target", .{});
             }
         }
-        // One list, logged here and listed in the overlay. Two copies of a key map is how
-        // a sample ends up documenting a binding it no longer has.
+        // One list, logged here and — because the console reads the log ring — listed in
+        // the overlay for free. Two copies of a key map is how a sample ends up documenting
+        // a binding it no longer has, and now there is not even a second reader.
         for (bindings) |line| log.info("{s}", .{line});
         if (field.save_path) |path| {
             log.info("f5 and f9 use '{s}'", .{path});
@@ -2492,7 +2493,7 @@ const SpriteField = struct {
         );
         try ui.endPanel(&self.ui);
 
-        try self.describeBindings(width, height);
+        try self.describeConsole(engine, width, height);
     }
 
     /// How many detail lines the panel will show: a frame summary, then one span each,
@@ -2607,25 +2608,71 @@ const SpriteField = struct {
     /// region and the text field are for — built here on strings the sample already had,
     /// so the two widgets are drawn by something rather than only tested. The overlay's
     /// own document turns this shape into a real console over the log sink.
-    fn describeBindings(self: *SpriteField, width: f32, height: f32) !void {
+    /// The rows the console draws at once. The scroll region shows five; one more is read
+    /// so that a half-scrolled row is there to draw.
+    const console_rows = 6;
+
+    /// The log console: a filter box over the last lines the engine logged.
+    ///
+    /// **This panel was the log console's *shape* at `ui.md` step 5** — the same filter box
+    /// over the same scrolling list, filled with the sample's key bindings because there was
+    /// nothing else to put in it. This is the step where it stops being a shape.
+    ///
+    /// It is also the first user of `debug-overlay.md` §11's windowing convention, and the
+    /// case that convention was written for: the ring holds up to a thousand lines and six
+    /// are on screen. **The caller emits only the visible rows**, with two `spacer`s
+    /// standing in for the rest, because a row is a fiction only the caller maintains — and
+    /// the work skipped is the formatting, not merely the drawing.
+    fn describeConsole(self: *SpriteField, engine: *app.Engine, width: f32, height: f32) !void {
         const style = self.ui.style;
         const filter = self.filter[0..self.filter_len];
 
-        var widest: f32 = 0;
-        var matches: usize = 0;
-        for (bindings) |line| {
-            if (!matchesFilter(line, filter)) continue;
-            matches += 1;
+        const row = style.line_height + style.spacing;
+        const list_height = row * 5;
+
+        const list_id = ui.Id.root.child("console").child("list");
+        // Last frame's offset, which is this frame's: the kernel clamped it when it drew,
+        // and reading it *before* `beginScroll` is what makes the window computable at all.
+        const scroll = @max(0, self.ui.stateOf(list_id).scroll);
+        const first: usize = @intFromFloat(@floor(scroll / row));
+
+        var records: [console_rows]app.LogRecord = undefined;
+        const view = app.log_sink.readView(
+            engine.frameAllocator(),
+            &records,
+            .{ .contains = filter },
+            first,
+        ) catch app.LogView{ .total = 0, .records = records[0..0] };
+
+        // Formatted before anything is sized, because the panel has to be the right width
+        // the first time it is drawn and these are the widest lines in it.
+        var buffers: [console_rows][160]u8 = undefined;
+        var lines: [console_rows][]const u8 = undefined;
+        for (view.records, 0..) |record, i| {
+            lines[i] = std.fmt.bufPrint(&buffers[i], "{d} {t} {s}: {s}", .{
+                record.frame,
+                record.level,
+                record.scope,
+                record.text,
+            }) catch "";
+        }
+
+        var footer_buffer: [64]u8 = undefined;
+        const footer = std.fmt.bufPrint(&footer_buffer, "{d} lines, {d} dropped", .{
+            view.total,
+            app.log_sink.dropped(),
+        }) catch "";
+
+        var widest: f32 = style.font.measure(footer, style.text_scale).x;
+        for (lines[0..view.records.len]) |line| {
             widest = @max(widest, style.font.measure(line, style.text_scale).x);
         }
 
-        const row = style.line_height + style.spacing;
-        const list_height = row * 5;
-        const listed = @as(f32, @floatFromInt(matches)) * row;
-
-        const panel_w = @max(widest, style.line_height * 8) +
-            style.padding.x * 3 + style.scrollbar;
-        const panel_h = style.line_height + style.spacing + list_height + style.padding.y * 2;
+        const panel_w = @min(
+            @max(widest, style.line_height * 8) + style.padding.x * 3 + style.scrollbar,
+            width * 0.6,
+        );
+        const panel_h = (style.line_height + style.spacing) * 2 + list_height + style.padding.y * 2;
         const panel: core.math.Rect = .init(
             width - panel_w - hud_margin,
             height - panel_h - hud_margin,
@@ -2633,16 +2680,22 @@ const SpriteField = struct {
             panel_h,
         );
 
-        try ui.beginPanel(&self.ui, ui.Id.root.child("bindings"), panel);
+        try ui.beginPanel(&self.ui, ui.Id.root.child("console"), panel);
         // Typing here must not also walk the player, resize the window or recentre the
         // camera — which is what `wantsKeyboard` is for, and what `walk`, the resize key
         // and `control` each check.
         _ = try ui.textField(&self.ui, self.ui.childId("filter"), &self.filter, &self.filter_len);
-        try ui.beginScroll(&self.ui, self.ui.childId("list"), self.ui.region().remaining(), listed);
-        for (bindings) |line| {
-            if (matchesFilter(line, filter)) try ui.label(&self.ui, line);
-        }
+
+        const listed = @as(f32, @floatFromInt(view.total)) * row;
+        try ui.beginScroll(&self.ui, list_id, self.ui.region().remaining(), listed);
+        // The rows above and below, as two gaps. Ten thousand lines cost two `spacer`s.
+        ui.spacer(&self.ui, @as(f32, @floatFromInt(first)) * row);
+        for (lines[0..view.records.len]) |line| try ui.label(&self.ui, line);
+        const after = view.total -| (first + view.records.len);
+        ui.spacer(&self.ui, @as(f32, @floatFromInt(after)) * row);
         try ui.endScroll(&self.ui);
+
+        try ui.label(&self.ui, footer);
         try ui.endPanel(&self.ui);
     }
 
@@ -2786,15 +2839,6 @@ fn hudStyle(font: app.UiFont) ui.Style {
         .control_active = uiColor(80, 110, 145, 255),
         .accent = uiColor(120, 200, 255, 255),
     };
-}
-
-/// Whether a binding survives the overlay's filter box.
-///
-/// Case-sensitive substring, which is what a debug filter over eleven lines needs. Anything
-/// cleverer is a decision about text that belongs with the localisation the game widget
-/// layer will bring, not in a sample.
-fn matchesFilter(line: []const u8, filter: []const u8) bool {
-    return filter.len == 0 or std.mem.indexOf(u8, line, filter) != null;
 }
 
 /// sRGB in, linear out — **above the seam, which is where the conversion belongs**.

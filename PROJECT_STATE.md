@@ -5,11 +5,12 @@
 the milestone's actual value.** `docs/design/debug-overlay.md` (852 lines, §17 is the step list)
 covers the remaining three roadmap bullets — the entity inspector, the content browser and the
 log console; the frame profiler and per-allocator memory reporting; and the introspection APIs
-beneath all of them. **Steps 1 and 2 of its §17 are implemented**: `engine/src/core/profile.zig`
-and `Engine.beginScope` with the engine's seven named spans; `core.mem.Counted`,
-`Arena.highWater` and the engine's memory registry. The sandbox plots the profiler's own frame
-totals, lists the frame's spans and its two allocators under `detail`, and logs both at exit.
-**935 tests**, up from 900.
+beneath all of them. **Steps 1, 2 and 3 of its §17 are implemented**:
+`engine/src/core/profile.zig` and `Engine.beginScope` with the engine's seven named spans;
+`core.mem.Counted`, `Arena.highWater` and the engine's memory registry; and the in-memory log
+ring behind `app/log_sink.zig`. The sandbox plots the profiler's own frame totals, lists the
+frame's spans and its two allocators under `detail`, logs both at exit, and its second panel is
+now **an actual log console** rather than the shape of one. **943 tests**, up from 900.
 
 **[ADR-0025](docs/adr/0025-debug-overlay-module.md) is still `Proposed`, and nothing yet depends
 on it**, which is deliberate: steps 1-4 add calls to modules that already exist and only step 5
@@ -1778,11 +1779,11 @@ value is**, not the widgets.
    this milestone to "shaped so the ABI could expose it". Both halves are cheap now and expensive
    later, and rule 10 says neither is decided silently.
 2. Then `debug-overlay.md` §17, six steps, each ending in something that runs and something that
-   is tested. **Steps 1 and 2 are done, 2026-09-07**: `core/profile.zig` (storage and arithmetic,
-   holding no clock), `Engine.beginScope`/`profiler` and the seven engine spans; then
-   `core.mem.Counted`, `Arena.highWater()` and the engine's memory registry. The rest: the log
-   ring; the introspection calls in `scene`, `data` and `asset`; the `debug` module and its five
-   panels; and `samples/room` adopting it.
+   is tested. **Steps 1, 2 and 3 are done, 2026-09-07**: `core/profile.zig` (storage and
+   arithmetic, holding no clock), `Engine.beginScope`/`profiler` and the seven engine spans;
+   then `core.mem.Counted`, `Arena.highWater()` and the engine's memory registry; then the log
+   ring and the sandbox's console over it. The rest: the introspection calls in `scene`, `data`
+   and `asset`; the `debug` module and its five panels; and `samples/room` adopting it.
 
    **Step 1's three findings**, all in the document's Resolution. The design named six engine
    spans and there are **seven** — on Metal the vsync wait is at *drawable acquisition* inside
@@ -1816,6 +1817,27 @@ value is**, not the widgets.
    because the null RHI backend keeps real CPU storage for every buffer, while the sample's
    1,356 KiB is identical in both — which is the cross-check that the attribution is right
    rather than merely plausible.
+
+   **Step 3's findings**, also in the Resolution. §6.1 contradicted §6.3 — a ring filtered by
+   the terminal's level goes quiet exactly when somebody quietens the terminal — so `logFn` now
+   decides its two destinations independently, and the section is corrected. The ring is
+   **statically sized** because an ambient thing has no owner to hand it an allocator, and it is
+   guarded by a **spin lock** because `std.Io.Mutex` needs an `Io` and `logFn` is the one place
+   in Foundry with no instance to ask; contention is essentially zero, and a job system's
+   workers are what would change that. **Two bugs**, both found by a test that then had to be
+   made stricter: the "keep nothing" sentinel is `0xff` and severity is ordered
+   most-severe-first, so capture-off captured *everything*; and `reserve`'s empty-ring branch
+   returned offset zero **without advancing the head**, so every line landed at zero and older
+   records quietly read the newest one's bytes — a test checking each line's *shape* still
+   passed, and it now parses each line's own index and asserts they are consecutive.
+
+   Two connections worth keeping. The console is **§11's windowing convention's first user** —
+   a thousand lines in the ring, six on screen, two `spacer`s for the rest — and it gave step
+   2's instrument its first reading: the frame arena's high-water mark was zero because nothing
+   called `frameAllocator()`, and is now 396 bytes headless and 696 windowed. The panel also
+   kept its contents by losing its copy of them: it listed the sample's key bindings from a
+   hardcoded array, and now lists them because `main` logs them at startup and the console
+   reads the ring.
 3. **Step 6 is also the exit criterion**, and it has a target already: diagnose the overlay's own
    batch cost *with* the overlay, and settle whether panel rectangles and glyphs coming from two
    different textures is what inflates it. A milestone about diagnosing a performance problem
@@ -2070,16 +2092,17 @@ a rewrite of the one before.
   staging buffer has to outlive the frames that reference it, the way every other transient
   does — and it is a `render2d`/`rhi` job rather than a collision one, which is why it is
   recorded here rather than folded into step 7.
-* **The log sink has a runtime *level* filter but no timestamps, no scope filtering and no
-  destination but stderr.** Timestamps want a monotonic source, which lives on `Platform`,
-  and a free logging function has no instance to ask — worth solving when there is a log
-  *file* to correlate against, at M9. Scope filtering is compile-time only for now
-  (`std.Options.log_scope_levels`), and there are three scopes. **`debug-overlay.md` §6
-  discharges two thirds of this at M6**: a second destination (an in-memory ring, never a
-  replacement for stderr) with its own level, and filtering by scope, level and substring in
-  the console. Timestamps stay open, and the design proposes the cheaper correlation instead —
-  each record carries the **frame index**, written by `beginFrame` into an atomic the sink
-  reads, which lines a log line up against a profiler span without giving the sink a clock.
+* **The log sink has no timestamps.** Two of this entry's original three gaps closed
+  2026-09-07 (step 3 of `debug-overlay.md`): there is now a **second destination** — a
+  statically-sized in-memory ring, never a replacement for stderr, with **its own level**, so
+  quietening the terminal does not blind the console — and the console filters by level, scope
+  and substring at runtime rather than relying on compile-time `std.Options.log_scope_levels`.
+  **Timestamps stay open.** They want a monotonic source, which lives on `Platform`, and a free
+  logging function has no instance to ask; worth solving when there is a log *file* to correlate
+  against, at M9. The design proposes the cheaper correlation in the meantime, and it is
+  implemented: each record carries the **frame index**, written by `beginFrame` into an atomic
+  the sink reads, which lines a log line up against a profiler span without giving the sink a
+  clock.
 * **The overlay costs fifteen batches where the hand-drawn HUD cost six**, recorded twice in
   `ui.md`'s step 4 and step 5 Resolutions and never measured. The suspected cause is that panel
   rectangles come from the blank texture and labels from the font atlas, so every alternation is

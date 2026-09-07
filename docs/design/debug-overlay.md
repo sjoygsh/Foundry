@@ -335,8 +335,13 @@ for the same reason and under the same defence.
 ### 6.1 A second sink, never a replacement
 
 Every line still goes to stderr. A crash loses the ring and does not lose the terminal, and the
-terminal is what a bug report contains. The ring is *added* to `logFn`, after the level check
+terminal is what a bug report contains. The ring is *added* to `logFn`, beside the level check
 that already exists and before `defaultLog`.
+
+> **Revised at step 3.** This said the ring goes *after* the existing level check, which
+> contradicts §6.3 two paragraphs later: a ring filtered by the terminal's level is a ring that
+> goes quiet exactly when somebody quietens the terminal. The two destinations are decided
+> independently and neither gates the other.
 
 ### 6.2 Fixed memory, no allocation, contiguous lines
 
@@ -1017,3 +1022,65 @@ samples `queryCapacity` *before* the reset, which is the only moment the number 
 build, and it means slightly different things in the two reset modes — the worst single frame
 under `free_all`, the largest the arena ever grew under `retain_capacity` — which are the same
 high-water mark reached from opposite sides.
+
+
+---
+
+## Resolution: the log ring (step 3, 2026-09-07)
+
+`app/log_sink.zig` grows a statically-sized ring, its own level, a frame stamp and a reader;
+`Config.log_capture` turns it on; `samples/sandbox`'s second panel stops being the log console's
+*shape* and becomes one. **943 tests**, up from 935.
+
+**§6.1 contradicted §6.3 and the implementation had to pick one.** "The ring is added after the
+level check that already exists" makes the ring a slave to the terminal's verbosity, which is
+precisely what §6.3 forbids two paragraphs later. `logFn` now decides the two destinations
+independently and returns early only when neither wants the line. The section is corrected in
+place.
+
+**The ring is statically sized, and that follows from what it is.** An ambient thing has no owner
+to hand it an allocator — the same argument `log_sink` already made for the runtime level being
+the one piece of genuinely ambient state in Foundry — so the capacities are constants (64 KiB of
+text, 1,024 records, 512 bytes a line) rather than `Config` fields. Nothing here allocates, which
+was the requirement; what changed is that it does not need to.
+
+**`std.Io.Mutex` needs an `Io` and there is nowhere to get one.** Zig 0.16 made locking an `Io`
+operation, the same move `std.fs` and `std.Thread.sleep` made, and `logFn` is the one place in
+Foundry with no instance to ask. The ring is guarded by a five-line spin lock instead. That is
+defensible because contention is essentially zero — the writer is the game thread, the reader is
+the game thread once a frame, and the engine's one other thread is forbidden from logging — and
+because the critical section is a `memcpy` and some arithmetic. **What would change it** is a
+second thread that legitimately logs: a job system's workers, at which point there will be an
+`Io` to hand a real mutex.
+
+**Two bugs, both found by a test that had to be made stricter afterwards.**
+
+The first: the "keep nothing" sentinel is `0xff`, and severity is ordered *most-severe-first*, so
+`level <= 0xff` is true for every level — capture-off captured everything. There is no `u8` below
+`err` for an off state to live at, so the sentinel has to be excluded explicitly rather than
+compared against.
+
+The second is the one worth remembering. `reserve` returns the offset a line is written at, and
+its empty-ring branch returned zero **without advancing the head**. Every line then landed at
+offset zero, each overwriting the last, and the older records' slices quietly began reading the
+newer one's bytes — so a filter for "played" matched two lines when only one contained it. The
+existing test walked every record and checked its *shape* (a colon, then nothing but `z`), and an
+overwritten line still has that shape. It now parses each line's own index and asserts they are
+consecutive and end where the run ended, which is a test of identity rather than of form.
+
+**The console is §11's windowing convention's first user, and the case it was written for.** The
+ring holds up to a thousand lines and six are on screen: the caller reads
+`stateOf(list_id).scroll` *before* `beginScroll`, asks the ring for exactly the window it will
+draw, and emits two `spacer`s for the rest. Ten thousand lines would cost two spacers and six
+labels.
+
+**It also gave step 2's instrument its first reading.** The frame arena's high-water mark was
+zero after step 2 because nothing called `engine.frameAllocator()`; the console copies its
+visible lines into it under the lock, and the number is now 396 bytes headless and 696 windowed.
+The engine's allocation count went from 222 to 1,422 over a 600-frame run for the same reason,
+which is per-frame arena traffic being visible rather than a leak — `live_bytes` is unchanged.
+
+**And the panel kept its contents by losing its copy of them.** It listed the sample's key
+bindings from a hardcoded array; it now lists them because `main` *logs* them at startup and the
+console reads the ring. `matchesFilter` was deleted with the array's reader, and the sample is
+one fewer place where a key map can go stale.
