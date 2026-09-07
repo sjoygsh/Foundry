@@ -1,10 +1,12 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-07
-**Updated by:** **M7 is open, and step 1 of seven is done.** Both ADRs are accepted,
-`docs/design/public-abi.md` is written, and **`engine/src/mod/` exists**: a new L2 module holding
-manifests, discovery, dependency resolution and a stable topological sort. **1005 tests**, up from
-981.
+**Updated by:** **M7 is open, and two of its seven steps are done.** Both ADRs are accepted,
+`docs/design/public-abi.md` is written, **`engine/src/mod/` exists** — a new L2 module holding
+manifests, discovery, dependency resolution and a stable topological sort — and **`engine/src/abi/`
+exists**, holding the types that cross the public boundary, the hand-written `foundry.h` that
+specifies them, and the agreement that keeps the two the same. **1026 tests**, up from 981 at the
+start of the milestone.
 
 **What step 1 actually finished is M3's claim.** Tier 1 content modding has worked since
 2026-09-05; what it lacked was a way for a package to be *found*. Now every package in this
@@ -29,7 +31,32 @@ package's namespace, and the namespace now comes from inside the package, so the
 read one file before it knows anything and therefore has to know which file. The rule it costs an
 author is one: write `foundry:mod` out in full.
 
-**Next is step 2** — `foundry.h`, the type layer, and the agreement test that compiles it.
+**Step 2 is the type layer, and it publishes no capabilities at all.** `abi` is at L5, a peer of
+`debug`, and depends on `core` alone — it will gain a module per group of capabilities and will
+**never** gain `rhi`. What is in it: results, strings, opaque handles, cursors, the entry-point
+signature that can never change, and `foundry.h` — hand-written, C99, installed to
+`<prefix>/include/foundry.h`, and the *specification* rather than a description of the engine.
+
+**What keeps the header true is a translation unit that fails the build.** `agreement.c` includes
+it, asserts every size, every offset and every member's width, and is attached to the `abi`
+**module** rather than to the test binary — so it compiles on `zig build check` too, for
+`x86_64-windows` and `x86_64-linux` as well as the host. `agreement.zig` asserts the same numbers
+from the Zig side and then does the part no assertion can: it pushes a string, a handle in each
+direction and a cursor *through* the boundary, because matching numbers prove two layouts are the
+same shape and only a crossing proves they are the same layout. All of it was verified by breaking
+it — and the first deliberate break, `uint64_t len` changed to `uint32_t`, **passed**, because the
+struct pads back out to sixteen bytes. That is why member widths are asserted now.
+
+**Nothing had to be converted at the boundary**, which is M0 being paid back: `ContentId` crosses
+as `core.ContentId` because it was made an `extern struct` for this, and a handle's 64 bits are
+`core.Handle.bits()`, written down then for the same reason.
+
+**Verified beyond the suite:** a stub mod including only `<foundry.h>` from the install tree
+compiles `-std=c99 -pedantic -Werror` for macOS and for `x86_64-linux-gnu`, exports both entry
+points, and the header compiles clean as C++17 as well.
+
+**Next is step 3** — `abi`'s skeleton: `Host`, `get_api`, and a `FoundryApi_v1` carrying only what
+`app` and `data` already answer. The validation discipline and the garbage sweep land there.
 
 ---
 
@@ -60,7 +87,7 @@ that can see it is one line from publishing it); `platform` is in for exactly on
 rule that keeps the widest module in the project from becoming the fattest.
 
 **[ADR-0027](docs/adr/0027-mods-are-content-packages.md): a mod is a content package**, and its
-manifest is a `foundry:mod` record inside it, of a schema `content/core` declares. Every tier is
+manifest is a `foundry:mod` record inside it, of an engine-declared schema. Every tier is
 a package with something optional attached — Tier 1 is a package and nothing else, and it has
 worked since M3 — so identity, version, dependencies, engine range and ADR-0016's license field
 are a record like any other. No second format, no sidecar that can disagree with the package, no
@@ -548,8 +575,9 @@ the deserializer matches by position, so an unchecked mismatch would read `y` in
 
 ## What has been implemented
 
-**`core` (L0), `platform`, `data` and `physics2d` (L1), `rhi` (L2) with two backends,
-`asset` (L2), `render2d` and `scene` (L3), `app` (L4), plus `tools/fpack`. It draws thousands
+**`core` (L0), `platform`, `data`, `physics2d` and `ui` (L1), `rhi` (L2) with two backends,
+`asset` and `mod` (L2), `render2d`, `scene` and `audio` (L3), `app` (L4), `debug` and `abi`
+(L5), plus `tools/fpack`. It draws thousands
 of sprites under a camera that pans, zooms and picks, and it loads content by content id.
 `scene` holds entities, component types, queries and systems; entities can be described in
 content, and a whole world can be written to a file and read back with its handles intact.
@@ -558,6 +586,20 @@ catching on the seams between its tiles. A map is content from a hand-written te
 onward; the sandbox draws the one it ships, and a player walks it and is stopped by its
 walls. There are **two samples**: `samples/sandbox` demonstrates the capabilities and
 `samples/room` is a small game built out of them.**
+
+**M7, newest — the two modules the mod system is made of.** Neither is a capability yet;
+both are the shape the capabilities have to fit.
+
+* `engine/src/mod/` (L2, `core` + `data` + `platform`) — `schemas.zig` declares `foundry:mod`,
+  `manifest.zig` reads one out of a compiled package, `discover.zig` reads every `.fpk` in a
+  directory *after sorting the filenames*, and `resolve.zig` turns candidates and a player's
+  enabled list into a load order: a stable topological sort tie-broken by content id ascending,
+  where a package that cannot load is **skipped with a diagnostic** rather than refusing the
+  game (ADR-0027).
+* `engine/src/abi/` (L5, `core` alone so far) — `foundry.h`, hand-written and installed to
+  `<prefix>/include/foundry.h`; `types.zig`, holding every type that crosses and nothing that
+  uses one; and the two halves of the agreement, `agreement.c` and `agreement.zig`, which fail
+  the build when the header and the engine stop matching (ADR-0004, ADR-0026).
 
 **M5, newest — `samples/room` and its content package.** A second consumer of the engine,
 built from the engine exactly as it already was:
@@ -1887,9 +1929,11 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 ~~1. **`mod`**~~ — **done 2026-09-07.** All three packages carry manifests, `fpack` reads name
    and version from them, `build.zig` lost its `id` column, and both samples' load order is
    computed rather than written by hand. 24 new tests.
-2. **The type layer and `foundry.h`** — results, strings, handles, cursors, and the agreement
-   test: a C translation unit that `_Static_assert`s every size and offset, compiled by `zig cc`
-   inside `zig build test`, so a header that disagrees with the engine fails the build.
+~~2. **The type layer and `foundry.h`**~~ — **done 2026-09-07.** `engine/src/abi/` at L5,
+   depending on `core` alone: results, strings, opaque handles, cursors, the frozen entry point,
+   and a hand-written C99 header installed to `<prefix>/include/foundry.h`. The agreement is a C
+   translation unit attached to the *module*, so it compiles on `zig build check` for every
+   target, plus a Zig test that pushes four values through the boundary. 21 new tests.
 3. **`abi`'s skeleton** — `Host`, `get_api`, and only what `app` and `data` already answer. The
    validation discipline and the garbage sweep land here, with the smallest surface to be wrong
    about.

@@ -596,12 +596,19 @@ header is the **specification** — the artifact a mod author reads and the one 
 about — and a generated header is a description of the implementation rather than a contract the
 implementation owes.
 
-It is kept honest by compilation rather than by care: a C translation unit in the test suite
-includes `foundry.h` and `_Static_assert`s every struct's size and every field's offset, and a
-Zig test asserts the same numbers from the `extern struct` side. Both are built by `zig build
-test` for every target, because Zig compiles C and this therefore needs no tool that is not
-already installed. A header that disagrees with the engine fails the build on the machine that
-changed it.
+It is kept honest by compilation rather than by care: a C translation unit includes `foundry.h`
+and statically asserts every struct's size, every field's offset **and every member's width**,
+and a Zig test asserts the same numbers from the `extern struct` side. Both are built by `zig
+build test` *and* `zig build check` for every target, because Zig compiles C and this therefore
+needs no tool that is not already installed. A header that disagrees with the engine fails the
+build on the machine that changed it.
+
+> **Revised 2026-09-07, implementing it.** Two details this had wrong. The translation unit is
+> attached to the `abi` *module* rather than to the test binary, which is what puts it on `zig
+> build check` and therefore on the cross-compiled targets where a padding assumption would
+> actually differ. And sizes and offsets alone do not pin a member's *width* — a `uint32_t` where
+> a `uint64_t` belongs can satisfy both and still be a different ABI — so member widths are
+> asserted too. See the resolution at the end of this document.
 
 ## 17. Testing
 
@@ -739,3 +746,65 @@ half of ADR-0027: a mod is identified by what it calls itself, and where its fil
 mattering. `docs/modding/content-mods.md` was updated and then followed verbatim: a package
 compiled with no `--name`, discovered by manifest, enabled by id, loading third behind
 `foundry:core` and the sandbox's own.
+
+---
+
+## Resolution: the type layer (implementation, 2026-09-07)
+
+§19 step 2, built: `engine/src/abi/` with `foundry.h`, the types that cross, and the agreement
+that keeps the two of them the same. No capabilities, and the module depends on `core` alone.
+
+**Where the header lives, which §16 did not say.** `engine/src/abi/foundry.h`, beside the module
+whose contract it is — the same arrangement `metal_shim.h` already has beside its implementation
+— and installed by `zig build` to `<prefix>/include/foundry.h`. So a mod compiles against exactly
+the header the engine it will be loaded by was built from, which is the only version of that
+sentence worth having.
+
+**A size and an offset do not pin a member's width, and the agreement test had to be tested to
+find that out.** The first deliberate break — `uint64_t len` changed to `uint32_t` in
+`FoundryStr` — passed every assertion, because the struct pads back out to sixteen bytes and
+`len` still sits at offset eight. It is a real ABI break and nothing caught it. `agreement.c` now
+asserts `sizeof(((FoundryStr *)0)->len)` as well as the offsets, and the general lesson is the one
+`.fpk`'s mutate-a-byte test already taught: a test that checks agreement is worth exactly what
+breaking the thing it agrees about proves, so break it.
+
+**The check belongs on the module, not on the test binary.** §16 said "a C translation unit in the
+test suite", and attaching `agreement.c` to the `abi` *module* instead makes it part of `zig build
+check` too — so a header edited here is compiled for `x86_64-windows` and `x86_64-linux` as well
+as the host, which is where a padding assumption would actually differ. Nothing in the file is
+referenced outside a test, so a linked game drops all of it. `-std=c99 -pedantic -Werror`, with
+nothing else in the translation unit, is also what turns the header's "C99, no dependencies" from
+an intention into a checked claim; it is included twice, which checks the include guard.
+
+**§6's "lengths are bounded" needed a number.** `Str.max_bytes` is one gibibyte. No string that
+legitimately crosses this boundary is that long, and refusing the ones that claim to be turns a
+large class of garbage — an uninitialised field, a length where a pointer belonged — into a
+refusal rather than a fault. It is explicitly *not* a security boundary: nothing here can check
+that memory a mod described is memory a mod owns. A null pointer with a zero length is the empty
+string and is legal, because a mod that builds a `FoundryStr` by zeroing a struct means `""`.
+
+**`Result.fromError` had to be split in two to be testable.** §6 requires an unmapped error to
+become `internal` *and log*, and Zig's test runner fails any test that logs at `err` level —
+correctly, and not something to opt out of. So the mapping is a private function the test calls
+and the logging wraps it. The same shape will be wanted wherever validation logs.
+
+**The 64-bit assumption is now stated twice rather than assumed once.** `FoundryStr` is only
+byte-identical to a Zig slice while a pointer is eight bytes; the header `#error`s on any other
+target and `types.zig` `@compileError`s. Two halves of one claim, each failing on its own side,
+which is the same arrangement as the agreement test itself.
+
+**Nothing had to be converted.** `ContentId` crosses as `core.ContentId`, unchanged, because M0
+made it an `extern struct` *for this* — and a handle's 64 bits are `core.Handle.bits()`, written
+down in M0 for the same reason. The one place two implementations do exist is FNV-1a: the header
+carries its own copy so that external tooling can compute an id without linking Foundry, so
+`agreement.zig` calls the header's through the C boundary and compares it against the content
+compiler's, over the pinned vectors plus a non-ASCII one.
+
+**Four values cross in the tests, and that is the part the assertions cannot do.** Matching
+numbers prove two layouts are the same *shape*; a `FoundryStr` built in Zig and read byte by byte
+in C proves they are the same *layout*. Reordering `Str`'s two fields fails the offset assertion
+and the crossing test independently — which is what a second, differently-shaped check is for.
+
+**Verified beyond the suite:** a stub mod including only `<foundry.h>` from the install tree
+compiles `-std=c99 -pedantic -Werror` for macOS and for `x86_64-linux-gnu`, exports
+`foundry_mod_init` and `foundry_mod_shutdown`, and the header also compiles clean as C++17.

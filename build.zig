@@ -122,8 +122,21 @@ const layering = [_]Module{
     // architecture the build cannot check.
     .{ .name = "debug", .deps = &.{ "core", "data", "ui", "asset", "render2d", "scene", "audio", "app" } },
 
-    // Added as each is implemented. The rest of the graph from ADR-0007 is:
-    //   L5  abi        -> app             (M7)
+    // L5 — the one public API surface (I4, ADR-0004, docs/design/public-abi.md). A **peer
+    // of `debug`, not a layer over `app`** (ADR-0026), and the reason is visible one screen
+    // up: `app` has no `scene`, no `audio` and no `physics2d`, and it owns no world, no
+    // renderer, no mixer and no collision world, because the game does. A module publishing
+    // those capabilities therefore cannot sit on top of `app` and reach down for them — it
+    // sits beside `debug` and is *handed* its subsystems by the host, exactly as
+    // `debug.Sources` is.
+    //
+    // `core` alone today, which is the type layer (public-abi.md §19 step 2) and no
+    // capabilities. It gains a module as each group of capabilities lands, and the list it
+    // is growing towards is ADR-0026's: everything except `rhi`, which it will **never**
+    // have — §4.2's two boundaries, where the renderer API is game-facing and the RHI is
+    // not, so this module does not merely decline to publish the RHI, it cannot see it.
+    // `platform` will arrive for `Library` alone, at step 6.
+    .{ .name = "abi", .deps = &.{"core"} },
 };
 
 /// Which platform backend to build against.
@@ -237,6 +250,24 @@ pub fn build(b: *std.Build) void {
         rhi_module.linkFramework("QuartzCore", .{});
         rhi_module.linkFramework("Foundation", .{});
     }
+
+    // **The header and the engine, checked against each other** (public-abi.md §16).
+    // `foundry.h` is hand-written, because it is the specification a mod author reads rather
+    // than a description of whatever the engine currently does — and a hand-written header is
+    // a header somebody has to keep true. `agreement.c` includes it and asserts every size and
+    // every offset at compile time; `agreement.zig` asserts the same numbers from the Zig
+    // side and pushes four values through the boundary to prove the layouts are not merely
+    // the same shape. Attaching the C file to the module rather than to the test binary is
+    // what puts the check on `zig build check` too, so a header edited here fails on every
+    // target the engine claims to support rather than only on this machine.
+    //
+    // `-std=c99 -pedantic` is not decoration: the header claims C99 with no dependencies, and
+    // this translation unit contains nothing else, so compiling it is what makes that claim
+    // checked. Nothing here is referenced outside the test suite, so a linked game drops it.
+    modules.get("abi").?.addCSourceFile(.{
+        .file = b.path("engine/src/abi/agreement.c"),
+        .flags = &.{ "-std=c99", "-pedantic", "-Wall", "-Wextra", "-Werror" },
+    });
 
     // **The only place SDL enters the build graph.** I7 is enforced here as much as by
     // the layering table above: no other module is linked against it, so no other
@@ -463,6 +494,15 @@ pub fn build(b: *std.Build) void {
             }).step);
         }
     }
+
+    // The public header, installed as an artifact of the build rather than copied by hand.
+    // A native mod compiles against exactly the header the engine it will be loaded by was
+    // built from, which is the only version of that sentence worth having.
+    b.getInstallStep().dependOn(&b.addInstallFileWithDir(
+        b.path("engine/src/abi/foundry.h"),
+        .header,
+        "foundry.h",
+    ).step);
 
     const run_sandbox = b.addRunArtifact(sandbox);
     run_sandbox.step.dependOn(b.getInstallStep());
