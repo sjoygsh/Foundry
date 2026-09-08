@@ -306,6 +306,8 @@ assume it.
 ```
 Foundry/
   CLAUDE.md              This file. Durable principles and architecture.
+  AGENTS.md              How to build, verify and work here. Binds to this file,
+                         never restates it. For any agent, not only Claude Code.
   PROJECT_STATE.md       Current state. Changes every session.
   README.md
   LICENSE  NOTICE        Apache-2.0.
