@@ -140,7 +140,7 @@ const layering = [_]Module{
     // The one module it will **never** have is
     // `rhi` — §4.2's two boundaries, where the renderer API is game-facing and the RHI is
     // not, so this module does not merely decline to publish the RHI, it cannot see it.
-    .{ .name = "abi", .deps = &.{ "core", "data", "platform", "asset", "app" } },
+    .{ .name = "abi", .deps = &.{ "core", "data", "platform", "asset", "app", "scene", "mod" } },
 };
 
 /// Which platform backend to build against.

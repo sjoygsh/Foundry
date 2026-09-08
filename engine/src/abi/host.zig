@@ -24,6 +24,7 @@
 const std = @import("std");
 const core = @import("core");
 const data = @import("data");
+const scene = @import("scene");
 
 const types = @import("types.zig");
 
@@ -39,6 +40,16 @@ const log = core.log.scoped(.abi);
 /// bound, and a bound that is hit is a refusal with a name (`limit`) rather than a surprise.
 pub const max_counters: u32 = 16;
 pub const max_counter_name: u32 = 48;
+
+/// Callback records are host-owned because `scene` borrows its callback context for the
+/// lifetime of the world. The bounds are intentionally below the world's limits: this is
+/// metadata only for types and systems a native mod registered through this ABI.
+pub const max_component_callbacks: u32 = 64;
+pub const max_system_callbacks: u32 = 64;
+pub const max_queries: u32 = 64;
+/// M7 leaves native libraries mapped for the life of the process. This is therefore the
+/// process-lifetime limit on identities the native loader may issue.
+pub const max_mods: u32 = 64;
 
 /// How many nested blocks a mod may have open views on at once.
 ///
@@ -70,8 +81,12 @@ pub fn HostOf(comptime E: type) type {
         /// tool that only wants to read a package is a legitimate host.
         engine: ?*E = null,
 
-        // Steps 4 and 5 add `world`, `renderer`, `mixer` and `collision` here. Each is
-        // optional and each absence is an `unavailable` answer, never a missing entry.
+        /// The world's ownership stays with the game. Its presence turns on the `scene`
+        /// group; its absence is an `unavailable` answer, never a missing table entry.
+        world: ?*scene.World = null,
+
+        // Step 5 adds `renderer`, `mixer` and `collision` here. Each is optional and each
+        // absence is an `unavailable` answer, never a missing entry.
 
         /// Counters opened by mods, and registered with the engine on their behalf.
         counters: [max_counters]Counter = @splat(.{}),
@@ -86,6 +101,20 @@ pub fn HostOf(comptime E: type) type {
         /// those.
         scope_depth: u32 = 0,
 
+        /// Stable callback contexts for component types and systems native mods register.
+        components: [max_component_callbacks]Component = @splat(.{}),
+        systems: [max_system_callbacks]System = @splat(.{}),
+
+        /// Queries borrow the world's stores and have mutable progress, so a cursor names a
+        /// host-owned slot rather than exposing `scene.Query` itself.
+        queries: [max_queries]Query = @splat(.{}),
+        query_next: u32 = 0,
+
+        /// Identities handed to native libraries at `foundry_mod_init`. A mod can receive
+        /// one but cannot manufacture one through the API.
+        mods: [max_mods]ModSlot = @splat(.{}),
+        mod_next: u32 = 0,
+
         /// The bound host, which is what a table's functions find. One per process and per
         /// engine type; binding a second replaces the first and says so.
         var bound: ?*Self = null;
@@ -99,6 +128,15 @@ pub fn HostOf(comptime E: type) type {
             /// the store and the package bytes underneath, so a view that survived one is
             /// pointing at memory that has been freed — and this is what notices.
             content_generation: u64 = 0,
+            /// The frame the view was opened in, for a view over memory the **frame arena**
+            /// owns rather than a loaded package's: `world_read_component` serializes a
+            /// component into the arena, and the next `beginFrame` reclaims it. Null for a
+            /// view into package bytes, which live until a reload and are what
+            /// `content_generation` above guards.
+            ///
+            /// Two lifetimes rather than one because they really are two: a content view is
+            /// legitimately usable across frames and a described component never is.
+            frame: ?u64 = null,
             fields: data.fpk.Fields = undefined,
             /// The schema the block is laid out against: the parent field's `nested` list.
             schema: data.Schema = undefined,
@@ -117,6 +155,7 @@ pub fn HostOf(comptime E: type) type {
         pub fn openNested(
             self: *Self,
             content_generation: u64,
+            frame: ?u64,
             fields: data.fpk.Fields,
             schema: data.Schema,
         ) types.Record {
@@ -127,6 +166,7 @@ pub fn HostOf(comptime E: type) type {
             view.generation +%= 1;
             if (view.generation == 0) view.generation = 1;
             view.content_generation = content_generation;
+            view.frame = frame;
             view.fields = fields;
             view.schema = schema;
 
@@ -144,7 +184,12 @@ pub fn HostOf(comptime E: type) type {
 
         /// Resolves one, or null for a view that was recycled, never issued, or opened
         /// against content that has since been reloaded.
-        pub fn nestedView(self: *Self, handle: types.Record, content_generation: u64) ?*const NestedView {
+        pub fn nestedView(
+            self: *Self,
+            handle: types.Record,
+            content_generation: u64,
+            frame: u64,
+        ) ?*const NestedView {
             const unpacked = handle.unwrap(core.Handle(NestedView));
             if (unpacked.index & nested_flag == 0) return null;
 
@@ -154,6 +199,9 @@ pub fn HostOf(comptime E: type) type {
             const view = &self.nested[slot];
             if (view.generation == 0 or view.generation != unpacked.generation) return null;
             if (view.content_generation != content_generation) return null;
+            if (view.frame) |opened| {
+                if (opened != frame) return null;
+            }
             return view;
         }
 
@@ -171,6 +219,32 @@ pub fn HostOf(comptime E: type) type {
             owner: types.Mod = .none,
         };
 
+        pub const Component = struct {
+            active: bool = false,
+            owner: types.Mod = .none,
+            type: scene.ComponentType = .none,
+            ctx: ?*anyopaque = null,
+            construct: ?types.ComponentConstruct = null,
+            destruct: ?types.ComponentDestruct = null,
+        };
+
+        pub const System = struct {
+            active: bool = false,
+            owner: types.Mod = .none,
+            ctx: ?*anyopaque = null,
+            update: ?types.SystemUpdate = null,
+        };
+
+        pub const Query = struct {
+            generation: u32 = 0,
+            inner: scene.Query = undefined,
+        };
+
+        const ModSlot = struct {
+            active: bool = false,
+            generation: u32 = 0,
+        };
+
         /// Publishes this host to the table. **The host must outlive the binding and must
         /// not be moved**, because the engine holds pointers into its counters.
         pub fn bind(self: *Self) void {
@@ -178,6 +252,24 @@ pub fn HostOf(comptime E: type) type {
                 if (previous != self) log.warn("a second host was bound; the first is replaced", .{});
             }
             bound = self;
+        }
+
+        /// Issue a process-lifetime identity to a library about to run. M7 deliberately
+        /// never unloads a native mod, so reusing a slot would make an old callback's
+        /// `self` name a different library — exactly the stale-handle failure I1 forbids.
+        pub fn issueMod(self: *Self) ?types.Mod {
+            var tried: u32 = 0;
+            while (tried < max_mods) : (tried += 1) {
+                const index = self.mod_next;
+                self.mod_next = (self.mod_next + 1) % max_mods;
+                const slot = &self.mods[index];
+                if (slot.active) continue;
+                slot.generation +%= 1;
+                if (slot.generation == 0) slot.generation = 1;
+                slot.active = true;
+                return .wrap(core.Handle(ModSlot){ .index = index, .generation = slot.generation });
+            }
+            return null;
         }
 
         /// Takes the host away and hands back everything it registered on a mod's behalf.
@@ -189,6 +281,12 @@ pub fn HostOf(comptime E: type) type {
             self.releaseCounters();
             self.nested = @splat(.{});
             self.nested_next = 0;
+            self.components = @splat(.{});
+            self.systems = @splat(.{});
+            self.queries = @splat(.{});
+            self.query_next = 0;
+            self.mods = @splat(.{});
+            self.mod_next = 0;
             if (bound == self) bound = null;
         }
 
@@ -238,6 +336,101 @@ pub fn HostOf(comptime E: type) type {
             const c = &self.counters[unpacked.index];
             if (!c.open) return null;
             return c;
+        }
+
+        /// Reserves a stable context before `scene` records its callbacks. A failed world
+        /// registration is discarded by the caller, so no unused record remains visible.
+        pub fn openComponent(self: *Self, owner: types.Mod, desc: types.ComponentDesc) ?*Component {
+            const slot = for (self.components[0..]) |*component| {
+                if (!component.active) break component;
+            } else return null;
+
+            slot.* = .{
+                .active = true,
+                .owner = owner,
+                .ctx = desc.ctx,
+                .construct = desc.construct,
+                .destruct = desc.destruct,
+            };
+            return slot;
+        }
+
+        pub fn closeComponent(_: *Self, component: *Component) void {
+            component.* = .{};
+        }
+
+        pub fn ownComponent(self: *const Self, owner: types.Mod, t: scene.ComponentType) bool {
+            for (self.components) |component| {
+                if (component.active and component.owner.eql(owner) and component.type.eql(t)) return true;
+            }
+            return false;
+        }
+
+        /// `scene` calls these with the slot as its context, so **the host must outlive
+        /// every world it was lent to**: the world keeps registrations pointing here.
+        ///
+        /// A released slot is a no-op rather than a null call. A host that unbinds while a
+        /// world still holds its registrations has made a mistake, and the ABI's job at that
+        /// point is to not be the thing that crashes — which is the same rule every entry
+        /// point above follows, applied to the direction the calls run the other way.
+        pub fn componentConstruct(ctx: ?*anyopaque, out: [*]u8) void {
+            const slot: *Component = @ptrCast(@alignCast(ctx.?));
+            const construct = slot.construct orelse return;
+            construct(slot.ctx, @ptrCast(out));
+        }
+
+        pub fn componentDestruct(ctx: ?*anyopaque, bytes: [*]u8) void {
+            const slot: *Component = @ptrCast(@alignCast(ctx.?));
+            const destruct = slot.destruct orelse return;
+            destruct(slot.ctx, @ptrCast(bytes));
+        }
+
+        pub fn openSystem(self: *Self, owner: types.Mod, desc: types.SystemDesc) ?*System {
+            const slot = for (self.systems[0..]) |*system| {
+                if (!system.active) break system;
+            } else return null;
+
+            slot.* = .{
+                .active = true,
+                .owner = owner,
+                .ctx = desc.ctx,
+                .update = desc.update,
+            };
+            return slot;
+        }
+
+        pub fn closeSystem(_: *Self, system: *System) void {
+            system.* = .{};
+        }
+
+        /// The world is dropped rather than passed on: a native system reaches it through
+        /// the table it kept from init, so no engine pointer crosses and `scene` never
+        /// learns that one of its systems came from outside the process image.
+        pub fn systemUpdate(ctx: ?*anyopaque, _: *scene.World, tick: scene.Tick) void {
+            const slot: *System = @ptrCast(@alignCast(ctx.?));
+            const update = slot.update orelse return;
+            const step: types.Step = .{ .tick = tick.tick, .delta_ns = @intCast(tick.delta.ns) };
+            update(slot.ctx, &step);
+        }
+
+        pub fn openQuery(self: *Self, opened: scene.Query) types.Cursor {
+            const slot = self.query_next;
+            self.query_next = (slot + 1) % max_queries;
+
+            const entry = &self.queries[slot];
+            entry.generation +%= 1;
+            if (entry.generation == 0) entry.generation = 1;
+            entry.inner = opened;
+
+            return .{ .bits = (core.Handle(Query){ .index = slot, .generation = entry.generation }).bits() };
+        }
+
+        pub fn query(self: *Self, cursor: types.Cursor) ?*Query {
+            const handle = core.Handle(Query).fromBits(cursor.bits);
+            if (handle.generation == 0 or handle.index >= max_queries) return null;
+            const entry = &self.queries[handle.index];
+            if (entry.generation != handle.generation) return null;
+            return entry;
         }
 
         fn releaseCounters(self: *Self) void {

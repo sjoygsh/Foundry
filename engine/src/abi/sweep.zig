@@ -128,6 +128,10 @@ fn callWith(comptime field: std.builtin.Type.StructField, comptime argument: any
 }
 
 test "every entry point refuses a zeroed call when nothing is bound" {
+    // The table's own length, walked at comptime four times over. Raised rather than
+    // reduced: the point of these sweeps is that they grow with the table.
+    @setEvalBranchQuota(64 * @typeInfo(Api_v1).@"struct".fields.len);
+
     Host.unbindAny();
 
     inline for (@typeInfo(Api_v1).@"struct".fields) |field| {
@@ -142,6 +146,10 @@ test "every entry point refuses a zeroed call when nothing is bound" {
 }
 
 test "every entry point refuses a zeroed call when everything is bound" {
+    // The table's own length, walked at comptime four times over. Raised rather than
+    // reduced: the point of these sweeps is that they grow with the table.
+    @setEvalBranchQuota(64 * @typeInfo(Api_v1).@"struct".fields.len);
+
     var engine: TestEngine = try .init(testing.allocator);
     defer engine.deinit();
     engine.settle();
@@ -162,6 +170,10 @@ test "every entry point refuses a zeroed call when everything is bound" {
 }
 
 test "an absent subsystem answers unavailable, not not_found and not a crash" {
+    // The table's own length, walked at comptime four times over. Raised rather than
+    // reduced: the point of these sweeps is that they grow with the table.
+    @setEvalBranchQuota(64 * @typeInfo(Api_v1).@"struct".fields.len);
+
     // A host with nothing in it at all: bound, so the table finds it, and empty, so every
     // capability has to say what it says when its subsystem was never supplied.
     var host: Host = .{};
@@ -197,6 +209,10 @@ test "the two calls that need no subsystem work on an empty host" {
 }
 
 test "the table is one shape: every entry present, none null, and it says its own size" {
+    // The table's own length, walked at comptime four times over. Raised rather than
+    // reduced: the point of these sweeps is that they grow with the table.
+    @setEvalBranchQuota(64 * @typeInfo(Api_v1).@"struct".fields.len);
+
     try testing.expectEqual(@as(u32, 1), table.version);
     try testing.expectEqual(@as(u32, @sizeOf(Api_v1)), table.size);
 

@@ -36,6 +36,7 @@ const agreement = @import("agreement.zig");
 const calls_asset = @import("calls_asset.zig");
 const calls_content = @import("calls_content.zig");
 const calls_engine = @import("calls_engine.zig");
+const calls_scene = @import("calls_scene.zig");
 
 // The vocabulary of the boundary. Named here because a host writing a `get_api` and a loader
 // reading a mod's symbols both need them, and neither should be reaching into a file.
@@ -75,7 +76,10 @@ pub const LogLevel = types.LogLevel;
 pub const LogRecord = types.LogRecord;
 pub const MemoryCounter = types.MemoryCounter;
 pub const MemoryStats = types.MemoryStats;
+pub const ComponentDesc = types.ComponentDesc;
 pub const SchemaId = types.SchemaId;
+pub const Step = types.Step;
+pub const SystemDesc = types.SystemDesc;
 
 /// What a native mod exports, and the version of the table this build publishes.
 pub const GetApi = types.GetApi;
@@ -91,6 +95,7 @@ test {
     _ = calls_asset;
     _ = calls_content;
     _ = calls_engine;
+    _ = calls_scene;
     _ = host;
     _ = types;
     _ = @import("sweep.zig");

@@ -315,6 +315,7 @@ pub fn Of(comptime H: type) type {
             const fields = r.fields.nestedAt(field) catch |err| return readFailure(err);
             dst.* = h.openNested(
                 engine.contentGeneration(),
+                null,
                 fields orelse return .not_found,
                 .{ .id = .none, .version = r.schema.version, .fields = declared.nested },
             );
@@ -398,6 +399,7 @@ pub fn Of(comptime H: type) type {
             const fields = list.nestedAt(index) catch |err| return readFailure(err);
             dst.* = h.openNested(
                 engine.contentGeneration(),
+                null,
                 fields orelse return .not_found,
                 .{ .id = .none, .version = r.schema.version, .fields = list.elem.nested },
             );
@@ -569,7 +571,8 @@ pub fn Of(comptime H: type) type {
             const engine = h.engine orelse return error.Stale;
 
             if (H.namesNested(handle)) {
-                const view = h.nestedView(handle, engine.contentGeneration()) orelse return error.Stale;
+                const view = h.nestedView(handle, engine.contentGeneration(), engine.frame_index) orelse
+                    return error.Stale;
                 return .{
                     .fields = view.fields,
                     .schema = view.schema,

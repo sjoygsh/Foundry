@@ -17,12 +17,16 @@ const std = @import("std");
 const asset_calls = @import("calls_asset.zig");
 const content_calls = @import("calls_content.zig");
 const engine_calls = @import("calls_engine.zig");
+const scene_calls = @import("calls_scene.zig");
 const types = @import("types.zig");
 
 const Asset = types.Asset;
 const Bool = types.Bool;
+const ComponentDesc = types.ComponentDesc;
+const ComponentType = types.ComponentType;
 const ContentId = types.ContentId;
 const Cursor = types.Cursor;
+const Entity = types.Entity;
 const FieldType = types.FieldType;
 const Package = types.Package;
 const Record = types.Record;
@@ -34,6 +38,7 @@ const MemoryStats = types.MemoryStats;
 const Mod = types.Mod;
 const Result = types.Result;
 const Str = types.Str;
+const SystemDesc = types.SystemDesc;
 
 /// Everything a mod may call.
 ///
@@ -143,6 +148,37 @@ pub const Api_v1 = extern struct {
     asset_content_id: *const fn (handle: Asset, out: ?*ContentId) callconv(.c) Result,
     asset_schema: *const fn (handle: Asset, out: ?*SchemaId) callconv(.c) Result,
     asset_refcount: *const fn (handle: Asset, out: ?*u32) callconv(.c) Result,
+
+    // -- Scene -------------------------------------------------------------------------
+
+    world_register_component: *const fn (self: Mod, desc: ?*const ComponentDesc, out: ?*ComponentType) callconv(.c) Result,
+    world_find_component_type: *const fn (schema: SchemaId, out: ?*ComponentType) callconv(.c) Result,
+    world_component_type_next: *const fn (cursor: ?*Cursor, out: ?*ComponentType) callconv(.c) Result,
+    world_component_type_schema: *const fn (t: ComponentType, out: ?*SchemaId) callconv(.c) Result,
+    world_component_type_name: *const fn (t: ComponentType, out: ?*Str) callconv(.c) Result,
+    world_component_type_size: *const fn (t: ComponentType, out: ?*u32) callconv(.c) Result,
+    world_component_type_alignment: *const fn (t: ComponentType, out: ?*u32) callconv(.c) Result,
+    world_component_type_count: *const fn (t: ComponentType, out: ?*u32) callconv(.c) Result,
+    world_component_type_savable: *const fn (t: ComponentType, out: ?*Bool) callconv(.c) Result,
+
+    world_create_entity: *const fn (out: ?*Entity) callconv(.c) Result,
+    world_destroy_entity: *const fn (entity: Entity) callconv(.c) Result,
+    world_contains: *const fn (entity: Entity, out: ?*Bool) callconv(.c) Result,
+    world_entity_count: *const fn (out: ?*u32) callconv(.c) Result,
+    world_next_entity: *const fn (cursor: ?*Cursor, out: ?*Entity) callconv(.c) Result,
+
+    world_add_component: *const fn (entity: Entity, t: ComponentType, initial: ?[*]const u8, initial_size: u32) callconv(.c) Result,
+    world_remove_component: *const fn (entity: Entity, t: ComponentType) callconv(.c) Result,
+    world_has_component: *const fn (entity: Entity, t: ComponentType, out: ?*Bool) callconv(.c) Result,
+
+    world_register_system: *const fn (self: Mod, desc: ?*const SystemDesc) callconv(.c) Result,
+    world_query_begin: *const fn (wanted: ?[*]const ComponentType, count: u32, out: ?*Cursor) callconv(.c) Result,
+    world_query_next: *const fn (cursor: ?*Cursor, out: ?*Entity) callconv(.c) Result,
+
+    world_spawn: *const fn (template: ContentId, out: ?*Entity) callconv(.c) Result,
+    world_spawn_scene: *const fn (id: ContentId, out: ?*u32) callconv(.c) Result,
+    world_read_component: *const fn (entity: Entity, t: ComponentType, out: ?*Record) callconv(.c) Result,
+    world_component_bytes: *const fn (self: Mod, entity: Entity, t: ComponentType, out: ?*?*anyopaque, size: ?*u32) callconv(.c) Result,
 };
 
 /// The table for one host type, and the `get_api` that hands it out.
@@ -150,6 +186,7 @@ pub fn TableOf(comptime H: type) type {
     const engine = engine_calls.Of(H);
     const content = content_calls.Of(H);
     const assets = asset_calls.Of(H);
+    const world = scene_calls.Of(H);
 
     return struct {
         pub const v1: Api_v1 = .{
@@ -231,6 +268,35 @@ pub fn TableOf(comptime H: type) type {
             .asset_content_id = assets.assetContentId,
             .asset_schema = assets.assetSchema,
             .asset_refcount = assets.assetRefcount,
+
+            .world_register_component = world.worldRegisterComponent,
+            .world_find_component_type = world.worldFindComponentType,
+            .world_component_type_next = world.worldComponentTypeNext,
+            .world_component_type_schema = world.worldComponentTypeSchema,
+            .world_component_type_name = world.worldComponentTypeName,
+            .world_component_type_size = world.worldComponentTypeSize,
+            .world_component_type_alignment = world.worldComponentTypeAlignment,
+            .world_component_type_count = world.worldComponentTypeCount,
+            .world_component_type_savable = world.worldComponentTypeSavable,
+
+            .world_create_entity = world.worldCreateEntity,
+            .world_destroy_entity = world.worldDestroyEntity,
+            .world_contains = world.worldContains,
+            .world_entity_count = world.worldEntityCount,
+            .world_next_entity = world.worldNextEntity,
+
+            .world_add_component = world.worldAddComponent,
+            .world_remove_component = world.worldRemoveComponent,
+            .world_has_component = world.worldHasComponent,
+
+            .world_register_system = world.worldRegisterSystem,
+            .world_query_begin = world.worldQueryBegin,
+            .world_query_next = world.worldQueryNext,
+
+            .world_spawn = world.worldSpawn,
+            .world_spawn_scene = world.worldSpawnScene,
+            .world_read_component = world.worldReadComponent,
+            .world_component_bytes = world.worldComponentBytes,
         };
 
         /// What a native mod is handed (§3). **Never a crash and never a Zig error** — a
@@ -247,4 +313,5 @@ test {
     _ = asset_calls;
     _ = content_calls;
     _ = engine_calls;
+    _ = scene_calls;
 }

@@ -397,6 +397,42 @@ pub const MemoryStats = extern struct {
     failures: u64 = 0,
 };
 
+/// A fixed simulation step, as a native system sees it.
+pub const Step = extern struct {
+    tick: u64 = 0,
+    delta_ns: u64 = 0,
+};
+
+/// Native lifecycle hooks for a component's raw storage.
+pub const ComponentConstruct = *const fn (ctx: ?*anyopaque, out: ?*anyopaque) callconv(.c) void;
+pub const ComponentDestruct = *const fn (ctx: ?*anyopaque, component: ?*anyopaque) callconv(.c) void;
+
+/// What a native mod supplies when it registers a component type.
+///
+/// The schema is already content data: the mod's package declared it with `@schema`, and
+/// this descriptor supplies the in-memory half `scene` cannot know. `name` repeats the
+/// schema spelling for diagnostics and is checked against `schema` before it is kept.
+pub const ComponentDesc = extern struct {
+    schema: SchemaId = .none,
+    name: Str = .empty,
+    size: u32 = 0,
+    alignment: u32 = 0,
+    ctx: ?*anyopaque = null,
+    construct: ?ComponentConstruct = null,
+    destruct: ?ComponentDestruct = null,
+};
+
+/// A native system callback. It reaches its world through the ambient host, as every API
+/// call does; the step is the only per-update data it is handed directly.
+pub const SystemUpdate = *const fn (ctx: ?*anyopaque, step: ?*const Step) callconv(.c) void;
+
+pub const SystemDesc = extern struct {
+    id: ContentId = .none,
+    name: Str = .empty,
+    ctx: ?*anyopaque = null,
+    update: ?SystemUpdate = null,
+};
+
 // == Cursors ===========================================================================
 
 /// A position in a walk, and the generation of the container it is walking.

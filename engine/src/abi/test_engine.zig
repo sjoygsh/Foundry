@@ -173,6 +173,14 @@ pub const TestEngine = struct {
         return self.arena.allocator();
     }
 
+    /// What a frame boundary does to everything the frame arena owns: reclaims it. The
+    /// engine's own loop does exactly this, and a borrow that survives it is reading memory
+    /// somebody else now has.
+    pub fn nextFrame(self: *Self) void {
+        self.frame_index += 1;
+        self.arena.reset();
+    }
+
     pub fn beginScope(self: *Self, name: []const u8) Scope {
         self.open_scopes += 1;
         self.scope_names.append(self.gpa, name) catch {};
