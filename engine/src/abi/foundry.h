@@ -20,10 +20,9 @@
  * Design: docs/design/public-abi.md. Decisions: ADR-0004 (one versioned C ABI), ADR-0026
  * (where `abi` sits and who supplies its subsystems), ADR-0027 (a mod is a content package).
  *
- * WHAT IS HERE YET: the type layer, which is step 2 of public-abi.md §19. The table itself —
- * `FoundryApi_v1`, the capabilities a mod calls — is step 3 and is not in this file. What is
- * here is already frozen: once a compiled mod exists, a type that crosses this boundary can
- * never change its layout.
+ * WHAT IS HERE YET: the type layer, ABI skeleton and `scene` group — steps 2 through 4 of
+ * public-abi.md §19. What is here is already frozen: once a compiled mod exists, a type that
+ * crosses this boundary can never change its layout.
  */
 
 #ifndef FOUNDRY_H
@@ -199,6 +198,22 @@ typedef struct FoundrySchemaId {
     uint64_t hash;
 } FoundrySchemaId;
 
+/*
+ * The same hash as `foundry_content_id`, over the same bytes, into the other space.
+ *
+ * Here rather than in the table because a mod that registers a component type has to name
+ * its own schema before any record of it exists to be asked — every call that *returns* a
+ * schema id needs something that already has one, so without this there is no way in. The
+ * spelling is still checked: `world_register_component` parses the name beside it and
+ * refuses a hash that does not belong to it.
+ */
+static inline FoundrySchemaId foundry_schema_id(const void *bytes, size_t len)
+{
+    FoundrySchemaId id;
+    id.hash = foundry_content_id(bytes, len).hash;
+    return id;
+}
+
 /* == Handles =========================================================================== */
 
 /*
@@ -352,6 +367,34 @@ typedef struct FoundryMemoryStats {
     uint64_t failures;
 } FoundryMemoryStats;
 
+/* One deterministic simulation update. A native system gets no clock, input snapshot or
+ * interpolation alpha: all three would make the simulation depend on its host. */
+typedef struct FoundryStep {
+    uint64_t tick;
+    uint64_t delta_ns;
+} FoundryStep;
+
+/* The in-memory half of a component type. The schema lives in the mod's content package;
+ * this names its raw storage and optional construction/destruction hooks. */
+typedef struct FoundryComponentDesc {
+    FoundrySchemaId schema;
+    FoundryStr name;
+    uint32_t size;
+    uint32_t alignment;
+    void *ctx;
+    void (*construct)(void *ctx, void *out);
+    void (*destruct)(void *ctx, void *component);
+} FoundryComponentDesc;
+
+/* A system is an identity, a context and a callback. It reaches the world through the API
+ * table it retained from init; the step is the only per-update value it is handed. */
+typedef struct FoundrySystemDesc {
+    FoundryContentId id;
+    FoundryStr name;
+    void *ctx;
+    void (*update)(void *ctx, const FoundryStep *step);
+} FoundrySystemDesc;
+
 /* == The table ========================================================================= */
 
 /*
@@ -376,10 +419,9 @@ typedef struct FoundryMemoryStats {
  * either direction; a mod that wants to keep a string copies it, and the two calls whose
  * names end in `copy_string` are there for exactly that.
  *
- * WHAT IS HERE YET: `abi`'s skeleton (public-abi.md §19 step 3) — what the engine and the
- * content system already answer. The `scene`, `render2d`, `ui`, `audio` and `physics2d`
- * groups are steps 4 and 5 and will be appended below, never inserted: a field's position in
- * this struct is what a compiled mod holds.
+ * WHAT IS HERE YET: `abi`'s skeleton and `scene` group (public-abi.md §19 steps 3 and 4).
+ * The `render2d`, `ui`, `audio` and `physics2d` groups are step 5 and will be appended below,
+ * never inserted: a field's position in this struct is what a compiled mod holds.
  */
 typedef struct FoundryApi_v1 {
     /* Always 1, and `sizeof(FoundryApi_v1)` as the host built it. Both are redundant with
@@ -595,6 +637,78 @@ typedef struct FoundryApi_v1 {
     FoundryResult (*asset_schema)(FoundryAsset asset, FoundrySchemaId *out);
     /* Zero means evictable, not freed — a real answer to "why is this still in memory". */
     FoundryResult (*asset_refcount)(FoundryAsset asset, uint32_t *out);
+
+    /* -- Scene ------------------------------------------------------------------------- */
+
+    /* Registers the in-memory half of a component whose schema the mod's content package
+     * already declared. Registration is startup-only, like the engine's own component types. */
+    FoundryResult (*world_register_component)(FoundryMod self,
+                                              const FoundryComponentDesc *desc,
+                                              FoundryComponentType *out);
+    FoundryResult (*world_find_component_type)(FoundrySchemaId schema,
+                                               FoundryComponentType *out);
+    /* Registered types, in registration order. A changed registry invalidates the cursor. */
+    FoundryResult (*world_component_type_next)(FoundryCursor *cursor,
+                                                FoundryComponentType *out);
+    FoundryResult (*world_component_type_schema)(FoundryComponentType type,
+                                                  FoundrySchemaId *out);
+    FoundryResult (*world_component_type_name)(FoundryComponentType type, FoundryStr *out);
+    FoundryResult (*world_component_type_size)(FoundryComponentType type, uint32_t *out);
+    FoundryResult (*world_component_type_alignment)(FoundryComponentType type, uint32_t *out);
+    /* How many entities have one — the number a query over this type would visit, not a
+     * count of registered types. */
+    FoundryResult (*world_component_type_count)(FoundryComponentType type, uint32_t *out);
+    /* Whether a save carries it, which is also whether `world_read_component` can show it.
+     * False for a type registered through `world_register_component`: raw C storage has no
+     * serialized form the engine could invent for it. */
+    FoundryResult (*world_component_type_savable)(FoundryComponentType type,
+                                                   FoundryBool *out);
+
+    FoundryResult (*world_create_entity)(FoundryEntity *out);
+    FoundryResult (*world_destroy_entity)(FoundryEntity entity);
+    FoundryResult (*world_contains)(FoundryEntity entity, FoundryBool *out);
+    FoundryResult (*world_entity_count)(uint32_t *out);
+    /* Live entities, in slot-index order. A structural change invalidates the cursor. */
+    FoundryResult (*world_next_entity)(FoundryCursor *cursor, FoundryEntity *out);
+
+    /* `initial` is either NULL with zero size (construct or zero initialize), or exactly
+     * the registered component size. Its bytes are copied before this call returns. */
+    FoundryResult (*world_add_component)(FoundryEntity entity, FoundryComponentType type,
+                                         const void *initial, uint32_t initial_size);
+    FoundryResult (*world_remove_component)(FoundryEntity entity, FoundryComponentType type);
+    FoundryResult (*world_has_component)(FoundryEntity entity, FoundryComponentType type,
+                                         FoundryBool *out);
+
+    FoundryResult (*world_register_system)(FoundryMod self, const FoundrySystemDesc *desc);
+    /* Opens a query over one or more component types. The returned cursor names the query
+     * until it ends, is recycled, or the world changes shape. A type the world does not
+     * know is FOUNDRY_ERR_INVALID_HANDLE rather than a walk that quietly matches nothing.
+     *
+     * Iteration is driven by the FIRST named type, so name the most selective one first. */
+    FoundryResult (*world_query_begin)(const FoundryComponentType *types, uint32_t count,
+                                       FoundryCursor *out);
+    FoundryResult (*world_query_next)(FoundryCursor *cursor, FoundryEntity *out);
+
+    /* `entity_template` rather than `template`, which is a C++ keyword: this header has to
+     * compile as C++ too, and a parameter name is documentation rather than ABI. */
+    FoundryResult (*world_spawn)(FoundryContentId entity_template, FoundryEntity *out);
+    FoundryResult (*world_spawn_scene)(FoundryContentId scene, uint32_t *out);
+    /* Schema-described data for any savable component, read through the type's own
+     * serializer rather than by casting its bytes — so it works for a type this build was
+     * never compiled against. FOUNDRY_ERR_UNSUPPORTED for a type with no serializer, which
+     * today means every type registered through `world_register_component`.
+     *
+     * The record is borrowed FOR THE CURRENT FRAME ONLY, and is the one borrow at this
+     * boundary with that lifetime: it is serialized into the frame arena rather than read
+     * out of a loaded package. Using it on a later frame is FOUNDRY_ERR_INVALID_HANDLE. */
+    FoundryResult (*world_read_component)(FoundryEntity entity, FoundryComponentType type,
+                                          FoundryRecord *out);
+    /* The one raw-storage fast path: only the mod that registered `type` receives it, and
+     * the pointer is invalid after the next structural world mutation. A marker type — one
+     * registered with size zero — yields NULL and a size of zero, which is FOUNDRY_OK. */
+    FoundryResult (*world_component_bytes)(FoundryMod self, FoundryEntity entity,
+                                           FoundryComponentType type, void **out,
+                                           uint32_t *size);
 } FoundryApi_v1;
 
 /* == The entry point =================================================================== */

@@ -207,6 +207,48 @@ FOUNDRY_AGREE(offsetof(FoundryMemoryStats, allocations) == 16);
 FOUNDRY_AGREE(offsetof(FoundryMemoryStats, frees) == 24);
 FOUNDRY_AGREE(offsetof(FoundryMemoryStats, failures) == 32);
 
+/* Widths as well as offsets, for the reason step 2 found the hard way: padding hides a
+ * narrowed member from every offset around it. `alignment` is the live example — narrow it
+ * and nothing after it moves, because `ctx` is eight-aligned and the padding absorbs it. */
+FOUNDRY_AGREE(sizeof(FoundryStep) == 16);
+FOUNDRY_AGREE(offsetof(FoundryStep, tick) == 0);
+FOUNDRY_AGREE(offsetof(FoundryStep, delta_ns) == 8);
+FOUNDRY_AGREE(sizeof(((FoundryStep *)0)->tick) == 8);
+FOUNDRY_AGREE(sizeof(((FoundryStep *)0)->delta_ns) == 8);
+
+FOUNDRY_AGREE(sizeof(FoundryComponentDesc) == 56);
+FOUNDRY_AGREE(offsetof(FoundryComponentDesc, schema) == 0);
+FOUNDRY_AGREE(offsetof(FoundryComponentDesc, name) == 8);
+FOUNDRY_AGREE(offsetof(FoundryComponentDesc, size) == 24);
+FOUNDRY_AGREE(offsetof(FoundryComponentDesc, alignment) == 28);
+FOUNDRY_AGREE(offsetof(FoundryComponentDesc, ctx) == 32);
+FOUNDRY_AGREE(offsetof(FoundryComponentDesc, construct) == 40);
+FOUNDRY_AGREE(offsetof(FoundryComponentDesc, destruct) == 48);
+FOUNDRY_AGREE(sizeof(((FoundryComponentDesc *)0)->schema) == 8);
+FOUNDRY_AGREE(sizeof(((FoundryComponentDesc *)0)->name) == 16);
+FOUNDRY_AGREE(sizeof(((FoundryComponentDesc *)0)->size) == 4);
+FOUNDRY_AGREE(sizeof(((FoundryComponentDesc *)0)->alignment) == 4);
+FOUNDRY_AGREE(sizeof(((FoundryComponentDesc *)0)->ctx) == 8);
+FOUNDRY_AGREE(sizeof(((FoundryComponentDesc *)0)->construct) == 8);
+FOUNDRY_AGREE(sizeof(((FoundryComponentDesc *)0)->destruct) == 8);
+
+FOUNDRY_AGREE(sizeof(FoundrySystemDesc) == 40);
+FOUNDRY_AGREE(offsetof(FoundrySystemDesc, id) == 0);
+FOUNDRY_AGREE(offsetof(FoundrySystemDesc, name) == 8);
+FOUNDRY_AGREE(offsetof(FoundrySystemDesc, ctx) == 24);
+FOUNDRY_AGREE(offsetof(FoundrySystemDesc, update) == 32);
+FOUNDRY_AGREE(sizeof(((FoundrySystemDesc *)0)->id) == 8);
+FOUNDRY_AGREE(sizeof(((FoundrySystemDesc *)0)->name) == 16);
+FOUNDRY_AGREE(sizeof(((FoundrySystemDesc *)0)->ctx) == 8);
+FOUNDRY_AGREE(sizeof(((FoundrySystemDesc *)0)->update) == 8);
+
+/* Both spaces, one algorithm — and the Zig side compares each against the engine's own. */
+uint64_t foundry_agreement_schema_id(const void *bytes, size_t len);
+uint64_t foundry_agreement_schema_id(const void *bytes, size_t len)
+{
+    return foundry_schema_id(bytes, len).hash;
+}
+
 /* -- The table ----------------------------------------------------------------------- */
 
 /*
@@ -288,7 +330,31 @@ static const char *const api_v1_names[] = {
     "asset_next",
     "asset_content_id",
     "asset_schema",
-    "asset_refcount"
+    "asset_refcount",
+    "world_register_component",
+    "world_find_component_type",
+    "world_component_type_next",
+    "world_component_type_schema",
+    "world_component_type_name",
+    "world_component_type_size",
+    "world_component_type_alignment",
+    "world_component_type_count",
+    "world_component_type_savable",
+    "world_create_entity",
+    "world_destroy_entity",
+    "world_contains",
+    "world_entity_count",
+    "world_next_entity",
+    "world_add_component",
+    "world_remove_component",
+    "world_has_component",
+    "world_register_system",
+    "world_query_begin",
+    "world_query_next",
+    "world_spawn",
+    "world_spawn_scene",
+    "world_read_component",
+    "world_component_bytes"
 };
 
 static const uint64_t api_v1_offsets[] = {
@@ -356,7 +422,31 @@ static const uint64_t api_v1_offsets[] = {
     (uint64_t)offsetof(FoundryApi_v1, asset_next),
     (uint64_t)offsetof(FoundryApi_v1, asset_content_id),
     (uint64_t)offsetof(FoundryApi_v1, asset_schema),
-    (uint64_t)offsetof(FoundryApi_v1, asset_refcount)
+    (uint64_t)offsetof(FoundryApi_v1, asset_refcount),
+    (uint64_t)offsetof(FoundryApi_v1, world_register_component),
+    (uint64_t)offsetof(FoundryApi_v1, world_find_component_type),
+    (uint64_t)offsetof(FoundryApi_v1, world_component_type_next),
+    (uint64_t)offsetof(FoundryApi_v1, world_component_type_schema),
+    (uint64_t)offsetof(FoundryApi_v1, world_component_type_name),
+    (uint64_t)offsetof(FoundryApi_v1, world_component_type_size),
+    (uint64_t)offsetof(FoundryApi_v1, world_component_type_alignment),
+    (uint64_t)offsetof(FoundryApi_v1, world_component_type_count),
+    (uint64_t)offsetof(FoundryApi_v1, world_component_type_savable),
+    (uint64_t)offsetof(FoundryApi_v1, world_create_entity),
+    (uint64_t)offsetof(FoundryApi_v1, world_destroy_entity),
+    (uint64_t)offsetof(FoundryApi_v1, world_contains),
+    (uint64_t)offsetof(FoundryApi_v1, world_entity_count),
+    (uint64_t)offsetof(FoundryApi_v1, world_next_entity),
+    (uint64_t)offsetof(FoundryApi_v1, world_add_component),
+    (uint64_t)offsetof(FoundryApi_v1, world_remove_component),
+    (uint64_t)offsetof(FoundryApi_v1, world_has_component),
+    (uint64_t)offsetof(FoundryApi_v1, world_register_system),
+    (uint64_t)offsetof(FoundryApi_v1, world_query_begin),
+    (uint64_t)offsetof(FoundryApi_v1, world_query_next),
+    (uint64_t)offsetof(FoundryApi_v1, world_spawn),
+    (uint64_t)offsetof(FoundryApi_v1, world_spawn_scene),
+    (uint64_t)offsetof(FoundryApi_v1, world_read_component),
+    (uint64_t)offsetof(FoundryApi_v1, world_component_bytes)
 };
 
 /* The two lists are one list, and this is what says so. */

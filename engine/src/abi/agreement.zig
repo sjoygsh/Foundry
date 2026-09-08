@@ -16,15 +16,96 @@
 
 const std = @import("std");
 const core = @import("core");
+const data = @import("data");
 
 const api = @import("api.zig");
 const types = @import("types.zig");
 
 const testing = std.testing;
 
+/// **The header, as a build input.**
+///
+/// Not decoration: `agreement.c`'s object is cached against the C file, and a change to
+/// `foundry.h` *alone* left that cache warm — so the one edit the agreement exists to catch
+/// was the one edit that did not re-run it. Embedding the header here makes it an input of
+/// this Zig module, whose recompilation does re-run the C half.
+///
+/// The two assertions below are what stop this from being an unexplained `@embedFile`: they
+/// read the numbers out of the text and check them against the ones the engine publishes.
+const header = @embedFile("foundry.h");
+
+test "the header declares the version and the entry points this build publishes" {
+    try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_1 1u") != null);
+    try testing.expect(std.mem.indexOf(u8, header, types.init_symbol) != null);
+    try testing.expect(std.mem.indexOf(u8, header, types.shutdown_symbol) != null);
+}
+
+test "no parameter in the header is a name C++ cannot compile" {
+    // A parameter name is documentation rather than ABI, which is what makes this cheap to
+    // obey and easy to break: `world_spawn(FoundryContentId template, ...)` compiled as C
+    // for as long as nobody tried it from C++, and mods get written in C++.
+    //
+    // Only the keywords C++ has and C does not — a C keyword here would already have failed
+    // `agreement.c`. Names are checked where they appear as parameters, so a keyword inside
+    // a comment or a type is not a false alarm.
+    const cxx_only = [_][]const u8{
+        "and",       "and_eq",       "asm",       "bitand",     "bitor",
+        "bool",      "catch",        "class",     "compl",      "concept",
+        "consteval", "constexpr",    "constinit", "const_cast", "decltype",
+        "delete",    "dynamic_cast", "explicit",  "export",     "false",
+        "friend",    "mutable",      "namespace", "new",        "noexcept",
+        "not",       "not_eq",       "nullptr",   "operator",   "or",
+        "or_eq",     "private",      "protected", "public",     "reinterpret_cast",
+        "requires",  "static_cast",  "template",  "this",       "throw",
+        "true",      "try",          "typeid",    "typename",   "using",
+        "virtual",   "wchar_t",      "xor",       "xor_eq",
+    };
+
+    for (cxx_only) |word| {
+        var at: usize = 0;
+        while (std.mem.indexOfPos(u8, header, at, word)) |found| {
+            at = found + word.len;
+            // A parameter is preceded by a space and followed by `,` or `)`.
+            if (found == 0 or at >= header.len) continue;
+            if (header[found - 1] != ' ') continue;
+            if (header[at] != ',' and header[at] != ')') continue;
+            std.debug.print(
+                "the header uses '{s}' as a parameter name, which C++ cannot compile\n",
+                .{word},
+            );
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "the header names every table entry, in the table's own order" {
+    @setEvalBranchQuota(64 * @typeInfo(api.Api_v1).@"struct".fields.len);
+
+    // A weaker check than `agreement.c`'s offsets and a differently-shaped one: that walks
+    // the compiled struct, this walks the text a mod author actually reads. A member added
+    // to one and not the other fails here first, and says which name is missing.
+    var at: usize = std.mem.indexOf(u8, header, "typedef struct FoundryApi_v1 {").?;
+    inline for (@typeInfo(api.Api_v1).@"struct".fields) |field| {
+        // `version` and `size` are plain integers; every other member is a call, and a call
+        // is spelled `(*name)` in C.
+        if (comptime @typeInfo(field.type) == .pointer) {
+            const spelled = "*" ++ field.name ++ ")";
+            const found = std.mem.indexOfPos(u8, header, at, spelled) orelse {
+                std.debug.print(
+                    "the header does not declare '{s}' after the entry before it\n",
+                    .{field.name},
+                );
+                return error.TestUnexpectedResult;
+            };
+            at = found;
+        }
+    }
+}
+
 // `agreement.c`, which the build attaches to this module. Referenced only from tests, so a
 // build of `abi` that is not a test never needs the object at all.
 extern fn foundry_agreement_content_id(bytes: ?*const anyopaque, len: usize) u64;
+extern fn foundry_agreement_schema_id(bytes: ?*const anyopaque, len: usize) u64;
 extern fn foundry_agreement_str_len(s: types.Str) u64;
 extern fn foundry_agreement_str_byte(s: types.Str, index: u64) u8;
 extern fn foundry_agreement_entity_bits(entity: types.Entity) u64;
@@ -91,6 +172,12 @@ test "the header's hash is the engine's hash" {
     for (vectors) |v| {
         const from_header = foundry_agreement_content_id(v.ptr, v.len);
         try testing.expectEqual(core.ContentId.fromString(v).hash, from_header);
+
+        // The other identifier space, which is the same algorithm over the same bytes into
+        // a different C type. A mod naming its own schema has no other way to compute one,
+        // so this drifting would break registration and nothing else would say why.
+        const schema_from_header = foundry_agreement_schema_id(v.ptr, v.len);
+        try testing.expectEqual(data.SchemaId.fromStringUnchecked(v).hash, schema_from_header);
     }
 
     // And the empty case, where a mod may legitimately pass a null pointer.
@@ -160,6 +247,42 @@ test "FoundryLogRecord and FoundryMemoryStats are the shapes the header states" 
     try testing.expectEqual(@as(usize, 32), @offsetOf(types.MemoryStats, "failures"));
 
     try testing.expectEqual(@as(usize, 8), @sizeOf(types.MemoryCounter));
+}
+
+test "the scene descriptors are the shapes the header states" {
+    // Widths beside offsets, for step 2's reason: `alignment` narrowing to `u16` moves no
+    // offset around it, because `ctx` is eight-aligned and the padding absorbs the change.
+    try testing.expectEqual(@as(usize, 16), @sizeOf(types.Step));
+    try testing.expectEqual(@as(usize, 0), @offsetOf(types.Step, "tick"));
+    try testing.expectEqual(@as(usize, 8), @offsetOf(types.Step, "delta_ns"));
+    try testing.expectEqual(@as(usize, 8), @sizeOf(@FieldType(types.Step, "tick")));
+    try testing.expectEqual(@as(usize, 8), @sizeOf(@FieldType(types.Step, "delta_ns")));
+
+    try testing.expectEqual(@as(usize, 56), @sizeOf(types.ComponentDesc));
+    try testing.expectEqual(@as(usize, 0), @offsetOf(types.ComponentDesc, "schema"));
+    try testing.expectEqual(@as(usize, 8), @offsetOf(types.ComponentDesc, "name"));
+    try testing.expectEqual(@as(usize, 24), @offsetOf(types.ComponentDesc, "size"));
+    try testing.expectEqual(@as(usize, 28), @offsetOf(types.ComponentDesc, "alignment"));
+    try testing.expectEqual(@as(usize, 32), @offsetOf(types.ComponentDesc, "ctx"));
+    try testing.expectEqual(@as(usize, 40), @offsetOf(types.ComponentDesc, "construct"));
+    try testing.expectEqual(@as(usize, 48), @offsetOf(types.ComponentDesc, "destruct"));
+    try testing.expectEqual(@as(usize, 8), @sizeOf(@FieldType(types.ComponentDesc, "schema")));
+    try testing.expectEqual(@as(usize, 16), @sizeOf(@FieldType(types.ComponentDesc, "name")));
+    try testing.expectEqual(@as(usize, 4), @sizeOf(@FieldType(types.ComponentDesc, "size")));
+    try testing.expectEqual(@as(usize, 4), @sizeOf(@FieldType(types.ComponentDesc, "alignment")));
+    try testing.expectEqual(@as(usize, 8), @sizeOf(@FieldType(types.ComponentDesc, "ctx")));
+    try testing.expectEqual(@as(usize, 8), @sizeOf(@FieldType(types.ComponentDesc, "construct")));
+    try testing.expectEqual(@as(usize, 8), @sizeOf(@FieldType(types.ComponentDesc, "destruct")));
+
+    try testing.expectEqual(@as(usize, 40), @sizeOf(types.SystemDesc));
+    try testing.expectEqual(@as(usize, 0), @offsetOf(types.SystemDesc, "id"));
+    try testing.expectEqual(@as(usize, 8), @offsetOf(types.SystemDesc, "name"));
+    try testing.expectEqual(@as(usize, 24), @offsetOf(types.SystemDesc, "ctx"));
+    try testing.expectEqual(@as(usize, 32), @offsetOf(types.SystemDesc, "update"));
+    try testing.expectEqual(@as(usize, 8), @sizeOf(@FieldType(types.SystemDesc, "id")));
+    try testing.expectEqual(@as(usize, 16), @sizeOf(@FieldType(types.SystemDesc, "name")));
+    try testing.expectEqual(@as(usize, 8), @sizeOf(@FieldType(types.SystemDesc, "ctx")));
+    try testing.expectEqual(@as(usize, 8), @sizeOf(@FieldType(types.SystemDesc, "update")));
 }
 
 test "the table has the same members, in the same places, in both languages" {
