@@ -894,3 +894,114 @@ could not use. Both are in the header rather than only here.
 querying the table, writing a log line, walking the packages, and reading a record field by
 field through its schema — compiles `-std=c99 -pedantic -Werror` for macOS and for
 `x86_64-linux-gnu`, and as C++17.
+
+---
+
+## Resolution: `scene` through the ABI (implementation, 2026-09-07)
+
+§19 step 4, built. `abi` gains `scene`, and a host lends a `scene.World` exactly as it already
+lends an engine: twenty-four `world_*` entries, each answering `unavailable` when the game has
+no world to lend. `FoundryApi_v1` is eighty-seven calls. What writing it settled that the design
+had not.
+
+**A raw native component type cannot be saved, read as content, or spawned from a template —
+and that is the milestone's real limit, not an oversight.** §9 says `world_read_component`
+"works for any type including ones the engine has never heard of". That is true for a type the
+*engine* registered and false for a type a *mod* registered, and the difference is a serializer.
+`FoundryComponentDesc` carries size, alignment and construct/destruct, because those are the
+things a C struct can honestly describe about itself; it carries no serializer, because writing
+one means a mod calling back into a field-block writer, which is a whole sub-surface this step
+would have had to invent. So a mod's own type is transient state and behaviour today:
+`world_component_bytes` gives its owner the storage, `world_read_component` answers
+`unsupported`, and `world_component_type_savable` says so ahead of time rather than after.
+
+Not worked around, because the versioned-struct path already exists and is the honest one: a
+later `FoundryComponentDesc` with serializer slots, alongside a `world_register_component`
+that takes it, is exactly the additive shape I8 asks for. **Reserved fields were considered and
+refused** — speculative padding is what §7's rule against hypothetical requirements is about,
+and it would freeze a guess about a surface nobody has designed. What this owes step 7 is
+concrete: the exit criterion's mod adds a component type whose *content* comes from records it
+also ships, and whose native type carries the runtime half.
+
+**A C mod could not construct a `FoundrySchemaId` at all.** Every call that takes one —
+`schema_find`, `content_next_of_schema`, `world_find_component_type`, and now
+`FoundryComponentDesc.schema` — could only be fed by a call that *returns* one, and every one of
+those needs something that already has a schema. A mod naming its own component type has nothing
+to start from, and there is deliberately no `schema_name` to search by. So `foundry_schema_id`
+joins `foundry_content_id` as an inline function in the header: same algorithm, same bytes, the
+other type. The agreement now cross-checks both against the engine over the same pinned vectors.
+Found by writing the stub mod, which is the argument for writing one at every step rather than
+at the end — the Zig tests could not find it, because Zig has `SchemaId.fromStringUnchecked` and
+C had nothing.
+
+**The agreement did not re-run when only the header changed.** `agreement.c`'s object is cached
+against the C file, so editing `foundry.h` alone left the cache warm and the build green — the
+one edit the whole mechanism exists to catch was the one edit that did not trigger it. Step 2's
+verification passed because it changed both sides. The fix is that `agreement.zig` now
+`@embedFile`s the header, making it an input of a module whose recompilation does re-run the C
+half, and two checks read the embedded text so the embed is a check rather than a trick: the
+version and entry-point symbols are the ones this build publishes, and every table member is
+named in the header **in the table's own order**. Both header-only breaks — a narrowed member
+and a reordered entry — now fail.
+
+**`template` is a C++ keyword, and the header did not compile as C++.** Mods get written in
+C++, `world_spawn`'s parameter was called `template`, and nothing had ever compiled the header
+that way. A parameter name is documentation rather than ABI, so the rename is free; the guard
+beside it is not free and is the point — a test walks the embedded header for the keywords C++
+has and C does not, so the next one fails at the commit rather than at a mod author's build.
+
+**A described component is a frame-lifetime borrow, and that is a second lifetime a nested view
+did not have.** `world_read_component` serializes through the type's own function into the frame
+arena, so what it returns is alive until the next `beginFrame` — where a view into a loaded
+package is alive until a content reload. The host's view slots guarded only the second, so a
+record held across a frame would have resolved and read reclaimed memory. A view now records
+which lifetime it has, and the two are tested against each other: the same frame boundary that
+kills a described component leaves a package view untouched.
+
+**Systems use the shape §8 already named, and the world is the thing that does not cross.**
+`FoundrySystemDesc` is an id, a name, a context and a callback; the host bridges it to
+`scene.System` and drops the world pointer `scene` passes, handing over only a `FoundryStep` of
+tick and fixed delta. A system reaches the world through the table it kept from init. No clock,
+no input snapshot, no interpolation alpha — all three would make a mod's simulation depend on
+its host's frame rate, which is I9's whole argument.
+
+The id and the name must agree, and the boundary is stricter than the engine here on purpose: a
+`ContentId` has no spelling at runtime, so the name is the only thing that can ever say what the
+id was, and two that disagree produce a mod nobody can diagnose later. `registerComponent`
+already enforces the same rule for schemas; making systems match it costs a mod one identical
+string.
+
+**The mutation guard has a validating form, and only one of the three walks needed it.**
+`Query.nextChecked`, `EntityIterator.nextChecked` and `TypeIterator.nextChecked` return
+`error.Mutated` where `next` asserts. The query's is load-bearing: a query cursor names a
+host-held `scene.Query` that survives between calls, so a structural change really is caught
+there. The entity and type walks rebuild their iterator on every call, so their own guard cannot
+fire — what catches a mutation is the cursor's generation stamp, folded from the world's
+mutation counter. They still take the checked form, because **no entry point may call an API
+that can assert**, and that rule has to survive somebody later hoisting an iterator.
+
+Two deliberate widenings beyond §15, recorded rather than left to be noticed. `EntityIterator`
+and `TypeIterator` gained a mutation guard they never had — the same discipline the query has,
+for the same reason, and a walk that silently skips entities is a worse bug than one that stops.
+And `World.typeInfo` is now a public accessor: the type walk was already building that snapshot,
+and a caller holding a handle had no way to ask for it. Both are additive; nothing below L5
+learns that the ABI exists.
+
+**The assertion audit was small because the premises were written down.** Five assertions are
+reachable in `scene`, and each is now either guarded or unreachable from a published entry
+point: `Query.next`'s and the two iterators' are the checked forms above; `World.query`'s
+maximum type count is validated at the boundary before the call; `ComponentStore.add`'s pair sit
+behind `addComponent`'s own size, existence and duplicate checks; and `World.destroy`'s follows
+its `contains`. The one premise a mod can actually falsify was mutation during iteration, which
+is what §15 predicted, and finding nothing else is the six milestones of discipline paying out
+rather than a light audit.
+
+**Three refusals the mapping got wrong until a test asked.** `WorldNotEmpty` is `refused`, not
+`invalid_argument` — component types are startup-only, so the call is well formed and permitted
+in general, just not now, which is exactly what that code means. A query naming a type the world
+does not know is `invalid_handle` at the boundary although `World.query` deliberately tolerates
+it: the engine's reasoning is about a system that should be inert when the mod owning its
+component is absent, and a mod cannot hold a handle to a type nobody registered, so the same
+input means something different on this side. And `memory_counter_set`'s step-3 rule generalised:
+a call whose subject only exists because a subsystem accepted it must answer `unavailable`
+before `invalid_handle`.

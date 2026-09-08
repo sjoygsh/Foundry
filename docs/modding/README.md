@@ -20,7 +20,7 @@ they grant.
 | --- | --- | --- |
 | **1 — Content mods** | Data only: items, entities, rules, text, assets. No code, no compiler, no sandbox. | **Works.** See [`content-mods.md`](content-mods.md). |
 | **2 — Script mods** | Sandboxed, hot-reloadable code against the public API. Cannot crash the host. | Not built. The language is an M8 decision (`CLAUDE.md` §9). |
-| **3 — Native mods** | Dynamic libraries through the C ABI. Full speed, full power, no sandbox. | **Half built** — M7 opened 2026-09-07. `foundry.h` is installed to `<prefix>/include/` and `FoundryApi_v1` has sixty-three calls: logging, content, records, packages, schemas and assets. Nothing loads a mod's library yet. See [`design/public-abi.md`](../design/public-abi.md). |
+| **3 — Native mods** | Dynamic libraries through the C ABI. Full speed, full power, no sandbox. | **More than half built** — M7 opened 2026-09-07. `foundry.h` is installed to `<prefix>/include/`, compiles as C99 and C++, and `FoundryApi_v1` has eighty-seven calls: content, records, packages, schemas, assets, and a host-supplied world with its component types, entities, systems and queries. Nothing loads a mod's library yet. See [`design/public-abi.md`](../design/public-abi.md). |
 
 Tier 1 is first on purpose. It is where most mod value actually lives, and its requirements
 constrain the content model and the serialization format in ways that are impossible to add
@@ -68,11 +68,18 @@ Being honest about this is more useful than a feature list.
   because a mod that appears to load and does not work is the worst outcome available.
   Overriding a whole record works today.
 * **No scripting, and nothing loads a native mod's library yet.** `foundry.h` is installed
-  beside the executables and a mod compiles against it today; the table it gets is real, and
-  already lets a mod read any record in any loaded package through that record's own schema.
-  What is missing is the half that runs it: opening the library, calling `foundry_mod_init`,
-  and everything a mod would want to *do* — entities, drawing, sound, collision. Those are the
-  next three steps. Tier 2 is M8.
+  beside the executables and a mod compiles against it today. The table it gets is real: it
+  reads any record in any loaded package through that record's own schema, and it operates a
+  world the game lends it — registering component types and systems, creating and querying
+  entities, and handing a mod the raw bytes of a type it registered itself. What is missing is
+  the half that runs it — opening the library and calling `foundry_mod_init` — then drawing,
+  UI, sound and collision in step 5. Tier 2 is M8.
+* **A component type a mod registers is not saved and not built from content — yet.** The
+  engine reads a component through the type's own serializer rather than by casting its bytes,
+  which is what lets it show a type it was never compiled against. A native type registered
+  through the ABI supplies no serializer, so it holds runtime state and behaviour, and
+  `world_component_type_savable` says false before you find out the hard way. The additive fix
+  is a later descriptor with serializer slots; nothing about today's shape blocks it.
 * **No signing, no sandboxing, no trust model.** A content package is data and is validated
   as untrusted input, but nothing here is a security boundary yet.
 

@@ -1,12 +1,12 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-07
-**Updated by:** **M7 is open, and three of its seven steps are done.** Both ADRs are accepted,
+**Updated by:** **M7 is open, and four of its seven steps are done.** Both ADRs are accepted,
 `docs/design/public-abi.md` is written, **`engine/src/mod/` exists** — a new L2 module holding
 manifests, discovery, dependency resolution and a stable topological sort — and **`engine/src/abi/`
 exists**: the types that cross the public boundary, the hand-written `foundry.h` that specifies
-them, the agreement that keeps the two the same, and **`FoundryApi_v1` — sixty-three calls a mod
-can make**. **1070 tests**, up from 981 at the start of the milestone.
+them, the agreement that keeps the two the same, and **`FoundryApi_v1` — eighty-seven calls a mod
+can make**, now including the world. **1086 tests**, up from 981 at the start of the milestone.
 
 **What step 1 actually finished is M3's claim.** Tier 1 content modding has worked since
 2026-09-05; what it lacked was a way for a package to be *found*. Now every package in this
@@ -65,7 +65,7 @@ made public, one milestone after ADR-0025 required it be built as if it had to c
 called with zeroed arguments returns an error and does not fault; every entry on a host with
 nothing bound answers `unavailable` rather than `not_found`. Both use `inline for` over
 `Api_v1`'s fields, so **a capability added without a refusal path fails rather than ships** —
-which is the only version of that guarantee that survives a table of sixty-three calls.
+which is the only version of that guarantee that survives a table of eighty-seven calls.
 
 **`Host` is generic over the engine's type**, and that is the decision the rest of the step
 rests on. `app.Engine` is `EngineOf(platform.Platform, rhi.Device)`, so a host that named it
@@ -80,8 +80,46 @@ sixty-four bits. So the host keeps a **ring of views** with generational handles
 valid until enough further ones are opened, and a recycled view, or one that survived a content
 reload, answers `invalid_handle` rather than reading freed memory.
 
-**Next is step 4** — `scene` through the ABI, including §15's mutation-guard change and the
-assertion audit. Two thirds of the exit criterion.
+**Step 4 is `scene`, and it is two thirds of the exit criterion.** A host lends its world the
+way it already lends its engine, and twenty-four calls appear: register a component type, walk
+the ones that exist and ask each what it is, create and destroy entities, add and remove
+components, register a system, run a query, spawn from a template, read a component through its
+schema, and — for the type the calling mod itself registered — borrow its raw bytes. A world
+the host never lent answers `unavailable`, like every other absent subsystem.
+
+**The milestone's real limit surfaced here, and it is honest rather than hidden.** A component
+type a *mod* registers has no serializer, because writing one from C means calling back into a
+field-block writer — a sub-surface this step would have had to invent. So a mod's own type is
+transient state and behaviour today: its owner gets the bytes, `world_read_component` answers
+`unsupported`, and `world_component_type_savable` says so ahead of time. Reserved struct fields
+were considered and refused; the versioned-struct path I8 already defines is the honest one, and
+what this owes step 7 is now written down.
+
+**Three defects the step found, each in a different half of the boundary.** A C mod could not
+construct a `FoundrySchemaId` **at all** — every call taking one could only be fed by a call
+returning one, and a mod naming its own component type has nothing to start from; the header
+gains `foundry_schema_id` beside `foundry_content_id`, cross-checked against the engine. The
+agreement **did not re-run when only the header changed**, because `agreement.c`'s object is
+cached against the C file, so the one edit the mechanism exists to catch was the one edit that
+left the build green; `agreement.zig` now embeds the header, and two checks read that text so
+the embed is a check rather than a trick. And `template` is a **C++ keyword**, so the header did
+not compile as C++ at all — renamed, with a test that walks the header for the keywords C++ has
+and C does not.
+
+**A described component is a frame-lifetime borrow**, which is a second lifetime the host's
+nested views did not have. `world_read_component` serializes into the frame arena, so what it
+returns dies at the next frame, where a view into a loaded package lives until a content reload.
+A view now records which of the two it has, and the test asserts both: the frame boundary that
+kills the component view leaves the package view working.
+
+**The assertion audit was small, and that is the six milestones paying out.** Five assertions
+are reachable in `scene`; the only premise a mod can falsify is mutation while iterating, which
+is exactly what §15 predicted. The query's checked form is load-bearing; the entity and type
+walks are caught by their cursor's generation stamp and still take the checked form, because no
+entry point may call an API that can assert.
+
+**Next is step 5** — `render2d`, `ui`, `audio` and `physics2d`. Mechanical by this point, which
+is the test of whether steps 2 and 3 were right.
 
 ---
 
@@ -1968,7 +2006,12 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
    `get_api`, and `FoundryApi_v1` with sixty-three calls: log, ids, frame, profiler, memory,
    content, records, packages, schemas, assets. The validation discipline and both sweeps walk
    the table's fields, so a capability without a refusal path fails. 44 new tests.
-4. **`scene` through the ABI**, including the mutation-guard change and the assertion audit.
+~~4. **`scene` through the ABI**~~ — **done 2026-09-07.** A host lends its world, and the
+   table appends twenty-four calls: component types and their metadata, entities, components,
+   systems, queries, spawning, the schema-described read and the owner-scoped raw-byte path.
+   Native callbacks live in host-owned stable slots. `scene` gained checked entity, type and
+   query iteration; the internal forms keep asserting. The assertion audit found the one premise
+   a mod can falsify — mutation while iterating — and nothing else. 35 new tests.
 5. **The rest** — `render2d`, `ui`, `audio`, `physics2d`. Mechanical, which is the test of
    whether steps 2 and 3 were right.
 6. **Native loading** — the library, `foundry_mod_init`, the lifecycle phases, every refusal
