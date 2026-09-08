@@ -139,7 +139,7 @@ test "every handle kind is eight opaque bytes" {
     inline for (.{
         types.Mod,   types.Package, types.Schema,        types.Record,
         types.Asset, types.Entity,  types.ComponentType, types.Texture,
-        types.View,  types.Voice,   types.Body,
+        types.View,  types.Voice,   types.Body,          types.Grid,
     }) |Handle| {
         try testing.expectEqual(@as(usize, 8), @sizeOf(Handle));
         try testing.expectEqual(@as(usize, 8), @alignOf(Handle));

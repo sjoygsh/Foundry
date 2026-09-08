@@ -17,8 +17,15 @@ const std = @import("std");
 const asset_calls = @import("calls_asset.zig");
 const content_calls = @import("calls_content.zig");
 const engine_calls = @import("calls_engine.zig");
+const audio_calls = @import("calls_audio.zig");
+const physics_calls = @import("calls_physics.zig");
+const render_calls = @import("calls_render.zig");
 const scene_calls = @import("calls_scene.zig");
+const ui_calls = @import("calls_ui.zig");
 const types = @import("types.zig");
+const physics_types = @import("physics_types.zig");
+const render_types = @import("render_types.zig");
+const ui_types = @import("ui_types.zig");
 
 const Asset = types.Asset;
 const Bool = types.Bool;
@@ -38,7 +45,26 @@ const MemoryStats = types.MemoryStats;
 const Mod = types.Mod;
 const Result = types.Result;
 const Str = types.Str;
+const Texture = types.Texture;
+const View = types.View;
+const Voice = types.Voice;
 const SystemDesc = types.SystemDesc;
+const BodyDesc = physics_types.BodyDesc;
+const Hit = physics_types.Hit;
+const MoveResult = physics_types.MoveResult;
+const QueryHit = physics_types.QueryHit;
+const PhysicsVec2 = physics_types.Vec2;
+const RenderCamera = render_types.Camera;
+const RenderFont = render_types.Font;
+const RenderSprite = render_types.Sprite;
+const RenderStats = render_types.Stats;
+const RenderTextOptions = render_types.TextOptions;
+const RenderVec2 = render_types.Vec2;
+const RenderViewDesc = render_types.ViewDesc;
+const UiId = ui_types.Id;
+const UiRect = ui_types.Rect;
+const UiStyle = ui_types.Style;
+const UiPlotOptions = ui_types.PlotOptions;
 
 /// Everything a mod may call.
 ///
@@ -179,6 +205,66 @@ pub const Api_v1 = extern struct {
     world_spawn_scene: *const fn (id: ContentId, out: ?*u32) callconv(.c) Result,
     world_read_component: *const fn (entity: Entity, t: ComponentType, out: ?*Record) callconv(.c) Result,
     world_component_bytes: *const fn (self: Mod, entity: Entity, t: ComponentType, out: ?*?*anyopaque, size: ?*u32) callconv(.c) Result,
+
+    // -- Render2d ---------------------------------------------------------------------
+
+    render_texture_of_asset: *const fn (asset: Asset, out: ?*Texture) callconv(.c) Result,
+    render_destroy_texture: *const fn (texture: Texture) callconv(.c) Result,
+    render_draw_sprite: *const fn (sprite: ?*const RenderSprite) callconv(.c) Result,
+    render_draw_text: *const fn (font: ?*const RenderFont, text: Str, options: ?*const RenderTextOptions) callconv(.c) Result,
+    render_add_view: *const fn (desc: ?*const RenderViewDesc, out: ?*View) callconv(.c) Result,
+    render_select_view: *const fn (view: View) callconv(.c) Result,
+    render_camera_get: *const fn (out: ?*RenderCamera) callconv(.c) Result,
+    render_camera_set: *const fn (camera: ?*const RenderCamera) callconv(.c) Result,
+    render_world_to_screen: *const fn (world: RenderVec2, out: ?*RenderVec2) callconv(.c) Result,
+    render_screen_to_world: *const fn (screen: RenderVec2, out: ?*RenderVec2) callconv(.c) Result,
+    render_stats: *const fn (out: ?*RenderStats) callconv(.c) Result,
+
+    // -- UI ---------------------------------------------------------------------------
+
+    ui_begin: *const fn (viewport: ?*const UiRect) callconv(.c) Result,
+    ui_end: *const fn () callconv(.c) Result,
+    ui_push_id: *const fn (id: UiId) callconv(.c) Result,
+    ui_pop_id: *const fn () callconv(.c) Result,
+    ui_begin_panel: *const fn (id: UiId, bounds: ?*const UiRect) callconv(.c) Result,
+    ui_end_panel: *const fn () callconv(.c) Result,
+    ui_begin_row: *const fn (id: UiId, height: f32) callconv(.c) Result,
+    ui_end_row: *const fn () callconv(.c) Result,
+    ui_begin_scroll: *const fn (id: UiId, bounds: ?*const UiRect, content: f32) callconv(.c) Result,
+    ui_end_scroll: *const fn () callconv(.c) Result,
+    ui_label: *const fn (text: Str) callconv(.c) Result,
+    ui_button: *const fn (id: UiId, text: Str, out: ?*Bool) callconv(.c) Result,
+    ui_checkbox: *const fn (id: UiId, text: Str, checked: ?*Bool, changed: ?*Bool) callconv(.c) Result,
+    ui_slider: *const fn (id: UiId, text: Str, value: ?*f32, min: f32, max: f32, changed: ?*Bool) callconv(.c) Result,
+    ui_slider_int: *const fn (id: UiId, text: Str, value: ?*i32, min: i32, max: i32, changed: ?*Bool) callconv(.c) Result,
+    ui_separator: *const fn () callconv(.c) Result,
+    ui_spacer: *const fn (size: f32) callconv(.c) Result,
+    ui_collapsing_header: *const fn (id: UiId, text: Str, open: ?*Bool) callconv(.c) Result,
+    ui_text_field: *const fn (id: UiId, buffer: ?[*]u8, capacity: u64, length: ?*u64, changed: ?*Bool) callconv(.c) Result,
+    ui_plot: *const fn (samples: ?[*]const f32, count: u64, options: ?*const UiPlotOptions) callconv(.c) Result,
+    ui_style_get: *const fn (out: ?*UiStyle) callconv(.c) Result,
+    ui_style_set: *const fn (style: ?*const UiStyle) callconv(.c) Result,
+    ui_wants_keyboard: *const fn (out: ?*Bool) callconv(.c) Result,
+    ui_wants_pointer: *const fn (out: ?*Bool) callconv(.c) Result,
+
+    // -- Audio ------------------------------------------------------------------------
+
+    audio_play: *const fn (id: ContentId, gain: f32, pan: f32, pitch: f32, looping: Bool, out: ?*Voice) callconv(.c) Result,
+    audio_stop: *const fn (voice: Voice) callconv(.c) Result,
+    audio_set_gain: *const fn (voice: Voice, gain: f32) callconv(.c) Result,
+    audio_set_pan: *const fn (voice: Voice, pan: f32) callconv(.c) Result,
+    audio_set_pitch: *const fn (voice: Voice, pitch: f32) callconv(.c) Result,
+    audio_set_master_gain: *const fn (gain: f32) callconv(.c) Result,
+
+    // -- Physics2d --------------------------------------------------------------------
+
+    physics_create_body: *const fn (desc: ?*const BodyDesc, out: ?*types.Body) callconv(.c) Result,
+    physics_destroy_body: *const fn (body: types.Body) callconv(.c) Result,
+    physics_move_body: *const fn (body: types.Body, motion: PhysicsVec2, hits: ?[*]Hit, capacity: u32, out: ?*MoveResult) callconv(.c) Result,
+    physics_query_point: *const fn (point: PhysicsVec2, mask: u32, hits: ?[*]QueryHit, capacity: u32, count: ?*u32, total: ?*u32) callconv(.c) Result,
+    physics_query_aabb: *const fn (min: PhysicsVec2, max: PhysicsVec2, mask: u32, hits: ?[*]QueryHit, capacity: u32, count: ?*u32, total: ?*u32) callconv(.c) Result,
+    physics_query_ray: *const fn (from: PhysicsVec2, to: PhysicsVec2, mask: u32, hits: ?[*]Hit, capacity: u32, count: ?*u32, total: ?*u32) callconv(.c) Result,
+    physics_body_contacts: *const fn (body: types.Body, hits: ?[*]QueryHit, capacity: u32, count: ?*u32, total: ?*u32) callconv(.c) Result,
 };
 
 /// The table for one host type, and the `get_api` that hands it out.
@@ -187,6 +273,10 @@ pub fn TableOf(comptime H: type) type {
     const content = content_calls.Of(H);
     const assets = asset_calls.Of(H);
     const world = scene_calls.Of(H);
+    const render = render_calls.Of(H);
+    const ui = ui_calls.Of(H);
+    const audio = audio_calls.Of(H);
+    const physics = physics_calls.Of(H);
 
     return struct {
         pub const v1: Api_v1 = .{
@@ -297,6 +387,58 @@ pub fn TableOf(comptime H: type) type {
             .world_spawn_scene = world.worldSpawnScene,
             .world_read_component = world.worldReadComponent,
             .world_component_bytes = world.worldComponentBytes,
+
+            .render_texture_of_asset = render.renderTextureOfAsset,
+            .render_destroy_texture = render.renderDestroyTexture,
+            .render_draw_sprite = render.renderDrawSprite,
+            .render_draw_text = render.renderDrawText,
+            .render_add_view = render.renderAddView,
+            .render_select_view = render.renderSelectView,
+            .render_camera_get = render.renderCameraGet,
+            .render_camera_set = render.renderCameraSet,
+            .render_world_to_screen = render.renderWorldToScreen,
+            .render_screen_to_world = render.renderScreenToWorld,
+            .render_stats = render.renderStats,
+
+            .ui_begin = ui.uiBegin,
+            .ui_end = ui.uiEnd,
+            .ui_push_id = ui.uiPushId,
+            .ui_pop_id = ui.uiPopId,
+            .ui_begin_panel = ui.uiBeginPanel,
+            .ui_end_panel = ui.uiEndPanel,
+            .ui_begin_row = ui.uiBeginRow,
+            .ui_end_row = ui.uiEndRow,
+            .ui_begin_scroll = ui.uiBeginScroll,
+            .ui_end_scroll = ui.uiEndScroll,
+            .ui_label = ui.uiLabel,
+            .ui_button = ui.uiButton,
+            .ui_checkbox = ui.uiCheckbox,
+            .ui_slider = ui.uiSlider,
+            .ui_slider_int = ui.uiSliderInt,
+            .ui_separator = ui.uiSeparator,
+            .ui_spacer = ui.uiSpacer,
+            .ui_collapsing_header = ui.uiCollapsingHeader,
+            .ui_text_field = ui.uiTextField,
+            .ui_plot = ui.uiPlot,
+            .ui_style_get = ui.uiStyleGet,
+            .ui_style_set = ui.uiStyleSet,
+            .ui_wants_keyboard = ui.uiWantsKeyboard,
+            .ui_wants_pointer = ui.uiWantsPointer,
+
+            .audio_play = audio.audioPlay,
+            .audio_stop = audio.audioStop,
+            .audio_set_gain = audio.audioSetGain,
+            .audio_set_pan = audio.audioSetPan,
+            .audio_set_pitch = audio.audioSetPitch,
+            .audio_set_master_gain = audio.audioSetMasterGain,
+
+            .physics_create_body = physics.physicsCreateBody,
+            .physics_destroy_body = physics.physicsDestroyBody,
+            .physics_move_body = physics.physicsMoveBody,
+            .physics_query_point = physics.physicsQueryPoint,
+            .physics_query_aabb = physics.physicsQueryAabb,
+            .physics_query_ray = physics.physicsQueryRay,
+            .physics_body_contacts = physics.physicsBodyContacts,
         };
 
         /// What a native mod is handed (§3). **Never a crash and never a Zig error** — a
@@ -313,5 +455,9 @@ test {
     _ = asset_calls;
     _ = content_calls;
     _ = engine_calls;
+    _ = audio_calls;
+    _ = physics_calls;
+    _ = render_calls;
     _ = scene_calls;
+    _ = ui_calls;
 }

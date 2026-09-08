@@ -462,21 +462,41 @@ pub fn MixerOf(comptime P: type) type {
         }
 
         pub fn stop(self: *Self, handle: VoiceHandle) void {
-            _ = self.to_audio.push(.{ .stop = .{ .voice = handle } });
+            _ = self.stopChecked(handle);
+        }
+
+        /// Queues a stop and reports whether the command ring accepted it. The legacy void
+        /// wrapper remains for engine/game callers whose presentation controls may be dropped
+        /// when the ring is full; the public ABI uses this checked form so a mod is never told
+        /// success for a command that vanished.
+        pub fn stopChecked(self: *Self, handle: VoiceHandle) bool {
+            return self.to_audio.push(.{ .stop = .{ .voice = handle } });
         }
 
         pub fn stopAll(self: *Self) void {
-            _ = self.to_audio.push(.stop_all);
+            _ = self.stopAllChecked();
+        }
+
+        pub fn stopAllChecked(self: *Self) bool {
+            return self.to_audio.push(.stop_all);
         }
 
         pub fn setGain(self: *Self, handle: VoiceHandle, gain: f32) void {
-            _ = self.to_audio.push(.{ .set_gain = .{ .voice = handle, .gain = gain } });
+            _ = self.setGainChecked(handle, gain);
+        }
+
+        pub fn setGainChecked(self: *Self, handle: VoiceHandle, gain: f32) bool {
+            return self.to_audio.push(.{ .set_gain = .{ .voice = handle, .gain = gain } });
         }
 
         /// The trigonometry runs here, once, rather than per sample in the callback.
         pub fn setPan(self: *Self, handle: VoiceHandle, pan: f32) void {
+            _ = self.setPanChecked(handle, pan);
+        }
+
+        pub fn setPanChecked(self: *Self, handle: VoiceHandle, pan: f32) bool {
             const gains = voice.panGains(pan);
-            _ = self.to_audio.push(.{
+            return self.to_audio.push(.{
                 .set_pan = .{ .voice = handle, .left = gains.left, .right = gains.right },
             });
         }
@@ -484,16 +504,24 @@ pub fn MixerOf(comptime P: type) type {
         /// The ratio is computed here for the same reason the pan gains are: the callback
         /// does arithmetic, not policy, and the device's rate is known on this side.
         pub fn setPitch(self: *Self, handle: VoiceHandle, pitch: f32) void {
-            const slot = self.liveSlot(handle) orelse return;
-            const stored = self.sounds.getConst(slot.sound) orelse return;
-            _ = self.to_audio.push(.{ .set_pitch = .{
+            _ = self.setPitchChecked(handle, pitch);
+        }
+
+        pub fn setPitchChecked(self: *Self, handle: VoiceHandle, pitch: f32) bool {
+            const slot = self.liveSlot(handle) orelse return false;
+            const stored = self.sounds.getConst(slot.sound) orelse return false;
+            return self.to_audio.push(.{ .set_pitch = .{
                 .voice = handle,
                 .step = voice.stepFor(stored.sound.sample_rate, self.info.sample_rate, pitch),
             } });
         }
 
         pub fn setMasterGain(self: *Self, gain: f32) void {
-            _ = self.to_audio.push(.{ .set_master_gain = .{ .gain = gain } });
+            _ = self.setMasterGainChecked(gain);
+        }
+
+        pub fn setMasterGainChecked(self: *Self, gain: f32) bool {
+            return self.to_audio.push(.{ .set_master_gain = .{ .gain = gain } });
         }
 
         /// Whether the game still believes this voice is playing.
@@ -978,6 +1006,25 @@ test "a full command ring refuses a play instead of stranding its slot" {
     _ = try f.step(1);
     _ = try f.mixer.playSound(sound, .{});
     try testing.expectEqual(@as(u32, 3), f.mixer.activeVoices());
+}
+
+test "checked control commands report a full ring" {
+    const f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 1, .voices = 1, .command_capacity = 1 });
+    defer f.deinit();
+
+    const sound = try f.add(&[_]f32{0.1}, 1, 48_000);
+    const playing = try f.mixer.playSound(sound, .{ .looping = true });
+
+    // The play command occupies the only slot. Every checked form observes the drop, while
+    // the legacy void wrappers remain available to callers that intentionally tolerate one.
+    // Ring capacity has a floor of two, so the first checked control occupies its second slot.
+    try testing.expect(f.mixer.setGainChecked(playing, 0.5));
+    try testing.expect(!f.mixer.stopChecked(playing));
+    try testing.expect(!f.mixer.setPanChecked(playing, 0.5));
+    try testing.expect(!f.mixer.setPitchChecked(playing, 1.5));
+    try testing.expect(!f.mixer.setMasterGainChecked(0.5));
+    try testing.expect(!f.mixer.stopAllChecked());
+    try testing.expectEqual(@as(u32, 5), f.mixer.commandsDropped());
 }
 
 test "a sound released while it is playing is freed only once nothing is reading it" {

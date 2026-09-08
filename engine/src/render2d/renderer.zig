@@ -176,6 +176,9 @@ pub const Renderer = struct {
     frame: ?rhi.FrameContext,
     stats: Stats,
     last_stats: Stats,
+    /// Generation of the current frame's view table. Zero is reserved for no frame, and
+    /// every begin advances it so a public view cannot survive a renderer frame boundary.
+    view_generation: u32,
 
     const Self = @This();
 
@@ -278,6 +281,7 @@ pub const Renderer = struct {
             .frame = null,
             .stats = .{},
             .last_stats = .{},
+            .view_generation = 0,
         };
         errdefer self.textures.deinit(gpa, device);
 
@@ -621,6 +625,8 @@ pub const Renderer = struct {
     /// exactly as it did before there were any.
     pub fn begin(self: *Self, view: FrameView) Error!void {
         try view.camera.validate();
+        self.view_generation +%= 1;
+        if (self.view_generation == 0) self.view_generation = 1;
         self.view = view;
 
         self.views.clearRetainingCapacity();
@@ -641,6 +647,13 @@ pub const Renderer = struct {
         self.batcher.reset();
         self.stats = .{};
         self.recording = true;
+    }
+
+    /// The generation attached to views issued by the current frame. The ABI uses this
+    /// instead of an engine frame counter because a host may begin the renderer more than
+    /// once per engine frame.
+    pub fn viewGeneration(self: *const Self) u32 {
+        return self.view_generation;
     }
 
     /// Adds a space for this frame and returns its id.

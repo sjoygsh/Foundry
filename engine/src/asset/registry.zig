@@ -127,6 +127,16 @@ pub const Loader = struct {
     ctx: ?*anyopaque = null,
     load: *const fn (ctx: ?*anyopaque, gpa: Allocator, record: Record, bytes: []const u8) LoadError!Payload,
     unload: *const fn (ctx: ?*anyopaque, gpa: Allocator, payload: Payload) void,
+
+    /// Loader identity is part of an asset payload's provenance. A schema match alone is
+    /// insufficient: two renderers can register the same texture schema, and each loader's
+    /// context owns the texture handles it creates. Function pointers are compared by their
+    /// code addresses rather than with `==`, which Zig does not define for function values.
+    pub fn eql(a: Loader, b: Loader) bool {
+        return a.schema.eql(b.schema) and a.ctx == b.ctx and
+            @intFromPtr(a.load) == @intFromPtr(b.load) and
+            @intFromPtr(a.unload) == @intFromPtr(b.unload);
+    }
 };
 
 /// A loaded asset, as a caller sees it.
@@ -363,6 +373,18 @@ pub const Registry = struct {
 
     pub fn get(self: *Registry, handle: AssetHandle) ?Asset {
         const entry = self.entries.get(handle) orelse return null;
+        return .{ .id = entry.id, .schema_id = entry.schema_id, .payload = entry.payload };
+    }
+
+    /// Returns a loaded asset only when the loader that produced its current payload is
+    /// exactly `expected`. The schema is checked as part of loader identity, while `ctx` and
+    /// both callbacks prove that a payload belongs to the subsystem instance asking for it.
+    /// This narrow query is intentionally the only way for a higher layer to validate opaque
+    /// payload provenance without exposing the registry's loader table.
+    pub fn getIfLoader(self: *Registry, handle: AssetHandle, expected: Loader) ?Asset {
+        const entry = self.entries.get(handle) orelse return null;
+        const actual = self.loaders.items[entry.loader] orelse return null;
+        if (!actual.eql(expected)) return null;
         return .{ .id = entry.id, .schema_id = entry.schema_id, .payload = entry.payload };
     }
 
@@ -1085,6 +1107,36 @@ test "a changed file reloads behind the handle, and the handle does not move" {
     try testing.expectEqual(@as(u32, 2), fx.texture_loader.loads);
     try testing.expectEqual(@as(u32, 1), fx.texture_loader.unloads);
     try testing.expectEqual(@as(u32, 1), fx.registry.count());
+}
+
+test "loader provenance rejects another owner and follows reload through the handle" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+
+    try fx.writeFile("textures/sprites.png", &one_pixel_png);
+    _ = try fx.addPackage("foundry:core", one_texture);
+    try fx.registerTextureLoader();
+
+    const handle = try fx.registry.acquire(fx.gpa, sprites_id);
+    defer fx.registry.release(handle);
+    const expected = fx.texture_loader.loader(schemas.texture.id);
+    const first = fx.registry.getIfLoader(handle, expected).?;
+    const first_texture: *const FakeTexture = @ptrCast(@alignCast(first.payload.pointer().?));
+    try testing.expectEqual(@as(u32, 1), first_texture.width);
+
+    // The schema and handle bits are not provenance. A second subsystem instance uses the
+    // same callbacks and schema but has a different owner context, and must not receive it.
+    var other_owner: FakeLoader = .{};
+    try testing.expect(fx.registry.getIfLoader(
+        handle,
+        other_owner.loader(schemas.texture.id),
+    ) == null);
+
+    try fx.writeFile("textures/sprites.png", &four_pixel_png);
+    try fx.registry.reload(fx.gpa, handle);
+    const reloaded = fx.registry.getIfLoader(handle, expected).?;
+    const replacement: *const FakeTexture = @ptrCast(@alignCast(reloaded.payload.pointer().?));
+    try testing.expectEqual(@as(u32, 2), replacement.width);
 }
 
 test "a reload that fails leaves the last thing that worked" {

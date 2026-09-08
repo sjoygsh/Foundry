@@ -25,8 +25,14 @@ const std = @import("std");
 const core = @import("core");
 const data = @import("data");
 const scene = @import("scene");
+const render2d = @import("render2d");
+const ui = @import("ui");
+const audio = @import("audio");
+const physics2d = @import("physics2d");
 
+const render_calls = @import("calls_render.zig");
 const types = @import("types.zig");
+const ui_types = @import("ui_types.zig");
 
 const Allocator = std.mem.Allocator;
 const log = core.log.scoped(.abi);
@@ -70,9 +76,16 @@ pub const max_nested_views: u32 = 64;
 /// boundary — so this is not what protects the recorder. It is what lets `scope_end` refuse
 /// to close a span the *engine or the game* opened, which the recorder cannot tell apart.
 pub const max_scope_depth: u32 = 32;
+pub const max_render_textures = render_calls.max_render_textures;
 
 /// A `Host` bound to a particular engine type.
 pub fn HostOf(comptime E: type) type {
+    return HostWithMixer(E, audio.Mixer);
+}
+
+/// The same host with an explicitly selected mixer, for a stepped null-device test.
+/// This changes no C type or table shape; backends remain an implementation detail.
+pub fn HostWithMixer(comptime E: type, comptime M: type) type {
     return struct {
         const Self = @This();
 
@@ -85,8 +98,20 @@ pub fn HostOf(comptime E: type) type {
         /// group; its absence is an `unavailable` answer, never a missing table entry.
         world: ?*scene.World = null,
 
-        // Step 5 adds `renderer`, `mixer` and `collision` here. Each is optional and each
-        // absence is an `unavailable` answer, never a missing entry.
+        renderer: ?*render2d.Renderer = null,
+        /// Applied by the host at its next renderer begin, not to already recorded draws.
+        camera: ?*render2d.Camera2D = null,
+        render_textures: [max_render_textures]render_calls.RenderTextureSlot = @splat(.{}),
+        render_texture_next: u32 = 0,
+        ui_context: ?*ui.Context = null,
+        /// The host refreshes this snapshot before each ABI UI frame. Its text is borrowed
+        /// until ui_end, just as it is when a game calls Context.begin directly.
+        ui_input: ?ui.Input = null,
+        ui_state: ui_types.State = .{},
+        mixer: ?*M = null,
+        collision: ?*physics2d.World = null,
+        /// Must be the allocator the host uses for this collision world's storage.
+        collision_allocator: ?Allocator = null,
 
         /// Counters opened by mods, and registered with the engine on their behalf.
         counters: [max_counters]Counter = @splat(.{}),
@@ -278,6 +303,15 @@ pub fn HostOf(comptime E: type) type {
         /// are the host's memory, and an engine still holding pointers into a host that has
         /// gone is exactly the failure this whole module exists to make impossible.
         pub fn unbind(self: *Self) void {
+            // A mod can disappear while it is midway through describing a UI frame (for
+            // example, a loader refusing the next callback). Do not leave the borrowed
+            // context in-frame: the next bind must be able to begin a fresh frame, and the
+            // context's own end path is what resolves its interaction state.
+            if (self.ui_context) |ctx| {
+                if (ctx.in_frame) ctx.end();
+                ctx.clearInteraction();
+            }
+            self.releaseRenderTextures();
             self.releaseCounters();
             self.nested = @splat(.{});
             self.nested_next = 0;
@@ -285,6 +319,7 @@ pub fn HostOf(comptime E: type) type {
             self.systems = @splat(.{});
             self.queries = @splat(.{});
             self.query_next = 0;
+            self.ui_state.reset();
             self.mods = @splat(.{});
             self.mod_next = 0;
             if (bound == self) bound = null;
@@ -294,6 +329,28 @@ pub fn HostOf(comptime E: type) type {
         /// track of the host, and for a test that has to prove what an unbound table does.
         pub fn unbindAny() void {
             bound = null;
+        }
+
+        /// Releases the extra asset references held by ABI texture wrappers while the
+        /// engine is still available, then invalidates every wrapper without resetting its
+        /// generations. A stale wrapper must not become valid if this host is rebound.
+        pub fn releaseRenderTextures(self: *Self) void {
+            if (self.engine) |engine| {
+                for (&self.render_textures) |*slot| {
+                    if (!slot.active) continue;
+                    engine.assets.release(slot.asset);
+                    const generation = slot.generation;
+                    slot.* = .{};
+                    slot.generation = generation;
+                }
+            } else {
+                for (&self.render_textures) |*slot| {
+                    const generation = slot.generation;
+                    slot.* = .{};
+                    slot.generation = generation;
+                }
+            }
+            self.render_texture_next = 0;
         }
 
         /// The bound host, or null when nothing has been bound. Every entry point starts

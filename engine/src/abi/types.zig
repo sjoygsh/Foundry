@@ -285,6 +285,7 @@ pub const Voice = Opaque("voice");
 
 /// `physics2d` — a collision body.
 pub const Body = Opaque("body");
+pub const Grid = Opaque("grid");
 
 /// A memory counter a mod reports its own numbers into. The boundary's own handle rather
 /// than a subsystem's: the engine issues an `app.MemoryHandle` for the counter it was

@@ -1,12 +1,13 @@
 # Foundry Project State
 
-**Last updated:** 2026-09-07
-**Updated by:** **M7 is open, and four of its seven steps are done.** Both ADRs are accepted,
+**Last updated:** 2026-09-09
+**Updated by:** **M7 is open, and five of its seven steps are done.** Both ADRs are accepted,
 `docs/design/public-abi.md` is written, **`engine/src/mod/` exists** — a new L2 module holding
 manifests, discovery, dependency resolution and a stable topological sort — and **`engine/src/abi/`
 exists**: the types that cross the public boundary, the hand-written `foundry.h` that specifies
-them, the agreement that keeps the two the same, and **`FoundryApi_v1` — eighty-seven calls a mod
-can make**, now including the world. **1086 tests**, up from 981 at the start of the milestone.
+them, the agreement that keeps the two the same, and **`FoundryApi_v1` — one hundred and
+thirty-five calls a mod can make**, now including the world, rendering, UI, audio and collision.
+**1108 tests**, up from 981 at the start of the milestone.
 
 **What step 1 actually finished is M3's claim.** Tier 1 content modding has worked since
 2026-09-05; what it lacked was a way for a package to be *found*. Now every package in this
@@ -118,8 +119,21 @@ is exactly what §15 predicted. The query's checked form is load-bearing; the en
 walks are caught by their cursor's generation stamp and still take the checked form, because no
 entry point may call an API that can assert.
 
-**Next is step 5** — `render2d`, `ui`, `audio` and `physics2d`. Mechanical by this point, which
-is the test of whether steps 2 and 3 were right.
+**Step 5 is the rest of the engine-facing surface.** Eleven render calls publish content-backed
+textures, sprites, text, views, the host camera and frame statistics; twenty-four UI calls publish
+the existing immediate-mode widgets without exposing a context or platform input; six audio calls
+publish voices through checked command queueing; seven collision calls publish bodies, movement
+and counted caller-buffer queries. Missing subsystems remain `unavailable`, never missing entries.
+
+**Three integration defects were found rather than documented away.** A pushed UI id initially
+erased its region seed and aliased sibling panels; a maximum-size body-contact buffer lost one
+slot to the body itself; and a renderer-local texture handle could appear valid in a second
+renderer. The fixes are exercised directly. Texture wrappers retain an asset reference and
+resolve its current payload through the exact loader identity on every draw, so they also follow
+a successful asset reload instead of retaining a stale GPU handle.
+
+**Next is step 6** — native library loading and the complete lifecycle/refusal pipeline. Its
+uncommitted starting work remains deliberately separate from this step.
 
 ---
 
@@ -2012,8 +2026,11 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
    Native callbacks live in host-owned stable slots. `scene` gained checked entity, type and
    query iteration; the internal forms keep asserting. The assertion audit found the one premise
    a mod can falsify — mutation while iterating — and nothing else. 35 new tests.
-5. **The rest** — `render2d`, `ui`, `audio`, `physics2d`. Mechanical, which is the test of
-   whether steps 2 and 3 were right.
+~~5. **The rest**~~ — **done 2026-09-09.** `render2d`, `ui`, `audio` and `physics2d` append
+   forty-eight calls, taking the table to 135. Content-backed texture handles retain an asset
+   reference and follow reloads, UI nesting and identity are guarded, audio queue refusal is
+   observable, and collision queries preserve written/total counts and grid identity. 23 new
+   tests, including a two-renderer reload integration test and deliberate C agreement breaks.
 6. **Native loading** — the library, `foundry_mod_init`, the lifecycle phases, every refusal
    path, and `engine/tests/mod_pipeline.zig`.
 7. **The exit criterion**, and `docs/modding/` written by doing it and verified by following it

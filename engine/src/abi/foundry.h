@@ -20,9 +20,9 @@
  * Design: docs/design/public-abi.md. Decisions: ADR-0004 (one versioned C ABI), ADR-0026
  * (where `abi` sits and who supplies its subsystems), ADR-0027 (a mod is a content package).
  *
- * WHAT IS HERE YET: the type layer, ABI skeleton and `scene` group — steps 2 through 4 of
- * public-abi.md §19. What is here is already frozen: once a compiled mod exists, a type that
- * crosses this boundary can never change its layout.
+ * The type layer, ABI skeleton, `scene` group and the remaining capability groups are here —
+ * steps 2 through 5 of public-abi.md §19. What is here is already frozen: once a compiled mod
+ * exists, a type that crosses this boundary can never change its layout.
  */
 
 #ifndef FOUNDRY_H
@@ -255,6 +255,7 @@ typedef struct FoundryVoice { uint64_t bits; } FoundryVoice;
 
 /* `physics2d` — a collision body. */
 typedef struct FoundryBody { uint64_t bits; } FoundryBody;
+typedef struct FoundryGrid { uint64_t bits; } FoundryGrid;
 
 /* Two handles that are the boundary's own rather than a subsystem's: an open profiler span
  * and a memory counter a mod reports its own numbers into. Both exist because a mod has no
@@ -395,6 +396,223 @@ typedef struct FoundrySystemDesc {
     void (*update)(void *ctx, const FoundryStep *step);
 } FoundrySystemDesc;
 
+/* == Render2d values ================================================================== */
+
+/* A point or extent in logical screen points or world units, as the call specifies. */
+typedef struct FoundryRenderVec2 {
+    float x;
+    float y;
+} FoundryRenderVec2;
+
+/* A rectangle in logical points, except UV rectangles, which are normalised coordinates. */
+typedef struct FoundryRenderRect {
+    float x;
+    float y;
+    float w;
+    float h;
+} FoundryRenderRect;
+
+/* A linear-light colour multiplier. */
+typedef struct FoundryRenderColor {
+    float r;
+    float g;
+    float b;
+    float a;
+} FoundryRenderColor;
+
+/* A camera in world units and logical screen points. */
+typedef struct FoundryRenderCamera {
+    FoundryRenderVec2 center;
+    float zoom;
+    float rotation;
+    FoundryRenderRect viewport;
+} FoundryRenderCamera;
+
+/* A sprite descriptor. `blend` is alpha=0, additive=1, none=2. */
+typedef struct FoundryRenderSprite {
+    FoundryTexture texture;
+    FoundryRenderVec2 position;
+    FoundryRenderVec2 size;
+    FoundryRenderRect uv;
+    FoundryRenderVec2 origin;
+    float rotation;
+    FoundryRenderColor tint;
+    int16_t layer;
+    uint16_t reserved_layer;
+    int32_t blend;
+    FoundryBool flip_x;
+    FoundryBool flip_y;
+    uint8_t reserved_flags[2];
+} FoundryRenderSprite;
+
+/* Fixed-grid bitmap font metadata. */
+typedef struct FoundryRenderFont {
+    FoundryTexture texture;
+    FoundryRenderRect uv;
+    uint32_t width;
+    uint32_t height;
+    uint32_t cell_width;
+    uint32_t cell_height;
+    uint32_t columns;
+    uint32_t first_codepoint;
+    uint32_t glyph_count;
+    uint32_t substitute;
+    uint8_t reserved[4];
+} FoundryRenderFont;
+
+/* Text drawing parameters. */
+typedef struct FoundryRenderTextOptions {
+    FoundryRenderVec2 position;
+    float scale;
+    FoundryRenderColor tint;
+    int16_t layer;
+    uint16_t reserved_layer;
+    int32_t blend;
+    float letter_spacing;
+    float line_spacing;
+} FoundryRenderTextOptions;
+
+/* A view descriptor. Both payloads are present; `kind` selects the meaningful one. */
+typedef struct FoundryRenderViewDesc {
+    int32_t kind;
+    uint32_t reserved;
+    FoundryRenderCamera camera;
+    FoundryRenderRect screen;
+} FoundryRenderViewDesc;
+
+/* Per-frame renderer output counters. */
+typedef struct FoundryRenderStats {
+    uint32_t sprites;
+    uint32_t glyphs;
+    uint32_t tiles;
+    uint32_t batches;
+    uint32_t draw_calls;
+    uint32_t vertices;
+    uint32_t vertex_bytes;
+    uint32_t buffers_used;
+    uint32_t textures_resident;
+    uint32_t views;
+} FoundryRenderStats;
+
+/* == UI values ======================================================================== */
+
+/* Runtime-only widget identity, distinct from content ids. */
+typedef struct FoundryUiId {
+    uint64_t bits;
+} FoundryUiId;
+
+typedef struct FoundryUiVec2 {
+    float x;
+    float y;
+} FoundryUiVec2;
+
+typedef struct FoundryUiRect {
+    float x;
+    float y;
+    float w;
+    float h;
+} FoundryUiRect;
+
+typedef struct FoundryUiColor {
+    float r;
+    float g;
+    float b;
+    float a;
+} FoundryUiColor;
+
+typedef struct FoundryUiFontMetrics {
+    FoundryUiVec2 cell;
+    float letter_spacing;
+    float line_spacing;
+} FoundryUiFontMetrics;
+
+/* Complete style read by the UI kernel. */
+typedef struct FoundryUiStyle {
+    FoundryUiFontMetrics font;
+    float text_scale;
+    float line_height;
+    FoundryUiVec2 padding;
+    float spacing;
+    float separator_thickness;
+    float scrollbar;
+    uint32_t caret_blink_frames;
+    FoundryUiColor text;
+    FoundryUiColor text_dim;
+    FoundryUiColor surface;
+    FoundryUiColor control;
+    FoundryUiColor control_hot;
+    FoundryUiColor control_active;
+    FoundryUiColor accent;
+} FoundryUiStyle;
+
+/* One-line plot options. The named padding is part of the wire layout. */
+typedef struct FoundryUiPlotOptions {
+    float height;
+    uint8_t _padding0[4];
+    uint64_t first;
+    float min;
+    float max;
+    FoundryBool has_min;
+    FoundryBool has_max;
+    uint8_t _padding1[2];
+} FoundryUiPlotOptions;
+
+/* == Physics2d values ================================================================= */
+
+typedef struct FoundryPhysicsVec2 {
+    float x;
+    float y;
+} FoundryPhysicsVec2;
+
+/* kind is 0 for a box and 1 for a circle; both payload members are always present. */
+typedef struct FoundryPhysicsShape {
+    int32_t kind;
+    uint32_t reserved;
+    float x;
+    float y;
+} FoundryPhysicsShape;
+
+/* Body kind is 0 static, 1 movable and 2 trigger. */
+typedef struct FoundryPhysicsBodyDesc {
+    FoundryPhysicsShape shape;
+    FoundryPhysicsVec2 position;
+    int32_t kind;
+    uint32_t reserved;
+    uint32_t layer;
+    uint32_t mask;
+    uint64_t user;
+} FoundryPhysicsBodyDesc;
+
+/* A swept contact; body is zero for a grid hit and grid/cell identify that cell. */
+typedef struct FoundryPhysicsHit {
+    FoundryBody body;
+    FoundryGrid grid;
+    uint32_t cell_x;
+    uint32_t cell_y;
+    FoundryPhysicsVec2 normal;
+    float fraction;
+    uint8_t reserved[4];
+    uint64_t user;
+} FoundryPhysicsHit;
+
+/* An overlap result; body and grid retain both possible kinds of identity. */
+typedef struct FoundryPhysicsQueryHit {
+    FoundryBody body;
+    FoundryGrid grid;
+    uint32_t cell_x;
+    uint32_t cell_y;
+    uint64_t user;
+} FoundryPhysicsQueryHit;
+
+/* The result of moving a body, including written and total hit counts. */
+typedef struct FoundryPhysicsMoveResult {
+    FoundryPhysicsVec2 position;
+    uint32_t hit_count;
+    uint32_t total_hits;
+    FoundryBool started_inside;
+    uint8_t reserved[3];
+} FoundryPhysicsMoveResult;
+
 /* == The table ========================================================================= */
 
 /*
@@ -419,9 +637,9 @@ typedef struct FoundrySystemDesc {
  * either direction; a mod that wants to keep a string copies it, and the two calls whose
  * names end in `copy_string` are there for exactly that.
  *
- * WHAT IS HERE YET: `abi`'s skeleton and `scene` group (public-abi.md §19 steps 3 and 4).
- * The `render2d`, `ui`, `audio` and `physics2d` groups are step 5 and will be appended below,
- * never inserted: a field's position in this struct is what a compiled mod holds.
+ * The table contains the skeleton, `scene` and all remaining capability groups (public-abi.md
+ * §19 steps 3 through 5). They are appended in implementation order, never inserted: a
+ * field's position in this struct is what a compiled mod holds.
  */
 typedef struct FoundryApi_v1 {
     /* Always 1, and `sizeof(FoundryApi_v1)` as the host built it. Both are redundant with
@@ -709,6 +927,82 @@ typedef struct FoundryApi_v1 {
     FoundryResult (*world_component_bytes)(FoundryMod self, FoundryEntity entity,
                                            FoundryComponentType type, void **out,
                                            uint32_t *size);
+
+    /* -- Render2d --------------------------------------------------------------------- */
+
+    FoundryResult (*render_texture_of_asset)(FoundryAsset asset, FoundryTexture *out);
+    FoundryResult (*render_destroy_texture)(FoundryTexture texture);
+    FoundryResult (*render_draw_sprite)(const FoundryRenderSprite *sprite);
+    FoundryResult (*render_draw_text)(const FoundryRenderFont *font, FoundryStr text,
+                                      const FoundryRenderTextOptions *options);
+    FoundryResult (*render_add_view)(const FoundryRenderViewDesc *desc, FoundryView *out);
+    FoundryResult (*render_select_view)(FoundryView view);
+    FoundryResult (*render_camera_get)(FoundryRenderCamera *out);
+    FoundryResult (*render_camera_set)(const FoundryRenderCamera *camera);
+    FoundryResult (*render_world_to_screen)(FoundryRenderVec2 world, FoundryRenderVec2 *out);
+    FoundryResult (*render_screen_to_world)(FoundryRenderVec2 screen, FoundryRenderVec2 *out);
+    FoundryResult (*render_stats)(FoundryRenderStats *out);
+
+    /* -- UI --------------------------------------------------------------------------- */
+
+    FoundryResult (*ui_begin)(const FoundryUiRect *viewport);
+    FoundryResult (*ui_end)(void);
+    FoundryResult (*ui_push_id)(FoundryUiId id);
+    FoundryResult (*ui_pop_id)(void);
+    FoundryResult (*ui_begin_panel)(FoundryUiId id, const FoundryUiRect *bounds);
+    FoundryResult (*ui_end_panel)(void);
+    FoundryResult (*ui_begin_row)(FoundryUiId id, float height);
+    FoundryResult (*ui_end_row)(void);
+    FoundryResult (*ui_begin_scroll)(FoundryUiId id, const FoundryUiRect *bounds, float content);
+    FoundryResult (*ui_end_scroll)(void);
+    FoundryResult (*ui_label)(FoundryStr text);
+    FoundryResult (*ui_button)(FoundryUiId id, FoundryStr text, FoundryBool *out);
+    FoundryResult (*ui_checkbox)(FoundryUiId id, FoundryStr text, FoundryBool *checked,
+                                 FoundryBool *changed);
+    FoundryResult (*ui_slider)(FoundryUiId id, FoundryStr text, float *value, float min, float max,
+                               FoundryBool *changed);
+    FoundryResult (*ui_slider_int)(FoundryUiId id, FoundryStr text, int32_t *value, int32_t min,
+                                   int32_t max, FoundryBool *changed);
+    FoundryResult (*ui_separator)(void);
+    FoundryResult (*ui_spacer)(float size);
+    FoundryResult (*ui_collapsing_header)(FoundryUiId id, FoundryStr text, FoundryBool *open);
+    FoundryResult (*ui_text_field)(FoundryUiId id, uint8_t *buffer, uint64_t capacity,
+                                   uint64_t *length, FoundryBool *changed);
+    FoundryResult (*ui_plot)(const float *samples, uint64_t count,
+                             const FoundryUiPlotOptions *options);
+    FoundryResult (*ui_style_get)(FoundryUiStyle *out);
+    FoundryResult (*ui_style_set)(const FoundryUiStyle *style);
+    FoundryResult (*ui_wants_keyboard)(FoundryBool *out);
+    FoundryResult (*ui_wants_pointer)(FoundryBool *out);
+
+    /* -- Audio ------------------------------------------------------------------------ */
+
+    FoundryResult (*audio_play)(FoundryContentId id, float gain, float pan, float pitch,
+                                FoundryBool looping, FoundryVoice *out);
+    FoundryResult (*audio_stop)(FoundryVoice voice);
+    FoundryResult (*audio_set_gain)(FoundryVoice voice, float gain);
+    FoundryResult (*audio_set_pan)(FoundryVoice voice, float pan);
+    FoundryResult (*audio_set_pitch)(FoundryVoice voice, float pitch);
+    FoundryResult (*audio_set_master_gain)(float gain);
+
+    /* -- Physics2d -------------------------------------------------------------------- */
+
+    FoundryResult (*physics_create_body)(const FoundryPhysicsBodyDesc *desc, FoundryBody *out);
+    FoundryResult (*physics_destroy_body)(FoundryBody body);
+    FoundryResult (*physics_move_body)(FoundryBody body, FoundryPhysicsVec2 motion,
+                                       FoundryPhysicsHit *hits, uint32_t capacity,
+                                       FoundryPhysicsMoveResult *out);
+    FoundryResult (*physics_query_point)(FoundryPhysicsVec2 point, uint32_t mask,
+                                         FoundryPhysicsQueryHit *hits, uint32_t capacity,
+                                         uint32_t *count, uint32_t *total);
+    FoundryResult (*physics_query_aabb)(FoundryPhysicsVec2 min, FoundryPhysicsVec2 max,
+                                        uint32_t mask, FoundryPhysicsQueryHit *hits,
+                                        uint32_t capacity, uint32_t *count, uint32_t *total);
+    FoundryResult (*physics_query_ray)(FoundryPhysicsVec2 from, FoundryPhysicsVec2 to,
+                                       uint32_t mask, FoundryPhysicsHit *hits, uint32_t capacity,
+                                       uint32_t *count, uint32_t *total);
+    FoundryResult (*physics_body_contacts)(FoundryBody body, FoundryPhysicsQueryHit *hits,
+                                           uint32_t capacity, uint32_t *count, uint32_t *total);
 } FoundryApi_v1;
 
 /* == The entry point =================================================================== */

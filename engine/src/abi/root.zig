@@ -34,9 +34,16 @@ pub const types = @import("types.zig");
 
 const agreement = @import("agreement.zig");
 const calls_asset = @import("calls_asset.zig");
+const calls_audio = @import("calls_audio.zig");
 const calls_content = @import("calls_content.zig");
 const calls_engine = @import("calls_engine.zig");
+const calls_physics = @import("calls_physics.zig");
+const calls_render = @import("calls_render.zig");
 const calls_scene = @import("calls_scene.zig");
+const calls_ui = @import("calls_ui.zig");
+const physics_types = @import("physics_types.zig");
+const render_types = @import("render_types.zig");
+const ui_types = @import("ui_types.zig");
 
 // The vocabulary of the boundary. Named here because a host writing a `get_api` and a loader
 // reading a mod's symbols both need them, and neither should be reaching into a file.
@@ -52,6 +59,7 @@ pub const boolOut = types.boolOut;
 /// The opaque handles, one type per kind (`public-abi.md` §5).
 pub const Asset = types.Asset;
 pub const Body = types.Body;
+pub const Grid = types.Grid;
 pub const ComponentType = types.ComponentType;
 pub const Entity = types.Entity;
 pub const Mod = types.Mod;
@@ -68,9 +76,11 @@ pub const Voice = types.Voice;
 /// fake engine and run every entry point with no window, no device and no frame.
 pub const Host = host.HostOf(@import("app").Engine);
 pub const HostOf = host.HostOf;
+pub const HostWithMixer = host.HostWithMixer;
 
 /// The table itself, and the enumerations and structs that cross with it.
 pub const Api_v1 = api.Api_v1;
+pub const TableOf = api.TableOf;
 pub const FieldType = types.FieldType;
 pub const LogLevel = types.LogLevel;
 pub const LogRecord = types.LogRecord;
@@ -80,6 +90,31 @@ pub const ComponentDesc = types.ComponentDesc;
 pub const SchemaId = types.SchemaId;
 pub const Step = types.Step;
 pub const SystemDesc = types.SystemDesc;
+
+pub const RenderVec2 = render_types.Vec2;
+pub const RenderRect = render_types.Rect;
+pub const RenderColor = render_types.Color;
+pub const RenderCamera = render_types.Camera;
+pub const RenderSprite = render_types.Sprite;
+pub const RenderFont = render_types.Font;
+pub const RenderTextOptions = render_types.TextOptions;
+pub const RenderViewDesc = render_types.ViewDesc;
+pub const RenderStats = render_types.Stats;
+
+pub const UiId = ui_types.Id;
+pub const UiVec2 = ui_types.Vec2;
+pub const UiRect = ui_types.Rect;
+pub const UiColor = ui_types.Color;
+pub const UiFontMetrics = ui_types.FontMetrics;
+pub const UiStyle = ui_types.Style;
+pub const UiPlotOptions = ui_types.PlotOptions;
+
+pub const PhysicsVec2 = physics_types.Vec2;
+pub const PhysicsShape = physics_types.Shape;
+pub const PhysicsBodyDesc = physics_types.BodyDesc;
+pub const PhysicsHit = physics_types.Hit;
+pub const PhysicsQueryHit = physics_types.QueryHit;
+pub const PhysicsMoveResult = physics_types.MoveResult;
 
 /// What a native mod exports, and the version of the table this build publishes.
 pub const GetApi = types.GetApi;
@@ -93,10 +128,17 @@ test {
     _ = agreement;
     _ = api;
     _ = calls_asset;
+    _ = calls_audio;
     _ = calls_content;
     _ = calls_engine;
+    _ = calls_physics;
+    _ = calls_render;
     _ = calls_scene;
+    _ = calls_ui;
     _ = host;
     _ = types;
+    _ = physics_types;
+    _ = render_types;
+    _ = ui_types;
     _ = @import("sweep.zig");
 }

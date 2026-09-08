@@ -1005,3 +1005,102 @@ component is absent, and a mod cannot hold a handle to a type nobody registered,
 input means something different on this side. And `memory_counter_set`'s step-3 rule generalised:
 a call whose subject only exists because a subsystem accepted it must answer `unavailable`
 before `invalid_handle`.
+
+## Resolution: remaining capabilities (contract, 2026-09-08)
+
+Step 5 exposes the existing subsystems through §9's table. The following host contracts
+are recorded before their implementation; verification and any further findings follow below.
+
+**The host still owns every subsystem and the inputs it needs.** In addition to the engine
+and scene world, it lends the renderer, UI context, mixer and collision world. Collision's
+allocator is supplied alongside its world, because `physics2d.World` deliberately takes an
+allocator per allocating call and a collision-only host must not need an `app.Engine`.
+The audio host type may be specialised for a null-device mixer in tests, retaining the
+ordinary `HostOf(Engine)` spelling for applications.
+
+**UI input is supplied by the host, not reconstructed by a mod.** `ui_begin` takes a plain
+viewport rectangle and uses the captured `ui.Input` the host lends for that frame. The host
+walks the completed draw list through the existing walker. The boundary refuses a second
+begin while the context is open, and refuses an unbalanced end. Identity-stack bookkeeping
+belongs to the boundary; widget state and layout continue to belong to `ui`.
+
+**A camera is host-owned state, not a mutable view inside the renderer.** Camera get/set and
+coordinate conversion use a camera explicitly lent by the host. The host supplies that camera
+to its next renderer begin; changing it does not rewrite views or draws already recorded.
+Per-frame view handles must expire when the renderer begins its next frame, even if the new
+frame reuses the same view index.
+
+**Integer slider endpoints must remain representable.** The existing widget converts an
+`i32` limit to `f32` and back when dragging. `INT32_MAX` rounds up to 2147483648 in that path,
+so a valid boundary argument can trigger a checked float-to-integer conversion failure. The
+widget must clamp before conversion using representable integer limits; the ABI must not
+hide that bug by refusing a valid part of its declared integer range.
+
+**A queued audio command needs an acceptance result.** The mixer's existing control calls
+return `void` and can drop a command when its ring is full. A public call cannot report
+success for a command it did not queue. Checked control forms expose queue acceptance to
+the ABI, which returns `limit` when full; existing callers keep their current signatures.
+No callback-thread code or ownership changes are needed.
+
+**Collision results retain both kinds of identity.** A hit names a body or a grid by an
+opaque generational handle, with cell coordinates for a grid. Dropping the grid handle would
+make the same cell coordinates in two grids indistinguishable. A grid handle grants identity,
+not access to its arrays. Queries use caller buffers with written and total counts, preserving
+the collision subsystem's explicit truncation semantics; zero capacity is a counting query.
+This extends §9's list of caller-buffer calls, which predated the concrete collision surface.
+
+**A texture obtained from an asset owns its own asset reference.** `render_texture_of_asset`
+accepts an acquired asset, verifies that its payload is a texture belonging to the supplied
+renderer, and issues a boundary-owned generational texture handle while acquiring one further
+reference. `render_destroy_texture` invalidates that boundary handle and releases precisely
+that reference; it never destroys the renderer payload directly. A caller may therefore release
+the asset it used to create the texture handle without invalidating the texture prematurely.
+This is the concrete replacement for `render2d.md` §12's earlier intent to expose raw texture
+and atlas construction: `public-abi.md` §9 deliberately publishes content-backed textures in
+version one, so image bytes and renderer allocation policy do not cross the boundary.
+
+**A view handle carries the renderer frame that issued it.** `Renderer.begin` advances a
+nonzero generation and the ABI combines that generation with the returned view index. Selecting
+a handle from an earlier renderer frame is therefore `invalid_handle`, even when that frame has
+created a view at the same index. This is the validating support the public boundary forces on
+`render2d`; it exposes no RHI state and changes no game-facing draw semantics.
+
+## Resolution: remaining capabilities (implementation, 2026-09-09)
+
+§19 step 5, built. `FoundryApi_v1` is **one hundred and thirty-five calls**: eleven render,
+twenty-four UI, six audio and seven collision calls appended after the eighty-seven-call scene
+table. `abi` gains the four corresponding modules and still cannot see `rhi`; the one integration
+test that needs a real validating device lives above the modules in `engine/tests`.
+
+**Texture ownership is loader provenance, not handle coincidence.** Renderer texture handles
+are local to a renderer, so two pools can issue identical bits. The asset registry now has one
+narrow query that compares the schema, owner context and both loader callbacks before returning a
+payload. The ABI uses it both when issuing a texture wrapper and on every draw. A wrapper stores
+the acquired asset handle rather than a copied renderer handle, so a successful hot reload swaps
+the payload behind the same wrapper; changing its loader or schema makes the next draw a refusal.
+An integration test uses two renderers to prove both halves.
+
+**UI nesting needs identity and topology.** The boundary shadows each open panel, row and scroll
+with its kind and the kernel stack depths it produced, so a mismatched close cannot unwind state
+opened by somebody else. Explicit pushed ids are raw scopes folded through the current region
+seed at widget time; otherwise one pushed id erases the distinction between sibling panels. The
+regression uses the same child id in two panels, rows and scroll regions and observes no duplicate.
+
+**Collision counting had two edge cases.** A body's own overlap is subtracted only when its layer
+passes the query mask, and the conversion scratch has one slot beyond the caller's bounded
+capacity. The maximum-capacity regression creates the self hit plus 4,096 external contacts: all
+4,096 caller slots must be filled and the total must still be honest. Mask zero remains a valid
+counting/filter query, not malformed input.
+
+**The C agreement now checks signatures as well as bytes.** Every new struct member has a width,
+offset and size assertion, every new table member has a name and offset, and all forty-eight new
+function pointers are assigned to independently written expected types. Deliberately narrowing
+`FoundryPhysicsHit.user` failed its width assertion while the surrounding layout still fitted;
+deliberately changing `render_stats`' expected parameter failed as an incompatible function
+pointer. Both guards were restored and compiled as C99 on all three targets and as C++17.
+
+**The implementation audit found and fixed the existing integer-slider overflow.** Interpolation
+now uses wider arithmetic before the result is clamped back into the complete `i32` range. Audio's
+control commands gained checked queue forms so the ABI can return `limit` rather than claiming a
+dropped command succeeded. View generations advance at renderer begin, malformed strings stop at
+the ABI as invalid UTF-8, and every new out-parameter remains untouched on refusal.

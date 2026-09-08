@@ -227,19 +227,25 @@ pub fn sliderInt(
     const size = style.font.measure(text, style.text_scale);
     const bounds = ctx.take(.init(size.x + style.padding.x * 4, style.line_height));
 
+    // Keep the drawing path in f32, but do the value conversion in f64. `maxInt(i32)`
+    // rounds to 2147483648 in f32; converting that rounded value back to i32 traps even
+    // though the caller supplied a valid endpoint. The wider arithmetic preserves the full
+    // i32 range and clamps before the integer conversion.
     const low: f32 = @floatFromInt(min);
     const high: f32 = @floatFromInt(max);
+    const low_wide: f64 = @floatFromInt(min);
+    const high_wide: f64 = @floatFromInt(max);
 
     const state = ctx.interact(id, bounds);
     var changed = false;
     if (state.active and !bounds.isEmpty()) {
         // Rounded rather than truncated, so the two halves of a step are the same width and
         // the ends of the range are reachable.
-        const wanted: i32 = @intFromFloat(@round(std.math.clamp(
-            valueAt(ctx.input.pointer.x, bounds, low, high),
-            low,
-            high,
-        )));
+        const wanted: i32 = @intFromFloat(std.math.clamp(
+            @round(valueAtWide(ctx.input.pointer.x, bounds, low_wide, high_wide)),
+            low_wide,
+            high_wide,
+        ));
         if (wanted != value.*) {
             value.* = wanted;
             changed = true;
@@ -507,6 +513,18 @@ fn fractionOf(value: f32, min: f32, max: f32) f32 {
 fn valueAt(x: f32, bounds: Rect, min: f32, max: f32) f32 {
     if (bounds.w <= 0) return min;
     const t = std.math.clamp((finiteOr(x, bounds.x) - bounds.x) / bounds.w, 0, 1);
+    return min + (max - min) * t;
+}
+
+/// The integer slider's value path. `f32` cannot represent both endpoints of i32, so this
+/// deliberately widens before interpolation and keeps the clamp in the same type as the
+/// final conversion.
+fn valueAtWide(x: f32, bounds: Rect, min: f64, max: f64) f64 {
+    if (bounds.w <= 0) return min;
+    const pointer: f64 = @floatCast(finiteOr(x, bounds.x));
+    const left: f64 = @floatCast(bounds.x);
+    const width: f64 = @floatCast(bounds.w);
+    const t = std.math.clamp((pointer - left) / width, @as(f64, 0), @as(f64, 1));
     return min + (max - min) * t;
 }
 
@@ -1120,6 +1138,26 @@ test "an integer slider stops on whole numbers and reaches both ends" {
         _ = try sliderInt(&ctx, id, "count", &value, 0, 10);
         ctx.end();
     }
+}
+
+test "an integer slider accepts the maximum i32 endpoint" {
+    var ctx: Context = .init(testing.allocator, testStyle());
+    defer ctx.deinit();
+    const id = Id.root.child("large-count");
+    const maximum = std.math.maxInt(i32);
+    var value: i32 = maximum - 1;
+
+    // Both endpoints round to the same f32 value. The old value path therefore produced
+    // 2147483648 and trapped when it converted the right-hand click back to i32.
+    const at_right: Vec2 = .init(799, 10);
+    ctx.begin(frameOf(at_right, .up), viewport);
+    _ = try sliderInt(&ctx, id, "count", &value, maximum - 1, maximum);
+    ctx.end();
+
+    ctx.begin(frameOf(at_right, .pressed), viewport);
+    _ = try sliderInt(&ctx, id, "count", &value, maximum - 1, maximum);
+    ctx.end();
+    try testing.expectEqual(maximum, value);
 }
 
 test "a collapsing header remembers, and two of them remember separately" {

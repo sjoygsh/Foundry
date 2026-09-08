@@ -140,7 +140,7 @@ const layering = [_]Module{
     // The one module it will **never** have is
     // `rhi` — §4.2's two boundaries, where the renderer API is game-facing and the RHI is
     // not, so this module does not merely decline to publish the RHI, it cannot see it.
-    .{ .name = "abi", .deps = &.{ "core", "data", "platform", "asset", "app", "scene", "mod" } },
+    .{ .name = "abi", .deps = &.{ "core", "data", "platform", "asset", "app", "scene", "mod", "render2d", "ui", "audio", "physics2d" } },
 };
 
 /// Which platform backend to build against.
@@ -565,7 +565,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    for ([_][]const u8{ "core", "data", "platform", "physics2d", "ui", "rhi", "asset", "render2d", "scene", "audio", "app", "debug" }) |name| {
+    for ([_][]const u8{ "core", "data", "platform", "physics2d", "ui", "rhi", "asset", "render2d", "scene", "audio", "app", "debug", "abi" }) |name| {
         integration_mod.addImport(name, modules.get(name).?);
     }
 
