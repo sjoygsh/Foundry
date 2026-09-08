@@ -80,15 +80,29 @@ pub const Query = struct {
     /// Dense positions of the current match, one per named type.
     slots: [max_components]u32 = undefined,
 
+    pub const NextError = error{Mutated};
+
     /// The next matching entity, or null when there are none left.
     pub fn next(self: *Query) ?Entity {
-        const driver = self.driver orelse return null;
         assert.always(
             self.mutation_at_start == self.mutation.*,
             "the world changed shape while a query was iterating it; " ++
                 "collect the entities first and act on them after the loop",
             .{},
         );
+        return self.nextUnchecked();
+    }
+
+    /// The next matching entity, or `error.Mutated` when a structural change invalidated
+    /// this query. The ABI uses this form because a mod can make that mistake and must get
+    /// a refusal rather than bring down its host.
+    pub fn nextChecked(self: *Query) NextError!?Entity {
+        if (self.mutation_at_start != self.mutation.*) return error.Mutated;
+        return self.nextUnchecked();
+    }
+
+    fn nextUnchecked(self: *Query) ?Entity {
+        const driver = self.driver orelse return null;
 
         outer: while (self.cursor < driver.count()) {
             const dense = self.cursor;

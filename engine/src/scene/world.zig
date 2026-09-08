@@ -151,6 +151,10 @@ pub const World = struct {
     /// handed out. Wrapping is deliberate — it is compared for equality, never ordered.
     mutation: u64 = 0,
 
+    /// Bumped whenever a component type is registered. Entity mutation deliberately does
+    /// not cover this: a type walk is over the registry rather than entity storage.
+    type_mutation: u64 = 0,
+
     pub fn init(gpa: Allocator, schemas: *data.Registry, limits: Limits) World {
         return .{
             .gpa = gpa,
@@ -263,6 +267,7 @@ pub const World = struct {
         // is half of why removing a type is not a removal.
         std.debug.assert(handle.index == self.stores.items.len);
         self.stores.appendAssumeCapacity(.init(self.types.getConst(handle).?));
+        self.type_mutation +%= 1;
 
         log.debug("component type '{s}' registered: {d} bytes, align {d}, schema version {d}", .{
             name,
@@ -377,14 +382,38 @@ pub const World = struct {
     ///
     /// Called `liveEntities` rather than `entities` only because the field is called that.
     pub fn liveEntities(self: *const World) EntityIterator {
-        return .{ .world = self };
+        return .{ .world = self, .mutation_at_start = self.mutation };
     }
 
     pub const EntityIterator = struct {
         world: *const World,
         slot: u32 = 0,
+        mutation_at_start: u64,
+
+        pub const NextError = error{Mutated};
 
         pub fn next(self: *EntityIterator) ?Entity {
+            core.assert.always(
+                self.mutation_at_start == self.world.mutation,
+                "the world changed shape while its entities were iterating; " ++
+                    "collect them first and act on them after the loop",
+                .{},
+            );
+            return self.nextUnchecked();
+        }
+
+        /// The same walk, reporting a structural change instead of asserting on one.
+        ///
+        /// `next` above is right for engine and game code, where iterating a world you are
+        /// also mutating is a programmer error. At M7 the caller can be a mod, and untrusted
+        /// input reaching an assertion is a crash from outside the repository — so the
+        /// boundary takes this form and refuses. Same rule as `Query.nextChecked`.
+        pub fn nextChecked(self: *EntityIterator) NextError!?Entity {
+            if (self.mutation_at_start != self.world.mutation) return error.Mutated;
+            return self.nextUnchecked();
+        }
+
+        fn nextUnchecked(self: *EntityIterator) ?Entity {
             while (self.world.entities.slotAt(self.slot)) |state| {
                 const index = self.slot;
                 self.slot += 1;
@@ -412,34 +441,72 @@ pub const World = struct {
         savable: bool,
     };
 
+    /// One registered type, for a caller that already holds the handle — the same snapshot
+    /// `componentTypes` yields, and the same handle validation `componentInfo` does. The ABI
+    /// needs it: a mod holds a component type and asks about it one field at a time.
+    pub fn typeInfo(self: *const World, t: ComponentType) ?TypeInfo {
+        const registration = self.types.getConst(t) orelse return null;
+        return .{
+            .type = t,
+            .id = registration.id,
+            .name = registration.name,
+            .size = registration.size,
+            .alignment = registration.alignment,
+            .count = self.componentCount(t),
+            .savable = registration.savable(),
+        };
+    }
+
     /// Every registered component type, **in registration order**.
     pub fn componentTypes(self: *const World) TypeIterator {
-        return .{ .world = self };
+        return .{ .world = self, .mutation_at_start = self.type_mutation };
+    }
+
+    /// What a walk over the type registry must not see change under it. A cursor at the
+    /// C boundary cannot hold an iterator, so it holds this instead.
+    pub fn componentTypeGeneration(self: *const World) u64 {
+        return self.type_mutation;
     }
 
     pub const TypeIterator = struct {
         world: *const World,
         slot: u32 = 0,
+        mutation_at_start: u64,
+
+        pub const NextError = error{Mutated};
 
         pub fn next(self: *TypeIterator) ?TypeInfo {
+            core.assert.always(
+                self.mutation_at_start == self.world.type_mutation,
+                "a component type was registered while its registry was iterating",
+                .{},
+            );
+            return self.nextUnchecked();
+        }
+
+        /// Reports a registration mid-walk rather than asserting on one, for the reason
+        /// `EntityIterator.nextChecked` gives.
+        pub fn nextChecked(self: *TypeIterator) NextError!?TypeInfo {
+            if (self.mutation_at_start != self.world.type_mutation) return error.Mutated;
+            return self.nextUnchecked();
+        }
+
+        fn nextUnchecked(self: *TypeIterator) ?TypeInfo {
             while (self.world.types.slotAt(self.slot)) |state| {
                 const index = self.slot;
                 self.slot += 1;
-                const registration = state.value orelse continue;
-                const t: ComponentType = .{ .index = index, .generation = state.generation };
-                return .{
-                    .type = t,
-                    .id = registration.id,
-                    .name = registration.name,
-                    .size = registration.size,
-                    .alignment = registration.alignment,
-                    .count = self.world.componentCount(t),
-                    .savable = registration.savable(),
-                };
+                if (state.value == null) continue;
+                return self.world.typeInfo(.{ .index = index, .generation = state.generation });
             }
             return null;
         }
     };
+
+    /// What a walk over the entities must not see change under it — the counter every
+    /// structural change bumps. Same purpose as `componentTypeGeneration`, other registry.
+    pub fn mutationGeneration(self: *const World) u64 {
+        return self.mutation;
+    }
 
     pub const DescribeError = error{
         /// The type has no serializer, so there is nothing to read it *through*. The same
