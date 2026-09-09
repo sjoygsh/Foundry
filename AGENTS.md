@@ -25,7 +25,7 @@ this file.** Fix it rather than following it.
    subsystem has one and it was written *before* the code. If you are implementing something,
    its design doc is your specification, and its §-numbered sections are what commit messages
    and comments refer to.
-5. **`docs/adr/`** — 28 numbered decision records. Read the ones your work touches. §4.1 of
+5. **`docs/adr/`** — numbered decision records. Read the ones your work touches. §4.1 of
    `CLAUDE.md` is the index.
 
 **Then inspect the actual code before assuming anything about it**, and summarize your
@@ -43,9 +43,10 @@ runs package-local libraries through a refusal-safe lifecycle. `docs/modding/nat
 was written by building its C mod outside this repository and running its content, registered
 component and system through an external proof host.
 
-**M8 is next, but it has not been designed.** Its scripting-language decision, architecture
-and implementation order must be written before code. Do not infer them from M7 or start a
-scripting host opportunistically; read `PROJECT_STATE.md` for the current handoff.
+**M8 is designed; implementation has not begun (0/8 steps).** Read ADR-0028, ADR-0029 and
+`docs/design/scripting.md`; §16 is the eight-step implementation order. Restricted Lua 5.5.1,
+the public ABI consumer boundary, source assets, resource limits and candidate-VM reload are
+specified. The planning session stops before step 1; resume only when the user requests it.
 
 ## 3. Building and verifying
 

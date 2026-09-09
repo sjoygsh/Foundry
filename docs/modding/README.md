@@ -19,7 +19,7 @@ they grant.
 | Tier | What it is | Status |
 | --- | --- | --- |
 | **1 — Content mods** | Data only: items, entities, rules, text, assets. No code, no compiler, no sandbox. | **Works.** See [`content-mods.md`](content-mods.md). |
-| **2 — Script mods** | Sandboxed, hot-reloadable code against the public API. Cannot crash the host. | Not built. The language is an M8 decision (`CLAUDE.md` §9). |
+| **2 — Script mods** | Sandboxed, hot-reloadable code against the public API; script faults are contained. | Not built. Restricted Lua 5.5.1 is selected; [M8's design and eight steps](../design/scripting.md) are written, with implementation pending. |
 | **3 — Native mods** | Dynamic libraries through the C ABI. Full speed, full power, no sandbox. | **ABI and loader work.** `foundry.h` is installed to `<prefix>/include/`, compiles as C99 and C++, and `FoundryApi_v1` has 135 calls: content, records, packages, schemas, assets, world, rendering, UI, audio and collision. A native-capable host loads the library after content. See [`native-mods.md`](native-mods.md) and [`design/public-abi.md`](../design/public-abi.md). |
 
 Tier 1 is first on purpose. It is where most mod value actually lives, and its requirements

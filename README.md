@@ -14,7 +14,9 @@ the versioned public ABI and can add component types, systems and behaviour with
 source changes.
 
 Tier 1 content modding and Tier 3 native modding work: see
-[docs/modding](docs/modding/). Tier 2 scripting is M8.
+[docs/modding](docs/modding/). Tier 2 scripting is M8: its
+[architecture and eight-step plan](docs/design/scripting.md) are written; implementation
+has not begun.
 
 ```sh
 ./scripts/install-zig.sh   # the only tool you need

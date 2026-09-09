@@ -11,11 +11,9 @@ depended on by several others, or will be hard to change later.
 
 Written documents move to the table below. This one is a schedule, not an index.
 
-**M8's scripting-host design is next, but it is not ready to write.** The scripting-language
-decision comes due first (`CLAUDE.md` §9); the language, sandbox/resource model, hot-reload
-lifecycle and implementation order remain deliberately undecided. M7's `public-abi.md` is
-implemented in full, all seven steps, and constrains M8 to use the same public surface rather
-than inventing a script-only one.
+**M8's design is written, 2026-09-09:** [`scripting.md`](scripting.md), supported by ADR-0028
+and ADR-0029. Its §16 has eight steps; none has begun. M9's packaging/distribution design is
+still owed when that milestone opens. M7's `public-abi.md` remains implemented in full.
 
 M6's two documents are both written and both implemented: `ui.md`, and `debug-overlay.md`,
 written 2026-09-07 and implemented in full the same day. The second was written after the first
@@ -32,6 +30,7 @@ re-dated.
 
 | Document | Covers | Decisions worth knowing about |
 | --- | --- | --- |
+| [`scripting.md`](scripting.md) | M8 runtime, package/source model, ABI v2 source access, bindings, sandbox limits, lifecycle, state migration and eight implementation steps | **Designed 2026-09-09; 0/8 steps implemented.** Restricted Lua 5.5.1; `script` imports header declarations rather than engine modules; stable system callbacks survive VM replacement; failed preparation preserves the old VM, while active update effects are not rolled back. Step 1 proves runtime containment before gameplay work. |
 | [`core-memory-and-handles.md`](core-memory-and-handles.md) | Allocator model, generational handles, content ID hashing, logging, assertions, math, time, RNG | Handles are `extern struct` because they cross the C ABI later; null handle is all-zero bits; FNV-1a 64 and PCG32 are **specified in the document**, not delegated to `std`, because both are persisted; simulation time is an integer tick count, never a float |
 | [`rhi.md`](rhi.md) | Devices, resources, memory intent, resource states, the frame ring, command recording, pipelines and binding, the validation backend | Every decision taken from the **strictest** API, not the first one implemented: four bind groups because Vulkan only guarantees four, 128-byte inline constants because that is Vulkan's push-constant minimum, `device_local` resources are never mappable so unified memory cannot become a habit, and state transitions are declared at pass boundaries and enforced by the null backend. **Metal backend implemented 2026-09-04**; §9 gained the binding index convention it forced — which is shader-visible, and so a contract each future backend owes its own written version of |
 | [`app-and-frame-loop.md`](app-and-frame-loop.md) | The engine loop, subsystem lifecycle, allocator ownership, the log sink, loading content packages | `Engine` is a library you drive, not a framework that calls you back; input is captured once per frame so every simulation step in it sees the same value; teardown is strictly reverse of initialisation; `alpha` is for the render only; the engine consumes a load order and does not compute one, loads package zero through the same call a mod's package uses (I3), and leaves the loaders to the game because it has no `render2d`; hot reload builds a whole new content set and swaps it, at the top of a frame, and publishes a generation counter because a handle survives a reload and anything derived from one does not. **§8 added 2026-09-05** |

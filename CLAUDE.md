@@ -165,6 +165,8 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Shader ownership | Engine-owned shaders embedded; content-owned shaders are assets | [0019](docs/adr/0019-builtin-versus-content-shaders.md) |
 | Public API | One versioned C ABI table shared by mods, scripts and tools | [0004](docs/adr/0004-public-c-abi.md) |
 | ABI placement | `abi` is a peer of `debug` at L5; the host supplies its subsystems | [0026](docs/adr/0026-abi-module-and-host.md) |
+| Scripting runtime | Restricted Lua 5.5.1, one VM per package; M8 design accepted, implementation pending | [0028](docs/adr/0028-scripting-lua.md) |
+| Script host | Header-only public ABI consumer; source assets through additive v2; stable callbacks and candidate-VM reload | [0029](docs/adr/0029-script-host-and-reload.md) |
 | Identity | Generational handles internally; stable namespaced string IDs for content | [0005](docs/adr/0005-handles-and-content-ids.md) |
 | Content | Engine is a library; content is data; two representations (authoring / runtime) | [0006](docs/adr/0006-content-model.md) |
 | Authoring format | Foundry's own `.fdt` text format; IDs are bare tokens, directives are `@`-prefixed | [0020](docs/adr/0020-authoring-text-format.md) |
@@ -251,6 +253,12 @@ L5  abi         -> core, data, physics2d, platform, ui, asset, render2d, scene,
 
 Games, samples and tools depend on `app`. A host that loads mods also imports `abi`; a
 native mod itself depends on the C header and never on a Zig module.
+
+**Designed for M8, not implemented:** `script` sits at L6 as a public API consumer,
+depending on `core`, the declarations in `foundry.h`, and the pinned Lua library only.
+It receives the version query and identities from its application; it imports no engine
+implementation modules. Source assets become reachable through additive ABI v2, while v1
+stays unchanged. See ADR-0029 and `docs/design/scripting.md` for ownership and step order.
 
 **The overlay is not privileged.** `debug` is engine code and gets no private path (I4,
 ADR-0025): every call it makes must be one the public ABI could expose, which means handle or
@@ -373,7 +381,9 @@ most mod value actually lives and because its requirements (I2, I3, I5, I8) cons
 serialization and the content model in ways that are impossible to retrofit.
 
 **Tier 2 — Script mods (most modders).** Sandboxed, hot-reloadable code against the public API.
-Cannot crash the host. The scripting language is a **postponed** decision (§9).
+Script faults must not crash the host. **Restricted Lua 5.5.1** is selected by ADR-0028;
+the M8 host is designed but not implemented. Its operational fault-containment contract,
+limits and explicit exclusions are in `docs/design/scripting.md`.
 
 **Tier 3 — Native mods (power users).** Dynamic libraries loaded through the C ABI. Full speed,
 full power, no sandbox, version-fragile by nature. Explicitly a consenting-adults tier.
@@ -520,7 +530,6 @@ Recorded so they are not made accidentally. Each notes when it comes due.
 | Decision | Due | Notes |
 | --- | --- | --- |
 | Separate editor application | M6+ | In-process debug overlay first. |
-| Scripting language (Lua vs. WASM vs. other) | M8 | WASM: sandboxed, multi-language. Lua: small, easy, hot-reload. |
 | Second graphics backend (Vulkan / D3D12) | Unscheduled | Triggered by a reason — shipping Windows or Linux, or validating the RHI. Linux implies Vulkan; Windows could be either. |
 | Shader cross-compiler vs. hand-written variants | Backend #2, or when the shader set grows large | ADR-0015. Whichever comes first. |
 | Job system / threading model | Post-M5 | Do not design subsystems that assume single-threaded forever. |

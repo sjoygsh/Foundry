@@ -1,7 +1,36 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-09
-**Updated by:** **M7 is complete, all seven steps.** Both ADRs are accepted,
+**Current handoff: M8 planning complete; implementation not started (0/8 steps).**
+The user requested architecture/design/steps only and a stop before step 1.
+
+**Written 2026-09-09:** [ADR-0028](docs/adr/0028-scripting-lua.md) selects restricted
+Lua 5.5.1; [ADR-0029](docs/adr/0029-script-host-and-reload.md) specifies the public ABI
+consumer and stable-callback reload architecture; [scripting.md](docs/design/scripting.md)
+specifies the runtime boundary, script assets, manifest v2, additive ABI v2 source copying,
+bounded content/world bindings, failure policy, state migration and verification.
+
+**Eight implementation units, in `scripting.md` §16:** runtime containment; script assets
+and manifests; ABI v2 source access; bounded bindings; package lifecycle; hot reload;
+adversarial/determinism proof; outside-tree author guide and milestone closure. **Next is
+step 1 only, when the user resumes implementation.** No Lua dependency, script module,
+ABI v2 header or sample script has been added in this planning session. Runtime compatibility,
+resource defaults and sandbox claims still require the specified implementation evidence.
+M7 remains complete with 1117 headless tests; M9 remains undesigned.
+
+**Planning verification:** the full AGENTS.md §3 bar passes on the unchanged implementation:
+format check, tests, host/Linux/Windows compilation, and both 30-frame null sample runs.
+This verifies the repository baseline, not the future scripting design's runtime claims.
+
+The architecture uses one VM and one stable system callback per script package. Reload
+prepares an isolated replacement and explicitly migrates bounded state; failure preserves
+old code/state, but active tick effects cannot be rolled back. The initial gameplay surface
+reads content/world state and spawns/removes script-owned template entities. Larger bindings,
+native unload, durable script saves and an editor are deliberately not smuggled into M8.
+
+---
+
+**M7 completion record (2026-09-09): M7 is complete, all seven steps.** Both ADRs are accepted,
 `docs/design/public-abi.md` is written, **`engine/src/mod/` exists** — a new L2 module holding
 manifests, discovery, dependency resolution and a stable topological sort — and **`engine/src/abi/`
 exists**: the types that cross the public boundary, the hand-written `foundry.h` that specifies
@@ -174,8 +203,8 @@ is invalidated. The image and append-only world metadata remain, but no later fr
 calls into it. Mod generations are process-wide across host instances, so replacing the ambient
 host cannot make an old library's `self` name a new mod by coincidence.
 
-**Next is M8 design, not implementation.** The scripting language, sandbox/resource model,
-hot-reload lifecycle and host architecture remain undecided and must be designed before code.
+**Handoff at M7 completion:** M8's decisions/design were next. That planning work is now
+complete; see the current handoff at the top. No implementation step has begun.
 
 ---
 
@@ -569,10 +598,12 @@ is mature enough to need them rather than as decoration.
 pixels; Phase 2 closed with M6, and every milestone in it is complete: sprites, content,
 entities, a playable sample, and an overlay that diagnosed its own cost. **M7 — Moddable:
 "others can extend it" — completed 2026-09-09**, all seven design steps and the outside-tree
-exit proof. M8 is next; it has roadmap requirements but no language decision, design document
-or implementation order yet.
+exit proof. M8's design is written, with eight implementation steps; none has begun.
 
 ## Current milestone
+
+**M8 — Scriptable: design complete, implementation pending (0/8 steps).** See
+`docs/design/scripting.md` §16. The planning session stops before step 1.
 
 **M7 — Moddable: "others can extend it." Complete, 2026-09-07 to 2026-09-09.** All six
 roadmap bullets and all seven steps of `public-abi.md` §19 are implemented. The exit criterion
@@ -1392,9 +1423,8 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M5, with every bullet finished and only the exit criterion left.** All three design
-documents are written and all three are fully implemented, and the fourth bullet — a playable
-sample — is `samples/room`.
+**M8 planning is complete.** Architecture and eight steps are written; implementation is
+paused before step 1 at the user's requested boundary. The M5 material below is historical.
 
 ### `samples/room`, and what a second consumer proved
 
@@ -2039,7 +2069,9 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**M7 is complete. Everything below the next four lines is the record of M5 and M6.**
+**Next: `docs/design/scripting.md` §16 step 1, only after the user resumes.** M8 design is
+complete; no implementation work is authorized by the planning-only request. The completed
+M7 checklist below and subsequent M5/M6 material are historical records.
 
 ~~1. Accept ADR-0026 and ADR-0027.~~ ~~2. Update `CLAUDE.md`.~~ ~~3. Write
 `docs/design/public-abi.md`.~~ **All done 2026-09-07.** What is left is code, and
@@ -2075,8 +2107,8 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
    by building its package and C99 library outside the tree, then verified through a separate
    host: content value 41 became component value 42 when its registered system ran.
 
-**Next:** open M8 at its decisions and write its design before implementation. No scripting
-language, sandbox/resource model or implementation order has been chosen yet.
+**M7's handoff has been fulfilled by the M8 planning session.** ADR-0028/0029 and
+`docs/design/scripting.md` are written; the current stop point is before implementation step 1.
 
 ---
 
@@ -3309,6 +3341,11 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 ---
 
 ## Notes for the next session
+
+**Resume point, 2026-09-09:** M8 design complete, 0/8 steps implemented. Read ADR-0028,
+ADR-0029 and `docs/design/scripting.md` before implementation. The last request authorized
+planning only. Keep existing M7 behavior and v1 compatibility; step 1 must prove the pinned
+runtime/error boundary before later binding work. The environment notes below still apply.
 
 * Read `CLAUDE.md` first, then this file, then `docs/ROADMAP.md`.
 * The architecture is settled. Do not relitigate ADRs without a concrete reason; each records

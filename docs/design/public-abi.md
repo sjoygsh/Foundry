@@ -653,6 +653,12 @@ must not settle them opportunistically. Question 1 was resolved by the M7 exit p
 7. **Sandboxing.** Tier 2's problem and M8's. Nothing in `_v1` assumes the caller is trusted; the
    difference at M8 is what happens when it misbehaves, not what it may call.
 
+> **M8 design follow-up, 2026-09-09:** question 7 is now specified by
+> [scripting.md](scripting.md) and ADR-0028/0029, with implementation pending. The restricted
+> binding exposes a bounded subset of this table, and source access is designed as an additive
+> v2 call. V1 is unchanged. Questions 2–6 remain open; script VM replacement does not unload
+> native libraries or introduce per-mod C tables.
+
 ## 19. Implementation order
 
 Each step ends with something that runs and something that is tested.
