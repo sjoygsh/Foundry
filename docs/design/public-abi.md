@@ -1,6 +1,6 @@
 # The public API surface, and what a mod is
 
-**Status:** written 2026-09-07, before implementation. M7.
+**Status:** implemented in full 2026-09-09. M7 complete.
 
 Rests on [ADR-0004](../adr/0004-public-c-abi.md) (one versioned C ABI),
 [ADR-0026](../adr/0026-abi-module-and-host.md) (where `abi` sits and who supplies its
@@ -633,15 +633,9 @@ build on the machine that changed it.
 
 ## 18. Open questions
 
-Named rather than resolved, per the standing rule that implementation must not settle these
-opportunistically.
+The remaining questions are named rather than resolved, per the standing rule that implementation
+must not settle them opportunistically. Question 1 was resolved by the M7 exit proof below.
 
-1. **Where the exit criterion's mod lives.** It must be "built outside the engine tree" and
-   ADR-0017 keeps games out of this repository — but a mod is not a game, and `samples/` is where
-   the smallest thing that exercises a capability goes. Three candidates: a `samples/mod/` built
-   as its own artifact against the installed header; a directory with its own `build.zig`
-   invoked separately; a genuinely separate repository. *Due inside this milestone*, before its
-   last step. What the criterion tests is that no engine source changed, not where the file sat.
 2. **Unloading, and native hot reload.** §14 defers both with a reason. *Trigger: a mod author
    with a real iteration loop complaining, or the editor needing to reload a tool plugin.*
 3. **A mod's own storage.** Reading is content and needs nothing. Writing — a config file, a
@@ -663,7 +657,8 @@ opportunistically.
 
 Each step ends with something that runs and something that is tested.
 
-1. **`mod`** — the manifest schema in `content/core`, `discover`, `resolve`, the diagnostics.
+1. **`mod`** — the engine-declared manifest schema, with `content/core` carrying its record,
+   `discover`, `resolve`, and the diagnostics.
    Headless: no table, no library, no window. Ends with the three packages in this repository
    carrying manifests, `fpack` reading name and version from them, `build.zig` losing its `id`
    column, and both samples' load order **computed rather than written by hand**. This is Tier 1
@@ -1155,3 +1150,33 @@ component types, one registers a system whose callback mutates a world, and thei
 entities prove reverse order. Further images and entries cover a missing or corrupt file, missing
 init symbol, an absent optional shutdown, missing or unsupported ABI range, known refusal, unknown
 result integer, unsafe name/root and the 64-mod identity limit. **1117 headless tests.**
+
+## Resolution: the exit criterion (implementation, 2026-09-09)
+
+§19 step 7, done, and with it M7. The mod itself lived in a temporary directory outside the
+Foundry checkout, which resolves open question 1 narrowly: **the proof belongs outside the engine
+tree; the durable artifact is the author guide, not another in-tree sample.** A mod is not a game,
+but putting this one under `samples/` would have weakened the only property the criterion exists
+to test — that neither its source nor its build participates in Foundry's build graph. Nothing
+about this answer requires every future example mod to live elsewhere; it answers where this
+compatibility proof lives.
+
+`docs/modding/native-mods.md` was written from the outside in and then followed. Its exact C99
+source compiled against `zig-out/include/foundry.h`, not an engine module or private header; its
+manifest and content compiled with the installed `fpack`; and the resulting `.fpk` plus
+package-local `liblanterns.dylib` were handed to a separate host. Discovery found `lanterns:mod`,
+resolution put `foundry:core` before it, the loader called its init, and the mod read 41 from its
+own content, registered `lanterns:counter` and `lanterns:advance`, then changed the component to
+42 on the first world update. The host observed the value through `scene`, not through a test-only
+export from the library. No engine source changed to make the proof pass.
+
+The exercise found one test-host defect rather than an ABI defect. `mod_pipeline.zig` called the
+selected `app.Engine`, so the default SDL build tried to initialise a display even though the test
+declared itself headless. It now explicitly instantiates `EngineOf` with the null platform and
+null RHI, matching the test's documented contract and making the ordinary `zig build test` bar
+headless independently of the configured application backend.
+
+Open questions 2 through 7 remain open. In particular M7 still does not unload or hot-reload a
+native image, provide mod-owned writable storage, vary the table per mod, expose host identity,
+run mod callbacks concurrently, or sandbox native code. None was required to meet the criterion,
+and step 7 does not manufacture evidence to close them.

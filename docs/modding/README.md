@@ -1,8 +1,8 @@
 # Modding Foundry
 
-**Status:** Tier 1 (content mods) works as of M3, 2026-09-05. Tiers 2 and 3 do not exist
-yet. This directory documents what a mod author can actually do today, and says plainly
-what is not built.
+**Status:** Tier 1 (content mods) works as of M3, 2026-09-05. Tier 3's C ABI and native
+library lifecycle work as of M7, 2026-09-09. Tier 2 is not built yet. This directory
+documents what a mod author can actually do today, and says plainly what is not built.
 
 Modding is a fundamental feature of Foundry rather than something added later
 (`CLAUDE.md` §5). That is a claim about *architecture*, not about features: the mod system
@@ -20,7 +20,7 @@ they grant.
 | --- | --- | --- |
 | **1 — Content mods** | Data only: items, entities, rules, text, assets. No code, no compiler, no sandbox. | **Works.** See [`content-mods.md`](content-mods.md). |
 | **2 — Script mods** | Sandboxed, hot-reloadable code against the public API. Cannot crash the host. | Not built. The language is an M8 decision (`CLAUDE.md` §9). |
-| **3 — Native mods** | Dynamic libraries through the C ABI. Full speed, full power, no sandbox. | **More than half built** — M7 opened 2026-09-07. `foundry.h` is installed to `<prefix>/include/`, compiles as C99 and C++, and `FoundryApi_v1` has eighty-seven calls: content, records, packages, schemas, assets, and a host-supplied world with its component types, entities, systems and queries. Nothing loads a mod's library yet. See [`design/public-abi.md`](../design/public-abi.md). |
+| **3 — Native mods** | Dynamic libraries through the C ABI. Full speed, full power, no sandbox. | **ABI and loader work.** `foundry.h` is installed to `<prefix>/include/`, compiles as C99 and C++, and `FoundryApi_v1` has 135 calls: content, records, packages, schemas, assets, world, rendering, UI, audio and collision. A native-capable host loads the library after content. See [`native-mods.md`](native-mods.md) and [`design/public-abi.md`](../design/public-abi.md). |
 
 Tier 1 is first on purpose. It is where most mod value actually lives, and its requirements
 constrain the content model and the serialization format in ways that are impossible to add
@@ -67,15 +67,11 @@ Being honest about this is more useful than a feature list.
   implemented, and a mod using one is told so rather than having it quietly ignored —
   because a mod that appears to load and does not work is the worst outcome available.
   Overriding a whole record works today.
-* **No scripting, and nothing loads a native mod's library yet.** `foundry.h` is installed
-  beside the executables and a mod compiles against it today. The table it gets is real: it
-  reads any record in any loaded package through that record's own schema, and it operates a
-  world the game lends it — registering component types and systems, creating and querying
-  entities, and handing a mod the raw bytes of a type it registered itself. What is missing is
-  the half that runs it — opening the library and calling `foundry_mod_init` — then drawing,
-  UI, sound and collision in step 5. Tier 2 is M8.
-* **A component type a mod registers is not saved and not built from content — yet.** The
-  engine reads a component through the type's own serializer rather than by casting its bytes,
+* **No scripting.** Tier 2's language, sandbox, resource limits and hot reload are M8 work.
+  Native code is deliberately different: it is trusted, unsandboxed code and can crash the
+  host. See [`native-mods.md`](native-mods.md) for the complete C99 package and loader guide.
+* **Instances of a component type a mod registers are not saved or built from content — yet.**
+  The engine reads a component through the type's own serializer rather than by casting its bytes,
   which is what lets it show a type it was never compiled against. A native type registered
   through the ABI supplies no serializer, so it holds runtime state and behaviour, and
   `world_component_type_savable` says false before you find out the hard way. The additive fix
@@ -86,6 +82,8 @@ Being honest about this is more useful than a feature list.
 ## Where to go next
 
 * [`content-mods.md`](content-mods.md) — write one, compile it, load it.
+* [`native-mods.md`](native-mods.md) — build a C99 library against `foundry.h`, register a
+  component and system, and load it through a native-capable host.
 * [`../design/content-schemas.md`](../design/content-schemas.md) — the `.fdt` format and the
   content model, in full.
 * [`../design/assets.md`](../design/assets.md) — how assets are identified and loaded.

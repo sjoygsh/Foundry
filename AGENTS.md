@@ -36,17 +36,16 @@ there because agents reliably skip it.
 
 Read `PROJECT_STATE.md` for the real answer — this section goes stale and that one does not.
 
-As of 2026-09-08: **M7 (modding) is open and four of its seven steps are done.** The
-implementation order is `docs/design/public-abi.md` §19. Steps 1–4 are committed and pushed;
-**step 5 is next** and is `render2d`, `ui`, `audio` and `physics2d` through the ABI.
+As of 2026-09-09: **M7 (modding) is complete, all seven steps.** `mod` discovers and
+dependency-orders content packages; the installed C99/C++ header specifies the 135-call
+`FoundryApi_v1`; `abi` validates and publishes the host's subsystems; and the native loader
+runs package-local libraries through a refusal-safe lifecycle. `docs/modding/native-mods.md`
+was written by building its C mod outside this repository and running its content, registered
+component and system through an external proof host.
 
-**There is uncommitted work in the tree, and it is step 6, not step 5.** `engine/src/abi/`
-`native_loader.zig` (167 lines, one test), its three wiring lines in `abi/root.zig`, and an
-`Entry.abi` field in `engine/src/mod/resolve.zig`. It compiles and the suite is green with it.
-It was deliberately not committed: it opens dynamic libraries, it has not been reviewed, and
-step 6 is not a unit until it has every refusal path and `engine/tests/mod_pipeline.zig`.
-Either finish and review it properly, or leave it alone — do not commit it as a side effect of
-committing something else.
+**M8 is next, but it has not been designed.** Its scripting-language decision, architecture
+and implementation order must be written before code. Do not infer them from M7 or start a
+scripting host opportunistically; read `PROJECT_STATE.md` for the current handoff.
 
 ## 3. Building and verifying
 

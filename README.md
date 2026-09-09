@@ -8,17 +8,18 @@ leave behind something that runs.
 
 ## Status
 
-**M0 through M3 complete.** It draws: thousands of sprites under a camera that pans, zooms
-and picks, at vsync, with text — and everything it draws is content, loaded by content ID
-from packages the base game and a mod share one path into. Edit a content file and the
-running program follows without restarting.
+**M0 through M7 complete.** Foundry is a playable, inspectable and natively moddable 2D
+engine. Content packages are discovered and dependency-ordered; native C mods load through
+the versioned public ABI and can add component types, systems and behaviour without engine
+source changes.
 
-Tier 1 content modding works: see [docs/modding](docs/modding/).
+Tier 1 content modding and Tier 3 native modding work: see
+[docs/modding](docs/modding/). Tier 2 scripting is M8.
 
 ```sh
 ./scripts/install-zig.sh   # the only tool you need
 zig build run -Drhi=metal  # opens a window and draws; escape quits
-zig build test             # 502 tests
+zig build test             # 1117 headless tests
 ```
 
 Implemented so far:
@@ -34,8 +35,17 @@ Implemented so far:
 * **`asset`** — Foundry's own PNG decoder, and the registry that turns a content ID into a
   loaded asset through loaders registered at runtime. Nothing is addressable by path.
 * **`render2d`** — sprite and text batching, atlases, cameras.
+* **`physics2d`** — shapes, tile grids, broadphase, collision queries and response.
+* **`ui`** — an immediate-mode kernel that emits a renderer-independent draw list.
+* **`scene`** — runtime-registered components and systems, entities, queries and world saves.
+* **`audio`** — Foundry's WAV decoder and lock-free mixer over the platform audio device.
 * **`app`** — the engine loop, subsystem lifecycle, the log sink, and loading content
   packages in the order it is given them.
+* **`debug`** — the in-process profiler, memory report, log console, entity inspector and
+  content browser.
+* **`mod`** — manifests, package discovery, dependency resolution and deterministic order.
+* **`abi`** — the installed C99/C++ header, 135-call `FoundryApi_v1`, host boundary and
+  native-library lifecycle.
 * **`tools/fpack`** — the content compiler: a package directory in, one `.fpk` out.
 * **`content/core`** — package zero. The engine's own content, loaded through exactly the
   path a mod's package uses, because that is the only durable way to know that path works.
@@ -43,10 +53,9 @@ Implemented so far:
 [PROJECT_STATE.md](PROJECT_STATE.md) records exactly where things stand, and is updated
 every session.
 
-This is currently a solo project in its earliest stage. It is developed in the open because
-the boundaries are worth making checkable, not because it is ready to be depended on — the
-public API does not exist yet, and nothing is stable. Contribution infrastructure will appear
-when there is something to contribute to.
+This is currently a solo project in an early stage. It is developed in the open because the
+boundaries are worth making checkable. The versioned public C ABI now exists, but Foundry is
+not yet a shipped release and interfaces outside that ABI remain free to evolve.
 
 ## Scope
 

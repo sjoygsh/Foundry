@@ -3,7 +3,10 @@
 Everything here works today, against the sandbox. It was written by doing it.
 
 A content mod is a directory. You compile it into one file, put that file where the game
-looks, and name it in the load order. There is no manifest, no registration, and no code.
+looks, and enable its content ID in the load order. Its `foundry:mod` manifest supplies its
+identity, version, dependencies and license; there is no code or registration step. For the
+optional native library that can accompany the same package, see
+[`native-mods.md`](native-mods.md).
 
 ---
 
@@ -432,4 +435,6 @@ deliberate and tested.
 ## 12. What this does not cover yet
 
 See [`README.md`](README.md) for the honest list. The short version: no mod manager, no
-dependency resolution, no manifests, no partial edits, no scripting, no native mods.
+partial edits (`@patch` and `@remove` are reserved but refused), no scripting, and no
+signing or sandboxing for native code. Native package loading and the C ABI are documented in
+[`native-mods.md`](native-mods.md).

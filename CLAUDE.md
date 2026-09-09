@@ -400,7 +400,7 @@ cannot use it. Therefore **adding a subsystem includes deciding what, if anythin
 ### What a mod is made of
 
 **A mod is a content package** (ADR-0027), and its manifest — id, version, dependencies,
-engine range, license (ADR-0016) — is a record inside it, of a schema `content/core` declares.
+engine range, license (ADR-0016) — is a record inside it, of an engine-declared schema.
 Every tier is that package with something optional attached: Tier 1 is the package alone, Tier 3
 adds a native library the manifest names, Tier 2 adds scripts. So there is one identity (the
 package's content ID, I2), one version, one file, and no second format that can disagree with

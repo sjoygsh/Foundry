@@ -8,6 +8,7 @@ const std = @import("std");
 const core = @import("core");
 const data = @import("data");
 const platform = @import("platform");
+const rhi = @import("rhi");
 const scene = @import("scene");
 const app = @import("app");
 const mod = @import("mod");
@@ -16,6 +17,8 @@ const options = @import("mod_pipeline_options");
 
 const testing = std.testing;
 const gpa = testing.allocator;
+const TestEngine = app.EngineOf(platform.null_backend.Platform, rhi.null_backend.Device);
+const TestHost = abi.HostOf(TestEngine);
 
 const core_source =
     \\foundry:mod foundry:core {
@@ -142,7 +145,7 @@ test "a discovered package loads native code, registers behaviour, and shuts dow
     for (resolution.order, packages) |entry, *package| {
         package.* = .{ .file = entry.file, .root = entry.root };
     }
-    const engine = try app.Engine.init(gpa, .{
+    const engine = try TestEngine.init(gpa, .{
         .headless = true,
         .content_dir = content_dir,
         .content = packages,
@@ -152,10 +155,10 @@ test "a discovered package loads native code, registers behaviour, and shuts dow
 
     var world: scene.World = .init(gpa, &engine.schemas, .default);
     defer world.deinit();
-    var host: abi.Host = .{ .engine = engine, .world = &world };
+    var host: TestHost = .{ .engine = engine, .world = &world };
     host.bind();
     defer host.unbind();
-    var loader = abi.NativeLoaderOf(abi.Host).init(gpa, &host);
+    var loader = abi.NativeLoaderOf(TestHost).init(gpa, &host);
     defer loader.deinit();
 
     try loader.load(content_dir, resolution.order, &diags);

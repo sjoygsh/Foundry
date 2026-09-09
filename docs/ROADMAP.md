@@ -300,7 +300,7 @@ widgets are replaceable, the introspection APIs reach the ABI at M7.
 
 ## Phase 3 — Modding and shipping
 
-### M7 — Moddable: "others can extend it" — **opened 2026-09-07**
+### M7 — Moddable: "others can extend it" — **complete (2026-09-07 to 2026-09-09)**
 
 * The public C ABI: `FoundryApi_v1` table, opaque handles, versioning (ADR-0004).
 * Mod manifests: ID, version, dependencies, compatibility range, **license field** (ADR-0016).
@@ -309,11 +309,15 @@ widgets are replaceable, the introspection APIs reach the ABI at M7.
 * Untrusted-input validation across the whole boundary.
 * Mod-facing API documentation in `docs/modding/`.
 
-**Exit criteria:** a mod built outside the engine tree adds a new component type, new content,
-and new behaviour, without engine source changes.
+**Exit criterion met:** a C99 mod built outside the engine tree against only the installed
+`foundry.h` was discovered as a package, loaded its own content, registered a component type
+and system, and changed its content-supplied value from 41 to 42 on the first update — without
+an engine source change. The author guide in `docs/modding/native-mods.md` was followed
+verbatim to build the package and library, then the result was run through an external host.
 
-**It opened where the last five did: at the decisions, before the design document.** Two, both
-`Proposed`, and the first is a correction rather than a new question.
+**At opening, it followed the last five milestones: it began at the decisions, before the design
+document.** The two ADRs were both `Proposed`; the first is a correction rather than a new
+question.
 
 [**ADR-0026**](adr/0026-abi-module-and-host.md) — **`abi -> app` is wrong and the build graph
 says so.** ADR-0007 wrote that line on the project's second day and ADR-0025 copied it forward;
@@ -328,19 +332,20 @@ the same reason. A capability whose subsystem is absent answers `Unavailable`; t
 never changes, because that is most of what a version means.
 
 [**ADR-0027**](adr/0027-mods-are-content-packages.md) — **a mod is a content package**, and its
-manifest is a `foundry:mod` record inside it, declared by `content/core`. Every tier is a
-package with something optional attached, so identity, version, dependencies and the license
-field ADR-0016 asks for are a record like any other — no second format, no sidecar to keep in
-sync, no identity derived from a folder name. `fpack` reads the name and version from the
-manifest instead of the command line. Discovery, resolution and load order become a new L2
-module `mod`, **below `app`**, because a Tier 1 mod list has to be computable by a game that
-loads no code at all, and because its output is exactly the ordered list `app.Config.content`
-already takes — so `data` still consumes an order and does not compute one.
+manifest is a `foundry:mod` record inside it, using an engine-declared schema; `content/core`
+carries its own record like every other package. Every tier is a package with something optional
+attached, so identity, version, dependencies and the license field ADR-0016 asks for are a
+record like any other — no second format, no sidecar to keep in sync, no identity derived from a
+folder name. `fpack` reads the name and version from the manifest instead of the command line.
+Discovery, resolution and load order become a new L2 module `mod`, **below `app`**, because a
+Tier 1 mod list has to be computable by a game that loads no code at all, and because its output
+is exactly the ordered list `app.Config.content` already takes — so `data` still consumes an
+order and does not compute one.
 
 **Both accepted 2026-09-07, and [`design/public-abi.md`](design/public-abi.md) is written
 against them the same day** — the table and the mod lifecycle together, because a manifest naming
 a library the table could not receive would be two designs that only look like one. §19 is the
-implementation order, seven steps, and nothing is implemented against it yet.
+implementation order, seven steps. At that point nothing was implemented against it yet.
 
 The document settles three things worth knowing without reading it. **The only signature frozen
 forever is `foundry_mod_init(get_api, self)`** — a *query function* rather than the table itself,
@@ -363,6 +368,16 @@ they cannot run without and the package they are, and `FOUNDRY_SANDBOX_PACKAGES`
 **content ids** instead of filenames — which is the visible half of ADR-0027. `docs/modding/content-mods.md`
 was updated and then followed verbatim. **1005 tests**, up from 981. Tier 1 modding, which has
 worked since M3, stopped needing a hand-written list.
+
+**All seven steps are done (2026-09-09).** The installed hand-written header and its
+cross-language agreement freeze the boundary; `FoundryApi_v1` publishes 135 validated calls
+over a host-supplied engine, world, renderer, UI, mixer and collision world; and native images
+load from their package-local directories, initialise in resolved order and shut down once in
+reverse order. Refused native code is neutralised without discarding its content, and images
+that have run remain mapped for process lifetime. The full in-tree pipeline and every refusal
+path are covered by `engine/tests/mod_pipeline.zig`; the final outside-tree proof exercises
+the same lifecycle as an independent consumer. **1117 headless tests.** M8 is next and remains
+undesigned until its language and scripting-host architecture are decided.
 
 ### M8 — Scriptable: "modders can extend it"
 

@@ -1,13 +1,24 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-09
-**Updated by:** **M7 is open, and six of its seven steps are done.** Both ADRs are accepted,
+**Updated by:** **M7 is complete, all seven steps.** Both ADRs are accepted,
 `docs/design/public-abi.md` is written, **`engine/src/mod/` exists** — a new L2 module holding
 manifests, discovery, dependency resolution and a stable topological sort — and **`engine/src/abi/`
 exists**: the types that cross the public boundary, the hand-written `foundry.h` that specifies
 them, the agreement that keeps the two the same, and **`FoundryApi_v1` — one hundred and
-thirty-five calls a mod can make**, now including the world, rendering, UI, audio and collision.
-**1117 tests**, up from 981 at the start of the milestone.
+thirty-five calls a mod can make**, including the world, rendering, UI, audio and collision,
+and the native loader runs package-local code through the documented lifecycle. **1117
+headless tests**, up from 981 at the start of the milestone.
+
+**The exit criterion was executed outside this repository.** The exact C99 mod in
+`docs/modding/native-mods.md` compiled against only the installed `foundry.h`; its manifest and
+content compiled with `fpack`; and a separate host discovered `lanterns:mod`, resolved it after
+`foundry:core`, merged its content, and loaded its package-local dynamic library. The mod read 41
+from `lanterns:config`, registered the `lanterns:counter` component and `lanterns:advance`
+system, and changed the component to 42 on the first update. No engine source or private header
+was part of the mod build. The proof itself stays outside the tree; the durable artifact is the
+guide that was followed, which resolves `public-abi.md` §18 open question 1 without turning the
+mod into a privileged in-tree sample.
 
 **What step 1 actually finished is M3's claim.** Tier 1 content modding has worked since
 2026-09-05; what it lacked was a way for a package to be *found*. Now every package in this
@@ -163,7 +174,8 @@ is invalidated. The image and append-only world metadata remain, but no later fr
 calls into it. Mod generations are process-wide across host instances, so replacing the ambient
 host cannot make an old library's `self` name a new mod by coincidence.
 
-**Next is step 7** — the external mod and mod-author documentation that meet M7's exit criterion.
+**Next is M8 design, not implementation.** The scripting language, sandbox/resource model,
+hot-reload lifecycle and host architecture remain undecided and must be designed before code.
 
 ---
 
@@ -218,8 +230,8 @@ consumer has asked for a shared one, and none was manufactured to close the ques
 **Both ADRs were accepted the same day, `CLAUDE.md` §4.1, §4.3, §4.5 and §5 updated with them,
 and [`docs/design/public-abi.md`](docs/design/public-abi.md) is written.** ADR-0007 and ADR-0025
 each carry the wrong `abi -> app` line and code depends on both, so each gained a dated pointer
-to ADR-0026 rather than an edit (`CLAUDE.md` §8). **Nothing is implemented**; §19 of the design
-document is the seven-step order.
+to ADR-0026 rather than an edit (`CLAUDE.md` §8). **At that point nothing was implemented**;
+§19 of the design document is the seven-step order.
 
 **Four things the document settles that the ADRs did not.**
 
@@ -556,25 +568,18 @@ is mature enough to need them rather than as decoration.
 **Phase 3 — Modding and shipping**, entered 2026-09-07. Phase 1 (M0, M1) closed with the first
 pixels; Phase 2 closed with M6, and every milestone in it is complete: sprites, content,
 entities, a playable sample, and an overlay that diagnosed its own cost. **M7 — Moddable:
-"others can extend it" — opened 2026-09-07** at two `Proposed` ADRs, 0026 and 0027, with no code
-and no design document against either yet. This is the milestone the last four have been paying
-for: I1 through I9 exist so that it is possible, and nothing about it should require retrofitting
-anything below.
+"others can extend it" — completed 2026-09-09**, all seven design steps and the outside-tree
+exit proof. M8 is next; it has roadmap requirements but no language decision, design document
+or implementation order yet.
 
 ## Current milestone
 
-**M7 — Moddable: "others can extend it." Open, 2026-09-07.** Six roadmap bullets — the
-`FoundryApi_v1` table, manifests, discovery and load order, native mod loading, untrusted-input
-validation across the whole boundary, and `docs/modding/`. **Nothing is implemented.** What
-exists is the pair of decisions above; `docs/design/public-abi.md` is owed before the first line
-of code, and neither ADR is accepted.
-
-The exit criterion is the sharpest one the roadmap holds: *a mod built outside the engine tree
-adds a new component type, new content, and new behaviour, without engine source changes.* Note
-what each third of it tests — a component type is `scene` through the ABI, content is Tier 1
-which already works, and new behaviour is a native library through `platform.Library`. Note also
-"outside the engine tree", which ADR-0017 makes a real constraint rather than a phrasing: where
-that mod lives is a question this milestone has to answer and has not yet.
+**M7 — Moddable: "others can extend it." Complete, 2026-09-07 to 2026-09-09.** All six
+roadmap bullets and all seven steps of `public-abi.md` §19 are implemented. The exit criterion
+was met by the outside-tree `lanterns` package recorded at the top of this file: content,
+component type and behaviour all crossed the public boundary without an engine source change.
+The design's remaining open questions stay open; they are not blockers to the lifecycle M7
+specified.
 
 **The milestone behind it — M6 — is complete**; its record is the header of this file. What
 follows in this section is what **M5** opened with, kept because the decisions and the design are
@@ -694,8 +699,9 @@ onward; the sandbox draws the one it ships, and a player walks it and is stopped
 walls. There are **two samples**: `samples/sandbox` demonstrates the capabilities and
 `samples/room` is a small game built out of them.**
 
-**M7, newest — the two modules the mod system is made of.** Neither is a capability yet;
-both are the shape the capabilities have to fit.
+**M7, newest — the complete mod system and public boundary.** Tier 1 packages are discovered
+and ordered, and Tier 3 libraries receive the same validated surface a future script host and
+tool must use.
 
 * `engine/src/mod/` (L2, `core` + `data` + `platform`) — `schemas.zig` declares `foundry:mod`,
   `manifest.zig` reads one out of a compiled package, `discover.zig` reads every `.fpk` in a
@@ -703,15 +709,16 @@ both are the shape the capabilities have to fit.
   enabled list into a load order: a stable topological sort tie-broken by content id ascending,
   where a package that cannot load is **skipped with a diagnostic** rather than refusing the
   game (ADR-0027).
-* `engine/src/abi/` (L5, `core` + `data` + `platform` + `asset` + `app`) — `foundry.h`,
-  hand-written and installed to `<prefix>/include/foundry.h`; `types.zig`, holding every type
-  that crosses and nothing that uses one; `host.zig`, the subsystems a host supplies plus the
-  ring of nested-record views; `api.zig`, the sixty-five-member table and `get_api`;
-  `calls_engine.zig`, `calls_content.zig` and `calls_asset.zig`, one shape each — validate,
-  call one subsystem, translate; `sweep.zig`, the two properties that hold of every entry;
-  `test_engine.zig`, the fake the boundary tests bind; and the two halves of the agreement,
-  `agreement.c` and `agreement.zig`, which fail the build when the header and the engine stop
-  matching (ADR-0004, ADR-0026).
+* `engine/src/abi/` (L5, the union of v1's published subsystems, never `rhi`) — `foundry.h`, hand-written and
+  installed to `<prefix>/include/foundry.h`; the matching types and agreement; the 135-call
+  `FoundryApi_v1`; a host lent the engine, world, renderer, UI, mixer and collision world; and
+  one calls module per capability, each validating, calling one subsystem and translating the
+  result. `native_loader.zig` opens only a resolved package's own decorated library name, calls
+  the frozen init entry point, neutralises refused callbacks and shuts successful mods down in
+  reverse order while keeping invoked images mapped. `sweep.zig` retains the two table-wide
+  properties: garbage never crashes, and an absent subsystem is `unavailable`. The C and Zig
+  halves of the agreement fail the build when the header and engine stop matching
+  (ADR-0004, ADR-0026).
 
 **M5, newest — `samples/room` and its content package.** A second consumer of the engine,
 built from the engine exactly as it already was:
@@ -2032,7 +2039,7 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**M7 is open, and everything below the next four lines is the record of M5 and M6.**
+**M7 is complete. Everything below the next four lines is the record of M5 and M6.**
 
 ~~1. Accept ADR-0026 and ADR-0027.~~ ~~2. Update `CLAUDE.md`.~~ ~~3. Write
 `docs/design/public-abi.md`.~~ **All done 2026-09-07.** What is left is code, and
@@ -2061,17 +2068,15 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
    reference and follow reloads, UI nesting and identity are guarded, audio queue refusal is
    observable, and collision queries preserve written/total counts and grid identity. 23 new
    tests, including a two-renderer reload integration test and deliberate C agreement breaks.
-6. **Native loading** — the library, `foundry_mod_init`, the lifecycle phases, every refusal
-   path, and `engine/tests/mod_pipeline.zig`.
-7. **The exit criterion**, and `docs/modding/` written by doing it and verified by following it
-   verbatim, which is how `content-mods.md` stayed true.
+~~6. **Native loading**~~ — **done 2026-09-09.** Package-local dynamic libraries initialise
+   in resolved order and shut down once in reverse order; every refusal path and the full
+   lifecycle are covered by `engine/tests/mod_pipeline.zig`.
+~~7. **The exit criterion**~~ — **done 2026-09-09.** `docs/modding/native-mods.md` was written
+   by building its package and C99 library outside the tree, then verified through a separate
+   host: content value 41 became component value 42 when its registered system ran.
 
-**Open, and owed an answer inside this milestone, not before it:** where the exit criterion's
-mod lives. It must be "built outside the engine tree" and ADR-0017 keeps games out of this
-repository, but a mod is not a game and `samples/` is where the smallest thing that exercises a
-capability goes. The three candidates are a `samples/mod/` built as its own artifact, a
-directory built by a separate `build.zig` invocation, and a genuinely separate repository. The
-criterion is what it proves, not where it sits.
+**Next:** open M8 at its decisions and write its design before implementation. No scripting
+language, sandbox/resource model or implementation order has been chosen yet.
 
 ---
 

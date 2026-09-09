@@ -20,10 +20,8 @@
 //! not asserted, not assumed, not documented as a precondition. The boundary never panics
 //! and never propagates a Zig error.
 //!
-//! **What is built so far:** the type layer and the skeleton (`public-abi.md` §19 steps 2
-//! and 3) — `Host`, `get_api`, and a `FoundryApi_v1` carrying what `app` and `data` already
-//! answer. The `scene`, `render2d`, `ui`, `audio` and `physics2d` groups are steps 4 and 5;
-//! `native_loader` owns the process-lifetime image and lifecycle work.
+//! **What is built:** `Host`, `get_api`, the complete 135-call `FoundryApi_v1`, and
+//! `native_loader`'s process-lifetime image and lifecycle work (`public-abi.md` §19).
 //!
 //! Design: `docs/design/public-abi.md`. The header is `foundry.h`, beside this file, and it
 //! is the specification rather than a description of what is here.
