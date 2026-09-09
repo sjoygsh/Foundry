@@ -13,7 +13,8 @@ painful; maintaining it as you go costs a few minutes per dependency.
 
 ## Current dependencies
 
-None yet. SDL3 will be the first.
+SDL3 and Lua. Their exact versions, provenance, elected licenses and distribution status are
+recorded in the entries beside this file.
 
 ## What to record
 

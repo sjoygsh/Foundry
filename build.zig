@@ -299,6 +299,40 @@ pub fn build(b: *std.Build) void {
         });
     }
 
+    // M8 step 1 deliberately keeps the scripting host outside the engine layering table.
+    // It is an optional L6 consumer: it may name `core`, and its private C bridge is
+    // compiled beside the pinned Lua sources, but no existing engine module can depend on
+    // it and it has no gameplay or ABI surface yet.
+    const script_mod = if (b.lazyDependency("lua", .{})) |lua| blk: {
+        const mod = b.createModule(.{
+            .root_source_file = b.path("engine/src/script/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        mod.addImport("core", modules.get("core").?);
+        mod.addIncludePath(b.path("engine/src/script"));
+        mod.addIncludePath(lua.path("src"));
+        mod.link_libc = true;
+
+        const lua_sources = .{
+            "lapi.c",    "lcode.c",  "lctype.c",  "ldebug.c", "ldo.c",     "ldump.c",
+            "lfunc.c",   "lgc.c",    "llex.c",    "lmem.c",   "lobject.c", "lopcodes.c",
+            "lparser.c", "lstate.c", "lstring.c", "ltable.c", "ltm.c",     "lundump.c",
+            "lvm.c",     "lzio.c",   "lauxlib.c",
+        };
+        inline for (lua_sources) |name| {
+            mod.addCSourceFile(.{
+                .file = lua.path(b.fmt("src/{s}", .{name})),
+                .flags = &.{ "-std=c99", "-fno-fast-math" },
+            });
+        }
+        mod.addCSourceFile(.{
+            .file = b.path("engine/src/script/bridge.c"),
+            .flags = &.{ "-std=c99", "-pedantic", "-Wall", "-Wextra", "-Werror", "-fno-fast-math" },
+        });
+        break :blk mod;
+    } else null;
+
     // Samples are consumers of the engine, exactly as a game in its own repository
     // would be (ADR-0017): they depend on `app` and reach nothing that `app` does not
     // hand them. `samples/` holds the smallest thing that exercises a capability — when
@@ -546,6 +580,17 @@ pub fn build(b: *std.Build) void {
 
         const run = b.addRunArtifact(unit_tests);
         test_step.dependOn(&run.step);
+    }
+
+    if (script_mod) |mod| {
+        const script_tests = b.addTest(.{ .root_module = mod });
+        check_step.dependOn(&script_tests.step);
+        const run_script_tests = b.addRunArtifact(script_tests);
+        test_step.dependOn(&run_script_tests.step);
+        // A separate headless entry point lets the host-side regression harness run
+        // the runaway fixture under its own wall-clock deadline. The instruction hook
+        // is the deterministic guard; this step is not a simulation timeout.
+        b.step("script-test", "Run headless scripting bridge tests").dependOn(&run_script_tests.step);
     }
 
     // Tools are tested like modules are. `fpack`'s tests reach a real filesystem, which is

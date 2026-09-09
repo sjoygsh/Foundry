@@ -15,13 +15,13 @@ source changes.
 
 Tier 1 content modding and Tier 3 native modding work: see
 [docs/modding](docs/modding/). Tier 2 scripting is M8: its
-[architecture and eight-step plan](docs/design/scripting.md) are written; implementation
-has not begun.
+[architecture and eight-step plan](docs/design/scripting.md) are written; step 1's protected
+Lua runtime boundary is complete, with script assets and manifests next.
 
 ```sh
 ./scripts/install-zig.sh   # the only tool you need
 zig build run -Drhi=metal  # opens a window and draws; escape quits
-zig build test             # 1117 headless tests
+zig build test             # 1131 headless tests
 ```
 
 Implemented so far:
@@ -46,6 +46,8 @@ Implemented so far:
 * **`debug`** — the in-process profiler, memory report, log console, entity inspector and
   content browser.
 * **`mod`** — manifests, package discovery, dependency resolution and deterministic order.
+* **`script`** — an optional restricted Lua runtime with protected execution, heap and
+  instruction quotas; package assets and gameplay bindings are subsequent M8 steps.
 * **`abi`** — the installed C99/C++ header, 135-call `FoundryApi_v1`, host boundary and
   native-library lifecycle.
 * **`tools/fpack`** — the content compiler: a package directory in, one `.fpk` out.

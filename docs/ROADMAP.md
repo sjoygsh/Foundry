@@ -377,19 +377,21 @@ reverse order. Refused native code is neutralised without discarding its content
 that have run remain mapped for process lifetime. The full in-tree pipeline and every refusal
 path are covered by `engine/tests/mod_pipeline.zig`; the final outside-tree proof exercises
 the same lifecycle as an independent consumer. **1117 headless tests.** M8's design is now
-written; implementation has not begun.
+written; its first implementation step is complete below.
 
 ### M8 — Scriptable: "modders can extend it"
 
-**Designed 2026-09-09; 0/8 implementation steps complete.**
+**Designed 2026-09-09; 1/8 implementation steps complete.**
 [ADR-0028](adr/0028-scripting-lua.md) selects restricted Lua 5.5.1;
 [ADR-0029](adr/0029-script-host-and-reload.md) fixes the public boundary and reload lifetime.
 [`design/scripting.md`](design/scripting.md) specifies the architecture; §16 is the order:
 runtime containment, script assets/manifests, ABI v2 source access, bounded bindings,
 package lifecycle, hot reload, adversarial/determinism proof, and the outside-tree author guide.
-The design session stops before step 1. M9 remains undesigned.
+Step 1, completed 2026-09-10, pins/builds Lua and proves its private protected boundary,
+quotas and minimal allowlisted fixture on every supported build target. Step 2 (script assets
+and manifest v2) has not begun. M9 remains undesigned.
 
-* Scripting language decision — **made in ADR-0028; implementation pending**.
+* Scripting language decision — **made in ADR-0028; runtime boundary implemented**.
 * Scripting host over the same public ABI; no separate surface.
 * Sandboxing, resource limits, script hot reload.
 * Error reporting good enough for a non-programmer mod author.

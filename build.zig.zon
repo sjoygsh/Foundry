@@ -6,6 +6,15 @@
     .minimum_zig_version = "0.16.0",
 
     .dependencies = .{
+        // PUC Lua, embedded by the optional M8 L6 scripting test module. The
+        // interpreter is compiled directly from this exact upstream archive;
+        // no Lua build script or system installation is used (ADR-0028).
+        // License entry: THIRD_PARTY_LICENSES/lua.md (MIT)
+        .lua = .{
+            .url = "https://www.lua.org/ftp/lua-5.5.1.tar.gz",
+            .hash = "N-V-__8AAPqeFQDipy0CdI6MKBmwYYarybBTO3IIJPrSzH_w",
+            .lazy = true,
+        },
         // SDL3, via its Zig build-system port. Confined to the `platform` module
         // (ADR-0002); nothing above L1 may reference it, and `rhi` never sees an SDL
         // type — it gets an opaque NativeSurfaceHandle instead.

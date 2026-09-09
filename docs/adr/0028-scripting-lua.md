@@ -1,6 +1,6 @@
 # ADR-0028: Restricted Lua for Tier 2 scripting
 
-**Status:** Accepted (constraint only; implementation starts at M8 step 1)
+**Status:** Accepted (runtime boundary implemented in M8 step 1)
 **Date:** 2026-09-09
 
 ## Context
@@ -80,3 +80,12 @@ The pinned runtime cannot contain errors and enforce the documented limits on th
 targets; maintained upstream fixes require a deliberate pin update; measured gameplay cannot
 meet its budget without another runtime; or real authors need compiled multi-language mods.
 Do not substitute a runtime during implementation without recording the revised decision.
+
+## Implementation note — 2026-09-10
+
+Step 1 passed its feasibility gate with Lua 5.5.1 unchanged: host, Linux and Windows builds;
+protected syntax/runtime/recursion/instruction failures; exhaustive early allocation refusal;
+a real heap-quota exhaustion and recovery; and stable diagnostics for non-string errors. The
+bridge uses Lua's public API only. Script assets, public ABI bindings and package/reload
+lifecycle remain unimplemented, so this evidence accepts the runtime boundary rather than
+claiming M8's full sandbox contract is complete.

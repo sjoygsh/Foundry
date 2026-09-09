@@ -1,7 +1,7 @@
 # Scripting: the Tier 2 host
 
-**Status:** designed 2026-09-09; **0 of 8 implementation steps complete.**
-**Stop point for this planning session:** before §16 step 1. No dependency or code installed.
+**Status:** designed 2026-09-09; **1 of 8 implementation steps complete.**
+**Current stop point:** after §16 step 1; step 2 has not begun.
 
 Rests on [ADR-0028](../adr/0028-scripting-lua.md) (runtime),
 [ADR-0029](../adr/0029-script-host-and-reload.md) (boundary and lifetime), and
@@ -576,7 +576,35 @@ steps simply because a session has budget. This planning commit completes none o
 
 ## 17. Planning handoff
 
-Architecture and sequence are written; runtime/build compatibility, security tests,
-performance and guide execution are **unverified until their implementation steps**.
-The next authorized implementation unit, when the user resumes, is §16 step 1 only.
-Planning changes no Zig/C source, public header, dependency manifest or existing behavior.
+Architecture and sequence are written. Step 1 proves the Lua/C/Zig containment boundary;
+package/source integration, the public ABI addition, gameplay bindings, reload, end-to-end
+security, performance and guide execution remain **unverified until their implementation
+steps**. The next authorized unit, when the user resumes, is §16 step 2 only.
+
+## Resolution — 2026-09-10, step 1
+
+Lua 5.5.1 builds directly from its pinned official archive on the host, Linux and Windows
+targets. The optional L6 module imports `core` and links Lua privately; existing engine modules,
+tools and samples do not import it. A C-owned outer `lua_pcall` contains bootstrap and each
+execution, with a nested protected call distinguishing script faults. The bridge uses only
+Lua's public headers/API. `lua_newstate` contains its own initialization failure internally,
+and closing can run no author finalizer because this environment publishes neither metatables
+nor finalizable userdata.
+
+The step-1 fixture exposes only `assert`, `error`, `type`, bounded scalar `tonumber`/`tostring`
+and `ipairs`, enough to prove allowlist construction, execution and failure recovery. Its
+single integer result is a test seam, not §11's module contract. `select`, deterministic
+`pairs`, the bounded math/string groups and `foundry` bindings remain due when step 4 installs
+the authored environment; this does not narrow §8's final allowlist.
+
+The Zig wrapper allocates a stable allocator context so moving its `Runtime` value cannot leave
+C with a pointer into moved Zig storage. Lua allocations are charged before being attempted;
+replacement allocation preserves the old block on failure. Tests walk allocation refusal from
+index zero until bootstrap plus execution succeeds, separately exhaust a real 64 KiB quota,
+and require same-VM recovery. Teardown injection leaves the state owned so ordinary `deinit`
+still closes and frees it.
+
+The three guards were also broken one at a time. Disabling the instruction hook made the
+headless fixture exceed a host-side three-second process deadline; bypassing the quota changed
+the heap-limit test from `memory_limit` to success; and publishing a forbidden `debug` global
+broke the allowlist test. The exact temporary edits were restored before verification.
