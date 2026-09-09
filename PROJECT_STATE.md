@@ -1,13 +1,13 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-09
-**Updated by:** **M7 is open, and five of its seven steps are done.** Both ADRs are accepted,
+**Updated by:** **M7 is open, and six of its seven steps are done.** Both ADRs are accepted,
 `docs/design/public-abi.md` is written, **`engine/src/mod/` exists** — a new L2 module holding
 manifests, discovery, dependency resolution and a stable topological sort — and **`engine/src/abi/`
 exists**: the types that cross the public boundary, the hand-written `foundry.h` that specifies
 them, the agreement that keeps the two the same, and **`FoundryApi_v1` — one hundred and
 thirty-five calls a mod can make**, now including the world, rendering, UI, audio and collision.
-**1108 tests**, up from 981 at the start of the milestone.
+**1117 tests**, up from 981 at the start of the milestone.
 
 **What step 1 actually finished is M3's claim.** Tier 1 content modding has worked since
 2026-09-05; what it lacked was a way for a package to be *found*. Now every package in this
@@ -132,8 +132,38 @@ renderer. The fixes are exercised directly. Texture wrappers retain an asset ref
 resolve its current payload through the exact loader identity on every draw, so they also follow
 a successful asset reload instead of retaining a stale GPU handle.
 
-**Next is step 6** — native library loading and the complete lifecycle/refusal pipeline. Its
-uncommitted starting work remains deliberately separate from this step.
+**Step 6 is the native lifecycle.** The resolved order now carries each manifest's ABI range
+to `abi.NativeLoaderOf`, which validates the package directory and platform-neutral library
+name, applies the host's `.dylib` / `.dll` / `.so` decoration, opens the image, resolves the
+required init and optional shutdown symbols, and issues a generational `FoundryMod` identity.
+Successful mods shut down exactly once in reverse load order. An image whose init ran remains
+mapped even when init refused — it may already have registered a callback — but the refused mod
+receives no shutdown call, as the public header promises.
+
+**The complete pipeline is now an integration test rather than an inference.** `build.zig`
+builds small C99 dynamic libraries against only `foundry.h` on every target; the test writes
+real packages, discovers and resolves them, lets `app` merge their content, opens their native
+images, observes a C mod register a component and a system, runs that system, and proves reverse
+shutdown order with two libraries. Separate images exercise a missing init symbol, an optional
+shutdown that is absent, a known refusal and an unknown result code; missing ABI metadata, an
+unsupported ABI range, a missing or corrupt image, unsafe location input and the native identity
+limit are diagnosed and skipped without losing content.
+
+**Three boundary defects in the starting seed were fixed.** A native init result crosses as raw
+`i32` and is looked up only after the call; typing it as Zig's `Result` enum made an invented C
+value illegal before validation. Mod handles are now resolved on every self-scoped owning call,
+with generations preserved across unbind/rebind, so fabricated bits and stale identities cannot
+claim another mod's components, systems or counters. The issued identity also carries its
+validated package spelling, so `log_write` finally attributes a loaded mod's lines by name while
+remaining available before or during refusal.
+
+A mod that registers foreign callbacks and then refuses is also made inert before the loader
+continues: callback slots lose their function pointers, counters are unregistered and its `self`
+is invalidated. The image and append-only world metadata remain, but no later frame or teardown
+calls into it. Mod generations are process-wide across host instances, so replacing the ambient
+host cannot make an old library's `self` name a new mod by coincidence.
+
+**Next is step 7** — the external mod and mod-author documentation that meet M7's exit criterion.
 
 ---
 

@@ -143,6 +143,9 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
         /// The bound host, which is what a table's functions find. One per process and per
         /// engine type; binding a second replaces the first and says so.
         var bound: ?*Self = null;
+        /// Shared by every host instance of this type so a handle issued by a replaced host
+        /// cannot alias the same slot in its successor.
+        var next_mod_generation: u32 = 0;
 
         /// One borrowed view of a nested block.
         pub const NestedView = struct {
@@ -268,6 +271,9 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
         const ModSlot = struct {
             active: bool = false,
             generation: u32 = 0,
+            id: core.ContentId = .none,
+            name_buffer: [data.id.max_bytes]u8 = @splat(0),
+            name_len: usize = 0,
         };
 
         /// Publishes this host to the table. **The host must outlive the binding and must
@@ -282,19 +288,70 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
         /// Issue a process-lifetime identity to a library about to run. M7 deliberately
         /// never unloads a native mod, so reusing a slot would make an old callback's
         /// `self` name a different library — exactly the stale-handle failure I1 forbids.
-        pub fn issueMod(self: *Self) ?types.Mod {
+        pub fn issueMod(self: *Self, id: core.ContentId, name: []const u8) error{ InvalidArgument, Limit }!types.Mod {
+            const named = data.contentId(name) catch return error.InvalidArgument;
+            if (id.isNone() or !named.eql(id)) return error.InvalidArgument;
+
             var tried: u32 = 0;
             while (tried < max_mods) : (tried += 1) {
                 const index = self.mod_next;
                 self.mod_next = (self.mod_next + 1) % max_mods;
                 const slot = &self.mods[index];
                 if (slot.active) continue;
-                slot.generation +%= 1;
-                if (slot.generation == 0) slot.generation = 1;
+                next_mod_generation +%= 1;
+                if (next_mod_generation == 0) next_mod_generation = 1;
+                slot.generation = next_mod_generation;
                 slot.active = true;
+                slot.id = id;
+                @memcpy(slot.name_buffer[0..name.len], name);
+                slot.name_len = name.len;
                 return .wrap(core.Handle(ModSlot){ .index = index, .generation = slot.generation });
             }
-            return null;
+            return error.Limit;
+        }
+
+        /// Resolves an identity issued by the native loader. A `FoundryMod` is opaque,
+        /// not authority by possession of arbitrary bits: every self-scoped call uses this
+        /// before recording ownership.
+        pub fn modId(self: *const Self, handle: types.Mod) ?core.ContentId {
+            return (self.modSlot(handle) orelse return null).id;
+        }
+
+        /// The validated package spelling carried by a native identity, for log attribution.
+        pub fn modName(self: *const Self, handle: types.Mod) ?[]const u8 {
+            const slot = self.modSlot(handle) orelse return null;
+            return slot.name_buffer[0..slot.name_len];
+        }
+
+        /// Neutralizes everything a library registered before refusing initialization.
+        /// World registrations cannot be removed, so their stable host slots stay reserved
+        /// but lose every foreign pointer. Counters can be unregistered outright.
+        pub fn refuseMod(self: *Self, handle: types.Mod) void {
+            const mod_slot = @constCast(self.modSlot(handle) orelse return);
+            for (&self.components) |*component| {
+                if (!component.active or !component.owner.eql(handle)) continue;
+                component.owner = .none;
+                component.ctx = null;
+                component.construct = null;
+                component.destruct = null;
+            }
+            for (&self.systems) |*system| {
+                if (!system.active or !system.owner.eql(handle)) continue;
+                system.owner = .none;
+                system.ctx = null;
+                system.update = null;
+            }
+            for (&self.counters) |*counter_slot| {
+                if (!counter_slot.open or !counter_slot.owner.eql(handle)) continue;
+                if (counter_slot.registration) |registration| {
+                    if (self.engine) |engine| engine.unregisterMemory(registration);
+                }
+                counter_slot.* = .{};
+                self.counter_count -= 1;
+            }
+            const generation = mod_slot.generation;
+            mod_slot.* = .{};
+            mod_slot.generation = generation;
         }
 
         /// Takes the host away and hands back everything it registered on a mod's behalf.
@@ -320,7 +377,7 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
             self.queries = @splat(.{});
             self.query_next = 0;
             self.ui_state.reset();
-            self.mods = @splat(.{});
+            self.releaseMods();
             self.mod_next = 0;
             if (bound == self) bound = null;
         }
@@ -329,6 +386,25 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
         /// track of the host, and for a test that has to prove what an unbound table does.
         pub fn unbindAny() void {
             bound = null;
+        }
+
+        /// Invalidates native identities without resetting their generations. A library
+        /// remains mapped after unbind and may still hold its old `self`; rebinding this
+        /// host must not make those bits identify a newly loaded mod.
+        fn releaseMods(self: *Self) void {
+            for (&self.mods) |*slot| {
+                const generation = slot.generation;
+                slot.* = .{};
+                slot.generation = generation;
+            }
+        }
+
+        fn modSlot(self: *const Self, handle: types.Mod) ?*const ModSlot {
+            const unpacked = handle.unwrap(core.Handle(ModSlot));
+            if (unpacked.index >= max_mods) return null;
+            const slot = &self.mods[unpacked.index];
+            if (!slot.active or slot.generation == 0 or slot.generation != unpacked.generation) return null;
+            return slot;
         }
 
         /// Releases the extra asset references held by ABI texture wrappers while the

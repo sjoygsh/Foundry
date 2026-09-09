@@ -37,9 +37,8 @@ const Mod = types.Mod;
 const Result = types.Result;
 const Str = types.Str;
 
-/// A mod's own log lines. One scope for all of them today; the mod's name joins the line at
-/// step 6, when `abi` learns what a loaded mod is and `self` has something to resolve
-/// against.
+/// A mod's own log lines. One scope for all of them today; the resolved `self` prefixes the
+/// line with the package name without requiring a separate logger for every loaded mod.
 const mod_log = core.log.scoped(.mod);
 
 /// The longest line a mod may write in one call.
@@ -70,7 +69,6 @@ pub fn Of(comptime H: type) type {
         /// Available with no subsystems bound, for the same reason `result_name` is: this is
         /// what a mod refusing itself uses to explain why.
         pub fn logWrite(self: Mod, level: i32, message: Str) callconv(.c) Result {
-            _ = self;
             const severity = types.LogLevel.fromCode(level) orelse return .invalid_argument;
             if (message.len > max_log_message) return .limit;
             const text = message.utf8() orelse return .invalid_argument;
@@ -78,12 +76,13 @@ pub fn Of(comptime H: type) type {
             // costs a mod nothing it wanted.
             if (text.len == 0) return .invalid_argument;
 
+            const name = if (H.current()) |h| h.modName(self) else null;
             switch (severity) {
-                .err => mod_log.err("{s}", .{text}),
-                .warn => mod_log.warn("{s}", .{text}),
-                .info => mod_log.info("{s}", .{text}),
-                .debug => mod_log.debug("{s}", .{text}),
-                .trace => mod_log.trace("{s}", .{text}),
+                .err => if (name) |n| mod_log.err("[{s}] {s}", .{ n, text }) else mod_log.err("{s}", .{text}),
+                .warn => if (name) |n| mod_log.warn("[{s}] {s}", .{ n, text }) else mod_log.warn("{s}", .{text}),
+                .info => if (name) |n| mod_log.info("[{s}] {s}", .{ n, text }) else mod_log.info("{s}", .{text}),
+                .debug => if (name) |n| mod_log.debug("[{s}] {s}", .{ n, text }) else mod_log.debug("{s}", .{text}),
+                .trace => if (name) |n| mod_log.trace("[{s}] {s}", .{ n, text }) else mod_log.trace("{s}", .{text}),
             }
             return .ok;
         }
@@ -269,6 +268,9 @@ pub fn Of(comptime H: type) type {
         pub fn memoryCounterOpen(self: Mod, name: Str, out: ?*MemoryCounter) callconv(.c) Result {
             const dst = out orelse return .invalid_argument;
             const h = H.current() orelse return .unavailable;
+            if (h.engine == null) return .unavailable;
+            if (self.isNone()) return .invalid_argument;
+            if (h.modId(self) == null) return .invalid_handle;
             const text = name.utf8() orelse return .invalid_argument;
 
             const handle = h.openCounter(self, text) catch |err| return switch (err) {
@@ -375,6 +377,10 @@ const Fixture = struct {
         self.host.unbind();
         self.engine.deinit();
         testing.allocator.destroy(self);
+    }
+
+    fn issueMod(self: *Fixture) Mod {
+        return self.host.issueMod(core.ContentId.fromString("mymod:mod"), "mymod:mod") catch unreachable;
     }
 };
 
@@ -607,8 +613,9 @@ test "a mod's memory counter reaches the engine's report" {
     const f = try Fixture.init();
     defer f.deinit();
 
+    const owner = f.issueMod();
     var counter: types.MemoryCounter = .none;
-    try testing.expectEqual(Result.ok, table.memory_counter_open(.none, .from("mymod"), &counter));
+    try testing.expectEqual(Result.ok, table.memory_counter_open(owner, .from("mymod"), &counter));
     try testing.expect(!counter.isNone());
     try testing.expectEqual(@as(u32, 1), f.engine.registeredCount());
 
@@ -629,6 +636,58 @@ test "a mod's memory counter reaches the engine's report" {
     try testing.expectEqual(@as(u64, 1), reported.failures);
 }
 
+test "a memory counter refuses a mod identity the loader never issued" {
+    const f = try Fixture.init();
+    defer f.deinit();
+
+    var counter: types.MemoryCounter = .none;
+    try testing.expectEqual(
+        Result.invalid_handle,
+        table.memory_counter_open(.{ .bits = 1 }, .from("invented"), &counter),
+    );
+}
+
+test "a mod identity stays stale across an unbind and rebind" {
+    const f = try Fixture.init();
+    defer f.deinit();
+
+    const old = f.issueMod();
+    try testing.expect(f.host.modId(old) != null);
+    try testing.expectEqualStrings("mymod:mod", f.host.modName(old).?);
+    f.host.unbind();
+    f.host.bind();
+    try testing.expect(f.host.modId(old) == null);
+    try testing.expect(f.host.modName(old) == null);
+    const replacement = f.issueMod();
+    try testing.expect(!old.eql(replacement));
+}
+
+test "a mod identity refuses a malformed or mismatched package name" {
+    const f = try Fixture.init();
+    defer f.deinit();
+
+    try testing.expectError(
+        error.InvalidArgument,
+        f.host.issueMod(core.ContentId.fromString("mymod:mod"), "not qualified"),
+    );
+    try testing.expectError(
+        error.InvalidArgument,
+        f.host.issueMod(core.ContentId.fromString("mymod:mod"), "other:mod"),
+    );
+}
+
+test "a mod identity from a replaced host cannot name a new host's mod" {
+    const first = try Fixture.init();
+    defer first.deinit();
+    const old = first.issueMod();
+
+    const second = try Fixture.init();
+    defer second.deinit();
+    const replacement = second.issueMod();
+    try testing.expect(!old.eql(replacement));
+    try testing.expect(second.host.modId(old) == null);
+}
+
 test "a counter handle nobody issued resolves to nothing" {
     const f = try Fixture.init();
     defer f.deinit();
@@ -646,15 +705,16 @@ test "a name too long for a counter is refused, and so is the counter after the 
     const f = try Fixture.init();
     defer f.deinit();
 
+    const owner = f.issueMod();
     var counter: types.MemoryCounter = .none;
     const long: [host_mod.max_counter_name + 1]u8 = @splat('n');
-    try testing.expectEqual(Result.limit, table.memory_counter_open(.none, .from(&long), &counter));
-    try testing.expectEqual(Result.limit, table.memory_counter_open(.none, .empty, &counter));
+    try testing.expectEqual(Result.limit, table.memory_counter_open(owner, .from(&long), &counter));
+    try testing.expectEqual(Result.limit, table.memory_counter_open(owner, .empty, &counter));
 
     for (0..host_mod.max_counters) |_| {
-        try testing.expectEqual(Result.ok, table.memory_counter_open(.none, .from("mymod"), &counter));
+        try testing.expectEqual(Result.ok, table.memory_counter_open(owner, .from("mymod"), &counter));
     }
-    try testing.expectEqual(Result.limit, table.memory_counter_open(.none, .from("mymod"), &counter));
+    try testing.expectEqual(Result.limit, table.memory_counter_open(owner, .from("mymod"), &counter));
 }
 
 test "unbinding hands back everything the boundary registered" {
@@ -664,9 +724,10 @@ test "unbinding hands back everything the boundary registered" {
 
     var host: Host = .{ .engine = &engine };
     host.bind();
+    const owner = try host.issueMod(core.ContentId.fromString("mymod:mod"), "mymod:mod");
 
     var counter: types.MemoryCounter = .none;
-    try testing.expectEqual(Result.ok, table.memory_counter_open(.none, .from("mymod"), &counter));
+    try testing.expectEqual(Result.ok, table.memory_counter_open(owner, .from("mymod"), &counter));
     try testing.expectEqual(@as(u32, 1), engine.registeredCount());
 
     // The engine holds a pointer into the host's own storage, so a host that went away

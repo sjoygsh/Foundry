@@ -25,6 +25,7 @@ const core = @import("core");
 const data = @import("data");
 
 const discover_mod = @import("discover.zig");
+const manifest_mod = @import("manifest.zig");
 
 const Allocator = std.mem.Allocator;
 const Candidate = discover_mod.Candidate;
@@ -89,6 +90,10 @@ pub const Entry = struct {
     file: []const u8,
     root: []const u8,
     version: u32,
+    /// The ABI range is checked only after the package's content is live, when phase 5
+    /// considers its optional native library. Carry discovery's answer through the
+    /// resolved order instead of reopening an untrusted package to ask it again.
+    abi: ?manifest_mod.Range = null,
     native: ?[]const u8 = null,
 };
 
@@ -251,6 +256,7 @@ pub fn resolve(
             .file = try arena.dupe(u8, candidates[index].file),
             .root = try arena.dupe(u8, candidates[index].root),
             .version = m.version,
+            .abi = m.abi,
             .native = if (m.native) |native| try arena.dupe(u8, native) else null,
         });
     }

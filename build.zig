@@ -560,18 +560,56 @@ pub fn build(b: *std.Build) void {
     // into `asset` is the first: the modules deliberately cannot see each other — `asset`
     // is below and `render2d` has no `data` — so the seam between them is only reachable
     // from a consumer that has both, which is what `app` and a game are.
+    // A real C99 native mod for the lifecycle integration test. It is a separately linked
+    // dynamic library and sees only the public header, exactly like an external mod does.
+    const c_mod_flags = &[_][]const u8{ "-std=c99", "-pedantic", "-Wall", "-Wextra", "-Werror" };
+    const pipeline_mod = testNativeLibrary(b, target, optimize, "pipeline_mod", "engine/tests/fixtures/native_mod.c", c_mod_flags);
+    const shutdown_mod = testNativeLibrary(b, target, optimize, "shutdown_mod", "engine/tests/fixtures/shutdown_mod.c", c_mod_flags);
+    const no_init_mod = testNativeLibrary(b, target, optimize, "no_init_mod", "engine/tests/fixtures/no_init_mod.c", c_mod_flags);
+    const refused_mod = testNativeLibrary(b, target, optimize, "refused_mod", "engine/tests/fixtures/result_mod.c", c_mod_flags ++ [_][]const u8{"-DRESULT_CODE=-8"});
+    const unknown_mod = testNativeLibrary(b, target, optimize, "unknown_mod", "engine/tests/fixtures/result_mod.c", c_mod_flags ++ [_][]const u8{"-DRESULT_CODE=2147483647"});
+    const no_shutdown_mod = testNativeLibrary(b, target, optimize, "no_shutdown_mod", "engine/tests/fixtures/result_mod.c", c_mod_flags ++ [_][]const u8{"-DOMIT_SHUTDOWN"});
+    const callback_refused_mod = testNativeLibrary(b, target, optimize, "callback_refused_mod", "engine/tests/fixtures/callback_refused_mod.c", c_mod_flags);
+    for ([_]*std.Build.Step.Compile{ pipeline_mod, shutdown_mod, no_init_mod, refused_mod, unknown_mod, no_shutdown_mod, callback_refused_mod }) |library| {
+        check_step.dependOn(&library.step);
+    }
+
+    const pipeline_options = b.addOptions();
+    pipeline_options.addOptionPath("native_mod_path", pipeline_mod.getEmittedBin());
+    pipeline_options.addOptionPath("shutdown_mod_path", shutdown_mod.getEmittedBin());
+    pipeline_options.addOptionPath("no_init_mod_path", no_init_mod.getEmittedBin());
+    pipeline_options.addOptionPath("refused_mod_path", refused_mod.getEmittedBin());
+    pipeline_options.addOptionPath("unknown_mod_path", unknown_mod.getEmittedBin());
+    pipeline_options.addOptionPath("no_shutdown_mod_path", no_shutdown_mod.getEmittedBin());
+    pipeline_options.addOptionPath("callback_refused_mod_path", callback_refused_mod.getEmittedBin());
+
     const integration_mod = b.createModule(.{
         .root_source_file = b.path("engine/tests/root.zig"),
         .target = target,
         .optimize = optimize,
     });
-    for ([_][]const u8{ "core", "data", "platform", "physics2d", "ui", "rhi", "asset", "render2d", "scene", "audio", "app", "debug", "abi" }) |name| {
+    for ([_][]const u8{ "core", "data", "platform", "physics2d", "ui", "rhi", "asset", "mod", "render2d", "scene", "audio", "app", "debug", "abi" }) |name| {
         integration_mod.addImport(name, modules.get(name).?);
     }
+    integration_mod.addImport("mod_pipeline_options", pipeline_options.createModule());
 
     const integration_tests = b.addTest(.{ .root_module = integration_mod });
     check_step.dependOn(&integration_tests.step);
     test_step.dependOn(&b.addRunArtifact(integration_tests).step);
+}
+
+fn testNativeLibrary(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    name: []const u8,
+    source: []const u8,
+    flags: []const []const u8,
+) *std.Build.Step.Compile {
+    const module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    module.addIncludePath(b.path("engine/src/abi"));
+    module.addCSourceFile(.{ .file = b.path(source), .flags = flags });
+    return b.addLibrary(.{ .name = name, .linkage = .dynamic, .root_module = module });
 }
 
 /// Adds every file under `dir` as an input to `run`, so that editing one re-runs it.

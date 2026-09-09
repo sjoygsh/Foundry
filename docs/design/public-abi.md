@@ -1104,3 +1104,54 @@ now uses wider arithmetic before the result is clamped back into the complete `i
 control commands gained checked queue forms so the ABI can return `limit` rather than claiming a
 dropped command succeeded. View generations advance at renderer begin, malformed strings stop at
 the ABI as invalid UTF-8, and every new out-parameter remains untouched on refusal.
+
+## Resolution: native loading (implementation, 2026-09-09)
+
+§19 step 6, built. `mod.Entry` carries the manifest's ABI range beside its native base name, and
+`abi.NativeLoaderOf` implements phases 5 and 7 without moving library loading below L5. It applies
+the target's decoration, opens only beneath the resolved package's one-directory root, resolves
+the required init and optional shutdown symbols, and gives the library the same 135-call v1 table
+the rest of the milestone has tested directly.
+
+**An init result crosses as an integer before it becomes an enum.** The header returns
+`FoundryResult`, which is an `int32_t`; native code can return any value in that range. Typing the
+function pointer as Zig's `Result` made an unknown value illegal at the instant the call returned,
+before the boundary could diagnose it. `ModInit` therefore returns raw `i32` internally and the
+loader uses `Result.fromCode`, diagnosing an unknown result exactly like `result_name` does.
+
+**A failed init leaves an image mapped but does not earn shutdown.** Once init has run, the mod may
+already have put a function pointer into a subsystem before returning an error, so closing the
+image would manufacture a later use-after-unload. The loader reserves its bookkeeping before any
+foreign call and retains every invoked image. But `foundry.h` also promises that nothing else is
+called after init refuses, so only a successful init keeps its optional shutdown callback. Those
+callbacks run once, in reverse resolved order; the image itself is never unloaded in M7.
+
+**Refusal neutralizes registrations made before the refusal.** A hostile init can register a
+component callback, system or memory counter and then return an error. The world has no removal
+operation in M7, so its append-only registration metadata remains, but the host clears every
+foreign callback and unregisters the counters before invalidating `self`; no later frame or
+teardown calls into that library. The C integration fixture registers a system and then refuses,
+and proves an ordinary world update leaves its callback untouched.
+
+**`FoundryMod` became a resolved identity rather than merely nonzero bits.** The loader issues it
+from a bounded generational table carrying the package's content id and validated spelling, which
+now prefixes that mod's log lines as §3 promised. Every call that records or
+uses per-mod ownership — component registration and raw access, system registration, and memory
+counters — resolves the handle first. Unbind invalidates slots without resetting their
+generations, so a library retaining an old `self` cannot regain authority when the same host is
+bound again. Generation allocation is shared across host instances too, so replacing the ambient
+host cannot make an old identity valid against a fresh host's first slot.
+
+**Location is checked at both seams.** Manifest reading still refuses a `native` value that is not
+a bare name. The loader checks it again because `mod.Entry` is a public host-facing value, and also
+requires `root` to be exactly one safe relative directory before joining any path. This closes the
+case a hand-constructed entry or a pathological package filename could otherwise turn into a
+library outside its own package directory.
+
+`engine/tests/mod_pipeline.zig` is the complete composition test §17 required. The build produces
+separate C99 dynamic libraries against only `foundry.h` for the host, Linux and Windows targets.
+Real packages are written to disk, discovered, resolved and merged; two native images register
+component types, one registers a system whose callback mutates a world, and their shutdown-created
+entities prove reverse order. Further images and entries cover a missing or corrupt file, missing
+init symbol, an absent optional shutdown, missing or unsupported ABI range, known refusal, unknown
+result integer, unsafe name/root and the 64-mod identity limit. **1117 headless tests.**

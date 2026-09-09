@@ -23,7 +23,7 @@
 //! **What is built so far:** the type layer and the skeleton (`public-abi.md` §19 steps 2
 //! and 3) — `Host`, `get_api`, and a `FoundryApi_v1` carrying what `app` and `data` already
 //! answer. The `scene`, `render2d`, `ui`, `audio` and `physics2d` groups are steps 4 and 5;
-//! the native loader is step 6.
+//! `native_loader` owns the process-lifetime image and lifecycle work.
 //!
 //! Design: `docs/design/public-abi.md`. The header is `foundry.h`, beside this file, and it
 //! is the specification rather than a description of what is here.
@@ -41,6 +41,7 @@ const calls_physics = @import("calls_physics.zig");
 const calls_render = @import("calls_render.zig");
 const calls_scene = @import("calls_scene.zig");
 const calls_ui = @import("calls_ui.zig");
+const native_loader = @import("native_loader.zig");
 const physics_types = @import("physics_types.zig");
 const render_types = @import("render_types.zig");
 const ui_types = @import("ui_types.zig");
@@ -87,6 +88,8 @@ pub const LogRecord = types.LogRecord;
 pub const MemoryCounter = types.MemoryCounter;
 pub const MemoryStats = types.MemoryStats;
 pub const ComponentDesc = types.ComponentDesc;
+pub const NativeLoaderOf = native_loader.LoaderOf;
+pub const libraryFileNameAlloc = native_loader.libraryFileNameAlloc;
 pub const SchemaId = types.SchemaId;
 pub const Step = types.Step;
 pub const SystemDesc = types.SystemDesc;
@@ -135,6 +138,7 @@ test {
     _ = calls_render;
     _ = calls_scene;
     _ = calls_ui;
+    _ = native_loader;
     _ = host;
     _ = types;
     _ = physics_types;

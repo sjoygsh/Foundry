@@ -37,6 +37,7 @@ pub fn Of(comptime H: type) type {
             const world = h.world orelse return .unavailable;
 
             if (self.isNone() or supplied.schema.isNone()) return .invalid_argument;
+            if (h.modId(self) == null) return .invalid_handle;
             const name = supplied.name.utf8() orelse return .invalid_argument;
             if (name.len == 0) return .invalid_argument;
             if (supplied.alignment == 0 or !std.math.isPowerOfTwo(supplied.alignment)) {
@@ -242,6 +243,7 @@ pub fn Of(comptime H: type) type {
             const world = h.world orelse return .unavailable;
 
             if (self.isNone() or supplied.id.isNone() or supplied.update == null) return .invalid_argument;
+            if (h.modId(self) == null) return .invalid_handle;
             const name = supplied.name.utf8() orelse return .invalid_argument;
             if (name.len == 0) return .invalid_argument;
             const named = data.contentId(name) catch return .invalid_argument;
@@ -354,6 +356,8 @@ pub fn Of(comptime H: type) type {
             const extent = size orelse return .invalid_argument;
             const h = H.current() orelse return .unavailable;
             const world = h.world orelse return .unavailable;
+            if (self.isNone()) return .invalid_argument;
+            if (h.modId(self) == null) return .invalid_handle;
             const component = t.unwrap(scene.ComponentType);
             const info = world.componentInfo(component) orelse return .invalid_handle;
             if (!h.ownComponent(self, component)) return .refused;
@@ -495,6 +499,10 @@ const Fixture = struct {
         self.engine.deinit();
         testing.allocator.destroy(self);
     }
+
+    fn issueMod(self: *Fixture) Mod {
+        return self.host.issueMod(core.ContentId.fromString("mymod:mod"), "mymod:mod") catch unreachable;
+    }
 };
 
 const Constructed = struct {
@@ -525,7 +533,7 @@ test "a native component is a world component and only its owner gets raw bytes"
         .ctx = &constructed,
         .construct = &constructCounter,
     };
-    const owner: Mod = .{ .bits = 1 };
+    const owner = f.issueMod();
     var t: ComponentType = .none;
     try testing.expectEqual(Result.ok, test_table.world_register_component(owner, &desc, &t));
 
@@ -546,7 +554,7 @@ test "a native component is a world component and only its owner gets raw bytes"
     try testing.expectEqual(@as(u32, 42), value.*);
 
     try testing.expectEqual(
-        Result.refused,
+        Result.invalid_handle,
         test_table.world_component_bytes(.{ .bits = 2 }, entity, t, &raw, &bytes),
     );
     var described: Record = .none;
@@ -567,7 +575,7 @@ test "scene cursors and queries refuse a structural mutation" {
         .alignment = 1,
     };
     var t: ComponentType = .none;
-    try testing.expectEqual(Result.ok, test_table.world_register_component(.{ .bits = 1 }, &desc, &t));
+    try testing.expectEqual(Result.ok, test_table.world_register_component(f.issueMod(), &desc, &t));
 
     var first: Entity = .none;
     try testing.expectEqual(Result.ok, test_table.world_create_entity(&first));
@@ -610,7 +618,7 @@ test "a native system receives the fixed step through the ABI bridge" {
         .ctx = &calls,
         .update = &countSystem,
     };
-    try testing.expectEqual(Result.ok, test_table.world_register_system(.{ .bits = 1 }, &desc));
+    try testing.expectEqual(Result.ok, test_table.world_register_system(f.issueMod(), &desc));
     f.world.update(.{ .tick = 7, .delta = .fromMillis(16) });
     try testing.expectEqual(@as(u32, 1), calls.ticks);
     try testing.expectEqual(@as(u64, 7), calls.last_tick);
@@ -801,7 +809,7 @@ test "registration refuses everything a mod can get wrong about a component type
     _ = try f.engine.loadPackage("mymod:content",
         \\@schema mymod:counter { value u32 }
     );
-    const owner: Mod = .{ .bits = 1 };
+    const owner = f.issueMod();
     const schema = data.SchemaId.fromStringUnchecked("mymod:counter");
     var t: ComponentType = .none;
 
@@ -816,6 +824,10 @@ test "registration refuses everything a mod can get wrong about a component type
     try testing.expectEqual(
         Result.invalid_argument,
         test_table.world_register_component(.none, &no_mod, &t),
+    );
+    try testing.expectEqual(
+        Result.invalid_handle,
+        test_table.world_register_component(.{ .bits = 1 }, &no_mod, &t),
     );
 
     var unaligned = good;
@@ -917,6 +929,7 @@ test "a system is refused when its id and its name disagree, or when it is regis
     defer f.deinit();
 
     var calls: SystemCalls = .{};
+    const owner = f.issueMod();
     const good: SystemDesc = .{
         .id = core.ContentId.fromString("mymod:tick"),
         .name = .from("mymod:tick"),
@@ -928,28 +941,28 @@ test "a system is refused when its id and its name disagree, or when it is regis
     // was — and the two disagreeing is a mod that will be impossible to diagnose later.
     var lying = good;
     lying.name = .from("mymod:other");
-    try testing.expectEqual(Result.invalid_argument, test_table.world_register_system(.{ .bits = 1 }, &lying));
+    try testing.expectEqual(Result.invalid_argument, test_table.world_register_system(owner, &lying));
 
     var unqualified = good;
     unqualified.id = core.ContentId.fromString("tick");
     unqualified.name = .from("tick");
     try testing.expectEqual(
         Result.invalid_argument,
-        test_table.world_register_system(.{ .bits = 1 }, &unqualified),
+        test_table.world_register_system(owner, &unqualified),
     );
 
     var headless = good;
     headless.update = null;
     try testing.expectEqual(
         Result.invalid_argument,
-        test_table.world_register_system(.{ .bits = 1 }, &headless),
+        test_table.world_register_system(owner, &headless),
     );
 
     var accepted = good;
-    try testing.expectEqual(Result.ok, test_table.world_register_system(.{ .bits = 1 }, &accepted));
+    try testing.expectEqual(Result.ok, test_table.world_register_system(owner, &accepted));
     try testing.expectEqual(
         Result.already_exists,
-        test_table.world_register_system(.{ .bits = 1 }, &accepted),
+        test_table.world_register_system(owner, &accepted),
     );
 }
 

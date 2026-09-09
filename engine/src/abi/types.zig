@@ -480,7 +480,9 @@ pub const Cursor = extern struct {
 /// be solvable without touching them, and `GetApi` is how it is.
 pub const GetApi = *const fn (version: u32) callconv(.c) ?*const anyopaque;
 
-pub const ModInit = *const fn (get_api: GetApi, self: Mod) callconv(.c) Result;
+/// Raw `i32`, not `Result`: a native library is untrusted and may return a value the
+/// enum does not contain. The loader validates it with `Result.fromCode` after crossing.
+pub const ModInit = *const fn (get_api: GetApi, self: Mod) callconv(.c) i32;
 pub const ModShutdown = *const fn (self: Mod) callconv(.c) void;
 
 /// The symbol names looked up in a mod's library. Written here rather than at the lookup so
