@@ -86,6 +86,7 @@ Do not substitute a runtime during implementation without recording the revised 
 Step 1 passed its feasibility gate with Lua 5.5.1 unchanged: host, Linux and Windows builds;
 protected syntax/runtime/recursion/instruction failures; exhaustive early allocation refusal;
 a real heap-quota exhaustion and recovery; and stable diagnostics for non-string errors. The
-bridge uses Lua's public API only. Script assets, public ABI bindings and package/reload
-lifecycle remain unimplemented, so this evidence accepts the runtime boundary rather than
-claiming M8's full sandbox contract is complete.
+bridge uses Lua's public API only. Script assets and manifest metadata arrived in step 2
+without importing this runtime; public ABI bindings and package/reload lifecycle remain
+unimplemented, so this evidence accepts the runtime boundary rather than claiming M8's full
+sandbox contract is complete.

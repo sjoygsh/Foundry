@@ -25,6 +25,7 @@ pub const image = @import("image.zig");
 pub const png = @import("png.zig");
 pub const registry = @import("registry.zig");
 pub const schemas = @import("schemas.zig");
+pub const script = @import("script.zig");
 pub const sound = @import("sound.zig");
 pub const tilegrid = @import("tilegrid.zig");
 pub const tilemap = @import("tilemap.zig");
@@ -50,6 +51,9 @@ pub const Payload = registry.Payload;
 pub const Registry = registry.Registry;
 pub const AssetInfo = registry.Registry.AssetInfo;
 
+pub const ScriptSource = script.Source;
+pub const ScriptSourceLoader = script.SourceLoader;
+
 pub const TileGrid = tilegrid.TileGrid;
 /// The loader for `foundry:tilegrid`. Registered by whoever wants grids (I6); it needs no
 /// renderer, because a grid of tile ids is not a GPU object.
@@ -73,6 +77,7 @@ test {
     _ = png;
     _ = registry;
     _ = schemas;
+    _ = script;
     _ = sound;
     _ = tilegrid;
     _ = tilemap;

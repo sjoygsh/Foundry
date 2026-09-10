@@ -82,8 +82,8 @@ pub const Skip = struct {
     other_name: []const u8 = "",
 };
 
-/// One package to load, in order. Exactly what `app.Config.content` takes, plus the two
-/// things the native loader will want at `public-abi.md` §13 phase 5.
+/// One package to load, in order. Exactly what `app.Config.content` takes, plus the code-tier
+/// descriptors later hosts consume without reopening an untrusted package.
 pub const Entry = struct {
     id: ContentId,
     name: []const u8,
@@ -95,6 +95,7 @@ pub const Entry = struct {
     /// resolved order instead of reopening an untrusted package to ask it again.
     abi: ?manifest_mod.Range = null,
     native: ?[]const u8 = null,
+    script: ?manifest_mod.Script = null,
 };
 
 pub const Request = struct {
@@ -258,6 +259,7 @@ pub fn resolve(
             .version = m.version,
             .abi = m.abi,
             .native = if (m.native) |native| try arena.dupe(u8, native) else null,
+            .script = m.script,
         });
     }
 

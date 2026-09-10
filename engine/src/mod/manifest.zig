@@ -43,6 +43,10 @@ pub const Error = error{
     /// Checked here rather than by whoever opens the library, because a manifest naming a
     /// path is a manifest to refuse, not a load to attempt carefully.
     InvalidNativeName,
+    /// M8 has one authored binding contract. A different number is not guessed at.
+    UnsupportedScriptBinding,
+    /// Binding 1 depends on the additive source-copy API and therefore declares ABI v2.
+    ScriptRequiresAbiV2,
 } || Allocator.Error;
 
 pub const Range = struct {
@@ -68,6 +72,11 @@ pub const Requirement = struct {
     range: Range = .{},
 };
 
+pub const Script = struct {
+    entry: ContentId,
+    binding: u32,
+};
+
 /// A package's own description of itself, with every string owned by the caller's arena.
 ///
 /// Owned rather than borrowed because the `.fpk` bytes it was read from are freed as soon
@@ -89,11 +98,12 @@ pub const Manifest = struct {
     requires: []const Requirement = &.{},
     abi: ?Range = null,
     native: ?[]const u8 = null,
+    script: ?Script = null,
 
-    /// Whether this mod has code, which is the only thing that distinguishes a Tier 3 mod
-    /// from a Tier 1 one (ADR-0027).
+    /// Whether this package carries either code tier. A package carrying both remains
+    /// discoverable as content, but code activation refuses it explicitly (§5).
     pub fn hasCode(self: Manifest) bool {
-        return self.native != null;
+        return self.native != null or self.script != null;
     }
 };
 
@@ -143,6 +153,11 @@ pub fn read(arena: Allocator, reader: *const data.fpk.Reader) Error!Manifest {
     out.requires = try readRequires(arena, schema.*, fields);
     out.abi = try readAbi(schema.*, fields);
     out.native = try readNative(arena, schema.*, fields);
+    out.script = try readScript(schema.*, fields);
+    if (out.script != null) {
+        const range = out.abi orelse return error.ScriptRequiresAbiV2;
+        if (!range.accepts(2)) return error.ScriptRequiresAbiV2;
+    }
 
     return out;
 }
@@ -234,6 +249,15 @@ fn readNative(arena: Allocator, schema: data.Schema, fields: data.fpk.Fields) Er
     return text;
 }
 
+fn readScript(schema: data.Schema, fields: data.fpk.Fields) Error!?Script {
+    const i = indexOf(schema, schemas.script_field) orelse return null;
+    const nested = (fields.nestedAt(i) catch return error.ManifestMalformed) orelse return null;
+    const entry = (nested.idAt(0) catch return error.ManifestMalformed) orelse return error.ManifestMalformed;
+    const binding = (try u32At(nested, 1)) orelse return error.ManifestMalformed;
+    if (binding != 1) return error.UnsupportedScriptBinding;
+    return .{ .entry = entry, .binding = binding };
+}
+
 /// Whether a `native` value is a bare library name.
 ///
 /// The loader decorates it — `libfoo.dylib`, `foo.dll`, `libfoo.so` — so what belongs here
@@ -252,6 +276,26 @@ pub fn isBareName(text: []const u8) bool {
 // -- tests -------------------------------------------------------------------------
 
 const testing = std.testing;
+
+fn compileManifestForTest(schema: data.Schema, package_name: []const u8, source: []const u8) ![]u8 {
+    var registry: data.Registry = .init(testing.allocator, .default);
+    defer registry.deinit(testing.allocator);
+    _ = try registry.register(testing.allocator, schema);
+    var diags: data.Diagnostics = .init(testing.allocator, .default);
+    defer diags.deinit(testing.allocator);
+    const colon = std.mem.indexOfScalar(u8, package_name, ':').?;
+    var doc = try data.parser.parse(testing.allocator, "mod.fdt", source, .{
+        .namespace = package_name[0..colon],
+    }, &diags);
+    defer doc.deinit(testing.allocator);
+    var package = try data.check.Package.init(testing.allocator, package_name, 1, .default);
+    defer package.deinit(testing.allocator);
+    try package.addDocument(testing.allocator, &doc, &registry, &diags);
+    var bytes: std.ArrayList(u8) = .empty;
+    errdefer bytes.deinit(testing.allocator);
+    try data.fpk.write(testing.allocator, &package, &registry, &bytes);
+    return bytes.toOwnedSlice(testing.allocator);
+}
 
 test "a bare native name is letters, digits, underscore and dash, and nothing else" {
     try testing.expect(isBareName("brighter"));
@@ -287,4 +331,61 @@ test "a manifest with no code is a Tier 1 mod, which is most of them" {
     var with_code = content_only;
     with_code.native = "brighter";
     try testing.expect(with_code.hasCode());
+
+    with_code.native = null;
+    with_code.script = .{ .entry = .{ .hash = 2 }, .binding = 1 };
+    try testing.expect(with_code.hasCode());
+}
+
+test "a schema-v1 package remains readable after manifest v2" {
+    const legacy_schema: data.Schema = .{
+        .id = schemas.manifest.id,
+        .version = 1,
+        .fields = schemas.manifest.fields[0 .. schemas.manifest.fields.len - 1],
+    };
+    const bytes = try compileManifestForTest(legacy_schema, "legacy:mod",
+        \\foundry:mod legacy:mod { name "Legacy" version 1 license "MIT" abi { min 1 max 1 } native "legacy" }
+    );
+    defer testing.allocator.free(bytes);
+    var reader = try data.fpk.Reader.open(testing.allocator, bytes, .default);
+    defer reader.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const parsed = try read(arena.allocator(), &reader);
+    try testing.expectEqualStrings("legacy", parsed.native.?);
+    try testing.expect(parsed.script == null);
+}
+
+test "script metadata is complete, binding 1, and declares ABI v2" {
+    const good = try compileManifestForTest(schemas.manifest, "scripts:mod",
+        \\foundry:mod scripts:mod { name "Scripts" version 1 license "MIT" abi { min 2 max 2 } script { entry scripts:main binding 1 } }
+    );
+    defer testing.allocator.free(good);
+    var good_reader = try data.fpk.Reader.open(testing.allocator, good, .default);
+    defer good_reader.deinit();
+    var good_arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer good_arena.deinit();
+    const parsed = try read(good_arena.allocator(), &good_reader);
+    try testing.expect(parsed.script.?.entry.eql(core.ContentId.fromString("scripts:main")));
+    try testing.expectEqual(@as(u32, 1), parsed.script.?.binding);
+
+    const wrong_binding = try compileManifestForTest(schemas.manifest, "binding:mod",
+        \\foundry:mod binding:mod { name "Binding" version 1 license "MIT" abi { min 2 } script { entry binding:main binding 2 } }
+    );
+    defer testing.allocator.free(wrong_binding);
+    var binding_reader = try data.fpk.Reader.open(testing.allocator, wrong_binding, .default);
+    defer binding_reader.deinit();
+    var binding_arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer binding_arena.deinit();
+    try testing.expectError(error.UnsupportedScriptBinding, read(binding_arena.allocator(), &binding_reader));
+
+    const wrong_abi = try compileManifestForTest(schemas.manifest, "abi:mod",
+        \\foundry:mod abi:mod { name "ABI" version 1 license "MIT" abi { min 1 max 1 } script { entry abi:main binding 1 } }
+    );
+    defer testing.allocator.free(wrong_abi);
+    var abi_reader = try data.fpk.Reader.open(testing.allocator, wrong_abi, .default);
+    defer abi_reader.deinit();
+    var abi_arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer abi_arena.deinit();
+    try testing.expectError(error.ScriptRequiresAbiV2, read(abi_arena.allocator(), &abi_reader));
 }

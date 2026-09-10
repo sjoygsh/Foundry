@@ -272,16 +272,13 @@ fn readIdentity(
     options: Options,
     diags: *Diagnostics,
 ) Error!Identity {
-    const path = platform.os.joinPath(gpa, &.{ dir, manifest_file }) catch return error.IoFailed;
-    defer gpa.free(path);
-
-    const source = os.readFile(gpa, path, options.max_source_bytes) catch |err| {
+    const read = os.readFileConfined(gpa, dir, manifest_file, options.max_source_bytes) catch |err| {
         try diags.addFmt(gpa, .err, .whole(manifest_file), 0, "", "every package states its own identity here and this one could not be read: {s}", .{@errorName(err)});
         return error.ContentInvalid;
     };
-    defer gpa.free(source);
+    defer gpa.free(read.bytes);
 
-    var doc = data.parser.parse(gpa, manifest_file, source, .{
+    var doc = data.parser.parse(gpa, manifest_file, read.bytes, .{
         .namespace = "package",
         .limits = options.limits,
     }, diags) catch |err| switch (err) {
@@ -466,10 +463,9 @@ const Loader = struct {
 
     fn read(self: *Loader, rel: []const u8) ![]const u8 {
         if (self.files.get(rel)) |bytes| return bytes;
-        const absolute = try platform.os.joinPath(self.arena, &.{ self.root, rel });
-        const bytes = try self.os.readFile(self.arena, absolute, self.options.max_source_bytes);
-        try self.files.put(self.gpa, rel, bytes);
-        return bytes;
+        const result = try self.os.readFileConfined(self.arena, self.root, rel, self.options.max_source_bytes);
+        try self.files.put(self.gpa, rel, result.bytes);
+        return result.bytes;
     }
 
     fn resolver(self: *Loader) data.parser.Resolver {
@@ -672,12 +668,16 @@ fn derive(
             continue;
         }
 
-        try text.print(arena, "{s} {s} {{ {s} \"{s}\" }}\n", .{
+        try text.print(arena, "{s} {s} {{ {s} \"{s}\"", .{
             kind.name,
             id,
             asset.schemas.source_field,
             rel,
         });
+        for (kind.derived_strings) |extra| {
+            try text.print(arena, " {s} \"{s}\"", .{ extra.field, extra.value });
+        }
+        try text.appendSlice(arena, " }\n");
     }
 
     if (failed) return error.ContentInvalid;
@@ -945,6 +945,87 @@ test "a sound derives from its path exactly as an image does" {
         try testing.expectEqualStrings("sounds/ui/step.wav", (try fields.stringAt(0)).?);
     }
     try testing.expect(found);
+}
+
+test "a script derives with its required language and an explicit record suppresses derivation" {
+    var f = try Fixture.init();
+    defer f.deinit();
+
+    try f.write("scripts/main.lua", "return 1");
+    try f.compileIt("example:content");
+    {
+        var r = try f.open();
+        defer r.deinit();
+        const view = recordNamed(&r, "example:scripts.main").?;
+        const schema = r.schemaFor(asset.schemas.script.id).?;
+        const fields = r.fieldsOf(view, schema.*);
+        try testing.expectEqualStrings("scripts/main.lua", (try fields.stringAt(0)).?);
+        try testing.expectEqualStrings("lua-5.5", (try fields.stringAt(1)).?);
+    }
+
+    try f.write("assets.fdt",
+        \\foundry:script example:entry { source "scripts/main.lua" language "lua-5.5" }
+    );
+    try f.compileIt("example:content");
+    var explicit = try f.open();
+    defer explicit.deinit();
+    try testing.expect(recordNamed(&explicit, "example:entry") != null);
+    try testing.expect(recordNamed(&explicit, "example:scripts.main") == null);
+}
+
+test "fpack discovery and an asset-only host read a bounded script package without Lua" {
+    var f = try Fixture.init();
+    defer f.deinit();
+
+    try f.write(manifest_file,
+        \\foundry:mod scripted:mod {
+        \\    name "Scripted"
+        \\    version 1
+        \\    license "MIT"
+        \\    abi { min 2 max 2 }
+        \\    script { entry scripted:main binding 1 }
+        \\}
+    );
+    try f.write("main.lua", "return { init = function() return {} end }");
+    f.bytes.clearRetainingCapacity();
+    const identity = try compile(testing.allocator, f.os, f.root, .{ .assets_out = f.gen }, &f.registry, &f.diags, &f.bytes);
+    defer testing.allocator.free(identity.name);
+
+    const package_path = try platform.os.joinPath(testing.allocator, &.{ f.root, "scripted.fpk" });
+    defer testing.allocator.free(package_path);
+    try f.os.writeFile(package_path, f.bytes.items);
+    const package_root = try platform.os.joinPath(testing.allocator, &.{ f.root, "scripted" });
+    defer testing.allocator.free(package_root);
+    try f.os.createDirPath(package_root);
+    const installed_source = try platform.os.joinPath(testing.allocator, &.{ package_root, "main.lua" });
+    defer testing.allocator.free(installed_source);
+    try f.os.writeFile(installed_source, "return { init = function() return {} end }");
+
+    var found = try mod.discover(testing.allocator, f.os, f.root, .{}, &f.diags);
+    defer found.deinit();
+    try testing.expectEqual(@as(usize, 1), found.candidates.len);
+    try testing.expect(found.candidates[0].manifest.script.?.entry.eql(core.ContentId.fromString("scripted:main")));
+    var resolved = try mod.resolve(testing.allocator, found.candidates, .{
+        .enabled = &.{core.ContentId.fromString("scripted:mod")},
+    }, &f.diags);
+    defer resolved.deinit();
+    try testing.expectEqual(@as(usize, 1), resolved.order.len);
+    try testing.expectEqual(@as(u32, 1), resolved.order[0].script.?.binding);
+
+    var store: data.Store = .init(testing.allocator, .default);
+    defer store.deinit(testing.allocator);
+    const package = try store.add(testing.allocator, "scripted.fpk", f.bytes.items, &f.registry, &f.diags);
+    var assets: asset.Registry = .init(testing.allocator, f.os, &store, .{});
+    defer assets.deinit(testing.allocator);
+    try assets.mount(testing.allocator, package, package_root);
+    var source_loader: asset.ScriptSourceLoader = .{};
+    try assets.registerLoader(testing.allocator, source_loader.assetLoader());
+    const handle = try assets.acquireOf(testing.allocator, core.ContentId.fromString("scripted:main"), asset.schemas.script.id);
+    defer assets.release(handle);
+    try testing.expectEqualStrings(
+        "return { init = function() return {} end }",
+        asset.script.get(&assets, handle, &source_loader).?.bytes,
+    );
 }
 
 test "a directory of text and images compiles to a package that reads back" {

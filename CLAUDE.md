@@ -254,13 +254,14 @@ L5  abi         -> core, data, physics2d, platform, ui, asset, render2d, scene,
 Games, samples and tools depend on `app`. A host that loads mods also imports `abi`; a
 native mod itself depends on the C header and never on a Zig module.
 
-**Implemented at its runtime boundary in M8 step 1:** `script` sits at L6 as a public API
+**Implemented through its package boundary in M8 step 2:** `script` sits at L6 as a public API
 consumer. The current fixture depends on `core` and the pinned Lua library only; the completed
 host also consumes declarations from `foundry.h`, never an engine implementation module. It
 receives the version query and identities from its application. Source assets become reachable
-through additive ABI v2, while v1 stays unchanged. Source assets, ABI v2 and package lifecycle
-remain subsequent M8 work. See ADR-0029 and `docs/design/scripting.md` for ownership and step
-order.
+through additive ABI v2, while v1 stays unchanged. `foundry:script`, confined source loading,
+fpack derivation and manifest-v2 metadata now exist below it without linking Lua; ABI v2 and
+package lifecycle remain subsequent M8 work. See ADR-0029 and `docs/design/scripting.md` for
+ownership and step order.
 
 **The overlay is not privileged.** `debug` is engine code and gets no private path (I4,
 ADR-0025): every call it makes must be one the public ABI could expose, which means handle or
@@ -384,9 +385,9 @@ serialization and the content model in ways that are impossible to retrofit.
 
 **Tier 2 — Script mods (most modders).** Sandboxed, hot-reloadable code against the public API.
 Script faults must not crash the host. **Restricted Lua 5.5.1** is selected by ADR-0028;
-its protected runtime boundary is implemented, while package assets, public bindings and hot
-reload remain M8 work. Its operational fault-containment contract, limits and explicit
-exclusions are in `docs/design/scripting.md`.
+its protected runtime boundary and ordinary package source assets are implemented, while
+public bindings and hot reload remain M8 work. Its operational fault-containment contract,
+limits and explicit exclusions are in `docs/design/scripting.md`.
 
 **Tier 3 — Native mods (power users).** Dynamic libraries loaded through the C ABI. Full speed,
 full power, no sandbox, version-fragile by nature. Explicitly a consenting-adults tier.

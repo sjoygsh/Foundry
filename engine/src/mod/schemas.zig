@@ -38,6 +38,7 @@ pub const url_field = "url";
 pub const requires_field = "requires";
 pub const abi_field = "abi";
 pub const native_field = "native";
+pub const script_field = "script";
 
 /// One entry of `requires`: what must load first, and at what versions.
 ///
@@ -65,6 +66,13 @@ pub const abi_fields = [_]Field{
     .{ .name = "max", .type = .u32, .presence = .optional },
 };
 
+/// Tier 2 entry metadata. Both values are required when the optional outer field exists:
+/// a script with no entry or no binding version cannot be activated safely.
+pub const script_fields = [_]Field{
+    .{ .name = "entry", .type = .id },
+    .{ .name = "binding", .type = .u32 },
+};
+
 const string_list: FieldType = .string;
 
 /// A package's own description of itself.
@@ -75,7 +83,7 @@ const string_list: FieldType = .string;
 /// here and there is nowhere else for them to disagree with it.
 pub const manifest: Schema = .{
     .id = SchemaId.fromStringUnchecked(manifest_name),
-    .version = 1,
+    .version = 2,
     .fields = &.{
         .{ .name = name_field, .type = .string },
         .{ .name = version_field, .type = .u32 },
@@ -92,6 +100,12 @@ pub const manifest: Schema = .{
         // The loader decorates it per platform, so one package works on all three and no
         // mod author writes a platform conditional into content (`public-abi.md` §11.1).
         .{ .name = native_field, .type = .string, .presence = .optional },
+        .{
+            .name = script_field,
+            .type = .{ .nested = &script_fields },
+            .since = 2,
+            .presence = .optional,
+        },
     },
 };
 
@@ -127,11 +141,13 @@ test "name, version and license are required and are the first three fields" {
     for (manifest.fields[0..3]) |f| try testing.expect(f.presence == .required);
 }
 
-test "every field after the required three is optional, and every field is version 1" {
+test "every field after the required three is optional, and script is the sole v2 addition" {
     for (manifest.fields[3..]) |f| try testing.expect(f.presence != .required);
-    // Nothing has been added yet, so nothing carries a `since`. The test exists to make
-    // the next addition state one deliberately rather than inherit 1 by accident (I8).
-    for (manifest.fields) |f| try testing.expectEqual(@as(u32, 1), f.since);
+    for (manifest.fields) |f| {
+        const expected: u32 = if (std.mem.eql(u8, f.name, script_field)) 2 else 1;
+        try testing.expectEqual(expected, f.since);
+    }
+    try testing.expectEqual(@as(u32, 2), manifest.version);
 }
 
 test "a requirement defaults to any version at or above one" {

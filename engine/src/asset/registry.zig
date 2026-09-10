@@ -125,6 +125,9 @@ pub const Loader = struct {
     /// The record type this loader claims.
     schema: SchemaId,
     ctx: ?*anyopaque = null,
+    /// A per-kind bound applied before the source is read. The registry-wide option remains
+    /// an upper ceiling; a small text kind need not inherit a texture-sized allowance.
+    max_source_bytes: usize = std.math.maxInt(usize),
     load: *const fn (ctx: ?*anyopaque, gpa: Allocator, record: Record, bytes: []const u8) LoadError!Payload,
     unload: *const fn (ctx: ?*anyopaque, gpa: Allocator, payload: Payload) void,
 
@@ -134,6 +137,7 @@ pub const Loader = struct {
     /// code addresses rather than with `==`, which Zig does not define for function values.
     pub fn eql(a: Loader, b: Loader) bool {
         return a.schema.eql(b.schema) and a.ctx == b.ctx and
+            a.max_source_bytes == b.max_source_bytes and
             @intFromPtr(a.load) == @intFromPtr(b.load) and
             @intFromPtr(a.unload) == @intFromPtr(b.unload);
     }
@@ -334,13 +338,11 @@ pub const Registry = struct {
             return existing;
         }
 
-        const path = try self.sourcePath(gpa, record);
-        defer gpa.free(path);
-        const bytes = try self.readSource(gpa, record, path);
-        defer gpa.free(bytes);
-
         const loader = self.loaders.items[loader_index].?;
-        const payload = try loader.load(loader.ctx, gpa, record, bytes);
+        const location = try self.sourceLocation(record);
+        const read = try self.readSource(gpa, record, location, loader.max_source_bytes);
+        defer gpa.free(read.bytes);
+        const payload = try loader.load(loader.ctx, gpa, record, read.bytes);
         errdefer loader.unload(loader.ctx, gpa, payload);
 
         // Reserved before the slot is taken, so a failure here cannot leave a loaded
@@ -352,7 +354,7 @@ pub const Registry = struct {
             .loader = loader_index,
             .payload = payload,
             .refs = 1,
-            .stamp = self.stampOf(path),
+            .stamp = .{ .modified_ns = read.info.modified_ns, .size = read.info.size },
         });
         self.by_id.putAssumeCapacity(id.hash, handle);
         return handle;
@@ -429,14 +431,12 @@ pub const Registry = struct {
             return error.NoLoader;
         };
 
-        const path = try self.sourcePath(gpa, record);
-        defer gpa.free(path);
-        const stamp = self.stampOf(path);
-        const bytes = try self.readSource(gpa, record, path);
-        defer gpa.free(bytes);
-
         const loader = self.loaders.items[loader_index].?;
-        const payload = try loader.load(loader.ctx, gpa, record, bytes);
+        const location = try self.sourceLocation(record);
+        const read = try self.readSource(gpa, record, location, loader.max_source_bytes);
+        defer gpa.free(read.bytes);
+        const payload = try loader.load(loader.ctx, gpa, record, read.bytes);
+        const stamp: Stamp = .{ .modified_ns = read.info.modified_ns, .size = read.info.size };
 
         // Past every failure. From here nothing can go wrong, which is what makes the swap
         // atomic from the caller's side.
@@ -462,9 +462,8 @@ pub const Registry = struct {
         var it = self.entries.iterator();
         while (it.next()) |entry| {
             const record = self.store.lookup(entry.value.id) orelse continue;
-            const path = self.sourcePath(gpa, record) catch continue;
-            defer gpa.free(path);
-            if (self.stampOf(path).eql(entry.value.stamp)) continue;
+            const location = self.sourceLocation(record) catch continue;
+            if (self.stampOf(location).eql(entry.value.stamp)) continue;
 
             const handle = entry.id;
             self.reload(gpa, handle) catch |err| {
@@ -472,7 +471,7 @@ pub const Registry = struct {
                 // Stamped anyway, so a file that is broken *and* not being edited does not
                 // produce the same complaint sixty times a second. The next real edit
                 // changes the stamp again and it is retried.
-                if (self.entries.get(handle)) |e| e.stamp = self.stampOf(path);
+                if (self.entries.get(handle)) |e| e.stamp = self.stampOf(location);
                 continue;
             };
             log.info("reloaded '{s}'", .{record.name});
@@ -608,9 +607,22 @@ pub const Registry = struct {
         return null;
     }
 
-    /// Reads the bytes at a path the caller got from `sourcePath`.
-    fn readSource(self: *Registry, gpa: Allocator, record: Record, path: []const u8) AcquireError![]u8 {
-        return self.os.readFile(gpa, path, self.options.max_source_bytes) catch |err| switch (err) {
+    const SourceLocation = struct {
+        root: []const u8,
+        relative: []const u8,
+    };
+
+    /// Reads through the package root handle with symlink following disabled. The smaller
+    /// of the host and loader bounds is applied before allocation/read.
+    fn readSource(
+        self: *Registry,
+        gpa: Allocator,
+        record: Record,
+        location: SourceLocation,
+        loader_max: usize,
+    ) AcquireError!platform.os.FileRead {
+        const max_bytes = @min(self.options.max_source_bytes, loader_max);
+        return self.os.readFileConfined(gpa, location.root, location.relative, max_bytes) catch |err| switch (err) {
             error.OutOfMemory => error.OutOfMemory,
             // The record is fine and the file is not there. This is the distinction §7
             // exists to keep: "your texture is missing" is a different sentence from
@@ -632,8 +644,8 @@ pub const Registry = struct {
     /// A file that has vanished stamps as zero, which differs from any real file — so it
     /// registers as a change and the reload attempt reports the missing source properly,
     /// rather than the watcher swallowing it.
-    fn stampOf(self: *Registry, path: []const u8) Stamp {
-        const info = self.os.statFile(path) catch return .{};
+    fn stampOf(self: *Registry, location: SourceLocation) Stamp {
+        const info = self.os.statFileConfined(location.root, location.relative) catch return .{};
         return .{ .modified_ns = info.modified_ns, .size = info.size };
     }
 
@@ -642,7 +654,7 @@ pub const Registry = struct {
     /// Every step here is a refusal waiting to happen, because every input is a package's:
     /// the record must be shaped like an asset, the path must be one a package is allowed
     /// to name, and the package must be mounted.
-    fn sourcePath(self: *Registry, gpa: Allocator, record: Record) AcquireError![]u8 {
+    fn sourceLocation(self: *Registry, record: Record) AcquireError!SourceLocation {
         // Against the schema the record's own package carries, which is the one its bytes
         // are laid out by — not the registry's, which may have moved on.
         const index = record.schema.fieldIndex(schemas.source_field) orelse {
@@ -677,10 +689,7 @@ pub const Registry = struct {
             return error.SourceMissing;
         };
 
-        return platform.os.joinPath(gpa, &.{ root, rel }) catch |err| switch (err) {
-            error.OutOfMemory => error.OutOfMemory,
-            else => error.LoadFailed,
-        };
+        return .{ .root = root, .relative = rel };
     }
 };
 

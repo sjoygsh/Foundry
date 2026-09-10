@@ -235,6 +235,7 @@ test "every native refusal is diagnosed and does not stop another library" {
         .{ .id = core.ContentId.fromString("test:path"), .name = "test:path", .file = "", .root = "safe", .version = 1, .abi = .{}, .native = "../escape" },
         .{ .id = core.ContentId.fromString("test:root"), .name = "test:root", .file = "", .root = "../escape", .version = 1, .abi = .{}, .native = "unused" },
         .{ .id = core.ContentId.fromString("test:noabi"), .name = "test:noabi", .file = "", .root = "safe", .version = 1, .native = "unused" },
+        .{ .id = core.ContentId.fromString("test:mixed"), .name = "test:mixed", .file = "", .root = "refused", .version = 1, .abi = .{ .min = 1, .max = 2 }, .native = "refused_mod", .script = .{ .entry = core.ContentId.fromString("test:scripts.main"), .binding = 1 } },
         .{ .id = core.ContentId.fromString("test:future"), .name = "test:future", .file = "", .root = "safe", .version = 1, .abi = .{ .min = 2 }, .native = "unused" },
         .{ .id = core.ContentId.fromString("test:missing"), .name = "test:missing", .file = "", .root = "missing", .version = 1, .abi = .{}, .native = "absent" },
         .{ .id = core.ContentId.fromString("test:corrupt"), .name = "test:corrupt", .file = "", .root = "corrupt", .version = 1, .abi = .{}, .native = "corrupt_mod" },
@@ -252,7 +253,7 @@ test "every native refusal is diagnosed and does not stop another library" {
     const without_shutdown = &loader.loaded.items[2];
     try testing.expect(without_shutdown.library.symbol(abi.ModShutdown, abi.shutdown_symbol) == null);
     try testing.expect(without_shutdown.shutdown == null);
-    try testing.expectEqual(@as(usize, 9), diags.count());
+    try testing.expectEqual(@as(usize, 10), diags.count());
 }
 
 test "the native identity limit closes a library that has not run" {

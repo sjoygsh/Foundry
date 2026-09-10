@@ -23,6 +23,16 @@ const Allocator = std.mem.Allocator;
 const Diagnostics = data.Diagnostics;
 const log = core.log.scoped(.abi);
 
+/// Every public table this build can hand to a native consumer. Kept as a set rather than a
+/// hardcoded latest number: additive versions coexist, and a v1-only native mod must remain
+/// loadable after v2 arrives in Step 3.
+const offered_api_versions = [_]u32{types.api_version_1};
+
+fn acceptsOffered(range: mod.Range) bool {
+    for (offered_api_versions) |version| if (range.accepts(version)) return true;
+    return false;
+}
+
 /// Apply the host's library-name convention to a manifest's platform-neutral `native`
 /// value. A package says `lanterns`, never `liblanterns.dylib`.
 pub fn libraryFileNameAlloc(gpa: Allocator, native: []const u8) Allocator.Error![]u8 {
@@ -66,6 +76,10 @@ pub fn LoaderOf(comptime H: type) type {
         ) Allocator.Error!void {
             for (entries) |entry| {
                 const native = entry.native orelse continue;
+                if (entry.script != null) {
+                    try report(self.gpa, diags, entry, "names both native and script code; activating both tiers is unsupported", .{});
+                    continue;
+                }
                 if (!mod.manifest.isBareName(native)) {
                     try report(self.gpa, diags, entry, "native library name is not a bare name", .{});
                     continue;
@@ -78,11 +92,12 @@ pub fn LoaderOf(comptime H: type) type {
                     try report(self.gpa, diags, entry, "names a native library but declares no ABI range", .{});
                     continue;
                 };
-                if (!range.accepts(types.api_version_1)) {
-                    try report(self.gpa, diags, entry, "requires ABI {d} through {d}; this host offers {d}", .{
+                if (!acceptsOffered(range)) {
+                    try report(self.gpa, diags, entry, "requires ABI {d} through {d}; this host offers {d} through {d}", .{
                         range.min,
                         range.max orelse std.math.maxInt(u32),
-                        types.api_version_1,
+                        offered_api_versions[0],
+                        offered_api_versions[offered_api_versions.len - 1],
                     });
                     continue;
                 }
@@ -203,4 +218,9 @@ test "a native library root is exactly one relative package directory" {
     try testing.expect(!validPackageRoot("mods/brighter"));
     try testing.expect(!validPackageRoot("mods\\brighter"));
     try testing.expect(!validPackageRoot("/brighter"));
+}
+
+test "native compatibility considers every offered table version" {
+    try testing.expect(acceptsOffered(.{ .min = 1, .max = 1 }));
+    try testing.expect(!acceptsOffered(.{ .min = 2 }));
 }

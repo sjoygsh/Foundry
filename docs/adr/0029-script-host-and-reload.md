@@ -1,6 +1,6 @@
 # ADR-0029: Scripts consume the public ABI and reload behind stable callbacks
 
-**Status:** Accepted (constraint only; implementation deferred to M8)
+**Status:** Accepted (package/source half implemented through M8 step 2)
 **Date:** 2026-09-09
 
 ## Context
@@ -82,3 +82,13 @@ expanding it requires a public ABI design, not a script-only shortcut.
 Scripts need multiple independently scheduled systems, component definitions that survive
 saves, resumable coroutines, rendering callbacks, or live package enable/disable. A real
 consumer requiring any of these supplies the reason for the next ABI/lifecycle design.
+
+## Implementation note — 2026-09-10
+
+Step 2 implements decision 2 up to, but not including, its public ABI addition. The
+`foundry:script` asset is copied, text-validated, bounded before read and revisioned; package
+reads traverse opened directory handles without following package-selected symlinks. Fpack
+derives the required `language "lua-5.5"`, and manifest v2 carries entry/binding metadata
+through resolution while schema-v1 packages remain readable. The native loader refuses a
+package carrying both code tiers before opening an image. `FoundryApi_v2`, bindings, stable
+callbacks and reload remain later steps.

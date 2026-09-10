@@ -91,6 +91,15 @@ pub const FileInfo = struct {
     modified_ns: i64,
 };
 
+/// Bytes and metadata obtained from the same opened file.
+///
+/// Keeping these together matters for confined package reads: checking one path and then
+/// opening it again would leave a race in which a symlink could replace the checked object.
+pub const FileRead = struct {
+    bytes: []u8,
+    info: FileInfo,
+};
+
 pub const DirEntry = struct {
     name: []const u8,
     kind: FileKind,
@@ -222,6 +231,90 @@ pub const Os = struct {
         return bytes catch |err| return mapFileError(err, "read", path);
     }
 
+    /// Reads one package-relative file without following a symlink or reparse point below
+    /// `root`. The root itself is a host-supplied capability and may be a symlink; every
+    /// component selected by untrusted package content is opened relative to an already-open
+    /// directory handle with following disabled.
+    ///
+    /// This deliberately rejects symlinks rather than resolving and comparing paths. The
+    /// latter is a check-then-open race; handle-relative traversal validates the object that
+    /// is actually read. `info` describes that same opened object.
+    pub fn readFileConfined(
+        self: *Os,
+        gpa: Allocator,
+        root: []const u8,
+        relative: []const u8,
+        max_bytes: usize,
+    ) FileError!FileRead {
+        const the_io = self.io();
+        var file = try self.openFileConfined(root, relative);
+        defer file.close(the_io);
+
+        const st = file.stat(the_io) catch |err| return mapConfinedError(err, "stat", relative);
+        if (st.kind != .file) return error.WrongFileKind;
+        if (st.size > max_bytes) return error.FileTooLarge;
+
+        var reader = file.reader(the_io, &.{});
+        const bytes = reader.interface.allocRemaining(gpa, .limited(max_bytes)) catch |err|
+            return mapConfinedError(err, "read", relative);
+        return .{ .bytes = bytes, .info = infoFromStat(st) };
+    }
+
+    /// Metadata for a confined file. This opens the object under the same no-symlink rules
+    /// as `readFileConfined`; it is suitable for change detection, not as authorization for
+    /// a later ordinary path open.
+    pub fn statFileConfined(self: *Os, root: []const u8, relative: []const u8) FileError!FileInfo {
+        const the_io = self.io();
+        var file = try self.openFileConfined(root, relative);
+        defer file.close(the_io);
+        const st = file.stat(the_io) catch |err| return mapConfinedError(err, "stat", relative);
+        if (st.kind != .file) return error.WrongFileKind;
+        return infoFromStat(st);
+    }
+
+    fn openFileConfined(self: *Os, root: []const u8, relative: []const u8) FileError!std.Io.File {
+        if (!isSafeRelativePath(relative)) return error.InvalidPath;
+
+        var component_count: usize = 0;
+        var count_it = std.mem.splitScalar(u8, relative, '/');
+        while (count_it.next()) |component| {
+            if (component.len == 0 or std.mem.eql(u8, component, ".")) continue;
+            component_count += 1;
+        }
+        if (component_count == 0) return error.InvalidPath;
+
+        const the_io = self.io();
+        var current = (if (isAbsolute(root))
+            std.Io.Dir.openDirAbsolute(the_io, root, .{})
+        else
+            std.Io.Dir.cwd().openDir(the_io, root, .{})) catch |err|
+            return mapConfinedError(err, "open root for", relative);
+        errdefer current.close(the_io);
+
+        var component_index: usize = 0;
+        var it = std.mem.splitScalar(u8, relative, '/');
+        while (it.next()) |component| {
+            if (component.len == 0 or std.mem.eql(u8, component, ".")) continue;
+            component_index += 1;
+            if (component_index == component_count) {
+                const file = current.openFile(the_io, component, .{
+                    .allow_directory = false,
+                    .follow_symlinks = false,
+                    .resolve_beneath = true,
+                }) catch |err| return mapConfinedError(err, "open", relative);
+                current.close(the_io);
+                return file;
+            }
+
+            const next = current.openDir(the_io, component, .{
+                .follow_symlinks = false,
+            }) catch |err| return mapConfinedError(err, "open", relative);
+            current.close(the_io);
+            current = next;
+        }
+        unreachable;
+    }
+
     fn openDirAbsoluteRead(the_io: std.Io, gpa: Allocator, path: []const u8, limit: std.Io.Limit) ![]u8 {
         var file = try std.Io.Dir.openFileAbsolute(the_io, path, .{});
         defer file.close(the_io);
@@ -260,11 +353,7 @@ pub const Os = struct {
             std.Io.Dir.cwd().statFile(the_io, path, .{})) catch |err|
             return mapFileError(err, "stat", path);
 
-        return .{
-            .size = st.size,
-            .kind = mapKind(st.kind),
-            .modified_ns = std.math.cast(i64, st.mtime.nanoseconds) orelse 0,
-        };
+        return infoFromStat(st);
     }
 
     fn statAbsolute(the_io: std.Io, path: []const u8) !std.Io.File.Stat {
@@ -485,6 +574,24 @@ fn mapFileError(err: anyerror, comptime verb: []const u8, path: []const u8) File
     };
 }
 
+/// Confined traversal treats a symlink loop and an intermediate non-directory as a rejected
+/// path. Both are the observable results of opening a component with following disabled, and
+/// neither may be softened into "missing" at the asset boundary.
+fn mapConfinedError(err: anyerror, comptime verb: []const u8, relative: []const u8) FileError {
+    return switch (err) {
+        error.SymLinkLoop, error.NotDir => error.InvalidPath,
+        else => mapFileError(err, verb, relative),
+    };
+}
+
+fn infoFromStat(st: std.Io.File.Stat) FileInfo {
+    return .{
+        .size = st.size,
+        .kind = mapKind(st.kind),
+        .modified_ns = std.math.cast(i64, st.mtime.nanoseconds) orelse 0,
+    };
+}
+
 fn mapKind(kind: std.Io.File.Kind) FileKind {
     return switch (kind) {
         .file => .file,
@@ -578,6 +685,64 @@ test "a file larger than the caller allowed is refused" {
 
     try os.writeFile(path, "x" ** 100);
     try testing.expectError(error.FileTooLarge, os.readFile(testing.allocator, path, 10));
+}
+
+test "a confined read returns bytes and metadata from an ordinary package file" {
+    var os = try testOs(&.{});
+    defer os.deinit();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir = try tmpPath(&tmp, &buf);
+    const nested = try joinPath(testing.allocator, &.{ dir, "scripts" });
+    defer testing.allocator.free(nested);
+    try os.createDirPath(nested);
+    const path = try joinPath(testing.allocator, &.{ nested, "main.lua" });
+    defer testing.allocator.free(path);
+    try os.writeFile(path, "return 42");
+
+    const read = try os.readFileConfined(testing.allocator, dir, "scripts/main.lua", 256 << 10);
+    defer testing.allocator.free(read.bytes);
+    try testing.expectEqualStrings("return 42", read.bytes);
+    try testing.expectEqual(@as(u64, 9), read.info.size);
+    try testing.expectEqual(FileKind.file, read.info.kind);
+
+    const info = try os.statFileConfined(dir, "scripts/main.lua");
+    try testing.expectEqual(read.info.size, info.size);
+    try testing.expectEqual(read.info.modified_ns, info.modified_ns);
+}
+
+test "a confined read rejects final and intermediate symlinks" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var os = try testOs(&.{});
+    defer os.deinit();
+
+    var root_tmp = testing.tmpDir(.{});
+    defer root_tmp.cleanup();
+    var outside_tmp = testing.tmpDir(.{});
+    defer outside_tmp.cleanup();
+    var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    var outside_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root = try tmpPath(&root_tmp, &root_buf);
+    const outside = try tmpPath(&outside_tmp, &outside_buf);
+    const secret = try joinPath(testing.allocator, &.{ outside, "secret.lua" });
+    defer testing.allocator.free(secret);
+    try os.writeFile(secret, "outside");
+
+    try root_tmp.dir.symLink(testing.io, secret, "final.lua", .{});
+    try root_tmp.dir.symLink(testing.io, outside, "linked", .{ .is_directory = true });
+
+    try testing.expectError(
+        error.InvalidPath,
+        os.readFileConfined(testing.allocator, root, "final.lua", 1024),
+    );
+    try testing.expectError(
+        error.InvalidPath,
+        os.readFileConfined(testing.allocator, root, "linked/secret.lua", 1024),
+    );
+    try testing.expectError(error.InvalidPath, os.statFileConfined(root, "final.lua"));
 }
 
 test "listing a directory finds what was written into it" {

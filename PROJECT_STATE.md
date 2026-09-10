@@ -1,9 +1,9 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-10
-**Current handoff: M8 step 1 complete (1/8 steps); next is step 2 only.**
-The restricted Lua runtime boundary is implemented and proven; script assets, manifests,
-ABI v2 and gameplay bindings have not begun.
+**Current handoff: M8 step 2 complete (2/8 steps); next is step 3 only.**
+The restricted Lua runtime and ordinary script package assets/manifests are implemented and
+proven; ABI v2 and gameplay bindings have not begun.
 
 **Implemented 2026-09-10:** PUC Lua 5.5.1 is pinned from the official archive and compiled
 directly with Zig into the optional L6 `script` consumer. Its private C bridge contains every
@@ -18,13 +18,30 @@ prove the boundary; it is not the M8 author contract.
 source; stop runaway and recursive code; force every early allocation index through successful
 bootstrap and execution; exercise real heap exhaustion, compile/result/teardown failures and
 stable non-string diagnostics; and prove a faulted VM can execute healthy text afterward.
-The full suite is now **1131 headless tests**. Deliberately disabling the hook exceeded an
+The step-1 suite was **1131 headless tests**. Deliberately disabling the hook exceeded an
 external three-second deadline; bypassing the heap check failed the quota test; admitting a
 `debug` global failed the allowlist test. Each exact mutation was restored before the bar.
 
-**Step 2 boundary:** add `foundry:script` assets, confined source reads, fpack derivation and
-manifest v2 metadata through mod discovery/resolution. It must not add ABI v2 or gameplay
-bindings yet.
+**Implemented in step 2, 2026-09-10:** `foundry:script` version 1 is an ordinary engine-declared
+asset schema. Its runtime-registered loader accepts exactly `lua-5.5`, copies valid UTF-8 text,
+rejects NUL/binary chunks, applies a 256 KiB pre-read bound, and publishes a nonzero monotonic
+revision that refuses exhaustion rather than wrapping. Package-selected reads traverse opened
+directory handles without following symlink/reparse components; fpack uses the same confined
+primitive for authoring/import reads. `.lua` derivation emits both source and language, while
+an explicit record may choose a stable ID or override a source.
+
+`foundry:mod` is now schema version 2 with one appended optional `script { entry id, binding
+u32 }` field. Binding 1 requires a declared ABI range containing v2; schema-v1 packages remain
+readable, and the descriptor survives discovery/resolution. A package naming both native and
+script code keeps its content but the native loader refuses activation before opening an image.
+Native compatibility now examines all offered table versions rather than one hardcoded value.
+The end-to-end proof compiles, discovers, resolves, mounts and reads a script-bearing package in
+an asset-only host with no Lua dependency. **The full suite is now 1142 headless tests.**
+Temporarily enabling symlink following made the confinement test fail; the exact edit was
+restored and the focused platform suite passed.
+
+**Step 3 boundary:** publish the typed source-copy call through additive `FoundryApi_v2`, keep
+v1 unchanged, and prove the installed C/C++ contract. Do not begin gameplay bindings.
 
 **Written 2026-09-09:** [ADR-0028](docs/adr/0028-scripting-lua.md) selects restricted
 Lua 5.5.1; [ADR-0029](docs/adr/0029-script-host-and-reload.md) specifies the public ABI
@@ -34,15 +51,14 @@ bounded content/world bindings, failure policy, state migration and verification
 
 **Eight implementation units, in `scripting.md` §16:** runtime containment; script assets
 and manifests; ABI v2 source access; bounded bindings; package lifecycle; hot reload;
-adversarial/determinism proof; outside-tree author guide and milestone closure. **Step 1 is
-complete; next is step 2 only when the user resumes.** No script asset, manifest v2,
-ABI v2 header or sample script exists yet. Package isolation, gameplay bindings, reload,
+adversarial/determinism proof; outside-tree author guide and milestone closure. **Steps 1 and 2
+are complete; next is step 3 only when the user resumes.** No ABI v2 header or sample script
+exists yet. Package isolation, gameplay bindings, reload,
 performance defaults and the full adversarial matrix still require their specified evidence.
 M7 remains complete with 1117 headless tests; M9 remains undesigned.
 
-**Planning verification:** the full AGENTS.md §3 bar passes on the unchanged implementation:
-format check, tests, host/Linux/Windows compilation, and both 30-frame null sample runs.
-This verifies the repository baseline, not the future scripting design's runtime claims.
+**Step-2 verification:** focused compilation and all 1142 tests pass. The final AGENTS.md §3
+bar covers formatting, host/Linux/Windows compilation and both 30-frame null sample runs.
 
 The architecture uses one VM and one stable system callback per script package. Reload
 prepares an isolated replacement and explicitly migrates bounded state; failure preserves
@@ -620,13 +636,13 @@ is mature enough to need them rather than as decoration.
 pixels; Phase 2 closed with M6, and every milestone in it is complete: sprites, content,
 entities, a playable sample, and an overlay that diagnosed its own cost. **M7 — Moddable:
 "others can extend it" — completed 2026-09-09**, all seven design steps and the outside-tree
-exit proof. M8's design is written; runtime containment is complete and seven implementation
-steps remain.
+exit proof. M8's design is written; runtime containment and package assets/manifests are
+complete and six implementation steps remain.
 
 ## Current milestone
 
-**M8 — Scriptable: step 1 complete (1/8 steps).** See `docs/design/scripting.md` §16.
-The next session begins and ends with step 2: ordinary script assets and manifest metadata.
+**M8 — Scriptable: step 2 complete (2/8 steps).** See `docs/design/scripting.md` §16.
+The next session begins and ends with step 3: additive ABI v2 source access.
 
 **M7 — Moddable: "others can extend it." Complete, 2026-09-07 to 2026-09-09.** All six
 roadmap bullets and all seven steps of `public-abi.md` §19 are implemented. The exit criterion
@@ -3365,10 +3381,10 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 
 ## Notes for the next session
 
-**Resume point, 2026-09-10:** M8 step 1 complete, 1/8 steps implemented. Read ADR-0028,
+**Resume point, 2026-09-10:** M8 step 2 complete, 2/8 steps implemented. Read ADR-0028,
 ADR-0029 and `docs/design/scripting.md` before implementation. Keep existing M7 behavior and
-v1 compatibility; step 2 adds only script assets, confined source reads, fpack derivation and
-manifest v2 metadata. Stop before ABI v2. The environment notes below still apply.
+v1 compatibility; step 3 adds only additive ABI v2 typed source copying and its installed-header
+proof. Stop before gameplay bindings. The environment notes below still apply.
 
 * Read `CLAUDE.md` first, then this file, then `docs/ROADMAP.md`.
 * The architecture is settled. Do not relitigate ADRs without a concrete reason; each records

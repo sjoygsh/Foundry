@@ -1,7 +1,7 @@
 # Scripting: the Tier 2 host
 
-**Status:** designed 2026-09-09; **1 of 8 implementation steps complete.**
-**Current stop point:** after §16 step 1; step 2 has not begun.
+**Status:** designed 2026-09-09; **2 of 8 implementation steps complete.**
+**Current stop point:** after §16 step 2; step 3 has not begun.
 
 Rests on [ADR-0028](../adr/0028-scripting-lua.md) (runtime),
 [ADR-0029](../adr/0029-script-host-and-reload.md) (boundary and lifetime), and
@@ -109,9 +109,10 @@ different content ID or override the source. Runtime source is UTF-8 text, bound
 read, with no binary chunk, embedded NUL or bytecode accepted. The source loader copies
 text; it does not parse/execute Lua and does not make `fpack` depend on Lua.
 
-The current derivation in `tools/fpack/pack.zig` emits only `source`; step 2 must extend
-the script-kind emission to include `language "lua-5.5"`. Merely adding `.lua` to the
-extension table is insufficient. Test both derived and explicitly authored records.
+The derivation in `tools/fpack/pack.zig` emits both `source` and the kind's required derived
+string fields; `.lua` therefore adds `language "lua-5.5"`. Merely adding `.lua` to the
+extension table would have been insufficient. Both derived and explicitly authored records
+are tested.
 
 Append optional **`script`**, `since = 2`, to `foundry:mod` and raise that schema to version
 2. Its nested fields are `entry: id` and `binding: u32`, both required when present.
@@ -119,7 +120,7 @@ M8 accepts binding 1. Keep every existing field unchanged. V1 packages remain re
 absent script means exactly today's behavior. Update the test that currently assumes all
 manifest fields have `since = 1`; do not remove version checking.
 
-Illustrative authoring record (validated against actual syntax in step 2):
+Illustrative authoring record (validated against the implemented syntax in step 2):
 
 ```text
 foundry:mod encounters:mod {
@@ -185,12 +186,12 @@ Source loading inherits asset override semantics: an entry ID may resolve to a l
 package, just as a texture does. Diagnostics show both the consuming package and winning
 source package. This grants source-reading capability, not arbitrary filesystem access.
 
-**Containment before publication:** lexical `..` rejection is insufficient. The new source
-read must reject escaping symlinks/reparse points using a root-relative confined open (or
-reject symlink components entirely), through `platform.Os`. Validate on the opened object,
-not a `realpath` check followed by an unrelated open. No absolute machine path reaches a
-script diagnostic. Cross-target compilation and adversarial host filesystem tests belong
-to step 2. Do not claim the existing asset path check already establishes this guarantee.
+**Containment before publication:** lexical `..` rejection is insufficient. The source read
+rejects symlink/reparse components through a root-relative confined open in `platform.Os`.
+It validates the opened object, not a `realpath` check followed by an unrelated open, and no
+absolute machine path reaches a script diagnostic. Step 2 includes cross-target compilation
+and adversarial host filesystem tests; the older lexical asset path check alone does not
+establish this guarantee.
 
 ## 7. Binding 1: exact scope and value rules
 
@@ -538,7 +539,7 @@ steps simply because a session has budget. This planning commit completes none o
    executes text, stops a runaway, contains recursion/OOM and proves no Lua nonlocal exit
    crosses Zig. Include compile/bootstrap/result/teardown failure injection. If it fails,
    revise the architecture before proceeding. Runnable result: protected script fixture.
-2. **Make scripts ordinary package assets.** Add script schema/source loader, confined
+2. **Make scripts ordinary package assets. Complete 2026-09-10.** Add script schema/source loader, confined
    source reads, fpack derivation and manifest v2 metadata through discovery/resolution.
    Source revisions and override/refusal tests; neither fpack nor content-only hosts links
    Lua. Runnable result: compile/discover a script-bearing package and read its bounded
@@ -576,10 +577,10 @@ steps simply because a session has budget. This planning commit completes none o
 
 ## 17. Planning handoff
 
-Architecture and sequence are written. Step 1 proves the Lua/C/Zig containment boundary;
-package/source integration, the public ABI addition, gameplay bindings, reload, end-to-end
+Architecture and sequence are written. Steps 1 and 2 prove the Lua/C/Zig containment boundary
+and package/source integration. The public ABI addition, gameplay bindings, reload, end-to-end
 security, performance and guide execution remain **unverified until their implementation
-steps**. The next authorized unit, when the user resumes, is §16 step 2 only.
+steps**. The next authorized unit, when the user resumes, is §16 step 3 only.
 
 ## Resolution — 2026-09-10, step 1
 
@@ -608,3 +609,35 @@ The three guards were also broken one at a time. Disabling the instruction hook 
 headless fixture exceed a host-side three-second process deadline; bypassing the quota changed
 the heap-limit test from `memory_limit` to success; and publishing a forbidden `debug` global
 broke the allowlist test. The exact temporary edits were restored before verification.
+
+## Resolution — 2026-09-10, step 2
+
+The design required no architectural correction. `foundry:script` version 1 has required
+`source` and `language` fields; the registered source loader accepts exactly `lua-5.5`, copies
+valid UTF-8 text, rejects NUL and binary chunks, and owns a nonzero monotonic revision. Its
+256 KiB limit is a loader property applied by the registry before file allocation/read, so
+large binary asset kinds keep their existing host ceiling without making script source large.
+Revision exhaustion refuses replacement rather than wrapping, and a failed replacement leaves
+the prior bytes and revision active.
+
+Package-selected source paths now use `platform.Os` handle-relative traversal. Each component
+below the mounted root is opened with symlink/reparse following disabled; bytes and the initial
+stamp come from the same opened object. The same primitive also closes fpack's import-read hole.
+This is stricter than resolving symlinks that remain inside a package, deliberately choosing the
+design's permitted reject-all policy and avoiding a check/open race. Temporarily enabling
+symlink following made the adversarial confinement test fail; restoring it returned the focused
+platform suite to green.
+
+Asset kinds gained declarative derived string fields rather than a script-name branch in fpack,
+so `.lua` emits `language "lua-5.5"` through the ordinary derivation path. Manifest v2 appends
+optional `{entry, binding}` script metadata, accepts binding 1 only, requires a declared range
+containing ABI v2, and carries the descriptor unchanged through deterministic resolution.
+Schema-v1 manifests still read. A package carrying native and script code remains discoverable
+as content, while the native loader diagnoses and refuses code activation before opening its
+image. Its compatibility predicate now examines the set of offered tables, ready for v2 to join
+that set in step 3 without dropping v1-only native mods.
+
+The runnable proof compiles a script-bearing package with fpack, discovers and resolves it,
+mounts its ordinary package root in an asset-only host, and reads the bounded source through the
+registered loader. Neither that host nor fpack imports or links Lua. The suite is 1142 headless
+tests after this step. ABI v2, public source copying and every gameplay binding remain untouched.

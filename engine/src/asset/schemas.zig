@@ -34,6 +34,7 @@ const Value = data.Value;
 /// runtime code resolves anything by it (ADR-0021). The name is frozen the moment content
 /// outside this repository writes one.
 pub const source_field = "source";
+pub const language_field = "language";
 
 /// One asset kind: a record type, and the file extensions that produce one by derivation.
 pub const Kind = struct {
@@ -48,6 +49,14 @@ pub const Kind = struct {
     /// Lowercase, without the dot. A file with one of these extensions becomes a record of
     /// this kind unless an authored record already names it (`assets.md` §3).
     extensions: []const []const u8,
+    /// Additional string fields `fpack` writes for a path-derived record. Most kinds need
+    /// none; scripts must state their language even when the record itself is implicit.
+    derived_strings: []const DerivedString = &.{},
+};
+
+pub const DerivedString = struct {
+    field: []const u8,
+    value: []const u8,
 };
 
 /// How the sampler filters and how it addresses outside `[0,1]`.
@@ -123,6 +132,23 @@ pub const sound: Schema = .{
     },
 };
 
+pub const script_name = "foundry:script";
+pub const script_language = "lua-5.5";
+
+/// One source file for a Tier 2 package.
+///
+/// The language is explicit because both the asset schema and the eventual script binding
+/// are versioned boundaries (I8). It is required rather than defaulted: a package must not
+/// silently change languages when a future runtime learns another one.
+pub const script: Schema = .{
+    .id = SchemaId.fromStringUnchecked(script_name),
+    .version = 1,
+    .fields = &.{
+        .{ .name = source_field, .type = .string },
+        .{ .name = language_field, .type = .string },
+    },
+};
+
 /// Every asset kind the engine itself defines, in a fixed order.
 ///
 /// Fixed because `fpack` walks it to decide what a file becomes, and I9 wants that answer to
@@ -131,6 +157,12 @@ pub const kinds = [_]Kind{
     .{ .name = texture_name, .schema = texture, .extensions = &.{"png"} },
     .{ .name = tilegrid_name, .schema = tilegrid, .extensions = &.{tilegrid_extension} },
     .{ .name = sound_name, .schema = sound, .extensions = &.{"wav"} },
+    .{
+        .name = script_name,
+        .schema = script,
+        .extensions = &.{"lua"},
+        .derived_strings = &.{.{ .field = language_field, .value = script_language }},
+    },
 };
 
 /// The kind a file extension derives, or null if that extension is not an asset.
@@ -212,6 +244,7 @@ test "extensions map to kinds, and nothing else does" {
     try testing.expect(kindForExtension("png") == &kinds[0]);
     try testing.expect(kindForExtension("fgrid") == &kinds[1]);
     try testing.expect(kindForExtension("wav") == &kinds[2]);
+    try testing.expect(kindForExtension("lua") == &kinds[3]);
     try testing.expect(kindForExtension("PNG") == null);
     try testing.expect(kindForExtension("txt") == null);
     try testing.expect(kindForExtension("") == null);
@@ -237,6 +270,15 @@ test "a kind's name and its id are the same fact twice" {
         try testing.expect(kindForSchema(kind.schema.id) == kind);
     }
     try testing.expect(kindForSchema(SchemaId.fromStringUnchecked("foundry:item")) == null);
+}
+
+test "every derived extra names a string field in its own schema" {
+    for (&kinds) |kind| {
+        for (kind.derived_strings) |extra| {
+            const index = kind.schema.fieldIndex(extra.field).?;
+            try testing.expect(kind.schema.fields[index].type == .string);
+        }
+    }
 }
 
 test "the engine's asset schemas register, and register twice without complaint" {

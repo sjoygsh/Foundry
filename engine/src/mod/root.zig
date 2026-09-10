@@ -36,6 +36,7 @@ pub const Manifest = manifest.Manifest;
 pub const Range = manifest.Range;
 pub const Request = resolve_mod.Request;
 pub const Requirement = manifest.Requirement;
+pub const Script = manifest.Script;
 pub const Resolution = resolve_mod.Resolution;
 pub const Skip = resolve_mod.Skip;
 pub const SkipReason = resolve_mod.SkipReason;

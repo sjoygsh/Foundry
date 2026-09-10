@@ -15,13 +15,14 @@ source changes.
 
 Tier 1 content modding and Tier 3 native modding work: see
 [docs/modding](docs/modding/). Tier 2 scripting is M8: its
-[architecture and eight-step plan](docs/design/scripting.md) are written; step 1's protected
-Lua runtime boundary is complete, with script assets and manifests next.
+[architecture and eight-step plan](docs/design/scripting.md) are written; steps 1 and 2 have
+completed the protected Lua boundary and ordinary package script assets/manifests. ABI v2 is
+next.
 
 ```sh
 ./scripts/install-zig.sh   # the only tool you need
 zig build run -Drhi=metal  # opens a window and draws; escape quits
-zig build test             # 1131 headless tests
+zig build test             # 1142 headless tests
 ```
 
 Implemented so far:
@@ -35,7 +36,8 @@ Implemented so far:
   backend** that enforces the strict rules Metal forgives. Not scaffolding: it is what
   substitutes for a second graphics backend until there is one.
 * **`asset`** — Foundry's own PNG decoder, and the registry that turns a content ID into a
-  loaded asset through loaders registered at runtime. Nothing is addressable by path.
+  loaded asset through loaders registered at runtime, including bounded/revisioned script
+  source. Nothing is addressable by path.
 * **`render2d`** — sprite and text batching, atlases, cameras.
 * **`physics2d`** — shapes, tile grids, broadphase, collision queries and response.
 * **`ui`** — an immediate-mode kernel that emits a renderer-independent draw list.
@@ -47,7 +49,7 @@ Implemented so far:
   content browser.
 * **`mod`** — manifests, package discovery, dependency resolution and deterministic order.
 * **`script`** — an optional restricted Lua runtime with protected execution, heap and
-  instruction quotas; package assets and gameplay bindings are subsequent M8 steps.
+  instruction quotas; public source access and gameplay bindings are subsequent M8 steps.
 * **`abi`** — the installed C99/C++ header, 135-call `FoundryApi_v1`, host boundary and
   native-library lifecycle.
 * **`tools/fpack`** — the content compiler: a package directory in, one `.fpk` out.
