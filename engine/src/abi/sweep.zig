@@ -34,12 +34,14 @@ const test_engine = @import("test_engine.zig");
 const types = @import("types.zig");
 
 const Api_v1 = api.Api_v1;
+const Api_v2 = api.Api_v2;
 const Result = types.Result;
 const Str = types.Str;
 const TestEngine = test_engine.TestEngine;
 
 const Host = host_mod.HostOf(TestEngine);
 const table = api.TableOf(Host).v1;
+const table_v2 = api.TableOf(Host).v2;
 
 const testing = std.testing;
 
@@ -228,19 +230,35 @@ test "the table is one shape: every entry present, none null, and it says its ow
     }
 }
 
-test "get_api hands out the version it has and refuses the ones it does not" {
+test "get_api hands out v1 and v2 side by side and refuses unknown versions" {
     const Table = api.TableOf(Host);
 
     const v1 = Table.getApi(1) orelse return error.TestUnexpectedResult;
     const typed: *const Api_v1 = @ptrCast(@alignCast(v1));
     try testing.expectEqual(@as(u32, 1), typed.version);
 
+    const v2 = Table.getApi(2) orelse return error.TestUnexpectedResult;
+    const typed_v2: *const Api_v2 = @ptrCast(@alignCast(v2));
+    try testing.expectEqual(@as(u32, 2), typed_v2.version);
+    try testing.expectEqual(@as(u32, @sizeOf(Api_v2)), typed_v2.size);
+
+    // V2 is separate storage rather than a cast, while every common capability reuses the
+    // exact implementation and stays in v1's relative order.
+    try testing.expect(v1 != v2);
+    inline for (@typeInfo(Api_v1).@"struct".fields) |field| {
+        if (comptime isCall(field.type)) {
+            try testing.expect(@field(table, field.name) == @field(table_v2, field.name));
+            try testing.expectEqual(@offsetOf(Api_v1, field.name), @offsetOf(Api_v2, field.name));
+        }
+    }
+
     // Refused legibly rather than by crashing, which is the whole reason the entry point
     // takes a query function instead of the table.
     try testing.expectEqual(@as(?*const anyopaque, null), Table.getApi(0));
-    try testing.expectEqual(@as(?*const anyopaque, null), Table.getApi(2));
+    try testing.expectEqual(@as(?*const anyopaque, null), Table.getApi(3));
     try testing.expectEqual(@as(?*const anyopaque, null), Table.getApi(std.math.maxInt(u32)));
 
     // The same pointer every time: the table is static, so a mod may keep it.
     try testing.expectEqual(Table.getApi(1), Table.getApi(1));
+    try testing.expectEqual(Table.getApi(2), Table.getApi(2));
 }

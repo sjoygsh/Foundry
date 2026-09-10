@@ -1,6 +1,6 @@
 # ADR-0029: Scripts consume the public ABI and reload behind stable callbacks
 
-**Status:** Accepted (package/source half implemented through M8 step 2)
+**Status:** Accepted (public source boundary implemented through M8 step 3)
 **Date:** 2026-09-09
 
 ## Context
@@ -92,3 +92,17 @@ derives the required `language "lua-5.5"`, and manifest v2 carries entry/binding
 through resolution while schema-v1 packages remain readable. The native loader refuses a
 package carrying both code tiers before opening an image. `FoundryApi_v2`, bindings, stable
 callbacks and reload remain later steps.
+
+## Implementation note — 2026-09-10, step 3
+
+`FoundryApi_v2` now exists beside the byte-for-byte unchanged v1 declaration. It is a separate
+flat table with the same 135 common calls in the same relative order and one appended
+`script_source_copy` call. The host supplies the exact registered source-loader identity;
+schema agreement alone cannot authorize an opaque payload. A header-only C consumer exercises
+query, asset acquisition, sizing, copy, revision and balanced release without engine types.
+
+The agreement checks both table layouts, every common signature and the new signature on all
+build targets. Deliberately narrowing the header's capacity parameter and independently
+swapping two same-typed Zig table entries both failed the harness before being restored. V1-only
+native code still negotiates and runs, while native range selection now offers both versions.
+Lua gameplay bindings, stable callbacks and reload remain later steps.

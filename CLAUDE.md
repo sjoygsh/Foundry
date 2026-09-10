@@ -166,7 +166,7 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Public API | One versioned C ABI table shared by mods, scripts and tools | [0004](docs/adr/0004-public-c-abi.md) |
 | ABI placement | `abi` is a peer of `debug` at L5; the host supplies its subsystems | [0026](docs/adr/0026-abi-module-and-host.md) |
 | Scripting runtime | Restricted Lua 5.5.1; protected runtime boundary implemented, package host pending | [0028](docs/adr/0028-scripting-lua.md) |
-| Script host | Header-only public ABI consumer; source assets through additive v2; stable callbacks and candidate-VM reload | [0029](docs/adr/0029-script-host-and-reload.md) |
+| Script host | Header-only public ABI consumer; source assets and additive v2 copying implemented; stable callbacks and candidate-VM reload pending | [0029](docs/adr/0029-script-host-and-reload.md) |
 | Identity | Generational handles internally; stable namespaced string IDs for content | [0005](docs/adr/0005-handles-and-content-ids.md) |
 | Content | Engine is a library; content is data; two representations (authoring / runtime) | [0006](docs/adr/0006-content-model.md) |
 | Authoring format | Foundry's own `.fdt` text format; IDs are bare tokens, directives are `@`-prefixed | [0020](docs/adr/0020-authoring-text-format.md) |
@@ -254,14 +254,14 @@ L5  abi         -> core, data, physics2d, platform, ui, asset, render2d, scene,
 Games, samples and tools depend on `app`. A host that loads mods also imports `abi`; a
 native mod itself depends on the C header and never on a Zig module.
 
-**Implemented through its package boundary in M8 step 2:** `script` sits at L6 as a public API
+**Implemented through its public source boundary in M8 step 3:** `script` sits at L6 as a public API
 consumer. The current fixture depends on `core` and the pinned Lua library only; the completed
 host also consumes declarations from `foundry.h`, never an engine implementation module. It
 receives the version query and identities from its application. Source assets become reachable
 through additive ABI v2, while v1 stays unchanged. `foundry:script`, confined source loading,
-fpack derivation and manifest-v2 metadata now exist below it without linking Lua; ABI v2 and
-package lifecycle remain subsequent M8 work. See ADR-0029 and `docs/design/scripting.md` for
-ownership and step order.
+fpack derivation, manifest-v2 metadata and typed public source copying now exist without making
+Lua a lower-layer dependency. Gameplay bindings and package lifecycle remain subsequent M8
+work. See ADR-0029 and `docs/design/scripting.md` for ownership and step order.
 
 **The overlay is not privileged.** `debug` is engine code and gets no private path (I4,
 ADR-0025): every call it makes must be one the public ABI could expose, which means handle or
@@ -386,7 +386,7 @@ serialization and the content model in ways that are impossible to retrofit.
 **Tier 2 — Script mods (most modders).** Sandboxed, hot-reloadable code against the public API.
 Script faults must not crash the host. **Restricted Lua 5.5.1** is selected by ADR-0028;
 its protected runtime boundary and ordinary package source assets are implemented, while
-public bindings and hot reload remain M8 work. Its operational fault-containment contract,
+gameplay bindings and hot reload remain M8 work. Its operational fault-containment contract,
 limits and explicit exclusions are in `docs/design/scripting.md`.
 
 **Tier 3 — Native mods (power users).** Dynamic libraries loaded through the C ABI. Full speed,

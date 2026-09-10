@@ -1,6 +1,7 @@
 //! Assets, as the table publishes them.
 //!
-//! Six calls, and one of them is the only thing in `_v1` a mod has to balance:
+//! Seven calls across the additive tables, and one of them is the only thing a mod has to
+//! balance:
 //! **`asset_acquire` adds a reference and `asset_release` takes it away**. That is the one
 //! refcount a mod owns and must own — nothing else here transfers ownership in either
 //! direction, and an asset acquired and never released stays in memory for the life of the
@@ -113,6 +114,36 @@ pub fn Of(comptime H: type) type {
             dst.* = engine.assets.refCount(handle.unwrap(asset.AssetHandle)) orelse return .invalid_handle;
             return .ok;
         }
+
+        /// Copies only payloads made by the exact built-in script source loader supplied
+        /// by the host. The two outputs are deliberately written on `limit`, so callers can
+        /// size a buffer and observe one coherent revision without borrowing engine memory.
+        pub fn scriptSourceCopy(
+            handle: Asset,
+            buffer: ?[*]u8,
+            capacity: u64,
+            needed: ?*u64,
+            revision: ?*u64,
+        ) callconv(.c) Result {
+            const out_needed = needed orelse return .invalid_argument;
+            const out_revision = revision orelse return .invalid_argument;
+            if (capacity != 0 and buffer == null) return .invalid_argument;
+
+            const h = H.current() orelse return .unavailable;
+            const engine = h.engine orelse return .unavailable;
+            const loader = h.script_source_loader orelse return .unavailable;
+
+            const unwrapped = handle.unwrap(asset.AssetHandle);
+            _ = engine.assets.get(unwrapped) orelse return .invalid_handle;
+            const source = asset.script.get(&engine.assets, unwrapped, loader) orelse
+                return .unsupported;
+
+            out_needed.* = source.bytes.len;
+            out_revision.* = source.revision;
+            if (capacity < source.bytes.len) return .limit;
+            if (source.bytes.len != 0) @memcpy(buffer.?[0..source.bytes.len], source.bytes);
+            return .ok;
+        }
     };
 }
 
@@ -151,6 +182,16 @@ const test_engine = @import("test_engine.zig");
 const TestEngine = test_engine.TestEngine;
 const Host = host_mod.HostOf(TestEngine);
 const table = api.TableOf(Host).v1;
+const table_v2 = api.TableOf(Host).v2;
+
+extern fn foundry_agreement_copy_script_source(
+    get_api: types.GetApi,
+    id: ContentId,
+    buffer: ?[*]u8,
+    capacity: u64,
+    needed: ?*u64,
+    revision: ?*u64,
+) callconv(.c) Result;
 
 /// A record type whose bytes live in a file, which is all `asset` requires of one: a
 /// `source` field naming a path inside the package. Nothing here is an engine asset kind,
@@ -183,14 +224,17 @@ const Fixture = struct {
     engine: TestEngine,
     host: Host,
     loader: CountingLoader = .{},
+    script_loader: asset.ScriptSourceLoader = .{},
 
     fn init() !*Fixture {
         const self = try testing.allocator.create(Fixture);
         self.* = .{ .engine = try .init(testing.allocator), .host = .{} };
         self.engine.settle();
         self.host.engine = &self.engine;
+        self.host.script_source_loader = &self.script_loader;
         self.host.bind();
 
+        try asset.schemas.registerAll(testing.allocator, &self.engine.schemas);
         const package = try self.engine.loadPackage("mymod:content", source_text);
         try self.engine.writeSource(package, "one.bin", "aaaa");
         try self.engine.writeSource(package, "two.bin", "bb");
@@ -200,6 +244,7 @@ const Fixture = struct {
             .load = CountingLoader.load,
             .unload = CountingLoader.unload,
         });
+        try self.engine.assets.registerLoader(testing.allocator, self.script_loader.assetLoader());
         return self;
     }
 
@@ -344,4 +389,170 @@ test "an asset handle nobody issued resolves to nothing" {
     // Released rather than silently ignored: the difference between a mod being told it has
     // a bug and a mod leaking every asset it ever acquired.
     try testing.expectEqual(Result.invalid_handle, table.asset_release(.{ .bits = std.math.maxInt(u64) }));
+}
+
+test "v2 copies a packaged script source with sizing and revision semantics" {
+    const f = try Fixture.init();
+    defer f.deinit();
+
+    const package = try f.engine.loadPackage("scripts:content",
+        \\foundry:script scripts:main { source "main.lua" language "lua-5.5" }
+    );
+    try f.engine.writeSource(package, "main.lua", "return 41");
+
+    var handle: Asset = .none;
+    try testing.expectEqual(
+        Result.ok,
+        table_v2.asset_acquire(core.ContentId.fromString("scripts:main"), &handle),
+    );
+    defer _ = table_v2.asset_release(handle);
+
+    var needed: u64 = 99;
+    var revision: u64 = 99;
+    try testing.expectEqual(
+        Result.limit,
+        table_v2.script_source_copy(handle, null, 0, &needed, &revision),
+    );
+    try testing.expectEqual(@as(u64, 9), needed);
+    try testing.expectEqual(@as(u64, 1), revision);
+
+    var too_small: [8]u8 = @splat(0xa5);
+    try testing.expectEqual(
+        Result.limit,
+        table_v2.script_source_copy(handle, &too_small, too_small.len, &needed, &revision),
+    );
+    try testing.expectEqualSlices(u8, &(@as([8]u8, @splat(0xa5))), &too_small);
+
+    var copied: [16]u8 = @splat(0);
+    try testing.expectEqual(
+        Result.ok,
+        table_v2.script_source_copy(handle, &copied, copied.len, &needed, &revision),
+    );
+    try testing.expectEqualStrings("return 41", copied[0..needed]);
+
+    try f.engine.writeSource(package, "main.lua", "return 42");
+    try f.engine.assets.reload(testing.allocator, handle.unwrap(asset.AssetHandle));
+    try testing.expectEqual(
+        Result.ok,
+        table_v2.script_source_copy(handle, &copied, copied.len, &needed, &revision),
+    );
+    try testing.expectEqualStrings("return 42", copied[0..needed]);
+    try testing.expectEqual(@as(u64, 2), revision);
+}
+
+test "a C-shaped v2 consumer reads packaged source without engine types" {
+    const f = try Fixture.init();
+    defer f.deinit();
+
+    const package = try f.engine.loadPackage("consumer:content",
+        \\foundry:script consumer:main { source "consumer.lua" language "lua-5.5" }
+    );
+    try f.engine.writeSource(package, "consumer.lua", "return 73");
+
+    var needed: u64 = 0;
+    var revision: u64 = 0;
+    try testing.expectEqual(
+        Result.limit,
+        foundry_agreement_copy_script_source(
+            api.TableOf(Host).getApi,
+            core.ContentId.fromString("consumer:main"),
+            null,
+            0,
+            &needed,
+            &revision,
+        ),
+    );
+    try testing.expectEqual(@as(u64, 9), needed);
+    try testing.expectEqual(@as(u64, 1), revision);
+
+    var copied: [16]u8 = @splat(0);
+    try testing.expectEqual(
+        Result.ok,
+        foundry_agreement_copy_script_source(
+            api.TableOf(Host).getApi,
+            core.ContentId.fromString("consumer:main"),
+            &copied,
+            copied.len,
+            &needed,
+            &revision,
+        ),
+    );
+    try testing.expectEqualStrings("return 73", copied[0..needed]);
+}
+
+test "v2 script source refuses invalid pointers, stale handles, and wrong provenance" {
+    const f = try Fixture.init();
+    defer f.deinit();
+
+    var needed: u64 = 7;
+    var revision: u64 = 8;
+    try testing.expectEqual(
+        Result.invalid_argument,
+        table_v2.script_source_copy(.none, null, 1, &needed, &revision),
+    );
+    try testing.expectEqual(Result.invalid_argument, table_v2.script_source_copy(.none, null, 0, null, &revision));
+    try testing.expectEqual(Result.invalid_argument, table_v2.script_source_copy(.none, null, 0, &needed, null));
+    try testing.expectEqual(@as(u64, 7), needed);
+    try testing.expectEqual(@as(u64, 8), revision);
+
+    try testing.expectEqual(
+        Result.invalid_handle,
+        table_v2.script_source_copy(.{ .bits = std.math.maxInt(u64) }, null, 0, &needed, &revision),
+    );
+
+    var ordinary: Asset = .none;
+    try testing.expectEqual(
+        Result.ok,
+        table_v2.asset_acquire(core.ContentId.fromString("mymod:blob.one"), &ordinary),
+    );
+    defer _ = table_v2.asset_release(ordinary);
+    try testing.expectEqual(
+        Result.unsupported,
+        table_v2.script_source_copy(ordinary, null, 0, &needed, &revision),
+    );
+
+    const package = try f.engine.loadPackage("provenance:content",
+        \\foundry:script provenance:main { source "main.lua" language "lua-5.5" }
+    );
+    try f.engine.writeSource(package, "main.lua", "return 1");
+    var script_handle: Asset = .none;
+    try testing.expectEqual(
+        Result.ok,
+        table_v2.asset_acquire(core.ContentId.fromString("provenance:main"), &script_handle),
+    );
+
+    f.host.script_source_loader = null;
+    try testing.expectEqual(
+        Result.unavailable,
+        table_v2.script_source_copy(script_handle, null, 0, &needed, &revision),
+    );
+
+    var other_loader: asset.ScriptSourceLoader = .{};
+    f.host.script_source_loader = &other_loader;
+    try testing.expectEqual(
+        Result.unsupported,
+        table_v2.script_source_copy(script_handle, null, 0, &needed, &revision),
+    );
+    f.host.script_source_loader = &f.script_loader;
+
+    try testing.expectEqual(Result.ok, table_v2.asset_release(script_handle));
+    try testing.expectEqual(@as(u32, 1), f.engine.assets.evictUnused(testing.allocator));
+    try testing.expectEqual(
+        Result.invalid_handle,
+        table_v2.script_source_copy(script_handle, null, 0, &needed, &revision),
+    );
+}
+
+test "v2 script source is unavailable on an empty host" {
+    Host.unbindAny();
+    var empty: Host = .{};
+    empty.bind();
+    defer empty.unbind();
+
+    var needed: u64 = 0;
+    var revision: u64 = 0;
+    try testing.expectEqual(
+        Result.unavailable,
+        table_v2.script_source_copy(.none, null, 0, &needed, &revision),
+    );
 }

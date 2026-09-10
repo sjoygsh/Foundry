@@ -659,6 +659,12 @@ must not settle them opportunistically. Question 1 was resolved by the M7 exit p
 > v2 call. V1 is unchanged. Questions 2–6 remain open; script VM replacement does not unload
 > native libraries or introduce per-mod C tables.
 
+> **M8 implementation follow-up, 2026-09-10:** source access and the additive flat
+> `FoundryApi_v2` are implemented by `scripting.md` §16 step 3. The original 135-call v1
+> declaration is unchanged and remains available beside v2. The same C/Zig agreement now checks
+> both layouts and signatures. Gameplay bindings and VM replacement remain later M8 steps;
+> questions 2–6 remain open.
+
 ## 19. Implementation order
 
 Each step ends with something that runs and something that is tested.

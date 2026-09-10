@@ -1,9 +1,9 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-10
-**Current handoff: M8 step 2 complete (2/8 steps); next is step 3 only.**
-The restricted Lua runtime and ordinary script package assets/manifests are implemented and
-proven; ABI v2 and gameplay bindings have not begun.
+**Current handoff: M8 step 3 complete (3/8 steps); next is step 4 only.**
+The restricted Lua runtime, ordinary script package assets/manifests and additive ABI v2 typed
+source copying are implemented and proven; gameplay bindings have not begun.
 
 **Implemented 2026-09-10:** PUC Lua 5.5.1 is pinned from the official archive and compiled
 directly with Zig into the optional L6 `script` consumer. Its private C bridge contains every
@@ -40,8 +40,17 @@ an asset-only host with no Lua dependency. **The full suite is now 1142 headless
 Temporarily enabling symlink following made the confinement test fail; the exact edit was
 restored and the focused platform suite passed.
 
-**Step 3 boundary:** publish the typed source-copy call through additive `FoundryApi_v2`, keep
-v1 unchanged, and prove the installed C/C++ contract. Do not begin gameplay bindings.
+**Implemented in step 3, 2026-09-10:** `FoundryApi_v2` is a separate flat table containing the
+unchanged 135-call v1 surface in the same relative order plus `script_source_copy`. Both versions
+remain available at stable distinct addresses; native compatibility now considers v1 and v2.
+The host supplies the exact registered script-loader identity, so a stale asset is distinguished
+from a live payload with the wrong provenance. A valid sizing probe publishes both byte count
+and nonzero revision, an undersized call copies nothing, and success copies exact source bytes
+without a terminator. A C99 consumer using only `foundry.h` proves query, acquire, copy and
+balanced release over a packaged script asset.
+
+**Step 4 boundary:** bind only the bounded content/world gameplay allowlist in
+`scripting.md` §7, against fake and real API tables. Do not begin package scheduling.
 
 **Written 2026-09-09:** [ADR-0028](docs/adr/0028-scripting-lua.md) selects restricted
 Lua 5.5.1; [ADR-0029](docs/adr/0029-script-host-and-reload.md) specifies the public ABI
@@ -51,14 +60,18 @@ bounded content/world bindings, failure policy, state migration and verification
 
 **Eight implementation units, in `scripting.md` §16:** runtime containment; script assets
 and manifests; ABI v2 source access; bounded bindings; package lifecycle; hot reload;
-adversarial/determinism proof; outside-tree author guide and milestone closure. **Steps 1 and 2
-are complete; next is step 3 only when the user resumes.** No ABI v2 header or sample script
-exists yet. Package isolation, gameplay bindings, reload,
+adversarial/determinism proof; outside-tree author guide and milestone closure. **Steps 1 through 3
+are complete; next is step 4 only when the user resumes.** No sample script exists yet.
+Package isolation, gameplay bindings, reload,
 performance defaults and the full adversarial matrix still require their specified evidence.
 M7 remains complete with 1117 headless tests; M9 remains undesigned.
 
-**Step-2 verification:** focused compilation and all 1142 tests pass. The final AGENTS.md §3
-bar covers formatting, host/Linux/Windows compilation and both 30-frame null sample runs.
+**Step-3 verification:** focused source-copy and agreement tests pass. Deliberately narrowing
+the C capacity width failed the signature harness; swapping two same-typed Zig entries failed
+textual order, compiled layout and side-by-side checks. The exact edits were restored. The
+suite declares 1155 tests, or **1147 headless tests** after the documented 8 Metal-only tests.
+The final AGENTS.md §3 bar covers formatting, host/Linux/Windows compilation, installed-header
+C99/C++17 consumers and both 30-frame null sample runs.
 
 The architecture uses one VM and one stable system callback per script package. Reload
 prepares an isolated replacement and explicitly migrates bounded state; failure preserves
@@ -636,13 +649,13 @@ is mature enough to need them rather than as decoration.
 pixels; Phase 2 closed with M6, and every milestone in it is complete: sprites, content,
 entities, a playable sample, and an overlay that diagnosed its own cost. **M7 — Moddable:
 "others can extend it" — completed 2026-09-09**, all seven design steps and the outside-tree
-exit proof. M8's design is written; runtime containment and package assets/manifests are
-complete and six implementation steps remain.
+exit proof. M8's design is written; runtime containment, package assets/manifests and additive
+public source access are complete and five implementation steps remain.
 
 ## Current milestone
 
-**M8 — Scriptable: step 2 complete (2/8 steps).** See `docs/design/scripting.md` §16.
-The next session begins and ends with step 3: additive ABI v2 source access.
+**M8 — Scriptable: step 3 complete (3/8 steps).** See `docs/design/scripting.md` §16.
+The next session begins and ends with step 4: bounded content and gameplay bindings.
 
 **M7 — Moddable: "others can extend it." Complete, 2026-09-07 to 2026-09-09.** All six
 roadmap bullets and all seven steps of `public-abi.md` §19 are implemented. The exit criterion
@@ -3381,10 +3394,11 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 
 ## Notes for the next session
 
-**Resume point, 2026-09-10:** M8 step 2 complete, 2/8 steps implemented. Read ADR-0028,
-ADR-0029 and `docs/design/scripting.md` before implementation. Keep existing M7 behavior and
-v1 compatibility; step 3 adds only additive ABI v2 typed source copying and its installed-header
-proof. Stop before gameplay bindings. The environment notes below still apply.
+**Resume point, 2026-09-10:** M8 step 3 complete, 3/8 steps implemented. Read ADR-0028,
+ADR-0029 and `docs/design/scripting.md` before implementation. Keep existing M7 behavior,
+v1 compatibility and the typed v2 source-copy contract; step 4 adds only the bounded binding-1
+content/world surface. Stop before package lifecycle and scheduling. The environment notes below
+still apply.
 
 * Read `CLAUDE.md` first, then this file, then `docs/ROADMAP.md`.
 * The architecture is settled. Do not relitigate ADRs without a concrete reason; each records

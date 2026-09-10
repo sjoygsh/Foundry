@@ -22,6 +22,7 @@
 //! Design: `docs/design/public-abi.md` §4, §9 and §13.
 
 const std = @import("std");
+const asset = @import("asset");
 const core = @import("core");
 const data = @import("data");
 const scene = @import("scene");
@@ -93,6 +94,11 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
         /// schema registry and the asset registry. Optional like everything else, because a
         /// tool that only wants to read a package is a legitimate host.
         engine: ?*E = null,
+
+        /// The exact built-in source loader registered by the application. The v2 source
+        /// call needs its identity as well as the engine's registry: a matching schema is
+        /// not proof that an opaque payload was created by this loader instance.
+        script_source_loader: ?*asset.ScriptSourceLoader = null,
 
         /// The world's ownership stays with the game. Its presence turns on the `scene`
         /// group; its absence is an `unavailable` answer, never a missing table entry.

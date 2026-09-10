@@ -36,6 +36,7 @@ const header = @embedFile("foundry.h");
 
 test "the header declares the version and the entry points this build publishes" {
     try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_1 1u") != null);
+    try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_2 2u") != null);
     try testing.expect(std.mem.indexOf(u8, header, types.init_symbol) != null);
     try testing.expect(std.mem.indexOf(u8, header, types.shutdown_symbol) != null);
 }
@@ -100,6 +101,22 @@ test "the header names every table entry, in the table's own order" {
             at = found;
         }
     }
+
+    @setEvalBranchQuota(64 * @typeInfo(api.Api_v2).@"struct".fields.len);
+    at = std.mem.indexOf(u8, header, "typedef struct FoundryApi_v2 {").?;
+    inline for (@typeInfo(api.Api_v2).@"struct".fields) |field| {
+        if (comptime @typeInfo(field.type) == .pointer) {
+            const spelled = "*" ++ field.name ++ ")";
+            const found = std.mem.indexOfPos(u8, header, at, spelled) orelse {
+                std.debug.print(
+                    "the v2 header does not declare '{s}' after the entry before it\n",
+                    .{field.name},
+                );
+                return error.TestUnexpectedResult;
+            };
+            at = found;
+        }
+    }
 }
 
 // `agreement.c`, which the build attaches to this module. Referenced only from tests, so a
@@ -115,6 +132,10 @@ extern fn foundry_agreement_api_v1_size() u64;
 extern fn foundry_agreement_api_v1_count() u64;
 extern fn foundry_agreement_api_v1_offset(index: u64) u64;
 extern fn foundry_agreement_api_v1_name(index: u64) ?[*:0]const u8;
+extern fn foundry_agreement_api_v2_size() u64;
+extern fn foundry_agreement_api_v2_count() u64;
+extern fn foundry_agreement_api_v2_offset(index: u64) u64;
+extern fn foundry_agreement_api_v2_name(index: u64) ?[*:0]const u8;
 
 test "the scalars are the widths the header states" {
     try testing.expectEqual(@as(usize, 4), @sizeOf(types.Result));
@@ -313,4 +334,28 @@ test "the table has the same members, in the same places, in both languages" {
     // what happens when two sides disagree about a length.
     try testing.expectEqual(@as(u64, std.math.maxInt(u64)), foundry_agreement_api_v1_offset(fields.len));
     try testing.expectEqual(@as(?[*:0]const u8, null), foundry_agreement_api_v1_name(fields.len));
+}
+
+test "the additive v2 table has the same members, in the same places, in both languages" {
+    const fields = @typeInfo(api.Api_v2).@"struct".fields;
+
+    try testing.expectEqual(@as(u64, fields.len), foundry_agreement_api_v2_count());
+    try testing.expectEqual(@as(u64, @sizeOf(api.Api_v2)), foundry_agreement_api_v2_size());
+
+    inline for (fields, 0..) |field, i| {
+        const from_header = foundry_agreement_api_v2_offset(i);
+        testing.expectEqual(@as(u64, @offsetOf(api.Api_v2, field.name)), from_header) catch |err| {
+            std.debug.print(
+                "the v2 table disagrees about '{s}': Zig puts it at {d}, the header at {d}\n",
+                .{ field.name, @offsetOf(api.Api_v2, field.name), from_header },
+            );
+            return err;
+        };
+
+        const spelled = foundry_agreement_api_v2_name(i) orelse return error.TestUnexpectedResult;
+        try testing.expectEqualStrings(field.name, std.mem.span(spelled));
+    }
+
+    try testing.expectEqual(@as(u64, std.math.maxInt(u64)), foundry_agreement_api_v2_offset(fields.len));
+    try testing.expectEqual(@as(?[*:0]const u8, null), foundry_agreement_api_v2_name(fields.len));
 }

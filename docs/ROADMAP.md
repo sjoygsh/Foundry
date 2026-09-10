@@ -381,7 +381,7 @@ written; its first implementation step is complete below.
 
 ### M8 — Scriptable: "modders can extend it"
 
-**Designed 2026-09-09; 2/8 implementation steps complete.**
+**Designed 2026-09-09; 3/8 implementation steps complete.**
 [ADR-0028](adr/0028-scripting-lua.md) selects restricted Lua 5.5.1;
 [ADR-0029](adr/0029-script-host-and-reload.md) fixes the public boundary and reload lifetime.
 [`design/scripting.md`](design/scripting.md) specifies the architecture; §16 is the order:
@@ -390,8 +390,10 @@ package lifecycle, hot reload, adversarial/determinism proof, and the outside-tr
 Step 1, completed 2026-09-10, pins/builds Lua and proves its private protected boundary,
 quotas and minimal allowlisted fixture on every supported build target. Step 2, completed the
 same day, makes bounded/revisioned script source an ordinary confined package asset, derives
-`.lua` records through fpack, and carries manifest-v2 metadata through resolution. Step 3
-(ABI v2 source access) has not begun. M9 remains undesigned.
+`.lua` records through fpack, and carries manifest-v2 metadata through resolution. Step 3,
+completed 2026-09-10, publishes typed source copying through a separate additive
+`FoundryApi_v2` while retaining v1 unchanged. Step 4 bounded bindings are next. M9 remains
+undesigned.
 
 * Scripting language decision — **made in ADR-0028; runtime boundary implemented**.
 * Scripting host over the same public ABI; no separate surface.

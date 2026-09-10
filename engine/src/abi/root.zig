@@ -79,6 +79,7 @@ pub const HostWithMixer = host.HostWithMixer;
 
 /// The table itself, and the enumerations and structs that cross with it.
 pub const Api_v1 = api.Api_v1;
+pub const Api_v2 = api.Api_v2;
 pub const TableOf = api.TableOf;
 pub const FieldType = types.FieldType;
 pub const LogLevel = types.LogLevel;
@@ -122,6 +123,7 @@ pub const GetApi = types.GetApi;
 pub const ModInit = types.ModInit;
 pub const ModShutdown = types.ModShutdown;
 pub const api_version_1 = types.api_version_1;
+pub const api_version_2 = types.api_version_2;
 pub const init_symbol = types.init_symbol;
 pub const shutdown_symbol = types.shutdown_symbol;
 

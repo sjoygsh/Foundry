@@ -30,6 +30,7 @@ comptime {
 /// struct added alongside `_v1` rather than a replacement for it (ADR-0004), so this grows
 /// by gaining a sibling and never by being incremented in place.
 pub const api_version_1: u32 = 1;
+pub const api_version_2: u32 = 2;
 
 // == Booleans ==========================================================================
 

@@ -1,7 +1,7 @@
 # Scripting: the Tier 2 host
 
-**Status:** designed 2026-09-09; **2 of 8 implementation steps complete.**
-**Current stop point:** after §16 step 2; step 3 has not begun.
+**Status:** designed 2026-09-09; **3 of 8 implementation steps complete.**
+**Current stop point:** after §16 step 3; step 4 has not begun.
 
 Rests on [ADR-0028](../adr/0028-scripting-lua.md) (runtime),
 [ADR-0029](../adr/0029-script-host-and-reload.md) (boundary and lifetime), and
@@ -544,7 +544,7 @@ steps simply because a session has budget. This planning commit completes none o
    Source revisions and override/refusal tests; neither fpack nor content-only hosts links
    Lua. Runnable result: compile/discover a script-bearing package and read its bounded
    source asset through an asset test host. Old packages still compile/load.
-3. **Publish source through ABI v2.** Add the table and typed copy call, retain v1 exactly,
+3. **Publish source through ABI v2. Complete 2026-09-10.** Add the table and typed copy call, retain v1 exactly,
    update native version-range selection and install header agreement. Test a native C
    consumer reading the asset, both versions side by side, empty host, stale/provenance
    refusals and deliberate agreement breaks. Runnable result: an external C-shaped consumer
@@ -577,10 +577,10 @@ steps simply because a session has budget. This planning commit completes none o
 
 ## 17. Planning handoff
 
-Architecture and sequence are written. Steps 1 and 2 prove the Lua/C/Zig containment boundary
-and package/source integration. The public ABI addition, gameplay bindings, reload, end-to-end
-security, performance and guide execution remain **unverified until their implementation
-steps**. The next authorized unit, when the user resumes, is §16 step 3 only.
+Architecture and sequence are written. Steps 1 through 3 prove the Lua/C/Zig containment
+boundary, package/source integration and additive public source access. Gameplay bindings,
+reload, end-to-end security, performance and guide execution remain **unverified until their
+implementation steps**. The next authorized unit, when the user resumes, is §16 step 4 only.
 
 ## Resolution — 2026-09-10, step 1
 
@@ -641,3 +641,29 @@ The runnable proof compiles a script-bearing package with fpack, discovers and r
 mounts its ordinary package root in an asset-only host, and reads the bounded source through the
 registered loader. Neither that host nor fpack imports or links Lua. The suite is 1142 headless
 tests after this step. ABI v2, public source copying and every gameplay binding remain untouched.
+
+## Resolution — 2026-09-10, step 3
+
+The design required no architectural correction. `FoundryApi_v2` is a separate flat table:
+its 135 common calls retain v1's types, relative order and implementation functions, followed
+by `script_source_copy`. The Zig type is constructed from v1's field metadata so common-table
+drift cannot originate in one Zig declaration, while the independently hand-written C header
+still declares the full flat v2 layout and remains the public specification. `get_api` returns
+stable, distinct v1 and v2 table addresses; unknown versions remain null.
+
+The application lends `abi.Host` the stable address of the exact `ScriptSourceLoader` it
+registered. The copy call first distinguishes a stale handle from a live payload with the wrong
+loader provenance, then writes required length and nonzero revision on a valid sizing refusal,
+copies nothing on insufficient capacity and copies exactly the source bytes with no terminator
+on success. A source reload keeps the asset handle and advances the observed revision. An empty
+host reports `unavailable`; malformed outputs, stale handles and another loader report their
+specified result codes without exposing an asset payload pointer.
+
+The C agreement now covers v2's complete name/order/offset list, all common function signatures
+against v1 and the appended call's exact signature. A C99 consumer built only from `foundry.h`
+queries v2, acquires a packaged script asset, probes and copies the source, and balances its
+reference. Narrowing the C capacity parameter made the compile-time signature assignment fail;
+swapping two same-typed Zig entries made the textual-order, compiled-offset and side-by-side
+table checks fail. Both temporary mutations were restored. The suite declares 1155 tests,
+which is 1147 headless after the documented 8 Metal-only tests. Gameplay bindings, Lua-facing
+API construction, package scheduling and every step-4 capability remain untouched.

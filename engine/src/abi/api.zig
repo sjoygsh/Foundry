@@ -267,6 +267,51 @@ pub const Api_v1 = extern struct {
     physics_body_contacts: *const fn (body: types.Body, hits: ?[*]QueryHit, capacity: u32, count: ?*u32, total: ?*u32) callconv(.c) Result,
 };
 
+/// ABI v2 is the complete, flat v1 surface followed by typed script-source copying.
+/// Constructing its type from v1's fields is intentional: it makes changing a common
+/// field's type or relative position in only one Zig table impossible, while the independent
+/// hand-written C header and agreement translation unit still prove the public contract.
+const ScriptSourceCopy = *const fn (
+    asset: Asset,
+    buffer: ?[*]u8,
+    capacity: u64,
+    needed: ?*u64,
+    revision: ?*u64,
+) callconv(.c) Result;
+
+const api_v1_fields = @typeInfo(Api_v1).@"struct".fields;
+const api_v2_names = blk: {
+    var names: [api_v1_fields.len + 1][:0]const u8 = undefined;
+    for (api_v1_fields, 0..) |field, i| names[i] = field.name;
+    names[api_v1_fields.len] = "script_source_copy";
+    break :blk names;
+};
+const api_v2_types = blk: {
+    var field_types: [api_v1_fields.len + 1]type = undefined;
+    for (api_v1_fields, 0..) |field, i| field_types[i] = field.type;
+    field_types[api_v1_fields.len] = ScriptSourceCopy;
+    break :blk field_types;
+};
+
+pub const Api_v2 = @Struct(
+    .@"extern",
+    null,
+    &api_v2_names,
+    &api_v2_types,
+    &@splat(.{}),
+);
+
+fn extendV1(v1: Api_v1, script_source_copy: ScriptSourceCopy) Api_v2 {
+    var v2: Api_v2 = undefined;
+    inline for (@typeInfo(Api_v1).@"struct".fields) |field| {
+        @field(v2, field.name) = @field(v1, field.name);
+    }
+    v2.version = types.api_version_2;
+    v2.size = @sizeOf(Api_v2);
+    v2.script_source_copy = script_source_copy;
+    return v2;
+}
+
 /// The table for one host type, and the `get_api` that hands it out.
 pub fn TableOf(comptime H: type) type {
     const engine = engine_calls.Of(H);
@@ -441,11 +486,14 @@ pub fn TableOf(comptime H: type) type {
             .physics_body_contacts = physics.physicsBodyContacts,
         };
 
+        pub const v2: Api_v2 = extendV1(v1, assets.scriptSourceCopy);
+
         /// What a native mod is handed (§3). **Never a crash and never a Zig error** — a
         /// version this host does not offer is null, which is a legible refusal on the
         /// mod's side rather than a fault on ours.
         pub fn getApi(version: u32) callconv(.c) ?*const anyopaque {
             if (version == types.api_version_1) return @ptrCast(&v1);
+            if (version == types.api_version_2) return @ptrCast(&v2);
             return null;
         }
     };

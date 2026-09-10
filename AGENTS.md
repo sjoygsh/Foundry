@@ -36,17 +36,17 @@ there because agents reliably skip it.
 
 Read `PROJECT_STATE.md` for the real answer — this section goes stale and that one does not.
 
-As of 2026-09-09: **M7 (modding) is complete, all seven steps.** `mod` discovers and
+As of 2026-09-10: **M7 (modding) is complete, all seven steps.** `mod` discovers and
 dependency-orders content packages; the installed C99/C++ header specifies the 135-call
 `FoundryApi_v1`; `abi` validates and publishes the host's subsystems; and the native loader
 runs package-local libraries through a refusal-safe lifecycle. `docs/modding/native-mods.md`
 was written by building its C mod outside this repository and running its content, registered
 component and system through an external proof host.
 
-**M8 is designed; implementation has not begun (0/8 steps).** Read ADR-0028, ADR-0029 and
+**M8 is designed and 3/8 steps are complete.** Read ADR-0028, ADR-0029 and
 `docs/design/scripting.md`; §16 is the eight-step implementation order. Restricted Lua 5.5.1,
-the public ABI consumer boundary, source assets, resource limits and candidate-VM reload are
-specified. The planning session stops before step 1; resume only when the user requests it.
+ordinary package script assets and additive ABI v2 source copying are implemented. Bounded
+gameplay bindings are step 4; package lifecycle and candidate-VM reload remain later steps.
 
 ## 3. Building and verifying
 
