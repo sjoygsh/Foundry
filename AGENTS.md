@@ -162,7 +162,66 @@ one went well. A step ends with the bar in §3 green, `PROJECT_STATE.md` updated
 question opportunistically while implementing something else. If implementation forces a
 decision, document it architecturally — an ADR, or a Resolution section — *before* proceeding.
 
-## 6. Commits
+## 6. Agent execution and bounded verification
+
+The primary agent performs implementation, reasoning, testing, debugging, documentation
+updates and review itself by default. Delegation is exceptional, not routine. Use a subagent
+only for a concrete technical reason that materially benefits the task, such as genuinely
+independent parallel work or a clearly separable investigation.
+
+Do not spawn agents merely to repeat completed work, review work the primary agent can
+reasonably review itself, reconfirm successful tests, duplicate architecture or documentation
+audits, or provide reassurance after adequate verification has succeeded. Never spawn several
+agents that substantially inspect the same work or answer the same verification question.
+
+Foundry still requires rigorous verification. This policy eliminates redundant verification;
+it does not lower correctness, security, portability, testing or architectural standards. For
+a normal implementation step:
+
+1. Implement the planned work.
+2. Run the tests and checks directly relevant to the changed systems.
+3. If a check exposes a concrete problem, fix it and rerun the affected checks.
+4. Once targeted verification is clean, perform one appropriate final integration/regression
+   verification.
+5. Perform one documentation consistency pass and make all required documentation updates.
+6. Stop when these are clean.
+
+A successful verification remains accepted unless subsequent changes could reasonably have
+invalidated what it established. Do not:
+
+* re-audit already-clean work without new evidence;
+* verify a verification pass merely for additional reassurance;
+* repeatedly perform whole-repository audits answering substantially the same question;
+* repeatedly reread or revalidate documentation after it has been confirmed;
+* perform chains of "final check", "last check", "sanity check", "one more pass", or
+  equivalent checks over unchanged work;
+* spawn reviewers simply to reconfirm successful verification; or
+* restart the entire verification sequence after a localized fix unless that fix materially
+  affects the wider system.
+
+When verification exposes a problem, use the bounded sequence
+`problem -> fix -> rerun affected verification -> continue`; do not restart every previous
+audit unless the fix materially affects the wider system. Focused executable evidence is
+preferable to repeated speculative inspection.
+
+Repository-wide tests, cross-compilation, security tests, integration tests, sample runs,
+architecture checks, documentation checks and other expensive verification remain appropriate
+when the affected subsystem or established Foundry process requires them. Run them when they
+provide distinct evidence, but do not rerun them over unchanged work merely for reassurance.
+Additional verification is justified when new changes could invalidate an earlier result; a
+failure reveals possible wider consequences; an applicable ADR or design requires it; an
+affected security, ABI, determinism, portability, memory-safety or similar boundary requires
+distinct evidence; or the final integration check discovers a new concrete concern. Otherwise,
+once sufficient evidence is clean, stop.
+
+Treat this repository as authoritative. Follow this file, `CLAUDE.md`, the ADRs, design
+documents, `PROJECT_STATE.md`, the roadmap, build-layer rules, tests and established
+conventions. Do not redesign established architecture merely because another design appears
+preferable. If a milestone exposes a contradiction that prevents correct implementation,
+resolve it through Foundry's ADR/design process. Stay strictly within the current milestone
+step and do not implement future-step functionality merely because it is convenient.
+
+## 7. Commits
 
 Small, focused, present tense (`CLAUDE.md` §7). The subject line says what the change lets
 somebody do, or what it stops being possible; the body says what the design had not settled and
@@ -177,7 +236,7 @@ git -c user.name="Shrunjoy Ghosh" -c user.email="sjoy.gsh@gmail.com" commit -F <
 Do not add a `Co-Authored-By` trailer naming a model you are not. A milestone ends with a
 tagged commit and an updated `PROJECT_STATE.md`.
 
-## 7. Standing constraints from the user
+## 8. Standing constraints from the user
 
 These are in force regardless of what any task appears to ask for.
 
