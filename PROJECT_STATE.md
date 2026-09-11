@@ -1,9 +1,41 @@
 # Foundry Project State
 
-**Last updated:** 2026-09-10
-**Current handoff: M8 step 3 complete (3/8 steps); next is step 4 only.**
-The restricted Lua runtime, ordinary script package assets/manifests and additive ABI v2 typed
-source copying are implemented and proven; gameplay bindings have not begun.
+**Last updated:** 2026-09-12
+**Current handoff: M8 step 4 complete (4/8 steps); next is step 5 only.**
+The restricted Lua runtime, ordinary script package assets/manifests, additive ABI v2 typed
+source copying and binding 1's bounded content/world surface are implemented and proven. No
+script package runs yet: nothing registers a system or drives a tick, which is step 5.
+
+**Implemented in step 4, 2026-09-12:** the `foundry` Lua module, binding version 1 — 39
+functions covering identity, a deterministic RNG, attributed logging, content walks, record
+and list reads, world inspection, template spawning and script-owned entity removal. Each is
+validation over one `FoundryApi_v2` entry in a C frame, so no Zig frame is live when a Lua
+error is raised and no capability exists that the public table does not already publish. The
+VM receives the table through the `FoundryGetApi` a native mod gets, never an engine pointer.
+`world_spawn` preflights a template (a `foundry:entity` of at most 32 savable components and
+64 KiB) and reserves its ledger entry before asking the world; the preflight is cached against
+the content generation. Absence answers `nil, name`; malformed arguments, stale handles, phase
+and ownership violations and every budget raise. The environment gained `select`, deterministic
+`pairs`, and the bounded `math` and `string` groups, all by allowlist.
+
+**The one design correction:** `scripting.md` §11 puts the entity-ownership ledger in a manager
+slot that does not exist until step 5, and a ledger owned by the VM would be lost at step 6's
+VM replacement. The ledger and the shared memory budget are therefore **caller-owned structs
+passed to the VM by pointer**, which step 5's slot simply holds. Recorded in that file's
+Resolution — 2026-09-12, step 4.
+
+**Step-4 verification:** the full AGENTS.md §3 bar passes — formatting, host/Linux/Windows
+compilation and both 30-frame null sample runs. The suite declares 1172 tests, **1164 headless**
+after the documented 8 Metal-only tests. Ten fake-table tests fix what the bridge does with an
+answer; three integration tests drive the real table over a real world and real merged content,
+including a spawn refused by an exhausted world allocator that leaves no entity and no
+ownership behind. Four guards were broken one at a time and each failed its own test: letting
+preparation mutate the world, not stamping a record with its invocation, removing the
+per-call charge, and publishing one extra table entry. Every edit was restored.
+
+**Step 5 boundary:** stable manager slots, issued identities, one registered system per
+package, activation/fault/teardown and diagnostics, plus the scripted encounter in the
+sandbox's own package. Do not begin hot reload.
 
 **Implemented 2026-09-10:** PUC Lua 5.5.1 is pinned from the official archive and compiled
 directly with Zig into the optional L6 `script` consumer. Its private C bridge contains every
@@ -49,8 +81,6 @@ and nonzero revision, an undersized call copies nothing, and success copies exac
 without a terminator. A C99 consumer using only `foundry.h` proves query, acquire, copy and
 balanced release over a packaged script asset.
 
-**Step 4 boundary:** bind only the bounded content/world gameplay allowlist in
-`scripting.md` §7, against fake and real API tables. Do not begin package scheduling.
 
 **Written 2026-09-09:** [ADR-0028](docs/adr/0028-scripting-lua.md) selects restricted
 Lua 5.5.1; [ADR-0029](docs/adr/0029-script-host-and-reload.md) specifies the public ABI
@@ -60,8 +90,8 @@ bounded content/world bindings, failure policy, state migration and verification
 
 **Eight implementation units, in `scripting.md` §16:** runtime containment; script assets
 and manifests; ABI v2 source access; bounded bindings; package lifecycle; hot reload;
-adversarial/determinism proof; outside-tree author guide and milestone closure. **Steps 1 through 3
-are complete; next is step 4 only when the user resumes.** No sample script exists yet.
+adversarial/determinism proof; outside-tree author guide and milestone closure. **Steps 1 through 4
+are complete; next is step 5 only when the user resumes.** No sample script exists yet.
 Package isolation, gameplay bindings, reload,
 performance defaults and the full adversarial matrix still require their specified evidence.
 M7 remains complete with 1117 headless tests; M9 remains undesigned.

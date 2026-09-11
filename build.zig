@@ -311,6 +311,9 @@ pub fn build(b: *std.Build) void {
         });
         mod.addImport("core", modules.get("core").?);
         mod.addIncludePath(b.path("engine/src/script"));
+        // The public header, as a **header**: declarations, never an engine module
+        // (ADR-0029). This is the same file a native mod includes from the install tree.
+        mod.addIncludePath(b.path("engine/src/abi"));
         mod.addIncludePath(lua.path("src"));
         mod.link_libc = true;
 
@@ -326,10 +329,12 @@ pub fn build(b: *std.Build) void {
                 .flags = &.{ "-std=c99", "-fno-fast-math" },
             });
         }
-        mod.addCSourceFile(.{
-            .file = b.path("engine/src/script/bridge.c"),
-            .flags = &.{ "-std=c99", "-pedantic", "-Wall", "-Wextra", "-Werror", "-fno-fast-math" },
-        });
+        inline for (.{ "bridge.c", "binding.c" }) |name| {
+            mod.addCSourceFile(.{
+                .file = b.path("engine/src/script/" ++ name),
+                .flags = &.{ "-std=c99", "-pedantic", "-Wall", "-Wextra", "-Werror", "-fno-fast-math" },
+            });
+        }
         break :blk mod;
     } else null;
 
@@ -591,6 +596,22 @@ pub fn build(b: *std.Build) void {
         // the runaway fixture under its own wall-clock deadline. The instruction hook
         // is the deterministic guard; this step is not a simulation timeout.
         b.step("script-test", "Run headless scripting bridge tests").dependOn(&run_script_tests.step);
+
+        // The bindings against the real table, a real world and real merged content. It is
+        // its own binary because `script` is an optional consumer: the ordinary integration
+        // suite must still build for a host that never fetched Lua.
+        const script_integration = b.createModule(.{
+            .root_source_file = b.path("engine/tests/script_bindings.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        for ([_][]const u8{ "core", "data", "platform", "rhi", "scene", "app", "mod", "abi" }) |name| {
+            script_integration.addImport(name, modules.get(name).?);
+        }
+        script_integration.addImport("script", mod);
+        const script_integration_tests = b.addTest(.{ .root_module = script_integration });
+        check_step.dependOn(&script_integration_tests.step);
+        test_step.dependOn(&b.addRunArtifact(script_integration_tests).step);
     }
 
     // Tools are tested like modules are. `fpack`'s tests reach a real filesystem, which is

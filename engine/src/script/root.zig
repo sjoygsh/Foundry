@@ -1,17 +1,25 @@
-//! M8 step 1 scripting fixture.
+//! The Tier 2 scripting host's Zig side.
 //!
 //! Every Lua call that can allocate, execute or raise stays inside the private C bridge's
-//! protected `lua_pcall`; no Lua non-local exit may cross an active Zig frame. This step
-//! intentionally exposes only text execution with one integer result, not gameplay bindings.
-//! A host supplies the caller-owned allocator and must deinitialize the Runtime before
-//! releasing that allocator. The bridge's allocator context is separately allocated so it
-//! remains stable even if the Runtime value moves.
+//! protected `lua_pcall`; no Lua non-local exit may cross an active Zig frame. A host
+//! supplies the caller-owned allocator and must deinitialize the Runtime before releasing
+//! that allocator. The bridge's allocator context is separately allocated so it remains
+//! stable even if the Runtime value moves.
+//!
+//! **This module imports no engine implementation module** (ADR-0029). It names `core` for
+//! allocation and the pinned Lua library, and it reaches the engine only through the
+//! `FoundryApi_v2` table a host hands it, exactly as a native mod does — which is why the
+//! configuration takes a `FoundryGetApi` rather than any engine pointer.
+//!
+//! Step 4 binds content and gameplay (scripting.md §7). The invocation shape is still the
+//! fixture's — text in, one integer out — because the author-facing module contract and the
+//! package lifecycle that drives it are step 5.
 
 const std = @import("std");
 const core = @import("core");
 const Allocator = core.mem.Allocator;
 
-const c = @cImport({
+pub const c = @cImport({
     @cInclude("foundry_script.h");
 });
 
@@ -35,10 +43,36 @@ fn allocator(ctx: ?*anyopaque, pointer: ?*anyopaque, old_size: usize, new_size: 
     return next.ptr;
 }
 
+/// What one script package owns, and therefore all it may destroy. Caller-owned and stable
+/// across VM replacement: it belongs to the package, not to the VM (scripting.md §11).
+pub const Ledger = c.FoundryScriptLedger;
+
+/// Memory shared by every VM one host runs. Caller-owned; zero-initialize with a limit.
+pub const Budget = c.FoundryScriptBudget;
+
+/// What an invocation may do. Preparation reads; only an update changes the world or logs.
+pub const Phase = enum(u32) {
+    prepare = 0,
+    update = 1,
+};
+
 pub const Config = struct {
     heap_limit: usize = c.FOUNDRY_SCRIPT_DEFAULT_HEAP_LIMIT,
     instruction_limit: u64 = c.FOUNDRY_SCRIPT_DEFAULT_INSTRUCTION_LIMIT,
     hook_period: u32 = c.FOUNDRY_SCRIPT_DEFAULT_HOOK_PERIOD,
+    /// Shared across every VM a host runs. Null charges this VM's heap limit alone.
+    budget: ?*Budget = null,
+    /// The table query a native mod is handed. Null builds the bare fixture environment
+    /// with no `foundry` module at all.
+    get_api: c.FoundryGetApi = null,
+    /// The identity the host issued this package. Required with `get_api`.
+    self: u64 = 0,
+    /// Required with `get_api`; see `Ledger`.
+    ledger: ?*Ledger = null,
+    /// Per-invocation budgets. Zero takes scripting.md §8's default.
+    abi_call_limit: u32 = 0,
+    spawn_limit: u32 = 0,
+    log_limit: u32 = 0,
     /// Test-only allocation refusal control; hosts must leave it at its default.
     fail_after_allocations: usize = c.FOUNDRY_SCRIPT_NEVER_FAIL,
     /// Test-only teardown failure control; not script or mod configuration.
@@ -57,11 +91,10 @@ const AllocatorContext = struct {
     allocator: Allocator,
 };
 
-/// A single protected Lua fixture. `init` takes ownership of no allocator; it borrows the
-/// caller's allocator until `deinit`. The bridge stores a stable separately allocated context
-/// rather than a pointer into this struct, so moving the Runtime value after init is safe.
-/// Callers must still call `deinit` before destroying the allocator. `execute` is deliberately
-/// fixture-only: it accepts text and returns exactly one Lua integer.
+/// A single protected Lua VM. `init` takes ownership of no allocator; it borrows the
+/// caller's allocator until `deinit`. The bridge stores a stable separately allocated
+/// context rather than a pointer into this struct, so moving the Runtime value after init is
+/// safe. Callers must still call `deinit` before destroying the allocator.
 pub const Runtime = struct {
     owner: Allocator = undefined,
     allocator_context: ?*AllocatorContext = null,
@@ -85,12 +118,24 @@ pub const Runtime = struct {
             .inject_teardown_failure = @intFromBool(config.inject_teardown_failure),
             .inject_result_failure = @intFromBool(config.inject_result_failure),
             .inject_compile_failure = @intFromBool(config.inject_compile_failure),
+            .budget = config.budget,
+            .get_api = config.get_api,
+            .self = .{ .bits = config.self },
+            .ledger = config.ledger,
+            .abi_call_limit = config.abi_call_limit,
+            .spawn_limit = config.spawn_limit,
+            .log_limit = config.log_limit,
         };
         var script: ?*c.FoundryScript = null;
-        if (c.foundry_script_create(&script, &native_config) != c.FOUNDRY_SCRIPT_OK) {
+        const created = status(c.foundry_script_create(&script, &native_config));
+        if (created != c.FOUNDRY_SCRIPT_OK) {
             owner.destroy(context);
             self.allocator_context = null;
-            return error.BootstrapFailed;
+            return switch (created) {
+                c.FOUNDRY_SCRIPT_INVALID_ARGUMENT => error.InvalidArgument,
+                c.FOUNDRY_SCRIPT_UNSUPPORTED => error.UnsupportedApi,
+                else => error.BootstrapFailed,
+            };
         }
         self.script = script orelse {
             owner.destroy(context);
@@ -108,11 +153,13 @@ pub const Runtime = struct {
         self.allocator_context = null;
     }
 
-    /// Executes one source chunk through the C-owned protected invocation.
-    pub fn execute(self: *Runtime, source: []const u8) !i64 {
+    /// Executes one source chunk through the C-owned protected invocation, in `phase`.
+    /// Every record and cursor the chunk obtained is stale once this returns.
+    pub fn run(self: *Runtime, source: []const u8, phase: Phase) !i64 {
         const script = self.script orelse return error.NotInitialized;
         var result: c.FoundryScriptResult = undefined;
-        return switch (status(c.foundry_script_execute(script, source.ptr, source.len, &result))) {
+        const phase_value: c.FoundryScriptPhase = @intCast(@intFromEnum(phase));
+        return switch (status(c.foundry_script_execute(script, source.ptr, source.len, phase_value, &result))) {
             c.FOUNDRY_SCRIPT_OK => result.integer,
             c.FOUNDRY_SCRIPT_INVALID_ARGUMENT => error.InvalidArgument,
             c.FOUNDRY_SCRIPT_COMPILE_ERROR => error.CompileFailed,
@@ -120,8 +167,20 @@ pub const Runtime = struct {
             c.FOUNDRY_SCRIPT_INSTRUCTION_LIMIT => error.InstructionLimit,
             c.FOUNDRY_SCRIPT_MEMORY_LIMIT => error.MemoryLimit,
             c.FOUNDRY_SCRIPT_RESULT_ERROR => error.ResultFailed,
+            c.FOUNDRY_SCRIPT_NATIVE_WORK_LIMIT => error.NativeWorkLimit,
             else => error.ExecutionFailed,
         };
+    }
+
+    /// Preparation: the phase that may read but may not change the world.
+    pub fn execute(self: *Runtime, source: []const u8) !i64 {
+        return self.run(source, .prepare);
+    }
+
+    /// Table calls the most recent invocation made, traversal included.
+    pub fn abiCalls(self: *const Runtime) u32 {
+        const script = self.script orelse return 0;
+        return c.foundry_script_abi_calls(script);
     }
 
     pub fn failNextAllocation(self: *Runtime) void {
@@ -157,12 +216,16 @@ pub const Runtime = struct {
 
 pub const Fixture = Runtime;
 
+test {
+    _ = @import("binding_tests.zig");
+}
+
 test "text execution uses only the allowlisted environment" {
     var runtime: Runtime = .{};
     try runtime.init(std.testing.allocator, .{});
     defer runtime.deinit();
 
-    const source = "return (type(1) == 'number' and type(io) == 'nil' and type(os) == 'nil' and type(package) == 'nil' and type(debug) == 'nil' and type(coroutine) == 'nil' and type(load) == 'nil' and type(require) == 'nil' and type(pcall) == 'nil' and type(xpcall) == 'nil' and type(collectgarbage) == 'nil' and type(next) == 'nil' and type(rawset) == 'nil' and type(getmetatable) == 'nil' and type(setmetatable) == 'nil' and (2 + 3))";
+    const source = "return (type(1) == 'number' and type(io) == 'nil' and type(os) == 'nil' and type(package) == 'nil' and type(debug) == 'nil' and type(coroutine) == 'nil' and type(load) == 'nil' and type(require) == 'nil' and type(pcall) == 'nil' and type(xpcall) == 'nil' and type(collectgarbage) == 'nil' and type(next) == 'nil' and type(rawset) == 'nil' and type(getmetatable) == 'nil' and type(setmetatable) == 'nil' and type(foundry) == 'nil' and (2 + 3))";
     try std.testing.expectEqual(@as(i64, 5), try runtime.execute(source));
 }
 
@@ -173,6 +236,53 @@ test "ipairs walks the supplied table" {
 
     const source = "local values = {4, 5}; local total = 0; for _, value in ipairs(values) do total = total + value end return total";
     try std.testing.expectEqual(@as(i64, 9), try runtime.execute(source));
+}
+
+test "pairs walks integers ascending then strings by byte order" {
+    var runtime: Runtime = .{};
+    try runtime.init(std.testing.allocator, .{});
+    defer runtime.deinit();
+
+    // The same table contents must be visited in the same order on every machine (I9), so
+    // the walk is over a sorted snapshot rather than the hash table's own layout.
+    const source =
+        \\local t = { b = 1, a = 2, [3] = 3, [1] = 4, B = 5, ["a b"] = 6 }
+        \\local order = ""
+        \\for key, value in pairs(t) do order = order .. tostring(key) .. "=" .. tostring(value) .. "," end
+        \\assert(order == "1=4,3=3,B=5,a=2,a b=6,b=1,", order)
+        \\return 1
+    ;
+    try std.testing.expectEqual(@as(i64, 1), try runtime.execute(source));
+
+    // Two runs of the same construction agree, and a key kind the snapshot cannot order
+    // is refused rather than silently walked in address order.
+    try std.testing.expectEqual(@as(i64, 1), try runtime.execute(source));
+    try std.testing.expectError(error.RuntimeFailed, runtime.execute("for k in pairs({[1.5] = 1}) do end return 1"));
+    try std.testing.expect(std.mem.indexOf(u8, runtime.diagnostic(), "invalid_argument") != null);
+}
+
+test "the math, string and select helpers are bounded and locale-independent" {
+    var runtime: Runtime = .{};
+    try runtime.init(std.testing.allocator, .{});
+    defer runtime.deinit();
+
+    const source =
+        \\assert(math.abs(-3) == 3 and math.floor(2.7) == 2 and math.ceil(2.1) == 3)
+        \\assert(math.min(4, 2, 9) == 2 and math.max(4, 2, 9) == 9 and math.sqrt(9) == 3)
+        \\assert(math.random == nil and math.randomseed == nil)
+        \\assert(string.len("abc") == 3 and string.sub("abcdef", 2, 3) == "bc")
+        \\assert(string.sub("abcdef", -2) == "ef" and string.upper("aZ") == "AZ" and string.lower("Az") == "az")
+        \\assert(string.byte("A") == 65 and string.char(65, 66) == "AB")
+        \\assert(string.format == nil and string.rep == nil and string.gsub == nil and string.dump == nil)
+        \\assert(select("#", 1, 2, 3) == 3 and select(2, "a", "b", "c") == "b" and select(-1, "a", "b") == "b")
+        \\assert(tostring(4611686018427387904 * 2 - 1) == "9223372036854775807")
+        \\return 1
+    ;
+    try std.testing.expectEqual(@as(i64, 1), try runtime.execute(source));
+
+    // A string method would mean a metatable on every string, and a metatable on every
+    // string is a route to whatever library installed it.
+    try std.testing.expectError(error.RuntimeFailed, runtime.execute("return (\"x\"):len()"));
 }
 
 test "instruction hook stops runaway text" {
@@ -228,7 +338,7 @@ test "hook periods that do not fit Lua's int are refused" {
     var config: Config = .{};
     config.hook_period = @as(u32, @intCast(std.math.maxInt(c_int))) + 1;
     var runtime: Runtime = .{};
-    try std.testing.expectError(error.BootstrapFailed, runtime.init(std.testing.allocator, config));
+    try std.testing.expectError(error.InvalidArgument, runtime.init(std.testing.allocator, config));
 }
 
 test "heap quota rejects a finite allocation and recovers" {
@@ -242,6 +352,29 @@ test "heap quota rejects a finite allocation and recovers" {
     const source = "local values = {}; for i = 1, 20000 do values[i] = i end return 1";
     try std.testing.expectError(error.MemoryLimit, runtime.execute(source));
     try std.testing.expectEqual(@as(i64, 2), try runtime.execute("return 2"));
+}
+
+test "one shared budget bounds every VM a host runs" {
+    var budget: Budget = .{ .limit = 256 * 1024, .used = 0 };
+    var first: Runtime = .{};
+    try first.init(std.testing.allocator, .{ .budget = &budget });
+    const after_first = budget.used;
+    try std.testing.expect(after_first > 0);
+
+    // The second VM is charged against what the first already holds, so a host cannot buy
+    // more memory by opening more VMs.
+    var second: Runtime = .{};
+    try second.init(std.testing.allocator, .{ .budget = &budget });
+    defer second.deinit();
+    try std.testing.expect(budget.used > after_first);
+    try std.testing.expectError(error.MemoryLimit, second.execute("local t = {}; for i = 1, 20000 do t[i] = i end return 1"));
+
+    // And a closed VM gives back exactly what it took, rather than leaking the accounting.
+    // The first VM ran nothing, so its charge is still the whole of `after_first`.
+    const before_release = budget.used;
+    first.deinit();
+    try std.testing.expectEqual(before_release - after_first, budget.used);
+    try std.testing.expectEqual(@as(i64, 3), try second.execute("return 3"));
 }
 
 test "allocation refusal is contained at every early index" {

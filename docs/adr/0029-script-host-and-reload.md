@@ -1,6 +1,6 @@
 # ADR-0029: Scripts consume the public ABI and reload behind stable callbacks
 
-**Status:** Accepted (public source boundary implemented through M8 step 3)
+**Status:** Accepted (public source boundary and bounded bindings implemented through M8 step 4)
 **Date:** 2026-09-09
 
 ## Context
@@ -106,3 +106,17 @@ build targets. Deliberately narrowing the header's capacity parameter and indepe
 swapping two same-typed Zig table entries both failed the harness before being restored. V1-only
 native code still negotiates and runs, while native range selection now offers both versions.
 Lua gameplay bindings, stable callbacks and reload remain later steps.
+
+## Implementation note — 2026-09-12, step 4
+
+Decision 5 is implemented: the Lua module publishes 39 functions, every one a wrapper over a
+single existing table entry, and the public ABI gained nothing. `script` still imports no
+engine module — it takes a `FoundryGetApi`, asks for version 2, and checks the table's version
+and size before using it, so a host offering only v1 is refused before a VM exists.
+
+Decision 3's per-package bookkeeping arrived earlier than its slot: §11 places the entity
+ownership ledger in the stable manager slot, which is step 5's. The ledger, and the memory
+budget shared across VMs, are therefore caller-owned structs the VM is handed by pointer. That
+keeps the property decision 4 depends on — a VM can be replaced without the package forgetting
+what it owns — without building the slot before its step. Stable callbacks, activation and
+candidate-VM reload remain steps 5 and 6.

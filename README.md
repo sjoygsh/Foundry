@@ -22,7 +22,7 @@ additive ABI v2 typed source copying. Bounded gameplay bindings are next.
 ```sh
 ./scripts/install-zig.sh   # the only tool you need
 zig build run -Drhi=metal  # opens a window and draws; escape quits
-zig build test             # 1147 headless tests
+zig build test             # 1164 headless tests
 ```
 
 Implemented so far:

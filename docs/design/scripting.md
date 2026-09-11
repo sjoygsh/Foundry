@@ -1,7 +1,7 @@
 # Scripting: the Tier 2 host
 
-**Status:** designed 2026-09-09; **3 of 8 implementation steps complete.**
-**Current stop point:** after §16 step 3; step 4 has not begun.
+**Status:** designed 2026-09-09; **4 of 8 implementation steps complete.**
+**Current stop point:** after §16 step 4; step 5 has not begun.
 
 Rests on [ADR-0028](../adr/0028-scripting-lua.md) (runtime),
 [ADR-0029](../adr/0029-script-host-and-reload.md) (boundary and lifetime), and
@@ -549,7 +549,7 @@ steps simply because a session has budget. This planning commit completes none o
    consumer reading the asset, both versions side by side, empty host, stale/provenance
    refusals and deliberate agreement breaks. Runnable result: an external C-shaped consumer
    reads a packaged script without engine types. No Lua gameplay yet.
-4. **Bind bounded content and gameplay operations.** Implement §7's conversions and exact
+4. **Bind bounded content and gameplay operations. Complete 2026-09-12.** Implement §7's conversions and exact
    allowlist against fake and real ABI tables; stable iteration/RNG and entity ownership.
    Implement/check template preflight, aggregate/native memory policy and atomic spawn
    refusal. Runnable result: a protected script reads content and spawns/removes an entity
@@ -577,10 +577,11 @@ steps simply because a session has budget. This planning commit completes none o
 
 ## 17. Planning handoff
 
-Architecture and sequence are written. Steps 1 through 3 prove the Lua/C/Zig containment
-boundary, package/source integration and additive public source access. Gameplay bindings,
-reload, end-to-end security, performance and guide execution remain **unverified until their
-implementation steps**. The next authorized unit, when the user resumes, is §16 step 4 only.
+Architecture and sequence are written. Steps 1 through 4 prove the Lua/C/Zig containment
+boundary, package/source integration, additive public source access and binding 1's bounded
+content/world surface. Package lifecycle, reload, end-to-end security, performance and guide
+execution remain **unverified until their implementation steps**. The next authorized unit,
+when the user resumes, is §16 step 5 only.
 
 ## Resolution — 2026-09-10, step 1
 
@@ -667,3 +668,67 @@ swapping two same-typed Zig entries made the textual-order, compiled-offset and 
 table checks fail. Both temporary mutations were restored. The suite declares 1155 tests,
 which is 1147 headless after the documented 8 Metal-only tests. Gameplay bindings, Lua-facing
 API construction, package scheduling and every step-4 capability remain untouched.
+
+## Resolution — 2026-09-12, step 4
+
+The design needed **one correction, and §11 named the thing it collided with.** The ownership
+ledger "belongs to the stable manager slot", and that slot does not exist until step 5; a
+ledger owned by the VM would also be lost at step 6's VM replacement, which is the loss §11
+forbids. So the ledger and the aggregate memory budget are **caller-owned C structs passed to
+the VM by pointer** (`FoundryScriptLedger`, `FoundryScriptBudget`). Step 5's slot becomes
+their owner by holding them, with no change to the VM's contract, and step 6 can swap a VM
+beneath a package that still knows what it owns. Nothing else in §§7–9 changed.
+
+The bindings are C, beside the bridge in `binding.c`, because §4's rule is that the argument
+check, the table call and the result construction happen in C frames with no Zig frame between
+them. Each validates, builds a plain C request, calls exactly one table entry, waits for it to
+return, and only then pushes results or raises. No Zig helper is reachable from Lua, and the
+`foundry` table is built by allowlist rather than by deletion.
+
+**Three shapes the design gave in ABI terms had to become Lua terms**, each following from
+§7's own rule that handles are immutable values. An in/out cursor cannot be immutable, so a
+walk is `record, cursor = foundry.content_next(cursor)`, with `nil` to begin and `nil, "end"`
+at the end — the ABI's spelling, not its calling convention. A `u64` above `INT64_MAX` is
+opaque unsigned userdata that compares and formats in decimal rather than a lossy float. And a
+field type is its name (`"i64"`, `"nested"`), because the integer would make every script
+carry its own copy of an enum this header may extend.
+
+Records, cursors and packages are stamped with the invocation that produced them and refused
+in any other — stricter than the ABI beneath them, deliberately: a content record's engine
+handle survives the tick and a described component's dies with the frame, so the
+script-visible rule is the shorter of the two rather than two rules an author must tell apart.
+Ids, schema ids, entities and component types are values and carry no stamp.
+
+**Absence is a value; misuse raises.** `end`, `not_found`, `unavailable` and `unsupported`
+return `nil, name`; a malformed argument, a stale handle, a phase violation, an ownership
+violation and every budget raise with a category and the ABI's own result name. A mutation or
+a log line attempted during preparation is a `contract` error rather than a quiet no-op, so
+§11's "init cannot touch the world" rule is visible the first time it is broken.
+
+`world_spawn` preflights through the same public calls a script could make — the schema is
+`foundry:entity`, at most 32 components, every one a registered **savable** type, at most
+64 KiB of instance storage — and reserves its ledger entry before asking the world, so a
+successful spawn cannot produce an entity the package does not own. The answer is cached
+against the content generation, and the integration test asserts that spawning the same
+template a second time costs fewer engine calls. `world_destroy_entity` refuses an entity the
+package did not spawn, and prunes one the world has already lost.
+
+`foundry.rng` is `core.Pcg32` written out in C and pinned by a test to `core`'s own sequence,
+for the reason the content hash is written out in `foundry.h`: a seed is a reproducibility
+promise, and two implementations of one generator must not be able to drift. `pairs` walks a
+sorted bounded snapshot — integers ascending, then strings by unsigned byte order — and
+`tostring` formats scalars and bridge values only, so no address is observable as gameplay.
+Writing it also fixed a defect inherited from step 1: integers were formatted through a double
+and lost precision above 2^53.
+
+**Verified by breaking each new guard in turn**, restoring the exact edit each time: letting
+preparation mutate the world failed the phase test; not stamping a record with its invocation
+failed the stale-handle test; removing the per-call charge failed the budget test; and
+publishing one extra entry in the table failed the allowlist test. The suite is **1172
+declared, 1164 headless** after the documented 8 Metal-only tests, and the full AGENTS.md §3
+bar passes on the host, `x86_64-linux-gnu` and `x86_64-windows-gnu`, with both samples.
+
+What step 4 deliberately does **not** do: no script package runs. Nothing registers a system,
+nothing drives a tick, and an invocation is still the fixture's text-in/integer-out with a
+phase beside it. §11's module contract, stable callbacks, activation and teardown are step 5's,
+and none of them was smuggled in early.
