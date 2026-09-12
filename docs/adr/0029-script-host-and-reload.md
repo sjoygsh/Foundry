@@ -1,6 +1,6 @@
 # ADR-0029: Scripts consume the public ABI and reload behind stable callbacks
 
-**Status:** Accepted (public source boundary and bounded bindings implemented through M8 step 4)
+**Status:** Accepted (public source boundary, bounded bindings and the package lifecycle implemented through M8 step 5)
 **Date:** 2026-09-09
 
 ## Context
@@ -120,3 +120,23 @@ budget shared across VMs, are therefore caller-owned structs the VM is handed by
 keeps the property decision 4 depends on — a VM can be replaced without the package forgetting
 what it owns — without building the slot before its step. Stable callbacks, activation and
 candidate-VM reload remain steps 5 and 6.
+
+## Implementation note — 2026-09-12, step 5
+
+Decision 3 is implemented. One `script.Manager` slot per package holds the source reference,
+the VM, the ownership ledger and the diagnostics, and its address is what the world's system
+callback carries for the world's lifetime. A fault closes the VM and keeps everything else,
+which is the property decision 4's reload depends on. Registration is the **last** step of
+activation, so a refused one — an absent world, a name collision, an exhausted capacity —
+leaves nothing for the world to call, and `Host.refuseMod` is not used anywhere.
+
+Decision 1 still holds with the lifecycle in place: the manager is trusted and uses the asset,
+source, system and log calls a script cannot reach, but every one of them is a
+`FoundryApi_v2` entry a native mod could call. `script` gained no engine import. The public
+ABI gained nothing either — the diagnostic names a script by the entry record's own spelling,
+read through `content_find` and `record_name`, because the table publishes a script's bytes
+and revision but not the path they came from, and a filename call would be a public ABI
+design rather than a lifecycle step.
+
+Decision 5's boundary held. `migrate` is validated as an optional field and never called;
+nothing polls a revision, snapshots state or swaps a VM. Candidate-VM reload is step 6.

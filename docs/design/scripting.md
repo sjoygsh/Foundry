@@ -1,7 +1,7 @@
 # Scripting: the Tier 2 host
 
 **Status:** designed 2026-09-09; **4 of 8 implementation steps complete.**
-**Current stop point:** after §16 step 4; step 5 has not begun.
+**Current stop point:** after §16 step 5; step 6 has not begun.
 
 Rests on [ADR-0028](../adr/0028-scripting-lua.md) (runtime),
 [ADR-0029](../adr/0029-script-host-and-reload.md) (boundary and lifetime), and
@@ -554,7 +554,7 @@ steps simply because a session has budget. This planning commit completes none o
    Implement/check template preflight, aggregate/native memory policy and atomic spawn
    refusal. Runnable result: a protected script reads content and spawns/removes an entity
    through a fake-table test and a real null-world integration fixture. No package scheduler.
-5. **Wire the package lifecycle.** Stable manager slots, issued identities, one system per
+5. **Wire the package lifecycle. Complete 2026-09-12.** Stable manager slots, issued identities, one system per
    package, activation/fault/teardown and diagnostics; integrate the minimal scripted
    encounter in the sandbox's own package. Support an opt-in host with no native loader.
    Test mixed packages, version failures, capacity and one script failing beside a healthy
@@ -577,11 +577,11 @@ steps simply because a session has budget. This planning commit completes none o
 
 ## 17. Planning handoff
 
-Architecture and sequence are written. Steps 1 through 4 prove the Lua/C/Zig containment
-boundary, package/source integration, additive public source access and binding 1's bounded
-content/world surface. Package lifecycle, reload, end-to-end security, performance and guide
-execution remain **unverified until their implementation steps**. The next authorized unit,
-when the user resumes, is §16 step 5 only.
+Architecture and sequence are written. Steps 1 through 5 prove the Lua/C/Zig containment
+boundary, package/source integration, additive public source access, binding 1's bounded
+content/world surface, and the package lifecycle that drives it on a fixed tick. Reload,
+end-to-end security, performance and guide execution remain **unverified until their
+implementation steps**. The next authorized unit, when the user resumes, is §16 step 6 only.
 
 ## Resolution — 2026-09-10, step 1
 
@@ -732,3 +732,73 @@ What step 4 deliberately does **not** do: no script package runs. Nothing regist
 nothing drives a tick, and an invocation is still the fixture's text-in/integer-out with a
 phase beside it. §11's module contract, stable callbacks, activation and teardown are step 5's,
 and none of them was smuggled in early.
+
+## Resolution — 2026-09-12, step 5
+
+A script package now runs. The module contract of §11 is three C entry points beside the
+fixture's — `load_module` evaluates the chunk and validates the table it returned,
+`init_state` calls `init()` and validates the state it returned, `update` calls
+`update(state, step)` — and each is one protected invocation on the same two nested
+`lua_pcall`s step 1 built. `script.Manager` in Zig holds one stable slot per package, and
+the slot is what the world's system callback points at, forever. What changes underneath it
+is which VM, or none; the registration, the issued identity and the ownership ledger do not.
+
+**Preparation earned its own instruction budget**, which §8 always specified and steps 1
+through 4 had no phase to spend it in. A zero `prepare_instruction_limit` still means "one
+budget for both", so a zeroed C config is valid; the Zig `Config` defaults it to §8's
+1,000,000. The step-1 runaway test now names both, because with only the update budget named
+it would have stopped a preparation at a limit it was no longer being given.
+
+**Diagnostics are structured, not scraped.** Every failure carries a `FoundryScriptCategory`
+a host can branch on and the source line when Lua knew one. The category comes from the
+failure kind when the bridge already knows it and otherwise from the leading token every
+raise in `bridge.c` and `binding.c` already wrote; `limit` maps onto `native_work_limit`
+rather than becoming a category §13 does not name. Reading the line at all is why chunks are
+now compiled under a `=`-prefixed name: Lua then spells the name literally instead of
+wrapping it in `[string "..."]`, and the parse is exact rather than a guess at a delimiter.
+
+**§13 asks for a logical source filename and this step cannot give one.** The public ABI
+publishes a script's bytes and its revision, not the path they were read from, and adding a
+call for it would be a public ABI design rather than a lifecycle step. So a diagnostic names
+the package and the **entry record's own spelling**, which the manager reads out of content
+through `content_find` and `record_name` — the same calls a script reads content with, and
+the reason no `entry_name` had to be added to the descriptor §3 specifies. A filename, if it
+is ever worth having, is the ABI's to publish.
+
+**Ownership of the four pieces is the application's, and the sandbox is now the reference
+for that.** `samples/sandbox/scripting.zig` registers the source loader, binds an `abi.Host`
+over the sample's own engine and world, issues one identity per package and holds the
+manager; it is the only file in the sample that names `abi` or `script`, and the
+`mod.Entry` → `script.Descriptor` conversion lives there because that is the code that owns
+both. A build without the pinned Lua gets `scripting_absent.zig`, which answers the same
+calls and does nothing, so the sample still builds, loads and runs with no Lua linked at all.
+
+**One sample-level limit, stated rather than papered over.** A manager belongs to one world's
+lifetime (§3), and loading a save rebuilds the world. The sandbox therefore stops its scripts
+once, with a log line saying why, instead of appearing to run while nothing calls them.
+Reactivating across a world swap would need a lifecycle M8 has not specified — it consumes a
+fresh ABI system slot per swap and has to decide what a script owns in a world it never saw
+— and inventing one here would be the wrong place to decide it.
+
+The scripted encounter is `samples/sandbox/content/scripts/encounter.lua`: it reads
+`sandbox:encounter.main` at load, keeps its interval and its owned entities in state, lights
+four beacons around the world origin half a second apart and then puts them out. The beacons
+are content — a transform, a visual and a `foundry:entity` each — because binding 1 cannot
+write a component, so *where* they are and what they look like is the package's and the
+script only decides when. In a headless null run their sprites appear in the frame's own
+batch count and disappear again, which is the claim "visible fixed-tick behavior driven by
+an ordinary script package" reduced to a number a test could read.
+
+**Verified by breaking each new guard in turn**, restoring the exact edit each time:
+accepting an unrecognised lifecycle field failed the module-shape test; letting a state table
+be reached twice failed the state-tree test; publishing a slot whether or not the world took
+its system failed the capacity test; never releasing a source reference failed the teardown
+test; and accepting any binding version failed the binding test. The suite is **1187
+declared, 1179 headless** after the documented 8 Metal-only tests, and the full AGENTS.md §3
+bar passes on the host, `x86_64-linux-gnu` and `x86_64-windows-gnu`, with both samples. The
+public ABI did not change, so `foundry.h` is byte-for-byte what step 3 left.
+
+What step 5 deliberately does **not** do: no reload. Nothing polls a source revision, nothing
+snapshots state, nothing migrates and nothing swaps a VM. The state validation written here
+is the *shape* check §10 asks for at `init`, not the copy step 6 owes, and `migrate` is
+validated as a field and never called.

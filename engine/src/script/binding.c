@@ -1162,6 +1162,32 @@ static int value_le(lua_State *state) {
     return value_compare(state, 1);
 }
 
+int foundry_script_value_is_persistable(lua_State *state, int index,
+                                        const FoundryScript *script) {
+    const ScriptValue *value = test_value(state, index);
+    if (value == NULL) {
+        return 0;
+    }
+    switch (value->tag) {
+        case TAG_ID:
+        case TAG_SCHEMA:
+        case TAG_U64:
+        case TAG_RNG:
+            /* Values, with no engine lifetime behind them. */
+            return 1;
+        case TAG_ENTITY: {
+            /* An entity persists only while this package still owns it, so state cannot
+             * become a way to name somebody else's entity across a reload (§11). */
+            FoundryEntity entity;
+            entity.bits = value->bits;
+            return script->ledger != NULL && ledger_find(script->ledger, entity) >= 0;
+        }
+        default:
+            /* A record, cursor, package or component type dies with its invocation. */
+            return 0;
+    }
+}
+
 int foundry_script_format_value(lua_State *state, int index) {
     char text[48];
     const ScriptValue *value = test_value(state, index);

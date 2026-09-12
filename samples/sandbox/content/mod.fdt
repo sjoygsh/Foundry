@@ -11,4 +11,9 @@ foundry:mod  sandbox:content {
     license  "Apache-2.0"
     summary  "Capabilities, demonstrated: sprites, content, entities, collision, audio, UI."
     requires [ { id foundry:core } ]
+    # **This package carries code**, and says so in the one place a package says anything
+    # about itself. The ABI range is the versions its script was written against, and the
+    # binding version is which Lua surface it expects (ADR-0029, `scripting.md` §5).
+    abi      { min 2  max 2 }
+    script   { entry sandbox:scripts.encounter  binding 1 }
 }

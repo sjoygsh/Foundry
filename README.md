@@ -15,14 +15,16 @@ source changes.
 
 Tier 1 content modding and Tier 3 native modding work: see
 [docs/modding](docs/modding/). Tier 2 scripting is M8: its
-[architecture and eight-step plan](docs/design/scripting.md) are written; steps 1 through 3
-have completed the protected Lua boundary, ordinary package script assets/manifests and
-additive ABI v2 typed source copying. Bounded gameplay bindings are next.
+[architecture and eight-step plan](docs/design/scripting.md) are written, and steps 1 through 5
+have completed the protected Lua boundary, ordinary package script assets/manifests, additive
+ABI v2 typed source copying, the bounded content and gameplay bindings, and the package
+lifecycle. **A script package runs** — the sandbox ships one, and the world's fixed tick
+drives it. Hot reload is next.
 
 ```sh
 ./scripts/install-zig.sh   # the only tool you need
 zig build run -Drhi=metal  # opens a window and draws; escape quits
-zig build test             # 1164 headless tests
+zig build test             # 1179 headless tests
 ```
 
 Implemented so far:
@@ -49,7 +51,8 @@ Implemented so far:
   content browser.
 * **`mod`** — manifests, package discovery, dependency resolution and deterministic order.
 * **`script`** — an optional restricted Lua runtime with protected execution, heap and
-  instruction quotas; gameplay bindings are the next M8 step.
+  instruction quotas, the bounded `foundry` binding a script calls the engine through, and the
+  package lifecycle that registers one system per script package and drives it on a fixed tick.
 * **`abi`** — the installed C99/C++ header, frozen 135-call `FoundryApi_v1`, additive
   `FoundryApi_v2`, host boundary and native-library lifecycle.
 * **`tools/fpack`** — the content compiler: a package directory in, one `.fpk` out.

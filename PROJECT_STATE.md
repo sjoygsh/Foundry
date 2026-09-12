@@ -1,10 +1,53 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-12
-**Current handoff: M8 step 4 complete (4/8 steps); next is step 5 only.**
+**Current handoff: M8 step 5 complete (5/8 steps); next is step 6 only.**
 The restricted Lua runtime, ordinary script package assets/manifests, additive ABI v2 typed
-source copying and binding 1's bounded content/world surface are implemented and proven. No
-script package runs yet: nothing registers a system or drives a tick, which is step 5.
+source copying, binding 1's bounded content/world surface and the package lifecycle that
+drives it are implemented and proven. **A script package runs**: the sandbox's own package
+ships one, and it lights four beacons around the world origin on a fixed tick and puts them
+out again. Nothing reloads yet, which is step 6.
+
+**Implemented in step 5, 2026-09-12:** the author's module contract (`scripting.md` §11) as
+three protected C entry points — `load_module` evaluates the chunk and validates the table it
+returns, `init_state` calls `init()` and validates the state it returns, `update` calls
+`update(state, step)` — and `script.Manager`, which holds one stable slot per package. The
+slot is what the world's system callback points at for the world's lifetime; what is replaced
+underneath it is the VM, never the registration, the issued identity or the ownership ledger.
+Activation copies the source through v2 under the manager's aggregate budget, prepares the VM,
+loads and validates the module, runs `init`, and **registers the system last** — so a refused
+registration leaves nothing for the world to call. Preparation now spends §8's separate
+1,000,000-instruction budget. Every failure carries a `FoundryScriptCategory` a host can
+branch on and the line Lua knew, formatted into §13's diagnostic and written through the
+package's own attributed log, with repeats suppressed after the third identical report.
+
+**The application owns the wiring, and the sandbox is the reference for it.**
+`samples/sandbox/scripting.zig` registers the source loader, binds an `abi.Host` over the
+sample's engine and world, issues one identity per package and holds the manager; it is the
+only file in the sample that names `abi` or `script`, and the `mod.Entry` →
+`script.Descriptor` conversion lives there. A build without the pinned Lua gets
+`scripting_absent.zig`, answers the same calls, links no Lua and still runs.
+
+**Two things step 5 decided rather than inherited.** §13 asks for a logical source filename;
+the public ABI publishes a script's bytes and revision, not its path, so a diagnostic names
+the **entry record's own spelling**, read out of content through `content_find` and
+`record_name`. And a manager belongs to one world's lifetime (§3), so loading a save in the
+sandbox stops its scripts once, with a log line, rather than appearing to run while nothing
+calls them.
+
+**Step-5 verification:** the full AGENTS.md §3 bar passes — formatting, host/Linux/Windows
+compilation and both 30-frame null sample runs. The suite declares 1187 tests, **1179
+headless** after the documented 8 Metal-only tests. Fourteen fake-host tests cover mixed
+packages, a refused binding version, both capacities, one script failing beside a healthy one,
+the module and state contracts, teardown and the aggregate budget; two real-table integration
+tests drive a registered system from `World.update` over real merged content. Five guards were
+broken one at a time and each failed its own test: accepting an unrecognised lifecycle field,
+letting a state table be reached twice, publishing a slot whether or not the world took its
+system, never releasing a source reference, and accepting any binding version. Every edit was
+restored. The public ABI did not change; `foundry.h` is byte-for-byte what step 3 left.
+
+**Step 6 boundary:** snapshots, versioned migration, candidate validation, source-revision
+polling and a nonallocating commit. Do not begin the adversarial matrix.
 
 **Implemented in step 4, 2026-09-12:** the `foundry` Lua module, binding version 1 — 39
 functions covering identity, a deterministic RNG, attributed logging, content walks, record
@@ -33,9 +76,6 @@ ownership behind. Four guards were broken one at a time and each failed its own 
 preparation mutate the world, not stamping a record with its invocation, removing the
 per-call charge, and publishing one extra table entry. Every edit was restored.
 
-**Step 5 boundary:** stable manager slots, issued identities, one registered system per
-package, activation/fault/teardown and diagnostics, plus the scripted encounter in the
-sandbox's own package. Do not begin hot reload.
 
 **Implemented 2026-09-10:** PUC Lua 5.5.1 is pinned from the official archive and compiled
 directly with Zig into the optional L6 `script` consumer. Its private C bridge contains every
@@ -90,10 +130,10 @@ bounded content/world bindings, failure policy, state migration and verification
 
 **Eight implementation units, in `scripting.md` §16:** runtime containment; script assets
 and manifests; ABI v2 source access; bounded bindings; package lifecycle; hot reload;
-adversarial/determinism proof; outside-tree author guide and milestone closure. **Steps 1 through 4
-are complete; next is step 5 only when the user resumes.** No sample script exists yet.
-Package isolation, gameplay bindings, reload,
-performance defaults and the full adversarial matrix still require their specified evidence.
+adversarial/determinism proof; outside-tree author guide and milestone closure. **Steps 1 through 5
+are complete; next is step 6 only when the user resumes.** The sample script is
+`samples/sandbox/content/scripts/encounter.lua`. Reload, performance defaults and the full
+adversarial matrix still require their specified evidence.
 M7 remains complete with 1117 headless tests; M9 remains undesigned.
 
 **Step-3 verification:** focused source-copy and agreement tests pass. Deliberately narrowing

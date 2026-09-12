@@ -378,6 +378,30 @@ pub fn build(b: *std.Build) void {
     sandbox_mod.addImport("mod", modules.get("mod").?);
     sandbox_mod.addImport("debug", modules.get("debug").?);
 
+    // **Tier 2, and the shape of opting into it.** A game that wants scripts registers the
+    // source loader, binds an `abi.Host` over its own subsystems, issues an identity per
+    // package and holds a `script.Manager`; that is `samples/sandbox/scripting.zig`, and it
+    // is the only place in the sample that names `abi` or `script`. A build without the
+    // pinned Lua dependency gets the other file, which answers the same calls and does
+    // nothing — so the sample builds, loads and runs either way (ADR-0029).
+    const scripting_mod = b.createModule(.{
+        .root_source_file = b.path(if (script_mod == null)
+            "samples/sandbox/scripting_absent.zig"
+        else
+            "samples/sandbox/scripting.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    for ([_][]const u8{ "app", "core", "mod", "scene" }) |name| {
+        scripting_mod.addImport(name, modules.get(name).?);
+    }
+    if (script_mod) |lua_host| {
+        scripting_mod.addImport("asset", modules.get("asset").?);
+        scripting_mod.addImport("abi", modules.get("abi").?);
+        scripting_mod.addImport("script", lua_host);
+    }
+    sandbox_mod.addImport("scripting", scripting_mod);
+
     // The shader the sandbox draws with, compiled by the build and embedded in the
     // executable. Only under Metal: `xcrun` is a macOS toolchain, and a null build must not
     // require Xcode to be installed at all.
@@ -605,7 +629,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
-        for ([_][]const u8{ "core", "data", "platform", "rhi", "scene", "app", "mod", "abi" }) |name| {
+        for ([_][]const u8{ "core", "asset", "data", "platform", "rhi", "scene", "app", "mod", "abi" }) |name| {
             script_integration.addImport(name, modules.get(name).?);
         }
         script_integration.addImport("script", mod);

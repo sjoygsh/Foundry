@@ -149,3 +149,66 @@ foundry:tilemap sandbox:map.room {
     cell   [ 16 16 ]
     layers [ sandbox:map.room.walls ]
 }
+
+# -- Tier 2: the scripted encounter ----------------------------------------------------
+#
+# **A script package is an ordinary content package with a script in it** (ADR-0027), and
+# the sandbox is its own reference for that too: the manifest names one entry and a binding
+# version, the source is a file the compiler turns into a `foundry:script` asset exactly as
+# it turns a `.png` into a `foundry:texture`, and everything the script does is content.
+#
+# What the script may do is binding 1 (`scripting.md` §7): read content, look at the world,
+# spawn a template it was pointed at, and remove what it spawned. It cannot write a
+# component, reach a renderer or touch a file — so the *appearance* of what it spawns is
+# these records, and the script only decides when.
+
+@schema encounter {
+    # Fixed ticks between one beacon and the next. Ticks, not seconds: this is simulation
+    # and simulation counts steps (I9).
+    interval i64
+    # What to light, in order. The script walks this list and then puts them out again.
+    beacons [id]
+}
+
+encounter sandbox:encounter.main {
+    # Half a second at 60 Hz: the ring lights over two seconds and then goes out.
+    interval 30
+    beacons  [ sandbox:beacon.north  sandbox:beacon.east  sandbox:beacon.south  sandbox:beacon.west ]
+}
+
+# The two component types the sample defines in Zig, declared here so a package can build
+# an entity out of them. The names and types must match the Zig structs field for field, in
+# order — that agreement is what `World.spawn` checks before it deserializes anything, and
+# it is the same check a mod's own component records go through.
+
+@schema transform {
+    x f32
+    y f32
+    rotation f32
+}
+
+@schema visual {
+    size f32
+    cell u32
+    tint { r f32  g f32  b f32  a f32 }
+    additive bool
+    layer i32
+}
+
+# A ring around the world origin, where the banner is, so the encounter is visible from
+# wherever the camera starts.
+
+transform sandbox:at.north { x   0  y -40  rotation 0 }
+transform sandbox:at.east  { x  40  y   0  rotation 0 }
+transform sandbox:at.south { x   0  y  40  rotation 0 }
+transform sandbox:at.west  { x -40  y   0  rotation 0 }
+
+visual sandbox:look.north { size 20  cell 3  tint { r 1.0  g 0.75  b 0.25  a 1 }  additive true  layer 5 }
+visual sandbox:look.east  { size 20  cell 3  tint { r 0.4  g 0.9   b 1.0   a 1 }  additive true  layer 5 }
+visual sandbox:look.south { size 20  cell 3  tint { r 1.0  g 0.45  b 0.55  a 1 }  additive true  layer 5 }
+visual sandbox:look.west  { size 20  cell 3  tint { r 0.6  g 1.0   b 0.5   a 1 }  additive true  layer 5 }
+
+foundry:entity sandbox:beacon.north { components [ sandbox:at.north  sandbox:look.north ] }
+foundry:entity sandbox:beacon.east  { components [ sandbox:at.east   sandbox:look.east  ] }
+foundry:entity sandbox:beacon.south { components [ sandbox:at.south  sandbox:look.south ] }
+foundry:entity sandbox:beacon.west  { components [ sandbox:at.west   sandbox:look.west  ] }

@@ -4,6 +4,7 @@
 
 #include <limits.h>
 #include <math.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +26,12 @@ typedef char foundry_lua_number_must_be_double[(sizeof(lua_Number) == sizeof(dou
 
 static int script_runner(lua_State *state);
 
+/* The registry slots the author's module lives in. Their **addresses** are the keys, which
+ * is why they are distinct objects and why nothing a script can name could collide with
+ * them: the environment publishes no registry access at all (scripting.md §8). */
+static const char module_registry_key = 0;
+static const char state_registry_key = 0;
+
 FoundryScript *foundry_script_from_state(lua_State *state) {
     FoundryScript *script = NULL;
     memcpy(&script, lua_getextraspace(state), sizeof(script));
@@ -41,6 +48,120 @@ static void diagnostic_literal(FoundryScript *script, const char *message) {
     script->diagnostic_length = length;
 }
 
+/* A contract breach: the module or its state is not the shape §11 describes. Named rather
+ * than raised, because the caller is the loader and not the script. */
+static void diagnostic_contract(FoundryScript *script, const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    int written = vsnprintf(script->diagnostic, sizeof(script->diagnostic), format, args);
+    va_end(args);
+    if (written < 0) {
+        diagnostic_literal(script, "contract: the module is not what §11 describes");
+    } else {
+        script->diagnostic_length = (size_t)written >= sizeof(script->diagnostic)
+            ? sizeof(script->diagnostic) - 1 : (size_t)written;
+        script->diagnostic[script->diagnostic_length] = '\0';
+    }
+    script->failure = SCRIPT_FAILURE_RESULT;
+    script->category = FOUNDRY_SCRIPT_CATEGORY_CONTRACT;
+}
+
+/* The category token every raise in this module and in `binding.c` puts first. An error a
+ * script raised itself carries none, and is a plain runtime fault. */
+static FoundryScriptCategory category_from_token(const char *text, size_t length) {
+    static const struct {
+        const char *token;
+        FoundryScriptCategory category;
+    } known[] = {
+        {"contract", FOUNDRY_SCRIPT_CATEGORY_CONTRACT},
+        {"invalid_argument", FOUNDRY_SCRIPT_CATEGORY_INVALID_ARGUMENT},
+        {"stale_handle", FOUNDRY_SCRIPT_CATEGORY_STALE_HANDLE},
+        {"unavailable", FOUNDRY_SCRIPT_CATEGORY_UNAVAILABLE},
+        {"unsupported", FOUNDRY_SCRIPT_CATEGORY_UNAVAILABLE},
+        {"refused", FOUNDRY_SCRIPT_CATEGORY_UNAVAILABLE},
+        {"instruction_limit", FOUNDRY_SCRIPT_CATEGORY_INSTRUCTION_LIMIT},
+        {"memory_limit", FOUNDRY_SCRIPT_CATEGORY_MEMORY_LIMIT},
+        {"native_work_limit", FOUNDRY_SCRIPT_CATEGORY_NATIVE_WORK_LIMIT},
+        /* A template refused for its shape is a bounded-work refusal, not a new class. */
+        {"limit", FOUNDRY_SCRIPT_CATEGORY_NATIVE_WORK_LIMIT},
+        {"migration", FOUNDRY_SCRIPT_CATEGORY_MIGRATION},
+        {"source_rejected", FOUNDRY_SCRIPT_CATEGORY_SOURCE_REJECTED},
+    };
+    for (size_t i = 0; i < sizeof(known) / sizeof(known[0]); ++i) {
+        if (strlen(known[i].token) == length && memcmp(known[i].token, text, length) == 0) {
+            return known[i].category;
+        }
+    }
+    return FOUNDRY_SCRIPT_CATEGORY_RUNTIME;
+}
+
+/* Reads `<chunk name>:<line>: ` off the front of a Lua error message, records the line and
+ * returns what follows. The chunk name is `=`-prefixed, so Lua spells it literally and the
+ * bridge knows exactly what it is looking at rather than guessing at a delimiter. */
+static const char *skip_position(FoundryScript *script, const char *message, size_t *length) {
+    const char *name = script->chunk_name + 1;
+    size_t name_length = strlen(name);
+    if (*length <= name_length + 1 || memcmp(message, name, name_length) != 0 ||
+        message[name_length] != ':') {
+        return message;
+    }
+    const char *cursor = message + name_length + 1;
+    size_t remaining = *length - name_length - 1;
+    uint64_t line = 0;
+    size_t digits = 0;
+    while (digits < remaining && cursor[digits] >= '0' && cursor[digits] <= '9') {
+        if (line < UINT32_MAX) {
+            line = line * 10 + (uint64_t)(cursor[digits] - '0');
+        }
+        digits++;
+    }
+    if (digits == 0 || digits >= remaining || cursor[digits] != ':') {
+        return message;
+    }
+    script->error_line = line > UINT32_MAX ? UINT32_MAX : (uint32_t)line;
+    cursor += digits + 1;
+    remaining -= digits + 1;
+    while (remaining > 0 && *cursor == ' ') {
+        cursor++;
+        remaining--;
+    }
+    *length = remaining;
+    return cursor;
+}
+
+/* What a failed invocation was, as a category a host can branch on. A failure the bridge
+ * already named outranks the message text; anything else is read off the raise's own
+ * leading token. */
+static void classify(FoundryScript *script, const char *message, size_t length) {
+    switch (script->failure) {
+        case SCRIPT_FAILURE_INSTRUCTION:
+            script->category = FOUNDRY_SCRIPT_CATEGORY_INSTRUCTION_LIMIT;
+            return;
+        case SCRIPT_FAILURE_MEMORY:
+            script->category = FOUNDRY_SCRIPT_CATEGORY_MEMORY_LIMIT;
+            return;
+        case SCRIPT_FAILURE_NATIVE_WORK:
+            script->category = FOUNDRY_SCRIPT_CATEGORY_NATIVE_WORK_LIMIT;
+            return;
+        case SCRIPT_FAILURE_COMPILE:
+            script->category = FOUNDRY_SCRIPT_CATEGORY_SYNTAX;
+            return;
+        case SCRIPT_FAILURE_RESULT:
+            script->category = FOUNDRY_SCRIPT_CATEGORY_CONTRACT;
+            return;
+        default:
+            break;
+    }
+    size_t token = 0;
+    while (token < length && ((message[token] >= 'a' && message[token] <= 'z') ||
+                              message[token] == '_')) {
+        token++;
+    }
+    script->category = (token > 0 && token < length && message[token] == ':')
+        ? category_from_token(message, token)
+        : FOUNDRY_SCRIPT_CATEGORY_RUNTIME;
+}
+
 static void diagnostic_from_stack(FoundryScript *script, lua_State *state,
                                   const char *phase) {
     const char *message = NULL;
@@ -50,6 +171,7 @@ static void diagnostic_from_stack(FoundryScript *script, lua_State *state,
     }
     if (message == NULL) {
         const char *type = luaL_typename(state, -1);
+        classify(script, "", 0);
         int written = snprintf(script->diagnostic, sizeof(script->diagnostic),
                                "%s: lua error (%s)", phase, type);
         if (written >= 0 && (size_t)written < sizeof(script->diagnostic)) {
@@ -60,6 +182,9 @@ static void diagnostic_from_stack(FoundryScript *script, lua_State *state,
         return;
     }
 
+    /* The position becomes the structured line; what stays in the text is the reason. */
+    message = skip_position(script, message, &message_length);
+    classify(script, message, message_length);
     int written = snprintf(script->diagnostic, sizeof(script->diagnostic),
                            "%s: %.*s", phase, (int)message_length, message);
     if (written < 0) {
@@ -597,7 +722,7 @@ static void install_environment(lua_State *state) {
 static void script_hook(lua_State *state, lua_Debug *debug) {
     (void)debug;
     FoundryScript *script = foundry_script_from_state(state);
-    if (script->instructions > script->instruction_limit - script->hook_period) {
+    if (script->instructions > script->active_instruction_limit - script->hook_period) {
         script->failure = SCRIPT_FAILURE_INSTRUCTION;
         script->terminal = 1;
         luaL_error(state, "instruction_limit: this invocation exceeded its instruction budget");
@@ -622,7 +747,7 @@ static int script_runner(lua_State *state) {
         return 0;
     }
     int status = luaL_loadbufferx(state, (const char *)script->source,
-                                  script->source_len, "foundry-script", "t");
+                                  script->source_len, script->chunk_name, "t");
     if (status != LUA_OK) {
         script->failure = status == LUA_ERRMEM ? SCRIPT_FAILURE_MEMORY : SCRIPT_FAILURE_COMPILE;
         diagnostic_from_stack(script, state, "compile");
@@ -653,6 +778,9 @@ static int script_runner(lua_State *state) {
     return 0;
 }
 
+/* The outer half of every protected invocation. The inner half is whatever the entry point
+ * set as pending; nesting them is what makes a script fault distinguishable from a failure
+ * of the machinery that was running it. */
 static int execute_function(lua_State *state) {
     FoundryScript *script = foundry_script_from_state(state);
     if (!lua_checkstack(state, LUA_MINSTACK)) {
@@ -660,10 +788,12 @@ static int execute_function(lua_State *state) {
         diagnostic_literal(script, "invoke: stack limit exceeded");
         return 0;
     }
-    lua_pushcfunction(state, script_runner);
+    lua_pushcfunction(state, script->pending);
     int status = lua_pcall(state, 0, 0, 0);
     if (status != LUA_OK) {
-        script->failure = status == LUA_ERRMEM ? SCRIPT_FAILURE_MEMORY : SCRIPT_FAILURE_RUNTIME;
+        if (script->failure == SCRIPT_FAILURE_NONE) {
+            script->failure = status == LUA_ERRMEM ? SCRIPT_FAILURE_MEMORY : SCRIPT_FAILURE_RUNTIME;
+        }
         diagnostic_from_stack(script, state, "invoke");
         lua_settop(state, 0);
     }
@@ -690,6 +820,52 @@ static FoundryScriptStatus status_from_failure(ScriptFailure failure) {
     return FOUNDRY_SCRIPT_RUNTIME_ERROR;
 }
 
+/* A new invocation: this phase's instruction budget, fresh per-invocation counters, and
+ * every record or cursor the last one made now stale (scripting.md §7). */
+static void begin_invocation(FoundryScript *script, FoundryScriptPhase phase) {
+    script->instructions = 0;
+    script->active_instruction_limit = phase == FOUNDRY_SCRIPT_PHASE_PREPARE
+        ? script->prepare_instruction_limit : script->instruction_limit;
+    script->failure = SCRIPT_FAILURE_NONE;
+    script->terminal = 0;
+    script->phase = phase;
+    script->invocation += 1;
+    script->abi_calls = 0;
+    script->spawns = 0;
+    script->logs = 0;
+    script->category = FOUNDRY_SCRIPT_CATEGORY_NONE;
+    script->error_line = 0;
+    diagnostic_literal(script, "");
+    lua_settop(script->state, 0);
+}
+
+/* Runs `inner` as one protected invocation in `phase`. No Lua error reaches the caller:
+ * the two nested protected calls are what §4 requires, and this is the only way in. */
+static FoundryScriptStatus invoke(FoundryScript *script, lua_CFunction inner,
+                                  FoundryScriptPhase phase) {
+    begin_invocation(script, phase);
+    script->pending = inner;
+    if (!lua_checkstack(script->state, LUA_MINSTACK)) {
+        script->failure = SCRIPT_FAILURE_MEMORY;
+        script->category = FOUNDRY_SCRIPT_CATEGORY_MEMORY_LIMIT;
+        diagnostic_literal(script, "invoke: stack limit exceeded");
+        return FOUNDRY_SCRIPT_MEMORY_LIMIT;
+    }
+    lua_pushcfunction(script->state, execute_function);
+    int status = lua_pcall(script->state, 0, 0, 0);
+    if (status != LUA_OK && script->failure == SCRIPT_FAILURE_NONE) {
+        script->failure = status == LUA_ERRMEM ? SCRIPT_FAILURE_MEMORY : SCRIPT_FAILURE_RUNTIME;
+        diagnostic_literal(script, status == LUA_ERRMEM ?
+            "invoke: memory limit exceeded" : "invoke: failed");
+    }
+    /* A failure named by a literal diagnostic still owes the host a category. */
+    if (script->failure != SCRIPT_FAILURE_NONE &&
+        script->category == FOUNDRY_SCRIPT_CATEGORY_NONE) {
+        classify(script, "", 0);
+    }
+    return status_from_failure(script->failure);
+}
+
 static uint32_t limit_or_default(uint32_t value, uint32_t fallback) {
     uint32_t chosen = value == 0 ? fallback : value;
     return chosen > (uint32_t)INT_MAX ? (uint32_t)INT_MAX : chosen;
@@ -701,7 +877,9 @@ FoundryScriptStatus foundry_script_create(FoundryScript **out,
     if (out == NULL || config == NULL || config->heap_limit == 0 ||
         config->instruction_limit == 0 || config->hook_period == 0 ||
         config->hook_period > config->instruction_limit ||
-        config->hook_period > (uint32_t)INT_MAX || config->allocator == NULL) {
+        config->hook_period > (uint32_t)INT_MAX || config->allocator == NULL ||
+        (config->prepare_instruction_limit != 0 &&
+         config->hook_period > config->prepare_instruction_limit)) {
         return FOUNDRY_SCRIPT_INVALID_ARGUMENT;
     }
     *out = NULL;
@@ -730,7 +908,14 @@ FoundryScriptStatus foundry_script_create(FoundryScript **out,
     script->heap_limit = config->heap_limit;
     script->fail_after_allocations = config->fail_after_allocations;
     script->instruction_limit = config->instruction_limit;
+    /* Zero means one budget for both phases, which is what a zeroed C config asks for. */
+    script->prepare_instruction_limit = config->prepare_instruction_limit == 0
+        ? config->instruction_limit : config->prepare_instruction_limit;
+    script->active_instruction_limit = script->instruction_limit;
     script->hook_period = config->hook_period;
+    /* `=` so Lua spells the name literally in its own messages rather than wrapping it in
+     * `[string "..."]`; a host names a real package through `load_module`. */
+    memcpy(script->chunk_name, "=foundry-script", sizeof("=foundry-script"));
     script->inject_teardown_failure = config->inject_teardown_failure;
     script->inject_result_failure = config->inject_result_failure;
     script->inject_compile_failure = config->inject_compile_failure;
@@ -790,42 +975,372 @@ FoundryScriptStatus foundry_script_execute(FoundryScript *script,
 
     script->source = source;
     script->source_len = source_len;
-    script->instructions = 0;
-    script->failure = SCRIPT_FAILURE_NONE;
-    script->terminal = 0;
     script->result_is_integer = 0;
-    /* A new invocation: fresh per-invocation budgets, and every record or cursor from the
-     * last one is now stale. */
-    script->phase = phase;
-    script->invocation += 1;
-    script->abi_calls = 0;
-    script->spawns = 0;
-    script->logs = 0;
-    diagnostic_literal(script, "");
-    lua_settop(script->state, 0);
 
-    if (!lua_checkstack(script->state, LUA_MINSTACK)) {
-        script->failure = SCRIPT_FAILURE_MEMORY;
-        diagnostic_literal(script, "invoke: stack limit exceeded");
-        return FOUNDRY_SCRIPT_MEMORY_LIMIT;
-    }
-    lua_pushcfunction(script->state, execute_function);
-    int status = lua_pcall(script->state, 0, 0, 0);
-    if (status != LUA_OK && script->failure == SCRIPT_FAILURE_NONE) {
-        script->failure = status == LUA_ERRMEM ? SCRIPT_FAILURE_MEMORY : SCRIPT_FAILURE_RUNTIME;
-        diagnostic_literal(script, status == LUA_ERRMEM ?
-            "invoke: memory limit exceeded" : "invoke: failed");
-    }
-    FoundryScriptStatus result_status = status_from_failure(script->failure);
+    FoundryScriptStatus result_status = invoke(script, script_runner, phase);
     if (result_status != FOUNDRY_SCRIPT_OK) {
         return result_status;
     }
     if (!script->result_is_integer) {
         diagnostic_literal(script, "result: missing integer");
+        script->category = FOUNDRY_SCRIPT_CATEGORY_CONTRACT;
         return FOUNDRY_SCRIPT_RESULT_ERROR;
     }
     result->integer = script->result;
     return FOUNDRY_SCRIPT_OK;
+}
+
+/* -- The author's module (scripting.md §11) --------------------------------------------
+ *
+ * `load_module` evaluates the chunk and keeps the table it returned; `init_state` calls
+ * `init()` and keeps the table it returned; `update` calls `update(state, step)`. Both
+ * tables live in the registry across invocations, which nothing in the script environment
+ * can name. A breach of the contract is diagnosed by name rather than raised: a misspelled
+ * lifecycle field is an ordinary authoring mistake and deserves to be told, not traced.
+ */
+
+static const char *const module_fields[] = {"state_version", "init", "update", "migrate"};
+
+static int recognised_field(const char *name, size_t length) {
+    for (size_t i = 0; i < sizeof(module_fields) / sizeof(module_fields[0]); ++i) {
+        if (strlen(module_fields[i]) == length && memcmp(module_fields[i], name, length) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int validate_module(lua_State *state, FoundryScript *script, int index) {
+    /* Every field the module publishes must be one this version recognises, which is what
+     * turns `udpate = function...` into a message instead of a script that never runs. */
+    lua_pushnil(state);
+    while (lua_next(state, index) != 0) {
+        if (lua_type(state, -2) != LUA_TSTRING) {
+            diagnostic_contract(script, "contract: the module is keyed by a %s; §11 names four fields",
+                                luaL_typename(state, -2));
+            lua_pop(state, 2);
+            return 0;
+        }
+        size_t length = 0;
+        const char *name = lua_tolstring(state, -2, &length);
+        if (!recognised_field(name, length)) {
+            diagnostic_contract(script,
+                                "contract: the module has no field '%.*s'; §11 recognises "
+                                "state_version, init, update and migrate",
+                                (int)length, name);
+            lua_pop(state, 2);
+            return 0;
+        }
+        lua_pop(state, 1);
+    }
+
+    lua_getfield(state, index, "state_version");
+    if (!lua_isinteger(state, -1)) {
+        diagnostic_contract(script, "contract: state_version must be a positive integer");
+        lua_pop(state, 1);
+        return 0;
+    }
+    lua_Integer version = lua_tointeger(state, -1);
+    lua_pop(state, 1);
+    if (version <= 0 || version > (lua_Integer)UINT32_MAX) {
+        diagnostic_contract(script, "contract: state_version must be between 1 and 4294967295");
+        return 0;
+    }
+
+    for (size_t i = 1; i <= 2; ++i) {
+        lua_getfield(state, index, module_fields[i]);
+        int is_function = lua_isfunction(state, -1);
+        lua_pop(state, 1);
+        if (!is_function) {
+            diagnostic_contract(script, "contract: %s must be a function", module_fields[i]);
+            return 0;
+        }
+    }
+
+    int migrate = lua_getfield(state, index, "migrate");
+    lua_pop(state, 1);
+    if (migrate != LUA_TNIL && migrate != LUA_TFUNCTION) {
+        diagnostic_contract(script, "contract: migrate must be a function when it is present");
+        return 0;
+    }
+
+    script->state_version = (uint32_t)version;
+    return 1;
+}
+
+/* -- The persistent state (scripting.md §11) ------------------------------------------- */
+
+typedef struct StateWalk {
+    uint32_t entries;
+    size_t bytes;
+    /* Absolute index of the table recording which tables this walk has already entered. */
+    int seen;
+} StateWalk;
+
+static int validate_state_value(lua_State *state, FoundryScript *script, int index,
+                                uint32_t depth, StateWalk *walk);
+
+static int validate_state_table(lua_State *state, FoundryScript *script, int index,
+                                uint32_t depth, StateWalk *walk) {
+    if (depth > FOUNDRY_SCRIPT_MAX_STATE_DEPTH) {
+        diagnostic_contract(script, "contract: state nests deeper than %u tables",
+                            (unsigned)FOUNDRY_SCRIPT_MAX_STATE_DEPTH);
+        return 0;
+    }
+    /* One walk, one visit. A cycle and a table stored in two places fail the same check,
+     * deliberately: the representation a reload copies preserves neither (§11). */
+    lua_pushvalue(state, index);
+    lua_rawget(state, walk->seen);
+    int repeated = !lua_isnil(state, -1);
+    lua_pop(state, 1);
+    if (repeated) {
+        diagnostic_contract(script, "contract: state holds the same table twice, or a cycle");
+        return 0;
+    }
+    lua_pushvalue(state, index);
+    lua_pushboolean(state, 1);
+    lua_rawset(state, walk->seen);
+
+    lua_pushnil(state);
+    while (lua_next(state, index) != 0) {
+        int key_type = lua_type(state, -2);
+        if (key_type == LUA_TSTRING) {
+            size_t length = 0;
+            (void)lua_tolstring(state, -2, &length);
+            walk->bytes += length;
+        } else if (key_type != LUA_TNUMBER || !lua_isinteger(state, -2)) {
+            diagnostic_contract(script, "contract: state is keyed by a %s; only integers and strings persist",
+                                luaL_typename(state, -2));
+            lua_pop(state, 2);
+            return 0;
+        }
+        walk->entries += 1;
+        if (walk->entries > FOUNDRY_SCRIPT_MAX_STATE_ENTRIES) {
+            diagnostic_contract(script, "contract: state holds more than %u entries",
+                                (unsigned)FOUNDRY_SCRIPT_MAX_STATE_ENTRIES);
+            lua_pop(state, 2);
+            return 0;
+        }
+        if (!validate_state_value(state, script, lua_gettop(state), depth + 1, walk)) {
+            lua_pop(state, 2);
+            return 0;
+        }
+        lua_pop(state, 1);
+    }
+    return 1;
+}
+
+static int validate_state_value(lua_State *state, FoundryScript *script, int index,
+                                uint32_t depth, StateWalk *walk) {
+    switch (lua_type(state, index)) {
+        case LUA_TBOOLEAN:
+            walk->bytes += 8;
+            break;
+        case LUA_TNUMBER:
+            if (!lua_isinteger(state, index) && !isfinite((double)lua_tonumber(state, index))) {
+                diagnostic_contract(script, "contract: state holds a number that is not finite");
+                return 0;
+            }
+            walk->bytes += 8;
+            break;
+        case LUA_TSTRING: {
+            size_t length = 0;
+            (void)lua_tolstring(state, index, &length);
+            if (length > FOUNDRY_SCRIPT_MAX_STRING) {
+                diagnostic_contract(script, "contract: state holds a string longer than %u bytes",
+                                    (unsigned)FOUNDRY_SCRIPT_MAX_STRING);
+                return 0;
+            }
+            walk->bytes += length;
+            break;
+        }
+        case LUA_TTABLE:
+            if (!validate_state_table(state, script, index, depth, walk)) {
+                return 0;
+            }
+            break;
+        case LUA_TUSERDATA:
+            if (!foundry_script_value_is_persistable(state, index, script)) {
+                diagnostic_contract(script,
+                                    "contract: state holds a value that cannot outlive this "
+                                    "invocation; records, cursors, packages and component "
+                                    "types must be found again");
+                return 0;
+            }
+            /* What one bridge value costs in the bounded representation §11 describes:
+             * a tag and the two words behind it, whatever Lua spends on the box. */
+            walk->bytes += 32;
+            break;
+        default:
+            diagnostic_contract(script, "contract: state holds a %s, which cannot persist",
+                                luaL_typename(state, index));
+            return 0;
+    }
+    if (walk->bytes > FOUNDRY_SCRIPT_MAX_STATE_BYTES) {
+        diagnostic_contract(script, "contract: state is larger than %u bytes",
+                            (unsigned)FOUNDRY_SCRIPT_MAX_STATE_BYTES);
+        return 0;
+    }
+    return 1;
+}
+
+/* Validates the table on the top of the stack as a persistent state root, leaving it there. */
+static int validate_state_root(lua_State *state, FoundryScript *script) {
+    if (!lua_checkstack(state, 8)) {
+        script->failure = SCRIPT_FAILURE_MEMORY;
+        diagnostic_literal(script, "state: stack limit exceeded");
+        return 0;
+    }
+    int root = lua_gettop(state);
+    lua_newtable(state);
+    StateWalk walk = {0, 0, lua_gettop(state)};
+    int ok = validate_state_table(state, script, root, 1, &walk);
+    /* The `seen` table goes whatever happened; the root stays for the caller to store. */
+    lua_remove(state, walk.seen);
+    return ok;
+}
+
+/* -- The three entry points ------------------------------------------------------------ */
+
+static int module_loader(lua_State *state) {
+    FoundryScript *script = foundry_script_from_state(state);
+    if (script->inject_compile_failure != 0) {
+        script->failure = SCRIPT_FAILURE_MEMORY;
+        diagnostic_literal(script, "load: injected allocation failure");
+        return 0;
+    }
+    int status = luaL_loadbufferx(state, (const char *)script->source, script->source_len,
+                                  script->chunk_name, "t");
+    if (status != LUA_OK) {
+        script->failure = status == LUA_ERRMEM ? SCRIPT_FAILURE_MEMORY : SCRIPT_FAILURE_COMPILE;
+        diagnostic_from_stack(script, state, "load");
+        lua_settop(state, 0);
+        return 0;
+    }
+    status = lua_pcall(state, 0, 1, 0);
+    if (status != LUA_OK) {
+        if (script->failure == SCRIPT_FAILURE_NONE) {
+            script->failure = status == LUA_ERRMEM ? SCRIPT_FAILURE_MEMORY : SCRIPT_FAILURE_RUNTIME;
+        }
+        diagnostic_from_stack(script, state, "load");
+        lua_settop(state, 0);
+        return 0;
+    }
+    if (!lua_istable(state, -1)) {
+        diagnostic_contract(script, "contract: the script must return a table; it returned a %s",
+                            luaL_typename(state, -1));
+        lua_settop(state, 0);
+        return 0;
+    }
+    if (!validate_module(state, script, lua_gettop(state))) {
+        lua_settop(state, 0);
+        return 0;
+    }
+    lua_rawsetp(state, LUA_REGISTRYINDEX, &module_registry_key);
+    script->has_module = 1;
+    return 0;
+}
+
+static int init_runner(lua_State *state) {
+    FoundryScript *script = foundry_script_from_state(state);
+    lua_rawgetp(state, LUA_REGISTRYINDEX, &module_registry_key);
+    lua_getfield(state, -1, "init");
+    lua_remove(state, -2);
+    int status = lua_pcall(state, 0, 1, 0);
+    if (status != LUA_OK) {
+        if (script->failure == SCRIPT_FAILURE_NONE) {
+            script->failure = status == LUA_ERRMEM ? SCRIPT_FAILURE_MEMORY : SCRIPT_FAILURE_RUNTIME;
+        }
+        diagnostic_from_stack(script, state, "init");
+        lua_settop(state, 0);
+        return 0;
+    }
+    if (!lua_istable(state, -1)) {
+        diagnostic_contract(script, "contract: init must return a table; it returned a %s",
+                            luaL_typename(state, -1));
+        lua_settop(state, 0);
+        return 0;
+    }
+    if (!validate_state_root(state, script)) {
+        lua_settop(state, 0);
+        return 0;
+    }
+    lua_rawsetp(state, LUA_REGISTRYINDEX, &state_registry_key);
+    script->has_state = 1;
+    return 0;
+}
+
+static int update_runner(lua_State *state) {
+    FoundryScript *script = foundry_script_from_state(state);
+    lua_rawgetp(state, LUA_REGISTRYINDEX, &module_registry_key);
+    lua_getfield(state, -1, "update");
+    lua_remove(state, -2);
+    lua_rawgetp(state, LUA_REGISTRYINDEX, &state_registry_key);
+    /* The step, and nothing else: no clock, no frame delta, no interpolation alpha (§9). */
+    lua_createtable(state, 0, 2);
+    lua_pushinteger(state, (lua_Integer)script->step.tick);
+    lua_setfield(state, -2, "tick");
+    lua_pushinteger(state, (lua_Integer)script->step.delta_ns);
+    lua_setfield(state, -2, "delta_ns");
+    int status = lua_pcall(state, 2, 0, 0);
+    if (status != LUA_OK) {
+        if (script->failure == SCRIPT_FAILURE_NONE) {
+            script->failure = status == LUA_ERRMEM ? SCRIPT_FAILURE_MEMORY : SCRIPT_FAILURE_RUNTIME;
+        }
+        diagnostic_from_stack(script, state, "update");
+        lua_settop(state, 0);
+    }
+    return 0;
+}
+
+FoundryScriptStatus foundry_script_load_module(FoundryScript *script, const uint8_t *source,
+                                               size_t source_len, const char *chunk_name) {
+    if (script == NULL || script->state == NULL || source == NULL || chunk_name == NULL ||
+        source_len == 0 || source_len > FOUNDRY_SCRIPT_MAX_SOURCE ||
+        memchr(source, '\0', source_len) != NULL) {
+        return FOUNDRY_SCRIPT_INVALID_ARGUMENT;
+    }
+    size_t name_length = strlen(chunk_name);
+    if (name_length == 0 || name_length > FOUNDRY_SCRIPT_MAX_CHUNK_NAME) {
+        return FOUNDRY_SCRIPT_INVALID_ARGUMENT;
+    }
+    if (source_len >= sizeof(LUA_SIGNATURE) - 1 &&
+        memcmp(source, LUA_SIGNATURE, sizeof(LUA_SIGNATURE) - 1) == 0) {
+        diagnostic_literal(script, "compile: binary chunks are not accepted");
+        script->category = FOUNDRY_SCRIPT_CATEGORY_SOURCE_REJECTED;
+        return FOUNDRY_SCRIPT_COMPILE_ERROR;
+    }
+    script->chunk_name[0] = '=';
+    memcpy(script->chunk_name + 1, chunk_name, name_length);
+    script->chunk_name[name_length + 1] = '\0';
+    script->source = source;
+    script->source_len = source_len;
+    script->has_module = 0;
+    script->has_state = 0;
+    script->state_version = 0;
+    return invoke(script, module_loader, FOUNDRY_SCRIPT_PHASE_PREPARE);
+}
+
+FoundryScriptStatus foundry_script_init_state(FoundryScript *script) {
+    if (script == NULL || script->state == NULL || script->has_module == 0) {
+        return FOUNDRY_SCRIPT_INVALID_ARGUMENT;
+    }
+    script->has_state = 0;
+    return invoke(script, init_runner, FOUNDRY_SCRIPT_PHASE_PREPARE);
+}
+
+FoundryScriptStatus foundry_script_update(FoundryScript *script, const FoundryStep *step) {
+    if (script == NULL || script->state == NULL || step == NULL ||
+        script->has_module == 0 || script->has_state == 0 ||
+        step->tick > (uint64_t)INT64_MAX || step->delta_ns > (uint64_t)INT64_MAX) {
+        return FOUNDRY_SCRIPT_INVALID_ARGUMENT;
+    }
+    script->step = *step;
+    return invoke(script, update_runner, FOUNDRY_SCRIPT_PHASE_UPDATE);
+}
+
+uint32_t foundry_script_state_version(const FoundryScript *script) {
+    return script == NULL ? 0 : script->state_version;
 }
 
 FoundryScriptStatus foundry_script_teardown(FoundryScript *script) {
@@ -880,6 +1395,14 @@ const char *foundry_script_diagnostic(const FoundryScript *script, size_t *lengt
         *length = script == NULL ? 0 : script->diagnostic_length;
     }
     return script == NULL ? "" : script->diagnostic;
+}
+
+FoundryScriptCategory foundry_script_category(const FoundryScript *script) {
+    return script == NULL ? FOUNDRY_SCRIPT_CATEGORY_NONE : script->category;
+}
+
+uint32_t foundry_script_error_line(const FoundryScript *script) {
+    return script == NULL ? 0 : script->error_line;
 }
 
 uint32_t foundry_script_abi_calls(const FoundryScript *script) {

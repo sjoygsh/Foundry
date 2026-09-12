@@ -381,7 +381,7 @@ written; its first implementation step is complete below.
 
 ### M8 — Scriptable: "modders can extend it"
 
-**Designed 2026-09-09; 4/8 implementation steps complete.**
+**Designed 2026-09-09; 5/8 implementation steps complete.**
 [ADR-0028](adr/0028-scripting-lua.md) selects restricted Lua 5.5.1;
 [ADR-0029](adr/0029-script-host-and-reload.md) fixes the public boundary and reload lifetime.
 [`design/scripting.md`](design/scripting.md) specifies the architecture; §16 is the order:
@@ -394,7 +394,10 @@ same day, makes bounded/revisioned script source an ordinary confined package as
 completed 2026-09-10, publishes typed source copying through a separate additive
 `FoundryApi_v2` while retaining v1 unchanged. Step 4, completed 2026-09-12, binds the
 bounded content and gameplay surface a script may call, with per-invocation budgets and
-script-owned entities. Step 5 wires the package lifecycle. M9 remains undesigned.
+script-owned entities. Step 5, completed the same day, wires the package lifecycle: one stable
+manager slot and one registered system per package, activation, fault, teardown and structured
+diagnostics — and the sandbox's own package now ships a script the world's fixed tick drives.
+Step 6 replaces a package's code without replacing the world. M9 remains undesigned.
 
 * Scripting language decision — **made in ADR-0028; runtime boundary implemented**.
 * Scripting host over the same public ABI; no separate surface.

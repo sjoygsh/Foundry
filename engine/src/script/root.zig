@@ -56,9 +56,67 @@ pub const Phase = enum(u32) {
     update = 1,
 };
 
+/// Why an invocation stopped, as something a host can branch on (scripting.md §13). The
+/// diagnostic text keeps the underlying ABI result name; this is the classification.
+pub const Category = enum(u32) {
+    none = 0,
+    syntax = 1,
+    contract = 2,
+    invalid_argument = 3,
+    stale_handle = 4,
+    unavailable = 5,
+    instruction_limit = 6,
+    memory_limit = 7,
+    native_work_limit = 8,
+    migration = 9,
+    source_rejected = 10,
+    runtime = 11,
+
+    pub fn label(self: Category) []const u8 {
+        return switch (self) {
+            .none => "none",
+            .syntax => "syntax",
+            .contract => "contract",
+            .invalid_argument => "invalid_argument",
+            .stale_handle => "stale_handle",
+            .unavailable => "unavailable",
+            .instruction_limit => "instruction_limit",
+            .memory_limit => "memory_limit",
+            .native_work_limit => "native_work_limit",
+            .migration => "migration",
+            .source_rejected => "source_rejected",
+            .runtime => "runtime",
+        };
+    }
+
+    /// What a person should try, given this category. Half of a diagnostic's usefulness is
+    /// the next move, and the next move follows from the class rather than the message.
+    pub fn action(self: Category) []const u8 {
+        return switch (self) {
+            .syntax, .source_rejected => "fix the source and reload it",
+            .contract => "the script is not the module scripting.md §11 describes",
+            .invalid_argument => "check the arguments this call was given",
+            .stale_handle => "look the value up again in this update",
+            .unavailable => "this host does not publish that capability",
+            .instruction_limit => "check for an unbounded loop",
+            .memory_limit => "the script asked for more memory than its budget",
+            .native_work_limit => "the script made more engine calls than one update allows",
+            .migration => "the new state version needs a migrate that returns valid state",
+            .none, .runtime => "read the message above",
+        };
+    }
+};
+
+/// One deterministic simulation step, exactly as a native system is handed it.
+pub const Step = c.FoundryStep;
+
 pub const Config = struct {
     heap_limit: usize = c.FOUNDRY_SCRIPT_DEFAULT_HEAP_LIMIT,
     instruction_limit: u64 = c.FOUNDRY_SCRIPT_DEFAULT_INSTRUCTION_LIMIT,
+    /// What one preparation — module load, `init`, later `migrate` — may execute. Larger
+    /// than an update's because it compiles a whole file and runs outside simulation
+    /// (scripting.md §8).
+    prepare_instruction_limit: u64 = c.FOUNDRY_SCRIPT_DEFAULT_PREPARE_INSTRUCTION_LIMIT,
     hook_period: u32 = c.FOUNDRY_SCRIPT_DEFAULT_HOOK_PERIOD,
     /// Shared across every VM a host runs. Null charges this VM's heap limit alone.
     budget: ?*Budget = null,
@@ -87,6 +145,34 @@ fn status(value: c.FoundryScriptStatus) c_int {
     return @intCast(value);
 }
 
+/// Everything an invocation can fail with. Named as a set so a host can handle a fault
+/// exhaustively rather than by catching `anyerror`.
+pub const Error = error{
+    NotInitialized,
+    InvalidArgument,
+    CompileFailed,
+    RuntimeFailed,
+    InstructionLimit,
+    MemoryLimit,
+    ResultFailed,
+    NativeWorkLimit,
+    ExecutionFailed,
+};
+
+fn check(value: c_int) Error!void {
+    return switch (value) {
+        c.FOUNDRY_SCRIPT_OK => {},
+        c.FOUNDRY_SCRIPT_INVALID_ARGUMENT => error.InvalidArgument,
+        c.FOUNDRY_SCRIPT_COMPILE_ERROR => error.CompileFailed,
+        c.FOUNDRY_SCRIPT_RUNTIME_ERROR => error.RuntimeFailed,
+        c.FOUNDRY_SCRIPT_INSTRUCTION_LIMIT => error.InstructionLimit,
+        c.FOUNDRY_SCRIPT_MEMORY_LIMIT => error.MemoryLimit,
+        c.FOUNDRY_SCRIPT_RESULT_ERROR => error.ResultFailed,
+        c.FOUNDRY_SCRIPT_NATIVE_WORK_LIMIT => error.NativeWorkLimit,
+        else => error.ExecutionFailed,
+    };
+}
+
 const AllocatorContext = struct {
     allocator: Allocator,
 };
@@ -113,6 +199,7 @@ pub const Runtime = struct {
             .allocator_userdata = context,
             .heap_limit = config.heap_limit,
             .instruction_limit = config.instruction_limit,
+            .prepare_instruction_limit = config.prepare_instruction_limit,
             .hook_period = config.hook_period,
             .fail_after_allocations = config.fail_after_allocations,
             .inject_teardown_failure = @intFromBool(config.inject_teardown_failure),
@@ -159,17 +246,46 @@ pub const Runtime = struct {
         const script = self.script orelse return error.NotInitialized;
         var result: c.FoundryScriptResult = undefined;
         const phase_value: c.FoundryScriptPhase = @intCast(@intFromEnum(phase));
-        return switch (status(c.foundry_script_execute(script, source.ptr, source.len, phase_value, &result))) {
-            c.FOUNDRY_SCRIPT_OK => result.integer,
-            c.FOUNDRY_SCRIPT_INVALID_ARGUMENT => error.InvalidArgument,
-            c.FOUNDRY_SCRIPT_COMPILE_ERROR => error.CompileFailed,
-            c.FOUNDRY_SCRIPT_RUNTIME_ERROR => error.RuntimeFailed,
-            c.FOUNDRY_SCRIPT_INSTRUCTION_LIMIT => error.InstructionLimit,
-            c.FOUNDRY_SCRIPT_MEMORY_LIMIT => error.MemoryLimit,
-            c.FOUNDRY_SCRIPT_RESULT_ERROR => error.ResultFailed,
-            c.FOUNDRY_SCRIPT_NATIVE_WORK_LIMIT => error.NativeWorkLimit,
-            else => error.ExecutionFailed,
-        };
+        try check(status(c.foundry_script_execute(script, source.ptr, source.len, phase_value, &result)));
+        return result.integer;
+    }
+
+    /// Compiles and evaluates the package's entry chunk, then validates the module it
+    /// returned against scripting.md §11. `name` is what diagnostics call this script.
+    pub fn loadModule(self: *Runtime, source: []const u8, name: [:0]const u8) Error!void {
+        const script = self.script orelse return error.NotInitialized;
+        return check(status(c.foundry_script_load_module(script, source.ptr, source.len, name.ptr)));
+    }
+
+    /// Calls `init()` and validates the state it returned. Preparation: it may read the
+    /// world and content, and may not change either.
+    pub fn initState(self: *Runtime) Error!void {
+        const script = self.script orelse return error.NotInitialized;
+        return check(status(c.foundry_script_init_state(script)));
+    }
+
+    /// Calls `update(state, step)`. The only invocation that may change the world.
+    pub fn update(self: *Runtime, step: Step) Error!void {
+        const script = self.script orelse return error.NotInitialized;
+        var value = step;
+        return check(status(c.foundry_script_update(script, &value)));
+    }
+
+    /// The `state_version` the loaded module declared, or zero before one is loaded.
+    pub fn stateVersion(self: *const Runtime) u32 {
+        const script = self.script orelse return 0;
+        return c.foundry_script_state_version(script);
+    }
+
+    /// Why the last invocation stopped, and the line it stopped on when Lua knew one.
+    pub fn category(self: *const Runtime) Category {
+        const script = self.script orelse return .none;
+        return @enumFromInt(c.foundry_script_category(script));
+    }
+
+    pub fn errorLine(self: *const Runtime) u32 {
+        const script = self.script orelse return 0;
+        return c.foundry_script_error_line(script);
     }
 
     /// Preparation: the phase that may read but may not change the world.
@@ -216,8 +332,18 @@ pub const Runtime = struct {
 
 pub const Fixture = Runtime;
 
+pub const Descriptor = manager.Descriptor;
+pub const Manager = manager.Manager;
+pub const Limits = manager.Limits;
+pub const Slot = manager.Slot;
+pub const Status = manager.Status;
+
+const manager = @import("manager.zig");
+
 test {
     _ = @import("binding_tests.zig");
+    _ = @import("manager_tests.zig");
+    _ = manager;
 }
 
 test "text execution uses only the allowlisted environment" {
@@ -288,6 +414,7 @@ test "the math, string and select helpers are bounded and locale-independent" {
 test "instruction hook stops runaway text" {
     var config: Config = .{};
     config.instruction_limit = 1000;
+    config.prepare_instruction_limit = 1000;
     config.hook_period = 10;
     var runtime: Runtime = .{};
     try runtime.init(std.testing.allocator, config);

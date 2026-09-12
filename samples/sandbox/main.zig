@@ -37,6 +37,10 @@ const scene = @import("scene");
 // turns a described frame into draw calls, and the widgets themselves are the game's to
 // call. So the sample names `ui` directly, exactly as it names `scene` and `physics2d`.
 const ui = @import("ui");
+// Tier 2, which the sample opts into the same way it opts into the overlay: by naming it.
+// The build supplies the real host when it has Lua and a do-nothing one when it does not,
+// so nothing below ever asks which build this is (ADR-0029).
+const scripting = @import("scripting");
 
 /// Routes Foundry's logging through the engine's sink. One line, in the root source file.
 pub const std_options = app.std_options;
@@ -81,6 +85,7 @@ fn contentPackages(
     os: *platform.os.Os,
     content_dir: []const u8,
     env: []const platform.os.EnvVar,
+    scripts: *scripting.Host,
 ) ![]app.ContentPackage {
     var diags: data.Diagnostics = .init(gpa, .default);
     defer diags.deinit(gpa);
@@ -121,6 +126,10 @@ fn contentPackages(
     errdefer list.deinit(gpa);
     for (resolution.order) |entry| {
         log.info("load order: {s} version {d}", .{ entry.name, entry.version });
+        // A package that carries a script is noted *here*, while the resolution that owns
+        // its strings is still alive. `app.ContentPackage` is only a file and a root: the
+        // code tiers are the host's business, not the content loader's.
+        scripts.note(entry);
         try list.append(gpa, .{
             .file = try gpa.dupe(u8, entry.file),
             .root = try gpa.dupe(u8, entry.root),
@@ -172,7 +181,12 @@ pub fn main(init: std.process.Init) !void {
     const content_dir = try app.contentDirOf(gpa, discovery_os, null);
     defer gpa.free(content_dir);
 
-    const packages = try contentPackages(gpa, discovery_os, content_dir, env);
+    // Declared before discovery, because it is discovery that finds the scripts — and
+    // torn down after the world is built, which is why its `defer` is registered below
+    // rather than here. Deferred teardown runs in reverse, and the world has to outlive
+    // the scripts that were registered into it (`scripting.md` §10).
+    var scripts: scripting.Host = .{};
+    const packages = try contentPackages(gpa, discovery_os, content_dir, env, &scripts);
     defer {
         freePackages(gpa, packages);
         gpa.free(packages);
@@ -218,6 +232,14 @@ pub fn main(init: std.process.Init) !void {
     var field = try SpriteField.init(sample_memory.allocator(), engine.gpu);
     defer field.deinit(engine);
     try field.load(engine);
+
+    // **Last to start and first to stop.** Scripts need the world the field just built,
+    // and the world has to outlive the systems registered into it — so this `defer` is
+    // registered after the field's and therefore runs before it.
+    defer scripts.deinit();
+    scripts.start(sample_memory.allocator(), engine, &field.world);
+    field.scripts = &scripts;
+
     field.pick_every = everyFrames(engine, "FOUNDRY_SANDBOX_PICK_EVERY");
     field.walk_every = everyFrames(engine, "FOUNDRY_SANDBOX_WALK");
 
@@ -1232,6 +1254,9 @@ const SpriteField = struct {
     /// schemas are declared by code and outlive any reload, which is exactly the difference.
     schemas: data.Registry,
     world: scene.World,
+    /// The Tier 2 host, so a world rebuild can tell it the world it was activated in is
+    /// gone. Borrowed and outlived by `main`.
+    scripts: ?*scripting.Host = null,
     orbit: scene.ComponentType = .none,
     transform: scene.ComponentType = .none,
     visual: scene.ComponentType = .none,
@@ -1573,6 +1598,9 @@ const SpriteField = struct {
     /// Merging one into a populated world is a different operation with different rules,
     /// and it is not owed anything yet.
     fn rebuildWorld(self: *SpriteField) !void {
+        // Before the world goes, because what it holds is a system pointing into a script
+        // manager. A manager belongs to one world's lifetime (`scripting.md` §3).
+        if (self.scripts) |scripts| scripts.worldReplaced();
         self.world.deinit();
         self.schemas.deinit(self.gpa);
         self.schemas = .init(self.gpa, .default);

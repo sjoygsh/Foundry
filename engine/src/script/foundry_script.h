@@ -44,6 +44,24 @@ typedef enum FoundryScriptPhase {
     FOUNDRY_SCRIPT_PHASE_UPDATE = 1,
 } FoundryScriptPhase;
 
+/* A stable reason a script stopped, so a host can act on a class of failure rather than on
+ * message text (scripting.md §13). The message keeps the underlying ABI result name; this
+ * is the part that is safe to branch on. */
+typedef enum FoundryScriptCategory {
+    FOUNDRY_SCRIPT_CATEGORY_NONE = 0,
+    FOUNDRY_SCRIPT_CATEGORY_SYNTAX = 1,
+    FOUNDRY_SCRIPT_CATEGORY_CONTRACT = 2,
+    FOUNDRY_SCRIPT_CATEGORY_INVALID_ARGUMENT = 3,
+    FOUNDRY_SCRIPT_CATEGORY_STALE_HANDLE = 4,
+    FOUNDRY_SCRIPT_CATEGORY_UNAVAILABLE = 5,
+    FOUNDRY_SCRIPT_CATEGORY_INSTRUCTION_LIMIT = 6,
+    FOUNDRY_SCRIPT_CATEGORY_MEMORY_LIMIT = 7,
+    FOUNDRY_SCRIPT_CATEGORY_NATIVE_WORK_LIMIT = 8,
+    FOUNDRY_SCRIPT_CATEGORY_MIGRATION = 9,
+    FOUNDRY_SCRIPT_CATEGORY_SOURCE_REJECTED = 10,
+    FOUNDRY_SCRIPT_CATEGORY_RUNTIME = 11,
+} FoundryScriptCategory;
+
 #define FOUNDRY_SCRIPT_MAX_OWNED 256u
 
 /* The entities one script package spawned, and so the only ones it may destroy.
@@ -70,6 +88,10 @@ typedef struct FoundryScriptConfig {
     void *allocator_userdata;
     size_t heap_limit;
     uint64_t instruction_limit;
+    /* Instructions one preparation — module load, `init`, later `migrate` — may execute.
+     * Preparation happens outside simulation and compiles a whole file, so it gets its own
+     * larger budget (scripting.md §8). Zero spends `instruction_limit` in both phases. */
+    uint64_t prepare_instruction_limit;
     uint32_t hook_period;
     size_t fail_after_allocations;
     uint8_t inject_teardown_failure;
@@ -97,11 +119,19 @@ typedef struct FoundryScriptResult {
 
 #define FOUNDRY_SCRIPT_DEFAULT_HEAP_LIMIT (8u * 1024u * 1024u)
 #define FOUNDRY_SCRIPT_DEFAULT_INSTRUCTION_LIMIT 100000u
+#define FOUNDRY_SCRIPT_DEFAULT_PREPARE_INSTRUCTION_LIMIT 1000000u
 #define FOUNDRY_SCRIPT_DEFAULT_HOOK_PERIOD 100u
 #define FOUNDRY_SCRIPT_DEFAULT_ABI_CALLS 2048u
 #define FOUNDRY_SCRIPT_DEFAULT_SPAWNS 8u
 #define FOUNDRY_SCRIPT_DEFAULT_LOGS 8u
 #define FOUNDRY_SCRIPT_NEVER_FAIL ((size_t)-1)
+/* The longest chunk name a host may give a module, which is what a diagnostic names the
+ * script by. A package's entry content ID is far shorter than this. */
+#define FOUNDRY_SCRIPT_MAX_CHUNK_NAME 128u
+/* The persistent state bounds of scripting.md §8, checked when a state table is validated. */
+#define FOUNDRY_SCRIPT_MAX_STATE_DEPTH 16u
+#define FOUNDRY_SCRIPT_MAX_STATE_ENTRIES 1024u
+#define FOUNDRY_SCRIPT_MAX_STATE_BYTES (64u * 1024u)
 
 /* The allocator and userdata remain caller-owned until destroy returns. */
 FoundryScriptStatus foundry_script_create(FoundryScript **out,
@@ -111,6 +141,23 @@ FoundryScriptStatus foundry_script_execute(FoundryScript *script,
                                            size_t source_len,
                                            FoundryScriptPhase phase,
                                            FoundryScriptResult *result);
+/* -- The author's module (scripting.md §11) -------------------------------------------
+ *
+ * Three calls replace the fixture's text-in/integer-out for a real package. Each is one
+ * protected invocation: `load_module` evaluates the chunk and validates the table it
+ * returns, `init_state` calls `init()` and validates the state it returns, and `update`
+ * calls `update(state, step)`. Load and init are preparation and may not change the world;
+ * only `update` may. `chunk_name` is what diagnostics call this script and is required.
+ */
+FoundryScriptStatus foundry_script_load_module(FoundryScript *script,
+                                               const uint8_t *source,
+                                               size_t source_len,
+                                               const char *chunk_name);
+FoundryScriptStatus foundry_script_init_state(FoundryScript *script);
+FoundryScriptStatus foundry_script_update(FoundryScript *script, const FoundryStep *step);
+/* The `state_version` the loaded module declared, or zero before one is loaded. */
+uint32_t foundry_script_state_version(const FoundryScript *script);
+
 FoundryScriptStatus foundry_script_teardown(FoundryScript *script);
 void foundry_script_destroy(FoundryScript *script);
 void foundry_script_fail_next_allocation(FoundryScript *script);
@@ -119,6 +166,10 @@ void foundry_script_inject_result_failure(FoundryScript *script, uint8_t enabled
 void foundry_script_inject_compile_failure(FoundryScript *script, uint8_t enabled);
 const char *foundry_script_diagnostic(const FoundryScript *script,
                                       size_t *length);
+/* Why the last invocation stopped, and the source line it stopped on when Lua knew one.
+ * Zero means no line was available, which a diagnostic reports as an absence. */
+FoundryScriptCategory foundry_script_category(const FoundryScript *script);
+uint32_t foundry_script_error_line(const FoundryScript *script);
 /* Engine calls the most recent invocation made. For tests and the budget's own evidence. */
 uint32_t foundry_script_abi_calls(const FoundryScript *script);
 

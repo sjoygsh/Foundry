@@ -44,6 +44,9 @@ struct FoundryScript {
     size_t allocation_count;
     size_t fail_after_allocations;
     uint64_t instruction_limit;
+    uint64_t prepare_instruction_limit;
+    /* Whichever of the two the current invocation is spending. */
+    uint64_t active_instruction_limit;
     uint64_t instructions;
     uint32_t hook_period;
     uint8_t inject_teardown_failure;
@@ -74,6 +77,22 @@ struct FoundryScript {
     uint32_t template_cache_next;
     TemplateCacheEntry template_cache[FOUNDRY_SCRIPT_TEMPLATE_CACHE];
 
+    /* -- The author's module (scripting.md §11) ------------------------------------ */
+    /* The loaded module table and its state table live in the registry, not on the stack:
+     * they outlive every invocation, and nothing a script can reach names the registry. */
+    /* The inner function one protected invocation runs; see `invoke` in bridge.c. */
+    lua_CFunction pending;
+    uint8_t has_module;
+    uint8_t has_state;
+    uint32_t state_version;
+    /* The step the running update was handed, copied before the invocation begins. */
+    FoundryStep step;
+    /* What a diagnostic calls this script. `=`-prefixed for Lua, so its own messages spell
+     * the name literally rather than wrapping it in `[string "..."]`. */
+    char chunk_name[FOUNDRY_SCRIPT_MAX_CHUNK_NAME + 2];
+
+    FoundryScriptCategory category;
+    uint32_t error_line;
     size_t diagnostic_length;
     char diagnostic[FOUNDRY_SCRIPT_DIAGNOSTIC_CAPACITY];
 };
@@ -83,6 +102,12 @@ FoundryScript *foundry_script_from_state(lua_State *state);
 /* Installs the `foundry` table into the global environment. Runs inside the bootstrap's
  * protected call. */
 void foundry_script_open_binding(lua_State *state);
+
+/* Whether the value at `index` is a bridge value that may live in a script's persistent
+ * state and therefore survive into another VM (scripting.md §11): an id, a schema id, an
+ * unsigned value, an RNG, or an entity this package still owns. A record, cursor, package
+ * or component type is not, because none of them outlives the invocation that made it. */
+int foundry_script_value_is_persistable(lua_State *state, int index, const FoundryScript *script);
 
 /* The shared value metatable's formatter, for the environment's scalar-only `tostring`.
  * Pushes a string and returns 1 when `index` is a bridge value, else pushes nothing and

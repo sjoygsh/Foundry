@@ -383,10 +383,10 @@ most mod value actually lives and because its requirements (I2, I3, I5, I8) cons
 serialization and the content model in ways that are impossible to retrofit.
 
 **Tier 2 — Script mods (most modders).** Sandboxed, hot-reloadable code against the public API.
-Script faults must not crash the host. **Restricted Lua 5.5.1** is selected by ADR-0028;
-its protected runtime boundary and ordinary package source assets are implemented, while
-gameplay bindings and hot reload remain M8 work. Its operational fault-containment contract,
-limits and explicit exclusions are in `docs/design/scripting.md`.
+Script faults must not crash the host. **Restricted Lua 5.5.1** is selected by ADR-0028 and
+its boundary by ADR-0029. Its operational fault-containment contract, limits and explicit
+exclusions are in `docs/design/scripting.md`; how far M8's eight steps have been walked is in
+`PROJECT_STATE.md`.
 
 **Tier 3 — Native mods (power users).** Dynamic libraries loaded through the C ABI. Full speed,
 full power, no sandbox, version-fragile by nature. Explicitly a consenting-adults tier.

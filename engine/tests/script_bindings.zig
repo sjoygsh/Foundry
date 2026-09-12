@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const core = @import("core");
+const asset = @import("asset");
 const data = @import("data");
 const platform = @import("platform");
 const rhi = @import("rhi");
@@ -44,6 +45,30 @@ const package_source =
     \\demo:config demo:encounter { delay 3  spawn demo:goblin  label "wave" }
     \\demo:position demo:at_origin { x 1  y 2 }
     \\foundry:entity demo:goblin { components [ demo:at_origin ] }
+    \\foundry:script demo:scripts.main { source "scripts/main.lua"  language "lua-5.5" }
+;
+
+/// What a package's script actually looks like: the module of scripting.md §11, reading its
+/// own content at load, keeping what it needs in state, and spawning on a tick it decides.
+const encounter_source =
+    \\local config = foundry.content_find("demo:encounter")
+    \\local delay = foundry.record_get_i64(config, foundry.record_field_index(config, "delay"))
+    \\local template = foundry.record_get_id(config, foundry.record_field_index(config, "spawn"))
+    \\
+    \\return {
+    \\    state_version = 1,
+    \\    init = function()
+    \\        return { spawned = 0, next_tick = delay }
+    \\    end,
+    \\    update = function(state, step)
+    \\        if step.tick < state.next_tick then return end
+    \\        local made = foundry.world_spawn(template)
+    \\        if made == nil then return end
+    \\        state.spawned = state.spawned + 1
+    \\        state.next_tick = step.tick + delay
+    \\        foundry.log_write("info", "spawned " .. tostring(state.spawned))
+    \\    end,
+    \\}
 ;
 
 fn writePackage(os: *platform.Os, dir: []const u8, name: []const u8, source: []const u8) !void {
@@ -53,6 +78,7 @@ fn writePackage(os: *platform.Os, dir: []const u8, name: []const u8, source: []c
     defer diags.deinit(gpa);
     try mod.schemas.registerAll(gpa, &registry);
     try scene.schemas.registerAll(gpa, &registry);
+    try asset.schemas.registerAll(gpa, &registry);
 
     const colon = std.mem.indexOfScalar(u8, name, ':').?;
     var doc = try data.parser.parse(gpa, "mod.fdt", source, .{ .namespace = name[0..colon] }, &diags);
@@ -83,6 +109,9 @@ const Fixture = struct {
     host: TestHost,
     self: abi.Mod,
     position: scene.ComponentType,
+    /// The host's own source loader. Its address is its identity: `script_source_copy`
+    /// refuses a payload this exact loader did not make (step 3).
+    script_loader: asset.ScriptSourceLoader,
 
     /// `world_allocator` is the world's own, so a test can make the world run out of memory
     /// without starving the engine that has to report it.
@@ -97,6 +126,15 @@ const Fixture = struct {
         defer gpa.free(root);
         try self.os.createDirPath(root);
 
+        // The script is a file in the package, reached by the path its record names and by
+        // nothing else. Writing it here is what a package author does with an editor.
+        const scripts = try platform.os.joinPath(gpa, &.{ root, "scripts" });
+        defer gpa.free(scripts);
+        try self.os.createDirPath(scripts);
+        const entry_path = try platform.os.joinPath(gpa, &.{ scripts, "main.lua" });
+        defer gpa.free(entry_path);
+        try self.os.writeFile(entry_path, encounter_source);
+
         self.engine = try TestEngine.init(gpa, .{
             .headless = true,
             .content_dir = content_dir,
@@ -104,9 +142,16 @@ const Fixture = struct {
             .log_capture = null,
         });
 
+        self.script_loader = .{};
+        try self.engine.assets.registerLoader(gpa, self.script_loader.assetLoader());
+
         self.world = .init(world_allocator, &self.engine.schemas, .default);
         self.position = try self.world.registerComponent(scene.componentType(Position));
-        self.host = .{ .engine = self.engine, .world = &self.world };
+        self.host = .{
+            .engine = self.engine,
+            .world = &self.world,
+            .script_source_loader = &self.script_loader,
+        };
         self.host.bind();
         self.self = try self.host.issueMod(core.ContentId.fromString("demo:mod"), "demo:mod");
     }
@@ -274,4 +319,81 @@ test "a spawn the world cannot afford leaves no entity and no ownership behind" 
         }
     }
     try testing.expect(refusals > 0);
+}
+
+test "a package's script registers a system, and the world's own update drives it" {
+    var fixture: Fixture = undefined;
+    try fixture.init(gpa);
+    defer fixture.deinit();
+
+    var manager = try script.Manager.init(gpa, @ptrCast(&Table.getApi), .{});
+    defer manager.deinit();
+
+    // The conversion from a resolved package to a descriptor is the application's, which is
+    // why it is written out here rather than hidden inside `script` (scripting.md §3).
+    const slot = try manager.add(.{
+        .package = core.ContentId.fromString("demo:mod"),
+        .package_name = "demo:mod",
+        .entry = core.ContentId.fromString("demo:scripts.main"),
+        .binding = 1,
+        .self = fixture.self.bits,
+    });
+    manager.activateAll();
+    try testing.expectEqual(script.Status.ready, slot.status);
+    try testing.expect(slot.registered);
+    // The diagnostic name came from content: the entry record's own spelling, not the id's
+    // hash and not a filename the host happened to read it from.
+    try testing.expectEqualStrings("demo:scripts.main", slot.chunkName());
+
+    // Nothing has run yet. `init` prepared state and was not allowed to touch the world.
+    try testing.expectEqual(@as(u32, 0), fixture.world.entityCount());
+
+    // The world drives the script exactly as it drives a native mod's system: one
+    // registration, called once per fixed step, in the schedule's order.
+    const delta = core.time.Duration.fromNanos(16_666_667);
+    var tick: u64 = 1;
+    while (tick <= 9) : (tick += 1) fixture.world.update(.{ .tick = tick, .delta = delta });
+
+    // `demo:encounter` says every third tick, and the script read that out of content.
+    try testing.expectEqual(@as(u32, 3), fixture.world.entityCount());
+    try testing.expectEqual(@as(u32, 3), slot.ownedCount());
+    try testing.expectEqual(script.Status.ready, slot.status);
+
+    // What the script made belongs to the world, not to the VM: tearing the manager down
+    // closes Lua and leaves the entities exactly where they are (§10).
+    manager.deinit();
+    try testing.expectEqual(@as(u32, 3), fixture.world.entityCount());
+}
+
+test "a script that faults on a tick is disabled, and the world keeps its entities" {
+    var fixture: Fixture = undefined;
+    try fixture.init(gpa);
+    defer fixture.deinit();
+
+    var manager = try script.Manager.init(gpa, @ptrCast(&Table.getApi), .{});
+    defer manager.deinit();
+    const slot = try manager.add(.{
+        .package = core.ContentId.fromString("demo:mod"),
+        .package_name = "demo:mod",
+        .entry = core.ContentId.fromString("demo:scripts.main"),
+        .binding = 1,
+        .self = fixture.self.bits,
+    });
+    manager.activateAll();
+
+    const delta = core.time.Duration.fromNanos(16_666_667);
+    fixture.world.update(.{ .tick = 3, .delta = delta });
+    try testing.expectEqual(@as(u32, 1), fixture.world.entityCount());
+
+    // An entity the script owns, removed by the game rather than by the script. The next
+    // tick's ownership walk has to notice, rather than acting on a handle that is gone.
+    var walk = fixture.world.entities.iterator();
+    const owned = walk.next().?.id;
+    try testing.expect(fixture.world.destroy(owned));
+
+    // The world's own step still reaches the script, and the script still works: what it
+    // lost was an entity, which is an ordinary thing for a world to take away.
+    fixture.world.update(.{ .tick = 6, .delta = delta });
+    try testing.expectEqual(script.Status.ready, slot.status);
+    try testing.expectEqual(@as(u32, 1), fixture.world.entityCount());
 }
