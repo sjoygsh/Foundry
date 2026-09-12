@@ -1,14 +1,49 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-12
-**Current handoff: M8 step 7 complete (7/8 steps); next is step 8 only.**
+**Current handoff: M8 is complete — all eight steps. M9 is undesigned and not started.**
 The restricted Lua runtime, ordinary script package assets/manifests, additive ABI v2 typed
 source copying, binding 1's bounded content/world surface, the package lifecycle that drives
-it, candidate-VM replacement, isolation and deterministic behavior are implemented and proven.
+it, candidate-VM replacement, isolation, deterministic behavior and the author guide are
+implemented and proven. **All three modding tiers now work.**
 **A script package runs and can be edited while it runs**: the sandbox's own package ships
 one, it lights four beacons around the world origin on a fixed tick and puts them out again,
 and saving an edit to its `.lua` beside the executable changes what it does on the next tick
-without the world, its state or its entities being disturbed.
+without the world, its state or its entities being disturbed. A mod author's package does the
+same from a directory outside this repository, through the shipped sandbox and nothing else.
+
+**Implemented in step 8, 2026-09-12:** `docs/modding/script-mods.md`, written by doing what it
+describes. A script package — `mod.fdt`, one content file, one `.lua` — was built in a directory
+outside this repository, compiled with the installed `fpack`, installed as a `.fpk` and its own
+directory beside it, and enabled by content ID in the sandbox with `FOUNDRY_SANDBOX_PACKAGES`.
+It ran as its own registered system beside the sandbox's own script package, spawning and
+removing the entities its content describes on a fixed tick. It was then edited at the same
+state version, migrated to `state_version 2` through its own `migrate`, broken with text that
+does not compile, and repaired — all while the host kept running.
+
+**The sandbox is a script-capable host, which is why step 8 needed no proof harness.** M7's
+native guide had to describe a host the author must write, because the sandbox binds no native
+loader. Tier 2 needs no such caveat: the sample registers the source loader, publishes its
+subsystems through the public ABI and runs up to four script packages, so a mod author's first
+script runs in the program this repository ships. No engine header, no engine source and no
+private path is involved on the author's side.
+
+**Step-8 verification.** The guide was checked the way it will be used: the package was rebuilt
+in a fresh directory **from the listings on the page alone**, and §4's and §5's commands were run
+again from a clean install. It reproduced the first run line for line — the same 2,070-byte
+`.fpk`, the same first-run output, the counter continuing at 13 across the edit and at 26 across
+the migration, the same warning naming the same source line, and the same recovery — then exited
+cleanly after 12,000 frames and 720 ticks with no error-level line. Every output block on the
+page is from that second run. Two packages ran together throughout and shared neither globals,
+state, heap quota nor entity ownership; the aggregate peaked at 89,844 bytes of the 160 MiB
+budget with a candidate VM in flight. The full AGENTS.md §3 bar passes: formatting, **1,207
+declared / 1,199 headless tests**, host/Linux/Windows compilation and both 30-frame null sample
+runs. No engine code changed in this step, and the public ABI is untouched.
+
+**One measurement artifact, recorded so it is not read as a defect.** The instruction counter
+advances by `hook_period` at each hook, so a reported peak is quantized to 100 and a preparation
+that executes fewer than 100 VM instructions reports zero. Metering and enforcement are
+unaffected; the reported number is a lower bound rounded down.
 
 **Implemented in step 7, 2026-09-12:** the complete accumulated adversarial and determinism
 matrix of `scripting.md` §14. The isolated runtime now exhaustively injects allocation refusal
@@ -92,10 +127,11 @@ destroys all four including the three the previous VM spawned. Replacing the fil
 that does not compile logs one warning saying the last working version is still running, and
 the beacons keep their cadence.
 
-**Step 8 boundary:** execute the author exit criterion exactly as `scripting.md` §16 specifies:
-write `docs/modding/script-mods.md` by building and running a package outside this repository,
-then update status and close/tag M8 only when that guide has been independently followed. Step 8
-has not begun.
+**M9 boundary:** M8 is closed and tagged. M9 — packaging and distribution — has no design
+document, and `docs/design/README.md` records that one is owed before any of it is implemented.
+Nothing in this repository authorizes starting it. `scripting.md` §15's six open questions stay
+open; none was closed by implementation, and durable script state across a process restart is
+still the first of them.
 
 **Implemented in step 5, 2026-09-12:** the author's module contract (`scripting.md` §11) as
 three protected C entry points — `load_module` evaluates the chunk and validates the table it
@@ -216,11 +252,11 @@ bounded content/world bindings, failure policy, state migration and verification
 
 **Eight implementation units, in `scripting.md` §16:** runtime containment; script assets
 and manifests; ABI v2 source access; bounded bindings; package lifecycle; hot reload;
-adversarial/determinism proof; outside-tree author guide and milestone closure. **Steps 1 through 7
-are complete; next is step 8 only when the user resumes.** The sample script is
-`samples/sandbox/content/scripts/encounter.lua`. Reload, performance defaults and the full
-adversarial matrix are proven; the independently followed author guide remains.
-M7 remains complete with 1117 headless tests; M9 remains undesigned.
+adversarial/determinism proof; outside-tree author guide and milestone closure. **All eight are
+complete, 2026-09-12.** The sample script is
+`samples/sandbox/content/scripts/encounter.lua`. Reload, performance defaults, the full
+adversarial matrix and the independently followed author guide are all proven.
+M7 remains complete; M9 remains undesigned.
 
 **Step-3 verification:** focused source-copy and agreement tests pass. Deliberately narrowing
 the C capacity width failed the signature harness; swapping two same-typed Zig entries failed
@@ -805,13 +841,21 @@ is mature enough to need them rather than as decoration.
 pixels; Phase 2 closed with M6, and every milestone in it is complete: sprites, content,
 entities, a playable sample, and an overlay that diagnosed its own cost. **M7 — Moddable:
 "others can extend it" — completed 2026-09-09**, all seven design steps and the outside-tree
-exit proof. M8's design is written; runtime containment, package assets/manifests and additive
-public source access are complete and five implementation steps remain.
+exit proof. **M8 — Scriptable: "modders can extend it" — completed 2026-09-12**, all eight
+steps of `scripting.md` §16 and its own outside-tree exit proof. What remains in this phase is
+M9, shipping, which is undesigned.
 
 ## Current milestone
 
-**M8 — Scriptable: step 3 complete (3/8 steps).** See `docs/design/scripting.md` §16.
-The next session begins and ends with step 4: bounded content and gameplay bindings.
+**M8 — Scriptable: "modders can extend it." Complete, 2026-09-10 to 2026-09-12.** All eight
+steps of `docs/design/scripting.md` §16 are implemented, and the exit criterion — meaningful
+gameplay written in script, hot-reloaded, unable to crash the host — was met by the outside-tree
+script package recorded at the top of this file and by `docs/modding/script-mods.md`, which was
+written from it and then rebuilt from its own listings. The design's §15 open questions stay
+open; none of them blocks what M8 specified.
+
+**The next milestone is M9 — Shippable, and it has no design document.** `docs/design/README.md`
+records that one is owed before implementation. Do not begin it without the user asking.
 
 **M7 — Moddable: "others can extend it." Complete, 2026-09-07 to 2026-09-09.** All six
 roadmap bullets and all seven steps of `public-abi.md` §19 are implemented. The exit criterion
@@ -928,7 +972,7 @@ the deserializer matches by position, so an unchecked mismatch would read `y` in
 
 **`core` (L0), `platform`, `data`, `physics2d` and `ui` (L1), `rhi` (L2) with two backends,
 `asset` and `mod` (L2), `render2d`, `scene` and `audio` (L3), `app` (L4), `debug` and `abi`
-(L5), plus `tools/fpack`. It draws thousands
+(L5), `script` (L6), plus `tools/fpack`. It draws thousands
 of sprites under a camera that pans, zooms and picks, and it loads content by content id.
 `scene` holds entities, component types, queries and systems; entities can be described in
 content, and a whole world can be written to a file and read back with its handles intact.
@@ -938,9 +982,33 @@ onward; the sandbox draws the one it ships, and a player walks it and is stopped
 walls. There are **two samples**: `samples/sandbox` demonstrates the capabilities and
 `samples/room` is a small game built out of them.**
 
-**M7, newest — the complete mod system and public boundary.** Tier 1 packages are discovered
-and ordered, and Tier 3 libraries receive the same validated surface a future script host and
-tool must use.
+**M8, newest — Tier 2 scripting.** A script package is an ordinary content package with one
+Lua file in it, and it reaches the engine through the same table a native mod is handed.
+
+* `engine/src/script/` (L6, `core` + pinned Lua + `foundry.h` declarations, and **no engine
+  implementation module**) — `bridge.c` and `binding.c` behind `foundry_script.h`, the private
+  C contract: a protected VM with a quota allocator, an instruction hook, the allowlisted
+  environment, the 40-call `foundry` module of binding 1, the author's `load_module` /
+  `init_state` / `update` contract, and the `snapshot_state` / `restore_state` /
+  `migrate_state` entry points that carry one VM's state to the next as bytes.
+  `manager.zig` holds one stable slot per package — the slot is what the world's system
+  callback points at for the world's lifetime, and what is replaced under it is the VM, never
+  the registration, the issued identity or the ownership ledger — and `pollReload` is §12's
+  transaction, candidate VM and nonallocating commit included.
+* `asset.ScriptSourceLoader` and the `foundry:script` schema make source an ordinary confined,
+  bounded, revisioned package asset; `FoundryApi_v2` publishes `script_source_copy` beside the
+  frozen 135 calls of v1; `foundry:mod` gained optional `script { entry binding }` at schema
+  version 2. `fpack` derives a `.lua` record from its path and links no Lua.
+* `samples/sandbox/scripting.zig` is the reference host wiring — source loader, `abi.Host`,
+  one issued identity per package, the manager, and the `pollReload` call placed where §12 puts
+  it. `scripting_absent.zig` answers the same calls when the build has no Lua, so a
+  content-only build of the sample links none.
+* `docs/modding/script-mods.md` is the author guide, written from a package built outside this
+  repository and rebuilt from its own listings to check it.
+
+**M7 — the complete mod system and public boundary.** Tier 1 packages are discovered
+and ordered, and Tier 3 libraries receive the same validated surface the script host and
+tools use.
 
 * `engine/src/mod/` (L2, `core` + `data` + `platform`) — `schemas.zig` declares `foundry:mod`,
   `manifest.zig` reads one out of a compiled package, `discover.zig` reads every `.fpk` in a
@@ -1467,9 +1535,10 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 796 tests** (56 `core`, 78 `platform`, 104 `data`, 82 `physics2d`,
-92 `rhi`, 70 `asset`, 129 `render2d`, 79 `scene`, 33 `audio`, 28 `app`, 22 `fpack`,
-23 integration), and **804 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
+**`zig build test` passes 1,199 tests** of 1,207 declared (84 `core`, 81 `platform`,
+106 `data`, 82 `physics2d`, 83 `ui`, 92 `rhi`, 76 `asset`, 22 `mod`, 139 `render2d`,
+84 `scene`, 34 `audio`, 51 `app`, 23 `debug`, 111 `abi`, 56 `script`, 47 integration,
+28 `tools`), and **1,207 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
 8 exceptions need a real GPU and compile only when Metal is selected. **`samples/room` adds
@@ -1631,8 +1700,8 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M8 planning is complete.** Architecture and eight steps are written; implementation is
-paused before step 1 at the user's requested boundary. The M5 material below is historical.
+**Nothing.** M8 is complete and tagged; M9 is undesigned and unauthorized. The M5 material
+below is historical.
 
 ### `samples/room`, and what a second consumer proved
 
@@ -2277,9 +2346,15 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: `docs/design/scripting.md` §16 step 1, only after the user resumes.** M8 design is
-complete; no implementation work is authorized by the planning-only request. The completed
-M7 checklist below and subsequent M5/M6 material are historical records.
+**Next: nothing is authorized.** M8 is complete, all eight steps of `docs/design/scripting.md`
+§16, and the milestone is tagged `m8`. M9 — packaging and distribution — has no design document,
+and one is owed before any of it is implemented (`docs/design/README.md`). The completed M8 and
+M7 checklists and the subsequent M5/M6 material below are historical records.
+
+Carried, recorded and **not** started: the `render2d` blank-patch/font-atlas batching fix, the
+job-system decision `CLAUDE.md` §9 dates to post-M5, the `-Drhi=metal` `app` test-binary compile
+failure, and the `render2d` texture staging buffer destroyed while frames are in flight. None of
+them is a milestone; each needs the user to ask.
 
 ~~1. Accept ADR-0026 and ADR-0027.~~ ~~2. Update `CLAUDE.md`.~~ ~~3. Write
 `docs/design/public-abi.md`.~~ **All done 2026-09-07.** What is left is code, and

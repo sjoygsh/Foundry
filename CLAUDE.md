@@ -428,8 +428,8 @@ same order on every machine (I9).
 ### Keeping mod compatibility ahead of the mod system
 
 The *disciplines* that make modding possible were in force from day one, before any of the above
-was built, and they are exactly Invariants I1–I9. That is why M7 required no retrofit below it.
-Sandboxing and a mod manager UI are still unbuilt (M8 and later).
+was built, and they are exactly Invariants I1–I9. That is why neither M7 nor M8 required a
+retrofit below it. A mod manager UI is still unbuilt.
 
 The Metal shim (ADR-0012) is a small, low-risk C ABI boundary inside the engine that exercised
 the same discipline early.

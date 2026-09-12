@@ -379,9 +379,9 @@ path are covered by `engine/tests/mod_pipeline.zig`; the final outside-tree proo
 the same lifecycle as an independent consumer. **1117 headless tests.** M8's current
 implementation status is recorded below.
 
-### M8 — Scriptable: "modders can extend it"
+### M8 — Scriptable: "modders can extend it" — **complete (2026-09-12)**
 
-**Designed 2026-09-09; 7/8 implementation steps complete.**
+**All eight implementation steps.**
 [ADR-0028](adr/0028-scripting-lua.md) selects restricted Lua 5.5.1;
 [ADR-0029](adr/0029-script-host-and-reload.md) fixes the public boundary and reload lifetime.
 [`design/scripting.md`](design/scripting.md) specifies the architecture; §16 is the order:
@@ -405,14 +405,21 @@ while its world, its state and the entities it owns stay. Step 7, completed the 
 proves isolation, bounded failure and reproducibility end to end, including exhaustive
 snapshot/migration allocation refusal, child-process stress deadlines, two-package isolation,
 fresh-run determinism, confined-source recovery and a live windowed bad-edit/recovery run.
-The outside-tree author guide is step 8. M9 remains undesigned.
+Step 8, completed the same day, executes the author exit criterion: a script package built in a
+directory outside this repository, compiled by the installed `fpack`, loaded by the shipped
+sandbox beside the sandbox's own script package, then edited, migrated, broken and repaired
+while it ran — and [`modding/script-mods.md`](modding/script-mods.md), written from that and
+then rebuilt from its own listings in a fresh directory, which reproduced the run line for line.
+**1199 headless tests.** M9 remains undesigned.
 
 * Scripting language decision — **made in ADR-0028; runtime boundary implemented**.
 * Scripting host over the same public ABI; no separate surface.
 * Sandboxing, resource limits, script hot reload.
 * Error reporting good enough for a non-programmer mod author.
 
-**Exit criteria:** meaningful gameplay written in script, hot-reloaded, unable to crash the host.
+**Exit criteria: met.** Gameplay written in script, hot-reloaded, and unable to crash the
+host — a runaway loop, an exhausted heap, a bad handle or a script error is contained, named
+and survived.
 
 `scripting.md` §1 makes the runnable proof concrete: script-controlled encounter timing and
 entity spawning through ordinary content templates. Its §§8 and 14 define operational fault

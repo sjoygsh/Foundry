@@ -1,7 +1,7 @@
 # Scripting: the Tier 2 host
 
-**Status:** designed 2026-09-09; **7 of 8 implementation steps complete.**
-**Current stop point:** after §16 step 7; step 8 has not begun.
+**Status:** designed 2026-09-09; **all 8 implementation steps complete, 2026-09-12. M8 is
+done.** What remains open is §15, and nothing in it was closed by implementation.
 
 Rests on [ADR-0028](../adr/0028-scripting-lua.md) (runtime),
 [ADR-0029](../adr/0029-script-host-and-reload.md) (boundary and lifetime), and
@@ -570,7 +570,7 @@ steps simply because a session has budget. This planning commit completes none o
    budgets with the runnable sample and record any justified adjustment before changing them.
    Runnable result: a deliberately broken mod beside healthy gameplay, with a useful error
    and working controls.
-8. **Execute the author exit criterion.** Write `docs/modding/script-mods.md` by creating
+8. **Execute the author exit criterion. Complete 2026-09-12.** Write `docs/modding/script-mods.md` by creating
    a package outside the engine tree, following it from installed tools to scripted gameplay,
    source edit, migration and intentional failure/recovery. Verify it independently by
    following the exact guide. Update indices/status/actual test count and mark M8 complete
@@ -578,13 +578,17 @@ steps simply because a session has budget. This planning commit completes none o
 
 ## 17. Planning handoff
 
-Architecture and sequence are written. Steps 1 through 7 prove the Lua/C/Zig containment
-boundary, package/source integration, additive public source access, binding 1's bounded
-content/world surface, the package lifecycle that drives it on a fixed tick, and the
-candidate-VM replacement that changes a package's code while its world, its state and its
-entities stay, plus the end-to-end isolation, bounded-failure, reproducibility, confinement
-and live recovery evidence. Author-guide execution remains **unverified until step 8**. The
-next authorized unit, when the user resumes, is §16 step 8 only.
+Architecture and sequence are written, and **all eight steps are complete**. They prove the
+Lua/C/Zig containment boundary, package/source integration, additive public source access,
+binding 1's bounded content/world surface, the package lifecycle that drives it on a fixed
+tick, the candidate-VM replacement that changes a package's code while its world, its state
+and its entities stay, the end-to-end isolation, bounded-failure, reproducibility,
+confinement and live recovery evidence, and the author guide written by building a script
+package outside the engine tree and then reproduced from its own listings.
+
+M8 is closed. What this document leaves open is §15's list, and nothing in it was closed by
+implementation. The next milestone is M9, which is undesigned; no further work here is
+authorized by this document.
 
 ## Resolution — 2026-09-10, step 1
 
@@ -929,3 +933,38 @@ generic runtime category failed the exact status assertion; both edits were rest
 bar passes with **1,207 declared / 1,199 headless tests**, host/Linux/Windows compilation and
 both null-backend samples. The remaining step is the independently executed outside-tree
 author guide; it has not begun.
+
+## Resolution — 2026-09-12, step 8
+
+The author exit criterion was executed rather than described. A script package — manifest,
+content, one `.lua` — was written in a directory outside this repository, compiled by the
+installed `fpack`, installed as a `.fpk` and its own directory beside it, and enabled by
+content ID in the shipped sandbox. It ran beside the sandbox's own script package and was then
+edited, migrated to a new `state_version`, broken and repaired while it ran.
+`docs/modding/script-mods.md` is that guide.
+
+**The sandbox is a script-capable host, and that changed what step 8 could be.** M7's native
+guide had to tell an author to write a host, because the sandbox binds no native loader. Tier 2
+needs no such caveat: the sample publishes its subsystems through the public ABI, registers the
+source loader and runs up to four script packages, so an author's first script mod runs in the
+program this repository ships. That is I3 for Tier 2 — the path we are on ourselves is the path
+the author is on — and it is why the guide's every command is one a reader can run.
+
+**The guide was verified by rebuilding the package from its own listings.** `mod.fdt`,
+`wisp.fdt` and `main.lua` were extracted from the page, the migrated module was assembled from
+§7 exactly as that section describes, and the commands in §4 and §5 were run again from a clean
+install. The result reproduced the first run line for line: the same 2,070-byte `.fpk`, the same
+first-run output, the counter continuing at 13 across the edit and at 26 across the migration,
+the same warning naming the same source line, and the same recovery. Every output block on the
+page is from that second run, so the page cannot drift from the behaviour it documents without
+a test of the rebuild failing.
+
+One measurement artifact is worth recording, because it will otherwise be read as a defect. The
+instruction counter advances by `hook_period` at each hook, so a reported peak is quantized to
+100 and a preparation that executes fewer than 100 VM instructions reports zero. Metering and
+enforcement are unaffected — a runaway is stopped at the next hook — but the *reported* number
+is a lower bound rounded down, not an exact count.
+
+Nothing was decided here and no engine code changed: step 8 is documentation and an execution
+record. §15's six open questions are all still open, durable script state first among them.
+M8 is complete.

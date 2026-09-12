@@ -435,6 +435,7 @@ deliberate and tested.
 ## 12. What this does not cover yet
 
 See [`README.md`](README.md) for the honest list. The short version: no mod manager, no
-partial edits (`@patch` and `@remove` are reserved but refused), no scripting, and no
-signing or sandboxing for native code. Native package loading and the C ABI are documented in
-[`native-mods.md`](native-mods.md).
+partial edits (`@patch` and `@remove` are reserved but refused), and no signing or sandboxing
+for native code. Code tiers are documented separately: [`script-mods.md`](script-mods.md) for a
+sandboxed Lua file that runs on the world's tick and can be edited while it runs, and
+[`native-mods.md`](native-mods.md) for native package loading and the C ABI.

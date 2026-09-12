@@ -43,16 +43,19 @@ runs package-local libraries through a refusal-safe lifecycle. `docs/modding/nat
 was written by building its C mod outside this repository and running its content, registered
 component and system through an external proof host.
 
-**M8 is designed and 7/8 steps are complete.** Read ADR-0028, ADR-0029 and
-`docs/design/scripting.md`; §16 is the eight-step implementation order. Restricted Lua 5.5.1,
-ordinary package script assets, additive ABI v2 source copying, binding 1's bounded
-content/world surface, the package lifecycle, candidate-VM reload and the complete
-adversarial/determinism proof are implemented. **A script package runs and can be edited
-while it runs**:
+**M8 is complete, all eight steps (2026-09-12).** Read ADR-0028, ADR-0029 and
+`docs/design/scripting.md`; §16 is the eight-step implementation order and every step is
+marked done. Restricted Lua 5.5.1, ordinary package script assets, additive ABI v2 source
+copying, binding 1's bounded content/world surface, the package lifecycle, candidate-VM
+reload, the complete adversarial/determinism proof and the author guide are all in.
+**A script package runs and can be edited while it runs**:
 `samples/sandbox/content/scripts/encounter.lua` is registered as one system, driven by the
 world's own fixed tick, and replaced in place when the file changes — its state and the
-entities it owns carry across. The independently executed author guide is the remaining
-step 8.
+entities it owns carry across. `docs/modding/script-mods.md` was written by building a script
+package outside this repository and was then rebuilt from its own listings to check it.
+
+**M9 is undesigned.** Do not start it without the user asking; a milestone begins with a design
+document, not with code.
 
 ## 3. Building and verifying
 

@@ -8,21 +8,19 @@ leave behind something that runs.
 
 ## Status
 
-**M0 through M7 complete.** Foundry is a playable, inspectable and natively moddable 2D
-engine. Content packages are discovered and dependency-ordered; native C mods load through
-the versioned public ABI and can add component types, systems and behaviour without engine
-source changes.
+**M0 through M8 complete.** Foundry is a playable, inspectable and fully moddable 2D engine.
+Content packages are discovered and dependency-ordered; native C mods load through the
+versioned public ABI and can add component types, systems and behaviour without engine source
+changes; and **script mods run on the world's tick and can be edited while the game is
+running**.
 
-Tier 1 content modding and Tier 3 native modding work: see
-[docs/modding](docs/modding/). Tier 2 scripting is M8: its
-[architecture and eight-step plan](docs/design/scripting.md) are written, and steps 1 through 7
-have completed the protected Lua boundary, ordinary package script assets/manifests, additive
-ABI v2 typed source copying, the bounded content and gameplay bindings, the package lifecycle
-and hot reload, including the adversarial isolation and reproducibility proof. **A script
-package runs, and can be edited while it runs** — the sandbox ships
-one, the world's fixed tick drives it, and saving an edit to its `.lua` changes what it does on
-the next tick while its state and its entities carry across. The independently followed
-author's guide is the remaining M8 step.
+All three modding tiers work — see [docs/modding](docs/modding/). Tier 2 is restricted
+Lua 5.5.1, one VM per package, bounded in memory, instructions and engine calls, reaching the
+engine only through the same public ABI table a native mod is handed. Replacing a package's
+code builds a candidate VM beside the running one: the old state crosses, the entities it owns
+stay, and source that does not compile leaves the last working version running with one warning
+saying so. The author guide was written by building a script package outside this repository
+and then rebuilt from its own listings to check that it says what the engine does.
 
 ```sh
 ./scripts/install-zig.sh   # the only tool you need
@@ -54,8 +52,10 @@ Implemented so far:
   content browser.
 * **`mod`** — manifests, package discovery, dependency resolution and deterministic order.
 * **`script`** — an optional restricted Lua runtime with protected execution, heap and
-  instruction quotas, the bounded `foundry` binding a script calls the engine through, and the
-  package lifecycle that registers one system per script package and drives it on a fixed tick.
+  instruction quotas, the bounded `foundry` binding a script calls the engine through, the
+  package lifecycle that registers one system per script package and drives it on a fixed tick,
+  and the candidate-VM transaction that replaces a package's code while its state, its entities
+  and the world stay.
 * **`abi`** — the installed C99/C++ header, frozen 135-call `FoundryApi_v1`, additive
   `FoundryApi_v2`, host boundary and native-library lifecycle.
 * **`tools/fpack`** — the content compiler: a package directory in, one `.fpk` out.

@@ -1,6 +1,6 @@
 # ADR-0028: Restricted Lua for Tier 2 scripting
 
-**Status:** Accepted (runtime boundary implemented in M8 step 1)
+**Status:** Accepted (implemented across M8's eight steps; the milestone is complete)
 **Date:** 2026-09-09
 
 ## Context

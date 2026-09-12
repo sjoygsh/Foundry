@@ -1,7 +1,6 @@
 # ADR-0029: Scripts consume the public ABI and reload behind stable callbacks
 
-**Status:** Accepted (public source boundary, bounded bindings, package lifecycle,
-candidate-VM reload and end-to-end isolation/reproducibility implemented through M8 step 7)
+**Status:** Accepted (fully implemented and author-verified; M8 complete, all eight steps)
 **Date:** 2026-09-09
 
 ## Context
@@ -181,3 +180,19 @@ test infrastructure rather than a simulation clock or runtime promise. Private h
 high-water metrics measured the runnable package far below §8's defaults, so no limit and no
 public ABI changed. The author-guide execution and durable state across process restart remain
 outside this step; the latter is still `scripting.md` §15's open question.
+
+## Implementation note — 2026-09-12, step 8
+
+The decisions were checked from outside. A script package built in a directory outside this
+repository — manifest, content, one `.lua` — was compiled by the installed `fpack`, loaded by
+the shipped sandbox beside the sandbox's own script package, and then edited, migrated, broken
+and repaired while it ran. It reached the engine through nothing but the v2 table and binding 1;
+no engine header, no engine source and no private path was involved on the author's side, which
+is decision 1 observed rather than asserted.
+
+The guide that describes it, `docs/modding/script-mods.md`, was then rebuilt from its own
+listings in a fresh directory and produced the same run line for line. That is the closest thing
+available to a proof that the boundary is documented as it behaves.
+
+Nothing was decided here; step 8 adds documentation and an execution record. §15's open
+questions — durable script state first among them — remain open.

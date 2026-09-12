@@ -1,8 +1,9 @@
 # Modding Foundry
 
 **Status:** Tier 1 (content mods) works as of M3, 2026-09-05. Tier 3's C ABI and native
-library lifecycle work as of M7, 2026-09-09. Tier 2 is not built yet. This directory
-documents what a mod author can actually do today, and says plainly what is not built.
+library lifecycle work as of M7, 2026-09-09. Tier 2 (script mods) works as of M8,
+2026-09-12. **All three tiers are built.** This directory documents what a mod author can
+actually do today, and says plainly what is not built.
 
 Modding is a fundamental feature of Foundry rather than something added later
 (`CLAUDE.md` §5). That is a claim about *architecture*, not about features: the mod system
@@ -19,7 +20,7 @@ they grant.
 | Tier | What it is | Status |
 | --- | --- | --- |
 | **1 — Content mods** | Data only: items, entities, rules, text, assets. No code, no compiler, no sandbox. | **Works.** See [`content-mods.md`](content-mods.md). |
-| **2 — Script mods** | Sandboxed, hot-reloadable code against the public API; script faults are contained. | Not built. Restricted Lua 5.5.1 is selected; [M8's design and eight steps](../design/scripting.md) are written, with implementation pending. |
+| **2 — Script mods** | Sandboxed, hot-reloadable code against the public API; script faults are contained. | **Works.** One restricted Lua 5.5.1 VM per package, bounded memory, instructions and engine calls, a 40-call binding over `FoundryApi_v2`, and code you can replace while the game runs — the state and the entities carry across. See [`script-mods.md`](script-mods.md). |
 | **3 — Native mods** | Dynamic libraries through the C ABI. Full speed, full power, no sandbox. | **ABI and loader work.** `foundry.h` is installed to `<prefix>/include/`, compiles as C99 and C++, and `FoundryApi_v1` has 135 calls: content, records, packages, schemas, assets, world, rendering, UI, audio and collision. A native-capable host loads the library after content. See [`native-mods.md`](native-mods.md) and [`design/public-abi.md`](../design/public-abi.md). |
 
 Tier 1 is first on purpose. It is where most mod value actually lives, and its requirements
@@ -67,21 +68,28 @@ Being honest about this is more useful than a feature list.
   implemented, and a mod using one is told so rather than having it quietly ignored —
   because a mod that appears to load and does not work is the worst outcome available.
   Overriding a whole record works today.
-* **No scripting.** Tier 2's language, sandbox, resource limits and hot reload are M8 work.
-  Native code is deliberately different: it is trusted, unsandboxed code and can crash the
-  host. See [`native-mods.md`](native-mods.md) for the complete C99 package and loader guide.
+* **Script state does not survive the process, and a script's binding is deliberately small.**
+  State crosses a reload; it is not a save format. Binding 1 reads content and the world and
+  spawns or removes what the package owns — no component writes, input, rendering, UI, audio or
+  collision, because a capability becomes public before it becomes script-callable. One file
+  per package, no imports, and no enabling or disabling a package without a restart.
+  [`script-mods.md` §12](script-mods.md) is the full list.
 * **Instances of a component type a mod registers are not saved or built from content — yet.**
   The engine reads a component through the type's own serializer rather than by casting its bytes,
   which is what lets it show a type it was never compiled against. A native type registered
   through the ABI supplies no serializer, so it holds runtime state and behaviour, and
   `world_component_type_savable` says false before you find out the hard way. The additive fix
   is a later descriptor with serializer slots; nothing about today's shape blocks it.
-* **No signing, no sandboxing, no trust model.** A content package is data and is validated
-  as untrusted input, but nothing here is a security boundary yet.
+* **No signing and no trust model.** A content package is data and is validated as untrusted
+  input. A script runs in a sandbox, but that sandbox is a **fault** boundary — it contains a
+  script's own mistakes, not an unknown defect in the runtime underneath it. Native code is
+  neither sandboxed nor contained. Nothing here is a security boundary yet.
 
 ## Where to go next
 
 * [`content-mods.md`](content-mods.md) — write one, compile it, load it.
+* [`script-mods.md`](script-mods.md) — write one Lua file, run it on the world's tick, and
+  edit it while the game is running.
 * [`native-mods.md`](native-mods.md) — build a C99 library against `foundry.h`, register a
   component and system, and load it through a native-capable host.
 * [`../design/content-schemas.md`](../design/content-schemas.md) — the `.fdt` format and the
