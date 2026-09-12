@@ -46,6 +46,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const build_options = @import("build_options");
 
 const app = @import("app");
 const asset = @import("asset");
@@ -88,6 +89,7 @@ fn contentPackages(
     env: []const platform.os.EnvVar,
     selected: app.settings.IdSet,
     include_user_packages: bool,
+    session: *app.diagnostics.Session,
 ) ![]app.ContentPackage {
     var diags: data.Diagnostics = .init(gpa, .default);
     defer diags.deinit(gpa);
@@ -158,6 +160,16 @@ fn contentPackages(
     // failure to start, and the message is the whole point of it being one.
     for (diags.items.items) |d| log.warn("content: {s}", .{d.message});
 
+    // The resolved load order, into the session's header. It is the first thing anyone
+    // reading a stranger's log wants to know, and it is only knowable here
+    // (`distribution.md` §10).
+    var summary: std.ArrayList(app.diagnostics.Package) = .empty;
+    defer summary.deinit(gpa);
+    for (resolution.order) |entry| {
+        try summary.append(gpa, .{ .id = entry.name, .version = entry.version });
+    }
+    session.notePackages(summary.items);
+
     var list: std.ArrayList(app.ContentPackage) = .empty;
     errdefer freePackages(gpa, list.items);
     errdefer list.deinit(gpa);
@@ -204,7 +216,19 @@ fn freePackage(gpa: std.mem.Allocator, package: app.ContentPackage) void {
 /// The directory this application's user data lives under, inside the OS's per-user
 /// location. **Bootstrap identity**: chosen by the build, seen by players and mod authors on
 /// disk, and not something a content record may move (ADR-0031).
+/// Foundry's logging, installed the way a game installs it.
+///
+/// **A root source file is the only place `std.log` can be routed from**, and the room had
+/// never done it — so its lines went to std's default handler, its overlay's log console
+/// saw nothing, and a session log would have been a header with no session under it. One
+/// line, in the one file that can carry it (`app-and-frame-loop.md` §5).
+pub const std_options = app.std_options;
+
 const app_name = "foundry-room";
+
+/// The product's own version, which is not the engine's and not the ABI's (§4). A game
+/// states its own; this is the sample stating the one its release description carries.
+const product_version = "0.9.0";
 
 /// The window size and the master volume — the two things this sample lets a player change
 /// and expects to find again next time.
@@ -387,15 +411,72 @@ const Preferences = struct {
 /// whether it can be finished, which is the one thing this run is for.
 const default_headless_frames: u64 = 60000;
 
+/// What this build is, for the head of a session's log (`distribution.md` §4).
+///
+/// Assembled by the application, because none of it is the engine's to know: the ABI's
+/// version is not a product version, and a header that guessed would be wrong on the one
+/// build somebody asks about.
+fn buildIdentity() app.diagnostics.Build {
+    return .{
+        .application = "Foundry Room",
+        .version = product_version,
+        .revision = build_options.revision,
+        .target = @tagName(builtin.target.cpu.arch) ++ "-" ++ @tagName(builtin.target.os.tag),
+        .platform_backend = @tagName(platform.backend),
+        .rhi_backend = @tagName(rhi.backend),
+        .optimize = @tagName(builtin.mode),
+    };
+}
+
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
 
-    // Zig 0.16 hands the environment to the entry point rather than exposing it ambiently,
-    // and Foundry keeps it that way on purpose: configuration read from the air is a hidden
-    // input (I9).
     const env = try app.environment(gpa, init);
     defer gpa.free(env);
 
+    var os = try platform.os.Os.init(gpa, .{ .env = env, .app_name = app_name });
+    defer os.deinit();
+
+    // **Before settings, before discovery, before the engine.** The failures worth keeping
+    // evidence of are exactly the ones that happen before there is an engine to ask, so the
+    // session is the first thing that exists (`distribution.md` §10).
+    //
+    // A frame-budgeted or headless run keeps nothing, by the rule Step 2 set for
+    // preferences: a scripted run must not depend on — or write to — whatever is on the
+    // machine running it (I9). `FOUNDRY_ROOM_DIAGNOSTICS` opts one back in, which is how a
+    // scripted run can demonstrate the thing at all.
+    const budgeted = envValue(env, "FOUNDRY_ROOM_FRAMES") != null or platform.backend == .null;
+    const keep = !budgeted or envValue(env, "FOUNDRY_ROOM_DIAGNOSTICS") != null;
+    const session = try app.diagnostics.Session.open(gpa, os, buildIdentity(), .{ .enabled = keep });
+    defer session.deinit();
+    if (session.logPath()) |leaf| {
+        // **Relative, deliberately.** The absolute path runs through this user's home
+        // directory, and this line is captured into the very file it names — §10 says a log
+        // does not collect home paths, and the easiest way to keep that true is not to
+        // write one. Where `logs/` lives is in the shipping guide.
+        log.info("this session's log: {s}/{s}", .{ app.diagnostics.dir_name, leaf });
+    }
+
+    run(gpa, env, os, session) catch |err| {
+        // §10: a concise named cause, and where to find the rest, before a nonzero exit.
+        log.err("could not start: {t}", .{err});
+        if (session.logPath()) |leaf| {
+            log.err("what happened is in {s}/{s}, under this application's data directory", .{
+                app.diagnostics.dir_name, leaf,
+            });
+        }
+        session.finish(.failed);
+        return err;
+    };
+    session.finish(.clean);
+}
+
+fn run(
+    gpa: std.mem.Allocator,
+    env: []const platform.os.EnvVar,
+    discovery_os: *platform.os.Os,
+    session: *app.diagnostics.Session,
+) !void {
     const headless = platform.backend == .null;
 
     // **Discovery happens before the engine exists**, which is not an accident of ordering:
@@ -403,9 +484,7 @@ pub fn main(init: std.process.Init) !void {
     // load is the answer (`public-abi.md` §13, phase 1). So the sample opens its own `Os`,
     // asks where content lives, discovers, resolves — and only then builds an engine, which
     // is handed both the directory and the order so the two cannot disagree.
-    var discovery_os = try platform.os.Os.init(gpa, .{ .env = env, .app_name = app_name });
-    defer discovery_os.deinit();
-
+    session.setStage(.discovery);
     const content_dir = try app.contentDirOf(gpa, discovery_os, null);
     defer gpa.free(content_dir);
 
@@ -428,12 +507,14 @@ pub fn main(init: std.process.Init) !void {
         env,
         prefs.selected,
         include_user_packages,
+        session,
     );
     defer {
         freePackages(gpa, packages);
         gpa.free(packages);
     }
 
+    session.setStage(.startup);
     var engine = try app.Engine.init(gpa, .{
         .env = env,
         .app_name = "foundry-room",
@@ -494,6 +575,7 @@ pub fn main(init: std.process.Init) !void {
         if (room.autopilot) log.info("autopilot is on; the walker finds them itself", .{});
     }
 
+    session.setStage(.running);
     while (!engine.shouldQuit()) {
         engine.beginFrame();
 
@@ -540,6 +622,10 @@ pub fn main(init: std.process.Init) !void {
         // made it, so a drag costs one write rather than one per frame.
         prefs.tick(gpa);
 
+        // Once a frame, and outside the log lock: `drainSession` copies under it and this
+        // writes after it, so a slow disk never stalls a thread that is trying to log (§10).
+        session.drain();
+
         // A windowed Metal build is paced by the display. The null backend has no swapchain
         // to wait on and would otherwise spin as fast as the CPU allows.
         if (!headless and rhi.backend == .null) engine.os.sleep(.fromMillis(2));
@@ -551,6 +637,7 @@ pub fn main(init: std.process.Init) !void {
 
     // A normal shutdown, which is the other moment §6 names. A fatal exit reaches none of
     // this, deliberately: there is nothing trustworthy to write from a broken process.
+    session.setStage(.shutdown);
     prefs.flush(gpa);
 
     // What a scripted run has to say for itself. "Finished" is the only line here that

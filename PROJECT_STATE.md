@@ -1,7 +1,74 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-12
-**Current handoff: M8 is complete. M9 is designed; 5/8 steps implemented. Stop before Step 6.**
+**Current handoff: M8 is complete. M9 is designed; 6/8 steps implemented. Stop before Step 7.**
+
+**Implemented in M9 step 6, 2026-09-12:** `app.diagnostics` keeps the local evidence a session
+leaves behind. It is **not crash recovery**: nothing catches a signal, resumes a simulation or
+tries to save a world through state that may already be wrong. macOS writes the crash report;
+what this adds is the log that was already on disk when the process died, and the record of
+whether the previous session closed.
+
+**A session opens before settings, before discovery and before the engine**, because the
+failures worth keeping evidence of are the ones that happen before there is an engine to ask.
+It drains a bounded capture in `log_sink` that is **separate from the overlay's ring** — its
+own buffer, own level, own counter, sharing only the lock and one formatting pass — so a
+console that is closed, cleared or filtered to `err` cannot empty a release log. The capture is
+a queue rather than a ring: something empties it every frame, so it overflows only when one
+frame logs more than 64 KiB, and then the excess is dropped and counted rather than evicted
+from the front, which would renumber a stream whose value is being in order. The copy happens
+under the log lock and the write happens after it.
+
+**Five slots, claimed by exclusive creation.** `session-1.log` … `session-5.log`, each with a
+marker. Exclusive creation is the whole concurrency mechanism *and* the symlink refusal: two
+processes racing for a name cannot both win, and a symlink planted at one is refused without
+anything testing for it. When all five are taken the least recently active is retired, decided
+by the log's own modification time — which advances every frame a session drains — and a slot
+written within the last minute is never retired, because an overlapping session is precisely
+what §10 says must not be mistaken for a dead one. The marker is rewritten at **every stage**,
+not only at the end: the session whose stage anyone needs is the one that never reached the
+end, and a marker written only there would say `start` after every crash.
+
+**Nothing about the filesystem is fatal.** No user-data directory, no free slot, a read-only
+`logs/`, a failing write — each leaves a live session with stages and an ending, and the
+terminal unaffected. A failing sink is disabled *before* the message about it is logged, so
+the report cannot re-enter what just failed. A log stops at 1 MiB with a truncation marker, and
+the append guard and the level switch are both needed: one stops the writes that never went
+through the capture, the other stops the formatting.
+
+**Diagnostics are off in a scripted run**, by the rule Step 2 set for preferences: a
+frame-budgeted or headless run keeps nothing, or the bar would depend on the machine running
+it (I9). `FOUNDRY_ROOM_DIAGNOSTICS` / `FOUNDRY_SANDBOX_DIAGNOSTICS` opt one back in, which is
+how the evidence below was produced. The log's envelope carries application, version,
+revision, target, backends, optimize mode and the resolved package order; it carries **no**
+home path, including from the line that says where the log is — that names
+`logs/session-1.log` relative to the data directory, and the absolute location belongs in the
+shipping guide.
+
+**Two things this found.** `samples/room` had never installed `app.std_options`, so its lines
+went to std's default handler and its own overlay's log console had always been empty; one
+line in its root fixed it. And a test that could not fail: breaking the cap's append guard
+changed nothing observable, because the level switch had already stopped everything the test
+drove — until the test was extended to write through `notePackages`, which does not go via the
+capture at all.
+
+**New surface:** `app.diagnostics.Session` (`open`/`setStage`/`notePackages`/`drain`/`finish`),
+`log_sink.setSessionLevel`/`drainSession`/`resetSession`, and
+`platform.os.createAppendConfined`/`deleteFileConfined`/`AppendFile`, with `FileError` gaining
+a quiet `AlreadyExists`.
+
+**Step-6 verification.** The full AGENTS.md §3 bar passes: formatting, **1,272 headless tests
+of 1,280 declared**, host/Linux/Windows compilation and both 30-frame null sample runs. Three
+guards were broken narrowly and their tests observed to fail, then restored. `zig build
+diagnostics-stress` runs three scenarios in child processes under a 10-second deadline: an
+unclean exit leaves its drained lines, a marker saying `open` and the stage it reached; the
+next launch takes the next slot, reports what it found and leaves the earlier log intact; a
+startup failure names its cause, marks `failed` and exits nonzero. Real evidence: the staged
+ReleaseSafe/SDL3/Metal room, run from outside the checkout, wrote a session log headed
+`backend sdl3/metal` and a `clean` marker; the same binary with its content removed exited
+nonzero having logged `could not start: RequiredPackageMissing`, with a `failed` marker at
+stage `discovery`. No macOS bundle, signing or recipient work from Step 7 onward has begun.
+
 
 **Implemented in M9 step 5, 2026-09-12:** a staged release carries its attribution.
 `tools/distribution/notices.zig` reads every entry in `THIRD_PARTY_LICENSES/` and generates
@@ -1787,10 +1854,10 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 1,263 tests** of 1,271 declared (84 `core`, 90 `platform`,
+**`zig build test` passes 1,272 tests** of 1,280 declared (84 `core`, 90 `platform`,
 106 `data`, 82 `physics2d`, 83 `ui`, 92 `rhi`, 76 `asset`, 24 `mod`, 139 `render2d`,
-84 `scene`, 34 `audio`, 72 `app`, 23 `debug`, 111 `abi`, 56 `script`, 54 integration,
-53 `tools`), and **1,271 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
+84 `scene`, 34 `audio`, 81 `app`, 23 `debug`, 111 `abi`, 56 `script`, 54 integration,
+53 `tools`), and **1,280 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
 8 exceptions need a real GPU and compile only when Metal is selected. **`samples/room` adds

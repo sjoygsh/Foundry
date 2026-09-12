@@ -1,7 +1,7 @@
 # Distribution: an application a stranger can run
 
-**Status:** designed 2026-09-12; **5/8 implementation steps complete** (Steps 1-5, 2026-09-12).
-**Stop point:** after Step 5. Step 6 is not started.
+**Status:** designed 2026-09-12; **6/8 implementation steps complete** (Steps 1-6, 2026-09-12).
+**Stop point:** after Step 6. Step 7 is not started.
 
 Rests on [ADR-0030](../adr/0030-distribution-artifacts.md) and
 [ADR-0031](../adr/0031-application-configuration-and-user-data.md), with ADR-0008, ADR-0014,
@@ -392,7 +392,7 @@ Resolution when implementation exposes a design correction. No step is done by t
 5. **Generate and ship complete attribution. Complete 2026-09-12.** Implement §9 and integrate its required
    outputs with staging. Test malformed metadata and full SDL/Lua text retention; include
    package notices. Runnable result: staged release carries generated, reproducible notices.
-6. **Keep useful evidence after startup and fatal failure.** Implement §10 and wire both
+6. **Keep useful evidence after startup and fatal failure. Complete 2026-09-12.** Implement §10 and wire both
    application lifecycles. Child-process failures and persistence/rotation tests; prove
    read-only storage does not prevent play. Runnable result: failed launch leaves a useful
    local log; a subsequent successful launch remains usable. No custom native crash recovery.
@@ -412,9 +412,9 @@ Resolution when implementation exposes a design correction. No step is done by t
 ## 15. Planning handoff
 
 ADRs 0030/0031 and this design settle the M9 architecture and eight bounded steps. All M8
-implementation/evidence is retained. Steps 1 through 5 are complete as of 2026-09-12; see
-their Resolutions below. **Next is Step 6, not started and not authorized.** Nothing in Steps
-6-8 — diagnostics, the macOS bundle or the recipient guide — exists yet.
+implementation/evidence is retained. Steps 1 through 6 are complete as of 2026-09-12; see
+their Resolutions below. **Next is Step 7, not started and not authorized.** Nothing in Steps
+7-8 — the macOS bundle, signing or the recipient guide — exists yet.
 
 ## Resolution — 2026-09-12, step 1
 
@@ -680,3 +680,65 @@ happened to return them sorted. Enumeration order cannot be chosen from a test, 
 ordering moved into `notices.entryNames`, which takes a listing as data — and the test that
 hands it an unsorted one does fail when the sort is removed. The end-to-end test was kept and
 its claim narrowed to what it actually checks.
+
+## Resolution — 2026-09-12, step 6
+
+What implementing §10's diagnostics settled, corrected or made explicit.
+
+**The marker is written at every stage, not only at the end.** The first implementation wrote
+it at `open` and at `finish`, which is exactly wrong: the session whose stage anyone needs is
+the one that never reached `finish`, and that marker would have said `start` after every
+crash. The child-process test caught it. It is a handful of short lines through
+`replaceFileConfined`, five times in a session, so the cost is nothing and the alternative
+answers nothing.
+
+**Exclusive creation is the whole of the concurrency story.** Five numbered slots, claimed by
+exclusively creating `session-N.log`. Two processes racing for one name cannot both win, so
+the loser takes the next name rather than sharing a file, and a symlink planted at a name is
+refused without anything having to test for one — on every system Foundry targets, with no
+lock. When all five are taken, the least recently *active* slot is retired, decided by the
+log's own modification time, which advances every frame a session drains. A slot written
+within the last minute is never retired, because §10's overlapping-session case is precisely
+the one that must not be mistaken for a dead one. A session that can claim nothing runs with
+no file, which is the designed degradation rather than a failure.
+
+**A session that cannot write is still a session.** Nothing about the filesystem is fatal to
+`open`: no user-data directory, no free slot, a read-only `logs/`, a failing write — each
+leaves a live session with stages and an ending, and the terminal unaffected. A game that
+refused to start because a log could not be opened would have diagnostics worse than none.
+
+**Turning the capture off is what makes "no recursion" structural.** A failing sink is
+disabled before the message about it is logged, so the report cannot re-enter the thing that
+just failed. It is one flag and one level store rather than a rule someone has to remember.
+
+**The cap and the level switch are two mechanisms, and the test only saw one.** At the cap,
+capture is turned off *and* an append guard is set. Breaking the guard changed nothing the
+test could see, because the level switch had already stopped everything reaching it — until
+the test was extended to write through `notePackages`, which does not go via the capture at
+all. Both are needed: one stops the formatting, the other stops the writes that were never
+formatted. The redundancy was apparent, not real, and the test that could not tell them apart
+was the defect.
+
+**The room had never installed the log sink.** `pub const std_options = app.std_options;` is
+the one line that routes `std.log`, a root source file is the only place it can go, and the
+room did not have it — so its lines went to std's default handler, its own overlay's log
+console had always been empty, and a session log would have been a header with nothing under
+it. Found by wiring diagnostics into it, which is the sort of thing a second consumer is for.
+
+**A log does not collect home paths, including from the line that says where it is.** The
+first wired run put `/Users/<name>/Library/...` into the file, logged by the very message
+telling a person where the log was. The message now names `logs/session-1.log` relative to the
+application's data directory; the absolute location belongs in the shipping guide, not in
+every log a player might send.
+
+**Diagnostics are off in a scripted run, by the rule Step 2 set for preferences.** A
+frame-budgeted or headless run keeps nothing: a run that wrote to the machine running it would
+make the bar depend on that machine (I9). `FOUNDRY_*_DIAGNOSTICS` opts one back in explicitly,
+which is how a scripted run can demonstrate the feature at all, and is how the evidence below
+was produced.
+
+**Unclean is not proof of a crash.** An abandoned marker means the session never said it
+finished. A SIGKILL, a power loss, a machine switched off and an overlapping session all leave
+exactly that mark, and nothing here claims otherwise. There is no signal handler, no resumed
+simulation and no attempt to save a world through state that may already be wrong; the last
+undrained records are lost, and that is stated rather than worked around.

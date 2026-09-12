@@ -147,11 +147,27 @@ redundant: the compile-time level decides what is *built* (and a disabled call n
 constructs its argument tuple), while the runtime level lets a shipped build be made quiet or
 verbose without recompiling.
 
-Deferred, with reasons: **timestamps** (they want a monotonic source, which lives on
-`Platform`, and a free logging function has no instance to ask — worth solving when there is
-a log *file* to correlate, at M9); **runtime scope filtering** (`std.Options.log_scope_levels`
-already covers the compile-time case, and there are two scopes so far); **a destination other
-than stderr** (M9, with packaging and crash diagnostics).
+### Three destinations, decided independently — added M9 step 6, 2026-09-12
+
+A line can reach the terminal, the overlay's ring, and a **session log**, and each has its own
+level. The last is `app.diagnostics`, and its separateness is the point: the ring belongs to
+the overlay, which a game filters, clears and usually leaves off, and a release log that
+shared it would be a release log a closed console could empty (`distribution.md` §10).
+
+The capture behind it is a queue rather than a ring. Something drains it to a file at least
+once a frame, so it overflows only when a single frame logs more than it holds — and then the
+right answer is to drop what does not fit and count it, because evicting the oldest would
+renumber a stream whose whole value is being in order. The drain copies under the log lock and
+writes *after* releasing it, so a slow disk never stalls a thread that is trying to log.
+
+**Timestamps are still deferred, and now for a better reason than before.** A captured line
+carries the engine frame it was logged in, which costs one relaxed load, needs no clock, and
+is the timeline a log is actually read against — the header says what build the session was.
+A wall-clock read per line would buy correlation with other programs' logs, which nothing has
+asked for yet.
+
+Deferred, with reasons: **runtime scope filtering** (`std.Options.log_scope_levels` already
+covers the compile-time case); **anything uploaded anywhere** (never, by §10).
 
 ## 6. Testing
 

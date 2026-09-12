@@ -425,7 +425,7 @@ and survived.
 entity spawning through ordinary content templates. Its §§8 and 14 define operational fault
 containment and the required failure tests; this is not a proof against unknown native defects.
 
-### M9 — Shippable: "it distributes" — **designed (2026-09-12), 5/8 implemented**
+### M9 — Shippable: "it distributes" — **designed (2026-09-12), 6/8 implemented**
 
 [ADR-0030](adr/0030-distribution-artifacts.md) fixes release artifacts and the macOS tooling
 boundary; [ADR-0031](adr/0031-application-configuration-and-user-data.md) separates bootstrap,
@@ -458,8 +458,17 @@ reproduced whole — SDL's license election included, since it is part of the at
 commentary on it — with the application's own `LICENSE` and `NOTICE` staged separately beside
 it. The aggregate is a documented superset rather than a claim of linkage. A malformed entry,
 an unreadable directory or a staged package whose declared license needs a notice it did not
-supply all refuse the release. **1263 headless tests.** No signed, bundled or recipient
-evidence exists.
+supply all refuse the release. Step 6, completed the same day, adds `app.diagnostics`: an
+opt-in session opened before settings, discovery and the engine, draining a bounded capture of
+its own — separate from the overlay's ring, so a closed console cannot empty a release log —
+into one of five slots under the application's `logs/`, with a marker recording the stage
+reached and whether the session closed. A slot is claimed by exclusive creation, which is both
+the concurrency mechanism and the symlink refusal; a slot written in the last minute is never
+retired. Nothing about the filesystem is fatal: no directory, no free slot, a read-only
+`logs/` or a failing write each leave a working session and an unaffected terminal. There is
+no crash recovery and no signal handler — an abandoned marker means a session never said it
+finished, never that a crash was proven. **1272 headless tests.** No signed, bundled or
+recipient evidence exists.
 
 * Asset and content bundling; release build configuration.
 * Game configuration and user settings.

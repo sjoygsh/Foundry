@@ -19,6 +19,9 @@ pub const log_sink = @import("log_sink.zig");
 /// §§4-6, ADR-0031). **Opt-in**: an application that keeps no preferences constructs none
 /// of this, and the engine owns no `Storage`, because the engine does not own an
 /// application's configuration.
+/// Local evidence a session leaves behind: a bounded log, and whether the last one closed
+/// cleanly. Opt-in, and not crash recovery (`distribution.md` §10).
+pub const diagnostics = @import("diagnostics.zig");
 pub const settings = @import("settings.zig");
 pub const ui_draw = @import("ui_draw.zig");
 
@@ -59,6 +62,7 @@ pub const std_options = log_sink.std_options;
 test {
     _ = engine;
     _ = log_sink;
+    _ = diagnostics;
     _ = settings;
     _ = ui_draw;
 }

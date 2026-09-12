@@ -255,6 +255,19 @@ exists looks nothing like its cause. Everything finer — owners, groups, read-o
 whoever installs a file, not to whoever writes it, and `FileMode.has_bit` is false on Windows,
 where asking for one is not an error and is not a change either.
 
+### Appending, and exclusive creation — added M9 step 6, 2026-09-12
+
+`createAppendConfined` opens a file for appending under a host-supplied root, **creating it
+exclusively**. That single choice does three jobs: it refuses a symlink at the name without
+testing for one, it makes two processes racing for the same name resolve without a lock — one
+wins, the other tries the next name — and it turns "is this name taken?" into the answer the
+caller wanted rather than an error worth logging, which is why `AlreadyExists` is its own
+member of `FileError` and is the one outcome that stays quiet.
+
+There is no atomicity here, deliberately. `replaceFileConfined` exists so a settings file is
+never half-written; a log is the opposite case — its value is that the lines written before a
+crash survive it (`distribution.md` §10).
+
 ### Untrusted input
 
 Everything the filesystem returns is untrusted (§5 of `core-memory-and-handles.md`). A missing

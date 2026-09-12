@@ -211,6 +211,9 @@ pub fn build(b: *std.Build) void {
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "platform_backend", @tagName(platform_backend));
     build_options.addOption([]const u8, "rhi_backend", @tagName(rhi_backend));
+    // The source revision, for a release's log header. `local` when nobody said: the build
+    // runs no `git` (ADR-0014), so a revision is stated by an operator or it is not known.
+    build_options.addOption([]const u8, "revision", revision orelse "local");
     const build_options_module = build_options.createModule();
 
     var modules: std.StringHashMapUnmanaged(*std.Build.Module) = .empty;
@@ -393,6 +396,11 @@ pub fn build(b: *std.Build) void {
     // through the same call a mod will use at M7.
     sandbox_mod.addImport("mod", modules.get("mod").?);
     sandbox_mod.addImport("debug", modules.get("debug").?);
+    // **A sample, not an engine module.** The rule above — build configuration reaches
+    // exactly the module that needs it — is about engine modules, whose behaviour must be
+    // decided by their inputs. A game's build identity is genuinely the game's, and a log
+    // header that could not name the revision it came from is a log header worth less.
+    sandbox_mod.addImport("build_options", build_options_module);
 
     // **Tier 2, and the shape of opting into it.** A game that wants scripts registers the
     // source loader, binds an `abi.Host` over its own subsystems, issues an identity per
@@ -468,6 +476,7 @@ pub fn build(b: *std.Build) void {
     // module, checked by a game that is not the one the overlay grew up next to.
     room_mod.addImport("mod", modules.get("mod").?);
     room_mod.addImport("debug", modules.get("debug").?);
+    room_mod.addImport("build_options", build_options_module);
 
     const room = b.addExecutable(.{ .name = "room", .root_module = room_mod });
     b.installArtifact(room);
@@ -739,6 +748,25 @@ pub fn build(b: *std.Build) void {
     // Tools are tested like modules are. `fpack`'s tests reach a real filesystem, which is
     // the point of them: everything below it is already hermetic, and what is left to prove
     // is exactly the part that touches a disk.
+    // What a session leaves behind when a process does not come back. Its own binary, and
+    // it re-invokes itself: the only honest way to exercise an unclean exit is for something
+    // to actually exit uncleanly, and a test runner cannot (`distribution.md` §10).
+    const diagnostics_stress_mod = b.createModule(.{
+        .root_source_file = b.path("engine/tests/diagnostics_stress.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    diagnostics_stress_mod.addImport("app", modules.get("app").?);
+    diagnostics_stress_mod.addImport("platform", platform_module);
+    const diagnostics_stress = b.addExecutable(.{
+        .name = "foundry-diagnostics-stress",
+        .root_module = diagnostics_stress_mod,
+    });
+    check_step.dependOn(&diagnostics_stress.step);
+    test_step.dependOn(&b.addRunArtifact(diagnostics_stress).step);
+    b.step("diagnostics-stress", "Run session lifecycle cases in child processes")
+        .dependOn(&b.addRunArtifact(diagnostics_stress).step);
+
     const fpack_tests = b.addTest(.{ .root_module = fpack_mod });
     check_step.dependOn(&fpack_tests.step);
     test_step.dependOn(&b.addRunArtifact(fpack_tests).step);

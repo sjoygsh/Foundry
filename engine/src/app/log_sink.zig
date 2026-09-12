@@ -78,9 +78,11 @@ pub fn logFn(
     // most-severe-first means there is no u8 below `err` for an off state to be.
     const capture_raw = captureLevelRaw();
     const to_ring = capture_raw != capture_off and @intFromEnum(message_level) <= capture_raw;
-    if (!to_terminal and !to_ring) return;
+    const session_raw = session_level_raw.load(.monotonic);
+    const to_session = session_raw != capture_off and @intFromEnum(message_level) <= session_raw;
+    if (!to_terminal and !to_ring and !to_session) return;
 
-    if (to_ring) capture(message_level, @tagName(scope), format, args);
+    if (to_ring or to_session) capture(message_level, @tagName(scope), format, args, to_ring, to_session);
     if (to_terminal) std.log.defaultLog(message_level, scope, format, args);
 }
 
@@ -303,6 +305,8 @@ fn capture(
     scope: []const u8,
     comptime format: []const u8,
     args: anytype,
+    to_ring: bool,
+    to_session: bool,
 ) void {
     // On the stack, because `logFn` has no allocator and must not acquire one. A line that
     // does not fit keeps what fitted and says so.
@@ -316,6 +320,13 @@ fn capture(
 
     ring_mutex.lock();
     defer ring_mutex.unlock();
+
+    // Formatted once, kept twice. One lock rather than two, because the thing that must be
+    // independent is the *state* — a console that is closed, or filtered to `err`, must not
+    // be able to empty a release log — and that is two buffers and two levels, not two
+    // locks.
+    if (to_session) appendSession(message_level, scope, text);
+    if (!to_ring) return;
 
     const offset = reserve(@intCast(text.len));
     @memcpy(text_ring[offset.at..][0..text.len], text);
@@ -374,6 +385,103 @@ fn evictOldest() void {
     oldest = (oldest + 1) % record_capacity;
     live -= 1;
     dropped_total += 1;
+}
+
+// -- the session capture ---------------------------------------------------------------
+//
+// **A second bounded capture, and deliberately not the ring above.** The ring belongs to the
+// overlay: a game filters it, clears it, and usually leaves it off. None of that may reach a
+// release log, because the log is the only evidence a player's failed launch produces
+// (`distribution.md` §10). So this is its own buffer, its own level and its own counter, and
+// the only thing the two share is the lock and the single formatting pass.
+//
+// **A queue, not a ring.** Something drains this to a file at least once a frame, so it
+// overflows only when one frame logs more than it holds. Then the right answer is to drop
+// what does not fit and say how much — evicting the oldest instead would renumber a stream
+// whose whole value is being in order.
+
+/// How much one frame may produce. Also the drain's bound, since a full buffer is what a
+/// drain empties: "no more than 64 KiB per frame" is a property of the buffer rather than a
+/// rule something has to remember (§10).
+pub const session_capacity = 64 * 1024;
+
+var session_level_raw: std.atomic.Value(u8) = .init(capture_off);
+var session_text: [session_capacity]u8 = undefined;
+var session_used: u32 = 0;
+var session_dropped: u64 = 0;
+
+/// What a drain got, and what it cost.
+pub const Drained = struct {
+    /// Bytes copied into the caller's buffer.
+    len: usize,
+    /// Records dropped since the session started, cumulative.
+    dropped: u64,
+};
+
+/// Turns the session capture on at `new_level`, or off. Called by `app.diagnostics`.
+pub fn setSessionLevel(new_level: ?core.log.Level) void {
+    session_level_raw.store(
+        if (new_level) |l| @intFromEnum(toStd(l)) else capture_off,
+        .monotonic,
+    );
+}
+
+pub fn sessionLevel() ?std.log.Level {
+    const raw = session_level_raw.load(.monotonic);
+    return if (raw == capture_off) null else @enumFromInt(raw);
+}
+
+/// Empties the capture into `into`, and returns how much and what was lost.
+///
+/// The copy happens under the lock and the *writing* does not, which is the whole reason
+/// this hands bytes back instead of taking a file: a drain that wrote to a disk with the log
+/// lock held would stall every thread that logs for as long as the disk took (§10).
+pub fn drainSession(into: []u8) Drained {
+    ring_mutex.lock();
+    defer ring_mutex.unlock();
+
+    const len = @min(into.len, session_used);
+    @memcpy(into[0..len], session_text[0..len]);
+    if (len < session_used) {
+        // Only possible if a caller brought a smaller buffer than the capacity. Keep the
+        // remainder in order rather than dropping it.
+        std.mem.copyForwards(u8, session_text[0 .. session_used - len], session_text[len..session_used]);
+        session_used -= @intCast(len);
+    } else {
+        session_used = 0;
+    }
+    return .{ .len = len, .dropped = session_dropped };
+}
+
+/// Discards whatever the capture holds. Used when a session ends, so that the next one does
+/// not inherit lines from it.
+pub fn resetSession() void {
+    ring_mutex.lock();
+    defer ring_mutex.unlock();
+    session_used = 0;
+    session_dropped = 0;
+}
+
+/// Appends one already-formatted line. Called with the lock held.
+fn appendSession(message_level: std.log.Level, scope: []const u8, text: []const u8) void {
+    var line: [max_line + 64]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&line);
+    // The frame is the timeline a release log is read against, and it costs nothing: there
+    // is no wall-clock read per line, and the header says when the session began.
+    writer.print("f{d} {s}({s}): {s}\n", .{
+        frame_stamp.load(.monotonic),
+        @tagName(message_level),
+        scope,
+        text,
+    }) catch {};
+    const formatted = writer.buffered();
+
+    if (session_used + formatted.len > session_capacity) {
+        session_dropped += 1;
+        return;
+    }
+    @memcpy(session_text[session_used..][0..formatted.len], formatted);
+    session_used += @intCast(formatted.len);
 }
 
 /// Drop this into a game's root source file:

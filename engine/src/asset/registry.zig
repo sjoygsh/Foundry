@@ -632,7 +632,9 @@ pub const Registry = struct {
                 return error.SourceMissing;
             },
             error.InvalidPath => error.SourceRejected,
-            error.AccessDenied, error.FileTooLarge, error.IoFailed => {
+            // `AlreadyExists` cannot arrive from a read; it is listed because the set is
+            // exhaustive and an unlisted member would be a compile error the day one can.
+            error.AlreadyExists, error.AccessDenied, error.FileTooLarge, error.IoFailed => {
                 log.warn("'{s}': its source could not be read ({s})", .{ record.name, @errorName(err) });
                 return error.LoadFailed;
             },

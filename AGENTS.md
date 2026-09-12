@@ -54,8 +54,8 @@ world's own fixed tick, and replaced in place when the file changes — its stat
 entities it owns carry across. `docs/modding/script-mods.md` was written by building a script
 package outside this repository and was then rebuilt from its own listings to check it.
 
-**M9 is designed, with 5/8 steps implemented (2026-09-12).** Read ADR-0030, ADR-0031 and
-`docs/design/distribution.md`; §14 is the implementation order and its first five Resolutions
+**M9 is designed, with 6/8 steps implemented (2026-09-12).** Read ADR-0030, ADR-0031 and
+`docs/design/distribution.md`; §14 is the implementation order and its first six Resolutions
 record what implementation settled. Step 1: `engine/src/app/settings.zig` holds
 the `settings.fset` envelope over `data`'s field-block layout, and `Os.replaceFileConfined` is
 the confined temporary-then-rename write every later step goes through — a file this build does
@@ -73,7 +73,12 @@ repository uses too, and `fstage` is the packager. **`dist` requires its configu
 not invent one**; the command is below. Step 5: a release carries `LICENSE`, `NOTICE` and a
 `THIRD_PARTY_NOTICES.txt` generated from `THIRD_PARTY_LICENSES/`. **That directory's entries
 are now parsed**, so their shape is load-bearing: a malformed one refuses the release rather
-than shipping a gap. Step 6 is next and requires the user's instruction.
+than shipping a gap. Step 6: `app.diagnostics` keeps a bounded session log under the
+application's user-data `logs/`, with a marker saying whether the session closed. **A
+frame-budgeted or headless run keeps nothing** — the same rule preferences follow — so
+`FOUNDRY_*_DIAGNOSTICS=1` is how a scripted run exercises it at all. `zig build
+diagnostics-stress` runs the unclean-exit cases in child processes. Step 7 is next and
+requires the user's instruction.
 
 ## 3. Building and verifying
 
@@ -132,6 +137,10 @@ a target Zig no longer calls native and the content compiler has to run here:
 ```sh
 zig build dist -Dapp=room -Dplatform=sdl3 -Drhi=metal -Doptimize=ReleaseSafe
 ```
+
+`zig build diagnostics-stress` is part of `zig build test` and also runs on its own. It spawns
+children that die without closing their session, so **expect stderr noise from a passing
+run** — a child that exits 3 on purpose is the test working.
 
 `-Dapp` is `room` (default) or `sandbox`; `-Drevision=<sha>` is recorded in the release's
 inventory and is `local` when unstated — the build runs no `git`. The staged tree is

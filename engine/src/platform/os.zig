@@ -69,6 +69,10 @@ pub const FileError = error{
     InvalidPath,
     /// The file is larger than the caller said it was willing to read.
     FileTooLarge,
+    /// Something already has that name. Its own member rather than `AccessDenied`, because
+    /// for an exclusive create it is not a problem: it is the answer the caller asked the
+    /// question to get, and it is not logged.
+    AlreadyExists,
     OutOfMemory,
     /// Anything else the OS reported. Logged at the site with the underlying cause.
     IoFailed,
@@ -132,6 +136,41 @@ pub const FileInfo = struct {
 pub const FileRead = struct {
     bytes: []u8,
     info: FileInfo,
+};
+
+/// A file being written a piece at a time, opened confined and owned by its caller.
+///
+/// **Created exclusively, never opened**, which is what makes it safe in a directory a
+/// player can reach: an exclusive create fails on an existing name whatever that name is, so
+/// a symlink planted there is refused rather than followed, and two processes cannot end up
+/// holding the same file (`distribution.md` §10).
+///
+/// The counterpart of `replaceFileConfined` for output that arrives over a session rather
+/// than all at once. There is no atomicity here and there cannot be: a log's value is that
+/// the lines written before a crash survive it.
+pub const AppendFile = struct {
+    file: std.Io.File,
+    the_io: std.Io,
+    /// Bytes written through this handle. The caller's own cap is applied to it — this
+    /// enforces none, because how large a log may be is not the filesystem's opinion.
+    written: u64 = 0,
+
+    pub fn append(self: *AppendFile, bytes: []const u8) FileError!void {
+        self.file.writeStreamingAll(self.the_io, bytes) catch |err|
+            return mapFileError(err, "append to", "an open file");
+        self.written += bytes.len;
+    }
+
+    /// Pushes what has been written to the device. Called at the boundaries worth paying
+    /// for — a session's start and its end — and not once a frame.
+    pub fn sync(self: *AppendFile) FileError!void {
+        self.file.sync(self.the_io) catch |err| return mapFileError(err, "sync", "an open file");
+    }
+
+    pub fn close(self: *AppendFile) void {
+        self.file.close(self.the_io);
+        self.* = undefined;
+    }
 };
 
 /// Whether a completed replacement is known to have reached the disk.
@@ -552,6 +591,41 @@ pub const Os = struct {
     }
 
     /// Whether something exists at `path`. Says nothing about what kind of thing.
+    /// Opens a confined file for appending, failing if anything already has that name.
+    ///
+    /// The exclusive create is doing two jobs at once. It refuses a symlink without having
+    /// to test for one, and it is the whole of the concurrency story for session logs: two
+    /// processes racing for the same name, one wins, and the loser tries the next name
+    /// rather than sharing a file (`distribution.md` §10).
+    pub fn createAppendConfined(self: *Os, root: []const u8, relative: []const u8) FileError!AppendFile {
+        const the_io = self.io();
+        var parent = try self.openParentConfined(root, relative);
+        defer parent.dir.close(the_io);
+
+        const file = parent.dir.createFile(the_io, parent.leaf, .{
+            .exclusive = true,
+            .truncate = false,
+        }) catch |err| switch (err) {
+            // Expected, and quiet. A caller competing for a name is *using* this outcome,
+            // and a warning would put a line about the ordinary case in every log.
+            error.PathAlreadyExists => return error.AlreadyExists,
+            else => return mapConfinedError(err, "create", relative),
+        };
+        return .{ .file = file, .the_io = the_io };
+    }
+
+    /// Removes a confined file. Missing is not an error: the caller wanted it gone.
+    pub fn deleteFileConfined(self: *Os, root: []const u8, relative: []const u8) FileError!void {
+        const the_io = self.io();
+        var parent = try self.openParentConfined(root, relative);
+        defer parent.dir.close(the_io);
+
+        parent.dir.deleteFile(the_io, parent.leaf) catch |err| switch (err) {
+            error.FileNotFound => return,
+            else => return mapConfinedError(err, "delete", relative),
+        };
+    }
+
     pub fn exists(self: *Os, path: []const u8) bool {
         _ = self.statFile(path) catch return false;
         return true;
