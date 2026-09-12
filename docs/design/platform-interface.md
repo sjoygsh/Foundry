@@ -358,7 +358,7 @@ of the snapshot design in §4.
    per-file, per-directory or a polling fallback depends on what the OS APIs make cheap.
    Deferred until hot reload is actually built.
 3. **Multiple windows.** The interface does not forbid them — windows are handles, not a
-   singleton (I1) — but nothing supports them yet. The editor (M6+) is the first plausible
+   singleton (I1) — but nothing supports them yet. The editor (M15) is the first plausible
    consumer.
 4. **Whether `platform` should own the main loop.** It should not, and does not: `app` owns
    the loop. Recorded because most platform libraries invert this, and SDL's examples do.

@@ -264,7 +264,7 @@ itself.
    runs — budgeted, on level transition, never — is unanswered, and answering it before there
    is a memory number to look at would be guessing.
 2. **Streaming and async loading.** Everything here is synchronous. Nothing in the design
-   forecloses async, and the job system is a post-M5 decision (CLAUDE.md §9); this is a
+   forecloses async, and the job system is an M12 decision (CLAUDE.md §9); this is a
    deliberate non-answer rather than an omission.
 3. **Asset dependencies.** A material referencing a shader referencing a texture is a graph,
    and acquiring the root should acquire the rest. Whether that is a loader's business or the

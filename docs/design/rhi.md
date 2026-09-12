@@ -512,7 +512,7 @@ headlessly — the same reason the null *platform* backend exists.
 
 ## 12. Deliberately not here
 
-* **Compute.** Arrives with 3D (ROADMAP Phase 4). `ComputePass` is a natural sibling of
+* **Compute.** Arrives with 3D (ROADMAP Phase 5). `ComputePass` is a natural sibling of
   `RenderPass` and nothing above forecloses it; designing it now would be guessing.
 * **Multiple queues.** One graphics queue. Async compute and transfer queues are a real
   Vulkan/D3D12 win and a genuine complication; they arrive with a reason, not before.

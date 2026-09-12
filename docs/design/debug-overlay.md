@@ -488,7 +488,7 @@ The write path exists — `deserialize` from an edited block is how `spawn` alre
 is not being used. Editing a live component raises three questions M6 has no business answering:
 whether an edit is a change to *state* or to *content* (and therefore whether it survives a
 reload), what undo means, and what happens when a value is refused. Those are the editor's
-questions, `CLAUDE.md` §9 puts the editor at M6+, and the mechanism will still be there.
+questions, `CLAUDE.md` §9 puts the editor at M15, and the mechanism will still be there.
 
 
 ## 8. The content browser
@@ -836,7 +836,7 @@ anything — entities, content, assets, style. Docking, floating or resizable pa
 already refused those and nothing here changes the argument). A save-state diff view. Console
 commands. A crash reporter. Hot-reloading the overlay itself.
 
-Each is real; several are the editor's, and the editor is M6+ by `CLAUDE.md` §9. None of them is
+Each is real; several are the editor's, and the editor is M15 by `CLAUDE.md` §9. None of them is
 blocked by anything above.
 
 

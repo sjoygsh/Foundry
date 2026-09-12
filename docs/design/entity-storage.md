@@ -577,7 +577,7 @@ Recorded rather than resolved, each with what would force it.
   added without touching storage. Building it now would fix a policy — dirty flags, traversal
   order, what happens to a child when a parent dies — with no consumer to judge it.
 * **Change detection**, **parallel iteration**, and **any threading**. ADR-0010 defers all
-  three; the job system is a post-M5 decision (CLAUDE.md §9). Nothing here assumes single-
+  three; the job system is an M12 decision (CLAUDE.md §9). Nothing here assumes single-
   threaded forever: storage is per type, systems are a list, and the interface hands out
   borrows with stated lifetimes rather than long-lived pointers.
 * **Prefab nesting** — a template that includes another template. Wanted eventually, an

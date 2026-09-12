@@ -131,7 +131,7 @@ means re-uploading the whole thing; rule 10 in `rhi.md` §11 grew to match, befo
     (ADR-0019) and the sprite shader is one; the only remaining case is a *content-owned*
     shader, which needs something to reference it. Building an asset kind with per-backend
     variant selection (ADR-0015) for no consumer would be exactly the hypothetical
-    requirement rule 7 warns about. **Due with the material system**, which is Phase 4 or
+    requirement rule 7 warns about. **Due with the material system**, which is Phase 5 or
     whenever a sample needs its own shader — and the asset kind is a schema and a loader
     registered at runtime, so nothing has to be reshaped to add it.
 * ~~Hot reload of content and assets in development builds.~~
@@ -292,7 +292,7 @@ The last three bullets have their **own** design document, [`design/debug-overla
 answer `ui.md`'s open culling question with a convention the finished widget set already supports.
 §17 is the step list. [ADR-0025](adr/0025-debug-overlay-module.md) carries the structural decision
 it rests on: the overlay is a module above `app`, and it may use **no call the public ABI could
-not expose**, so that the editor at M6+ is a re-host rather than a rewrite and a mod gets tooling
+not expose**, so that the editor at M15 is a re-host rather than a rewrite and a mod gets tooling
 at M7 through the same calls. The fourth bullet is where this milestone's lasting value is — the
 widgets are replaceable, the introspection APIs reach the ABI at M7.
 
@@ -677,7 +677,8 @@ reading and problems found by strangers.
 * The quarantine-preserving launch on a genuinely clean recipient Mac, and the remaining steps
   of `docs/shipping/macos.md` §4, recorded with identity, ticket, checksum and OS version.
 * The deferred release questions that come due with it: how far back macOS support reaches
-  (`LSMinimumSystemVersion` is 13.0 by assertion, not by test), and crash collection beyond
+  — the release description asserts `LSMinimumSystemVersion` 26.0 and nothing tests an older
+  system, so the supported floor is the newest one, not a range — and crash collection beyond
   what the OS already reports.
 
 **Not this milestone:** release automation, CI or a storefront. ADR-0032 keeps all three

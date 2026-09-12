@@ -43,7 +43,7 @@ chosen by `app` at startup and passed down.
 * **Persistent, debug builds:** `std.heap.DebugAllocator` — leak detection and
   use-after-free detection are worth the cost while the engine is being built.
 * **Persistent, release builds:** `std.heap.smp_allocator`. Chosen now to avoid designing
-  around a single-threaded assumption we intend to abandon (the job system is a post-M5
+  around a single-threaded assumption we intend to abandon (the job system is M12's
   postponed decision); switching later is a one-line change in `app`.
 * **Frame and scratch:** `std.heap.ArenaAllocator`, reset with `retain_capacity` so steady
   state performs no syscalls.

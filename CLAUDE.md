@@ -271,7 +271,7 @@ content-ID identity, a documented iteration order, read-only answers, frame-life
 and validation rather than assertion on anything a mod could have supplied. The introspection
 itself lives in the subsystem being introspected, never in the overlay. This is I3's argument
 applied to tooling — the overlay is package zero for the introspection API, and the editor
-(§9, M6+) is a re-host of it rather than a rewrite.
+(§9, M15) is a re-host of it rather than a rewrite.
 
 **The ABI is not a layer over the engine; it is a peer of the overlay** (ADR-0026). Two
 facts force it. `app` cannot see `scene`, `audio` or `physics2d` — each absence deliberate —
