@@ -587,8 +587,8 @@ confinement and live recovery evidence, and the author guide written by building
 package outside the engine tree and then reproduced from its own listings.
 
 M8 is closed. What this document leaves open is §15's list, and nothing in it was closed by
-implementation. The next milestone is M9, which is undesigned; no further work here is
-authorized by this document.
+implementation. M9 is now designed in [distribution.md](distribution.md), with no steps
+implemented; no further scripting work is authorized by this document.
 
 ## Resolution — 2026-09-10, step 1
 

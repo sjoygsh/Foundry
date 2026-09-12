@@ -410,7 +410,7 @@ directory outside this repository, compiled by the installed `fpack`, loaded by 
 sandbox beside the sandbox's own script package, then edited, migrated, broken and repaired
 while it ran — and [`modding/script-mods.md`](modding/script-mods.md), written from that and
 then rebuilt from its own listings in a fresh directory, which reproduced the run line for line.
-**1199 headless tests.** M9 remains undesigned.
+**1199 headless tests.** M9's design is recorded below.
 
 * Scripting language decision — **made in ADR-0028; runtime boundary implemented**.
 * Scripting host over the same public ABI; no separate surface.
@@ -425,7 +425,15 @@ and survived.
 entity spawning through ordinary content templates. Its §§8 and 14 define operational fault
 containment and the required failure tests; this is not a proof against unknown native defects.
 
-### M9 — Shippable: "it distributes"
+### M9 — Shippable: "it distributes" — **designed (2026-09-12), 0/8 implemented**
+
+[ADR-0030](adr/0030-distribution-artifacts.md) fixes release artifacts and the macOS tooling
+boundary; [ADR-0031](adr/0031-application-configuration-and-user-data.md) separates bootstrap,
+ordinary content defaults and user state. [`design/distribution.md`](design/distribution.md)
+is the specification; §14 orders eight steps: bounded preferences, sample configuration,
+user package roots, release staging, generated attribution, diagnostics, macOS application,
+and the recipient guide/exit proof. **Planning stops before Step 1.** Existing M8 verification
+is accepted; no M9 implementation or recipient evidence exists yet.
 
 * Asset and content bundling; release build configuration.
 * Game configuration and user settings.
@@ -433,6 +441,13 @@ containment and the required failure tests; this is not a proof against unknown 
 * Distributable macOS build. Crash handling and diagnostics.
 
 **Exit criteria:** a zip a stranger can download and run.
+
+The reference artifact is the existing room sample, ReleaseSafe/SDL3/Metal on Apple Silicon
+macOS, with the sandbox proving packaged scripting separately. Ordinary packages remain the
+runtime format. A local ad-hoc zip proves staging, not notarization; the final recipient gate
+records actual download/quarantine launch, relocation, preferences and diagnostics without
+the development toolchain. External signing/recipient prerequisites are recorded explicitly
+if unavailable, rather than treating a local run as milestone completion.
 
 ---
 

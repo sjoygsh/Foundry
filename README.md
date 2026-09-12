@@ -14,6 +14,10 @@ versioned public ABI and can add component types, systems and behaviour without 
 changes; and **script mods run on the world's tick and can be edited while the game is
 running**.
 
+**M9's distribution design is written; implementation has not started.** Its
+[eight-step plan](docs/design/distribution.md#14-implementation-order) covers preferences,
+user package roots, release staging, attribution, diagnostics and macOS distribution.
+
 All three modding tiers work — see [docs/modding](docs/modding/). Tier 2 is restricted
 Lua 5.5.1, one VM per package, bounded in memory, instructions and engine calls, reaching the
 engine only through the same public ABI table a native mod is handed. Replacing a package's

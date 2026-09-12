@@ -54,8 +54,9 @@ world's own fixed tick, and replaced in place when the file changes — its stat
 entities it owns carry across. `docs/modding/script-mods.md` was written by building a script
 package outside this repository and was then rebuilt from its own listings to check it.
 
-**M9 is undesigned.** Do not start it without the user asking; a milestone begins with a design
-document, not with code.
+**M9 is designed, with 0/8 steps implemented (2026-09-12).** Read ADR-0030, ADR-0031 and
+`docs/design/distribution.md`; §14 is the implementation order. The planning handoff stops
+immediately before Step 1. Implementation requires the user's next instruction.
 
 ## 3. Building and verifying
 

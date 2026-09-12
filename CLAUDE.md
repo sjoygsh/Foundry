@@ -167,6 +167,8 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | ABI placement | `abi` is a peer of `debug` at L5; the host supplies its subsystems | [0026](docs/adr/0026-abi-module-and-host.md) |
 | Scripting runtime | Restricted Lua 5.5.1, one VM per package, quotas inside a protected C boundary | [0028](docs/adr/0028-scripting-lua.md) |
 | Script host | Header-only public ABI consumer; its Lua surface is validation over the shared table | [0029](docs/adr/0029-script-host-and-reload.md) |
+| Distribution | Relocatable applications around ordinary packages; explicit staging and macOS release gates | [0030](docs/adr/0030-distribution-artifacts.md) |
+| Configuration | Host bootstrap, ordinary content defaults and bounded user preferences remain separate | [0031](docs/adr/0031-application-configuration-and-user-data.md) |
 | Identity | Generational handles internally; stable namespaced string IDs for content | [0005](docs/adr/0005-handles-and-content-ids.md) |
 | Content | Engine is a library; content is data; two representations (authoring / runtime) | [0006](docs/adr/0006-content-model.md) |
 | Authoring format | Foundry's own `.fdt` text format; IDs are bare tokens, directives are `@`-prefixed | [0020](docs/adr/0020-authoring-text-format.md) |

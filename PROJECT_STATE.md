@@ -1,7 +1,27 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-12
-**Current handoff: M8 is complete — all eight steps. M9 is undesigned and not started.**
+**Current handoff: M8 is complete. M9 is designed; 0/8 steps implemented. Stop before Step 1.**
+
+**M9 planning, 2026-09-12:** `docs/design/distribution.md` is the specification and §14 the
+eight-step order. ADR-0030 records ordinary-package release staging/macOS artifacts and
+scoped platform tools; ADR-0031 separates host bootstrap, content defaults and user state.
+The steps are preferences, sample configuration, user package roots, release staging,
+generated attribution, persistent diagnostics, macOS application, and the recipient exit
+proof. No implementation code, schemas, build targets or generated releases were added.
+M8 baseline `8c27f07` and Claude's completed verification are accepted, not rerun for this
+documentation-only task. Existing test count remains 1,207 declared / 1,199 headless.
+Planning verification: documentation consistency reviewed, 103 local documentation links
+resolve, and whitespace checks pass. No engine/build code changed or tests were rerun.
+
+The design preserves the existing module graph, `.fpk`/asset formats and v1/v2 public ABI.
+User settings reuse binary field blocks, user mods retain their own mounted roots, and the
+reference release is the existing room in ReleaseSafe/SDL3/Metal. Signing/notarization and
+recipient testing are explicit external gates; no access or successful release is assumed.
+The remaining Metal concerns below are recorded risks for the release gate, not silently
+fixed or re-audited during planning. **Await the user's instruction to begin M9 Step 1.**
+
+**M8 completion record:**
 The restricted Lua runtime, ordinary script package assets/manifests, additive ABI v2 typed
 source copying, binding 1's bounded content/world surface, the package lifecycle that drives
 it, candidate-VM replacement, isolation, deterministic behavior and the author guide are
@@ -127,9 +147,8 @@ destroys all four including the three the previous VM spawned. Replacing the fil
 that does not compile logs one warning saying the last working version is still running, and
 the beacons keep their cadence.
 
-**M9 boundary:** M8 is closed and tagged. M9 — packaging and distribution — has no design
-document, and `docs/design/README.md` records that one is owed before any of it is implemented.
-Nothing in this repository authorizes starting it. `scripting.md` §15's six open questions stay
+**M9 boundary:** M8 is closed and tagged. M9's design is written in `distribution.md`, and
+its planning handoff stops before implementation Step 1. `scripting.md` §15's six open questions stay
 open; none was closed by implementation, and durable script state across a process restart is
 still the first of them.
 
@@ -256,7 +275,8 @@ adversarial/determinism proof; outside-tree author guide and milestone closure. 
 complete, 2026-09-12.** The sample script is
 `samples/sandbox/content/scripts/encounter.lua`. Reload, performance defaults, the full
 adversarial matrix and the independently followed author guide are all proven.
-M7 remains complete; M9 remains undesigned.
+At that M8 planning handoff, M7 was complete and M9 remained undesigned; see the current
+M9 planning handoff at the top of this file.
 
 **Step-3 verification:** focused source-copy and agreement tests pass. Deliberately narrowing
 the C capacity width failed the signature harness; swapping two same-typed Zig entries failed
@@ -843,7 +863,7 @@ entities, a playable sample, and an overlay that diagnosed its own cost. **M7 �
 "others can extend it" — completed 2026-09-09**, all seven design steps and the outside-tree
 exit proof. **M8 — Scriptable: "modders can extend it" — completed 2026-09-12**, all eight
 steps of `scripting.md` §16 and its own outside-tree exit proof. What remains in this phase is
-M9, shipping, which is undesigned.
+M9, shipping, now designed with all eight implementation steps still ahead.
 
 ## Current milestone
 
@@ -854,8 +874,8 @@ script package recorded at the top of this file and by `docs/modding/script-mods
 written from it and then rebuilt from its own listings. The design's §15 open questions stay
 open; none of them blocks what M8 specified.
 
-**The next milestone is M9 — Shippable, and it has no design document.** `docs/design/README.md`
-records that one is owed before implementation. Do not begin it without the user asking.
+**M9 — Shippable is designed, 0/8 steps implemented.** Read `docs/design/distribution.md`
+and ADR-0030/0031. The next authorized session may begin Step 1; this planning session does not.
 
 **M7 — Moddable: "others can extend it." Complete, 2026-09-07 to 2026-09-09.** All six
 roadmap bullets and all seven steps of `public-abi.md` §19 are implemented. The exit criterion
@@ -1700,8 +1720,8 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**Nothing.** M8 is complete and tagged; M9 is undesigned and unauthorized. The M5 material
-below is historical.
+**M9 planning is complete; implementation is paused before Step 1.** M8 remains complete
+and tagged. The M5 material below is historical.
 
 ### `samples/room`, and what a second consumer proved
 
@@ -2346,10 +2366,10 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: nothing is authorized.** M8 is complete, all eight steps of `docs/design/scripting.md`
-§16, and the milestone is tagged `m8`. M9 — packaging and distribution — has no design document,
-and one is owed before any of it is implemented (`docs/design/README.md`). The completed M8 and
-M7 checklists and the subsequent M5/M6 material below are historical records.
+**Next: M9 Step 1, when the user asks to begin implementation.** M8 is complete and tagged
+`m8`. Read `docs/design/distribution.md`, ADR-0030/0031 and this handoff; implement only
+§14 Step 1's bounded preference codec and atomic persistence. The planning task ends before
+that step. The completed M8/M7 checklists and subsequent M5/M6 material below are historical.
 
 Carried, recorded and **not** started: the `render2d` blank-patch/font-atlas batching fix, the
 job-system decision `CLAUDE.md` §9 dates to post-M5, the `-Drhi=metal` `app` test-binary compile
