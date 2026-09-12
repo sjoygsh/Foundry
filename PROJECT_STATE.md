@@ -1273,10 +1273,19 @@ distributes" — completed 2026-09-13**, all eight steps of `distribution.md` §
 external-consumer recipient proof obtainable without private Apple credentials. **Phase 3 is
 closed.** What a public macOS release still owes is operator certification — Developer ID
 signing, notarization and a clean recipient Mac (ADR-0032) — not engine work. **Phase 4,
-"Hardening and reach" (M10-M17), is written and entirely unstarted**; it gathers the deferred
-work rather than adding to it, and only M10, the engine's own identity, is new.
+"Hardening and reach" (M10-M17), is under way**: it gathers the deferred work rather than
+adding to it, only M10 was new, and **M10 is complete (2026-09-13)**. M11 through M17 are
+unstarted.
 
 ## Current milestone
+
+**M10 — Identity: "it knows its own name." Complete, 2026-09-13.** The marks, the icon the
+release path stages and the plist names, and ADR-0034's rule that reference is permitted and
+identity is not. No design document was written and none was owed: what M10 decided is a
+boundary, not a subsystem. Its record is the header of this file. **One manual step remains
+and is not code**: GitHub has no API for a repository's social preview, so `brand/
+social-preview.png` has to be uploaded by hand at Settings → General → Social preview. The
+description and topics are already updated.
 
 **M9 — Shippable: "it distributes." Complete, 2026-09-12 to 2026-09-13.** All eight steps of
 `docs/design/distribution.md` §14 are implemented, and each has a dated Resolution recording
@@ -2784,21 +2793,22 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Nothing is next until the user chooses it. M9 is complete and tagged `m9`, and M0 through
-M9 are complete with it.** Phase 3 is closed. The completed M8/M7 checklists and subsequent
-M5/M6 material below are historical.
+**M0 through M10 are complete and tagged, and everything is pushed.** Phase 3 is closed;
+Phase 4 is under way. The completed M8/M7 checklists and subsequent M5/M6 material below are
+historical.
 
-**The deferred work now has milestones — `docs/ROADMAP.md` Phase 4, "Hardening and reach",
-M10 through M17.** Nothing in it is started, and the phase gathers what was already recorded
-rather than inventing work; only M10 is new. `CLAUDE.md` §9's postponed table now names the
-milestone each decision belongs to.
+**What remains is `docs/ROADMAP.md` Phase 4, "Hardening and reach", M11 through M17.** The
+phase gathers work that was already recorded rather than inventing any, and `CLAUDE.md` §9's
+postponed table names the milestone each decision belongs to. **The intent as of 2026-09-13 is
+to work through them over the following two weeks**, in roadmap order unless a trigger moves
+one: M13 and M16 are trigger-started and M17 is credential-gated, and M17 opens through a full
+review of `main` rather than beginning on a schedule.
 
-* **M10 — Identity.** The engine has no logo, wordmark or icon; a staged `.app` names no
-  `CFBundleIconFile` and its window carries no icon, and Apache-2.0 §6 grants no trademark
-  rights, so nothing says what a third party may call their own work. Branding stays a
-  consumer-supplied input with an engine default used only by engine artifacts. It also brings
-  the GitHub repository up to date with M9 — the description still says the implementation has
-  not started — as presentation only, with no CI or contribution infrastructure.
+* **M12 owes a design document before it starts** — the job system's, whose trigger fired when
+  §9 was re-dated. `docs/design/README.md` records it as owed.
+* ~~**M10 — Identity.**~~ **Done 2026-09-13**, tagged `m10`. One manual step is left and is
+  not code: uploading `brand/social-preview.png` as the repository's social preview, which
+  GitHub exposes through no API.
 * **M11 — Solid.** The carried correctness debt: the `render2d` texture staging buffer
   destroyed while frames are in flight, the `-Drhi=metal` `app` test-binary compile failure,
   the blank-patch/font-atlas batching fix, and the smaller entries in this file's known-bugs
