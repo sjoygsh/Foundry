@@ -54,9 +54,9 @@ world's own fixed tick, and replaced in place when the file changes — its stat
 entities it owns carry across. `docs/modding/script-mods.md` was written by building a script
 package outside this repository and was then rebuilt from its own listings to check it.
 
-**M9 is designed, with 7/8 steps implemented (2026-09-13).** Read ADR-0030, ADR-0031 and
-`docs/design/distribution.md`; §14 is the implementation order and its first seven Resolutions
-record what implementation settled. Step 1: `engine/src/app/settings.zig` holds
+**M9 is complete, all eight steps (2026-09-13).** Read ADR-0031, ADR-0032 (which supersedes
+ADR-0030) and `docs/design/distribution.md`; §14 is the implementation order and all eight
+Resolutions record what implementation settled. Step 1: `engine/src/app/settings.zig` holds
 the `settings.fset` envelope over `data`'s field-block layout, and `Os.replaceFileConfined` is
 the confined temporary-then-rename write every later step goes through — a file this build does
 not understand is preserved rather than replaced. Step 2: both samples resolve a window size
@@ -80,8 +80,12 @@ frame-budgeted or headless run keeps nothing** — the same rule preferences fol
 diagnostics-stress` runs the unclean-exit cases in child processes. Step 7: `zig build dist`
 now produces an ad-hoc-signed `.app`, matching dSYM and permission-preserving zip; the
 separate `dist-developer-id` target is the only route that touches a private signing identity,
-notarytool Keychain profile or network. Step 8 — the recipient guide and actual
-download/quarantine/no-toolchain exit proof — is next and requires the user's instruction.
+notarytool Keychain profile or network. Step 8: `docs/shipping/macos.md` and an outside build
+prove exported-helper consumption, checksum-matched HTTP transfer, no-toolchain runtime,
+cross-process preferences, relocated read-only user mods and failed-then-clean diagnostics.
+Strict ad-hoc integrity passed and Gatekeeper rejection is expected. Actual Developer ID
+signing, Apple notarization and a quarantine-preserving launch on a genuinely clean Mac remain
+mandatory deferred work for the first public release; the current artifact does not claim it.
 
 ## 3. Building and verifying
 

@@ -1,7 +1,39 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-13
-**Current handoff: M8 is complete. M9 is designed; 7/8 steps implemented. Stop before Step 8.**
+**Current handoff: M0 through M9 are complete. All eight M9 steps are implemented. No
+post-M9 deferred work has begun.**
+
+**Completed M9 step 8 and M9, 2026-09-13:** `docs/shipping/macos.md` was written from an
+external consuming project and the credential-independent recipient exercise. The fresh
+consumer imported Foundry's build declarations, obtained `Tools.fromDependency`, compiled its
+own packages and used `macosApplication`; all 29 build steps succeeded and produced its own
+`.app`, matching dSYM and local zip. An HTTP-transferred copy matched SHA-256 at sender and
+recipient (`7ee1e46701b1bb57f56c0634c8728f34e54748694ca72c5560122cb7edee4a22`).
+
+**The recipient behaviors crossed real process and installation boundaries.** With a clean
+environment and system-only `PATH`, the app initialized SDL3/Cocoa, Metal and audio without
+Zig or Xcode as runtime inputs. Window size `1000x650` and master volume `0.25` survived into
+a fresh process. A relocated path containing spaces, with `Contents/Resources` read-only,
+loaded a precompiled user package from the application-data `mods/` root and applied its
+`900x600`/`0.40` defaults. A duplicate package then produced `DuplicatePackage`, a `failed`
+marker at `discovery` and a retained error log; after removal, the next launch produced a
+`clean` marker at `shutdown`.
+
+**The signing claim stops exactly where the evidence stops.** Strict ad-hoc `codesign`
+verification passed. Gatekeeper assessment rejected the artifact, as expected when no valid
+Developer ID identity is installed and no notarization occurred. Quarantine metadata survived
+the local transfer/extraction exercise, but this development Mac had already executed the same
+code, so its later GUI launch is not claimed as a clean-recipient pass. No quarantine was
+removed and Gatekeeper was not disabled.
+
+ADR-0032 supersedes ADR-0030's milestone-gate rule: M9 closes on the implemented release path
+and external-consumer proof available without private Apple credentials. Actual Developer ID
+signing, Apple notarization and a quarantine-preserving launch of the exact public archive on
+a genuinely clean recipient Mac are now mandatory deferred work for the first public macOS
+release. The ad-hoc artifact is not equivalent. No engine/build code changed in Step 8, so the
+successful Step 7 suite, full integration bar and **1,278 headless tests** remain accepted
+under AGENTS.md §6 rather than rerun.
 
 **Implemented in M9 step 7, 2026-09-13:** `zig build dist` now produces a real macOS
 application, retained symbols and a transport zip, not a loose directory wearing an
@@ -42,11 +74,11 @@ path is under `/usr/lib` or `/System/Library`, codesign's strict verification pa
 dSYM UUID matches, and the zip retains the `.app` root and executable permission. Building
 the public target without its three operator inputs fails with the intended diagnostic.
 
-**Two external gates remain unmet, explicitly.** No Developer ID/notarization credential was
-provided or authorized, so no private signing, upload, accepted ticket, staple or public
-Gatekeeper assessment was claimed. The actual downloaded/quarantined no-toolchain recipient
-run belongs to Step 8 and has not begun. Step 7 establishes the Finder-launchable local
-artifact and the complete credentialed path; it does not claim M9's stranger-download exit.
+**At Step 7, two external gates remained unmet, explicitly.** No Developer ID/notarization
+credential was provided or authorized, so no private signing, upload, accepted ticket, staple
+or public Gatekeeper assessment was claimed. Step 8 subsequently proved every
+credential-independent recipient behavior above; ADR-0032 carries the credentialed and truly
+clean-recipient proof into mandatory public-release work. Step 7's artifact never claimed it.
 
 **Implemented in M9 step 6, 2026-09-12:** `app.diagnostics` keeps the local evidence a session
 leaves behind. It is **not crash recovery**: nothing catches a signal, resumes a simulation or
@@ -1202,11 +1234,23 @@ pixels; Phase 2 closed with M6, and every milestone in it is complete: sprites, 
 entities, a playable sample, and an overlay that diagnosed its own cost. **M7 — Moddable:
 "others can extend it" — completed 2026-09-09**, all seven design steps and the outside-tree
 exit proof. **M8 — Scriptable: "modders can extend it" — completed 2026-09-12**, all eight
-steps of `scripting.md` §16 and its own outside-tree exit proof. What remains in this phase is
-M9, shipping, designed and now begun: Steps 1 through 3 of its eight are implemented as of
-2026-09-12.
+steps of `scripting.md` §16 and its own outside-tree exit proof. **M9 — Shippable: "it
+distributes" — completed 2026-09-13**, all eight steps of `distribution.md` §14 and the
+external-consumer recipient proof obtainable without private Apple credentials. **Phase 3 is
+closed.** What a public macOS release still owes is operator certification — Developer ID
+signing, notarization and a clean recipient Mac (ADR-0032) — not engine work.
 
 ## Current milestone
+
+**M9 — Shippable: "it distributes." Complete, 2026-09-12 to 2026-09-13.** All eight steps of
+`docs/design/distribution.md` §14 are implemented, and each has a dated Resolution recording
+what implementation settled. Read those before touching the release path. The scoped exit
+criterion — the release path implemented and proved through an external consumer as far as
+private Apple credentials allow — was met by the outside-tree consumer recorded at the top of
+this file and by `docs/shipping/macos.md`. **ADR-0032 defers actual Developer ID signing,
+Apple notarization and a quarantine-preserving launch on a genuinely clean recipient Mac to
+the first public macOS release; they remain mandatory there, and the current ad-hoc artifact
+is not equivalent to a notarized one.** The design's §13 open questions stay open.
 
 **M8 — Scriptable: "modders can extend it." Complete, 2026-09-10 to 2026-09-12.** All eight
 steps of `docs/design/scripting.md` §16 are implemented, and the exit criterion — meaningful
@@ -1214,12 +1258,6 @@ gameplay written in script, hot-reloaded, unable to crash the host — was met b
 script package recorded at the top of this file and by `docs/modding/script-mods.md`, which was
 written from it and then rebuilt from its own listings. The design's §15 open questions stay
 open; none of them blocks what M8 specified.
-
-**M9 — Shippable is designed, 3/8 steps implemented.** Read `docs/design/distribution.md`
-and ADR-0030/0031, and its Step 1 through Step 3 Resolutions for what implementation settled.
-Installed and user package roots now resolve together without losing their provenance.
-**Step 4 — staging a complete release from explicit inputs — is next and is not started.**
-There is no `dist` target, generated notices, diagnostics session or macOS bundle.
 
 **M7 — Moddable: "others can extend it." Complete, 2026-09-07 to 2026-09-09.** All six
 roadmap bullets and all seven steps of `public-abi.md` §19 are implemented. The exit criterion
@@ -2064,8 +2102,8 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M9 planning is complete; implementation is paused before Step 1.** M8 remains complete
-and tagged. The M5 material below is historical.
+**Nothing is in progress. M9 is complete and tagged `m9`, closing Phase 3**, and no post-M9
+or deferred work has been started. The M5 material below is historical.
 
 ### `samples/room`, and what a second consumer proved
 
@@ -2710,19 +2748,34 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M9 Step 8, when the user asks to begin it.** Steps 1 through 7 are complete. Step 8
-writes and reproduces the macOS recipient guide from an external consumer, and executes the
-actual downloaded/quarantined no-toolchain recipient proof: Finder launch, play/audio,
-preferences, relocation, diagnostics and user-mod installation. It records the real signing
-and support limits, and only then may M9 be marked complete and tagged `m9`. It must not infer
-notarization from the local ad-hoc artifact or begin backend #2/3D. Read `distribution.md`
-§§11-15 and every Resolution first. The completed M8/M7 checklists and subsequent M5/M6
-material below are historical.
+**Nothing is next until the user chooses it. M9 is complete and tagged `m9`, and M0 through
+M9 are complete with it.** Phase 3 is closed. The roadmap's Phase 4 (3D) and the unscheduled
+second backend are both unstarted, and `CLAUDE.md` §9's postponed decisions become their own
+later milestones rather than being squeezed into a current one. The completed M8/M7 checklists
+and subsequent M5/M6 material below are historical.
 
-Carried, recorded and **not** started: the `render2d` blank-patch/font-atlas batching fix, the
-job-system decision `CLAUDE.md` §9 dates to post-M5, the `-Drhi=metal` `app` test-binary compile
-failure, and the `render2d` texture staging buffer destroyed while frames are in flight. None of
-them is a milestone; each needs the user to ask.
+Deferred, recorded and **not** started — each needs the user to ask, and none is in progress:
+
+* **The public macOS release certification** (ADR-0032, `CLAUDE.md` §9): sign the exact public
+  archive with a Developer ID identity, notarize and staple it, and launch that quarantined
+  download on a genuinely clean recipient Mac through the steps in `docs/shipping/macos.md`
+  §4. `dist-developer-id` already performs the sequence; what is missing is operator
+  credentials and an untouched Mac, not code. Until then Foundry has no verified public
+  release, and the ad-hoc zip must not be described as one.
+* The `render2d` blank-patch/font-atlas batching fix.
+* The job-system/threading decision, which `CLAUDE.md` §9 still dates to post-M5 — four
+  milestones ago, so the date itself is owed a revision.
+* The `-Drhi=metal` `app` test-binary compile failure.
+* The `render2d` texture staging buffer destroyed while frames are in flight.
+* `distribution.md` §13's remaining deferred questions: older macOS support,
+  storefront-specific signing, settings migrations once a second schema exists, preference
+  profiles and concurrent merging, crash collection beyond OS reports, and a runtime container
+  if measured file overhead ever warrants one.
+* The design documents' own open questions, which stay open by standing instruction rather
+  than being answered opportunistically.
+
+None of these is a milestone on its own; `CLAUDE.md` §9 is where the ones with a due date
+live.
 
 ~~1. Accept ADR-0026 and ADR-0027.~~ ~~2. Update `CLAUDE.md`.~~ ~~3. Write
 `docs/design/public-abi.md`.~~ **All done 2026-09-07.** What is left is code, and

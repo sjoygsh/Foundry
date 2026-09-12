@@ -8,13 +8,14 @@ leave behind something that runs.
 
 ## Status
 
-**M0 through M8 complete.** Foundry is a playable, inspectable and fully moddable 2D engine.
+**M0 through M9 complete.** Foundry is a playable, inspectable, fully moddable and
+packageable 2D engine.
 Content packages are discovered and dependency-ordered; native C mods load through the
 versioned public ABI and can add component types, systems and behaviour without engine source
 changes; and **script mods run on the world's tick and can be edited while the game is
 running**.
 
-**M9 is under way: seven of its eight steps are done.** Its
+**M9 is complete: all eight steps are done.** Its
 [eight-step plan](docs/design/distribution.md#14-implementation-order) covers preferences,
 user package roots, release staging, attribution, diagnostics and macOS distribution. Step 1
 adds bounded, versioned user preferences — the same field-block layout a record and a save
@@ -36,9 +37,13 @@ session closed — so a launch that fails leaves something a person can read and
 next launch starts beside it rather than on top of it. Step 7 turns that release into a real
 macOS `.app`, matching retained dSYM and permission-preserving zip, validates its plist and
 Mach-O dependencies, and ad-hoc signs the local artifact. Public Developer ID signing,
-notarization and Gatekeeper verification have a separate explicitly credentialed build target;
-they have not been executed without credentials. The remaining step is the reproduced
-download/quarantine/no-toolchain recipient guide and exit proof.
+notarization and Gatekeeper verification have a separate explicitly credentialed build target.
+Step 8 proves the exported helpers from an external build, checksum-matched HTTP transfer,
+runtime without Zig/Xcode on `PATH`, cross-process preferences, relocation/read-only user mods,
+and failed-then-clean diagnostics; see the [macOS shipping guide](docs/shipping/macos.md).
+ADR-0032 defers actual Developer ID signing, notarization and verification of the exact
+quarantined download on a genuinely clean recipient Mac to the first public release. Those
+remain mandatory; the current ad-hoc artifact is not equivalent to a notarized release.
 
 All three modding tiers work — see [docs/modding](docs/modding/). Tier 2 is restricted
 Lua 5.5.1, one VM per package, bounded in memory, instructions and engine calls, reaching the
@@ -112,6 +117,7 @@ decided independently ([ADR-0017](docs/adr/0017-repository-scope.md)).
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Staged milestones from minimal engine to 2D to 3D | Occasionally |
 | [docs/adr/](docs/adr/) | Numbered architecture decision records | Append-only |
 | [docs/design/](docs/design/) | Per-subsystem design, written before implementation | As needed |
+| [docs/shipping/macos.md](docs/shipping/macos.md) | macOS packaging, recipient use and public-release gates | At release-boundary changes |
 
 If you read only one thing, read `CLAUDE.md` §3 — the nine invariants. They are the
 constraints everything else follows from, and most of them exist to keep modding possible.

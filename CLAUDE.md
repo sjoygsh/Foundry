@@ -167,7 +167,7 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | ABI placement | `abi` is a peer of `debug` at L5; the host supplies its subsystems | [0026](docs/adr/0026-abi-module-and-host.md) |
 | Scripting runtime | Restricted Lua 5.5.1, one VM per package, quotas inside a protected C boundary | [0028](docs/adr/0028-scripting-lua.md) |
 | Script host | Header-only public ABI consumer; its Lua surface is validation over the shared table | [0029](docs/adr/0029-script-host-and-reload.md) |
-| Distribution | Relocatable applications around ordinary packages; explicit staging and macOS release gates | [0030](docs/adr/0030-distribution-artifacts.md) |
+| Distribution | Relocatable applications around ordinary packages; explicit staging and macOS release gates — with credentialed release certification separated from milestone completion | [0030](docs/adr/0030-distribution-artifacts.md), whose M9 gate [0032](docs/adr/0032-defer-macos-release-certification.md) supersedes |
 | Configuration | Host bootstrap, ordinary content defaults and bounded user preferences remain separate | [0031](docs/adr/0031-application-configuration-and-user-data.md) |
 | Identity | Generational handles internally; stable namespaced string IDs for content | [0005](docs/adr/0005-handles-and-content-ids.md) |
 | Content | Engine is a library; content is data; two representations (authoring / runtime) | [0006](docs/adr/0006-content-model.md) |
@@ -544,6 +544,7 @@ Recorded so they are not made accidentally. Each notes when it comes due.
 | Job system / threading model | Post-M5 | Do not design subsystems that assume single-threaded forever. |
 | Bit-exact determinism for a subset | If lockstep networking is ever wanted | ADR-0013 keeps this open without paying for it now. |
 | Networking | Indefinite | I1, I2, I8 and I9 keep it possible. Nothing else is owed to it now. |
+| Public macOS release certification | First public macOS release | Use the implemented Developer ID/notary path, then verify the exact quarantined download on a genuinely clean recipient Mac. The current ad-hoc artifact is not equivalent (ADR-0032). |
 
 **Out of scope indefinitely, not constraining the initial architecture:** consoles, mobile, web,
 VR, x86-64 macOS.

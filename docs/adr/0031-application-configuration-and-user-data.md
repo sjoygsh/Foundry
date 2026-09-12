@@ -1,6 +1,6 @@
 # ADR-0031: Separate application bootstrap, content defaults and user state
 
-**Status:** Accepted (implemented through M9 Step 3)
+**Status:** Accepted (implemented across M9's eight steps; the milestone is complete)
 **Date:** 2026-09-12
 
 ## Context

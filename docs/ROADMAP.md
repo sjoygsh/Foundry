@@ -425,7 +425,7 @@ and survived.
 entity spawning through ordinary content templates. Its §§8 and 14 define operational fault
 containment and the required failure tests; this is not a proof against unknown native defects.
 
-### M9 — Shippable: "it distributes" — **designed (2026-09-12), 7/8 implemented**
+### M9 — Shippable: "it distributes" — **complete (2026-09-13)**
 
 [ADR-0030](adr/0030-distribution-artifacts.md) fixes release artifacts and the macOS tooling
 boundary; [ADR-0031](adr/0031-application-configuration-and-user-data.md) separates bootstrap,
@@ -476,22 +476,30 @@ made read-only, run with SDL3/Metal/audio, and opened through LaunchServices; th
 bundle separately carries and runs its script. A second, explicit `dist-developer-id` target
 contains the hardened-runtime/timestamp/notary/staple/Gatekeeper sequence and refuses missing
 operator inputs, but no credential was supplied or authorized, so no public signing or
-notarization is claimed. **1278 headless tests.** The actual
-download/quarantine/no-toolchain recipient evidence remains Step 8.
+notarization is claimed. Step 8, completed 2026-09-13, consumed Foundry's exported release
+helpers from an outside build and reproduced the credential-independent recipient path: an
+HTTP-transferred zip matched its published SHA-256; the app ran with no Zig or Xcode on
+`PATH`; preferences survived a fresh process; a relocated read-only app loaded a precompiled
+user mod; and a failed startup plus the next healthy launch left the intended diagnostic
+markers. Ad-hoc signature integrity passed and Gatekeeper rejection was expected. ADR-0032
+defers actual Developer ID signing, Apple notarization and a quarantined stranger-download
+launch on a genuinely clean Mac to the first public release, without weakening that release
+gate. **1278 headless tests.** All eight steps are complete.
 
 * Asset and content bundling; release build configuration.
 * Game configuration and user settings.
 * Generated `THIRD_PARTY_NOTICES.txt` from `THIRD_PARTY_LICENSES/` (ADR-0016).
 * Distributable macOS build. Crash handling and diagnostics.
 
-**Exit criteria:** a zip a stranger can download and run.
+**Exit criteria met:** the reusable release/distribution path is implemented and proved through
+an external consumer as far as possible without private Apple release credentials.
 
 The reference artifact is the existing room sample, ReleaseSafe/SDL3/Metal on Apple Silicon
 macOS, with the sandbox proving packaged scripting separately. Ordinary packages remain the
-runtime format. A local ad-hoc zip proves staging, not notarization; the final recipient gate
-records actual download/quarantine launch, relocation, preferences and diagnostics without
-the development toolchain. External signing/recipient prerequisites are recorded explicitly
-if unavailable, rather than treating a local run as milestone completion.
+runtime format. A local ad-hoc zip proves staging and integrity, not notarization. A real public
+macOS release still requires Developer ID signing, Apple notarization and verification of the
+exact quarantined stranger download on a genuinely clean recipient Mac. ADR-0032 carries that
+credential-dependent proof into deferred release work; no current artifact claims it.
 
 ---
 

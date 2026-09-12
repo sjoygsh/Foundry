@@ -1,6 +1,7 @@
 # ADR-0030: Distribute an application around ordinary content packages
 
-**Status:** Accepted (implemented through M9 Step 7; recipient proof remains)
+**Status:** Superseded by [0032](0032-defer-macos-release-certification.md) — in its M9
+completion gate only. The artifact architecture below remains binding and is restated there.
 **Date:** 2026-09-12
 
 ## Context

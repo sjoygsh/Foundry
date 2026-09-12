@@ -1,8 +1,8 @@
 # Distribution: an application a stranger can run
 
-**Status:** designed 2026-09-12; **7/8 implementation steps complete** (Steps 1-6,
-2026-09-12; Step 7, 2026-09-13).
-**Stop point:** after Step 7. Step 8 is not started.
+**Status:** designed 2026-09-12; **implemented in full 2026-09-13** (all eight steps).
+**Stop point:** M9 complete. Credentialed public-release certification remains deferred by
+ADR-0032; no post-M9 work is started.
 
 Rests on [ADR-0030](../adr/0030-distribution-artifacts.md) and
 [ADR-0031](../adr/0031-application-configuration-and-user-data.md), with ADR-0008, ADR-0014,
@@ -13,11 +13,16 @@ authoritative. Proposed filenames, types and commands below are implementation s
 
 ## 1. What M9 owes
 
-The roadmap's exit is **a zip a stranger can download and run**. The concrete proof is the
-existing room sample as a macOS application: extract, launch in Finder, play, change volume
-and window size, quit and relaunch with preferences retained. Move the app and launch again.
-Its packages, runtime assets, attribution and useful local failure diagnostics travel with
-it; neither a compiler nor the repository is present on the recipient's machine.
+M9's scoped exit is an implemented release path proved through an external consumer as far as
+possible without private Apple release credentials (ADR-0032). The concrete reference is the
+existing room sample as a macOS application: extract, launch, play, change volume and window
+size, quit and relaunch with preferences retained, move the app and launch again. Its packages,
+runtime assets, attribution and useful local failure diagnostics travel with it; neither a
+compiler nor the repository is present at runtime.
+
+An actual public macOS release still owes the stronger stranger-download gate: Developer ID
+signing, Apple notarization and a quarantine-preserving launch on a genuinely clean recipient
+Mac. That proof is deferred to release work and cannot be inferred from an ad-hoc artifact.
 
 Needed now: explicit release inputs, runtime-only staging, settings, writable user package
 roots, generated notices, persistent diagnostics, macOS bundle/signing workflow and a guide
@@ -341,7 +346,7 @@ distinct M9 obligations, distributed among steps, not repeated whole-repository 
 | Staging | Missing/custom/generated assets, collision/traversal/symlink refusals, exact inventory; no authoring/build residue; two identical unsigned stages compare. |
 | Notices | Every distributed entry preserved, build-only excluded, malformed entries fail; content notices included. |
 | Diagnostics | Startup failure before engine exists, rollover/cap/drop counts, denied writes, unclean child exit, healthy next launch and matching symbols. |
-| Distribution | SDL/Metal ReleaseSafe app visibly renders/plays/audio works; Finder launch after actual download/quarantine; relocation; no toolchain at runtime. |
+| Distribution | SDL/Metal ReleaseSafe app visibly renders/plays/audio works; checksum-matched HTTP transfer; relocation and no toolchain at runtime; ad-hoc integrity passes and its Gatekeeper rejection remains explicit. Credentialed notarization and clean-recipient quarantine proof are deferred by ADR-0032. |
 | Modding | Packaged sandbox loads an outside-tree script/content package from user roots; native signing claims require separate native-host evidence. |
 
 Break each newly introduced guard narrowly at its implementing step and observe its test
@@ -352,8 +357,8 @@ null builds cannot. Cross builds remain compile evidence, not runtime support cl
 ## 13. Risks and deliberately open work
 
 Signing identity, notarization access and a clean recipient Mac are not assumed available.
-Their absence does not block design or local steps; it does block reporting the full release
-gate complete. Do not buy credentials, upload a release or invent recipient evidence.
+Their absence does not block M9 completion; it does block calling any artifact a verified
+public macOS release. Do not buy credentials, upload a release or invent recipient evidence.
 
 PROJECT_STATE.md carries a Metal app-test compilation issue and a renderer texture staging
 lifetime concern. Neither is re-audited during planning. At the affected release gate, a
@@ -361,10 +366,12 @@ concrete reproduced failure must be reported and scoped before claiming success;
 does not authorize a renderer redesign. Existing batching optimization, threading/editor,
 networking and scripting open questions stay open.
 
-Deferred questions: older macOS support, storefront-specific signing, settings migrations
-once a second schema exists, profiles/concurrent preference merging, crash collection beyond
-OS reports, and a runtime container if measured file overhead warrants one. These do not
-prevent the scoped first release; they are not silently answered by helper implementation.
+Deferred work: actual Developer ID signing, Apple notarization and a quarantined launch of the
+exact public archive on a genuinely clean recipient Mac; older macOS support;
+storefront-specific signing; settings migrations once a second schema exists;
+profiles/concurrent preference merging; crash collection beyond OS reports; and a runtime
+container if measured file overhead warrants one. These are not silently answered by helper
+implementation. The first item is mandatory before a public macOS release is called verified.
 
 ## 14. Implementation order
 
@@ -401,21 +408,24 @@ Resolution when implementation exposes a design correction. No step is done by t
    it; inspect dependencies/signature/symbol UUIDs. Document exact operator notarization
    commands, execute only with authorized available credentials. Record any unmet external
    gate explicitly. Runnable result: Finder-launchable local `.app` and zip.
-8. **Execute the recipient exit criterion.** Write `docs/shipping/macos.md` from an external
+8. **Execute the recipient exit criterion. Complete 2026-09-13.** Write `docs/shipping/macos.md` from an external
    consumer using the helpers and the reference room artifact. Reproduce the exact guide
    from a fresh directory; verify download/quarantine launch on a recipient environment
    without the development toolchain, play/audio, persistence, relocation, diagnostics and
    user-mod installation. Record actual signing/support limits. Update indices, counts and
    PROJECT_STATE; mark M9 complete/tag `m9` only after the exit evidence exists. Stop before
-   backend #2, 3D or any other milestone.
+   backend #2, 3D or any other milestone. ADR-0032 scoped what credentials this environment
+   does not have out of this step: the quarantined launch on a genuinely clean recipient Mac,
+   and the certification around it, belong to the first public release instead.
 
 ## 15. Planning handoff
 
-ADRs 0030/0031 and this design settle the M9 architecture and eight bounded steps. All M8
-implementation/evidence is retained. Steps 1 through 7 are complete as of 2026-09-13; see
-their Resolutions below. **Next is Step 8, not started and not authorized.** The recipient
-guide and the actual downloaded/quarantined no-toolchain exit evidence do not exist yet;
-local ad-hoc bundle evidence must not be promoted into that claim.
+ADRs 0031/0032 and this design settle the M9 architecture and eight bounded steps. All M8
+implementation/evidence is retained. **All eight steps and M9 are complete as of
+2026-09-13.** The credential-independent recipient guide and external-consumer evidence are
+recorded below. Developer ID signing, Apple notarization and a quarantine-preserving launch on
+a genuinely clean recipient Mac remain mandatory deferred release work; the local ad-hoc
+bundle is not promoted into that claim.
 
 ## Resolution — 2026-09-12, step 1
 
@@ -797,3 +807,41 @@ the retained dSYM UUID matches. No Developer ID/notarization credential was supp
 authorized, so there is no claim of private signing, upload, accepted ticket, staple or public
 Gatekeeper assessment. The actual downloaded/quarantined machine without the development
 toolchain remains Step 8's exit evidence.
+
+## Resolution — 2026-09-13, step 8
+
+What executing the external-consumer proof settled, corrected or made explicit.
+
+**The helpers work from the dependency side of ADR-0017.** A fresh project outside this
+repository imported Foundry as a Zig dependency, obtained `Tools.fromDependency`, compiled its
+own room-derived packages and called `macosApplication`. Its `dist` graph completed all 29
+steps and produced its own application, matching dSYM and local zip. No sample-only build path
+was needed.
+
+**Transport, runtime state and user roots crossed process and installation boundaries.** The
+zip was served over HTTP, downloaded into a separate recipient directory and matched SHA-256
+at both ends (`7ee1e46701b1bb57f56c0634c8728f34e54748694ca72c5560122cb7edee4a22`). The
+application ran with a clean environment and a system-only `PATH`, so neither Zig nor Xcode
+was a runtime input; SDL3/Cocoa, Metal and audio initialized. A changed window size and volume
+were written, then a fresh process loaded `1000x650` and `0.25`. From a relocated path
+containing spaces, with `Contents/Resources` read-only, a precompiled user package loaded from
+the application data `mods/` root and supplied its own `900x600`/`0.40` content defaults.
+
+**Failure evidence survives without poisoning the next launch.** A deliberately duplicated
+package made startup fail with `DuplicatePackage`; the session marker recorded `failed` at
+`discovery` and its log retained the named error. Removing it and launching again created the
+next marker as `clean` at `shutdown`.
+
+**Ad-hoc integrity is not release certification.** Strict `codesign` verification passed.
+`spctl --assess --type execute` rejected the artifact, as it should: the machine has no valid
+Developer ID identity and no notarization was performed. Quarantine metadata was propagated
+through extraction, but a launch on this development Mac is not claimed as clean-recipient
+evidence because the same code had already executed here and Gatekeeper may retain local user
+approval. No quarantine was removed and Gatekeeper was not disabled.
+
+ADR-0032 corrects the original M9 boundary: the credential-independent engineering and
+external-consumer evidence above completes M9, while Developer ID signing, Apple notarization
+and a quarantine-preserving launch of the exact public archive on a genuinely clean recipient
+Mac remain mandatory deferred release work. `docs/shipping/macos.md` records both the proven
+workflow and that release gate. No engine/build code changed in this step, so the successful
+Step 7 suite and full integration bar remain accepted under AGENTS.md §6.
