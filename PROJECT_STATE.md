@@ -2771,8 +2771,12 @@ milestone each decision belongs to.
   section.
 * **M12 — Parallel.** The job system and threading model, which §9 dated post-M5 and which is
   four milestones overdue. I9 constrains it hardest.
-* **M13 — Portable.** The second backend, trigger-started, with the shader cross-compiler
-  decision, the unimplemented `win32_hwnd`/X11/Wayland surfaces and non-Metal frame pacing.
+* **M13 — Portable.** The second backend, trigger-started — **and it is Vulkan, decided
+  2026-09-13 in [ADR-0033](docs/adr/0033-vulkan-second-backend.md)**, covering Windows and
+  Linux with one backend; D3D12 is not planned and Metal stays macOS's. With it: the shader
+  cross-compiler decision, which Vulkan's SPIR-V-only input brings due, Vulkan's own binding
+  convention owed to `rhi.md` §9, the unimplemented `win32_hwnd`/X11/Wayland surfaces and
+  non-Metal frame pacing. The largest milestone in the phase.
 * **M14 — Managed.** The mod manager capability `CLAUDE.md` §5 records as unbuilt, the
   content-driven widget set ADR-0024 deferred, preference profiles and concurrent merging, and
   settings migrations once a second schema exists.

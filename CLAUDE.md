@@ -160,6 +160,7 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Platforms | macOS/Apple Silicon primary; Windows x64 and Linux x64 build-checked | [0008](docs/adr/0008-target-platforms.md) |
 | Platform layer | SDL3 behind Foundry's own platform interface, via a Zig package | [0002](docs/adr/0002-platform-layer-sdl3.md) |
 | Rendering | Foundry's own RHI with native backends; Metal first, null backend validates | [0003](docs/adr/0003-renderer-own-rhi-metal-first.md) |
+| Second backend | Vulkan, covering Windows and Linux with one backend; D3D12 not planned | [0033](docs/adr/0033-vulkan-second-backend.md) |
 | Metal bridge | Thin Objective-C shim exposing a C API | [0012](docs/adr/0012-metal-objc-shim.md) |
 | Shaders | MSL now; shaders are assets with per-backend variants | [0015](docs/adr/0015-shader-strategy.md) |
 | Shader ownership | Engine-owned shaders embedded; content-owned shaders are assets | [0019](docs/adr/0019-builtin-versus-content-shaders.md) |
@@ -541,7 +542,7 @@ milestone named below is where `docs/ROADMAP.md` now places it.
 | Decision | Due | Notes |
 | --- | --- | --- |
 | Separate editor application | **M15** | In-process debug overlay first; the editor re-hosts its introspection (ADR-0025). |
-| Second graphics backend (Vulkan / D3D12) | **M13**, trigger-started | Triggered by a reason — shipping Windows or Linux, or validating the RHI. Linux implies Vulkan; Windows could be either. |
+| Second graphics backend | **M13**, trigger-started | **Which API is decided: Vulkan (ADR-0033)**, covering Windows and Linux together. *When* is still triggered by a reason — shipping either platform, or validating the RHI. |
 | Shader cross-compiler vs. hand-written variants | **M13**, or when the shader set grows large | ADR-0015. Whichever comes first. |
 | Job system / threading model | **M12** (was dated post-M5) | Do not design subsystems that assume single-threaded forever. I9 constrains this hardest. |
 | Bit-exact determinism for a subset | **M16**, and only if lockstep | ADR-0013 keeps this open without paying for it now; an authoritative server does not need it. |

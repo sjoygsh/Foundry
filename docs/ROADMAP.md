@@ -585,18 +585,26 @@ determinism test unchanged and still passing.
 
 ### M13 — Portable: "the RHI was real" — **not started; trigger-started**
 
-**Deliberately not placed on the timeline.** Started when there is a reason — a decision to
-ship Windows or Linux, or a decision to validate the RHI against a second API — not when the
-roadmap reaches it. Linux implies Vulkan; Windows could be either (ADR-0003).
+**The backend is Vulkan** ([ADR-0033](adr/0033-vulkan-second-backend.md)), which covers Windows
+and Linux with one backend. D3D12 is not planned, and Metal stays macOS's — nothing is routed
+through MoltenVK. *When* remains trigger-started: a decision to ship either platform, or a
+decision to validate the RHI against a second API, not the roadmap reaching this line.
 
 Expect this milestone to surface RHI design errors. That is its second purpose, and budgeting
-for it is more honest than being surprised by it. It also brings: real hardware or VM testing
-for that platform, the Vulkan SDK and RenderDoc if applicable, and the shader cross-compiler
-decision (ADR-0015). With it come the platform surfaces that are declared and unimplemented —
-`win32_hwnd` and the X11/Wayland kinds — and frame pacing, which today exists only on Metal.
+for it is more honest than being surprised by it — and Vulkan is where they will surface,
+because the RHI's strict rules were copied from Vulkan's guaranteed minimums in the first
+place. It also brings: real hardware or VM testing for both platforms, the Vulkan SDK and
+RenderDoc, Vulkan's own shader-visible binding convention written into `rhi.md` §9 the way
+Metal's was, and the shader cross-compiler decision (ADR-0015), which comes due here because
+Vulkan consumes SPIR-V only. With it come the platform surfaces that are declared and
+unimplemented — `win32_hwnd` and the X11/Wayland kinds — and frame pacing, which today exists
+only on Metal.
 
-**Exit criteria:** a sample runs on a second API and a second platform, and the RHI's written
-rules either survived the encounter or changed by ADR.
+**It is the largest milestone in this phase.** ADR-0003 recorded that a Vulkan-first plan would
+have made M1 a months-long wall; that wall was moved here, not removed.
+
+**Exit criteria:** a sample runs on Vulkan on a second platform, and the RHI's written rules
+either survived the encounter or changed by ADR.
 
 ### M14 — Managed: "players choose their mods" — **not started**
 
