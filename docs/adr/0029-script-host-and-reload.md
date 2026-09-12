@@ -1,6 +1,7 @@
 # ADR-0029: Scripts consume the public ABI and reload behind stable callbacks
 
-**Status:** Accepted (public source boundary, bounded bindings, the package lifecycle and candidate-VM reload implemented through M8 step 6)
+**Status:** Accepted (public source boundary, bounded bindings, package lifecycle,
+candidate-VM reload and end-to-end isolation/reproducibility implemented through M8 step 7)
 **Date:** 2026-09-09
 
 ## Context
@@ -163,3 +164,20 @@ test proves by refusing a `migrate` that tries to log. What remains unclaimed is
 adversarial and determinism matrix, which is step 7, and durable script state across a
 process restart, which is `scripting.md` §15's first open question and is not what a snapshot
 is: it carries no version, no header, and never leaves the process.
+
+## Implementation note — 2026-09-12, step 7
+
+The remaining evidence for decisions 1, 4 and 5 now exists. Two real package identities and
+VMs share the world but not globals, state, heap quota or entity-mutation ownership. Two fresh
+runs over the same twelve fixed ticks and explicit RNG seed produce identical state bytes,
+entity actions and error classification despite different frame pacing. Missing and escaping
+symlinked source fail through the asset boundary while the accepted VM and revision remain,
+and the next confined revision replaces it successfully.
+
+Snapshot and migration allocation sites are exhaustively refused one index at a time; failure
+retains no new aggregate charge and leaves a healthy retry or old package. A child-process
+deadline prevents an accidentally removed instruction hook from hanging the suite, but it is
+test infrastructure rather than a simulation clock or runtime promise. Private host-only
+high-water metrics measured the runnable package far below §8's defaults, so no limit and no
+public ABI changed. The author-guide execution and durable state across process restart remain
+outside this step; the latter is still `scripting.md` §15's open question.

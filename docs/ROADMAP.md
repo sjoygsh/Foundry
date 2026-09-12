@@ -376,12 +376,12 @@ load from their package-local directories, initialise in resolved order and shut
 reverse order. Refused native code is neutralised without discarding its content, and images
 that have run remain mapped for process lifetime. The full in-tree pipeline and every refusal
 path are covered by `engine/tests/mod_pipeline.zig`; the final outside-tree proof exercises
-the same lifecycle as an independent consumer. **1117 headless tests.** M8's design is now
-written; its first implementation step is complete below.
+the same lifecycle as an independent consumer. **1117 headless tests.** M8's current
+implementation status is recorded below.
 
 ### M8 — Scriptable: "modders can extend it"
 
-**Designed 2026-09-09; 5/8 implementation steps complete.**
+**Designed 2026-09-09; 7/8 implementation steps complete.**
 [ADR-0028](adr/0028-scripting-lua.md) selects restricted Lua 5.5.1;
 [ADR-0029](adr/0029-script-host-and-reload.md) fixes the public boundary and reload lifetime.
 [`design/scripting.md`](design/scripting.md) specifies the architecture; §16 is the order:
@@ -401,8 +401,11 @@ Step 6, completed the same day, replaces a package's code without replacing the 
 candidate VM is built beside the running one, the old state crosses as a bounded value tree
 or through the module's own `migrate`, and the commit allocates nothing and runs no script
 code — so editing a `.lua` beside the executable changes what a package does on the next tick
-while its world, its state and the entities it owns stay. Step 7 proves isolation and
-reproducibility end to end. M9 remains undesigned.
+while its world, its state and the entities it owns stay. Step 7, completed the same day,
+proves isolation, bounded failure and reproducibility end to end, including exhaustive
+snapshot/migration allocation refusal, child-process stress deadlines, two-package isolation,
+fresh-run determinism, confined-source recovery and a live windowed bad-edit/recovery run.
+The outside-tree author guide is step 8. M9 remains undesigned.
 
 * Scripting language decision — **made in ADR-0028; runtime boundary implemented**.
 * Scripting host over the same public ABI; no separate surface.

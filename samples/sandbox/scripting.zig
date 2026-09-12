@@ -157,7 +157,10 @@ pub const Host = struct {
     pub fn worldReplaced(self: *Host) void {
         if (!self.started or self.stopped_for_good) return;
         self.stopped_for_good = true;
-        if (self.manager) |*manager| manager.deinit();
+        if (self.manager) |*manager| {
+            reportBudgets(manager);
+            manager.deinit();
+        }
         self.manager = null;
         log.warn("scripts stopped: they belong to the world they were activated in", .{});
     }
@@ -166,12 +169,42 @@ pub const Host = struct {
     /// the ABI is still bound**, because releasing an asset is a call; then unbind, which
     /// neutralises what the world still points at. The caller destroys the world after.
     pub fn deinit(self: *Host) void {
-        if (self.manager) |*manager| manager.deinit();
+        if (self.manager) |*manager| {
+            reportBudgets(manager);
+            manager.deinit();
+        }
         self.manager = null;
         if (self.bound) {
             self.abi_host.unbind();
             self.bound = false;
         }
         self.started = false;
+    }
+
+    /// Step 7 measures §8's defaults with the runnable sample. These are observations only:
+    /// no simulation decision reads them, and the Lua binding cannot reach them (I9).
+    fn reportBudgets(manager: *script.Manager) void {
+        const aggregate = manager.memoryMetrics();
+        log.info("script budget measure: {d} / {d} package(s), aggregate {d} B current / {d} B peak / {d} B limit", .{
+            manager.readyCount(), manager.count, aggregate.used, aggregate.peak, aggregate.limit,
+        });
+        var index: u32 = 0;
+        while (index < manager.count) : (index += 1) {
+            const slot = manager.at(index) orelse continue;
+            if (!slot.has_runtime) continue;
+            const measured = slot.runtime.metrics();
+            log.info("script budget measure '{s}': source {d} B; heap {d} B current / {d} B peak; instructions prepare {d}, update {d}; ABI calls {d}, spawns {d}, logs {d}; owned {d}", .{
+                slot.name(),
+                slot.source_bytes,
+                measured.heap_used,
+                measured.heap_peak,
+                measured.prepare_instructions_peak,
+                measured.update_instructions_peak,
+                measured.abi_calls_peak,
+                measured.spawns_peak,
+                measured.logs_peak,
+                slot.ownedCount(),
+            });
+        }
     }
 };

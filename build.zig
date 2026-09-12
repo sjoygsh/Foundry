@@ -616,10 +616,26 @@ pub fn build(b: *std.Build) void {
         check_step.dependOn(&script_tests.step);
         const run_script_tests = b.addRunArtifact(script_tests);
         test_step.dependOn(&run_script_tests.step);
-        // A separate headless entry point lets the host-side regression harness run
-        // the runaway fixture under its own wall-clock deadline. The instruction hook
-        // is the deterministic guard; this step is not a simulation timeout.
+        // A separate headless entry point runs the runaway, recursion and heap fixtures
+        // in child processes under a host-side wall-clock deadline. The runtime's own
+        // deterministic guards decide the result; the deadline prevents a broken guard
+        // from hanging the test runner (scripting.md §14).
         b.step("script-test", "Run headless scripting bridge tests").dependOn(&run_script_tests.step);
+
+        const script_stress_mod = b.createModule(.{
+            .root_source_file = b.path("engine/tests/script_stress.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        script_stress_mod.addImport("script", mod);
+        const script_stress = b.addExecutable(.{
+            .name = "foundry-script-stress",
+            .root_module = script_stress_mod,
+        });
+        check_step.dependOn(&script_stress.step);
+        const run_script_stress = b.addRunArtifact(script_stress);
+        test_step.dependOn(&run_script_stress.step);
+        b.step("script-stress", "Run scripting stress cases under a host deadline").dependOn(&run_script_stress.step);
 
         // The bindings against the real table, a real world and real merged content. It is
         // its own binary because `script` is an optional consumer: the ordinary integration
@@ -635,7 +651,9 @@ pub fn build(b: *std.Build) void {
         script_integration.addImport("script", mod);
         const script_integration_tests = b.addTest(.{ .root_module = script_integration });
         check_step.dependOn(&script_integration_tests.step);
-        test_step.dependOn(&b.addRunArtifact(script_integration_tests).step);
+        const run_script_integration_tests = b.addRunArtifact(script_integration_tests);
+        test_step.dependOn(&run_script_integration_tests.step);
+        b.step("script-integration-test", "Run scripting tests against the real ABI and world").dependOn(&run_script_integration_tests.step);
     }
 
     // Tools are tested like modules are. `fpack`'s tests reach a real filesystem, which is

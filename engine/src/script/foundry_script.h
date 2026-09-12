@@ -81,7 +81,21 @@ typedef struct FoundryScriptLedger {
 typedef struct FoundryScriptBudget {
     size_t limit;
     size_t used;
+    /* High-water mark across every VM and manager-owned temporary charged here. */
+    size_t peak;
 } FoundryScriptBudget;
+
+/* Host-side measurement of the limits in scripting.md §8. This is private scripting
+ * instrumentation, not a public ABI or a Lua capability. */
+typedef struct FoundryScriptMetrics {
+    size_t heap_used;
+    size_t heap_peak;
+    uint64_t prepare_instructions_peak;
+    uint64_t update_instructions_peak;
+    uint32_t abi_calls_peak;
+    uint32_t spawns_peak;
+    uint32_t logs_peak;
+} FoundryScriptMetrics;
 
 typedef struct FoundryScriptConfig {
     FoundryScriptAllocator allocator;
@@ -190,6 +204,9 @@ FoundryScriptStatus foundry_script_migrate_state(FoundryScript *script,
 FoundryScriptStatus foundry_script_teardown(FoundryScript *script);
 void foundry_script_destroy(FoundryScript *script);
 void foundry_script_fail_next_allocation(FoundryScript *script);
+/* Test-only: fail after this many additional successful Lua allocations. */
+void foundry_script_fail_after_allocations(FoundryScript *script,
+                                           size_t successful_allocations);
 void foundry_script_clear_allocation_failure(FoundryScript *script);
 void foundry_script_inject_result_failure(FoundryScript *script, uint8_t enabled);
 void foundry_script_inject_compile_failure(FoundryScript *script, uint8_t enabled);
@@ -201,5 +218,7 @@ FoundryScriptCategory foundry_script_category(const FoundryScript *script);
 uint32_t foundry_script_error_line(const FoundryScript *script);
 /* Engine calls the most recent invocation made. For tests and the budget's own evidence. */
 uint32_t foundry_script_abi_calls(const FoundryScript *script);
+/* Copies current/high-water budget measurements without entering Lua. */
+void foundry_script_metrics(const FoundryScript *script, FoundryScriptMetrics *out);
 
 #endif

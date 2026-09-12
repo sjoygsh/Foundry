@@ -51,6 +51,18 @@ pub const Ledger = c.FoundryScriptLedger;
 /// Memory shared by every VM one host runs. Caller-owned; zero-initialize with a limit.
 pub const Budget = c.FoundryScriptBudget;
 
+/// Measured high-water marks for one VM. Host diagnostics only: scripts cannot read these
+/// and simulation never branches on them (scripting.md §8, I9).
+pub const Metrics = struct {
+    heap_used: usize,
+    heap_peak: usize,
+    prepare_instructions_peak: u64,
+    update_instructions_peak: u64,
+    abi_calls_peak: u32,
+    spawns_peak: u32,
+    logs_peak: u32,
+};
+
 /// What an invocation may do. Preparation reads; only an update changes the world or logs.
 pub const Phase = enum(u32) {
     prepare = 0,
@@ -339,8 +351,27 @@ pub const Runtime = struct {
         return c.foundry_script_abi_calls(script);
     }
 
+    pub fn metrics(self: *const Runtime) Metrics {
+        var measured: c.FoundryScriptMetrics = std.mem.zeroes(c.FoundryScriptMetrics);
+        c.foundry_script_metrics(self.script, &measured);
+        return .{
+            .heap_used = measured.heap_used,
+            .heap_peak = measured.heap_peak,
+            .prepare_instructions_peak = measured.prepare_instructions_peak,
+            .update_instructions_peak = measured.update_instructions_peak,
+            .abi_calls_peak = measured.abi_calls_peak,
+            .spawns_peak = measured.spawns_peak,
+            .logs_peak = measured.logs_peak,
+        };
+    }
+
     pub fn failNextAllocation(self: *Runtime) void {
         if (self.script) |script| c.foundry_script_fail_next_allocation(script);
+    }
+
+    /// Test-only exhaustive failure injection, counted from the current Lua allocation.
+    pub fn failAfterAllocations(self: *Runtime, successful_allocations: usize) void {
+        if (self.script) |script| c.foundry_script_fail_after_allocations(script, successful_allocations);
     }
 
     pub fn clearAllocationFailure(self: *Runtime) void {
@@ -383,6 +414,7 @@ pub const Status = manager.Status;
 const manager = @import("manager.zig");
 
 test {
+    _ = @import("adversarial_tests.zig");
     _ = @import("binding_tests.zig");
     _ = @import("manager_tests.zig");
     _ = manager;
@@ -524,7 +556,7 @@ test "heap quota rejects a finite allocation and recovers" {
 }
 
 test "one shared budget bounds every VM a host runs" {
-    var budget: Budget = .{ .limit = 256 * 1024, .used = 0 };
+    var budget: Budget = .{ .limit = 256 * 1024, .used = 0, .peak = 0 };
     var first: Runtime = .{};
     try first.init(std.testing.allocator, .{ .budget = &budget });
     const after_first = budget.used;

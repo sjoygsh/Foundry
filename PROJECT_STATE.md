@@ -1,14 +1,49 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-12
-**Current handoff: M8 step 6 complete (6/8 steps); next is step 7 only.**
+**Current handoff: M8 step 7 complete (7/8 steps); next is step 8 only.**
 The restricted Lua runtime, ordinary script package assets/manifests, additive ABI v2 typed
 source copying, binding 1's bounded content/world surface, the package lifecycle that drives
-it and the candidate-VM replacement that swaps a package's code are implemented and proven.
+it, candidate-VM replacement, isolation and deterministic behavior are implemented and proven.
 **A script package runs and can be edited while it runs**: the sandbox's own package ships
 one, it lights four beacons around the world origin on a fixed tick and puts them out again,
 and saving an edit to its `.lua` beside the executable changes what it does on the next tick
 without the world, its state or its entities being disturbed.
+
+**Implemented in step 7, 2026-09-12:** the complete accumulated adversarial and determinism
+matrix of `scripting.md` §14. The isolated runtime now exhaustively injects allocation refusal
+at every snapshot and migration allocation point, checks unchanged aggregate accounting and a
+healthy next invocation, rejects oversized/non-persistable state and all three non-finite
+float forms, exercises the forbidden-library/metatable/protected-call escape attempts, and
+classifies bounded native helper work as its own `native_work_limit`. A child-process harness
+runs infinite-loop, recursion and heap-exhaustion cases under a host-side three-second deadline,
+so a missing deterministic guard fails the suite instead of hanging it. Real ABI/world tests
+prove that two package VMs share neither globals, state, heap quota nor entity ownership; compare
+two fresh fixed-tick runs byte-for-byte across different frame pacing; and carry missing,
+escaping/symlinked and restored source through the real asset/manager path while old code keeps
+running.
+
+The measurement surface is deliberately private host instrumentation, not public ABI and not a
+Lua capability. It records aggregate and per-VM heap high-water marks plus peak instruction,
+ABI-call, spawn and log counts; simulation never observes it. The runnable sandbox measured its
+2,918-byte source at about 34 KiB peak VM heap and 54 KiB peak aggregate memory during a live
+bad-edit/recovery cycle, with 100 peak update instructions, 22 ABI calls, one spawn and one log
+in the busiest invocation. Those values are far below §8's 8 MiB VM, 160 MiB aggregate,
+100,000-instruction, 2,048-call, 8-spawn and 8-log defaults, so no default was changed.
+
+**Step-7 verification:** the focused isolated runtime suite passes 56/56 and the real ABI/world
+suite passes 10/10. The full AGENTS.md §3 bar passes — formatting, all 1,199 headless tests,
+host/Linux/Windows compilation and both 30-frame null sample runs. There are **1,207 declared
+tests**, less the documented 8 Metal-only tests. Deliberately disabling the instruction hook
+first failed strict C compilation and, with its symbol retained, made the runaway child hit the
+three-second host deadline; deliberately downgrading the bounded-native-work category failed
+the exact `NativeWorkLimit` assertion. Both exact mutations were restored before the bar.
+
+**Runnable evidence:** in a real SDL window, replacing the installed script with invalid text
+logged the precise source/line syntax failure and said the last working version remained active;
+the window, controls, fixed ticks and beacon cadence continued. Restoring the confined source
+then logged `'sandbox:content' is running new code (1 reload(s) in)`, and the same live world
+continued to a clean bounded exit.
 
 **Implemented in step 6, 2026-09-12:** `script.Manager.pollReload` — §12's transaction, one
 package per call in resolved order. It observes the entry's source revision through v2,
@@ -57,10 +92,10 @@ destroys all four including the three the previous VM spawned. Replacing the fil
 that does not compile logs one warning saying the last working version is still running, and
 the beacons keep their cadence.
 
-**Step 7 boundary:** the adversarial and determinism matrix of `scripting.md` §14 —
-allocation failure at every point of snapshot and migration, the escape attempts, deterministic
-scenarios, source confinement and windowed recovery — and the budget measurement §16 step 7
-asks for. Do not begin the author guide.
+**Step 8 boundary:** execute the author exit criterion exactly as `scripting.md` §16 specifies:
+write `docs/modding/script-mods.md` by building and running a package outside this repository,
+then update status and close/tag M8 only when that guide has been independently followed. Step 8
+has not begun.
 
 **Implemented in step 5, 2026-09-12:** the author's module contract (`scripting.md` §11) as
 three protected C entry points — `load_module` evaluates the chunk and validates the table it
@@ -181,10 +216,10 @@ bounded content/world bindings, failure policy, state migration and verification
 
 **Eight implementation units, in `scripting.md` §16:** runtime containment; script assets
 and manifests; ABI v2 source access; bounded bindings; package lifecycle; hot reload;
-adversarial/determinism proof; outside-tree author guide and milestone closure. **Steps 1 through 5
-are complete; next is step 6 only when the user resumes.** The sample script is
+adversarial/determinism proof; outside-tree author guide and milestone closure. **Steps 1 through 7
+are complete; next is step 8 only when the user resumes.** The sample script is
 `samples/sandbox/content/scripts/encounter.lua`. Reload, performance defaults and the full
-adversarial matrix still require their specified evidence.
+adversarial matrix are proven; the independently followed author guide remains.
 M7 remains complete with 1117 headless tests; M9 remains undesigned.
 
 **Step-3 verification:** focused source-copy and agreement tests pass. Deliberately narrowing

@@ -88,6 +88,11 @@ struct FoundryScript {
     uint32_t abi_calls;
     uint32_t spawns;
     uint32_t logs;
+    uint64_t prepare_instructions_peak;
+    uint64_t update_instructions_peak;
+    uint32_t abi_calls_peak;
+    uint32_t spawns_peak;
+    uint32_t logs_peak;
     uint32_t template_cache_next;
     TemplateCacheEntry template_cache[FOUNDRY_SCRIPT_TEMPLATE_CACHE];
 

@@ -217,13 +217,23 @@ const Fixture = struct {
     }
 
     fn runtime(self: *Fixture, ledger: *script.Ledger, config: script.Config) !script.Runtime {
+        return runtimeFor(ledger, config, self.self.bits);
+    }
+
+    fn runtimeFor(ledger: *script.Ledger, config: script.Config, self_bits: u64) !script.Runtime {
         var full = config;
         full.get_api = @ptrCast(&Table.getApi);
-        full.self = self.self.bits;
+        full.self = self_bits;
         full.ledger = ledger;
         var value: script.Runtime = .{};
         try value.init(gpa, full);
         return value;
+    }
+
+    fn reloadSource(self: *Fixture) !void {
+        const handle = try self.engine.assets.acquire(gpa, core.ContentId.fromString("demo:scripts.main"));
+        defer self.engine.assets.release(handle);
+        try self.engine.assets.reload(gpa, handle);
     }
 };
 
@@ -524,4 +534,208 @@ test "source that does not compile leaves the running package exactly as it was"
     try fixture.rewriteScript(cleanup_source);
     try testing.expectEqual(script.Reload.reloaded, manager.pollReload().outcome);
     try testing.expectEqual(@as(u32, 3), fixture.world.entityCount());
+}
+
+test "two real packages isolate globals, state, heap quota, and entity ownership" {
+    var fixture: Fixture = undefined;
+    try fixture.init(gpa);
+    defer fixture.deinit();
+
+    const second_self = try fixture.host.issueMod(core.ContentId.fromString("other:mod"), "other:mod");
+    var first_ledger: script.Ledger = std.mem.zeroes(script.Ledger);
+    var second_ledger: script.Ledger = std.mem.zeroes(script.Ledger);
+    var first = try Fixture.runtimeFor(&first_ledger, .{ .heap_limit = 64 * 1024 }, fixture.self.bits);
+    defer first.deinit();
+    var second = try Fixture.runtimeFor(&second_ledger, .{}, second_self.bits);
+    defer second.deinit();
+
+    try testing.expectEqual(@as(i64, 1), try first.run(
+        \\private_global = 41
+        \\mine = foundry.world_spawn("demo:goblin")
+        \\return 1
+    , .update));
+    try testing.expectEqual(@as(u32, 1), first_ledger.count);
+    try testing.expectEqual(@as(u32, 0), second_ledger.count);
+
+    // A separate VM has neither the first package's globals nor its ownership ledger. It
+    // can see the shared world, but the real ABI refuses its attempt to remove the entity.
+    try testing.expectEqual(@as(i64, 1), try second.run("assert(private_global == nil) return 1", .update));
+    try testing.expectError(error.RuntimeFailed, second.run(
+        \\local entity = foundry.world_next_entity(nil)
+        \\return foundry.world_destroy_entity(entity)
+    , .update));
+    try testing.expectEqual(script.Category.contract, second.category());
+    try testing.expectEqual(@as(u32, 1), fixture.world.entityCount());
+
+    // Exhausting one VM's own heap neither spends the other's quota nor prevents its next
+    // invocation. The failing package can also recover on its following invocation.
+    try testing.expectError(error.MemoryLimit, first.run(
+        \\local values = {}
+        \\for i = 1, 20000 do values[i] = i end
+        \\return 1
+    , .update));
+    try testing.expectEqual(@as(i64, 2), try second.run("return 2", .update));
+    try testing.expectEqual(@as(i64, 3), try first.run("return 3", .update));
+
+    const module_template =
+        \\return {
+        \\  state_version = 1,
+        \\  init = function() return { value = VALUE } end,
+        \\  update = function(state) state.value = state.value + 1 end,
+        \\}
+    ;
+    var first_source: [module_template.len]u8 = undefined;
+    var second_source: [module_template.len]u8 = undefined;
+    @memcpy(first_source[0..], module_template);
+    @memcpy(second_source[0..], module_template);
+    // Replace the marker word without depending on a formatter allocation.
+    const marker = std.mem.indexOf(u8, module_template, "VALUE").?;
+    @memcpy(first_source[marker .. marker + 5], "11   ");
+    @memcpy(second_source[marker .. marker + 5], "22   ");
+    try first.loadModule(&first_source, "isolation:first");
+    try first.initState();
+    try second.loadModule(&second_source, "isolation:second");
+    try second.initState();
+    const first_size = try first.stateSize();
+    const second_size = try second.stateSize();
+    const first_state = try gpa.alloc(u8, first_size);
+    defer gpa.free(first_state);
+    const second_state = try gpa.alloc(u8, second_size);
+    defer gpa.free(second_state);
+    _ = try first.snapshotState(first_state);
+    _ = try second.snapshotState(second_state);
+    try testing.expect(!std.mem.eql(u8, first_state, second_state));
+
+    try testing.expectEqual(@as(i64, 1), try first.run("return foundry.world_destroy_entity(mine) and 1 or 0", .update));
+    try testing.expectEqual(@as(u32, 0), fixture.world.entityCount());
+}
+
+const DeterministicRun = struct {
+    snapshot: []u8,
+    entities: []u64,
+    category: script.Category,
+    line: u32,
+
+    fn deinit(self: *DeterministicRun) void {
+        gpa.free(self.snapshot);
+        gpa.free(self.entities);
+    }
+};
+
+const deterministic_source =
+    \\local template = foundry.id_from_string("demo:goblin")
+    \\return {
+    \\  state_version = 1,
+    \\  init = function()
+    \\    return { rng = foundry.rng(12345, 9), count = 0, rolls = {}, owned = {} }
+    \\  end,
+    \\  update = function(state, step)
+    \\    state.count = state.count + 1
+    \\    state.rolls[state.count] = state.rng:next_u32()
+    \\    if step.tick % 3 == 0 then
+    \\      state.owned[state.count / 3] = foundry.world_spawn(template)
+    \\    end
+    \\    if step.tick == 12 then error("deterministic stop") end
+    \\  end,
+    \\}
+;
+
+fn runDeterministicScenario(pacing: []const u8) !DeterministicRun {
+    var fixture: Fixture = undefined;
+    try fixture.init(gpa);
+    defer fixture.deinit();
+
+    var ledger: script.Ledger = std.mem.zeroes(script.Ledger);
+    var runtime = try fixture.runtime(&ledger, .{});
+    defer runtime.deinit();
+    try runtime.loadModule(deterministic_source, "determinism:scenario");
+    try runtime.initState();
+
+    var tick: u64 = 0;
+    for (pacing) |steps_this_frame| {
+        for (0..steps_this_frame) |_| {
+            tick += 1;
+            if (runtime.update(.{ .tick = tick, .delta_ns = 16_666_667 })) |_| {
+                try testing.expect(tick < 12);
+            } else |err| {
+                try testing.expectEqual(@as(u64, 12), tick);
+                try testing.expectEqual(error.RuntimeFailed, err);
+            }
+        }
+    }
+    try testing.expectEqual(@as(u64, 12), tick);
+    const category = runtime.category();
+    const line = runtime.errorLine();
+
+    const needed = try runtime.stateSize();
+    const snapshot = try gpa.alloc(u8, needed);
+    errdefer gpa.free(snapshot);
+    _ = try runtime.snapshotState(snapshot);
+
+    const entities = try gpa.alloc(u64, ledger.count);
+    errdefer gpa.free(entities);
+    for (entities, 0..) |*bits, index| bits.* = ledger.entities[index].bits;
+    return .{ .snapshot = snapshot, .entities = entities, .category = category, .line = line };
+}
+
+test "fresh deterministic runs agree across different frame pacing" {
+    const one_step_frames = [_]u8{ 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+    const uneven_frames = [_]u8{ 0, 3, 0, 2, 1, 0, 4, 2 };
+    var first = try runDeterministicScenario(&one_step_frames);
+    defer first.deinit();
+    var second = try runDeterministicScenario(&uneven_frames);
+    defer second.deinit();
+
+    try testing.expectEqualSlices(u8, first.snapshot, second.snapshot);
+    try testing.expectEqualSlices(u64, first.entities, second.entities);
+    try testing.expectEqual(script.Category.runtime, first.category);
+    try testing.expectEqual(first.category, second.category);
+    try testing.expectEqual(first.line, second.line);
+}
+
+test "missing and escaping source keep old code until a confined revision recovers" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    var fixture: Fixture = undefined;
+    try fixture.init(gpa);
+    defer fixture.deinit();
+    var manager = try script.Manager.init(gpa, @ptrCast(&Table.getApi), .{});
+    defer manager.deinit();
+    const slot = try manager.add(fixture.descriptor());
+    manager.activateAll();
+
+    const delta = core.time.Duration.fromNanos(16_666_667);
+    fixture.world.update(.{ .tick = 3, .delta = delta });
+    try testing.expectEqual(@as(u32, 1), fixture.world.entityCount());
+    const accepted_revision = slot.source_revision;
+
+    try fixture.tmp.dir.deleteFile(testing.io, "demo/scripts/main.lua");
+    try testing.expectError(error.SourceMissing, fixture.reloadSource());
+    try testing.expectEqual(script.Reload.idle, manager.pollReload().outcome);
+    try testing.expectEqual(accepted_revision, slot.source_revision);
+    fixture.world.update(.{ .tick = 6, .delta = delta });
+    try testing.expectEqual(@as(u32, 2), fixture.world.entityCount());
+
+    const outside_name = try std.fmt.allocPrint(gpa, "outside-{s}.lua", .{fixture.tmp.sub_path});
+    defer gpa.free(outside_name);
+    try fixture.tmp.parent_dir.writeFile(testing.io, .{ .sub_path = outside_name, .data = cleanup_source });
+    defer fixture.tmp.parent_dir.deleteFile(testing.io, outside_name) catch {};
+    const escape_target = try std.fmt.allocPrint(gpa, "../../../{s}", .{outside_name});
+    defer gpa.free(escape_target);
+    try fixture.tmp.dir.symLink(testing.io, escape_target, "demo/scripts/main.lua", .{});
+    try testing.expectError(error.SourceRejected, fixture.reloadSource());
+    try testing.expectEqual(script.Reload.idle, manager.pollReload().outcome);
+    fixture.world.update(.{ .tick = 9, .delta = delta });
+    try testing.expectEqual(@as(u32, 3), fixture.world.entityCount());
+
+    try fixture.tmp.dir.deleteFile(testing.io, "demo/scripts/main.lua");
+    const entry_path = try platform.os.joinPath(gpa, &.{
+        fixture.path_buf[0..fixture.content_len], "demo", "scripts", "main.lua",
+    });
+    defer gpa.free(entry_path);
+    try fixture.os.writeFile(entry_path, cleanup_source);
+    try fixture.reloadSource();
+    try testing.expectEqual(script.Reload.reloaded, manager.pollReload().outcome);
+    fixture.world.update(.{ .tick = 10, .delta = delta });
+    try testing.expectEqual(@as(u32, 2), fixture.world.entityCount());
 }

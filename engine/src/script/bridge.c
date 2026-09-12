@@ -266,6 +266,9 @@ static void *quota_allocator(void *userdata, void *pointer, size_t old_size,
     }
     if (budget != NULL) {
         budget->used = shared_base + new_size;
+        if (budget->used > budget->peak) {
+            budget->peak = budget->used;
+        }
     }
     return next;
 }
@@ -388,6 +391,12 @@ static int base_ipairs(lua_State *state) {
     return 3;
 }
 
+static int native_work_error(lua_State *state, const char *message) {
+    FoundryScript *script = foundry_script_from_state(state);
+    script->failure = SCRIPT_FAILURE_NATIVE_WORK;
+    return luaL_error(state, "%s", message);
+}
+
 typedef struct PairKey {
     int is_string;
     lua_Integer integer;
@@ -445,7 +454,8 @@ static int base_pairs(lua_State *state) {
         }
         count += 1;
         if (count > FOUNDRY_SCRIPT_MAX_PAIRS) {
-            return luaL_error(state, "native_work_limit: pairs: the table has more than 1024 keys");
+            return native_work_error(state,
+                "native_work_limit: pairs: the table has more than 1024 keys");
         }
     }
 
@@ -621,7 +631,8 @@ static int string_sub(lua_State *state) {
         return 1;
     }
     if (last - first + 1 > FOUNDRY_SCRIPT_MAX_STRING) {
-        return luaL_error(state, "native_work_limit: string.sub: the result is longer than 16 KiB");
+        return native_work_error(state,
+            "native_work_limit: string.sub: the result is longer than 16 KiB");
     }
     lua_pushlstring(state, text + first - 1, last - first + 1);
     return 1;
@@ -637,7 +648,8 @@ static int string_byte(lua_State *state) {
         return 0;
     }
     if (last - first + 1 > FOUNDRY_SCRIPT_MAX_BYTES) {
-        return luaL_error(state, "native_work_limit: string.byte: more than 256 values requested");
+        return native_work_error(state,
+            "native_work_limit: string.byte: more than 256 values requested");
     }
     luaL_checkstack(state, (int)(last - first + 1), "string.byte");
     for (i = first; i <= last; ++i) {
@@ -650,7 +662,8 @@ static int string_char(lua_State *state) {
     char buffer[FOUNDRY_SCRIPT_MAX_BYTES];
     int count = lua_gettop(state), i;
     if (count > FOUNDRY_SCRIPT_MAX_BYTES) {
-        return luaL_error(state, "native_work_limit: string.char: more than 256 values");
+        return native_work_error(state,
+            "native_work_limit: string.char: more than 256 values");
     }
     for (i = 1; i <= count; ++i) {
         lua_Integer value = check_integer(state, i, 0, "string.char");
@@ -669,6 +682,8 @@ static int string_case(lua_State *state, const char *fn, int upper) {
     size_t length = 0, i;
     const char *text = check_string(state, 1, &length, fn);
     if (length > FOUNDRY_SCRIPT_MAX_STRING) {
+        FoundryScript *script = foundry_script_from_state(state);
+        script->failure = SCRIPT_FAILURE_NATIVE_WORK;
         return luaL_error(state, "native_work_limit: %s: the string is longer than 16 KiB", fn);
     }
     for (i = 0; i < length; ++i) {
@@ -860,6 +875,25 @@ static void begin_invocation(FoundryScript *script, FoundryScriptPhase phase) {
 
 /* Runs `inner` as one protected invocation in `phase`. No Lua error reaches the caller:
  * the two nested protected calls are what §4 requires, and this is the only way in. */
+static FoundryScriptStatus finish_invocation(FoundryScript *script,
+                                             FoundryScriptStatus status) {
+    uint64_t *instruction_peak = script->phase == FOUNDRY_SCRIPT_PHASE_PREPARE
+        ? &script->prepare_instructions_peak : &script->update_instructions_peak;
+    if (script->instructions > *instruction_peak) {
+        *instruction_peak = script->instructions;
+    }
+    if (script->abi_calls > script->abi_calls_peak) {
+        script->abi_calls_peak = script->abi_calls;
+    }
+    if (script->spawns > script->spawns_peak) {
+        script->spawns_peak = script->spawns;
+    }
+    if (script->logs > script->logs_peak) {
+        script->logs_peak = script->logs;
+    }
+    return status;
+}
+
 static FoundryScriptStatus invoke(FoundryScript *script, lua_CFunction inner,
                                   FoundryScriptPhase phase) {
     begin_invocation(script, phase);
@@ -868,7 +902,7 @@ static FoundryScriptStatus invoke(FoundryScript *script, lua_CFunction inner,
         script->failure = SCRIPT_FAILURE_MEMORY;
         script->category = FOUNDRY_SCRIPT_CATEGORY_MEMORY_LIMIT;
         diagnostic_literal(script, "invoke: stack limit exceeded");
-        return FOUNDRY_SCRIPT_MEMORY_LIMIT;
+        return finish_invocation(script, FOUNDRY_SCRIPT_MEMORY_LIMIT);
     }
     lua_pushcfunction(script->state, execute_function);
     int status = lua_pcall(script->state, 0, 0, 0);
@@ -882,7 +916,7 @@ static FoundryScriptStatus invoke(FoundryScript *script, lua_CFunction inner,
         script->category == FOUNDRY_SCRIPT_CATEGORY_NONE) {
         classify(script, "", 0);
     }
-    return status_from_failure(script->failure);
+    return finish_invocation(script, status_from_failure(script->failure));
 }
 
 static uint32_t limit_or_default(uint32_t value, uint32_t fallback) {
@@ -1981,6 +2015,18 @@ void foundry_script_fail_next_allocation(FoundryScript *script) {
     }
 }
 
+void foundry_script_fail_after_allocations(FoundryScript *script,
+                                           size_t successful_allocations) {
+    if (script == NULL) {
+        return;
+    }
+    if (successful_allocations > SIZE_MAX - script->allocation_count) {
+        script->fail_after_allocations = FOUNDRY_SCRIPT_NEVER_FAIL;
+        return;
+    }
+    script->fail_after_allocations = script->allocation_count + successful_allocations;
+}
+
 void foundry_script_clear_allocation_failure(FoundryScript *script) {
     if (script != NULL) {
         script->fail_after_allocations = FOUNDRY_SCRIPT_NEVER_FAIL;
@@ -2016,4 +2062,21 @@ uint32_t foundry_script_error_line(const FoundryScript *script) {
 
 uint32_t foundry_script_abi_calls(const FoundryScript *script) {
     return script == NULL ? 0 : script->abi_calls;
+}
+
+void foundry_script_metrics(const FoundryScript *script, FoundryScriptMetrics *out) {
+    if (out == NULL) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    if (script == NULL) {
+        return;
+    }
+    out->heap_used = script->heap_used;
+    out->heap_peak = script->heap_peak;
+    out->prepare_instructions_peak = script->prepare_instructions_peak;
+    out->update_instructions_peak = script->update_instructions_peak;
+    out->abi_calls_peak = script->abi_calls_peak;
+    out->spawns_peak = script->spawns_peak;
+    out->logs_peak = script->logs_peak;
 }

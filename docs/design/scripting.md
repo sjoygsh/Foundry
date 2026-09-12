@@ -1,7 +1,7 @@
 # Scripting: the Tier 2 host
 
-**Status:** designed 2026-09-09; **6 of 8 implementation steps complete.**
-**Current stop point:** after §16 step 6; step 7 has not begun.
+**Status:** designed 2026-09-09; **7 of 8 implementation steps complete.**
+**Current stop point:** after §16 step 7; step 8 has not begun.
 
 Rests on [ADR-0028](../adr/0028-scripting-lua.md) (runtime),
 [ADR-0029](../adr/0029-script-host-and-reload.md) (boundary and lifetime), and
@@ -564,11 +564,12 @@ steps simply because a session has budget. This planning commit completes none o
    commit. Test rollback, fault recovery and repeated reload beyond slot capacity. Runnable
    result: edit gameplay conditions live and retain state/entities, then introduce bad source
    and keep the old behavior. Document content-reload independence explicitly.
-7. **Prove isolation and reproducibility end to end.** Complete the adversarial matrix in
-   §14, guard-breaking evidence, bounded native-work/OOM paths, deterministic scenarios,
-   source confinement and windowed recovery. Measure the default budgets with the runnable
-   sample and record any justified adjustment before changing them. Runnable result: a
-   deliberately broken mod beside healthy gameplay, with a useful error and working controls.
+7. **Prove isolation and reproducibility end to end. Complete 2026-09-12.** Complete the
+   adversarial matrix in §14, guard-breaking evidence, bounded native-work/OOM paths,
+   deterministic scenarios, source confinement and windowed recovery. Measure the default
+   budgets with the runnable sample and record any justified adjustment before changing them.
+   Runnable result: a deliberately broken mod beside healthy gameplay, with a useful error
+   and working controls.
 8. **Execute the author exit criterion.** Write `docs/modding/script-mods.md` by creating
    a package outside the engine tree, following it from installed tools to scripted gameplay,
    source edit, migration and intentional failure/recovery. Verify it independently by
@@ -577,13 +578,13 @@ steps simply because a session has budget. This planning commit completes none o
 
 ## 17. Planning handoff
 
-Architecture and sequence are written. Steps 1 through 6 prove the Lua/C/Zig containment
+Architecture and sequence are written. Steps 1 through 7 prove the Lua/C/Zig containment
 boundary, package/source integration, additive public source access, binding 1's bounded
 content/world surface, the package lifecycle that drives it on a fixed tick, and the
 candidate-VM replacement that changes a package's code while its world, its state and its
-entities stay. End-to-end security, performance and guide execution remain **unverified
-until their implementation steps**. The next authorized unit, when the user resumes, is
-§16 step 7 only.
+entities stay, plus the end-to-end isolation, bounded-failure, reproducibility, confinement
+and live recovery evidence. Author-guide execution remains **unverified until step 8**. The
+next authorized unit, when the user resumes, is §16 step 8 only.
 
 ## Resolution — 2026-09-10, step 1
 
@@ -886,3 +887,45 @@ at every point of snapshot and migration, the escape attempts, the determinism s
 the windowed recovery — is step 7's, and no part of it was claimed early. Nor does anything
 here make a script's state durable across a process restart: §15's first question stays open,
 and the snapshot is not a save format.
+
+## Resolution — 2026-09-12, step 7
+
+The §14 matrix is complete. Exhaustive allocation-index injection now covers snapshot and
+migration in addition to step 1's bootstrap/compile/invocation/teardown paths; every refused
+operation returns a memory-limit status, retains no new aggregate charge and leaves a usable
+VM or old package. The runtime cases cover forbidden globals, protected-call and library/
+metatable escape attempts, bounded `pairs` and string helpers, recursion, runaway execution,
+heap exhaustion, oversized state, functions in state, NaN and both infinities. A separate
+executable runs the three cases that could hang or exhaust their test process as children
+under a three-second awake-clock deadline. That deadline is a test-harness backstop only and
+does not enter simulation or change §8's bounded-work policy.
+
+One defect was found by the matrix: bounded base-library helpers emitted the
+`native_work_limit` diagnostic token but left the bridge's failure kind at generic runtime,
+so the host received `RuntimeFailed` rather than `NativeWorkLimit`. The helpers now set the
+native-work failure before raising, preserving §13's structured category. This changes no
+public ABI and adds no Lua capability.
+
+Real-table/world tests prove two package VMs share neither globals, state, heap quota nor
+entity ownership; a failure in one leaves both its next invocation and the other package
+healthy. Two fresh worlds driven through twelve identical fixed ticks with different frame
+pacing produce byte-identical state snapshots, identical entity-handle action sequences and
+the same error category/line. The real asset/manager path refuses missing and escaping
+symlinked source without advancing the running revision, continues the old code, and accepts
+the next confined regular-file revision.
+
+The sample's new measurements are private host diagnostics: no public table changed, Lua
+cannot read them and simulation does not branch on them. Its 2,918-byte script reached about
+34 KiB peak VM heap and 54 KiB peak aggregate memory during the live bad-edit/recovery run;
+the busiest invocation used 100 metered update instructions, 22 ABI calls, one spawn and one
+log. These are well below every applicable §8 default, so **no default is adjusted**.
+
+The windowed proof edited only the installed source. Invalid text produced its record, line,
+phase and syntax category while the old VM kept the beacon cadence and the window and controls
+remained live; restoring the confined file logged that the package was running new code and
+the same world continued to a clean bounded exit. Deliberately disabling the instruction hook
+made the child harness reach its deadline, and deliberately changing bounded-native-work to a
+generic runtime category failed the exact status assertion; both edits were restored. The full
+bar passes with **1,207 declared / 1,199 headless tests**, host/Linux/Windows compilation and
+both null-backend samples. The remaining step is the independently executed outside-tree
+author guide; it has not begun.

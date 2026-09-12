@@ -125,6 +125,8 @@ pub const Slot = struct {
     has_asset: bool = false,
     /// The revision the running VM was built from.
     source_revision: u64 = 0,
+    /// Last accepted source size, retained as measurement rather than source storage.
+    source_bytes: usize = 0,
     /// The last revision a replacement was *attempted* on, whether or not it worked. Broken
     /// text is compiled once, not once a frame; retrying it is a host action (§12).
     attempted_revision: u64 = 0,
@@ -321,6 +323,7 @@ pub const Slot = struct {
     fn reserve(self: *Slot, bytes: usize) bool {
         if (bytes > self.budget.limit - self.budget.used) return false;
         self.budget.used += bytes;
+        self.budget.peak = @max(self.budget.peak, self.budget.used);
         return true;
     }
 
@@ -502,7 +505,7 @@ pub const Manager = struct {
         for (slots) |*each| each.* = .{};
 
         const budget = try gpa.create(root.Budget);
-        budget.* = .{ .limit = limits.memory, .used = 0 };
+        budget.* = .{ .limit = limits.memory, .used = 0, .peak = 0 };
 
         return .{
             .gpa = gpa,
@@ -573,6 +576,17 @@ pub const Manager = struct {
         return total;
     }
 
+    pub const MemoryMetrics = struct {
+        used: usize,
+        peak: usize,
+        limit: usize,
+    };
+
+    /// Aggregate script memory, including manager-owned source/snapshot temporaries.
+    pub fn memoryMetrics(self: *const Manager) MemoryMetrics {
+        return .{ .used = self.budget.used, .peak = self.budget.peak, .limit = self.budget.limit };
+    }
+
     /// §10 steps 3 through 5: copy the source, prepare a VM, validate the module, run
     /// `init`, and only then publish by registering the system. Every failure releases
     /// everything it took and leaves the package's content loaded.
@@ -599,6 +613,7 @@ pub const Manager = struct {
         };
         defer self.releaseSource(target, source);
         target.source_revision = revision;
+        target.source_bytes = source.len;
 
         var config = self.limits.runtime;
         config.budget = self.budget;
@@ -827,6 +842,7 @@ pub const Manager = struct {
         target.runtime = candidate;
         target.has_runtime = true;
         target.source_revision = revision;
+        target.source_bytes = source.len;
         target.reloads += 1;
         target.status = .ready;
         committed = true;
