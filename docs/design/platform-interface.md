@@ -204,7 +204,8 @@ identifiers and are not renamed casually.
 
 `platform` provides **raw filesystem access only**:
 
-* Read a file, write a file, check existence, get modification time.
+* Read a file, write a file, replace a file atomically, check existence, get modification
+  time.
 * Enumerate a directory.
 * Well-known base locations: executable directory, user data directory, temporary directory.
 * Later, for hot reload: watch a path for changes.
@@ -223,6 +224,25 @@ to and from the OS's native form happens **inside** the platform backend and now
 Content IDs are not paths and paths are not content IDs (I2). Whether asset IDs are
 path-derived is an open decision due at M3, and this interface deliberately does not
 prejudge it.
+
+### Confined reads, and confined writes — added M9 step 1, 2026-09-12
+
+Two operations take a **root** the host supplies and a path relative to it, and open every
+component below that root with symlink following disabled: `readFileConfined`, which `asset`
+uses for package files, and `replaceFileConfined`, which writes one.
+
+A replacement creates an exclusively named temporary sibling, writes it, flushes it to the
+device and renames it over the destination. Three properties follow, and all three are the
+reason it exists rather than `writeFile`. Nothing truncates the old file, so every failure
+before the rename leaves the previous bytes exactly as they were. The destination is replaced
+as a *name*, so a symlink sitting there is overwritten rather than followed to whatever it
+points at — which is what a user-writable directory requires. And the result says whether the
+directory entry was flushed, because once the rename has happened there is nothing left to roll
+back and a weaker guarantee is not a failed write (`distribution.md` §6).
+
+`platform` still owns no policy about *what* is written. Deciding when a preference is dirty,
+what a settings file contains and whether one may be replaced at all belongs to `app`
+(ADR-0031); this is the primitive underneath it.
 
 ### Untrusted input
 

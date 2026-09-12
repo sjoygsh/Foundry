@@ -425,15 +425,20 @@ and survived.
 entity spawning through ordinary content templates. Its §§8 and 14 define operational fault
 containment and the required failure tests; this is not a proof against unknown native defects.
 
-### M9 — Shippable: "it distributes" — **designed (2026-09-12), 0/8 implemented**
+### M9 — Shippable: "it distributes" — **designed (2026-09-12), 1/8 implemented**
 
 [ADR-0030](adr/0030-distribution-artifacts.md) fixes release artifacts and the macOS tooling
 boundary; [ADR-0031](adr/0031-application-configuration-and-user-data.md) separates bootstrap,
 ordinary content defaults and user state. [`design/distribution.md`](design/distribution.md)
 is the specification; §14 orders eight steps: bounded preferences, sample configuration,
 user package roots, release staging, generated attribution, diagnostics, macOS application,
-and the recipient guide/exit proof. **Planning stops before Step 1.** Existing M8 verification
-is accepted; no M9 implementation or recipient evidence exists yet.
+and the recipient guide/exit proof. Step 1, completed 2026-09-12, adds bounded versioned
+preferences: a `settings.fset` envelope over `data`'s existing field-block layout, and a
+confined replacement in `platform` that writes an exclusively created temporary sibling, syncs
+it and renames it over the destination as a leaf — so nothing is ever truncated, a symlinked
+destination is overwritten rather than followed, and a file from a newer build or a different
+schema version is preserved instead of replaced. **1223 headless tests.** No sample reads a
+preference yet, and no release artifact or recipient evidence exists.
 
 * Asset and content bundling; release build configuration.
 * Game configuration and user settings.

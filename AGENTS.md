@@ -54,9 +54,13 @@ world's own fixed tick, and replaced in place when the file changes — its stat
 entities it owns carry across. `docs/modding/script-mods.md` was written by building a script
 package outside this repository and was then rebuilt from its own listings to check it.
 
-**M9 is designed, with 0/8 steps implemented (2026-09-12).** Read ADR-0030, ADR-0031 and
-`docs/design/distribution.md`; §14 is the implementation order. The planning handoff stops
-immediately before Step 1. Implementation requires the user's next instruction.
+**M9 is designed, with 1/8 steps implemented (2026-09-12).** Read ADR-0030, ADR-0031 and
+`docs/design/distribution.md`; §14 is the implementation order and its Step 1 Resolution
+records what implementing the codec settled. Step 1 is in: `engine/src/app/settings.zig` holds
+the `settings.fset` envelope over `data`'s field-block layout, and `Os.replaceFileConfined` is
+the confined temporary-then-rename write every later step goes through — a file this build does
+not understand is preserved rather than replaced. **Nothing calls either from a sample yet.**
+Step 2 is next and requires the user's instruction.
 
 ## 3. Building and verifying
 

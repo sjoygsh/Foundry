@@ -1,7 +1,7 @@
 # Distribution: an application a stranger can run
 
-**Status:** designed 2026-09-12; **0/8 implementation steps complete**.
-**Stop point:** immediately before Step 1. This document implements nothing.
+**Status:** designed 2026-09-12; **1/8 implementation steps complete** (Step 1, 2026-09-12).
+**Stop point:** after Step 1. Step 2 is not started.
 
 Rests on [ADR-0030](../adr/0030-distribution-artifacts.md) and
 [ADR-0031](../adr/0031-application-configuration-and-user-data.md), with ADR-0008, ADR-0014,
@@ -372,7 +372,7 @@ prevent the scoped first release; they are not silently answered by helper imple
 integration bar, required documentation updates, a focused commit and handoff. Append a dated
 Resolution when implementation exposes a design correction. No step is done by this plan.
 
-1. **Persist bounded versioned preferences.** Implement §5's codec and §6's atomic OS
+1. **Persist bounded versioned preferences. Complete 2026-09-12.** Implement §5's codec and §6's atomic OS
    primitive/opt-in `app.settings` storage. Tests cover corruption, versions, failure injection
    and confinement. Runnable result: headless round trip through real user-root fixture files.
    No sample configuration changes, package roots or distribution build target yet.
@@ -412,6 +412,51 @@ Resolution when implementation exposes a design correction. No step is done by t
 ## 15. Planning handoff
 
 ADRs 0030/0031 and this design settle the M9 architecture and eight bounded steps. All M8
-implementation/evidence is retained. **Next is Step 1, not started and not authorized by
-this planning task.** No codecs, schemas, OS primitives, build targets, generated artifacts
-or runtime changes are introduced by the planning commit.
+implementation/evidence is retained. Step 1 is complete as of 2026-09-12; see its Resolution
+below. **Next is Step 2, not started and not authorized.** Nothing in Steps 2-8 — sample
+configuration, package roots, the `dist` target, generated notices, diagnostics or the macOS
+bundle — exists yet.
+
+## Resolution — 2026-09-12, step 1
+
+What implementing §5's codec and §6's replacement settled, corrected or made explicit.
+
+**A file written against an *earlier* version of the same schema is preserved, not read.**
+§5 says a *future* envelope or schema version is read-only to this build, and that a
+migration later means an explicit versioned conversion. It did not say what an older file
+does, and the layout forces the answer: a block's presence bitmap is
+`presenceBytes(field_count)` wide, so a schema that grows from eight fields to nine moves
+every slot that follows it. An older block's fields are therefore *not* at the offsets a
+newer schema would read them from, and reading one anyway would return plausible wrong
+numbers rather than an error. So `PastVersion` joins `FutureVersion` and `ForeignSchema` as a
+reason to keep the file and use defaults. This is why §5's "explicit versioned conversion
+with old-file fixtures" is a requirement rather than a nicety: without one, bumping a
+settings schema version silently drops every user's preferences on the floor.
+
+**Finiteness is the codec's business; range is the application's.** §5 puts "volume must be
+finite in [0,1]" in the sample schema. The interval stays there — it is policy about one
+field — but finiteness moved into `encode` and `decode`, because a NaN is a legal `f32` and
+can never be a preference a person chose. Left to the schema, every consumer of every float
+setting would have to defend against it separately, and the one that forgot would propagate
+it into a mixer gain or a window size.
+
+**Uncertain durability is a result, not an error.** §6 asks for durability to be reported as
+uncertain "without claiming rollback". `replaceFileConfined` therefore returns
+`Durability.durable` or `.entry_unflushed` rather than failing: by the time the directory
+entry can fail to flush, the rename has already happened and the new bytes are what the file
+holds. Zig 0.16's `std.Io.Dir` has no directory sync of its own, so the flush is done by
+opening the parent as a file and syncing that; where an OS does not permit it — Windows among
+them — the answer is `.entry_unflushed` and the replacement still happened.
+
+**A destination name has a bound, and callers need to know it before they save.** The
+replacement writes an exclusively created sibling named after its destination, so a name
+close to the filesystem's 255-byte component limit has no room for the decoration.
+`platform.os.max_replaceable_name` is public for that reason: a caller choosing its own file
+name can refuse one at construction rather than discovering on the first save that its
+settings can be read and never written.
+
+**Confined reading and confined replacing share one walk.** Both now go through
+`openParentConfined`, which opens every component below the host's root with following
+disabled and hands back the parent directory and the leaf. Two implementations of "do not
+follow a link" would be two places for the rule to be almost right, and the failure mode of
+almost-right there is writing outside the root a host granted.

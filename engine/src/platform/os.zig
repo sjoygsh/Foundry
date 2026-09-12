@@ -100,6 +100,21 @@ pub const FileRead = struct {
     info: FileInfo,
 };
 
+/// Whether a completed replacement is known to have reached the disk.
+///
+/// Two outcomes rather than one, because the second is not a failure and must not be
+/// reported as one: by the time it can happen the destination already names the new
+/// bytes, and there is nothing left to roll back. Only a power loss in the window that
+/// follows can still show the old file.
+pub const Durability = enum {
+    /// The bytes and the directory entry naming them were both flushed.
+    durable,
+    /// The new bytes are in place and readable; the entry naming them was not confirmed
+    /// flushed. Some systems do not permit flushing a directory at all — Windows among
+    /// them — so this is the ordinary answer there rather than a sign of trouble.
+    entry_unflushed,
+};
+
 pub const DirEntry = struct {
     name: []const u8,
     kind: FileKind,
@@ -132,11 +147,34 @@ pub const Options = struct {
     app_name: []const u8 = "foundry",
 };
 
+/// The decoration `Os.tempName` wraps a destination name in: a leading dot, `.tmp-`, and
+/// sixteen hex digits.
+const temp_decoration = 1 + 5 + 16;
+
+/// Effectively every filesystem in use limits one path component to 255 bytes, and a
+/// replacement that cannot name its own temporary file has to say so rather than build a
+/// name the OS will refuse.
+const temp_name_max = 255;
+
+/// The longest destination name `Os.replaceFileConfined` can build a temporary sibling
+/// for. Public because a caller that chooses its own file names needs to be able to refuse
+/// one it could never replace, rather than discovering that on the first save.
+pub const max_replaceable_name = temp_name_max - temp_decoration;
+
+/// How many names a replacement tries before giving up. Exclusive creation can only lose
+/// to a name that already exists, and the counter guarantees a different one next time, so
+/// reaching the end of this means something other than a collision is wrong.
+const temp_name_attempts = 8;
+
 pub const Os = struct {
     gpa: Allocator,
     threaded: std.Io.Threaded,
     env: []const EnvVar,
     app_name: []const u8,
+    /// Distinguishes the temporary files this process's replacements create. Neither
+    /// randomness nor security: exclusive creation is what makes a name ours, and this
+    /// only has to stop two replacements in one process from choosing the same one.
+    temp_sequence: u64 = 0,
 
     /// Heap-allocated because `std.Io.Threaded` publishes its own address inside the
     /// `Io` it hands out; an `Os` that moved after init would leave that dangling.
@@ -272,14 +310,28 @@ pub const Os = struct {
         return infoFromStat(st);
     }
 
-    fn openFileConfined(self: *Os, root: []const u8, relative: []const u8) FileError!std.Io.File {
+    /// The directory holding a confined path's last component, and that component.
+    ///
+    /// The caller closes `dir`. Split out because reading a confined file and replacing
+    /// one need the same walk and must not disagree about it: a second implementation of
+    /// "open every component without following a link" is a second place for the rule to
+    /// be almost right.
+    const ConfinedParent = struct {
+        dir: std.Io.Dir,
+        /// Borrowed from the caller's `relative`.
+        leaf: []const u8,
+    };
+
+    fn openParentConfined(self: *Os, root: []const u8, relative: []const u8) FileError!ConfinedParent {
         if (!isSafeRelativePath(relative)) return error.InvalidPath;
 
         var component_count: usize = 0;
+        var leaf: []const u8 = &.{};
         var count_it = std.mem.splitScalar(u8, relative, '/');
         while (count_it.next()) |component| {
             if (component.len == 0 or std.mem.eql(u8, component, ".")) continue;
             component_count += 1;
+            leaf = component;
         }
         if (component_count == 0) return error.InvalidPath;
 
@@ -296,15 +348,7 @@ pub const Os = struct {
         while (it.next()) |component| {
             if (component.len == 0 or std.mem.eql(u8, component, ".")) continue;
             component_index += 1;
-            if (component_index == component_count) {
-                const file = current.openFile(the_io, component, .{
-                    .allow_directory = false,
-                    .follow_symlinks = false,
-                    .resolve_beneath = true,
-                }) catch |err| return mapConfinedError(err, "open", relative);
-                current.close(the_io);
-                return file;
-            }
+            if (component_index == component_count) break;
 
             const next = current.openDir(the_io, component, .{
                 .follow_symlinks = false,
@@ -312,7 +356,19 @@ pub const Os = struct {
             current.close(the_io);
             current = next;
         }
-        unreachable;
+        return .{ .dir = current, .leaf = leaf };
+    }
+
+    fn openFileConfined(self: *Os, root: []const u8, relative: []const u8) FileError!std.Io.File {
+        const the_io = self.io();
+        var parent = try self.openParentConfined(root, relative);
+        defer parent.dir.close(the_io);
+
+        return parent.dir.openFile(the_io, parent.leaf, .{
+            .allow_directory = false,
+            .follow_symlinks = false,
+            .resolve_beneath = true,
+        }) catch |err| return mapConfinedError(err, "open", relative);
     }
 
     fn openDirAbsoluteRead(the_io: std.Io, gpa: Allocator, path: []const u8, limit: std.Io.Limit) ![]u8 {
@@ -337,6 +393,117 @@ pub const Os = struct {
         }
         std.Io.Dir.cwd().writeFile(the_io, .{ .sub_path = path, .data = bytes }) catch |err|
             return mapFileError(err, "write", path);
+    }
+
+    /// Replaces one confined file with `bytes`, without the destination ever naming a
+    /// partly written file.
+    ///
+    /// The counterpart of `readFileConfined`, and confined for the same reason: `root` is
+    /// a capability the host supplies, every component below it is opened with following
+    /// disabled, and nothing the caller passes can name a file outside it. `relative`'s
+    /// last component is the destination, and it is replaced as a *leaf* — a symlink
+    /// sitting there is overwritten, never followed to whatever it points at.
+    ///
+    /// The order is what makes it safe. A temporary sibling is created exclusively, the
+    /// bytes are written and flushed to the device, and only then does one rename put the
+    /// new file where the old one was. Nothing truncates the destination, so every failure
+    /// before the rename leaves the previous file exactly as it was, and every failure
+    /// after it has already succeeded. The temporary file is removed on any failure — that
+    /// one and no other, since a name this call did not create is not this call's to
+    /// delete.
+    ///
+    /// `max_bytes` is checked before anything is opened: a caller that cannot say how big
+    /// its own file should be has no business replacing one.
+    pub fn replaceFileConfined(
+        self: *Os,
+        root: []const u8,
+        relative: []const u8,
+        bytes: []const u8,
+        max_bytes: usize,
+    ) FileError!Durability {
+        if (bytes.len > max_bytes) return error.FileTooLarge;
+
+        const the_io = self.io();
+        var parent = try self.openParentConfined(root, relative);
+        defer parent.dir.close(the_io);
+
+        var name_buf: [temp_name_max]u8 = undefined;
+        var temp_name: []const u8 = undefined;
+        var file: std.Io.File = undefined;
+        var created = false;
+        var attempt: u32 = 0;
+        while (attempt < temp_name_attempts) : (attempt += 1) {
+            temp_name = try self.tempName(&name_buf, parent.leaf);
+            file = parent.dir.createFile(the_io, temp_name, .{
+                .truncate = false,
+                // Exclusive creation is the whole of the claim to this name, and it is
+                // also why the temporary file needs no symlink check of its own: a name
+                // already taken by anything, a dangling link included, fails here.
+                .exclusive = true,
+                .resolve_beneath = true,
+            }) catch |err| switch (err) {
+                error.PathAlreadyExists => continue,
+                else => return mapConfinedError(err, "create a temporary file beside", relative),
+            };
+            created = true;
+            break;
+        }
+        if (!created) {
+            log.warn("could not find an unused temporary name beside '{s}'", .{relative});
+            return error.IoFailed;
+        }
+
+        self.writeSynced(file, bytes, relative) catch |err| {
+            parent.dir.deleteFile(the_io, temp_name) catch {};
+            return err;
+        };
+
+        std.Io.Dir.rename(parent.dir, temp_name, parent.dir, parent.leaf, the_io) catch |err| {
+            parent.dir.deleteFile(the_io, temp_name) catch {};
+            return mapConfinedError(err, "replace", relative);
+        };
+
+        // The destination now names the new bytes. Flushing the directory is what makes
+        // that survive a power loss, and it is reported rather than retried: the
+        // replacement has happened, so a failure here is a weaker guarantee and not a
+        // failed write. Systems that do not allow flushing a directory land here too.
+        var dir_file = parent.dir.openFile(the_io, ".", .{ .allow_directory = true }) catch
+            return .entry_unflushed;
+        defer dir_file.close(the_io);
+        dir_file.sync(the_io) catch return .entry_unflushed;
+        return .durable;
+    }
+
+    /// Writes a whole open file and puts it on the device. Closes it either way.
+    fn writeSynced(self: *Os, file: std.Io.File, bytes: []const u8, what: []const u8) FileError!void {
+        const the_io = self.io();
+        defer file.close(the_io);
+
+        var buffer: [4096]u8 = undefined;
+        var writer = file.writer(the_io, &buffer);
+        writer.interface.writeAll(bytes) catch |err| return mapFileError(err, "write", what);
+        writer.interface.flush() catch |err| return mapFileError(err, "flush", what);
+        // Before the rename, not after. A rename publishes whatever the file contains, so
+        // syncing afterwards would be publishing bytes and then hoping.
+        file.sync(the_io) catch |err| return mapFileError(err, "sync", what);
+    }
+
+    /// A name for the temporary file a replacement writes before it renames.
+    ///
+    /// Leading dot so that a half-finished replacement does not show up among the user's
+    /// own files, and the destination's name inside it so that a leftover one — which only
+    /// a crash between creation and rename can produce — says what it belonged to.
+    fn tempName(self: *Os, buf: []u8, leaf: []const u8) FileError![]const u8 {
+        if (leaf.len > max_replaceable_name) return error.InvalidPath;
+        self.temp_sequence +%= 1;
+        // Deliberately not random. Uniqueness within a process comes from the counter and
+        // between processes from the clock, and exclusive creation is what actually
+        // guarantees the name is ours — so this only has to make a collision rare, without
+        // threading a generator through the filesystem to do it (CLAUDE.md §7).
+        const stamp = @as(u64, @bitCast(self.wallClockNanos())) ^
+            (self.temp_sequence *% 0x9e3779b97f4a7c15);
+        return std.fmt.bufPrint(buf, ".{s}.tmp-{x:0>16}", .{ leaf, stamp }) catch
+            return error.InvalidPath;
     }
 
     /// Whether something exists at `path`. Says nothing about what kind of thing.
@@ -537,7 +704,11 @@ pub fn isSafeRelativePath(path: []const u8) bool {
     return true;
 }
 
-fn isAbsolute(path: []const u8) bool {
+/// Whether `path` names a location from the filesystem root rather than from wherever the
+/// process happens to be. Public because a host directory that is not absolute is one a
+/// caller must refuse: resolving it would write beside the current directory, which in a
+/// shipped application is an app bundle or a read-only install (`distribution.md` §6).
+pub fn isAbsolute(path: []const u8) bool {
     if (path.len == 0) return false;
     if (builtin.os.tag == .windows) {
         if (path.len >= 2 and path[1] == ':') return true;
@@ -898,4 +1069,197 @@ test "creating a directory path is idempotent" {
     try os.createDirPath(nested); // again: not an error
     const info = try os.statFile(nested);
     try testing.expectEqual(FileKind.directory, info.kind);
+}
+
+// -- confined replacement ------------------------------------------------------------
+
+/// Counts what is actually in a directory, which is how the replacement tests check that
+/// no temporary file was left behind. A leftover would be invisible to a `readFile` of the
+/// destination and is exactly the kind of mess the rename order exists to avoid.
+fn countEntries(os: *Os, dir: []const u8) !usize {
+    var listing = try os.listDir(testing.allocator, dir);
+    defer listing.deinit();
+    return listing.entries.len;
+}
+
+test "a confined replacement swaps a file's contents and leaves nothing behind" {
+    var os = try testOs(&.{});
+    defer os.deinit();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir = try tmpPath(&tmp, &buf);
+
+    // The first write has no file to replace, which is the ordinary first-run case.
+    _ = try os.replaceFileConfined(dir, "settings.fset", "first", 1024);
+    const durability = try os.replaceFileConfined(dir, "settings.fset", "second", 1024);
+    try testing.expect(durability == .durable or durability == .entry_unflushed);
+
+    const read = try os.readFileConfined(testing.allocator, dir, "settings.fset", 1024);
+    defer testing.allocator.free(read.bytes);
+    try testing.expectEqualStrings("second", read.bytes);
+    try testing.expectEqual(@as(usize, 1), try countEntries(os, dir));
+}
+
+test "a confined replacement writes through a subdirectory it is given" {
+    var os = try testOs(&.{});
+    defer os.deinit();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir = try tmpPath(&tmp, &buf);
+    const logs = try joinPath(testing.allocator, &.{ dir, "logs" });
+    defer testing.allocator.free(logs);
+    try os.createDirPath(logs);
+
+    _ = try os.replaceFileConfined(dir, "logs/session.log", "line", 1024);
+    const read = try os.readFileConfined(testing.allocator, dir, "logs/session.log", 1024);
+    defer testing.allocator.free(read.bytes);
+    try testing.expectEqualStrings("line", read.bytes);
+    try testing.expectEqual(@as(usize, 1), try countEntries(os, logs));
+}
+
+test "a replacement that cannot finish leaves the previous file and no temporary" {
+    var os = try testOs(&.{});
+    defer os.deinit();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir = try tmpPath(&tmp, &buf);
+    _ = try os.replaceFileConfined(dir, "settings.fset", "original", 1024);
+
+    // Too large: refused before anything is opened, which is the only way a bound on
+    // untrusted size is worth having.
+    try testing.expectError(
+        error.FileTooLarge,
+        os.replaceFileConfined(dir, "settings.fset", "much too long", 4),
+    );
+    // A directory component that does not exist: the walk fails before the temporary
+    // file, so there is nothing to clean up and nothing to damage.
+    try testing.expectError(
+        error.FileNotFound,
+        os.replaceFileConfined(dir, "absent/settings.fset", "x", 1024),
+    );
+    // Escaping the root is a path error, not a file that happens not to be there.
+    try testing.expectError(
+        error.InvalidPath,
+        os.replaceFileConfined(dir, "../escaped.fset", "x", 1024),
+    );
+    try testing.expectError(
+        error.InvalidPath,
+        os.replaceFileConfined(dir, "", "x", 1024),
+    );
+
+    const read = try os.readFileConfined(testing.allocator, dir, "settings.fset", 1024);
+    defer testing.allocator.free(read.bytes);
+    try testing.expectEqualStrings("original", read.bytes);
+    try testing.expectEqual(@as(usize, 1), try countEntries(os, dir));
+}
+
+test "a replacement overwrites a symlinked destination instead of what it points at" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var os = try testOs(&.{});
+    defer os.deinit();
+
+    var root_tmp = testing.tmpDir(.{});
+    defer root_tmp.cleanup();
+    var outside_tmp = testing.tmpDir(.{});
+    defer outside_tmp.cleanup();
+    var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    var outside_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root = try tmpPath(&root_tmp, &root_buf);
+    const outside = try tmpPath(&outside_tmp, &outside_buf);
+
+    const target = try joinPath(testing.allocator, &.{ outside, "elsewhere.fset" });
+    defer testing.allocator.free(target);
+    try os.writeFile(target, "not yours");
+
+    try root_tmp.dir.symLink(testing.io, target, "settings.fset", .{});
+    try root_tmp.dir.symLink(testing.io, outside, "linked", .{ .is_directory = true });
+
+    // The destination is replaced as a name: the link is gone and the file it pointed at
+    // is untouched. A writer that resolved the link first would have written through it.
+    _ = try os.replaceFileConfined(root, "settings.fset", "ours", 1024);
+    const elsewhere = try os.readFile(testing.allocator, target, 1024);
+    defer testing.allocator.free(elsewhere);
+    try testing.expectEqualStrings("not yours", elsewhere);
+
+    const read = try os.readFileConfined(testing.allocator, root, "settings.fset", 1024);
+    defer testing.allocator.free(read.bytes);
+    try testing.expectEqualStrings("ours", read.bytes);
+
+    // An intermediate link is refused outright: there is no version of following one that
+    // stays inside the root the host handed over.
+    try testing.expectError(
+        error.InvalidPath,
+        os.replaceFileConfined(root, "linked/elsewhere.fset", "x", 1024),
+    );
+}
+
+test "a replacement refuses a name it cannot build a temporary beside" {
+    var os = try testOs(&.{});
+    defer os.deinit();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir = try tmpPath(&tmp, &buf);
+
+    const long = try testing.allocator.alloc(u8, max_replaceable_name + 1);
+    defer testing.allocator.free(long);
+    @memset(long, 'n');
+
+    try testing.expectError(error.InvalidPath, os.replaceFileConfined(dir, long, "x", 1024));
+    try testing.expectEqual(@as(usize, 0), try countEntries(os, dir));
+}
+
+test "temporary names differ between replacements in one process" {
+    var os = try testOs(&.{});
+    defer os.deinit();
+
+    var first: [temp_name_max]u8 = undefined;
+    var second: [temp_name_max]u8 = undefined;
+    const a = try os.tempName(&first, "settings.fset");
+    const b = try os.tempName(&second, "settings.fset");
+
+    try testing.expect(!std.mem.eql(u8, a, b));
+    try testing.expect(std.mem.startsWith(u8, a, ".settings.fset.tmp-"));
+    try testing.expect(a.len <= temp_name_max);
+}
+
+test "a replacement into a directory it may not write leaves the old file alone" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var os = try testOs(&.{});
+    defer os.deinit();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const parent = try tmpPath(&tmp, &buf);
+    const dir = try joinPath(testing.allocator, &.{ parent, "user-data" });
+    defer testing.allocator.free(dir);
+    try os.createDirPath(dir);
+    _ = try os.replaceFileConfined(dir, "settings.fset", "original", 1024);
+
+    const read_only: std.Io.File.Permissions = @enumFromInt(0o555);
+    const writable: std.Io.File.Permissions = @enumFromInt(0o755);
+    try tmp.dir.setFilePermissions(testing.io, "user-data", read_only, .{});
+    defer tmp.dir.setFilePermissions(testing.io, "user-data", writable, .{}) catch {};
+
+    // The temporary file cannot even be created, which is the earliest of the boundaries
+    // a replacement can fail at and the one that must obviously not destroy anything.
+    try testing.expectError(
+        error.AccessDenied,
+        os.replaceFileConfined(dir, "settings.fset", "replacement", 1024),
+    );
+
+    const read = try os.readFileConfined(testing.allocator, dir, "settings.fset", 1024);
+    defer testing.allocator.free(read.bytes);
+    try testing.expectEqualStrings("original", read.bytes);
+    try testing.expectEqual(@as(usize, 1), try countEntries(os, dir));
 }

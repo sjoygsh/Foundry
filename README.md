@@ -14,9 +14,13 @@ versioned public ABI and can add component types, systems and behaviour without 
 changes; and **script mods run on the world's tick and can be edited while the game is
 running**.
 
-**M9's distribution design is written; implementation has not started.** Its
+**M9 is under way: one of its eight steps is done.** Its
 [eight-step plan](docs/design/distribution.md#14-implementation-order) covers preferences,
-user package roots, release staging, attribution, diagnostics and macOS distribution.
+user package roots, release staging, attribution, diagnostics and macOS distribution. Step 1
+adds bounded, versioned user preferences — the same field-block layout a record and a save
+already use, written by creating a temporary file, syncing it and renaming it over the old
+one, so a settings file is never half-written and one this build does not understand is kept
+rather than replaced. No sample reads a preference yet and nothing is packaged.
 
 All three modding tiers work — see [docs/modding](docs/modding/). Tier 2 is restricted
 Lua 5.5.1, one VM per package, bounded in memory, instructions and engine calls, reaching the
@@ -29,7 +33,7 @@ and then rebuilt from its own listings to check that it says what the engine doe
 ```sh
 ./scripts/install-zig.sh   # the only tool you need
 zig build run -Drhi=metal  # opens a window and draws; escape quits
-zig build test             # 1199 headless tests
+zig build test             # 1223 headless tests
 ```
 
 Implemented so far:

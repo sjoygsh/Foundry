@@ -1,7 +1,41 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-12
-**Current handoff: M8 is complete. M9 is designed; 0/8 steps implemented. Stop before Step 1.**
+**Current handoff: M8 is complete. M9 is designed; 1/8 steps implemented. Stop before Step 2.**
+
+**Implemented in M9 step 1, 2026-09-12:** the user's own preferences, on disk, and the write
+that puts them there safely. `engine/src/app/settings.zig` is the `settings.fset` envelope —
+magic, envelope version, the application's schema id and version, two section lengths, and one
+field block written against that schema with `data.BlockWriter`, so a settings file is the same
+layout a record and a save already use rather than a second one that can drift from it. The
+file is bounded before it is believed: 64 KiB total, 64 fields, nesting 4, 128 list elements,
+1,024-byte strings, every offset and presence bit checked, and every present field read once so
+that a decode either succeeds whole or fails whole. `platform.Os.replaceFileConfined` is the
+write: a temporary sibling created exclusively under a host-supplied root, filled, flushed to
+the device, and then renamed over the destination as a **leaf** — so a symlink sitting there is
+overwritten rather than followed, nothing ever truncates the old file, and every failure before
+the rename leaves the previous bytes exactly as they were. `app.SettingsStorage` puts the two
+together: a first run reports `absent`, a damaged file is kept as `settings.fset.bak` before it
+is replaced, and a file written by a newer build or a different schema version is **preserved**
+and disables writing for the session, because an older build silently overwriting newer
+preferences is a user's settings destroyed by an update.
+
+**Step-1 verification.** The full AGENTS.md §3 bar passes: formatting, **1,231 declared /
+1,223 headless tests**, host/Linux/Windows compilation, and both 30-frame null sample runs.
+The 24 new tests are the evidence the design asks for in §12: a round trip of every value kind
+a preference can be, byte-identical encodes of equal values, an absent field staying absent
+rather than becoming zero, every truncation past the header refused, a trailing byte refused, a
+string offset pushed outside its section refused, a reserved flag refused, a presence bit for a
+field the schema does not have refused, a nonfinite float refused from a caller *and* from a
+file, values past the file's own bounds refused, four shapes of unusable schema refused, a
+newer envelope, a newer schema version, an older schema version and a foreign schema each told
+apart, encoding driven through an allocator that fails at every step, and — on real files in a
+real directory — save-then-reload through a second `Storage`, the damaged-file backup, a
+preserved file that `save` refuses to touch and that is byte-identical afterwards, an unreadable
+root that disables writing instead of relocating, and a replacement that leaves the old file and
+no temporary behind when the directory refuses it. Nothing about the samples, the package roots,
+the build targets or the ABI changed.
+
 
 **M9 planning, 2026-09-12:** `docs/design/distribution.md` is the specification and §14 the
 eight-step order. ADR-0030 records ordinary-package release staging/macOS artifacts and
@@ -19,7 +53,7 @@ User settings reuse binary field blocks, user mods retain their own mounted root
 reference release is the existing room in ReleaseSafe/SDL3/Metal. Signing/notarization and
 recipient testing are explicit external gates; no access or successful release is assumed.
 The remaining Metal concerns below are recorded risks for the release gate, not silently
-fixed or re-audited during planning. **Await the user's instruction to begin M9 Step 1.**
+fixed or re-audited during planning. **Step 1 is now complete; Step 2 is not started.**
 
 **M8 completion record:**
 The restricted Lua runtime, ordinary script package assets/manifests, additive ABI v2 typed
@@ -863,7 +897,7 @@ entities, a playable sample, and an overlay that diagnosed its own cost. **M7 �
 "others can extend it" — completed 2026-09-09**, all seven design steps and the outside-tree
 exit proof. **M8 — Scriptable: "modders can extend it" — completed 2026-09-12**, all eight
 steps of `scripting.md` §16 and its own outside-tree exit proof. What remains in this phase is
-M9, shipping, now designed with all eight implementation steps still ahead.
+M9, shipping, designed and now begun: Step 1 of its eight is implemented as of 2026-09-12.
 
 ## Current milestone
 
@@ -874,8 +908,12 @@ script package recorded at the top of this file and by `docs/modding/script-mods
 written from it and then rebuilt from its own listings. The design's §15 open questions stay
 open; none of them blocks what M8 specified.
 
-**M9 — Shippable is designed, 0/8 steps implemented.** Read `docs/design/distribution.md`
-and ADR-0030/0031. The next authorized session may begin Step 1; this planning session does not.
+**M9 — Shippable is designed, 1/8 steps implemented.** Read `docs/design/distribution.md`
+and ADR-0030/0031, and its Step 1 Resolution for what implementing the codec settled. **Step 2
+— applying ordinary content defaults and user settings in both samples — is next and is not
+started.** Nothing in Steps 2-8 exists: no sample reads or writes a preference yet, there is no
+`dist` target, no user package root, no generated notices, no diagnostics session and no macOS
+bundle.
 
 **M7 — Moddable: "others can extend it." Complete, 2026-09-07 to 2026-09-09.** All six
 roadmap bullets and all seven steps of `public-abi.md` §19 are implemented. The exit criterion
@@ -1555,10 +1593,10 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 1,199 tests** of 1,207 declared (84 `core`, 81 `platform`,
+**`zig build test` passes 1,223 tests** of 1,231 declared (84 `core`, 88 `platform`,
 106 `data`, 82 `physics2d`, 83 `ui`, 92 `rhi`, 76 `asset`, 22 `mod`, 139 `render2d`,
-84 `scene`, 34 `audio`, 51 `app`, 23 `debug`, 111 `abi`, 56 `script`, 47 integration,
-28 `tools`), and **1,207 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
+84 `scene`, 34 `audio`, 68 `app`, 23 `debug`, 111 `abi`, 56 `script`, 47 integration,
+28 `tools`), and **1,231 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
 8 exceptions need a real GPU and compile only when Metal is selected. **`samples/room` adds
@@ -2366,10 +2404,14 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M9 Step 1, when the user asks to begin implementation.** M8 is complete and tagged
-`m8`. Read `docs/design/distribution.md`, ADR-0030/0031 and this handoff; implement only
-§14 Step 1's bounded preference codec and atomic persistence. The planning task ends before
-that step. The completed M8/M7 checklists and subsequent M5/M6 material below are historical.
+**Next: M9 Step 2, when the user asks to begin it.** Step 1 is complete: the preference codec
+and the confined replacement exist, and nothing yet calls them from a sample. Step 2 applies
+§4's startup order in both `samples/sandbox` and `samples/room` — an application-owned settings
+schema, a default record authored in that sample's own package, and the existing volume and
+window controls persisting across a relaunch. Read `docs/design/distribution.md` §4, its Step 1
+Resolution, and ADR-0031's three kinds of input before writing any of it; the rule that matters
+is that content may supply a *default* and never an authority. Package roots stay as they are
+until Step 3. The completed M8/M7 checklists and subsequent M5/M6 material below are historical.
 
 Carried, recorded and **not** started: the `render2d` blank-patch/font-atlas batching fix, the
 job-system decision `CLAUDE.md` §9 dates to post-M5, the `-Drhi=metal` `app` test-binary compile
