@@ -10,8 +10,8 @@ leave behind something that runs.
 
 ## Status
 
-**M0 through M9 complete.** Foundry is a playable, inspectable, fully moddable and
-packageable 2D engine.
+**M0 through M10 complete.** Foundry is a playable, inspectable, fully moddable and
+packageable 2D engine, and it now has a face of its own.
 Content packages are discovered and dependency-ordered; native C mods load through the
 versioned public ABI and can add component types, systems and behaviour without engine source
 changes; and **script mods run on the world's tick and can be edited while the game is
@@ -47,10 +47,11 @@ ADR-0032 defers actual Developer ID signing, notarization and verification of th
 quarantined download on a genuinely clean recipient Mac to the first public release. Those
 remain mandatory; the current ad-hoc artifact is not equivalent to a notarized release.
 
-**Next is Phase 4 — Hardening and reach**, M10 through M17: the engine's own identity and
-branding, the carried defects, the job system, a second graphics backend, a mod manager, the
-editor, networking, and last of all the certified public release — strangers come last. It
-gathers work the project had already deferred; nothing in it is started. See the
+**Phase 4 — Hardening and reach** is under way. M10 gave the engine its
+[marks](brand/) and put its icon on the artifacts it builds; what follows is the carried
+defects, the job system, a second graphics backend (Vulkan, [ADR-0033](docs/adr/0033-vulkan-second-backend.md)),
+a mod manager, the editor, networking, and last of all the certified public release —
+strangers come last. It gathers work the project had already deferred. See the
 [roadmap](docs/ROADMAP.md).
 
 All three modding tiers work — see [docs/modding](docs/modding/). Tier 2 is restricted
