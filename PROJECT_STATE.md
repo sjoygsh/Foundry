@@ -1,7 +1,66 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-12
-**Current handoff: M8 is complete. M9 is designed; 3/8 steps implemented. Stop before Step 4.**
+**Current handoff: M8 is complete. M9 is designed; 4/8 steps implemented. Stop before Step 5.**
+
+**Implemented in M9 step 4, 2026-09-12:** `zig build dist` stages a release of a sample from
+explicit inputs. The machinery is `tools/distribution`: `release.zig` is the build-time release
+description — product name, bundle id, version, executable, packages, extra runtime files,
+limits — and is `@import`ed by `build.zig` and by a game in its own repository through
+`@import("foundry").release`, with `Tools.fromDependency` supplying the two programs. `fstage`
+beside it is the packager, a consumer of `data`, `platform`, `asset` and `mod` on exactly the
+terms `fpack` is: it reads packages, never executes a script or opens a library, and is not
+installed, because shipping the packager inside the artifact it packages is the build residue
+§8 refuses. The development install is untouched.
+
+**Nothing is excluded by name.** A file is in a release because a record in a compiled package
+names it in its `source` field, so `room.fdt`, `hall.grid`, `README.md`, `foundry.h` and `fpack`
+are absent for one reason: nothing asked for them. A `.fgrid` comes from the compiler's output
+and the `.grid` beside it does not ship. The room's release carries no sandbox content and no
+Lua; the sandbox's carries `scripts/encounter.lua`, which is what proves runtime `.lua` is
+retained. The stated package list is checked rather than computed — every `requires` in every
+staged manifest must name a package that is also staged — and a record whose schema the engine
+does not define, or a manifest's `native` library, is **required and not resolved**: it is
+named with the exact `--extra` that satisfies it, because guessing where a custom loader's
+bytes live is the assumption §8 forbids and a silently missing file fails on the recipient's
+machine. `libraryFileName` moved from `abi` down into `mod` so the loader that opens a library
+and the packager that stages it cannot disagree about its name.
+
+**Nothing is copied until the whole plan is known.** A missing asset, a `source` escaping its
+package, a symlink, two inputs writing one destination, two paths differing only in case, and
+either explicit limit are all refused with an empty output directory. Every read goes through
+`readFileConfined` — the executable and the declared extras included, split into a root and a
+leaf for the purpose — so a symlink is refused by the same code that refuses one inside a mod's
+package at runtime. The output is build-owned and fresh; the packager refuses a destination
+that is not empty and deletes nothing.
+
+**`dist` requires its configuration rather than imposing one**: ReleaseSafe, SDL3, Metal, and a
+native aarch64-macOS target, with `-Dtarget` deliberately absent. A `build.zig` is not told
+which step was asked for, so a self-configuring `dist` would configure a macOS/SDL/Metal graph
+on every build, including the cross-compile checks whose whole point is to need none of it. A
+wrong configuration fails with every wrong thing named at once and the exact command. A staged
+release's `inventory.txt` records product, version, build, revision, target, packages, and
+every path, size, mode and SHA-256 in path order — no timestamps, no absolute paths, nothing
+from the machine that produced it. `-Drevision` is recorded as given and is `local` when
+unstated: the build runs no `git` (ADR-0014).
+
+**New platform surface:** `platform.os.FileMode`, `Os.writeFileMode`, and `FileInfo.executable`.
+The first staged room would not start — `writeFile` creates an ordinary file, so the program
+arrived without permission to execute, and "permission denied" from a path that plainly exists
+looks nothing like its cause. Staging preserves the bit from the source rather than deciding it.
+
+**Step-4 verification.** The full AGENTS.md §3 bar passes: formatting, **1,251 headless tests of
+1,259 declared**, host/Linux/Windows compilation and both 30-frame null sample runs. Four new
+guards were broken narrowly and their tests observed to fail, then restored: the
+case-insensitive destination check, generated-asset resolution, and the rule that nothing is
+copied before the plan is complete (which failed four tests at once). Real evidence beyond the
+suite: `zig build dist -Dapp=room` stages 11 files and `-Dapp=sandbox` stages 10, each copied
+out of the checkout to `/tmp` and run — the room opened a Metal window at 1280x720, loaded two
+packages and 28 records, played a sound and exited cleanly; the sandbox ran its Lua package as
+one system with its budget measured. Two independent runs of the packager over the room
+produced byte-identical trees, inventory included. No notices, diagnostics, bundle or signing
+work from Step 5 onward has begun.
+
 
 **Implemented in M9 step 3, 2026-09-12:** an application can keep its installation read-only
 and load explicitly selected packages from its platform user-data `mods/` directory. Discovery
@@ -1682,10 +1741,10 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 1,237 tests** of 1,245 declared (84 `core`, 90 `platform`,
-106 `data`, 82 `physics2d`, 83 `ui`, 92 `rhi`, 76 `asset`, 23 `mod`, 139 `render2d`,
+**`zig build test` passes 1,251 tests** of 1,259 declared (84 `core`, 90 `platform`,
+106 `data`, 82 `physics2d`, 83 `ui`, 92 `rhi`, 76 `asset`, 24 `mod`, 139 `render2d`,
 84 `scene`, 34 `audio`, 72 `app`, 23 `debug`, 111 `abi`, 56 `script`, 54 integration,
-28 `tools`), and **1,245 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
+41 `tools`), and **1,259 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
 8 exceptions need a real GPU and compile only when Metal is selected. **`samples/room` adds

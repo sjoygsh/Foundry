@@ -244,6 +244,17 @@ back and a weaker guarantee is not a failed write (`distribution.md` §6).
 what a settings file contains and whether one may be replaced at all belongs to `app`
 (ADR-0031); this is the primitive underneath it.
 
+### One file at a time, and whether it is a program — added M9 step 4, 2026-09-12
+
+`writeFileMode` takes a `FileMode` of `regular` or `executable`, and `FileInfo` reports whether
+a file has the bit. Two values rather than a permission number, because the only thing above
+this layer has an opinion about is that one file: a release stages a program the operating
+system will be asked to run, and a program written as ordinary data does not run. The first
+staged release found this the expensive way — "permission denied" from a path that plainly
+exists looks nothing like its cause. Everything finer — owners, groups, read-only — belongs to
+whoever installs a file, not to whoever writes it, and `FileMode.has_bit` is false on Windows,
+where asking for one is not an error and is not a change either.
+
 ### Untrusted input
 
 Everything the filesystem returns is untrusted (§5 of `core-memory-and-handles.md`). A missing

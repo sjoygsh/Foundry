@@ -14,7 +14,7 @@ versioned public ABI and can add component types, systems and behaviour without 
 changes; and **script mods run on the world's tick and can be edited while the game is
 running**.
 
-**M9 is under way: three of its eight steps are done.** Its
+**M9 is under way: four of its eight steps are done.** Its
 [eight-step plan](docs/design/distribution.md#14-implementation-order) covers preferences,
 user package roots, release staging, attribution, diagnostics and macOS distribution. Step 1
 adds bounded, versioned user preferences — the same field-block layout a record and a save
@@ -25,7 +25,10 @@ volume from a built-in fallback, then their package's own `config` record, then 
 player saved — so a mod can change a default and a player can overrule it. Step 3 discovers
 explicitly selected packages from the platform user-data `mods/` directory beside the installed
 ones, retaining each package's confined root through asset/script/native load and hot reload;
-the installation no longer needs to be writable for mods. Nothing is packaged yet.
+the installation no longer needs to be writable for mods. Step 4 stages a release: `zig build
+dist` produces a tree holding the program, the packages it named, and exactly the files those
+packages' records refer to — no authoring text, no uncompiled grids, no headers and no
+compiler — with an inventory of every path, size and SHA-256. Nothing is signed or bundled yet.
 
 All three modding tiers work — see [docs/modding](docs/modding/). Tier 2 is restricted
 Lua 5.5.1, one VM per package, bounded in memory, instructions and engine calls, reaching the
@@ -38,7 +41,7 @@ and then rebuilt from its own listings to check that it says what the engine doe
 ```sh
 ./scripts/install-zig.sh   # the only tool you need
 zig build run -Drhi=metal  # opens a window and draws; escape quits
-zig build test             # 1237 headless tests
+zig build test             # 1251 headless tests
 ```
 
 Implemented so far:

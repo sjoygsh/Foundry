@@ -342,6 +342,8 @@ Foundry/
 
   tools/
     fpack/               Content compiler: authoring text -> runtime binary.
+    distribution/        Release staging: the build-time description a consuming game
+                         imports, and the packager it drives. Not installed.
     (editor/)            Later. A Foundry application, not a special case.
 
   samples/

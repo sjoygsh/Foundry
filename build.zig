@@ -1,5 +1,9 @@
 const std = @import("std");
 
+/// Describing a release, shared with any game that consumes Foundry (`distribution.md` §3).
+/// Re-exported so a consumer's `build.zig` reaches it as `@import("foundry").release`.
+pub const release = @import("tools/distribution/release.zig");
+
 /// The module layering from ADR-0007, expressed as data.
 ///
 /// This table *is* the enforcement mechanism for Invariant I7. A module can only
@@ -172,6 +176,12 @@ const RhiBackend = enum {
     metal,
 };
 
+/// Which sample `zig build dist` stages.
+///
+/// A sample rather than a game: Foundry ships no game (ADR-0017), and the release helpers
+/// have to be exercised by something in this repository or nothing here checks them.
+const DistApp = enum { room, sandbox };
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -181,6 +191,12 @@ pub fn build(b: *std.Build) void {
         "platform",
         "Platform backend to build against (default: null, headless)",
     ) orelse .sdl3;
+
+    // Which sample `zig build dist` stages, and what revision the release records. Both are
+    // read here so that they appear in `zig build --help` beside everything else; neither
+    // affects any other step.
+    const dist_app = b.option(DistApp, "app", "Which sample `zig build dist` stages (default: room)") orelse .room;
+    const revision = b.option([]const u8, "revision", "Source revision recorded in a staged release");
 
     // Passed as a string rather than as the enum: `addOption` would emit its own
     // definition of the enum type, which would not be the same type as the one
@@ -483,6 +499,29 @@ pub fn build(b: *std.Build) void {
     const fpack = b.addExecutable(.{ .name = "fpack", .root_module = fpack_mod });
     b.installArtifact(fpack);
 
+    // `tools/distribution` — the release packager. A consumer of the engine's modules on the
+    // same terms `fpack` is, and deliberately the same *shape* of program: it reads packages
+    // through `data`, files through `platform`, and reaches nothing a game could not
+    // (`distribution.md` §3). It gets `asset` because a release is decided by which records
+    // are asset kinds, and `mod` because a manifest says what a package requires and what
+    // native library it names. It does not get `abi`, `render2d` or `rhi`: packaging machinery
+    // that could open a library or a device would be one.
+    //
+    // **Not installed.** `fpack` is installed because content authors run it; this runs from
+    // the build graph, and shipping the packager inside the artifact it packages is exactly
+    // the build residue §8 refuses.
+    const fstage_mod = b.createModule(.{
+        .root_source_file = b.path("tools/distribution/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    for ([_][]const u8{ "asset", "core", "data", "mod" }) |name| {
+        fstage_mod.addImport(name, modules.get(name).?);
+    }
+    fstage_mod.addImport("platform", platform_module);
+
+    const fstage = b.addExecutable(.{ .name = "fstage", .root_module = fstage_mod });
+
     // Content packages, compiled by `fpack` and installed beside the executable.
     //
     // **The base game is package zero and there is no privileged path** (I3): the engine's
@@ -495,18 +534,11 @@ pub fn build(b: *std.Build) void {
     // game loads and in what order is `mod`'s answer now, computed from the manifests
     // these packages carry (ADR-0027). `data` still consumes a load order and does not
     // compute one.
-    const ContentPackage = struct {
-        /// Where its sources are in this repository.
-        dir: []const u8,
-        /// What it is called under `<prefix>/content`. A location, never identity
-        /// (ADR-0021) — the compiled package states its own id and the store checks it.
-        stem: []const u8,
-    };
     //
     // **There is no `id` here any more.** A package's identity is in its own `mod.fdt`
     // (ADR-0027), and the build used to state it a second time — two places to keep in
     // agreement, for a fact only one of them owns.
-    const content_packages = [_]ContentPackage{
+    const content_packages = [_]release.Package{
         .{ .dir = "content/core", .stem = "core" },
         .{ .dir = "samples/sandbox/content", .stem = "sandbox" },
         .{ .dir = "samples/room/content", .stem = "room" },
@@ -519,24 +551,12 @@ pub fn build(b: *std.Build) void {
     // is one, the answer is a host-targeted `fpack`, not a weaker check here.
     if (target.query.isNative()) {
         for (content_packages) |pkg| {
-            const compile_content = b.addRunArtifact(fpack);
-            compile_content.addArgs(&.{ "--quiet", "--out" });
-            const compiled = compile_content.addOutputFileArg(b.fmt("{s}.fpk", .{pkg.stem}));
-            // Assets with an authoring format of their own — a tile grid — are compiled too,
-            // and land here rather than in the package directory: what a person wrote and
-            // what a tool produced never share a tree (`tilemaps-and-collision.md` §9).
-            compile_content.addArg("--assets-out");
-            const generated = compile_content.addOutputDirectoryArg(b.fmt("{s}-assets", .{pkg.stem}));
-            compile_content.addDirectoryArg(b.path(pkg.dir));
-            // And every file under it as an input, which is what actually makes the build
-            // re-run `fpack` when a package changes. A directory argument creates the
-            // dependency and passes the path; it does **not** put the directory's contents
-            // in the Run step's cache key, so without this an edited `.fdt` leaves a stale
-            // `.fpk` installed and the game loads yesterday's content.
-            addDirectoryInputs(b, compile_content, pkg.dir);
+            // The same call `release.stage` makes, so the development install and a staged
+            // release cannot compile content differently (`distribution.md` §8).
+            const compiled = release.compilePackage(b, fpack, pkg);
 
             b.getInstallStep().dependOn(&b.addInstallFileWithDir(
-                compiled,
+                compiled.fpk,
                 .prefix,
                 b.fmt("content/{s}.fpk", .{pkg.stem}),
             ).step);
@@ -555,7 +575,7 @@ pub fn build(b: *std.Build) void {
             // `.fgrid` beside it is what an asset record names — so the two installs never
             // write the same file.
             b.getInstallStep().dependOn(&b.addInstallDirectory(.{
-                .source_dir = generated,
+                .source_dir = compiled.generated,
                 .install_dir = .prefix,
                 .install_subdir = b.fmt("content/{s}", .{pkg.stem}),
             }).step);
@@ -586,6 +606,54 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run_fpack.addArgs(args);
     b.step("fpack", "Build and run tools/fpack (pass arguments after --)").dependOn(&run_fpack.step);
 
+    // **`dist` — a release, from explicit inputs** (`distribution.md` §8).
+    //
+    // It builds exactly one configuration: ReleaseSafe, SDL3 and Metal, aarch64-macOS. It
+    // does not *impose* that configuration, it **requires** it, and the difference is worth
+    // the sentence. A `build.zig` is not told which step was asked for, so a `dist` that
+    // configured its own module graph would have to configure a macOS/SDL/Metal graph on
+    // every build — including `zig build check -Dtarget=x86_64-linux-gnu -Dplatform=null`,
+    // which exists precisely to need none of it. So the step states what it needs and
+    // refuses anything else, which is what §8 asks for in the same breath: never silently
+    // produce a headless or unsafe release.
+    const dist_step = b.step("dist", "Stage a release of a sample (see -Dapp)");
+    if (distComplaint(b, target, optimize, platform_backend, rhi_backend)) |complaint| {
+        dist_step.dependOn(&b.addFail(complaint).step);
+    } else {
+        const description: release.Description = switch (dist_app) {
+            // The room is the default because it is the sample M9's exit criterion names: a
+            // small game rather than a page of frame statistics (`distribution.md` §1).
+            .room => .{
+                .product_name = "Foundry Room",
+                .bundle_id = "dev.foundry.room",
+                .product_version = "0.9.0",
+                .executable = room,
+                .packages = &.{ content_packages[0], content_packages[2] },
+                .revision = revision,
+            },
+            // The second artifact, and not for symmetry: it is the one that carries scripts,
+            // so it is what proves a release retains runtime `.lua` and that the room's does
+            // not accidentally ship any (§2, §8).
+            .sandbox => .{
+                .product_name = "Foundry Sandbox",
+                .bundle_id = "dev.foundry.sandbox",
+                .product_version = "0.9.0",
+                .executable = sandbox,
+                .packages = &.{ content_packages[0], content_packages[1] },
+                .revision = revision,
+            },
+        };
+        const staged = release.stage(b, .{ .fpack = fpack, .fstage = fstage }, description);
+        // Copied out of the build-owned staging directory so a person can open it, zip it,
+        // or run it from somewhere else. The staged tree is the fresh one; this is a copy,
+        // and `zig build dist` overwrites it without pruning what an earlier release left.
+        dist_step.dependOn(&b.addInstallDirectory(.{
+            .source_dir = staged,
+            .install_dir = .prefix,
+            .install_subdir = b.fmt("dist/{s}", .{@tagName(dist_app)}),
+        }).step);
+    }
+
     // Unit tests are colocated in source (project convention). One test binary per
     // module, all hung off `zig build test`.
     const test_step = b.step("test", "Run all unit tests");
@@ -602,6 +670,7 @@ pub fn build(b: *std.Build) void {
     check_step.dependOn(&sandbox.step);
     check_step.dependOn(&room.step);
     check_step.dependOn(&fpack.step);
+    check_step.dependOn(&fstage.step);
 
     for (layering) |spec| {
         const unit_tests = b.addTest(.{ .root_module = modules.get(spec.name).? });
@@ -663,6 +732,10 @@ pub fn build(b: *std.Build) void {
     check_step.dependOn(&fpack_tests.step);
     test_step.dependOn(&b.addRunArtifact(fpack_tests).step);
 
+    const fstage_tests = b.addTest(.{ .root_module = fstage_mod });
+    check_step.dependOn(&fstage_tests.step);
+    test_step.dependOn(&b.addRunArtifact(fstage_tests).step);
+
     // Integration tests (CLAUDE.md §4.5): what no single module can test alone, because
     // testing it means standing above two of them. `render2d` registering a texture loader
     // into `asset` is the first: the modules deliberately cannot see each other — `asset`
@@ -706,6 +779,58 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(integration_tests).step);
 }
 
+/// Why this build cannot stage a release, or null if it can.
+///
+/// Every reason at once rather than the first one: an operator who has to run the command
+/// four times to learn four things is an operator who will stop reading the message.
+fn distComplaint(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    platform_backend: PlatformBackend,
+    rhi_backend: RhiBackend,
+) ?[]const u8 {
+    var wrong: std.ArrayList([]const u8) = .empty;
+
+    if (target.result.os.tag != .macos or target.result.cpu.arch != .aarch64) {
+        wrong.append(b.allocator, b.fmt("the target is {t}-{t}, and a release is aarch64-macos", .{
+            target.result.cpu.arch, target.result.os.tag,
+        })) catch @panic("OOM");
+    } else if (!target.query.isNative()) {
+        // Content is compiled by *running* the content compiler, and a program built for
+        // another system is a program this one cannot run (`distribution.md` §8). So the
+        // release target is the machine, and is left unstated rather than restated: naming
+        // it explicitly also produces a target Zig no longer calls native, which is enough
+        // to stop SDL building against this machine's SDK.
+        wrong.append(
+            b.allocator,
+            "the target was stated explicitly, and a release is staged natively: leave -Dtarget off",
+        ) catch @panic("OOM");
+    }
+    if (optimize != .ReleaseSafe) {
+        wrong.append(b.allocator, b.fmt("the optimization mode is {t}, and a release is ReleaseSafe", .{optimize})) catch @panic("OOM");
+    }
+    if (platform_backend != .sdl3) {
+        wrong.append(b.allocator, "the platform backend is null, and a release opens a window") catch @panic("OOM");
+    }
+    if (rhi_backend != .metal) {
+        wrong.append(b.allocator, "the graphics backend is null, and a release draws") catch @panic("OOM");
+    }
+    if (wrong.items.len == 0) return null;
+
+    var message: std.Io.Writer.Allocating = .init(b.allocator);
+    const out = &message.writer;
+    out.writeAll("`dist` stages one configuration and this build is not it:\n") catch @panic("OOM");
+    for (wrong.items) |reason| out.print("  - {s}\n", .{reason}) catch @panic("OOM");
+    out.writeAll(
+        \\
+        \\Stage a release with:
+        \\  zig build dist -Dapp=room -Dplatform=sdl3 -Drhi=metal -Doptimize=ReleaseSafe
+        \\
+    ) catch @panic("OOM");
+    return message.written();
+}
+
 fn testNativeLibrary(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -718,26 +843,6 @@ fn testNativeLibrary(
     module.addIncludePath(b.path("engine/src/abi"));
     module.addCSourceFile(.{ .file = b.path(source), .flags = flags });
     return b.addLibrary(.{ .name = name, .linkage = .dynamic, .root_module = module });
-}
-
-/// Adds every file under `dir` as an input to `run`, so that editing one re-runs it.
-///
-/// Walked at configure time, which happens on every build, so a file *added* since the last
-/// build is picked up as well as a file changed. A directory that cannot be read is left
-/// with no inputs rather than failing the configure: the step itself will report the
-/// problem, with the path, in the one place that knows why it was reading it.
-fn addDirectoryInputs(b: *std.Build, run: *std.Build.Step.Run, dir: []const u8) void {
-    const io = b.graph.io;
-    var handle = b.build_root.handle.openDir(io, dir, .{ .iterate = true }) catch return;
-    defer handle.close(io);
-
-    var walker = handle.walk(b.allocator) catch return;
-    defer walker.deinit();
-
-    while (walker.next(io) catch null) |entry| {
-        if (entry.kind != .file) continue;
-        run.addFileInput(b.path(b.pathJoin(&.{ dir, entry.path })));
-    }
 }
 
 /// Compiles MSL into a `.metallib`, per ADR-0015: `xcrun metal` turns each source into an

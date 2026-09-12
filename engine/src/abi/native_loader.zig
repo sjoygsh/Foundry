@@ -37,11 +37,7 @@ fn acceptsOffered(range: mod.Range) bool {
 /// Apply the host's library-name convention to a manifest's platform-neutral `native`
 /// value. A package says `lanterns`, never `liblanterns.dylib`.
 pub fn libraryFileNameAlloc(gpa: Allocator, native: []const u8) Allocator.Error![]u8 {
-    return switch (builtin.os.tag) {
-        .windows => std.fmt.allocPrint(gpa, "{s}.dll", .{native}),
-        .macos => std.fmt.allocPrint(gpa, "lib{s}.dylib", .{native}),
-        else => std.fmt.allocPrint(gpa, "lib{s}.so", .{native}),
-    };
+    return mod.manifest.libraryFileName(gpa, native, builtin.os.tag);
 }
 
 /// Kept after init so the optional shutdown callback remains callable. The `Library` value

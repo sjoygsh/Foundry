@@ -273,6 +273,24 @@ pub fn isBareName(text: []const u8) bool {
     return true;
 }
 
+/// What a manifest's platform-neutral `native` value is called as a file on `target`.
+///
+/// A package says `lanterns`; the file beside it is `liblanterns.dylib`, `lanterns.dll` or
+/// `liblanterns.so`. **Here rather than in `abi`**, because it is package policy rather than
+/// ABI policy — `schemas.zig` one screen up is what freezes the `native` field, and the
+/// loader that opens the library and the packager that stages it must not be able to
+/// disagree about its name (`distribution.md` §8).
+///
+/// `target` is explicit because the two callers answer for different machines: the loader
+/// asks about the one it is running on, and a release is staged on a host for a target.
+pub fn libraryFileName(gpa: Allocator, native: []const u8, target: std.Target.Os.Tag) Allocator.Error![]u8 {
+    return switch (target) {
+        .windows => std.fmt.allocPrint(gpa, "{s}.dll", .{native}),
+        .macos, .ios, .tvos, .watchos, .visionos => std.fmt.allocPrint(gpa, "lib{s}.dylib", .{native}),
+        else => std.fmt.allocPrint(gpa, "lib{s}.so", .{native}),
+    };
+}
+
 // -- tests -------------------------------------------------------------------------
 
 const testing = std.testing;
@@ -295,6 +313,19 @@ fn compileManifestForTest(schema: data.Schema, package_name: []const u8, source:
     errdefer bytes.deinit(testing.allocator);
     try data.fpk.write(testing.allocator, &package, &registry, &bytes);
     return bytes.toOwnedSlice(testing.allocator);
+}
+
+test "a native name becomes the file name the target system uses" {
+    const gpa = testing.allocator;
+    for ([_]struct { target: std.Target.Os.Tag, name: []const u8 }{
+        .{ .target = .macos, .name = "liblanterns.dylib" },
+        .{ .target = .windows, .name = "lanterns.dll" },
+        .{ .target = .linux, .name = "liblanterns.so" },
+    }) |case| {
+        const file = try libraryFileName(gpa, "lanterns", case.target);
+        defer gpa.free(file);
+        try testing.expectEqualStrings(case.name, file);
+    }
 }
 
 test "a bare native name is letters, digits, underscore and dash, and nothing else" {

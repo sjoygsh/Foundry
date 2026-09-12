@@ -86,9 +86,37 @@ pub const PathError = error{
 
 pub const FileKind = enum { file, directory, other };
 
+/// Whether a file being written is a program.
+///
+/// Two values rather than a permission number, because the only thing above this layer has
+/// an opinion about is that one file: a release stages a program the operating system will
+/// be asked to run, and a program written as ordinary data does not run
+/// (`distribution.md` §8). Everything finer — owners, groups, read-only — belongs to
+/// whoever installs the file, not to whoever wrote it.
+pub const FileMode = enum {
+    regular,
+    executable,
+
+    /// Whether this system has an executable bit at all. False on Windows, which decides by
+    /// extension, and where asking for one is not an error but is not a change either.
+    pub const has_bit = std.Io.File.Permissions.has_executable_bit;
+
+    fn permissions(self: FileMode) std.Io.File.Permissions {
+        return switch (self) {
+            .regular => .default_file,
+            .executable => .executable_file,
+        };
+    }
+};
+
 pub const FileInfo = struct {
     size: u64,
     kind: FileKind,
+    /// Whether the system would let anyone execute this file.
+    ///
+    /// Always false where there is no such bit — Windows decides by extension — so a
+    /// caller that copies it is copying "nothing to preserve" rather than a wrong answer.
+    executable: bool = false,
     /// Modification time in nanoseconds since the Unix epoch.
     ///
     /// Wall-clock, and therefore not monotonic: it can move backwards when a clock is
@@ -388,9 +416,18 @@ pub const Os = struct {
 
     /// Writes a whole file, replacing anything already there.
     pub fn writeFile(self: *Os, path: []const u8, bytes: []const u8) FileError!void {
+        return self.writeFileMode(path, bytes, .regular);
+    }
+
+    /// Writes a whole file that the system will be asked to execute.
+    ///
+    /// Separate from `writeFile` rather than a default argument, because "this file is a
+    /// program" is a decision a caller makes deliberately and exactly once per file.
+    pub fn writeFileMode(self: *Os, path: []const u8, bytes: []const u8, mode: FileMode) FileError!void {
         const the_io = self.io();
+        const flags: std.Io.Dir.CreateFileOptions = .{ .permissions = mode.permissions() };
         if (isAbsolute(path)) {
-            var file = std.Io.Dir.createFileAbsolute(the_io, path, .{}) catch |err|
+            var file = std.Io.Dir.createFileAbsolute(the_io, path, flags) catch |err|
                 return mapFileError(err, "create", path);
             defer file.close(the_io);
             var buffer: [4096]u8 = undefined;
@@ -399,7 +436,7 @@ pub const Os = struct {
             writer.interface.flush() catch |err| return mapFileError(err, "flush", path);
             return;
         }
-        std.Io.Dir.cwd().writeFile(the_io, .{ .sub_path = path, .data = bytes }) catch |err|
+        std.Io.Dir.cwd().writeFile(the_io, .{ .sub_path = path, .data = bytes, .flags = flags }) catch |err|
             return mapFileError(err, "write", path);
     }
 
@@ -791,6 +828,7 @@ fn infoFromStat(st: std.Io.File.Stat) FileInfo {
         .size = st.size,
         .kind = mapKind(st.kind),
         .modified_ns = std.math.cast(i64, st.mtime.nanoseconds) orelse 0,
+        .executable = FileMode.has_bit and (st.permissions.toMode() & 0o111) != 0,
     };
 }
 

@@ -1,7 +1,7 @@
 # Distribution: an application a stranger can run
 
-**Status:** designed 2026-09-12; **3/8 implementation steps complete** (Steps 1-3, 2026-09-12).
-**Stop point:** after Step 3. Step 4 is not started.
+**Status:** designed 2026-09-12; **4/8 implementation steps complete** (Steps 1-4, 2026-09-12).
+**Stop point:** after Step 4. Step 5 is not started.
 
 Rests on [ADR-0030](../adr/0030-distribution-artifacts.md) and
 [ADR-0031](../adr/0031-application-configuration-and-user-data.md), with ADR-0008, ADR-0014,
@@ -385,7 +385,7 @@ Resolution when implementation exposes a design correction. No step is done by t
    combined discovery and optional per-package base, including reload and script/native host
    adapters. Test duplicates, unavailable roots, relocation and confined asset loading.
    Runnable result: outside-tree user content/script package runs without modifying install.
-4. **Stage a complete release from explicit inputs.** Implement §8's reusable Zig build
+4. **Stage a complete release from explicit inputs. Complete 2026-09-12.** Implement §8's reusable Zig build
    helpers, host fpack and bounded runtime inventory; stage both sample variants. Verify
    ReleaseSafe, exact selected files, deliberate omissions/collisions and unsigned byte
    reproducibility. Runnable result: staged loose room runs from outside the checkout.
@@ -412,9 +412,9 @@ Resolution when implementation exposes a design correction. No step is done by t
 ## 15. Planning handoff
 
 ADRs 0030/0031 and this design settle the M9 architecture and eight bounded steps. All M8
-implementation/evidence is retained. Steps 1 through 3 are complete as of 2026-09-12; see
-their Resolutions below. **Next is Step 4, not started and not authorized.** Nothing in Steps
-4-8 — the `dist` target, generated notices, diagnostics or the macOS bundle — exists yet.
+implementation/evidence is retained. Steps 1 through 4 are complete as of 2026-09-12; see
+their Resolutions below. **Next is Step 5, not started and not authorized.** Nothing in Steps
+5-8 — generated notices, diagnostics or the macOS bundle — exists yet.
 
 ## Resolution — 2026-09-12, step 1
 
@@ -562,3 +562,73 @@ applied to package roots: the standard deterministic headless run must not vary 
 a developer happens to have installed, while an explicit selection must be able to exercise
 an outside-tree user package. Watchers remain the existing opt-in developer setting; no
 release default was introduced ahead of Step 4.
+
+## Resolution — 2026-09-12, step 4
+
+What implementing §8's staging settled, corrected or made explicit.
+
+**`dist` requires its configuration rather than imposing one.** §8 asks for a target that
+"explicitly builds ReleaseSafe, SDL3/Metal, aarch64-macos" and, in the same paragraph, for
+conflicting arguments to be rejected. A `build.zig` is not told which step was asked for, so a
+`dist` that configured its own module graph would configure a macOS/SDL/Metal graph on every
+build — including `zig build check -Dtarget=x86_64-linux-gnu -Dplatform=null -Drhi=null`,
+which exists precisely to need none of it and whose SDL dependency is lazy for that reason. So
+the step states the one configuration it stages and fails with every wrong thing named at
+once, plus the exact command. The release target is left *unstated* rather than restated:
+naming `-Dtarget=aarch64-macos` also produces a target Zig no longer calls native, which stops
+SDL building against this machine's SDK and would make the content compiler uninvokable.
+
+**A release is decided by records, not by extensions.** Nothing lists what to exclude. A file
+is staged because a record in a compiled package names it in its `source` field, so
+`room.fdt`, `hall.grid`, `README.md`, `foundry.h` and `fpack` are absent for the same reason:
+nothing asked for them. The corollary is the rule §8 states from the other side — a record of
+a schema the engine does not define, but which has a string `source`, is **required and not
+resolved**. Guessing where a custom loader's bytes live is the assumption §8 forbids; ignoring
+it would let a file go missing and fail on the recipient's machine. It is named, with the
+exact `--extra` that satisfies it. A manifest's `native` is the same case, which is why
+`libraryFileName` moved from `abi` down into `mod`: the loader that opens a library and the
+packager that stages it must not be able to disagree about its name, and the name is package
+policy — `mod/schemas.zig` is what freezes the field.
+
+**The closure is stated and checked, never computed.** An application names its packages;
+staging verifies that every `requires` in every staged manifest names a package that is also
+staged. Computing the closure instead would let a release quietly grow a package nobody
+decided to ship, and a release missing a dependency fails at content load on a machine whose
+owner cannot act on the diagnostic.
+
+**A copy that drops the executable bit is not a copy.** The first staged room would not run:
+`writeFile` creates an ordinary file, so the program arrived without permission to execute and
+the failure — "permission denied" from a path that plainly exists — looks nothing like its
+cause. `platform.os` gained `FileMode` and `writeFileMode`, and `FileInfo` gained
+`executable`; staging preserves the bit from the source rather than deciding it, so a native
+library or a helper program declared as an extra is carried across on the same terms.
+
+**Every read goes through the confined primitive, including the ones that did not have to.**
+The executable and the explicitly declared extras are named by absolute paths from the build,
+not by content — but they are still read as a root plus a leaf through `readFileConfined`, so
+a symlink in the last component is refused by the same code that refuses one inside a mod's
+package at runtime. One rule with one implementation is worth more than the small awkwardness
+of splitting a path to use it.
+
+**Destination collisions are checked case-insensitively.** Two staged paths differing only in
+case stage cleanly on a case-sensitive build machine and silently become one file on the
+player's, where the filesystem usually is not. An exact duplicate is a mistake in the release
+description and is caught anywhere; this one is only catchable here.
+
+**A revision is stated, never inferred.** The build runs no `git`: ADR-0014's toolchain has no
+external tool dependencies, and a staged release that guessed at its provenance could claim a
+clean tag it has no way to verify. An unstated revision is recorded as `local`. Whether a tree
+was clean when `-Drevision` was passed is the operator's assertion, and the release gate that
+depends on it is Step 8's.
+
+**The inventory is where a release says what it is.** Path order, no timestamps, no absolute
+paths and nothing from the machine that produced it, so two stages compare byte-for-byte
+without being interpreted — verified at real scale, not only in a test: two independent runs
+of the packager over the room produced identical trees, inventory included. It does not list
+itself, because a file cannot carry its own hash.
+
+**Staging is fresh because of where it writes, not because it deletes.** The output is a
+build-owned directory that Zig creates anew on every run; the packager refuses a destination
+that is not empty and removes nothing. The copy installed under `zig-out/dist/<app>` for a
+person to open or zip is a convenience and is overwritten without pruning, which is recorded
+here rather than left to be discovered.

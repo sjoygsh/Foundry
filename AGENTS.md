@@ -54,8 +54,8 @@ world's own fixed tick, and replaced in place when the file changes — its stat
 entities it owns carry across. `docs/modding/script-mods.md` was written by building a script
 package outside this repository and was then rebuilt from its own listings to check it.
 
-**M9 is designed, with 3/8 steps implemented (2026-09-12).** Read ADR-0030, ADR-0031 and
-`docs/design/distribution.md`; §14 is the implementation order and its first three Resolutions
+**M9 is designed, with 4/8 steps implemented (2026-09-12).** Read ADR-0030, ADR-0031 and
+`docs/design/distribution.md`; §14 is the implementation order and its first four Resolutions
 record what implementation settled. Step 1: `engine/src/app/settings.zig` holds
 the `settings.fset` envelope over `data`'s field-block layout, and `Os.replaceFileConfined` is
 the confined temporary-then-rename write every later step goes through — a file this build does
@@ -67,7 +67,10 @@ writes them — so `FOUNDRY_*_FRAMES` runs touch no settings file. Step 3: insta
 package discoveries are combined before resolution, and the host-assigned base for each package
 survives content/native/script loading and reload without entering either ABI. A headless sample
 discovers ambient user mods only when an explicit `FOUNDRY_*_PACKAGES` selection asks for them.
-Step 4 is next and requires the user's instruction.
+Step 4: `zig build dist` stages a release of a sample from explicit inputs, through
+`tools/distribution` — `release.zig` is the build-time description a game outside this
+repository uses too, and `fstage` is the packager. **`dist` requires its configuration and will
+not invent one**; the command is below. Step 5 is next and requires the user's instruction.
 
 ## 3. Building and verifying
 
@@ -116,6 +119,22 @@ zig c++ -x c++ -std=c++17 -Wall -Wextra -Werror -Izig-out/include -c mod.c -o /d
 This is not ceremony. Step 4 found three defects this way and none of them by any other route:
 a type a C mod had no way to construct, a header that did not compile as C++ at all, and an
 agreement that stopped firing.
+
+### Staging a release
+
+`dist` builds exactly one configuration and refuses every other, naming each wrong thing at
+once. There is no shorter form; `-Dtarget` is deliberately absent, because stating it produces
+a target Zig no longer calls native and the content compiler has to run here:
+
+```sh
+zig build dist -Dapp=room -Dplatform=sdl3 -Drhi=metal -Doptimize=ReleaseSafe
+```
+
+`-Dapp` is `room` (default) or `sandbox`; `-Drevision=<sha>` is recorded in the release's
+inventory and is `local` when unstated — the build runs no `git`. The staged tree is
+build-owned and fresh; a copy lands in `zig-out/dist/<app>` for a person to open or zip, and
+that copy is overwritten without pruning. It is a real artifact, so it takes a real SDL and
+Metal build: expect minutes on a cold cache, and expect it to be the slowest thing here.
 
 ### Counting tests
 

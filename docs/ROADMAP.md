@@ -425,7 +425,7 @@ and survived.
 entity spawning through ordinary content templates. Its §§8 and 14 define operational fault
 containment and the required failure tests; this is not a proof against unknown native defects.
 
-### M9 — Shippable: "it distributes" — **designed (2026-09-12), 3/8 implemented**
+### M9 — Shippable: "it distributes" — **designed (2026-09-12), 4/8 implemented**
 
 [ADR-0030](adr/0030-distribution-artifacts.md) fixes release artifacts and the macOS tooling
 boundary; [ADR-0031](adr/0031-application-configuration-and-user-data.md) separates bootstrap,
@@ -444,8 +444,15 @@ the player chose is written back, and a content reload moves a default without m
 Step 3, completed the same day, combines installed and user package discovery without losing
 host-assigned roots: content, assets, scripts, native libraries and reload all use the resolved
 package's own confined base, while neither ABI gains a path. An outside-tree user script package
-runs from Application Support beside a read-only installation. **1237 headless tests.** No
-release artifact or recipient evidence exists.
+runs from Application Support beside a read-only installation. Step 4, completed the same day,
+adds `zig build dist` and `tools/distribution`: a release is staged from explicit inputs into a
+build-owned directory, holding the program, the packages an application named, and exactly the
+files those packages' records refer to. Nothing is excluded by name — a file is present because
+a record asked for it — so authoring text, uncompiled grids, the public header and the content
+compiler are all absent, and an asset for a loader the engine does not define must be declared
+rather than guessed at. Every staged path, size and SHA-256 is inventoried in path order, and
+two stages of one release compare byte-for-byte. The staged room runs from outside the
+checkout. **1251 headless tests.** No signed, bundled or recipient evidence exists.
 
 * Asset and content bundling; release build configuration.
 * Game configuration and user settings.
