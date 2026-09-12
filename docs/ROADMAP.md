@@ -503,7 +503,103 @@ credential-dependent proof into deferred release work; no current artifact claim
 
 ---
 
-## Unscheduled: backend #2
+## Phase 4 — Hardening and reach
+
+**This phase gathers what the project already deferred; it does not invent work.** Every
+milestone below is drawn from `CLAUDE.md` §9's postponed table, `distribution.md` §13,
+ADR-0032, the carried items and the known-bugs section of `PROJECT_STATE.md`, or a capability
+`CLAUDE.md` §5 records as unbuilt — with one addition, M10, which is new work the engine has
+never had.
+
+**The order is a proposal, not a commitment.** Milestones are units of work, and three of
+these are started by a *trigger* rather than by the roadmap reaching them: M11 needs operator
+credentials and a machine, M14 needs a reason to want a second API, and M17 needs a decision
+that a game is networked. The rest can be reordered freely. What is not negotiable is that
+each still owes a design document before implementation, an ADR for anything that constrains
+the future, and a runnable result.
+
+### M10 — Identity: "it knows its own name" — **not started**
+
+Foundry has no face. There is no logo, no wordmark, no icon; a staged `.app` carries no
+`CFBundleIconFile` and therefore wears the generic Finder document icon, the window it opens
+has no icon either, and nothing anywhere states what a third party may do with the name. This
+milestone gives the engine a visual identity and, more importantly, draws the line between the
+engine's identity and the game's.
+
+* A mark set: wordmark, logo, and the small and monochrome forms an icon actually needs.
+* An icon through the ordinary paths — `.icns` staged by `tools/distribution` and named in the
+  generated plist, a window icon through `platform`, both **supplied by the consuming
+  application** exactly as its product name, bundle ID and version already are.
+* The engine's own mark used only on the engine's own artifacts: README, docs, tools, samples.
+* A usage and trademark note, because Apache-2.0 §6 deliberately grants no trademark rights
+  (ADR-0016), so mod and game authors currently have nothing to read.
+
+**The boundary is the point.** A game that shipped wearing Foundry's icon would be a defect,
+not a feature (I5, ADR-0017). Branding is a consumer-supplied input with an engine default
+used by engine artifacts, never an engine assumption baked into a product.
+
+**Owes an ADR** — what the marks may be used for is a licensing constraint on everyone
+downstream, not a style choice.
+
+**Exit criteria:** the room in the Dock and in its own title bar, recognisably Foundry; the
+README showing the mark; and a page a stranger can read to know what they may call their own
+work.
+
+### M11 — Released: "a stranger can download it" — **not started; credential-gated**
+
+M9 built and proved the release path; ADR-0032 deferred exactly the part that needs an
+identity, Apple's service and a machine that has never run the code. This milestone executes
+it, once.
+
+* Developer ID signing, notarization, stapling and Gatekeeper assessment of the exact public
+  archive, through the `dist-developer-id` path that already performs the sequence.
+* The quarantine-preserving launch on a genuinely clean recipient Mac, and the remaining steps
+  of `docs/shipping/macos.md` §4, recorded with identity, ticket, checksum and OS version.
+* The deferred release questions that come due with it: how far back macOS support reaches
+  (`LSMinimumSystemVersion` is 13.0 by assertion, not by test), and crash collection beyond
+  what the OS already reports.
+
+**Not this milestone:** release automation, CI or a storefront. ADR-0032 keeps all three
+deferred, and storefront-specific signing stays open until a storefront is actually chosen.
+
+**Exit criteria:** a download nobody has to be told how to open, and a record of why it can be
+trusted. Until then no artifact is a verified release, and the ad-hoc zip never becomes one.
+
+### M12 — Solid: "its known faults are fixed" — **not started**
+
+The known-bugs section of `PROJECT_STATE.md` has entries that have been carried for several
+milestones. Individually each is small. Together they are the reason a future session cannot
+tell the list's deliberate limitations from its unfinished work, which is the real cost.
+
+* The `render2d` texture staging buffer destroyed while frames are still in flight.
+* `zig build check -Drhi=metal` failing to compile `app`'s *test* binary — the executables
+  build, so the gap is in what the bar can prove, which is the worse half.
+* The `render2d` blank-patch/font-atlas batching fix, and the overlay's fifteen batches where
+  the hand-drawn HUD cost six.
+* The smaller recorded ones: log-sink timestamps, a directory read as a file reporting
+  `IoFailed` rather than `WrongFileKind`, `FrameError` unable to separate transient from fatal,
+  usage-flag conformance declared but unenforced, and the deferred destroy `interface.zig`
+  describes but no backend performs.
+
+**Exit criteria:** no entry in that section is a correctness defect; everything left is a
+deliberate limitation with its reason written next to it; and the bar compiles what it
+previously could not.
+
+### M13 — Parallel: "it uses more than one core" — **not started**
+
+`CLAUDE.md` §9 dates the job system and threading model to post-M5. Four milestones have
+passed. The decision is overdue and has never been made, which is the only reason it is still
+cheap.
+
+**I9 constrains this harder than anything else in the phase.** A job system that lets
+iteration order float changes results, and determinism is not a property that can be restored
+afterwards. Design document and ADR first; the model itself — what may run concurrently, where
+a frame splits, what a system may assume — stays open until that document decides it.
+
+**Exit criteria:** a measured improvement on a real workload in a sample, with every existing
+determinism test unchanged and still passing.
+
+### M14 — Portable: "the RHI was real" — **not started; trigger-started**
 
 **Deliberately not placed on the timeline.** Started when there is a reason — a decision to
 ship Windows or Linux, or a decision to validate the RHI against a second API — not when the
@@ -512,11 +608,57 @@ roadmap reaches it. Linux implies Vulkan; Windows could be either (ADR-0003).
 Expect this milestone to surface RHI design errors. That is its second purpose, and budgeting
 for it is more honest than being surprised by it. It also brings: real hardware or VM testing
 for that platform, the Vulkan SDK and RenderDoc if applicable, and the shader cross-compiler
-decision (ADR-0015).
+decision (ADR-0015). With it come the platform surfaces that are declared and unimplemented —
+`win32_hwnd` and the X11/Wayland kinds — and frame pacing, which today exists only on Metal.
+
+**Exit criteria:** a sample runs on a second API and a second platform, and the RHI's written
+rules either survived the encounter or changed by ADR.
+
+### M15 — Managed: "players choose their mods" — **not started**
+
+`CLAUDE.md` §5 records it plainly: a mod manager UI is still unbuilt. Every mechanism under it
+exists — discovery, dependency resolution, deterministic order, user package roots — and
+nothing exposes them to the person actually playing.
+
+* Enabling, disabling, ordering and conflict reporting, through the same public API a mod
+  could use (I4) and with the order still deterministic (I2, I9).
+* The content-driven game widget set ADR-0024 deferred, which is what such a screen is made of.
+* The deferred preference work that belongs with it: profiles and concurrent merging, and
+  settings migrations once a second schema version exists.
+
+**The engine owes the capability, not the screen.** A game's mod UI is the game's, and its skin
+is not Foundry's business.
+
+**Exit criteria:** a packaged sample where a player — not an environment variable — turns a mod
+on, and preferences survive a schema change without losing what the player chose.
+
+### M16 — Editor: "content is authored in Foundry" — **not started**
+
+`CLAUDE.md` §9's oldest deferred item, dated M6+. Its shape is already decided: tools are
+Foundry applications (ADR-0011), and the editor is a **re-host of the debug overlay's
+introspection, not a rewrite of it** (ADR-0025). The overlay was built as package zero for that
+API precisely so this milestone would not need a private path.
+
+**Exit criteria:** a content package authored, saved and reloaded without hand-editing `.fdt`,
+using only calls the public ABI already exposes — an editor with a back door has failed I4
+regardless of what it can do.
+
+### M17 — Connected: "it plays with others" — **not started; trigger-started**
+
+Networking is recorded as indefinite, and I1, I2, I8 and I9 have kept it possible without
+paying for it. It becomes a milestone when a game needs it.
+
+It brings ADR-0013's deferred question with it, but only conditionally: bit-exact determinism
+for a subset is owed to *lockstep*, and an authoritative-server model does not need it. Which
+model is chosen is an ADR before any code, because it decides how much of I9 has to become
+literal.
+
+**Exit criteria:** two processes share a world convincingly, and the model was decided in
+writing first.
 
 ---
 
-## Phase 4 — 3D
+## Phase 5 — 3D
 
 Deliberately unplanned in detail. Reuses `core`, `platform`, `rhi`, `data`, `asset` and `scene`
 unchanged; that reuse is the entire point of the earlier architecture.

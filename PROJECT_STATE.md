@@ -1238,7 +1238,9 @@ steps of `scripting.md` §16 and its own outside-tree exit proof. **M9 — Shipp
 distributes" — completed 2026-09-13**, all eight steps of `distribution.md` §14 and the
 external-consumer recipient proof obtainable without private Apple credentials. **Phase 3 is
 closed.** What a public macOS release still owes is operator certification — Developer ID
-signing, notarization and a clean recipient Mac (ADR-0032) — not engine work.
+signing, notarization and a clean recipient Mac (ADR-0032) — not engine work. **Phase 4,
+"Hardening and reach" (M10-M17), is written and entirely unstarted**; it gathers the deferred
+work rather than adding to it, and only M10, the engine's own identity, is new.
 
 ## Current milestone
 
@@ -2749,33 +2751,42 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 ## Immediate next steps
 
 **Nothing is next until the user chooses it. M9 is complete and tagged `m9`, and M0 through
-M9 are complete with it.** Phase 3 is closed. The roadmap's Phase 4 (3D) and the unscheduled
-second backend are both unstarted, and `CLAUDE.md` §9's postponed decisions become their own
-later milestones rather than being squeezed into a current one. The completed M8/M7 checklists
-and subsequent M5/M6 material below are historical.
+M9 are complete with it.** Phase 3 is closed. The completed M8/M7 checklists and subsequent
+M5/M6 material below are historical.
 
-Deferred, recorded and **not** started — each needs the user to ask, and none is in progress:
+**The deferred work now has milestones — `docs/ROADMAP.md` Phase 4, "Hardening and reach",
+M10 through M17.** Nothing in it is started, and the phase gathers what was already recorded
+rather than inventing work; only M10 is new. `CLAUDE.md` §9's postponed table now names the
+milestone each decision belongs to.
 
-* **The public macOS release certification** (ADR-0032, `CLAUDE.md` §9): sign the exact public
-  archive with a Developer ID identity, notarize and staple it, and launch that quarantined
-  download on a genuinely clean recipient Mac through the steps in `docs/shipping/macos.md`
-  §4. `dist-developer-id` already performs the sequence; what is missing is operator
-  credentials and an untouched Mac, not code. Until then Foundry has no verified public
-  release, and the ad-hoc zip must not be described as one.
-* The `render2d` blank-patch/font-atlas batching fix.
-* The job-system/threading decision, which `CLAUDE.md` §9 still dates to post-M5 — four
-  milestones ago, so the date itself is owed a revision.
-* The `-Drhi=metal` `app` test-binary compile failure.
-* The `render2d` texture staging buffer destroyed while frames are in flight.
-* `distribution.md` §13's remaining deferred questions: older macOS support,
-  storefront-specific signing, settings migrations once a second schema exists, preference
-  profiles and concurrent merging, crash collection beyond OS reports, and a runtime container
-  if measured file overhead ever warrants one.
-* The design documents' own open questions, which stay open by standing instruction rather
-  than being answered opportunistically.
+* **M10 — Identity.** The engine has no logo, wordmark or icon; a staged `.app` names no
+  `CFBundleIconFile` and its window carries no icon, and Apache-2.0 §6 grants no trademark
+  rights, so nothing says what a third party may call their own work. Branding stays a
+  consumer-supplied input with an engine default used only by engine artifacts.
+* **M11 — Released.** ADR-0032's deferred gate: Developer ID signing, notarization, stapling
+  and the quarantined launch on a genuinely clean recipient Mac, plus how far back macOS
+  support reaches and crash collection beyond OS reports. `dist-developer-id` already performs
+  the sequence; what is missing is operator credentials and an untouched Mac, not code. Until
+  then Foundry has no verified public release and the ad-hoc zip is not one.
+* **M12 — Solid.** The carried correctness debt: the `render2d` texture staging buffer
+  destroyed while frames are in flight, the `-Drhi=metal` `app` test-binary compile failure,
+  the blank-patch/font-atlas batching fix, and the smaller entries in this file's known-bugs
+  section.
+* **M13 — Parallel.** The job system and threading model, which §9 dated post-M5 and which is
+  four milestones overdue. I9 constrains it hardest.
+* **M14 — Portable.** The second backend, trigger-started, with the shader cross-compiler
+  decision, the unimplemented `win32_hwnd`/X11/Wayland surfaces and non-Metal frame pacing.
+* **M15 — Managed.** The mod manager capability `CLAUDE.md` §5 records as unbuilt, the
+  content-driven widget set ADR-0024 deferred, preference profiles and concurrent merging, and
+  settings migrations once a second schema exists.
+* **M16 — Editor.** §9's oldest item, dated M6+; ADR-0011 and ADR-0025 already decided its
+  shape as a re-host of the overlay's introspection.
+* **M17 — Connected.** Networking, trigger-started, carrying ADR-0013's bit-exact determinism
+  question only if lockstep is chosen.
 
-None of these is a milestone on its own; `CLAUDE.md` §9 is where the ones with a due date
-live.
+Storefront-specific signing and a runtime container stay unplaced: both are triggered by a
+decision nobody has made. The design documents' own open questions stay open by standing
+instruction rather than being answered opportunistically.
 
 ~~1. Accept ADR-0026 and ADR-0027.~~ ~~2. Update `CLAUDE.md`.~~ ~~3. Write
 `docs/design/public-abi.md`.~~ **All done 2026-09-07.** What is left is code, and
