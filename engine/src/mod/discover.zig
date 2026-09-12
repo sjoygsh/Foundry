@@ -35,11 +35,14 @@ pub const Options = struct {
 
 /// One installed package: what it says about itself, and where its two halves are.
 ///
-/// `file` and `root` are relative to the directory that was searched, and are exactly the
-/// pair `app.Config.content` takes — which is the point. `mod` computes an order; it does
-/// not load anything, and it hands its answer to the thing that does.
+/// `base_dir` is the host-assigned directory that was searched. `file` and `root` are
+/// relative to it. Keeping all three on the candidate is what lets a host combine an
+/// installation and a user's mod directory before resolution without losing which root
+/// owns which bytes (`distribution.md` §7).
 pub const Candidate = struct {
     manifest: Manifest,
+    /// The directory the host chose to search. Content cannot supply or override it.
+    base_dir: []const u8,
     /// The compiled package, e.g. `core.fpk`.
     file: []const u8,
     /// Where the files its asset records name live, e.g. `core`. Derived from the `.fpk`'s
@@ -107,19 +110,13 @@ pub fn discover(
     defer candidates.deinit(gpa);
 
     for (names.items) |file_name| {
-        const path = platform.os.joinPath(gpa, &.{ dir, file_name }) catch |err| {
-            try diags.addFmt(gpa, .warning, .whole(file_name), 0, "", "path could not be built: {s}", .{@errorName(err)});
-            continue;
-        };
-        defer gpa.free(path);
-
-        const bytes = os.readFile(gpa, path, options.max_package_bytes) catch |err| {
+        const read = os.readFileConfined(gpa, dir, file_name, options.max_package_bytes) catch |err| {
             try diags.addFmt(gpa, .warning, .whole(file_name), 0, "", "could not be read: {s}", .{@errorName(err)});
             continue;
         };
-        defer gpa.free(bytes);
+        defer gpa.free(read.bytes);
 
-        var reader = data.fpk.Reader.open(gpa, bytes, options.limits) catch |err| {
+        var reader = data.fpk.Reader.open(gpa, read.bytes, options.limits) catch |err| {
             try diags.addFmt(gpa, .warning, .whole(file_name), 0, "", "is not a readable package: {s}", .{@errorName(err)});
             continue;
         };
@@ -136,6 +133,7 @@ pub fn discover(
         const stem = file_name[0 .. file_name.len - extension.len];
         try candidates.append(gpa, .{
             .manifest = m,
+            .base_dir = try arena.dupe(u8, dir),
             .file = try arena.dupe(u8, file_name),
             .root = try arena.dupe(u8, stem),
         });
@@ -176,4 +174,25 @@ test "sorting happens on names, so the answer does not depend on the filesystem"
     try testing.expectEqualStrings("a.fpk", names[0]);
     try testing.expectEqualStrings("m.fpk", names[1]);
     try testing.expectEqualStrings("z.fpk", names[2]);
+}
+
+test "an unavailable package root is diagnosed and contributes no candidates" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "not-a-directory", .data = "x" });
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(testing.io, &path_buf);
+    const unavailable = try platform.os.joinPath(testing.allocator, &.{ path_buf[0..root_len], "not-a-directory" });
+    defer testing.allocator.free(unavailable);
+
+    var os = try Os.init(testing.allocator, .{});
+    defer os.deinit();
+    var diags: Diagnostics = .init(testing.allocator, .default);
+    defer diags.deinit(testing.allocator);
+
+    var found = try discover(testing.allocator, os, unavailable, .{}, &diags);
+    defer found.deinit();
+    try testing.expectEqual(@as(usize, 0), found.candidates.len);
+    try testing.expectEqual(@as(usize, 1), diags.count());
+    try testing.expect(std.mem.indexOf(u8, diags.items.items[0].message, "could not be listed") != null);
 }

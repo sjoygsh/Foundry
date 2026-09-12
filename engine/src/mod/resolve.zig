@@ -87,6 +87,9 @@ pub const Skip = struct {
 pub const Entry = struct {
     id: ContentId,
     name: []const u8,
+    /// The host-assigned directory this package was discovered under. Content cannot
+    /// name it; applications preserve it into their content/code adapters.
+    base_dir: []const u8,
     file: []const u8,
     root: []const u8,
     version: u32,
@@ -136,8 +139,12 @@ pub fn resolve(
     for (candidates, 0..) |c, i| {
         const gop = by_id.getOrPutAssumeCapacity(c.manifest.id.hash);
         if (gop.found_existing) {
-            try diags.addFmt(gpa, .err, .whole(c.file), 0, "", "declares the same package id as '{s}': {s}", .{
-                candidates[gop.value_ptr.*].file,
+            const first = candidates[gop.value_ptr.*];
+            try diags.addFmt(gpa, .err, .whole(c.file), 0, "", "package '{s}/{s}' declares the same package id as '{s}/{s}': {s}", .{
+                c.base_dir,
+                c.file,
+                first.base_dir,
+                first.file,
                 c.manifest.id_name,
             });
             return error.DuplicatePackage;
@@ -254,6 +261,7 @@ pub fn resolve(
         try order.append(gpa, .{
             .id = m.id,
             .name = try arena.dupe(u8, m.id_name),
+            .base_dir = try arena.dupe(u8, candidates[index].base_dir),
             .file = try arena.dupe(u8, candidates[index].file),
             .root = try arena.dupe(u8, candidates[index].root),
             .version = m.version,
@@ -361,6 +369,7 @@ const testing = std.testing;
 
 const TestPackage = struct {
     name: []const u8,
+    base_dir: []const u8 = "test-root",
     version: u32 = 1,
     requires: []const []const u8 = &.{},
     /// Version ranges, parallel to `requires`. Empty means "any".
@@ -384,6 +393,7 @@ fn makeCandidate(arena: Allocator, spec: TestPackage) !Candidate {
             .license = "MIT",
             .requires = reqs,
         },
+        .base_dir = spec.base_dir,
         .file = try std.fmt.allocPrint(arena, "{s}.fpk", .{spec.name}),
         .root = spec.name,
     };
@@ -444,6 +454,8 @@ test "a dependency loads before what needs it, whatever the player asked for" {
 
     var buf: [8][]const u8 = undefined;
     try testing.expectEqualDeep(@as([]const []const u8, &.{ "foundry:core", "a:lamps" }), orderNames(res, &buf));
+    try testing.expectEqualStrings("test-root", res.order[0].base_dir);
+    try testing.expectEqualStrings("test-root", res.order[1].base_dir);
 }
 
 test "the player's order survives where the graph does not constrain it" {
@@ -606,8 +618,8 @@ test "two packages claiming one id is an error naming both files" {
 
     const candidates = try makeAll(h.a(), &.{
         .{ .name = "foundry:core" },
-        .{ .name = "a:twice", .version = 1 },
-        .{ .name = "a:twice", .version = 2 },
+        .{ .name = "a:twice", .base_dir = "installed", .version = 1 },
+        .{ .name = "a:twice", .base_dir = "user-mods", .version = 2 },
     });
 
     // Two copies of one mod installed is a common mistake, and choosing one quietly
@@ -616,6 +628,8 @@ test "two packages claiming one id is an error naming both files" {
         .required = try ids(h.a(), &.{"foundry:core"}),
     }, &h.diags));
     try testing.expect(h.diags.failed);
+    try testing.expect(std.mem.indexOf(u8, h.diags.items.items[0].message, "installed") != null);
+    try testing.expect(std.mem.indexOf(u8, h.diags.items.items[0].message, "user-mods") != null);
 }
 
 test "a required package that is not installed is fatal, and one that is skipped is too" {

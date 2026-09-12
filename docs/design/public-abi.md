@@ -449,7 +449,12 @@ pub const Manifest = struct {
     native: ?[]const u8,
 };
 
-pub const Candidate = struct { manifest: Manifest, file: []const u8, root: []const u8 };
+pub const Candidate = struct {
+    manifest: Manifest,
+    base_dir: []const u8, // host-assigned directory passed to discover
+    file: []const u8,
+    root: []const u8,
+};
 
 pub fn discover(gpa: Allocator, os: *platform.os.Os, dir: []const u8) ![]Candidate;
 pub fn resolve(gpa: Allocator, candidates: []const Candidate, request: Request) !Resolution;
@@ -743,8 +748,12 @@ test that reads a value is the one that discovers who owns it.
 **`app.contentDirOf` is public now.** Discovery happens before an engine exists (§13 phase 1), so
 the directory to search has to be answerable without one, and the two samples were about to
 compute `<prefix>/content` themselves — which is how a default becomes two defaults that drift.
-The engine calls it with `Config.content_dir`; a host that discovers calls it once and passes the
-answer back, so both look in the same place by construction.
+The engine calls it with `Config.content_dir`; a single-root host that discovers calls it once
+and passes the answer back, so both look in the same place by construction. M9 Step 3 extends
+the entry, not this helper: every candidate retains the concrete directory passed to its
+discovery call, resolution copies that host-owned provenance, and `ContentPackage.base_dir`
+optionally overrides the config default for that package. This is host authority and never ABI
+or manifest data.
 
 **What the samples show now.** Neither names a file. Each names two content ids — the package it
 cannot run without and the package it *is* — and everything else comes from the manifests. The

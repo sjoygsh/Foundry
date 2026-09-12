@@ -54,17 +54,20 @@ world's own fixed tick, and replaced in place when the file changes — its stat
 entities it owns carry across. `docs/modding/script-mods.md` was written by building a script
 package outside this repository and was then rebuilt from its own listings to check it.
 
-**M9 is designed, with 2/8 steps implemented (2026-09-12).** Read ADR-0030, ADR-0031 and
-`docs/design/distribution.md`; §14 is the implementation order and its Step 1 and Step 2
-Resolutions record what implementing them settled. Step 1: `engine/src/app/settings.zig` holds
+**M9 is designed, with 3/8 steps implemented (2026-09-12).** Read ADR-0030, ADR-0031 and
+`docs/design/distribution.md`; §14 is the implementation order and its first three Resolutions
+record what implementation settled. Step 1: `engine/src/app/settings.zig` holds
 the `settings.fset` envelope over `data`'s field-block layout, and `Os.replaceFileConfined` is
 the confined temporary-then-rename write every later step goes through — a file this build does
 not understand is preserved rather than replaced. Step 2: both samples resolve a window size
 and a master volume from a built-in fallback, a `config` record in their own package, and the
 player's file, in that order. **Two rules about when preferences are live, and both matter when
 running the bar**: a headless run neither reads nor applies them, and a frame-budgeted run never
-writes them — so `FOUNDRY_*_FRAMES` runs touch no user directory. Step 3 is next and requires
-the user's instruction.
+writes them — so `FOUNDRY_*_FRAMES` runs touch no settings file. Step 3: installed and user
+package discoveries are combined before resolution, and the host-assigned base for each package
+survives content/native/script loading and reload without entering either ABI. A headless sample
+discovers ambient user mods only when an explicit `FOUNDRY_*_PACKAGES` selection asks for them.
+Step 4 is next and requires the user's instruction.
 
 ## 3. Building and verifying
 

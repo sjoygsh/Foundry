@@ -607,18 +607,24 @@ pub const Os = struct {
         return switch (builtin.os.tag) {
             .windows => blk: {
                 const appdata = self.envVar("APPDATA") orelse break :blk error.PathUnavailable;
+                if (!isAbsolute(appdata)) break :blk error.PathUnavailable;
                 break :blk joinPath(gpa, &.{ appdata, self.app_name });
             },
             .macos, .ios, .tvos, .watchos, .visionos => blk: {
                 const home = self.envVar("HOME") orelse break :blk error.PathUnavailable;
+                if (!isAbsolute(home)) break :blk error.PathUnavailable;
                 break :blk joinPath(gpa, &.{ home, "Library", "Application Support", self.app_name });
             },
             // The XDG base directory specification, which Linux and the BSDs follow.
             else => blk: {
                 if (self.envVar("XDG_DATA_HOME")) |xdg| {
-                    if (xdg.len > 0) break :blk joinPath(gpa, &.{ xdg, self.app_name });
+                    if (xdg.len > 0) {
+                        if (!isAbsolute(xdg)) break :blk error.PathUnavailable;
+                        break :blk joinPath(gpa, &.{ xdg, self.app_name });
+                    }
                 }
                 const home = self.envVar("HOME") orelse break :blk error.PathUnavailable;
+                if (!isAbsolute(home)) break :blk error.PathUnavailable;
                 break :blk joinPath(gpa, &.{ home, ".local", "share", self.app_name });
             },
         };
@@ -1036,6 +1042,16 @@ test "user data directory is derived, not guessed" {
 
 test "an unavailable directory says so instead of inventing one" {
     var os = try testOs(&.{});
+    defer os.deinit();
+    try testing.expectError(error.PathUnavailable, os.userDataDirAlloc(testing.allocator));
+}
+
+test "a relative environment directory is unavailable rather than resolved from cwd" {
+    var os = try testOs(&.{
+        .{ .name = "HOME", .value = "relative-home" },
+        .{ .name = "XDG_DATA_HOME", .value = "relative-xdg" },
+        .{ .name = "APPDATA", .value = "relative-appdata" },
+    });
     defer os.deinit();
     try testing.expectError(error.PathUnavailable, os.userDataDirAlloc(testing.allocator));
 }

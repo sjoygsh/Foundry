@@ -5,6 +5,7 @@
 //! content, then proves `abi` opens the image and its registered system runs.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const core = @import("core");
 const data = @import("data");
 const platform = @import("platform");
@@ -110,26 +111,45 @@ test "a discovered package loads native code, registers behaviour, and shuts dow
     defer tmp.cleanup();
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path_len = try tmp.dir.realPath(testing.io, &path_buf);
-    const content_dir = path_buf[0..path_len];
+    const root_dir = path_buf[0..path_len];
 
     var os = try platform.Os.init(gpa, .{ .app_name = "foundry-mod-pipeline", .env = &.{} });
     defer os.deinit();
+    const installed_dir = try platform.os.joinPath(gpa, &.{ root_dir, "Read Only Install" });
+    defer gpa.free(installed_dir);
+    const user_mods_dir = try platform.os.joinPath(gpa, &.{ root_dir, "User Móds" });
+    defer gpa.free(user_mods_dir);
+    try os.createDirPath(installed_dir);
+    try os.createDirPath(user_mods_dir);
     var registry: data.Registry = .init(gpa, .default);
     defer registry.deinit(gpa);
     var diags: data.Diagnostics = .init(gpa, .default);
     defer diags.deinit(gpa);
     try mod.schemas.registerAll(gpa, &registry);
-    try writePackage(os, content_dir, &registry, &diags, "foundry:core", core_source);
-    try writePackage(os, content_dir, &registry, &diags, "pipeline:mod", mod_source);
-    try writePackage(os, content_dir, &registry, &diags, "tail:mod", tail_source);
-    try writePackage(os, content_dir, &registry, &diags, "refused:mod", refused_source);
-    try copyLibrary(os, content_dir, "pipeline", "pipeline_mod", options.native_mod_path);
-    try copyLibrary(os, content_dir, "tail", "shutdown_mod", options.shutdown_mod_path);
-    try copyLibrary(os, content_dir, "refused", "callback_refused_mod", options.callback_refused_mod_path);
+    try writePackage(os, installed_dir, &registry, &diags, "foundry:core", core_source);
+    try writePackage(os, user_mods_dir, &registry, &diags, "pipeline:mod", mod_source);
+    try writePackage(os, user_mods_dir, &registry, &diags, "tail:mod", tail_source);
+    try writePackage(os, user_mods_dir, &registry, &diags, "refused:mod", refused_source);
+    try copyLibrary(os, user_mods_dir, "pipeline", "pipeline_mod", options.native_mod_path);
+    try copyLibrary(os, user_mods_dir, "tail", "shutdown_mod", options.shutdown_mod_path);
+    try copyLibrary(os, user_mods_dir, "refused", "callback_refused_mod", options.callback_refused_mod_path);
 
-    var discovery = try mod.discover(gpa, os, content_dir, .{}, &diags);
-    defer discovery.deinit();
-    var resolution = try mod.resolve(gpa, discovery.candidates, .{
+    // Once staged, the installation really is read-only. The engine must need no write
+    // beside package zero; user code and assets live under their own writable root.
+    if (builtin.os.tag != .windows) {
+        try tmp.dir.setFilePermissions(testing.io, "Read Only Install", .fromMode(0o555), .{});
+        defer tmp.dir.setFilePermissions(testing.io, "Read Only Install", .fromMode(0o755), .{}) catch {};
+    }
+
+    var installed = try mod.discover(gpa, os, installed_dir, .{}, &diags);
+    defer installed.deinit();
+    var user = try mod.discover(gpa, os, user_mods_dir, .{}, &diags);
+    defer user.deinit();
+    var candidates: std.ArrayList(mod.Candidate) = .empty;
+    defer candidates.deinit(gpa);
+    try candidates.appendSlice(gpa, installed.candidates);
+    try candidates.appendSlice(gpa, user.candidates);
+    var resolution = try mod.resolve(gpa, candidates.items, .{
         .required = &.{core.ContentId.fromString("foundry:core")},
         .enabled = &.{
             core.ContentId.fromString("pipeline:mod"),
@@ -139,15 +159,17 @@ test "a discovered package loads native code, registers behaviour, and shuts dow
     }, &diags);
     defer resolution.deinit();
     try testing.expectEqual(@as(usize, 4), resolution.order.len);
+    try testing.expectEqualStrings(installed_dir, resolution.order[0].base_dir);
+    for (resolution.order[1..]) |entry| try testing.expectEqualStrings(user_mods_dir, entry.base_dir);
 
     const packages = try gpa.alloc(app.ContentPackage, resolution.order.len);
     defer gpa.free(packages);
     for (resolution.order, packages) |entry, *package| {
-        package.* = .{ .file = entry.file, .root = entry.root };
+        package.* = .{ .base_dir = entry.base_dir, .file = entry.file, .root = entry.root };
     }
     const engine = try TestEngine.init(gpa, .{
         .headless = true,
-        .content_dir = content_dir,
+        .content_dir = installed_dir,
         .content = packages,
         .log_capture = null,
     });
@@ -161,7 +183,7 @@ test "a discovered package loads native code, registers behaviour, and shuts dow
     var loader = abi.NativeLoaderOf(TestHost).init(gpa, &host);
     defer loader.deinit();
 
-    try loader.load(content_dir, resolution.order, &diags);
+    try loader.load(resolution.order, &diags);
     try testing.expectEqual(@as(usize, 3), loader.loaded.items.len);
     try testing.expect(engine.schemas.lookup(data.SchemaId.fromStringUnchecked("refused:survives")) != null);
     try testing.expectEqual(@as(u32, 2), world.componentTypeCount());
@@ -231,20 +253,20 @@ test "every native refusal is diagnosed and does not stop another library" {
     var loader = abi.NativeLoaderOf(abi.Host).init(gpa, &host);
     defer loader.deinit();
     const entries = [_]mod.Entry{
-        .{ .id = core.ContentId.fromString("test:content"), .name = "test:content", .file = "", .root = "", .version = 1 },
-        .{ .id = core.ContentId.fromString("test:path"), .name = "test:path", .file = "", .root = "safe", .version = 1, .abi = .{}, .native = "../escape" },
-        .{ .id = core.ContentId.fromString("test:root"), .name = "test:root", .file = "", .root = "../escape", .version = 1, .abi = .{}, .native = "unused" },
-        .{ .id = core.ContentId.fromString("test:noabi"), .name = "test:noabi", .file = "", .root = "safe", .version = 1, .native = "unused" },
-        .{ .id = core.ContentId.fromString("test:mixed"), .name = "test:mixed", .file = "", .root = "refused", .version = 1, .abi = .{ .min = 1, .max = 2 }, .native = "refused_mod", .script = .{ .entry = core.ContentId.fromString("test:scripts.main"), .binding = 1 } },
-        .{ .id = core.ContentId.fromString("test:future"), .name = "test:future", .file = "", .root = "safe", .version = 1, .abi = .{ .min = 2 }, .native = "unused" },
-        .{ .id = core.ContentId.fromString("test:missing"), .name = "test:missing", .file = "", .root = "missing", .version = 1, .abi = .{}, .native = "absent" },
-        .{ .id = core.ContentId.fromString("test:corrupt"), .name = "test:corrupt", .file = "", .root = "corrupt", .version = 1, .abi = .{}, .native = "corrupt_mod" },
-        .{ .id = core.ContentId.fromString("test:noinit"), .name = "test:noinit", .file = "", .root = "no_init", .version = 1, .abi = .{}, .native = "no_init_mod" },
-        .{ .id = core.ContentId.fromString("test:refused"), .name = "test:refused", .file = "", .root = "refused", .version = 1, .abi = .{}, .native = "refused_mod" },
-        .{ .id = core.ContentId.fromString("test:unknown"), .name = "test:unknown", .file = "", .root = "unknown", .version = 1, .abi = .{}, .native = "unknown_mod" },
-        .{ .id = core.ContentId.fromString("test:noshutdown"), .name = "test:noshutdown", .file = "", .root = "no_shutdown", .version = 1, .abi = .{}, .native = "no_shutdown_mod" },
+        .{ .id = core.ContentId.fromString("test:content"), .name = "test:content", .base_dir = content_dir, .file = "", .root = "", .version = 1 },
+        .{ .id = core.ContentId.fromString("test:path"), .name = "test:path", .base_dir = content_dir, .file = "", .root = "safe", .version = 1, .abi = .{}, .native = "../escape" },
+        .{ .id = core.ContentId.fromString("test:root"), .name = "test:root", .base_dir = content_dir, .file = "", .root = "../escape", .version = 1, .abi = .{}, .native = "unused" },
+        .{ .id = core.ContentId.fromString("test:noabi"), .name = "test:noabi", .base_dir = content_dir, .file = "", .root = "safe", .version = 1, .native = "unused" },
+        .{ .id = core.ContentId.fromString("test:mixed"), .name = "test:mixed", .base_dir = content_dir, .file = "", .root = "refused", .version = 1, .abi = .{ .min = 1, .max = 2 }, .native = "refused_mod", .script = .{ .entry = core.ContentId.fromString("test:scripts.main"), .binding = 1 } },
+        .{ .id = core.ContentId.fromString("test:future"), .name = "test:future", .base_dir = content_dir, .file = "", .root = "safe", .version = 1, .abi = .{ .min = 2 }, .native = "unused" },
+        .{ .id = core.ContentId.fromString("test:missing"), .name = "test:missing", .base_dir = content_dir, .file = "", .root = "missing", .version = 1, .abi = .{}, .native = "absent" },
+        .{ .id = core.ContentId.fromString("test:corrupt"), .name = "test:corrupt", .base_dir = content_dir, .file = "", .root = "corrupt", .version = 1, .abi = .{}, .native = "corrupt_mod" },
+        .{ .id = core.ContentId.fromString("test:noinit"), .name = "test:noinit", .base_dir = content_dir, .file = "", .root = "no_init", .version = 1, .abi = .{}, .native = "no_init_mod" },
+        .{ .id = core.ContentId.fromString("test:refused"), .name = "test:refused", .base_dir = content_dir, .file = "", .root = "refused", .version = 1, .abi = .{}, .native = "refused_mod" },
+        .{ .id = core.ContentId.fromString("test:unknown"), .name = "test:unknown", .base_dir = content_dir, .file = "", .root = "unknown", .version = 1, .abi = .{}, .native = "unknown_mod" },
+        .{ .id = core.ContentId.fromString("test:noshutdown"), .name = "test:noshutdown", .base_dir = content_dir, .file = "", .root = "no_shutdown", .version = 1, .abi = .{}, .native = "no_shutdown_mod" },
     };
-    try loader.load(content_dir, &entries, &diags);
+    try loader.load(&entries, &diags);
     try testing.expectEqual(@as(usize, 3), loader.loaded.items.len);
     for (loader.loaded.items[0..2]) |*loaded| {
         try testing.expect(loaded.library.symbol(abi.ModShutdown, abi.shutdown_symbol) != null);
@@ -281,13 +303,14 @@ test "the native identity limit closes a library that has not run" {
     const entry = [_]mod.Entry{.{
         .id = core.ContentId.fromString("test:limit"),
         .name = "test:limit",
+        .base_dir = content_dir,
         .file = "",
         .root = "refused",
         .version = 1,
         .abi = .{},
         .native = "refused_mod",
     }};
-    try loader.load(content_dir, &entry, &diags);
+    try loader.load(&entry, &diags);
     try testing.expectEqual(@as(usize, 0), loader.loaded.items.len);
     try testing.expectEqual(@as(usize, 1), diags.count());
 }

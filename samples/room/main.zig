@@ -87,12 +87,39 @@ fn contentPackages(
     content_dir: []const u8,
     env: []const platform.os.EnvVar,
     selected: app.settings.IdSet,
+    include_user_packages: bool,
 ) ![]app.ContentPackage {
     var diags: data.Diagnostics = .init(gpa, .default);
     defer diags.deinit(gpa);
 
-    var found = try mod.discover(gpa, os, content_dir, .{}, &diags);
-    defer found.deinit();
+    var installed = try mod.discover(gpa, os, content_dir, .{}, &diags);
+    defer installed.deinit();
+
+    // The user root is a second host-granted capability, never a path content can name.
+    // A missing `mods/` directory is the ordinary first-run state and discovery reports
+    // it as empty. An unavailable user-data location leaves installed content usable.
+    var user: ?mod.Discovery = null;
+    defer if (user) |*found| found.deinit();
+    if (include_user_packages) {
+        const user_data = os.userDataDirAlloc(gpa) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => blk: {
+                log.warn("user packages are unavailable ({t})", .{err});
+                break :blk null;
+            },
+        };
+        if (user_data) |dir| {
+            defer gpa.free(dir);
+            const mods_dir = try platform.os.joinPath(gpa, &.{ dir, "mods" });
+            defer gpa.free(mods_dir);
+            user = try mod.discover(gpa, os, mods_dir, .{}, &diags);
+        }
+    }
+
+    var candidates: std.ArrayList(mod.Candidate) = .empty;
+    defer candidates.deinit(gpa);
+    try candidates.appendSlice(gpa, installed.candidates);
+    if (user) |found| try candidates.appendSlice(gpa, found.candidates);
 
     var enabled: std.ArrayList(core.ContentId) = .empty;
     defer enabled.deinit(gpa);
@@ -121,7 +148,7 @@ fn contentPackages(
         }
     }
 
-    var resolution = try mod.resolve(gpa, found.candidates, .{
+    var resolution = try mod.resolve(gpa, candidates.items, .{
         .required = &.{try data.contentId("foundry:core")},
         .enabled = enabled.items,
     }, &diags);
@@ -136,12 +163,22 @@ fn contentPackages(
     errdefer list.deinit(gpa);
     for (resolution.order) |entry| {
         log.info("load order: {s} version {d}", .{ entry.name, entry.version });
-        try list.append(gpa, .{
-            .file = try gpa.dupe(u8, entry.file),
-            .root = try gpa.dupe(u8, entry.root),
-        });
+        const package = try copyPackage(gpa, entry);
+        list.append(gpa, package) catch |err| {
+            freePackage(gpa, package);
+            return err;
+        };
     }
     return list.toOwnedSlice(gpa);
+}
+
+fn copyPackage(gpa: std.mem.Allocator, entry: mod.Entry) !app.ContentPackage {
+    const base = try gpa.dupe(u8, entry.base_dir);
+    errdefer gpa.free(base);
+    const file = try gpa.dupe(u8, entry.file);
+    errdefer gpa.free(file);
+    const root = try gpa.dupe(u8, entry.root);
+    return .{ .base_dir = base, .file = file, .root = root };
 }
 
 fn envValue(env: []const platform.os.EnvVar, name: []const u8) ?[]const u8 {
@@ -152,10 +189,13 @@ fn envValue(env: []const platform.os.EnvVar, name: []const u8) ?[]const u8 {
 }
 
 fn freePackages(gpa: std.mem.Allocator, packages: []const app.ContentPackage) void {
-    for (packages) |pkg| {
-        gpa.free(pkg.file);
-        gpa.free(pkg.root);
-    }
+    for (packages) |pkg| freePackage(gpa, pkg);
+}
+
+fn freePackage(gpa: std.mem.Allocator, package: app.ContentPackage) void {
+    if (package.base_dir) |base| gpa.free(base);
+    gpa.free(package.file);
+    gpa.free(package.root);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -376,7 +416,19 @@ pub fn main(init: std.process.Init) !void {
     var prefs = try Preferences.open(gpa, discovery_os, headless, budgeted);
     defer prefs.deinit(gpa);
 
-    const packages = try contentPackages(gpa, discovery_os, content_dir, env, prefs.selected);
+    // An ordinary windowed run considers the user's installed packages. A headless bar
+    // run has deliberately read no user preferences (Step 2), so it also avoids ambient
+    // user packages unless the caller explicitly supplies the package-list input.
+    const include_user_packages = !headless or prefs.selected.ids.len > 0 or
+        envValue(env, "FOUNDRY_ROOM_PACKAGES") != null;
+    const packages = try contentPackages(
+        gpa,
+        discovery_os,
+        content_dir,
+        env,
+        prefs.selected,
+        include_user_packages,
+    );
     defer {
         freePackages(gpa, packages);
         gpa.free(packages);

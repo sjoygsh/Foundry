@@ -1,6 +1,6 @@
 # ADR-0030: Distribute an application around ordinary content packages
 
-**Status:** Accepted (constraint only; M9 implementation not started)
+**Status:** Accepted (M9 Steps 1-3 implemented; release staging not started)
 **Date:** 2026-09-12
 
 ## Context

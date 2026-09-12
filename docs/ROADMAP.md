@@ -425,7 +425,7 @@ and survived.
 entity spawning through ordinary content templates. Its §§8 and 14 define operational fault
 containment and the required failure tests; this is not a proof against unknown native defects.
 
-### M9 — Shippable: "it distributes" — **designed (2026-09-12), 2/8 implemented**
+### M9 — Shippable: "it distributes" — **designed (2026-09-12), 3/8 implemented**
 
 [ADR-0030](adr/0030-distribution-artifacts.md) fixes release artifacts and the macOS tooling
 boundary; [ADR-0031](adr/0031-application-configuration-and-user-data.md) separates bootstrap,
@@ -441,7 +441,11 @@ schema version is preserved instead of replaced. Step 2, completed the same day,
 startup order in both samples: a `config` record in each sample's own package supplies the
 window size and master volume as ordinary content, a saved preference overrides it, only what
 the player chose is written back, and a content reload moves a default without moving a choice.
-**1233 headless tests.** No release artifact or recipient evidence exists.
+Step 3, completed the same day, combines installed and user package discovery without losing
+host-assigned roots: content, assets, scripts, native libraries and reload all use the resolved
+package's own confined base, while neither ABI gains a path. An outside-tree user script package
+runs from Application Support beside a read-only installation. **1237 headless tests.** No
+release artifact or recipient evidence exists.
 
 * Asset and content bundling; release build configuration.
 * Game configuration and user settings.

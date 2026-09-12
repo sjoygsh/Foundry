@@ -78,11 +78,18 @@ is what keeps your record types from colliding with someone else's. `foundry:mod
 in full here for a reason: the compiler reads this file before it knows your namespace, so a
 bare `mod` would not resolve.
 
-Compile it:
+Compile it into the sandbox's user mod directory. On macOS that directory is:
 
 ```sh
-zig build fpack -- --out zig-out/content/mymod.fpk mymod
+MODS_ROOT="$HOME/Library/Application Support/foundry-sandbox/mods"
+mkdir -p "$MODS_ROOT"
+zig build fpack -- --out "$MODS_ROOT/mymod.fpk" mymod
 ```
+
+Linux uses `$XDG_DATA_HOME/foundry-sandbox/mods` (or
+`$HOME/.local/share/foundry-sandbox/mods` when XDG has no override); Windows uses
+`%APPDATA%\foundry-sandbox\mods`. The room sample uses `foundry-room` instead. Foundry never
+falls back to the working directory when the platform user-data root is unavailable.
 
 There is no `--name` and no `--version`: both come out of your `mod.fdt`, so there is
 nowhere for a second answer to disagree from.
@@ -95,8 +102,9 @@ have a mod manager, and does not yet:
 FOUNDRY_SANDBOX_PACKAGES=mymod:changes zig build run -Drhi=metal
 ```
 
-The sandbox discovers every package in its content directory, resolves the order from what
-the manifests say, and loads `foundry:core`, then its own package, then yours. Your
+The sandbox discovers installed and user packages separately, combines them before resolving
+the order from what the manifests say, and loads `foundry:core`, then its own package, then
+yours. A duplicate package ID in either place is an error, not a filesystem-precedence rule. Your
 `requires` line is what guarantees the first of those is underneath you. Walk the player around
 with WASD: the animation is a different colour and three times faster, and nothing was
 rebuilt but your mod.
@@ -180,8 +188,8 @@ from a directory named for your package beside the `.fpk` — so a mod with file
 rather than one:
 
 ```sh
-zig build fpack -- --out zig-out/content/mymod.fpk mymod
-cp -R mymod zig-out/content/mymod
+zig build fpack -- --out "$MODS_ROOT/mymod.fpk" mymod
+cp -R mymod "$MODS_ROOT/mymod"
 ```
 
 §2's mod needed only the first line because it had no files at all. An ordinary file — a
@@ -190,8 +198,8 @@ kind `fpack` *compiles* is a tile grid (§6), and that needs `--assets-out` poin
 directory, so the `.fgrid` lands over the top of the sources:
 
 ```sh
-zig build fpack -- --out zig-out/content/mymod.fpk \
-    --assets-out zig-out/content/mymod mymod
+zig build fpack -- --out "$MODS_ROOT/mymod.fpk" \
+    --assets-out "$MODS_ROOT/mymod" mymod
 ```
 
 ### Derived IDs
@@ -403,7 +411,7 @@ In a development build the engine watches what it loaded. Recompile your package
 save an image, and the running program picks it up at the start of the next frame:
 
 ```sh
-zig build fpack -- --out zig-out/content/mymod.fpk mymod
+zig build fpack -- --out "$MODS_ROOT/mymod.fpk" mymod
 ```
 
 Two rules worth relying on:

@@ -219,24 +219,30 @@ oversight ([`scripting.md` §15](../design/scripting.md)).
 
 ## 4. Compile it and install it
 
-From the Foundry checkout, build once so the tools and the content directory exist:
+From the Foundry checkout, build once so the tool and installed sample packages exist:
 
 ```sh
 FOUNDRY_ROOT="/absolute/path/to/Foundry"
 MOD_ROOT="/absolute/path/to/wisp"
+MODS_ROOT="$HOME/Library/Application Support/foundry-sandbox/mods"
 cd "$FOUNDRY_ROOT"
 zig build
+mkdir -p "$MODS_ROOT"
 ```
+
+That is the macOS path. The Linux and Windows user mod roots are listed in
+[`content-mods.md` §2](content-mods.md#2-your-first-mod); each sample has its own application
+directory.
 
 Compile the package, then copy its files in beside the result:
 
 ```sh
-zig build fpack -- --out zig-out/content/wisp.fpk "$MOD_ROOT"
-cp -R "$MOD_ROOT" zig-out/content/wisp
+zig build fpack -- --out "$MODS_ROOT/wisp.fpk" "$MOD_ROOT"
+cp -R "$MOD_ROOT" "$MODS_ROOT/wisp"
 ```
 
 ```
-fpack: wisp:content version 1 -> zig-out/content/wisp.fpk (2070 bytes)
+fpack: wisp:content version 1 -> .../foundry-sandbox/mods/wisp.fpk (2070 bytes)
 ```
 
 The `.fpk` and the same-stem directory beside it are a pair, exactly as they are for a mod with
@@ -281,7 +287,8 @@ your lines are yours.
 
 ## 6. Edit it while it runs
 
-Leave that running and edit the **installed** copy, `zig-out/content/wisp/scripts/main.lua`. A
+Leave that running and edit the **installed** copy,
+`$MODS_ROOT/wisp/scripts/main.lua`. A
 development build watches what it loaded, and the next tick runs the new code:
 
 ```

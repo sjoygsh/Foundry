@@ -127,11 +127,14 @@ place in Foundry a `std.process.Init` appears.
 
 ### Content is not configuration, and configuration is not authority
 
-`Config.content` is a list of packages **in load order**, and `Config.content_dir` says
-where they are. That is the whole of it. The engine consumes an order and does not compute
-one: discovering packages, resolving dependencies between them and deciding what a player
-has enabled is M7 (`content-schemas.md` §11), and answering it in a config struct would be
-answering it in the wrong place.
+`Config.content` is a list of packages **in load order**, and `Config.content_dir` is their
+default base. A package may carry an optional host-assigned `base_dir`; this is how M9 keeps
+installed and user packages in separate confined roots through load, watch, reload and asset
+remount. Null retains the original one-directory behaviour. `file` and `root` remain relative,
+and neither a manifest nor a script can provide the absolute base. The engine consumes the
+order and does not compute one: discovering packages, resolving dependencies between them and
+deciding what a player has enabled is M7 (`content-schemas.md` §11), and answering it in a
+config struct would be answering it in the wrong place.
 
 ## 5. Logging
 

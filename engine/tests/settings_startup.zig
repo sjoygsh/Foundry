@@ -54,6 +54,34 @@ const changed_source =
     \\}
 ;
 
+const user_override_source =
+    \\@schema demo:config {
+    \\    window_width  u32 (default 1280)
+    \\    window_height u32 (default 720)
+    \\    master_volume f32 (default 1)
+    \\}
+    \\
+    \\demo:config demo:config.main {
+    \\    window_width  900
+    \\    window_height 700
+    \\    master_volume 0.75
+    \\}
+;
+
+const changed_user_override_source =
+    \\@schema demo:config {
+    \\    window_width  u32 (default 1280)
+    \\    window_height u32 (default 720)
+    \\    master_volume f32 (default 1)
+    \\}
+    \\
+    \\demo:config demo:config.main {
+    \\    window_width  901
+    \\    window_height 701
+    \\    master_volume 0.25
+    \\}
+;
+
 /// The application's own settings schema. Declared in code, not in content: preferences are
 /// not a content package and are not merged into the store (ADR-0031).
 const prefs_schema: data.Schema = .{
@@ -167,6 +195,78 @@ test "an application starts on its package's own defaults" {
     try testing.expectEqual(@as(u32, 768), at_start.height.value);
     try testing.expectEqual(@as(f32, 0.5), at_start.volume.value);
     try testing.expectEqual(app.settings.Origin.content, at_start.volume.origin);
+}
+
+test "a user package keeps its own root through load and the content watcher" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp.dir.realPath(testing.io, &path_buf);
+    const installed_dir = path_buf[0..path_len];
+
+    var os = try platform.Os.init(gpa, .{ .app_name = app_name, .env = &.{} });
+    defer os.deinit();
+    const user_mods_dir = try platform.os.joinPath(gpa, &.{ installed_dir, "User Móds" });
+    defer gpa.free(user_mods_dir);
+    try os.createDirPath(user_mods_dir);
+    try writePackage(os, installed_dir, "demo:content", package_source);
+    try writePackage(os, user_mods_dir, "user:override", user_override_source);
+
+    const engine = try TestEngine.init(gpa, .{
+        .headless = true,
+        .content_dir = installed_dir,
+        .content = &.{
+            .{ .file = "demo.fpk", .root = "." },
+            .{ .base_dir = user_mods_dir, .file = "user.fpk", .root = "." },
+        },
+        .hot_reload = true,
+        .hot_reload_frames = 1,
+        .log_capture = null,
+    });
+    defer engine.deinit();
+
+    try testing.expectEqual(@as(?i128, 900), contentInt(engine, "window_width"));
+    const user_mount = engine.assets.rootOf(engine.store.loadOrder()[1]).?;
+    try testing.expect(std.mem.startsWith(u8, user_mount, user_mods_dir));
+
+    const before = engine.contentGeneration();
+    try writePackage(os, user_mods_dir, "user:override", changed_user_override_source);
+    engine.beginFrame();
+    engine.endFrame();
+    try testing.expect(engine.contentGeneration() != before);
+    try testing.expectEqual(@as(?i128, 901), contentInt(engine, "window_width"));
+    try testing.expect(std.mem.startsWith(
+        u8,
+        engine.assets.rootOf(engine.store.loadOrder()[1]).?,
+        user_mods_dir,
+    ));
+}
+
+test "a configured package cannot escape its host-supplied base" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp.dir.realPath(testing.io, &path_buf);
+    const root = path_buf[0..path_len];
+
+    try testing.expectError(error.ContentUnavailable, TestEngine.init(gpa, .{
+        .headless = true,
+        .content_dir = root,
+        .content = &.{.{ .file = "../outside.fpk", .root = "." }},
+        .log_capture = null,
+    }));
+    try testing.expectError(error.ContentUnavailable, TestEngine.init(gpa, .{
+        .headless = true,
+        .content_dir = root,
+        .content = &.{.{ .file = "inside.fpk", .root = "../outside" }},
+        .log_capture = null,
+    }));
+}
+
+fn contentInt(engine: *TestEngine, field: []const u8) ?i128 {
+    const record = engine.store.lookup(core.ContentId.fromString(record_id)) orelse return null;
+    const index = record.schema.fieldIndex(field) orelse return null;
+    return record.fields.intAt(index) catch null;
 }
 
 test "what the player saved outranks the package, and survives the process that saved it" {

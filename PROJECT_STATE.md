@@ -1,7 +1,41 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-12
-**Current handoff: M8 is complete. M9 is designed; 2/8 steps implemented. Stop before Step 3.**
+**Current handoff: M8 is complete. M9 is designed; 3/8 steps implemented. Stop before Step 4.**
+
+**Implemented in M9 step 3, 2026-09-12:** an application can keep its installation read-only
+and load explicitly selected packages from its platform user-data `mods/` directory. Discovery
+still validates one directory at a time, but every candidate now retains the concrete,
+host-assigned base directory it came from; applications combine installed and user candidates
+before the existing resolver runs. Resolution owns that provenance and carries it into an
+optional `app.ContentPackage.base_dir`, whose null default preserves the original single
+`Config.content_dir` contract. Duplicate IDs across either root are one explicit conflict and
+the diagnostic names both locations. A missing or unusable user root is an empty optional
+source, never a fallback to the current directory and never a reason installed content fails.
+
+The base survives the entire package lifetime: confined same-open package read/stamp, mounted
+asset root, watcher stat, transactional content reload and remount. Directly supplied package
+file/root paths are refused unless they are confined relative paths. Native loading uses the
+resolved entry's base; scripts receive no filesystem path at all — their package is mounted in
+`asset` and binding 1 still copies source through `FoundryApi_v2`, preserving I4 and both ABI
+tables byte-for-byte. Relative `HOME`, `XDG_DATA_HOME` or `APPDATA` values are now refused by
+`userDataDirAlloc` instead of becoming cwd-relative authority.
+
+Both samples discover their installed root and user `mods/` root separately. Windowed runs do
+so normally; deterministic headless runs admit ambient user packages only when an explicit
+`FOUNDRY_*_PACKAGES` selection asks for one, extending Step 2's hidden-input rule without
+preventing null-backend proofs. A disposable package built outside the repository was placed
+under macOS Application Support, discovered by the shipped sandbox, registered as the second
+Lua system, logged from its first update and exited cleanly without changing the install.
+
+**Step-3 verification.** Focused script integration passes all 10 real-Lua tests; the complete
+suite passes **1,237 headless tests of 1,245 declared**. The full AGENTS.md §3 bar passes:
+formatting, host/Linux/Windows compilation and both 30-frame null sample runs. Root-specific
+tests cover separate installed/user discovery, duplicate origins, unavailable roots,
+spaces/non-ASCII and read-only installed paths, engine ownership after resolution teardown,
+confined package paths, user-root asset/script load and reload, remount provenance, relative
+environment rejection and native libraries from the user root. No release staging, notices,
+diagnostic session or bundle work from Step 4 onward has begun.
 
 **Implemented in M9 step 2, 2026-09-12:** both samples now start the way `distribution.md` §4
 says an application starts. Each carries a `config` record in its **own package** —
@@ -108,7 +142,7 @@ User settings reuse binary field blocks, user mods retain their own mounted root
 reference release is the existing room in ReleaseSafe/SDL3/Metal. Signing/notarization and
 recipient testing are explicit external gates; no access or successful release is assumed.
 The remaining Metal concerns below are recorded risks for the release gate, not silently
-fixed or re-audited during planning. **Step 1 is now complete; Step 2 is not started.**
+fixed or re-audited during planning. At that planning handoff, Step 1 had not started.
 
 **M8 completion record:**
 The restricted Lua runtime, ordinary script package assets/manifests, additive ABI v2 typed
@@ -952,7 +986,7 @@ entities, a playable sample, and an overlay that diagnosed its own cost. **M7 �
 "others can extend it" — completed 2026-09-09**, all seven design steps and the outside-tree
 exit proof. **M8 — Scriptable: "modders can extend it" — completed 2026-09-12**, all eight
 steps of `scripting.md` §16 and its own outside-tree exit proof. What remains in this phase is
-M9, shipping, designed and now begun: Steps 1 and 2 of its eight are implemented as of
+M9, shipping, designed and now begun: Steps 1 through 3 of its eight are implemented as of
 2026-09-12.
 
 ## Current milestone
@@ -964,11 +998,11 @@ script package recorded at the top of this file and by `docs/modding/script-mods
 written from it and then rebuilt from its own listings. The design's §15 open questions stay
 open; none of them blocks what M8 specified.
 
-**M9 — Shippable is designed, 2/8 steps implemented.** Read `docs/design/distribution.md`
-and ADR-0030/0031, and its Step 1 and Step 2 Resolutions for what implementing them settled.
-**Step 3 — loading user packages beside a read-only installation — is next and is not started.**
-Nothing in Steps 3-8 exists: package roots are still the one installed content directory, there
-is no `dist` target, no generated notices, no diagnostics session and no macOS bundle.
+**M9 — Shippable is designed, 3/8 steps implemented.** Read `docs/design/distribution.md`
+and ADR-0030/0031, and its Step 1 through Step 3 Resolutions for what implementation settled.
+Installed and user package roots now resolve together without losing their provenance.
+**Step 4 — staging a complete release from explicit inputs — is next and is not started.**
+There is no `dist` target, generated notices, diagnostics session or macOS bundle.
 
 **M7 — Moddable: "others can extend it." Complete, 2026-09-07 to 2026-09-09.** All six
 roadmap bullets and all seven steps of `public-abi.md` §19 are implemented. The exit criterion
@@ -1648,10 +1682,10 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 1,233 tests** of 1,241 declared (84 `core`, 89 `platform`,
-106 `data`, 82 `physics2d`, 83 `ui`, 92 `rhi`, 76 `asset`, 22 `mod`, 139 `render2d`,
-84 `scene`, 34 `audio`, 72 `app`, 23 `debug`, 111 `abi`, 56 `script`, 52 integration,
-28 `tools`), and **1,241 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
+**`zig build test` passes 1,237 tests** of 1,245 declared (84 `core`, 90 `platform`,
+106 `data`, 82 `physics2d`, 83 `ui`, 92 `rhi`, 76 `asset`, 23 `mod`, 139 `render2d`,
+84 `scene`, 34 `audio`, 72 `app`, 23 `debug`, 111 `abi`, 56 `script`, 54 integration,
+28 `tools`), and **1,245 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
 8 exceptions need a real GPU and compile only when Metal is selected. **`samples/room` adds
@@ -2459,15 +2493,14 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M9 Step 3, when the user asks to begin it.** Steps 1 and 2 are complete: preferences
-are kept, resolved and applied in both samples. Step 3 implements §7 — combined discovery that
-keeps each candidate's host-assigned origin, an optional per-package base directory carried
-through loading, remount, the content watcher and reload, and the script and native host
-adapters that go with it. Read `docs/design/distribution.md` §7 and both Resolutions first. Two
-things Step 3 inherits and must not undo: the enabled-package set is already read out of the
-settings file and folded into what `mod.resolve` is given, and duplicate package ids are an
-explicit conflict rather than something the last directory visited wins. The completed M8/M7
-checklists and subsequent M5/M6 material below are historical.
+**Next: M9 Step 4, when the user asks to begin it.** Steps 1 through 3 are complete:
+preferences are kept and applied, and installed/user packages retain their own confined roots
+through loading and reload. Step 4 implements `distribution.md` §8 — reusable build helpers,
+host `fpack`, a bounded runtime inventory and explicit ReleaseSafe staging for both sample
+variants. It must not turn the development install into the release tree, flatten package
+roots, ship authoring/build residue, or start attribution work from Step 5. Read §8 and all
+three Resolutions first. The completed M8/M7 checklists and subsequent M5/M6 material below
+are historical.
 
 Carried, recorded and **not** started: the `render2d` blank-patch/font-atlas batching fix, the
 job-system decision `CLAUDE.md` §9 dates to post-M5, the `-Drhi=metal` `app` test-binary compile

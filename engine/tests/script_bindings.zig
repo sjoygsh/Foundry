@@ -39,6 +39,7 @@ const package_source =
     \\    name "Scripted Demo"
     \\    version 1
     \\    license "Apache-2.0"
+    \\    requires [ { id foundry:core } ]
     \\}
     \\@schema demo:position { x f32  y f32 }
     \\@schema demo:config { delay i64  spawn id  label string }
@@ -46,6 +47,14 @@ const package_source =
     \\demo:position demo:at_origin { x 1  y 2 }
     \\foundry:entity demo:goblin { components [ demo:at_origin ] }
     \\foundry:script demo:scripts.main { source "scripts/main.lua"  language "lua-5.5" }
+;
+
+const core_package_source =
+    \\foundry:mod foundry:core {
+    \\    name "Foundry Core"
+    \\    version 1
+    \\    license "Apache-2.0"
+    \\}
 ;
 
 /// What a package's script actually looks like: the module of scripting.md §11, reading its
@@ -126,7 +135,8 @@ fn writePackage(os: *platform.Os, dir: []const u8, name: []const u8, source: []c
 const Fixture = struct {
     tmp: std.testing.TmpDir,
     path_buf: [std.Io.Dir.max_path_bytes]u8,
-    content_len: usize,
+    installed_dir: []u8,
+    user_mods_dir: []u8,
     os: *platform.Os,
     engine: *TestEngine,
     world: scene.World,
@@ -142,12 +152,18 @@ const Fixture = struct {
     fn init(self: *Fixture, world_allocator: std.mem.Allocator) !void {
         self.tmp = testing.tmpDir(.{});
         const path_len = try self.tmp.dir.realPath(testing.io, &self.path_buf);
-        self.content_len = path_len;
         const content_dir = self.path_buf[0..path_len];
 
         self.os = try platform.Os.init(gpa, .{ .app_name = "foundry-script-bindings", .env = &.{} });
-        try writePackage(self.os, content_dir, "demo:mod", package_source);
-        const root = try platform.os.joinPath(gpa, &.{ content_dir, "demo" });
+        // Two roots, neither related to cwd. Their names deliberately exercise spaces and
+        // non-ASCII host paths; content never sees either spelling.
+        self.installed_dir = try platform.os.joinPath(gpa, &.{ content_dir, "Read Only Install" });
+        self.user_mods_dir = try platform.os.joinPath(gpa, &.{ content_dir, "User Móds" });
+        try self.os.createDirPath(self.installed_dir);
+        try self.os.createDirPath(self.user_mods_dir);
+        try writePackage(self.os, self.installed_dir, "foundry:core", core_package_source);
+        try writePackage(self.os, self.user_mods_dir, "demo:mod", package_source);
+        const root = try platform.os.joinPath(gpa, &.{ self.user_mods_dir, "demo" });
         defer gpa.free(root);
         try self.os.createDirPath(root);
 
@@ -160,10 +176,35 @@ const Fixture = struct {
         defer gpa.free(entry_path);
         try self.os.writeFile(entry_path, encounter_source);
 
+        var diags: data.Diagnostics = .init(gpa, .default);
+        defer diags.deinit(gpa);
+        var installed = try mod.discover(gpa, self.os, self.installed_dir, .{}, &diags);
+        defer installed.deinit();
+        var user = try mod.discover(gpa, self.os, self.user_mods_dir, .{}, &diags);
+        defer user.deinit();
+        var candidates: std.ArrayList(mod.Candidate) = .empty;
+        defer candidates.deinit(gpa);
+        try candidates.appendSlice(gpa, installed.candidates);
+        try candidates.appendSlice(gpa, user.candidates);
+        var resolution = try mod.resolve(gpa, candidates.items, .{
+            .required = &.{core.ContentId.fromString("foundry:core")},
+            .enabled = &.{core.ContentId.fromString("demo:mod")},
+        }, &diags);
+        defer resolution.deinit();
+        try testing.expectEqual(@as(usize, 2), resolution.order.len);
+
+        const packages = try gpa.alloc(app.ContentPackage, resolution.order.len);
+        defer gpa.free(packages);
+        for (resolution.order, packages) |entry, *package| package.* = .{
+            .base_dir = entry.base_dir,
+            .file = entry.file,
+            .root = entry.root,
+        };
+
         self.engine = try TestEngine.init(gpa, .{
             .headless = true,
-            .content_dir = content_dir,
-            .content = &.{.{ .file = "demo.fpk", .root = "demo" }},
+            .content_dir = self.installed_dir,
+            .content = packages,
             .log_capture = null,
         });
 
@@ -186,6 +227,8 @@ const Fixture = struct {
         self.world.deinit();
         self.engine.deinit();
         self.os.deinit();
+        gpa.free(self.user_mods_dir);
+        gpa.free(self.installed_dir);
         self.tmp.cleanup();
     }
 
@@ -194,8 +237,7 @@ const Fixture = struct {
     /// asset handle does not change and neither does the manager's reference to it; what
     /// changes is the payload behind it, and the revision that says so.
     fn rewriteScript(self: *Fixture, source: []const u8) !void {
-        const content_dir = self.path_buf[0..self.content_len];
-        const entry_path = try platform.os.joinPath(gpa, &.{ content_dir, "demo", "scripts", "main.lua" });
+        const entry_path = try platform.os.joinPath(gpa, &.{ self.user_mods_dir, "demo", "scripts", "main.lua" });
         defer gpa.free(entry_path);
         try self.os.writeFile(entry_path, source);
 
@@ -709,7 +751,7 @@ test "missing and escaping source keep old code until a confined revision recove
     try testing.expectEqual(@as(u32, 1), fixture.world.entityCount());
     const accepted_revision = slot.source_revision;
 
-    try fixture.tmp.dir.deleteFile(testing.io, "demo/scripts/main.lua");
+    try fixture.tmp.dir.deleteFile(testing.io, "User Móds/demo/scripts/main.lua");
     try testing.expectError(error.SourceMissing, fixture.reloadSource());
     try testing.expectEqual(script.Reload.idle, manager.pollReload().outcome);
     try testing.expectEqual(accepted_revision, slot.source_revision);
@@ -720,18 +762,16 @@ test "missing and escaping source keep old code until a confined revision recove
     defer gpa.free(outside_name);
     try fixture.tmp.parent_dir.writeFile(testing.io, .{ .sub_path = outside_name, .data = cleanup_source });
     defer fixture.tmp.parent_dir.deleteFile(testing.io, outside_name) catch {};
-    const escape_target = try std.fmt.allocPrint(gpa, "../../../{s}", .{outside_name});
+    const escape_target = try std.fmt.allocPrint(gpa, "../../../../{s}", .{outside_name});
     defer gpa.free(escape_target);
-    try fixture.tmp.dir.symLink(testing.io, escape_target, "demo/scripts/main.lua", .{});
+    try fixture.tmp.dir.symLink(testing.io, escape_target, "User Móds/demo/scripts/main.lua", .{});
     try testing.expectError(error.SourceRejected, fixture.reloadSource());
     try testing.expectEqual(script.Reload.idle, manager.pollReload().outcome);
     fixture.world.update(.{ .tick = 9, .delta = delta });
     try testing.expectEqual(@as(u32, 3), fixture.world.entityCount());
 
-    try fixture.tmp.dir.deleteFile(testing.io, "demo/scripts/main.lua");
-    const entry_path = try platform.os.joinPath(gpa, &.{
-        fixture.path_buf[0..fixture.content_len], "demo", "scripts", "main.lua",
-    });
+    try fixture.tmp.dir.deleteFile(testing.io, "User Móds/demo/scripts/main.lua");
+    const entry_path = try platform.os.joinPath(gpa, &.{ fixture.user_mods_dir, "demo", "scripts", "main.lua" });
     defer gpa.free(entry_path);
     try fixture.os.writeFile(entry_path, cleanup_source);
     try fixture.reloadSource();

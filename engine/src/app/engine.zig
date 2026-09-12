@@ -43,12 +43,15 @@ pub const InitError = error{
 
 /// One package to load, in load order.
 ///
-/// Both fields are **locations, never identity** (ADR-0021). The compiled package states
+/// All fields are **locations, never identity** (ADR-0021). The compiled package states
 /// its own content id and the store checks it; these only say where the bytes are.
 pub const ContentPackage = struct {
-    /// The compiled `.fpk`, relative to the content directory.
+    /// An optional host-supplied base for this package. Null retains the original contract:
+    /// `Config.content_dir` is the base. Content and manifests can never choose this path.
+    base_dir: ?[]const u8 = null,
+    /// The compiled `.fpk`, relative to this package's base.
     file: []const u8,
-    /// Where that package's source files live, relative to the content directory. An
+    /// Where that package's source files live, relative to this package's base. An
     /// asset record names its bytes relative to this.
     root: []const u8,
 };
@@ -246,7 +249,7 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
 
         // -- content -----------------------------------------------------------------
 
-        /// Where packages and their files live. Owned.
+        /// Default base for packages whose `ContentPackage.base_dir` is null. Owned.
         content_dir: []u8,
         /// The load order, **owned**, because a reload has to read it again long after the
         /// caller's `Config` has gone.
@@ -348,8 +351,8 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                 .off;
             errdefer profile.deinit(gpa);
 
-            // Resolved before anything owns it, so a bad `content_dir` fails before the
-            // window opens rather than after.
+            // Resolved before anything owns it. Per-package bases are copied and kept
+            // beside their relative locations below; content can never supply one.
             const content_dir = try contentDirOf(gpa, os, config.content_dir);
             const content = dupePackages(gpa, config.content) catch |err| {
                 gpa.free(content_dir);
@@ -506,10 +509,9 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             self.adopt(&loaded);
 
             if (self.content.len == 0) return;
-            log.info("content: {d} package(s), {d} record(s), from '{s}'", .{
+            log.info("content: {d} package(s), {d} record(s)", .{
                 self.store.packageCount(),
                 self.store.count(),
-                self.content_dir,
             });
         }
 
@@ -565,30 +567,29 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         ) InitError!void {
             const gpa = self.gpa;
 
-            const path = try joinUnder(gpa, self.content_dir, pkg.file);
-            defer gpa.free(path);
+            const base = self.packageBase(pkg);
 
-            // Stamped before it is read, so a file rewritten between the two shows as
-            // changed on the next check rather than being missed.
-            const stamp: asset.Registry.Stamp = if (self.os.statFile(path)) |info|
-                .{ .modified_ns = info.modified_ns, .size = info.size }
-            else |_|
-                .{};
-
+            // Read and stamp one opened object, through the same confined path walk asset
+            // sources use. A user package cannot replace discovery's ordinary file with
+            // a symlink and make loading escape the root the host granted.
+            //
             // Reported at `warn` and returned as an error, which is the convention the
             // asset registry already follows: the returned error is the signal and the log
             // line is the context. It is also what keeps these paths testable — the test
             // runner counts an `err`-level log as a failed test, so a failure nothing can
             // exercise is a failure nothing checks.
-            const bytes = self.os.readFile(gpa, path, self.max_package_bytes) catch |err| {
-                log.warn("content package '{s}' could not be read: {t}", .{ path, err });
+            const read = self.os.readFileConfined(gpa, base, pkg.file, self.max_package_bytes) catch |err| {
+                log.warn("content package '{s}/{s}' could not be read: {t}", .{ base, pkg.file, err });
                 return error.ContentUnavailable;
             };
             // Appended before the store can borrow it, so exactly one thing frees it.
-            try into.bytes.append(gpa, bytes);
-            try into.stamps.append(gpa, stamp);
+            into.bytes.append(gpa, read.bytes) catch |err| {
+                gpa.free(read.bytes);
+                return err;
+            };
+            try into.stamps.append(gpa, .{ .modified_ns = read.info.modified_ns, .size = read.info.size });
 
-            _ = into.store.add(gpa, pkg.file, bytes, &into.schemas, diags) catch |err| switch (err) {
+            _ = into.store.add(gpa, pkg.file, read.bytes, &into.schemas, diags) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 error.PackageRejected => {
                     log.warn("content package '{s}' was refused", .{pkg.file});
@@ -621,7 +622,7 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             const order = self.store.loadOrder();
             std.debug.assert(order.len == self.content.len);
             for (order, self.content) |handle, pkg| {
-                const root = joinUnder(gpa, self.content_dir, pkg.root) catch continue;
+                const root = joinUnder(gpa, self.packageBase(pkg), pkg.root) catch continue;
                 defer gpa.free(root);
                 self.assets.mount(gpa, handle, root) catch {
                     log.warn("package '{s}' could not be mounted; its assets will not load", .{pkg.root});
@@ -674,9 +675,7 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         /// doing it the other way round would load some of them twice.
         fn pollContent(self: *Self) void {
             for (self.content, self.package_stamps.items) |pkg, stamp| {
-                const path = joinUnder(self.gpa, self.content_dir, pkg.file) catch continue;
-                defer self.gpa.free(path);
-                const now: asset.Registry.Stamp = if (self.os.statFile(path)) |info|
+                const now: asset.Registry.Stamp = if (self.os.statFileConfined(self.packageBase(pkg), pkg.file)) |info|
                     .{ .modified_ns = info.modified_ns, .size = info.size }
                 else |_|
                     .{};
@@ -719,7 +718,11 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             diags.suppressed = 0;
         }
 
-        /// Joins a configured name onto the content directory.
+        fn packageBase(self: *const Self, pkg: ContentPackage) []const u8 {
+            return pkg.base_dir orelse self.content_dir;
+        }
+
+        /// Joins a configured name onto its host-supplied base.
         ///
         /// `joinPath`'s wider error set collapses here: out of memory is out of memory, and
         /// everything else means the configured location is unusable, which is the same
@@ -735,20 +738,34 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         }
 
         /// Copies a load order the caller owns into one the engine owns.
-        fn dupePackages(gpa: Allocator, from: []const ContentPackage) Allocator.Error![]ContentPackage {
+        fn dupePackages(gpa: Allocator, from: []const ContentPackage) InitError![]ContentPackage {
             const out = try gpa.alloc(ContentPackage, from.len);
             var made: usize = 0;
             errdefer freePackages(gpa, out[0..made]);
             errdefer gpa.free(out);
             for (from, out) |src, *dst| {
-                dst.* = .{ .file = try gpa.dupe(u8, src.file), .root = try gpa.dupe(u8, src.root) };
+                if (!platform.os.isSafeRelativePath(src.file) or !platform.os.isSafeRelativePath(src.root)) {
+                    log.warn("content package locations must stay beneath their base: file '{s}', root '{s}'", .{ src.file, src.root });
+                    return error.ContentUnavailable;
+                }
+                dst.* = try dupePackage(gpa, src);
                 made += 1;
             }
             return out;
         }
 
+        fn dupePackage(gpa: Allocator, src: ContentPackage) Allocator.Error!ContentPackage {
+            const base = if (src.base_dir) |value| try gpa.dupe(u8, value) else null;
+            errdefer if (base) |value| gpa.free(value);
+            const file = try gpa.dupe(u8, src.file);
+            errdefer gpa.free(file);
+            const root = try gpa.dupe(u8, src.root);
+            return .{ .base_dir = base, .file = file, .root = root };
+        }
+
         fn freePackages(gpa: Allocator, packages: []const ContentPackage) void {
             for (packages) |pkg| {
+                if (pkg.base_dir) |base| gpa.free(base);
                 gpa.free(pkg.file);
                 gpa.free(pkg.root);
             }

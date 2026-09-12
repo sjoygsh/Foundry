@@ -2,9 +2,10 @@
 //!
 //! Package discovery and dependency resolution deliberately happen in `mod`, below the
 //! engine loop and with no code loading. Once content is live, a host gives this loader the
-//! resolved entries. It opens an optional library from each package's own directory, hands it
-//! the public table, and preserves its image for the process lifetime. A library that failed
-//! to initialise is diagnosed but its package's content remains loaded.
+//! resolved entries. Each entry retains the host-assigned base it was discovered under; the
+//! loader opens an optional library from that package's own directory, hands it the public
+//! table, and preserves its image for the process lifetime. A library that failed to initialise
+//! is diagnosed but its package's content remains loaded.
 //!
 //! Design: docs/design/public-abi.md §13 and §14.
 
@@ -70,7 +71,6 @@ pub fn LoaderOf(comptime H: type) type {
         /// library: it adds a diagnostic and moves on, preserving Tier 1 content.
         pub fn load(
             self: *Self,
-            content_dir: []const u8,
             entries: []const mod.Entry,
             diags: *Diagnostics,
         ) Allocator.Error!void {
@@ -104,7 +104,7 @@ pub fn LoaderOf(comptime H: type) type {
 
                 const file = try libraryFileNameAlloc(self.gpa, native);
                 defer self.gpa.free(file);
-                const path = platform.os.joinPath(self.gpa, &.{ content_dir, entry.root, file }) catch |err| {
+                const path = platform.os.joinPath(self.gpa, &.{ entry.base_dir, entry.root, file }) catch |err| {
                     try report(self.gpa, diags, entry, "could not form its native-library path: {s}", .{@errorName(err)});
                     continue;
                 };

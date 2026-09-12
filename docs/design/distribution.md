@@ -1,7 +1,7 @@
 # Distribution: an application a stranger can run
 
-**Status:** designed 2026-09-12; **2/8 implementation steps complete** (Steps 1-2, 2026-09-12).
-**Stop point:** after Step 2. Step 3 is not started.
+**Status:** designed 2026-09-12; **3/8 implementation steps complete** (Steps 1-3, 2026-09-12).
+**Stop point:** after Step 3. Step 4 is not started.
 
 Rests on [ADR-0030](../adr/0030-distribution-artifacts.md) and
 [ADR-0031](../adr/0031-application-configuration-and-user-data.md), with ADR-0008, ADR-0014,
@@ -381,7 +381,7 @@ Resolution when implementation exposes a design correction. No step is done by t
    changes and selected package IDs; selection still uses the existing installed root until
    Step 3. Verify content override versus user override and fresh-process persistence.
    Runnable result: resize/change volume, quit/relaunch, keep both preferences.
-3. **Load user packages beside a read-only installation.** Implement §7's origin-preserving
+3. **Load user packages beside a read-only installation. Complete 2026-09-12.** Implement §7's origin-preserving
    combined discovery and optional per-package base, including reload and script/native host
    adapters. Test duplicates, unavailable roots, relocation and confined asset loading.
    Runnable result: outside-tree user content/script package runs without modifying install.
@@ -412,10 +412,9 @@ Resolution when implementation exposes a design correction. No step is done by t
 ## 15. Planning handoff
 
 ADRs 0030/0031 and this design settle the M9 architecture and eight bounded steps. All M8
-implementation/evidence is retained. Steps 1 and 2 are complete as of 2026-09-12; see their
-Resolutions below. **Next is Step 3, not started and not authorized.** Nothing in Steps 3-8 —
-writable package roots, the `dist` target, generated notices, diagnostics or the macOS bundle
-— exists yet.
+implementation/evidence is retained. Steps 1 through 3 are complete as of 2026-09-12; see
+their Resolutions below. **Next is Step 4, not started and not authorized.** Nothing in Steps
+4-8 — the `dist` target, generated notices, diagnostics or the macOS bundle — exists yet.
 
 ## Resolution — 2026-09-12, step 1
 
@@ -522,3 +521,44 @@ content default cannot be known before then. A windowed sandbox run therefore op
 layers is worth a frame of resize; the alternative — seeding the window from the preferences
 file and the content default from somewhere else — makes bootstrap authority partly a
 preference, which is the distinction ADR-0031 exists to hold.
+
+## Resolution — 2026-09-12, step 3
+
+What implementing §7's two roots and package provenance settled, corrected or made explicit.
+
+**Provenance is the concrete base directory, not an origin enum.** Discovery is still one
+directory per call. Each candidate now retains the host-supplied directory that was actually
+searched, resolution copies it into each ordered entry, and the application may pass it as an
+optional `ContentPackage.base_dir`. An `installed`/`user` label would still leave the loader
+needing a second lookup table, while the concrete base is exactly the capability it needs.
+The manifest cannot supply or alter it. A null application base preserves the original
+`Config.content_dir` behaviour for hosts with one root.
+
+**The script boundary does not learn a filesystem path.** The engine mounts each package's
+host-assigned base and relative root in `asset`; binding 1 continues to obtain copied source
+through `FoundryApi_v2`. Giving the script manager an absolute directory would duplicate that
+route and violate I4. Native loading is different because the consenting host opens the
+package-local dynamic library itself, so `native_loader` consumes the resolved entry's base.
+Neither public ABI table changed.
+
+**Every package operation keeps the same provenance.** Initial `.fpk` reads use a confined
+same-open read/stamp operation beneath the package base. The watcher stats that same confined
+file, reload reads it there again, and content replacement remounts the same base/root pair.
+`file` and `root` must remain safe relative paths even when a host constructs
+`ContentPackage` directly. Asset loading retains its existing confined walk beneath each
+mount, so a user package cannot make an installed package's assets relative to itself or
+escape its own root.
+
+**A user-data path is either absolute or unavailable.** `userDataDirAlloc` now refuses
+relative `HOME`, `XDG_DATA_HOME` and `APPDATA` values rather than returning a path relative to
+the process working directory. An absent, invalid or unreadable user root produces a warning
+and an empty user discovery; installed packages remain usable. Duplicate IDs across either
+root are still one explicit resolution conflict, and the diagnostic names both origins.
+
+**Headless discovery has no ambient user input unless selection is explicit.** Windowed
+samples discover the user `mods/` directory normally. A null-backend run does so only when
+`FOUNDRY_*_PACKAGES` explicitly supplies a selected package set. This is the Step-2/I9 rule
+applied to package roots: the standard deterministic headless run must not vary with whatever
+a developer happens to have installed, while an explicit selection must be able to exercise
+an outside-tree user package. Watchers remain the existing opt-in developer setting; no
+release default was introduced ahead of Step 4.
