@@ -512,9 +512,9 @@ ADR-0032, the carried items and the known-bugs section of `PROJECT_STATE.md`, or
 never had.
 
 **The order is a proposal, not a commitment.** Milestones are units of work, and three of
-these are started by a *trigger* rather than by the roadmap reaching them: M11 needs operator
-credentials and a machine, M14 needs a reason to want a second API, and M17 needs a decision
-that a game is networked. The rest can be reordered freely. What is not negotiable is that
+these are started by a *trigger* rather than by the roadmap reaching them: M13 needs a reason
+to want a second API, M16 needs a decision that a game is networked, and M17 needs operator
+credentials and a machine. The rest can be reordered freely. What is not negotiable is that
 each still owes a design document before implementation, an ADR for anything that constrains
 the future, and a runnable result.
 
@@ -533,6 +533,10 @@ engine's identity and the game's.
 * The engine's own mark used only on the engine's own artifacts: README, docs, tools, samples.
 * A usage and trademark note, because Apache-2.0 §6 deliberately grants no trademark rights
   (ADR-0016), so mod and game authors currently have nothing to read.
+* **The GitHub repository brought up to date with M9.** Its description still says the engine
+  implementation has not started, which has been wrong for nine milestones; with it, the About
+  section, topics and the social preview the mark makes possible. Presentation only — no CI,
+  no release automation, no contribution infrastructure; those stay deferred (ADR-0032).
 
 **The boundary is the point.** A game that shipped wearing Foundry's icon would be a defect,
 not a feature (I5, ADR-0017). Branding is a consumer-supplied input with an engine default
@@ -545,27 +549,7 @@ downstream, not a style choice.
 README showing the mark; and a page a stranger can read to know what they may call their own
 work.
 
-### M11 — Released: "a stranger can download it" — **not started; credential-gated**
-
-M9 built and proved the release path; ADR-0032 deferred exactly the part that needs an
-identity, Apple's service and a machine that has never run the code. This milestone executes
-it, once.
-
-* Developer ID signing, notarization, stapling and Gatekeeper assessment of the exact public
-  archive, through the `dist-developer-id` path that already performs the sequence.
-* The quarantine-preserving launch on a genuinely clean recipient Mac, and the remaining steps
-  of `docs/shipping/macos.md` §4, recorded with identity, ticket, checksum and OS version.
-* The deferred release questions that come due with it: how far back macOS support reaches
-  (`LSMinimumSystemVersion` is 13.0 by assertion, not by test), and crash collection beyond
-  what the OS already reports.
-
-**Not this milestone:** release automation, CI or a storefront. ADR-0032 keeps all three
-deferred, and storefront-specific signing stays open until a storefront is actually chosen.
-
-**Exit criteria:** a download nobody has to be told how to open, and a record of why it can be
-trusted. Until then no artifact is a verified release, and the ad-hoc zip never becomes one.
-
-### M12 — Solid: "its known faults are fixed" — **not started**
+### M11 — Solid: "its known faults are fixed" — **not started**
 
 The known-bugs section of `PROJECT_STATE.md` has entries that have been carried for several
 milestones. Individually each is small. Together they are the reason a future session cannot
@@ -585,7 +569,7 @@ tell the list's deliberate limitations from its unfinished work, which is the re
 deliberate limitation with its reason written next to it; and the bar compiles what it
 previously could not.
 
-### M13 — Parallel: "it uses more than one core" — **not started**
+### M12 — Parallel: "it uses more than one core" — **not started**
 
 `CLAUDE.md` §9 dates the job system and threading model to post-M5. Four milestones have
 passed. The decision is overdue and has never been made, which is the only reason it is still
@@ -599,7 +583,7 @@ a frame splits, what a system may assume — stays open until that document deci
 **Exit criteria:** a measured improvement on a real workload in a sample, with every existing
 determinism test unchanged and still passing.
 
-### M14 — Portable: "the RHI was real" — **not started; trigger-started**
+### M13 — Portable: "the RHI was real" — **not started; trigger-started**
 
 **Deliberately not placed on the timeline.** Started when there is a reason — a decision to
 ship Windows or Linux, or a decision to validate the RHI against a second API — not when the
@@ -614,7 +598,7 @@ decision (ADR-0015). With it come the platform surfaces that are declared and un
 **Exit criteria:** a sample runs on a second API and a second platform, and the RHI's written
 rules either survived the encounter or changed by ADR.
 
-### M15 — Managed: "players choose their mods" — **not started**
+### M14 — Managed: "players choose their mods" — **not started**
 
 `CLAUDE.md` §5 records it plainly: a mod manager UI is still unbuilt. Every mechanism under it
 exists — discovery, dependency resolution, deterministic order, user package roots — and
@@ -632,7 +616,7 @@ is not Foundry's business.
 **Exit criteria:** a packaged sample where a player — not an environment variable — turns a mod
 on, and preferences survive a schema change without losing what the player chose.
 
-### M16 — Editor: "content is authored in Foundry" — **not started**
+### M15 — Editor: "content is authored in Foundry" — **not started**
 
 `CLAUDE.md` §9's oldest deferred item, dated M6+. Its shape is already decided: tools are
 Foundry applications (ADR-0011), and the editor is a **re-host of the debug overlay's
@@ -643,7 +627,7 @@ API precisely so this milestone would not need a private path.
 using only calls the public ABI already exposes — an editor with a back door has failed I4
 regardless of what it can do.
 
-### M17 — Connected: "it plays with others" — **not started; trigger-started**
+### M16 — Connected: "it plays with others" — **not started; trigger-started**
 
 Networking is recorded as indefinite, and I1, I2, I8 and I9 have kept it possible without
 paying for it. It becomes a milestone when a game needs it.
@@ -655,6 +639,32 @@ literal.
 
 **Exit criteria:** two processes share a world convincingly, and the model was decided in
 writing first.
+
+### M17 — Released: "a stranger can download it" — **not started; credential-gated**
+
+M9 built and proved the release path; ADR-0032 deferred exactly the part that needs an
+identity, Apple's service and a machine that has never run the code. This milestone executes
+it, once.
+
+**It is last deliberately: strangers come last.** Certification is what you perform on
+something you are ready to hand over, and every milestone above it is what makes that true —
+the faults fixed, the identity real, the mods manageable. Nothing prevents it being pulled
+forward the day credentials exist; but a signed, notarized download of an engine that still
+carries known defects buys trust it has not earned.
+
+* Developer ID signing, notarization, stapling and Gatekeeper assessment of the exact public
+  archive, through the `dist-developer-id` path that already performs the sequence.
+* The quarantine-preserving launch on a genuinely clean recipient Mac, and the remaining steps
+  of `docs/shipping/macos.md` §4, recorded with identity, ticket, checksum and OS version.
+* The deferred release questions that come due with it: how far back macOS support reaches
+  (`LSMinimumSystemVersion` is 13.0 by assertion, not by test), and crash collection beyond
+  what the OS already reports.
+
+**Not this milestone:** release automation, CI or a storefront. ADR-0032 keeps all three
+deferred, and storefront-specific signing stays open until a storefront is actually chosen.
+
+**Exit criteria:** a download nobody has to be told how to open, and a record of why it can be
+trusted. Until then no artifact is a verified release, and the ad-hoc zip never becomes one.
 
 ---
 

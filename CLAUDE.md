@@ -540,13 +540,13 @@ milestone named below is where `docs/ROADMAP.md` now places it.
 
 | Decision | Due | Notes |
 | --- | --- | --- |
-| Separate editor application | **M16** | In-process debug overlay first; the editor re-hosts its introspection (ADR-0025). |
-| Second graphics backend (Vulkan / D3D12) | **M14**, trigger-started | Triggered by a reason — shipping Windows or Linux, or validating the RHI. Linux implies Vulkan; Windows could be either. |
-| Shader cross-compiler vs. hand-written variants | **M14**, or when the shader set grows large | ADR-0015. Whichever comes first. |
-| Job system / threading model | **M13** (was dated post-M5) | Do not design subsystems that assume single-threaded forever. I9 constrains this hardest. |
-| Bit-exact determinism for a subset | **M17**, and only if lockstep | ADR-0013 keeps this open without paying for it now; an authoritative server does not need it. |
-| Networking | **M17**, trigger-started | I1, I2, I8 and I9 keep it possible. Nothing else is owed to it now. |
-| Public macOS release certification | **M11**, credential-gated | Use the implemented Developer ID/notary path, then verify the exact quarantined download on a genuinely clean recipient Mac. The current ad-hoc artifact is not equivalent (ADR-0032). |
+| Separate editor application | **M15** | In-process debug overlay first; the editor re-hosts its introspection (ADR-0025). |
+| Second graphics backend (Vulkan / D3D12) | **M13**, trigger-started | Triggered by a reason — shipping Windows or Linux, or validating the RHI. Linux implies Vulkan; Windows could be either. |
+| Shader cross-compiler vs. hand-written variants | **M13**, or when the shader set grows large | ADR-0015. Whichever comes first. |
+| Job system / threading model | **M12** (was dated post-M5) | Do not design subsystems that assume single-threaded forever. I9 constrains this hardest. |
+| Bit-exact determinism for a subset | **M16**, and only if lockstep | ADR-0013 keeps this open without paying for it now; an authoritative server does not need it. |
+| Networking | **M16**, trigger-started | I1, I2, I8 and I9 keep it possible. Nothing else is owed to it now. |
+| Public macOS release certification | **M17**, credential-gated — last in its phase | Use the implemented Developer ID/notary path, then verify the exact quarantined download on a genuinely clean recipient Mac. The current ad-hoc artifact is not equivalent (ADR-0032). |
 
 **Out of scope indefinitely, not constraining the initial architecture:** consoles, mobile, web,
 VR, x86-64 macOS.

@@ -46,9 +46,10 @@ quarantined download on a genuinely clean recipient Mac to the first public rele
 remain mandatory; the current ad-hoc artifact is not equivalent to a notarized release.
 
 **Next is Phase 4 — Hardening and reach**, M10 through M17: the engine's own identity and
-branding, the credentialed public release, the carried defects, the job system, a second
-graphics backend, a mod manager, the editor and networking. It gathers work the project had
-already deferred; nothing in it is started. See the [roadmap](docs/ROADMAP.md).
+branding, the carried defects, the job system, a second graphics backend, a mod manager, the
+editor, networking, and last of all the certified public release — strangers come last. It
+gathers work the project had already deferred; nothing in it is started. See the
+[roadmap](docs/ROADMAP.md).
 
 All three modding tiers work — see [docs/modding](docs/modding/). Tier 2 is restricted
 Lua 5.5.1, one VM per package, bounded in memory, instructions and engine calls, reaching the

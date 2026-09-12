@@ -2762,27 +2762,30 @@ milestone each decision belongs to.
 * **M10 — Identity.** The engine has no logo, wordmark or icon; a staged `.app` names no
   `CFBundleIconFile` and its window carries no icon, and Apache-2.0 §6 grants no trademark
   rights, so nothing says what a third party may call their own work. Branding stays a
-  consumer-supplied input with an engine default used only by engine artifacts.
-* **M11 — Released.** ADR-0032's deferred gate: Developer ID signing, notarization, stapling
-  and the quarantined launch on a genuinely clean recipient Mac, plus how far back macOS
-  support reaches and crash collection beyond OS reports. `dist-developer-id` already performs
-  the sequence; what is missing is operator credentials and an untouched Mac, not code. Until
-  then Foundry has no verified public release and the ad-hoc zip is not one.
-* **M12 — Solid.** The carried correctness debt: the `render2d` texture staging buffer
+  consumer-supplied input with an engine default used only by engine artifacts. It also brings
+  the GitHub repository up to date with M9 — the description still says the implementation has
+  not started — as presentation only, with no CI or contribution infrastructure.
+* **M11 — Solid.** The carried correctness debt: the `render2d` texture staging buffer
   destroyed while frames are in flight, the `-Drhi=metal` `app` test-binary compile failure,
   the blank-patch/font-atlas batching fix, and the smaller entries in this file's known-bugs
   section.
-* **M13 — Parallel.** The job system and threading model, which §9 dated post-M5 and which is
+* **M12 — Parallel.** The job system and threading model, which §9 dated post-M5 and which is
   four milestones overdue. I9 constrains it hardest.
-* **M14 — Portable.** The second backend, trigger-started, with the shader cross-compiler
+* **M13 — Portable.** The second backend, trigger-started, with the shader cross-compiler
   decision, the unimplemented `win32_hwnd`/X11/Wayland surfaces and non-Metal frame pacing.
-* **M15 — Managed.** The mod manager capability `CLAUDE.md` §5 records as unbuilt, the
+* **M14 — Managed.** The mod manager capability `CLAUDE.md` §5 records as unbuilt, the
   content-driven widget set ADR-0024 deferred, preference profiles and concurrent merging, and
   settings migrations once a second schema exists.
-* **M16 — Editor.** §9's oldest item, dated M6+; ADR-0011 and ADR-0025 already decided its
+* **M15 — Editor.** §9's oldest item, dated M6+; ADR-0011 and ADR-0025 already decided its
   shape as a re-host of the overlay's introspection.
-* **M17 — Connected.** Networking, trigger-started, carrying ADR-0013's bit-exact determinism
+* **M16 — Connected.** Networking, trigger-started, carrying ADR-0013's bit-exact determinism
   question only if lockstep is chosen.
+* **M17 — Released.** ADR-0032's deferred gate, and last in the phase on purpose: Developer ID
+  signing, notarization, stapling and the quarantined launch on a genuinely clean recipient
+  Mac, plus how far back macOS support reaches and crash collection beyond OS reports.
+  `dist-developer-id` already performs the sequence; what is missing is operator credentials
+  and an untouched Mac, not code. Until then Foundry has no verified public release and the
+  ad-hoc zip is not one.
 
 Storefront-specific signing and a runtime container stay unplaced: both are triggered by a
 decision nobody has made. The design documents' own open questions stay open by standing
