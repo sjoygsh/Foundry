@@ -56,6 +56,9 @@ const usage =
     \\  --notice <file>           the application's own NOTICE, if it has one
     \\  --package-notice <file>   the notice a package's own license needs (per --package)
     \\  --extra <staged>=<file>   one more runtime file, at <staged> in the release
+    \\  --macos-bundle            stage the fixed .app Contents layout
+    \\  --bundle-id <id>          reverse-DNS identifier (required with --macos-bundle)
+    \\  --minimum-macos-version <v> deployment floor (required with --macos-bundle)
     \\  --quiet                   report nothing on success
     \\  --help                    this text
     \\
@@ -128,6 +131,9 @@ const Args = struct {
     limits: stage.Limits = .default,
     packages: std.ArrayList(stage.PackageInput) = .empty,
     extras: std.ArrayList(stage.ExtraInput) = .empty,
+    macos_bundle: bool = false,
+    bundle_id: []const u8 = "",
+    minimum_macos_version: []const u8 = "",
     quiet: bool = false,
 
     fn deinit(self: *Args, gpa: Allocator) void {
@@ -155,6 +161,14 @@ const Args = struct {
             },
             .limits = self.limits,
             .target_os = self.target_os.?,
+            .macos_bundle = if (self.macos_bundle) .{
+                .product_name = self.product,
+                .bundle_id = self.bundle_id,
+                .product_version = self.version,
+                .build_number = self.build,
+                .executable_name = self.executable_name,
+                .minimum_macos_version = self.minimum_macos_version,
+            } else null,
         };
     }
 };
@@ -171,6 +185,12 @@ fn parseArgs(gpa: Allocator, argv: []const []const u8, err: *std.Io.Writer) ArgE
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) return error.HelpRequested;
         if (std.mem.eql(u8, arg, "--quiet")) {
             args.quiet = true;
+        } else if (std.mem.eql(u8, arg, "--macos-bundle")) {
+            args.macos_bundle = true;
+        } else if (std.mem.eql(u8, arg, "--bundle-id")) {
+            args.bundle_id = try value(argv, &i, err);
+        } else if (std.mem.eql(u8, arg, "--minimum-macos-version")) {
+            args.minimum_macos_version = try value(argv, &i, err);
         } else if (std.mem.eql(u8, arg, "--out")) {
             args.out = try value(argv, &i, err);
         } else if (std.mem.eql(u8, arg, "--licenses")) {
@@ -237,6 +257,17 @@ fn parseArgs(gpa: Allocator, argv: []const []const u8, err: *std.Io.Writer) ArgE
         try err.writeAll("fstage: --target-os is required\n");
         return error.BadUsage;
     }
+    if (args.macos_bundle) {
+        try require(args.bundle_id, "--bundle-id", err);
+        try require(args.minimum_macos_version, "--minimum-macos-version", err);
+        if (args.target_os != .macos) {
+            try err.writeAll("fstage: --macos-bundle requires --target-os macos\n");
+            return error.BadUsage;
+        }
+    } else if (args.bundle_id.len != 0 or args.minimum_macos_version.len != 0) {
+        try err.writeAll("fstage: macOS metadata requires --macos-bundle\n");
+        return error.BadUsage;
+    }
     if (args.packages.items.len == 0) {
         try err.writeAll("fstage: at least one --package is required\n");
         return error.BadUsage;
@@ -299,24 +330,27 @@ test "a release is described in the order it is written, and a package owns the 
     var writer: std.Io.Writer = .fixed(&buf);
 
     var args = try parseArgs(testing.allocator, &.{
-        "--out",            "out",
-        "--executable",     "build/bin/room",
-        "--product",        "Foundry Room",
-        "--version",        "0.9.0",
-        "--target-os",      "macos",
-        "--licenses",       "THIRD_PARTY_LICENSES",
-        "--license",        "LICENSE",
-        "--license-id",     "Apache-2.0",
-        "--notice",         "NOTICE",
-        "--package",        "core",
-        "--fpk",            "build/core.fpk",
-        "--source-root",    "content/core",
-        "--package",        "room",
-        "--fpk",            "build/room.fpk",
-        "--source-root",    "samples/room/content",
-        "--generated-root", "build/room-assets",
-        "--package-notice", "build/room-notice.txt",
-        "--extra",          "content/room/libx.dylib=build/libx.dylib",
+        "--out",                                    "out",
+        "--executable",                             "build/bin/room",
+        "--product",                                "Foundry Room",
+        "--version",                                "0.9.0",
+        "--target-os",                              "macos",
+        "--macos-bundle",                           "--bundle-id",
+        "dev.foundry.room",                         "--minimum-macos-version",
+        "26.0",                                     "--licenses",
+        "THIRD_PARTY_LICENSES",                     "--license",
+        "LICENSE",                                  "--license-id",
+        "Apache-2.0",                               "--notice",
+        "NOTICE",                                   "--package",
+        "core",                                     "--fpk",
+        "build/core.fpk",                           "--source-root",
+        "content/core",                             "--package",
+        "room",                                     "--fpk",
+        "build/room.fpk",                           "--source-root",
+        "samples/room/content",                     "--generated-root",
+        "build/room-assets",                        "--package-notice",
+        "build/room-notice.txt",                    "--extra",
+        "content/room/libx.dylib=build/libx.dylib",
     }, &writer);
     defer args.deinit(testing.allocator);
 
@@ -329,6 +363,8 @@ test "a release is described in the order it is written, and a package owns the 
     // The notice attaches to the package before it, not to the release.
     try testing.expectEqualStrings("build/room-notice.txt", args.packages.items[1].notice.?);
     try testing.expectEqual(std.Target.Os.Tag.macos, args.target_os.?);
+    try testing.expect(args.macos_bundle);
+    try testing.expectEqualStrings("dev.foundry.room", args.bundle_id);
 
     // The executable's own name, because an application that wants a different one says so.
     try testing.expectEqualStrings("room", args.executable_name);
@@ -339,6 +375,7 @@ test "a release is described in the order it is written, and a package owns the 
     const options = args.options();
     try testing.expectEqualStrings("THIRD_PARTY_LICENSES", options.licenses_dir);
     try testing.expectEqualStrings("NOTICE", options.notice_file.?);
+    try testing.expectEqualStrings("26.0", options.macos_bundle.?.minimum_macos_version);
 
     // Recorded as given, and `local` when nobody said. The build runs no `git`.
     try testing.expectEqualStrings("local", args.revision);
@@ -387,6 +424,8 @@ test "an incomplete release description is a usage error rather than a default" 
     try testing.expectError(error.BadUsage, parseArgs(testing.allocator, &.{ "--max-files", "lots" }, &writer));
     writer = .fixed(&buf);
     try testing.expectError(error.BadUsage, parseArgs(testing.allocator, &.{"--nope"}, &writer));
+    writer = .fixed(&buf);
+    try testing.expectError(error.BadUsage, parseArgs(testing.allocator, &.{ "--bundle-id", "dev.foundry.room" }, &writer));
     writer = .fixed(&buf);
     try testing.expectError(error.HelpRequested, parseArgs(testing.allocator, &.{"--help"}, &writer));
 }

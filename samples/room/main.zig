@@ -485,7 +485,7 @@ fn run(
     // asks where content lives, discovers, resolves — and only then builds an engine, which
     // is handed both the directory and the order so the two cannot disagree.
     session.setStage(.discovery);
-    const content_dir = try app.contentDirOf(gpa, discovery_os, null);
+    const content_dir = try installedContentDir(gpa, discovery_os);
     defer gpa.free(content_dir);
 
     // **Before discovery**, because the set of packages a player enabled is one of the
@@ -667,6 +667,23 @@ fn run(
         room.capture_failures,
     });
     if (room.capture_failures != 0) log.err("capture is broken: see the lines above", .{});
+}
+
+/// The build chooses one installation layout. There is no fallback search from a bundle to
+/// a loose tree: a signed application reading some parent directory by accident is exactly
+/// the ambient authority `distribution.md` §7 excludes.
+fn installedContentDir(gpa: std.mem.Allocator, os: *platform.os.Os) ![]u8 {
+    if (!build_options.bundle_layout) return app.contentDirOf(gpa, os, null);
+
+    const executable_dir = try os.executableDirAlloc(gpa);
+    defer gpa.free(executable_dir);
+    if (!std.mem.eql(u8, std.fs.path.basename(executable_dir), "MacOS")) {
+        log.err("this build requires the macOS application layout", .{});
+        return error.ContentUnavailable;
+    }
+    const contents = std.fs.path.dirname(executable_dir) orelse return error.ContentUnavailable;
+    if (!std.mem.eql(u8, std.fs.path.basename(contents), "Contents")) return error.ContentUnavailable;
+    return platform.os.joinPath(gpa, &.{ contents, "Resources", "content" });
 }
 
 /// Which surface kind the platform is asked for. macOS is the only one with a backend.

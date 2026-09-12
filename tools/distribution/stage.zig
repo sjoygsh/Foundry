@@ -26,6 +26,7 @@ const data = @import("data");
 const mod = @import("mod");
 const platform = @import("platform");
 
+const macos = @import("macos.zig");
 const notices = @import("notices.zig");
 
 const Allocator = std.mem.Allocator;
@@ -152,6 +153,9 @@ pub const Options = struct {
     /// Explicit rather than `builtin.os.tag`: this runs on the host and stages for the
     /// target, and on the day those differ a guess would be wrong silently.
     target_os: std.Target.Os.Tag,
+    /// Present only when this stage is the contents of a macOS application bundle. The
+    /// ordinary loose layout remains the default and is still used on every other target.
+    macos_bundle: ?macos.Metadata = null,
 };
 
 pub const Result = struct {
@@ -186,7 +190,7 @@ pub const Report = struct {
 };
 
 /// Why a file is in the release. Carried so a refusal can say what asked for it.
-const Origin = enum { executable, package, asset, generated, extra, license, notices };
+const Origin = enum { executable, package, asset, generated, extra, license, notices, metadata };
 
 /// One file to copy: where it goes, and the confined pair it comes from.
 ///
@@ -392,6 +396,35 @@ pub fn run(gpa: Allocator, os: *Os, options: Options, report: *Report) Error!Res
 
     checkRequirements(packages.items, requirements.items, report);
     checkReferences(entries.items, references.items, report);
+
+    // The release plan above is deliberately expressed in the portable loose layout: it is
+    // where package references and explicit extras are defined. A bundle changes placement,
+    // not identity. Map that complete plan only after its references agree, then add the
+    // one macOS-only file. Nothing else gets a second packaging path.
+    if (options.macos_bundle) |bundle_metadata| {
+        var plist: std.Io.Writer.Allocating = .init(arena);
+        macos.writePlist(&plist.writer, bundle_metadata) catch |err| switch (err) {
+            error.WriteFailed => return error.OutOfMemory,
+            else => {
+                report.refuse("cannot create Info.plist: {t}", .{err});
+            },
+        };
+        if (report.refusals == 0) {
+            for (entries.items) |*entry| {
+                entry.staged = try bundlePath(arena, entry.origin, entry.staged);
+            }
+            try appendMade(
+                arena,
+                &entries,
+                report,
+                "Contents/Info.plist",
+                plist.written(),
+                .metadata,
+                "the macOS application metadata",
+                options.limits,
+            );
+        }
+    }
     try checkDestinations(gpa, entries.items, report);
 
     // Sorted before anything below reads the list, so neither the limits nor the inventory
@@ -853,11 +886,23 @@ fn writeInventory(
         error.WriteFailed => return error.OutOfMemory,
     };
 
-    const destination = try std.fmt.allocPrint(arena, "{s}/{s}", .{ options.out, inventory_name });
+    const inventory_path = if (options.macos_bundle != null)
+        "Contents/Resources/" ++ inventory_name
+    else
+        inventory_name;
+    const destination = try std.fmt.allocPrint(arena, "{s}/{s}", .{ options.out, inventory_path });
     os.writeFile(destination, text.written()) catch |err| {
         report.refuse("cannot write '{s}': {t}", .{ destination, err });
         return error.Refused;
     };
+}
+
+/// Places one already-validated portable release path in the fixed app-bundle tree.
+fn bundlePath(arena: Allocator, origin: Origin, staged: []const u8) Allocator.Error![]const u8 {
+    return if (origin == .executable)
+        std.fmt.allocPrint(arena, "Contents/MacOS/{s}", .{std.fs.path.basename(staged)})
+    else
+        std.fmt.allocPrint(arena, "Contents/Resources/{s}", .{staged});
 }
 
 fn writeInventoryText(
@@ -1156,6 +1201,66 @@ test "a release holds what the packages name, and nothing a developer needed to 
         try testing.expect(try fx.isExecutable("out/bin/demo"));
         try testing.expect(!try fx.isExecutable("out/content/demo.fpk"));
     }
+}
+
+test "a macOS stage is the same release inside the fixed application tree" {
+    var fx = try plainFixture();
+    defer fx.deinit();
+
+    var options = try plainOptions(&fx);
+    options.macos_bundle = .{
+        .product_name = "Foundry & Demo",
+        .bundle_id = "dev.foundry.demo",
+        .product_version = "1.0.0",
+        .build_number = "1",
+        .executable_name = "demo",
+        .minimum_macos_version = "26.0",
+    };
+
+    var buf: [2048]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    var report: Report = .{ .writer = &writer };
+    const result = try run(testing.allocator, fx.os, options, &report);
+    try testing.expectEqual(@as(u32, 0), report.refusals);
+    try testing.expectEqual(@as(u32, 7), result.files);
+
+    try expectStaged(&fx, &.{
+        "Contents/Info.plist",
+        "Contents/MacOS/demo",
+        "Contents/Resources/LICENSE",
+        "Contents/Resources/THIRD_PARTY_NOTICES.txt",
+        "Contents/Resources/content/demo.fpk",
+        "Contents/Resources/content/demo/sounds/bump.wav",
+        "Contents/Resources/content/demo/textures/sheet.png",
+        "Contents/Resources/inventory.txt",
+    });
+    if (platform.os.FileMode.has_bit) try testing.expect(try fx.isExecutable("out/Contents/MacOS/demo"));
+    const plist = try fx.read("out/Contents/Info.plist");
+    try testing.expect(std.mem.indexOf(u8, plist, "Foundry &amp; Demo") != null);
+    const inventory = try fx.read("out/Contents/Resources/inventory.txt");
+    try testing.expect(std.mem.indexOf(u8, inventory, "Contents/MacOS/demo") != null);
+}
+
+test "bad macOS metadata refuses the release before writing any file" {
+    var fx = try plainFixture();
+    defer fx.deinit();
+
+    var options = try plainOptions(&fx);
+    options.macos_bundle = .{
+        .product_name = "Demo",
+        .bundle_id = "not-reverse-dns",
+        .product_version = "1.0.0",
+        .build_number = "1",
+        .executable_name = "demo",
+        .minimum_macos_version = "26.0",
+    };
+
+    var buf: [2048]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    var report: Report = .{ .writer = &writer };
+    try testing.expectError(error.Refused, run(testing.allocator, fx.os, options, &report));
+    try testing.expectEqual(@as(usize, 0), (try fx.staged("out")).len);
+    try testing.expect(std.mem.indexOf(u8, writer.buffered(), "InvalidBundleId") != null);
 }
 
 test "the inventory names every staged file, in path order, with its size and hash" {

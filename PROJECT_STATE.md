@@ -1,7 +1,52 @@
 # Foundry Project State
 
-**Last updated:** 2026-09-12
-**Current handoff: M8 is complete. M9 is designed; 6/8 steps implemented. Stop before Step 7.**
+**Last updated:** 2026-09-13
+**Current handoff: M8 is complete. M9 is designed; 7/8 steps implemented. Stop before Step 8.**
+
+**Implemented in M9 step 7, 2026-09-13:** `zig build dist` now produces a real macOS
+application, retained symbols and a transport zip, not a loose directory wearing an
+application name. `tools/distribution` maps the same already-validated release plan into
+`Contents/MacOS` and `Contents/Resources`, writes and validates the one generated
+`Info.plist`, inspects every Mach-O dependency, generates a separate dSYM and requires its
+architecture/UUID set to match the executable exactly. The room and sandbox each compile a
+separate release bootstrap whose installed-content base is explicitly
+`Contents/Resources/content`; the ordinary development executable keeps its existing loose
+layout. There is no path search or guessed fallback between them.
+
+**The two signing operations are deliberately different.** The local `dist` step ad-hoc
+signs with no timestamp, verifies the sealed bundle and uses `ditto --keepParent`, producing
+`zig-out/dist/<app>/<Product>.app`, `<Product>.app.dSYM` and `<Product>-local.zip`.
+`dist-developer-id` is a separate explicit target: it refuses to exist without a stated
+Developer ID identity, notarytool Keychain profile and revision, then applies hardened
+runtime/timestamp signing, submits and waits, staples and validates the ticket, verifies
+codesign and Gatekeeper assessment, and only then makes the final zip. Ordinary `dist`
+touches no private identity, Keychain credential or network. No JIT entitlement, App Sandbox
+or library-validation exception was added.
+
+**The platform tools are the authorities and their output is checked.** `plutil`, `otool`,
+`dsymutil`, `dwarfdump`, `codesign` and `ditto` run as visible build steps; the small
+`fmacos-verify` tool turns leaked non-system load paths and symbol UUID disagreement into hard
+failures. A game may declare nested code and its exact loader-relative dependency spelling;
+the helper signs it deepest-first before sealing the application. Both `fstage` and
+`fmacos-verify` are exported to an external Zig build as build-only lazy paths and remain
+absent from the installed development/runtime tree.
+
+**Step-7 evidence.** The focused distribution suite passes **31/31** checks, and its forbidden
+absolute-dependency guard was broken narrowly, observed failing, then restored. Local
+ReleaseSafe/SDL3/Metal artifacts were built for both samples. The room app was extracted with
+`ditto` outside the checkout, its Resources made read-only, and launched from `/`: it opened
+SDL3/Cocoa, Metal and audio, loaded two packages and 28 records, played six sounds and exited
+after 180 frames/96 ticks. LaunchServices then opened the moved `.app` with `open -n -W` and
+returned successfully. The bundle plist parses, the executable is arm64 Mach-O, every load
+path is under `/usr/lib` or `/System/Library`, codesign's strict verification passes, the
+dSYM UUID matches, and the zip retains the `.app` root and executable permission. Building
+the public target without its three operator inputs fails with the intended diagnostic.
+
+**Two external gates remain unmet, explicitly.** No Developer ID/notarization credential was
+provided or authorized, so no private signing, upload, accepted ticket, staple or public
+Gatekeeper assessment was claimed. The actual downloaded/quarantined no-toolchain recipient
+run belongs to Step 8 and has not begun. Step 7 establishes the Finder-launchable local
+artifact and the complete credentialed path; it does not claim M9's stranger-download exit.
 
 **Implemented in M9 step 6, 2026-09-12:** `app.diagnostics` keeps the local evidence a session
 leaves behind. It is **not crash recovery**: nothing catches a signal, resumes a simulation or
@@ -2665,14 +2710,14 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M9 Step 4, when the user asks to begin it.** Steps 1 through 3 are complete:
-preferences are kept and applied, and installed/user packages retain their own confined roots
-through loading and reload. Step 4 implements `distribution.md` §8 — reusable build helpers,
-host `fpack`, a bounded runtime inventory and explicit ReleaseSafe staging for both sample
-variants. It must not turn the development install into the release tree, flatten package
-roots, ship authoring/build residue, or start attribution work from Step 5. Read §8 and all
-three Resolutions first. The completed M8/M7 checklists and subsequent M5/M6 material below
-are historical.
+**Next: M9 Step 8, when the user asks to begin it.** Steps 1 through 7 are complete. Step 8
+writes and reproduces the macOS recipient guide from an external consumer, and executes the
+actual downloaded/quarantined no-toolchain recipient proof: Finder launch, play/audio,
+preferences, relocation, diagnostics and user-mod installation. It records the real signing
+and support limits, and only then may M9 be marked complete and tagged `m9`. It must not infer
+notarization from the local ad-hoc artifact or begin backend #2/3D. Read `distribution.md`
+§§11-15 and every Resolution first. The completed M8/M7 checklists and subsequent M5/M6
+material below are historical.
 
 Carried, recorded and **not** started: the `render2d` blank-patch/font-atlas batching fix, the
 job-system decision `CLAUDE.md` §9 dates to post-M5, the `-Drhi=metal` `app` test-binary compile

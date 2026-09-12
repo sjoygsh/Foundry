@@ -197,6 +197,8 @@ pub fn build(b: *std.Build) void {
     // affects any other step.
     const dist_app = b.option(DistApp, "app", "Which sample `zig build dist` stages (default: room)") orelse .room;
     const revision = b.option([]const u8, "revision", "Source revision recorded in a staged release");
+    const signing_identity = b.option([]const u8, "signing-identity", "Developer ID Application identity");
+    const notary_profile = b.option([]const u8, "notary-profile", "notarytool Keychain profile name");
 
     // Passed as a string rather than as the enum: `addOption` would emit its own
     // definition of the enum type, which would not be the same type as the one
@@ -211,6 +213,10 @@ pub fn build(b: *std.Build) void {
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "platform_backend", @tagName(platform_backend));
     build_options.addOption([]const u8, "rhi_backend", @tagName(rhi_backend));
+    // The normal samples use the loose `<prefix>/bin` + `<prefix>/content` layout. A
+    // separately compiled release entry point sets this true and therefore asks for the
+    // fixed `.app/Contents/Resources/content` bootstrap path explicitly (§7, §11).
+    build_options.addOption(bool, "bundle_layout", false);
     // The source revision, for a release's log header. `local` when nobody said: the build
     // runs no `git` (ADR-0014), so a revision is stated by an operator or it is not known.
     build_options.addOption([]const u8, "revision", revision orelse "local");
@@ -530,6 +536,18 @@ pub fn build(b: *std.Build) void {
     fstage_mod.addImport("platform", platform_module);
 
     const fstage = b.addExecutable(.{ .name = "fstage", .root_module = fstage_mod });
+    b.addNamedLazyPath("fstage", fstage.getEmittedBin());
+
+    // The macOS gate checker consumes `otool`/`dwarfdump` text and nothing from the engine.
+    // Kept as a second tiny program so the platform tools stay the authorities and their
+    // answers become executable gates rather than output an operator must remember to read.
+    const fmacos_verify_mod = b.createModule(.{
+        .root_source_file = b.path("tools/distribution/macos_verify_main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const fmacos_verify = b.addExecutable(.{ .name = "fmacos-verify", .root_module = fmacos_verify_mod });
+    b.addNamedLazyPath("fmacos-verify", fmacos_verify.getEmittedBin());
 
     // Content packages, compiled by `fpack` and installed beside the executable.
     //
@@ -626,9 +644,49 @@ pub fn build(b: *std.Build) void {
     // refuses anything else, which is what §8 asks for in the same breath: never silently
     // produce a headless or unsafe release.
     const dist_step = b.step("dist", "Stage a release of a sample (see -Dapp)");
+    const distribution_step = b.step(
+        "dist-developer-id",
+        "Sign, notarize and staple a macOS release (explicit credentials required)",
+    );
     if (distComplaint(b, target, optimize, platform_backend, rhi_backend)) |complaint| {
         dist_step.dependOn(&b.addFail(complaint).step);
+        distribution_step.dependOn(&b.addFail(complaint).step);
     } else {
+        // A bundle is an explicit bootstrap choice in the application, not a search the
+        // engine performs. Compile the release entry point separately with that one fact;
+        // the normal `run`/`room` artifacts retain the loose layout and all engine modules
+        // are shared unchanged.
+        const bundle_options = b.addOptions();
+        bundle_options.addOption([]const u8, "platform_backend", @tagName(platform_backend));
+        bundle_options.addOption([]const u8, "rhi_backend", @tagName(rhi_backend));
+        bundle_options.addOption([]const u8, "revision", revision orelse "local");
+        bundle_options.addOption(bool, "bundle_layout", true);
+
+        const release_mod = b.createModule(.{
+            .root_source_file = b.path(switch (dist_app) {
+                .room => "samples/room/main.zig",
+                .sandbox => "samples/sandbox/main.zig",
+            }),
+            .target = target,
+            .optimize = optimize,
+        });
+        for ([_][]const u8{
+            "app",      "asset", "audio", "core", "data", "debug", "mod", "physics2d",
+            "render2d", "rhi",   "scene", "ui",
+        }) |name| release_mod.addImport(name, modules.get(name).?);
+        release_mod.addImport("platform", platform_module);
+        release_mod.addImport("build_options", bundle_options.createModule());
+        if (dist_app == .sandbox) {
+            release_mod.addImport("scripting", scripting_mod);
+            release_mod.addAnonymousImport("quad_metallib", .{
+                .root_source_file = metalLibrary(b, "quad-release", &.{"samples/sandbox/shaders/quad.metal"}),
+            });
+        }
+        const release_executable = b.addExecutable(.{
+            .name = @tagName(dist_app),
+            .root_module = release_mod,
+        });
+
         const description: release.Description = switch (dist_app) {
             // The room is the default because it is the sample M9's exit criterion names: a
             // small game rather than a page of frame statistics (`distribution.md` §1).
@@ -636,7 +694,7 @@ pub fn build(b: *std.Build) void {
                 .product_name = "Foundry Room",
                 .bundle_id = "dev.foundry.room",
                 .product_version = "0.9.0",
-                .executable = room,
+                .executable = release_executable,
                 .packages = &.{ content_packages[0], content_packages[2] },
                 .license_id = "Apache-2.0",
                 .license_file = b.path("LICENSE"),
@@ -651,7 +709,7 @@ pub fn build(b: *std.Build) void {
                 .product_name = "Foundry Sandbox",
                 .bundle_id = "dev.foundry.sandbox",
                 .product_version = "0.9.0",
-                .executable = sandbox,
+                .executable = release_executable,
                 .packages = &.{ content_packages[0], content_packages[1] },
                 // The samples are Foundry's, so Foundry's license is the application's and
                 // its packages declare the same one. A game states its own here, and records
@@ -663,15 +721,63 @@ pub fn build(b: *std.Build) void {
                 .revision = revision,
             },
         };
-        const staged = release.stage(b, .{ .fpack = fpack, .fstage = fstage }, description);
-        // Copied out of the build-owned staging directory so a person can open it, zip it,
-        // or run it from somewhere else. The staged tree is the fresh one; this is a copy,
-        // and `zig build dist` overwrites it without pruning what an earlier release left.
-        dist_step.dependOn(&b.addInstallDirectory(.{
-            .source_dir = staged,
+        const tools: release.Tools = .{
+            .fpack = fpack,
+            .fstage = fstage.getEmittedBin(),
+            .fmacos_verify = fmacos_verify.getEmittedBin(),
+        };
+        const artifacts = release.macosApplication(b, tools, description, .local);
+        const install_app = b.addInstallDirectory(.{
+            .source_dir = artifacts.app,
             .install_dir = .prefix,
-            .install_subdir = b.fmt("dist/{s}", .{@tagName(dist_app)}),
-        }).step);
+            .install_subdir = b.fmt("dist/{s}/{s}.app", .{ @tagName(dist_app), description.product_name }),
+        });
+        install_app.step.dependOn(artifacts.ready);
+        const install_symbols = b.addInstallDirectory(.{
+            .source_dir = artifacts.symbols,
+            .install_dir = .prefix,
+            .install_subdir = b.fmt("dist/{s}/{s}.app.dSYM", .{ @tagName(dist_app), description.product_name }),
+        });
+        install_symbols.step.dependOn(artifacts.ready);
+        const install_zip = b.addInstallFile(
+            artifacts.zip,
+            b.fmt("dist/{s}/{s}-local.zip", .{ @tagName(dist_app), description.product_name }),
+        );
+        install_zip.step.dependOn(artifacts.ready);
+        dist_step.dependOn(&install_app.step);
+        dist_step.dependOn(&install_symbols.step);
+        dist_step.dependOn(&install_zip.step);
+
+        // Public signing/notarization is a separate, explicitly credentialed action. Merely
+        // staging `dist` never touches a Developer ID identity, Keychain profile or network.
+        if (signing_identity == null or notary_profile == null or revision == null) {
+            distribution_step.dependOn(&b.addFail(
+                "`dist-developer-id` requires -Dsigning-identity, -Dnotary-profile and -Drevision; credentials stay in the named notarytool Keychain profile",
+            ).step);
+        } else {
+            const signed = release.macosApplication(b, tools, description, .{ .developer_id = signing_identity.? });
+            const notarized = release.notarizeMacos(b, description, signed, notary_profile.?);
+            const install_notarized_app = b.addInstallDirectory(.{
+                .source_dir = notarized.app,
+                .install_dir = .prefix,
+                .install_subdir = b.fmt("dist/{s}-developer-id/{s}.app", .{ @tagName(dist_app), description.product_name }),
+            });
+            install_notarized_app.step.dependOn(notarized.ready);
+            const install_notarized_symbols = b.addInstallDirectory(.{
+                .source_dir = notarized.symbols,
+                .install_dir = .prefix,
+                .install_subdir = b.fmt("dist/{s}-developer-id/{s}.app.dSYM", .{ @tagName(dist_app), description.product_name }),
+            });
+            install_notarized_symbols.step.dependOn(notarized.ready);
+            const install_notarized_zip = b.addInstallFile(
+                notarized.zip,
+                b.fmt("dist/{s}-developer-id/{s}.zip", .{ @tagName(dist_app), description.product_name }),
+            );
+            install_notarized_zip.step.dependOn(notarized.ready);
+            distribution_step.dependOn(&install_notarized_app.step);
+            distribution_step.dependOn(&install_notarized_symbols.step);
+            distribution_step.dependOn(&install_notarized_zip.step);
+        }
     }
 
     // Unit tests are colocated in source (project convention). One test binary per
@@ -691,6 +797,7 @@ pub fn build(b: *std.Build) void {
     check_step.dependOn(&room.step);
     check_step.dependOn(&fpack.step);
     check_step.dependOn(&fstage.step);
+    check_step.dependOn(&fmacos_verify.step);
 
     for (layering) |spec| {
         const unit_tests = b.addTest(.{ .root_module = modules.get(spec.name).? });
@@ -773,7 +880,10 @@ pub fn build(b: *std.Build) void {
 
     const fstage_tests = b.addTest(.{ .root_module = fstage_mod });
     check_step.dependOn(&fstage_tests.step);
-    test_step.dependOn(&b.addRunArtifact(fstage_tests).step);
+    const run_fstage_tests = b.addRunArtifact(fstage_tests);
+    test_step.dependOn(&run_fstage_tests.step);
+    b.step("distribution-test", "Run release staging and macOS artifact policy tests")
+        .dependOn(&run_fstage_tests.step);
 
     // Integration tests (CLAUDE.md §4.5): what no single module can test alone, because
     // testing it means standing above two of them. `render2d` registering a texture loader

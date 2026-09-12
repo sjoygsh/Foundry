@@ -1,7 +1,8 @@
 # Distribution: an application a stranger can run
 
-**Status:** designed 2026-09-12; **6/8 implementation steps complete** (Steps 1-6, 2026-09-12).
-**Stop point:** after Step 6. Step 7 is not started.
+**Status:** designed 2026-09-12; **7/8 implementation steps complete** (Steps 1-6,
+2026-09-12; Step 7, 2026-09-13).
+**Stop point:** after Step 7. Step 8 is not started.
 
 Rests on [ADR-0030](../adr/0030-distribution-artifacts.md) and
 [ADR-0031](../adr/0031-application-configuration-and-user-data.md), with ADR-0008, ADR-0014,
@@ -289,8 +290,7 @@ Foundry Room.app/Contents/
   Resources/LICENSE
   Resources/NOTICE
   Resources/THIRD_PARTY_NOTICES.txt
-  Resources/build-info.txt
-  Resources/runtime-files.txt
+  Resources/inventory.txt
 ```
 
 Use a stable sample bundle ID owned by the project, generated `CFBundleExecutable`, name,
@@ -396,7 +396,7 @@ Resolution when implementation exposes a design correction. No step is done by t
    application lifecycles. Child-process failures and persistence/rotation tests; prove
    read-only storage does not prevent play. Runnable result: failed launch leaves a useful
    local log; a subsequent successful launch remains usable. No custom native crash recovery.
-7. **Build and verify the macOS application.** Implement §11's plist, bundle, symbols,
+7. **Build and verify the macOS application. Complete 2026-09-13.** Implement §11's plist, bundle, symbols,
    signing profiles and zip steps. Run the real windowed ReleaseSafe artifact after moving
    it; inspect dependencies/signature/symbol UUIDs. Document exact operator notarization
    commands, execute only with authorized available credentials. Record any unmet external
@@ -412,9 +412,10 @@ Resolution when implementation exposes a design correction. No step is done by t
 ## 15. Planning handoff
 
 ADRs 0030/0031 and this design settle the M9 architecture and eight bounded steps. All M8
-implementation/evidence is retained. Steps 1 through 6 are complete as of 2026-09-12; see
-their Resolutions below. **Next is Step 7, not started and not authorized.** Nothing in Steps
-7-8 — the macOS bundle, signing or the recipient guide — exists yet.
+implementation/evidence is retained. Steps 1 through 7 are complete as of 2026-09-13; see
+their Resolutions below. **Next is Step 8, not started and not authorized.** The recipient
+guide and the actual downloaded/quarantined no-toolchain exit evidence do not exist yet;
+local ad-hoc bundle evidence must not be promoted into that claim.
 
 ## Resolution — 2026-09-12, step 1
 
@@ -742,3 +743,57 @@ finished. A SIGKILL, a power loss, a machine switched off and an overlapping ses
 exactly that mark, and nothing here claims otherwise. There is no signal handler, no resumed
 simulation and no attempt to save a world through state that may already be wrong; the last
 undrained records are lost, and that is stated rather than worked around.
+
+## Resolution — 2026-09-13, step 7
+
+What implementing §11's macOS artifact and signing gates settled, corrected or made explicit.
+
+**The bundle is another layout of the same release plan, not another packager.** `fstage`
+validates the executable, packages, runtime assets, notices, collisions and bounds exactly as
+it does for the loose artifact, then maps the already-decided destinations under
+`Contents/MacOS` and `Contents/Resources` and adds the generated plist. The reference tree in
+§11 used separate `build-info.txt` and `runtime-files.txt`; Step 4 had already settled one
+deterministic `inventory.txt` carrying both metadata and every runtime file, so the tree above
+now names that implemented file rather than duplicating its authority.
+
+**Bundle layout is a compile-time bootstrap choice, not a path search.** The samples compile
+a separate release executable whose installed-content base is explicitly
+`Contents/Resources/content`. Their ordinary executables retain the loose development layout.
+Trying one location and falling back to another would make the process directory an unrecorded
+input and could hide a broken package; the host states which artifact it built instead.
+
+**Apple's tools establish facts; Foundry checks the facts it depends on.** `plutil`, `otool`,
+`dsymutil`, `dwarfdump`, `codesign` and `ditto` remain visible build steps. A small build-only
+verifier parses the dependency and UUID reports: a load path is a system path or one exact
+bundle-relative dependency the application declared, and the dSYM's architecture/UUID set is
+identical to the executable's. This does not reimplement Mach-O, code signing or symbols.
+
+**Local and public signing are different targets with different claims.** `dist` uses an
+ad-hoc identity and no timestamp, validates the sealed app and produces a local zip.
+`dist-developer-id` requires a stated identity, revision and external notarytool Keychain
+profile; it signs nested code deepest-first, seals the app with hardened runtime and a
+timestamp, submits and waits, staples and validates the ticket, verifies codesign and
+Gatekeeper, then makes the final zip. Ordinary staging never touches a private identity,
+Keychain profile or network. Interpreted Lua needs no JIT entitlement; neither App Sandbox nor
+a blanket library-validation exception was introduced.
+
+**A directory's basename is part of an application artifact.** The first successful zip
+contained a top-level `Foundry Room/`, because the output directory had been named before the
+`.app` layout was applied. Every file and signature inside it was correct and Finder still did
+not have an application. Extracting the real archive exposed the mistake; the producing build
+output is now named `<Product>.app`, so every install and zip consumer inherits the correct
+identity instead of renaming it after signing.
+
+**Build-only tools stay build-only for external games too.** A consuming Zig build receives
+`fstage` and `fmacos-verify` as named lazy paths, while `fpack` remains an artifact. That makes
+the release helpers reusable without installing either packaging program into the developer
+prefix or, worse, into the release they help create.
+
+**The local gate passed; the public and recipient gates did not run.** Both sample bundles
+were produced and inspected. The room was extracted outside the checkout, made read-only,
+run with SDL3/Metal/audio, and opened by LaunchServices; the zip preserves the `.app` root and
+executable mode, dependencies are system-only, strict ad-hoc signature verification passes and
+the retained dSYM UUID matches. No Developer ID/notarization credential was supplied or
+authorized, so there is no claim of private signing, upload, accepted ticket, staple or public
+Gatekeeper assessment. The actual downloaded/quarantined machine without the development
+toolchain remains Step 8's exit evidence.

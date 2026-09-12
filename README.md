@@ -14,7 +14,7 @@ versioned public ABI and can add component types, systems and behaviour without 
 changes; and **script mods run on the world's tick and can be edited while the game is
 running**.
 
-**M9 is under way: six of its eight steps are done.** Its
+**M9 is under way: seven of its eight steps are done.** Its
 [eight-step plan](docs/design/distribution.md#14-implementation-order) covers preferences,
 user package roots, release staging, attribution, diagnostics and macOS distribution. Step 1
 adds bounded, versioned user preferences — the same field-block layout a record and a save
@@ -33,7 +33,12 @@ it: `LICENSE`, `NOTICE`, and a `THIRD_PARTY_NOTICES.txt` generated from the entr
 `THIRD_PARTY_LICENSES/`, each reproduced whole. Step 6 keeps local evidence: a bounded log
 per session under the application's own data directory, with a marker recording whether the
 session closed — so a launch that fails leaves something a person can read and send, and the
-next launch starts beside it rather than on top of it. Nothing is signed or bundled yet.
+next launch starts beside it rather than on top of it. Step 7 turns that release into a real
+macOS `.app`, matching retained dSYM and permission-preserving zip, validates its plist and
+Mach-O dependencies, and ad-hoc signs the local artifact. Public Developer ID signing,
+notarization and Gatekeeper verification have a separate explicitly credentialed build target;
+they have not been executed without credentials. The remaining step is the reproduced
+download/quarantine/no-toolchain recipient guide and exit proof.
 
 All three modding tiers work — see [docs/modding](docs/modding/). Tier 2 is restricted
 Lua 5.5.1, one VM per package, bounded in memory, instructions and engine calls, reaching the
@@ -46,7 +51,7 @@ and then rebuilt from its own listings to check that it says what the engine doe
 ```sh
 ./scripts/install-zig.sh   # the only tool you need
 zig build run -Drhi=metal  # opens a window and draws; escape quits
-zig build test             # 1272 headless tests
+zig build test             # 1278 headless tests
 ```
 
 Implemented so far:

@@ -136,6 +136,15 @@ order and does not compute one: discovering packages, resolving dependencies bet
 deciding what a player has enabled is M7 (`content-schemas.md` §11), and answering it in a
 config struct would be answering it in the wrong place.
 
+### Artifact layout is stated by the application — added M9 step 7, 2026-09-13
+
+The two samples compile a separate release bootstrap for a macOS application. That bootstrap
+resolves installed packages at `Contents/Resources/content`; the ordinary development build
+continues to use its loose executable-relative content directory. This is a compile-time host
+choice, not a search order: trying a bundle location and falling back to a loose one could hide
+a broken release and would make unrelated files beside the process an ambient input. `Engine`
+still receives only the final directory through `Config` and owns no bundle policy.
+
 ## 5. Logging
 
 `app` installs the log sink, resolving what `core.log` deliberately left open: `core` defines

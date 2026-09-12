@@ -425,7 +425,7 @@ and survived.
 entity spawning through ordinary content templates. Its §§8 and 14 define operational fault
 containment and the required failure tests; this is not a proof against unknown native defects.
 
-### M9 — Shippable: "it distributes" — **designed (2026-09-12), 6/8 implemented**
+### M9 — Shippable: "it distributes" — **designed (2026-09-12), 7/8 implemented**
 
 [ADR-0030](adr/0030-distribution-artifacts.md) fixes release artifacts and the macOS tooling
 boundary; [ADR-0031](adr/0031-application-configuration-and-user-data.md) separates bootstrap,
@@ -467,8 +467,17 @@ the concurrency mechanism and the symlink refusal; a slot written in the last mi
 retired. Nothing about the filesystem is fatal: no directory, no free slot, a read-only
 `logs/` or a failing write each leave a working session and an unaffected terminal. There is
 no crash recovery and no signal handler — an abandoned marker means a session never said it
-finished, never that a crash was proven. **1272 headless tests.** No signed, bundled or
-recipient evidence exists.
+finished, never that a crash was proven. Step 7, completed 2026-09-13, maps the same validated
+release plan into a generated and `plutil`-checked macOS application, keeps its dSYM outside
+the player zip and requires the executable/symbol UUIDs to agree, rejects Mach-O load paths
+outside system libraries or explicitly declared bundle-relative dependencies, signs the local
+profile ad hoc and archives it with `ditto`. The room bundle was moved outside the checkout,
+made read-only, run with SDL3/Metal/audio, and opened through LaunchServices; the sandbox
+bundle separately carries and runs its script. A second, explicit `dist-developer-id` target
+contains the hardened-runtime/timestamp/notary/staple/Gatekeeper sequence and refuses missing
+operator inputs, but no credential was supplied or authorized, so no public signing or
+notarization is claimed. **1278 headless tests.** The actual
+download/quarantine/no-toolchain recipient evidence remains Step 8.
 
 * Asset and content bundling; release build configuration.
 * Game configuration and user settings.

@@ -54,8 +54,8 @@ world's own fixed tick, and replaced in place when the file changes — its stat
 entities it owns carry across. `docs/modding/script-mods.md` was written by building a script
 package outside this repository and was then rebuilt from its own listings to check it.
 
-**M9 is designed, with 6/8 steps implemented (2026-09-12).** Read ADR-0030, ADR-0031 and
-`docs/design/distribution.md`; §14 is the implementation order and its first six Resolutions
+**M9 is designed, with 7/8 steps implemented (2026-09-13).** Read ADR-0030, ADR-0031 and
+`docs/design/distribution.md`; §14 is the implementation order and its first seven Resolutions
 record what implementation settled. Step 1: `engine/src/app/settings.zig` holds
 the `settings.fset` envelope over `data`'s field-block layout, and `Os.replaceFileConfined` is
 the confined temporary-then-rename write every later step goes through — a file this build does
@@ -77,8 +77,11 @@ than shipping a gap. Step 6: `app.diagnostics` keeps a bounded session log under
 application's user-data `logs/`, with a marker saying whether the session closed. **A
 frame-budgeted or headless run keeps nothing** — the same rule preferences follow — so
 `FOUNDRY_*_DIAGNOSTICS=1` is how a scripted run exercises it at all. `zig build
-diagnostics-stress` runs the unclean-exit cases in child processes. Step 7 is next and
-requires the user's instruction.
+diagnostics-stress` runs the unclean-exit cases in child processes. Step 7: `zig build dist`
+now produces an ad-hoc-signed `.app`, matching dSYM and permission-preserving zip; the
+separate `dist-developer-id` target is the only route that touches a private signing identity,
+notarytool Keychain profile or network. Step 8 — the recipient guide and actual
+download/quarantine/no-toolchain exit proof — is next and requires the user's instruction.
 
 ## 3. Building and verifying
 
@@ -135,7 +138,8 @@ once. There is no shorter form; `-Dtarget` is deliberately absent, because stati
 a target Zig no longer calls native and the content compiler has to run here:
 
 ```sh
-zig build dist -Dapp=room -Dplatform=sdl3 -Drhi=metal -Doptimize=ReleaseSafe
+zig build dist -Dapp=room -Dplatform=sdl3 -Drhi=metal -Doptimize=ReleaseSafe \
+  -Drevision=<commit>
 ```
 
 `zig build diagnostics-stress` is part of `zig build test` and also runs on its own. It spawns
@@ -144,9 +148,30 @@ run** — a child that exits 3 on purpose is the test working.
 
 `-Dapp` is `room` (default) or `sandbox`; `-Drevision=<sha>` is recorded in the release's
 inventory and is `local` when unstated — the build runs no `git`. The staged tree is
-build-owned and fresh; a copy lands in `zig-out/dist/<app>` for a person to open or zip, and
-that copy is overwritten without pruning. It is a real artifact, so it takes a real SDL and
-Metal build: expect minutes on a cold cache, and expect it to be the slowest thing here.
+build-owned and fresh. Local output lands in `zig-out/dist/<app>/` as `<Product>.app`, its
+separate `<Product>.app.dSYM`, and `<Product>-local.zip`. The application is ad-hoc signed
+without a timestamp; this proves the local bundle and relocation, not public notarization.
+It is a real artifact, so it takes a real SDL and Metal build: expect minutes on a cold cache,
+and expect it to be the slowest thing here. `zig build distribution-test` runs the focused
+staging/plist/dependency/symbol policy tests without building the windowed artifacts.
+
+Public signing is an explicit operator action. First store credentials in the operator's
+Keychain profile, following `notarytool`'s prompts; do not put passwords, API keys or private
+key material in a command, environment variable or repository file. Then state all three
+public-release inputs:
+
+```sh
+xcrun notarytool store-credentials "<profile>"
+zig build dist-developer-id -Dapp=room -Dplatform=sdl3 -Drhi=metal \
+  -Doptimize=ReleaseSafe -Drevision=<commit> \
+  -Dsigning-identity="Developer ID Application: … (TEAMID)" \
+  -Dnotary-profile="<profile>"
+```
+
+`dist-developer-id` signs with hardened runtime and Apple's timestamp, submits and waits,
+staples and validates the accepted ticket, verifies codesign and Gatekeeper assessment, and
+then creates the final zip under `zig-out/dist/<app>-developer-id/`. Never run it without the
+owner's authorization to use that identity, Keychain profile and network service.
 
 ### Counting tests
 

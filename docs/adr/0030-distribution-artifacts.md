@@ -1,6 +1,6 @@
 # ADR-0030: Distribute an application around ordinary content packages
 
-**Status:** Accepted (M9 Steps 1-3 implemented; release staging not started)
+**Status:** Accepted (implemented through M9 Step 7; recipient proof remains)
 **Date:** 2026-09-12
 
 ## Context
@@ -76,3 +76,13 @@ Consulted 2026-09-12: Apple's [distribution signing guide](https://developer.app
 [notarization guide](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution),
 and [library-validation entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.cs.disable-library-validation).
 Recheck the operational commands when Step 7 is implemented; these are external platform rules.
+
+## Implementation note — 2026-09-13
+
+M9 Steps 4-7 implement this decision. `tools/distribution` stages the declared runtime closure
+and attribution, maps it into a generated macOS application, rejects undeclared host load
+paths, retains an exactly UUID-matched dSYM, and exposes distinct local ad-hoc and explicit
+Developer ID/notarization build targets. A moved, read-only local app passed SDL3/Metal/audio
+and LaunchServices execution. No Developer ID credential was supplied or authorized, and the
+downloaded/quarantined no-toolchain recipient proof remains Step 8; neither is inferred from
+the local artifact.
