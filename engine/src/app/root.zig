@@ -13,6 +13,12 @@
 const engine = @import("engine.zig");
 
 pub const log_sink = @import("log_sink.zig");
+
+/// The user's own preferences, on disk, and the resolution that decides which of a
+/// built-in fallback, a content default and a saved preference wins (`distribution.md`
+/// §§4-6, ADR-0031). **Opt-in**: an application that keeps no preferences constructs none
+/// of this, and the engine owns no `Storage`, because the engine does not own an
+/// application's configuration.
 pub const settings = @import("settings.zig");
 pub const ui_draw = @import("ui_draw.zig");
 
@@ -44,13 +50,6 @@ pub const UiDrawOptions = ui_draw.Options;
 pub const LogRecord = log_sink.Record;
 pub const LogFilter = log_sink.Filter;
 pub const LogView = log_sink.View;
-
-/// The user's own preferences, on disk (`distribution.md` §5, ADR-0031). Opt-in: an
-/// application that keeps none constructs none of this. The engine owns no `Storage`,
-/// because the engine does not own an application's configuration.
-pub const SettingsStorage = settings.Storage;
-pub const SettingsLimits = settings.Limits;
-pub const SettingsState = settings.State;
 
 /// Drop this into a game's root source file to route Foundry's logging:
 ///

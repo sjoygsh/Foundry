@@ -1,7 +1,62 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-12
-**Current handoff: M8 is complete. M9 is designed; 1/8 steps implemented. Stop before Step 2.**
+**Current handoff: M8 is complete. M9 is designed; 2/8 steps implemented. Stop before Step 3.**
+
+**Implemented in M9 step 2, 2026-09-12:** both samples now start the way `distribution.md` §4
+says an application starts. Each carries a `config` record in its **own package** —
+`room:config.main` and `sandbox:config.main`, against a `config` schema authored in that
+sample's `.fdt` — holding a window width, a height and a master volume. Each declares its own
+settings schema **in Zig** (`room:preferences`, `sandbox:preferences`), which is deliberately
+*not* registered with the content store: preferences are not content, carry no manifest and are
+not merged (ADR-0031), so no package can see or override one. At startup the application reads
+its settings file before discovery — because the set of packages a player enabled is one of the
+things kept there — creates the engine on its bootstrap window defaults, loads content, and then
+resolves each value through the three layers in order: built-in fallback, content record,
+player's file. The result is applied through interfaces that already existed, `setWindowSize`
+and `Mixer.setMasterGain`, before the first ordinary frame. A windowed sandbox run opens at
+1280x720 and resizes to the 1152x648 its package asks for, which is the content layer visible
+on screen.
+
+**What is written back is only what the player chose.** A resolved value carries its origin, and
+a field is encoded only when that origin is `.user` — writing back a content default would
+freeze it, so the package that supplied it could never change it again. A content hot reload
+re-resolves every field whose origin is not `.user`, which is §5's rule made literal: a reload
+may move a default and may not move a choice. Changes coalesce: the room's volume slider reports
+every frame of a drag and the file is written once, sixty quiet frames later, and once more at a
+normal shutdown.
+
+**Two rules decide whether preferences are live at all, and both matter when running the bar.**
+A **headless** run neither reads nor applies them — it has no window to size and no audible
+mixer, so reading them would be a hidden input with no visible effect (I9) and would make a
+scripted run depend on whatever is saved on the machine running it. A **frame-budgeted** run
+reads and applies them and never writes them (§4). So every `FOUNDRY_SANDBOX_FRAMES` /
+`FOUNDRY_ROOM_FRAMES` run touches no user directory at all — confirmed: a 90-frame windowed
+sandbox run created nothing under `~/Library/Application Support`. The deliberate cost is that
+the bar exercises the fallback and content layers and never the user layer; that layer's evidence
+is `engine/tests/settings_startup.zig` and a windowed run by hand.
+
+**New engine surface, all of it opt-in:** `app.settings.File` (where the file is, whether this
+run may write it, when a change is written), `Layer`/`Origin`/`Resolved`/`resolveInt`/
+`resolveFloat` (the resolution walk), `IdSet` (the enabled-package set, sorted and unique so its
+bytes are canonical), and `platform.os.isValidAppName`, which `Os.init` now enforces — widening
+`app.InitError` by one member. The samples keep what is genuinely theirs: which fields exist,
+what counts as a usable value, and where a resolved value goes.
+
+**Step-2 verification.** The full AGENTS.md §3 bar passes: formatting, **1,241 declared /
+1,233 headless tests**, host/Linux/Windows compilation, and both 30-frame null sample runs. The
+10 new tests are §12's Defaults row: an application starting on its package's own defaults out
+of a real `.fpk` loaded by a real engine; a saved preference outranking the package and surviving
+into a **fresh `File` that carries nothing from the one that wrote it**; a content reload moving
+the height and leaving a chosen width where it was; two application directories on one machine
+not reading each other's file, and a foreign schema in the same directory being preserved rather
+than replaced; a drag of ten frames writing nothing and settling into one write; a run with
+writing off changing nothing on disk; and the resolution walk itself — the highest layer with a
+usable value winning, an out-of-range value losing to the layer under it, and a selection that is
+partly wrong not being partly used. The user directory in those tests is a real one: `HOME`,
+`XDG_DATA_HOME` and `APPDATA` are pointed at a temporary directory, so `userDataDirAlloc` derives
+what it would on a player's machine.
+
 
 **Implemented in M9 step 1, 2026-09-12:** the user's own preferences, on disk, and the write
 that puts them there safely. `engine/src/app/settings.zig` is the `settings.fset` envelope —
@@ -897,7 +952,8 @@ entities, a playable sample, and an overlay that diagnosed its own cost. **M7 �
 "others can extend it" — completed 2026-09-09**, all seven design steps and the outside-tree
 exit proof. **M8 — Scriptable: "modders can extend it" — completed 2026-09-12**, all eight
 steps of `scripting.md` §16 and its own outside-tree exit proof. What remains in this phase is
-M9, shipping, designed and now begun: Step 1 of its eight is implemented as of 2026-09-12.
+M9, shipping, designed and now begun: Steps 1 and 2 of its eight are implemented as of
+2026-09-12.
 
 ## Current milestone
 
@@ -908,12 +964,11 @@ script package recorded at the top of this file and by `docs/modding/script-mods
 written from it and then rebuilt from its own listings. The design's §15 open questions stay
 open; none of them blocks what M8 specified.
 
-**M9 — Shippable is designed, 1/8 steps implemented.** Read `docs/design/distribution.md`
-and ADR-0030/0031, and its Step 1 Resolution for what implementing the codec settled. **Step 2
-— applying ordinary content defaults and user settings in both samples — is next and is not
-started.** Nothing in Steps 2-8 exists: no sample reads or writes a preference yet, there is no
-`dist` target, no user package root, no generated notices, no diagnostics session and no macOS
-bundle.
+**M9 — Shippable is designed, 2/8 steps implemented.** Read `docs/design/distribution.md`
+and ADR-0030/0031, and its Step 1 and Step 2 Resolutions for what implementing them settled.
+**Step 3 — loading user packages beside a read-only installation — is next and is not started.**
+Nothing in Steps 3-8 exists: package roots are still the one installed content directory, there
+is no `dist` target, no generated notices, no diagnostics session and no macOS bundle.
 
 **M7 — Moddable: "others can extend it." Complete, 2026-09-07 to 2026-09-09.** All six
 roadmap bullets and all seven steps of `public-abi.md` §19 are implemented. The exit criterion
@@ -1593,10 +1648,10 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 1,223 tests** of 1,231 declared (84 `core`, 88 `platform`,
+**`zig build test` passes 1,233 tests** of 1,241 declared (84 `core`, 89 `platform`,
 106 `data`, 82 `physics2d`, 83 `ui`, 92 `rhi`, 76 `asset`, 22 `mod`, 139 `render2d`,
-84 `scene`, 34 `audio`, 68 `app`, 23 `debug`, 111 `abi`, 56 `script`, 47 integration,
-28 `tools`), and **1,231 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
+84 `scene`, 34 `audio`, 72 `app`, 23 `debug`, 111 `abi`, 56 `script`, 52 integration,
+28 `tools`), and **1,241 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
 8 exceptions need a real GPU and compile only when Metal is selected. **`samples/room` adds
@@ -2404,14 +2459,15 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M9 Step 2, when the user asks to begin it.** Step 1 is complete: the preference codec
-and the confined replacement exist, and nothing yet calls them from a sample. Step 2 applies
-§4's startup order in both `samples/sandbox` and `samples/room` — an application-owned settings
-schema, a default record authored in that sample's own package, and the existing volume and
-window controls persisting across a relaunch. Read `docs/design/distribution.md` §4, its Step 1
-Resolution, and ADR-0031's three kinds of input before writing any of it; the rule that matters
-is that content may supply a *default* and never an authority. Package roots stay as they are
-until Step 3. The completed M8/M7 checklists and subsequent M5/M6 material below are historical.
+**Next: M9 Step 3, when the user asks to begin it.** Steps 1 and 2 are complete: preferences
+are kept, resolved and applied in both samples. Step 3 implements §7 — combined discovery that
+keeps each candidate's host-assigned origin, an optional per-package base directory carried
+through loading, remount, the content watcher and reload, and the script and native host
+adapters that go with it. Read `docs/design/distribution.md` §7 and both Resolutions first. Two
+things Step 3 inherits and must not undo: the enabled-package set is already read out of the
+settings file and folded into what `mod.resolve` is given, and duplicate package ids are an
+explicit conflict rather than something the last directory visited wins. The completed M8/M7
+checklists and subsequent M5/M6 material below are historical.
 
 Carried, recorded and **not** started: the `render2d` blank-patch/font-atlas batching fix, the
 job-system decision `CLAUDE.md` §9 dates to post-M5, the `-Drhi=metal` `app` test-binary compile

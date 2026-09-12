@@ -142,6 +142,22 @@ sandbox:settings sandbox:settings.main { ... }   # explicit, and always correct
 You do not need to know where the original lives, what package it came from, or how its
 directory is laid out.
 
+### Some of what a game overrides is not in the game
+
+An application may keep a record for its own presentation — both samples do, as
+`room:config.main` and `sandbox:config.main` — holding a window width, a height and a master
+volume. It is an ordinary record of an ordinary schema, so overriding it is the same act as
+overriding a lamp, and a package that does so changes the size of the window the game opens
+in.
+
+Two limits are worth knowing, and both are deliberate. **A player outranks you.** These
+particular fields can also be set in the player's own preferences file, and a value they
+chose wins over any package's; a value they have *not* chosen takes yours, including after a
+hot reload. And **a record cannot grant itself authority**: content decides defaults, never
+where files are read from, which packages load, or whether native code runs. That separation
+is [ADR-0031](../adr/0031-application-configuration-and-user-data.md), and it is the reason
+a mod can change how a game looks without being able to change what it trusts.
+
 ## 5. Assets
 
 An asset is a record like any other, and its identity is its content ID. The file is named

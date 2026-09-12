@@ -109,16 +109,23 @@ much later.
 
 ## 4. Configuration
 
-`Config` is a plain struct with defaults, passed by value. There is no config *file* yet:
-reading one is a content concern, it needs the authoring format that ADR-0006 postpones to
-M3, and user settings are an M9 item. Until then a game writes its configuration in Zig,
-which is honest about where the values come from.
+`Config` is a plain struct with defaults, passed by value. **It is bootstrap, not
+preference.** A game writes it in Zig, which is honest about where the values come from, and
+nothing a package or a player supplies can reach into it: the window it names is the size the
+engine comes up at, not the size the player last chose.
+
+That distinction is M9's, and it is why `Config` did not grow a file. An application that
+keeps preferences resolves them *above* this — a built-in fallback, then an ordinary content
+record, then `settings.fset` — and applies the result through `setWindowSize` and the mixer,
+after content is loaded and before the first ordinary frame (`distribution.md` §4, ADR-0031).
+`app.settings` is opt-in and the engine owns none of it, because the engine does not own an
+application's configuration.
 
 The environment is part of `Config`, because Zig 0.16 hands the process environment to the
 entry point and `app` is what owns the entry point. `app.environment` marshals it — the one
 place in Foundry a `std.process.Init` appears.
 
-### Content is not configuration
+### Content is not configuration, and configuration is not authority
 
 `Config.content` is a list of packages **in load order**, and `Config.content_dir` says
 where they are. That is the whole of it. The engine consumes an order and does not compute

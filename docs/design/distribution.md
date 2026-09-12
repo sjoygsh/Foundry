@@ -1,7 +1,7 @@
 # Distribution: an application a stranger can run
 
-**Status:** designed 2026-09-12; **1/8 implementation steps complete** (Step 1, 2026-09-12).
-**Stop point:** after Step 1. Step 2 is not started.
+**Status:** designed 2026-09-12; **2/8 implementation steps complete** (Steps 1-2, 2026-09-12).
+**Stop point:** after Step 2. Step 3 is not started.
 
 Rests on [ADR-0030](../adr/0030-distribution-artifacts.md) and
 [ADR-0031](../adr/0031-application-configuration-and-user-data.md), with ADR-0008, ADR-0014,
@@ -376,7 +376,7 @@ Resolution when implementation exposes a design correction. No step is done by t
    primitive/opt-in `app.settings` storage. Tests cover corruption, versions, failure injection
    and confinement. Runnable result: headless round trip through real user-root fixture files.
    No sample configuration changes, package roots or distribution build target yet.
-2. **Apply ordinary content defaults and user settings.** Implement §4 in both samples,
+2. **Apply ordinary content defaults and user settings. Complete 2026-09-12.** Implement §4 in both samples,
    application-owned schemas/default records and existing volume/window controls. Persist
    changes and selected package IDs; selection still uses the existing installed root until
    Step 3. Verify content override versus user override and fresh-process persistence.
@@ -412,10 +412,10 @@ Resolution when implementation exposes a design correction. No step is done by t
 ## 15. Planning handoff
 
 ADRs 0030/0031 and this design settle the M9 architecture and eight bounded steps. All M8
-implementation/evidence is retained. Step 1 is complete as of 2026-09-12; see its Resolution
-below. **Next is Step 2, not started and not authorized.** Nothing in Steps 2-8 — sample
-configuration, package roots, the `dist` target, generated notices, diagnostics or the macOS
-bundle — exists yet.
+implementation/evidence is retained. Steps 1 and 2 are complete as of 2026-09-12; see their
+Resolutions below. **Next is Step 3, not started and not authorized.** Nothing in Steps 3-8 —
+writable package roots, the `dist` target, generated notices, diagnostics or the macOS bundle
+— exists yet.
 
 ## Resolution — 2026-09-12, step 1
 
@@ -460,3 +460,65 @@ settings can be read and never written.
 disabled and hands back the parent directory and the leaf. Two implementations of "do not
 follow a link" would be two places for the rule to be almost right, and the failure mode of
 almost-right there is writing outside the root a host granted.
+
+## Resolution — 2026-09-12, step 2
+
+What applying §4 in two real applications settled, corrected or made explicit.
+
+**Whether preferences are live at all is two rules, not one.** §4 says "test frame budgets do
+not rewrite preferences", which covers writing. Reading needed a rule too, because a scripted
+run that reads whatever happens to be saved on the machine running it is a run whose result
+depends on that machine — the hidden input I9 objects to. So both samples apply two
+conditions, each with its own reason. A **headless** run neither reads nor applies them: it
+has no window to size and no audible mixer, so there is nothing for a preference to change
+and everything for one to make unrepeatable. A **frame-budgeted** run reads and applies them
+and never writes: a budget marks a run nobody is watching, and such a run must leave a
+person's choices as it found them. The consequence is deliberate and worth stating: the
+AGENTS.md §3 bar exercises the fallback and content layers and never the user layer, so the
+user layer's evidence is `engine/tests/settings_startup.zig` and a windowed run by hand.
+
+**Only a value the player chose is written back.** §4's layering implies it and does not say
+it: a resolved value carries its origin, and `flush` writes a field only when that origin is
+`.user`. Writing back a content default would freeze it — the file would outrank the package
+from then on, so the package that supplied the value could never change it again, and a mod
+overriding it would appear to do nothing. This is also what makes a first run leave a *small*
+file rather than a copy of the package's defaults.
+
+**Applying a window preference produces an event indistinguishable from the player making
+one.** `setWindowSize` is a request; the result arrives as a `window_resized` event on a later
+frame, by design, so that a program resizing itself takes the same path as a user dragging an
+edge (`platform-interface.md`). That means the act of applying a saved width generates exactly
+the input that records a saved width. Both samples suppress the echo by ignoring a resize
+whose logical size already equals the resolved value — without which every launch would mark
+the file dirty and rewrite it.
+
+**A settings schema is not registered with the content registry.** §4's "Settings schemas are
+registered by the application at runtime too" can be read as putting them in `data.Registry`
+beside content schemas; ADR-0031's "not merged into the content store" rules that out. The
+implementation resolves it the second way: the application declares its schema in its own
+code and hands it to `app.settings`, which validates and encodes against it. Nothing about a
+settings schema enters the store, so no package can see one, override one, or define a record
+of one.
+
+**The part that is the same for every application was extracted after it was written once.**
+`app.settings.File` owns where the file is, whether this run may write it, and when a change
+is written; `Layer`, `Origin`, `resolveInt`, `resolveFloat` and `IdSet` own the resolution
+walk and the selected set. What stays in each sample is what is genuinely that sample's: which
+fields exist, what counts as a usable value, and where a resolved value goes. This is the
+`render2d` lesson applied early — the room and the sandbox would otherwise have carried two
+copies of the "when may this be written" rule, which is the one piece where being almost right
+costs a player their settings.
+
+**The application directory name is validated where it enters.** §4 asks for a single ASCII
+component of at most 64 bytes. `platform.os.isValidAppName` enforces it and `Os.init` refuses
+one that fails, which widened `app.InitError` by one member. Checking it at the point it is
+supplied rather than at each place that builds a path means no caller of `userDataDirAlloc`
+has to wonder whether the name it is about to join is one.
+
+**One resize is visible at startup, and it is the design's choice.** §4 creates the engine on
+bootstrap window defaults and applies the resolved size after content is loaded, because the
+content default cannot be known before then. A windowed sandbox run therefore opens at
+1280x720 and resizes to the 1152x648 its package asks for. Keeping one apply path for both
+layers is worth a frame of resize; the alternative — seeding the window from the preferences
+file and the content default from somewhere else — makes bootstrap authority partly a
+preference, which is the distinction ADR-0031 exists to hold.

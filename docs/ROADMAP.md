@@ -425,7 +425,7 @@ and survived.
 entity spawning through ordinary content templates. Its §§8 and 14 define operational fault
 containment and the required failure tests; this is not a proof against unknown native defects.
 
-### M9 — Shippable: "it distributes" — **designed (2026-09-12), 1/8 implemented**
+### M9 — Shippable: "it distributes" — **designed (2026-09-12), 2/8 implemented**
 
 [ADR-0030](adr/0030-distribution-artifacts.md) fixes release artifacts and the macOS tooling
 boundary; [ADR-0031](adr/0031-application-configuration-and-user-data.md) separates bootstrap,
@@ -437,8 +437,11 @@ preferences: a `settings.fset` envelope over `data`'s existing field-block layou
 confined replacement in `platform` that writes an exclusively created temporary sibling, syncs
 it and renames it over the destination as a leaf — so nothing is ever truncated, a symlinked
 destination is overwritten rather than followed, and a file from a newer build or a different
-schema version is preserved instead of replaced. **1223 headless tests.** No sample reads a
-preference yet, and no release artifact or recipient evidence exists.
+schema version is preserved instead of replaced. Step 2, completed the same day, applies §4's
+startup order in both samples: a `config` record in each sample's own package supplies the
+window size and master volume as ordinary content, a saved preference overrides it, only what
+the player chose is written back, and a content reload moves a default without moving a choice.
+**1233 headless tests.** No release artifact or recipient evidence exists.
 
 * Asset and content bundling; release build configuration.
 * Game configuration and user settings.

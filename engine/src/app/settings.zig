@@ -339,6 +339,199 @@ fn checkDecoded(v: data.Value, limits: Limits) DecodeError!void {
 }
 
 // ---------------------------------------------------------------------------
+// Resolving a value out of the layers that may supply it
+// ---------------------------------------------------------------------------
+
+/// Where a resolved value came from.
+///
+/// Kept beside the value rather than thrown away, because two decisions need it. A content
+/// hot reload may move a default and must **not** move a field the user has chosen
+/// (`distribution.md` §5), which is a question about origin. And a preference is only worth
+/// writing back when it is the user's; writing back a content default would freeze it, so
+/// that the package that supplied it could never change it again.
+pub const Origin = enum {
+    /// The application's own built-in value. Used when nothing usable was supplied.
+    fallback,
+    /// An ordinary content record — a default a package author chose, which a mod may
+    /// override by ordinary content override.
+    content,
+    /// The user's own saved preference.
+    user,
+};
+
+pub fn Resolved(comptime T: type) type {
+    return struct {
+        value: T,
+        origin: Origin,
+
+        pub fn isUser(self: @This()) bool {
+            return self.origin == .user;
+        }
+    };
+}
+
+/// One place a value may come from: a block of fields, and the schema that names them.
+///
+/// The two settings layers have different shapes on disk — a content record lives in a
+/// package and a preference lives in `settings.fset` — and exactly the same shape in
+/// memory, because both are field blocks (`content-schemas.md` §5.3). That is what lets one
+/// resolution walk read both.
+pub const Layer = struct {
+    schema: data.Schema,
+    fields: data.fpk.Fields,
+    origin: Origin,
+};
+
+/// The highest-priority layer that supplies a usable value for `name`, or `fallback`.
+///
+/// `layers` is given in **increasing** priority, and is walked backwards. A layer that
+/// omits the field, spells it as another type, or supplies a number outside `[min, max]` is
+/// skipped rather than fatal — which is §4's "validated content defaults -> valid user
+/// overrides" made literal. A preference a person edited by hand into nonsense costs them
+/// that preference and nothing else.
+pub fn resolveInt(
+    comptime T: type,
+    name: []const u8,
+    fallback: T,
+    min: T,
+    max: T,
+    layers: []const ?Layer,
+) Resolved(T) {
+    var i = layers.len;
+    while (i > 0) {
+        i -= 1;
+        const layer = layers[i] orelse continue;
+        const index = layer.schema.fieldIndex(name) orelse continue;
+        const raw = (layer.fields.intAt(index) catch null) orelse continue;
+        const value = std.math.cast(T, raw) orelse continue;
+        if (value < min or value > max) {
+            log.warn("settings: {s} {s}={d} is outside {d}..{d}; ignoring it", .{
+                @tagName(layer.origin), name, value, min, max,
+            });
+            continue;
+        }
+        return .{ .value = value, .origin = layer.origin };
+    }
+    return .{ .value = fallback, .origin = .fallback };
+}
+
+/// The float counterpart, with the same rules and one more: a nonfinite value never wins.
+///
+/// The codec already refuses one from a file, so this is the layer that catches a nonfinite
+/// *content* default — a package is as capable of holding a NaN as a preferences file, and
+/// it reaches the same mixer gain if nobody stops it.
+pub fn resolveFloat(
+    comptime T: type,
+    name: []const u8,
+    fallback: T,
+    min: T,
+    max: T,
+    layers: []const ?Layer,
+) Resolved(T) {
+    var i = layers.len;
+    while (i > 0) {
+        i -= 1;
+        const layer = layers[i] orelse continue;
+        const index = layer.schema.fieldIndex(name) orelse continue;
+        const raw = (layer.fields.floatAt(index) catch null) orelse continue;
+        const value: T = @floatCast(raw);
+        if (!std.math.isFinite(value) or value < min or value > max) {
+            log.warn("settings: {s} {s}={d} is not a usable value in {d}..{d}; ignoring it", .{
+                @tagName(layer.origin), name, value, min, max,
+            });
+            continue;
+        }
+        return .{ .value = value, .origin = layer.origin };
+    }
+    return .{ .value = fallback, .origin = .fallback };
+}
+
+/// A set of content-id spellings — the packages a player has enabled.
+///
+/// Sorted and unique, which is what makes writing it canonical: the same set encodes to the
+/// same bytes whatever order it was assembled in (I9). It holds **spellings** rather than
+/// hashes because a settings file has to name a package in a way a person can read and a
+/// future build can still resolve, and because a hash cannot be turned back into a name for
+/// a diagnostic.
+///
+/// It is a *selected set* and nothing more. It does not order anything — `mod` resolves
+/// order from the manifests — and enabling a package is not consent to run native code
+/// (ADR-0031).
+pub const IdSet = struct {
+    /// Owned, sorted, unique.
+    ids: []const []u8 = &.{},
+
+    pub fn deinit(self: *IdSet, gpa: Allocator) void {
+        for (self.ids) |id| gpa.free(id);
+        gpa.free(self.ids);
+        self.* = undefined;
+    }
+
+    /// Reads the set from one layer's list field.
+    ///
+    /// An absent field is an empty set. A field holding anything that is not a content id,
+    /// or naming one twice, yields an empty set and a warning: a selection that is
+    /// partly understood is worse than none, because the packages it silently dropped are
+    /// the ones the player would notice missing.
+    pub fn read(gpa: Allocator, layer: Layer, name: []const u8, max: usize) Allocator.Error!IdSet {
+        const index = layer.schema.fieldIndex(name) orelse return .{};
+        const list = (layer.fields.listAt(index) catch null) orelse return .{};
+        if (list.len > max) {
+            log.warn("settings: '{s}' names {d} packages, past the {d} allowed", .{ name, list.len, max });
+            return .{};
+        }
+
+        var owned: std.ArrayList([]u8) = .empty;
+        defer {
+            for (owned.items) |item| gpa.free(item);
+            owned.deinit(gpa);
+        }
+
+        var arena: std.heap.ArenaAllocator = .init(gpa);
+        defer arena.deinit();
+
+        var i: u32 = 0;
+        while (i < list.len) : (i += 1) {
+            const value = (list.valueAt(arena.allocator(), i) catch null) orelse return .{};
+            if (value != .string) return .{};
+            _ = data.contentId(value.string) catch {
+                log.warn("settings: '{s}' is not a content id; ignoring the whole selection", .{value.string});
+                return .{};
+            };
+            for (owned.items) |already| {
+                if (std.mem.eql(u8, already, value.string)) {
+                    log.warn("settings: '{s}' is named twice; ignoring the whole selection", .{value.string});
+                    return .{};
+                }
+            }
+            try owned.append(gpa, try gpa.dupe(u8, value.string));
+        }
+
+        const ids = try owned.toOwnedSlice(gpa);
+        std.mem.sort([]u8, ids, {}, lessThanId);
+        return .{ .ids = ids };
+    }
+
+    /// The set as a value a list field can hold. Borrows `buf`, which must be at least as
+    /// long as the set, and the set's own strings.
+    pub fn toValue(self: IdSet, buf: []data.Value) data.Value {
+        for (self.ids, 0..) |id, i| buf[i] = .{ .string = id };
+        return .{ .list = buf[0..self.ids.len] };
+    }
+
+    pub fn contains(self: IdSet, id: []const u8) bool {
+        for (self.ids) |held| {
+            if (std.mem.eql(u8, held, id)) return true;
+        }
+        return false;
+    }
+};
+
+fn lessThanId(_: void, a: []u8, b: []u8) bool {
+    return std.mem.lessThan(u8, a, b);
+}
+
+// ---------------------------------------------------------------------------
 // Storage
 // ---------------------------------------------------------------------------
 
@@ -532,6 +725,135 @@ pub const Storage = struct {
             return;
         };
         log.info("settings: the damaged '{s}' was kept as '{s}'", .{ self.leaf, backup });
+    }
+};
+
+/// How an application keeps its settings file: where it is, whether this run may write it,
+/// and how long a change waits before it does.
+pub const FileOptions = struct {
+    leaf: []const u8 = default_leaf,
+    limits: Limits = .default,
+    /// Whether this run may write at all. A scripted run with a frame budget says `false`:
+    /// a budget marks a run nobody is watching, and such a run must leave a person's
+    /// choices exactly as it found them (`distribution.md` §4).
+    persist: bool = true,
+    /// Frames a change waits before it is written. A drag reports every frame it moves;
+    /// without this the file would be rewritten sixty times a second while a slider is held
+    /// (`distribution.md` §6).
+    settle_frames: u32 = 60,
+};
+
+/// An application's settings file, from opening it to deciding when to write it.
+///
+/// The part of keeping preferences that is the same for every application, so that it is
+/// written once. What stays the application's: which fields exist, what they mean, what is
+/// a usable value, and what to do with one (ADR-0031). This owns none of that and could not
+/// name a window or a volume if it wanted to.
+pub const File = struct {
+    /// The user-data directory, owned, and borrowed by `storage`.
+    dir: []u8 = &.{},
+    storage: ?Storage = null,
+    /// What the last load found. Its bytes outlive the load, because a `Layer` reads them.
+    loaded: Loaded = .{ .state = .absent },
+    persist: bool = false,
+    settle_frames: u32 = 60,
+
+    /// A change that has not reached the disk.
+    dirty: bool = false,
+    settled: u32 = 0,
+
+    /// Opens the application's settings under the OS's per-user location and reads them.
+    ///
+    /// **Never fails.** Every reason there might be nothing to read — no user directory at
+    /// all, one that cannot be read, a file a newer build wrote — is a reason to carry on
+    /// with defaults. An application that refused to start because a preference was missing
+    /// would be worse in every case than one that starts without it.
+    pub fn open(
+        gpa: Allocator,
+        os: *platform.Os,
+        schema: data.Schema,
+        options: FileOptions,
+    ) Allocator.Error!File {
+        const dir = os.userDataDirAlloc(gpa) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {
+                log.warn("settings: no user data directory ({t}); preferences are not kept", .{err});
+                return .{};
+            },
+        };
+        errdefer gpa.free(dir);
+
+        var storage = Storage.open(os, dir, options.leaf) catch |err| {
+            log.warn("settings: '{s}' cannot hold preferences ({t})", .{ dir, err });
+            gpa.free(dir);
+            return .{};
+        };
+        storage.limits = options.limits;
+
+        const loaded = try storage.load(gpa, schema);
+        return .{
+            .dir = dir,
+            .storage = storage,
+            .loaded = loaded,
+            .persist = options.persist and storage.writable,
+            .settle_frames = options.settle_frames,
+        };
+    }
+
+    pub fn deinit(self: *File, gpa: Allocator) void {
+        self.loaded.deinit(gpa);
+        if (self.dir.len != 0) gpa.free(self.dir);
+        self.* = .{};
+    }
+
+    pub fn state(self: File) State {
+        return self.loaded.state;
+    }
+
+    /// The saved preferences as a layer to resolve against, or null when there are none.
+    pub fn layer(self: File, schema: data.Schema) ?Layer {
+        const fields = self.loaded.fields orelse return null;
+        return .{ .schema = schema, .fields = fields, .origin = .user };
+    }
+
+    /// A preference changed. Starts the wait rather than the write.
+    pub fn touch(self: *File) void {
+        self.dirty = true;
+        self.settled = 0;
+    }
+
+    /// One frame of waiting, and the write when the waiting is over.
+    ///
+    /// `values` is only read when something is actually written, so building it is cheap
+    /// enough to do every frame and correct to build from whatever is current.
+    pub fn tick(self: *File, gpa: Allocator, schema: data.Schema, values: []const ?data.Value) void {
+        if (!self.dirty) return;
+        self.settled += 1;
+        if (self.settled < self.settle_frames) return;
+        self.flush(gpa, schema, values);
+    }
+
+    /// Writes now if anything is waiting. Called when a change settles, and once more at a
+    /// normal shutdown — never on a fatal exit, which has nothing trustworthy to write.
+    pub fn flush(self: *File, gpa: Allocator, schema: data.Schema, values: []const ?data.Value) void {
+        if (!self.dirty) return;
+        self.dirty = false;
+        self.settled = 0;
+        if (!self.persist) return;
+
+        const storage = if (self.storage) |*s| s else return;
+        storage.save(gpa, schema, values) catch |err| {
+            // Said once. A warning repeated every time a slider moves is a warning nobody
+            // reads, and the condition that caused it does not change within a run.
+            self.persist = false;
+            switch (err) {
+                error.Preserved => log.warn(
+                    "settings: the stored file was written by another build; keeping it as it is",
+                    .{},
+                ),
+                else => log.warn("settings: could not be saved ({t}); not trying again this run", .{err}),
+            }
+        };
     }
 };
 
@@ -839,6 +1161,160 @@ test "encoding survives an allocator that fails at every step" {
             out.deinit(gpa);
         }
     }.run, .{@as([]const ?data.Value, &values)});
+}
+
+// -- resolution ----------------------------------------------------------------------
+
+/// A layer built the way both real ones are: bytes somewhere, and a block read out of them.
+const TestLayer = struct {
+    bytes: std.ArrayList(u8),
+    layer: Layer,
+
+    fn init(gpa: Allocator, schema: data.Schema, values: []const ?data.Value, origin: Origin) !TestLayer {
+        var bytes: std.ArrayList(u8) = .empty;
+        errdefer bytes.deinit(gpa);
+        try encode(gpa, schema, values, .default, &bytes);
+        const fields = try decode(gpa, bytes.items, schema, .default);
+        return .{ .bytes = bytes, .layer = .{ .schema = schema, .fields = fields, .origin = origin } };
+    }
+
+    fn deinit(self: *TestLayer, gpa: Allocator) void {
+        self.bytes.deinit(gpa);
+    }
+};
+
+test "a value comes from the highest layer that has a usable one" {
+    const gpa = testing.allocator;
+
+    var content = try TestLayer.init(gpa, testSchema(), &[_]?data.Value{
+        .{ .int = 1024 }, .{ .int = 768 }, .{ .float = 0.5 }, null,
+    }, .content);
+    defer content.deinit(gpa);
+
+    var user = try TestLayer.init(gpa, testSchema(), &[_]?data.Value{
+        .{ .int = 1920 }, null, null, null,
+    }, .user);
+    defer user.deinit(gpa);
+
+    const layers = [_]?Layer{ content.layer, user.layer };
+
+    // The user chose a width, so the user's width wins.
+    const width = resolveInt(u32, "window_width", 1280, 320, 8192, &layers);
+    try testing.expectEqual(@as(u32, 1920), width.value);
+    try testing.expectEqual(Origin.user, width.origin);
+
+    // They chose no height, so the package's default stands and a later package could
+    // still change it.
+    const height = resolveInt(u32, "window_height", 720, 320, 8192, &layers);
+    try testing.expectEqual(@as(u32, 768), height.value);
+    try testing.expectEqual(Origin.content, height.origin);
+
+    const volume = resolveFloat(f32, "master_volume", 1, 0, 1, &layers);
+    try testing.expectEqual(@as(f32, 0.5), volume.value);
+    try testing.expectEqual(Origin.content, volume.origin);
+
+    // Nothing supplies this one at all.
+    const absent = resolveInt(u32, "not_a_field", 42, 0, 100, &layers);
+    try testing.expectEqual(@as(u32, 42), absent.value);
+    try testing.expectEqual(Origin.fallback, absent.origin);
+    try testing.expect(!absent.isUser());
+}
+
+test "a value outside its range loses to the layer under it" {
+    const gpa = testing.allocator;
+
+    var content = try TestLayer.init(gpa, testSchema(), &[_]?data.Value{
+        .{ .int = 1024 }, .{ .int = 100_000 }, .{ .float = 4 }, null,
+    }, .content);
+    defer content.deinit(gpa);
+
+    var user = try TestLayer.init(gpa, testSchema(), &[_]?data.Value{
+        .{ .int = 8 }, null, null, null,
+    }, .user);
+    defer user.deinit(gpa);
+
+    const layers = [_]?Layer{ content.layer, user.layer };
+
+    // A hand-edited preference costs the person that preference and nothing else.
+    const width = resolveInt(u32, "window_width", 1280, 320, 8192, &layers);
+    try testing.expectEqual(@as(u32, 1024), width.value);
+    try testing.expectEqual(Origin.content, width.origin);
+
+    // A package is as able to hold an unusable number as a person is, and it falls the
+    // same way — to the value the application knows is safe.
+    const height = resolveInt(u32, "window_height", 720, 320, 8192, &layers);
+    try testing.expectEqual(@as(u32, 720), height.value);
+    try testing.expectEqual(Origin.fallback, height.origin);
+
+    const volume = resolveFloat(f32, "master_volume", 1, 0, 1, &layers);
+    try testing.expectEqual(@as(f32, 1), volume.value);
+    try testing.expectEqual(Origin.fallback, volume.origin);
+
+    // A layer that is simply not there is skipped, which is what the first run looks like.
+    const only_content = [_]?Layer{ content.layer, null };
+    try testing.expectEqual(@as(u32, 1024), resolveInt(u32, "window_width", 1280, 320, 8192, &only_content).value);
+    try testing.expectEqual(@as(u32, 1280), resolveInt(u32, "window_width", 1280, 320, 8192, &.{}).value);
+}
+
+test "a selection is read sorted, or not at all" {
+    const gpa = testing.allocator;
+
+    var chosen = try TestLayer.init(gpa, testSchema(), &[_]?data.Value{
+        null, null, null, .{ .list = &.{ .{ .string = "wisp:content" }, .{ .string = "brighter:content" } } },
+    }, .user);
+    defer chosen.deinit(gpa);
+
+    var set = try IdSet.read(gpa, chosen.layer, "enabled", 128);
+    defer set.deinit(gpa);
+    try testing.expectEqual(@as(usize, 2), set.ids.len);
+    try testing.expectEqualStrings("brighter:content", set.ids[0]);
+    try testing.expectEqualStrings("wisp:content", set.ids[1]);
+    try testing.expect(set.contains("wisp:content"));
+    try testing.expect(!set.contains("room:content"));
+
+    // Sorted and unique means the same set encodes to the same bytes however it was
+    // assembled, which is what makes a settings file comparable between runs.
+    var buf: [2]data.Value = undefined;
+    var written = try encodeSample(gpa, &[_]?data.Value{ null, null, null, set.toValue(&buf) });
+    defer written.deinit(gpa);
+    const round = try decode(gpa, written.items, testSchema(), .default);
+    var again = try IdSet.read(gpa, .{ .schema = testSchema(), .fields = round, .origin = .user }, "enabled", 128);
+    defer again.deinit(gpa);
+    try testing.expectEqual(@as(usize, 2), again.ids.len);
+    try testing.expectEqualStrings("brighter:content", again.ids[0]);
+}
+
+test "a selection that is partly wrong is not partly used" {
+    const gpa = testing.allocator;
+
+    var absent = try TestLayer.init(gpa, testSchema(), &[_]?data.Value{ null, null, null, null }, .user);
+    defer absent.deinit(gpa);
+    var empty = try IdSet.read(gpa, absent.layer, "enabled", 128);
+    defer empty.deinit(gpa);
+    try testing.expectEqual(@as(usize, 0), empty.ids.len);
+
+    // Not a content id at all. Dropping it silently would leave the player with a
+    // selection they did not make and no way to see why.
+    var bad = try TestLayer.init(gpa, testSchema(), &[_]?data.Value{
+        null, null, null, .{ .list = &.{ .{ .string = "wisp:content" }, .{ .string = "not an id" } } },
+    }, .user);
+    defer bad.deinit(gpa);
+    var none = try IdSet.read(gpa, bad.layer, "enabled", 128);
+    defer none.deinit(gpa);
+    try testing.expectEqual(@as(usize, 0), none.ids.len);
+
+    var twice = try TestLayer.init(gpa, testSchema(), &[_]?data.Value{
+        null, null, null, .{ .list = &.{ .{ .string = "wisp:content" }, .{ .string = "wisp:content" } } },
+    }, .user);
+    defer twice.deinit(gpa);
+    var refused = try IdSet.read(gpa, twice.layer, "enabled", 128);
+    defer refused.deinit(gpa);
+    try testing.expectEqual(@as(usize, 0), refused.ids.len);
+
+    // More packages than the caller is willing to hold.
+    var over = try IdSet.read(gpa, twice.layer, "enabled", 1);
+    defer over.deinit(gpa);
+    try testing.expectEqual(@as(usize, 0), over.ids.len);
 }
 
 // -- storage -------------------------------------------------------------------------

@@ -46,7 +46,13 @@ const log = core.log.scoped(.platform);
 pub const Library = library.Library;
 pub const LibraryError = library.LibraryError;
 
-pub const InitError = error{OutOfMemory};
+pub const InitError = error{
+    OutOfMemory,
+    /// `Options.app_name` is not one ordinary directory name. It becomes a component of a
+    /// path in the user's own data directory, so it is checked once here rather than
+    /// trusted at every place that builds one (`distribution.md` §4).
+    InvalidAppName,
+};
 
 /// Errors from filesystem access.
 ///
@@ -144,6 +150,7 @@ pub const Options = struct {
     env: []const EnvVar = &.{},
     /// Directory name for user data, under the OS's per-user location. A name mods
     /// and users will see on disk, so it is chosen once and not changed casually.
+    /// Must satisfy `isValidAppName`.
     app_name: []const u8 = "foundry",
 };
 
@@ -181,6 +188,7 @@ pub const Os = struct {
     /// One allocation for the lifetime of the process is a fair price for making the
     /// hazard structurally impossible.
     pub fn init(gpa: Allocator, options: Options) InitError!*Os {
+        if (!isValidAppName(options.app_name)) return error.InvalidAppName;
         const self = try gpa.create(Os);
         self.* = .{
             .gpa = gpa,
@@ -700,6 +708,23 @@ pub fn isSafeRelativePath(path: []const u8) bool {
     var it = std.mem.splitScalar(u8, path, '/');
     while (it.next()) |component| {
         if (std.mem.eql(u8, component, "..")) return false;
+    }
+    return true;
+}
+
+/// Whether `name` is one ordinary directory name for an application's user data.
+///
+/// One ASCII component of at most 64 bytes, made of letters, digits, `.`, `_` and `-`, and
+/// neither `.` nor `..`. Deliberately narrower than what a filesystem would accept: this
+/// name is chosen by a build and is seen by users and mod authors on disk, so the bound
+/// worth enforcing is "a name a person can type", not "a name the OS tolerates".
+pub fn isValidAppName(name: []const u8) bool {
+    if (name.len == 0 or name.len > 64) return false;
+    if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) return false;
+    for (name) |c| {
+        const ok = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+            (c >= '0' and c <= '9') or c == '.' or c == '_' or c == '-';
+        if (!ok) return false;
     }
     return true;
 }
@@ -1262,4 +1287,26 @@ test "a replacement into a directory it may not write leaves the old file alone"
     defer testing.allocator.free(read.bytes);
     try testing.expectEqualStrings("original", read.bytes);
     try testing.expectEqual(@as(usize, 1), try countEntries(os, dir));
+}
+
+test "an application directory name is one ordinary component" {
+    try testing.expect(isValidAppName("foundry"));
+    try testing.expect(isValidAppName("foundry-room"));
+    try testing.expect(isValidAppName("foundry_sandbox.2"));
+
+    try testing.expect(!isValidAppName(""));
+    try testing.expect(!isValidAppName("."));
+    try testing.expect(!isValidAppName(".."));
+    try testing.expect(!isValidAppName("has/slash"));
+    try testing.expect(!isValidAppName("has\\backslash"));
+    try testing.expect(!isValidAppName("has space"));
+    try testing.expect(!isValidAppName("caf\u{00e9}"));
+    try testing.expect(!isValidAppName("n" ** 65));
+
+    // Refused where it enters rather than where it becomes a path, so that no caller of
+    // `userDataDirAlloc` has to wonder.
+    try testing.expectError(
+        error.InvalidAppName,
+        Os.init(testing.allocator, .{ .app_name = "../escape" }),
+    );
 }

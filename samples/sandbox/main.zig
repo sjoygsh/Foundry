@@ -85,6 +85,7 @@ fn contentPackages(
     os: *platform.os.Os,
     content_dir: []const u8,
     env: []const platform.os.EnvVar,
+    selected: app.settings.IdSet,
     scripts: *scripting.Host,
 ) ![]app.ContentPackage {
     var diags: data.Diagnostics = .init(gpa, .default);
@@ -96,6 +97,15 @@ fn contentPackages(
     var enabled: std.ArrayList(core.ContentId) = .empty;
     defer enabled.deinit(gpa);
     try enabled.append(gpa, try data.contentId("sandbox:content"));
+
+    // **What the player enabled**, read out of their own preferences before anything was
+    // discovered — which is why §4 puts settings ahead of discovery in the startup order.
+    // Each spelling was validated when it was read, so this cannot fail on one.
+    for (selected.ids) |id| {
+        if (std.mem.eql(u8, id, "sandbox:content")) continue;
+        log.info("enabling '{s}' (saved)", .{id});
+        try enabled.append(gpa, data.contentId(id) catch continue);
+    }
 
     if (envValue(env, "FOUNDRY_SANDBOX_PACKAGES")) |extra| {
         var it = std.mem.splitScalar(u8, extra, ',');
@@ -152,6 +162,153 @@ fn freePackages(gpa: std.mem.Allocator, packages: []const app.ContentPackage) vo
     }
 }
 
+// ---------------------------------------------------------------------------------------
+// What the player chose, and where it is kept.
+
+/// The directory this application's user data lives under, inside the OS's per-user
+/// location. **Bootstrap identity**: chosen by the build, seen by players and mod authors on
+/// disk, and not something a content record may move (ADR-0031). The room has its own, and
+/// the two never share a file — that separation is part of what §12 asks to be shown.
+const app_name = "foundry-sandbox";
+
+/// The window size and the master volume, resolved out of the three layers §4 names: this
+/// sample's own fallback, the `sandbox:config.main` record its package carries, and
+/// `settings.fset` in the user's data directory.
+///
+/// The sandbox has no volume slider and is not getting one — M9 adds no gameplay and no
+/// settings UI (`distribution.md` §2). It still *applies* a resolved volume, because
+/// applying a setting and offering a control for it are different things. What it persists
+/// is the window size, which a player changes by dragging an edge.
+///
+/// `app.settings.File` owns what is the same for every application. What is here is this
+/// sample's: which fields exist, what counts as usable, and where a value goes.
+const Preferences = struct {
+    file: app.settings.File = .{},
+    /// The packages the player enabled, as spellings. Read and written back unchanged:
+    /// enabling one is still `FOUNDRY_SANDBOX_PACKAGES`' job this milestone, and a mod
+    /// manager is not M9's (`docs/modding/README.md`).
+    selected: app.settings.IdSet = .{},
+
+    width: app.settings.Resolved(u32) = .{ .value = fallback_width, .origin = .fallback },
+    height: app.settings.Resolved(u32) = .{ .value = fallback_height, .origin = .fallback },
+    volume: app.settings.Resolved(f32) = .{ .value = fallback_volume, .origin = .fallback },
+
+    /// This application's own settings schema — not content, not merged, no manifest
+    /// (ADR-0031). The spelling differs from the room's, which is what keeps the two
+    /// samples' files from ever being read as each other's.
+    const schema: data.Schema = .{
+        .id = data.SchemaId.parse("sandbox:preferences") catch unreachable,
+        .version = 1,
+        .fields = &.{
+            .{ .name = "window_width", .type = .u32, .presence = .optional },
+            .{ .name = "window_height", .type = .u32, .presence = .optional },
+            .{ .name = "master_volume", .type = .f32, .presence = .optional },
+            .{ .name = "enabled", .type = .{ .list = &.string }, .presence = .optional },
+        },
+    };
+
+    const record_id = "sandbox:config.main";
+
+    const fallback_width: u32 = 1280;
+    const fallback_height: u32 = 720;
+    const fallback_volume: f32 = 1;
+
+    const min_size: u32 = 320;
+    const max_size: u32 = 8192;
+    const max_selected = 64;
+
+    fn open(
+        gpa: std.mem.Allocator,
+        os: *platform.os.Os,
+        headless: bool,
+        budgeted: bool,
+    ) std.mem.Allocator.Error!Preferences {
+        if (headless) return .{};
+
+        var self: Preferences = .{
+            .file = try app.settings.File.open(gpa, os, schema, .{ .persist = !budgeted }),
+        };
+        if (self.file.layer(schema)) |layer| {
+            self.selected = try app.settings.IdSet.read(gpa, layer, "enabled", max_selected);
+        }
+        log.info("preferences: {t}, {d} package(s) selected", .{ self.file.state(), self.selected.ids.len });
+        return self;
+    }
+
+    fn deinit(self: *Preferences, gpa: std.mem.Allocator) void {
+        self.selected.deinit(gpa);
+        self.file.deinit(gpa);
+        self.* = .{};
+    }
+
+    /// Resolves every value the player has not already chosen in this session. A field
+    /// whose origin is already `.user` is left alone: a content reload may move a default
+    /// and may not move a choice (§5).
+    fn resolve(self: *Preferences, engine: *app.Engine) void {
+        const record = engine.store.lookup(core.ContentId.fromString(record_id));
+        const content: ?app.settings.Layer = if (record) |r|
+            .{ .schema = r.schema, .fields = r.fields, .origin = .content }
+        else
+            null;
+        const layers = [_]?app.settings.Layer{ content, self.file.layer(schema) };
+
+        if (!self.width.isUser())
+            self.width = app.settings.resolveInt(u32, "window_width", fallback_width, min_size, max_size, &layers);
+        if (!self.height.isUser())
+            self.height = app.settings.resolveInt(u32, "window_height", fallback_height, min_size, max_size, &layers);
+        if (!self.volume.isUser())
+            self.volume = app.settings.resolveFloat(f32, "master_volume", fallback_volume, 0, 1, &layers);
+    }
+
+    fn apply(self: *Preferences, engine: *app.Engine, mixer: ?*audio.Mixer) void {
+        if (mixer) |m| m.setMasterGain(self.volume.value);
+
+        const info = engine.windowInfo() orelse return;
+        if (info.logical_size.width == self.width.value and info.logical_size.height == self.height.value) return;
+        engine.setWindowSize(.{ .width = self.width.value, .height = self.height.value }) catch |err| {
+            log.info("the window manager kept its own size ({t})", .{err});
+        };
+    }
+
+    /// A resize the user performed. Our own `setWindowSize` echoes back as one of these,
+    /// which is why a size equal to what is already resolved changes nothing.
+    fn noteResize(self: *Preferences, size: platform.Size) void {
+        const width = std.math.cast(u32, size.width) orelse return;
+        const height = std.math.cast(u32, size.height) orelse return;
+        if (width == self.width.value and height == self.height.value) return;
+        if (width < min_size or width > max_size) return;
+        if (height < min_size or height > max_size) return;
+
+        self.width = .{ .value = width, .origin = .user };
+        self.height = .{ .value = height, .origin = .user };
+        self.file.touch();
+    }
+
+    /// What gets written: the player's own choices, and nothing else. A value still coming
+    /// from content is left absent, because writing it back would freeze it — the package
+    /// that supplied it could never change it again.
+    fn values(self: *const Preferences, list: []data.Value) [4]?data.Value {
+        return .{
+            if (self.width.isUser()) data.Value{ .int = self.width.value } else null,
+            if (self.height.isUser()) data.Value{ .int = self.height.value } else null,
+            if (self.volume.isUser()) data.Value{ .float = self.volume.value } else null,
+            if (self.selected.ids.len == 0) null else self.selected.toValue(list),
+        };
+    }
+
+    fn tick(self: *Preferences, gpa: std.mem.Allocator) void {
+        var list: [max_selected]data.Value = undefined;
+        const chosen = self.values(&list);
+        self.file.tick(gpa, schema, &chosen);
+    }
+
+    fn flush(self: *Preferences, gpa: std.mem.Allocator) void {
+        var list: [max_selected]data.Value = undefined;
+        const chosen = self.values(&list);
+        self.file.flush(gpa, schema, &chosen);
+    }
+};
+
 /// The null platform backend has no window and no way to deliver a quit event, so a
 /// headless run bounds itself instead of hanging forever. Overridable so that a windowed
 /// run can also be bounded, which is what makes this usable as an automated check.
@@ -175,7 +332,7 @@ pub fn main(init: std.process.Init) !void {
     // load is the answer (`public-abi.md` §13, phase 1). So the sample opens its own `Os`,
     // asks where content lives, discovers, resolves — and only then builds an engine, which
     // is handed both the directory and the order so the two cannot disagree.
-    var discovery_os = try platform.os.Os.init(gpa, .{ .env = env });
+    var discovery_os = try platform.os.Os.init(gpa, .{ .env = env, .app_name = app_name });
     defer discovery_os.deinit();
 
     const content_dir = try app.contentDirOf(gpa, discovery_os, null);
@@ -185,8 +342,15 @@ pub fn main(init: std.process.Init) !void {
     // torn down after the world is built, which is why its `defer` is registered below
     // rather than here. Deferred teardown runs in reverse, and the world has to outlive
     // the scripts that were registered into it (`scripting.md` §10).
+    // **Before discovery**, because the set of packages a player enabled is one of the
+    // things kept here (`distribution.md` §4, startup order). A budgeted run reads them and
+    // never writes them; a headless one does neither.
+    const budgeted = envValue(env, "FOUNDRY_SANDBOX_FRAMES") != null or headless;
+    var prefs = try Preferences.open(gpa, discovery_os, headless, budgeted);
+    defer prefs.deinit(gpa);
+
     var scripts: scripting.Host = .{};
-    const packages = try contentPackages(gpa, discovery_os, content_dir, env, &scripts);
+    const packages = try contentPackages(gpa, discovery_os, content_dir, env, prefs.selected, &scripts);
     defer {
         freePackages(gpa, packages);
         gpa.free(packages);
@@ -231,7 +395,21 @@ pub fn main(init: std.process.Init) !void {
     // is what `rhi.waitIdle` was added for.
     var field = try SpriteField.init(sample_memory.allocator(), engine.gpu);
     defer field.deinit(engine);
+    field.prefs = &prefs;
     try field.load(engine);
+
+    // §4 step 4: the built-in fallback, then the package's own record, then whatever the
+    // player saved — resolved once content is loaded, and applied through the interfaces
+    // that already existed, before the first ordinary frame.
+    prefs.resolve(engine);
+    prefs.apply(engine, field.mixer);
+    log.info("window {d}x{d} ({t}), volume {d:.2} ({t})", .{
+        prefs.width.value,
+        prefs.height.value,
+        prefs.width.origin,
+        prefs.volume.value,
+        prefs.volume.origin,
+    });
 
     // **Last to start and first to stop.** Scripts need the world the field just built,
     // and the world has to outlive the systems registered into it — so this `defer` is
@@ -413,10 +591,18 @@ pub fn main(init: std.process.Init) !void {
         // yield. Still deliberately not inside `Engine` — pacing is renderer policy.
         if (!headless and rhi.backend == .null) engine.os.sleep(.fromMillis(2));
 
+        // A change that has stopped changing gets written. Never inside the frame that
+        // made it, so a drag costs one write rather than one per frame.
+        prefs.tick(gpa);
+
         if (frame_limit) |limit| {
             if (engine.frame_index >= limit) break;
         }
     }
+
+    // A normal shutdown, which is the other moment §6 names. A fatal exit reaches none of
+    // this, deliberately: there is nothing trustworthy to write from a broken process.
+    prefs.flush(gpa);
 
     // On the way out, so a scripted run leaves a save behind for the next one to read.
     // That is the only honest check that a world survives a *restart* rather than a round
@@ -1270,6 +1456,11 @@ const SpriteField = struct {
     ///
     /// Hot reload swaps what a handle points at, so the handles above survive; what does
     /// not survive is anything *derived* — the regions, and every string borrowed from a
+    /// The application's preferences, borrowed. The field does not own them — an
+    /// application's configuration is the application's (ADR-0031) — but the window it
+    /// draws into is where a resize happens.
+    prefs: ?*Preferences = null,
+
     /// package's bytes. Comparing this to `engine.contentGeneration()` is how the sample
     /// knows to derive them again.
     content_generation: u64 = 0,
@@ -1835,6 +2026,13 @@ const SpriteField = struct {
                 self.adoptPlayer();
             }
         }
+        // A reload may have moved `sandbox:config.main`. Whatever the player chose stays
+        // chosen; everything else takes the new default at this frame boundary.
+        if (self.prefs) |prefs| {
+            prefs.resolve(engine);
+            prefs.apply(engine, self.mixer);
+        }
+
         log.info("content changed: {d} sprites, grid {d}", .{ self.population, self.settings.grid });
     }
 
@@ -2427,6 +2625,11 @@ const SpriteField = struct {
     /// the snapshot would work in English and fail everywhere else.
     fn noteEvent(self: *SpriteField, ev: platform.Event) void {
         switch (ev) {
+            // The one preference this sample lets a person change. Our own `setWindowSize`
+            // arrives here too, which is why an echo of the resolved size changes nothing.
+            .window_resized => |resized| {
+                if (self.prefs) |prefs| prefs.noteResize(resized.logical_size);
+            },
             .text_input => |typed| {
                 if (self.typed_len == self.typed.len) return;
                 self.typed[self.typed_len] = typed;

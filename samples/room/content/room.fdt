@@ -79,6 +79,26 @@
 # engine still owns no `foundry:clip` (`sprite-animation.md` §5): a schema name is a
 # compatibility decision and M7 is when the mod-facing vocabulary gets chosen. Two samples
 # arriving at the same seven fields is the evidence that argument was waiting for.
+# How the application presents itself, as ordinary content.
+#
+# **Separate from `settings` above, and deliberately.** That one is what the room *is* --
+# its map, its art, how fast the walker walks. This is what the *application* does with the
+# window and the speakers, and the difference matters because these three are the only
+# fields a player can overrule from their own preferences file. A package loaded after this
+# one may change any of them; a package may not decide where preferences are kept, which
+# packages load, or whether native code runs (ADR-0031).
+#
+# Every field is optional. A package that says nothing here leaves the sample on the values
+# it was built with.
+@schema config {
+    # Logical units, not pixels -- the size a window manager is asked for, before any
+    # display scaling. The sample refuses anything outside 320..8192.
+    window_width  u32 (default 1280)
+    window_height u32 (default 720)
+    # Everything the mixer plays, scaled by this. 0..1.
+    master_volume f32 (default 1)
+}
+
 @schema clip {
     sheet   id
     columns u32
@@ -168,6 +188,13 @@ settings room:settings.main {
 
 # The sheet's first row is the tileset and the rest is everything drawn as a sprite, which
 # is why one texture serves both and there is only one to load.
+
+# The window the hall opens in, and how loud it is, until a player says otherwise.
+config room:config.main {
+    window_width  1280
+    window_height 720
+    master_volume 0.8
+}
 
 clip room:clip.walk {
     sheet   room:textures.room

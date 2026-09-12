@@ -39,7 +39,7 @@ pub const InitError = error{
     /// failing is not a condition a game can carry on from, and neither is a mod the
     /// player asked for: both are reported with the reason and stop startup.
     ContentUnavailable,
-} || platform.InitError || platform.WindowError || rhi.InitError;
+} || platform.InitError || platform.os.InitError || platform.WindowError || rhi.InitError;
 
 /// One package to load, in load order.
 ///

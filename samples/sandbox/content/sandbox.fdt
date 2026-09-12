@@ -74,6 +74,23 @@ settings sandbox:settings.main {
 # nothing in the engine reads a clip: `render2d.frameAt` takes four integers and never
 # learns where they came from. So this is the sample's, and it is also the reference for
 # what an engine-owned one would look like.
+# How the application presents itself, as ordinary content.
+#
+# **Separate from `settings` above.** That one is what the sandbox demonstrates -- its
+# sheet, its grid, how many sprites. This is what the *application* does with the window
+# and the speakers, and these three fields are the only ones a player can overrule from
+# their own preferences file. A package loaded after this one may change any of them; no
+# package may decide where preferences are kept, which packages load, or whether native
+# code runs (ADR-0031).
+@schema config {
+    # Logical units, not pixels -- the size a window manager is asked for, before any
+    # display scaling. The sample refuses anything outside 320..8192.
+    window_width  u32 (default 1280)
+    window_height u32 (default 720)
+    # Everything the mixer plays, scaled by this. 0..1.
+    master_volume f32 (default 1)
+}
+
 @schema clip {
     # Where the frames live. A content id, never a path (ADR-0021).
     sheet id
@@ -161,6 +178,17 @@ foundry:tilemap sandbox:map.room {
 # spawn a template it was pointed at, and remove what it spawned. It cannot write a
 # component, reach a renderer or touch a file — so the *appearance* of what it spawns is
 # these records, and the script only decides when.
+
+# The window the sandbox opens in, and how loud it is, until a player says otherwise.
+# Deliberately *not* the size the sample is built with. The engine comes up on the
+# application's bootstrap default and this record is read afterwards, so a window that
+# opens at this size is the content layer working -- and a package loaded after this one
+# can change it again without a rebuild.
+config sandbox:config.main {
+    window_width  1152
+    window_height 648
+    master_volume 0.9
+}
 
 @schema encounter {
     # Fixed ticks between one beacon and the next. Ticks, not seconds: this is simulation

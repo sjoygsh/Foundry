@@ -86,6 +86,7 @@ fn contentPackages(
     os: *platform.os.Os,
     content_dir: []const u8,
     env: []const platform.os.EnvVar,
+    selected: app.settings.IdSet,
 ) ![]app.ContentPackage {
     var diags: data.Diagnostics = .init(gpa, .default);
     defer diags.deinit(gpa);
@@ -96,6 +97,15 @@ fn contentPackages(
     var enabled: std.ArrayList(core.ContentId) = .empty;
     defer enabled.deinit(gpa);
     try enabled.append(gpa, try data.contentId("room:content"));
+
+    // **What the player enabled**, read out of their own preferences before anything was
+    // discovered — which is why §4 puts settings ahead of discovery in the startup order.
+    // Each spelling was validated when it was read, so this cannot fail on one.
+    for (selected.ids) |id| {
+        if (std.mem.eql(u8, id, "room:content")) continue;
+        log.info("enabling '{s}' (saved)", .{id});
+        try enabled.append(gpa, data.contentId(id) catch continue);
+    }
 
     if (envValue(env, "FOUNDRY_ROOM_PACKAGES")) |extra| {
         var it = std.mem.splitScalar(u8, extra, ',');
@@ -148,6 +158,186 @@ fn freePackages(gpa: std.mem.Allocator, packages: []const app.ContentPackage) vo
     }
 }
 
+// ---------------------------------------------------------------------------------------
+// What the player chose, and where it is kept.
+
+/// The directory this application's user data lives under, inside the OS's per-user
+/// location. **Bootstrap identity**: chosen by the build, seen by players and mod authors on
+/// disk, and not something a content record may move (ADR-0031).
+const app_name = "foundry-room";
+
+/// The window size and the master volume — the two things this sample lets a player change
+/// and expects to find again next time.
+///
+/// Three layers, in the order `distribution.md` §4 gives them: the sample's own fallback,
+/// the `room:config.main` record its package carries, and `settings.fset` in the user's data
+/// directory. The **origin** of each resolved value is kept rather than discarded, because a
+/// content reload may move a default and must not move something the player chose.
+///
+/// `app.settings.File` owns the part that is the same for every application — where the file
+/// is, whether this run may write it, and when a change is written. What is here is what is
+/// this sample's: which fields exist, what counts as a usable value, and where one goes.
+///
+/// Two rules about when this is live at all, each with its own reason:
+///
+///   * A **headless** run neither reads nor applies preferences. It has no window to size
+///     and no audible mixer, so reading them would be a hidden input with no visible effect
+///     — exactly what I9 objects to, and it would make a scripted run depend on whatever
+///     happens to be saved on the machine running it.
+///   * A **frame-budgeted** run never writes them (§4). A budget marks a run nobody is
+///     watching, and such a run must leave a person's choices exactly as it found them.
+const Preferences = struct {
+    file: app.settings.File = .{},
+    /// The packages the player enabled, as spellings. Read here and written back unchanged:
+    /// nothing in this sample can add one, and a mod manager is not M9's
+    /// (`docs/modding/README.md`).
+    selected: app.settings.IdSet = .{},
+
+    width: app.settings.Resolved(u32) = .{ .value = fallback_width, .origin = .fallback },
+    height: app.settings.Resolved(u32) = .{ .value = fallback_height, .origin = .fallback },
+    volume: app.settings.Resolved(f32) = .{ .value = fallback_volume, .origin = .fallback },
+
+    /// The application's own settings schema. Held here rather than registered with the
+    /// content store: preferences are not content, carry no manifest and are not merged
+    /// (ADR-0031). `app.settings` validates and encodes against it.
+    const schema: data.Schema = .{
+        .id = data.SchemaId.parse("room:preferences") catch unreachable,
+        .version = 1,
+        .fields = &.{
+            .{ .name = "window_width", .type = .u32, .presence = .optional },
+            .{ .name = "window_height", .type = .u32, .presence = .optional },
+            .{ .name = "master_volume", .type = .f32, .presence = .optional },
+            .{ .name = "enabled", .type = .{ .list = &.string }, .presence = .optional },
+        },
+    };
+
+    /// The package's own defaults, as an ordinary record a mod can override.
+    const record_id = "room:config.main";
+
+    /// What the sample knows without any content at all. Not a duplicate of the record:
+    /// these are the values that keep the hall openable when the package is missing.
+    const fallback_width: u32 = 1280;
+    const fallback_height: u32 = 720;
+    const fallback_volume: f32 = 1;
+
+    /// §5's usable bounds. Narrower than what the codec allows, because a window smaller
+    /// than this cannot hold the card and one larger is past what any display reports.
+    const min_size: u32 = 320;
+    const max_size: u32 = 8192;
+
+    /// How many packages a saved selection may name. Bounded because the file is untrusted
+    /// like any other.
+    const max_selected = 64;
+
+    fn open(
+        gpa: std.mem.Allocator,
+        os: *platform.os.Os,
+        headless: bool,
+        budgeted: bool,
+    ) std.mem.Allocator.Error!Preferences {
+        if (headless) return .{};
+
+        var self: Preferences = .{
+            .file = try app.settings.File.open(gpa, os, schema, .{ .persist = !budgeted }),
+        };
+        if (self.file.layer(schema)) |layer| {
+            self.selected = try app.settings.IdSet.read(gpa, layer, "enabled", max_selected);
+        }
+        log.info("preferences: {t}, {d} package(s) selected", .{ self.file.state(), self.selected.ids.len });
+        return self;
+    }
+
+    fn deinit(self: *Preferences, gpa: std.mem.Allocator) void {
+        self.selected.deinit(gpa);
+        self.file.deinit(gpa);
+        self.* = .{};
+    }
+
+    /// Resolves every value the player has not already chosen in this session.
+    ///
+    /// Called once after content is loaded and again after every content reload. A field
+    /// whose origin is already `.user` is left alone, which is §5's rule made literal: a
+    /// reload may move a default and may not move a choice.
+    fn resolve(self: *Preferences, engine: *app.Engine) void {
+        const record = engine.store.lookup(core.ContentId.fromString(record_id));
+        const content: ?app.settings.Layer = if (record) |r|
+            .{ .schema = r.schema, .fields = r.fields, .origin = .content }
+        else
+            null;
+        const layers = [_]?app.settings.Layer{ content, self.file.layer(schema) };
+
+        if (!self.width.isUser())
+            self.width = app.settings.resolveInt(u32, "window_width", fallback_width, min_size, max_size, &layers);
+        if (!self.height.isUser())
+            self.height = app.settings.resolveInt(u32, "window_height", fallback_height, min_size, max_size, &layers);
+        if (!self.volume.isUser())
+            self.volume = app.settings.resolveFloat(f32, "master_volume", fallback_volume, 0, 1, &layers);
+    }
+
+    /// Puts the resolved values where they are visible, through interfaces that already
+    /// existed. Nothing here is a new engine capability.
+    fn apply(self: *Preferences, engine: *app.Engine, mixer: ?*audio.Mixer) void {
+        if (mixer) |m| m.setMasterGain(self.volume.value);
+
+        const info = engine.windowInfo() orelse return;
+        if (info.logical_size.width == self.width.value and info.logical_size.height == self.height.value) return;
+        engine.setWindowSize(.{ .width = self.width.value, .height = self.height.value }) catch |err| {
+            // A tiling compositor declines, and so does a window manager with its own
+            // ideas. What the window actually is then becomes the truth, and the resize
+            // event that follows records it.
+            log.info("the window manager kept its own size ({t})", .{err});
+        };
+    }
+
+    /// A resize the user performed. Our own `setWindowSize` echoes back as one of these,
+    /// which is why a size equal to what is already resolved changes nothing.
+    fn noteResize(self: *Preferences, size: platform.Size) void {
+        const width = std.math.cast(u32, size.width) orelse return;
+        const height = std.math.cast(u32, size.height) orelse return;
+        if (width == self.width.value and height == self.height.value) return;
+        if (width < min_size or width > max_size) return;
+        if (height < min_size or height > max_size) return;
+
+        self.width = .{ .value = width, .origin = .user };
+        self.height = .{ .value = height, .origin = .user };
+        self.file.touch();
+    }
+
+    fn noteVolume(self: *Preferences, value: f32) void {
+        if (!std.math.isFinite(value)) return;
+        const chosen = std.math.clamp(value, 0, 1);
+        if (self.volume.isUser() and self.volume.value == chosen) return;
+        self.volume = .{ .value = chosen, .origin = .user };
+        self.file.touch();
+    }
+
+    /// What gets written: the player's own choices, and nothing else.
+    ///
+    /// A value still coming from content is deliberately left absent. Writing it back would
+    /// freeze it — the package that supplied it could never change it again, because the
+    /// file would outrank it forever after.
+    fn values(self: *const Preferences, list: []data.Value) [4]?data.Value {
+        return .{
+            if (self.width.isUser()) data.Value{ .int = self.width.value } else null,
+            if (self.height.isUser()) data.Value{ .int = self.height.value } else null,
+            if (self.volume.isUser()) data.Value{ .float = self.volume.value } else null,
+            if (self.selected.ids.len == 0) null else self.selected.toValue(list),
+        };
+    }
+
+    fn tick(self: *Preferences, gpa: std.mem.Allocator) void {
+        var list: [max_selected]data.Value = undefined;
+        const chosen = self.values(&list);
+        self.file.tick(gpa, schema, &chosen);
+    }
+
+    fn flush(self: *Preferences, gpa: std.mem.Allocator) void {
+        var list: [max_selected]data.Value = undefined;
+        const chosen = self.values(&list);
+        self.file.flush(gpa, schema, &chosen);
+    }
+};
+
 /// A headless build has no window and no way to deliver a quit event, so it bounds itself.
 ///
 /// **A cap on the walk, not its length**: the run quits the moment the autopilot steps out
@@ -173,13 +363,20 @@ pub fn main(init: std.process.Init) !void {
     // load is the answer (`public-abi.md` §13, phase 1). So the sample opens its own `Os`,
     // asks where content lives, discovers, resolves — and only then builds an engine, which
     // is handed both the directory and the order so the two cannot disagree.
-    var discovery_os = try platform.os.Os.init(gpa, .{ .env = env });
+    var discovery_os = try platform.os.Os.init(gpa, .{ .env = env, .app_name = app_name });
     defer discovery_os.deinit();
 
     const content_dir = try app.contentDirOf(gpa, discovery_os, null);
     defer gpa.free(content_dir);
 
-    const packages = try contentPackages(gpa, discovery_os, content_dir, env);
+    // **Before discovery**, because the set of packages a player enabled is one of the
+    // things kept here (`distribution.md` §4, startup order). A budgeted run reads them and
+    // never writes them; a headless one does neither.
+    const budgeted = envValue(env, "FOUNDRY_ROOM_FRAMES") != null or headless;
+    var prefs = try Preferences.open(gpa, discovery_os, headless, budgeted);
+    defer prefs.deinit(gpa);
+
+    const packages = try contentPackages(gpa, discovery_os, content_dir, env, prefs.selected);
     defer {
         freePackages(gpa, packages);
         gpa.free(packages);
@@ -204,7 +401,19 @@ pub fn main(init: std.process.Init) !void {
 
     var room = try Room.init(gpa, engine.gpu);
     defer room.deinit(engine);
+    room.prefs = &prefs;
     try room.load(engine);
+
+    // §4 step 4: the built-in fallback, then the package's own record, then whatever the
+    // player saved — resolved once content is loaded, and applied through the interfaces
+    // that already existed, before the first ordinary frame.
+    prefs.resolve(engine);
+    prefs.apply(engine, room.mixer);
+    room.volume = prefs.volume.value;
+    log.info("window {d}x{d} ({t}), volume {d:.2} ({t})", .{
+        prefs.width.value,  prefs.height.value,  prefs.width.origin,
+        prefs.volume.value, prefs.volume.origin,
+    });
 
     // Nobody can hold a key in a headless run, so it drives itself. A windowed run can opt
     // in, which is what makes the scripted path and the played path the same path.
@@ -275,6 +484,10 @@ pub fn main(init: std.process.Init) !void {
 
         engine.endFrame();
 
+        // A change that has stopped changing gets written. Never inside the frame that
+        // made it, so a drag costs one write rather than one per frame.
+        prefs.tick(gpa);
+
         // A windowed Metal build is paced by the display. The null backend has no swapchain
         // to wait on and would otherwise spin as fast as the CPU allows.
         if (!headless and rhi.backend == .null) engine.os.sleep(.fromMillis(2));
@@ -283,6 +496,10 @@ pub fn main(init: std.process.Init) !void {
             if (engine.frame_index >= limit) break;
         }
     }
+
+    // A normal shutdown, which is the other moment §6 names. A fatal exit reaches none of
+    // this, deliberately: there is nothing trustworthy to write from a broken process.
+    prefs.flush(gpa);
 
     // What a scripted run has to say for itself. "Finished" is the only line here that
     // means the sample is completable; the rest is how far it got.
@@ -1142,6 +1359,11 @@ const Room = struct {
     auto_target: ?core.math.Vec2 = null,
 
     content_generation: u64 = 0,
+
+    /// The application's preferences, borrowed. The room does not own them — an
+    /// application's configuration is the application's (ADR-0031) — but it is where the
+    /// two things a player changes actually happen.
+    prefs: ?*Preferences = null,
     /// **Copies, not borrows.** These strings live in a package's bytes, which a reload
     /// frees; the sample outlives a reload by exactly as long as it takes `refresh` to
     /// notice.
@@ -2041,6 +2263,11 @@ const Room = struct {
     /// a character out of several (`platform.event.TextInput`).
     fn noteEvent(self: *Room, ev: platform.Event) void {
         switch (ev) {
+            // The window half of a preference. Our own `setWindowSize` arrives here too,
+            // which is why an echo of the size already resolved changes nothing.
+            .window_resized => |resized| {
+                if (self.prefs) |prefs| prefs.noteResize(resized.logical_size);
+            },
             .text_input => |typed| {
                 if (self.typed_len == self.typed.len) return;
                 self.typed[self.typed_len] = typed;
@@ -2171,6 +2398,9 @@ const Room = struct {
         // cannot be two different numbers.
         if (try ui.slider(&self.ui, self.ui.childId("volume"), volume_label, &self.volume, 0, 1)) {
             if (self.mixer) |mixer| mixer.setMasterGain(self.volume);
+            // A drag reports every frame it moves. The preference records each one and
+            // writes none of them until the hand stops.
+            if (self.prefs) |prefs| prefs.noteVolume(self.volume);
         }
 
         self.close_rect = nextRow(self.ui.region().remaining(), style.line_height);
@@ -2422,6 +2652,15 @@ const Room = struct {
         self.camera.zoom = self.settings.zoom;
 
         if (self.hum.isNone()) self.startHum();
+
+        // A reload may have moved `room:config.main`. Whatever the player chose stays
+        // chosen; everything else takes the new default at this frame boundary.
+        if (self.prefs) |prefs| {
+            prefs.resolve(engine);
+            prefs.apply(engine, self.mixer);
+            if (!prefs.volume.isUser()) self.volume = prefs.volume.value;
+        }
+
         log.info("content reloaded: {d} of {d} lamps still lit", .{ self.lit, self.lamps });
     }
 
