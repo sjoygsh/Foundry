@@ -652,6 +652,18 @@ the faults fixed, the identity real, the mods manageable. Nothing prevents it be
 forward the day credentials exist; but a signed, notarized download of an engine that still
 carries known defects buys trust it has not earned.
 
+**Its entry gate is a full review and polish pass over `main`, and that pass is the last
+theoretical checkpoint this project gets.** Not a diff of one branch — the whole engine as it
+then stands, read for what a milestone-by-milestone eye stops seeing, ending with the bar and
+a staged artifact run. Everything it finds is fixed before M17 begins rather than recorded as
+debt; a review that produces a list instead of a repair has only moved the problem, and M11
+exists so that list is already empty.
+
+**After it, every remaining checkpoint is real.** Gatekeeper, the recipient's Mac, and then
+people. A notarized archive cannot be quietly amended — it is the exact bytes, checksum
+published, in someone else's hands — so this is the boundary between problems found by
+reading and problems found by strangers.
+
 * Developer ID signing, notarization, stapling and Gatekeeper assessment of the exact public
   archive, through the `dist-developer-id` path that already performs the sequence.
 * The quarantine-preserving launch on a genuinely clean recipient Mac, and the remaining steps

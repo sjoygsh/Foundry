@@ -2782,7 +2782,10 @@ milestone each decision belongs to.
   question only if lockstep is chosen.
 * **M17 — Released.** ADR-0032's deferred gate, and last in the phase on purpose: Developer ID
   signing, notarization, stapling and the quarantined launch on a genuinely clean recipient
-  Mac, plus how far back macOS support reaches and crash collection beyond OS reports.
+  Mac, plus how far back macOS support reaches and crash collection beyond OS reports. **Its
+  entry gate is a full review and polish pass over `main`** — the last theoretical checkpoint
+  before the remaining ones become Gatekeeper, a stranger's Mac and people; what it finds is
+  fixed before the milestone starts, not recorded as debt.
   `dist-developer-id` already performs the sequence; what is missing is operator credentials
   and an untouched Mac, not code. Until then Foundry has no verified public release and the
   ad-hoc zip is not one.
