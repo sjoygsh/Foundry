@@ -700,6 +700,9 @@ pub fn build(b: *std.Build) void {
                 .license_file = b.path("LICENSE"),
                 .notice_file = b.path("NOTICE"),
                 .licenses_dir = "THIRD_PARTY_LICENSES",
+                // The samples are Foundry's own artifacts, so they wear Foundry's mark. A
+                // game supplies its own here; the engine never supplies one for it.
+                .icon = b.path("brand/foundry.icns"),
                 .revision = revision,
             },
             // The second artifact, and not for symmetry: it is the one that carries scripts,
@@ -718,6 +721,7 @@ pub fn build(b: *std.Build) void {
                 .license_file = b.path("LICENSE"),
                 .notice_file = b.path("NOTICE"),
                 .licenses_dir = "THIRD_PARTY_LICENSES",
+                .icon = b.path("brand/foundry.icns"),
                 .revision = revision,
             },
         };

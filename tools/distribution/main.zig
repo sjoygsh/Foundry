@@ -59,6 +59,7 @@ const usage =
     \\  --macos-bundle            stage the fixed .app Contents layout
     \\  --bundle-id <id>          reverse-DNS identifier (required with --macos-bundle)
     \\  --minimum-macos-version <v> deployment floor (required with --macos-bundle)
+    \\  --icon-file <name>        an already-staged .icns to name in the plist
     \\  --quiet                   report nothing on success
     \\  --help                    this text
     \\
@@ -134,6 +135,7 @@ const Args = struct {
     macos_bundle: bool = false,
     bundle_id: []const u8 = "",
     minimum_macos_version: []const u8 = "",
+    icon_file: []const u8 = "",
     quiet: bool = false,
 
     fn deinit(self: *Args, gpa: Allocator) void {
@@ -168,6 +170,7 @@ const Args = struct {
                 .build_number = self.build,
                 .executable_name = self.executable_name,
                 .minimum_macos_version = self.minimum_macos_version,
+                .icon_file = if (self.icon_file.len == 0) null else self.icon_file,
             } else null,
         };
     }
@@ -189,6 +192,8 @@ fn parseArgs(gpa: Allocator, argv: []const []const u8, err: *std.Io.Writer) ArgE
             args.macos_bundle = true;
         } else if (std.mem.eql(u8, arg, "--bundle-id")) {
             args.bundle_id = try value(argv, &i, err);
+        } else if (std.mem.eql(u8, arg, "--icon-file")) {
+            args.icon_file = try value(argv, &i, err);
         } else if (std.mem.eql(u8, arg, "--minimum-macos-version")) {
             args.minimum_macos_version = try value(argv, &i, err);
         } else if (std.mem.eql(u8, arg, "--out")) {
@@ -264,7 +269,7 @@ fn parseArgs(gpa: Allocator, argv: []const []const u8, err: *std.Io.Writer) ArgE
             try err.writeAll("fstage: --macos-bundle requires --target-os macos\n");
             return error.BadUsage;
         }
-    } else if (args.bundle_id.len != 0 or args.minimum_macos_version.len != 0) {
+    } else if (args.bundle_id.len != 0 or args.minimum_macos_version.len != 0 or args.icon_file.len != 0) {
         try err.writeAll("fstage: macOS metadata requires --macos-bundle\n");
         return error.BadUsage;
     }

@@ -186,6 +186,7 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Tooling | Tools are Foundry applications built on the public API | [0011](docs/adr/0011-tooling-architecture.md) |
 | Toolchain | Zig only; no CMake, Ninja, Make or pkg-config | [0014](docs/adr/0014-toolchain.md) |
 | Licensing | Apache-2.0; permissive-only third-party policy | [0016](docs/adr/0016-licensing.md) |
+| Brand | The marks identify Foundry; an application supplies its own icon | [0034](docs/adr/0034-brand-and-trademark.md) |
 | Repository | Engine is a standalone public repo; games are separate consumers | [0017](docs/adr/0017-repository-scope.md) |
 | Process | CLAUDE.md + PROJECT_STATE.md + numbered ADRs | [0009](docs/adr/0009-documentation-process.md) |
 
@@ -359,6 +360,9 @@ Foundry/
 
   THIRD_PARTY_LICENSES/  One file per dependency. Entry lands in the same commit
                          as the dependency. See its README for the policy.
+  brand/                 The marks that identify Foundry, the icon generated from them,
+                         and what others may do with them (ADR-0034). An application
+                         supplies its own icon; the engine never supplies one for it.
   scripts/
 ```
 

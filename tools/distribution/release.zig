@@ -29,6 +29,10 @@
 const std = @import("std");
 
 /// One package in a release: where its sources are, and what it is called under `content/`.
+/// Where an application's icon lands inside the bundle. Fixed rather than derived from the
+/// source file's name, so the plist and the staged path cannot drift apart.
+pub const icon_staged_name = "AppIcon.icns";
+
 pub const Package = struct {
     /// Relative to the consuming build's root.
     dir: []const u8,
@@ -76,6 +80,11 @@ pub const Description = struct {
     executable: *std.Build.Step.Compile,
     /// What the executable is called in the release. Defaults to the artifact's name.
     executable_name: ?[]const u8 = null,
+    /// The application's macOS icon, staged as `Contents/Resources/AppIcon.icns` and named
+    /// in the generated plist. **Supplied by the application, like its name and bundle ID.**
+    /// Foundry's own mark is for Foundry's own artifacts; a game wearing the engine's icon
+    /// would be telling a player something untrue (ADR-0034). Null ships no icon.
+    icon: ?std.Build.LazyPath = null,
     /// The application's own license identifier, and the file holding its text. A staged
     /// package declaring this identifier is covered by that file; one declaring anything
     /// else supplies its own notice.
@@ -187,6 +196,13 @@ fn stageWithLayout(
     if (macos_bundle) {
         run.addArgs(&.{ "--macos-bundle", "--bundle-id", description.bundle_id });
         run.addArgs(&.{ "--minimum-macos-version", description.minimum_macos_version });
+        if (description.icon) |icon| {
+            // Staged like any other declared file, then named in the plist. The stager
+            // refuses the pair if the name and the file ever disagree.
+            run.addArg("--extra");
+            run.addPrefixedFileArg(icon_staged_name ++ "=", icon);
+            run.addArgs(&.{ "--icon-file", icon_staged_name });
+        }
     }
 
     run.addArgs(&.{ "--license-id", description.license_id });

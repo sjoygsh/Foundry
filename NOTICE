@@ -8,3 +8,7 @@ Licensed under the Apache License, Version 2.0. See LICENSE for the full text.
 Third-party components distributed with Foundry, and their licenses, are recorded in
 THIRD_PARTY_LICENSES/. Shipped builds carry the aggregated attribution file generated
 from that directory.
+
+The Foundry name and marks are not licensed by the Apache License (see its section 6).
+They may be used to refer to Foundry, and not as the identity of another product. See
+brand/README.md and docs/adr/0034-brand-and-trademark.md.

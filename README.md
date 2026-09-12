@@ -1,4 +1,6 @@
-# Foundry
+<p align="center">
+  <img src="brand/foundry-wordmark.png" alt="Foundry" width="440">
+</p>
 
 A modular 2D-first game engine, written in Zig, built to grow into a general-purpose
 2D/3D engine with modding as a first-class feature rather than an afterthought.
@@ -124,6 +126,7 @@ decided independently ([ADR-0017](docs/adr/0017-repository-scope.md)).
 | [docs/adr/](docs/adr/) | Numbered architecture decision records | Append-only |
 | [docs/design/](docs/design/) | Per-subsystem design, written before implementation | As needed |
 | [docs/shipping/macos.md](docs/shipping/macos.md) | macOS packaging, recipient use and public-release gates | At release-boundary changes |
+| [brand/](brand/) | The marks, and what anyone may do with them | Rarely |
 
 If you read only one thing, read `CLAUDE.md` §3 — the nine invariants. They are the
 constraints everything else follows from, and most of them exist to keep modding possible.

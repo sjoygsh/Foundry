@@ -1,8 +1,42 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-13
-**Current handoff: M0 through M9 are complete. All eight M9 steps are implemented. No
-post-M9 deferred work has begun.**
+**Current handoff: M0 through M10 are complete. Phase 4's remaining milestones, M11 through
+M17, are unstarted.**
+
+**Implemented in M10, 2026-09-13:** the engine has an identity, and the line between its
+identity and a game's is drawn where the release path already draws every other one. `brand/`
+holds the glyph and the wordmark as masters, with `foundry.icns` and a 1280x640 social card
+generated from them — `sips`/`iconutil` for the icon, `scripts/brand_card.py` for the card,
+which composites through stdlib `zlib` because this machine has neither ImageMagick nor
+Pillow and `sips` cannot put a transparent mark on an opaque ground. The script is a
+developer script and the build never runs it.
+
+**The icon travels the ordinary path.** `release.Description.icon` is a `LazyPath` the
+*application* fills in beside `product_name` and `bundle_id`; it is staged as
+`Contents/Resources/AppIcon.icns`, hashed into the inventory like every other file, and named
+by `CFBundleIconFile` in the generated plist. **The helpers supply no default**, because a
+default here would put Foundry's mark on someone else's product by omission — the leak I5 and
+ADR-0017 prevent everywhere else. Both samples pass the engine's own icon, which is correct:
+they are the engine demonstrating itself. A plist that names an icon nothing stages **refuses
+the release**; that mistake survives every build step and shows up as a generic icon on
+someone else's machine.
+
+**ADR-0034** records what the marks are for and what anyone may do with them: reference is
+permitted, identity is not, and Apache-2.0 §6 grants no trademark rights, so the answer had
+to be written rather than assumed. `brand/README.md` says it where the files are and `NOTICE`
+carries the sentence a redistributor needs.
+
+**One thing in the plan was deliberately not built.** A window icon through `platform`: on
+macOS the Dock and title bar read the bundle's icon and `SDL_SetWindowIcon` changes nothing
+visible, so it would be code whose only proof is that it compiles. It belongs to M13, where a
+second platform makes it visible.
+
+**Verification:** the full AGENTS.md §3 bar passes, **1,280 headless of 1,288 declared** (+2),
+both new guards were broken narrowly and both failed their tests — an icon named but not
+staged, and an icon name macOS would not recognise — and `zig build dist` produced a real
+`Foundry Room.app` whose plist names the icon and whose `Contents/Resources/AppIcon.icns` is
+in the inventory.
 
 **Completed M9 step 8 and M9, 2026-09-13:** `docs/shipping/macos.md` was written from an
 external consuming project and the credential-independent recipient exercise. The fresh

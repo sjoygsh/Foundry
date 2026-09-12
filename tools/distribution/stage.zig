@@ -409,6 +409,19 @@ pub fn run(gpa: Allocator, os: *Os, options: Options, report: *Report) Error!Res
                 report.refuse("cannot create Info.plist: {t}", .{err});
             },
         };
+        // The plist names the icon; nothing about naming it puts it in the bundle. An
+        // application whose Finder icon silently does not exist is exactly the kind of
+        // release this tool refuses to produce, so the reference is checked like any other.
+        if (bundle_metadata.icon_file) |icon| {
+            const staged = for (entries.items) |entry| {
+                if (std.mem.eql(u8, entry.staged, icon)) break true;
+            } else false;
+            if (!staged) report.refuse(
+                "the bundle names '{s}' as its icon, but nothing stages a file there",
+                .{icon},
+            );
+        }
+
         if (report.refusals == 0) {
             for (entries.items) |*entry| {
                 entry.staged = try bundlePath(arena, entry.origin, entry.staged);
@@ -1239,6 +1252,51 @@ test "a macOS stage is the same release inside the fixed application tree" {
     try testing.expect(std.mem.indexOf(u8, plist, "Foundry &amp; Demo") != null);
     const inventory = try fx.read("out/Contents/Resources/inventory.txt");
     try testing.expect(std.mem.indexOf(u8, inventory, "Contents/MacOS/demo") != null);
+}
+
+test "an icon travels with the bundle, and a named icon that does not exist refuses it" {
+    var fx = try plainFixture();
+    defer fx.deinit();
+    try fx.write("brand/AppIcon.icns", "icns bytes");
+
+    const extras = try fx.a().alloc(ExtraInput, 1);
+    extras[0] = .{ .staged = "AppIcon.icns", .source = try fx.abs("brand/AppIcon.icns") };
+
+    var options = try plainOptions(&fx);
+    options.extras = extras;
+    options.macos_bundle = .{
+        .product_name = "Foundry Demo",
+        .bundle_id = "dev.foundry.demo",
+        .product_version = "1.0.0",
+        .build_number = "1",
+        .executable_name = "demo",
+        .minimum_macos_version = "26.0",
+        .icon_file = "AppIcon.icns",
+    };
+
+    var buf: [2048]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    var report: Report = .{ .writer = &writer };
+    _ = try run(testing.allocator, fx.os, options, &report);
+    try testing.expectEqual(@as(u32, 0), report.refusals);
+
+    // The icon is an ordinary resource: placed by the same rule as everything that is not
+    // the program, and inventoried like everything else.
+    try testing.expectEqualStrings("icns bytes", try fx.read("out/Contents/Resources/AppIcon.icns"));
+    const plist = try fx.read("out/Contents/Info.plist");
+    try testing.expect(std.mem.indexOf(u8, plist, "<string>AppIcon.icns</string>") != null);
+    const inventory = try fx.read("out/Contents/Resources/inventory.txt");
+    try testing.expect(std.mem.indexOf(u8, inventory, "Contents/Resources/AppIcon.icns") != null);
+
+    // Naming one and staging nothing is the mistake worth catching: it survives every build
+    // step and shows up as a generic icon on someone else's machine.
+    var alone = try plainOptions(&fx);
+    alone.out = try fx.abs("out-alone");
+    alone.macos_bundle = options.macos_bundle;
+    writer = .fixed(&buf);
+    report = .{ .writer = &writer };
+    try testing.expectError(error.Refused, run(testing.allocator, fx.os, alone, &report));
+    try testing.expect(std.mem.indexOf(u8, writer.buffered(), "as its icon") != null);
 }
 
 test "bad macOS metadata refuses the release before writing any file" {

@@ -17,6 +17,11 @@ pub const Metadata = struct {
     build_number: []const u8,
     executable_name: []const u8,
     minimum_macos_version: []const u8,
+    /// The icon staged in `Contents/Resources`, named here so Finder, the Dock and
+    /// LaunchServices find it. Null ships no icon and gets the generic one, which is the
+    /// correct default: an application's mark belongs to the application, not to the engine
+    /// that packaged it.
+    icon_file: ?[]const u8 = null,
 };
 
 pub const MetadataError = error{
@@ -26,6 +31,7 @@ pub const MetadataError = error{
     InvalidBuildNumber,
     InvalidExecutableName,
     InvalidMinimumVersion,
+    InvalidIconFile,
 };
 
 /// Writes the one source of product metadata as an XML property list.
@@ -53,8 +59,13 @@ pub fn writePlist(out: *std.Io.Writer, metadata: Metadata) (MetadataError || std
         \\  <string>
     );
     try writeXml(out, metadata.executable_name);
+    try out.writeAll("</string>\n");
+    if (metadata.icon_file) |icon| {
+        try out.writeAll("  <key>CFBundleIconFile</key>\n  <string>");
+        try writeXml(out, icon);
+        try out.writeAll("</string>\n");
+    }
     try out.writeAll(
-        \\</string>
         \\  <key>CFBundleIdentifier</key>
         \\  <string>
     );
@@ -106,6 +117,12 @@ pub fn validateMetadata(metadata: Metadata) MetadataError!void {
     if (!isNumericVersion(metadata.build_number, 3)) return error.InvalidBuildNumber;
     if (!isComponent(metadata.executable_name, 255)) return error.InvalidExecutableName;
     if (!isNumericVersion(metadata.minimum_macos_version, 3)) return error.InvalidMinimumVersion;
+    if (metadata.icon_file) |icon| {
+        // A name, never a path: the icon is staged beside the plist, and an icon whose
+        // extension macOS does not recognise is a generic icon with extra steps.
+        if (!isComponent(icon, 255)) return error.InvalidIconFile;
+        if (!std.mem.endsWith(u8, icon, ".icns")) return error.InvalidIconFile;
+    }
 }
 
 fn isDisplayString(text: []const u8, limit: usize) bool {
@@ -302,6 +319,38 @@ test "metadata that macOS would reinterpret is refused before a plist exists" {
     bad = valid;
     bad.minimum_macos_version = "26.x";
     try testing.expectError(error.InvalidMinimumVersion, validateMetadata(bad));
+    bad = valid;
+    bad.icon_file = "../elsewhere/AppIcon.icns";
+    try testing.expectError(error.InvalidIconFile, validateMetadata(bad));
+    bad = valid;
+    bad.icon_file = "AppIcon.png";
+    try testing.expectError(error.InvalidIconFile, validateMetadata(bad));
+}
+
+test "an icon is named only when the application has one" {
+    const base: Metadata = .{
+        .product_name = "Room",
+        .bundle_id = "dev.foundry.room",
+        .product_version = "0.9.0",
+        .build_number = "1",
+        .executable_name = "room",
+        .minimum_macos_version = "26.0",
+    };
+
+    var without: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer without.deinit();
+    try writePlist(&without.writer, base);
+    // An application with no mark says nothing rather than naming a file that is not there.
+    try testing.expect(std.mem.indexOf(u8, without.written(), "CFBundleIconFile") == null);
+
+    var with: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer with.deinit();
+    var named = base;
+    named.icon_file = "AppIcon.icns";
+    try writePlist(&with.writer, named);
+    const got = with.written();
+    try testing.expect(std.mem.indexOf(u8, got, "<key>CFBundleIconFile</key>") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "<string>AppIcon.icns</string>") != null);
 }
 
 test "only system or explicitly bundled Mach-O dependencies are admitted" {

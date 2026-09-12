@@ -518,36 +518,49 @@ credentials and a machine. The rest can be reordered freely. What is not negotia
 each still owes a design document before implementation, an ADR for anything that constrains
 the future, and a runnable result.
 
-### M10 — Identity: "it knows its own name" — **not started**
+### M10 — Identity: "it knows its own name" — **complete (2026-09-13)**
 
-Foundry has no face. There is no logo, no wordmark, no icon; a staged `.app` carries no
-`CFBundleIconFile` and therefore wears the generic Finder document icon, the window it opens
-has no icon either, and nothing anywhere states what a third party may do with the name. This
-milestone gives the engine a visual identity and, more importantly, draws the line between the
-engine's identity and the game's.
+Foundry had no face. There was no logo, no wordmark, no icon; a staged `.app` carried no
+`CFBundleIconFile` and therefore wore the generic Finder document icon, and nothing anywhere
+stated what a third party may do with the name. This milestone gave the engine a visual
+identity and, more importantly, drew the line between the engine's identity and the game's.
 
-* A mark set: wordmark, logo, and the small and monochrome forms an icon actually needs.
-* An icon through the ordinary paths — `.icns` staged by `tools/distribution` and named in the
-  generated plist, a window icon through `platform`, both **supplied by the consuming
-  application** exactly as its product name, bundle ID and version already are.
-* The engine's own mark used only on the engine's own artifacts: README, docs, tools, samples.
+**No design document was written and none was owed.** What M10 decided is a boundary, not a
+subsystem: [ADR-0034](adr/0034-brand-and-trademark.md) is the whole of it, and
+[`brand/README.md`](../brand/README.md) says the same thing where the files are.
+
+* The marks live in `brand/`: the glyph and the wordmark as masters, with `foundry.icns` and
+  the 1280×640 social card generated from them and reproducible — `sips`/`iconutil` for the
+  icon, [`scripts/brand_card.py`](../scripts/brand_card.py) for the card, which composites
+  through stdlib `zlib` because this machine has neither ImageMagick nor Pillow and `sips`
+  cannot put a transparent mark on an opaque ground.
+* The icon reaches the bundle through the ordinary paths: `release.Description.icon` is staged
+  as `Contents/Resources/AppIcon.icns`, hashed into the inventory like every other file, and
+  named by `CFBundleIconFile` in the generated plist. **The application supplies it**, exactly
+  as it supplies its product name and bundle ID, and the helpers supply no default.
+* A release whose plist names an icon that nothing stages is **refused**. That mistake survives
+  every build step and appears as a generic icon on someone else's machine.
+* The engine's own mark on the engine's own artifacts: the README, and both samples' bundles.
 * A usage and trademark note, because Apache-2.0 §6 deliberately grants no trademark rights
-  (ADR-0016), so mod and game authors currently have nothing to read.
-* **The GitHub repository brought up to date with M9.** Its description still says the engine
-  implementation has not started, which has been wrong for nine milestones; with it, the About
-  section, topics and the social preview the mark makes possible. Presentation only — no CI,
-  no release automation, no contribution infrastructure; those stay deferred (ADR-0032).
+  (ADR-0016), so mod and game authors had nothing to read. Reference is permitted; identity is
+  not. `NOTICE` carries the same sentence for anyone redistributing.
+* **The GitHub repository brought up to date with M9** — description, topics and the social
+  preview the mark makes possible. Presentation only: no CI, no release automation, no
+  contribution infrastructure; those stay deferred (ADR-0032).
 
 **The boundary is the point.** A game that shipped wearing Foundry's icon would be a defect,
 not a feature (I5, ADR-0017). Branding is a consumer-supplied input with an engine default
 used by engine artifacts, never an engine assumption baked into a product.
 
-**Owes an ADR** — what the marks may be used for is a licensing constraint on everyone
-downstream, not a style choice.
+**One thing was deliberately not done.** A window icon through `platform` was in the plan and
+is not here: on macOS the Dock and the title bar read the bundle's icon, and `SDL_SetWindowIcon`
+changes nothing a person can see. Writing it now would be code whose only proof is that it
+compiles. It belongs to M13, where a second platform makes it visible.
 
-**Exit criteria:** the room in the Dock and in its own title bar, recognisably Foundry; the
-README showing the mark; and a page a stranger can read to know what they may call their own
-work.
+**Exit criteria — met.** `Foundry Room.app` and `Foundry Sandbox.app` carry the mark in Finder
+and the Dock; the README shows the wordmark; and [`brand/README.md`](../brand/README.md) tells a
+stranger what they may call their own work, with [ADR-0034](adr/0034-brand-and-trademark.md)
+behind it.
 
 ### M11 — Solid: "its known faults are fixed" — **not started**
 
