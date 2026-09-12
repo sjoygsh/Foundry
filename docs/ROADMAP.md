@@ -425,7 +425,7 @@ and survived.
 entity spawning through ordinary content templates. Its §§8 and 14 define operational fault
 containment and the required failure tests; this is not a proof against unknown native defects.
 
-### M9 — Shippable: "it distributes" — **designed (2026-09-12), 4/8 implemented**
+### M9 — Shippable: "it distributes" — **designed (2026-09-12), 5/8 implemented**
 
 [ADR-0030](adr/0030-distribution-artifacts.md) fixes release artifacts and the macOS tooling
 boundary; [ADR-0031](adr/0031-application-configuration-and-user-data.md) separates bootstrap,
@@ -452,7 +452,14 @@ a record asked for it — so authoring text, uncompiled grids, the public header
 compiler are all absent, and an asset for a loader the engine does not define must be declared
 rather than guessed at. Every staged path, size and SHA-256 is inventoried in path order, and
 two stages of one release compare byte-for-byte. The staged room runs from outside the
-checkout. **1251 headless tests.** No signed, bundled or recipient evidence exists.
+checkout. Step 5, completed the same day, generates the attribution: `THIRD_PARTY_NOTICES.txt`
+is built from the entries in `THIRD_PARTY_LICENSES/` in filename order, each distributed entry
+reproduced whole — SDL's license election included, since it is part of the attribution and not
+commentary on it — with the application's own `LICENSE` and `NOTICE` staged separately beside
+it. The aggregate is a documented superset rather than a claim of linkage. A malformed entry,
+an unreadable directory or a staged package whose declared license needs a notice it did not
+supply all refuse the release. **1263 headless tests.** No signed, bundled or recipient
+evidence exists.
 
 * Asset and content bundling; release build configuration.
 * Game configuration and user settings.

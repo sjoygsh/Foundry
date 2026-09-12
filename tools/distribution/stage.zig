@@ -26,6 +26,8 @@ const data = @import("data");
 const mod = @import("mod");
 const platform = @import("platform");
 
+const notices = @import("notices.zig");
+
 const Allocator = std.mem.Allocator;
 const ContentId = core.ContentId;
 const Os = platform.os.Os;
@@ -54,6 +56,15 @@ pub const bin_dir = "bin";
 /// Where packages are staged, relative to the release root.
 pub const content_dir = "content";
 
+/// The application's own license, its notice, and the generated third-party attribution.
+///
+/// Three files rather than one, because they answer different questions and one does not
+/// stand in for another: what this application is licensed under, what it asks you to
+/// preserve, and what it carries that somebody else wrote (§9).
+pub const license_name = "LICENSE";
+pub const notice_name = "NOTICE";
+pub const notices_name = "THIRD_PARTY_NOTICES.txt";
+
 pub const Limits = struct {
     /// How many files a release may contain, the inventory excluded.
     max_files: u32 = 4096,
@@ -63,6 +74,9 @@ pub const Limits = struct {
     max_file_bytes: usize = 512 << 20,
     /// How large a compiled package may be, matching `mod.discover.Options`.
     max_package_bytes: usize = 64 << 20,
+    /// How large one recorded license entry may be. SDL's is 62 KiB of aggregated notices
+    /// and is the reason this is not small.
+    max_license_bytes: usize = 4 << 20,
 
     pub const default: Limits = .{};
 };
@@ -83,6 +97,11 @@ pub const PackageInput = struct {
     /// Where the content compiler put the assets it compiled, if this package has any.
     /// Searched first, because a `.fgrid` produced from a `.grid` exists only here.
     generated_root: ?[]const u8 = null,
+    /// A file holding the notice this package's license requires, for a package that is not
+    /// under the application's own. **A license identifier is not a license text** (§9): a
+    /// manifest saying `CC-BY-4.0` states that an obligation exists and discharges none of
+    /// it, so the text has to be a declared release input or the release is refused.
+    notice: ?[]const u8 = null,
 };
 
 /// A runtime file no package can name: a native library, or an asset whose loader the
@@ -116,6 +135,17 @@ pub const Options = struct {
     executable_name: []const u8,
     packages: []const PackageInput,
     extras: []const ExtraInput = &.{},
+    /// The recorded third-party licenses the attribution is generated from. Required: a
+    /// release with no attribution is not a release anyone may hand to a stranger, and the
+    /// text is in the repository — the build never fetches it (§9).
+    licenses_dir: []const u8,
+    /// The application's own license text, staged as `LICENSE`.
+    license_file: []const u8,
+    /// Its `NOTICE`, when it has one.
+    notice_file: ?[]const u8 = null,
+    /// The application's own license identifier. A staged package declaring this one is
+    /// already covered by the file above; one declaring anything else supplies its own.
+    license_id: []const u8,
     metadata: Metadata,
     limits: Limits = .default,
     /// The system the release runs on, which decides what a manifest's `native` names.
@@ -156,7 +186,7 @@ pub const Report = struct {
 };
 
 /// Why a file is in the release. Carried so a refusal can say what asked for it.
-const Origin = enum { executable, package, asset, generated, extra };
+const Origin = enum { executable, package, asset, generated, extra, license, notices };
 
 /// One file to copy: where it goes, and the confined pair it comes from.
 ///
@@ -166,8 +196,7 @@ const Origin = enum { executable, package, asset, generated, extra };
 /// at runtime. One rule, one implementation.
 const Entry = struct {
     staged: []const u8,
-    root: []const u8,
-    relative: []const u8,
+    source: Source,
     size: u64,
     /// Preserved from the source rather than decided here. The program has to be
     /// executable or the release does not run, and a copy that drops the bit is a copy
@@ -176,6 +205,17 @@ const Entry = struct {
     origin: Origin,
     /// What named this file, for a message a person can act on.
     because: []const u8,
+};
+
+/// Where a staged file's bytes come from.
+const Source = union(enum) {
+    /// A file on disk, read confined: a root, and a path inside it.
+    file: Confined,
+    /// Bytes this program produced. Held rather than re-read, because there is nowhere to
+    /// re-read them from — the attribution exists only in the release.
+    made: []const u8,
+
+    const Confined = struct { root: []const u8, relative: []const u8 };
 };
 
 /// A package whose bytes are staged, by identity.
@@ -215,6 +255,7 @@ pub fn run(gpa: Allocator, os: *Os, options: Options, report: *Report) Error!Res
     var packages: std.ArrayList(StagedPackage) = .empty;
     var requirements: std.ArrayList(Requirement) = .empty;
     var references: std.ArrayList(Reference) = .empty;
+    var package_notices: std.ArrayList(notices.PackageNotice) = .empty;
 
     // The executable, first and unconditionally. A release with no program in it is not a
     // release.
@@ -266,6 +307,33 @@ pub fn run(gpa: Allocator, os: *Os, options: Options, report: *Report) Error!Res
             .version = manifest.version,
             .stem = pkg.stem,
         });
+
+        // What this package says it is licensed under, and the text that discharges it. A
+        // package under the application's own license is covered by the `LICENSE` staged
+        // beside it; anything else states an obligation its identifier cannot satisfy (§9).
+        var notice: ?[]const u8 = null;
+        if (pkg.notice) |path| {
+            if (splitLeaf(path)) |at| {
+                if (os.readFileConfined(arena, at.dir, at.leaf, options.limits.max_license_bytes)) |got| {
+                    notice = got.bytes;
+                } else |err| {
+                    report.refuse("the notice for '{s}' cannot be read from '{s}': {t}", .{ pkg.stem, path, err });
+                }
+            } else {
+                report.refuse("the notice for '{s}': '{s}' is not a path to a file", .{ pkg.stem, path });
+            }
+        } else if (!std.mem.eql(u8, manifest.license, options.license_id)) {
+            report.refuse(
+                "package '{s}' is licensed '{s}' and this release is '{s}'; its notice text is not its identifier, so declare it with --package-notice <file>",
+                .{ manifest.id_name, manifest.license, options.license_id },
+            );
+        }
+        try package_notices.append(arena, .{
+            .package = manifest.id_name,
+            .version = manifest.version,
+            .license = manifest.license,
+            .text = notice,
+        });
         for (manifest.requires) |requirement| {
             try requirements.append(arena, .{ .by = manifest.id_name, .id = requirement.id });
         }
@@ -301,6 +369,26 @@ pub fn run(gpa: Allocator, os: *Os, options: Options, report: *Report) Error!Res
             .limits = options.limits,
         });
     }
+
+    // The application's own license and notice, and the attribution generated from what the
+    // repository records. Last, so that a package's declared notice is already in hand.
+    try addEntry(arena, &entries, os, report, .{
+        .staged = license_name,
+        .source = options.license_file,
+        .origin = .license,
+        .because = "the application's own license",
+        .limits = options.limits,
+    });
+    if (options.notice_file) |path| {
+        try addEntry(arena, &entries, os, report, .{
+            .staged = notice_name,
+            .source = path,
+            .origin = .license,
+            .because = "the application's own notice",
+            .limits = options.limits,
+        });
+    }
+    try planNotices(arena, &entries, os, report, options, package_notices.items);
 
     checkRequirements(packages.items, requirements.items, report);
     checkReferences(entries.items, references.items, report);
@@ -393,8 +481,7 @@ fn planAssets(
                 if (info.kind == .file) {
                     try appendEntry(arena, entries, report, .{
                         .staged = staged,
-                        .root = generated,
-                        .relative = relative,
+                        .source = .{ .file = .{ .root = generated, .relative = relative } },
                         .size = info.size,
                         .executable = info.executable,
                         .origin = .generated,
@@ -415,6 +502,47 @@ fn planAssets(
             .limits = limits,
         });
     }
+}
+
+/// Generates the third-party attribution and adds it to the plan.
+///
+/// It is produced here rather than copied, because it does not exist anywhere else: the
+/// repository holds the recorded entries and this is the only thing that turns them into the
+/// file a player receives. Generated output belongs in the artifact and not in tracked
+/// source (§9), which is why nothing writes it back.
+fn planNotices(
+    arena: Allocator,
+    entries: *std.ArrayList(Entry),
+    os: *Os,
+    report: *Report,
+    options: Options,
+    packages: []const notices.PackageNotice,
+) Error!void {
+    const recorded = notices.collect(arena, os, options.licenses_dir, options.limits.max_license_bytes, report) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        // Already reported, by every reason it had. Planning continues so that a person
+        // fixing a malformed entry also learns what else is wrong.
+        error.Refused => return,
+    };
+
+    var text: std.Io.Writer.Allocating = .init(arena);
+    notices.write(&text.writer, .{
+        .name = options.metadata.product,
+        .version = options.metadata.version,
+    }, recorded, packages) catch |err| switch (err) {
+        error.WriteFailed => return error.OutOfMemory,
+    };
+
+    try appendMade(
+        arena,
+        entries,
+        report,
+        notices_name,
+        text.written(),
+        .notices,
+        "the generated third-party attribution",
+        options.limits,
+    );
 }
 
 const AddOptions = struct {
@@ -477,8 +605,7 @@ fn appendConfined(
     }
     try appendEntry(arena, entries, report, .{
         .staged = options.staged,
-        .root = options.root,
-        .relative = options.relative,
+        .source = .{ .file = .{ .root = options.root, .relative = options.relative } },
         .size = info.size,
         .executable = info.executable,
         .origin = options.origin,
@@ -487,12 +614,32 @@ fn appendConfined(
     });
 }
 
+/// Adds one file this program produced.
+fn appendMade(
+    arena: Allocator,
+    entries: *std.ArrayList(Entry),
+    report: *Report,
+    staged: []const u8,
+    bytes: []const u8,
+    origin: Origin,
+    because: []const u8,
+    limits: Limits,
+) Error!void {
+    try appendEntry(arena, entries, report, .{
+        .staged = staged,
+        .source = .{ .made = bytes },
+        .size = bytes.len,
+        .origin = origin,
+        .because = because,
+        .limits = limits,
+    });
+}
+
 const AppendOptions = struct {
     staged: []const u8,
-    root: []const u8,
-    relative: []const u8,
+    source: Source,
     size: u64,
-    executable: bool,
+    executable: bool = false,
     origin: Origin,
     because: []const u8,
     limits: Limits,
@@ -512,8 +659,13 @@ fn appendEntry(
     }
     try entries.append(arena, .{
         .staged = options.staged,
-        .root = try arena.dupe(u8, options.root),
-        .relative = try arena.dupe(u8, options.relative),
+        .source = switch (options.source) {
+            .file => |f| .{ .file = .{
+                .root = try arena.dupe(u8, f.root),
+                .relative = try arena.dupe(u8, f.relative),
+            } },
+            .made => |bytes| .{ .made = bytes },
+        },
         .size = options.size,
         .executable = options.executable,
         .origin = options.origin,
@@ -628,15 +780,24 @@ fn copyAll(
 ) Error![]const Written {
     var written: std.ArrayList(Written) = .empty;
     for (entries) |entry| {
-        const read = os.readFileConfined(gpa, entry.root, entry.relative, options.limits.max_file_bytes) catch |err| {
-            report.refuse("'{s}' cannot be read: {t} ({s})", .{ entry.staged, err, entry.because });
-            return error.Refused;
+        var owned: ?[]u8 = null;
+        defer if (owned) |bytes| gpa.free(bytes);
+
+        const bytes = switch (entry.source) {
+            .made => |made| made,
+            .file => |from| blk: {
+                const read = os.readFileConfined(gpa, from.root, from.relative, options.limits.max_file_bytes) catch |err| {
+                    report.refuse("'{s}' cannot be read: {t} ({s})", .{ entry.staged, err, entry.because });
+                    return error.Refused;
+                };
+                owned = read.bytes;
+                break :blk read.bytes;
+            },
         };
-        defer gpa.free(read.bytes);
 
         // Checked again against the plan: the plan decided this release fits, and a file
         // that changed since would make that answer stale rather than wrong-by-a-little.
-        if (read.bytes.len != entry.size) {
+        if (bytes.len != entry.size) {
             report.refuse("'{s}' changed while the release was being staged", .{entry.staged});
             return error.Refused;
         }
@@ -649,16 +810,16 @@ fn copyAll(
             };
         }
         const mode: platform.os.FileMode = if (entry.executable) .executable else .regular;
-        os.writeFileMode(destination, read.bytes, mode) catch |err| {
+        os.writeFileMode(destination, bytes, mode) catch |err| {
             report.refuse("cannot write '{s}': {t}", .{ destination, err });
             return error.Refused;
         };
 
         var digest: [Sha256.digest_length]u8 = undefined;
-        Sha256.hash(read.bytes, &digest, .{});
+        Sha256.hash(bytes, &digest, .{});
         try written.append(arena, .{
             .staged = entry.staged,
-            .size = read.bytes.len,
+            .size = bytes.len,
             .executable = entry.executable,
             .digest = digest,
         });
@@ -882,6 +1043,22 @@ fn lessThanString(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.lessThan(u8, a, b);
 }
 
+/// One valid recorded entry, in the convention `THIRD_PARTY_LICENSES/README.md` sets out.
+const recorded_entry =
+    \\# Widget
+    \\
+    \\- **Version:** 1.2.3
+    \\- **Upstream:** https://example.invalid/widget
+    \\- **License:** MIT
+    \\- **Distribution:** distributed — linked into the binary.
+    \\- **Modifications:** none
+    \\
+    \\## License text
+    \\
+    \\Permission is hereby granted, free of charge, to whoever.
+    \\
+;
+
 /// A package with one texture, one sound, and a manifest naming `foundry:core`.
 const demo_package =
     \\foundry:mod demo:pack { name "Demo" version 1 license "MIT" }
@@ -896,14 +1073,24 @@ const metadata: Metadata = .{
     .revision = "local",
 };
 
-/// The usual arrangement: an executable, a package, and the two files it names.
+/// What every release carries, whatever else it holds.
+fn writeAttribution(fx: *Fixture) !void {
+    try fx.write("licenses/README.md", "the directory's own documentation, never an entry");
+    try fx.write("licenses/widget.md", recorded_entry);
+    try fx.write("LICENSE", "the application's own license");
+}
+
+/// The usual arrangement: an executable, a package, the two files it names, and the
+/// attribution every release carries.
 fn plainFixture() !Fixture {
     var fx = try Fixture.init();
     errdefer fx.deinit();
     try fx.writeProgram("build/demo");
+    try writeAttribution(&fx);
     try fx.compile("demo:pack", demo_package, "build/demo.fpk");
     try fx.write("src/textures/sheet.png", "png bytes");
     try fx.write("src/sounds/bump.wav", "wav bytes");
+    try writeAttribution(&fx);
     return fx;
 }
 
@@ -920,6 +1107,9 @@ fn plainOptions(fx: *Fixture) !Options {
         .executable = try fx.abs("build/demo"),
         .executable_name = "demo",
         .packages = packages,
+        .licenses_dir = try fx.abs("licenses"),
+        .license_file = try fx.abs("LICENSE"),
+        .license_id = "MIT",
         .metadata = metadata,
         .target_os = .macos,
     };
@@ -948,9 +1138,11 @@ test "a release holds what the packages name, and nothing a developer needed to 
 
     const result = try run(testing.allocator, fx.os, try plainOptions(&fx), &report);
     try testing.expectEqual(@as(u32, 0), report.refusals);
-    try testing.expectEqual(@as(u32, 4), result.files);
+    try testing.expectEqual(@as(u32, 6), result.files);
 
     try expectStaged(&fx, &.{
+        "LICENSE",
+        "THIRD_PARTY_NOTICES.txt",
         "bin/demo",
         "content/demo.fpk",
         "content/demo/sounds/bump.wav",
@@ -984,7 +1176,7 @@ test "the inventory names every staged file, in path order, with its size and ha
     try testing.expectEqualStrings("revision local", lines.next().?);
     try testing.expectEqualStrings("target macos", lines.next().?);
     try testing.expectEqualStrings("package demo:pack 1 demo", lines.next().?);
-    try testing.expectEqualStrings("files 4", lines.next().?);
+    try testing.expectEqualStrings("files 6", lines.next().?);
     _ = lines.next().?; // bytes
 
     // The hash is of the staged bytes, and the line is the one a person would check by hand.
@@ -1032,6 +1224,7 @@ test "a compiled asset comes from the compiler's output rather than the source b
     defer fx.deinit();
 
     try fx.writeProgram("build/demo");
+    try writeAttribution(&fx);
     try fx.compile("demo:pack",
         \\foundry:mod demo:pack { name "Demo" version 1 license "MIT" }
         \\foundry:tilegrid demo:hall { source "grids/hall.fgrid" }
@@ -1048,7 +1241,14 @@ test "a compiled asset comes from the compiler's output rather than the source b
     var report: Report = .{ .writer = &writer };
     _ = try run(testing.allocator, fx.os, try plainOptions(&fx), &report);
 
-    try expectStaged(&fx, &.{ "bin/demo", "content/demo.fpk", "content/demo/grids/hall.fgrid", "inventory.txt" });
+    try expectStaged(&fx, &.{
+        "LICENSE",
+        "THIRD_PARTY_NOTICES.txt",
+        "bin/demo",
+        "content/demo.fpk",
+        "content/demo/grids/hall.fgrid",
+        "inventory.txt",
+    });
     try testing.expectEqualStrings("today", try fx.read("out/content/demo/grids/hall.fgrid"));
 }
 
@@ -1064,6 +1264,7 @@ test "an asset that is missing, escaping or a symlink refuses the release before
         defer fx.deinit();
 
         try fx.writeProgram("build/demo");
+        try writeAttribution(&fx);
         const source = try std.fmt.allocPrint(fx.a(),
             \\foundry:mod demo:pack {{ name "Demo" version 1 license "MIT" }}
             \\foundry:texture demo:sheet {{ source "{s}" }}
@@ -1129,6 +1330,7 @@ test "a package the release needs and does not contain is refused" {
     defer fx.deinit();
 
     try fx.writeProgram("build/demo");
+    try writeAttribution(&fx);
     try fx.compile("demo:pack",
         \\foundry:mod demo:pack { name "Demo" version 1 license "MIT" requires [ { id foundry:core } ] }
     , "build/demo.fpk");
@@ -1145,6 +1347,7 @@ test "a native library and an asset for an unknown loader are both staged only i
     defer fx.deinit();
 
     try fx.writeProgram("build/demo");
+    try writeAttribution(&fx);
     try fx.compile("demo:pack",
         \\foundry:mod demo:pack { name "Demo" version 1 license "MIT" native "lanterns" }
         \\@schema mesh { source string }
@@ -1175,6 +1378,8 @@ test "a native library and an asset for an unknown loader are both staged only i
     var second: Report = .{ .writer = &writer };
     _ = try run(testing.allocator, fx.os, options, &second);
     try expectStaged(&fx, &.{
+        "LICENSE",
+        "THIRD_PARTY_NOTICES.txt",
         "bin/demo",
         "content/demo.fpk",
         "content/demo/liblanterns.dylib",
@@ -1192,7 +1397,7 @@ test "a release over its declared bounds is refused before anything is copied" {
 
     {
         var options = try plainOptions(&fx);
-        options.limits.max_files = 3;
+        options.limits.max_files = 5;
         var report: Report = .{ .writer = &writer };
         try testing.expectError(error.Refused, run(testing.allocator, fx.os, options, &report));
         try testing.expect(std.mem.indexOf(u8, writer.buffered(), "over the limit") != null);
@@ -1222,4 +1427,126 @@ test "a release is not staged on top of one that is already there" {
 
     // Untouched, because nothing here deletes anything to make room.
     try testing.expectEqualStrings("from an older release", try fx.read("out/leftover"));
+}
+
+test "a release carries its own license, its notice, and the attribution generated beside them" {
+    var fx = try plainFixture();
+    defer fx.deinit();
+    try fx.write("NOTICE", "what this application asks you to preserve");
+
+    var buf: [2048]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    var report: Report = .{ .writer = &writer };
+
+    var options = try plainOptions(&fx);
+    options.notice_file = try fx.abs("NOTICE");
+    _ = try run(testing.allocator, fx.os, options, &report);
+    try testing.expectEqual(@as(u32, 0), report.refusals);
+
+    // Three files, because they answer three questions and none stands in for another (§9).
+    try testing.expectEqualStrings("the application's own license", try fx.read("out/LICENSE"));
+    try testing.expectEqualStrings("what this application asks you to preserve", try fx.read("out/NOTICE"));
+
+    const attribution = try fx.read("out/THIRD_PARTY_NOTICES.txt");
+    try testing.expect(std.mem.startsWith(u8, attribution, "THIRD-PARTY NOTICES\nDemo 1.0.0\n"));
+    try testing.expect(std.mem.indexOf(u8, attribution, "Permission is hereby granted") != null);
+    try testing.expect(std.mem.indexOf(u8, attribution, "demo:pack 1 — MIT") != null);
+
+    // The directory's own README is documentation, not a component.
+    try testing.expect(std.mem.indexOf(u8, attribution, "README") == null);
+
+    // And it is in the inventory like anything else: a file a release carries is a file the
+    // release accounts for, generated or not.
+    const inventory = try fx.read("out/inventory.txt");
+    try testing.expect(std.mem.indexOf(u8, inventory, "  file  THIRD_PARTY_NOTICES.txt") != null);
+    try testing.expect(std.mem.indexOf(u8, inventory, "  file  LICENSE") != null);
+}
+
+test "a malformed recorded license refuses the release rather than shipping a gap" {
+    var fx = try plainFixture();
+    defer fx.deinit();
+    try fx.write("licenses/broken.md", "# Broken\n\n- **Version:** 1\n\n## License text\n\nx\n");
+
+    var buf: [2048]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    var report: Report = .{ .writer = &writer };
+    try testing.expectError(error.Refused, run(testing.allocator, fx.os, try plainOptions(&fx), &report));
+    try testing.expect(std.mem.indexOf(u8, writer.buffered(), "'broken.md' is malformed: MissingField") != null);
+    try expectStaged(&fx, &.{});
+}
+
+test "a release whose licenses cannot be found is refused, because attribution is not optional" {
+    var fx = try plainFixture();
+    defer fx.deinit();
+
+    var buf: [2048]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    var report: Report = .{ .writer = &writer };
+
+    var options = try plainOptions(&fx);
+    options.licenses_dir = try fx.abs("no-such-directory");
+    try testing.expectError(error.Refused, run(testing.allocator, fx.os, options, &report));
+    try testing.expect(std.mem.indexOf(u8, writer.buffered(), "cannot be read") != null);
+}
+
+test "a package under another license supplies its notice, or the release is refused" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+
+    try fx.writeProgram("build/demo");
+    try writeAttribution(&fx);
+    try fx.compile("demo:pack",
+        \\foundry:mod demo:pack { name "Demo" version 1 license "CC-BY-4.0" }
+    , "build/demo.fpk");
+    try fx.write("build/art-notice.txt", "Hall texture by somebody, CC-BY-4.0.");
+
+    var buf: [2048]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    var report: Report = .{ .writer = &writer };
+
+    // An identifier states that an obligation exists. It discharges none of it (§9).
+    try testing.expectError(error.Refused, run(testing.allocator, fx.os, try plainOptions(&fx), &report));
+    const said = writer.buffered();
+    try testing.expect(std.mem.indexOf(u8, said, "is licensed 'CC-BY-4.0'") != null);
+    try testing.expect(std.mem.indexOf(u8, said, "--package-notice") != null);
+    try expectStaged(&fx, &.{});
+
+    // Declared, and the text reaches the player rather than the build log.
+    writer = .fixed(&buf);
+    var options = try plainOptions(&fx);
+    const packages = try fx.a().alloc(PackageInput, 1);
+    packages[0] = options.packages[0];
+    packages[0].notice = try fx.abs("build/art-notice.txt");
+    options.packages = packages;
+
+    var second: Report = .{ .writer = &writer };
+    _ = try run(testing.allocator, fx.os, options, &second);
+    try testing.expectEqual(@as(u32, 0), second.refusals);
+
+    const attribution = try fx.read("out/THIRD_PARTY_NOTICES.txt");
+    try testing.expect(std.mem.indexOf(u8, attribution, "demo:pack 1 — CC-BY-4.0") != null);
+    try testing.expect(std.mem.indexOf(u8, attribution, "Hall texture by somebody") != null);
+}
+
+test "every recorded entry reaches the attribution, in filename order" {
+    var fx = try plainFixture();
+    defer fx.deinit();
+
+    // End to end: that the ordering *rule* holds is `notices.entryNames`'s test, because a
+    // directory's enumeration order cannot be chosen from here. What this adds is that the
+    // rule is the one the generator actually applies, over a real directory.
+    try fx.write("licenses/zebra.md", try std.mem.replaceOwned(u8, fx.a(), recorded_entry, "Widget", "Zebra"));
+    try fx.write("licenses/alpha.md", try std.mem.replaceOwned(u8, fx.a(), recorded_entry, "Widget", "Alpha"));
+
+    var buf: [2048]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    var report: Report = .{ .writer = &writer };
+    _ = try run(testing.allocator, fx.os, try plainOptions(&fx), &report);
+
+    const text = try fx.read("out/THIRD_PARTY_NOTICES.txt");
+    const alpha = std.mem.indexOf(u8, text, " alpha.md\n").?;
+    const widget = std.mem.indexOf(u8, text, " widget.md\n").?;
+    const zebra = std.mem.indexOf(u8, text, " zebra.md\n").?;
+    try testing.expect(alpha < widget);
+    try testing.expect(widget < zebra);
 }

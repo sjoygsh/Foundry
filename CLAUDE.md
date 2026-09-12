@@ -507,7 +507,9 @@ these names with more care than internal ones.
 
 **Dependencies.** A dependency and its `THIRD_PARTY_LICENSES/` entry land in the **same commit**.
 Check the license before evaluating a library technically. Permissive licenses only; no GPL,
-AGPL or LGPL (ADR-0016).
+AGPL or LGPL (ADR-0016). **That entry's shape is load-bearing**: the release packager parses it
+to generate the attribution a player receives, and an entry that drifts from the template in
+`THIRD_PARTY_LICENSES/README.md` fails the build rather than being skipped.
 
 **Commits.** Small, focused, present tense. A milestone ends with a tagged commit and an updated
 `PROJECT_STATE.md`.

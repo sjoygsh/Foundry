@@ -1,7 +1,7 @@
 # Distribution: an application a stranger can run
 
-**Status:** designed 2026-09-12; **4/8 implementation steps complete** (Steps 1-4, 2026-09-12).
-**Stop point:** after Step 4. Step 5 is not started.
+**Status:** designed 2026-09-12; **5/8 implementation steps complete** (Steps 1-5, 2026-09-12).
+**Stop point:** after Step 5. Step 6 is not started.
 
 Rests on [ADR-0030](../adr/0030-distribution-artifacts.md) and
 [ADR-0031](../adr/0031-application-configuration-and-user-data.md), with ADR-0008, ADR-0014,
@@ -389,7 +389,7 @@ Resolution when implementation exposes a design correction. No step is done by t
    helpers, host fpack and bounded runtime inventory; stage both sample variants. Verify
    ReleaseSafe, exact selected files, deliberate omissions/collisions and unsigned byte
    reproducibility. Runnable result: staged loose room runs from outside the checkout.
-5. **Generate and ship complete attribution.** Implement §9 and integrate its required
+5. **Generate and ship complete attribution. Complete 2026-09-12.** Implement §9 and integrate its required
    outputs with staging. Test malformed metadata and full SDL/Lua text retention; include
    package notices. Runnable result: staged release carries generated, reproducible notices.
 6. **Keep useful evidence after startup and fatal failure.** Implement §10 and wire both
@@ -412,9 +412,9 @@ Resolution when implementation exposes a design correction. No step is done by t
 ## 15. Planning handoff
 
 ADRs 0030/0031 and this design settle the M9 architecture and eight bounded steps. All M8
-implementation/evidence is retained. Steps 1 through 4 are complete as of 2026-09-12; see
-their Resolutions below. **Next is Step 5, not started and not authorized.** Nothing in Steps
-5-8 — generated notices, diagnostics or the macOS bundle — exists yet.
+implementation/evidence is retained. Steps 1 through 5 are complete as of 2026-09-12; see
+their Resolutions below. **Next is Step 6, not started and not authorized.** Nothing in Steps
+6-8 — diagnostics, the macOS bundle or the recipient guide — exists yet.
 
 ## Resolution — 2026-09-12, step 1
 
@@ -632,3 +632,51 @@ build-owned directory that Zig creates anew on every run; the packager refuses a
 that is not empty and removes nothing. The copy installed under `zig-out/dist/<app>` for a
 person to open or zip is a convenience and is overwritten without pruning, which is recorded
 here rather than left to be discovered.
+
+## Resolution — 2026-09-12, step 5
+
+What implementing §9's attribution settled, corrected or made explicit.
+
+**The metadata block is bounded, and that is the whole parser.** `THIRD_PARTY_LICENSES/`
+entries are prose documents with tables, fenced text and paragraphs; SDL's discusses the very
+words the parser looks for. A parser that scanned whole files would have found
+`- **Distribution:** build-time only` inside someone's explanation and dropped a component
+from a legal document silently. So fields are read only between the `# Title` and the first
+`##` heading, a line there is either a field or a two-space continuation of the one above,
+and anything else is a refusal. The test that proves it puts the decoy in the prose.
+
+**A near miss is not a match.** `distributed` and `build-time only` are accepted with the
+explanatory suffixes the existing entries carry — SDL's says "distributed — SDL is statically
+linked into Foundry binaries." — and the word must end there. `distributed-ish` is refused
+rather than guessed at, because the guess decides whether a notice reaches a player.
+
+**The aggregate is a superset and says so in the file.** Every entry marked `distributed` is
+included whether or not this binary links it: the room links no Lua and ships Lua's notice.
+Deciding linkage per artifact would mean reading the build graph and being quietly wrong, so
+the file states plainly that a listing is not a claim of linkage — an aggregate that is too
+large is correct, and one that is too small is not.
+
+**Three files, not one.** `LICENSE` is what the application is licensed under, `NOTICE` is
+what it asks you to preserve, and `THIRD_PARTY_NOTICES.txt` is what it carries that somebody
+else wrote. None stands in for another, and for a game outside this repository all three are
+the *game's* — Foundry becomes one recorded entry in the game's own licenses directory, on
+exactly the terms SDL and Lua are entries in Foundry's (ADR-0017). The release description
+therefore names the directory rather than reaching for Foundry's.
+
+**Attribution is not optional, so a release without it does not stage.** `--licenses` and
+`--license` are required, an unreadable directory is a refusal, a directory that records
+nothing at all is a refusal, and one malformed entry refuses the whole release. Every one of
+those is the same failure in different clothes: a notice file that looks complete and is not.
+
+**A package's license identifier is a statement that an obligation exists.** A staged package
+declaring the application's own license is covered by the `LICENSE` beside it; one declaring
+anything else must supply its notice as a declared input, named in the refusal along with the
+flag that satisfies it. Every staged package is listed in the attribution with its declared
+identifier either way, because what a distribution contains is part of what it discloses.
+
+**A test that cannot fail is not a test.** The filename-order guard was broken deliberately
+and the test still passed: it wrote files and read the directory back, and this filesystem
+happened to return them sorted. Enumeration order cannot be chosen from a test, so the
+ordering moved into `notices.entryNames`, which takes a listing as data — and the test that
+hands it an unsorted one does fail when the sort is removed. The end-to-end test was kept and
+its claim narrowed to what it actually checks.

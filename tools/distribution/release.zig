@@ -34,6 +34,10 @@ pub const Package = struct {
     dir: []const u8,
     /// A location, never identity (ADR-0021) — the compiled package states its own id.
     stem: []const u8,
+    /// The notice this package's license requires, when it is not the application's own.
+    /// A manifest's `license` is an identifier and discharges nothing by itself
+    /// (`distribution.md` §9).
+    notice: ?std.Build.LazyPath = null,
 };
 
 /// A runtime file no package can name: a native library, or an asset for a loader the
@@ -66,6 +70,17 @@ pub const Description = struct {
     executable: *std.Build.Step.Compile,
     /// What the executable is called in the release. Defaults to the artifact's name.
     executable_name: ?[]const u8 = null,
+    /// The application's own license identifier, and the file holding its text. A staged
+    /// package declaring this identifier is covered by that file; one declaring anything
+    /// else supplies its own notice.
+    license_id: []const u8,
+    license_file: std.Build.LazyPath,
+    /// Its `NOTICE`, when it has one.
+    notice_file: ?std.Build.LazyPath = null,
+    /// The directory of recorded third-party licenses the attribution is generated from,
+    /// relative to the consuming build's root. A game records Foundry here, the way Foundry
+    /// records SDL and Lua.
+    licenses_dir: []const u8,
     packages: []const Package,
     extra_files: []const ExtraFile = &.{},
     limits: Limits = .{},
@@ -144,6 +159,19 @@ pub fn stage(b: *std.Build, tools: Tools, description: Description) std.Build.La
     run.addArgs(&.{ "--max-files", b.fmt("{d}", .{description.limits.max_files}) });
     run.addArgs(&.{ "--max-total-bytes", b.fmt("{d}", .{description.limits.max_total_bytes}) });
 
+    run.addArgs(&.{ "--license-id", description.license_id });
+    run.addArg("--license");
+    run.addFileArg(description.license_file);
+    if (description.notice_file) |notice| {
+        run.addArg("--notice");
+        run.addFileArg(notice);
+    }
+    run.addArg("--licenses");
+    run.addDirectoryArg(b.path(description.licenses_dir));
+    // The recorded entries are read file by file, so each one has to be an input in its own
+    // right: editing a license and restaging must not produce yesterday's attribution.
+    addDirectoryInputs(b, run, description.licenses_dir);
+
     for (description.packages) |package| {
         const compiled = compilePackage(b, tools.fpack, package);
         run.addArgs(&.{ "--package", package.stem });
@@ -153,6 +181,10 @@ pub fn stage(b: *std.Build, tools: Tools, description: Description) std.Build.La
         run.addDirectoryArg(b.path(package.dir));
         run.addArg("--generated-root");
         run.addDirectoryArg(compiled.generated);
+        if (package.notice) |notice| {
+            run.addArg("--package-notice");
+            run.addFileArg(notice);
+        }
         // A directory argument creates the dependency and passes the path; it does not put
         // the directory's contents in the step's cache key. Without this, editing a `.wav`
         // would leave the previous release staged and nobody would be told.

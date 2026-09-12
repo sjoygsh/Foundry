@@ -25,6 +25,7 @@
 const std = @import("std");
 const platform = @import("platform");
 
+const notices = @import("notices.zig");
 const stage = @import("stage.zig");
 
 const Allocator = std.mem.Allocator;
@@ -49,6 +50,11 @@ const usage =
     \\  --fpk <file>              its compiled package (required per --package)
     \\  --source-root <dir>       its authored directory (required per --package)
     \\  --generated-root <dir>    where its compiled assets are, if it has any
+    \\  --licenses <dir>          the recorded third-party licenses (required)
+    \\  --license <file>          the application's own license text (required)
+    \\  --license-id <spdx>       the application's own license identifier (required)
+    \\  --notice <file>           the application's own NOTICE, if it has one
+    \\  --package-notice <file>   the notice a package's own license needs (per --package)
     \\  --extra <staged>=<file>   one more runtime file, at <staged> in the release
     \\  --quiet                   report nothing on success
     \\  --help                    this text
@@ -108,6 +114,10 @@ pub fn main(init: std.process.Init) !u8 {
 
 const Args = struct {
     out: []const u8 = "",
+    licenses: []const u8 = "",
+    license: []const u8 = "",
+    license_id: []const u8 = "",
+    notice: []const u8 = "",
     executable: []const u8 = "",
     executable_name: []const u8 = "",
     product: []const u8 = "",
@@ -133,6 +143,10 @@ const Args = struct {
             .executable_name = self.executable_name,
             .packages = self.packages.items,
             .extras = self.extras.items,
+            .licenses_dir = self.licenses,
+            .license_file = self.license,
+            .notice_file = if (self.notice.len == 0) null else self.notice,
+            .license_id = self.license_id,
             .metadata = .{
                 .product = self.product,
                 .version = self.version,
@@ -159,6 +173,14 @@ fn parseArgs(gpa: Allocator, argv: []const []const u8, err: *std.Io.Writer) ArgE
             args.quiet = true;
         } else if (std.mem.eql(u8, arg, "--out")) {
             args.out = try value(argv, &i, err);
+        } else if (std.mem.eql(u8, arg, "--licenses")) {
+            args.licenses = try value(argv, &i, err);
+        } else if (std.mem.eql(u8, arg, "--license")) {
+            args.license = try value(argv, &i, err);
+        } else if (std.mem.eql(u8, arg, "--license-id")) {
+            args.license_id = try value(argv, &i, err);
+        } else if (std.mem.eql(u8, arg, "--notice")) {
+            args.notice = try value(argv, &i, err);
         } else if (std.mem.eql(u8, arg, "--executable")) {
             args.executable = try value(argv, &i, err);
         } else if (std.mem.eql(u8, arg, "--executable-name")) {
@@ -189,6 +211,8 @@ fn parseArgs(gpa: Allocator, argv: []const []const u8, err: *std.Io.Writer) ArgE
             (try current(&args, err)).source_root = try value(argv, &i, err);
         } else if (std.mem.eql(u8, arg, "--generated-root")) {
             (try current(&args, err)).generated_root = try value(argv, &i, err);
+        } else if (std.mem.eql(u8, arg, "--package-notice")) {
+            (try current(&args, err)).notice = try value(argv, &i, err);
         } else if (std.mem.eql(u8, arg, "--extra")) {
             const pair = try value(argv, &i, err);
             const at = std.mem.indexOfScalar(u8, pair, '=') orelse {
@@ -204,6 +228,9 @@ fn parseArgs(gpa: Allocator, argv: []const []const u8, err: *std.Io.Writer) ArgE
 
     try require(args.out, "--out", err);
     try require(args.executable, "--executable", err);
+    try require(args.licenses, "--licenses", err);
+    try require(args.license, "--license", err);
+    try require(args.license_id, "--license-id", err);
     try require(args.product, "--product", err);
     try require(args.version, "--version", err);
     if (args.target_os == null) {
@@ -261,6 +288,7 @@ fn number(comptime T: type, argv: []const []const u8, i: *usize, err: *std.Io.Wr
 }
 
 test {
+    _ = notices;
     _ = stage;
 }
 
@@ -276,6 +304,10 @@ test "a release is described in the order it is written, and a package owns the 
         "--product",        "Foundry Room",
         "--version",        "0.9.0",
         "--target-os",      "macos",
+        "--licenses",       "THIRD_PARTY_LICENSES",
+        "--license",        "LICENSE",
+        "--license-id",     "Apache-2.0",
+        "--notice",         "NOTICE",
         "--package",        "core",
         "--fpk",            "build/core.fpk",
         "--source-root",    "content/core",
@@ -283,6 +315,7 @@ test "a release is described in the order it is written, and a package owns the 
         "--fpk",            "build/room.fpk",
         "--source-root",    "samples/room/content",
         "--generated-root", "build/room-assets",
+        "--package-notice", "build/room-notice.txt",
         "--extra",          "content/room/libx.dylib=build/libx.dylib",
     }, &writer);
     defer args.deinit(testing.allocator);
@@ -291,7 +324,10 @@ test "a release is described in the order it is written, and a package owns the 
     try testing.expectEqualStrings("core", args.packages.items[0].stem);
     try testing.expectEqualStrings("build/core.fpk", args.packages.items[0].fpk);
     try testing.expect(args.packages.items[0].generated_root == null);
+    try testing.expect(args.packages.items[0].notice == null);
     try testing.expectEqualStrings("build/room-assets", args.packages.items[1].generated_root.?);
+    // The notice attaches to the package before it, not to the release.
+    try testing.expectEqualStrings("build/room-notice.txt", args.packages.items[1].notice.?);
     try testing.expectEqual(std.Target.Os.Tag.macos, args.target_os.?);
 
     // The executable's own name, because an application that wants a different one says so.
@@ -299,6 +335,10 @@ test "a release is described in the order it is written, and a package owns the 
 
     try testing.expectEqualStrings("content/room/libx.dylib", args.extras.items[0].staged);
     try testing.expectEqualStrings("build/libx.dylib", args.extras.items[0].source);
+
+    const options = args.options();
+    try testing.expectEqualStrings("THIRD_PARTY_LICENSES", options.licenses_dir);
+    try testing.expectEqualStrings("NOTICE", options.notice_file.?);
 
     // Recorded as given, and `local` when nobody said. The build runs no `git`.
     try testing.expectEqualStrings("local", args.revision);
@@ -310,26 +350,43 @@ test "an incomplete release description is a usage error rather than a default" 
     var writer: std.Io.Writer = .fixed(&buf);
 
     const complete = [_][]const u8{
-        "--out",     "out",   "--executable",  "bin/room", "--product", "Room",
-        "--version", "1",     "--target-os",   "macos",    "--package", "room",
+        "--out",     "out",   "--executable",  "bin/room",   "--product",  "Room",
+        "--version", "1",     "--target-os",   "macos",      "--licenses", "lic",
+        "--license", "LIC",   "--license-id",  "Apache-2.0", "--package",  "room",
         "--fpk",     "r.fpk", "--source-root", "src",
     };
     var ok = try parseArgs(testing.allocator, &complete, &writer);
     ok.deinit(testing.allocator);
 
     // Each required option, removed one at a time. A release described incompletely must
-    // not stage something plausible.
-    try testing.expectError(error.BadUsage, parseArgs(testing.allocator, complete[2..], &writer));
-    try testing.expectError(error.BadUsage, parseArgs(testing.allocator, &.{ "--out", "o" }, &writer));
-    try testing.expectError(error.BadUsage, parseArgs(testing.allocator, complete[0..8], &writer));
+    // not stage something plausible — and a release with no attribution is one of those.
+    var missing: usize = 0;
+    while (missing < complete.len) : (missing += 2) {
+        var without: std.ArrayList([]const u8) = .empty;
+        defer without.deinit(testing.allocator);
+        for (complete, 0..) |arg, at| {
+            if (at == missing or at == missing + 1) continue;
+            try without.append(testing.allocator, arg);
+        }
+        // Dropping `--package` also drops its file options, which is its own error; every
+        // other omission must be refused on its own account.
+        try testing.expectError(error.BadUsage, parseArgs(testing.allocator, without.items, &writer));
+    }
 
-    // A package with no compiled half, and a file with no package.
-    try testing.expectError(error.BadUsage, parseArgs(testing.allocator, complete[0..10], &writer));
+    // A file option with no package before it.
+    writer = .fixed(&buf);
     try testing.expectError(error.BadUsage, parseArgs(testing.allocator, &.{ "--fpk", "r.fpk" }, &writer));
+    writer = .fixed(&buf);
+    try testing.expectError(error.BadUsage, parseArgs(testing.allocator, &.{ "--package-notice", "n" }, &writer));
 
+    writer = .fixed(&buf);
     try testing.expectError(error.BadUsage, parseArgs(testing.allocator, &.{ "--target-os", "plan9x" }, &writer));
+    writer = .fixed(&buf);
     try testing.expectError(error.BadUsage, parseArgs(testing.allocator, &.{ "--extra", "nopair" }, &writer));
+    writer = .fixed(&buf);
     try testing.expectError(error.BadUsage, parseArgs(testing.allocator, &.{ "--max-files", "lots" }, &writer));
+    writer = .fixed(&buf);
     try testing.expectError(error.BadUsage, parseArgs(testing.allocator, &.{"--nope"}, &writer));
+    writer = .fixed(&buf);
     try testing.expectError(error.HelpRequested, parseArgs(testing.allocator, &.{"--help"}, &writer));
 }

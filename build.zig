@@ -629,6 +629,10 @@ pub fn build(b: *std.Build) void {
                 .product_version = "0.9.0",
                 .executable = room,
                 .packages = &.{ content_packages[0], content_packages[2] },
+                .license_id = "Apache-2.0",
+                .license_file = b.path("LICENSE"),
+                .notice_file = b.path("NOTICE"),
+                .licenses_dir = "THIRD_PARTY_LICENSES",
                 .revision = revision,
             },
             // The second artifact, and not for symmetry: it is the one that carries scripts,
@@ -640,6 +644,13 @@ pub fn build(b: *std.Build) void {
                 .product_version = "0.9.0",
                 .executable = sandbox,
                 .packages = &.{ content_packages[0], content_packages[1] },
+                // The samples are Foundry's, so Foundry's license is the application's and
+                // its packages declare the same one. A game states its own here, and records
+                // Foundry as an entry in its own licenses directory (ADR-0017).
+                .license_id = "Apache-2.0",
+                .license_file = b.path("LICENSE"),
+                .notice_file = b.path("NOTICE"),
+                .licenses_dir = "THIRD_PARTY_LICENSES",
                 .revision = revision,
             },
         };

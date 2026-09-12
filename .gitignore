@@ -21,6 +21,11 @@ out/
 *.fpk
 content-build/
 
+# Generated attribution. It belongs in the artifact, never in tracked source: the entries
+# it is built from are in THIRD_PARTY_LICENSES/, and a committed copy is a second answer
+# that starts drifting the day it lands (distribution.md §9).
+THIRD_PARTY_NOTICES.txt
+
 # A repo-local copy of the pinned toolchain, for an agent that wants `zig` on a
 # predictable path. The canonical install is ~/.local/zig/<version>/ (ADR-0014);
 # this is a convenience and must never enter the history — it is ~400 MB.

@@ -18,6 +18,26 @@ recorded in the entries beside this file.
 
 ## What to record
 
+**This template is parsed, not just read.** Since M9 step 5 the release packager
+(`tools/distribution/notices.zig`) reads every file in this directory and generates the
+attribution a player receives. An entry that does not follow the shape below **fails the
+build** rather than being skipped — silently skipping one is how a component vanishes from a
+legal document. The rules it enforces:
+
+* The file starts with `# <Name>`.
+* The **metadata block** is everything between that title and the first `##` heading. Every
+  line in it is either a `- **Key:** value` field or a continuation indented by two spaces.
+  Nothing else may appear there. Fields are read *only* here, so prose further down may
+  discuss `Distribution:` without being mistaken for it.
+* `Version`, `Upstream`, `License` and `Distribution` must each be present, non-empty, and
+  appear exactly once.
+* `Distribution` is `distributed` or `build-time only`, optionally followed by an explanation
+  after a space, comma or full stop. Nothing else — a near miss is refused rather than guessed.
+* There is a `## License text` section and it is not empty.
+
+Any other field — `Location in tree`, `Modifications`, one added later — is carried through
+with the rest of the file and needs no change here.
+
 Create `THIRD_PARTY_LICENSES/<name>.md` using this template:
 
 ```markdown
@@ -84,6 +104,17 @@ tractable question rather than a guess.
 
 ## Shipped attribution
 
-At packaging (M9), an aggregated `THIRD_PARTY_NOTICES.txt` is generated from the entries in
-this directory marked `distributed` and included in every build. It is generated, never
-hand-maintained — a hand-maintained notice file drifts within two releases.
+`THIRD_PARTY_NOTICES.txt` is generated from the entries in this directory marked
+`distributed`, in filename order, and staged into every release beside the application's own
+`LICENSE` and `NOTICE`. It is generated, never hand-maintained — a hand-maintained notice file
+drifts within two releases — and it is never committed: the entries here are the source, and a
+tracked copy would be a second answer that starts drifting the day it lands.
+
+**A selected entry is reproduced whole**, not just its `## License text` section. `sdl3.md`
+records a license *election* — which of HIDAPI's three licenses Foundry chose, and why — and
+that reasoning is part of the attribution. Write an entry expecting a player to read all of it.
+
+**The aggregate is a deliberate superset.** Every distributed entry is included whether or not
+a particular binary links it; the room sample links no Lua and ships Lua's notice. The
+generated file states this, so that listing a component is never read as a claim that it is
+linked. An aggregate that is too large is correct; one that is too small is not.

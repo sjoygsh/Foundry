@@ -1,7 +1,53 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-12
-**Current handoff: M8 is complete. M9 is designed; 4/8 steps implemented. Stop before Step 5.**
+**Current handoff: M8 is complete. M9 is designed; 5/8 steps implemented. Stop before Step 6.**
+
+**Implemented in M9 step 5, 2026-09-12:** a staged release carries its attribution.
+`tools/distribution/notices.zig` reads every entry in `THIRD_PARTY_LICENSES/` and generates
+`THIRD_PARTY_NOTICES.txt` into the release, beside the application's own `LICENSE` and
+`NOTICE` — three files, because they answer three different questions and none stands in for
+another. The room's is 65 KB: both recorded entries, each reproduced **whole**, because SDL's
+entry records which of HIDAPI's three licenses Foundry elected and that reasoning is part of
+the attribution rather than commentary on it. Scraping the `## License text` section would
+have dropped it.
+
+**The parser reads the metadata block and nothing else.** These entries are prose documents
+with tables and fenced text, and SDL's discusses the very words a parser looks for — a
+whole-file scan would have found `- **Distribution:** build-time only` inside an explanation
+and silently dropped a component from a legal document. So fields are read only between the
+`# Title` and the first `##` heading; a line there is a field or a two-space continuation of
+the one above, and anything else is refused. `distributed` and `build-time only` are accepted
+with the explanatory suffixes the existing entries carry, and the word must end there:
+`distributed-ish` is a refusal, not a guess.
+
+**Nothing about attribution is optional.** `--licenses` and `--license` are required; an
+unreadable directory, a directory recording nothing, or one malformed entry refuses the whole
+release. A staged package's `license` identifier states that an obligation exists and
+discharges none of it: a package declaring something other than the application's own license
+must supply its notice as a declared input, named in the refusal with the flag that satisfies
+it. Every staged package is listed with its identifier either way. The aggregate includes
+every distributed entry whether or not this binary links it — the room ships Lua's notice and
+links no Lua — and the generated file says so in its own text, because an aggregate that is
+too large is correct and one that is too small is not. For a game outside this repository all
+three files are the game's, and Foundry becomes one entry in the game's own licenses
+directory, on the terms SDL and Lua are entries in Foundry's (ADR-0017).
+
+**A test that could not fail was found and fixed.** Breaking the filename-order guard left its
+test passing: it wrote files and read the directory back, and this filesystem happened to
+return them sorted. Enumeration order cannot be chosen from a test, so the ordering moved into
+`notices.entryNames`, which takes a listing as data and whose test does fail when the sort is
+removed; the end-to-end test was kept with its claim narrowed to what it checks.
+
+**Step-5 verification.** The full AGENTS.md §3 bar passes: formatting, **1,263 headless tests
+of 1,271 declared**, host/Linux/Windows compilation and both 30-frame null sample runs. Four
+guards were broken narrowly and their tests observed to fail, then restored: the distribution
+near-miss rule, the build-time exclusion, the package-notice requirement, and the filename
+order — the last of which is what exposed the weak test above. `zig build dist -Dapp=room`
+stages 14 files including a 64,968-byte attribution; two independent runs of the packager
+produced byte-identical trees, and the staged release was copied out of the checkout and run.
+No diagnostics, bundle or signing work from Step 6 onward has begun.
+
 
 **Implemented in M9 step 4, 2026-09-12:** `zig build dist` stages a release of a sample from
 explicit inputs. The machinery is `tools/distribution`: `release.zig` is the build-time release
@@ -1741,10 +1787,10 @@ and the published repository.
 
 ## What currently works
 
-**`zig build test` passes 1,251 tests** of 1,259 declared (84 `core`, 90 `platform`,
+**`zig build test` passes 1,263 tests** of 1,271 declared (84 `core`, 90 `platform`,
 106 `data`, 82 `physics2d`, 83 `ui`, 92 `rhi`, 76 `asset`, 24 `mod`, 139 `render2d`,
 84 `scene`, 34 `audio`, 72 `app`, 23 `debug`, 111 `abi`, 56 `script`, 54 integration,
-41 `tools`), and **1,259 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
+53 `tools`), and **1,271 under `-Drhi=metal`**, where `rhi` gains the backend's own 8. Everything but those 8 is headless: nothing calls `SDL_Init`, and `app`'s tests
 instantiate `EngineOf(null_backend.Platform, null_backend.Device)` so the frame loop is
 measured against a synthetic clock and a validating device, never against this machine. The
 8 exceptions need a real GPU and compile only when Metal is selected. **`samples/room` adds
