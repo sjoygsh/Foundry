@@ -11,9 +11,10 @@
 //! `FoundryApi_v2` table a host hands it, exactly as a native mod does — which is why the
 //! configuration takes a `FoundryGetApi` rather than any engine pointer.
 //!
-//! Step 4 binds content and gameplay (scripting.md §7). The invocation shape is still the
-//! fixture's — text in, one integer out — because the author-facing module contract and the
-//! package lifecycle that drives it are step 5.
+//! Step 4 bound content and gameplay (scripting.md §7); step 5 added the author's module
+//! contract and the package lifecycle (§11, §10); step 6 added state snapshots, versioned
+//! migration and the candidate-VM replacement they exist for (§12). The fixture's original
+//! shape — text in, one integer out — remains beside them as the boundary's own test seam.
 
 const std = @import("std");
 const core = @import("core");
@@ -109,6 +110,9 @@ pub const Category = enum(u32) {
 
 /// One deterministic simulation step, exactly as a native system is handed it.
 pub const Step = c.FoundryStep;
+
+/// The largest a state snapshot can encode to, given scripting.md §8's own state bounds.
+pub const max_snapshot: usize = c.FOUNDRY_SCRIPT_MAX_SNAPSHOT;
 
 pub const Config = struct {
     heap_limit: usize = c.FOUNDRY_SCRIPT_DEFAULT_HEAP_LIMIT,
@@ -277,6 +281,42 @@ pub const Runtime = struct {
         return c.foundry_script_state_version(script);
     }
 
+    /// How many bytes this VM's state occupies as the value tree a replacement reads
+    /// (scripting.md §11). Measuring is a full walk, so it validates as well as counts.
+    pub fn stateSize(self: *Runtime) Error!usize {
+        const script = self.script orelse return error.NotInitialized;
+        var needed: usize = 0;
+        try check(status(c.foundry_script_snapshot_state(script, null, 0, &needed)));
+        return needed;
+    }
+
+    /// Writes that tree into `buffer` and answers how much it used. The buffer must be at
+    /// least `stateSize` bytes; nothing runs between the two calls that could change it.
+    pub fn snapshotState(self: *Runtime, buffer: []u8) Error!usize {
+        const script = self.script orelse return error.NotInitialized;
+        var needed: usize = 0;
+        try check(status(c.foundry_script_snapshot_state(script, buffer.ptr, buffer.len, &needed)));
+        return needed;
+    }
+
+    /// Reads one back as this VM's state, for a replacement whose state version is the same.
+    pub fn restoreState(self: *Runtime, snapshot: []const u8) Error!void {
+        const script = self.script orelse return error.NotInitialized;
+        return check(status(c.foundry_script_restore_state(script, snapshot.ptr, snapshot.len)));
+    }
+
+    /// Hands it to `migrate(old_state, old_version)` instead, and validates what comes back.
+    /// A module without a `migrate` refuses: there is no implicit reset (§12).
+    pub fn migrateState(self: *Runtime, snapshot: []const u8, old_version: u32) Error!void {
+        const script = self.script orelse return error.NotInitialized;
+        return check(status(c.foundry_script_migrate_state(
+            script,
+            snapshot.ptr,
+            snapshot.len,
+            old_version,
+        )));
+    }
+
     /// Why the last invocation stopped, and the line it stopped on when Lua knew one.
     pub fn category(self: *const Runtime) Category {
         const script = self.script orelse return .none;
@@ -335,6 +375,8 @@ pub const Fixture = Runtime;
 pub const Descriptor = manager.Descriptor;
 pub const Manager = manager.Manager;
 pub const Limits = manager.Limits;
+pub const Poll = manager.Poll;
+pub const Reload = manager.Reload;
 pub const Slot = manager.Slot;
 pub const Status = manager.Status;
 

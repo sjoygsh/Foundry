@@ -133,6 +133,23 @@ pub const Host = struct {
         log.info("scripts: {d} of {d} package(s) running", .{ manager.readyCount(), self.count });
     }
 
+    /// One replacement, if a script's source has changed under it (`scripting.md` §12).
+    ///
+    /// Called before the world's own update, which is where §12 puts it: no script callback
+    /// is running and no script value is borrowed. The engine's own content watcher has
+    /// already re-read whatever changed on disk — twice a second, in a debug build — so
+    /// **editing `content/sandbox/scripts/encounter.lua` beside the executable and saving
+    /// it is the whole of the loop.** A replacement that is refused says so through the
+    /// package's own log and leaves the last version that worked running.
+    pub fn poll(self: *Host) void {
+        const manager = &(self.manager orelse return);
+        const result = manager.pollReload();
+        const slot = result.slot orelse return;
+        if (result.outcome == .reloaded) {
+            log.info("'{s}' is running new code ({d} reload(s) in)", .{ slot.name(), slot.reloads });
+        }
+    }
+
     /// **A manager belongs to one world's lifetime** (`scripting.md` §3), and loading a save
     /// builds a new world. So the scripts stop, once, with a reason — rather than appearing
     /// to be running while nothing calls them. Reactivating across a world swap is a

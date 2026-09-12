@@ -1,6 +1,6 @@
 # ADR-0029: Scripts consume the public ABI and reload behind stable callbacks
 
-**Status:** Accepted (public source boundary, bounded bindings and the package lifecycle implemented through M8 step 5)
+**Status:** Accepted (public source boundary, bounded bindings, the package lifecycle and candidate-VM reload implemented through M8 step 6)
 **Date:** 2026-09-09
 
 ## Context
@@ -140,3 +140,26 @@ design rather than a lifecycle step.
 
 Decision 5's boundary held. `migrate` is validated as an optional field and never called;
 nothing polls a revision, snapshots state or swaps a VM. Candidate-VM reload is step 6.
+
+## Implementation note — 2026-09-12, step 6
+
+Decision 4 is implemented, and its two halves held. A replacement is built as a **candidate
+VM beside the running one**: the new source is copied, the old state is written out as a
+bounded value tree, the candidate is created, its module validated, and its state either
+restored directly or produced by the module's own `migrate(old_state, old_version)`. Anything
+that fails before the commit leaves the running VM, its state, the ownership ledger, the
+registration and the world untouched. The commit moves a `Runtime` value into the slot and
+closes the one it replaced — no allocation, no script code — and the stable slot decision 3
+built is what makes that possible: the world still calls the same address, holding the same
+identity and the same ledger.
+
+Decision 1 still holds. `script` gained no engine import and the public ABI gained nothing:
+the revision a replacement is triggered by is the one `script_source_copy` already publishes,
+and the asset reference the package already holds is what it is observed through.
+
+Decision 5's boundary moved exactly one step. `migrate` is now called, in preparation, under
+preparation's rules — it may read content and the world and may not change either, which a
+test proves by refusing a `migrate` that tries to log. What remains unclaimed is §14's
+adversarial and determinism matrix, which is step 7, and durable script state across a
+process restart, which is `scripting.md` §15's first open question and is not what a snapshot
+is: it carries no version, no header, and never leaves the process.

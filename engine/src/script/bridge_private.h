@@ -33,6 +33,20 @@ typedef struct TemplateCacheEntry {
     uint8_t valid;
 } TemplateCacheEntry;
 
+/* The bounded value tree one VM's state crosses to the next in (scripting.md §11), and where
+ * the running invocation has got to in it. Exactly one direction is in flight at a time:
+ * `out` writes — NULL measures instead — and `in` reads. The buffer is the caller's. */
+typedef struct ScriptSnapshot {
+    uint8_t *out;
+    const uint8_t *in;
+    size_t capacity;
+    /* Bytes written so far, or the input's length. */
+    size_t length;
+    /* Read position within `in`. */
+    size_t cursor;
+    uint8_t overflow;
+} ScriptSnapshot;
+
 struct FoundryScript {
     lua_State *state;
     FoundryScriptAllocator allocator;
@@ -87,6 +101,9 @@ struct FoundryScript {
     uint32_t state_version;
     /* The step the running update was handed, copied before the invocation begins. */
     FoundryStep step;
+    /* The state tree being written or read, and the version a migration is coming from. */
+    ScriptSnapshot snapshot;
+    uint32_t migrate_from;
     /* What a diagnostic calls this script. `=`-prefixed for Lua, so its own messages spell
      * the name literally rather than wrapping it in `[string "..."]`. */
     char chunk_name[FOUNDRY_SCRIPT_MAX_CHUNK_NAME + 2];
@@ -108,6 +125,15 @@ void foundry_script_open_binding(lua_State *state);
  * unsigned value, an RNG, or an entity this package still owns. A record, cursor, package
  * or component type is not, because none of them outlives the invocation that made it. */
 int foundry_script_value_is_persistable(lua_State *state, int index, const FoundryScript *script);
+
+/* Reads a persistable bridge value at `index` into the three words a snapshot stores, and
+ * pushes one back in another VM. `push` re-checks ownership, so a snapshot cannot be the way
+ * a package acquires an entity it does not own (scripting.md §11). Both return 0 for a value
+ * that is not persistable, having pushed nothing. */
+int foundry_script_read_persisted(lua_State *state, int index, const FoundryScript *script,
+                                  uint8_t *tag, uint64_t *bits, uint64_t *extra);
+int foundry_script_push_persisted(lua_State *state, const FoundryScript *script,
+                                  uint8_t tag, uint64_t bits, uint64_t extra);
 
 /* The shared value metatable's formatter, for the environment's scalar-only `tostring`.
  * Pushes a string and returns 1 when `index` is a bridge value, else pushes nothing and

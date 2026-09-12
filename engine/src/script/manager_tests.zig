@@ -47,6 +47,9 @@ const Host = struct {
     var system_count: usize = 0;
     var register_result: c.FoundryResult = 0;
     var publish_world: bool = true;
+    /// What a content reload looks like from a script's side: the number it reads changes
+    /// and nothing else does.
+    var content_generation: u64 = 1;
     var log_text: [max_logs][512]u8 = undefined;
     var log_len: [max_logs]usize = undefined;
     var log_count: usize = 0;
@@ -63,12 +66,14 @@ const Host = struct {
         table.asset_release = &assetRelease;
         table.script_source_copy = &sourceCopy;
         table.world_register_system = &registerSystem;
+        table.content_generation = &contentGeneration;
         sources = @splat(.{});
         source_count = 0;
         systems = @splat(.{});
         system_count = 0;
         register_result = c.FOUNDRY_OK;
         publish_world = true;
+        content_generation = 1;
         log_count = 0;
     }
 
@@ -105,6 +110,14 @@ const Host = struct {
         };
     }
 
+    /// One source file edited in place, exactly as a person editing it would look from
+    /// here: different bytes behind the same asset, under a revision that has moved on.
+    fn edit(entry_name: []const u8, text: []const u8) void {
+        const source = find(hashOf(entry_name)).?;
+        source.text = text;
+        source.revision += 1;
+    }
+
     fn find(id: u64) ?*Source {
         for (sources[0..source_count]) |*source| {
             if (source.id == id) return source;
@@ -125,6 +138,11 @@ const Host = struct {
         for (systems[0..system_count]) |system| {
             if (system.update) |update| update(system.ctx, &step);
         }
+    }
+
+    fn contentGeneration(out: [*c]u64) callconv(.c) c.FoundryResult {
+        out.* = content_generation;
+        return c.FOUNDRY_OK;
     }
 
     fn resultName(result: c.FoundryResult) callconv(.c) c.FoundryStr {
@@ -550,4 +568,379 @@ test "identical failures are reported, then suppressed" {
     try testing.expect(Host.logged("update must be a function"));
     try testing.expect(Host.logged("suppressed"));
     try testing.expectEqual(@as(usize, 3), Host.log_count);
+}
+
+// -- Replacing the code under a package (scripting.md §12) -------------------------------
+//
+// The claim these make is one claim seen from several sides: **the package outlives the VM
+// running it.** The registration, the identity, the ledger and the state survive; the code
+// does not. Everything that can go wrong leaves the last thing that worked in place.
+
+/// A replacement for `counting_module`: same state version, different behaviour, and an
+/// `init` that would be obvious if it ran — which it must not (§12).
+const resumed_module =
+    \\return {
+    \\    state_version = 1,
+    \\    init = function() return { seen = 100 } end,
+    \\    update = function(state, step)
+    \\        state.seen = state.seen + 1
+    \\        foundry.log_write("info", "resumed at " .. tostring(state.seen))
+    \\    end,
+    \\}
+;
+
+test "new source replaces the code and the state comes across" {
+    Host.reset();
+    var manager = try managerFor(.{});
+    defer manager.deinit();
+    const slot = try manager.add(Host.publish("demo:mod", "demo:scripts.main", counting_module, 1));
+    manager.activateAll();
+
+    Host.tick(1);
+    Host.tick(2);
+    try testing.expect(Host.logged("tick 2"));
+
+    Host.edit("demo:scripts.main", resumed_module);
+    const poll = manager.pollReload();
+    try testing.expectEqual(script.Reload.reloaded, poll.outcome);
+    try testing.expectEqual(@as(?*script.Slot, slot), poll.slot);
+    try testing.expectEqual(@as(u32, 1), slot.reloads);
+    try testing.expectEqual(script.Status.ready, slot.status);
+
+    // One registration, for the world's lifetime. The world still calls the same slot.
+    try testing.expectEqual(@as(usize, 1), Host.system_count);
+    try testing.expectEqual(@as(?*anyopaque, @ptrCast(slot)), Host.systems[0].ctx);
+
+    Host.tick(3);
+    // Three, not a hundred and one: the state crossed and `init` did not run.
+    try testing.expect(Host.logged("resumed at 3"));
+    try testing.expect(!Host.logged("resumed at 101"));
+
+    // The bytes are not kept once a VM holds the state again.
+    try testing.expectEqual(@as(?[]u8, null), slot.retained);
+}
+
+test "source that does not compile is refused and the old code keeps running" {
+    Host.reset();
+    var manager = try managerFor(.{});
+    defer manager.deinit();
+    const slot = try manager.add(Host.publish("demo:mod", "demo:scripts.main", counting_module, 1));
+    manager.activateAll();
+    Host.tick(1);
+
+    Host.edit("demo:scripts.main", "return {");
+    try testing.expectEqual(script.Reload.refused, manager.pollReload().outcome);
+    try testing.expectEqual(script.Status.ready, slot.status);
+    try testing.expectEqual(@as(u32, 0), slot.reloads);
+    try testing.expect(Host.logged("syntax"));
+    // And it says so without claiming the package stopped, because it did not.
+    try testing.expect(Host.logged("The last working version is still running"));
+
+    Host.tick(2);
+    try testing.expect(Host.logged("tick 2"));
+
+    // Broken text is compiled once, not once a frame: the same revision is not retried.
+    Host.log_count = 0;
+    try testing.expectEqual(script.Reload.idle, manager.pollReload().outcome);
+    try testing.expectEqual(@as(usize, 0), Host.log_count);
+
+    // Fixing it is a new revision, and that one is taken.
+    Host.edit("demo:scripts.main", resumed_module);
+    try testing.expectEqual(script.Reload.reloaded, manager.pollReload().outcome);
+    Host.tick(3);
+    try testing.expect(Host.logged("resumed at 3"));
+}
+
+test "a changed state version is carried across by the module's own migrate" {
+    Host.reset();
+    const second_version =
+        \\return {
+        \\    state_version = 2,
+        \\    init = function() return { ticks = 100 } end,
+        \\    migrate = function(old, version)
+        \\        return { ticks = old.seen * 10 + version - 1 }
+        \\    end,
+        \\    update = function(state, step)
+        \\        state.ticks = state.ticks + 1
+        \\        foundry.log_write("info", "v2 at " .. tostring(state.ticks))
+        \\    end,
+        \\}
+    ;
+
+    var manager = try managerFor(.{});
+    defer manager.deinit();
+    const slot = try manager.add(Host.publish("demo:mod", "demo:scripts.main", counting_module, 1));
+    manager.activateAll();
+    try testing.expectEqual(@as(u32, 1), slot.runtime.stateVersion());
+
+    Host.tick(1);
+    Host.tick(2);
+
+    Host.edit("demo:scripts.main", second_version);
+    try testing.expectEqual(script.Reload.reloaded, manager.pollReload().outcome);
+    try testing.expectEqual(@as(u32, 2), slot.runtime.stateVersion());
+
+    Host.tick(3);
+    // Two ticks seen, times ten, plus the version it came from, plus this one. Not 101:
+    // `init` did not run here either.
+    try testing.expect(Host.logged("v2 at 21"));
+}
+
+test "migrate is preparation, and preparation may not touch the world or the log" {
+    Host.reset();
+    const chatty =
+        \\return {
+        \\    state_version = 2,
+        \\    init = function() return { ticks = 0 } end,
+        \\    migrate = function(old) foundry.log_write("info", "hello") return { ticks = 0 } end,
+        \\    update = function() end,
+        \\}
+    ;
+
+    var manager = try managerFor(.{});
+    defer manager.deinit();
+    const slot = try manager.add(Host.publish("demo:mod", "demo:scripts.main", counting_module, 1));
+    manager.activateAll();
+    Host.tick(1);
+
+    Host.edit("demo:scripts.main", chatty);
+    try testing.expectEqual(script.Reload.refused, manager.pollReload().outcome);
+    // The same rule `init` has, in the phase that was added for `migrate` (§11).
+    try testing.expect(Host.logged("contract"));
+    try testing.expectEqual(script.Status.ready, slot.status);
+    try testing.expectEqual(@as(u32, 1), slot.runtime.stateVersion());
+}
+
+test "a changed state version without a migrate refuses the replacement" {
+    Host.reset();
+    const second_version =
+        \\return {
+        \\    state_version = 2,
+        \\    init = function() return { ticks = 0 } end,
+        \\    update = function(state) foundry.log_write("info", "v2 ran") end,
+        \\}
+    ;
+
+    var manager = try managerFor(.{});
+    defer manager.deinit();
+    const slot = try manager.add(Host.publish("demo:mod", "demo:scripts.main", counting_module, 1));
+    manager.activateAll();
+    Host.tick(1);
+
+    Host.edit("demo:scripts.main", second_version);
+    try testing.expectEqual(script.Reload.refused, manager.pollReload().outcome);
+    try testing.expect(Host.logged("migration"));
+    try testing.expect(Host.logged("has no migrate"));
+
+    // No implicit reset: the old code and the old state are still the ones running (§12).
+    try testing.expectEqual(script.Status.ready, slot.status);
+    try testing.expectEqual(@as(u32, 1), slot.runtime.stateVersion());
+    Host.tick(2);
+    try testing.expect(Host.logged("tick 2"));
+    try testing.expect(!Host.logged("v2 ran"));
+}
+
+test "a faulted package resumes from the state its fault left behind" {
+    Host.reset();
+    const breaks =
+        \\return {
+        \\    state_version = 1,
+        \\    init = function() return { n = 0 } end,
+        \\    update = function(state, step)
+        \\        state.n = state.n + 1
+        \\        if step.tick == 2 then error("the wheels came off") end
+        \\        foundry.log_write("info", "v1 n=" .. tostring(state.n))
+        \\    end,
+        \\}
+    ;
+    const fixed =
+        \\return {
+        \\    state_version = 1,
+        \\    init = function() return { n = 500 } end,
+        \\    update = function(state, step)
+        \\        state.n = state.n + 1
+        \\        foundry.log_write("info", "v2 n=" .. tostring(state.n))
+        \\    end,
+        \\}
+    ;
+
+    var manager = try managerFor(.{});
+    defer manager.deinit();
+    const slot = try manager.add(Host.publish("demo:mod", "demo:scripts.main", breaks, 1));
+    manager.activateAll();
+
+    Host.tick(1);
+    Host.tick(2);
+    try testing.expectEqual(script.Status.faulted, slot.status);
+    try testing.expect(!slot.has_runtime);
+    // The VM is gone and the state is not: kept as bytes at the moment it faulted, because
+    // afterwards there is nothing left to ask (§12).
+    try testing.expect(slot.retained != null);
+
+    Host.edit("demo:scripts.main", fixed);
+    try testing.expectEqual(script.Reload.reloaded, manager.pollReload().outcome);
+    try testing.expectEqual(script.Status.ready, slot.status);
+
+    Host.tick(3);
+    // Two, plus this one. Not 501: a fixed script picks up where the broken one stopped
+    // rather than running `init` again over a world it has already changed.
+    try testing.expect(Host.logged("v2 n=3"));
+    try testing.expectEqual(@as(?[]u8, null), slot.retained);
+}
+
+test "state an update corrupted refuses the replacement rather than carrying it" {
+    Host.reset();
+    const spoils =
+        \\return {
+        \\    state_version = 1,
+        \\    init = function() return { n = 0 } end,
+        \\    update = function(state, step)
+        \\        state.oops = function() end
+        \\        foundry.log_write("info", "v1 ran")
+        \\    end,
+        \\}
+    ;
+
+    var manager = try managerFor(.{});
+    defer manager.deinit();
+    const slot = try manager.add(Host.publish("demo:mod", "demo:scripts.main", spoils, 1));
+    manager.activateAll();
+    Host.tick(1);
+
+    Host.edit("demo:scripts.main", resumed_module);
+    try testing.expectEqual(script.Reload.refused, manager.pollReload().outcome);
+    try testing.expect(Host.logged("holds a function"));
+    // The old code is still the one running, which is all that can be true here: the state
+    // it holds is exactly the state that cannot be carried anywhere (§12).
+    try testing.expectEqual(script.Status.ready, slot.status);
+    try testing.expectEqual(@as(u32, 0), slot.reloads);
+    try testing.expectEqual(@as(?[]u8, null), slot.retained);
+}
+
+test "more reloads than the world has system slots change nothing about the registration" {
+    Host.reset();
+    var manager = try managerFor(.{});
+    defer manager.deinit();
+    const slot = try manager.add(Host.publish("demo:mod", "demo:scripts.main", counting_module, 1));
+    manager.activateAll();
+    Host.tick(1);
+
+    // Well past `Host.max_systems`, which is what the ABI's own system capacity stands in
+    // for here. A reload that registered anything would have run out long ago.
+    Host.edit("demo:scripts.main", resumed_module);
+    try testing.expectEqual(script.Reload.reloaded, manager.pollReload().outcome);
+    const after_first = manager.budget.used;
+
+    var round: u32 = 0;
+    while (round < 11) : (round += 1) {
+        Host.edit("demo:scripts.main", resumed_module);
+        try testing.expectEqual(script.Reload.reloaded, manager.pollReload().outcome);
+    }
+
+    try testing.expectEqual(@as(u32, 12), slot.reloads);
+    try testing.expectEqual(@as(usize, 1), Host.system_count);
+    try testing.expectEqualStrings("demo:mod", Host.systems[0].name);
+    try testing.expectEqual(@as(?*anyopaque, @ptrCast(slot)), Host.systems[0].ctx);
+    // One reference, held across every one of them.
+    try testing.expectEqual(@as(i32, 1), Host.sources[0].refs);
+    // And bounded memory: twelve replacements cost what one does, because eleven VMs were
+    // closed as the twelfth opened.
+    try testing.expectEqual(after_first, manager.budget.used);
+
+    Host.tick(2);
+    try testing.expect(Host.logged("resumed at 2"));
+}
+
+test "a refused replacement does not undo a content reload" {
+    Host.reset();
+    const reads_content =
+        \\return {
+        \\    state_version = 1,
+        \\    init = function() return { seen = 0 } end,
+        \\    update = function(state, step)
+        \\        foundry.log_write("info", "generation " .. tostring(foundry.content_generation()))
+        \\    end,
+        \\}
+    ;
+
+    var manager = try managerFor(.{});
+    defer manager.deinit();
+    const slot = try manager.add(Host.publish("demo:mod", "demo:scripts.main", reads_content, 1));
+    manager.activateAll();
+    Host.tick(1);
+    try testing.expect(Host.logged("generation 1"));
+
+    // Content reloaded, and then a script replacement that fails. The two are separate
+    // transactions and the failing one does not roll the other back (§12).
+    Host.content_generation = 2;
+    Host.edit("demo:scripts.main", "return { state_version = 1 }");
+    try testing.expectEqual(script.Reload.refused, manager.pollReload().outcome);
+    try testing.expectEqual(script.Status.ready, slot.status);
+
+    Host.tick(2);
+    // The old script sees the new content, which is the other half of the same rule: it has
+    // to cope with records that changed under it.
+    try testing.expect(Host.logged("generation 2"));
+}
+
+test "two states built in different orders snapshot to the same bytes" {
+    Host.reset();
+    // The same table, filled in two different orders, then faulted so the bytes are kept.
+    // Two runs of one simulation must agree about what its state *is* (I9).
+    const sorted =
+        \\return {
+        \\    state_version = 1,
+        \\    init = function() return { zeta = 1, alpha = 2, [10] = 3, [2] = 4 } end,
+        \\    update = function() error("stop") end,
+        \\}
+    ;
+    const shuffled =
+        \\return {
+        \\    state_version = 1,
+        \\    init = function()
+        \\        local t = {}
+        \\        t[2] = 4
+        \\        t.zeta = 1
+        \\        t[10] = 3
+        \\        t.alpha = 2
+        \\        return t
+        \\    end,
+        \\    update = function() error("stop") end,
+        \\}
+    ;
+
+    var manager = try managerFor(.{});
+    defer manager.deinit();
+    const a = try manager.add(Host.publish("a:mod", "a:scripts.main", sorted, 1));
+    const b = try manager.add(Host.publish("b:mod", "b:scripts.main", shuffled, 1));
+    manager.activateAll();
+    Host.tick(1);
+
+    try testing.expectEqual(script.Status.faulted, a.status);
+    try testing.expectEqual(script.Status.faulted, b.status);
+    try testing.expectEqualSlices(u8, a.retained.?, b.retained.?);
+}
+
+test "a package that never loaded is retried when its source is fixed" {
+    Host.reset();
+    var manager = try managerFor(.{});
+    defer manager.deinit();
+    const slot = try manager.add(Host.publish("demo:mod", "demo:scripts.main", "return 7", 1));
+    manager.activateAll();
+
+    try testing.expectEqual(script.Status.faulted, slot.status);
+    try testing.expect(!slot.registered);
+    try testing.expectEqual(@as(usize, 0), Host.system_count);
+    // Nothing was kept: a failed activation released everything it took (§10).
+    try testing.expectEqual(@as(i32, 0), Host.sources[0].refs);
+
+    // It has no state to carry and no system to keep, so what a fixed source earns it is
+    // the activation that failed — `init` and all, because it has never run.
+    Host.edit("demo:scripts.main", counting_module);
+    try testing.expectEqual(script.Reload.reloaded, manager.pollReload().outcome);
+    try testing.expectEqual(script.Status.ready, slot.status);
+    try testing.expectEqual(@as(usize, 1), Host.system_count);
+
+    Host.tick(1);
+    try testing.expect(Host.logged("tick 1"));
 }

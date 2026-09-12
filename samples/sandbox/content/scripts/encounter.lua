@@ -8,6 +8,12 @@
 -- world, spawn a template, and remove what it spawned. It cannot move an entity, draw
 -- anything, read a clock or touch a file -- so *where* the beacons are and what they look
 -- like is content, and this decides only when they appear and when they go.
+--
+-- **Edit it while the sandbox is running.** A debug build watches its content, and the copy
+-- that matters is the installed one beside the executable (`zig-out/content/sandbox/`). Save
+-- a change and the next tick runs it: the state below carries across, the beacons already
+-- lit stay lit and stay this package's, and source that does not compile leaves the last
+-- version that worked running with one warning saying so (§12).
 
 -- Top-level evaluation is preparation: it may read content and may not change the world.
 local config = foundry.content_find("sandbox:encounter.main")

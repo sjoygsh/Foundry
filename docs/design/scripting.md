@@ -1,7 +1,7 @@
 # Scripting: the Tier 2 host
 
-**Status:** designed 2026-09-09; **4 of 8 implementation steps complete.**
-**Current stop point:** after §16 step 5; step 6 has not begun.
+**Status:** designed 2026-09-09; **6 of 8 implementation steps complete.**
+**Current stop point:** after §16 step 6; step 7 has not begun.
 
 Rests on [ADR-0028](../adr/0028-scripting-lua.md) (runtime),
 [ADR-0029](../adr/0029-script-host-and-reload.md) (boundary and lifetime), and
@@ -559,11 +559,11 @@ steps simply because a session has budget. This planning commit completes none o
    encounter in the sandbox's own package. Support an opt-in host with no native loader.
    Test mixed packages, version failures, capacity and one script failing beside a healthy
    one. Runnable result: visible fixed-tick behavior driven by an ordinary script package.
-6. **Replace code without replacing the world.** Implement snapshots, versioned migration,
-   candidate validation, source revision polling and nonallocating commit. Test rollback,
-   fault recovery and repeated reload beyond slot capacity. Runnable result: edit gameplay
-   conditions live and retain state/entities, then introduce bad source and keep the old
-   behavior. Document content-reload independence explicitly.
+6. **Replace code without replacing the world. Complete 2026-09-12.** Implement snapshots,
+   versioned migration, candidate validation, source revision polling and nonallocating
+   commit. Test rollback, fault recovery and repeated reload beyond slot capacity. Runnable
+   result: edit gameplay conditions live and retain state/entities, then introduce bad source
+   and keep the old behavior. Document content-reload independence explicitly.
 7. **Prove isolation and reproducibility end to end.** Complete the adversarial matrix in
    §14, guard-breaking evidence, bounded native-work/OOM paths, deterministic scenarios,
    source confinement and windowed recovery. Measure the default budgets with the runnable
@@ -577,11 +577,13 @@ steps simply because a session has budget. This planning commit completes none o
 
 ## 17. Planning handoff
 
-Architecture and sequence are written. Steps 1 through 5 prove the Lua/C/Zig containment
+Architecture and sequence are written. Steps 1 through 6 prove the Lua/C/Zig containment
 boundary, package/source integration, additive public source access, binding 1's bounded
-content/world surface, and the package lifecycle that drives it on a fixed tick. Reload,
-end-to-end security, performance and guide execution remain **unverified until their
-implementation steps**. The next authorized unit, when the user resumes, is §16 step 6 only.
+content/world surface, the package lifecycle that drives it on a fixed tick, and the
+candidate-VM replacement that changes a package's code while its world, its state and its
+entities stay. End-to-end security, performance and guide execution remain **unverified
+until their implementation steps**. The next authorized unit, when the user resumes, is
+§16 step 7 only.
 
 ## Resolution — 2026-09-10, step 1
 
@@ -802,3 +804,85 @@ What step 5 deliberately does **not** do: no reload. Nothing polls a source revi
 snapshots state, nothing migrates and nothing swaps a VM. The state validation written here
 is the *shape* check §10 asks for at `init`, not the copy step 6 owes, and `migrate` is
 validated as a field and never called.
+
+## Resolution — 2026-09-12, step 6
+
+A package's code can be replaced while its world, its state and its entities stay. The
+transaction §12 describes is `script.Manager.pollReload`, and everything before its last
+step builds a complete replacement beside the running one: a failure at any point leaves the
+VM, the state, the ledger, the registration and the world exactly as they were. The commit
+moves a `Runtime` value into the slot and closes the old one — no allocation, no script code
+— and the next fixed tick runs the replacement.
+
+**State crosses as bytes, because two VMs share no heap.** `foundry_script_snapshot_state`
+writes the bounded value tree of §11 into a caller buffer (a NULL buffer measures instead,
+the same sizing probe `script_source_copy` has); `restore_state` reads one back as the new
+VM's state when the state version is unchanged, and `migrate_state` reads it back as a plain
+table, hands it to `migrate(old_state, old_version)` and validates what comes back. The tree
+carries no version and no header: it never leaves the process, and durable script saves stay
+§15's first open question rather than being answered by accident here.
+
+**The walk that writes the tree is also the last check that the state is still state.** An
+`update` may put a function, a cycle, an alias or a foreign entity into a table `init` handed
+over clean, and §11's rules are enforced at the moment the state is asked to move rather than
+only when it was made. A state that cannot be written is a package that cannot be replaced —
+which is exactly §12's "explicit host restart", said at the point where it is still useful.
+Keys are written in §9's order, so the same state produces the same bytes on any machine and
+in any run; a test builds one table two ways and compares the bytes.
+
+**A fault snapshots before it closes the VM, and that is a decision step 6 had to make.**
+§12 says a faulted package may attempt replacement on a new revision, and forbids calling
+`init` over a world the package has already changed. A faulted VM is gone, so the only honest
+thing to hand its replacement is the state the fault left behind: the slot keeps it, bounded
+by §8's own state limit and charged to the aggregate budget, and drops it the moment a VM
+holds the state again. The result is the loop an author actually has — a script errors, the
+error names the line, the file is fixed, and the next poll resumes from where it stopped.
+
+**A package that never registered is re-activated, not replaced.** It has no state, no owned
+entities and no system, so what a fixed source earns it is the activation that failed, `init`
+included — which is not "init over an existing world" for a package that has never run. Its
+source reference was released with everything else a failed startup took (§10), so the
+revision probe acquires, asks and releases rather than quietly holding one on its behalf.
+
+**Two smaller things the implementation decided.** A refused *replacement* is logged at
+warning level and says "the last working version is still running", because a package that is
+still running is not an error — `core.log`'s own definition of the two levels is the whole
+argument, and a fault that disables a package still logs at error. And the diagnostic of a
+candidate carries the *candidate's* line, not the running VM's, which is a different VM and a
+different error.
+
+**Content reload is independent, and now says so in three places**: `pollReload`'s own
+documentation, a fake-host test in which content moves under a script whose replacement is
+refused and the old code goes on reading the new content, and the fact that nothing in the
+transaction touches the store. A failed script replacement does not undo merged content, and
+the old script must cope with a record that changed under it — the same obligation it already
+had towards a package that overrode one.
+
+**The sandbox needs no new key.** The engine already watches its content in a debug build and
+re-reads what changed at the top of a frame, so the sample's fixed step polls before
+`world.update` and editing `content/sandbox/scripts/encounter.lua` beside the executable is
+the whole loop. A headless run of it is the runnable proof: beacons 1, 2 and 3 light on the
+original code; the file is edited; the log says the package *is running new code*; the next
+message is **beacon 4**, not beacon 1, so the state crossed and `init` did not run; the
+following cycle destroys all four, including the three the previous VM spawned, so the ledger
+and the handles in state crossed with it. Then the file is replaced with text that does not
+compile, and the warning says the last working version is still running while the beacons
+keep their cadence.
+
+**Verified by breaking each new guard in turn**, restoring the exact edit each time: losing
+the attempted-revision memo failed the refused-source test; running `init` instead of
+carrying the state failed the state-crossing test; treating a changed state version as
+unchanged failed the no-migrate test; not closing the replaced VM failed the repeated-reload
+test's memory assertion (and leaked 2,896 allocations); re-activating instead of replacing
+failed both real-world reload tests by registering a second system; accepting a value the
+snapshot cannot persist failed the corrupted-state test; and running `migrate` as an update
+failed the preparation test. The suite is **1200 declared, 1192 headless** after the
+documented 8 Metal-only tests, and the full AGENTS.md §3 bar passes on the host,
+`x86_64-linux-gnu` and `x86_64-windows-gnu`, with both samples. The public ABI did not
+change, so `foundry.h` is still byte-for-byte what step 3 left.
+
+What step 6 deliberately does **not** do: the adversarial matrix of §14 — allocation failure
+at every point of snapshot and migration, the escape attempts, the determinism scenarios and
+the windowed recovery — is step 7's, and no part of it was claimed early. Nor does anything
+here make a script's state durable across a process restart: §15's first question stays open,
+and the snapshot is not a save format.

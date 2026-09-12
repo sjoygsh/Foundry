@@ -397,7 +397,12 @@ bounded content and gameplay surface a script may call, with per-invocation budg
 script-owned entities. Step 5, completed the same day, wires the package lifecycle: one stable
 manager slot and one registered system per package, activation, fault, teardown and structured
 diagnostics — and the sandbox's own package now ships a script the world's fixed tick drives.
-Step 6 replaces a package's code without replacing the world. M9 remains undesigned.
+Step 6, completed the same day, replaces a package's code without replacing the world: a
+candidate VM is built beside the running one, the old state crosses as a bounded value tree
+or through the module's own `migrate`, and the commit allocates nothing and runs no script
+code — so editing a `.lua` beside the executable changes what a package does on the next tick
+while its world, its state and the entities it owns stay. Step 7 proves isolation and
+reproducibility end to end. M9 remains undesigned.
 
 * Scripting language decision — **made in ADR-0028; runtime boundary implemented**.
 * Scripting host over the same public ABI; no separate surface.

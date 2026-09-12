@@ -1690,6 +1690,11 @@ const SpriteField = struct {
     /// delta and nothing else, which is what makes a simulation reproducible and what stops
     /// it reading a device (`entity-storage.md` §7).
     fn step(self: *SpriteField, s: app.Step) void {
+        // **Before the world's update, and outside any callback** — which is the only place
+        // a script's code may be replaced (`scripting.md` §12). The engine has already
+        // re-read anything that changed on disk by the time a frame's steps run, so saving
+        // an edit to `content/sandbox/scripts/encounter.lua` is all it takes.
+        if (self.scripts) |scripts| scripts.poll();
         self.world.update(.{ .tick = s.tick, .delta = s.delta });
         self.walk(s);
     }

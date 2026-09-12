@@ -1,12 +1,66 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-12
-**Current handoff: M8 step 5 complete (5/8 steps); next is step 6 only.**
+**Current handoff: M8 step 6 complete (6/8 steps); next is step 7 only.**
 The restricted Lua runtime, ordinary script package assets/manifests, additive ABI v2 typed
-source copying, binding 1's bounded content/world surface and the package lifecycle that
-drives it are implemented and proven. **A script package runs**: the sandbox's own package
-ships one, and it lights four beacons around the world origin on a fixed tick and puts them
-out again. Nothing reloads yet, which is step 6.
+source copying, binding 1's bounded content/world surface, the package lifecycle that drives
+it and the candidate-VM replacement that swaps a package's code are implemented and proven.
+**A script package runs and can be edited while it runs**: the sandbox's own package ships
+one, it lights four beacons around the world origin on a fixed tick and puts them out again,
+and saving an edit to its `.lua` beside the executable changes what it does on the next tick
+without the world, its state or its entities being disturbed.
+
+**Implemented in step 6, 2026-09-12:** `script.Manager.pollReload` — §12's transaction, one
+package per call in resolved order. It observes the entry's source revision through v2,
+remembers the last revision it attempted so text that does not compile is compiled once
+rather than once a frame, copies the new source under the aggregate budget, snapshots the old
+state, builds a candidate VM beside the running one, loads and validates its module, and
+either restores the state directly (the state version is unchanged) or requires the module's
+own `migrate(old_state, old_version)` and validates what it returns. **Every step before the
+commit may fail and failing changes nothing** — not the VM, not its state, not the ledger,
+not the registration, not the world. The commit allocates nothing and runs no script code: it
+moves a `Runtime` value into the slot and closes the one it replaced. Three C entry points
+carry the state — `snapshot_state` (with the same NULL-buffer sizing probe
+`script_source_copy` has), `restore_state` and `migrate_state` — and the tagged value tree
+they write is bounded by §8's own state limits, ordered by §9's key order, and never leaves
+the process.
+
+**Three things step 6 decided rather than inherited.** A fault **snapshots before it closes
+the VM**, because §12 lets a faulted package be replaced on a new revision and forbids running
+`init` over a world the package has already changed; the bytes are held only until a VM holds
+the state again. A package that **never registered** is re-activated rather than replaced —
+it has no state, no owned entities and no system, and `init` is not "init over an existing
+world" for a package that has never run. And a **refused replacement logs at warning level**
+and says the last working version is still running, because a package that is still running is
+not an error; a fault that disables one still logs at error.
+
+**Step-6 verification:** the full AGENTS.md §3 bar passes — formatting, host/Linux/Windows
+compilation and both 30-frame null sample runs. The suite declares 1200 tests, **1192
+headless** after the documented 8 Metal-only tests. Thirteen new tests cover state crossing
+without re-`init`, refused source keeping the old code and state, versioned migration, a
+changed version with no `migrate`, `migrate` obeying preparation's rules, fault recovery from
+the state a fault left behind, state an update corrupted refusing the replacement, twelve
+reloads under one registration with bounded memory, content moving under a script whose
+replacement was refused, identical bytes from a state built two ways, a never-loaded package
+retried when its source is fixed, and two real-world tests that rewrite a package's `.lua` on
+disk, reload the asset and prove the new code destroys entities the old VM spawned. Seven
+guards were broken one at a time and each failed its own test: losing the attempted-revision
+memo, running `init` instead of carrying state, treating a changed state version as unchanged,
+not closing the replaced VM, re-activating instead of replacing, accepting a value the
+snapshot cannot persist, and running `migrate` as an update. Every edit was restored. The
+public ABI did not change; `foundry.h` is byte-for-byte what step 3 left.
+
+**Runnable evidence:** a headless sandbox run with the installed script edited underneath it
+logs beacons 1, 2 and 3 on the original code, then `'sandbox:content' is running new code`,
+then **beacon 4** — not beacon 1 — so the state crossed and `init` did not run; the next cycle
+destroys all four including the three the previous VM spawned. Replacing the file with text
+that does not compile logs one warning saying the last working version is still running, and
+the beacons keep their cadence.
+
+**Step 7 boundary:** the adversarial and determinism matrix of `scripting.md` §14 —
+allocation failure at every point of snapshot and migration, the escape attempts, deterministic
+scenarios, source confinement and windowed recovery — and the budget measurement §16 step 7
+asks for. Do not begin the author guide.
 
 **Implemented in step 5, 2026-09-12:** the author's module contract (`scripting.md` §11) as
 three protected C entry points — `load_module` evaluates the chunk and validates the table it
@@ -45,9 +99,6 @@ broken one at a time and each failed its own test: accepting an unrecognised lif
 letting a state table be reached twice, publishing a slot whether or not the world took its
 system, never releasing a source reference, and accepting any binding version. Every edit was
 restored. The public ABI did not change; `foundry.h` is byte-for-byte what step 3 left.
-
-**Step 6 boundary:** snapshots, versioned migration, candidate validation, source-revision
-polling and a nonallocating commit. Do not begin the adversarial matrix.
 
 **Implemented in step 4, 2026-09-12:** the `foundry` Lua module, binding version 1 — 39
 functions covering identity, a deterministic RNG, attributed logging, content walks, record

@@ -15,16 +15,18 @@ source changes.
 
 Tier 1 content modding and Tier 3 native modding work: see
 [docs/modding](docs/modding/). Tier 2 scripting is M8: its
-[architecture and eight-step plan](docs/design/scripting.md) are written, and steps 1 through 5
+[architecture and eight-step plan](docs/design/scripting.md) are written, and steps 1 through 6
 have completed the protected Lua boundary, ordinary package script assets/manifests, additive
-ABI v2 typed source copying, the bounded content and gameplay bindings, and the package
-lifecycle. **A script package runs** — the sandbox ships one, and the world's fixed tick
-drives it. Hot reload is next.
+ABI v2 typed source copying, the bounded content and gameplay bindings, the package lifecycle
+and hot reload. **A script package runs, and can be edited while it runs** — the sandbox ships
+one, the world's fixed tick drives it, and saving an edit to its `.lua` changes what it does on
+the next tick while its state and its entities carry across. Proving isolation end to end, and
+the author's guide, are next.
 
 ```sh
 ./scripts/install-zig.sh   # the only tool you need
 zig build run -Drhi=metal  # opens a window and draws; escape quits
-zig build test             # 1179 headless tests
+zig build test             # 1192 headless tests
 ```
 
 Implemented so far:

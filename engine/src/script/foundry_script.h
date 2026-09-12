@@ -132,6 +132,11 @@ typedef struct FoundryScriptResult {
 #define FOUNDRY_SCRIPT_MAX_STATE_DEPTH 16u
 #define FOUNDRY_SCRIPT_MAX_STATE_ENTRIES 1024u
 #define FOUNDRY_SCRIPT_MAX_STATE_BYTES (64u * 1024u)
+/* The largest a snapshot of state that already fits those bounds can encode to: the state's
+ * own bytes, plus a tag and a length for every entry and every table it is made of. A state
+ * the walk accepts always fits; the bound exists so a host can refuse a buffer request it
+ * could not have produced. */
+#define FOUNDRY_SCRIPT_MAX_SNAPSHOT (FOUNDRY_SCRIPT_MAX_STATE_BYTES + 48u * FOUNDRY_SCRIPT_MAX_STATE_ENTRIES)
 
 /* The allocator and userdata remain caller-owned until destroy returns. */
 FoundryScriptStatus foundry_script_create(FoundryScript **out,
@@ -157,6 +162,30 @@ FoundryScriptStatus foundry_script_init_state(FoundryScript *script);
 FoundryScriptStatus foundry_script_update(FoundryScript *script, const FoundryStep *step);
 /* The `state_version` the loaded module declared, or zero before one is loaded. */
 uint32_t foundry_script_state_version(const FoundryScript *script);
+
+/* -- Replacing the code under a package (scripting.md §12) -----------------------------
+ *
+ * **Two VMs share no heap**, so state crosses between them as a bounded value tree of bytes
+ * and never as a Lua value. `snapshot_state` writes that tree: a NULL buffer with zero
+ * capacity measures it instead, exactly as `script_source_copy` does, and `*needed` is the
+ * byte count either way. Snapshotting reads the live state directly, invoking no script code
+ * and no metamethod, and refuses anything scripting.md §11 says cannot persist — which is
+ * also how state an update has since corrupted is caught.
+ *
+ * `restore_state` reads a tree back as this VM's state, for a replacement whose state
+ * version is unchanged. `migrate_state` reads it back as a plain table instead, hands it to
+ * the module's `migrate(old_state, old_version)`, and validates what that returns. Both
+ * refuse an entity this package does not own, so migration cannot acquire one.
+ *
+ * All three are preparation: they may read content and the world and may change neither.
+ */
+FoundryScriptStatus foundry_script_snapshot_state(FoundryScript *script, uint8_t *buffer,
+                                                  size_t capacity, size_t *needed);
+FoundryScriptStatus foundry_script_restore_state(FoundryScript *script,
+                                                 const uint8_t *snapshot, size_t length);
+FoundryScriptStatus foundry_script_migrate_state(FoundryScript *script,
+                                                 const uint8_t *snapshot, size_t length,
+                                                 uint32_t old_version);
 
 FoundryScriptStatus foundry_script_teardown(FoundryScript *script);
 void foundry_script_destroy(FoundryScript *script);

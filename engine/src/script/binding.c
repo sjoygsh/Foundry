@@ -1188,6 +1188,50 @@ int foundry_script_value_is_persistable(lua_State *state, int index,
     }
 }
 
+/* -- Crossing between VMs (scripting.md §11) ------------------------------------------- */
+
+int foundry_script_read_persisted(lua_State *state, int index, const FoundryScript *script,
+                                  uint8_t *tag, uint64_t *bits, uint64_t *extra) {
+    const ScriptValue *value;
+    if (!foundry_script_value_is_persistable(state, index, script)) {
+        return 0;
+    }
+    value = test_value(state, index);
+    *tag = (uint8_t)value->tag;
+    *bits = value->bits;
+    /* Only an RNG uses `extra`, and it is the increment its sequence is defined by: a
+     * generator that came back without it would produce a different stream (I9). */
+    *extra = value->extra;
+    return 1;
+}
+
+int foundry_script_push_persisted(lua_State *state, const FoundryScript *script,
+                                  uint8_t tag, uint64_t bits, uint64_t extra) {
+    ScriptValue *value;
+    switch (tag) {
+        case TAG_ID:
+        case TAG_SCHEMA:
+        case TAG_U64:
+        case TAG_RNG:
+            break;
+        case TAG_ENTITY: {
+            /* Checked again on the way in, not only on the way out. Ownership is the stable
+             * slot's answer, and a snapshot must not become a way to assert one. */
+            FoundryEntity entity;
+            entity.bits = bits;
+            if (script->ledger == NULL || ledger_find(script->ledger, entity) < 0) {
+                return 0;
+            }
+            break;
+        }
+        default:
+            return 0;
+    }
+    value = push_value(state, tag, bits, 0);
+    value->extra = tag == TAG_RNG ? extra : 0;
+    return 1;
+}
+
 int foundry_script_format_value(lua_State *state, int index) {
     char text[48];
     const ScriptValue *value = test_value(state, index);

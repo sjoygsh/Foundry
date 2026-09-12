@@ -58,15 +58,38 @@ const encounter_source =
     \\return {
     \\    state_version = 1,
     \\    init = function()
-    \\        return { spawned = 0, next_tick = delay }
+    \\        return { spawned = 0, next_tick = delay, owned = {} }
     \\    end,
     \\    update = function(state, step)
     \\        if step.tick < state.next_tick then return end
     \\        local made = foundry.world_spawn(template)
     \\        if made == nil then return end
     \\        state.spawned = state.spawned + 1
+    \\        state.owned[state.spawned] = made
     \\        state.next_tick = step.tick + delay
     \\        foundry.log_write("info", "spawned " .. tostring(state.spawned))
+    \\    end,
+    \\}
+;
+
+/// The same package, edited: a new state version, a `migrate` that carries the old state
+/// across, and code that clears away what the previous VM spawned — using the very handles
+/// that VM put in its state (scripting.md §11, §12).
+const cleanup_source =
+    \\return {
+    \\    state_version = 2,
+    \\    init = function() return { spawned = 0, cleared = 0, owned = {} } end,
+    \\    migrate = function(old, version)
+    \\        return { spawned = old.spawned, cleared = 0, owned = old.owned, from = version }
+    \\    end,
+    \\    update = function(state, step)
+    \\        local last = 0
+    \\        for i = 1, 32 do if state.owned[i] ~= nil then last = i end end
+    \\        if last == 0 then return end
+    \\        foundry.world_destroy_entity(state.owned[last])
+    \\        state.owned[last] = nil
+    \\        state.cleared = state.cleared + 1
+    \\        foundry.log_write("info", "cleared " .. tostring(state.cleared))
     \\    end,
     \\}
 ;
@@ -103,6 +126,7 @@ fn writePackage(os: *platform.Os, dir: []const u8, name: []const u8, source: []c
 const Fixture = struct {
     tmp: std.testing.TmpDir,
     path_buf: [std.Io.Dir.max_path_bytes]u8,
+    content_len: usize,
     os: *platform.Os,
     engine: *TestEngine,
     world: scene.World,
@@ -118,6 +142,7 @@ const Fixture = struct {
     fn init(self: *Fixture, world_allocator: std.mem.Allocator) !void {
         self.tmp = testing.tmpDir(.{});
         const path_len = try self.tmp.dir.realPath(testing.io, &self.path_buf);
+        self.content_len = path_len;
         const content_dir = self.path_buf[0..path_len];
 
         self.os = try platform.Os.init(gpa, .{ .app_name = "foundry-script-bindings", .env = &.{} });
@@ -162,6 +187,33 @@ const Fixture = struct {
         self.engine.deinit();
         self.os.deinit();
         self.tmp.cleanup();
+    }
+
+    /// Edits the package's script on disk and reloads the asset behind it — which is the
+    /// whole of what a development host does before it polls (`scripting.md` §12). The
+    /// asset handle does not change and neither does the manager's reference to it; what
+    /// changes is the payload behind it, and the revision that says so.
+    fn rewriteScript(self: *Fixture, source: []const u8) !void {
+        const content_dir = self.path_buf[0..self.content_len];
+        const entry_path = try platform.os.joinPath(gpa, &.{ content_dir, "demo", "scripts", "main.lua" });
+        defer gpa.free(entry_path);
+        try self.os.writeFile(entry_path, source);
+
+        const handle = try self.engine.assets.acquire(gpa, core.ContentId.fromString("demo:scripts.main"));
+        defer self.engine.assets.release(handle);
+        try self.engine.assets.reload(gpa, handle);
+    }
+
+    /// The descriptor an application builds from a resolved package, written out because
+    /// that conversion is the application's and not `script`'s (§3).
+    fn descriptor(self: *Fixture) script.Descriptor {
+        return .{
+            .package = core.ContentId.fromString("demo:mod"),
+            .package_name = "demo:mod",
+            .entry = core.ContentId.fromString("demo:scripts.main"),
+            .binding = 1,
+            .self = self.self.bits,
+        };
     }
 
     fn runtime(self: *Fixture, ledger: *script.Ledger, config: script.Config) !script.Runtime {
@@ -396,4 +448,80 @@ test "a script that faults on a tick is disabled, and the world keeps its entiti
     fixture.world.update(.{ .tick = 6, .delta = delta });
     try testing.expectEqual(script.Status.ready, slot.status);
     try testing.expectEqual(@as(u32, 1), fixture.world.entityCount());
+}
+
+test "a package's code is replaced while its world, its state and its entities stay" {
+    var fixture: Fixture = undefined;
+    try fixture.init(gpa);
+    defer fixture.deinit();
+
+    var manager = try script.Manager.init(gpa, @ptrCast(&Table.getApi), .{});
+    defer manager.deinit();
+    const slot = try manager.add(fixture.descriptor());
+    manager.activateAll();
+    try testing.expectEqual(script.Status.ready, slot.status);
+    const first_revision = slot.source_revision;
+
+    const delta = core.time.Duration.fromNanos(16_666_667);
+    var tick: u64 = 1;
+    while (tick <= 9) : (tick += 1) fixture.world.update(.{ .tick = tick, .delta = delta });
+    try testing.expectEqual(@as(u32, 3), fixture.world.entityCount());
+    try testing.expectEqual(@as(u32, 3), slot.ownedCount());
+
+    // The author edits the file and the host reloads the asset. Nothing about the package,
+    // the world, the registration or the ownership ledger is torn down.
+    try fixture.rewriteScript(cleanup_source);
+    const poll = manager.pollReload();
+    try testing.expectEqual(script.Reload.reloaded, poll.outcome);
+    try testing.expectEqual(@as(?*script.Slot, slot), poll.slot);
+    try testing.expect(slot.source_revision != first_revision);
+    try testing.expectEqual(@as(u32, 2), slot.runtime.stateVersion());
+    try testing.expectEqual(@as(u32, 1), slot.reloads);
+
+    // The world it was activated in is the world it is still running in, and what the old
+    // VM spawned is still there and still this package's.
+    try testing.expectEqual(@as(u32, 3), fixture.world.entityCount());
+    try testing.expectEqual(@as(u32, 3), slot.ownedCount());
+
+    // And now the new code clears them — one per tick, through the very handles the old VM
+    // put in its state. Ownership came across with them: `world_destroy_entity` refuses an
+    // entity this package did not spawn, so three successful removals is the proof.
+    while (tick <= 12) : (tick += 1) fixture.world.update(.{ .tick = tick, .delta = delta });
+    try testing.expectEqual(@as(u32, 0), fixture.world.entityCount());
+    try testing.expectEqual(@as(u32, 0), slot.ownedCount());
+    try testing.expectEqual(script.Status.ready, slot.status);
+}
+
+test "source that does not compile leaves the running package exactly as it was" {
+    var fixture: Fixture = undefined;
+    try fixture.init(gpa);
+    defer fixture.deinit();
+
+    var manager = try script.Manager.init(gpa, @ptrCast(&Table.getApi), .{});
+    defer manager.deinit();
+    const slot = try manager.add(fixture.descriptor());
+    manager.activateAll();
+
+    const delta = core.time.Duration.fromNanos(16_666_667);
+    var tick: u64 = 1;
+    while (tick <= 6) : (tick += 1) fixture.world.update(.{ .tick = tick, .delta = delta });
+    try testing.expectEqual(@as(u32, 2), fixture.world.entityCount());
+    const revision = slot.source_revision;
+
+    try fixture.rewriteScript("return { state_version = ");
+    try testing.expectEqual(script.Reload.refused, manager.pollReload().outcome);
+    try testing.expectEqual(script.Status.ready, slot.status);
+    try testing.expectEqual(revision, slot.source_revision);
+    try testing.expectEqual(@as(u32, 0), slot.reloads);
+
+    // The old code keeps its cadence, its state and its entities: the third spawn lands on
+    // the tick it always would have.
+    while (tick <= 9) : (tick += 1) fixture.world.update(.{ .tick = tick, .delta = delta });
+    try testing.expectEqual(@as(u32, 3), fixture.world.entityCount());
+    try testing.expectEqual(@as(u32, 3), slot.ownedCount());
+
+    // Fixing it is a new revision, and it is taken without the world noticing.
+    try fixture.rewriteScript(cleanup_source);
+    try testing.expectEqual(script.Reload.reloaded, manager.pollReload().outcome);
+    try testing.expectEqual(@as(u32, 3), fixture.world.entityCount());
 }

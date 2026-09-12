@@ -48,22 +48,41 @@ static void diagnostic_literal(FoundryScript *script, const char *message) {
     script->diagnostic_length = length;
 }
 
-/* A contract breach: the module or its state is not the shape §11 describes. Named rather
- * than raised, because the caller is the loader and not the script. */
-static void diagnostic_contract(FoundryScript *script, const char *format, ...) {
-    va_list args;
-    va_start(args, format);
+/* A failure the bridge names itself, rather than one a script raised: the category is known
+ * here and is not read back off message text. The failure is a result failure because what
+ * went wrong is the answer the script gave, not the execution that produced it. */
+static void diagnostic_named(FoundryScript *script, FoundryScriptCategory category,
+                             const char *fallback, const char *format, va_list args) {
     int written = vsnprintf(script->diagnostic, sizeof(script->diagnostic), format, args);
-    va_end(args);
     if (written < 0) {
-        diagnostic_literal(script, "contract: the module is not what §11 describes");
+        diagnostic_literal(script, fallback);
     } else {
         script->diagnostic_length = (size_t)written >= sizeof(script->diagnostic)
             ? sizeof(script->diagnostic) - 1 : (size_t)written;
         script->diagnostic[script->diagnostic_length] = '\0';
     }
     script->failure = SCRIPT_FAILURE_RESULT;
-    script->category = FOUNDRY_SCRIPT_CATEGORY_CONTRACT;
+    script->category = category;
+}
+
+/* A contract breach: the module or its state is not the shape §11 describes. Named rather
+ * than raised, because the caller is the loader and not the script. */
+static void diagnostic_contract(FoundryScript *script, const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    diagnostic_named(script, FOUNDRY_SCRIPT_CATEGORY_CONTRACT,
+                     "contract: the module is not what §11 describes", format, args);
+    va_end(args);
+}
+
+/* A replacement's state could not be carried across (scripting.md §12). Its own category,
+ * because the next move is the author's `migrate` and not the module's shape. */
+static void diagnostic_migration(FoundryScript *script, const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    diagnostic_named(script, FOUNDRY_SCRIPT_CATEGORY_MIGRATION,
+                     "migration: the old state could not be carried across", format, args);
+    va_end(args);
 }
 
 /* The category token every raise in this module and in `binding.c` puts first. An error a
@@ -1341,6 +1360,596 @@ FoundryScriptStatus foundry_script_update(FoundryScript *script, const FoundrySt
 
 uint32_t foundry_script_state_version(const FoundryScript *script) {
     return script == NULL ? 0 : script->state_version;
+}
+
+/* -- State as bytes: what crosses between two VMs (scripting.md §11, §12) ---------------
+ *
+ * Two VMs share no heap, so a replacement cannot be handed a Lua value: the state is written
+ * out as a bounded tagged tree and read back into the new VM. It carries no version and no
+ * header because it never leaves the process and is never a save format — `docs/design/
+ * scripting.md` §15 keeps durable script saves an open question, and this is not it.
+ *
+ * The walk is also the check. It reads the live table directly, invoking no script code and
+ * no metamethod, and refuses everything §11 says cannot persist — which is how state an
+ * `update` has corrupted since `init` validated it gets caught, at the moment it matters.
+ */
+
+enum {
+    SNAP_FALSE = 1,
+    SNAP_TRUE,
+    SNAP_INT,
+    SNAP_NUMBER,
+    SNAP_STRING,
+    SNAP_TABLE,
+    SNAP_VALUE,
+};
+
+/* A NULL `out` measures instead of writing, which is how the caller sizes its buffer. */
+static void snapshot_put(FoundryScript *script, const void *bytes, size_t length) {
+    ScriptSnapshot *snap = &script->snapshot;
+    if (snap->out != NULL) {
+        if (length > snap->capacity - snap->length) {
+            snap->overflow = 1;
+            return;
+        }
+        memcpy(snap->out + snap->length, bytes, length);
+    }
+    snap->length += length;
+}
+
+static void snapshot_put_u8(FoundryScript *script, uint8_t value) {
+    snapshot_put(script, &value, 1);
+}
+
+/* Written a byte at a time, little end first: the tree is read back by the same code on the
+ * same machine, but a width or an endianness assumption spelled out costs nothing. */
+static void snapshot_put_u32(FoundryScript *script, uint32_t value) {
+    uint8_t bytes[4];
+    for (size_t i = 0; i < sizeof(bytes); ++i) {
+        bytes[i] = (uint8_t)(value >> (8 * i));
+    }
+    snapshot_put(script, bytes, sizeof(bytes));
+}
+
+static void snapshot_put_u64(FoundryScript *script, uint64_t value) {
+    uint8_t bytes[8];
+    for (size_t i = 0; i < sizeof(bytes); ++i) {
+        bytes[i] = (uint8_t)(value >> (8 * i));
+    }
+    snapshot_put(script, bytes, sizeof(bytes));
+}
+
+static int snapshot_take(FoundryScript *script, void *out, size_t length) {
+    ScriptSnapshot *snap = &script->snapshot;
+    if (snap->in == NULL || length > snap->length - snap->cursor) {
+        return 0;
+    }
+    memcpy(out, snap->in + snap->cursor, length);
+    snap->cursor += length;
+    return 1;
+}
+
+static int snapshot_take_u32(FoundryScript *script, uint32_t *out) {
+    uint8_t bytes[4];
+    uint32_t value = 0;
+    if (!snapshot_take(script, bytes, sizeof(bytes))) {
+        return 0;
+    }
+    for (size_t i = sizeof(bytes); i > 0; --i) {
+        value = (value << 8) | bytes[i - 1];
+    }
+    *out = value;
+    return 1;
+}
+
+static int snapshot_take_u64(FoundryScript *script, uint64_t *out) {
+    uint8_t bytes[8];
+    uint64_t value = 0;
+    if (!snapshot_take(script, bytes, sizeof(bytes))) {
+        return 0;
+    }
+    for (size_t i = sizeof(bytes); i > 0; --i) {
+        value = (value << 8) | bytes[i - 1];
+    }
+    *out = value;
+    return 1;
+}
+
+static int snapshot_truncated(FoundryScript *script) {
+    diagnostic_migration(script, "migration: the carried state ends in the middle of a value");
+    return 0;
+}
+
+static int snapshot_table(lua_State *state, FoundryScript *script, int index,
+                          uint32_t depth, StateWalk *walk);
+
+/* Encodes one value, accounting for it exactly as `validate_state_value` does, so the two
+ * walks agree about what fits. */
+static int snapshot_value(lua_State *state, FoundryScript *script, int index,
+                          uint32_t depth, StateWalk *walk) {
+    switch (lua_type(state, index)) {
+        case LUA_TBOOLEAN:
+            snapshot_put_u8(script, lua_toboolean(state, index) ? SNAP_TRUE : SNAP_FALSE);
+            walk->bytes += 8;
+            break;
+        case LUA_TNUMBER:
+            if (lua_isinteger(state, index)) {
+                snapshot_put_u8(script, SNAP_INT);
+                snapshot_put_u64(script, (uint64_t)lua_tointeger(state, index));
+            } else {
+                double number = (double)lua_tonumber(state, index);
+                uint64_t word = 0;
+                if (!isfinite(number)) {
+                    diagnostic_contract(script, "contract: state holds a number that is not finite");
+                    return 0;
+                }
+                memcpy(&word, &number, sizeof(number) < sizeof(word) ? sizeof(number) : sizeof(word));
+                snapshot_put_u8(script, SNAP_NUMBER);
+                snapshot_put_u64(script, word);
+            }
+            walk->bytes += 8;
+            break;
+        case LUA_TSTRING: {
+            size_t length = 0;
+            const char *text = lua_tolstring(state, index, &length);
+            if (length > FOUNDRY_SCRIPT_MAX_STRING) {
+                diagnostic_contract(script, "contract: state holds a string longer than %u bytes",
+                                    (unsigned)FOUNDRY_SCRIPT_MAX_STRING);
+                return 0;
+            }
+            snapshot_put_u8(script, SNAP_STRING);
+            snapshot_put_u32(script, (uint32_t)length);
+            snapshot_put(script, text, length);
+            walk->bytes += length;
+            break;
+        }
+        case LUA_TTABLE:
+            return snapshot_table(state, script, index, depth, walk);
+        case LUA_TUSERDATA: {
+            uint8_t tag = 0;
+            uint64_t bits = 0, extra = 0;
+            if (!foundry_script_read_persisted(state, index, script, &tag, &bits, &extra)) {
+                diagnostic_contract(script,
+                                    "contract: state holds a value that cannot outlive this "
+                                    "invocation; records, cursors, packages and component "
+                                    "types must be found again");
+                return 0;
+            }
+            snapshot_put_u8(script, SNAP_VALUE);
+            snapshot_put_u8(script, tag);
+            snapshot_put_u64(script, bits);
+            snapshot_put_u64(script, extra);
+            walk->bytes += 32;
+            break;
+        }
+        default:
+            diagnostic_contract(script, "contract: state holds a %s, which cannot persist",
+                                luaL_typename(state, index));
+            return 0;
+    }
+    if (walk->bytes > FOUNDRY_SCRIPT_MAX_STATE_BYTES) {
+        diagnostic_contract(script, "contract: state is larger than %u bytes",
+                            (unsigned)FOUNDRY_SCRIPT_MAX_STATE_BYTES);
+        return 0;
+    }
+    return 1;
+}
+
+/* Keys in §9's order — integers ascending, then strings by unsigned byte order — because two
+ * runs of the same simulation must produce the same bytes (I9). */
+static int snapshot_table(lua_State *state, FoundryScript *script, int index,
+                          uint32_t depth, StateWalk *walk) {
+    size_t count = 0, filled = 0, i;
+    PairKey *keys;
+
+    if (depth > FOUNDRY_SCRIPT_MAX_STATE_DEPTH) {
+        diagnostic_contract(script, "contract: state nests deeper than %u tables",
+                            (unsigned)FOUNDRY_SCRIPT_MAX_STATE_DEPTH);
+        return 0;
+    }
+    if (!lua_checkstack(state, 8)) {
+        script->failure = SCRIPT_FAILURE_MEMORY;
+        diagnostic_literal(script, "snapshot: stack limit exceeded");
+        return 0;
+    }
+
+    /* One walk, one visit. A cycle and a table stored in two places fail the same check,
+     * because the tree written here preserves neither (§11) — and an `update` is free to
+     * have introduced either since `init` was validated, so this is checked every time. */
+    lua_pushvalue(state, index);
+    lua_rawget(state, walk->seen);
+    if (!lua_isnil(state, -1)) {
+        lua_pop(state, 1);
+        diagnostic_contract(script, "contract: state holds the same table twice, or a cycle");
+        return 0;
+    }
+    lua_pop(state, 1);
+    lua_pushvalue(state, index);
+    lua_pushboolean(state, 1);
+    lua_rawset(state, walk->seen);
+
+    lua_pushnil(state);
+    while (lua_next(state, index) != 0) {
+        int key_type;
+        lua_pop(state, 1);
+        key_type = lua_type(state, -1);
+        if (key_type != LUA_TSTRING && !(key_type == LUA_TNUMBER && lua_isinteger(state, -1))) {
+            diagnostic_contract(script, "contract: state is keyed by a %s; only integers and strings persist",
+                                luaL_typename(state, -1));
+            lua_pop(state, 1);
+            return 0;
+        }
+        count += 1;
+        if (count > FOUNDRY_SCRIPT_MAX_STATE_ENTRIES) {
+            diagnostic_contract(script, "contract: state holds more than %u entries",
+                                (unsigned)FOUNDRY_SCRIPT_MAX_STATE_ENTRIES);
+            lua_pop(state, 2);
+            return 0;
+        }
+    }
+    walk->entries += (uint32_t)count;
+    if (walk->entries > FOUNDRY_SCRIPT_MAX_STATE_ENTRIES) {
+        diagnostic_contract(script, "contract: state holds more than %u entries",
+                            (unsigned)FOUNDRY_SCRIPT_MAX_STATE_ENTRIES);
+        return 0;
+    }
+
+    keys = (PairKey *)lua_newuserdatauv(state, (count == 0 ? 1 : count) * sizeof(PairKey), 0);
+    lua_pushnil(state);
+    while (lua_next(state, index) != 0) {
+        lua_pop(state, 1);
+        if (lua_type(state, -1) == LUA_TSTRING) {
+            keys[filled].is_string = 1;
+            keys[filled].integer = 0;
+            keys[filled].text = lua_tolstring(state, -1, &keys[filled].length);
+        } else {
+            keys[filled].is_string = 0;
+            keys[filled].integer = lua_tointeger(state, -1);
+            keys[filled].text = NULL;
+            keys[filled].length = 0;
+        }
+        filled += 1;
+    }
+    qsort(keys, count, sizeof(PairKey), compare_keys);
+
+    snapshot_put_u8(script, SNAP_TABLE);
+    snapshot_put_u32(script, (uint32_t)count);
+    for (i = 0; i < count; ++i) {
+        if (keys[i].is_string) {
+            if (keys[i].length > FOUNDRY_SCRIPT_MAX_STRING) {
+                diagnostic_contract(script, "contract: state holds a key longer than %u bytes",
+                                    (unsigned)FOUNDRY_SCRIPT_MAX_STRING);
+                return 0;
+            }
+            snapshot_put_u8(script, SNAP_STRING);
+            snapshot_put_u32(script, (uint32_t)keys[i].length);
+            snapshot_put(script, keys[i].text, keys[i].length);
+            walk->bytes += keys[i].length;
+            lua_pushlstring(state, keys[i].text, keys[i].length);
+        } else {
+            snapshot_put_u8(script, SNAP_INT);
+            snapshot_put_u64(script, (uint64_t)keys[i].integer);
+            lua_pushinteger(state, keys[i].integer);
+        }
+        if (walk->bytes > FOUNDRY_SCRIPT_MAX_STATE_BYTES) {
+            diagnostic_contract(script, "contract: state is larger than %u bytes",
+                                (unsigned)FOUNDRY_SCRIPT_MAX_STATE_BYTES);
+            lua_pop(state, 1);
+            return 0;
+        }
+        lua_rawget(state, index);
+        if (!snapshot_value(state, script, lua_gettop(state), depth + 1, walk)) {
+            lua_pop(state, 1);
+            return 0;
+        }
+        lua_pop(state, 1);
+    }
+    lua_pop(state, 1);
+    return 1;
+}
+
+static int restore_value(lua_State *state, FoundryScript *script, uint32_t depth, StateWalk *walk);
+
+static int restore_table(lua_State *state, FoundryScript *script, uint32_t depth, StateWalk *walk) {
+    uint32_t count = 0, i;
+    if (depth > FOUNDRY_SCRIPT_MAX_STATE_DEPTH) {
+        diagnostic_migration(script, "migration: the carried state nests deeper than %u tables",
+                             (unsigned)FOUNDRY_SCRIPT_MAX_STATE_DEPTH);
+        return 0;
+    }
+    if (!snapshot_take_u32(script, &count)) {
+        return snapshot_truncated(script);
+    }
+    if (count > FOUNDRY_SCRIPT_MAX_STATE_ENTRIES ||
+        walk->entries > FOUNDRY_SCRIPT_MAX_STATE_ENTRIES - count) {
+        diagnostic_migration(script, "migration: the carried state holds more than %u entries",
+                             (unsigned)FOUNDRY_SCRIPT_MAX_STATE_ENTRIES);
+        return 0;
+    }
+    walk->entries += count;
+    if (!lua_checkstack(state, 8)) {
+        script->failure = SCRIPT_FAILURE_MEMORY;
+        diagnostic_literal(script, "migrate: stack limit exceeded");
+        return 0;
+    }
+    lua_createtable(state, 0, (int)count);
+    for (i = 0; i < count; ++i) {
+        if (!restore_value(state, script, depth + 1, walk)) {
+            lua_pop(state, 1);
+            return 0;
+        }
+        if (lua_type(state, -1) != LUA_TSTRING && !lua_isinteger(state, -1)) {
+            diagnostic_migration(script, "migration: the carried state is keyed by a %s",
+                                 luaL_typename(state, -1));
+            lua_pop(state, 2);
+            return 0;
+        }
+        if (!restore_value(state, script, depth + 1, walk)) {
+            lua_pop(state, 2);
+            return 0;
+        }
+        lua_rawset(state, -3);
+    }
+    return 1;
+}
+
+static int restore_value(lua_State *state, FoundryScript *script, uint32_t depth, StateWalk *walk) {
+    uint8_t tag = 0;
+    if (!snapshot_take(script, &tag, 1)) {
+        return snapshot_truncated(script);
+    }
+    switch (tag) {
+        case SNAP_FALSE:
+            lua_pushboolean(state, 0);
+            break;
+        case SNAP_TRUE:
+            lua_pushboolean(state, 1);
+            break;
+        case SNAP_INT: {
+            uint64_t word = 0;
+            if (!snapshot_take_u64(script, &word)) {
+                return snapshot_truncated(script);
+            }
+            lua_pushinteger(state, (lua_Integer)word);
+            break;
+        }
+        case SNAP_NUMBER: {
+            uint64_t word = 0;
+            double number = 0;
+            if (!snapshot_take_u64(script, &word)) {
+                return snapshot_truncated(script);
+            }
+            memcpy(&number, &word, sizeof(number) < sizeof(word) ? sizeof(number) : sizeof(word));
+            if (!isfinite(number)) {
+                diagnostic_migration(script, "migration: the carried state holds a number that is not finite");
+                return 0;
+            }
+            lua_pushnumber(state, (lua_Number)number);
+            break;
+        }
+        case SNAP_STRING: {
+            uint32_t length = 0;
+            ScriptSnapshot *snap = &script->snapshot;
+            if (!snapshot_take_u32(script, &length)) {
+                return snapshot_truncated(script);
+            }
+            if (length > FOUNDRY_SCRIPT_MAX_STRING || length > snap->length - snap->cursor) {
+                return snapshot_truncated(script);
+            }
+            lua_pushlstring(state, (const char *)snap->in + snap->cursor, length);
+            snap->cursor += length;
+            break;
+        }
+        case SNAP_TABLE:
+            return restore_table(state, script, depth, walk);
+        case SNAP_VALUE: {
+            uint8_t kind = 0;
+            uint64_t bits = 0, extra = 0;
+            if (!snapshot_take(script, &kind, 1) || !snapshot_take_u64(script, &bits) ||
+                !snapshot_take_u64(script, &extra)) {
+                return snapshot_truncated(script);
+            }
+            /* The ledger is the stable slot's and has not changed, so an entity that was
+             * owned when it was written is owned now. One that is not is refused rather
+             * than rewrapped: state is not how a package claims an entity (§11). */
+            if (!foundry_script_push_persisted(state, script, kind, bits, extra)) {
+                diagnostic_migration(script,
+                                     "migration: the carried state names an entity this package does not own");
+                return 0;
+            }
+            break;
+        }
+        default:
+            diagnostic_migration(script, "migration: the carried state holds an unknown value");
+            return 0;
+    }
+    return 1;
+}
+
+/* -- The three reload entry points ----------------------------------------------------- */
+
+static int snapshot_runner(lua_State *state) {
+    FoundryScript *script = foundry_script_from_state(state);
+    StateWalk walk;
+    int root, ok;
+    if (!lua_checkstack(state, 8)) {
+        script->failure = SCRIPT_FAILURE_MEMORY;
+        diagnostic_literal(script, "snapshot: stack limit exceeded");
+        return 0;
+    }
+    lua_rawgetp(state, LUA_REGISTRYINDEX, &state_registry_key);
+    if (!lua_istable(state, -1)) {
+        diagnostic_contract(script, "contract: this script has no state to carry across");
+        lua_settop(state, 0);
+        return 0;
+    }
+    root = lua_gettop(state);
+    lua_newtable(state);
+    walk.entries = 0;
+    walk.bytes = 0;
+    walk.seen = lua_gettop(state);
+    ok = snapshot_table(state, script, root, 1, &walk);
+    lua_settop(state, 0);
+    if (ok && script->snapshot.overflow) {
+        script->failure = SCRIPT_FAILURE_MEMORY;
+        diagnostic_literal(script, "snapshot: the state did not fit the buffer it was given");
+    }
+    return 0;
+}
+
+static int restore_runner(lua_State *state) {
+    FoundryScript *script = foundry_script_from_state(state);
+    StateWalk walk;
+    walk.entries = 0;
+    walk.bytes = 0;
+    walk.seen = 0;
+    if (!lua_checkstack(state, 8)) {
+        script->failure = SCRIPT_FAILURE_MEMORY;
+        diagnostic_literal(script, "restore: stack limit exceeded");
+        return 0;
+    }
+    if (!restore_value(state, script, 1, &walk)) {
+        lua_settop(state, 0);
+        return 0;
+    }
+    if (!lua_istable(state, -1) || script->snapshot.cursor != script->snapshot.length) {
+        diagnostic_migration(script, "migration: the carried state is not a readable table");
+        lua_settop(state, 0);
+        return 0;
+    }
+    /* Validated on the way in as well as on the way out. The decoder's job is reading and
+     * the validator's is §11's policy; keeping the policy in one place is worth one more
+     * bounded walk over a table that holds at most a thousand entries. */
+    if (!validate_state_root(state, script)) {
+        lua_settop(state, 0);
+        return 0;
+    }
+    lua_rawsetp(state, LUA_REGISTRYINDEX, &state_registry_key);
+    script->has_state = 1;
+    return 0;
+}
+
+static int migrate_runner(lua_State *state) {
+    FoundryScript *script = foundry_script_from_state(state);
+    StateWalk walk;
+    int status;
+    walk.entries = 0;
+    walk.bytes = 0;
+    walk.seen = 0;
+    if (!lua_checkstack(state, 8)) {
+        script->failure = SCRIPT_FAILURE_MEMORY;
+        diagnostic_literal(script, "migrate: stack limit exceeded");
+        return 0;
+    }
+    lua_rawgetp(state, LUA_REGISTRYINDEX, &module_registry_key);
+    if (lua_getfield(state, -1, "migrate") != LUA_TFUNCTION) {
+        /* §12: a version change without a migration refuses the replacement. There is no
+         * implicit reset, because the world the old state describes is still there. */
+        diagnostic_migration(script,
+                             "migration: state_version went from %u to %u and this module has no migrate",
+                             (unsigned)script->migrate_from, (unsigned)script->state_version);
+        lua_settop(state, 0);
+        return 0;
+    }
+    lua_remove(state, -2);
+    if (!restore_value(state, script, 1, &walk)) {
+        lua_settop(state, 0);
+        return 0;
+    }
+    if (!lua_istable(state, -1) || script->snapshot.cursor != script->snapshot.length) {
+        diagnostic_migration(script, "migration: the carried state is not a readable table");
+        lua_settop(state, 0);
+        return 0;
+    }
+    lua_pushinteger(state, (lua_Integer)script->migrate_from);
+    status = lua_pcall(state, 2, 1, 0);
+    if (status != LUA_OK) {
+        if (script->failure == SCRIPT_FAILURE_NONE) {
+            script->failure = status == LUA_ERRMEM ? SCRIPT_FAILURE_MEMORY : SCRIPT_FAILURE_RUNTIME;
+        }
+        diagnostic_from_stack(script, state, "migrate");
+        /* A migrate that simply failed is a migration failure; a budget it exhausted is
+         * more useful named as the budget. */
+        if (script->category == FOUNDRY_SCRIPT_CATEGORY_RUNTIME) {
+            script->category = FOUNDRY_SCRIPT_CATEGORY_MIGRATION;
+        }
+        lua_settop(state, 0);
+        return 0;
+    }
+    if (!lua_istable(state, -1)) {
+        diagnostic_migration(script, "migration: migrate must return a table; it returned a %s",
+                             luaL_typename(state, -1));
+        lua_settop(state, 0);
+        return 0;
+    }
+    if (!validate_state_root(state, script)) {
+        script->category = FOUNDRY_SCRIPT_CATEGORY_MIGRATION;
+        lua_settop(state, 0);
+        return 0;
+    }
+    lua_rawsetp(state, LUA_REGISTRYINDEX, &state_registry_key);
+    script->has_state = 1;
+    return 0;
+}
+
+FoundryScriptStatus foundry_script_snapshot_state(FoundryScript *script, uint8_t *buffer,
+                                                  size_t capacity, size_t *needed) {
+    FoundryScriptStatus status;
+    if (script == NULL || script->state == NULL || needed == NULL ||
+        script->has_module == 0 || script->has_state == 0 ||
+        (buffer == NULL && capacity != 0) || capacity > FOUNDRY_SCRIPT_MAX_SNAPSHOT) {
+        return FOUNDRY_SCRIPT_INVALID_ARGUMENT;
+    }
+    script->snapshot.out = buffer;
+    script->snapshot.in = NULL;
+    script->snapshot.capacity = buffer == NULL ? 0 : capacity;
+    script->snapshot.length = 0;
+    script->snapshot.cursor = 0;
+    script->snapshot.overflow = 0;
+    status = invoke(script, snapshot_runner, FOUNDRY_SCRIPT_PHASE_PREPARE);
+    /* Written whatever happened, exactly as the ABI's own sizing probe does: a caller that
+     * asked how big the state is gets the answer even when the copy did not fit. */
+    *needed = script->snapshot.length;
+    script->snapshot.out = NULL;
+    script->snapshot.capacity = 0;
+    return status;
+}
+
+static FoundryScriptStatus read_snapshot(FoundryScript *script, lua_CFunction runner,
+                                         const uint8_t *snapshot, size_t length) {
+    FoundryScriptStatus status;
+    script->snapshot.out = NULL;
+    script->snapshot.in = snapshot;
+    script->snapshot.capacity = 0;
+    script->snapshot.length = length;
+    script->snapshot.cursor = 0;
+    script->snapshot.overflow = 0;
+    script->has_state = 0;
+    status = invoke(script, runner, FOUNDRY_SCRIPT_PHASE_PREPARE);
+    script->snapshot.in = NULL;
+    script->snapshot.length = 0;
+    script->snapshot.cursor = 0;
+    return status;
+}
+
+FoundryScriptStatus foundry_script_restore_state(FoundryScript *script,
+                                                 const uint8_t *snapshot, size_t length) {
+    if (script == NULL || script->state == NULL || snapshot == NULL || length == 0 ||
+        length > FOUNDRY_SCRIPT_MAX_SNAPSHOT || script->has_module == 0) {
+        return FOUNDRY_SCRIPT_INVALID_ARGUMENT;
+    }
+    return read_snapshot(script, restore_runner, snapshot, length);
+}
+
+FoundryScriptStatus foundry_script_migrate_state(FoundryScript *script,
+                                                 const uint8_t *snapshot, size_t length,
+                                                 uint32_t old_version) {
+    if (script == NULL || script->state == NULL || snapshot == NULL || length == 0 ||
+        length > FOUNDRY_SCRIPT_MAX_SNAPSHOT || script->has_module == 0 || old_version == 0) {
+        return FOUNDRY_SCRIPT_INVALID_ARGUMENT;
+    }
+    script->migrate_from = old_version;
+    return read_snapshot(script, migrate_runner, snapshot, length);
 }
 
 FoundryScriptStatus foundry_script_teardown(FoundryScript *script) {

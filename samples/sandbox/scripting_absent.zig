@@ -34,6 +34,10 @@ pub const Host = struct {
         _ = .{ self, gpa, engine, world };
     }
 
+    pub fn poll(self: *Host) void {
+        _ = self;
+    }
+
     pub fn worldReplaced(self: *Host) void {
         _ = self;
     }
