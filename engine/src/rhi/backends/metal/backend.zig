@@ -6,7 +6,7 @@
 //! group becomes an argument-table index, when a frame waits, what a resize means.
 //!
 //! **This backend does not validate.** That is deliberate and is the whole architecture of
-//! ADR-0003: the null backend enforces the ten rules of `docs/design/rhi.md` §11, and this
+//! ADR-0003: the null backend enforces the rules of `docs/design/rhi.md` §11, and this
 //! one trusts its caller. A real backend that also checked would be slower for no benefit
 //! and, worse, would let the two implementations disagree about what the contract is.
 //! Anything this file *would* have to check is a rule the null backend should be catching.

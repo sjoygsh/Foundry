@@ -8,7 +8,7 @@
 //!
 //! ## Scope, deliberately fixed
 //!
-//! It enforces **the ten rules in `docs/design/rhi.md` §11 and nothing else.** It is not a
+//! It enforces **the eleven rules in `docs/design/rhi.md` §11 and nothing else.** It is not a
 //! style checker and holds no opinions the abstraction does not state: a call the design
 //! document permits must not be rejected here, however unwise it looks. Tightening a rule
 //! means changing that document first — a validation backend that enforces more than the
@@ -48,7 +48,7 @@ const max_frames_in_flight = 4;
 /// guarantees, so exceeding it is a rule 10 violation rather than an assertion.
 const max_vertex_buffers = pipeline.max_vertex_buffers;
 
-/// The ten rules of `docs/design/rhi.md` §11, numbered as they are there.
+/// The eleven rules of `docs/design/rhi.md` §11, numbered as they are there.
 ///
 /// Numbered rather than free-form so that a violation can be asserted on by identity in a
 /// test, and so that the mapping between the document and the code stays checkable.
@@ -81,6 +81,9 @@ pub const Rule = enum(u8) {
     /// A documented limit was exceeded: more than four bind groups, or more inline
     /// constant bytes than 128 or than the bound pipeline's layout declares.
     limits = 10,
+    /// A resource was used, or declared to enter a state, that its declared usage does not
+    /// allow. Checked apart from rule 1: a correct state does not make up for a missing flag.
+    usage = 11,
 };
 
 pub const Violation = struct {
@@ -191,6 +194,11 @@ pub const Device = struct {
     /// error-level log as a test failure, correctly, and that is not something to opt out
     /// of globally just to keep a test quiet.
     log_violations: bool = true,
+    /// What `capabilities` reports as `unified_memory`. False unless a test sets it: the null
+    /// backend has no memory at all, and claiming unified by default would invite exactly the
+    /// habit rule 2 exists to prevent. It exists so a caller's unified-memory branch can be
+    /// validated as well as its staging-copy branch, deterministically, on any host.
+    unified_memory: bool = false,
 
     surface_texture: resource.TextureHandle = .none,
     surface_size: resource.Extent2D,
@@ -290,9 +298,7 @@ pub const Device = struct {
             .max_bind_groups = pipeline.max_bind_groups,
             .max_inline_constant_bytes = pipeline.max_inline_constant_bytes,
             .max_vertex_buffers = max_vertex_buffers,
-            // Deliberately false. The null backend has no memory at all, and claiming
-            // unified would invite exactly the habit rule 2 exists to prevent.
-            .unified_memory = false,
+            .unified_memory = self.unified_memory,
             .runtime_shader_compilation = true,
             .surface_format = if (self.textures.getConst(self.surface_texture)) |t|
                 t.desc.format
@@ -412,11 +418,38 @@ pub const Device = struct {
         return null;
     }
 
+    /// Rule 11: whether a texture's usage allows it to enter `state`. `present` belongs to the
+    /// device's surface alone, and `undefined` describes no operation.
+    fn textureAllows(tex: *const TextureState, state: resource.ResourceState) bool {
+        const u = tex.desc.usage;
+        return switch (state) {
+            .undefined => true,
+            .shader_read => u.sampled,
+            .render_target => u.render_target,
+            .depth_stencil => u.depth_stencil,
+            .copy_src => u.copy_src,
+            .copy_dst => u.copy_dst,
+            .present => tex.is_surface,
+        };
+    }
+
+    /// Rule 11, for a buffer. Reading one on the GPU is any of the four ways it can be bound;
+    /// it has no attachment or presentation state to enter.
+    fn bufferAllows(usage: resource.BufferUsage, state: resource.ResourceState) bool {
+        return switch (state) {
+            .undefined => true,
+            .shader_read => usage.vertex or usage.index or usage.uniform or usage.storage,
+            .copy_src => usage.copy_src,
+            .copy_dst => usage.copy_dst,
+            .render_target, .depth_stencil, .present => false,
+        };
+    }
+
     // -- buffers -------------------------------------------------------------------
 
     pub fn createBuffer(self: *Device, desc: resource.BufferDesc) interface.ResourceError!resource.BufferHandle {
         // An invalid descriptor, reported through the error the interface already
-        // defines for it. Deliberately *not* a violation record: the ten rules are the
+        // defines for it. Deliberately *not* a violation record: the rules are the
         // validation backend's whole remit, and zero-size is not among them.
         if (desc.size == 0) return error.InvalidDescriptor;
         try self.reserveRetirement();
@@ -459,8 +492,14 @@ pub const Device = struct {
 
     pub fn createTexture(self: *Device, desc: resource.TextureDesc) interface.ResourceError!resource.TextureHandle {
         if (desc.size.isEmpty()) return error.InvalidDescriptor;
+        // Rule 11, at creation: a texture cannot start in a state its usage forbids.
+        const candidate: TextureState = .{ .desc = desc, .state = desc.initial_state };
+        if (!textureAllows(&candidate, desc.initial_state)) {
+            self.violate(.usage, "texture '{s}' is created in {t}, which its usage does not allow", .{ desc.label, desc.initial_state });
+            return error.InvalidDescriptor;
+        }
         try self.reserveRetirement();
-        return self.textures.add(self.gpa, .{ .desc = desc, .state = desc.initial_state });
+        return self.textures.add(self.gpa, candidate);
     }
 
     pub fn destroyTexture(self: *Device, handle: resource.TextureHandle) void {
@@ -532,6 +571,23 @@ pub const Device = struct {
             if (@as(pipeline.BindingType, found.resource) != want.type) {
                 self.violate(.bind_group_compatibility, "bind group '{s}' binding {d} is {t}, layout requires {t}", .{
                     desc.label, want.binding, @as(pipeline.BindingType, found.resource), want.type,
+                });
+                return error.InvalidDescriptor;
+            }
+        }
+
+        // Rule 11, also at creation and for the same reason: usage never changes, so a group
+        // binding a resource as something its usage forbids is wrong from the moment it exists.
+        for (desc.entries) |e| {
+            const allowed = switch (e.resource) {
+                .uniform_buffer => |b| if (self.buffers.getConst(b.buffer)) |buf| buf.desc.usage.uniform else true,
+                .storage_buffer => |b| if (self.buffers.getConst(b.buffer)) |buf| buf.desc.usage.storage else true,
+                .sampled_texture => |t| if (self.textures.getConst(t)) |tex| tex.desc.usage.sampled else true,
+                .sampler => true,
+            };
+            if (!allowed) {
+                self.violate(.usage, "bind group '{s}' binding {d} is a {t}, which its resource's usage does not allow", .{
+                    desc.label, e.binding, @as(pipeline.BindingType, e.resource),
                 });
                 return error.InvalidDescriptor;
             }
@@ -753,6 +809,10 @@ pub const CommandBuffer = struct {
             if (!tex.desc.format.isColor()) {
                 dev.violate(.attachment_format, "render pass '{s}' colour attachment {d} has depth format {t}", .{ desc.label, i, tex.desc.format });
             }
+            // Rule 11: drawing into it is what `render_target` is for.
+            if (!tex.desc.usage.render_target) {
+                dev.violate(.usage, "render pass '{s}' colour attachment {d} '{s}' lacks render_target usage", .{ desc.label, i, tex.desc.label });
+            }
             checkTransition(dev, tex, att.initial_state, att.final_state, desc.label, "colour attachment");
             pass.color_formats[i] = tex.desc.format;
         }
@@ -762,6 +822,9 @@ pub const CommandBuffer = struct {
             if (dev.textures.get(att.texture)) |tex| {
                 if (!tex.desc.format.isDepth()) {
                     dev.violate(.attachment_format, "render pass '{s}' depth attachment has colour format {t}", .{ desc.label, tex.desc.format });
+                }
+                if (!tex.desc.usage.depth_stencil) {
+                    dev.violate(.usage, "render pass '{s}' depth attachment '{s}' lacks depth_stencil usage", .{ desc.label, tex.desc.label });
                 }
                 checkTransition(dev, tex, att.initial_state, att.final_state, desc.label, "depth attachment");
                 pass.depth_format = tex.desc.format;
@@ -791,6 +854,10 @@ pub const CommandBuffer = struct {
             });
         }
         if (initial == .undefined and tex.state != .undefined) tex.discarded += 1;
+        // Rule 11: the state it is left in must be one its usage allows.
+        if (!Device.textureAllows(tex, final)) {
+            dev.violate(.usage, "'{s}' {s} '{s}' ends in {t}, which its usage does not allow", .{ label, what, tex.desc.label, final });
+        }
         tex.state = final;
     }
 
@@ -810,6 +877,9 @@ pub const CommandBuffer = struct {
                 });
             }
             if (b.from == .undefined and tex.state != .undefined) tex.discarded += 1;
+            if (!Device.textureAllows(tex, b.to)) {
+                dev.violate(.usage, "barrier moves texture '{s}' to {t}, which its usage does not allow", .{ tex.desc.label, b.to });
+            }
             tex.state = b.to;
         }
     }
@@ -826,6 +896,9 @@ pub const CommandBuffer = struct {
                     buf.desc.label, b.from, buf.state,
                 });
             }
+            if (!Device.bufferAllows(buf.desc.usage, b.to)) {
+                dev.violate(.usage, "barrier moves buffer '{s}' to {t}, which its usage does not allow", .{ buf.desc.label, b.to });
+            }
             buf.state = b.to;
             buf.last_used = self.recording;
         }
@@ -836,11 +909,13 @@ pub const CommandBuffer = struct {
         if (self.open_pass) {
             dev.violate(.encoder_discipline, "copy recorded inside an open render pass", .{});
         }
-        // Usage-flag conformance is deliberately unchecked. It is a genuine invariant of
-        // the abstraction — Vulkan and D3D12 both treat a mismatch as undefined behaviour —
-        // but it is not one of the ten documented rules, and enforcing it here would make
-        // this backend stricter than the contract it exists to police. Recorded as an open
-        // question in `docs/design/rhi.md` §13.
+        // Rule 11: reading needs `copy_src` and writing `copy_dst`, whatever state either is in.
+        if (dev.buffers.getConst(copy.src)) |src| {
+            if (!src.desc.usage.copy_src) dev.violate(.usage, "copy reads buffer '{s}', which lacks copy_src usage", .{src.desc.label});
+        }
+        if (dev.buffers.getConst(copy.dst)) |dst| {
+            if (!dst.desc.usage.copy_dst) dev.violate(.usage, "copy writes buffer '{s}', which lacks copy_dst usage", .{dst.desc.label});
+        }
         if (dev.deadBuffer(copy.src)) dev.violate(.lifetime, "copy reads a destroyed buffer", .{});
         if (dev.deadBuffer(copy.dst)) dev.violate(.lifetime, "copy writes a destroyed buffer", .{});
         dev.touchBuffer(copy.src, self.recording);
@@ -853,6 +928,9 @@ pub const CommandBuffer = struct {
             dev.violate(.encoder_discipline, "copy recorded inside an open render pass", .{});
         }
         if (dev.textures.get(copy.dst)) |dst| {
+            if (!dst.desc.usage.copy_dst) {
+                dev.violate(.usage, "copy writes texture '{s}', which lacks copy_dst usage", .{dst.desc.label});
+            }
             if (dst.state != .copy_dst) {
                 dev.violate(.resource_state, "texture '{s}' is tracked as {t}, not copy_dst, at a buffer-to-texture copy", .{
                     dst.desc.label, dst.state,
@@ -883,6 +961,9 @@ pub const CommandBuffer = struct {
             dev.violate(.lifetime, "copy writes a destroyed texture", .{});
         }
         if (dev.deadBuffer(copy.src)) dev.violate(.lifetime, "copy reads a destroyed buffer", .{});
+        if (dev.buffers.getConst(copy.src)) |src| {
+            if (!src.desc.usage.copy_src) dev.violate(.usage, "copy reads buffer '{s}', which lacks copy_src usage", .{src.desc.label});
+        }
         dev.touchBuffer(copy.src, self.recording);
     }
 
@@ -990,6 +1071,10 @@ pub const RenderPass = struct {
         }
 
         if (dev.deadBuffer(buffer)) dev.violate(.lifetime, "pass '{s}' binds a destroyed buffer to vertex slot {d}", .{ self.label, slot });
+        if (dev.buffers.getConst(buffer)) |b| {
+            // Rule 11. Reported now, and surfaced when the command buffer is submitted.
+            if (!b.desc.usage.vertex) dev.violate(.usage, "pass '{s}' binds buffer '{s}' to vertex slot {d} without vertex usage", .{ self.label, b.desc.label, slot });
+        }
         self.bound_vertex_buffers[slot] = buffer;
         dev.touchBuffer(buffer, self.cmd.recording);
     }
@@ -999,6 +1084,9 @@ pub const RenderPass = struct {
         _ = offset;
         const dev = self.device;
         if (dev.deadBuffer(buffer)) dev.violate(.lifetime, "pass '{s}' binds a destroyed index buffer", .{self.label});
+        if (dev.buffers.getConst(buffer)) |b| {
+            if (!b.desc.usage.index) dev.violate(.usage, "pass '{s}' binds buffer '{s}' as indices without index usage", .{ self.label, b.desc.label });
+        }
         self.index_buffer = buffer;
         dev.touchBuffer(buffer, self.cmd.recording);
     }
@@ -1383,10 +1471,12 @@ test "rule 1: transitioning from undefined is always legal" {
     defer fx.deinit();
     const dev = fx.dev;
 
+    // Sampled as well: it is moved to `shader_read`, which rule 11 says only a texture shaders
+    // may read can enter.
     const tex = try dev.createTexture(.{
         .size = .{ .width = 8, .height = 8 },
         .format = .rgba8_unorm,
-        .usage = .{ .render_target = true },
+        .usage = .{ .render_target = true, .sampled = true },
         .initial_state = .render_target,
     });
 
@@ -2812,13 +2902,229 @@ test "rule 10: writing more than 128 bytes is caught even with no pipeline bound
     try testing.expect(fx.dev.hasViolation(.limits));
 }
 
+// -- rule 11: usage ------------------------------------------------------------------
+//
+// Every row is tested both ways, on two resources that differ only in the flag the row is
+// about, so the legal case is evidence that the check reads that flag and nothing else.
+
+fn bufferWith(dev: *Device, comptime flag: []const u8, has: bool) !resource.BufferHandle {
+    var usage: resource.BufferUsage = .{};
+    @field(usage, flag) = has;
+    return dev.createBuffer(.{ .label = flag, .size = 64, .usage = usage });
+}
+
+fn textureWith(dev: *Device, comptime flag: []const u8, has: bool, texture_format: format.TextureFormat) !resource.TextureHandle {
+    var usage: resource.TextureUsage = .{};
+    @field(usage, flag) = has;
+    return dev.createTexture(.{
+        .label = flag,
+        .size = .{ .width = 8, .height = 8 },
+        .format = texture_format,
+        .usage = usage,
+    });
+}
+
+/// Submits `cmd` and returns how many violations its recording produced. Every one must be
+/// rule 11, and submission must have failed exactly when there were any. Clears them, so the
+/// next case starts clean.
+fn usageViolations(dev: *Device, cmd: *CommandBuffer) !usize {
+    const failed = if (cmd.submit()) |_| false else |_| true;
+    const count = dev.violationCount();
+    for (dev.violations()) |v| try testing.expectEqual(Rule.usage, v.rule);
+    try testing.expectEqual(count > 0, failed);
+    dev.clearViolations();
+    return count;
+}
+
+test "rule 11: vertex and index bindings need vertex and index usage" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    inline for (.{ "vertex", "index" }) |flag| {
+        for ([_]bool{ true, false }) |has| {
+            const buffer = try bufferWith(dev, flag, has);
+            const frame = try dev.beginFrame();
+            const cmd = try dev.beginCommandBuffer();
+            const pass = try cmd.beginRenderPass(.{
+                .color = &.{.{ .texture = frame.surface_texture, .final_state = .present }},
+            });
+            if (comptime std.mem.eql(u8, flag, "vertex")) {
+                pass.setVertexBuffer(0, buffer, 0);
+            } else {
+                pass.setIndexBuffer(buffer, .uint32, 0);
+            }
+            pass.end();
+            // A setter returns nothing, so submission is where the recorder hears of it.
+            try testing.expectEqual(@as(usize, if (has) 0 else 1), try usageViolations(dev, cmd));
+            try dev.endFrame();
+        }
+    }
+}
+
+test "rule 11: uniform, storage and sampled bindings need the matching usage" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    inline for (.{
+        .{ "uniform", pipeline.BindingType.uniform_buffer },
+        .{ "storage", pipeline.BindingType.storage_buffer },
+        .{ "sampled", pipeline.BindingType.sampled_texture },
+    }) |row| {
+        const layout = try dev.createBindGroupLayout(.{
+            .entries = &.{.{ .binding = 0, .type = row[1], .visibility = .both }},
+        });
+        for ([_]bool{ true, false }) |has| {
+            const bound: pipeline.BindingResource = switch (row[1]) {
+                .uniform_buffer => .{ .uniform_buffer = .{ .buffer = try bufferWith(dev, row[0], has) } },
+                .storage_buffer => .{ .storage_buffer = .{ .buffer = try bufferWith(dev, row[0], has) } },
+                .sampled_texture => .{ .sampled_texture = try textureWith(dev, row[0], has, .rgba8_unorm) },
+                .sampler => unreachable,
+            };
+            const result = dev.createBindGroup(.{ .layout = layout, .entries = &.{.{ .binding = 0, .resource = bound }} });
+            if (has) {
+                _ = try result;
+                try testing.expectEqual(@as(usize, 0), dev.violationCount());
+            } else {
+                // A descriptor, so refused as a group breaking rule 4 is, and named as rule 11.
+                try testing.expectError(error.InvalidDescriptor, result);
+                try testing.expectEqual(@as(usize, 1), dev.violationCount());
+                try testing.expect(dev.hasViolation(.usage));
+                dev.clearViolations();
+            }
+        }
+    }
+}
+
+test "rule 11: a buffer copy needs copy_src on its source and copy_dst on its destination" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    for ([_][2]bool{ .{ true, true }, .{ false, true }, .{ true, false } }) |has| {
+        const src = try bufferWith(dev, "copy_src", has[0]);
+        const dst = try bufferWith(dev, "copy_dst", has[1]);
+        const cmd = try dev.beginCommandBuffer();
+        try cmd.copyBufferToBuffer(.{ .src = src, .dst = dst, .size = 64 });
+        try testing.expectEqual(@as(usize, if (has[0] and has[1]) 0 else 1), try usageViolations(dev, cmd));
+    }
+}
+
+test "rule 11: a buffer-to-texture copy needs copy_src on the buffer and copy_dst on the texture" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    for ([_][2]bool{ .{ true, true }, .{ false, true }, .{ true, false } }) |has| {
+        const src = try bufferWith(dev, "copy_src", has[0]);
+        const dst = try textureWith(dev, "copy_dst", has[1], .rgba8_unorm);
+        const cmd = try dev.beginCommandBuffer();
+        // The barrier is how a texture reaches copy_dst, and it is refused as well when the flag
+        // is missing: no state a caller can reach legally stands in for the usage.
+        try cmd.textureBarrier(&.{.{ .texture = dst, .from = .undefined, .to = .copy_dst }});
+        try cmd.copyBufferToTexture(.{ .src = src, .dst = dst, .size = .{ .width = 4, .height = 4 } });
+        const expected: usize = if (!has[0]) 1 else if (!has[1]) 2 else 0;
+        try testing.expectEqual(expected, try usageViolations(dev, cmd));
+    }
+}
+
+test "rule 11: colour and depth attachments need render_target and depth_stencil usage" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    for ([_]bool{ true, false }) |has| {
+        const target = try textureWith(dev, "render_target", has, .rgba8_unorm);
+        const cmd = try dev.beginCommandBuffer();
+        const pass = try cmd.beginRenderPass(.{
+            .color = &.{.{ .texture = target, .final_state = .render_target }},
+        });
+        pass.end();
+        // Without the flag the pass both draws into it and leaves it in render_target.
+        try testing.expectEqual(@as(usize, if (has) 0 else 2), try usageViolations(dev, cmd));
+    }
+    for ([_]bool{ true, false }) |has| {
+        const colour = try textureWith(dev, "render_target", true, .rgba8_unorm);
+        const depth = try textureWith(dev, "depth_stencil", has, .depth32_float);
+        const cmd = try dev.beginCommandBuffer();
+        const pass = try cmd.beginRenderPass(.{
+            .color = &.{.{ .texture = colour, .final_state = .render_target }},
+            .depth = .{ .texture = depth, .final_state = .depth_stencil },
+        });
+        pass.end();
+        try testing.expectEqual(@as(usize, if (has) 0 else 2), try usageViolations(dev, cmd));
+    }
+}
+
+test "rule 11: a state a resource is declared to enter needs the usage that state describes" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    // Through a barrier: a texture that shaders read needs `sampled`...
+    for ([_]bool{ true, false }) |has| {
+        const tex = try textureWith(dev, "sampled", has, .rgba8_unorm);
+        const cmd = try dev.beginCommandBuffer();
+        try cmd.textureBarrier(&.{.{ .texture = tex, .from = .undefined, .to = .shader_read }});
+        try testing.expectEqual(@as(usize, if (has) 0 else 1), try usageViolations(dev, cmd));
+    }
+    // ...and a buffer the GPU reads needs one of the ways a buffer can be bound.
+    for ([_]bool{ true, false }) |has| {
+        const buf = try bufferWith(dev, "uniform", has);
+        const cmd = try dev.beginCommandBuffer();
+        try cmd.bufferBarrier(&.{.{ .buffer = buf, .from = .undefined, .to = .shader_read }});
+        try testing.expectEqual(@as(usize, if (has) 0 else 1), try usageViolations(dev, cmd));
+    }
+    // At creation, where the state is part of a descriptor and so is refused.
+    for ([_]bool{ true, false }) |has| {
+        const result = dev.createTexture(.{
+            .size = .{ .width = 8, .height = 8 },
+            .format = .rgba8_unorm,
+            .usage = .{ .sampled = has },
+            .initial_state = .shader_read,
+        });
+        if (has) {
+            _ = try result;
+            try testing.expectEqual(@as(usize, 0), dev.violationCount());
+        } else {
+            try testing.expectError(error.InvalidDescriptor, result);
+            try testing.expect(dev.hasViolation(.usage));
+            dev.clearViolations();
+        }
+    }
+}
+
+test "rule 11: only the device's surface is presented, whatever another texture's usage" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    const offscreen = try dev.createTexture(.{
+        .label = "offscreen",
+        .size = .{ .width = 8, .height = 8 },
+        .format = .bgra8_unorm_srgb,
+        .usage = .{ .sampled = true, .render_target = true, .copy_src = true, .copy_dst = true },
+    });
+
+    // The surface's own descriptor is what lets a frame draw into it and present it.
+    const frame = try dev.beginFrame();
+    for ([_]resource.TextureHandle{ frame.surface_texture, offscreen }, [_]usize{ 0, 1 }) |target, expected| {
+        const cmd = try dev.beginCommandBuffer();
+        const pass = try cmd.beginRenderPass(.{ .color = &.{.{ .texture = target, .final_state = .present }} });
+        pass.end();
+        try testing.expectEqual(expected, try usageViolations(dev, cmd));
+    }
+    try dev.endFrame();
+}
+
 // -- the mechanism itself ------------------------------------------------------------
 
-test "the rules are exactly the ten the design document lists" {
+test "the rules are exactly the eleven the design document lists" {
     // If a rule is added or removed, that is a contract change and belongs in
     // `docs/design/rhi.md` §11 first. Asserted so a casual edit fails a test.
     const rules = std.enums.values(Rule);
-    try testing.expectEqual(@as(usize, 10), rules.len);
+    try testing.expectEqual(@as(usize, 11), rules.len);
     for (rules, 1..) |rule, expected| {
         try testing.expectEqual(@as(u8, @intCast(expected)), @intFromEnum(rule));
     }

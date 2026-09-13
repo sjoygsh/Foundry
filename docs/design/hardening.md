@@ -1,8 +1,8 @@
 # Hardening: close the known faults without changing Foundry's shape
 
-**Status:** designed 2026-09-13; **3/9 implementation steps complete**.
+**Status:** designed 2026-09-13; **4/9 implementation steps complete**.
 **Baseline:** `180ef4f`, M0–M10 complete; M10's verification remains accepted.
-**Stop point:** immediately before Step 4. Resolutions at the end record what each step settled.
+**Stop point:** immediately before Step 5. Resolutions at the end record what each step settled.
 
 Specification for M11, **Solid: "its known faults are fixed"**, in
 [`ROADMAP.md`](../ROADMAP.md). Rests on [ADR-0035](../adr/0035-rhi-lifetime-and-validation.md),
@@ -355,7 +355,7 @@ named implementation seams, check local links/whitespace and scope consistency o
 do not rerun them to prove prose. No compile failure is fixed, no new guard is implemented,
 and no milestone implementation count advances during planning.
 
-**Next action, only when implementation is requested: Step 4 above.**
+**Next action, only when implementation is requested: Step 5 above.**
 
 ## Resolution — Step 1, 2026-09-13
 
@@ -513,4 +513,53 @@ platform and validation backend ran 3,000 frames while its installed texture was
 continuously: 100 hot reloads, one per watcher pass, no violation and a clean exit. The same
 run windowed on Metal, under `MTL_DEBUG_LAYER=1`, reloaded the texture 20 times in 600 frames
 with no validation error and exited cleanly. The bar passed. 1,315 declared / 1,306 headless,
+nine of them Metal-only.
+
+## Resolution — Step 4, 2026-09-13
+
+**The contract first.** `rhi.md` §11 gained rule 11 before the backend enforced it, and §13's
+open question 4 is marked resolved. The matrix is §6's. The declared-state half reads:
+`shader_read` needs `sampled` on a texture and one of `vertex`, `index`, `uniform` or `storage`
+on a buffer; `render_target`, `depth_stencil`, `copy_src` and `copy_dst` need their namesakes;
+`present` belongs to the device's surface alone; and `undefined` describes no operation, so it
+needs no usage and grants none. No flag is inferred for storage textures or compute.
+
+**Where it is checked.** Descriptors — a bind group's uniform, storage and sampled entries,
+and a texture's `initial_state` — are refused with `InvalidDescriptor` and record rule 11,
+which is the convention `createBindGroup` already followed for rule 4; a zero-size descriptor
+is still a plain `InvalidDescriptor`. Commands — vertex and index binding, both copies, colour
+and depth attachments, attachment final states and barrier targets — record a violation as
+they are recorded, and submission reports `ValidationFailed`, the void setters included. The
+check is separate from rule 1: a texture in the right state with the flag missing is still
+refused, and the barrier that would put it in that state is refused too, so no legal route
+supplies a state in place of a flag. A bind group is checked once, at creation, because usage
+never changes; binding it again does not re-check.
+
+**No real consumer was missing a flag.** Every command stream the renderer, both samples, the
+UI walker, the overlay tests and the ABI render tests produce passed rule 11 on its first run.
+One validation-backend fixture moved a render target to `shader_read` without `sampled`, and was
+corrected rather than exempted; the test pinning the rule count now expects eleven. The Metal
+backend needed no change: it already maps `sampled` to shader-read usage and `render_target` or
+`depth_stencil` to render-target usage, and Metal copies need no usage bit.
+
+**Both memory paths are validated.** The validation device has a test-settable
+`unified_memory`, false by default, so the discrete branch stays the deterministic answer on
+every host. A renderer test runs both branches — upload buffers bound directly on unified
+memory, staging copies on discrete — through a texture, an atlas and two vertex buffers a
+frame, with no violation.
+
+**Not done here.** Rule 2's mapping rule is unchanged, and nothing in §6's matrix is deferred.
+The PROJECT_STATE debt entry for unenforced usage is left for Step 9's disposition pass.
+
+**Evidence.** Eight tests were added. Seven are rule 11 tests in the validation backend, each row
+legal and missing on resources differing only in that row's flag: vertex and index binding;
+uniform, storage and sampled bindings; both ends of a buffer copy; both ends of a
+buffer-to-texture copy; colour and depth attachments; declared states through barriers and at
+creation; and presentation of the surface only. The eighth is the renderer's two-path test.
+Breaking the guards — the declared-state checks always allowing, and the bind-group, vertex
+setter and copy-destination checks switched off — failed 6 of 1,314 tests, all of them rule 11
+tests. Dropping `vertex` from the renderer's unified vertex buffer was masked in that run by the
+disabled setter check, so it was run again alone: one test failed, the two-path test, naming the
+buffer bound without vertex usage. The files were restored byte-for-byte. Both samples ran 30 and
+600 null frames with no validation report. The bar passed. 1,323 declared / 1,314 headless,
 nine of them Metal-only.

@@ -15,9 +15,9 @@ frame-outcome contracts. **Step 2 implemented §3's deferred destruction and the
 §11 rule 9 in both backends**: completion covers every submission, uploads outside a frame
 included, and a destroyed handle's backing is kept until every recording that could use it
 has finished. **Step 3 moved `render2d` onto that contract**: the renderer keeps no retirement
-of its own, and its uploads declare a texture's tracked state rather than `undefined`. Usage
-conformance (rule 11) and distinct presentation outcomes are not implemented yet, so the rule
-counts below still describe ten rules.
+of its own, and its uploads declare a texture's tracked state rather than `undefined`. **Step 4
+added usage conformance as §11 rule 11.** Distinct presentation outcomes are not implemented
+yet.
 
 `rhi` is layer L2. It depends on `core` and `platform`. **Graphics API symbols appear
 nowhere outside it** (I7, enforced by the build graph).
@@ -518,10 +518,28 @@ forgives:
     numbers here are bounds, so this is a clarification of rule 10's scope rather than an
     eleventh rule — the same reading rule 8 already gets. Written here before it appeared
     in code, which is what the paragraph below asks of any tightening.
+11. **Usage.** A resource is used only as its declared usage allows, whatever state it is
+    in: a correct state does not make up for a missing flag. Binding a buffer as vertex or
+    index data needs `vertex` or `index`; a uniform or storage binding needs `uniform` or
+    `storage`; a sampled texture binding needs `sampled`; a copy needs `copy_src` on its
+    source and `copy_dst` on its destination, buffer or texture; a colour attachment needs
+    `render_target`, and a depth attachment `depth_stencil`. A state a resource is declared
+    to enter — at creation, through a barrier, or as an attachment's final state — needs the
+    usage that state describes: `shader_read` needs `sampled` on a texture and one of
+    `vertex`, `index`, `uniform` or `storage` on a buffer; `render_target`, `depth_stencil`,
+    `copy_src` and `copy_dst` need their namesakes, which a buffer has only for the copies;
+    and `present` belongs to the device's surface alone. `undefined` describes no operation,
+    so it needs no usage and grants none. No flag is inferred for an operation the RHI cannot
+    express yet, such as storage textures or compute. A bind group or texture descriptor that
+    breaks this is refused with `InvalidDescriptor`, as a group breaking rule 4 is; a command
+    that breaks it is reported when it is recorded and fails at submission. Added at M11
+    (ADR-0035), written here before it appeared in code.
 
 Rules 1, 3, 5 and 9 are the ones that would otherwise be discovered by a second backend
 producing garbage, months later, with no obvious cause. Rules 2 and 6 are the ones that
-would be discovered as *performance* problems on hardware nobody here owns.
+would be discovered as *performance* problems on hardware nobody here owns. Rule 11 is the
+first thing a Vulkan or D3D12 validation layer would report, and Metal forgives nearly all
+of it.
 
 **The list is exhaustive, and deliberately so.** The validation backend enforces the RHI's
 documented contract and nothing beyond it. It is not a style checker and it does not hold
@@ -568,7 +586,8 @@ headlessly — the same reason the null *platform* backend exists.
    one of the ten rules in §11, and the validation backend therefore does not check it.
    Enforcing it would be an eleventh rule, which is a contract change and belongs here
    before it appears in code. Recorded rather than resolved, because implementation did
-   not force the decision: everything else works without it.
+   not force the decision: everything else works without it. **Resolved at M11 (ADR-0035):
+   enforced as §11 rule 11.**
 5. **Whether shader entry points should be named in the descriptor.** Fixed as
    `vertexMain`/`fragmentMain` today (§10), which is one fewer string to get wrong. All
    three APIs support naming them per pipeline. Revisit when a module genuinely needs two

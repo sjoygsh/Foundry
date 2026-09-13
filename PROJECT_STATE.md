@@ -1,8 +1,22 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-13
-**Current handoff: M0 through M10 are complete. M11 is under way, 3/9 steps implemented.
-Stop immediately before M11 Step 4. M12 through M17 remain unstarted.**
+**Current handoff: M0 through M10 are complete. M11 is under way, 4/9 steps implemented.
+Stop immediately before M11 Step 5. M12 through M17 remain unstarted.**
+
+**Implemented in M11 Step 4, 2026-09-13:** declared resource usage is **validation rule 11**,
+written into `rhi.md` §11 before the code. The validation backend reports a resource used as
+something its usage does not allow — vertex, index, uniform, storage or sampled binding, either
+end of a copy, a colour or depth attachment — and a resource declared to enter a state its
+usage does not describe, through a barrier, at creation or as an attachment's final state.
+`present` is the surface's alone. Bad descriptors are refused with `InvalidDescriptor`; bad
+commands fail at submission. No real consumer was missing a flag; one test fixture was. The
+validation device can now report unified memory for tests, so the renderer's unified-memory
+branch is checked as well as its staging-copy branch. Evidence: every row tested with and
+without its flag; breaking the guards failed 6 of 1,314 tests, and dropping the renderer's
+unified vertex usage, run alone, failed the two-path test; both samples ran 600 null frames
+with no validation report; the bar passed. **1,323 declared / 1,314 headless**, nine
+Metal-only. Resolution: `hardening.md`, Step 4.
 
 **Implemented in M11 Step 3, 2026-09-13:** `render2d` now relies on the RHI's retirement
 instead of its own. Destroying a texture kills the renderer handle and destroys its GPU objects
@@ -1342,17 +1356,18 @@ closed.** What a public macOS release still owes is operator certification — D
 signing, notarization and a clean recipient Mac (ADR-0032) — not engine work. **Phase 4,
 "Hardening and reach" (M10-M17), is under way**: it gathers the deferred work rather than
 adding to it, only M10 was new, and **M10 is complete (2026-09-13)**. M11 is under way with
-3/9 steps implemented; M12 through M17 are unstarted.
+4/9 steps implemented; M12 through M17 are unstarted.
 
 ## Current milestone
 
-**M11 — Solid: "its known faults are fixed." Designed, 2026-09-13; 3/9 implemented.**
+**M11 — Solid: "its known faults are fixed." Designed, 2026-09-13; 4/9 implemented.**
 Read `docs/design/hardening.md` and ADR-0035. Step 1 is done: the Metal-selected graph, test
 binaries included, compiles and its tests pass. Step 2 is done: both RHI backends retain a
 destroyed resource until every recording that could use it has finished. Step 3 is done:
 `render2d` relies on that retirement instead of its own, and textures replace safely through
-the ordinary loader with frames in flight. Implementation is paused before §12 Step 4; the
-remaining known-debt entries are not claimed repaired.
+the ordinary loader with frames in flight. Step 4 is done: declared resource usage is
+validation rule 11. Implementation is paused before §12 Step 5; the remaining known-debt
+entries are not claimed repaired.
 
 **M10 — Identity: "it knows its own name." Complete, 2026-09-13.** The marks, the icon the
 release path stages and the plist names, and ADR-0034's rule that reference is permitted and
@@ -2222,7 +2237,7 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M11 Steps 1–3 are complete; implementation is paused before Step 4.** M0–M10 are complete.
+**M11 Steps 1–4 are complete; implementation is paused before Step 5.** M0–M10 are complete.
 The specification is `docs/design/hardening.md`; the M5 material below is historical.
 
 ### `samples/room`, and what a second consumer proved
@@ -2868,9 +2883,10 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M11 Step 4, when implementation is requested** — enforcing declared resource usage as
-validation rule 11, `hardening.md` §6, and correcting real descriptors it exposes. Steps 1–3 are
-done; six steps remain. Stop after each step; preserve the later milestone triggers below.
+**Next: M11 Step 5, when implementation is requested** — distinct transient and fatal frame
+outcomes and failure cleanup, `hardening.md` §7, including closing a recording an error leaves
+open. Steps 1–4 are done; five steps remain. Stop after each step; preserve the later milestone
+triggers below.
 
 **M0 through M10 are complete and tagged, and everything is pushed.** Phase 3 is closed;
 Phase 4 is under way. The completed M8/M7 checklists and subsequent M5/M6 material below are

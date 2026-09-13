@@ -115,7 +115,7 @@ pub const Stats = struct {
 ///   that makes people conclude batching does not work.
 ///
 /// Both paths are exercised: Metal on Apple Silicon reports unified, and the validation
-/// backend deliberately reports **not** unified, so its ten rules check the barriers and
+/// backend reports **not** unified by default, so its rules check the barriers and
 /// copies of the discrete path on every test run.
 const SlotBuffer = struct {
     upload: rhi.BufferHandle,
@@ -1185,7 +1185,7 @@ fn drawFrame(device: *rhi.Device, renderer: *Renderer) !void {
 /// A device, a renderer and one texture: the smallest thing that can draw.
 ///
 /// Under `-Drhi=null` this runs against the validation backend with violation logging on,
-/// so any of its ten rules broken anywhere in the renderer fails the test through the log
+/// so any of its rules broken anywhere in the renderer fails the test through the log
 /// — including the barrier and copy discipline of the discrete-memory path, which is the
 /// path the null backend takes because it deliberately reports memory as *not* unified.
 const Fixture = struct {
@@ -2100,4 +2100,37 @@ fn createDrawAndDestroy(gpa: Allocator) !void {
 test "no allocation failure in creating, drawing or destroying leaks, and no destroy swallows one" {
     if (rhi.backend != .null) return error.SkipZigTest;
     try testing.checkAllAllocationFailures(testing.allocator, createDrawAndDestroy, .{});
+}
+
+test "both memory paths submit a command stream that respects every declared usage" {
+    // The validation backend reports discrete memory unless told otherwise, so both branches
+    // are chosen here rather than left to the host: without this, the branch Apple Silicon
+    // takes would never be checked by rule 11 at all.
+    if (rhi.backend != .null) return error.SkipZigTest;
+
+    for ([_]bool{ false, true }) |unified| {
+        const device = try rhi.Device.init(testing.allocator, .{});
+        defer device.deinit();
+        device.unified_memory = unified;
+        var renderer = try Renderer.init(testing.allocator, device, .{ .quads_per_buffer = 2 });
+        defer renderer.deinit();
+        try testing.expectEqual(unified, renderer.unified);
+
+        var image = try asset.Image.alloc(testing.allocator, 2, 2);
+        defer image.deinit(testing.allocator);
+        @memset(image.pixels, 0xFF);
+        const texture = try renderer.createTexture(image, .{ .label = "memory path" });
+        const atlas = try renderer.createAtlas(.{ .width = 8, .height = 8 }, .{ .label = "memory path" });
+        const region = try renderer.atlasAdd(atlas, image);
+
+        // Spilling into a second buffer, and round both slots, so every buffer is bound.
+        for (0..4) |_| {
+            try renderer.begin(.{ .camera = .{ .viewport = .init(0, 0, 64, 64) } });
+            for (0..2) |_| try renderer.drawSprite(.{ .texture = texture, .position = .init(0, 0), .size = .init(4, 4) });
+            try renderer.drawSprite(.{ .texture = region.texture, .uv = region.uv, .position = .init(8, 0), .size = .init(2, 2) });
+            try drawFrame(device, &renderer);
+        }
+        try testing.expectEqual(@as(u32, 2), renderer.frameStats().buffers_used);
+        try testing.expectEqual(@as(usize, 0), device.violationCount());
+    }
 }
