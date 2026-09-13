@@ -81,7 +81,69 @@ pub const Options = struct {
     /// It is a parameter because the UI shares a view with whatever else the caller draws
     /// in screen space; this is how the caller says which is on top.
     layer: i16 = 0,
+    /// Where solid rectangles come from, or null for the renderer's blank patch.
+    ///
+    /// **A region of the font's own texture is the point.** The batcher breaks a batch
+    /// whenever the texture changes, so a rectangle from the blank followed by a glyph from the
+    /// font is two batches however close they are. A patch of solid colour inside the font's
+    /// texture — `solidRegion` finds one — puts both in one texture without changing the order
+    /// anything is drawn in (`hardening.md` §8).
+    ///
+    /// A region whose texture no longer resolves, or that names no part of it, is not used:
+    /// the blank is, without a word, because this runs every frame. The warning belongs to
+    /// `solidRegion`, which runs when content changes.
+    solid: ?render2d.Region = null,
 };
+
+/// A patch of solid colour inside a texture, in texels from its top-left: what content
+/// declares, before it is checked against the texture actually loaded.
+pub const SolidPatch = struct {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+};
+
+/// The region `patch` names in `texture`, for `Options.solid`, or null with a warning when the
+/// texture is not loaded or the patch is empty or does not lie wholly inside it.
+///
+/// **Resolve it again whenever the texture may have been replaced** — a content or asset
+/// reload — and hold no result across one: a region names the texture it was cut from, and a
+/// font a mod replaced may be another size with nothing solid where the old patch was. Nothing
+/// here can see whether the texels really are solid; content that moves the patch has to say
+/// so where it points at the font.
+pub fn solidRegion(
+    r: *render2d.Renderer,
+    texture: render2d.TextureHandle,
+    patch: SolidPatch,
+) ?render2d.Region {
+    const size = r.textureSize(texture) orelse {
+        log.warn("ui solid patch: the font texture is not loaded; using the renderer's blank", .{});
+        return null;
+    };
+    const right = @as(u64, patch.x) + patch.width;
+    const bottom = @as(u64, patch.y) + patch.height;
+    if (patch.width == 0 or patch.height == 0 or right > size.width or bottom > size.height) {
+        log.warn("ui solid patch at {d},{d}, {d}x{d}, is not inside the {d}x{d} font texture; using the renderer's blank", .{
+            patch.x, patch.y, patch.width, patch.height, size.width, size.height,
+        });
+        return null;
+    }
+    return render2d.Region.whole(texture, size).sub(patch.x, patch.y, patch.width, patch.height);
+}
+
+/// Whether `region` still names a non-empty part of a live texture. Cheap enough to ask every
+/// frame: one handle lookup and a few comparisons.
+fn usableSolid(r: *render2d.Renderer, region: render2d.Region) bool {
+    if (r.textureSize(region.texture) == null or region.size_px.isEmpty()) return false;
+    const uv = region.uv;
+    for ([_]f32{ uv.x, uv.y, uv.w, uv.h }) |v| if (!std.math.isFinite(v)) return false;
+    // A little slack past 1: a patch flush with the far edge of a texture whose size is not a
+    // power of two can land a rounding step beyond it.
+    const slack = 1e-5;
+    return uv.x >= 0 and uv.y >= 0 and uv.w > 0 and uv.h > 0 and
+        uv.x + uv.w <= 1 + slack and uv.y + uv.h <= 1 + slack;
+}
 
 /// Draws `list` into `view`.
 ///
@@ -111,8 +173,8 @@ pub fn draw(
         r.setView(previous_view) catch {};
     }
 
-    // Step 3 put this on the renderer precisely so that every UI does not grow its own.
-    const blank = r.blankRegion();
+    // The blank is on the renderer precisely so that every UI does not grow its own.
+    const solid = if (options.solid) |s| (if (usableSolid(r, s)) s else r.blankRegion()) else r.blankRegion();
 
     // What to restore to when each open clip is popped.
     var open: [max_clip_depth]?Rect = undefined;
@@ -120,8 +182,8 @@ pub fn draw(
 
     for (list.items()) |command| switch (command) {
         .rect => |c| try r.drawSprite(.{
-            .texture = blank.texture,
-            .uv = blank.uv,
+            .texture = solid.texture,
+            .uv = solid.uv,
             // The kernel's rectangles are top-left anchored, which is `origin` zero in a
             // Y-down space — the same convention `drawText` uses for its own positions.
             .position = .init(c.bounds.x, c.bounds.y),
@@ -282,6 +344,94 @@ test "the metrics a font produces are the font's own numbers" {
     try testing.expectEqual(core.math.Vec2.init(6, 11), metrics.cell);
     try testing.expectEqual(@as(f32, 1.5), metrics.letter_spacing);
     try testing.expectEqual(@as(f32, 3), metrics.line_spacing);
+}
+
+test "a solid patch in the font's own texture puts a fill and its label in one batch" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+
+    const solid = solidRegion(&fx.renderer, fx.font.font.glyphs.texture, .{ .x = 122, .y = 42, .width = 4, .height = 4 }).?;
+
+    // A button: a fill and then its label. From the blank that is two textures, so two batches.
+    for ([_]?render2d.Region{ null, solid }, [_]u32{ 2, 1 }) |choice, batches| {
+        try fx.beginFrame();
+        fx.ctx.begin(.at(.init(-1, -1), .up), .init(0, 0, 800, 600));
+        _ = try ui.widget.buttonIn(&fx.ctx, ui.Id.root.child("ok"), "Save", .init(10, 10, 100, 20));
+        fx.ctx.end();
+        try draw(&fx.ctx.list, &fx.renderer, fx.font, .screen, .{ .solid = choice });
+        try fx.endFrame();
+
+        const stats = fx.renderer.frameStats();
+        try testing.expectEqual(@as(u32, 5), stats.sprites);
+        try testing.expectEqual(batches, stats.batches);
+    }
+}
+
+test "a solid region whose texture is gone, or that names nothing, draws from the blank" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const gpa = testing.allocator;
+
+    var image = try asset.Image.alloc(gpa, 8, 8);
+    defer image.deinit(gpa);
+    @memset(image.pixels, 0xFF);
+    const doomed = try fx.renderer.createTexture(image, .{ .label = "doomed" });
+    const stale = solidRegion(&fx.renderer, doomed, .{ .x = 2, .y = 2, .width = 4, .height = 4 }).?;
+    fx.renderer.destroyTexture(doomed);
+
+    const font_texture = fx.font.font.glyphs.texture;
+    const empty: render2d.Region = .{ .texture = font_texture, .uv = .{}, .size_px = .{} };
+    const beyond: render2d.Region = .{
+        .texture = font_texture,
+        .uv = .{ .x = 0.9, .y = 0, .w = 0.5, .h = 0.1 },
+        .size_px = .{ .width = 4, .height = 4 },
+    };
+
+    var list: ui.DrawList = .{};
+    defer list.deinit(gpa);
+    try list.addRect(gpa, .init(0, 0, 10, 10), .white);
+
+    for ([_]render2d.Region{ stale, empty, beyond }) |bad| {
+        try fx.beginFrame();
+        try draw(&list, &fx.renderer, fx.font, .screen, .{ .solid = bad });
+        try fx.endFrame();
+        // Still drawn, and drawn exactly as it would be with no region at all.
+        try testing.expectEqual(@as(u32, 1), fx.renderer.frameStats().sprites);
+        const drawn = fx.renderer.batcher.items.items[0].sprite;
+        try testing.expect(drawn.texture.eql(fx.renderer.blankRegion().texture));
+        try testing.expectEqual(fx.renderer.blankRegion().uv, drawn.uv);
+    }
+}
+
+test "a solid patch is refused unless it is non-empty and wholly inside the texture as loaded" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const texture = fx.font.font.glyphs.texture;
+
+    // Flush with the far corner of the 128x48 sheet is inside.
+    const corner = solidRegion(&fx.renderer, texture, .{ .x = 124, .y = 44, .width = 4, .height = 4 }).?;
+    try testing.expectEqual(render2d.Extent2D{ .width = 4, .height = 4 }, corner.size_px);
+    try testing.expectEqual(@as(f32, 124.0 / 128.0), corner.uv.x);
+    try testing.expectEqual(@as(f32, 44.0 / 48.0), corner.uv.y);
+
+    for ([_]SolidPatch{
+        .{ .x = 125, .y = 0, .width = 4, .height = 4 },
+        .{ .x = 0, .y = 45, .width = 4, .height = 4 },
+        .{ .x = 0, .y = 0, .width = 0, .height = 4 },
+        .{ .x = std.math.maxInt(u32), .y = 0, .width = 2, .height = 2 },
+    }) |bad| {
+        try testing.expect(solidRegion(&fx.renderer, texture, bad) == null);
+    }
+
+    // A font a mod replaced with a smaller sheet has nothing where the old patch was, and a
+    // font that has been unloaded has nothing at all.
+    var small = try asset.Image.alloc(testing.allocator, 64, 24);
+    defer small.deinit(testing.allocator);
+    @memset(small.pixels, 0xFF);
+    const replacement = try fx.renderer.createTexture(small, .{ .label = "smaller font" });
+    try testing.expect(solidRegion(&fx.renderer, replacement, .{ .x = 122, .y = 42, .width = 4, .height = 4 }) == null);
+    fx.renderer.destroyTexture(replacement);
+    try testing.expect(solidRegion(&fx.renderer, replacement, .{ .x = 2, .y = 2, .width = 4, .height = 4 }) == null);
 }
 
 test "an empty list draws nothing and disturbs nothing" {

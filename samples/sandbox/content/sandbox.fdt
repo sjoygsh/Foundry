@@ -21,6 +21,11 @@
     sheet id
     # From `foundry:core`, not from here. A cross-package reference is an ordinary id.
     font id
+    # Where the font's texture keeps solid white, as [x y width height] in its texels, so the
+    # UI's rectangles and its text come from one texture and share a batch. Omitted, or not
+    # inside the texture, the renderer's own blank is used -- which is right for a font without
+    # such a patch. A package replacing the font must keep this true or say otherwise here.
+    font_solid [u32] (since 2) (optional)
     # The map drawn under the field. Where it *goes* is the sample's decision, not this
     # record's: a `foundry:tilemap` says how big a map is, never where it sits.
     map id
@@ -50,6 +55,8 @@ settings sandbox:settings.main {
     banner  "foundry sandbox\nworld origin"
     sheet   sandbox:textures.sprites
     font    foundry:fonts.debug
+    # The inside of the debug font's 96th cell, which holds no glyph and is solid white.
+    font_solid [ 122 42 4 4 ]
     map     sandbox:map.room
     # Narrower than the 16-unit cells, so a one-cell gap is a gap the player fits through.
     player_size  12

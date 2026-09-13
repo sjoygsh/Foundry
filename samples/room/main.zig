@@ -708,6 +708,9 @@ fn frameLimit(engine: *app.Engine, headless: bool) ?u64 {
 const Settings = struct {
     sheet: core.ContentId,
     font: core.ContentId,
+    /// Where the font's texture keeps solid texels for the UI's rectangles, or null for the
+    /// renderer's blank. Checked against the texture when it is resolved, not here.
+    font_solid: ?app.UiSolidPatch,
     map: core.ContentId,
     columns: u32,
     rows: u32,
@@ -743,6 +746,7 @@ const Settings = struct {
     const fallback: Settings = .{
         .sheet = .none,
         .font = .none,
+        .font_solid = null,
         .map = .none,
         .columns = 4,
         .rows = 4,
@@ -779,6 +783,7 @@ const Settings = struct {
         return .{
             .sheet = idField(record, "sheet"),
             .font = idField(record, "font"),
+            .font_solid = patchField(record, "font_solid"),
             .map = idField(record, "map"),
             .columns = @max(intField(record, "columns", 4), 1),
             .rows = @max(intField(record, "rows", 4), 1),
@@ -837,6 +842,30 @@ const Settings = struct {
     fn idField(record: data.store.Record, name: []const u8) core.ContentId {
         const index = record.schema.fieldIndex(name) orelse return .none;
         return (record.fields.idAt(index) catch null) orelse .none;
+    }
+
+    /// A `[x y width height]` patch of solid texels in the font's texture, or null.
+    ///
+    /// **Absent means the renderer's blank**, which is right for any font without one. A list
+    /// that is not four whole, non-negative numbers is reported and ignored rather than half
+    /// read; whether the patch lies inside the texture is decided against the texture as
+    /// loaded (`app.uiSolidRegion`), which a record cannot see.
+    fn patchField(record: data.store.Record, name: []const u8) ?app.UiSolidPatch {
+        const index = record.schema.fieldIndex(name) orelse return null;
+        const list = (record.fields.listAt(index) catch null) orelse return null;
+        if (list.len != 4) return badPatch(name);
+        var values: [4]u32 = undefined;
+        for (&values, 0..) |*value, i| {
+            const raw = (list.intAt(@intCast(i)) catch null) orelse return badPatch(name);
+            if (raw < 0 or raw > std.math.maxInt(u32)) return badPatch(name);
+            value.* = @intCast(raw);
+        }
+        return .{ .x = values[0], .y = values[1], .width = values[2], .height = values[3] };
+    }
+
+    fn badPatch(name: []const u8) ?app.UiSolidPatch {
+        log.warn("'{s}' is not four whole numbers, x y width height; the UI's rectangles use the renderer's blank", .{name});
+        return null;
     }
 
     /// A two-element `[u32]` — a column and a row, or a width and a height.
@@ -1399,6 +1428,9 @@ const Room = struct {
     font_asset: asset.AssetHandle,
     sheet: render2d.Region,
     font: render2d.BitmapFont,
+    /// The region the UI's rectangles are drawn from when content declares a patch in the font,
+    /// resolved again whenever content changes; null draws them from the renderer's blank.
+    ui_solid: ?render2d.Region = null,
 
     map: Map = .{},
     clips: Clips = .{},
@@ -2363,7 +2395,7 @@ const Room = struct {
         // The card, **drawn**: one call, and the only line in the sample that knows the
         // kernel and the renderer are two different things. Above the room's own panels,
         // because it is over the hall and they are part of it.
-        try app.drawUi(&self.ui.list, &self.renderer, uiFontOf(self.font), .screen, .{ .layer = 2 });
+        try app.drawUi(&self.ui.list, &self.renderer, uiFontOf(self.font), .screen, .{ .layer = 2, .solid = self.ui_solid });
 
         if (self.finished and self.text.won_len > 0) {
             const won = self.text.won[0..self.text.won_len];
@@ -2849,6 +2881,13 @@ const Room = struct {
         if (self.renderer.textureRegion(self.textureOf(engine, self.font_asset))) |region| {
             self.font.glyphs = region;
         }
+        // From the font as it is now, every time content changes, so no region cut from a
+        // replaced texture outlives it (`hardening.md` §8). A patch that does not fit the
+        // texture is reported there and leaves the renderer's blank in use.
+        self.ui_solid = if (self.settings.font_solid) |patch|
+            app.uiSolidRegion(&self.renderer, self.font.glyphs.texture, patch)
+        else
+            null;
     }
 
     fn reacquire(

@@ -892,6 +892,9 @@ const Settings = struct {
     banner: []const u8,
     sheet: core.ContentId,
     font: core.ContentId,
+    /// Where the font's texture keeps solid texels for the UI's rectangles, or null for the
+    /// renderer's blank. Checked against the texture when it is resolved, not here.
+    font_solid: ?app.UiSolidPatch,
     /// The map to draw under the field. `.none` draws no map, which is what a package
     /// without one means and not a reason to stop.
     map: core.ContentId,
@@ -931,6 +934,7 @@ const Settings = struct {
         .banner = "",
         .sheet = .none,
         .font = .none,
+        .font_solid = null,
         .map = .none,
         .player_size = 12,
         .player_speed = 84,
@@ -960,6 +964,7 @@ const Settings = struct {
             .banner = stringField(record, "banner", fallback.banner),
             .sheet = idField(record, "sheet"),
             .font = idField(record, "font"),
+            .font_solid = patchField(record, "font_solid"),
             .map = idField(record, "map"),
             .player_size = floatField(record, "player_size", fallback.player_size),
             .player_speed = floatField(record, "player_speed", fallback.player_speed),
@@ -970,6 +975,30 @@ const Settings = struct {
             .bump_sound = idField(record, "bump_sound"),
             .hum_sound = idField(record, "hum_sound"),
         };
+    }
+
+    /// A `[x y width height]` patch of solid texels in the font's texture, or null.
+    ///
+    /// **Absent means the renderer's blank**, which is right for any font without one. A list
+    /// that is not four whole, non-negative numbers is reported and ignored rather than half
+    /// read; whether the patch lies inside the texture is decided against the texture as
+    /// loaded (`app.uiSolidRegion`), which a record cannot see.
+    fn patchField(record: data.store.Record, name: []const u8) ?app.UiSolidPatch {
+        const index = record.schema.fieldIndex(name) orelse return null;
+        const list = (record.fields.listAt(index) catch null) orelse return null;
+        if (list.len != 4) return badPatch(name);
+        var values: [4]u32 = undefined;
+        for (&values, 0..) |*value, i| {
+            const raw = (list.intAt(@intCast(i)) catch null) orelse return badPatch(name);
+            if (raw < 0 or raw > std.math.maxInt(u32)) return badPatch(name);
+            value.* = @intCast(raw);
+        }
+        return .{ .x = values[0], .y = values[1], .width = values[2], .height = values[3] };
+    }
+
+    fn badPatch(name: []const u8) ?app.UiSolidPatch {
+        log.warn("'{s}' is not four whole numbers, x y width height; the UI's rectangles use the renderer's blank", .{name});
+        return null;
     }
 
     fn intField(record: data.store.Record, name: []const u8, fallback_value: u32) u32 {
@@ -1534,6 +1563,9 @@ const SpriteField = struct {
     /// or packed into something larger later.
     sheet: render2d.Region,
     font: render2d.BitmapFont,
+    /// The region the UI's rectangles are drawn from when content declares a patch in the font,
+    /// resolved again whenever content changes; null draws them from the renderer's blank.
+    ui_solid: ?render2d.Region = null,
 
     /// The map, rebuilt whenever content changes. Empty when the settings record names
     /// none, which is a package without a map rather than a failure.
@@ -2209,6 +2241,13 @@ const SpriteField = struct {
         if (self.renderer.textureRegion(self.textureOf(engine, self.font_asset))) |region| {
             self.font.glyphs = region;
         }
+        // From the font as it is now, every time content changes, so no region cut from a
+        // replaced texture outlives it (`hardening.md` §8). A patch that does not fit the
+        // texture is reported there and leaves the renderer's blank in use.
+        self.ui_solid = if (self.settings.font_solid) |patch|
+            app.uiSolidRegion(&self.renderer, self.font.glyphs.texture, patch)
+        else
+            null;
     }
 
     /// Swaps one asset handle for another when content renamed what it points at.
@@ -2853,7 +2892,7 @@ const SpriteField = struct {
     /// coordinate, and nothing here mentions a colour, a font size or a margin: those were
     /// all decided in `describeUi`, where they are style rather than drawing.
     fn hud(self: *SpriteField) !void {
-        try app.drawUi(&self.ui.list, &self.renderer, self.uiFont(), .screen, .{});
+        try app.drawUi(&self.ui.list, &self.renderer, self.uiFont(), .screen, .{ .solid = self.ui_solid });
     }
 
     /// The font, paired with the spacing it is laid out with. **One value**, so the metrics

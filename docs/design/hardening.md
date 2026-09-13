@@ -1,8 +1,8 @@
 # Hardening: close the known faults without changing Foundry's shape
 
-**Status:** designed 2026-09-13; **5/9 implementation steps complete**.
+**Status:** designed 2026-09-13; **6/9 implementation steps complete**.
 **Baseline:** `180ef4f`, M0–M10 complete; M10's verification remains accepted.
-**Stop point:** immediately before Step 6. Resolutions at the end record what each step settled.
+**Stop point:** immediately before Step 7. Resolutions at the end record what each step settled.
 
 Specification for M11, **Solid: "its known faults are fixed"**, in
 [`ROADMAP.md`](../ROADMAP.md). Rests on [ADR-0035](../adr/0035-rhi-lifetime-and-validation.md),
@@ -355,7 +355,7 @@ named implementation seams, check local links/whitespace and scope consistency o
 do not rerun them to prove prose. No compile failure is fixed, no new guard is implemented,
 and no milestone implementation count advances during planning.
 
-**Next action, only when implementation is requested: Step 6 above.**
+**Next action, only when implementation is requested: Step 7 above.**
 
 ## Resolution — Step 1, 2026-09-13
 
@@ -628,3 +628,59 @@ after 30. With a lost device injected at frame 10 and diagnostics on in a scratc
 its marker `state failed`, `stage running`. The windowed Metal sandbox resized six times in 600
 frames under `MTL_DEBUG_LAYER=1` with no error and a clean exit. The bar passed. 1,333 declared /
 1,323 headless, ten of them Metal-only.
+
+## Resolution — Step 6, 2026-09-13
+
+**The patch is content, and the walker draws only from what it is given.** `foundry:fonts.debug`
+holds 95 glyphs in 96 cells, and `scripts/gen-debug-font.py` now fills the spare cell, at texels
+120,40, with solid white. Regenerated, the sheet is still 128x48. Compared against the committed
+image, all 64 texels of that cell went from transparent to white and no texel outside it changed,
+so no glyph, grid dimension or glyph UV moved. It loads through the ordinary core package and
+texture loader, as it did.
+
+**The walker.** `app.ui_draw.Options` gained `solid: ?render2d.Region`. Null keeps the renderer's
+blank. A supplied region is used only while its texture resolves and it names a non-empty part of
+it; otherwise the walker draws from the blank without logging, because it runs every frame. The
+diagnostic is bounded by living elsewhere: `app.uiSolidRegion` turns texel coordinates into a
+region, checks that the texture is loaded, the extent is nonzero and the patch lies wholly inside
+the texture as loaded, and warns when it refuses one. Neither `ui` nor the walker names a font or
+a cell. Native callers already have the sprite and region calls to draw the same way, so the ABI
+is unchanged.
+
+**The samples declare it.** Both samples' `settings` schemas gained
+`font_solid [u32] (since 2) (optional)`, which makes each schema version 2, and both records set
+it to `[ 122 42 4 4 ]`: the inside of the spare cell, inset so that a filtered sample straying
+off the rectangle still lands on white. It is presentation content — the `config` schema, the
+preferences layering and `settings.fset` are untouched. A list that is not four whole numbers is
+reported when the record is read, and ignored. Each sample resolves the patch in `deriveRegions`,
+from the texture its font handle names now, every time content changes, so nothing cut from a
+replaced texture outlives it. A font mod whose sheet has no room there gets the warning and the
+blank; one that keeps its patch elsewhere overrides `font_solid`, as it would the glyph layout.
+
+**Measured.** On the unchanged attribution fixture the overlay cost 11 batches with no panel open,
+16 with one and 32 with all five. From the patch it costs 2, 4 and 12 — exactly the clip-only
+floor the model computes, and 12 is the floor M6 recorded — over the same 38, 318 and 494 sprites
+and 32, 70 and 238 glyphs. The headless sandbox went from 31 batches to 10 at frames 120, 240 and
+360, with the same 4,689–4,691 sprites and 313–315 glyphs. CPU cost was measured separately, by a
+temporary test removed before committing, which walked and submitted the five-panel list 400
+times per configuration in three passes: 234–244 µs per frame from the blank and 209–235 µs from
+the patch, in a Debug build on the null device. That is a few percent, inside the spread of three
+passes, and is not claimed as a frame-time improvement.
+
+**Not done here.** §8 asks for both sample UIs and a font override to be inspected by eye. This
+environment cannot see a window and has not been given access to capture one, so that inspection
+is owed to Step 9, alongside Step 5's Metal minimise-and-restore run. The shipped-layout `dist`
+build §13 allows after this step or at closure is left for closure.
+
+**Evidence.** Four tests. In `app.ui_draw`: a button's fill and label become one batch; a stale,
+empty or out-of-range region falls back to the blank; and a patch is refused unless it is
+non-empty and inside the texture as loaded, including against a smaller replacement font and an
+unloaded one. In `overlay_batches`, the five-panel overlay is drawn both ways: the shared case
+equals its clip-only floor with no texture break, and every sprite matches in order, position,
+size, tint, layer, view and clip, with glyphs keeping their UVs and rectangles moving from the
+blank to the patch. The text-metric corpus in `engine/tests/ui_text.zig` passed unchanged.
+Breaking the guards took two runs: the walker ignoring the region and the resolver skipping its
+bounds check failed 3 of 1,327 tests, and the walker accepting any region failed 1. The file was
+restored byte-for-byte each time. Both samples ran 30 and 600 null frames with no validation
+report and no patch warning, and 300 windowed frames on Metal under `MTL_DEBUG_LAYER=1` with no
+validation error. The bar passed. 1,337 declared / 1,327 headless, ten of them Metal-only.

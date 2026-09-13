@@ -18,6 +18,11 @@
     sheet id
     # From `foundry:core`, not from here. A cross-package reference is an ordinary id.
     font  id
+    # Where the font's texture keeps solid white, as [x y width height] in its texels, so the
+    # UI's rectangles and its text come from one texture and share a batch. Omitted, or not
+    # inside the texture, the renderer's own blank is used -- which is right for a font without
+    # such a patch. A package replacing the font must keep this true or say otherwise here.
+    font_solid [u32] (since 2) (optional)
     map   id
     # The sheet is a square grid; these are its dimensions in cells.
     columns u32 (default 4)
@@ -150,6 +155,8 @@
 settings room:settings.main {
     sheet   room:textures.room
     font    foundry:fonts.debug
+    # The inside of the debug font's 96th cell, which holds no glyph and is solid white.
+    font_solid [ 122 42 4 4 ]
     map     room:map.hall
     columns 4
     rows    4

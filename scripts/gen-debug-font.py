@@ -10,6 +10,10 @@ It lives in `content/core`, the base content package (I3), because the engine it
 want a font for its M6 debug overlay and `render2d` ships no glyphs (I5). It loads through
 the same path a mod's font would, and a mod may override `foundry:fonts.debug`.
 
+The first unused cell after the glyphs is solid white: a UI draws its rectangles from the
+inside of it, so a panel's fill and its text come from one texture and share a batch
+(`docs/design/hardening.md` §8). No glyph moves and no cell changes size.
+
 Glyphs are 5 wide and occupy rows 0..6, with row 7 reserved for descenders. The three blank
 columns to the right of every glyph are where a fixed-grid font's letter spacing comes from
 — `render2d`'s `BitmapFont` has no metrics and needs none (`docs/design/render2d.md` §10).
@@ -149,6 +153,17 @@ for i in range(count):
                 o = ((cy + r) * W + (cx + c)) * 4
                 px[o:o+4] = b'\xff\xff\xff\xff'
 
+# The solid cell. Filled whole, and declared by content as its inside only, so a filtered
+# sample straying off the declared rectangle still lands on white rather than on '~'.
+solid = count
+if solid >= COLS * rows_of_cells:
+    sys.exit("no unused cell left for the solid patch")
+sx, sy = (solid % COLS) * CELL, (solid // COLS) * CELL
+for y in range(sy, sy + CELL):
+    for x in range(sx, sx + CELL):
+        o = (y * W + x) * 4
+        px[o:o+4] = b'\xff\xff\xff\xff'
+
 raw = bytearray()
 for y in range(H):
     raw.append(0)  # filter: none
@@ -168,3 +183,4 @@ os.makedirs(os.path.dirname(out), exist_ok=True)
 with open(out, "wb") as f:
     f.write(png)
 print(f"wrote {out}, {len(png)} bytes, {W}x{H}, {count} glyphs on a {COLS}-column grid")
+print(f"solid cell {solid} at {sx},{sy}; declare its inside as [ {sx + 2} {sy + 2} {CELL - 4} {CELL - 4} ]")

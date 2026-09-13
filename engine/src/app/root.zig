@@ -46,6 +46,9 @@ pub const contentDirOf = engine.contentDirOf;
 pub const drawUi = ui_draw.draw;
 pub const UiFont = ui_draw.Font;
 pub const UiDrawOptions = ui_draw.Options;
+/// A solid patch in a font's texture, and the check that turns one into `UiDrawOptions.solid`.
+pub const UiSolidPatch = ui_draw.SolidPatch;
+pub const uiSolidRegion = ui_draw.solidRegion;
 
 /// One line from the in-memory log ring (`debug-overlay.md` §6), and what a reader asks
 /// for. The ring itself is `log_sink`, which is ambient because `std.log` reaches it from

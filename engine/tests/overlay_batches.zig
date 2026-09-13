@@ -30,11 +30,14 @@ const ui = @import("ui");
 const testing = std.testing;
 
 /// A renderer on the null device, with a font on a texture of its own — which is how every
-/// Foundry game has one today, and therefore the configuration the number was measured in.
+/// Foundry game had one when the number was measured — and a solid patch inside that texture,
+/// where the reference font now keeps one (`hardening.md` §8).
 const Fixture = struct {
     device: *rhi.Device,
     renderer: render2d.Renderer,
     font: app.UiFont,
+    /// The inside of the sheet's last cell, as the samples declare it.
+    solid: render2d.Region,
 
     fn init() !Fixture {
         const gpa = testing.allocator;
@@ -51,6 +54,7 @@ const Fixture = struct {
 
         return .{
             .device = device,
+            .solid = app.uiSolidRegion(&renderer, texture, .{ .x = 122, .y = 42, .width = 4, .height = 4 }).?,
             .renderer = renderer,
             .font = .{
                 .font = .{
@@ -69,9 +73,10 @@ const Fixture = struct {
     }
 
     /// Walks a described frame into the renderer and completes it, exactly as a game does.
-    fn walk(self: *Fixture, list: *const ui.DrawList) !render2d.Stats {
+    /// `solid` is where rectangles come from: null for the renderer's blank.
+    fn walk(self: *Fixture, list: *const ui.DrawList, solid: ?render2d.Region) !render2d.Stats {
         try self.renderer.begin(.{ .camera = .{ .viewport = .init(0, 0, 1280, 720) } });
-        try app.drawUi(list, &self.renderer, self.font, .screen, .{});
+        try app.drawUi(list, &self.renderer, self.font, .screen, .{ .solid = solid });
 
         const ctx = try self.device.beginFrame();
         const cmd = try self.device.beginCommandBuffer();
@@ -142,7 +147,9 @@ const Attribution = struct {
     texts: usize = 0,
     clips: usize = 0,
 
-    fn of(list: *const ui.DrawList) Attribution {
+    /// `shared` models rectangles drawn from the font's own texture, where no rectangle and
+    /// glyph ever differ in texture.
+    fn of(list: *const ui.DrawList, shared: bool) Attribution {
         var out: Attribution = .{};
 
         // The walker's own clip handling, reproduced: the kernel already intersected each
@@ -160,7 +167,7 @@ const Attribution = struct {
                 if (blank) out.rects += 1 else out.texts += 1;
 
                 if (previous) |p| {
-                    const texture_changed = p.blank != blank;
+                    const texture_changed = !shared and p.blank != blank;
                     const clip_changed = !render2d.batch.clipEql(p.clip, clip);
                     if (texture_changed and clip_changed) {
                         out.both += 1;
@@ -217,7 +224,7 @@ test "rectangles alone are one batch, however many there are" {
     }
     ctx.end();
 
-    const stats = try fx.walk(&ctx.list);
+    const stats = try fx.walk(&ctx.list, null);
     try testing.expectEqual(@as(u32, 64), stats.sprites);
     try testing.expectEqual(@as(u32, 1), stats.batches);
 }
@@ -236,7 +243,7 @@ test "text alone is one batch, however many glyphs" {
     }
     ctx.end();
 
-    const stats = try fx.walk(&ctx.list);
+    const stats = try fx.walk(&ctx.list, null);
     try testing.expect(stats.glyphs > 0);
     try testing.expectEqual(@as(u32, 1), stats.batches);
 }
@@ -257,8 +264,8 @@ test "every alternation between a rectangle and a glyph costs exactly one batch"
     }
     ctx.end();
 
-    const shape = Attribution.of(&ctx.list);
-    const stats = try fx.walk(&ctx.list);
+    const shape = Attribution.of(&ctx.list, false);
+    const stats = try fx.walk(&ctx.list, null);
 
     // **The suspicion, isolated and confirmed at this scale.** One batch to start, and one
     // more per change of texture, because the batcher preserves submission order within a
@@ -290,8 +297,8 @@ test "a clip breaks a batch on its own, with no texture change anywhere" {
     }
     ctx.end();
 
-    const shape = Attribution.of(&ctx.list);
-    const stats = try fx.walk(&ctx.list);
+    const shape = Attribution.of(&ctx.list, false);
+    const stats = try fx.walk(&ctx.list, null);
 
     try testing.expectEqual(@as(usize, 0), shape.texture_breaks);
     try testing.expectEqual(@as(usize, 8), shape.clips);
@@ -303,8 +310,9 @@ test "a clip breaks a batch on its own, with no texture change anywhere" {
 
 // -- the overlay itself ------------------------------------------------------------------
 
-/// Describes the overlay with `open` of its panels open, and reports what it cost.
-fn measure(fx: *Fixture, open: usize) !struct { shape: Attribution, stats: render2d.Stats } {
+/// Describes the overlay with `open` of its panels open, and reports what it cost with
+/// rectangles drawn from `solid` — null for the renderer's blank.
+fn measure(fx: *Fixture, open: usize, solid: ?render2d.Region) !struct { shape: Attribution, stats: render2d.Stats } {
     const overlay = try debug.Overlay.init(testing.allocator, .{});
     defer overlay.deinit();
     for (overlay.panels.items, 0..) |*panel, i| panel.open = i < open;
@@ -319,16 +327,16 @@ fn measure(fx: *Fixture, open: usize) !struct { shape: Attribution, stats: rende
     try overlay.describeIn(&ctx, .{}, arena.allocator(), .{});
     ctx.end();
 
-    return .{ .shape = Attribution.of(&ctx.list), .stats = try fx.walk(&ctx.list) };
+    return .{ .shape = Attribution.of(&ctx.list, solid != null), .stats = try fx.walk(&ctx.list, solid) };
 }
 
 test "the overlay's batch count is exactly its texture and clip breaks, and texture dominates" {
     var fx = try Fixture.init();
     defer fx.deinit();
 
-    const none = try measure(&fx, 0);
-    const one = try measure(&fx, 1);
-    const all = try measure(&fx, 5);
+    const none = try measure(&fx, 0, null);
+    const one = try measure(&fx, 1, null);
+    const all = try measure(&fx, 5, null);
 
     // **The model is the mechanism.** If walking the list and counting runs of identical
     // `(texture, clip)` reproduces `frameStats().batches` exactly, then every break has been
@@ -353,4 +361,66 @@ test "the overlay's batch count is exactly its texture and clip breaks, and text
     // rectangles and glyphs would leave only the clip changes, which is less than half of
     // what the overlay costs today — the size of the prize, measured rather than hoped for.
     try testing.expect(all.shape.single_texture_batches * 2 < all.stats.batches);
+}
+
+// -- the fix, measured against the same list ----------------------------------------------
+
+/// What the frame drew, in the order it is drawn.
+fn drawn(fx: *Fixture) !std.ArrayList(render2d.batch.Item) {
+    var out: std.ArrayList(render2d.batch.Item) = .empty;
+    errdefer out.deinit(testing.allocator);
+    for (fx.renderer.batcher.order.items) |index| {
+        try out.append(testing.allocator, fx.renderer.batcher.items.items[index]);
+    }
+    return out;
+}
+
+test "rectangles from the font's own texture leave only the clip breaks, and draw the same things" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const font_texture = fx.font.font.glyphs.texture;
+    const blank = fx.renderer.blankRegion();
+
+    const separate = try measure(&fx, 5, null);
+    var separate_drawn = try drawn(&fx);
+    defer separate_drawn.deinit(testing.allocator);
+    const shared = try measure(&fx, 5, fx.solid);
+    var shared_drawn = try drawn(&fx);
+    defer shared_drawn.deinit(testing.allocator);
+
+    // The same list both times, so the model's counterfactual is now simply the count.
+    try testing.expectEqual(separate.shape.rects, shared.shape.rects);
+    try testing.expectEqual(separate.shape.texts, shared.shape.texts);
+    try testing.expectEqual(separate.shape.clips, shared.shape.clips);
+    try testing.expectEqual(@as(usize, 0), shared.shape.texture_breaks);
+    try testing.expectEqual(separate.shape.single_texture_batches, shared.shape.batches);
+    try testing.expectEqual(@as(u32, @intCast(shared.shape.batches)), shared.stats.batches);
+    try testing.expect(shared.stats.batches < separate.stats.batches);
+
+    // **And nothing drawn is different but where a rectangle's texels come from.** Same
+    // sprites, same glyphs, in the same order, at the same place and size, in the same tint,
+    // layer, view and clip; a glyph keeps its UV, and a rectangle moves from the blank to the
+    // patch.
+    try testing.expectEqual(separate.stats.sprites, shared.stats.sprites);
+    try testing.expectEqual(separate.stats.glyphs, shared.stats.glyphs);
+    try testing.expectEqual(separate_drawn.items.len, shared_drawn.items.len);
+    for (separate_drawn.items, shared_drawn.items) |a, b| {
+        try testing.expectEqual(a.view, b.view);
+        try testing.expect(render2d.batch.clipEql(a.clip, b.clip));
+        try testing.expect(b.sprite.texture.eql(font_texture));
+        if (a.sprite.texture.eql(font_texture)) {
+            try testing.expectEqual(a.sprite.uv, b.sprite.uv);
+        } else {
+            try testing.expect(a.sprite.texture.eql(blank.texture));
+            try testing.expectEqual(blank.uv, a.sprite.uv);
+            try testing.expectEqual(fx.solid.uv, b.sprite.uv);
+        }
+        var left = a.sprite;
+        var right = b.sprite;
+        left.texture = .none;
+        left.uv = .{};
+        right.texture = .none;
+        right.uv = .{};
+        try testing.expectEqual(left, right);
+    }
 }

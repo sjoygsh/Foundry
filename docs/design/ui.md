@@ -289,11 +289,15 @@ The kernel measures; the walker draws.
 
 ## 8. The walker, and the one hazard the seam creates
 
-**M11 planned extension, 2026-09-13:** [hardening.md](hardening.md) §8 specifies an optional
-caller-supplied solid region in the walker's options. It lets rectangles share the font's
-texture while preserving paint/clip order and all text metrics. Missing or invalid input uses
-the existing renderer-owned blank. The reference atlas and its coordinates remain ordinary
-content; the walker gains no font ID or glyph-layout assumption. Not implemented yet.
+**M11 extension, implemented 2026-09-13 (Step 6):** [hardening.md](hardening.md) §8's optional
+solid region is `Options.solid`. A caller that sets it has rectangles drawn from that region —
+a patch of solid texels inside the font's own texture, found by `app.uiSolidRegion` from
+texel coordinates content declares — so fills and glyphs share a texture and a batch, with
+paint order, clipping and every text metric unchanged. Null, or a region whose texture no
+longer resolves or that names no part of it, uses the renderer-owned blank; the warning comes
+from `uiSolidRegion`, which a caller runs when content changes, not from the per-frame walk.
+The reference font keeps its patch in its spare 96th cell. The walker gains no font ID or
+glyph-layout assumption: which patch, in which texture, is the application's content.
 
 The walker turns a `ui.DrawList` into `render2d` calls. **It lives in `app`**, which is the only
 layer that can see both, exactly as §4.3 describes. Roughly:

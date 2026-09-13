@@ -87,7 +87,7 @@ Strict ad-hoc integrity passed and Gatekeeper rejection is expected. Actual Deve
 signing, Apple notarization and a quarantine-preserving launch on a genuinely clean Mac remain
 mandatory deferred work for the first public release; the current artifact does not claim it.
 
-**M10 is complete; M11 is under way, 5/9 steps implemented (2026-09-13).** M10 added
+**M10 is complete; M11 is under way, 6/9 steps implemented (2026-09-13).** M10 added
 Foundry's marks and an application-supplied release icon (ADR-0034); its full verification is
 recorded in PROJECT_STATE. For M11 read ADR-0035 and `docs/design/hardening.md`; §12 is the
 nine-step order. Step 1 repaired the Metal-selected test graph, and its compile check is now
@@ -99,7 +99,9 @@ failed atlas upload claims no space. Step 4 made declared usage **validation rul
 resource used, or moved into a state, its usage does not allow is reported. Step 5 split frame
 outcomes: **only `SurfaceUnavailable` may be skipped** (`app.Engine.frameSkippable`), and a
 failed frame is closed — its recording discarded, the frame finished — before `renderFrame`
-returns. **Next is Step 6, the shared UI font texture.** M12–M17 remain unstarted.
+returns. Step 6 lets the UI walker draw rectangles from a solid patch in the font's own
+texture (`UiDrawOptions.solid`, resolved by `app.uiSolidRegion`), which `foundry:fonts.debug`
+now carries in its spare cell. **Next is Step 7, log timestamps.** M12–M17 remain unstarted.
 
 ## 3. Building and verifying
 
