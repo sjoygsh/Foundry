@@ -67,6 +67,10 @@ pub const Config = struct {
     /// Must match the value the device was created with. The per-slot vertex buffer pools
     /// are sized by it.
     frames_in_flight: u32 = 2,
+    /// The explicit capability used only for disjoint vertex writes. Serial until a host
+    /// hands the renderer its engine's workers; ordering and RHI recording stay on the
+    /// calling thread (ADR-0036).
+    jobs: core.Jobs = core.jobs.serial,
 };
 
 /// What the camera contributes to a frame.
@@ -133,6 +137,37 @@ const Slot = struct {
     buffers: std.ArrayList(SlotBuffer) = .empty,
 };
 
+/// Quads per vertex-writing chunk. At 80 bytes per quad this is 320 KiB of sequential
+/// output, large beside dispatch overhead while leaving thirteen chunks in M12's 50,000
+/// sprite workload. Chosen independently of the worker count (ADR-0036).
+const vertex_grain: u32 = 4 * 1024;
+
+const VertexWrite = struct {
+    items: []const batch_mod.Item,
+    order: []const u32,
+    buffers: []const []Vertex,
+    views: []const view_mod.View,
+    quads_per_buffer: u32,
+
+    fn chunk(self: *const VertexWrite, range: core.jobs.Chunk) void {
+        for (range.begin..range.end) |position| {
+            const item = self.items[self.order[position]];
+            const buffer_index = position / self.quads_per_buffer;
+            const quad = position % self.quads_per_buffer;
+            const at = quad * sprite_mod.vertices_per_quad;
+            const y_axis: view_mod.YAxis = if (item.view.index() < self.views.len)
+                self.views[item.view.index()].y_axis
+            else
+                .up;
+            sprite_mod.writeQuad(
+                item.sprite,
+                y_axis,
+                self.buffers[buffer_index][at..][0..sprite_mod.vertices_per_quad],
+            );
+        }
+    }
+};
+
 /// What the renderer keeps for each live atlas: a texture it owns, and where the free
 /// space is. The packer holds no GPU state, which is what makes it testable on its own.
 const AtlasState = struct {
@@ -174,6 +209,10 @@ pub const Renderer = struct {
     /// rectangle. See `blankRegion`.
     blank: Region,
     slots: []Slot,
+    /// The mapped view of every vertex buffer used by one `prepare`. Capacity is retained,
+    /// but the slices themselves are cleared immediately after unmapping so no stale CPU
+    /// pointer appears to survive the join.
+    mapped_vertices: std.ArrayList([]Vertex),
 
     view: FrameView,
     recording: bool,
@@ -280,6 +319,7 @@ pub const Renderer = struct {
             // compares against it, and it is called from inside the creation that sets it.
             .blank = .{ .texture = .none, .uv = .{}, .size_px = .{} },
             .slots = slots,
+            .mapped_vertices = .empty,
             .view = .{ .camera = .{ .viewport = .init(0, 0, 1, 1) } },
             .recording = false,
             .frame = null,
@@ -308,6 +348,7 @@ pub const Renderer = struct {
             slot.buffers.deinit(self.gpa);
         }
         self.gpa.free(self.slots);
+        self.mapped_vertices.deinit(self.gpa);
 
         self.batcher.deinit(self.gpa);
         self.views.deinit(self.gpa);
@@ -867,37 +908,42 @@ pub const Renderer = struct {
         }
 
         const quads_per_buffer = self.config.quads_per_buffer;
-        var written_quads: u32 = 0;
+        const written_quads = self.batcher.count();
 
-        for (0..needed) |i| {
-            const first = @as(u32, @intCast(i)) * quads_per_buffer;
-            const count = @min(quads_per_buffer, self.batcher.count() - first);
-            const buffer = slot.buffers.items[i];
-
-            {
-                // Mapped per frame rather than persistently, deliberately: the validation
-                // backend's rule 3 fires on `mapBuffer` when the slot is still in flight,
-                // so a persistent mapping would switch off the exact check the per-slot
-                // scheme exists to earn.
-                const bytes = try self.device.mapBuffer(buffer.upload);
-                defer self.device.unmapBuffer(buffer.upload);
-
-                const aligned: []align(@alignOf(Vertex)) u8 = @alignCast(bytes);
-                const vertices = std.mem.bytesAsSlice(Vertex, aligned);
-                for (0..count) |q| {
-                    const item = self.batcher.items.items[self.batcher.order.items[first + q]];
-                    const at = q * sprite_mod.vertices_per_quad;
-                    // Which way is up is the *space's* property, not the sprite's, and
-                    // this is where the two meet.
-                    sprite_mod.writeQuad(
-                        item.sprite,
-                        self.viewAxis(item.view),
-                        vertices[at..][0..sprite_mod.vertices_per_quad],
-                    );
+        // Map on the calling thread before the split and unmap there after the join. A
+        // worker only sees ordinary disjoint memory; it never calls the RHI. Mapped per
+        // frame rather than persistently so validation rule 3 still checks the slot ring.
+        self.mapped_vertices.clearRetainingCapacity();
+        try self.mapped_vertices.ensureTotalCapacity(self.gpa, needed);
+        var mapped: u32 = 0;
+        {
+            defer {
+                for (slot.buffers.items[0..mapped]) |buffer| {
+                    self.device.unmapBuffer(buffer.upload);
                 }
+                self.mapped_vertices.clearRetainingCapacity();
             }
 
-            written_quads += count;
+            for (slot.buffers.items[0..needed], 0..) |buffer, i| {
+                const first = @as(u32, @intCast(i)) * quads_per_buffer;
+                const count = @min(quads_per_buffer, written_quads - first);
+                const bytes = try self.device.mapBuffer(buffer.upload);
+                mapped += 1;
+                const aligned: []align(@alignOf(Vertex)) u8 = @alignCast(bytes);
+                const vertices = std.mem.bytesAsSlice(Vertex, aligned);
+                self.mapped_vertices.appendAssumeCapacity(
+                    vertices[0 .. count * sprite_mod.vertices_per_quad],
+                );
+            }
+
+            const write: VertexWrite = .{
+                .items = self.batcher.items.items,
+                .order = self.batcher.order.items,
+                .buffers = self.mapped_vertices.items,
+                .views = self.views.items,
+                .quads_per_buffer = quads_per_buffer,
+            };
+            self.config.jobs.forChunks(written_quads, vertex_grain, &write, VertexWrite.chunk);
         }
 
         if (!self.unified and needed > 0) {

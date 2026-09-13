@@ -61,7 +61,7 @@ The final gate passed with the two real Metal sample windows inspected, an exter
 override exercised, the Metal test graph and repeated in-flight texture replacement clean,
 persisted diagnostics checked, and a strict-valid ad-hoc distribution retaining its icon.
 The existing technical-debt record now distinguishes closed defects from deliberate limits.
-M12's job-system/threading design and ADR-0036 are accepted, and Steps 1–4 of its six are implemented.
+M12's job-system/threading design and ADR-0036 are accepted, and Steps 1–5 of its six are implemented.
 
 All three modding tiers work — see [docs/modding](docs/modding/). Tier 2 is restricted
 Lua 5.5.1, one VM per package, bounded in memory, instructions and engine calls, reaching the

@@ -22,6 +22,7 @@ pub const asset_pipeline = @import("asset_pipeline.zig");
 pub const abi_render_pipeline = @import("abi_render_pipeline.zig");
 pub const debug_overlay = @import("debug_overlay.zig");
 pub const overlay_batches = @import("overlay_batches.zig");
+pub const render_jobs = @import("render_jobs.zig");
 pub const mod_pipeline = @import("mod_pipeline.zig");
 pub const settings_startup = @import("settings_startup.zig");
 pub const sound_pipeline = @import("sound_pipeline.zig");
@@ -36,6 +37,7 @@ test {
     _ = abi_render_pipeline;
     _ = debug_overlay;
     _ = overlay_batches;
+    _ = render_jobs;
     _ = mod_pipeline;
     _ = settings_startup;
     _ = sound_pipeline;

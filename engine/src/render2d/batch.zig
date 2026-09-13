@@ -74,6 +74,10 @@ pub const Batcher = struct {
     /// Indices into `items`, sorted. Sorting indices rather than items keeps the
     /// submission index available as the tie-break, and moves 4 bytes instead of 64.
     order: std.ArrayList(u32) = .empty,
+    /// The other half of the stable radix sort. Retained with `order`, so a steady frame
+    /// allocates neither while replacing the comparison sort with linear bucketing
+    /// (`jobs-and-threading.md` §6.3).
+    scratch: std.ArrayList(u32) = .empty,
     batches: std.ArrayList(Batch) = .empty,
     /// How many quads fit in one vertex buffer. A buffer boundary forces a batch break.
     quads_per_buffer: u32,
@@ -86,6 +90,7 @@ pub const Batcher = struct {
     pub fn deinit(self: *Batcher, gpa: Allocator) void {
         self.items.deinit(gpa);
         self.order.deinit(gpa);
+        self.scratch.deinit(gpa);
         self.batches.deinit(gpa);
         self.* = undefined;
     }
@@ -95,6 +100,7 @@ pub const Batcher = struct {
     pub fn reset(self: *Batcher) void {
         self.items.clearRetainingCapacity();
         self.order.clearRetainingCapacity();
+        self.scratch.clearRetainingCapacity();
         self.batches.clearRetainingCapacity();
     }
 
@@ -131,17 +137,29 @@ pub const Batcher = struct {
     /// nothing in the world can be given a layer high enough to cover it. The cost is
     /// honest — the floor on batch count is the number of views in use.
     ///
-    /// Because the key includes the submission index it is a **total** order, so the
-    /// result does not depend on the sort algorithm being stable. That discharges I9 by
-    /// construction rather than by choosing a stable sort and hoping nobody swaps it.
+    /// Submission order is the final key. `order` starts in submission order and the radix
+    /// passes are stable, so bucketing by layer and then view produces exactly the total
+    /// `(view, layer, submission index)` order the former comparison sort did. The four
+    /// fixed byte passes are linear in the draw count and allocate nothing after warm-up.
     pub fn plan(self: *Batcher, gpa: Allocator) Allocator.Error!void {
         self.order.clearRetainingCapacity();
+        self.scratch.clearRetainingCapacity();
         self.batches.clearRetainingCapacity();
 
         try self.order.ensureTotalCapacity(gpa, self.items.items.len);
-        for (0..self.items.items.len) |i| self.order.appendAssumeCapacity(@intCast(i));
+        try self.scratch.ensureTotalCapacity(gpa, self.items.items.len);
+        for (0..self.items.items.len) |i| {
+            self.order.appendAssumeCapacity(@intCast(i));
+            self.scratch.appendAssumeCapacity(0);
+        }
 
-        std.sort.pdq(u32, self.order.items, self.items.items, lessThan);
+        // Least-significant digit first: signed layer made lexicographic, then view. Four
+        // passes leave the result back in `order`. Stability carries submission order as
+        // the final tie-break without putting it in the radix key.
+        stableBucket(self.items.items, self.order.items, self.scratch.items, 0);
+        stableBucket(self.items.items, self.scratch.items, self.order.items, 8);
+        stableBucket(self.items.items, self.order.items, self.scratch.items, 16);
+        stableBucket(self.items.items, self.scratch.items, self.order.items, 24);
 
         for (self.order.items, 0..) |item_index, position| {
             const item = self.items.items[item_index];
@@ -181,6 +199,38 @@ pub const Batcher = struct {
         return a < b;
     }
 };
+
+/// One stable byte of the `(view, signed layer)` radix key.
+///
+/// `i16`'s sign bit is flipped so its unsigned representation orders from -32768 through
+/// 32767. View occupies the high half, making four least-significant-first passes order by
+/// layer within view. `source` begins in submission order, so equal keys stay there.
+fn stableBucket(items: []const Item, source: []const u32, destination: []u32, shift: u5) void {
+    std.debug.assert(source.len == destination.len);
+    var offsets = [_]u32{0} ** 256;
+
+    for (source) |item_index| offsets[keyByte(items[item_index], shift)] += 1;
+
+    var next: u32 = 0;
+    for (&offsets) |*offset| {
+        const count = offset.*;
+        offset.* = next;
+        next += count;
+    }
+
+    for (source) |item_index| {
+        const bucket = keyByte(items[item_index], shift);
+        destination[offsets[bucket]] = item_index;
+        offsets[bucket] += 1;
+    }
+}
+
+fn keyByte(item: Item, shift: u5) u8 {
+    const signed_layer: u16 = @bitCast(item.sprite.layer);
+    const key = (@as(u32, @intFromEnum(item.view)) << 16) |
+        @as(u32, signed_layer ^ 0x8000);
+    return @truncate(key >> shift);
+}
 
 const testing = std.testing;
 
@@ -242,6 +292,31 @@ test "the order is total, so it does not depend on the sort being stable" {
     for (first.order.items, 0..) |index, position| {
         try testing.expectEqual(@as(u32, @intCast(position)), index);
     }
+}
+
+test "stable bucketing produces the comparison sort's total order" {
+    const gpa = testing.allocator;
+    var b: Batcher = .init(31);
+    defer b.deinit(gpa);
+
+    var rng = core.Pcg32.init(0x6d3132, 5);
+    for (0..2_000) |i| {
+        const layer: i16 = switch (i % 9) {
+            0 => std.math.minInt(i16),
+            1 => std.math.maxInt(i16),
+            else => @bitCast(@as(u16, @intCast(rng.next() & 0xffff))),
+        };
+        try b.add(gpa, at(layer, @intCast(i % 7), .alpha), .fromIndex(i % 17), null);
+    }
+
+    var comparison: std.ArrayList(u32) = .empty;
+    defer comparison.deinit(gpa);
+    try comparison.ensureTotalCapacity(gpa, b.items.items.len);
+    for (0..b.items.items.len) |i| comparison.appendAssumeCapacity(@intCast(i));
+    std.sort.pdq(u32, comparison.items, b.items.items, Batcher.lessThan);
+
+    try b.plan(gpa);
+    try testing.expectEqualSlices(u32, comparison.items, b.order.items);
 }
 
 test "sprites sharing a texture and blend mode become one draw call" {

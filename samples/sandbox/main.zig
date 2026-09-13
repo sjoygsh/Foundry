@@ -519,10 +519,10 @@ fn run(
     _ = try engine.registerMemory(&engine_memory);
     _ = try engine.registerMemory(&sample_memory);
 
-    // The renderer and its sprites, created once and torn down explicitly. Unlike M1's
-    // quad, this *does* have a teardown: `Renderer.deinit` idles the device first, which
-    // is what `rhi.waitIdle` was added for.
-    var field = try SpriteField.init(sample_memory.allocator(), engine.gpu);
+    // The renderer and its sprites, created once and torn down explicitly before the engine
+    // and its device. `Renderer.deinit` retires its GPU objects without idling; the RHI keeps
+    // them through any work still in flight (ADR-0035).
+    var field = try SpriteField.init(sample_memory.allocator(), engine.gpu, engine.jobs());
     defer field.deinit(engine);
     field.prefs = &prefs;
     try field.load(engine);
@@ -1760,9 +1760,10 @@ const SpriteField = struct {
 
     /// The renderer and nothing else. Content arrives in `load`, which needs this struct
     /// to already be where it is going to live.
-    fn init(gpa: std.mem.Allocator, device: *rhi.Device) !SpriteField {
+    fn init(gpa: std.mem.Allocator, device: *rhi.Device, jobs: core.Jobs) !SpriteField {
         var renderer = try render2d.Renderer.init(gpa, device, .{
             .frames_in_flight = 2,
+            .jobs = jobs,
         });
         errdefer renderer.deinit();
 

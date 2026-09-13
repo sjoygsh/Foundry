@@ -1,8 +1,30 @@
 # Foundry Project State
 
-**Last updated:** 2026-09-13
+**Last updated:** 2026-09-14
 **Current handoff: M0 through M11 are complete. M12 is in progress: ADR-0036 is accepted and
-Steps 1–4 of six are implemented. Stop before M12 Step 5. M13 through M17 remain unstarted.**
+Steps 1–5 of six are implemented. Stop before M12 Step 6. M13 through M17 remain unstarted.**
+
+**Implemented in M12 Step 5, 2026-09-14:** renderer preparation now uses the explicit jobs
+capability without letting a worker reach the RHI. `render2d.Config.jobs` is `serial` by default;
+both samples hand it `engine.jobs()`, and `FOUNDRY_ROOM_WORKERS` joins the sandbox's existing
+override for controlled comparisons. `Batcher.plan` replaces its measured-dominant comparison
+sort with four stable byte-bucketing passes over `(view, signed layer)`; submission order enters
+as the stable input, so the resulting total order is byte-for-byte the former comparison sort's,
+with retained scratch and linear work. `prepare` maps every needed vertex buffer on the caller,
+splits the complete sorted position range at 4,096 quads, lets each chunk write only its own four
+vertices, joins, then unmaps and records copies on the caller.
+
+The new integration test compares exact mapped vertex bytes, order and batch lists under
+`serial`, `reversed` and a four-thread pool at 0 and 1 quad, on every side of a 257-quad buffer
+boundary and every side of the 4,096-quad grain; the validation backend reports no violation. A
+second test proves the bucketed permutation against the old total comparator over 2,000 draws,
+all signed-layer extremes and seventeen views. Swapping the layer radix passes failed the old
+order test and the new equivalence test; making every chunk write from buffer position zero
+failed the exact-byte pool test. After restoration all **1,370 declared / 1,360 headless** tests
+passed. Both samples completed 600 null frames at zero and default workers: Room output was
+byte-identical, and every world/render result in the sandbox was identical, with only its
+explicit pool-size line and the pool's one thread-array allocation differing. The bar passed.
+Resolution: `jobs-and-threading.md`, Step 5.
 
 **Implemented in M12 Step 4, 2026-09-13:** a `scene` system can split its own query.
 `World.setJobs` gives the world the host's `core.Jobs`, `serial` until set. A typed query's
@@ -1511,14 +1533,14 @@ external-consumer recipient proof obtainable without private Apple credentials. 
 closed.** What a public macOS release still owes is operator certification — Developer ID
 signing, notarization and a clean recipient Mac (ADR-0032) — not engine work. **Phase 4,
 "Hardening and reach" (M10-M17), is under way**: it gathers the deferred work rather than
-adding to it, only M10 was new, and **M10 and M11 are complete (2026-09-13)**. M12 through
-M17 are unstarted.
+adding to it, only M10 was new, and **M10 and M11 are complete (2026-09-13)**. M12 is in
+progress; M13 through M17 are unstarted.
 
 ## Current milestone
 
-**M12 — Parallel: "it uses more than one core." Designed and accepted 2026-09-13; Steps 1–4 of
+**M12 — Parallel: "it uses more than one core." Designed and accepted 2026-09-13; Steps 1–5 of
 six implemented.** Read `docs/design/jobs-and-threading.md` and ADR-0036. §11 orders six steps;
-stop after each. Next is Step 5, `render2d`: the bucketed sort and split vertex writes.
+stop after each. Next is Step 6, the measured exit proof and worker-count sweep.
 
 **M11 — Solid: "its known faults are fixed." Complete, 2026-09-13.** Read
 `docs/design/hardening.md` and ADR-0035. All nine steps are implemented: the Metal-selected
@@ -2397,8 +2419,8 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M0–M11 are complete; M12 is in progress.** Its design and ADR-0036 are accepted, and §11's six
-steps are walked one at a time. The M11 specification and all nine Resolutions are in
+**M0–M11 are complete; M12 is in progress through Step 5.** Its design and ADR-0036 are
+accepted, and §11's six steps are walked one at a time. The M11 specification and all nine Resolutions are in
 `docs/design/hardening.md`; the M5 material below is historical.
 
 ### `samples/room`, and what a second consumer proved
@@ -3044,8 +3066,10 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M12 Step 5, `render2d`, when requested.** The specification is
-`docs/design/jobs-and-threading.md` §11, and ADR-0036 is accepted.
+**Next: M12 Step 6, the exit proof, when requested.** The specification is
+`docs/design/jobs-and-threading.md` §8 and §11, and ADR-0036 is accepted. It measures the same
+serial and parallel workload, sweeps worker counts, runs the final determinism/bar gate and
+closes the milestone; do not perform that measurement as part of Step 5.
 
 **M0 through M11 are complete and tagged, and everything is pushed.** Phase 3 is closed;
 Phase 4 is under way. The completed M8/M7 checklists and subsequent M5/M6 material below are
@@ -3066,8 +3090,9 @@ review of `main` rather than beginning on a schedule.
 * ~~**M11 — Solid.**~~ **Done 2026-09-13**, tagged `m11`. All nine steps in
   `docs/design/hardening.md` repaired the carried correctness defects, made the remaining
   limits explicit and passed the final Metal/runtime/distribution gate.
-* **M12 — Parallel.** The job system and threading model, which §9 dated post-M5 and which is
-  four milestones overdue. I9 constrains it hardest.
+* **M12 — Parallel.** Five of six implementation steps are complete. Step 6 measures the exit,
+  chooses the default worker count from the sweep and closes the milestone. I9 constrains it
+  hardest.
 * **M13 — Portable.** The second backend, trigger-started — **and it is Vulkan, decided
   2026-09-13 in [ADR-0033](docs/adr/0033-vulkan-second-backend.md)**, covering Windows and
   Linux with one backend; D3D12 is not planned and Metal stays macOS's. With it: the shader
@@ -4271,9 +4296,9 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 
 ## Notes for the next session
 
-**Resume point, 2026-09-13:** M0–M11 complete and tagged. M12 is designed and accepted —
-`docs/design/jobs-and-threading.md`, ADR-0036 — and its steps are walked one at a time from §11: Steps 1–4
-are implemented and Step 5 is next. M13–M17 are unstarted.
+**Resume point, 2026-09-14:** M0–M11 complete and tagged. M12 is designed and accepted —
+`docs/design/jobs-and-threading.md`, ADR-0036 — and its steps are walked one at a time from §11:
+Steps 1–5 are implemented and Step 6 is next. M13–M17 are unstarted.
 `zig build check -Drhi=metal` is now part of the bar. The environment notes below still apply.
 
 * Read `CLAUDE.md` first, then this file, then `docs/ROADMAP.md`.

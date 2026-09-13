@@ -1,6 +1,6 @@
 # Jobs and threading: parallel work that cannot change a result
 
-**Status:** designed and **accepted 2026-09-13** (ADR-0036); Steps 1–4 of six implemented.
+**Status:** designed and **accepted 2026-09-13** (ADR-0036); Steps 1–5 of six implemented.
 **Baseline:** `b101745`, M0–M11 complete and tagged `m11`.
 **Stop point:** after each step of §11. Resolutions at the end record what each settled.
 
@@ -664,3 +664,51 @@ Evidence:
   rendering was identical.
 * §10's determinism tests are unchanged and pass. The bar passed. **1,368 declared / 1,358
   headless**, ten Metal-only.
+
+## Resolution — Step 5, 2026-09-14
+
+`render2d` accepts the engine's explicit jobs capability, replaces the measured-dominant sort
+with the algorithm §6.3 required, and splits only vertex writes. Both samples use it.
+
+What implementation settled:
+
+* **`render2d.Config.jobs` defaults to `core.jobs.serial`.** Existing consumers are unchanged;
+  the samples pass `engine.jobs()` when constructing their renderer. The room gains
+  `FOUNDRY_ROOM_WORKERS`, matching the sandbox's controlled worker-count input.
+* **The replacement sort is a four-pass stable LSD radix bucket.** Its 32-bit key is the view
+  followed by the signed layer with its sign bit flipped. The input indices begin in submission
+  order, so stability supplies the final tie-break and produces exactly the former comparison
+  sort's total `(view, layer, submission index)` permutation. The second index array is retained
+  beside the first; steady-state planning allocates nothing and costs linear work plus four
+  fixed 256-bucket tables.
+* **Vertex writes split at 4,096 quads.** One quad is 80 bytes, so a chunk writes 320 KiB of
+  sequential output; the 50,000-sprite workload makes thirteen chunks, while smaller frames do
+  not pay for tiny jobs. The grain is a property of the work and never of the worker count.
+* **Every RHI call remains on the caller.** `prepare` maps all vertex buffers before the split,
+  hands workers only immutable items/order/views and disjoint ordinary-memory slices, joins,
+  unmaps every buffer, and only then records discrete-memory copies. The renderer clears the
+  borrowed mapped slices immediately after unmapping; they never survive the call.
+* **Nothing crosses the public ABI.** Planning, command recording, texture state and the public
+  `FoundryApi_v2` remain on the calling thread and retain their existing order.
+
+Tests: one in `batch.zig` compares the bucketed permutation with the former total comparator over
+2,000 submissions spanning both signed-layer extremes and seventeen views. One integration test,
+`engine/tests/render_jobs.zig`, stands above `render2d` and `platform`: it compares exact mapped
+vertex bytes, sorted indices, batch lists and stats under `serial`, `reversed` and a four-thread
+pool. Its cases are zero and one quad, each side of a 257-quad buffer boundary, and each side of
+the 4,096-quad grain; the validation backend reports no violation.
+
+Evidence:
+
+* Swapping the two layer radix passes failed the existing layer-order test and the new
+  comparison-equivalence test. Making every chunk write from position zero made the exact vertex
+  bytes differ between forward and reverse execution, so the integration test failed. Both
+  changes were restored, and all 1,360 headless tests then passed.
+* At 600 null frames, the room's output was byte-identical with zero and default workers. The
+  sandbox's world, collision, rendering and script-derived lines were identical; only the
+  explicit pool-size line and one engine allocation for the pool's thread-handle array differed,
+  as in Step 4.
+* The bar passed. **1,370 declared / 1,360 headless**, ten Metal-only.
+
+Step 6 performs the measurement and worker-count sweep. No exit improvement or default-worker
+decision is claimed here.

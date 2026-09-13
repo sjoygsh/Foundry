@@ -200,6 +200,17 @@ fn envValue(env: []const platform.os.EnvVar, name: []const u8) ?[]const u8 {
     return null;
 }
 
+/// `FOUNDRY_ROOM_WORKERS`, when set: how many worker threads the engine starts, `0` for
+/// none. It exists so M12 can compare this sample against itself; unset lets the engine
+/// choose. Worker count changes only how fast disjoint work runs (ADR-0036).
+fn workersFrom(env: []const platform.os.EnvVar) ?u16 {
+    const text = envValue(env, "FOUNDRY_ROOM_WORKERS") orelse return null;
+    return std.fmt.parseInt(u16, text, 10) catch {
+        log.warn("FOUNDRY_ROOM_WORKERS='{s}' is not a thread count; the engine chooses", .{text});
+        return null;
+    };
+}
+
 fn freePackages(gpa: std.mem.Allocator, packages: []const app.ContentPackage) void {
     for (packages) |pkg| freePackage(gpa, pkg);
 }
@@ -520,6 +531,7 @@ fn run(
         .app_name = "foundry-room",
         .log_level = .info,
         .headless = headless,
+        .workers = workersFrom(env),
         .tick_rate_hz = 60,
         .window = .{
             .title = "The Long Hall",
@@ -532,7 +544,7 @@ fn run(
     });
     defer engine.deinit();
 
-    var room = try Room.init(gpa, engine.gpu);
+    var room = try Room.init(gpa, engine.gpu, engine.jobs());
     defer room.deinit(engine);
     room.prefs = &prefs;
     try room.load(engine);
@@ -1616,8 +1628,11 @@ const Room = struct {
     /// else. Plain integers rather than a registry of named layers, per `physics2d`.
     const lamp_layer: u32 = 1 << 1;
 
-    fn init(gpa: std.mem.Allocator, device: *rhi.Device) !Room {
-        var renderer = try render2d.Renderer.init(gpa, device, .{ .frames_in_flight = 2 });
+    fn init(gpa: std.mem.Allocator, device: *rhi.Device, jobs: core.Jobs) !Room {
+        var renderer = try render2d.Renderer.init(gpa, device, .{
+            .frames_in_flight = 2,
+            .jobs = jobs,
+        });
         errdefer renderer.deinit();
 
         // Until content arrives. Hoisted because the kernel needs metrics to exist before
