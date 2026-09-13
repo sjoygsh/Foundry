@@ -97,8 +97,8 @@ replaces textures safely with frames in flight and shares the font texture for U
 Only `SurfaceUnavailable` is skippable, and every opened frame is closed on failure. Captured
 logs carry the engine's observed elapsed time, and ordinary file reads report the kind of the
 same object they read. M11's final gate passed at **1,344 declared / 1,334 headless tests**,
-ten Metal-only. **M12 is next but undesigned; write its job-system/threading design and ADR
-before implementation.** M12–M17 remain unstarted.
+ten Metal-only. **M12 is designed but not accepted or implemented: read `docs/design/jobs-and-threading.md` and
+ADR-0036 (Proposed); Step 1 waits on its acceptance.** M12–M17 remain unstarted.
 
 ## 3. Building and verifying
 

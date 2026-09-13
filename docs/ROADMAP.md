@@ -591,7 +591,7 @@ an external font override, persisted diagnostics and the local ad-hoc shipped la
 Xcode GPU-frame-capture usability and an automated Metal minimise/restore remain honestly
 unverified rather than being represented as defects or completed evidence.
 
-### M12 — Parallel: "it uses more than one core" — **not started**
+### M12 — Parallel: "it uses more than one core" — **designed, not started**
 
 `CLAUDE.md` §9 dates the job system and threading model to post-M5. Four milestones have
 passed. The decision is overdue and has never been made, which is the only reason it is still
@@ -601,6 +601,10 @@ cheap.
 iteration order float changes results, and determinism is not a property that can be restored
 afterwards. Design document and ADR first; the model itself — what may run concurrently, where
 a frame splits, what a system may assume — stays open until that document decides it.
+[`design/jobs-and-threading.md`](design/jobs-and-threading.md) now proposes it, and
+[ADR-0036](adr/0036-explicit-deterministic-jobs.md) records the decision — **proposed, not yet
+accepted**: explicit `core.Jobs`, fork-join over data-determined chunks, systems kept in order,
+nothing in the ABI.
 
 **Exit criteria:** a measured improvement on a real workload in a sample, with every existing
 determinism test unchanged and still passing.

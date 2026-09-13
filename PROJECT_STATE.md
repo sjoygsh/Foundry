@@ -1,8 +1,26 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-13
-**Current handoff: M0 through M11 are complete. M12 through M17 remain unstarted.
-Stop before M12 design or implementation.**
+**Current handoff: M0 through M11 are complete. M12 is designed and proposed (ADR-0036), not
+accepted or implemented; M13 through M17 remain unstarted. Stop before M12 Step 1 until the
+owner accepts ADR-0036.**
+
+**Designed M12, 2026-09-13 — proposed, not accepted, not implemented:**
+`docs/design/jobs-and-threading.md` and ADR-0036 answer `CLAUDE.md` §9's job-system entry.
+Parallelism becomes explicit, like allocation: any API that may split work takes a
+`core.Jobs`, `serial` by default. Its only primitive is fork-join over chunks whose boundaries
+depend on the data alone, with disjoint writes and results combined in chunk order, so any
+worker count — including none — computes the same bytes, and every splitting call site is
+tested under `serial`, a reversed-order executor and a real pool. Systems keep their
+registration order; a system may split its own query through a view that cannot change the
+world's shape. A fixed pool lives in `platform`, is created by `app` and handed on by the game;
+the ABI exposes nothing. **Planning measurements:** the windowed Metal sandbox is display-bound
+at its own content — ReleaseSafe median 8.2 ms at 120 Hz, about 2 ms of it CPU — and at 20,000
+to 50,000 sprites `render.prepare` (about 3.8 ms) and `submit` (1–1.6 ms) grow while simulation
+stays small, so the exit measures CPU time per stage rather than frame time. A scratch benchmark
+put the batcher's comparison sort ahead of vertex writing, so §6.3 fixes in advance that a
+dominant sort is replaced serially rather than parallelised. Six steps. No code changed;
+**1,344 declared / 1,334 headless**, and the bar passed on the M11 commits it rests on.
 
 **Completed M11 Step 9 and M11, 2026-09-13:** the existing known-debt section received its
 single disposition pass. The faults M11 named are repaired; what remains is an explicit
@@ -21,8 +39,8 @@ and 2,400-frame Metal runs and the room completed 3,000; all exited cleanly. A R
 `dist` at implementation revision `6a26d3f` produced the app, dSYM, zip, inventory and notices;
 strict ad-hoc codesign passed and the staged `AppIcon.icns` remained declared and present.
 **1,344 declared / 1,334 headless tests**, ten Metal-only. Resolution: `hardening.md`, Step 9.
-M11 is complete and tagged `m11`; M12's job-system/threading design and ADR are next, but were
-not begun.
+M11 is complete and tagged `m11`; M12's job-system/threading design and ADR followed the same
+day (above).
 
 **Implemented in M11 Step 8, 2026-09-13:** ordinary file reads now report the object they
 opened. `Os.readFile` opens an absolute or relative path once, stats that same handle, accepts
@@ -1440,9 +1458,10 @@ M17 are unstarted.
 
 ## Current milestone
 
-**M12 — Parallel: "it uses more than one core." Not started.** The next action, only when
-requested, is to write the job-system/threading design and ADR required by `CLAUDE.md` §9.
-Do not implement M12 before that decision exists.
+**M12 — Parallel: "it uses more than one core." Designed 2026-09-13; proposed, not
+started.** Read `docs/design/jobs-and-threading.md` and ADR-0036 (Proposed). The next action is
+the owner's acceptance of ADR-0036, and only then Step 1, `core.jobs`. Do not implement M12
+before that.
 
 **M11 — Solid: "its known faults are fixed." Complete, 2026-09-13.** Read
 `docs/design/hardening.md` and ADR-0035. All nine steps are implemented: the Metal-selected
@@ -2321,8 +2340,8 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M0–M11 are complete; no milestone implementation is in progress.** M12's design and ADR are
-next when requested. The M11 specification and all nine Resolutions are in
+**M0–M11 are complete; no milestone implementation is in progress.** M12's design and ADR-0036
+are written and await acceptance. The M11 specification and all nine Resolutions are in
 `docs/design/hardening.md`; the M5 material below is historical.
 
 ### `samples/room`, and what a second consumer proved
@@ -2968,8 +2987,8 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: design M12, when requested.** Write the job-system/threading design and ADR before any
-implementation. M11 is closed; do not treat its completion as authority to begin M12.
+**Next: the owner accepts or amends ADR-0036, then M12 Step 1 when requested.** The design is
+`docs/design/jobs-and-threading.md`; do not treat its existence as authority to begin M12.
 
 **M0 through M11 are complete and tagged, and everything is pushed.** Phase 3 is closed;
 Phase 4 is under way. The completed M8/M7 checklists and subsequent M5/M6 material below are
@@ -2982,8 +3001,8 @@ to work through them over the following two weeks**, in roadmap order unless a t
 one: M13 and M16 are trigger-started and M17 is credential-gated, and M17 opens through a full
 review of `main` rather than beginning on a schedule.
 
-* **M12 owes a design document before it starts** — the job system's, whose trigger fired when
-  §9 was re-dated. `docs/design/README.md` records it as owed.
+* **M12's design document is written** — `docs/design/jobs-and-threading.md`, with ADR-0036
+  proposed. Step 1 waits on its acceptance.
 * ~~**M10 — Identity.**~~ **Done 2026-09-13**, tagged `m10`. One manual step is left and is
   not code: uploading `brand/social-preview.png` as the repository's social preview, which
   GitHub exposes through no API.
@@ -4195,9 +4214,9 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 
 ## Notes for the next session
 
-**Resume point, 2026-09-13:** M0–M11 complete and tagged. M12–M17 are unstarted. Read
-`CLAUDE.md` §9 and the M12 roadmap entry, then write the required job-system/threading design
-and ADR before any M12 implementation, only when requested.
+**Resume point, 2026-09-13:** M0–M11 complete and tagged. M12 is designed —
+`docs/design/jobs-and-threading.md`, ADR-0036 proposed — and unimplemented; M13–M17 are
+unstarted. Begin M12 Step 1 only after ADR-0036 is accepted.
 `zig build check -Drhi=metal` is now part of the bar. The environment notes below still apply.
 
 * Read `CLAUDE.md` first, then this file, then `docs/ROADMAP.md`.
