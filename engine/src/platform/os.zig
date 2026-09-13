@@ -335,13 +335,22 @@ pub const Os = struct {
     /// memory. Untrusted input is bounded at the boundary, not after it.
     pub fn readFile(self: *Os, gpa: Allocator, path: []const u8, max_bytes: usize) FileError![]u8 {
         const the_io = self.io();
-        const limit: std.Io.Limit = .limited(max_bytes);
-        const bytes = if (isAbsolute(path))
-            openDirAbsoluteRead(the_io, gpa, path, limit)
+        var file = (if (isAbsolute(path))
+            std.Io.Dir.openFileAbsolute(the_io, path, .{ .allow_directory = true })
         else
-            std.Io.Dir.cwd().readFileAlloc(the_io, path, gpa, limit);
+            std.Io.Dir.cwd().openFile(the_io, path, .{ .allow_directory = true })) catch |err|
+            return mapFileError(err, "open", path);
+        defer file.close(the_io);
 
-        return bytes catch |err| return mapFileError(err, "read", path);
+        const st = file.stat(the_io) catch |err| return mapFileError(err, "stat", path);
+        if (st.kind != .file) return error.WrongFileKind;
+        if (st.size > max_bytes) return error.FileTooLarge;
+
+        // The stat is classification, not the bound: the file can grow after it. Keep the
+        // limit on the read so no change between those operations can exceed the caller's cap.
+        var reader = file.reader(the_io, &.{});
+        return reader.interface.allocRemaining(gpa, .limited(max_bytes)) catch |err|
+            return mapFileError(err, "read", path);
     }
 
     /// Reads one package-relative file without following a symlink or reparse point below
@@ -444,13 +453,6 @@ pub const Os = struct {
             .follow_symlinks = false,
             .resolve_beneath = true,
         }) catch |err| return mapConfinedError(err, "open", relative);
-    }
-
-    fn openDirAbsoluteRead(the_io: std.Io, gpa: Allocator, path: []const u8, limit: std.Io.Limit) ![]u8 {
-        var file = try std.Io.Dir.openFileAbsolute(the_io, path, .{});
-        defer file.close(the_io);
-        var reader = file.reader(the_io, &.{});
-        return reader.interface.allocRemaining(gpa, limit);
     }
 
     /// Writes a whole file, replacing anything already there.
@@ -977,11 +979,16 @@ test "a path of the wrong kind is an error, never a panic" {
     // Listing a file: the OS says "not a directory" and Foundry says WrongFileKind.
     try testing.expectError(error.WrongFileKind, os.listDir(testing.allocator, file));
 
-    // Reading a directory as a file. What the OS reports here varies — macOS opens the
-    // directory happily and fails at the read — so this asserts only that it is an
-    // error, and the warn it logs is the engine correctly reporting an OS failure it
-    // cannot classify, not a broken test.
-    try testing.expect(std.meta.isError(os.readFile(testing.allocator, dir, 16)));
+    // The absolute and relative branches open differently, but classify the handle they
+    // opened the same way. In particular, macOS permits opening a directory for reading;
+    // the platform boundary must not wait for a later read to turn that into IoFailed.
+    try testing.expectError(error.WrongFileKind, os.readFile(testing.allocator, dir, 16));
+    const relative_dir = try joinPath(
+        testing.allocator,
+        &.{ ".zig-cache", "tmp", tmp.sub_path[0..] },
+    );
+    defer testing.allocator.free(relative_dir);
+    try testing.expectError(error.WrongFileKind, os.readFile(testing.allocator, relative_dir, 16));
 }
 
 test "a file larger than the caller allowed is refused" {
@@ -999,6 +1006,31 @@ test "a file larger than the caller allowed is refused" {
 
     try os.writeFile(path, "x" ** 100);
     try testing.expectError(error.FileTooLarge, os.readFile(testing.allocator, path, 10));
+}
+
+test "an allocation failure while reading closes the file and frees partial bytes" {
+    var os = try testOs(&.{});
+    defer os.deinit();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir = try tmpPath(&tmp, &buf);
+    const path = try joinPath(testing.allocator, &.{ dir, "allocation.bin" });
+    defer testing.allocator.free(path);
+    try os.writeFile(path, "bounded bytes");
+
+    var failing = testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    try testing.expectError(
+        error.OutOfMemory,
+        os.readFile(failing.allocator(), path, 1024),
+    );
+
+    // A second open succeeds after the failed one. The testing allocator also reports any
+    // partial allocation retained by allocRemaining when this test returns.
+    const read = try os.readFile(testing.allocator, path, 1024);
+    defer testing.allocator.free(read);
+    try testing.expectEqualStrings("bounded bytes", read);
 }
 
 test "a confined read returns bytes and metadata from an ordinary package file" {
@@ -1047,6 +1079,14 @@ test "a confined read rejects final and intermediate symlinks" {
 
     try root_tmp.dir.symLink(testing.io, secret, "final.lua", .{});
     try root_tmp.dir.symLink(testing.io, outside, "linked", .{ .is_directory = true });
+
+    // Ordinary reads deliberately follow links. The confined package path below is the
+    // stricter authority and continues to reject the very same final component.
+    const ordinary_link = try joinPath(testing.allocator, &.{ root, "final.lua" });
+    defer testing.allocator.free(ordinary_link);
+    const ordinary = try os.readFile(testing.allocator, ordinary_link, 1024);
+    defer testing.allocator.free(ordinary);
+    try testing.expectEqualStrings("outside", ordinary);
 
     try testing.expectError(
         error.InvalidPath,

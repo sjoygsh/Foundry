@@ -1,8 +1,19 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-13
-**Current handoff: M0 through M10 are complete. M11 is under way, 7/9 steps implemented.
-Stop immediately before M11 Step 8. M12 through M17 remain unstarted.**
+**Current handoff: M0 through M10 are complete. M11 is under way, 8/9 steps implemented.
+Stop immediately before M11 Step 9. M12 through M17 remain unstarted.**
+
+**Implemented in M11 Step 8, 2026-09-13:** ordinary file reads now report the object they
+opened. `Os.readFile` opens an absolute or relative path once, stats that same handle, accepts
+only a regular file and reads it through the existing live size cap. A directory therefore
+returns `WrongFileKind` on macOS instead of falling through to `IoFailed`; a file that grows
+after stat still cannot exceed the caller's bound. Ordinary symlinks continue to follow, while
+confined reads keep their component-by-component refusal. Tests cover absolute and relative
+directories, allocation failure followed by recovery, the ordinary/confined symlink split,
+and all existing read bounds. Disabling the kind guard failed exactly 1 of 1,334 tests. The
+bar passed. **1,344 declared / 1,334 headless**, ten Metal-only. Resolution: `hardening.md`,
+Step 8.
 
 **Implemented in M11 Step 7, 2026-09-13:** captured log lines carry elapsed time as well as the
 frame. The engine publishes an `app.log_sink.Stamp` — the frame, and nanoseconds since its
@@ -1403,11 +1414,11 @@ closed.** What a public macOS release still owes is operator certification — D
 signing, notarization and a clean recipient Mac (ADR-0032) — not engine work. **Phase 4,
 "Hardening and reach" (M10-M17), is under way**: it gathers the deferred work rather than
 adding to it, only M10 was new, and **M10 is complete (2026-09-13)**. M11 is under way with
-7/9 steps implemented; M12 through M17 are unstarted.
+8/9 steps implemented; M12 through M17 are unstarted.
 
 ## Current milestone
 
-**M11 — Solid: "its known faults are fixed." Designed, 2026-09-13; 7/9 implemented.**
+**M11 — Solid: "its known faults are fixed." Designed, 2026-09-13; 8/9 implemented.**
 Read `docs/design/hardening.md` and ADR-0035. Step 1 is done: the Metal-selected graph, test
 binaries included, compiles and its tests pass. Step 2 is done: both RHI backends retain a
 destroyed resource until every recording that could use it has finished. Step 3 is done:
@@ -1417,8 +1428,9 @@ validation rule 11. Step 5 is done: only an unavailable surface is a skippable f
 failed frame is closed before it is reported. Step 6 is done: the UI's rectangles can come from
 a solid patch in the font's texture, and the reference font has one. Step 7 is done: captured
 log lines carry the engine's elapsed time beside the frame, and the session log states how to
-read it. Implementation is paused before §12 Step 8; the remaining known-debt entries are not
-claimed repaired.
+read it. Step 8 is done: ordinary file reads classify the handle they read and return exact
+file-kind errors without changing confinement. Implementation is paused before §12 Step 9;
+the remaining known-debt entries are not claimed repaired.
 
 **M10 — Identity: "it knows its own name." Complete, 2026-09-13.** The marks, the icon the
 release path stages and the plist names, and ADR-0034's rule that reference is permitted and
@@ -2288,7 +2300,7 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M11 Steps 1–6 are complete; implementation is paused before Step 7.** M0–M10 are complete.
+**M11 Steps 1–8 are complete; implementation is paused before Step 9.** M0–M10 are complete.
 The specification is `docs/design/hardening.md`; the M5 material below is historical.
 
 ### `samples/room`, and what a second consumer proved
@@ -2934,10 +2946,9 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M11 Step 7, when implementation is requested** — stamping captured log lines with
-observed host time and versioning the session text format, `hardening.md` §9, without a clock
-entering simulation. Steps 1–6 are done; three steps remain. Stop after each step; preserve the
-later milestone triggers below.
+**Next: M11 Step 9, when implementation is requested** — perform the one disposition pass over
+the existing debt section, gather only its still-owed bounded evidence, run the milestone exit
+gate and close/tag M11 if it is clean. Steps 1–8 are done; one step remains. Do not begin M12.
 
 **M0 through M10 are complete and tagged, and everything is pushed.** Phase 3 is closed;
 Phase 4 is under way. The completed M8/M7 checklists and subsequent M5/M6 material below are
@@ -2955,11 +2966,10 @@ review of `main` rather than beginning on a schedule.
 * ~~**M10 — Identity.**~~ **Done 2026-09-13**, tagged `m10`. One manual step is left and is
   not code: uploading `brand/social-preview.png` as the repository's social preview, which
   GitHub exposes through no API.
-* **M11 — Solid. 2/9 implemented** in `docs/design/hardening.md`. The carried correctness
-  debt: the `render2d` texture staging buffer destroyed while frames are in flight (a legal,
-  retained destroy since Step 2; the renderer's integration is Step 3), the
-  blank-patch/font-atlas batching fix, and the smaller entries in this file's known-bugs
-  section. The `-Drhi=metal` test-binary compile failure is repaired (Step 1).
+* **M11 — Solid. 8/9 implemented** in `docs/design/hardening.md`. Steps 1–8 repaired the
+  Metal-selected test graph, GPU retirement and texture replacement, usage validation, frame
+  outcomes, UI atlas batching, log timing and ordinary file-kind errors. Step 9 is the single
+  disposition pass over this file's existing debt and the final milestone evidence.
 * **M12 — Parallel.** The job system and threading model, which §9 dated post-M5 and which is
   four milestones overdue. I9 constrains it hardest.
 * **M13 — Portable.** The second backend, trigger-started — **and it is Vulkan, decided
@@ -4258,8 +4268,8 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 
 ## Notes for the next session
 
-**Resume point, 2026-09-13:** M0–M10 complete; M11 Steps 1–2 complete. Read ADR-0035 and
-`docs/design/hardening.md`, then begin only Step 3 when implementation is requested.
+**Resume point, 2026-09-13:** M0–M10 complete; M11 Steps 1–8 complete. Read ADR-0035 and
+`docs/design/hardening.md`, then begin only Step 9 when implementation is requested.
 `zig build check -Drhi=metal` is now part of the bar. The environment notes below still apply.
 
 * Read `CLAUDE.md` first, then this file, then `docs/ROADMAP.md`.

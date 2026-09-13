@@ -562,7 +562,7 @@ and the Dock; the README shows the wordmark; and [`brand/README.md`](../brand/RE
 stranger what they may call their own work, with [ADR-0034](adr/0034-brand-and-trademark.md)
 behind it.
 
-### M11 — Solid: "its known faults are fixed" — **designed (2026-09-13), 7/9 implemented**
+### M11 — Solid: "its known faults are fixed" — **designed (2026-09-13), 8/9 implemented**
 
 The known-bugs section of `PROJECT_STATE.md` has entries that have been carried for several
 milestones. Individually each is small. Together they are the reason a future session cannot
@@ -574,7 +574,8 @@ destruction, reconciles rule 9 with it, settles usage validation for M11 and dis
 temporary drawable unavailability from fatal surface/device failure. The steps are Metal
 test compilation, RHI retirement, renderer reload integration, usage validation, frame
 outcomes, UI atlas batching, log timestamps, file-kind errors and the debt exit proof.
-**Stop before Step 1.** M10's completed verification is accepted; planning runs no code tests.
+Steps 1–8 are complete. **Next is Step 9, the existing-debt disposition and final M11 exit
+proof; do not begin M12.**
 
 * The `render2d` texture staging buffer destroyed while frames are still in flight.
 * `zig build check -Drhi=metal` failing to compile `app`'s *test* binary — the executables

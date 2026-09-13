@@ -202,10 +202,11 @@ identifiers and are not renamed casually.
 
 ## 5. Filesystem
 
-**M11 planned correction, 2026-09-13:** [hardening.md](hardening.md) §10 requires ordinary
-`Os.readFile` to classify the object it opened and return `WrongFileKind` for a directory.
-It preserves bounded reads and the distinct ordinary/confined symlink contracts. No code
-changes or new platform operation have landed during planning.
+**M11 correction, implemented at Step 8, 2026-09-13:** [hardening.md](hardening.md) §10.
+Ordinary `Os.readFile` opens once, classifies that same handle and returns `WrongFileKind`
+for a directory. Its read remains bounded after classification, ordinary symlinks still
+follow, and confined reads retain their stricter component-by-component refusal. The dated
+Resolution at the end records the evidence.
 
 `platform` provides **raw filesystem access only**:
 
@@ -535,3 +536,28 @@ What it found immediately, which is the argument for having done it: asking for 
 returns 900x794, because the window manager clamps to the usable display area. A design that
 had treated the call as a setter would have been wrong on the first call on the first
 machine it ran on.
+
+---
+
+## Resolution, part four — ordinary file-kind errors, 2026-09-13
+
+`Os.readFile` used `Dir.readFileAlloc` for relative paths and a separate open/read helper for
+absolute ones. On macOS both could open a directory, then discover only at the read that it was
+not a file; the broad standard-library error consequently collapsed to `IoFailed`. The fix is
+one shared sequence: open the requested path once with classification permitted, stat that
+handle, require `.file`, and read from it through the caller's limit. There is no path-level
+check followed by a second open, so the result cannot describe an object other than the one
+whose bytes would have been returned.
+
+The stat is useful for file kind and an early oversized refusal, but it is not authority for
+the final size. The bounded reader remains in force and catches a file that grows after the
+stat. Every path closes its handle; allocation failure frees partial bytes. Ordinary opening
+retains the standard follow-symlink behavior, while the already-implemented confined walk
+continues to refuse links below its root.
+
+Tests require the exact `WrongFileKind` result for the same temporary directory through both
+absolute and relative paths, exercise `OutOfMemory` followed by a successful reopen, and prove
+that an ordinary symlink read succeeds where the confined read and stat reject it. Removing
+the kind guard failed the exact-error test on macOS; the restored implementation and the
+Linux/Windows compile checks pass. No interface declaration, file authority or write path
+changed.

@@ -54,9 +54,11 @@ a mod manager, the editor, networking, and last of all the certified public rele
 strangers come last. It gathers work the project had already deferred. See the
 [roadmap](docs/ROADMAP.md).
 
-**M11 is designed, with implementation paused before Step 1.** Its
+**M11 is under way, with eight of nine steps implemented.** Its
 [nine-step plan](docs/design/hardening.md#12-implementation-order) covers resource lifetime,
 Metal test coverage, usage validation, frame/file errors, UI batching and diagnostic timing.
+The remaining Step 9 is the milestone's bounded exit proof and disposition of the existing
+technical-debt record; M12 has not begun.
 
 All three modding tiers work — see [docs/modding](docs/modding/). Tier 2 is restricted
 Lua 5.5.1, one VM per package, bounded in memory, instructions and engine calls, reaching the
@@ -69,7 +71,7 @@ and then rebuilt from its own listings to check that it says what the engine doe
 ```sh
 ./scripts/install-zig.sh   # the only tool you need
 zig build run -Drhi=metal  # opens a window and draws; escape quits
-zig build test             # 1278 headless tests
+zig build test             # 1334 headless tests
 ```
 
 Implemented so far:

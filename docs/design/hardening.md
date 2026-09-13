@@ -1,8 +1,8 @@
 # Hardening: close the known faults without changing Foundry's shape
 
-**Status:** designed 2026-09-13; **7/9 implementation steps complete**.
+**Status:** designed 2026-09-13; **8/9 implementation steps complete**.
 **Baseline:** `180ef4f`, M0–M10 complete; M10's verification remains accepted.
-**Stop point:** immediately before Step 8. Resolutions at the end record what each step settled.
+**Stop point:** immediately before Step 9. Resolutions at the end record what each step settled.
 
 Specification for M11, **Solid: "its known faults are fixed"**, in
 [`ROADMAP.md`](../ROADMAP.md). Rests on [ADR-0035](../adr/0035-rhi-lifetime-and-validation.md),
@@ -355,7 +355,7 @@ named implementation seams, check local links/whitespace and scope consistency o
 do not rerun them to prove prose. No compile failure is fixed, no new guard is implemented,
 and no milestone implementation count advances during planning.
 
-**Next action, only when implementation is requested: Step 8 above.**
+**Next action, only when implementation is requested: Step 9 above.**
 
 ## Resolution — Step 1, 2026-09-13
 
@@ -760,3 +760,35 @@ windowed sandbox frames logged startup at `f0 0.000000s` and the exit report at
 `f299 2.937981s`. That is about 9.8 ms a frame including startup, beside the profiler's median
 of 8.11 ms over the last 240 frames. The bar passed.
 1,343 declared / 1,333 headless, ten of them Metal-only.
+
+## Resolution — Step 8, 2026-09-13
+
+**The object classified is the object read.** Ordinary `Os.readFile` now opens either its
+absolute path or its path relative to the process directory exactly once, with directory
+handles permitted so the platform can identify them instead of relying on the eventual read
+error. It stats that handle, accepts only a regular file, and then reads through the same
+handle. A directory or other file kind therefore returns `WrongFileKind` consistently without
+a path-level `stat`/reopen race. Absolute and relative paths share that sequence rather than
+using two convenience readers with different behavior.
+
+The stat also refuses an already-oversized file before allocation, but it is not trusted as the
+read bound: `allocRemaining` still carries the caller's limit, so a regular file that grows
+after classification cannot make the operation exceed that cap. Open, stat and read failures
+continue through the existing narrow `FileError` mapping, partial allocations are freed, and
+the handle closes on every return. The operation's authority did not change. Ordinary reads
+still follow symlinks; `readFileConfined` still opens each component without following them and
+returns bytes plus metadata from its one stricter handle.
+
+**Evidence.** The former wrong-kind test now requires `WrongFileKind` for both the absolute
+temporary directory and the same directory named relative to the process directory. A new
+allocation-failure test refuses the first read allocation with `OutOfMemory`, retains no
+partial bytes, and reads the file successfully on the next open. The confined-symlink test now
+first proves an ordinary read follows the final link, then proves the confined read and stat
+still reject it. Existing missing-file, oversized-file, ordinary-file, confined-read and
+replacement tests pass unchanged.
+
+Disabling the same-handle kind check made the platform suite fail exactly one test out of
+1,334: macOS reported the opened directory's size first, producing `FileTooLarge` instead of
+`WrongFileKind`. Restoring the guard returned the suite to 1,334/1,334. The full bar passed:
+formatting, host/Metal-selected compilation, Linux and Windows cross-compilation, and both
+30-frame null samples. There are 1,344 declared tests / 1,334 headless, ten Metal-only.
