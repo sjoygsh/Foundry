@@ -97,8 +97,12 @@ replaces textures safely with frames in flight and shares the font texture for U
 Only `SurfaceUnavailable` is skippable, and every opened frame is closed on failure. Captured
 logs carry the engine's observed elapsed time, and ordinary file reads report the kind of the
 same object they read. M11's final gate passed at **1,344 declared / 1,334 headless tests**,
-ten Metal-only. **M12 is designed and accepted: read `docs/design/jobs-and-threading.md` and ADR-0036, and walk
-its §11 steps one at a time.** M12–M17 remain unstarted.
+ten Metal-only. **M12 is complete (2026-09-14).** Parallel work goes through an explicit
+`core.Jobs` (ADR-0036, `docs/design/jobs-and-threading.md`): a chunk writes only its own data and
+never allocates or calls the RHI, and every call site that splits work is tested under `serial`,
+`reversed` and a real pool. `FOUNDRY_SANDBOX_WORKERS` and `FOUNDRY_ROOM_WORKERS` set a sample's
+pool, `0` for none. M12 closed at **1,370 declared / 1,360 headless tests**. M13–M17 remain
+unstarted.
 
 ## 3. Building and verifying
 

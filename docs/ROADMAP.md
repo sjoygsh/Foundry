@@ -591,7 +591,7 @@ an external font override, persisted diagnostics and the local ad-hoc shipped la
 Xcode GPU-frame-capture usability and an automated Metal minimise/restore remain honestly
 unverified rather than being represented as defects or completed evidence.
 
-### M12 — Parallel: "it uses more than one core" — **in progress, 5/6**
+### M12 — Parallel: "it uses more than one core" — **complete (2026-09-14)**
 
 `CLAUDE.md` §9 dates the job system and threading model to post-M5. Four milestones have
 passed. The decision is overdue and has never been made, which is the only reason it is still
@@ -605,8 +605,19 @@ a frame splits, what a system may assume — stays open until that document deci
 [ADR-0036](adr/0036-explicit-deterministic-jobs.md) records the decision — **accepted 2026-09-13**: explicit `core.Jobs`, fork-join over data-determined chunks, systems kept in order,
 nothing in the ABI.
 
-**Exit criteria:** a measured improvement on a real workload in a sample, with every existing
-determinism test unchanged and still passing.
+All six steps are complete: `core.Jobs` and its reversed executor, the `platform` worker pool,
+per-stage span medians, chunked queries, the batch sort replaced by linear stable bucketing with
+vertex writes split, and the measured exit. Any worker count computes the same bytes, and the
+default stays one fewer than the logical CPUs.
+
+**Exit criteria — met.** A measured improvement on a real workload in a sample, with every
+existing determinism test unchanged and still passing. On the windowed sandbox with a
+50,000-sprite user package, every run at the default nine workers beat every serial run on
+vertex writing (0.34–0.36 against 0.75–1.72 ms) and on simulation steps (0.49–0.70 against
+0.88–2.06 ms); at the sandbox's own content, steps improved as well. §10's determinism tests
+are unchanged since `m11`. Frame time is the display's and is not claimed, and a pool was
+measured slowing the calling thread's unsplit work, which is recorded as debt with a revisit
+trigger.
 
 ### M13 — Portable: "the RHI was real" — **not started; trigger-started**
 

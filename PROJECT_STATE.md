@@ -1,8 +1,24 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-14
-**Current handoff: M0 through M11 are complete. M12 is in progress: ADR-0036 is accepted and
-Steps 1–5 of six are implemented. Stop before M12 Step 6. M13 through M17 remain unstarted.**
+**Current handoff: M0 through M12 are complete and tagged. M13 through M17 remain unstarted.**
+
+**Completed M12 Step 6 and M12, 2026-09-14:** the exit is met. On the windowed Metal ReleaseSafe
+sandbox, three runs each at `FOUNDRY_SANDBOX_WORKERS=0` and at the default of nine, every
+parallel run beat every serial run on `step` at both workloads — the sandbox's own content 0.37
+→ 0.24–0.27 ms, the 50,000-sprite user package 0.88–2.06 → 0.49–0.70 — and on `render.write` at
+50,000 sprites, 0.75–1.72 → 0.34–0.36. Frame time is the display's and is not claimed. The serial
+runs were unsteady, one of them 2–2.5× slower in every calling-thread span, so the worker count
+was chosen from a sweep that ran each count straight after a serial control: split spans got
+faster with every added worker through nine (`render.write` 1.09–1.18 → 0.33, `step` 1.27–1.42 →
+0.54), so **the default stays one fewer than the logical CPUs**. The same sweep found that a pool
+of any size slows the calling thread's unsplit `render.plan` and `submit` by 15–30%, leaving its
+per-frame CPU only about 5% lower at nine workers; that is recorded below as debt with a revisit
+trigger, not explained. §6.3's serial bucketing had already halved `render.plan` against Step 3's
+comparison sort, 2.85–2.92 → 1.41–1.44 ms on the package. §10's 26 determinism tests are
+byte-identical to `m11` and pass; the design and status documents are updated; the bar passed.
+Codex's Step 5 was verified first, with the bar. **1,370 declared / 1,360 headless**, ten
+Metal-only. Resolution: `jobs-and-threading.md`, Step 6. M12 is complete and tagged `m12`.
 
 **Implemented in M12 Step 5, 2026-09-14:** renderer preparation now uses the explicit jobs
 capability without letting a worker reach the RHI. `render2d.Config.jobs` is `serial` by default;
@@ -1533,14 +1549,19 @@ external-consumer recipient proof obtainable without private Apple credentials. 
 closed.** What a public macOS release still owes is operator certification — Developer ID
 signing, notarization and a clean recipient Mac (ADR-0032) — not engine work. **Phase 4,
 "Hardening and reach" (M10-M17), is under way**: it gathers the deferred work rather than
-adding to it, only M10 was new, and **M10 and M11 are complete (2026-09-13)**. M12 is in
-progress; M13 through M17 are unstarted.
+adding to it, only M10 was new, **M10 and M11 are complete (2026-09-13)** and **M12 is
+complete (2026-09-14)**. M13 through M17 are unstarted.
 
 ## Current milestone
 
-**M12 — Parallel: "it uses more than one core." Designed and accepted 2026-09-13; Steps 1–5 of
-six implemented.** Read `docs/design/jobs-and-threading.md` and ADR-0036. §11 orders six steps;
-stop after each. Next is Step 6, the measured exit proof and worker-count sweep.
+**M12 — Parallel: "it uses more than one core." Complete, 2026-09-14.** Read
+`docs/design/jobs-and-threading.md` and ADR-0036. All six steps are implemented: `core.Jobs`, the
+`platform` worker pool, per-stage span medians, chunked queries, the bucketed batch sort with
+split vertex writes, and the measured exit. Any worker count computes the same bytes, systems
+keep their order, and the ABI exposes nothing. With 50,000 sprites, nine workers made vertex
+writing about 3× and simulation steps about 2.5× faster; the default stays one fewer than the
+logical CPUs. M12 closed at **1,370 declared / 1,360 headless tests**, ten Metal-only, and is
+tagged `m12`.
 
 **M11 — Solid: "its known faults are fixed." Complete, 2026-09-13.** Read
 `docs/design/hardening.md` and ADR-0035. All nine steps are implemented: the Metal-selected
@@ -2419,9 +2440,9 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M0–M11 are complete; M12 is in progress through Step 5.** Its design and ADR-0036 are
-accepted, and §11's six steps are walked one at a time. The M11 specification and all nine Resolutions are in
-`docs/design/hardening.md`; the M5 material below is historical.
+**M0–M12 are complete.** M12's specification and all six Resolutions are in
+`docs/design/jobs-and-threading.md`, and M11's nine are in `docs/design/hardening.md`; the M5
+material below is historical.
 
 ### `samples/room`, and what a second consumer proved
 
@@ -3066,33 +3087,31 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M12 Step 6, the exit proof, when requested.** The specification is
-`docs/design/jobs-and-threading.md` §8 and §11, and ADR-0036 is accepted. It measures the same
-serial and parallel workload, sweeps worker counts, runs the final determinism/bar gate and
-closes the milestone; do not perform that measurement as part of Step 5.
+**Next: M14 — Managed, when requested, unless M13's trigger arrives first.** M12 is complete and
+tagged `m12`. M13 is trigger-started, so roadmap order reaches M14, which owes a design document
+before any implementation.
 
-**M0 through M11 are complete and tagged, and everything is pushed.** Phase 3 is closed;
+**M0 through M12 are complete and tagged, and everything is pushed.** Phase 3 is closed;
 Phase 4 is under way. The completed M8/M7 checklists and subsequent M5/M6 material below are
 historical.
 
-**What remains is `docs/ROADMAP.md` Phase 4, "Hardening and reach", M12 through M17.** The
+**What remains is `docs/ROADMAP.md` Phase 4, "Hardening and reach", M13 through M17.** The
 phase gathers work that was already recorded rather than inventing any, and `CLAUDE.md` §9's
 postponed table names the milestone each decision belongs to. **The intent as of 2026-09-13 is
 to work through them over the following two weeks**, in roadmap order unless a trigger moves
 one: M13 and M16 are trigger-started and M17 is credential-gated, and M17 opens through a full
 review of `main` rather than beginning on a schedule.
 
-* **M12's design document is written and accepted** — `docs/design/jobs-and-threading.md` and
-  ADR-0036.
 * ~~**M10 — Identity.**~~ **Done 2026-09-13**, tagged `m10`. One manual step is left and is
   not code: uploading `brand/social-preview.png` as the repository's social preview, which
   GitHub exposes through no API.
 * ~~**M11 — Solid.**~~ **Done 2026-09-13**, tagged `m11`. All nine steps in
   `docs/design/hardening.md` repaired the carried correctness defects, made the remaining
   limits explicit and passed the final Metal/runtime/distribution gate.
-* **M12 — Parallel.** Five of six implementation steps are complete. Step 6 measures the exit,
-  chooses the default worker count from the sweep and closes the milestone. I9 constrains it
-  hardest.
+* ~~**M12 — Parallel.**~~ **Done 2026-09-14**, tagged `m12`. All six steps in
+  `docs/design/jobs-and-threading.md` are implemented. Split spans are measurably faster at
+  50,000 sprites, every determinism test is unchanged, and a pool's cost to the calling thread's
+  unsplit work is recorded as debt.
 * **M13 — Portable.** The second backend, trigger-started — **and it is Vulkan, decided
   2026-09-13 in [ADR-0033](docs/adr/0033-vulkan-second-backend.md)**, covering Windows and
   Linux with one backend; D3D12 is not planned and Metal stays macOS's. With it: the shader
@@ -3585,6 +3604,15 @@ resize remains closed since 2026-09-04, and ADR-0019 remains the settled shader-
   process's minimise/restore control without accessibility authority. Neither observation is
   represented as completed evidence; deterministic frame-outcome tests and real resize remain
   the current proof.
+* **A worker pool slows the calling thread's unsplit work.** M12's paired sweep on the
+  50,000-sprite sandbox found `render.plan` and `submit`, which do not split, 15–30% slower beside
+  a pool of any size than in serial runs taken immediately before. At the default of nine workers
+  the split spans save more than that, so the calling thread's per-frame CPU is still about 5%
+  lower — much less than the split spans alone suggest. The sandbox's own content showed no such
+  slowdown. The cause is not isolated; a thread resuming on a slower core after parking at a join
+  is the leading candidate. Revisit with thread QoS, or by reopening Step 2's decision not to
+  spin, when a real workload is measured paying for it (`jobs-and-threading.md` §9 and its Step 6
+  Resolution).
 * **Toolchain compatibility is a maintenance obligation.** SDL3 arrives through a third-party
   build script that must be rechecked at each deliberate Zig upgrade. The milestone retains
   pinned Zig 0.16.0 and does not manufacture an upgrade to test that future event.
@@ -4285,10 +4313,10 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
    **Per-system timing inside `scene`** — refused deliberately, because the only way to time a
    system from inside is to give `scene` a clock, which would undo the ADR-0007 property I9
    leans on; the two honest answers are a sampling profiler or a caller-driven schedule, and
-   *the choice belongs to whoever actually has the slow world.* Alongside them: **threading**
-   (the counters and the recorder are single-threaded because Foundry has one thread that
-   allocates — a job system owes atomics or per-thread shadows and a merge, recorded now so its
-   design knows), persisting a profile to a file (which needs a version, I8), and whether the
+   *the choice belongs to whoever actually has the slow world.* Alongside them: **threading**,
+   answered by M12 without changing either — a chunk never allocates and a split joins inside
+   its stage's span, so only time on the workers themselves stays unmeasured — persisting a
+   profile to a file (which needs a version, I8), and whether the
    overlay may **pause and single-step** the simulation, which is a mutation and therefore the
    editor's, by the same reasoning that keeps the inspector read-only.
 
@@ -4296,9 +4324,10 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 
 ## Notes for the next session
 
-**Resume point, 2026-09-14:** M0–M11 complete and tagged. M12 is designed and accepted —
-`docs/design/jobs-and-threading.md`, ADR-0036 — and its steps are walked one at a time from §11:
-Steps 1–5 are implemented and Step 6 is next. M13–M17 are unstarted.
+**Resume point, 2026-09-14:** M0–M12 complete and tagged. M12's record is
+`docs/design/jobs-and-threading.md` and ADR-0036: parallel work goes through an explicit
+`core.Jobs`, and `FOUNDRY_SANDBOX_WORKERS` / `FOUNDRY_ROOM_WORKERS` set a sample's pool, `0` for
+none, for comparisons. M13–M17 are unstarted.
 `zig build check -Drhi=metal` is now part of the bar. The environment notes below still apply.
 
 * Read `CLAUDE.md` first, then this file, then `docs/ROADMAP.md`.

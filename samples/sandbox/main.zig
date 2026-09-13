@@ -1503,8 +1503,8 @@ fn orbitSystem(_: ?*anyopaque, world: *scene.World, tick: scene.Tick) void {
 ///
 /// At M12's baseline a step cost about 19 µs per thousand orbiting entities — an order of
 /// magnitude above the few microseconds a split costs to hand out — so a chunk this size is
-/// worth a worker, and the sandbox's own four thousand already make four chunks. Step 6's
-/// measurement revisits it.
+/// worth a worker, and the sandbox's own four thousand already make four chunks. M12's exit
+/// measurement kept it: nine workers cut `step` by a third here and about 2.5× at 50,000.
 const orbit_grain = 1024;
 
 const OrbitQuery = scene.query.TypedQuery(.{ Orbit, Transform });

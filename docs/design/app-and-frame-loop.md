@@ -208,10 +208,12 @@ the arena is empty again after `endFrame`.
 2. **Where the render step is expressed.** M0 has no renderer, so `alpha()` is currently a
    number nobody consumes. When `render2d` exists, whether interpolation is the engine's job
    or the renderer's is a real question, and answering it now would be guessing.
-3. **Whether `app` should own a job system.** Postponed with the threading model
-   (`CLAUDE.md` §9). The frame phases above are deliberately expressed as an order of
-   *stages* rather than as a single-threaded call sequence, so that parallelism inside a
-   stage does not require re-shaping the loop.
+3. **Whether `app` should own a job system — answered in M12 (ADR-0036).** It owns the worker
+   pool's lifetime and nothing more: `Engine.init` starts `platform.Workers` sized by
+   `Config.workers`, `Engine.jobs()` hands out the `core.Jobs` over it, and the game passes that
+   to the world and renderer it owns. The loop was not re-shaped. The stages above run in the
+   same order on the calling thread, and parallelism stays inside a stage, which is what
+   expressing them as stages was for.
 
 ---
 

@@ -143,8 +143,8 @@ pub const Config = struct {
     profiler_options: core.profile.Options = .{},
 
     /// Worker threads behind `Engine.jobs`, besides the thread that splits the work. `0` is
-    /// serial; null is `platform.workers.defaultCount()`, one fewer than the logical CPUs,
-    /// until M12's exit measurement chooses a default (`jobs-and-threading.md` §4).
+    /// serial; null is `platform.workers.defaultCount()`, one fewer than the logical CPUs, which
+    /// M12's exit sweep kept (`jobs-and-threading.md`, Step 6).
     ///
     /// Changes how fast a split runs and never what it computes (ADR-0036).
     workers: ?u16 = null,

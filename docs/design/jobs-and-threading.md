@@ -1,8 +1,8 @@
 # Jobs and threading: parallel work that cannot change a result
 
-**Status:** designed and **accepted 2026-09-13** (ADR-0036); Steps 1–5 of six implemented.
+**Status:** designed and **accepted 2026-09-13** (ADR-0036); **implemented in full 2026-09-14**; M12 complete.
 **Baseline:** `b101745`, M0–M11 complete and tagged `m11`.
-**Stop point:** after each step of §11. Resolutions at the end record what each settled.
+**Stop point:** after Step 6 and before M13. Resolutions at the end record what each step settled.
 
 Specification for M12, **Parallel: "it uses more than one core"**, in
 [`ROADMAP.md`](../ROADMAP.md). Rests on [ADR-0036](../adr/0036-explicit-deterministic-jobs.md),
@@ -345,7 +345,7 @@ repeats it.
 | ABI exposure | No native mod needs it; additive later | A native mod's system is measured CPU-bound |
 | Worker time in the profiler | The recorder is single-threaded, and one span per stage measures the exit | A parallel stage's efficiency cannot be explained from its span |
 | Log sink contention | Chunks are discouraged from logging | A profile shows workers contending on its spin lock |
-| Thread QoS or affinity | Unmeasured | Step 6's sweep shows chunks stalled on efficiency cores |
+| Thread QoS or affinity | Step 6 measured a cost without isolating its cause | Chunks are shown stalled on efficiency cores, which Step 6's sweep did not show; or the calling thread's measured slowdown beside a pool (Resolution, Step 6) costs a real workload more than its split spans save |
 
 ## 10. Determinism tests that must not change
 
@@ -411,7 +411,8 @@ Left to measurement rather than decided here:
 
 1. **Each call site's grain.** Chosen in Steps 4 and 5 and recorded in their Resolutions.
 2. **Whether idle workers spin before parking.** Step 2.
-3. **The default worker count on an asymmetric CPU.** Step 6.
+3. **The default worker count on an asymmetric CPU.** Step 6 — answered: one fewer than the logical
+   CPUs, unchanged (Resolution, Step 6).
 
 ## Resolution — Step 1, 2026-09-13
 
@@ -712,3 +713,83 @@ Evidence:
 
 Step 6 performs the measurement and worker-count sweep. No exit improvement or default-worker
 decision is claimed here.
+
+## Resolution — Step 6, 2026-09-14
+
+**M12's exit is met: work split across the engine's workers runs measurably faster, and every
+determinism test is unchanged.** That a split computes the serial bytes is the model's property,
+and Steps 4 and 5 proved it at each call site; this step measured what the split buys.
+
+What implementation settled:
+
+* **The claim, by §8's rule.** Windowed sandbox, Metal, ReleaseSafe, API validation off; 900
+  frames per run, medians over the last 240; `FOUNDRY_SANDBOX_WORKERS=0` against the default of
+  nine, three runs each, alternated. A span is claimed only where every parallel run's median is
+  below every serial run's. Claimed spans are bold.
+
+  | Span (ms) | Own content, serial | Own content, nine | 50,000 sprites, serial | 50,000 sprites, nine |
+  | --- | --- | --- | --- | --- |
+  | `step`, on half the frames | 0.367–0.376 | **0.244–0.270** | 0.875–2.059 | **0.493–0.699** |
+  | `render.write` | 0.329–0.332 | 0.317–0.329 | 0.746–1.724 | **0.342–0.360** |
+  | `render.plan` | 0.477–0.478 | 0.476–0.480 | 0.953–2.234 | 1.638–1.859 |
+  | `submit` | 0.601–0.604 | 0.598–0.606 | 0.959–2.364 | 1.738–1.830 |
+  | `render.prepare` | 0.816–0.826 | 0.802–0.821 | 1.732–3.981 | 2.078–2.228 |
+  | Frame median | 8.43–8.49 | 8.46–8.49 | 8.33–8.76 | 8.37–8.52 |
+
+  At the sandbox's own content vertex writing makes two chunks and does not improve measurably.
+  Frame time is not claimed, as §8 said: the display holds it.
+* **The serial runs were unsteady, which is why those ranges are wide.** One serial package run
+  was 2–2.5× slower in every calling-thread span at once (`render.plan` 2.23, `submit` 2.36)
+  while waiting only 1.1 ms for its drawable, and a first, unpaired sweep fell into the same
+  state for about half its runs whatever the worker count. No thermal or performance warning was
+  recorded. The most plausible reading is the calling thread spending a run on an efficiency
+  core; nothing here confirms it. Six runs across both sweeps also found the display at 60 Hz,
+  which moved `render.acquire` and the frame but no CPU span. **So the worker count was chosen
+  from a second sweep, on the package, in which each count ran immediately after its own serial
+  control:**
+
+  | Workers (ms) | `step` | `render.write` | `render.plan` | `submit` |
+  | --- | --- | --- | --- | --- |
+  | 0, six controls | 1.272–1.417 | 1.085–1.181 | 1.410–1.441 | 1.365–1.560 |
+  | 1 | 0.876–1.042 | 0.680–0.711 | 1.626–1.829 | 1.662–1.903 |
+  | 3 | 0.715–0.726 | 0.402–0.414 | 1.845–1.858 | 1.807–1.998 |
+  | 9 | 0.535–0.542 | 0.332–0.334 | 1.857 | 2.034–2.048 |
+
+* **The default stays one fewer than the logical CPUs, answering §12's third question.** On this
+  ten-core machine, six of them efficiency cores, every split span got faster with every added
+  worker through nine: a join waiting for an efficiency core's chunk cost less than that core
+  contributed. ADR-0036's revisit condition for asymmetric CPUs is not met, and
+  `platform.workers.defaultCount` is unchanged.
+* **A pool slows the calling thread's unsplit work; that is recorded, not explained.** Beside a
+  pool of any size, `render.plan` and `submit`, neither of which splits, ran 15–30% slower than in
+  their paired serial controls, and slightly slower at nine workers than at one. Summing the
+  calling thread's CPU spans per frame, with `step` weighted by the half of frames it runs on,
+  nine workers spent about 4.5 ms against their controls' 4.8; one worker landed within 0.2 ms of
+  its controls, once either side. The split spans are several times faster, but the calling
+  thread's total at 50,000 sprites is only about 5% lower. At the sandbox's own content those
+  spans did not slow. Candidate causes — the calling thread resuming on a slower core after
+  parking at a join, or shared cache or power budget — were not isolated. §9's thread QoS row now
+  names this as a trigger, and `PROJECT_STATE.md`'s debt section carries it.
+* **§6.3's serial replacement did more for `render.prepare` than either split.** On the same
+  package `render.plan` took 2.846–2.917 ms at Step 3 with the comparison sort, and 1.410–1.441 ms
+  in this step's serial controls with the stable bucketing; at the sandbox's own content,
+  0.684–0.702 against 0.477–0.478. The sessions differ, so this is a reading, not a §8 claim.
+* **The orbit grain stays 1,024.** At 50,000 orbiting entities it makes 49 chunks, and `step`
+  fell about 2.5× at nine workers in the paired sweep; at the sandbox's 4,000 it makes four, and
+  `step` fell by a third. Nothing measured asks for another grain.
+* **The documents.** `CLAUDE.md` §4.3's `platform` line names the worker pool, and §9's row
+  records the model as done, its deferrals pointing to §9 here. ADR-0036 is implemented.
+  `entity-storage.md` §14, `app-and-frame-loop.md` §7 and `debug-overlay.md` §15 answer their
+  threading notes. `core.mem.Counted`'s comment has described what M12 does since Step 2 and is
+  unchanged.
+
+Evidence:
+
+* §10's determinism tests — the ten it names, and the sixteen order, seed, clock and
+  reproducible-package tests in the files it names — are byte-identical in source to `m11`, and
+  pass.
+* All 36 measured runs exited cleanly and logged their pool size; each of the 30 package runs
+  reported 50,000 sprites, and the package was removed after each sweep.
+* The bar passed. **1,370 declared / 1,360 headless**, ten Metal-only; Step 6 adds no test.
+
+M12 is complete and may be tagged `m12`.

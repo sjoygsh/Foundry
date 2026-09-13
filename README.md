@@ -61,7 +61,13 @@ The final gate passed with the two real Metal sample windows inspected, an exter
 override exercised, the Metal test graph and repeated in-flight texture replacement clean,
 persisted diagnostics checked, and a strict-valid ad-hoc distribution retaining its icon.
 The existing technical-debt record now distinguishes closed defects from deliberate limits.
-M12's job-system/threading design and ADR-0036 are accepted, and Steps 1–5 of its six are implemented.
+
+**M12 is complete: Foundry uses more than one core.** Parallel work goes through an explicit
+`core.Jobs` whose chunks are fixed by the data, so any worker count computes the same bytes.
+With 50,000 sprites, nine workers made the sandbox's vertex writing about three times as fast
+and its simulation steps about two and a half. See
+[ADR-0036](docs/adr/0036-explicit-deterministic-jobs.md) and its
+[design](docs/design/jobs-and-threading.md).
 
 All three modding tiers work — see [docs/modding](docs/modding/). Tier 2 is restricted
 Lua 5.5.1, one VM per package, bounded in memory, instructions and engine calls, reaching the

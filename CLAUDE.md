@@ -222,7 +222,8 @@ L0  core        std only. Math, memory/allocators, containers, handles, IDs,
                 interface — which holds no thread (ADR-0036).
 
 L1  platform    -> core.        Window, input, events, filesystem, dynamic library
-                                loading, high-resolution clock, audio device.
+                                loading, high-resolution clock, audio device, and the
+                                worker pool behind `core.Jobs` (ADR-0036).
                                 *** SDL3 is referenced ONLY here. ***
 L1  data        -> core.        Schemas, records, content packages, load order,
                                 merge/override semantics, serialization.
@@ -551,7 +552,7 @@ milestone named below is where `docs/ROADMAP.md` now places it.
 | Separate editor application | **M15** | In-process debug overlay first; the editor re-hosts its introspection (ADR-0025). |
 | Second graphics backend | **M13**, trigger-started | **Which API is decided: Vulkan (ADR-0033)**, covering Windows and Linux together. *When* is still triggered by a reason — shipping either platform, or validating the RHI. |
 | Shader cross-compiler vs. hand-written variants | **M13**, or when the shader set grows large | ADR-0015. Whichever comes first. |
-| Job system / threading model | **M12** (was dated post-M5) | **The model is decided: ADR-0036**, accepted 2026-09-13 — explicit `core.Jobs`, fork-join over data-determined chunks. Implementation is M12's (`docs/design/jobs-and-threading.md`). Parallel system scheduling, task graphs and a render thread stay deferred there. |
+| Job system / threading model | **Done in M12** (was dated post-M5) | **Decided by ADR-0036 and implemented, 2026-09-14** — explicit `core.Jobs`, fork-join over data-determined chunks, systems kept in order, nothing in the ABI. What it deliberately left out — parallel system scheduling, task graphs, a render thread — has no date: each waits on a measured trigger in `docs/design/jobs-and-threading.md` §9. |
 | Bit-exact determinism for a subset | **M16**, and only if lockstep | ADR-0013 keeps this open without paying for it now; an authoritative server does not need it. |
 | Networking | **M16**, trigger-started | I1, I2, I8 and I9 keep it possible. Nothing else is owed to it now. |
 | Public macOS release certification | **M17**, credential-gated — last in its phase | Use the implemented Developer ID/notary path, then verify the exact quarantined download on a genuinely clean recipient Mac. The current ad-hoc artifact is not equivalent (ADR-0032). |

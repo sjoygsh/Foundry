@@ -53,8 +53,8 @@ pub const Options = struct {
 pub const max_count: u16 = 64;
 
 /// One fewer than the logical CPUs, leaving the calling thread its own — or zero when the count
-/// cannot be read. The engine's default until M12's exit measurement chooses one
-/// (`jobs-and-threading.md` §4).
+/// cannot be read. The engine's default. M12's exit sweep kept it on a CPU with efficiency cores:
+/// every split span got faster with each added worker (`jobs-and-threading.md`, Step 6).
 pub fn defaultCount() u16 {
     const cpus = std.Thread.getCpuCount() catch return 0;
     return @intCast(@min(cpus -| 1, max_count));

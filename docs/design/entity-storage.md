@@ -576,10 +576,14 @@ Recorded rather than resolved, each with what would force it.
 * **Hierarchy and parenting.** A transform hierarchy is a component and a system, and it can be
   added without touching storage. Building it now would fix a policy — dirty flags, traversal
   order, what happens to a child when a parent dies — with no consumer to judge it.
-* **Change detection**, **parallel iteration**, and **any threading**. ADR-0010 defers all
-  three; the job system is an M12 decision (CLAUDE.md §9). Nothing here assumes single-
-  threaded forever: storage is per type, systems are a list, and the interface hands out
-  borrows with stated lifetimes rather than long-lived pointers.
+* **Change detection.** ADR-0010 defers it, and nothing since has needed it.
+* **Parallelism between systems.** M12 added parallel iteration *inside* one system and
+  nothing else (ADR-0036, `jobs-and-threading.md`). `World.update` still runs systems in
+  registration order on the calling thread; a system may split its own query with
+  `TypedQuery.forChunks` over ranges of the driving store's dense order, and each chunk's
+  `Part` holds `const` stores, so no chunk can change the world's shape. Scheduling systems in
+  parallel stays out, because it needs read/write sets that every system — a mod's included —
+  would have to declare through the ABI (`jobs-and-threading.md` §9).
 * **Prefab nesting** — a template that includes another template. Wanted eventually, an
   override-semantics question, and not needed to spawn a scene.
 * **Spatial queries.** M5, with the tilemap and collision, where there is something to

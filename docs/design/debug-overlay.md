@@ -817,11 +817,13 @@ same thing to the engine's own overlay, which is what makes it a rule rather tha
   project) or a caller-driven schedule where the game runs the systems it cares about itself and
   times its own calls (which is a change to how `World.update` is used, not to what it can see).
   Neither is M6, and the choice should be made by whoever actually has the slow world.
-* **Threading.** The memory counters are single-threaded and the profiler's recorder is
-  single-threaded, both because Foundry has one thread that allocates. A job system (`CLAUDE.md`
-  §9, and overdue for re-dating) changes that: counters would need atomics or per-thread
-  shadows, and the profiler would need a recorder per worker plus a merge. **Recorded now so that
-  the job system's design knows it owes this**, and deliberately not paid for in advance.
+* **Threading — answered by M12 without changing either.** The job system (ADR-0036) keeps the
+  memory counters and the recorder single-threaded rather than paying for atomics, per-thread
+  shadows or a merge. A chunk never allocates, so allocation still happens on one thread, and
+  in Debug builds `core.mem.Counted` asserts it; a split joins before it returns, so a parallel
+  stage is still one span on the calling thread. What that leaves unmeasured is time on the
+  workers themselves, which `jobs-and-threading.md` §9 defers until a parallel stage's span
+  cannot be explained without it.
 * **Persisting a profile.** Writing a frame's spans to a file — for comparing two builds, or for
   attaching to a bug report — is obviously wanted and needs a format, which means a version
   (I8). It is small, and it is not M6.
