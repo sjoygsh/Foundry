@@ -21,6 +21,9 @@
 //! * `Os` — filesystem, base directories, dynamic libraries, wall clock. The same code
 //!   under every backend, so it is not behind the backend seam. See `os.zig`.
 //!
+//! And one pool beside them: `Workers`, the threads behind `core.Jobs`, which `Os` starts so
+//! that its I/O instance never leaves this module. See `workers.zig`.
+//!
 //! `app` owns both, initialises `platform` first and tears it down last, and no
 //! platform resource requires another subsystem to still be alive in order to be
 //! destroyed.
@@ -38,6 +41,7 @@ pub const key = @import("key.zig");
 pub const library = @import("library.zig");
 pub const os = @import("os.zig");
 pub const window = @import("window.zig");
+pub const workers = @import("workers.zig");
 
 /// The platform backends Foundry can be built against.
 ///
@@ -97,6 +101,7 @@ pub const SurfaceKind = window.SurfaceKind;
 pub const WindowConfig = window.WindowConfig;
 pub const WindowHandle = window.WindowHandle;
 pub const WindowInfo = window.WindowInfo;
+pub const Workers = workers.Workers;
 
 pub const AudioError = interface.AudioError;
 pub const InitError = interface.InitError;
@@ -119,6 +124,7 @@ test {
     _ = library;
     _ = os;
     _ = window;
+    _ = workers;
     // Always tested, whichever backend is selected — it is the reference
     // implementation of the interface and the one CI can always run.
     _ = null_backend;

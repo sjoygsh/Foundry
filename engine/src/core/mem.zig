@@ -78,8 +78,10 @@ pub const Arena = struct {
 /// owns the allocator. Foundry's second thread does not allocate — `audio.md` made "nothing
 /// in the callback can fail" a design property and no-allocation is half of what that
 /// means — so making these atomic would cost every allocation in the engine to serve a
-/// caller that does not exist. A job system changes that, and owes this an answer
-/// (`debug-overlay.md` §15).
+/// caller that does not exist. **M12's job system keeps it that way**: a chunk never
+/// allocates (`jobs-and-threading.md` §3.3), and in Debug builds a counter remembers the
+/// thread that first used it and asserts on any other, so the rule is checked where memory
+/// is counted rather than only written down.
 ///
 /// Design: `docs/design/debug-overlay.md` §5.
 pub const Counted = struct {
@@ -98,6 +100,10 @@ pub const Counted = struct {
     /// Allocations the child refused. Worth a number of its own: a subsystem that is
     /// quietly failing to allocate looks identical to one that is not trying.
     failures: u64 = 0,
+    /// The thread that first used this counter, in Debug builds.
+    owner: if (check_owner) ?std.Thread.Id else void = if (check_owner) null else {},
+
+    const check_owner = builtin.mode == .Debug;
 
     pub fn init(name: []const u8, child: Allocator) Counted {
         return .{ .name = name, .child = child };
@@ -126,6 +132,7 @@ pub const Counted = struct {
 
     fn allocFn(ctx: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*]u8 {
         const self: *Counted = @ptrCast(@alignCast(ctx));
+        self.claim();
         const bytes = self.child.rawAlloc(len, alignment, ret_addr) orelse {
             self.failures += 1;
             return null;
@@ -137,6 +144,7 @@ pub const Counted = struct {
 
     fn resizeFn(ctx: *anyopaque, memory: []u8, alignment: Alignment, new_len: usize, ret_addr: usize) bool {
         const self: *Counted = @ptrCast(@alignCast(ctx));
+        self.claim();
         if (!self.child.rawResize(memory, alignment, new_len, ret_addr)) return false;
         self.adjust(memory.len, new_len);
         return true;
@@ -144,6 +152,7 @@ pub const Counted = struct {
 
     fn remapFn(ctx: *anyopaque, memory: []u8, alignment: Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
         const self: *Counted = @ptrCast(@alignCast(ctx));
+        self.claim();
         const bytes = self.child.rawRemap(memory, alignment, new_len, ret_addr) orelse return null;
         self.adjust(memory.len, new_len);
         return bytes;
@@ -151,12 +160,29 @@ pub const Counted = struct {
 
     fn freeFn(ctx: *anyopaque, memory: []u8, alignment: Alignment, ret_addr: usize) void {
         const self: *Counted = @ptrCast(@alignCast(ctx));
+        self.claim();
         self.child.rawFree(memory, alignment, ret_addr);
         // Saturating, and not because it is expected to matter: memory allocated before a
         // counter was wrapped around an allocator and freed after it would underflow, and
         // a report that says 18 exabytes is worse than one that says zero.
         self.live_bytes -|= memory.len;
         self.frees += 1;
+    }
+
+    /// Records the first thread to use this counter, and asserts every later use is on it.
+    fn claim(self: *Counted) void {
+        if (!check_owner) return;
+        const current = std.Thread.getCurrentId();
+        const owner = self.owner orelse {
+            self.owner = current;
+            return;
+        };
+        assert.always(
+            owner == current,
+            "allocator '{s}' is counted on one thread and was used from another; " ++
+                "a job's chunk must not allocate (jobs-and-threading.md §3.3)",
+            .{self.name},
+        );
     }
 
     fn grow(self: *Counted, len: usize) void {
@@ -200,6 +226,16 @@ test "arena survives many reset cycles without leaking" {
         arena.reset();
     }
     // testing.allocator fails the test on leak, which is the actual assertion here.
+}
+
+test "a counted allocator remembers the thread that first used it" {
+    var counted = Counted.init("test", std.testing.allocator);
+    const gpa = counted.allocator();
+    const bytes = try gpa.alloc(u8, 8);
+    gpa.free(bytes);
+    if (Counted.check_owner) {
+        try std.testing.expectEqual(std.Thread.getCurrentId(), counted.owner.?);
+    }
 }
 
 test "a counted allocator follows a known sequence exactly" {

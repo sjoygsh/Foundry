@@ -2,7 +2,24 @@
 
 **Last updated:** 2026-09-13
 **Current handoff: M0 through M11 are complete. M12 is in progress: ADR-0036 is accepted and
-Step 1 of six is implemented. Stop before M12 Step 2. M13 through M17 remain unstarted.**
+Steps 1–2 of six are implemented. Stop before M12 Step 3. M13 through M17 remain unstarted.**
+
+**Implemented in M12 Step 2, 2026-09-13:** the worker pool exists, and nothing uses it yet.
+`platform.Workers` starts a fixed number of threads, publishes each split under a `std.Io`
+lock, lets every participant — the caller included — claim chunk indices with one atomic
+increment, and waits under the lock for the job's workers to leave, so a split allocates nothing
+and its job lives on the caller's stack. Nested and single-chunk splits run inline; one
+dispatcher at a time is asserted; a thread that cannot start is a warning. `Os.startWorkers`
+builds it with the process's `Io`, which still never leaves `platform`. `app.Config.workers`
+sizes the engine's pool (null is the logical CPUs minus one, `0` is serial) and `Engine.jobs()`
+hands it out. In Debug builds `core.mem.Counted` now asserts it is used from one thread. **Idle
+workers park rather than spin:** after an 8 ms idle even serial work ran six times slower than
+back-to-back, so the cost is the processor's state rather than the wake-up, and workers cut it —
+50,000 quad-shaped items took 2.66 ms serial and 0.45 ms at five workers. Zig 0.16.0's thread
+sanitizer crashes on macOS before running any test, so there is no sanitizer evidence. Breaking
+the guards tripped the dispatcher assertion, aborted the exactly-once test and failed exactly the
+concurrency test; a counter used from a second thread panicked. The bar passed. **1,359 declared
+/ 1,349 headless**, ten Metal-only. Resolution: `jobs-and-threading.md`, Step 2.
 
 **Implemented in M12 Step 1, 2026-09-13:** `core.jobs` is the interface parallel work goes
 through, and it holds no thread. `core.Jobs` is a pointer and a one-function table, shaped like
@@ -1470,9 +1487,9 @@ M17 are unstarted.
 
 ## Current milestone
 
-**M12 — Parallel: "it uses more than one core." Designed and accepted 2026-09-13; Step 1 of
+**M12 — Parallel: "it uses more than one core." Designed and accepted 2026-09-13; Steps 1–2 of
 six implemented.** Read `docs/design/jobs-and-threading.md` and ADR-0036. §11 orders six steps;
-stop after each. Next is Step 2, the `platform` worker pool.
+stop after each. Next is Step 3, measurement and baseline.
 
 **M11 — Solid: "its known faults are fixed." Complete, 2026-09-13.** Read
 `docs/design/hardening.md` and ADR-0035. All nine steps are implemented: the Metal-selected
@@ -2998,7 +3015,7 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M12 Step 2, the worker pool, when requested.** The specification is
+**Next: M12 Step 3, measurement and baseline, when requested.** The specification is
 `docs/design/jobs-and-threading.md` §11, and ADR-0036 is accepted.
 
 **M0 through M11 are complete and tagged, and everything is pushed.** Phase 3 is closed;
@@ -4226,8 +4243,8 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 ## Notes for the next session
 
 **Resume point, 2026-09-13:** M0–M11 complete and tagged. M12 is designed and accepted —
-`docs/design/jobs-and-threading.md`, ADR-0036 — and its steps are walked one at a time from §11: Step 1
-is implemented and Step 2 is next. M13–M17 are unstarted.
+`docs/design/jobs-and-threading.md`, ADR-0036 — and its steps are walked one at a time from §11: Steps 1–2
+are implemented and Step 3 is next. M13–M17 are unstarted.
 `zig build check -Drhi=metal` is now part of the bar. The environment notes below still apply.
 
 * Read `CLAUDE.md` first, then this file, then `docs/ROADMAP.md`.

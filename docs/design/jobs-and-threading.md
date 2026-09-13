@@ -1,6 +1,6 @@
 # Jobs and threading: parallel work that cannot change a result
 
-**Status:** designed and **accepted 2026-09-13** (ADR-0036); Step 1 of six implemented.
+**Status:** designed and **accepted 2026-09-13** (ADR-0036); Steps 1–2 of six implemented.
 **Baseline:** `b101745`, M0–M11 complete and tagged `m11`.
 **Stop point:** after each step of §11. Resolutions at the end record what each settled.
 
@@ -453,3 +453,74 @@ Evidence:
   Metal-only.
 
 Nothing splits work yet. Step 2 adds the pool that makes `run` concurrent.
+
+## Resolution — Step 2, 2026-09-13
+
+`engine/src/platform/workers.zig` is the pool. `Os.startWorkers(gpa, options)` constructs it
+with the process's `Io`, which still never leaves `platform`. `platform.Workers` is exported, and
+`workers.zig` imports only `std` and `core`, so its tests also compile standalone.
+`app.Config.workers: ?u16` sizes the engine's pool — null is `platform.workers.defaultCount()`,
+`0` is serial — which is created after `Os` and stopped before it; `Engine.jobs()` returns it.
+Nothing splits work yet.
+
+What implementation settled:
+
+* **Parking is a mutex and two condition variables from `std.Io`,** not a hand-built futex
+  protocol. The job is published under the lock, so a worker only ever reads a task that was
+  completely written before it looked. Claiming stays one atomic increment per chunk; the lock
+  is taken a few times per split, never per chunk. The caller waits under the same lock for the
+  job's worker count to reach zero, which is what lets the job live on its stack.
+* **The caller never waits for a worker that has not joined.** A worker that wakes after every
+  chunk was claimed finds the job withdrawn and sleeps again, so a split the caller can finish
+  alone costs it almost nothing.
+* **A split of one chunk runs inline**, as does any split on a pool of zero threads and any split
+  inside a chunk.
+* **One dispatcher at a time is asserted**, with a message naming the rule. It is also what a
+  nested split trips if the inline guard is removed.
+* **A thread that cannot start is a warning.** The pool runs on the threads it got, since fewer
+  workers compute the same bytes; `max_count`, 64, bounds a mistaken count. Threads are not
+  named; nothing reads a name yet.
+* **`core.mem.Counted` records its owning thread in Debug builds** and asserts on any other, in
+  all four allocation paths. No existing counter was shared across threads, and the whole suite
+  passed with the check on.
+* **Idle workers do not spin** (§12, question 2). Measured in ReleaseSafe on this machine with
+  50,000 quad-shaped items at a grain of 4,096, medians of two runs:
+
+  | Workers | Split after split | Split after an 8 ms idle |
+  | --- | --- | --- |
+  | 0 | 0.38–0.42 ms | 2.64–2.68 ms |
+  | 1 | 0.27–0.28 ms | 1.31 ms |
+  | 3 | 0.20–0.21 ms | 0.64–0.65 ms |
+  | 5 | 0.16 ms | 0.44–0.46 ms |
+  | 9 | 0.15 ms | 0.48 ms |
+
+  A split of four trivial chunks cost 0.1 µs or less at up to five workers and about 2 µs at
+  nine. **After an idle, serial work slows six-fold with no thread to wake**, so the cost is the
+  processor's own state rather than the pool's wake-up, and workers shrink it rather than add to
+  it. Spinning would buy nothing measurable and would cost power every frame. Nine workers were
+  no faster than five; Step 6's sweep on the real workload revisits the default.
+* **The thread sanitizer does not run on this toolchain.** Zig 0.16.0's `-fsanitize-thread`
+  binaries crash on macOS before running anything: the thread-free `core.jobs` tests, a program
+  that only spawns and joins one thread, and one that only locks an `Io` mutex all exit on
+  SIGSEGV with no output. There is no sanitizer evidence; the pool's safety rests on the lock
+  discipline above and the tests below. It is not added to the bar.
+
+Tests: six in `workers.zig` — every index exactly once across real threads, over 1,820 splits at
+counts around the worker count and up to 70,000; bytes identical to `serial`; two chunks provably
+running at the same time, bounded so a serial pool fails in ten seconds instead of hanging; a
+nested split inline on its chunk's thread, in order; zero workers on the calling thread, in
+order; and twenty starts and stops with and without splitting, with `defaultCount`. One in
+`core.mem`, the owner recorded. One in `app`: the engine's jobs at 0 and 3 workers match a
+serial reference.
+
+Evidence:
+
+* The standalone pool tests passed 20 of 20 repeated runs.
+* Breaking the guards against the pool's tests: removing the inline guard tripped the
+  one-dispatcher assertion in the nesting test; letting a claim run one index past the end
+  aborted the exactly-once test; not advancing the generation, so no worker wakes, failed exactly
+  the concurrency test, 5 passed and 1 failed. A counted allocator used from a second thread
+  panicked with the owning-thread message. The file was restored byte for byte.
+* The bar passed. **1,359 declared / 1,349 headless**, ten Metal-only.
+
+Step 3 builds the measurement.

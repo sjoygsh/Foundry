@@ -141,6 +141,13 @@ pub const Config = struct {
     /// Capacity for the above. Allocated once, at `init`, and never grown: a profiler
     /// that allocated mid-frame could fail inside the thing it was measuring.
     profiler_options: core.profile.Options = .{},
+
+    /// Worker threads behind `Engine.jobs`, besides the thread that splits the work. `0` is
+    /// serial; null is `platform.workers.defaultCount()`, one fewer than the logical CPUs,
+    /// until M12's exit measurement chooses a default (`jobs-and-threading.md` §4).
+    ///
+    /// Changes how fast a split runs and never what it computes (ADR-0036).
+    workers: ?u16 = null,
 };
 
 /// The names the engine gives its own timing spans.
@@ -225,6 +232,7 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
 
         // Subsystems, in initialisation order. Teardown is strictly the reverse.
         os: *platform.Os,
+        workers: *platform.Workers,
         platform: *P,
         gpu: *G,
 
@@ -319,6 +327,14 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             });
             errdefer os.deinit();
 
+            // After `os`, whose I/O instance its threads wait on, and before anything that might
+            // be handed its jobs.
+            const workers = try os.startWorkers(gpa, .{
+                .count = config.workers orelse platform.workers.defaultCount(),
+            });
+            errdefer workers.deinit();
+            log.debug("worker pool: {d} thread(s) besides the caller", .{workers.threadCount()});
+
             const plat = try P.init(gpa, .{});
             errdefer plat.deinit();
 
@@ -378,6 +394,7 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                 .gpa = gpa,
                 .frame_arena = .init(gpa),
                 .os = os,
+                .workers = workers,
                 .platform = plat,
                 .gpu = gpu,
                 .window = window,
@@ -453,8 +470,19 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             self.deinitOwned();
             self.gpu.deinit();
             self.platform.deinit();
+            self.workers.deinit();
             self.os.deinit();
             gpa.destroy(self);
+        }
+
+        /// The engine's worker pool, as the capability to hand whatever splits work.
+        ///
+        /// The engine owns no world and no renderer (ADR-0026), so the game passes this to the
+        /// ones it owns. Like an allocator, it must not outlive the engine.
+        ///
+        /// Design: `docs/design/jobs-and-threading.md` §4.
+        pub fn jobs(self: *Self) core.Jobs {
+            return self.workers.jobs();
         }
 
         /// Everything the engine struct itself owns, in reverse order of construction.
@@ -2047,6 +2075,31 @@ test "what a frame that failed to finish had submitted is still waited for befor
         try engine.renderFrame(.{}, NothingRecorder{});
         engine.endFrame();
         try testing.expectEqual(retained, gpu.retiredCount());
+    }
+}
+
+test "the engine's jobs split over its configured workers, and zero workers is serial" {
+    const len = 4_099;
+    const Squares = struct {
+        out: []u64,
+
+        fn chunk(self: *const @This(), c: core.jobs.Chunk) void {
+            for (c.begin..c.end) |i| self.out[i] = @as(u64, i) * i;
+        }
+    };
+
+    var expected: [len]u64 = undefined;
+    for (&expected, 0..) |*v, i| v.* = @as(u64, i) * i;
+
+    for ([_]u16{ 0, 3 }) |count| {
+        const engine = try TestEngine.init(testing.allocator, .{ .workers = count });
+        defer engine.deinit();
+        try testing.expectEqual(count, engine.workers.threadCount());
+
+        var got: [len]u64 = @splat(0);
+        const squares: Squares = .{ .out = &got };
+        engine.jobs().forChunks(len, 256, &squares, Squares.chunk);
+        try testing.expectEqualSlices(u64, &expected, &got);
     }
 }
 

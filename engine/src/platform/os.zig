@@ -39,6 +39,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const core = @import("core");
 const library = @import("library.zig");
+const workers_mod = @import("workers.zig");
 
 const Allocator = std.mem.Allocator;
 const log = core.log.scoped(.platform);
@@ -276,6 +277,19 @@ pub const Os = struct {
 
     fn io(self: *Os) std.Io {
         return self.threaded.io();
+    }
+
+    /// Starts a worker pool that waits on this `Os`'s I/O instance.
+    ///
+    /// **Here rather than in `workers.zig`**, so the `Io` still never leaves `platform`: the pool
+    /// is handed it by the one object that owns it. Stop the pool before this `Os` is torn down
+    /// (`jobs-and-threading.md` §4).
+    pub fn startWorkers(
+        self: *Os,
+        gpa: Allocator,
+        options: workers_mod.Options,
+    ) Allocator.Error!*workers_mod.Workers {
+        return workers_mod.Workers.init(gpa, self.io(), options);
     }
 
     // -- environment ---------------------------------------------------------------
