@@ -69,6 +69,11 @@ and its simulation steps about two and a half. See
 [ADR-0036](docs/adr/0036-explicit-deterministic-jobs.md) and its
 [design](docs/design/jobs-and-threading.md).
 
+**M13's Vulkan design is written; implementation has not begun.** The
+[ten-step plan](docs/design/vulkan.md) begins with Windows/Linux test-environment qualification.
+Its execution and shader-toolchain ADRs remain proposed. Metal stays macOS's backend;
+cross-compiling on a Mac will not substitute for native Vulkan runtime proof.
+
 All three modding tiers work — see [docs/modding](docs/modding/). Tier 2 is restricted
 Lua 5.5.1, one VM per package, bounded in memory, instructions and engine calls, reaching the
 engine only through the same public ABI table a native mod is handed. Replacing a package's

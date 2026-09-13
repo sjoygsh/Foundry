@@ -22,6 +22,10 @@ added usage conformance as §11 rule 11, and Step 5 the frame outcomes in §7 an
 `rhi` is layer L2. It depends on `core` and `platform`. **Graphics API symbols appear
 nowhere outside it** (I7, enforced by the build graph).
 
+**M13 planning, 2026-09-14:** [vulkan.md](vulkan.md) specifies ten steps, none begun.
+ADR-0037/0038 are proposed. The marked M13 additions below are the proposed Vulkan contract,
+not claims about a backend that exists. Metal/null remain the implemented backends.
+
 This is the document ADR-0003 demands before any Metal code exists, and it is written
 under an explicit warning from that ADR:
 
@@ -221,6 +225,13 @@ must be recreated. It is not detected implicitly inside `beginFrame`, because a 
 invalidates textures the caller may be holding handles to, and that is a fact the caller
 must be told rather than have happen underneath it.
 
+**M13 proposed clarification (ADR-0037):** window-system invalidation can arrive without a
+resize event. Vulkan may rebuild an out-of-date swapchain between frames after reporting
+`SurfaceUnavailable`, using fresh surface capabilities. That exception never changes the
+device's negotiated surface format or hides a lost surface/device. Presentation resources
+have separate completion fences; the submission timeline alone cannot retire them. The
+complete acquired-image, abort, resize and teardown protocol is [vulkan.md](vulkan.md) §8.
+
 ## 8. Recording commands
 
 Metal is the **strictest** of the three here, and the RHI keeps its shape.
@@ -400,10 +411,38 @@ The vertex-buffer block is reserved at a fixed eight rather than sized per pipel
 same reason. A vertex buffer's index does not move when some bind group gains a binding, so
 `[[buffer(0)]]` in a vertex shader means RHI vertex slot 0 in every pipeline in the engine.
 
-Vulkan and D3D12 will each need their own written convention when they arrive. Neither is
-obliged to match this one — they have descriptor sets and root signatures and can express
-groups directly — but each owes the same explicitness, and §2's mapping table is where that
-belongs.
+### Vulkan binding convention — proposed for M13, 2026-09-14
+
+ADR-0037/0038 and [vulkan.md](vulkan.md) §6 define the second backend's shader contract:
+
+| RHI declaration | Vulkan / GLSL representation |
+| --- | --- |
+| Bind group index `g`, binding `b` | `layout(set = g, binding = b)`; no flattening or renumbering |
+| Uniform buffer | `UNIFORM_BUFFER`, `std140` block |
+| Storage buffer | `STORAGE_BUFFER`, `std430` block |
+| Sampled texture | `SAMPLED_IMAGE`, separate `texture2D` |
+| Sampler | `SAMPLER`, separate `sampler`; combine at sampling, not in the descriptor layout |
+| Vertex attribute location | GLSL input `location`, from `VertexAttribute.location` |
+| Vertex buffer slot | Vulkan vertex binding index, independent of descriptor sets |
+| Inline constants | `layout(push_constant, std430)`, offset zero; column-major matrices |
+
+Entry numbers and stage visibility come from the layout. Layout entries may arrive unsorted;
+that does not change their shader-visible identities. Unused group positions use empty
+native layouts rather than shifting later sets. Sprite sampling is set 0 / binding 0 for the
+texture and binding 1 for the sampler; the sandbox quad additionally uses binding 2 for its
+uniform buffer. The two stage sources use matching explicit varying locations.
+
+The API still accepts whole-block inline writes up to its declared size; Vulkan pads a
+private copy to four-byte granularity without reading beyond the caller's slice. A layout
+change invalidates the current block as above. `std140`/`std430` specify shader byte layout,
+not Zig's default struct packing: build checks compare the known shaders' member offsets,
+matrix strides and bindings with their CPU producers.
+
+Descriptor-buffer alignment and range limits become neutral capabilities in M13 Step 4,
+with rule-10 checks on all backends before driver calls. Backend-private copy repacking preserves
+the existing byte-stride contract where Vulkan cannot represent it directly; see
+[vulkan.md](vulkan.md) §5.3. These changes are not implemented by this planning edit.
+Persistent group lifetime remains unchanged (§3/§13).
 
 ### Clip space, which is the other shader-visible contract
 
@@ -462,21 +501,18 @@ without a compiler. It is on the interface now because it is the same mechanism
 mod-authored shaders will need at M7, and finding out then that the interface cannot express
 it would be expensive.
 
-### Entry points are named by convention
+### Entry points have defaults and explicit descriptor fields
 
 *Written 2026-09-04, during M2. The convention existed in the Metal backend from M1 and
 was undocumented; `render2d`'s shader found it by failing pipeline creation.*
 
-A shader module's entry points must be called **`vertexMain`** and **`fragmentMain`**. The
-backend looks them up by those names, and a shader that names them anything else fails
-`createRenderPipeline` with `InvalidDescriptor` rather than rendering incorrectly — which
-is the right failure, but only if the rule is written down somewhere findable.
-
-The alternative is an entry-point name in `RenderPipelineDesc`, which every one of the
-three APIs supports. It is not obviously worth it: a fixed name is one fewer string to get
-wrong, and a module can still hold several pipelines' worth of code as long as only one
-pair is the entry. If a shader ever genuinely needs two vertex entry points in one module,
-that is the point to add the field — and it is recorded in §13 rather than done now.
+**Documentation correction, 2026-09-14:** the inspected implementation already has
+`RenderPipelineDesc.vertex_entry` and `.fragment_entry`, defaulting to `vertexMain` and
+`fragmentMain`. Metal resolves the supplied names and refuses a missing function with
+`InvalidDescriptor`. The former claim that the names were mandatory was stale documentation,
+not an interface constraint. The descriptor also has separate vertex and fragment module
+handles. M13 can therefore select GLSL's `main` in two SPIR-V modules without an interface
+change or a new shader container.
 
 ### Where the bytes come from
 
@@ -492,12 +528,11 @@ This is also the concrete answer to ADR-0014's claim that Foundry needs no build
 Zig: a shader compiler is an ordinary build step with declared inputs and outputs, so Zig
 caches it and re-runs it exactly when a source changes.
 
-**Where a shader *lives* is not settled here, deliberately.** Today the only one belongs to
-`samples/sandbox`, which embeds the compiled library in its executable. That is the smallest
-thing that proves the interface has a producer, and it avoids prejudging two decisions that
-belong to M3: whether the engine ships content of its own as package zero, and how an asset
-is named and found. From M3 shaders are assets referenced by content ID (ADR-0015) and this
-step becomes what the content compiler invokes rather than what a sample does.
+**Shader ownership was settled by ADR-0019.** The engine-owned sprite shader is built and
+embedded in `render2d`; the sandbox retains its demonstration shader. Content-owned shaders
+remain future material assets with backend variants, not an implemented `fpack` shader
+loader. M13's proposed producer is pinned GLSL-to-SPIR-V tooling (ADR-0038); Metal's existing
+producer stays in place. Runtime compilation remains a backend capability, not a requirement.
 
 ## 11. The validation backend
 
@@ -608,7 +643,9 @@ headlessly — the same reason the null *platform* backend exists.
 5. **Whether shader entry points should be named in the descriptor.** Fixed as
    `vertexMain`/`fragmentMain` today (§10), which is one fewer string to get wrong. All
    three APIs support naming them per pipeline. Revisit when a module genuinely needs two
-   vertex entry points, which the material system might well want.
+   vertex entry points, which the material system might well want. **Documentation corrected
+   during M13 planning, 2026-09-14:** those descriptor fields already exist and Metal uses
+   them. See §10; this is no longer an open interface question.
 6. **What happens on device loss.** Real on Windows, rare on macOS, and untestable until
    there is a second backend. Recorded so that it is a known gap rather than an oversight —
    the handle model at least makes recovery expressible, since every resource is already

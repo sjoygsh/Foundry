@@ -123,6 +123,18 @@ backends arrive. An `rhi` backend encountering a `kind` it does not handle retur
 it does not assert, because the combination is a configuration mistake rather than a
 programmer error.
 
+**M13 proposal, 2026-09-14:** the Windows/X11/Wayland enum values now exist but SDL still
+refuses them. [vulkan.md](vulkan.md) §4 and proposed ADR-0037 complete them with stable
+platform-owned payloads containing the full OS handle pairs, while preserving the outer
+tagged-pointer shape and Metal's payload meaning. An automatic native-window request selects
+the active Linux window system; the returned kind is concrete. No SDL/Vulkan type crosses
+this seam. Payloads remain valid until the window closes and the RHI copies their values
+during initialization. No implementation is included in this design update.
+
+M10's deferred application-supplied window icon is specified in [vulkan.md](vulkan.md) §9
+for M13 Step 8: validated RGBA8 bytes at the platform boundary, no engine default mark and
+no image-loading dependency in this layer.
+
 ### Deliberately excluded
 
 SDL offers a renderer, image loading, font rendering and a GPU abstraction. **Foundry uses

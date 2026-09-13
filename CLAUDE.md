@@ -192,6 +192,12 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Repository | Engine is a standalone public repo; games are separate consumers | [0017](docs/adr/0017-repository-scope.md) |
 | Process | CLAUDE.md + PROJECT_STATE.md + numbered ADRs | [0009](docs/adr/0009-documentation-process.md) |
 
+**M13 proposals, not accepted decisions:** [ADR-0037](docs/adr/0037-vulkan-execution-and-presentation.md)
+specifies Vulkan execution, presentation completion and the native-window seam;
+[ADR-0038](docs/adr/0038-vulkan-shaders-and-toolchain.md) specifies GLSL variants, SPIR-V tools
+and runtime loader ownership. [The design](docs/design/vulkan.md) stops before Step 1.
+Accept the proposals and qualify the target environment before implementing them.
+
 **Language note.** Zig is pre-1.0 and both the language and `std` break between releases. This
 is an accepted, managed risk: pinned to a stable release, **never master or nightly**, upgraded
 deliberately between milestones and never during one, with `std` usage concentrated behind
@@ -550,8 +556,8 @@ milestone named below is where `docs/ROADMAP.md` now places it.
 | Decision | Due | Notes |
 | --- | --- | --- |
 | Separate editor application | **M15** | In-process debug overlay first; the editor re-hosts its introspection (ADR-0025). |
-| Second graphics backend | **M13**, trigger-started | **Which API is decided: Vulkan (ADR-0033)**, covering Windows and Linux together. *When* is still triggered by a reason — shipping either platform, or validating the RHI. |
-| Shader cross-compiler vs. hand-written variants | **M13**, or when the shader set grows large | ADR-0015. Whichever comes first. |
+| Second graphics backend | **M13**, design written; implementation unstarted | **Vulkan is decided (ADR-0033)**. The owner's 2026-09-14 design request activates the RHI-validation trigger. [vulkan.md](docs/design/vulkan.md) has ten steps; proposed ADR-0037's hardware floor and actual Windows/Linux test access are entry gates. |
+| Shader cross-compiler vs. hand-written variants | **M13**, proposal written | ADR-0038 proposes hand-written GLSL variants for the two existing shader pairs, compiled to SPIR-V with pinned SDK tools; remains proposed until accepted. ADR-0015's future material/mod shader constraint remains. |
 | Job system / threading model | **Done in M12** (was dated post-M5) | **Decided by ADR-0036 and implemented, 2026-09-14** — explicit `core.Jobs`, fork-join over data-determined chunks, systems kept in order, nothing in the ABI. What it deliberately left out — parallel system scheduling, task graphs, a render thread — has no date: each waits on a measured trigger in `docs/design/jobs-and-threading.md` §9. |
 | Bit-exact determinism for a subset | **M16**, and only if lockstep | ADR-0013 keeps this open without paying for it now; an authoritative server does not need it. |
 | Networking | **M16**, trigger-started | I1, I2, I8 and I9 keep it possible. Nothing else is owed to it now. |

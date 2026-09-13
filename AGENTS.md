@@ -101,8 +101,12 @@ ten Metal-only. **M12 is complete (2026-09-14).** Parallel work goes through an 
 `core.Jobs` (ADR-0036, `docs/design/jobs-and-threading.md`): a chunk writes only its own data and
 never allocates or calls the RHI, and every call site that splits work is tested under `serial`,
 `reversed` and a real pool. `FOUNDRY_SANDBOX_WORKERS` and `FOUNDRY_ROOM_WORKERS` set a sample's
-pool, `0` for none. M12 closed at **1,370 declared / 1,360 headless tests**. M13–M17 remain
-unstarted.
+pool, `0` for none. M12 closed at **1,370 declared / 1,360 headless tests**.
+**M13's design is written (2026-09-14), with no implementation begun.** Read
+`docs/design/vulkan.md` and proposed ADR-0037/0038. Its ten steps start with environment/tool
+qualification after proposal acceptance; Vulkan runtime proof requires Windows/Linux x64
+test access, not just Mac cross-compilation. Stop before Step 1 at this handoff. M14–M17 remain
+unstarted. The bar below remains the current one until M13 adds its verified target commands.
 
 ## 3. Building and verifying
 
