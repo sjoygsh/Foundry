@@ -1,6 +1,6 @@
 # ADR-0035: Make resource retirement and validation agree
 
-**Status:** Accepted (constraint only; implementation is M11)
+**Status:** Accepted and implemented (M11 complete)
 **Date:** 2026-09-13
 
 ## Context
@@ -76,3 +76,12 @@ corrected rather than exempted. No C ABI table or serialized content layout chan
 Multiple queues arrive, measured retirement pressure needs finer reclamation, or Vulkan
 bring-up exposes completion or surface outcomes the current single-queue contract cannot
 express. Revisit the internal contract through an ADR before changing the public boundary.
+
+## Implementation
+
+M11 implemented this decision in full on 2026-09-13. Both backends share completion-backed
+retirement; validation rules 9 and 11 enforce stale-handle/lifetime and declared-usage
+contracts; the ordinary renderer reload path relies on that retirement; and the application
+distinguishes `SurfaceUnavailable`, `SurfaceLost` and `DeviceLost` while closing every opened
+frame. `docs/design/hardening.md` records the nine steps and final evidence. No public ABI
+layout changed.

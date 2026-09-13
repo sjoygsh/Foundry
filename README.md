@@ -10,8 +10,8 @@ leave behind something that runs.
 
 ## Status
 
-**M0 through M10 complete.** Foundry is a playable, inspectable, fully moddable and
-packageable 2D engine, and it now has a face of its own.
+**M0 through M11 complete.** Foundry is a playable, inspectable, fully moddable,
+packageable and hardened 2D engine, and it now has a face of its own.
 Content packages are discovered and dependency-ordered; native C mods load through the
 versioned public ABI and can add component types, systems and behaviour without engine source
 changes; and **script mods run on the world's tick and can be edited while the game is
@@ -54,11 +54,14 @@ a mod manager, the editor, networking, and last of all the certified public rele
 strangers come last. It gathers work the project had already deferred. See the
 [roadmap](docs/ROADMAP.md).
 
-**M11 is under way, with eight of nine steps implemented.** Its
+**M11 is complete: all nine steps are done.** Its
 [nine-step plan](docs/design/hardening.md#12-implementation-order) covers resource lifetime,
 Metal test coverage, usage validation, frame/file errors, UI batching and diagnostic timing.
-The remaining Step 9 is the milestone's bounded exit proof and disposition of the existing
-technical-debt record; M12 has not begun.
+The final gate passed with the two real Metal sample windows inspected, an external font
+override exercised, the Metal test graph and repeated in-flight texture replacement clean,
+persisted diagnostics checked, and a strict-valid ad-hoc distribution retaining its icon.
+The existing technical-debt record now distinguishes closed defects from deliberate limits.
+M12 has not begun and still needs its job-system/threading design and ADR.
 
 All three modding tiers work — see [docs/modding](docs/modding/). Tier 2 is restricted
 Lua 5.5.1, one VM per package, bounded in memory, instructions and engine calls, reaching the

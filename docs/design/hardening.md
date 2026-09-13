@@ -1,8 +1,8 @@
 # Hardening: close the known faults without changing Foundry's shape
 
-**Status:** designed 2026-09-13; **8/9 implementation steps complete**.
+**Status:** designed and **implemented in full 2026-09-13**; M11 complete.
 **Baseline:** `180ef4f`, M0–M10 complete; M10's verification remains accepted.
-**Stop point:** immediately before Step 9. Resolutions at the end record what each step settled.
+**Stop point:** after Step 9 and before M12. Resolutions at the end record what each step settled.
 
 Specification for M11, **Solid: "its known faults are fixed"**, in
 [`ROADMAP.md`](../ROADMAP.md). Rests on [ADR-0035](../adr/0035-rhi-lifetime-and-validation.md),
@@ -355,7 +355,8 @@ named implementation seams, check local links/whitespace and scope consistency o
 do not rerun them to prove prose. No compile failure is fixed, no new guard is implemented,
 and no milestone implementation count advances during planning.
 
-**Next action, only when implementation is requested: Step 9 above.**
+**M11 is complete.** M12 requires its own design and ADR before implementation; this document
+does not begin it.
 
 ## Resolution — Step 1, 2026-09-13
 
@@ -792,3 +793,57 @@ Disabling the same-handle kind check made the platform suite fail exactly one te
 `WrongFileKind`. Restoring the guard returned the suite to 1,334/1,334. The full bar passed:
 formatting, host/Metal-selected compilation, Linux and Windows cross-compilation, and both
 30-frame null samples. There are 1,344 declared tests / 1,334 headless, ten Metal-only.
+
+## Resolution — Step 9, 2026-09-13
+
+**The debt record now says what is wrong, not merely what was once unfinished.** The existing
+`PROJECT_STATE.md` section received one disposition pass. Steps 1–8 close its Metal-test,
+retirement, staging-reload, usage, frame-outcome, UI-batch, timestamp and file-kind defects.
+The already-settled real-window resize and shader-ownership decisions remain closed. There is
+no known correctness defect left in the section.
+
+What remains is explicit scope or a measured revisit trigger: Metal is the only real backend
+and `metal_layer` the only implemented native surface; display pacing therefore has no second
+platform proof. Vulkan, its surfaces and per-backend shader variants remain M13/ADR-0033.
+Gamepads, OS file notifications and IME preedit/control are unsupported; the implemented hot
+reload polls ordinary package files and does not claim OS watching. Audio-device replacement
+is not handled. Explicit subsystem fields, sparse handle iteration, sparse-set entity storage
+and the authoring syntax remain the simple implementations until their recorded scale triggers
+are measured. SDL3 build-script compatibility is checked when the pinned Zig toolchain is
+deliberately upgraded, not by changing Zig 0.16.0 inside this milestone.
+
+**The listening evidence already existed.** M5 closed at `c8ecbb8` after a person listened to
+the deterministic 12-second mixer render and confirmed the panning direction, resampled
+footstep and click-free envelopes. Its measured peak, stereo-energy movement and silence after
+the last voice are retained in the M5 record. Repeating that check would not add new evidence;
+the stale “nothing has listened” entry was corrected. Device disappearance remains an
+unsupported capability, not a mixer safety failure found by that check.
+
+**The UI was looked at through the path a mod uses.** Window-specific captures of both real
+Metal samples showed coherent sprites, glyphs, fills, clips and full-frame presentation. A
+temporary package outside the source tree then overrode `foundry:fonts.debug` with a
+package-local copy through `fpack`; the sandbox logged the three-package order, drew its
+profiler and fill rectangles correctly from that replacement, reported 10–11 batches and
+exited cleanly. The installed proof package was removed afterwards. No source asset or public
+ABI changed.
+
+**Two device-tool observations remain honestly unverified.** This environment cannot drive a
+different process's minimise/restore control without accessibility authority, so the Metal
+window was not manually minimised. Step 5's deterministic acquisition-outcome tests and real
+resizes remain the executable evidence, but are not described as that manual observation.
+Likewise, local tools expose Metal trace instruments and a capture-enabled sandbox runs clean,
+but no Xcode GPU frame capture was created and opened here. GPU-frame-capture usability remains
+a verification gap, not a completed capture and not evidence of a rendering defect.
+
+**Final gate.** Step 8's unchanged-code normal bar remains accepted: formatting, host and
+Metal compilation, Linux/Windows cross-compilation and both null samples passed. The final
+Metal-selected test graph passed under `MTL_DEBUG_LAYER=1`, including six ordinary texture
+replacements with a frame in flight, failure recovery and eventual reclamation. The sandbox
+completed 3,000, 1,800 and 2,400 real Metal frames in bounded runs; the room completed 3,000;
+all exited cleanly with no Metal validation report. `diagnostics-stress` passed. A ReleaseSafe
+room `dist` at implementation revision `6a26d3f` produced the application, matching dSYM,
+permission-preserving zip, inventory and notices; strict ad-hoc codesign passed, and the plist
+still named the staged `AppIcon.icns`. There are **1,344 declared / 1,334 headless tests**, ten
+Metal-only.
+
+M11 is complete and may be tagged `m11`. M12 was not designed or begun here.

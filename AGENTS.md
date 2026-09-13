@@ -87,27 +87,18 @@ Strict ad-hoc integrity passed and Gatekeeper rejection is expected. Actual Deve
 signing, Apple notarization and a quarantine-preserving launch on a genuinely clean Mac remain
 mandatory deferred work for the first public release; the current artifact does not claim it.
 
-**M10 is complete; M11 is under way, 8/9 steps implemented (2026-09-13).** M10 added
-Foundry's marks and an application-supplied release icon (ADR-0034); its full verification is
-recorded in PROJECT_STATE. For M11 read ADR-0035 and `docs/design/hardening.md`; §12 is the
-nine-step order. Step 1 repaired the Metal-selected test graph, and its compile check is now
-in the bar below. Step 2 made both RHI backends retain a destroyed resource until the
-recordings that could use it finish (`engine/src/rhi/lifetime.zig`); **rule 9 now rejects
-recording through a dead handle, not the destroy itself.** Step 3 moved `render2d` onto that
-contract: it keeps no retirement of its own, uploads declare a texture's tracked state, and a
-failed atlas upload claims no space. Step 4 made declared usage **validation rule 11**: a
-resource used, or moved into a state, its usage does not allow is reported. Step 5 split frame
-outcomes: **only `SurfaceUnavailable` may be skipped** (`app.Engine.frameSkippable`), and a
-failed frame is closed — its recording discarded, the frame finished — before `renderFrame`
-returns. Step 6 lets the UI walker draw rectangles from a solid patch in the font's own
-texture (`UiDrawOptions.solid`, resolved by `app.uiSolidRegion`), which `foundry:fonts.debug`
-now carries in its spare cell. Step 7 stamps every captured log line with the engine's elapsed
-time as well as its frame, published from clock readings the frame already takes
-(`log_sink.Stamp`); the session log is envelope version 2 and its header states the line
-format. Step 8 makes ordinary `Os.readFile` classify the same handle it reads, so relative
-and absolute directory reads return `WrongFileKind` while bounded reads, ordinary symlinks
-and stricter confined paths keep their contracts. **Next is Step 9, the M11 exit proof and
-existing-debt disposition.** M12–M17 remain unstarted.
+**M10 and M11 are complete (2026-09-13).** M10 added Foundry's marks and an
+application-supplied release icon (ADR-0034). M11 fixed the carried correctness defects and
+made the remaining entries explicit limitations; read ADR-0035 and
+`docs/design/hardening.md`, whose nine steps and Resolutions are complete. The Metal-selected
+test graph is part of the bar below. Both RHI backends now use completion-backed retirement;
+rule 9 rejects use through dead handles and rule 11 enforces declared usage. `render2d`
+replaces textures safely with frames in flight and shares the font texture for UI fills.
+Only `SurfaceUnavailable` is skippable, and every opened frame is closed on failure. Captured
+logs carry the engine's observed elapsed time, and ordinary file reads report the kind of the
+same object they read. M11's final gate passed at **1,344 declared / 1,334 headless tests**,
+ten Metal-only. **M12 is next but undesigned; write its job-system/threading design and ADR
+before implementation.** M12–M17 remain unstarted.
 
 ## 3. Building and verifying
 

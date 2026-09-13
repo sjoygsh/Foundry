@@ -1,8 +1,28 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-13
-**Current handoff: M0 through M10 are complete. M11 is under way, 8/9 steps implemented.
-Stop immediately before M11 Step 9. M12 through M17 remain unstarted.**
+**Current handoff: M0 through M11 are complete. M12 through M17 remain unstarted.
+Stop before M12 design or implementation.**
+
+**Completed M11 Step 9 and M11, 2026-09-13:** the existing known-debt section received its
+single disposition pass. The faults M11 named are repaired; what remains is an explicit
+unsupported capability, a later milestone's scope or a measured revisit trigger. Prior M5
+evidence at `c8ecbb8` confirms that a person listened to the mixer, so its stale debt entry is
+closed. Both real Metal sample windows were captured and inspected. A temporary external
+package overrode `foundry:fonts.debug` through ordinary `fpack`/user-mod loading; the sandbox
+drew the replacement cleanly at 10–11 batches, and the package was removed. Xcode GPU frame
+capture and a manually minimised/restored Metal window remain honestly unverified observations,
+not completed evidence and not known correctness defects.
+
+The final gate kept Step 8's unchanged-code full bar accepted, then added distinct evidence:
+the Metal-selected tests passed under API validation, including six texture replacements with
+a frame in flight; `diagnostics-stress` passed; the sandbox completed bounded 3,000-, 1,800-
+and 2,400-frame Metal runs and the room completed 3,000; all exited cleanly. A ReleaseSafe room
+`dist` at implementation revision `6a26d3f` produced the app, dSYM, zip, inventory and notices;
+strict ad-hoc codesign passed and the staged `AppIcon.icns` remained declared and present.
+**1,344 declared / 1,334 headless tests**, ten Metal-only. Resolution: `hardening.md`, Step 9.
+M11 is complete and tagged `m11`; M12's job-system/threading design and ADR are next, but were
+not begun.
 
 **Implemented in M11 Step 8, 2026-09-13:** ordinary file reads now report the object they
 opened. `Os.readFile` opens an absolute or relative path once, stats that same handle, accepts
@@ -38,8 +58,9 @@ rectangles from a region of that texture, which `app.uiSolidRegion` finds from t
 2). An absent, stale or out-of-range region falls back to the renderer's blank, and the resolver
 warns when content changes rather than every frame. Paint order, clipping and text metrics are
 unchanged. The overlay costs 2, 4 and 12 batches with 0, 1 and 5 panels open, down from 11, 16 and
-32 — its clip-only floor — and the headless sandbox 10 instead of 31. **Owed:** looking at both
-UIs and a font override needs a person. Evidence: the same five-panel list drawn both ways matches
+32 — its clip-only floor — and the headless sandbox 10 instead of 31. **Completed in Step 9:**
+both real Metal UIs and an ordinary external-package font override were captured and inspected.
+Evidence: the same five-panel list drawn both ways matches
 sprite for sprite except where the rectangles' texels come from; breaking the guards failed 3 and
 then 1 of 1,327 tests; the text-metric corpus passed unchanged; both samples ran on Metal under API
 validation; the bar passed. **1,337 declared / 1,327 headless**, ten Metal-only. Resolution:
@@ -55,8 +76,9 @@ reached `submit` — the new `CommandBuffer.discard`, while `submit` consumes wh
 and finishes the frame, keeping the first error. `endFrame` leaves the slot's marker even when it
 fails. Metal lets the drawable go on failure, presents only what submitted work drew into, and no
 longer leaks an encoder or swallows a pass-list allocation failure. The recording an error used
-to leave open until teardown (Steps 2–3) is now closed. **Owed:** a Metal minimise/restore run,
-which needs a person; resizing was exercised. Evidence: faults injected at acquisition,
+to leave open until teardown (Steps 2–3) is now closed. **Step 9 disposition:** real Metal
+resizing remains exercised; minimise/restore could not be driven without accessibility
+authority and is recorded as an unverified observation, not completed evidence. Evidence: faults injected at acquisition,
 preparation, recording, submission and finish; breaking the guards failed 4 and then 3 of 1,323
 tests in two runs; the Metal-selected tests passed under Metal API Validation; an injected lost
 device left a session log naming frame 10 and a `failed` marker; the bar passed. **1,333 declared
@@ -1413,24 +1435,23 @@ external-consumer recipient proof obtainable without private Apple credentials. 
 closed.** What a public macOS release still owes is operator certification — Developer ID
 signing, notarization and a clean recipient Mac (ADR-0032) — not engine work. **Phase 4,
 "Hardening and reach" (M10-M17), is under way**: it gathers the deferred work rather than
-adding to it, only M10 was new, and **M10 is complete (2026-09-13)**. M11 is under way with
-8/9 steps implemented; M12 through M17 are unstarted.
+adding to it, only M10 was new, and **M10 and M11 are complete (2026-09-13)**. M12 through
+M17 are unstarted.
 
 ## Current milestone
 
-**M11 — Solid: "its known faults are fixed." Designed, 2026-09-13; 8/9 implemented.**
-Read `docs/design/hardening.md` and ADR-0035. Step 1 is done: the Metal-selected graph, test
-binaries included, compiles and its tests pass. Step 2 is done: both RHI backends retain a
-destroyed resource until every recording that could use it has finished. Step 3 is done:
-`render2d` relies on that retirement instead of its own, and textures replace safely through
-the ordinary loader with frames in flight. Step 4 is done: declared resource usage is
-validation rule 11. Step 5 is done: only an unavailable surface is a skippable frame, and a
-failed frame is closed before it is reported. Step 6 is done: the UI's rectangles can come from
-a solid patch in the font's texture, and the reference font has one. Step 7 is done: captured
-log lines carry the engine's elapsed time beside the frame, and the session log states how to
-read it. Step 8 is done: ordinary file reads classify the handle they read and return exact
-file-kind errors without changing confinement. Implementation is paused before §12 Step 9;
-the remaining known-debt entries are not claimed repaired.
+**M12 — Parallel: "it uses more than one core." Not started.** The next action, only when
+requested, is to write the job-system/threading design and ADR required by `CLAUDE.md` §9.
+Do not implement M12 before that decision exists.
+
+**M11 — Solid: "its known faults are fixed." Complete, 2026-09-13.** Read
+`docs/design/hardening.md` and ADR-0035. All nine steps are implemented: the Metal-selected
+test graph, completion-backed retirement, safe ordinary texture replacement, declared-usage
+validation, distinct and cleaned-up frame outcomes, atlas-backed UI fills, observed-time log
+stamps, exact file-kind errors, and the final disposition/evidence gate. The existing debt
+section below contains no known correctness defect; its remaining entries are explicit
+limitations or measured revisit triggers. M11 closed at **1,344 declared / 1,334 headless
+tests**, ten Metal-only, and is tagged `m11`.
 
 **M10 — Identity: "it knows its own name." Complete, 2026-09-13.** The marks, the icon the
 release path stages and the plist names, and ADR-0034's rule that reference is permitted and
@@ -2300,8 +2321,9 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M11 Steps 1–8 are complete; implementation is paused before Step 9.** M0–M10 are complete.
-The specification is `docs/design/hardening.md`; the M5 material below is historical.
+**M0–M11 are complete; no milestone implementation is in progress.** M12's design and ADR are
+next when requested. The M11 specification and all nine Resolutions are in
+`docs/design/hardening.md`; the M5 material below is historical.
 
 ### `samples/room`, and what a second consumer proved
 
@@ -2946,15 +2968,14 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M11 Step 9, when implementation is requested** — perform the one disposition pass over
-the existing debt section, gather only its still-owed bounded evidence, run the milestone exit
-gate and close/tag M11 if it is clean. Steps 1–8 are done; one step remains. Do not begin M12.
+**Next: design M12, when requested.** Write the job-system/threading design and ADR before any
+implementation. M11 is closed; do not treat its completion as authority to begin M12.
 
-**M0 through M10 are complete and tagged, and everything is pushed.** Phase 3 is closed;
+**M0 through M11 are complete and tagged, and everything is pushed.** Phase 3 is closed;
 Phase 4 is under way. The completed M8/M7 checklists and subsequent M5/M6 material below are
 historical.
 
-**What remains is `docs/ROADMAP.md` Phase 4, "Hardening and reach", M11 through M17.** The
+**What remains is `docs/ROADMAP.md` Phase 4, "Hardening and reach", M12 through M17.** The
 phase gathers work that was already recorded rather than inventing any, and `CLAUDE.md` §9's
 postponed table names the milestone each decision belongs to. **The intent as of 2026-09-13 is
 to work through them over the following two weeks**, in roadmap order unless a trigger moves
@@ -2966,10 +2987,9 @@ review of `main` rather than beginning on a schedule.
 * ~~**M10 — Identity.**~~ **Done 2026-09-13**, tagged `m10`. One manual step is left and is
   not code: uploading `brand/social-preview.png` as the repository's social preview, which
   GitHub exposes through no API.
-* **M11 — Solid. 8/9 implemented** in `docs/design/hardening.md`. Steps 1–8 repaired the
-  Metal-selected test graph, GPU retirement and texture replacement, usage validation, frame
-  outcomes, UI atlas batching, log timing and ordinary file-kind errors. Step 9 is the single
-  disposition pass over this file's existing debt and the final milestone evidence.
+* ~~**M11 — Solid.**~~ **Done 2026-09-13**, tagged `m11`. All nine steps in
+  `docs/design/hardening.md` repaired the carried correctness defects, made the remaining
+  limits explicit and passed the final Metal/runtime/distribution gate.
 * **M12 — Parallel.** The job system and threading model, which §9 dated post-M5 and which is
   four milestones overdue. I9 constrains it hardest.
 * **M13 — Portable.** The second backend, trigger-started — **and it is Vulkan, decided
@@ -3435,131 +3455,38 @@ a rewrite of the one before.
 
 ## Known bugs and technical debt
 
-* **A texture hot reload destroys its staging buffer while frames are still in flight.**
-  Found 2026-09-06 while checking that step 7 survived a content reload, and **not caused by
-  it** — the same two lines appear on `main` before that commit, so it dates from step 5 or 6
-  at the latest. The null backend's validation says it plainly: `rule 9 (lifetime): buffer
-  'render2d texture staging' destroyed while frame 120 is in flight (completed: 118)`. Metal
-  would forgive it and a Metal build says nothing, which is exactly what the validating
-  backend exists for. To reproduce: run the sandbox, edit `samples/sandbox/content/sandbox.fdt`
-  and `zig build` while it runs. The fix belongs with `render2d`'s texture loader — the
-  staging buffer has to outlive the frames that reference it, the way every other transient
-  does — and it is a `render2d`/`rhi` job rather than a collision one, which is why it is
-  recorded here rather than folded into step 7.
-* **The log sink has no timestamps.** Two of this entry's original three gaps closed
-  2026-09-07 (step 3 of `debug-overlay.md`): there is now a **second destination** — a
-  statically-sized in-memory ring, never a replacement for stderr, with **its own level**, so
-  quietening the terminal does not blind the console — and the console filters by level, scope
-  and substring at runtime rather than relying on compile-time `std.Options.log_scope_levels`.
-  **Timestamps stay open.** They want a monotonic source, which lives on `Platform`, and a free
-  logging function has no instance to ask; worth solving when there is a log *file* to correlate
-  against, at M9. The design proposes the cheaper correlation in the meantime, and it is
-  implemented: each record carries the **frame index**, written by `beginFrame` into an atomic
-  the sink reads, which lines a log line up against a profiler span without giving the sink a
-  clock.
-* **The overlay costs fifteen batches where the hand-drawn HUD cost six**, recorded twice in
-  `ui.md`'s step 4 and step 5 Resolutions and never measured. The suspected cause is that panel
-  rectangles come from the blank texture and labels from the font atlas, so every alternation is
-  a texture break; the candidate fix is packing the blank patch into the font's atlas. It is
-  deliberately not fixed before there is a profiler to show it mattering (rule 2), and
-  `debug-overlay.md` §17 step 6 makes diagnosing it the way M6's exit criterion is met — a
-  milestone about diagnosing a performance problem closing on a real one rather than a
-  synthetic one.
-* **Frame pacing exists only on Metal.** A windowed Metal build is paced by the display,
-  because the layer has vsync enabled and acquiring a drawable blocks. The null backend has
-  no swapchain to wait on, so that path still sleeps 2ms per frame to avoid pegging a core.
-  Still deliberately outside `Engine` — pacing is renderer policy.
-* **Subsystem lifecycle is explicit fields, not a registry.** Correct at two subsystems and
-  machinery guarding nothing; revisit at perhaps six, which is also when the ordering stops
-  being obvious by inspection.
-* **The handle pool is sparse and iterates dead slots.** Fine for its intended use — lookup
-  by identity, rare iteration. Deliberately not optimised, and deliberately not generalised
-  toward component storage (ADR-0010, M4).
-* **`platform` has no gamepad support, file watching or IME preedit.** Each is deferred with
-  a recorded reason in the design doc's Resolution; none requires the interface to change to
-  accommodate it later. Audio was the fourth item on this list and arrived 2026-09-06, adding
-  four functions and needing no reshaping of anything already there — which is the evidence
-  that the deferral was the right kind.
-* **Nothing has listened to the mixer.** The arithmetic is tested bit-exactly, the device is
-  confirmed to call back with the block it was promised, and the sandbox reports how many
-  sounds it started; none of that would catch a swapped stereo pair or an envelope that
-  clicks. Thirty seconds with headphones is the check, and it has not been done.
-* **A device that disappears mid-run is whatever SDL3 does about it.** `audio.md`'s open
-  question 4: unplugging headphones today produces no event and no reopen. Owed when someone
-  unplugs something and the answer is unsatisfying; `platform`'s interface has room for a
-  device-changed event beside the window events, so nothing has to be reshaped.
-* **Text input is enabled for a window's whole lifetime.** SDL3 requires
-  `SDL_StartTextInput` explicitly, and without it `text_input` events never arrive at all.
-  Per-window IME control belongs with the UI system (M6).
-* **Only `metal_layer` surfaces are implemented.** `win32_hwnd` and the X11/Wayland kinds
-  return `SurfaceUnavailable`. SDL can produce an `HWND` through its properties API, but
-  there is no backend to consume one and no way to test it.
-* **Reading a directory as a file reports `IoFailed`, not `WrongFileKind`,** because macOS
-  opens the directory happily and fails at the read. The test asserts only that it errors.
-  Classifying it would cost a `stat` on every read, which is not worth it.
-* ~~**A real-window resize has never been run.**~~ **Closed 2026-09-04** by adding
-  `setWindowSize` to `platform`. Five real resizes per run — 1280x720, 900x900 (clamped by
-  the window manager to 900x794), 1400x500, 640x480 — each producing a `window_resized`
-  event with the pixel size tracking it, the `CAMetalLayer` following, zero Metal API and
-  GPU validation messages, and zero violations from the null backend on the same command
-  stream. Driving it from *outside* the process is still impossible here (`osascript is not
-  allowed assistive access`), which is why the capability went in the engine instead.
+**M11 disposition, 2026-09-13:** this section contains no known correctness defect. Steps 1–8
+closed the stale Metal-test, resource-retirement, texture-reload, usage, frame-outcome,
+UI-batching, log-time and file-kind entries; `docs/design/hardening.md` records the executable
+evidence. A person had already listened to the mixer when M5 closed at `c8ecbb8`. Real-window
+resize remains closed since 2026-09-04, and ADR-0019 remains the settled shader-ownership rule.
 
-* **`FrameError` cannot distinguish transient from fatal surface failure.** Metal returning
-  no drawable — a minimised or occluded window, or every drawable still in flight — is
-  transient and the right response is to skip the frame. A genuinely lost surface is fatal.
-  The RHI has one error, `SurfaceLost`, for both, so the backend reports the transient case
-  as `SurfaceLost` and the sandbox skips. Vulkan draws exactly this distinction
-  (`OUT_OF_DATE` versus `SURFACE_LOST`), which is a hint that the RHI should too — but
-  adding an error is a contract change, so it is recorded rather than done quietly.
-
-* **Xcode GPU frame capture is confirmed only by its prerequisites.** The sandbox runs
-  clean under `MTL_CAPTURE_ENABLED=1`, and shaders carry `-frecord-sources`, so a capture
-  should open and should show MSL rather than disassembly — but no one has yet opened one
-  in Xcode and looked. This is one of ADR-0012's stated reasons for the shim design, so it
-  is worth an actual look during M2, when there is more than one draw to inspect.
-
-* ~~**Where a compiled shader lives is unsettled, deliberately.**~~ **Settled by ADR-0019**,
-  2026-09-04, because M2 forced it: `render2d` needs a sprite shader before any content
-  system exists. Engine-owned shaders — those whose absence means the renderer cannot draw —
-  are compiled by the build step and embedded in the engine module. Content-owned shaders
-  remain assets per ADR-0015. This does not prejudge M3: first-party *content* shaders will
-  still load through the package-zero path like everyone else's.
-
-* **No backend defers a destroy, though `interface.zig` says every one does.** The comment
-  claims a destroy is deferred until no in-flight frame can reference the resource; neither
-  backend implements that. Metal happens to be safe — `[queue commandBuffer]` retains its
-  referenced resources, so a destroyed buffer outlives the GPU's use of it — and
-  `Device.deinit` does wait on every in-flight command buffer before releasing anything. But
-  a Vulkan or D3D12 backend would need a real deferred-destroy queue, and until one exists
-  the interface is promising something it does not deliver. Found while writing the quad,
-  which is why the sandbox holds its resources for the process lifetime instead of leaning
-  on the guarantee. Fixing it is a design choice — a destroy queue, or an explicit
-  `waitIdle` the interface also lacks — so it is recorded rather than settled quietly.
-  **`render2d.md` §9 responds to this without discharging it**: the renderer keeps its own
-  retirement queue and does not rely on the RHI's promise, so M2's code is correct whether or
-  not the RHI ever keeps it. The interface still says something untrue, and that stays here.
-  **Half of the fix landed 2026-09-04**: `waitIdle` now exists on the interface and in both
-  backends, so a caller that must destroy safely has a way to reach a state where doing so
-  is legal. The deferred-destroy *queue* the comment promises still does not exist.
-
-* **Usage-flag conformance is declared but unenforced.** Buffers and textures carry a
-  usage set because Vulkan and D3D12 require it at creation, and both treat using a
-  resource outside its declared usage as undefined behaviour — so it is a real invariant.
-  It is not one of the ten documented rules, so the validation backend deliberately does
-  not check it. Enforcing it would be an eleventh rule and therefore a contract change;
-  recorded as an open question in `docs/design/rhi.md` §13 rather than resolved quietly.
-* **The RHI is still validated by one real backend.** ADR-0003's mitigations reduce this
-  and are now demonstrably working — the null backend checks every command stream Metal
-  runs — but they do not remove it. Expect backend #2 to find design errors, particularly
-  in the parts Metal is most forgiving about: resource state and bind group compatibility.
-* **SDL3 arrives through a third-party build script** that can bitrot against a future
-  pinned Zig release. Checking it is part of the cost of every Zig upgrade. Fallbacks in
-  ADR-0002.
-* Shaders will need per-backend variants when a second backend lands (ADR-0015).
-* Sparse-set entity storage (M4) is explicitly a first implementation, not a final one.
-* The first content authoring format may need replacing once real content exists at scale.
-  ADR-0006 contains this by separating schemas from syntax.
+* **Metal is still the only real RHI backend and `metal_layer` the only implemented native
+  surface.** `win32_hwnd` and X11/Wayland surfaces remain M13 work with Vulkan (ADR-0033), as
+  do per-backend shader variants and a second real-backend validation of the RHI. Display
+  pacing consequently has only Metal evidence; the null backend still sleeps 2 ms so a
+  headless run does not peg a core. These are explicit platform limits, not portability claims.
+* **Platform input and change notification are deliberately incomplete.** There is no gamepad
+  support, OS file-notification API or IME preedit/control, and text input remains enabled for
+  a window's lifetime. Hot reload is implemented by polling package files; no documentation or
+  capability claim should call that OS file watching.
+* **Audio-device replacement is unsupported.** If a device disappears, Foundry currently
+  inherits SDL3's behavior and neither reports a device-change event nor reopens the mixer.
+  The listened render and real callback prove the present device path, not hot unplug policy.
+* **Several simple implementations have measured revisit triggers.** Subsystem lifecycle uses
+  explicit fields; handle-pool iteration visits sparse slots; M4's sparse-set entity storage is
+  its first implementation; and the first content authoring syntax may need replacing at real
+  content scale. Change them only when ordering, iteration or authoring measurements justify
+  it, retaining stable identity and deterministic iteration.
+* **Xcode GPU-frame-capture usability remains unverified.** Metal API/capture prerequisites and
+  real rendering are clean, and local tooling exposes Metal trace instruments, but no GPU frame
+  capture was created and opened in Xcode. Likewise, this environment could not drive another
+  process's minimise/restore control without accessibility authority. Neither observation is
+  represented as completed evidence; deterministic frame-outcome tests and real resize remain
+  the current proof.
+* **Toolchain compatibility is a maintenance obligation.** SDL3 arrives through a third-party
+  build script that must be rechecked at each deliberate Zig upgrade. The milestone retains
+  pinned Zig 0.16.0 and does not manufacture an upgrade to test that future event.
 
 ---
 
@@ -4268,8 +4195,9 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 
 ## Notes for the next session
 
-**Resume point, 2026-09-13:** M0–M10 complete; M11 Steps 1–8 complete. Read ADR-0035 and
-`docs/design/hardening.md`, then begin only Step 9 when implementation is requested.
+**Resume point, 2026-09-13:** M0–M11 complete and tagged. M12–M17 are unstarted. Read
+`CLAUDE.md` §9 and the M12 roadmap entry, then write the required job-system/threading design
+and ADR before any M12 implementation, only when requested.
 `zig build check -Drhi=metal` is now part of the bar. The environment notes below still apply.
 
 * Read `CLAUDE.md` first, then this file, then `docs/ROADMAP.md`.

@@ -562,7 +562,7 @@ and the Dock; the README shows the wordmark; and [`brand/README.md`](../brand/RE
 stranger what they may call their own work, with [ADR-0034](adr/0034-brand-and-trademark.md)
 behind it.
 
-### M11 — Solid: "its known faults are fixed" — **designed (2026-09-13), 8/9 implemented**
+### M11 — Solid: "its known faults are fixed" — **complete (2026-09-13)**
 
 The known-bugs section of `PROJECT_STATE.md` has entries that have been carried for several
 milestones. Individually each is small. Together they are the reason a future session cannot
@@ -574,22 +574,22 @@ destruction, reconciles rule 9 with it, settles usage validation for M11 and dis
 temporary drawable unavailability from fatal surface/device failure. The steps are Metal
 test compilation, RHI retirement, renderer reload integration, usage validation, frame
 outcomes, UI atlas batching, log timestamps, file-kind errors and the debt exit proof.
-Steps 1–8 are complete. **Next is Step 9, the existing-debt disposition and final M11 exit
-proof; do not begin M12.**
+All nine steps are complete.
 
-* The `render2d` texture staging buffer destroyed while frames are still in flight.
-* `zig build check -Drhi=metal` failing to compile `app`'s *test* binary — the executables
-  build, so the gap is in what the bar can prove, which is the worse half.
-* The `render2d` blank-patch/font-atlas batching fix, and the overlay's fifteen batches where
-  the hand-drawn HUD cost six.
-* The smaller recorded ones: log-sink timestamps, a directory read as a file reporting
-  `IoFailed` rather than `WrongFileKind`, `FrameError` unable to separate transient from fatal,
-  usage-flag conformance declared but unenforced, and the deferred destroy `interface.zig`
-  describes but no backend performs.
+The carried defects are closed: texture staging and every other RHI resource retire after
+completion; the Metal-selected test graph compiles; UI fills share the font atlas; logs carry
+observed elapsed time; file reads classify the opened handle; frame outcomes are distinct;
+declared resource usage is validation rule 11. `PROJECT_STATE.md`'s existing debt section now
+keeps only explicit limitations and measured revisit triggers, alongside a dated completion
+record.
 
-**Exit criteria:** no entry in that section is a correctness defect; everything left is a
-deliberate limitation with its reason written next to it; and the bar compiles what it
-previously could not.
+**Exit criteria — met.** No entry in that section is a known correctness defect; everything
+left is a deliberate limitation with its reason written next to it; and the bar compiles what
+it previously could not. The final gate passed at **1,344 declared / 1,334 headless tests**,
+ten Metal-only, with repeated in-flight texture replacement, both real Metal sample windows,
+an external font override, persisted diagnostics and the local ad-hoc shipped layout checked.
+Xcode GPU-frame-capture usability and an automated Metal minimise/restore remain honestly
+unverified rather than being represented as defects or completed evidence.
 
 ### M12 — Parallel: "it uses more than one core" — **not started**
 
