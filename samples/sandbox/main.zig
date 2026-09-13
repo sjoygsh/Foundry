@@ -504,6 +504,7 @@ fn run(
         // get an observer that moves the thing it observes. A windowed build reads a real
         // monotonic clock, where a reading costs time but does not create it.
         .profiler = !headless,
+        .workers = workersFrom(env),
         .tick_rate_hz = 60,
         .window = .{
             .title = "Foundry Sandbox",
@@ -1491,8 +1492,25 @@ const Animation = struct {
 fn orbitSystem(_: ?*anyopaque, world: *scene.World, tick: scene.Tick) void {
     const seconds = @as(f32, @floatFromInt(tick.tick)) * tick.delta.toSecondsF32();
 
-    var it = world.queryOf(.{ Orbit, Transform });
-    while (it.next()) |m| {
+    // **Split across the engine's workers.** Each entity's transform is written from its own
+    // orbit and the tick, and from nothing another entity's chunk writes, so every split —
+    // `serial` included — leaves the same bytes (ADR-0036, `jobs-and-threading.md` §6.1).
+    const orbits = world.queryOf(.{ Orbit, Transform });
+    orbits.forChunks(world.jobs(), orbit_grain, seconds, orbitChunk);
+}
+
+/// Entities per chunk of the orbit system's split.
+///
+/// At M12's baseline a step cost about 19 µs per thousand orbiting entities — an order of
+/// magnitude above the few microseconds a split costs to hand out — so a chunk this size is
+/// worth a worker, and the sandbox's own four thousand already make four chunks. Step 6's
+/// measurement revisits it.
+const orbit_grain = 1024;
+
+const OrbitQuery = scene.query.TypedQuery(.{ Orbit, Transform });
+
+fn orbitChunk(seconds: f32, part: *OrbitQuery.Part) void {
+    while (part.next()) |m| {
         const orbit = m.get(Orbit);
         const transform = m.get(Transform);
         const angle = orbit.phase + seconds * orbit.speed;
@@ -1500,6 +1518,17 @@ fn orbitSystem(_: ?*anyopaque, world: *scene.World, tick: scene.Tick) void {
         transform.y = orbit.home_y + @sin(angle) * orbit.radius;
         transform.rotation = angle * orbit.spin;
     }
+}
+
+/// `FOUNDRY_SANDBOX_WORKERS`, when set: how many worker threads the engine starts, `0` for
+/// none. For measuring a run against itself on fewer cores (`jobs-and-threading.md` §8);
+/// unset, the engine chooses. It changes how fast the sandbox runs and never what it computes.
+fn workersFrom(env: anytype) ?u16 {
+    const text = envValue(env, "FOUNDRY_SANDBOX_WORKERS") orelse return null;
+    return std.fmt.parseInt(u16, text, 10) catch {
+        log.warn("FOUNDRY_SANDBOX_WORKERS='{s}' is not a thread count; the engine chooses", .{text});
+        return null;
+    };
 }
 
 /// Advances every animated entity by one tick and records which frame that lands on.
@@ -1643,6 +1672,9 @@ const SpriteField = struct {
     /// schemas are declared by code and outlive any reload, which is exactly the difference.
     schemas: data.Registry,
     world: scene.World,
+    /// What the world's systems split their work with: the engine's workers, from `load` on
+    /// (ADR-0036). Handed to every world this field builds, including one rebuilt for a load.
+    jobs: core.Jobs = core.jobs.serial,
     /// The Tier 2 host, so a world rebuild can tell it the world it was activated in is
     /// gone. Borrowed and outlived by `main`.
     scripts: ?*scripting.Host = null,
@@ -1811,6 +1843,8 @@ const SpriteField = struct {
         // and a type arriving later would have no data for what is already there.
         self.schemas = .init(gpa, .default);
         self.world = .init(gpa, &self.schemas, .default);
+        self.jobs = engine.jobs();
+        self.world.setJobs(self.jobs);
         try self.registerTypes();
         self.save_path = engine.os.envVar("FOUNDRY_SANDBOX_SAVE");
 
@@ -1999,6 +2033,7 @@ const SpriteField = struct {
         self.schemas.deinit(self.gpa);
         self.schemas = .init(self.gpa, .default);
         self.world = .init(self.gpa, &self.schemas, .default);
+        self.world.setJobs(self.jobs);
         try self.registerTypes();
         self.selected = null;
         self.population = 0;

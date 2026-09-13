@@ -1,6 +1,6 @@
 # Jobs and threading: parallel work that cannot change a result
 
-**Status:** designed and **accepted 2026-09-13** (ADR-0036); Steps 1–3 of six implemented.
+**Status:** designed and **accepted 2026-09-13** (ADR-0036); Steps 1–4 of six implemented.
 **Baseline:** `b101745`, M0–M11 complete and tagged `m11`.
 **Stop point:** after each step of §11. Resolutions at the end record what each settled.
 
@@ -607,3 +607,60 @@ Evidence:
   restored byte for byte.
 * The bar passed, and the room's headless Debug run printed its nine span medians. **1,363
   declared / 1,353 headless**, ten Metal-only.
+
+## Resolution — Step 4, 2026-09-13
+
+A `scene` system can split its own query, and the sandbox's orbit system does.
+
+What implementation settled:
+
+* **`World.setJobs` and `World.jobs()`.** The world borrows a `core.Jobs` in a field named
+  `executor`, since a field and a method cannot share a name, and it is `serial` until a host
+  sets one. `World.update` is unchanged: systems still run in registration order on the calling
+  thread.
+* **One walk.** `Query.next` and a chunk's `Query.Part.next` both call `advance`, which takes the
+  driving store's position range explicitly. A split therefore cannot visit anything the loop
+  would not, or visit it in another order; the loop is a split with one chunk covering
+  everything.
+* **`Query.Part` holds `const` stores**, so nothing reached through it can add, remove, create or
+  destroy: the compiler refuses the call, rather than an assertion catching it. Its fields remain
+  visible, because Zig has no private fields, and are documented as not API. It offers `next`,
+  `bytes` and its chunk's `index`.
+* **Two forms, as `next` and `nextChecked` are.** The type-erased `Query.forChunksChecked` returns
+  `error.Mutated` for a world that changed shape before the split, and again for one that changed
+  during it — possible only through a chunk's context, which §3.3 forbids. `TypedQuery.forChunks`
+  asserts both, and its `Part` hands out typed matches exactly as the loop's `Match` does.
+* **The sandbox's orbit system splits at 1,024 entities per chunk.** At M12's baseline a step
+  cost about 19 µs per thousand orbiting entities, well above the microseconds a split costs to
+  hand out (Step 2), and the sandbox's own 4,000 make four chunks. Step 6 revisits the grain. The
+  sandbox hands `engine.jobs()` to its world at `load` and to every world `rebuildWorld` makes.
+* **`FOUNDRY_SANDBOX_WORKERS`** sets `app.Config.workers` for a run, `0` for none, so a run can
+  be compared against itself on fewer cores.
+* **The ABI is untouched.** Its query calls still use `nextChecked`; `FoundryApi_v2` and its tests
+  are unchanged.
+
+Tests: four in `scene/query.zig` — a split visits exactly what its loop visits, each chunk its
+own range and in the loop's order, under `serial` and `reversed`, after removals have reordered
+the driving store; chunks writing through their parts leave byte-identical saves in either order;
+a world changed after its query was built is refused before any chunk runs; and a query that can
+never match splits into nothing. One integration test, `engine/tests/world_jobs.zig`, where a
+real pool is reachable: 10,000 bodies with every seventh destroyed, stepped 120 ticks by
+floating-point motion that depends on each body's own phase, at a grain of 257 so chunks are many
+and the last is partial. The save from a plain loop equals the saves from a split under `serial`,
+under `reversed` and on a four-thread pool, and from four further pool runs.
+
+Evidence:
+
+* Breaking the guards one at a time: a part that walks past the end of its range aborted the
+  split test and failed the integration test; the checked split without its first check ran four
+  chunks where none were expected; parts that all start at the store's first position aborted the
+  split test and failed the integration test; and a chunk sharing a running value across chunks —
+  the rule §3.3 states — failed the integration test's save comparison. Each file was restored
+  byte for byte.
+* The headless sandbox at 600 frames printed the same 39 lines at `FOUNDRY_SANDBOX_WORKERS=0` and
+  at the default of nine workers, apart from the log path and the pool's size, with one
+  exception: the engine allocator's count read 1,330 against 1,329 — the pool's thread-handle
+  array, which a pool of none does not allocate. Every line derived from the world, collision and
+  rendering was identical.
+* §10's determinism tests are unchanged and pass. The bar passed. **1,368 declared / 1,358
+  headless**, ten Metal-only.

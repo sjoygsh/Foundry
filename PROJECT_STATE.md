@@ -2,7 +2,22 @@
 
 **Last updated:** 2026-09-13
 **Current handoff: M0 through M11 are complete. M12 is in progress: ADR-0036 is accepted and
-Steps 1–3 of six are implemented. Stop before M12 Step 4. M13 through M17 remain unstarted.**
+Steps 1–4 of six are implemented. Stop before M12 Step 5. M13 through M17 remain unstarted.**
+
+**Implemented in M12 Step 4, 2026-09-13:** a `scene` system can split its own query.
+`World.setJobs` gives the world the host's `core.Jobs`, `serial` until set. A typed query's
+`forChunks(world.jobs(), grain, context, chunkFn)` splits its matches over ranges of the driving
+store's dense order, and each chunk gets a `Part` whose stores are `const`, so it cannot change
+the world's shape. `next` and `Part.next` share one walk, so a split visits exactly what the loop
+does, in the same order. The type-erased `Query.forChunksChecked` returns `Mutated` for a world
+changed before or during the split; the typed form asserts. The sandbox's orbit system now splits
+at 1,024 entities per chunk, and `FOUNDRY_SANDBOX_WORKERS` sets its worker count. An integration
+test steps 10,000 bodies for 120 ticks and gets the same save bytes from a loop and from splits
+under `serial`, `reversed` and a four-thread pool. Breaking the guards aborted or failed the
+split, refusal and save tests, and a chunk sharing a running value failed the save comparison. The
+headless sandbox printed identical output at 0 and 9 workers, apart from one extra allocation for
+the pool's thread handles. The bar passed. **1,368 declared / 1,358 headless**, ten Metal-only.
+Resolution: `jobs-and-threading.md`, Step 4.
 
 **Implemented in M12 Step 3, 2026-09-13:** the stages M12 will change are measurable, and the
 serial baseline is recorded. `core.profile.spanMedians` gives each span's median per frame over
@@ -1501,9 +1516,9 @@ M17 are unstarted.
 
 ## Current milestone
 
-**M12 — Parallel: "it uses more than one core." Designed and accepted 2026-09-13; Steps 1–3 of
+**M12 — Parallel: "it uses more than one core." Designed and accepted 2026-09-13; Steps 1–4 of
 six implemented.** Read `docs/design/jobs-and-threading.md` and ADR-0036. §11 orders six steps;
-stop after each. Next is Step 4, a `scene` system splitting its own query.
+stop after each. Next is Step 5, `render2d`: the bucketed sort and split vertex writes.
 
 **M11 — Solid: "its known faults are fixed." Complete, 2026-09-13.** Read
 `docs/design/hardening.md` and ADR-0035. All nine steps are implemented: the Metal-selected
@@ -3029,7 +3044,7 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M12 Step 4, the chunked query, when requested.** The specification is
+**Next: M12 Step 5, `render2d`, when requested.** The specification is
 `docs/design/jobs-and-threading.md` §11, and ADR-0036 is accepted.
 
 **M0 through M11 are complete and tagged, and everything is pushed.** Phase 3 is closed;
@@ -4257,8 +4272,8 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 ## Notes for the next session
 
 **Resume point, 2026-09-13:** M0–M11 complete and tagged. M12 is designed and accepted —
-`docs/design/jobs-and-threading.md`, ADR-0036 — and its steps are walked one at a time from §11: Steps 1–3
-are implemented and Step 4 is next. M13–M17 are unstarted.
+`docs/design/jobs-and-threading.md`, ADR-0036 — and its steps are walked one at a time from §11: Steps 1–4
+are implemented and Step 5 is next. M13–M17 are unstarted.
 `zig build check -Drhi=metal` is now part of the bar. The environment notes below still apply.
 
 * Read `CLAUDE.md` first, then this file, then `docs/ROADMAP.md`.

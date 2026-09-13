@@ -154,6 +154,9 @@ pub const World = struct {
     /// Bumped whenever a component type is registered. Entity mutation deliberately does
     /// not cover this: a type walk is over the registry rather than entity storage.
     type_mutation: u64 = 0,
+    /// What systems split their own queries with. Borrowed from the host, and `serial` until
+    /// one is set; the world itself never splits anything (ADR-0036).
+    executor: core.Jobs = core.jobs.serial,
 
     pub fn init(gpa: Allocator, schemas: *data.Registry, limits: Limits) World {
         return .{
@@ -624,6 +627,21 @@ pub const World = struct {
 
         log.debug("system '{s}' registered at position {d}", .{ name, self.schedule.items.len - 1 });
         return handle;
+    }
+
+    /// Hands the world the jobs its systems may split their queries with.
+    ///
+    /// The host's to set, the way the registry a world borrows is: it must outlive the world,
+    /// and it changes how fast a split runs, never what it computes
+    /// (`jobs-and-threading.md` §6.1).
+    pub fn setJobs(self: *World, with: core.Jobs) void {
+        self.executor = with;
+    }
+
+    /// The jobs a system splits its own query with: `query.forChunks(world.jobs(), ...)`.
+    /// The schedule itself stays in order; only a system's inner loop is split.
+    pub fn jobs(self: *const World) core.Jobs {
+        return self.executor;
     }
 
     pub fn systemCount(self: *const World) u32 {

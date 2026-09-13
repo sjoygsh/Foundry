@@ -103,20 +103,95 @@ pub const Query = struct {
 
     fn nextUnchecked(self: *Query) ?Entity {
         const driver = self.driver orelse return null;
+        return advance(self.stores, self.types[0..self.type_count], driver, &self.cursor, driver.count(), &self.slots);
+    }
 
-        outer: while (self.cursor < driver.count()) {
-            const dense = self.cursor;
-            self.cursor += 1;
-            const entity = driver.ownerAt(dense);
-            self.slots[0] = dense;
+    // -- splitting -----------------------------------------------------------------
 
-            for (self.types[1..self.type_count], 1..) |t, i| {
-                const store = &self.stores[t.index];
-                self.slots[i] = store.denseIndex(entity) orelse continue :outer;
-            }
-            return entity;
+    /// One chunk of a split query: the matches whose position in the driving store lies in
+    /// the chunk, in the order `next` would visit them.
+    ///
+    /// **A view, not a world.** Its stores are `const`, so nothing reached through it can
+    /// add, remove, create or destroy; it iterates its own range and hands out component
+    /// bytes, which a chunk may write because no other chunk's range holds the same entity
+    /// (`jobs-and-threading.md` §6.1). Its fields are not API — Zig has no private fields.
+    pub const Part = struct {
+        stores: []const ComponentStore,
+        types: [max_components]ComponentType,
+        type_count: u32,
+        driver: *const ComponentStore,
+        cursor: u32,
+        end: u32,
+        /// Which chunk this is, for a caller that keeps a result slot per chunk.
+        index: u32,
+        slots: [max_components]u32 = undefined,
+
+        pub fn next(self: *Part) ?Entity {
+            return advance(self.stores, self.types[0..self.type_count], self.driver, &self.cursor, self.end, &self.slots);
         }
-        return null;
+
+        /// The bytes of the `index`-th named component of the current match.
+        pub fn bytes(self: *const Part, which: usize) []u8 {
+            assert.debugOnly(
+                which < self.type_count,
+                "query component {d} of {d}",
+                .{ which, self.type_count },
+            );
+            return self.stores[self.types[which].index].at(self.slots[which]);
+        }
+    };
+
+    /// Splits the matches across `jobs` in chunks of `grain` positions of the driving store,
+    /// and calls `chunkFn(context, part)` once for each, returning when all have returned.
+    ///
+    /// The checked form, as `nextChecked` is: a world whose shape changed since this query
+    /// was built is refused before anything runs, and one that changed during the split —
+    /// which a chunk can only do by breaking the rules through its context — is reported
+    /// after. The typed wrapper's `forChunks` asserts instead.
+    pub fn forChunksChecked(
+        self: *const Query,
+        jobs: core.Jobs,
+        grain: u32,
+        context: anytype,
+        comptime chunkFn: fn (@TypeOf(context), *Part) void,
+    ) NextError!void {
+        if (!self.unchanged()) return error.Mutated;
+        self.split(jobs, grain, context, chunkFn);
+        if (!self.unchanged()) return error.Mutated;
+    }
+
+    fn unchanged(self: *const Query) bool {
+        return self.mutation_at_start == self.mutation.*;
+    }
+
+    fn split(
+        self: *const Query,
+        jobs: core.Jobs,
+        grain: u32,
+        context: anytype,
+        comptime chunkFn: fn (@TypeOf(context), *Part) void,
+    ) void {
+        const driver = self.driver orelse return;
+        const Shared = struct { query: *const Query, context: @TypeOf(context) };
+        const Chunked = struct {
+            fn run(shared: Shared, chunk: core.jobs.Chunk) void {
+                var part = shared.query.partOf(chunk);
+                chunkFn(shared.context, &part);
+            }
+        };
+        jobs.forChunks(driver.count(), grain, Shared{ .query = self, .context = context }, Chunked.run);
+    }
+
+    fn partOf(self: *const Query, chunk: core.jobs.Chunk) Part {
+        return .{
+            .stores = self.stores,
+            .types = self.types,
+            .type_count = self.type_count,
+            .driver = self.driver.?,
+            .cursor = chunk.begin,
+            .end = chunk.end,
+            .index = chunk.index,
+        };
     }
 
     /// The bytes of the `index`-th named component of the current match.
@@ -132,6 +207,33 @@ pub const Query = struct {
         return self.stores[self.types[index].index].at(self.slots[index]);
     }
 };
+
+/// The next match at or after `cursor` and before `end`, advancing `cursor` past it.
+///
+/// The one walk both `Query.next` and a chunk's `Part.next` take, so a split cannot visit
+/// anything the loop would not, or visit it in another order.
+fn advance(
+    stores: []const ComponentStore,
+    types: []const ComponentType,
+    driver: *const ComponentStore,
+    cursor: *u32,
+    end: u32,
+    slots: *[max_components]u32,
+) ?Entity {
+    const limit = @min(end, driver.count());
+    outer: while (cursor.* < limit) {
+        const dense = cursor.*;
+        cursor.* += 1;
+        const entity = driver.ownerAt(dense);
+        slots[0] = dense;
+
+        for (types[1..], 1..) |t, i| {
+            slots[i] = stores[t.index].denseIndex(entity) orelse continue :outer;
+        }
+        return entity;
+    }
+    return null;
+}
 
 /// The schema id of a component type named as a Zig type — the same id its registration
 /// used, derived the same way, so the typed and erased paths cannot disagree about which
@@ -169,6 +271,58 @@ pub fn TypedQuery(comptime types: anytype) type {
             var ptrs: [count][*]u8 = undefined;
             inline for (0..count) |i| ptrs[i] = self.inner.bytes(i).ptr;
             return .{ .entity = entity, .ptrs = ptrs };
+        }
+
+        /// One chunk of a split, with the casts written for you. See `Query.Part`.
+        pub const Part = struct {
+            inner: *Query.Part,
+
+            pub fn next(self: *Part) ?Match {
+                const entity = self.inner.next() orelse return null;
+                var ptrs: [count][*]u8 = undefined;
+                inline for (0..count) |i| ptrs[i] = self.inner.bytes(i).ptr;
+                return .{ .entity = entity, .ptrs = ptrs };
+            }
+
+            /// Which chunk this is, for a caller that keeps a result slot per chunk.
+            pub fn index(self: *const Part) u32 {
+                return self.inner.index;
+            }
+        };
+
+        /// Splits this query's matches across `jobs` in chunks of `grain` positions of the
+        /// driving store — the order `next` walks — and calls `chunkFn(context, part)` once per
+        /// chunk, returning when every chunk has returned.
+        ///
+        /// A chunk writes only the components its own part hands it, allocates nothing and
+        /// reaches nothing else that another chunk writes (`jobs-and-threading.md` §3.3). Then
+        /// any `jobs`, `serial` included, leaves the world in the same bytes. A world that changed
+        /// shape before or during the call is a programmer error, asserted as `next` asserts it.
+        pub fn forChunks(
+            self: *const Self,
+            jobs: core.Jobs,
+            grain: u32,
+            context: anytype,
+            comptime chunkFn: fn (@TypeOf(context), *Part) void,
+        ) void {
+            const Typed = struct {
+                fn run(ctx: @TypeOf(context), part: *Query.Part) void {
+                    var typed: Part = .{ .inner = part };
+                    chunkFn(ctx, &typed);
+                }
+            };
+            assert.always(
+                self.inner.unchanged(),
+                "the world changed shape between building a query and splitting it",
+                .{},
+            );
+            self.inner.split(jobs, grain, context, Typed.run);
+            assert.always(
+                self.inner.unchanged(),
+                "a chunk of a split query changed the world's shape; a chunk may only write " ++
+                    "the components its part hands it",
+                .{},
+            );
         }
 
         fn indexOf(comptime T: type) usize {
@@ -381,4 +535,142 @@ test "a typed query over a type this world lacks matches nothing" {
 
     var it = f.world.queryOf(.{ Pos, Vis });
     try testing.expect(it.next() == null);
+}
+
+test "a split query visits what its loop visits, each chunk its own range, in the same order" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa);
+    defer f.deinit(gpa);
+
+    const pos = try f.world.registerComponent(derive.componentType(Pos));
+    const vis = try f.world.registerComponent(derive.componentType(Vis));
+
+    var made: [40]Entity = undefined;
+    for (&made, 0..) |*e, i| {
+        e.* = try f.world.create();
+        _ = try f.world.addComponent(e.*, pos, null);
+        if (i % 3 != 1) _ = try f.world.addComponent(e.*, vis, null);
+    }
+    // Removals reorder the driving store, so chunk ranges and entity order disagree.
+    for (made, 0..) |e, i| {
+        if (i % 5 == 2) _ = f.world.destroy(e);
+    }
+
+    var loop = f.world.query(&.{ pos, vis });
+    var expected = try collect(gpa, &loop);
+    defer expected.deinit(gpa);
+
+    const Seen = struct {
+        const grain = 6;
+        by_chunk: [7][grain]Entity = undefined,
+        counts: [7]usize = @splat(0),
+
+        fn chunk(self: *@This(), part: *Query.Part) void {
+            while (part.next()) |e| {
+                self.by_chunk[part.index][self.counts[part.index]] = e;
+                self.counts[part.index] += 1;
+            }
+        }
+    };
+
+    for ([_]core.Jobs{ core.jobs.serial, core.jobs.reversed }) |jobs| {
+        var seen: Seen = .{};
+        const q = f.world.query(&.{ pos, vis });
+        try q.forChunksChecked(jobs, Seen.grain, &seen, Seen.chunk);
+
+        var at: usize = 0;
+        for (seen.by_chunk, seen.counts) |entities, n| {
+            for (entities[0..n]) |e| {
+                try testing.expect(e.eql(expected.items[at]));
+                at += 1;
+            }
+        }
+        try testing.expectEqual(expected.items.len, at);
+    }
+}
+
+test "chunks write through their parts, and either order leaves the world in the same bytes" {
+    const gpa = testing.allocator;
+
+    const Double = struct {
+        fn chunk(_: void, part: *TypedQuery(.{Pos}).Part) void {
+            while (part.next()) |m| {
+                const p = m.get(Pos);
+                p.x = p.x * 2 + p.y;
+                p.y = p.y - p.x * 0.5;
+            }
+        }
+    };
+
+    var saves: [2]std.ArrayList(u8) = .{ .empty, .empty };
+    defer for (&saves) |*s| s.deinit(gpa);
+
+    for ([_]core.Jobs{ core.jobs.serial, core.jobs.reversed }, &saves) |jobs, *save| {
+        const f = try Fixture.init(gpa);
+        defer f.deinit(gpa);
+        const pos = try f.world.registerComponent(derive.componentType(Pos));
+        for (0..50) |i| {
+            const e = try f.world.create();
+            _ = try f.world.addComponent(e, pos, null);
+            if (i % 4 == 0) _ = f.world.destroy(e);
+        }
+        var n: f32 = 0;
+        var init = f.world.queryOf(.{Pos});
+        while (init.next()) |m| {
+            m.get(Pos).* = .{ .x = n * 0.25, .y = 3 - n };
+            n += 1;
+        }
+
+        for (0..10) |_| f.world.queryOf(.{Pos}).forChunks(jobs, 4, {}, Double.chunk);
+        try f.world.save(save);
+    }
+
+    try testing.expect(saves[0].items.len > 0);
+    try testing.expectEqualSlices(u8, saves[0].items, saves[1].items);
+}
+
+test "a world that changed shape after the query was built is refused before any chunk runs" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa);
+    defer f.deinit(gpa);
+
+    const pos = try f.world.registerComponent(derive.componentType(Pos));
+    for (0..8) |_| {
+        const e = try f.world.create();
+        _ = try f.world.addComponent(e, pos, null);
+    }
+
+    const Count = struct {
+        fn chunk(calls: *usize, _: *Query.Part) void {
+            calls.* += 1;
+        }
+    };
+
+    const q = f.world.query(&.{pos});
+    _ = try f.world.create();
+    var calls: usize = 0;
+    try testing.expectError(error.Mutated, q.forChunksChecked(core.jobs.serial, 2, &calls, Count.chunk));
+    try testing.expectEqual(@as(usize, 0), calls);
+}
+
+test "a query that can never match splits into nothing" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa);
+    defer f.deinit(gpa);
+
+    const pos = try f.world.registerComponent(derive.componentType(Pos));
+    const e = try f.world.create();
+    _ = try f.world.addComponent(e, pos, null);
+
+    const Count = struct {
+        fn chunk(calls: *usize, _: *Query.Part) void {
+            calls.* += 1;
+        }
+    };
+
+    // `Vis` is never registered, so the query has no driver.
+    var calls: usize = 0;
+    const q = f.world.query(&.{ pos, .none });
+    try q.forChunksChecked(core.jobs.serial, 1, &calls, Count.chunk);
+    try testing.expectEqual(@as(usize, 0), calls);
 }
