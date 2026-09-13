@@ -1,8 +1,8 @@
 # Hardening: close the known faults without changing Foundry's shape
 
-**Status:** designed 2026-09-13; **0/9 implementation steps complete**.
+**Status:** designed 2026-09-13; **1/9 implementation steps complete**.
 **Baseline:** `180ef4f`, M0–M10 complete; M10's verification remains accepted.
-**Stop point:** immediately before Step 1. This document implements nothing.
+**Stop point:** immediately before Step 2. Resolutions at the end record what each step settled.
 
 Specification for M11, **Solid: "its known faults are fixed"**, in
 [`ROADMAP.md`](../ROADMAP.md). Rests on [ADR-0035](../adr/0035-rhi-lifetime-and-validation.md),
@@ -355,4 +355,31 @@ named implementation seams, check local links/whitespace and scope consistency o
 do not rerun them to prove prose. No compile failure is fixed, no new guard is implemented,
 and no milestone implementation count advances during planning.
 
-**Next action, only when implementation is requested: Step 1 above.**
+**Next action, only when implementation is requested: Step 2 above.**
+
+## Resolution — Step 1, 2026-09-13
+
+**The Metal-selected graph had two mismatches, not one.** §2 names `app/engine.zig`'s
+`NothingRecorder`. Compiling the whole graph found the same class of error in
+`engine/tests/abi_render_pipeline.zig`, whose fixture built its engine on
+`rhi.null_backend.Device` and handed that device to `render2d.Renderer.init`, which takes the
+selected `rhi.Device`. That test arrived in `eb92181` during M7, after M6 had recorded the first
+failure, which is why only one was on record. Searching for `rhi.CommandBuffer`, `rhi.RenderPass`
+and `rhi.Device` outside `rhi` found no third: every other consumer either uses the selected
+device throughout or never hands a null engine's device to the renderer.
+
+**The two repairs differ because the two consumers do.** `NothingRecorder` is a test double for
+`renderFrame`'s `anytype` seam, on an engine that is deliberately null whatever the build
+selected, so it now names `rhi.null_backend.CommandBuffer` and `RenderPass`. The render pipeline
+test exercises the real renderer, which is not generic over its device and should not become so
+for a test's sake (§4); its engine is now built on `rhi.Device`, as `asset_pipeline.zig` and
+`overlay_batches.zig` already were. On a null build that is the identical type and nothing
+changes; under `-Drhi=metal` the test runs headless on the real device. `renderFrame`'s
+documentation now names the backend's types rather than the selected ones.
+
+**Evidence.** `zig build check -Drhi=metal` failed with both errors before the change and exits 0
+after it. `zig build test -Drhi=metal` exits 0 — the first run of the integration binary under
+Metal since `eb92181`, including `abi_render_pipeline` on the device. The seven-command bar
+passed. `zig build check -Drhi=metal` joins `AGENTS.md` §3's bar, since a Metal graph that only
+the executables prove is how this stayed broken. No test was added or removed: 1,288 declared /
+1,280 headless.

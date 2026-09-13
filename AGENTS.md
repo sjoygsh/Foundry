@@ -87,11 +87,12 @@ Strict ad-hoc integrity passed and Gatekeeper rejection is expected. Actual Deve
 signing, Apple notarization and a quarantine-preserving launch on a genuinely clean Mac remain
 mandatory deferred work for the first public release; the current artifact does not claim it.
 
-**M10 is complete; M11 is designed and 0/9 steps are implemented (2026-09-13).** M10 added
+**M10 is complete; M11 is under way, 1/9 steps implemented (2026-09-13).** M10 added
 Foundry's marks and an application-supplied release icon (ADR-0034); its full verification is
 recorded in PROJECT_STATE. For M11 read ADR-0035 and `docs/design/hardening.md`; §12 is the
-nine-step order. **Next is Step 1, the Metal-selected app test compilation repair.** No M11
-code, tests or assets have changed during planning. M12–M17 remain unstarted.
+nine-step order. Step 1 repaired the Metal-selected test graph, and its compile check is now
+in the bar below. **Next is Step 2, deferred destruction in both RHI backends.** M12–M17
+remain unstarted.
 
 ## 3. Building and verifying
 
@@ -116,6 +117,7 @@ Every one of these, every time. Not a subset.
 zig fmt --check engine tools samples build.zig
 zig build test
 zig build check
+zig build check -Drhi=metal
 zig build check -Dtarget=x86_64-linux-gnu   -Dplatform=null -Drhi=null
 zig build check -Dtarget=x86_64-windows-gnu -Dplatform=null -Drhi=null
 FOUNDRY_SANDBOX_FRAMES=30 zig build run  -Dplatform=null -Drhi=null
@@ -123,7 +125,10 @@ FOUNDRY_ROOM_FRAMES=30    zig build room -Dplatform=null -Drhi=null
 ```
 
 `check` compiles everything without running it, including the cross-compiled targets where
-padding and ABI assumptions differ from macOS. The two samples are the milestone's runnable
+padding and ABI assumptions differ from macOS. `-Drhi=metal` is the macOS configuration's whole
+graph, test binaries included — the Metal executables building is not the same evidence: a test
+binary under that flag stayed uncompilable for several milestones while every executable built
+(`hardening.md` §4). The two samples are the milestone's runnable
 result (`CLAUDE.md` §2) — a change that builds and leaves the sandbox broken is not done.
 
 When the ABI surface changed, also compile a C mod against the *installed* header, because the

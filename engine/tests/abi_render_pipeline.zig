@@ -18,7 +18,10 @@ const rhi = @import("rhi");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 
-const Engine = app.EngineOf(platform.null_backend.Platform, rhi.null_backend.Device);
+/// The selected device, not the null one. `render2d.Renderer` is built on `rhi.Device`, so an
+/// engine on the null device only type-checks when the build selected null; under
+/// `-Drhi=metal` this runs headless on the real device, as `asset_pipeline.zig` does.
+const Engine = app.EngineOf(platform.null_backend.Platform, rhi.Device);
 const Host = abi.HostOf(Engine);
 const Table = abi.TableOf(Host);
 

@@ -1,8 +1,19 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-13
-**Current handoff: M0 through M10 are complete. M11 is designed, 0/9 steps implemented.
-Stop immediately before M11 Step 1. M12 through M17 remain unstarted.**
+**Current handoff: M0 through M10 are complete. M11 is under way, 1/9 steps implemented.
+Stop immediately before M11 Step 2. M12 through M17 remain unstarted.**
+
+**Implemented in M11 Step 1, 2026-09-13:** the Metal-selected graph compiles again, test
+binaries included, and its tests pass. There were two mismatches, not the one recorded: `app`'s
+`NothingRecorder` named the selected backend's command types on a null-device engine, and
+`engine/tests/abi_render_pipeline.zig` (added in M7, after the first was recorded) handed a
+null engine's device to `render2d.Renderer`, which takes the selected one. The recorder now names
+the null backend's types; the render test's engine is built on `rhi.Device`, as the other
+renderer integration tests already were, so under Metal it runs on the real device. Evidence:
+`check -Drhi=metal` failed with both errors before and exits 0 after; `test -Drhi=metal` exits 0;
+the seven-command bar passed. **`zig build check -Drhi=metal` is now in `AGENTS.md` §3's bar.**
+Tests unchanged at **1,288 declared / 1,280 headless**. Resolution: `hardening.md`, Step 1.
 
 **M11 planning, 2026-09-13:** `docs/design/hardening.md` specifies Solid, and §12 orders
 nine steps: Metal-selected test compilation, RHI retirement, renderer texture-reload
@@ -1294,14 +1305,15 @@ external-consumer recipient proof obtainable without private Apple credentials. 
 closed.** What a public macOS release still owes is operator certification — Developer ID
 signing, notarization and a clean recipient Mac (ADR-0032) — not engine work. **Phase 4,
 "Hardening and reach" (M10-M17), is under way**: it gathers the deferred work rather than
-adding to it, only M10 was new, and **M10 is complete (2026-09-13)**. M11 is designed with
-0/9 steps implemented; M12 through M17 are unstarted.
+adding to it, only M10 was new, and **M10 is complete (2026-09-13)**. M11 is under way with
+1/9 steps implemented; M12 through M17 are unstarted.
 
 ## Current milestone
 
-**M11 — Solid: "its known faults are fixed." Designed, 2026-09-13; 0/9 implemented.**
-Read `docs/design/hardening.md` and ADR-0035. Implementation is paused before §12 Step 1;
-the existing known-debt entries are not claimed repaired by the plan.
+**M11 — Solid: "its known faults are fixed." Designed, 2026-09-13; 1/9 implemented.**
+Read `docs/design/hardening.md` and ADR-0035. Step 1 is done: the Metal-selected graph, test
+binaries included, compiles and its tests pass. Implementation is paused before §12 Step 2;
+the remaining known-debt entries are not claimed repaired.
 
 **M10 — Identity: "it knows its own name." Complete, 2026-09-13.** The marks, the icon the
 release path stages and the plist names, and ADR-0034's rule that reference is permitted and
@@ -2171,8 +2183,8 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M11 planning is complete; implementation is paused before Step 1.** M0–M10 are complete.
-The new specification is `docs/design/hardening.md`; the M5 material below is historical.
+**M11 Step 1 is complete; implementation is paused before Step 2.** M0–M10 are complete.
+The specification is `docs/design/hardening.md`; the M5 material below is historical.
 
 ### `samples/room`, and what a second consumer proved
 
@@ -2817,9 +2829,9 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M11 Step 1, when implementation is requested.** Follow `hardening.md` §12 and
-ADR-0035, starting with the Metal-selected app test recorder mismatch. Nine steps are planned,
-none implemented. Stop after each step; preserve the later milestone triggers below.
+**Next: M11 Step 2, when implementation is requested** — deferred destruction in both RHI
+backends, `hardening.md` §§5.1–5.2 and ADR-0035. Step 1 is done; eight steps remain. Stop
+after each step; preserve the later milestone triggers below.
 
 **M0 through M10 are complete and tagged, and everything is pushed.** Phase 3 is closed;
 Phase 4 is under way. The completed M8/M7 checklists and subsequent M5/M6 material below are
@@ -2837,11 +2849,10 @@ review of `main` rather than beginning on a schedule.
 * ~~**M10 — Identity.**~~ **Done 2026-09-13**, tagged `m10`. One manual step is left and is
   not code: uploading `brand/social-preview.png` as the repository's social preview, which
   GitHub exposes through no API.
-* **M11 — Solid. Designed, 0/9 implemented** in `docs/design/hardening.md`. The carried
-  correctness debt: the `render2d` texture staging buffer
-  destroyed while frames are in flight, the `-Drhi=metal` `app` test-binary compile failure,
-  the blank-patch/font-atlas batching fix, and the smaller entries in this file's known-bugs
-  section.
+* **M11 — Solid. 1/9 implemented** in `docs/design/hardening.md`. The carried correctness
+  debt: the `render2d` texture staging buffer destroyed while frames are in flight, the
+  blank-patch/font-atlas batching fix, and the smaller entries in this file's known-bugs
+  section. The `-Drhi=metal` test-binary compile failure is repaired (Step 1).
 * **M12 — Parallel.** The job system and threading model, which §9 dated post-M5 and which is
   four milestones overdue. I9 constrains it hardest.
 * **M13 — Portable.** The second backend, trigger-started — **and it is Vulkan, decided
@@ -4140,9 +4151,9 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 
 ## Notes for the next session
 
-**Resume point, 2026-09-13:** M0–M10 complete. M11 planning is complete; read ADR-0035 and
-`docs/design/hardening.md`, then begin only Step 1 when implementation is requested. No M11
-step has run. The environment notes below still apply.
+**Resume point, 2026-09-13:** M0–M10 complete; M11 Step 1 complete. Read ADR-0035 and
+`docs/design/hardening.md`, then begin only Step 2 when implementation is requested.
+`zig build check -Drhi=metal` is now part of the bar. The environment notes below still apply.
 
 * Read `CLAUDE.md` first, then this file, then `docs/ROADMAP.md`.
 * The architecture is settled. Do not relitigate ADRs without a concrete reason; each records

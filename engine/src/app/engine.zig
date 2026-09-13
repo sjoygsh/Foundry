@@ -1102,9 +1102,12 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         /// `recorder` is `anytype` rather than a `render2d.Renderer` deliberately: `app`
         /// owns the frame and should not care who records into it. It must provide:
         ///
-        /// * `prepare(*rhi.CommandBuffer, rhi.FrameContext) !void` — sorting, uploads and
+        /// * `prepare(*CommandBuffer, rhi.FrameContext) !void` — sorting, uploads and
         ///   copies, before the pass opens, because copies cannot be recorded inside one.
-        /// * `record(*rhi.RenderPass) !void` — the draw calls.
+        /// * `record(*RenderPass) !void` — the draw calls.
+        ///
+        /// Both are the types of the backend `G` comes from: `rhi.CommandBuffer` and
+        /// `rhi.RenderPass` for `app.Engine`, the null backend's for an engine built on it.
         ///
         /// The game calls this and never sees either argument, which is what keeps the
         /// RHI out of the game-facing surface (CLAUDE.md §4.2).
@@ -1777,9 +1780,13 @@ test "a render frame is four named spans, and acquire is one of them" {
 
 /// A recorder that records nothing, which is all `renderFrame` requires of one. It exists
 /// to prove `renderFrame` takes `anytype` for a reason (`render2d.md` §3).
+///
+/// Its types are the null backend's, not `rhi.CommandBuffer`: `TestEngine` is built on
+/// `NullDevice` whatever the build selected, and `rhi.CommandBuffer` is Metal's under
+/// `-Drhi=metal` (`hardening.md` §4).
 const NothingRecorder = struct {
-    pub fn prepare(_: NothingRecorder, _: *rhi.CommandBuffer, _: rhi.FrameContext) !void {}
-    pub fn record(_: NothingRecorder, _: *rhi.RenderPass) !void {}
+    pub fn prepare(_: NothingRecorder, _: *rhi.null_backend.CommandBuffer, _: rhi.FrameContext) !void {}
+    pub fn record(_: NothingRecorder, _: *rhi.null_backend.RenderPass) !void {}
 };
 
 test "a disabled profiler is not a null pointer the caller has to guard twice" {
