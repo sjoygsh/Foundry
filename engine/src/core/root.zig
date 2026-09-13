@@ -9,6 +9,7 @@
 pub const assert = @import("assert.zig");
 pub const handle = @import("handle.zig");
 pub const id = @import("id.zig");
+pub const jobs = @import("jobs.zig");
 pub const log = @import("log.zig");
 pub const math = @import("math.zig");
 pub const mem = @import("mem.zig");
@@ -21,6 +22,7 @@ pub const time = @import("time.zig");
 pub const Handle = handle.Handle;
 pub const HandlePool = handle.HandlePool;
 pub const ContentId = id.ContentId;
+pub const Jobs = jobs.Jobs;
 pub const Arena = mem.Arena;
 pub const Pcg32 = rng.Pcg32;
 
@@ -28,6 +30,7 @@ test {
     _ = assert;
     _ = handle;
     _ = id;
+    _ = jobs;
     _ = log;
     _ = math;
     _ = mem;

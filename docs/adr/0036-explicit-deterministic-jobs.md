@@ -1,7 +1,8 @@
 # ADR-0036: Parallelism is explicit, chunked and order-independent
 
-**Status:** Proposed
-**Date:** 2026-09-13
+**Status:** Accepted
+**Date:** 2026-09-13 (proposed and accepted the same day, with the design's §8 exit workload and
+§6.3 sort rule as proposed)
 
 ## Context
 

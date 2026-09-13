@@ -1,13 +1,12 @@
 # Jobs and threading: parallel work that cannot change a result
 
-**Status:** designed 2026-09-13; **proposed — ADR-0036 is not yet accepted, and nothing is
-implemented.**
+**Status:** designed and **accepted 2026-09-13** (ADR-0036); Step 1 of six implemented.
 **Baseline:** `b101745`, M0–M11 complete and tagged `m11`.
-**Stop point:** before Step 1, until ADR-0036 is accepted.
+**Stop point:** after each step of §11. Resolutions at the end record what each settled.
 
 Specification for M12, **Parallel: "it uses more than one core"**, in
-[`ROADMAP.md`](../ROADMAP.md). Rests on [ADR-0036](../adr/0036-explicit-deterministic-jobs.md)
-(proposed), ADR-0001/0007/0010/0013/0023/0026/0035, and the existing
+[`ROADMAP.md`](../ROADMAP.md). Rests on [ADR-0036](../adr/0036-explicit-deterministic-jobs.md),
+ADR-0001/0007/0010/0013/0023/0026/0035, and the existing
 [entity storage](entity-storage.md), [renderer](render2d.md),
 [frame loop](app-and-frame-loop.md), [audio](audio.md), [overlay](debug-overlay.md) and
 [platform](platform-interface.md) designs. It answers `CLAUDE.md` §9's job-system entry,
@@ -397,7 +396,7 @@ Six steps. Stop after each.
    pool, at buffer boundaries and at 0 and 1 quads; the validation backend reports nothing; both
    samples' 600-frame null runs print identical output at `workers` 0 and at the default.
 6. **Exit proof.** §8's comparison and a worker-count sweep; §10's tests unchanged; the bar.
-   Then the documents: `CLAUDE.md` §4.1, §4.3 and §9, ADR-0036's status, `entity-storage.md`
+   Then the documents: `CLAUDE.md` §4.3's `platform` line and §9's row, ADR-0036's status, `entity-storage.md`
    §14, `app-and-frame-loop.md` §7, `debug-overlay.md` §15, `core.mem`'s comment,
    `PROJECT_STATE.md`, `ROADMAP.md` and `AGENTS.md`. Tag `m12`.
 
@@ -413,3 +412,44 @@ Left to measurement rather than decided here:
 1. **Each call site's grain.** Chosen in Steps 4 and 5 and recorded in their Resolutions.
 2. **Whether idle workers spin before parking.** Step 2.
 3. **The default worker count on an asymmetric CPU.** Step 6.
+
+## Resolution — Step 1, 2026-09-13
+
+`engine/src/core/jobs.zig` holds the interface and nothing with a thread. `core` exports it as
+`core.jobs`, and `core.Jobs` beside the other names reached for most often.
+
+What implementation settled:
+
+* **`forChunks` is a method**, `jobs.forChunks(len, grain, context, chunkFn)`, where §3.1
+  sketched a free function taking the `Jobs` first. The call reads the way an allocator's does.
+  `chunkFn` is `fn (@TypeOf(context), Chunk) void`, checked at compile time.
+* **`Reversed` is the value `reversed`**, beside `serial`. Both are stateless `Jobs` constants,
+  so neither needs constructing and a test swaps one for the other in a table.
+* **A split allocates nothing.** The type-erased context lives on `forChunks`'s own stack
+  frame, which outlives every chunk because `run` joins before it returns. A pool implementing
+  the table inherits that guarantee.
+* **Zero items never reach the executor.** `forChunks` returns before `run` when `len` is zero;
+  `run` itself still accepts a count of zero, and calls nothing.
+* **Chunk arithmetic cannot overflow.** `chunkCount` divides and adds one for a remainder
+  rather than rounding up through `len + grain − 1`, and `chunkAt` computes the unclamped end in
+  64 bits. The last chunk of `maxInt(u32)` items at a grain of 2³¹ is tested.
+* `Chunk.len()` exists because every chunk body wants it.
+
+Seven tests: boundaries at 0, 1, grain − 1, grain, grain + 1 and a multiple of the grain; the
+widest length; every item visited exactly once, by exactly one chunk, under both executors;
+`serial` forward and `reversed` backward; results folded from slots in index order agreeing
+under both executors **while a shared running total does not** — the test that shows why §3.2
+rule 5 exists; a nested split equal to a flat loop; and a shuffling executor that sees only a
+count and a task, yet receives every chunk exactly once, and is never reached for zero items.
+
+Evidence:
+
+* Breaking the guards one at a time against the file's own tests, which are the whole blast
+  radius because nothing else uses `core.jobs` yet: rounding the chunk count down failed 5 of 7;
+  running `reversed` forward failed 2 of 7, the order test and the slot-versus-shared test;
+  removing the end's clamp failed the boundary test and then aborted on the widest length's
+  overflow check. The file was restored byte for byte after each.
+* `zig build test` passed and the bar passed. **1,351 declared / 1,341 headless**, ten
+  Metal-only.
+
+Nothing splits work yet. Step 2 adds the pool that makes `run` concurrent.

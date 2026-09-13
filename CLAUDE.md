@@ -162,6 +162,7 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Rendering | Foundry's own RHI with native backends; Metal first, null backend validates | [0003](docs/adr/0003-renderer-own-rhi-metal-first.md) |
 | Second backend | Vulkan, covering Windows and Linux with one backend; D3D12 not planned | [0033](docs/adr/0033-vulkan-second-backend.md) |
 | RHI hardening | Completion-backed retirement, usage validation and distinct transient/fatal frame outcomes; implemented in M11 | [0035](docs/adr/0035-rhi-lifetime-and-validation.md) |
+| Threading | Parallelism is an explicit `core.Jobs`; fork-join over data-determined chunks, combined in chunk order; systems keep their order; nothing in the ABI yet | [0036](docs/adr/0036-explicit-deterministic-jobs.md) |
 | Metal bridge | Thin Objective-C shim exposing a C API | [0012](docs/adr/0012-metal-objc-shim.md) |
 | Shaders | MSL now; shaders are assets with per-backend variants | [0015](docs/adr/0015-shader-strategy.md) |
 | Shader ownership | Engine-owned shaders embedded; content-owned shaders are assets | [0019](docs/adr/0019-builtin-versus-content-shaders.md) |
@@ -217,7 +218,8 @@ error rather than a code review finding (I7).
 
 ```
 L0  core        std only. Math, memory/allocators, containers, handles, IDs,
-                hashing, logging, assertions, time primitives, RNG.
+                hashing, logging, assertions, time primitives, RNG, and the job
+                interface — which holds no thread (ADR-0036).
 
 L1  platform    -> core.        Window, input, events, filesystem, dynamic library
                                 loading, high-resolution clock, audio device.
@@ -549,7 +551,7 @@ milestone named below is where `docs/ROADMAP.md` now places it.
 | Separate editor application | **M15** | In-process debug overlay first; the editor re-hosts its introspection (ADR-0025). |
 | Second graphics backend | **M13**, trigger-started | **Which API is decided: Vulkan (ADR-0033)**, covering Windows and Linux together. *When* is still triggered by a reason — shipping either platform, or validating the RHI. |
 | Shader cross-compiler vs. hand-written variants | **M13**, or when the shader set grows large | ADR-0015. Whichever comes first. |
-| Job system / threading model | **M12** (was dated post-M5) | Do not design subsystems that assume single-threaded forever. I9 constrains this hardest. |
+| Job system / threading model | **M12** (was dated post-M5) | **The model is decided: ADR-0036**, accepted 2026-09-13 — explicit `core.Jobs`, fork-join over data-determined chunks. Implementation is M12's (`docs/design/jobs-and-threading.md`). Parallel system scheduling, task graphs and a render thread stay deferred there. |
 | Bit-exact determinism for a subset | **M16**, and only if lockstep | ADR-0013 keeps this open without paying for it now; an authoritative server does not need it. |
 | Networking | **M16**, trigger-started | I1, I2, I8 and I9 keep it possible. Nothing else is owed to it now. |
 | Public macOS release certification | **M17**, credential-gated — last in its phase | Use the implemented Developer ID/notary path, then verify the exact quarantined download on a genuinely clean recipient Mac. The current ad-hoc artifact is not equivalent (ADR-0032). |
