@@ -43,6 +43,7 @@ const platform = @import("platform");
 const command = @import("../../command.zig");
 const format = @import("../../format.zig");
 const interface = @import("../../interface.zig");
+const lifetime = @import("../../lifetime.zig");
 const pipeline = @import("../../pipeline.zig");
 const resource = @import("../../resource.zig");
 
@@ -334,8 +335,48 @@ const PipelineLayoutState = struct {
 const RenderPipelineState = struct {
     mtl: *c.FdMtlRenderPipeline,
     depth_state: ?*c.FdMtlDepthState,
-    layout: pipeline.PipelineLayoutHandle,
+    /// Copied from the layout at creation. A pipeline owns what it was built from, so a draw
+    /// binds by the flattening the pipeline was compiled against even once the layout is gone.
+    slots: []BindingSlot,
     primitive: pipeline.PrimitiveState,
+};
+
+/// What a destroyed resource leaves behind until the recordings that could use it finish: the
+/// null backend's list, with Metal objects in it. Metal does retain what a committed command
+/// buffer references, and this backend deliberately does not rely on it (ADR-0035) — the null
+/// backend cannot model that, and Vulkan will not do it.
+const Retired = union(enum) {
+    buffer: *c.FdMtlBuffer,
+    texture: ?*c.FdMtlTexture,
+    sampler: *c.FdMtlSampler,
+    shader: *c.FdMtlLibrary,
+    bind_group_layout: []pipeline.BindGroupLayoutEntry,
+    bind_group: []pipeline.BindGroupEntry,
+    pipeline_layout: PipelineLayoutState,
+    render_pipeline: RenderPipelineState,
+    /// A headless surface's target, replaced by a resize while a frame may still use it.
+    offscreen: *c.FdMtlTexture,
+
+    fn release(self: Retired, gpa: Allocator) void {
+        switch (self) {
+            .buffer => |b| c.fd_mtl_buffer_destroy(b),
+            .texture => |t| if (t) |tex| c.fd_mtl_texture_destroy(tex),
+            .sampler => |s| c.fd_mtl_sampler_destroy(s),
+            .shader => |l| c.fd_mtl_library_destroy(l),
+            .bind_group_layout => |entries| gpa.free(entries),
+            .bind_group => |entries| gpa.free(entries),
+            .pipeline_layout => |p| {
+                gpa.free(p.bind_group_layouts);
+                gpa.free(p.slots);
+            },
+            .render_pipeline => |p| {
+                c.fd_mtl_render_pipeline_destroy(p.mtl);
+                if (p.depth_state) |d| c.fd_mtl_depth_state_destroy(d);
+                gpa.free(p.slots);
+            },
+            .offscreen => |t| c.fd_mtl_texture_destroy(t),
+        }
+    }
 };
 
 // -- device ----------------------------------------------------------------------------
@@ -360,9 +401,15 @@ pub const Device = struct {
 
     frame_index: u64 = 0,
     frame_slot: u32 = 0,
-    /// The command buffer that last used each slot. `beginFrame` waits on it before reusing
-    /// the slot — this is the whole frame-ring mechanism.
-    in_flight: [max_frames_in_flight]?*c.FdMtlCommandBuffer = @splat(null),
+    /// Every submission in queue order, each holding its command buffer until a wait has
+    /// covered it: those command buffers are what the waits block on.
+    timeline: lifetime.Timeline(*c.FdMtlCommandBuffer) = .{},
+    /// The frame-end command buffer each slot's previous frame committed, by submission
+    /// number, or 0. `beginFrame` waits through it before reusing the slot, and because Metal
+    /// orders a queue that also waits for everything submitted before it — uploads included.
+    /// This is the whole frame-ring mechanism.
+    slot_markers: [max_frames_in_flight]u64 = @splat(0),
+    retired: lifetime.Retirement(Retired) = .{},
 
     buffers: core.HandlePool(resource.Buffer, BufferState) = .empty,
     textures: core.HandlePool(resource.Texture, TextureState) = .empty,
@@ -442,7 +489,13 @@ pub const Device = struct {
 
         // The stable swapchain handle (see the file comment). Headless, it is backed by a
         // real offscreen texture; with a layer, its `mtl` is swapped in each frame.
-        self.surface_texture = self.textures.add(gpa, .{
+        //
+        // Failure from here is left to `errdefer` alone. Releasing the device, queue or `self`
+        // by hand as well and then returning an error released them twice.
+        errdefer self.textures.deinit(gpa);
+        errdefer self.retired.deinit(gpa);
+        try self.retired.reserve(gpa, 1);
+        self.surface_texture = try self.textures.add(gpa, .{
             .mtl = null,
             .desc = .{
                 .label = "surface",
@@ -451,18 +504,10 @@ pub const Device = struct {
                 .usage = .{ .render_target = true, .copy_src = true },
             },
             .is_surface = true,
-        }) catch {
-            gpa.destroy(self);
-            c.fd_mtl_queue_destroy(queue);
-            c.fd_mtl_device_destroy(dev);
-            return error.OutOfMemory;
-        };
+        });
 
         if (layer == null) {
-            self.offscreen = self.createOffscreen(desc.surface_size) orelse {
-                self.deinit();
-                return error.DeviceCreationFailed;
-            };
+            self.offscreen = self.createOffscreen(desc.surface_size) orelse return error.DeviceCreationFailed;
             if (self.textures.get(self.surface_texture)) |t| t.mtl = self.offscreen;
         }
 
@@ -490,15 +535,50 @@ pub const Device = struct {
         return c.fd_mtl_texture_create(self.dev, &d, "surface (offscreen)");
     }
 
-    /// Waits until the GPU has finished everything submitted so far.
+    /// Waits until the GPU has finished everything submitted so far, uploads outside a frame
+    /// included, and releases whatever was retired waiting on it.
     ///
-    /// The frame ring's own mechanism answers this exactly: wait on every slot's last
-    /// command buffer. Teardown needs it, and so does anything that must destroy a
-    /// resource without knowing whether a frame still references it.
+    /// One wait covers it all: the queue executes in submission order, so the newest
+    /// submission finishing means every earlier one has. It finishes nothing that was never
+    /// submitted — an open recording stays open, and what it could use stays retained.
     pub fn waitIdle(self: *Device) void {
-        for (&self.in_flight) |slot| {
-            if (slot) |cb| c.fd_mtl_command_buffer_wait_until_completed(cb);
-        }
+        self.waitThrough(self.timeline.submitted);
+    }
+
+    fn waitThrough(self: *Device, serial: u64) void {
+        if (self.timeline.waitTarget(serial)) |cb| c.fd_mtl_command_buffer_wait_until_completed(cb);
+        self.timeline.complete(serial);
+        self.collect();
+    }
+
+    /// Releases finished command buffers, then every retired backing no unfinished recording
+    /// could still use.
+    fn collect(self: *Device) void {
+        while (self.timeline.popCompleted()) |s| c.fd_mtl_command_buffer_destroy(s.token);
+        const through = self.timeline.resolvedThrough();
+        while (self.retired.next(through)) |backing| backing.release(self.gpa);
+    }
+
+    /// Backings destroyed and not yet released. Not part of the interface; tests read it.
+    pub fn retiredCount(self: *const Device) usize {
+        return self.retired.count();
+    }
+
+    fn liveCount(self: *const Device) usize {
+        return @as(usize, self.buffers.count()) + self.textures.count() + self.samplers.count() +
+            self.shaders.count() + self.bind_group_layouts.count() + self.bind_groups.count() +
+            self.pipeline_layouts.count() + self.pipelines.count();
+    }
+
+    /// Makes room to retire one more resource before it is published, so that destroying it
+    /// can never fail, leak or release early for want of memory.
+    fn reserveRetirement(self: *Device) Allocator.Error!void {
+        try self.retired.reserve(self.gpa, self.liveCount() + 1);
+    }
+
+    fn retire(self: *Device, backing: Retired) void {
+        self.retired.retire(backing, self.timeline.begun);
+        self.collect();
     }
 
     pub fn deinit(self: *Device) void {
@@ -506,12 +586,19 @@ pub const Device = struct {
 
         // Nothing may be released while the GPU might still read it.
         self.waitIdle();
-        for (&self.in_flight) |*slot| {
-            if (slot.*) |cb| {
-                c.fd_mtl_command_buffer_destroy(cb);
-                slot.* = null;
+        // A recording never submitted never will be. Its command buffer is discarded
+        // uncommitted, and nothing it could have used waits for it any longer.
+        for (self.command_buffers.items) |cb| {
+            if (cb.open) {
+                c.fd_mtl_command_buffer_destroy(cb.mtl);
+                self.timeline.discard(cb.recording);
+                cb.open = false;
             }
         }
+        self.collect();
+        assert.debugOnly(self.retired.count() == 0, "{d} retired backings outlived teardown", .{self.retired.count()});
+        self.retired.deinit(gpa);
+        self.timeline.deinit(gpa);
         self.releaseDrawable();
 
         for (self.command_buffers.items) |cb| gpa.destroy(cb);
@@ -537,10 +624,7 @@ pub const Device = struct {
         var shaders = self.shaders.iterator();
         while (shaders.next()) |e| c.fd_mtl_library_destroy(e.value.mtl);
         var pipes = self.pipelines.iterator();
-        while (pipes.next()) |e| {
-            c.fd_mtl_render_pipeline_destroy(e.value.mtl);
-            if (e.value.depth_state) |d| c.fd_mtl_depth_state_destroy(d);
-        }
+        while (pipes.next()) |e| Retired.release(.{ .render_pipeline = e.value.* }, gpa);
 
         var bgls = self.bind_group_layouts.iterator();
         while (bgls.next()) |e| gpa.free(e.value.entries);
@@ -583,6 +667,7 @@ pub const Device = struct {
 
     pub fn createBuffer(self: *Device, desc: resource.BufferDesc) interface.ResourceError!resource.BufferHandle {
         if (desc.size == 0) return error.InvalidDescriptor;
+        try self.reserveRetirement();
 
         var buf: [label_max + 1]u8 = undefined;
         const mtl = c.fd_mtl_buffer_create(
@@ -597,9 +682,10 @@ pub const Device = struct {
     }
 
     pub fn destroyBuffer(self: *Device, handle: resource.BufferHandle) void {
-        const state = self.buffers.get(handle) orelse return;
-        c.fd_mtl_buffer_destroy(state.mtl);
+        const state = self.buffers.getConst(handle) orelse return;
+        const mtl = state.mtl;
         _ = self.buffers.remove(handle);
+        self.retire(.{ .buffer = mtl });
     }
 
     pub fn mapBuffer(self: *Device, handle: resource.BufferHandle) interface.MapError![]u8 {
@@ -624,6 +710,7 @@ pub const Device = struct {
 
     pub fn createTexture(self: *Device, desc: resource.TextureDesc) interface.ResourceError!resource.TextureHandle {
         if (desc.size.isEmpty()) return error.InvalidDescriptor;
+        try self.reserveRetirement();
 
         const d: c.FdMtlTextureDesc = .{
             .pixel_format = pixelFormat(desc.format),
@@ -646,13 +733,15 @@ pub const Device = struct {
         const state = self.textures.get(handle) orelse return;
         // The swapchain handle is owned by the frame loop, not by its holder.
         if (state.is_surface) return;
-        if (state.mtl) |t| c.fd_mtl_texture_destroy(t);
+        const mtl = state.mtl;
         _ = self.textures.remove(handle);
+        self.retire(.{ .texture = mtl });
     }
 
     // -- samplers --------------------------------------------------------------------
 
     pub fn createSampler(self: *Device, desc: resource.SamplerDesc) interface.ResourceError!resource.SamplerHandle {
+        try self.reserveRetirement();
         const d: c.FdMtlSamplerDesc = .{
             .min_filter = samplerFilter(desc.min_filter),
             .mag_filter = samplerFilter(desc.mag_filter),
@@ -670,15 +759,17 @@ pub const Device = struct {
     }
 
     pub fn destroySampler(self: *Device, handle: resource.SamplerHandle) void {
-        const state = self.samplers.get(handle) orelse return;
-        c.fd_mtl_sampler_destroy(state.mtl);
+        const state = self.samplers.getConst(handle) orelse return;
+        const mtl = state.mtl;
         _ = self.samplers.remove(handle);
+        self.retire(.{ .sampler = mtl });
     }
 
     // -- shaders ---------------------------------------------------------------------
 
     pub fn createShaderModule(self: *Device, desc: resource.ShaderModuleDesc) interface.ResourceError!resource.ShaderModuleHandle {
         if (desc.bytes.len == 0) return error.InvalidDescriptor;
+        try self.reserveRetirement();
 
         var err: [512]u8 = undefined;
         const mtl = c.fd_mtl_library_from_data(
@@ -701,6 +792,7 @@ pub const Device = struct {
     /// the reasons it is a good first backend.
     pub fn createShaderModuleFromSource(self: *Device, desc: resource.ShaderSourceDesc) interface.ResourceError!resource.ShaderModuleHandle {
         if (desc.source.len == 0) return error.InvalidDescriptor;
+        try self.reserveRetirement();
 
         const source = try self.gpa.dupeZ(u8, desc.source);
         defer self.gpa.free(source);
@@ -718,9 +810,10 @@ pub const Device = struct {
     }
 
     pub fn destroyShaderModule(self: *Device, handle: resource.ShaderModuleHandle) void {
-        const state = self.shaders.get(handle) orelse return;
-        c.fd_mtl_library_destroy(state.mtl);
+        const state = self.shaders.getConst(handle) orelse return;
+        const mtl = state.mtl;
         _ = self.shaders.remove(handle);
+        self.retire(.{ .shader = mtl });
     }
 
     // -- binding ---------------------------------------------------------------------
@@ -730,6 +823,7 @@ pub const Device = struct {
     }
 
     pub fn createBindGroupLayout(self: *Device, desc: pipeline.BindGroupLayoutDesc) interface.ResourceError!pipeline.BindGroupLayoutHandle {
+        try self.reserveRetirement();
         const entries = try self.gpa.dupe(pipeline.BindGroupLayoutEntry, desc.entries);
         errdefer self.gpa.free(entries);
 
@@ -741,21 +835,24 @@ pub const Device = struct {
     }
 
     pub fn destroyBindGroupLayout(self: *Device, handle: pipeline.BindGroupLayoutHandle) void {
-        const state = self.bind_group_layouts.get(handle) orelse return;
-        self.gpa.free(state.entries);
+        const state = self.bind_group_layouts.getConst(handle) orelse return;
+        const entries = state.entries;
         _ = self.bind_group_layouts.remove(handle);
+        self.retire(.{ .bind_group_layout = entries });
     }
 
     pub fn createBindGroup(self: *Device, desc: pipeline.BindGroupDesc) interface.ResourceError!pipeline.BindGroupHandle {
+        try self.reserveRetirement();
         const entries = try self.gpa.dupe(pipeline.BindGroupEntry, desc.entries);
         errdefer self.gpa.free(entries);
         return try self.bind_groups.add(self.gpa, .{ .layout = desc.layout, .entries = entries });
     }
 
     pub fn destroyBindGroup(self: *Device, handle: pipeline.BindGroupHandle) void {
-        const state = self.bind_groups.get(handle) orelse return;
-        self.gpa.free(state.entries);
+        const state = self.bind_groups.getConst(handle) orelse return;
+        const entries = state.entries;
         _ = self.bind_groups.remove(handle);
+        self.retire(.{ .bind_group = entries });
     }
 
     /// Where the §9 flattening actually happens, once per layout rather than once per draw.
@@ -763,6 +860,7 @@ pub const Device = struct {
         if (desc.bind_group_layouts.len > pipeline.max_bind_groups) return error.InvalidDescriptor;
         if (desc.inline_constant_bytes > pipeline.max_inline_constant_bytes) return error.InvalidDescriptor;
 
+        try self.reserveRetirement();
         const groups = try self.gpa.dupe(pipeline.BindGroupLayoutHandle, desc.bind_group_layouts);
         errdefer self.gpa.free(groups);
 
@@ -808,10 +906,10 @@ pub const Device = struct {
     }
 
     pub fn destroyPipelineLayout(self: *Device, handle: pipeline.PipelineLayoutHandle) void {
-        const state = self.pipeline_layouts.get(handle) orelse return;
-        self.gpa.free(state.bind_group_layouts);
-        self.gpa.free(state.slots);
+        const state = self.pipeline_layouts.getConst(handle) orelse return;
+        const retired = state.*;
         _ = self.pipeline_layouts.remove(handle);
+        self.retire(.{ .pipeline_layout = retired });
     }
 
     // -- pipelines -------------------------------------------------------------------
@@ -819,6 +917,8 @@ pub const Device = struct {
     pub fn createRenderPipeline(self: *Device, desc: pipeline.RenderPipelineDesc) interface.ResourceError!pipeline.RenderPipelineHandle {
         const vertex_lib = self.shaders.getConst(desc.vertex_shader) orelse return error.InvalidDescriptor;
         const fragment_lib = self.shaders.getConst(desc.fragment_shader) orelse return error.InvalidDescriptor;
+        const layout = self.pipeline_layouts.getConst(desc.layout) orelse return error.InvalidDescriptor;
+        try self.reserveRetirement();
 
         var vname: [label_max + 1]u8 = undefined;
         var fname: [label_max + 1]u8 = undefined;
@@ -910,19 +1010,22 @@ pub const Device = struct {
         }
         errdefer if (depth_state) |s| c.fd_mtl_depth_state_destroy(s);
 
+        const slots = try self.gpa.dupe(BindingSlot, layout.slots);
+        errdefer self.gpa.free(slots);
+
         return try self.pipelines.add(self.gpa, .{
             .mtl = mtl,
             .depth_state = depth_state,
-            .layout = desc.layout,
+            .slots = slots,
             .primitive = desc.primitive,
         });
     }
 
     pub fn destroyRenderPipeline(self: *Device, handle: pipeline.RenderPipelineHandle) void {
-        const state = self.pipelines.get(handle) orelse return;
-        c.fd_mtl_render_pipeline_destroy(state.mtl);
-        if (state.depth_state) |d| c.fd_mtl_depth_state_destroy(d);
+        const state = self.pipelines.getConst(handle) orelse return;
+        const retired = state.*;
         _ = self.pipelines.remove(handle);
+        self.retire(.{ .render_pipeline = retired });
     }
 
     // -- the frame ring --------------------------------------------------------------
@@ -944,12 +1047,13 @@ pub const Device = struct {
         self.frame_index += 1;
         self.frame_slot = @intCast((self.frame_index - 1) % self.desc.frames_in_flight);
 
-        // The frame ring, in three lines. Waiting on the command buffer that last used this
-        // slot is what makes writing to the slot's per-frame resources safe.
-        if (self.in_flight[self.frame_slot]) |cb| {
-            c.fd_mtl_command_buffer_wait_until_completed(cb);
-            c.fd_mtl_command_buffer_destroy(cb);
-            self.in_flight[self.frame_slot] = null;
+        // The frame ring. Waiting through the command buffer this slot's previous frame
+        // committed last is what makes writing to the slot's per-frame resources safe, and it
+        // finishes every submission made before it, uploads included.
+        const marker = self.slot_markers[self.frame_slot];
+        if (marker != 0) {
+            self.slot_markers[self.frame_slot] = 0;
+            self.waitThrough(marker);
         }
 
         if (self.layer) |l| {
@@ -989,13 +1093,22 @@ pub const Device = struct {
         // is scheduled (Metal requires that before commit, and the caller's own command
         // buffers are already committed by then), it is what the slot waits on next time
         // round, and it keeps the headless path identical to the windowed one.
-        const cb = c.fd_mtl_command_buffer_create(self.queue, "frame end") orelse
+        //
+        // Without its own command buffer the slot still has to wait for this frame's work. The
+        // newest submission covers everything before it, which is all a marker is for.
+        self.timeline.reserveMarker(self.gpa) catch {
+            self.slot_markers[self.frame_slot] = self.timeline.submitted;
             return error.OutOfMemory;
+        };
+        const cb = c.fd_mtl_command_buffer_create(self.queue, "frame end") orelse {
+            self.slot_markers[self.frame_slot] = self.timeline.submitted;
+            return error.OutOfMemory;
+        };
 
         if (self.drawable) |d| c.fd_mtl_command_buffer_present(cb, d);
         c.fd_mtl_command_buffer_commit(cb);
 
-        self.in_flight[self.frame_slot] = cb;
+        self.slot_markers[self.frame_slot] = self.timeline.submitMarker(cb);
         self.releaseDrawable();
     }
 
@@ -1013,18 +1126,18 @@ pub const Device = struct {
                 true,
             );
         } else {
-            // Headless: the offscreen target is the surface, so it has to be rebuilt. Wait
-            // first — the old texture may still be in flight.
-            for (&self.in_flight) |*slot| {
-                if (slot.*) |cb| {
-                    c.fd_mtl_command_buffer_wait_until_completed(cb);
-                    c.fd_mtl_command_buffer_destroy(cb);
-                    slot.* = null;
-                }
-            }
-            if (self.offscreen) |t| c.fd_mtl_texture_destroy(t);
-            self.offscreen = self.createOffscreen(size) orelse return error.SurfaceLost;
-            if (self.textures.get(self.surface_texture)) |t| t.mtl = self.offscreen;
+            // Headless: the offscreen target is the surface, so it has to be rebuilt. The old
+            // one may still be in flight, so it is retired rather than destroyed — and the new
+            // one is built first, so that a failure leaves the surface as it was.
+            const replacement = self.createOffscreen(size) orelse return error.SurfaceLost;
+            self.retired.reserve(self.gpa, self.liveCount() + 1) catch {
+                c.fd_mtl_texture_destroy(replacement);
+                return error.OutOfMemory;
+            };
+            if (self.offscreen) |old| self.retired.retire(.{ .offscreen = old }, self.timeline.begun);
+            self.offscreen = replacement;
+            if (self.textures.get(self.surface_texture)) |t| t.mtl = replacement;
+            self.collect();
         }
 
         if (self.textures.get(self.surface_texture)) |t| t.desc.size = size;
@@ -1033,16 +1146,26 @@ pub const Device = struct {
     // -- recording -------------------------------------------------------------------
 
     pub fn beginCommandBuffer(self: *Device) interface.CommandError!*CommandBuffer {
+        const recording = try self.timeline.begin(self.gpa);
+        errdefer self.timeline.discard(recording);
+
         const cb = if (self.free_command_buffers.pop()) |reused| reused else blk: {
             const fresh = try self.gpa.create(CommandBuffer);
+            errdefer self.gpa.destroy(fresh);
+            try self.free_command_buffers.ensureTotalCapacity(self.gpa, self.command_buffers.items.len + 1);
             try self.command_buffers.append(self.gpa, fresh);
             break :blk fresh;
         };
+        // Closed until it has a Metal command buffer, so teardown never discards one that is
+        // not there.
+        cb.* = .{ .device = self, .mtl = undefined, .recording = recording, .open = false };
 
-        const mtl = c.fd_mtl_command_buffer_create(self.queue, "foundry") orelse
+        const mtl = c.fd_mtl_command_buffer_create(self.queue, "foundry") orelse {
+            self.free_command_buffers.appendAssumeCapacity(cb);
             return error.OutOfMemory;
-
-        cb.* = .{ .device = self, .mtl = mtl };
+        };
+        cb.mtl = mtl;
+        cb.open = true;
         return cb;
     }
 };
@@ -1052,6 +1175,10 @@ pub const Device = struct {
 pub const CommandBuffer = struct {
     device: *Device,
     mtl: *c.FdMtlCommandBuffer,
+    /// This recording's number in the device's timeline.
+    recording: u64,
+    /// Begun, and neither submitted nor discarded.
+    open: bool,
 
     pub fn beginRenderPass(self: *CommandBuffer, desc: command.RenderPassDesc) interface.CommandError!*RenderPass {
         const dev = self.device;
@@ -1175,11 +1302,15 @@ pub const CommandBuffer = struct {
 
     pub fn submit(self: *CommandBuffer) interface.CommandError!void {
         const dev = self.device;
+        // A second submit is a caller's mistake the null backend reports as rule 8. This
+        // backend does not validate, but it must still not queue one command buffer twice.
+        if (!self.open) return;
         c.fd_mtl_command_buffer_commit(self.mtl);
-        // Releasing our reference is safe the moment it is committed: Metal keeps the
-        // command buffer alive itself until the GPU is done with it.
-        c.fd_mtl_command_buffer_destroy(self.mtl);
-        dev.free_command_buffers.append(dev.gpa, self) catch {};
+        // The reference is kept rather than released: the timeline holds it until a wait has
+        // covered it, because it is what `waitIdle` and a slot's wait block on.
+        _ = dev.timeline.submit(self.recording, self.mtl);
+        self.open = false;
+        dev.free_command_buffers.appendAssumeCapacity(self);
     }
 };
 
@@ -1273,9 +1404,8 @@ pub const RenderPass = struct {
         const dev = self.device;
 
         const pso = dev.pipelines.getConst(self.pipeline_handle) orelse return;
-        const layout = dev.pipeline_layouts.getConst(pso.layout) orelse return;
 
-        for (layout.slots) |slot| {
+        for (pso.slots) |slot| {
             const group = dev.bind_groups.getConst(self.bound_groups[slot.group]) orelse continue;
             const entry = findEntry(group.entries, slot.binding) orelse continue;
 
@@ -1493,6 +1623,57 @@ test "a pipeline builds and a frame of it completes" {
     // cannot begin until it has.
     _ = try dev.beginFrame();
     try dev.endFrame();
+}
+
+test "what a destroyed handle named outlives the queued work that used it, then is released" {
+    // ADR-0035 against the real queue, relying on nothing Metal retains for us: an upload
+    // outside any frame, two frames, and both resources destroyed before a wait covers them.
+    const dev = try headlessDevice();
+    defer dev.deinit();
+
+    const texture = try dev.createTexture(.{
+        .label = "uploaded",
+        .size = .{ .width = 4, .height = 4 },
+        .format = .rgba8_unorm,
+        .usage = .{ .sampled = true, .copy_dst = true },
+    });
+    const staging = try dev.createBuffer(.{ .label = "staging", .size = 64, .usage = .{ .copy_src = true }, .memory = .upload });
+    @memset(try dev.mapBuffer(staging), 0xFF);
+    dev.unmapBuffer(staging);
+
+    var upload = try dev.beginCommandBuffer();
+    try upload.textureBarrier(&.{.{ .texture = texture, .from = .undefined, .to = .copy_dst }});
+    try upload.copyBufferToTexture(.{ .src = staging, .dst = texture, .size = .{ .width = 4, .height = 4 } });
+    try upload.submit();
+    dev.destroyBuffer(staging);
+    try testing.expectEqual(@as(usize, 1), dev.retiredCount());
+
+    for (0..2) |_| {
+        const frame = try dev.beginFrame();
+        var cmd = try dev.beginCommandBuffer();
+        var pass = try cmd.beginRenderPass(.{
+            .color = &.{.{
+                .texture = frame.surface_texture,
+                .load = .{ .clear = .{ .color = .{ 0, 0, 0, 1 } } },
+                .initial_state = .undefined,
+                .final_state = .present,
+            }},
+        });
+        pass.end();
+        try cmd.submit();
+        try dev.endFrame();
+    }
+    dev.destroyTexture(texture);
+    try testing.expectEqual(@as(usize, 2), dev.retiredCount());
+
+    // Frame 3 waits through frame 1's marker, which came after the upload but before frame 2's
+    // recording, the last one begun before the texture died.
+    _ = try dev.beginFrame();
+    try testing.expectEqual(@as(usize, 1), dev.retiredCount());
+    try dev.endFrame();
+
+    dev.waitIdle();
+    try testing.expectEqual(@as(usize, 0), dev.retiredCount());
 }
 
 test "the binding flattening follows the documented walk order" {

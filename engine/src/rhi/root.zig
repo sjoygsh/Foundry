@@ -25,6 +25,11 @@ pub const interface = @import("interface.zig");
 pub const pipeline = @import("pipeline.zig");
 pub const resource = @import("resource.zig");
 
+/// Completion and retirement bookkeeping the backends share (ADR-0035). Internal: nothing
+/// above `rhi` needs it, and exposing it would invite a second completion timeline above the
+/// one the backends keep.
+const lifetime = @import("lifetime.zig");
+
 /// The graphics backends Foundry can be built against.
 ///
 /// A backend is an engine port, chosen when the build graph is constructed. Metal joins
@@ -104,6 +109,7 @@ test {
     _ = command;
     _ = format;
     _ = interface;
+    _ = lifetime;
     _ = pipeline;
     _ = resource;
     // Always tested, whichever backend is selected — a file imported only for its types

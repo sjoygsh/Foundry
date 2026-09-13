@@ -30,6 +30,7 @@ const platform = @import("platform");
 const command = @import("../command.zig");
 const format = @import("../format.zig");
 const interface = @import("../interface.zig");
+const lifetime = @import("../lifetime.zig");
 const pipeline = @import("../pipeline.zig");
 const resource = @import("../resource.zig");
 
@@ -72,7 +73,10 @@ pub const Rule = enum(u8) {
     /// frame is the outermost recording scope. That reading is a clarification of the
     /// rule's scope rather than an eleventh rule.
     encoder_discipline = 8,
-    /// A resource was destroyed while a frame referencing it was still in flight.
+    /// A command was recorded through a destroyed handle, directly or through a bind group
+    /// naming one. Destroying something unfinished recordings use is legal: the backend keeps
+    /// its backing until they finish, which is the backend's promise rather than something a
+    /// caller can get wrong, so tests observe it through `retiredCount` (ADR-0035).
     lifetime = 9,
     /// A documented limit was exceeded: more than four bind groups, or more inline
     /// constant bytes than 128 or than the bound pipeline's layout declares.
@@ -94,15 +98,14 @@ const BufferState = struct {
     /// a test can observe. The null backend models the contract, not the silicon.
     storage: []u8,
     mapped: bool = false,
-    /// The last frame index in which a command buffer referenced this resource. Rules 3
-    /// and 9 both turn on this number.
-    last_frame_used: u64 = 0,
+    /// The last recording that referenced this buffer, numbered as `lifetime.Timeline`
+    /// numbers them, or 0 for none. Rule 3 turns on whether that recording has finished.
+    last_used: u64 = 0,
 };
 
 const TextureState = struct {
     desc: resource.TextureDesc,
     state: resource.ResourceState,
-    last_frame_used: u64 = 0,
     is_surface: bool = false,
 };
 
@@ -116,7 +119,6 @@ const BindGroupLayoutState = struct {
 const BindGroupState = struct {
     layout: pipeline.BindGroupLayoutHandle,
     entries: []pipeline.BindGroupEntry,
-    last_frame_used: u64 = 0,
 };
 
 const PipelineLayoutState = struct {
@@ -125,10 +127,43 @@ const PipelineLayoutState = struct {
 };
 
 const RenderPipelineState = struct {
+    /// Identity only, for §9's rule that a layout change invalidates inline constants. What a
+    /// draw is checked against is copied below: a pipeline owns what it was built from, so
+    /// destroying its layout afterwards cannot change what the pipeline requires.
     layout: pipeline.PipelineLayoutHandle,
+    bind_group_layouts: []pipeline.BindGroupLayoutHandle,
+    inline_constant_bytes: u32,
     color_formats: []format.TextureFormat,
     depth_format: ?format.TextureFormat,
     vertex_buffer_count: u32,
+};
+
+/// What a destroyed resource leaves behind until the recordings that could use it finish.
+/// Every kind is retired, including kinds with nothing to free here, so that retention is
+/// observable the same way for all of them and the list matches the one Metal keeps.
+const Retired = union(enum) {
+    buffer: []u8,
+    texture,
+    sampler,
+    shader,
+    bind_group_layout: []pipeline.BindGroupLayoutEntry,
+    bind_group: []pipeline.BindGroupEntry,
+    pipeline_layout: []pipeline.BindGroupLayoutHandle,
+    render_pipeline: RenderPipelineState,
+
+    fn release(self: Retired, gpa: Allocator) void {
+        switch (self) {
+            .buffer => |storage| gpa.free(storage),
+            .texture, .sampler, .shader => {},
+            .bind_group_layout => |entries| gpa.free(entries),
+            .bind_group => |entries| gpa.free(entries),
+            .pipeline_layout => |layouts| gpa.free(layouts),
+            .render_pipeline => |p| {
+                gpa.free(p.bind_group_layouts);
+                gpa.free(p.color_formats);
+            },
+        }
+    }
 };
 
 // -- device --------------------------------------------------------------------------
@@ -157,11 +192,18 @@ pub const Device = struct {
     surface_size: resource.Extent2D,
 
     frame_index: u64 = 0,
-    /// The highest frame index `waitIdle` has been told is finished. Frames complete on
-    /// their own as the ring turns; this is the other way they can complete.
-    idled_through: u64 = 0,
     frame_slot: u32 = 0,
     in_frame: bool = false,
+
+    /// Which recordings have finished. There is no GPU, so a submission finishes exactly when
+    /// a real backend's wait would have covered it — a slot's marker, or `waitIdle` — and never
+    /// because a frame ended or because the frame index is zero.
+    timeline: lifetime.Timeline(void) = .{},
+    /// The newest submission when each slot's previous frame ended, or 0. `beginFrame` waits
+    /// through it before reusing the slot; Metal waits on a command buffer committed at that
+    /// same point, so the two backends wait for the same work.
+    slot_markers: [max_frames_in_flight]u64 = @splat(0),
+    retired: lifetime.Retirement(Retired) = .{},
 
     command_buffers: std.ArrayList(*CommandBuffer) = .empty,
     free_command_buffers: std.ArrayList(*CommandBuffer) = .empty,
@@ -186,6 +228,8 @@ pub const Device = struct {
             .format = .bgra8_unorm_srgb,
             .usage = .{ .render_target = true, .copy_src = true },
         }) catch {
+            self.retired.deinit(gpa);
+            self.textures.deinit(gpa);
             gpa.destroy(self);
             return error.OutOfMemory;
         };
@@ -197,6 +241,12 @@ pub const Device = struct {
 
     pub fn deinit(self: *Device) void {
         const gpa = self.gpa;
+
+        // Teardown releases everything, finished or not: there is no queue left to wait on,
+        // and a recording that was never submitted never will be.
+        for (self.retired.entries.items) |entry| entry.backing.release(gpa);
+        self.retired.deinit(gpa);
+        self.timeline.deinit(gpa);
 
         for (self.command_buffers.items) |cb| gpa.destroy(cb);
         for (self.render_passes.items) |rp| gpa.destroy(rp);
@@ -214,7 +264,7 @@ pub const Device = struct {
         var pls = self.pipeline_layouts.iterator();
         while (pls.next()) |e| gpa.free(e.value.bind_group_layouts);
         var ps = self.pipelines.iterator();
-        while (ps.next()) |e| gpa.free(e.value.color_formats);
+        while (ps.next()) |e| Retired.release(.{ .render_pipeline = e.value.* }, gpa);
 
         self.buffers.deinit(gpa);
         self.textures.deinit(gpa);
@@ -282,25 +332,72 @@ pub const Device = struct {
         self.violation_list.clearRetainingCapacity();
     }
 
-    /// The frame index the GPU is known to have finished.
-    ///
-    /// A real backend asks the GPU. Here it is exactly what the frame ring guarantees:
-    /// by the time frame N begins, frame `N - frames_in_flight` must have completed,
-    /// because `beginFrame` would otherwise have waited for it.
-    fn completedFrame(self: *Device) u64 {
-        return @max(self.frame_index -| self.desc.frames_in_flight, self.idled_through);
-    }
-
-    /// Waits for the GPU to finish everything. Here there is no GPU, so this records that
-    /// every frame begun so far has completed — which is exactly what the modelled
-    /// contract says, and is what makes rule 9 stop firing for a teardown that is
-    /// genuinely safe.
+    /// Waits for everything submitted so far, uploads outside a frame included. There is no
+    /// GPU, so waiting is knowing. It finishes nothing that was never submitted: an open
+    /// recording stays open, and whatever it could use stays retained.
     pub fn waitIdle(self: *Device) void {
-        self.idled_through = self.frame_index;
+        self.waitThrough(self.timeline.submitted);
     }
 
-    fn inFlight(self: *Device, last_used: u64) bool {
-        return last_used > self.completedFrame();
+    fn waitThrough(self: *Device, serial: u64) void {
+        self.timeline.complete(serial);
+        self.collect();
+    }
+
+    /// Releases every retired backing no unfinished recording could still use.
+    fn collect(self: *Device) void {
+        while (self.timeline.popCompleted()) |_| {}
+        const through = self.timeline.resolvedThrough();
+        while (self.retired.next(through)) |backing| backing.release(self.gpa);
+    }
+
+    /// Whether a recording that used something may still be executing.
+    fn inFlight(self: *Device, recording: u64) bool {
+        return recording > self.timeline.resolvedThrough();
+    }
+
+    /// Backings destroyed and not yet released. Not part of the interface: it is how a test
+    /// sees that a destroy was deferred, and that the deferral ended.
+    pub fn retiredCount(self: *const Device) usize {
+        return self.retired.count();
+    }
+
+    fn liveCount(self: *const Device) usize {
+        return @as(usize, self.buffers.count()) + self.textures.count() + self.samplers.count() +
+            self.shaders.count() + self.bind_group_layouts.count() + self.bind_groups.count() +
+            self.pipeline_layouts.count() + self.pipelines.count();
+    }
+
+    /// Makes room to retire one more resource before it is published, so that destroying it
+    /// can never fail, leak or release early for want of memory.
+    fn reserveRetirement(self: *Device) Allocator.Error!void {
+        try self.retired.reserve(self.gpa, self.liveCount() + 1);
+    }
+
+    /// The caller's half of a destroy is already done — the handle no longer resolves. This is
+    /// the backend's half.
+    fn retire(self: *Device, backing: Retired) void {
+        self.retired.retire(backing, self.timeline.begun);
+        self.collect();
+    }
+
+    /// Rule 9's caller half: `.none` names nothing, so only a handle that once resolved and no
+    /// longer does is a use of something destroyed.
+    fn deadBuffer(self: *const Device, handle: resource.BufferHandle) bool {
+        return !handle.isNone() and !self.buffers.contains(handle);
+    }
+
+    /// The first binding of a group whose resource has been destroyed since the group was made.
+    fn deadEntry(self: *const Device, group: *const BindGroupState) ?pipeline.BindGroupEntry {
+        for (group.entries) |e| {
+            const dead = switch (e.resource) {
+                .sampled_texture => |t| !t.isNone() and !self.textures.contains(t),
+                .uniform_buffer, .storage_buffer => |b| self.deadBuffer(b.buffer),
+                .sampler => |s| !s.isNone() and !self.samplers.contains(s),
+            };
+            if (dead) return e;
+        }
+        return null;
     }
 
     // -- buffers -------------------------------------------------------------------
@@ -310,6 +407,7 @@ pub const Device = struct {
         // defines for it. Deliberately *not* a violation record: the ten rules are the
         // validation backend's whole remit, and zero-size is not among them.
         if (desc.size == 0) return error.InvalidDescriptor;
+        try self.reserveRetirement();
         const storage = try self.gpa.alloc(u8, @intCast(desc.size));
         @memset(storage, 0);
         errdefer self.gpa.free(storage);
@@ -318,14 +416,9 @@ pub const Device = struct {
 
     pub fn destroyBuffer(self: *Device, handle: resource.BufferHandle) void {
         const state = self.buffers.getConst(handle) orelse return;
-        // Rule 9: a resource the GPU may still be reading must not be released.
-        if (self.inFlight(state.last_frame_used)) {
-            self.violate(.lifetime, "buffer '{s}' destroyed while frame {d} is in flight (completed: {d})", .{
-                state.desc.label, state.last_frame_used, self.completedFrame(),
-            });
-        }
-        self.gpa.free(state.storage);
+        const storage = state.storage;
         _ = self.buffers.remove(handle);
+        self.retire(.{ .buffer = storage });
     }
 
     pub fn mapBuffer(self: *Device, handle: resource.BufferHandle) interface.MapError![]u8 {
@@ -337,9 +430,9 @@ pub const Device = struct {
             return error.NotMappable;
         }
         // Rule 3: writing to memory a frame still in flight may be reading.
-        if (self.inFlight(state.last_frame_used)) {
-            self.violate(.frame_ring, "buffer '{s}' mapped while frame {d} is still in flight (completed: {d})", .{
-                state.desc.label, state.last_frame_used, self.completedFrame(),
+        if (self.inFlight(state.last_used)) {
+            self.violate(.frame_ring, "buffer '{s}' mapped while recording {d}, which uses it, is unfinished (finished through {d})", .{
+                state.desc.label, state.last_used, self.timeline.resolvedThrough(),
             });
         }
         state.mapped = true;
@@ -354,48 +447,50 @@ pub const Device = struct {
 
     pub fn createTexture(self: *Device, desc: resource.TextureDesc) interface.ResourceError!resource.TextureHandle {
         if (desc.size.isEmpty()) return error.InvalidDescriptor;
+        try self.reserveRetirement();
         return self.textures.add(self.gpa, .{ .desc = desc, .state = desc.initial_state });
     }
 
     pub fn destroyTexture(self: *Device, handle: resource.TextureHandle) void {
-        const state = self.textures.getConst(handle) orelse return;
-        if (self.inFlight(state.last_frame_used)) {
-            self.violate(.lifetime, "texture '{s}' destroyed while frame {d} is in flight (completed: {d})", .{
-                state.desc.label, state.last_frame_used, self.completedFrame(),
-            });
-        }
-        _ = self.textures.remove(handle);
+        if (!self.textures.remove(handle)) return;
+        self.retire(.texture);
     }
 
     // -- samplers and shaders ------------------------------------------------------
 
     pub fn createSampler(self: *Device, desc: resource.SamplerDesc) interface.ResourceError!resource.SamplerHandle {
+        try self.reserveRetirement();
         return self.samplers.add(self.gpa, .{ .desc = desc });
     }
 
     pub fn destroySampler(self: *Device, handle: resource.SamplerHandle) void {
-        _ = self.samplers.remove(handle);
+        if (!self.samplers.remove(handle)) return;
+        self.retire(.sampler);
     }
 
     pub fn createShaderModule(self: *Device, desc: resource.ShaderModuleDesc) interface.ResourceError!resource.ShaderModuleHandle {
         // The null backend compiles nothing, so any bytes are acceptable — but empty
         // bytes are a caller mistake worth reporting rather than accepting silently.
         if (desc.bytes.len == 0) return error.ShaderCompilationFailed;
+        try self.reserveRetirement();
         return self.shaders.add(self.gpa, .{ .label = desc.label, .from_source = false });
     }
 
     pub fn createShaderModuleFromSource(self: *Device, desc: resource.ShaderSourceDesc) interface.ResourceError!resource.ShaderModuleHandle {
         if (desc.source.len == 0) return error.ShaderCompilationFailed;
+        try self.reserveRetirement();
         return self.shaders.add(self.gpa, .{ .label = desc.label, .from_source = true });
     }
 
     pub fn destroyShaderModule(self: *Device, handle: resource.ShaderModuleHandle) void {
-        _ = self.shaders.remove(handle);
+        if (!self.shaders.remove(handle)) return;
+        self.retire(.shader);
     }
 
     // -- binding -------------------------------------------------------------------
 
     pub fn createBindGroupLayout(self: *Device, desc: pipeline.BindGroupLayoutDesc) interface.ResourceError!pipeline.BindGroupLayoutHandle {
+        try self.reserveRetirement();
         const entries = try self.gpa.dupe(pipeline.BindGroupLayoutEntry, desc.entries);
         errdefer self.gpa.free(entries);
         return self.bind_group_layouts.add(self.gpa, .{ .entries = entries });
@@ -403,8 +498,9 @@ pub const Device = struct {
 
     pub fn destroyBindGroupLayout(self: *Device, handle: pipeline.BindGroupLayoutHandle) void {
         const state = self.bind_group_layouts.getConst(handle) orelse return;
-        self.gpa.free(state.entries);
+        const entries = state.entries;
         _ = self.bind_group_layouts.remove(handle);
+        self.retire(.{ .bind_group_layout = entries });
     }
 
     pub fn createBindGroup(self: *Device, desc: pipeline.BindGroupDesc) interface.ResourceError!pipeline.BindGroupHandle {
@@ -429,6 +525,7 @@ pub const Device = struct {
             }
         }
 
+        try self.reserveRetirement();
         const entries = try self.gpa.dupe(pipeline.BindGroupEntry, desc.entries);
         errdefer self.gpa.free(entries);
         return self.bind_groups.add(self.gpa, .{ .layout = desc.layout, .entries = entries });
@@ -436,13 +533,9 @@ pub const Device = struct {
 
     pub fn destroyBindGroup(self: *Device, handle: pipeline.BindGroupHandle) void {
         const state = self.bind_groups.getConst(handle) orelse return;
-        if (self.inFlight(state.last_frame_used)) {
-            self.violate(.lifetime, "bind group destroyed while frame {d} is in flight (completed: {d})", .{
-                state.last_frame_used, self.completedFrame(),
-            });
-        }
-        self.gpa.free(state.entries);
+        const entries = state.entries;
         _ = self.bind_groups.remove(handle);
+        self.retire(.{ .bind_group = entries });
     }
 
     pub fn createPipelineLayout(self: *Device, desc: pipeline.PipelineLayoutDesc) interface.ResourceError!pipeline.PipelineLayoutHandle {
@@ -460,6 +553,7 @@ pub const Device = struct {
             return error.InvalidDescriptor;
         }
 
+        try self.reserveRetirement();
         const layouts = try self.gpa.dupe(pipeline.BindGroupLayoutHandle, desc.bind_group_layouts);
         errdefer self.gpa.free(layouts);
         return self.pipeline_layouts.add(self.gpa, .{
@@ -470,12 +564,13 @@ pub const Device = struct {
 
     pub fn destroyPipelineLayout(self: *Device, handle: pipeline.PipelineLayoutHandle) void {
         const state = self.pipeline_layouts.getConst(handle) orelse return;
-        self.gpa.free(state.bind_group_layouts);
+        const layouts = state.bind_group_layouts;
         _ = self.pipeline_layouts.remove(handle);
+        self.retire(.{ .pipeline_layout = layouts });
     }
 
     pub fn createRenderPipeline(self: *Device, desc: pipeline.RenderPipelineDesc) interface.ResourceError!pipeline.RenderPipelineHandle {
-        if (self.pipeline_layouts.getConst(desc.layout) == null) return error.InvalidDescriptor;
+        const layout = self.pipeline_layouts.getConst(desc.layout) orelse return error.InvalidDescriptor;
         if (self.shaders.getConst(desc.vertex_shader) == null) return error.InvalidDescriptor;
         if (self.shaders.getConst(desc.fragment_shader) == null) return error.InvalidDescriptor;
 
@@ -494,12 +589,17 @@ pub const Device = struct {
             }
         }
 
+        try self.reserveRetirement();
+        const layouts = try self.gpa.dupe(pipeline.BindGroupLayoutHandle, layout.bind_group_layouts);
+        errdefer self.gpa.free(layouts);
         const formats = try self.gpa.alloc(format.TextureFormat, desc.color_targets.len);
         errdefer self.gpa.free(formats);
         for (desc.color_targets, 0..) |t, i| formats[i] = t.format;
 
         return self.pipelines.add(self.gpa, .{
             .layout = desc.layout,
+            .bind_group_layouts = layouts,
+            .inline_constant_bytes = layout.inline_constant_bytes,
             .color_formats = formats,
             .depth_format = if (desc.depth_stencil) |d| d.format else null,
             .vertex_buffer_count = @intCast(desc.vertex_buffers.len),
@@ -508,8 +608,9 @@ pub const Device = struct {
 
     pub fn destroyRenderPipeline(self: *Device, handle: pipeline.RenderPipelineHandle) void {
         const state = self.pipelines.getConst(handle) orelse return;
-        self.gpa.free(state.color_formats);
+        const retired = state.*;
         _ = self.pipelines.remove(handle);
+        self.retire(.{ .render_pipeline = retired });
     }
 
     // -- the frame ring ------------------------------------------------------------
@@ -523,6 +624,14 @@ pub const Device = struct {
         self.in_frame = true;
         self.frame_index += 1;
         self.frame_slot = @intCast((self.frame_index - 1) % self.desc.frames_in_flight);
+
+        // The ring's wait. Everything submitted before this slot's previous frame ended has
+        // finished, and so has whatever was retired waiting on it.
+        const marker = self.slot_markers[self.frame_slot];
+        if (marker != 0) {
+            self.slot_markers[self.frame_slot] = 0;
+            self.waitThrough(marker);
+        }
 
         // The surface arrives with nothing worth preserving, which is what makes the
         // first transition of the frame free on every backend.
@@ -541,6 +650,7 @@ pub const Device = struct {
             return;
         }
         self.in_frame = false;
+        self.slot_markers[self.frame_slot] = self.timeline.submitted;
     }
 
     pub fn resizeSurface(self: *Device, size: resource.Extent2D) interface.FrameError!void {
@@ -555,35 +665,41 @@ pub const Device = struct {
     // -- recording -----------------------------------------------------------------
 
     pub fn beginCommandBuffer(self: *Device) interface.CommandError!*CommandBuffer {
+        const recording = try self.timeline.begin(self.gpa);
+        errdefer self.timeline.discard(recording);
+
         const cb = if (self.free_command_buffers.pop()) |reused| reused else blk: {
             const fresh = try self.gpa.create(CommandBuffer);
+            errdefer self.gpa.destroy(fresh);
+            // Room to recycle it is reserved with it, so that returning it at submit cannot
+            // fail — an allocation failure there would otherwise be swallowed.
+            try self.free_command_buffers.ensureTotalCapacity(self.gpa, self.command_buffers.items.len + 1);
             try self.command_buffers.append(self.gpa, fresh);
             break :blk fresh;
         };
         cb.* = .{
             .device = self,
+            .recording = recording,
             .violations_at_start = self.violation_list.items.len,
         };
         return cb;
     }
 
     fn recycleCommandBuffer(self: *Device, cb: *CommandBuffer) void {
-        self.free_command_buffers.append(self.gpa, cb) catch {};
+        self.free_command_buffers.appendAssumeCapacity(cb);
     }
 
     fn acquireRenderPass(self: *Device) !*RenderPass {
         if (self.free_render_passes.pop()) |reused| return reused;
         const fresh = try self.gpa.create(RenderPass);
+        errdefer self.gpa.destroy(fresh);
+        try self.free_render_passes.ensureTotalCapacity(self.gpa, self.render_passes.items.len + 1);
         try self.render_passes.append(self.gpa, fresh);
         return fresh;
     }
 
-    fn touchBuffer(self: *Device, handle: resource.BufferHandle) void {
-        if (self.buffers.get(handle)) |b| b.last_frame_used = self.frame_index;
-    }
-
-    fn touchTexture(self: *Device, handle: resource.TextureHandle) void {
-        if (self.textures.get(handle)) |t| t.last_frame_used = self.frame_index;
+    fn touchBuffer(self: *Device, handle: resource.BufferHandle, recording: u64) void {
+        if (self.buffers.get(handle)) |b| b.last_used = recording;
     }
 };
 
@@ -591,6 +707,8 @@ pub const Device = struct {
 
 pub const CommandBuffer = struct {
     device: *Device,
+    /// This recording's number in the device's timeline.
+    recording: u64 = 0,
     violations_at_start: usize = 0,
     open_pass: bool = false,
     submitted: bool = false,
@@ -624,7 +742,6 @@ pub const CommandBuffer = struct {
                 dev.violate(.attachment_format, "render pass '{s}' colour attachment {d} has depth format {t}", .{ desc.label, i, tex.desc.format });
             }
             checkTransition(dev, tex, att.initial_state, att.final_state, desc.label, "colour attachment");
-            tex.last_frame_used = dev.frame_index;
             pass.color_formats[i] = tex.desc.format;
         }
         pass.color_count = desc.color.len;
@@ -635,8 +752,9 @@ pub const CommandBuffer = struct {
                     dev.violate(.attachment_format, "render pass '{s}' depth attachment has colour format {t}", .{ desc.label, tex.desc.format });
                 }
                 checkTransition(dev, tex, att.initial_state, att.final_state, desc.label, "depth attachment");
-                tex.last_frame_used = dev.frame_index;
                 pass.depth_format = tex.desc.format;
+            } else if (!att.texture.isNone()) {
+                dev.violate(.lifetime, "render pass '{s}' depth attachment names a destroyed texture", .{desc.label});
             }
         }
 
@@ -669,28 +787,33 @@ pub const CommandBuffer = struct {
             dev.violate(.encoder_discipline, "barrier recorded inside an open render pass", .{});
         }
         for (barriers) |b| {
-            const tex = dev.textures.get(b.texture) orelse continue;
+            const tex = dev.textures.get(b.texture) orelse {
+                if (!b.texture.isNone()) dev.violate(.lifetime, "barrier names a destroyed texture", .{});
+                continue;
+            };
             if (b.from != .undefined and tex.state != b.from) {
                 dev.violate(.resource_state, "barrier on '{s}' declares from {t} but it is tracked as {t}", .{
                     tex.desc.label, b.from, tex.state,
                 });
             }
             tex.state = b.to;
-            tex.last_frame_used = dev.frame_index;
         }
     }
 
     pub fn bufferBarrier(self: *CommandBuffer, barriers: []const command.BufferBarrier) interface.CommandError!void {
         const dev = self.device;
         for (barriers) |b| {
-            const buf = dev.buffers.get(b.buffer) orelse continue;
+            const buf = dev.buffers.get(b.buffer) orelse {
+                if (!b.buffer.isNone()) dev.violate(.lifetime, "barrier names a destroyed buffer", .{});
+                continue;
+            };
             if (b.from != .undefined and buf.state != b.from) {
                 dev.violate(.resource_state, "barrier on buffer '{s}' declares from {t} but it is tracked as {t}", .{
                     buf.desc.label, b.from, buf.state,
                 });
             }
             buf.state = b.to;
-            buf.last_frame_used = dev.frame_index;
+            buf.last_used = self.recording;
         }
     }
 
@@ -704,8 +827,10 @@ pub const CommandBuffer = struct {
         // but it is not one of the ten documented rules, and enforcing it here would make
         // this backend stricter than the contract it exists to police. Recorded as an open
         // question in `docs/design/rhi.md` §13.
-        dev.touchBuffer(copy.src);
-        dev.touchBuffer(copy.dst);
+        if (dev.deadBuffer(copy.src)) dev.violate(.lifetime, "copy reads a destroyed buffer", .{});
+        if (dev.deadBuffer(copy.dst)) dev.violate(.lifetime, "copy writes a destroyed buffer", .{});
+        dev.touchBuffer(copy.src, self.recording);
+        dev.touchBuffer(copy.dst, self.recording);
     }
 
     pub fn copyBufferToTexture(self: *CommandBuffer, copy: command.BufferToTextureCopy) interface.CommandError!void {
@@ -740,9 +865,11 @@ pub const CommandBuffer = struct {
                     });
                 }
             }
-            dst.last_frame_used = dev.frame_index;
+        } else if (!copy.dst.isNone()) {
+            dev.violate(.lifetime, "copy writes a destroyed texture", .{});
         }
-        dev.touchBuffer(copy.src);
+        if (dev.deadBuffer(copy.src)) dev.violate(.lifetime, "copy reads a destroyed buffer", .{});
+        dev.touchBuffer(copy.src, self.recording);
     }
 
     pub fn submit(self: *CommandBuffer) interface.CommandError!void {
@@ -753,8 +880,13 @@ pub const CommandBuffer = struct {
         }
         if (self.submitted) {
             dev.violate(.encoder_discipline, "command buffer submitted twice", .{});
+            return error.ValidationFailed;
         }
         self.submitted = true;
+        // Queued even when it broke a rule. The caller is told, but a recording that reached
+        // submit is treated as executing, so what it could use stays retained until a wait
+        // covers it; assuming otherwise would be the unsafe direction to be wrong in.
+        _ = dev.timeline.submit(self.recording, {});
 
         const failed = dev.violation_list.items.len > self.violations_at_start;
         dev.recycleCommandBuffer(self);
@@ -783,6 +915,9 @@ pub const RenderPass = struct {
 
     pub fn setPipeline(self: *RenderPass, handle: pipeline.RenderPipelineHandle) void {
         const dev = self.device;
+        if (!handle.isNone() and !dev.pipelines.contains(handle)) {
+            dev.violate(.lifetime, "pass '{s}' binds a destroyed pipeline", .{self.label});
+        }
         const new_layout = if (dev.pipelines.getConst(handle)) |p| p.layout else pipeline.PipelineLayoutHandle.none;
         const old_layout = if (dev.pipelines.getConst(self.pipeline_handle)) |p| p.layout else pipeline.PipelineLayoutHandle.none;
 
@@ -803,8 +938,11 @@ pub const RenderPass = struct {
             return;
         }
         self.bound_groups[index] = group;
-        if (dev.bind_groups.get(group)) |g| {
-            g.last_frame_used = dev.frame_index;
+        if (dev.bind_groups.getConst(group)) |g| {
+            // Rule 9: a live group is not permission to use what it names once that is dead.
+            if (dev.deadEntry(g)) |e| {
+                dev.violate(.lifetime, "pass '{s}' binds a group whose binding {d} names a destroyed resource", .{ self.label, e.binding });
+            }
             // Rule 1: a texture bound for sampling must actually be in shader_read.
             for (g.entries) |e| {
                 switch (e.resource) {
@@ -816,12 +954,13 @@ pub const RenderPass = struct {
                                 });
                             }
                         }
-                        dev.touchTexture(t);
                     },
-                    .uniform_buffer, .storage_buffer => |b| dev.touchBuffer(b.buffer),
+                    .uniform_buffer, .storage_buffer => |b| dev.touchBuffer(b.buffer, self.cmd.recording),
                     .sampler => {},
                 }
             }
+        } else if (!group.isNone()) {
+            dev.violate(.lifetime, "pass '{s}' binds a destroyed bind group", .{self.label});
         }
     }
 
@@ -836,16 +975,18 @@ pub const RenderPass = struct {
             return;
         }
 
+        if (dev.deadBuffer(buffer)) dev.violate(.lifetime, "pass '{s}' binds a destroyed buffer to vertex slot {d}", .{ self.label, slot });
         self.bound_vertex_buffers[slot] = buffer;
-        dev.touchBuffer(buffer);
+        dev.touchBuffer(buffer, self.cmd.recording);
     }
 
     pub fn setIndexBuffer(self: *RenderPass, buffer: resource.BufferHandle, index_format: format.IndexFormat, offset: u64) void {
         _ = index_format;
         _ = offset;
         const dev = self.device;
+        if (dev.deadBuffer(buffer)) dev.violate(.lifetime, "pass '{s}' binds a destroyed index buffer", .{self.label});
         self.index_buffer = buffer;
-        dev.touchBuffer(buffer);
+        dev.touchBuffer(buffer, self.cmd.recording);
     }
 
     /// Push-constant-style, and nothing more. The bytes are copied at the call, the value
@@ -863,13 +1004,11 @@ pub const RenderPass = struct {
         }
         // ...and never more than the bound pipeline's layout declares.
         if (dev.pipelines.getConst(self.pipeline_handle)) |p| {
-            if (dev.pipeline_layouts.getConst(p.layout)) |layout| {
-                if (bytes.len > layout.inline_constant_bytes) {
-                    dev.violate(.limits, "{d} inline constant bytes exceeds the {d} the bound pipeline's layout declares", .{
-                        bytes.len, layout.inline_constant_bytes,
-                    });
-                    return;
-                }
+            if (bytes.len > p.inline_constant_bytes) {
+                dev.violate(.limits, "{d} inline constant bytes exceeds the {d} the bound pipeline's layout declares", .{
+                    bytes.len, p.inline_constant_bytes,
+                });
+                return;
             }
         }
         self.inline_constants_set = true;
@@ -906,10 +1045,13 @@ pub const RenderPass = struct {
         }
 
         const pipe = dev.pipelines.getConst(self.pipeline_handle) orelse {
-            dev.violate(.incomplete_bindings, "draw in pass '{s}' with no pipeline bound", .{self.label});
+            if (self.pipeline_handle.isNone()) {
+                dev.violate(.incomplete_bindings, "draw in pass '{s}' with no pipeline bound", .{self.label});
+            } else {
+                dev.violate(.lifetime, "draw in pass '{s}' uses a pipeline destroyed since it was bound", .{self.label});
+            }
             return;
         };
-        const layout = dev.pipeline_layouts.getConst(pipe.layout) orelse return;
 
         // Rule 7: the pass's attachment formats must match the pipeline's.
         if (pipe.color_formats.len != self.color_count) {
@@ -937,22 +1079,29 @@ pub const RenderPass = struct {
 
         // Rule 5: every group the layout declares must be bound, and inline constants the
         // layout declares must have been set since the last layout-changing bind.
-        for (layout.bind_group_layouts, 0..) |declared, i| {
+        for (pipe.bind_group_layouts, 0..) |declared, i| {
             if (declared.isNone()) continue;
             const bound = self.bound_groups[i];
             if (bound.isNone()) {
                 dev.violate(.incomplete_bindings, "draw in pass '{s}' with nothing bound to group {d}, which the layout requires", .{ self.label, i });
                 continue;
             }
+            // Rule 9: the draw is a new use of the group and of everything it names.
+            const group = dev.bind_groups.getConst(bound) orelse {
+                dev.violate(.lifetime, "draw in pass '{s}' uses group {d}, destroyed since it was bound", .{ self.label, i });
+                continue;
+            };
+            if (dev.deadEntry(group)) |e| {
+                dev.violate(.lifetime, "draw in pass '{s}' uses group {d}, whose binding {d} names a destroyed resource", .{ self.label, i, e.binding });
+            }
             // Rule 4: the group must have been built for the layout the pipeline declares.
-            const group = dev.bind_groups.getConst(bound) orelse continue;
             if (!group.layout.eql(declared)) {
                 dev.violate(.bind_group_compatibility, "group {d} in pass '{s}' was built for a different layout than the pipeline declares", .{ i, self.label });
             }
         }
-        if (layout.inline_constant_bytes > 0 and !self.inline_constants_set) {
+        if (pipe.inline_constant_bytes > 0 and !self.inline_constants_set) {
             dev.violate(.incomplete_bindings, "draw in pass '{s}' whose layout declares {d} inline constant bytes that were never set", .{
-                self.label, layout.inline_constant_bytes,
+                self.label, pipe.inline_constant_bytes,
             });
         }
 
@@ -961,10 +1110,14 @@ pub const RenderPass = struct {
         while (slot < pipe.vertex_buffer_count) : (slot += 1) {
             if (self.bound_vertex_buffers[slot].isNone()) {
                 dev.violate(.vertex_layout, "draw in pass '{s}' with no buffer bound to vertex slot {d}, which the pipeline declares", .{ self.label, slot });
+            } else if (dev.deadBuffer(self.bound_vertex_buffers[slot])) {
+                dev.violate(.lifetime, "draw in pass '{s}' uses vertex slot {d}, whose buffer was destroyed since it was bound", .{ self.label, slot });
             }
         }
         if (indexed and self.index_buffer.isNone()) {
             dev.violate(.vertex_layout, "indexed draw in pass '{s}' with no index buffer bound", .{self.label});
+        } else if (indexed and dev.deadBuffer(self.index_buffer)) {
+            dev.violate(.lifetime, "indexed draw in pass '{s}' uses an index buffer destroyed since it was bound", .{self.label});
         }
     }
 
@@ -976,7 +1129,8 @@ pub const RenderPass = struct {
         }
         self.ended = true;
         self.cmd.open_pass = false;
-        dev.free_render_passes.append(dev.gpa, self) catch {};
+        // `acquireRenderPass` reserved this room when the pass was first allocated.
+        dev.free_render_passes.appendAssumeCapacity(self);
     }
 };
 
@@ -1316,9 +1470,7 @@ test "rule 3: writing to memory a frame in flight may be reading is caught" {
     _ = try dev.mapBuffer(staging);
     try testing.expect(dev.hasViolation(.frame_ring));
 
-    // Let the frame drain before tearing down, so this test does not also trip rule 9.
-    _ = try dev.beginFrame();
-    _ = try dev.beginFrame();
+    // Destroying it with frame 1 unfinished is legal; rule 9 keeps it until frame 1 is done.
     dev.destroyBuffer(staging);
 }
 
@@ -1931,8 +2083,14 @@ test "rule 8: a barrier inside an open pass is caught" {
 }
 
 // -- rule 9: lifetime ----------------------------------------------------------------
+//
+// ADR-0035 split this rule. Destroying something unfinished work uses is legal: the backend
+// keeps its backing until every recording that could use it has finished, and no caller can
+// make it release early, so these tests watch the retention itself — `retiredCount` — rather
+// than a violation. What a caller can get wrong is recording through the dead handle, and that
+// is the violation.
 
-test "rule 9: destroying a resource a frame in flight references is caught" {
+test "rule 9: destroying a resource a frame in flight uses is legal, and its backing waits" {
     var fx = try Fixture.init();
     defer fx.deinit();
     const dev = fx.dev;
@@ -1953,13 +2111,26 @@ test "rule 9: destroying a resource a frame in flight references is caught" {
     try cmd.submit();
     try dev.endFrame();
 
-    // The GPU may still be reading it. This is the error that is unobservable in testing
-    // right up until it is a crash on someone else's machine.
+    // Dead at once for callers...
     dev.destroyTexture(tex);
-    try testing.expect(dev.hasViolation(.lifetime));
+    try testing.expect(!dev.textures.contains(tex));
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
+    // ...and kept for the GPU, which may still be reading it. Releasing it here is the error
+    // that is unobservable in testing right up until it is a crash on someone else's machine.
+    try testing.expectEqual(@as(usize, 1), dev.retiredCount());
+
+    // Frame 2 takes the other slot and waits on nothing of frame 1's.
+    _ = try dev.beginFrame();
+    try dev.endFrame();
+    try testing.expectEqual(@as(usize, 1), dev.retiredCount());
+
+    // Frame 3 reuses frame 1's slot, so it waits for frame 1, and the backing goes.
+    _ = try dev.beginFrame();
+    try testing.expectEqual(@as(usize, 0), dev.retiredCount());
+    try dev.endFrame();
 }
 
-test "rule 9: destroying it after the frame completed is fine" {
+test "rule 9: destroying it after the frame completed releases it at once" {
     var fx = try Fixture.init();
     defer fx.deinit();
     const dev = fx.dev;
@@ -1986,6 +2157,7 @@ test "rule 9: destroying it after the frame completed is fine" {
 
     dev.destroyTexture(tex);
     try testing.expectEqual(@as(usize, 0), dev.violationCount());
+    try testing.expectEqual(@as(usize, 0), dev.retiredCount());
 }
 
 test "rule 9: a pass naming a destroyed texture is caught" {
@@ -2009,6 +2181,364 @@ test "rule 9: a pass naming a destroyed texture is caught" {
     pass.end();
 
     try testing.expect(dev.hasViolation(.lifetime));
+}
+
+test "rule 9: a recording open when a resource is destroyed holds it until that recording finishes" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    const buffer = try dev.createBuffer(.{ .size = 16, .usage = .{ .vertex = true }, .memory = .upload });
+    var cmd = try dev.beginCommandBuffer();
+    dev.destroyBuffer(buffer);
+
+    // `waitIdle` cannot finish a recording nobody has submitted.
+    dev.waitIdle();
+    try testing.expectEqual(@as(usize, 1), dev.retiredCount());
+
+    try cmd.submit();
+    try testing.expectEqual(@as(usize, 1), dev.retiredCount());
+    dev.waitIdle();
+    try testing.expectEqual(@as(usize, 0), dev.retiredCount());
+}
+
+test "rule 9: a recording begun after the destroy holds nothing back" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    const buffer = try dev.createBuffer(.{ .size = 16, .usage = .{ .vertex = true }, .memory = .upload });
+    var used = try dev.beginCommandBuffer();
+    try used.submit();
+    dev.destroyBuffer(buffer);
+
+    // Open, but begun after the handle died, so it cannot legally use it.
+    var later = try dev.beginCommandBuffer();
+    dev.waitIdle();
+    try testing.expectEqual(@as(usize, 0), dev.retiredCount());
+    try later.submit();
+}
+
+test "rule 9: every kind of resource is retained while a recording that could use it is unfinished" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    const buffer = try dev.createBuffer(.{ .size = 16, .usage = .{ .uniform = true }, .memory = .upload });
+    const texture = try dev.createTexture(.{ .size = .{ .width = 4, .height = 4 }, .format = .rgba8_unorm, .usage = .{ .sampled = true } });
+    const sampler = try dev.createSampler(.{});
+    const shader = try dev.createShaderModule(.{ .bytes = "stub" });
+    const group_layout = try dev.createBindGroupLayout(.{ .entries = &.{
+        .{ .binding = 0, .type = .uniform_buffer, .visibility = .both },
+    } });
+    const group = try dev.createBindGroup(.{ .layout = group_layout, .entries = &.{
+        .{ .binding = 0, .resource = .{ .uniform_buffer = .{ .buffer = buffer } } },
+    } });
+    const layout = try dev.createPipelineLayout(.{ .bind_group_layouts = &.{group_layout} });
+    const pipe = try dev.createRenderPipeline(.{
+        .layout = layout,
+        .vertex_shader = shader,
+        .fragment_shader = shader,
+        .color_targets = &.{.{ .format = .bgra8_unorm_srgb }},
+    });
+
+    // One recording, submitted and not yet waited for.
+    var cmd = try dev.beginCommandBuffer();
+    try cmd.submit();
+
+    dev.destroyRenderPipeline(pipe);
+    dev.destroyPipelineLayout(layout);
+    dev.destroyBindGroup(group);
+    dev.destroyBindGroupLayout(group_layout);
+    dev.destroyShaderModule(shader);
+    dev.destroySampler(sampler);
+    dev.destroyTexture(texture);
+    dev.destroyBuffer(buffer);
+    try testing.expectEqual(@as(usize, 8), dev.retiredCount());
+
+    // Destroying twice is harmless and retires nothing twice. Teardown under
+    // `testing.allocator` catches any backing released more than once.
+    dev.destroyBuffer(buffer);
+    try testing.expectEqual(@as(usize, 8), dev.retiredCount());
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
+
+    dev.waitIdle();
+    try testing.expectEqual(@as(usize, 0), dev.retiredCount());
+}
+
+test "rule 9: recording through a destroyed handle is caught, including through a live bind group" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    const texture = try dev.createTexture(.{
+        .size = .{ .width = 4, .height = 4 },
+        .format = .rgba8_unorm,
+        .usage = .{ .sampled = true },
+        .initial_state = .shader_read,
+    });
+    const group_layout = try dev.createBindGroupLayout(.{ .entries = &.{
+        .{ .binding = 0, .type = .sampled_texture, .visibility = .{ .fragment = true } },
+    } });
+    const group = try dev.createBindGroup(.{ .layout = group_layout, .entries = &.{
+        .{ .binding = 0, .resource = .{ .sampled_texture = texture } },
+    } });
+    const vertices = try dev.createBuffer(.{ .size = 64, .usage = .{ .vertex = true, .copy_dst = true } });
+    const staging = try dev.createBuffer(.{ .size = 64, .usage = .{ .copy_src = true }, .memory = .upload });
+
+    dev.destroyTexture(texture);
+    dev.destroyBuffer(vertices);
+    dev.destroyBuffer(staging);
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
+
+    const frame = try dev.beginFrame();
+    var cmd = try dev.beginCommandBuffer();
+    try cmd.copyBufferToBuffer(.{ .src = staging, .dst = vertices, .size = 64 });
+    try testing.expectEqual(@as(usize, 2), dev.violationCount());
+
+    var pass = try cmd.beginRenderPass(.{
+        .color = &.{.{ .texture = frame.surface_texture, .initial_state = .undefined, .final_state = .present }},
+    });
+    // The group is alive. What it names is not.
+    pass.setBindGroup(0, group);
+    try testing.expectEqual(@as(usize, 3), dev.violationCount());
+    pass.setVertexBuffer(0, vertices, 0);
+    try testing.expectEqual(@as(usize, 4), dev.violationCount());
+    pass.end();
+
+    try testing.expectError(error.ValidationFailed, cmd.submit());
+    for (dev.violations()) |v| try testing.expectEqual(Rule.lifetime, v.rule);
+}
+
+test "rule 9: a draw after destroying what is bound is a new use of it" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    const frame = try dev.beginFrame();
+    var cmd = try dev.beginCommandBuffer();
+    var pass = try cmd.beginRenderPass(.{
+        .color = &.{.{ .texture = frame.surface_texture, .initial_state = .undefined, .final_state = .present }},
+    });
+    pass.setPipeline(fx.pipe);
+    dev.destroyRenderPipeline(fx.pipe);
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
+
+    pass.draw(.{ .vertex_count = 3 });
+    try testing.expect(dev.hasViolation(.lifetime));
+    pass.end();
+    try testing.expectError(error.ValidationFailed, cmd.submit());
+}
+
+test "a pipeline keeps what it was built from after its layout is destroyed" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    const layout = try dev.createPipelineLayout(.{ .label = "constants", .inline_constant_bytes = 16 });
+    const pipe = try dev.createRenderPipeline(.{
+        .label = "needs constants",
+        .layout = layout,
+        .vertex_shader = fx.vs,
+        .fragment_shader = fx.fs,
+        .color_targets = &.{.{ .format = .bgra8_unorm_srgb }},
+    });
+    dev.destroyPipelineLayout(layout);
+
+    const frame = try dev.beginFrame();
+    var cmd = try dev.beginCommandBuffer();
+    var pass = try cmd.beginRenderPass(.{
+        .color = &.{.{ .texture = frame.surface_texture, .initial_state = .undefined, .final_state = .present }},
+    });
+    pass.setPipeline(pipe);
+    pass.draw(.{ .vertex_count = 3 });
+    // Rule 5 still knows the pipeline needs 16 bytes of constants. Rule 9 has nothing to say:
+    // the pipeline is alive, and using it is not a use of the layout it was built from.
+    try testing.expect(dev.hasViolation(.incomplete_bindings));
+    try testing.expect(!dev.hasViolation(.lifetime));
+    pass.end();
+    try testing.expectError(error.ValidationFailed, cmd.submit());
+}
+
+// -- completion outside the frame ring -------------------------------------------------
+//
+// `hardening.md` §5.1. An upload made outside a frame is ordinary queue work: it finishes when
+// a wait covers it, never because the frame index is zero and never because a frame ended.
+
+/// An upload the way a renderer makes one: fill a staging buffer, copy, submit, destroy.
+fn upload(dev: *Device) !void {
+    const staging = try dev.createBuffer(.{ .label = "staging", .size = 16, .usage = .{ .copy_src = true }, .memory = .upload });
+    const target = try dev.createBuffer(.{ .label = "target", .size = 16, .usage = .{ .copy_dst = true } });
+    @memset(try dev.mapBuffer(staging), 0xAB);
+    dev.unmapBuffer(staging);
+
+    var cmd = try dev.beginCommandBuffer();
+    try cmd.copyBufferToBuffer(.{ .src = staging, .dst = target, .size = 16 });
+    try cmd.submit();
+    dev.destroyBuffer(staging);
+}
+
+/// An empty frame, which is how the ring turns.
+fn idleFrame(dev: *Device) !void {
+    _ = try dev.beginFrame();
+    try dev.endFrame();
+}
+
+test "an upload before the first frame is unfinished until a slot's wait covers it" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    try upload(dev);
+    try testing.expectEqual(@as(usize, 1), dev.retiredCount());
+
+    // Ending a frame is not a wait, and neither slot has waited on anything yet.
+    try idleFrame(dev);
+    try idleFrame(dev);
+    try testing.expectEqual(@as(usize, 1), dev.retiredCount());
+
+    // Frame 3 reuses frame 1's slot, and frame 1 ended after the upload.
+    _ = try dev.beginFrame();
+    try testing.expectEqual(@as(usize, 0), dev.retiredCount());
+    try dev.endFrame();
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
+}
+
+test "an upload between two frames waits for the first frame that ended after it" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    try idleFrame(dev); // frame 1, slot 0: ends before the upload
+    try upload(dev);
+    try idleFrame(dev); // frame 2, slot 1: ends after it
+
+    _ = try dev.beginFrame(); // frame 3 waits on frame 1, which does not cover it
+    try testing.expectEqual(@as(usize, 1), dev.retiredCount());
+    try dev.endFrame();
+
+    _ = try dev.beginFrame(); // frame 4 waits on frame 2, which does
+    try testing.expectEqual(@as(usize, 0), dev.retiredCount());
+    try dev.endFrame();
+}
+
+test "an upload after the last frame is finished by waitIdle" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    try idleFrame(dev);
+    try idleFrame(dev);
+    try upload(dev);
+    try testing.expectEqual(@as(usize, 1), dev.retiredCount());
+
+    dev.waitIdle();
+    try testing.expectEqual(@as(usize, 0), dev.retiredCount());
+}
+
+test "every submission made during a frame is covered by that frame's wait" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    _ = try dev.beginFrame(); // frame 1, slot 0
+    try upload(dev);
+    try upload(dev);
+    try dev.endFrame();
+    try testing.expectEqual(@as(usize, 2), dev.retiredCount());
+
+    try idleFrame(dev);
+    _ = try dev.beginFrame();
+    try testing.expectEqual(@as(usize, 0), dev.retiredCount());
+    try dev.endFrame();
+}
+
+test "rule 3: a buffer an upload used is not writable until a wait covers the upload" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    const staging = try dev.createBuffer(.{ .size = 16, .usage = .{ .copy_src = true }, .memory = .upload });
+    const target = try dev.createBuffer(.{ .size = 16, .usage = .{ .copy_dst = true } });
+    var cmd = try dev.beginCommandBuffer();
+    try cmd.copyBufferToBuffer(.{ .src = staging, .dst = target, .size = 16 });
+    try cmd.submit();
+
+    // No frame has begun, so a model built on frame indices would call this safe. The copy may
+    // still be reading it.
+    _ = try dev.mapBuffer(staging);
+    try testing.expect(dev.hasViolation(.frame_ring));
+
+    dev.clearViolations();
+    dev.waitIdle();
+    _ = try dev.mapBuffer(staging);
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
+}
+
+/// Every kind of resource created, used in a frame and destroyed with that frame unfinished,
+/// against whatever allocator it is handed.
+fn createUseAndRetire(gpa: Allocator) !void {
+    const dev = try Device.init(gpa, .{});
+    defer dev.deinit();
+
+    const staging = try dev.createBuffer(.{ .size = 16, .usage = .{ .copy_src = true }, .memory = .upload });
+    const uniforms = try dev.createBuffer(.{ .size = 16, .usage = .{ .uniform = true, .copy_dst = true } });
+    const texture = try dev.createTexture(.{
+        .size = .{ .width = 4, .height = 4 },
+        .format = .rgba8_unorm,
+        .usage = .{ .sampled = true },
+        .initial_state = .shader_read,
+    });
+    const sampler = try dev.createSampler(.{});
+    const shader = try dev.createShaderModuleFromSource(.{ .source = "stub" });
+    const group_layout = try dev.createBindGroupLayout(.{ .entries = &.{
+        .{ .binding = 0, .type = .uniform_buffer, .visibility = .both },
+        .{ .binding = 1, .type = .sampled_texture, .visibility = .{ .fragment = true } },
+        .{ .binding = 2, .type = .sampler, .visibility = .{ .fragment = true } },
+    } });
+    const group = try dev.createBindGroup(.{ .layout = group_layout, .entries = &.{
+        .{ .binding = 0, .resource = .{ .uniform_buffer = .{ .buffer = uniforms } } },
+        .{ .binding = 1, .resource = .{ .sampled_texture = texture } },
+        .{ .binding = 2, .resource = .{ .sampler = sampler } },
+    } });
+    const layout = try dev.createPipelineLayout(.{ .bind_group_layouts = &.{group_layout} });
+    const pipe = try dev.createRenderPipeline(.{
+        .layout = layout,
+        .vertex_shader = shader,
+        .fragment_shader = shader,
+        .color_targets = &.{.{ .format = .bgra8_unorm_srgb }},
+    });
+
+    const frame = try dev.beginFrame();
+    var cmd = try dev.beginCommandBuffer();
+    try cmd.copyBufferToBuffer(.{ .src = staging, .dst = uniforms, .size = 16 });
+    var pass = try cmd.beginRenderPass(.{
+        .color = &.{.{ .texture = frame.surface_texture, .initial_state = .undefined, .final_state = .present }},
+    });
+    pass.setPipeline(pipe);
+    pass.setBindGroup(0, group);
+    pass.draw(.{ .vertex_count = 3 });
+    pass.end();
+    try cmd.submit();
+    try dev.endFrame();
+
+    // None of these may allocate: a destroy has no error to report a failure with, so a run
+    // that failed an allocation inside one would surface as a swallowed failure.
+    dev.destroyRenderPipeline(pipe);
+    dev.destroyPipelineLayout(layout);
+    dev.destroyBindGroup(group);
+    dev.destroyBindGroupLayout(group_layout);
+    dev.destroyShaderModule(shader);
+    dev.destroySampler(sampler);
+    dev.destroyTexture(texture);
+    dev.destroyBuffer(uniforms);
+    dev.destroyBuffer(staging);
+    try testing.expectEqual(@as(usize, 9), dev.retiredCount());
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
+}
+
+test "no allocation failure leaks, and no destroy needs an allocation" {
+    try std.testing.checkAllAllocationFailures(testing.allocator, createUseAndRetire, .{});
 }
 
 // -- rule 10: limits -----------------------------------------------------------------

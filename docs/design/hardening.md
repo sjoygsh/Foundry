@@ -1,8 +1,8 @@
 # Hardening: close the known faults without changing Foundry's shape
 
-**Status:** designed 2026-09-13; **1/9 implementation steps complete**.
+**Status:** designed 2026-09-13; **2/9 implementation steps complete**.
 **Baseline:** `180ef4f`, M0–M10 complete; M10's verification remains accepted.
-**Stop point:** immediately before Step 2. Resolutions at the end record what each step settled.
+**Stop point:** immediately before Step 3. Resolutions at the end record what each step settled.
 
 Specification for M11, **Solid: "its known faults are fixed"**, in
 [`ROADMAP.md`](../ROADMAP.md). Rests on [ADR-0035](../adr/0035-rhi-lifetime-and-validation.md),
@@ -355,7 +355,7 @@ named implementation seams, check local links/whitespace and scope consistency o
 do not rerun them to prove prose. No compile failure is fixed, no new guard is implemented,
 and no milestone implementation count advances during planning.
 
-**Next action, only when implementation is requested: Step 2 above.**
+**Next action, only when implementation is requested: Step 3 above.**
 
 ## Resolution — Step 1, 2026-09-13
 
@@ -383,3 +383,71 @@ Metal since `eb92181`, including `abi_render_pipeline` on the device. The seven-
 passed. `zig build check -Drhi=metal` joins `AGENTS.md` §3's bar, since a Metal graph that only
 the executables prove is how this stayed broken. No test was added or removed: 1,288 declared /
 1,280 headless.
+
+## Resolution — Step 2, 2026-09-13
+
+**One completion model, in one file both backends run.** `engine/src/rhi/lifetime.zig` holds a
+`Timeline`, which numbers recordings as they begin and submissions as they reach the queue, and
+a `Retirement` list of backings whose handles are dead. Keeping it backend-neutral is what §5.1
+is after: the validation backend and Metal cannot drift apart about when work has finished, and
+Vulkan inherits the same answer. It is internal to `rhi`. No public or C surface changed, and
+the interface still names 40 functions.
+
+**Two numberings, because one queue has two orders.** Retirement is decided by recordings. A
+resource destroyed while recording R was the newest begun may be used by R and by nothing begun
+later — a command recorded through a dead handle is now itself a rule 9 violation — so its
+backing is released once every recording up to R has finished or been discarded. Completion is
+decided by submissions, which a queue executes in order, so a wait through submission S
+finishes everything up to S. §5.2 allowed either tracking each recording's resources or
+retaining conservatively; this is the conservative choice, and it allocates nothing per command.
+
+**Only a wait finishes work.** Each slot keeps a marker: the newest submission when that slot's
+frame ended, which on Metal is the frame-end command buffer it commits. `beginFrame` waits
+through the slot's marker and `waitIdle` through the newest submission. Ending a frame finishes
+nothing, and neither does a frame index of zero, so an upload before frame 1, between frames or
+after the last one stays retained until a wait covers it. Metal now keeps each submitted
+command buffer's reference until then, since those are what it waits on, and no longer relies
+on Metal retaining what a command buffer references. If `endFrame` cannot allocate its marker,
+the slot records the newest submission instead, so the next wait still covers that frame's
+work; the rest of §7's failure cleanup remains Step 5.
+
+**Nothing on the destroy path can fail.** Creating any resource reserves its retirement entry
+before the handle is published, and beginning a recording reserves its submission. The null
+backend's recycled command-buffer and render-pass lists now reserve their room when a new one is
+allocated too: a failed append at submit had been swallowed, which the allocation sweep below
+reported until it was fixed.
+
+**Rule 9 in its corrected form.** Destroying what unfinished recordings use produces no
+violation. Recording through a dead handle does — copies, barriers, attachments, pipelines,
+vertex and index buffers, bind groups, and a live group whose texture, buffer or sampler has
+since died, checked when bound and again at the draw that uses it. A pipeline copies what it
+needs from its layout (group layouts and constant size on the null backend, binding slots on
+Metal), so destroying the layout afterwards changes nothing the pipeline requires or binds.
+Rule 3 moved to the same numbering: a buffer is unwritable while the last recording that used
+it is unfinished. That closes a gap the frame-index model had, where a staging buffer mapped
+again after an upload made before any frame was never reported.
+
+**Found and repaired on the way.** Metal's `Device.init` released the device, the queue and the
+device struct by hand on two failure paths, then returned an error with `errdefer`s for the
+same objects still armed, releasing each twice. Both paths now rely on the `errdefer`s alone.
+The headless resize builds its replacement target before retiring the old one, so a failure
+leaves the surface as it was instead of pointing at a destroyed texture.
+
+**Not done here.** `render2d` still keeps its own frame-index retirement layer and destroys
+staging after an asynchronous submit; the RHI now makes that destroy safe, and routing the
+renderer through the contract is Step 3. A recording left open by an error path — `renderFrame`
+failing between beginning a command buffer and submitting it — now holds later retirements
+until teardown. That costs memory rather than safety, and closing the recording scope on error
+is Step 5.
+
+**Evidence.** Nineteen headless tests were added, seven in `lifetime.zig` and twelve in the null
+backend, and one Metal test. The two rule-9 tests that expected a violation on destroy now
+assert immediate invalidation, retained storage and release at the slot's wait.
+`std.testing.checkAllAllocationFailures` runs a device through every resource kind, a frame and
+nine destroys, failing each allocation in turn: nothing leaks and no destroy allocates. Breaking
+the guards — releasing retired backings regardless of completion, and treating a destroyed
+buffer as alive — failed ten of 1,299 tests, nine to the first and one to the second; both files
+were restored byte-for-byte. `zig build test -Drhi=metal` passed under `MTL_DEBUG_LAYER=1`, with
+Metal API Validation enabled in each test process and no validation error, including the new
+test's upload, frames and retirement on the device. The bar passed. 1,308 declared / 1,299
+headless, nine of them Metal-only.

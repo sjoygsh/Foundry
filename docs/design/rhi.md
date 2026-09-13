@@ -9,12 +9,13 @@ cannot do: a test checks our arithmetic against this document, not that Metal ag
 **Date:** 2026-09-03, revised 2026-09-04
 **Implements:** I1, I7, I8 · **Informed by:** ADR-0003, ADR-0012, ADR-0015, ADR-0007
 
-**M11 planned correction, 2026-09-13:** [ADR-0035](../adr/0035-rhi-lifetime-and-validation.md)
-and [hardening.md](hardening.md) §§5–7 govern the next implementation. They retain §3's
-deferred destruction, correct §11 rule 9 to prohibit premature physical release and new use
-of dead handles, add usage conformance as rule 11, and distinguish temporary presentation
-unavailability from fatal surface/device errors. The old ten-rule implementation and test
-counts below describe the baseline; **none of these M11 changes is implemented yet**.
+**M11 correction, 2026-09-13:** [ADR-0035](../adr/0035-rhi-lifetime-and-validation.md)
+and [hardening.md](hardening.md) §§5–7 govern this document's lifetime, usage and
+frame-outcome contracts. **Step 2 implemented §3's deferred destruction and the corrected
+§11 rule 9 in both backends**: completion covers every submission, uploads outside a frame
+included, and a destroyed handle's backing is kept until every recording that could use it
+has finished. Usage conformance (rule 11) and distinct presentation outcomes are not
+implemented yet, so the rule counts below still describe ten rules.
 
 `rhi` is layer L2. It depends on `core` and `platform`. **Graphics API symbols appear
 nowhere outside it** (I7, enforced by the build graph).
@@ -100,10 +101,12 @@ typically two frames ahead of the GPU — and a stale handle that reports itself
 difference between a diagnosable error and a corrupted command buffer.
 
 **Destruction is deferred.** `destroy(handle)` marks the resource dead immediately for
-callers, and the backend releases it only once every frame that could reference it has
-completed (§7). Destroying a resource the GPU is still reading is undefined behaviour in
-all three APIs and is *unobservable* in testing right up until it is a crash on someone
-else's machine.
+callers, and the backend releases it only once every recording that could reference it —
+every command buffer begun before the destroy, submitted inside a frame or outside one — has
+completed or been discarded (§7). Destroying a resource the GPU is still reading is undefined
+behaviour in all three APIs and is *unobservable* in testing right up until it is a crash on
+someone else's machine. Destroy itself cannot fail: the room to retire a resource is reserved
+when the resource is created.
 
 ## 4. Device, surface, and what is discoverable
 
@@ -188,6 +191,12 @@ device.endFrame()     // submits, presents
 frame slot index. Anything written per-frame — upload buffers, bind groups — is indexed by
 that slot, so writing to slot `i` is safe precisely because `beginFrame` waited for the
 previous use of slot `i` to finish.
+
+Completion is tracked per submission, not per frame, and a frame ending is not a wait.
+`beginFrame` waits through the last submission made before slot `i`'s previous frame ended —
+which covers every earlier submission too, uploads outside the frame included, because a
+queue executes in order — and `waitIdle` waits through the newest submission of all. Neither
+can finish a command buffer that was never submitted.
 
 This is the piece Metal's conveniences hide most thoroughly: `MTLCommandBuffer` completion
 handlers make it easy to never think about it, and Vulkan makes it impossible not to. The
@@ -493,7 +502,13 @@ forgives:
 7. **Attachment format match.** A pass's attachment formats must match the pipeline's.
 8. **Encoder discipline.** One pass open at a time; every pass ended; every command buffer
    ended before submission.
-9. **Lifetime.** No resource destroyed while a frame that references it is in flight.
+9. **Lifetime.** A destroyed resource's handle is dead at once: recording a command through
+   it — directly, or through a bind group or bound state that names it — is an error.
+   Destroying a resource that unfinished recordings use is legal, and the backend keeps its
+   backing until they finish (§3). Releasing it earlier would be the backend's fault, not
+   something a caller can cause, so conformance tests observe the retained backing and its
+   release rather than a violation. A pipeline owns what it was built from: using it is not
+   a use of its layout or its shaders.
 10. **Limits.** At most 4 bind groups and at most 8 vertex buffers. Inline constants at
     most 128 bytes, and never more than the bound pipeline's layout declares. A copy's
     region must also lie inside the resource it addresses, and name a mip level that

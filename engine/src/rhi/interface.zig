@@ -95,8 +95,9 @@ pub fn check(comptime Impl: type, comptime label: []const u8) void {
         expectFn(D, label, "deinit", &.{*D}, void);
         expectFn(D, label, "capabilities", &.{*D}, command.Capabilities);
 
-        // Resources. Every create returns a generational handle (I1); every destroy is
-        // deferred until no in-flight frame can reference it.
+        // Resources. Every create returns a generational handle (I1); every destroy kills its
+        // handle at once and releases the resource only after every recording that could use
+        // it has finished (ADR-0035).
         expectFn(D, label, "createBuffer", &.{ *D, resource.BufferDesc }, ResourceError!resource.BufferHandle);
         expectFn(D, label, "destroyBuffer", &.{ *D, resource.BufferHandle }, void);
         expectFn(D, label, "mapBuffer", &.{ *D, resource.BufferHandle }, MapError![]u8);
@@ -127,11 +128,11 @@ pub fn check(comptime Impl: type, comptime label: []const u8) void {
         expectFn(D, label, "beginFrame", &.{*D}, FrameError!command.FrameContext);
         expectFn(D, label, "endFrame", &.{*D}, FrameError!void);
         expectFn(D, label, "resizeSurface", &.{ *D, resource.Extent2D }, FrameError!void);
-        // Added during M2, because teardown forced it. Every consumer destroys its
-        // resources before the device that owns them, and without this there is no way to
-        // reach the state in which doing so is legal — the validation backend's rule 9
-        // fires on the most ordinary shutdown imaginable. Deliberately not an error
-        // union: waiting cannot fail in a way a caller could act on.
+        // Added during M2, because teardown forced it while rule 9 still rejected destroying
+        // what a frame in flight used. Since ADR-0035 that destroy is legal and deferred; this
+        // waits for every submission, uploads outside a frame included, and releases what was
+        // waiting on them — still what a consumer wants before letting a device go.
+        // Deliberately not an error union: waiting cannot fail in a way a caller could act on.
         expectFn(D, label, "waitIdle", &.{*D}, void);
 
         // Recording.
