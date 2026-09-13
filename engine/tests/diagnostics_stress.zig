@@ -128,7 +128,7 @@ fn parent(gpa: std.mem.Allocator, io: std.Io) !u8 {
         const text = try read(gpa, os, dir, "session-1.log");
         defer gpa.free(text);
         failures += check("what it managed to say is on disk", std.mem.indexOf(u8, text, said) != null);
-        failures += check("the header survived too", std.mem.startsWith(u8, text, "foundry-log 1\n"));
+        failures += check("the header survived too", std.mem.startsWith(u8, text, "foundry-log 2\n"));
 
         const marker = try read(gpa, os, dir, "session-1.marker");
         defer gpa.free(marker);

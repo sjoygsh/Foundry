@@ -273,6 +273,11 @@ Do not collect environment dumps, usernames, absolute home paths, source text, s
 credentials. Existing subsystem messages can contain paths/user strings; the sharing guide
 must require user review, rather than promise total redaction. Nothing is uploaded.
 
+> **M11 Step 7, 2026-09-13:** the log envelope is version 2. Every line after the header reads
+> `f<frame> <elapsed> <level>(<scope>): <text>`, the elapsed time being seconds since the engine
+> started, as it last observed them, or `-` before it had; the header states that format. The
+> marker's own version stays 1, because the marker did not change (`hardening.md` §9).
+
 For ordinary startup errors, log a concise named cause before returning nonzero, with the
 local log location available to a Finder user via the shipping guide. For fatal errors,
 rely on macOS crash reports and matching retained symbols, plus the last drained log. Losing

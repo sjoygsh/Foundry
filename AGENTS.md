@@ -87,7 +87,7 @@ Strict ad-hoc integrity passed and Gatekeeper rejection is expected. Actual Deve
 signing, Apple notarization and a quarantine-preserving launch on a genuinely clean Mac remain
 mandatory deferred work for the first public release; the current artifact does not claim it.
 
-**M10 is complete; M11 is under way, 6/9 steps implemented (2026-09-13).** M10 added
+**M10 is complete; M11 is under way, 7/9 steps implemented (2026-09-13).** M10 added
 Foundry's marks and an application-supplied release icon (ADR-0034); its full verification is
 recorded in PROJECT_STATE. For M11 read ADR-0035 and `docs/design/hardening.md`; §12 is the
 nine-step order. Step 1 repaired the Metal-selected test graph, and its compile check is now
@@ -101,7 +101,10 @@ outcomes: **only `SurfaceUnavailable` may be skipped** (`app.Engine.frameSkippab
 failed frame is closed — its recording discarded, the frame finished — before `renderFrame`
 returns. Step 6 lets the UI walker draw rectangles from a solid patch in the font's own
 texture (`UiDrawOptions.solid`, resolved by `app.uiSolidRegion`), which `foundry:fonts.debug`
-now carries in its spare cell. **Next is Step 7, log timestamps.** M12–M17 remain unstarted.
+now carries in its spare cell. Step 7 stamps every captured log line with the engine's elapsed
+time as well as its frame, published from clock readings the frame already takes
+(`log_sink.Stamp`); the session log is envelope version 2 and its header states the line
+format. **Next is Step 8, file-kind errors.** M12–M17 remain unstarted.
 
 ## 3. Building and verifying
 

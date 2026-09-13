@@ -175,6 +175,18 @@ is the timeline a log is actually read against — the header says what build th
 A wall-clock read per line would buy correlation with other programs' logs, which nothing has
 asked for yet.
 
+> **Revised at M11 Step 7, 2026-09-13** (`hardening.md` §9). A frame index cannot say how long a
+> hitch lasted or how long startup took, so every captured line now also carries an **elapsed
+> time** — still with no clock read of its own. The engine publishes a `log_sink.Stamp`, frame
+> and nanoseconds since its creation, from readings it already takes: once when it is created,
+> at the top of `beginFrame` (the profiler's reading, or else the previous frame's), and again
+> when the frame's own reading is taken. Lines between two publications share one time. Before
+> an engine publishes, and from the moment a session opens, the time is absent rather than
+> guessed. The session log's envelope is version 2: each line is
+> `f<frame> <elapsed> <level>(<scope>): <text>`, the elapsed time in seconds to the microsecond or
+> `-`, and the header states the format. Its marker stays version 1. It is still not a
+> wall-clock date; correlation with other programs' logs has still not been asked for.
+
 Deferred, with reasons: **runtime scope filtering** (`std.Options.log_scope_levels` already
 covers the compile-time case); **anything uploaded anywhere** (never, by §10).
 

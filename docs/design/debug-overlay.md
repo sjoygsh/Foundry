@@ -326,10 +326,13 @@ does not show is a breakdown by call site, which needs stack capture and is §16
 
 ## 6. The log console
 
-**M11 planned extension, 2026-09-13:** [hardening.md](hardening.md) §9 adds optional sampled
-host elapsed time beside frame identity in internal capture and versioned session text.
-`logFn` acquires no clock, simulation gets no new time input, and C log-record layouts remain
-unchanged. This is planned behavior; the implementation below still records frame/sequence.
+**M11 extension, implemented at Step 7, 2026-09-13** ([hardening.md](hardening.md) §9). A
+record now carries an optional elapsed time beside its frame: the engine's most recent clock
+reading, published together with the frame under the ring's lock rather than through an
+atomic. The session log writes it in its version 2 line format. `logFn` acquires no clock,
+simulation gets no new time input, and `FoundryLogRecord` is unchanged — `log_next` still
+reports frame and sequence only. The console still shows the frame; `LogRecord.elapsed` is
+there for a reader that wants the time.
 
 `app/log_sink.zig` already carries the argument this section extends. Logging is the one piece of
 genuinely ambient state in Foundry, "defensible only because logging is ambient by nature:
@@ -351,7 +354,7 @@ that already exists and before `defaultLog`.
 ### 6.2 Fixed memory, no allocation, contiguous lines
 
 ```
-records:  a ring of { level, scope, frame, sequence, offset, len }
+records:  a ring of { level, scope, frame, elapsed, sequence, offset, len }
 text:     a byte ring, written contiguously
 ```
 
@@ -369,6 +372,8 @@ text:     a byte ring, written contiguously
   so its name is a compile-time constant with a program-lifetime address; there is nothing to
   copy and nothing to free.
 * **Each record carries the frame index**, written by `beginFrame` into an atomic the sink reads.
+  *(Revised at M11 Step 7: the frame is now published with the elapsed time as one
+  `log_sink.Stamp`, under the ring's lock rather than through an atomic.)*
   It is what lets a person line a log line up against a span in §4 and against the frame the
   hitch was in, and it costs one relaxed store per frame.
 
@@ -743,7 +748,8 @@ What gets tested, by layer:
 * **`app`'s log ring** — a line longer than the buffer is truncated with its marker; a message
   that will not fit in the tail starts at the beginning and is still one contiguous slice; the
   oldest record is evicted first and the drop count is right; the ring's level is independent of
-  the terminal's; the frame stamp on a record is the frame it was logged in.
+  the terminal's; the frame stamp on a record is the frame it was logged in — and, since M11
+  Step 7, its elapsed time is the observation published before it, or none.
 * **`scene`** — `entities()` yields exactly the live entities in slot order and agrees with what
   a save writes; `describeComponent` round-trips every field type through a registered component;
   a type with no serializer reports why rather than returning an empty block; a destroyed entity

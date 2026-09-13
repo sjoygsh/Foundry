@@ -112,7 +112,6 @@ const truncation_marker = "...";
 const capture_off: u8 = 0xff;
 
 var capture_level_raw: std.atomic.Value(u8) = .init(capture_off);
-var frame_stamp: std.atomic.Value(u64) = .init(0);
 
 /// Guards everything below it.
 ///
@@ -156,6 +155,8 @@ var text_head: u32 = 0;
 var text_used: u32 = 0;
 var next_sequence: u64 = 1;
 var dropped_total: u64 = 0;
+/// Published by `setStamp`, copied by `capture`.
+var stamp: Stamp = .{};
 
 const Entry = struct {
     level: std.log.Level,
@@ -163,6 +164,7 @@ const Entry = struct {
     /// program-lifetime address, so there is nothing to copy and nothing to free.
     scope: []const u8,
     frame: u64,
+    elapsed: ?core.time.Duration,
     sequence: u64,
     offset: u32,
     len: u32,
@@ -177,8 +179,11 @@ pub const Record = struct {
     level: std.log.Level,
     scope: []const u8,
     /// The engine frame this was logged in. What lines a log line up against a profiler
-    /// span, and it costs one relaxed store per frame.
+    /// span.
     frame: u64,
+    /// The host's most recent elapsed-time observation when this was logged, or null before
+    /// one (`Stamp`). Lines logged between two observations share it.
+    elapsed: ?core.time.Duration = null,
     /// Monotonic from 1, so a reader can tell whether it has seen a line before.
     sequence: u64,
     text: []const u8,
@@ -221,9 +226,40 @@ fn captureLevelRaw() u8 {
     return capture_level_raw.load(.monotonic);
 }
 
-/// Stamps subsequent records with a frame index. Called once per frame by the engine.
-pub fn setFrame(index: u64) void {
-    frame_stamp.store(index, .monotonic);
+/// What a captured line is stamped with: the frame it was logged in, and the most recent
+/// elapsed time its host observed.
+///
+/// **Observed, never read.** `logFn` reads no clock. The engine publishes a reading it had
+/// already taken for its frame delta, so every line between two publications carries the
+/// earlier one and a burst of lines shares a time exactly. That is coarser than a clock read
+/// per line, and it is the price of a sink that cannot change what the null platform's clock,
+/// which advances per reading, hands the simulation (I9).
+pub const Stamp = struct {
+    frame: u64 = 0,
+    /// Monotonic time since the host's origin — the engine's creation — in nanoseconds. Null
+    /// until a host publishes one, and again once a session resets it: never an invented
+    /// date, and never a previous session's.
+    elapsed: ?core.time.Duration = null,
+};
+
+/// The stamp every line captured from now on carries, until the next call.
+///
+/// Called by the engine when it is created and twice a frame (`Engine.beginFrame`). **Under
+/// the capture's lock** rather than as two atomics, so the frame and the time a line copies
+/// always came from one publication.
+pub fn setStamp(new: Stamp) void {
+    // A monotonic reading measured from an earlier one. Negative is a host's bug, not input.
+    if (new.elapsed) |elapsed| std.debug.assert(elapsed.ns >= 0);
+    ring_mutex.lock();
+    defer ring_mutex.unlock();
+    stamp = new;
+}
+
+/// The stamp a line captured now would carry.
+pub fn currentStamp() Stamp {
+    ring_mutex.lock();
+    defer ring_mutex.unlock();
+    return stamp;
 }
 
 /// Lines evicted since the process started, because the ring filled.
@@ -290,6 +326,7 @@ pub fn readView(arena: Allocator, out: []Record, filter: Filter, from: usize) Al
             .level = entry.level,
             .scope = entry.scope,
             .frame = entry.frame,
+            .elapsed = entry.elapsed,
             .sequence = entry.sequence,
             .text = try arena.dupe(u8, text),
         };
@@ -325,7 +362,9 @@ fn capture(
     // independent is the *state* — a console that is closed, or filtered to `err`, must not
     // be able to empty a release log — and that is two buffers and two levels, not two
     // locks.
-    if (to_session) appendSession(message_level, scope, text);
+    // Copied once, under the lock `setStamp` takes, so the two captures cannot disagree.
+    const at = stamp;
+    if (to_session) appendSession(message_level, scope, text, at);
     if (!to_ring) return;
 
     const offset = reserve(@intCast(text.len));
@@ -335,7 +374,8 @@ fn capture(
     entries[(oldest + live) % record_capacity] = .{
         .level = message_level,
         .scope = scope,
-        .frame = frame_stamp.load(.monotonic),
+        .frame = at.frame,
+        .elapsed = at.elapsed,
         .sequence = next_sequence,
         .offset = offset.at,
         .len = @intCast(text.len),
@@ -453,28 +493,35 @@ pub fn drainSession(into: []u8) Drained {
     return .{ .len = len, .dropped = session_dropped };
 }
 
-/// Discards whatever the capture holds. Used when a session ends, so that the next one does
-/// not inherit lines from it.
+/// Discards whatever the capture holds, and the stamp. Called when a session opens, so that it
+/// inherits neither lines nor a frame and a time from whatever ran before it.
 pub fn resetSession() void {
     ring_mutex.lock();
     defer ring_mutex.unlock();
     session_used = 0;
     session_dropped = 0;
+    stamp = .{};
 }
 
+/// How a session line is laid out. The session header states it, so a log tells its reader
+/// how to read it (`diagnostics.envelope_version` 2).
+pub const session_line_format = "f<frame> <elapsed> <level>(<scope>): <text>";
+
+/// Room on a session line for everything but its text. The widest frame and elapsed time take
+/// 40 bytes and a level with the punctuation 11, which leaves a scope name 77.
+const session_line_overhead = 128;
+
 /// Appends one already-formatted line. Called with the lock held.
-fn appendSession(message_level: std.log.Level, scope: []const u8, text: []const u8) void {
-    var line: [max_line + 64]u8 = undefined;
+fn appendSession(message_level: std.log.Level, scope: []const u8, text: []const u8, at: Stamp) void {
+    var line: [max_line + session_line_overhead]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&line);
-    // The frame is the timeline a release log is read against, and it costs nothing: there
-    // is no wall-clock read per line, and the header says when the session began.
-    writer.print("f{d} {s}({s}): {s}\n", .{
-        frame_stamp.load(.monotonic),
-        @tagName(message_level),
-        scope,
-        text,
-    }) catch {};
+    // The frame is the timeline a release log is read against, and the elapsed time is what
+    // lines it up against a person's account of the session. Neither costs a clock read.
+    const complete = if (writeSessionLine(&writer, message_level, scope, text, at)) |_| true else |_| false;
     const formatted = writer.buffered();
+    // Only a scope name longer than any Foundry uses can overflow. What fitted is kept, and it
+    // still ends a line, so the next line is never read as part of this one.
+    if (!complete and formatted.len > 0) formatted[formatted.len - 1] = '\n';
 
     if (session_used + formatted.len > session_capacity) {
         session_dropped += 1;
@@ -482,6 +529,25 @@ fn appendSession(message_level: std.log.Level, scope: []const u8, text: []const 
     }
     @memcpy(session_text[session_used..][0..formatted.len], formatted);
     session_used += @intCast(formatted.len);
+}
+
+fn writeSessionLine(
+    writer: *std.Io.Writer,
+    message_level: std.log.Level,
+    scope: []const u8,
+    text: []const u8,
+    at: Stamp,
+) std.Io.Writer.Error!void {
+    try writer.print("f{d} ", .{at.frame});
+    if (at.elapsed) |elapsed| {
+        // Seconds to the microsecond, with the unit written. The value is sampled once a
+        // frame, so further digits would claim a precision it does not have.
+        const ns: u64 = @intCast(elapsed.ns);
+        try writer.print("{d}.{d:0>6}s", .{ ns / std.time.ns_per_s, ns % std.time.ns_per_s / std.time.ns_per_us });
+    } else {
+        try writer.writeByte('-');
+    }
+    try writer.print(" {s}({s}): {s}\n", .{ @tagName(message_level), scope, text });
 }
 
 /// Drop this into a game's root source file:
@@ -554,7 +620,7 @@ fn quietCapture() void {
     setLevel(.err);
     setCaptureLevel(.debug);
     clear();
-    setFrame(0);
+    setStamp(.{});
 }
 
 test "the ring keeps what the terminal is too quiet to print" {
@@ -601,24 +667,30 @@ test "the ring's level is its own" {
     try testing.expect(captureLevel() == null);
 }
 
-test "a record carries the frame it was logged in" {
+test "a record carries its frame and the time observed before it, or no time before any" {
     const terminal = level();
     const kept = captureLevel();
     defer restoreSink(terminal, if (kept != null) .debug else null);
 
     quietCapture();
-    setFrame(41);
-    logFn(.info, .sink_test, "during a frame", .{});
-    setFrame(42);
+    setStamp(.{ .frame = 41 });
+    logFn(.info, .sink_test, "before anything was observed", .{});
+    setStamp(.{ .frame = 42, .elapsed = .fromMillis(1500) });
     logFn(.info, .sink_test, "the next one", .{});
+    logFn(.info, .sink_test, "and one sharing its observation", .{});
 
     var out: [4]Record = undefined;
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
 
     const got = try read(arena.allocator(), &out, .{}, 0);
+    try testing.expectEqual(@as(usize, 3), got.len);
     try testing.expectEqual(@as(u64, 41), got[0].frame);
+    try testing.expect(got[0].elapsed == null);
     try testing.expectEqual(@as(u64, 42), got[1].frame);
+    try testing.expectEqual(@as(i64, 1500 * std.time.ns_per_ms), got[1].elapsed.?.ns);
+    // Sampled, not read: two lines between observations carry the same one exactly.
+    try testing.expectEqual(got[1].elapsed.?.ns, got[2].elapsed.?.ns);
     // Sequence numbers are monotonic, which is how a reader tells a line it has seen.
     try testing.expect(got[1].sequence > got[0].sequence);
 }
@@ -760,6 +832,106 @@ test "clear empties the ring and keeps the drop count" {
     try testing.expectEqual(@as(usize, 0), count());
     // A fact about the run, not about the view.
     try testing.expectEqual(drops, dropped());
+}
+
+/// Puts the session capture back the way a test found it: off and empty.
+fn restoreSession() void {
+    setSessionLevel(null);
+    resetSession();
+}
+
+test "both captures copy one stamp, whatever each one's level keeps" {
+    const terminal = level();
+    const kept = captureLevel();
+    defer restoreSink(terminal, if (kept != null) .debug else null);
+    defer restoreSession();
+    const buffer = try testing.allocator.alloc(u8, session_capacity);
+    defer testing.allocator.free(buffer);
+
+    quietCapture();
+    resetSession();
+    // The ring keeps `warn` and the session `info`, so each keeps a line the other does not.
+    setCaptureLevel(.warn);
+    setSessionLevel(.info);
+    setStamp(.{ .frame = 5, .elapsed = .fromNanos(250_000) });
+    logFn(.info, .sink_test, "the session's only", .{});
+    logFn(.warn, .sink_test, "both", .{});
+
+    // And the other way round, with the session off.
+    setSessionLevel(null);
+    setCaptureLevel(.debug);
+    setStamp(.{ .frame = 6, .elapsed = .fromSeconds(2) });
+    logFn(.info, .sink_test, "the ring's only", .{});
+
+    const got = drainSession(buffer);
+    try testing.expectEqualStrings(
+        "f5 0.000250s info(sink_test): the session's only\n" ++
+            "f5 0.000250s warn(sink_test): both\n",
+        buffer[0..got.len],
+    );
+
+    var out: [4]Record = undefined;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const records = try read(arena.allocator(), &out, .{}, 0);
+    try testing.expectEqual(@as(usize, 2), records.len);
+    try testing.expectEqualStrings("both", records[0].text);
+    try testing.expectEqual(@as(u64, 5), records[0].frame);
+    try testing.expectEqual(@as(i64, 250_000), records[0].elapsed.?.ns);
+    try testing.expectEqualStrings("the ring's only", records[1].text);
+    try testing.expectEqual(@as(u64, 6), records[1].frame);
+    try testing.expectEqual(@as(i64, 2 * std.time.ns_per_s), records[1].elapsed.?.ns);
+}
+
+test "a session reset forgets the stamp, and a line before any observation says so" {
+    const terminal = level();
+    const kept = captureLevel();
+    defer restoreSink(terminal, if (kept != null) .debug else null);
+    defer restoreSession();
+    const buffer = try testing.allocator.alloc(u8, session_capacity);
+    defer testing.allocator.free(buffer);
+
+    quietCapture();
+    // Whatever ran before — an engine, or a previous session's frames — left a stamp behind.
+    setStamp(.{ .frame = 90, .elapsed = .fromSeconds(3) });
+    resetSession();
+    try testing.expectEqual(Stamp{}, currentStamp());
+
+    setSessionLevel(.info);
+    logFn(.info, .sink_test, "nothing observed yet", .{});
+    const got = drainSession(buffer);
+    try testing.expectEqualStrings("f0 - info(sink_test): nothing observed yet\n", buffer[0..got.len]);
+}
+
+test "a session line keeps its stamp when its text is truncated, and always ends its line" {
+    const terminal = level();
+    const kept = captureLevel();
+    defer restoreSink(terminal, if (kept != null) .debug else null);
+    defer restoreSession();
+    const buffer = try testing.allocator.alloc(u8, session_capacity);
+    defer testing.allocator.free(buffer);
+
+    quietCapture();
+    resetSession();
+    setSessionLevel(.info);
+    // The widest stamp there is.
+    setStamp(.{ .frame = std.math.maxInt(u64), .elapsed = .fromNanos(std.math.maxInt(i64)) });
+    logFn(.info, .sink_test, "{s}", .{"x" ** (max_line * 2)});
+
+    var got = drainSession(buffer);
+    const prefix = "f18446744073709551615 9223372036.854775s info(sink_test): ";
+    try testing.expect(std.mem.startsWith(u8, buffer[0..got.len], prefix));
+    try testing.expectEqual(prefix.len + max_line + 1, got.len);
+    try testing.expect(std.mem.endsWith(u8, buffer[0..got.len], truncation_marker ++ "\n"));
+
+    // A scope too long for the line — nothing forbids naming one — loses the end of what it
+    // said, and still ends its line.
+    logFn(.info, .a_scope_named_at_such_length_that_its_line_cannot_hold_the_stamp_the_scope_and_all_of_the_text, "{s}", .{"y" ** max_line});
+    got = drainSession(buffer);
+    try testing.expect(got.len <= max_line + session_line_overhead);
+    try testing.expect(std.mem.startsWith(u8, buffer[0..got.len], "f18446744073709551615 "));
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, buffer[0..got.len], "\n"));
+    try testing.expect(std.mem.endsWith(u8, buffer[0..got.len], "\n"));
 }
 
 test "the exported std_options names our sink" {

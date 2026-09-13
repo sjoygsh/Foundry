@@ -45,7 +45,14 @@ pub const dir_name = "logs";
 pub const slot_count = 5;
 
 /// The log envelope's version. A reader that does not recognise it must not guess (I8).
-pub const envelope_version: u32 = 1;
+///
+/// **2** stamps every line with the elapsed time last observed, and states the line format
+/// in the header (`hardening.md` §9). Version 1 lines carried the frame alone.
+pub const envelope_version: u32 = 2;
+
+/// The marker's version, which is its own: the marker did not change when the log did, and a
+/// reader of either should not be told that it had.
+pub const marker_version: u32 = 1;
 
 /// What is appended when the cap is reached, and nothing more is.
 pub const truncation_marker = "-- truncated: this session reached its size cap --\n";
@@ -346,8 +353,10 @@ pub const Session = struct {
     }
 
     fn writeHeader(self: *Session, build: Build) void {
-        var line: [512]u8 = undefined;
+        var line: [1024]u8 = undefined;
         var writer: std.Io.Writer = .fixed(&line);
+        // The last two lines say how to read every line after the header, so a person handed
+        // a log needs nothing but the log to read its times.
         writer.print(
             \\foundry-log {d}
             \\application {s} {s}
@@ -356,6 +365,8 @@ pub const Session = struct {
             \\backend {s}/{s}
             \\optimize {s}
             \\slot {d} of {d}
+            \\lines {s}
+            \\elapsed seconds since the engine started, as last observed; - before it had
             \\
         , .{
             envelope_version,
@@ -368,6 +379,7 @@ pub const Session = struct {
             build.optimize,
             self.slot,
             slot_count,
+            log_sink.session_line_format,
         }) catch {};
         self.append(writer.buffered());
         self.writeMarker(.open);
@@ -385,7 +397,7 @@ pub const Session = struct {
         var line: [256]u8 = undefined;
         var writer: std.Io.Writer = .fixed(&line);
         writer.print("foundry-session {d}\nstate {t}\nstage {t}\n", .{
-            envelope_version, outcome, self.stage,
+            marker_version, outcome, self.stage,
         }) catch return;
         _ = self.os.replaceFileConfined(
             self.dir,
@@ -562,7 +574,7 @@ test "a session writes a header, the lines that follow it, and a marker saying i
     defer testing.allocator.free(text);
 
     // The envelope, which is what makes a log readable by someone who was not there.
-    try testing.expect(std.mem.startsWith(u8, text, "foundry-log 1\n"));
+    try testing.expect(std.mem.startsWith(u8, text, "foundry-log 2\n"));
     try testing.expect(std.mem.indexOf(u8, text, "application Test 1.0.0\n") != null);
     try testing.expect(std.mem.indexOf(u8, text, "revision local\n") != null);
     try testing.expect(std.mem.indexOf(u8, text, "backend null/null\n") != null);
@@ -670,6 +682,9 @@ test "a log stops at its cap and says that it stopped" {
 
     const session = try Session.open(testing.allocator, fx.os, test_build, .{ .limits = .{ .max_file_bytes = 2048 } });
     defer session.deinit();
+    // Stamped, so the lines that reach the cap are as wide as a real session's.
+    log_sink.setStamp(.{ .frame = 3, .elapsed = .fromMillis(1500) });
+    defer log_sink.setStamp(.{});
 
     var wrote: u32 = 0;
     while (wrote < 200) : (wrote += 1) {
@@ -689,7 +704,43 @@ test "a log stops at its cap and says that it stopped" {
     try testing.expect(std.mem.endsWith(u8, text, truncation_marker));
     // What it did keep is the beginning, header included: the build a log came from is worth
     // more than the two hundredth line of it.
-    try testing.expect(std.mem.startsWith(u8, text, "foundry-log 1\n"));
+    try testing.expect(std.mem.startsWith(u8, text, "foundry-log 2\n"));
+    try testing.expect(std.mem.indexOf(u8, text, "\nf3 1.500000s info(diagnostics): line 0 of a session") != null);
+}
+
+test "every line says its frame and the time last observed, and a new session inherits neither" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+    defer log_sink.setStamp(.{});
+
+    // Left behind by whatever ran before this session: an engine, or another session's frames.
+    log_sink.setStamp(.{ .frame = 90, .elapsed = .fromSeconds(3) });
+    const session = try Session.open(testing.allocator, fx.os, test_build, .{});
+    defer session.deinit();
+
+    say("before the engine observed anything", .{});
+    log_sink.setStamp(.{ .frame = 0, .elapsed = .zero });
+    say("the engine is up", .{});
+    log_sink.setStamp(.{ .frame = 7, .elapsed = .fromNanos(2_004_150_999) });
+    say("a frame later", .{});
+    say("and a line sharing its observation", .{});
+    session.finish(.clean);
+
+    const text = try readIn(fx, session.dir, "session-1.log");
+    defer testing.allocator.free(text);
+
+    try testing.expect(std.mem.startsWith(u8, text, "foundry-log 2\n"));
+    // The format is in the header, so the log is all a reader needs to read its times.
+    try testing.expect(std.mem.indexOf(u8, text, "\nlines f<frame> <elapsed> <level>(<scope>): <text>\n") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "\nf0 - info(diagnostics): before the engine observed anything\n" ++
+        "f0 0.000000s info(diagnostics): the engine is up\n" ++
+        "f7 2.004150s info(diagnostics): a frame later\n" ++
+        "f7 2.004150s info(diagnostics): and a line sharing its observation\n") != null);
+
+    // The marker's format did not change, and neither did its version.
+    const marker = try readIn(fx, session.dir, "session-1.marker");
+    defer testing.allocator.free(marker);
+    try testing.expect(std.mem.startsWith(u8, marker, "foundry-session 1\n"));
 }
 
 test "lines produced faster than they are drained are dropped, and counted" {

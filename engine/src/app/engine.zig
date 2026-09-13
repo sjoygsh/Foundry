@@ -232,6 +232,9 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
 
         stepper: core.time.FixedStepper,
         step_delta: core.time.Duration,
+        /// The clock reading taken at creation, and the origin a log line's elapsed time is
+        /// measured from. **Presentation only**, like `frame_delta`.
+        started: core.time.Instant,
         previous: core.time.Instant,
         /// Wall-clock time the previous frame took. **Presentation only** — see
         /// `frameDelta`.
@@ -368,6 +371,9 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                 return err;
             };
             errdefer gpa.destroy(self);
+            // Read once, now: the first frame's delta is the time spent getting to it rather
+            // than everything since the process started, and log lines measure from it.
+            const started = plat.now();
             self.* = .{
                 .gpa = gpa,
                 .frame_arena = .init(gpa),
@@ -378,9 +384,8 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                 .stepper = .init(timestep),
                 .step_delta = timestep.elapsedAt(1),
                 .frame_delta = .zero,
-                // Read now, so the first frame's delta is the time spent getting to it
-                // rather than everything since the process started.
-                .previous = plat.now(),
+                .started = started,
+                .previous = started,
                 .events = .empty,
                 .event_cursor = 0,
                 .input = .{},
@@ -419,6 +424,11 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                 error.LoaderExists => unreachable,
             };
             self.stepper.max_steps_per_frame = config.max_steps_per_frame;
+
+            // From here what the engine logs — loading content, coming up — carries frame 0 at
+            // its origin. A line before this has no time, which is the truth: nothing had been
+            // observed (`log_sink.Stamp`).
+            log_sink.setStamp(.{ .frame = 0, .elapsed = .zero });
 
             errdefer self.deinitOwned();
             try self.loadContent();
@@ -791,13 +801,14 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             // null backend's synthetic clock advances *per reading* — so a profiler that
             // read it freely would change the number of simulation steps a headless frame
             // produces, which is a measurement altering what it measures.
-            // Stamped before anything can log, so every line this frame produces carries
-            // the frame it belongs to. One relaxed store, and it is what lets a log line be
-            // lined up against a profiler span.
-            log_sink.setFrame(self.frame_index);
-
+            // Stamped before anything can log, so every line this frame produces carries the
+            // frame it belongs to — what lines a log line up against a profiler span — and the
+            // latest time the engine has observed. **No reading is taken for it.** Until
+            // `current` is read below, that is the profiler's reading when there is one and
+            // otherwise the one the previous frame's input ended on (`hardening.md` §9).
             const profiling = self.profile.enabled();
-            var mark: core.time.Instant = if (profiling) self.platform.now() else .{ .ns = 0 };
+            var mark: core.time.Instant = if (profiling) self.platform.now() else self.previous;
+            log_sink.setStamp(.{ .frame = self.frame_index, .elapsed = mark.since(self.started) });
             if (profiling) self.profile.beginFrame(self.frame_index, mark);
 
             // **Before anything else in the frame** (`assets.md` §6, rule 1). A texture
@@ -838,6 +849,9 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
 
             const current = self.platform.now();
             if (profiling) self.profile.close(current);
+            // The reading the delta is made of, so the rest of the frame — simulation,
+            // rendering, whatever the game logs — carries this frame's time.
+            log_sink.setStamp(.{ .frame = self.frame_index, .elapsed = current.since(self.started) });
             self.frame_delta = current.since(self.previous);
             self.stepper.advance(self.frame_delta);
             self.previous = current;
@@ -1708,6 +1722,109 @@ test "the same frame timings produce the same simulation, twice" {
     const b = try run();
     try testing.expectEqual(a.ticks, b.ticks);
     try testing.expectEqual(a.elapsed, b.elapsed);
+}
+
+test "a log line carries its frame and the reading the frame already took" {
+    // `hardening.md` §9: the stamp is an observation the engine made anyway, measured from its
+    // creation, and publishing it costs the frame no clock reading of its own.
+    const engine = try testEngine(.{});
+    defer engine.deinit();
+    defer log_sink.setStamp(.{});
+    try testing.expectEqual(log_sink.Stamp{ .frame = 0, .elapsed = .zero }, log_sink.currentStamp());
+
+    engine.platform.setClockStep(.fromMillis(4));
+    for (0..3) |frame| {
+        const before = engine.platform.clock_ns;
+        engine.beginFrame();
+        try testing.expectEqual(before + 4 * std.time.ns_per_ms, engine.platform.clock_ns);
+        const stamp = log_sink.currentStamp();
+        try testing.expectEqual(@as(u64, frame), stamp.frame);
+        try testing.expectEqual(engine.platform.clock_ns - engine.started.ns, stamp.elapsed.?.ns);
+        engine.endFrame();
+    }
+}
+
+test "capturing and stamping log lines changes neither the clock readings nor the simulation" {
+    // I9 with the sink in the loop: both captures on and every line stamped, against both off.
+    // The null clock advances per reading, so a capture that read it would change the ticks,
+    // and one that fed anything back would change the checksum.
+    const Outcome = struct { ticks: u64, elapsed: i64, clock: i64, checksum: u64 };
+    const run = struct {
+        fn go(capture: bool, buffer: []u8) !Outcome {
+            log_sink.clear();
+            log_sink.resetSession();
+            defer {
+                log_sink.setCaptureLevel(null);
+                log_sink.setSessionLevel(null);
+                log_sink.clear();
+                log_sink.resetSession();
+            }
+
+            // Through the config, because creating an engine applies its log levels: set
+            // beforehand, they would be overwritten.
+            const engine = try TestEngine.init(testing.allocator, .{
+                .headless = true,
+                .tick_rate_hz = 60,
+                .max_steps_per_frame = 1000,
+                .log_level = .err,
+                .log_capture = if (capture) .trace else null,
+            });
+            defer engine.deinit();
+            // The session capture is not the engine's; `app.diagnostics` turns it on.
+            if (capture) log_sink.setSessionLevel(.trace);
+            engine.platform.setClockStep(.fromNanos(7_777_777));
+
+            var checksum: u64 = 0xcbf29ce484222325;
+            for (0..333) |i| {
+                engine.beginFrame();
+                if (i % 50 == 0) try engine.platform.pushEvent(.{ .key_down = .{ .key = .space } });
+                while (engine.nextStep()) |step| {
+                    log_sink.logFn(.debug, .engine_test, "tick {d}", .{step.tick});
+                    const values = [_]u64{ step.tick, @intFromBool(step.input.isHeld(.space)), @bitCast(step.elapsed.ns) };
+                    for (values) |value| checksum = (checksum ^ value) *% 0x100000001b3;
+                }
+                log_sink.logFn(.debug, .engine_test, "frame {d}", .{engine.frame_index});
+                engine.endFrame();
+                // Drained every frame, as a host does, so nothing is dropped on the way.
+                _ = log_sink.drainSession(buffer);
+            }
+
+            if (capture) {
+                var last: [1]log_sink.Record = undefined;
+                var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+                defer arena.deinit();
+                const view = try log_sink.readView(arena.allocator(), &last, .{}, log_sink.count() - 1);
+                // The last line carries the reading the last frame's delta was made of, measured
+                // from creation. Not the clock's latest: this config profiles, and the profiler
+                // reads once more to end the frame, after the line was logged.
+                try testing.expectEqual(@as(u64, 332), view.records[0].frame);
+                try testing.expectEqual(engine.previous.ns - engine.started.ns, view.records[0].elapsed.?.ns);
+            } else {
+                try testing.expectEqual(@as(usize, 0), log_sink.count());
+            }
+            return .{
+                .ticks = engine.stepper.tick,
+                .elapsed = engine.elapsed().ns,
+                .clock = engine.platform.clock_ns,
+                .checksum = checksum,
+            };
+        }
+    }.go;
+
+    const terminal = log_sink.level();
+    defer log_sink.setLevel(switch (terminal) {
+        .err => .err,
+        .warn => .warn,
+        .info => .info,
+        .debug => .debug,
+    });
+    defer log_sink.setStamp(.{});
+    const buffer = try testing.allocator.alloc(u8, log_sink.session_capacity);
+    defer testing.allocator.free(buffer);
+
+    const off = try run(false, buffer);
+    const on = try run(true, buffer);
+    try testing.expectEqual(off, on);
 }
 
 test "with the profiler off, a frame reads the clock exactly once" {

@@ -445,6 +445,10 @@ test "a mod walks the log ring and reaches the end of it" {
     app.log_sink.clear();
     defer app.log_sink.clear();
 
+    // Stamped with a time, which the ring keeps and the record a mod reads does not: that
+    // layout is frozen, so the time stays inside the engine (`hardening.md` §9).
+    app.log_sink.setStamp(.{ .frame = 12, .elapsed = .fromSeconds(3) });
+    defer app.log_sink.setStamp(.{});
     app.log_sink.logFn(.info, .mod, "{s}", .{"first"});
     app.log_sink.logFn(.info, .mod, "{s}", .{"second"});
 
@@ -452,6 +456,7 @@ test "a mod walks the log ring and reaches the end of it" {
     var record: LogRecord = .{};
 
     try testing.expectEqual(Result.ok, table.log_next(&cursor, &record));
+    try testing.expectEqual(@as(u64, 12), record.frame);
     try testing.expectEqualStrings("first", record.text.bytes().?);
     try testing.expectEqualStrings("mod", record.scope.bytes().?);
     try testing.expectEqual(types.LogLevel.info, record.level);

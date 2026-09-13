@@ -1,8 +1,8 @@
 # Hardening: close the known faults without changing Foundry's shape
 
-**Status:** designed 2026-09-13; **6/9 implementation steps complete**.
+**Status:** designed 2026-09-13; **7/9 implementation steps complete**.
 **Baseline:** `180ef4f`, M0–M10 complete; M10's verification remains accepted.
-**Stop point:** immediately before Step 7. Resolutions at the end record what each step settled.
+**Stop point:** immediately before Step 8. Resolutions at the end record what each step settled.
 
 Specification for M11, **Solid: "its known faults are fixed"**, in
 [`ROADMAP.md`](../ROADMAP.md). Rests on [ADR-0035](../adr/0035-rhi-lifetime-and-validation.md),
@@ -355,7 +355,7 @@ named implementation seams, check local links/whitespace and scope consistency o
 do not rerun them to prove prose. No compile failure is fixed, no new guard is implemented,
 and no milestone implementation count advances during planning.
 
-**Next action, only when implementation is requested: Step 7 above.**
+**Next action, only when implementation is requested: Step 8 above.**
 
 ## Resolution — Step 1, 2026-09-13
 
@@ -684,3 +684,79 @@ bounds check failed 3 of 1,327 tests, and the walker accepting any region failed
 restored byte-for-byte each time. Both samples ran 30 and 600 null frames with no validation
 report and no patch warning, and 300 windowed frames on Metal under `MTL_DEBUG_LAYER=1` with no
 validation error. The bar passed. 1,337 declared / 1,327 headless, ten of them Metal-only.
+
+## Resolution — Step 7, 2026-09-13
+
+**The stamp is published, never read.** `app.log_sink.Stamp` is a frame and an optional elapsed
+`core.time.Duration`. `setStamp` replaces `setFrame`'s atomic with one assignment under the
+capture's existing lock, so a line copies its frame and its time from one publication and the
+ring and the session capture copy the same one. `logFn` still reads no clock, allocates nothing
+and writes nothing under the lock, and no callback was added. The engine publishes three times.
+At creation it publishes frame 0 at zero, measured from `Engine.started`: the reading `previous`
+was already initialised from, now kept. At the top of `beginFrame` it publishes the profiler's
+reading when the profiler is on, and otherwise the previous frame's final reading — §9's
+permitted most recent observation — so content-reload and event lines keep their own frame
+index. Immediately after the frame's own reading, the one its delta is made of, it publishes that.
+No reading was added: with the profiler off a frame still reads the clock once. Lines logged
+after `endFrame` carry that frame's reading; the profiler's end-of-frame reading is not published.
+
+**Absent means absent.** A line logged before an engine publishes has no time. Both samples open
+their session, `Os`, platform and RHI before the engine, so those lines read `-`. `resetSession`,
+which `Session.open` calls, clears the whole stamp, so a session inherits neither a frame nor a
+time from whatever ran before it. After an engine is destroyed its last observation remains until
+a session opens or another engine publishes, so shutdown lines carry the final frame's time — the
+most recent observation, as §9 permits. Several engines publishing to the one ambient sink at once
+remains M12's.
+
+**The format.** The session envelope is version 2. The header gains
+`lines f<frame> <elapsed> <level>(<scope>): <text>` and a line saying what elapsed measures. Each
+line's elapsed is seconds to the microsecond with the unit written, such as `7.809000s`, or `-`;
+storage is nanoseconds. The marker's format did not change, so it now has its own
+`marker_version`, still 1, and markers left by earlier sessions read as before. A truncated line
+keeps its stamp, and a scope name too long for the line's 128 bytes of overhead still ends its
+line. The ring's `LogRecord` gained `elapsed`. The overlay console still shows the frame alone, and
+`log_next` fills `FoundryLogRecord` from exactly the fields it did.
+
+**Evidence.** Six new tests, and one existing test renamed and extended.
+- **`log_sink`:**
+  - A record carries its frame, and the time observed before it or none; lines between two
+    observations share one time.
+  - Both captures copy one stamp under independent levels, each keeping a line the other refuses.
+  - A reset forgets the stamp, and the next line writes `-`.
+  - A truncated line with the widest possible stamp keeps it and ends with the marker and a
+    newline; a line with an overlong scope still ends in a newline.
+- **`diagnostics`:**
+  - The version 2 header states the format, and lines read `f0 -`, `f0 0.000000s` and
+    `f7 2.004150s` around two observations.
+  - A session opened over a leftover stamp inherits nothing, and the marker stays version 1.
+  - The size-cap test now writes stamped lines.
+- **`engine`:**
+  - Creation publishes frame 0 at zero, and each frame publishes its own reading while still
+    reading the clock once.
+  - 333 frames with both captures on and every line stamped match 333 frames with both off, in
+    ticks, simulated time, clock readings and a checksum over every step's tick, input and
+    simulated time. The last captured line carries the last frame's delta reading.
+- **ABI:** the log-walk test stamps its lines and reads the same record, frame included.
+- **`diagnostics-stress`:** it expects the version 2 header.
+
+**Deliberate breakage.** Three runs of 1,333 tests; each run failed 3, and the files were
+restored byte-for-byte each time.
+- A reset that kept the stamp, and an overflowing line without its newline.
+- Dropping the frame's own publication, and giving the marker the log's version.
+- A stamp taken from a clock reading of its own, and nothing published at creation. This failed
+  the one-reading test and the step-count test, which is how an added read would show.
+
+**Runtime.** Both samples ran 600 null frames with the session log on and off. Their terminal
+output was identical line for line (39 sandbox lines and 20 room lines, excluding the line naming
+the log), and neither run reported a validation problem. The room's log reads:
+- `f0 -` through platform and RHI startup;
+- `f0 0.000000s` from content loading onward;
+- `f85 1.110000s` and `f268 3.495000s` as lamps caught;
+- `f599 7.809000s` on its stop line.
+
+The sandbox's log ends at `f599 0.600000s`, its synthetic clock's 600 ms. On Metal under
+`MTL_DEBUG_LAYER=1`, with the real clock, API validation enabled and no error reported, 300
+windowed sandbox frames logged startup at `f0 0.000000s` and the exit report at
+`f299 2.937981s`. That is about 9.8 ms a frame including startup, beside the profiler's median
+of 8.11 ms over the last 240 frames. The bar passed.
+1,343 declared / 1,333 headless, ten of them Metal-only.
