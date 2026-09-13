@@ -87,7 +87,7 @@ Strict ad-hoc integrity passed and Gatekeeper rejection is expected. Actual Deve
 signing, Apple notarization and a quarantine-preserving launch on a genuinely clean Mac remain
 mandatory deferred work for the first public release; the current artifact does not claim it.
 
-**M10 is complete; M11 is under way, 4/9 steps implemented (2026-09-13).** M10 added
+**M10 is complete; M11 is under way, 5/9 steps implemented (2026-09-13).** M10 added
 Foundry's marks and an application-supplied release icon (ADR-0034); its full verification is
 recorded in PROJECT_STATE. For M11 read ADR-0035 and `docs/design/hardening.md`; §12 is the
 nine-step order. Step 1 repaired the Metal-selected test graph, and its compile check is now
@@ -96,8 +96,10 @@ recordings that could use it finish (`engine/src/rhi/lifetime.zig`); **rule 9 no
 recording through a dead handle, not the destroy itself.** Step 3 moved `render2d` onto that
 contract: it keeps no retirement of its own, uploads declare a texture's tracked state, and a
 failed atlas upload claims no space. Step 4 made declared usage **validation rule 11**: a
-resource used, or moved into a state, its usage does not allow is reported. **Next is Step 5,
-transient and fatal frame outcomes.** M12–M17 remain unstarted.
+resource used, or moved into a state, its usage does not allow is reported. Step 5 split frame
+outcomes: **only `SurfaceUnavailable` may be skipped** (`app.Engine.frameSkippable`), and a
+failed frame is closed — its recording discarded, the frame finished — before `renderFrame`
+returns. **Next is Step 6, the shared UI font texture.** M12–M17 remain unstarted.
 
 ## 3. Building and verifying
 
@@ -196,7 +198,7 @@ owner's authorization to use that identity, Keychain profile and network service
 ### Counting tests
 
 `PROJECT_STATE.md` quotes a number. It is `^test "` plus `^test {` across `engine/src`,
-`engine/tests` and `tools`, minus the 9 Metal-only tests that do not run headlessly:
+`engine/tests` and `tools`, minus the 10 Metal-only tests that do not run headlessly:
 
 ```sh
 { grep -rhc '^test "' --include='*.zig' engine/src engine/tests tools;

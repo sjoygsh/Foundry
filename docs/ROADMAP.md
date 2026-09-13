@@ -562,7 +562,7 @@ and the Dock; the README shows the wordmark; and [`brand/README.md`](../brand/RE
 stranger what they may call their own work, with [ADR-0034](adr/0034-brand-and-trademark.md)
 behind it.
 
-### M11 — Solid: "its known faults are fixed" — **designed (2026-09-13), 4/9 implemented**
+### M11 — Solid: "its known faults are fixed" — **designed (2026-09-13), 5/9 implemented**
 
 The known-bugs section of `PROJECT_STATE.md` has entries that have been carried for several
 milestones. Individually each is small. Together they are the reason a future session cannot

@@ -49,8 +49,13 @@ pub const MapError = error{
 
 pub const FrameError = error{
     OutOfMemory,
-    /// The window went away, or the swapchain needs recreating.
+    /// No presentation image this frame, and nothing is wrong: a minimised or occluded window,
+    /// or every image still in flight. **The only outcome a caller may answer by skipping the
+    /// frame** (ADR-0035). No frame opened, so there is nothing to finish.
+    SurfaceUnavailable,
+    /// The surface cannot be used again without recovery the current host does not implement.
     SurfaceLost,
+    /// The device is unusable.
     DeviceLost,
 };
 
@@ -125,6 +130,9 @@ pub fn check(comptime Impl: type, comptime label: []const u8) void {
 
         // The frame ring. Explicit because Vulkan makes it impossible to ignore and Metal
         // makes it easy to, and the engine must not depend on which.
+        // A failed `beginFrame` opens no frame and spends no frame index. One that succeeds is
+        // closed by `endFrame` on every path, a failed frame's included, and `endFrame` leaves
+        // the slot's marker even when it fails, so what the frame submitted is still waited for.
         expectFn(D, label, "beginFrame", &.{*D}, FrameError!command.FrameContext);
         expectFn(D, label, "endFrame", &.{*D}, FrameError!void);
         expectFn(D, label, "resizeSurface", &.{ *D, resource.Extent2D }, FrameError!void);
@@ -143,7 +151,12 @@ pub fn check(comptime Impl: type, comptime label: []const u8) void {
         expectFn(C, label, "bufferBarrier", &.{ *C, []const command.BufferBarrier }, CommandError!void);
         expectFn(C, label, "copyBufferToBuffer", &.{ *C, command.BufferCopy }, CommandError!void);
         expectFn(C, label, "copyBufferToTexture", &.{ *C, command.BufferToTextureCopy }, CommandError!void);
+        // `submit` consumes the command buffer whatever it returns: queued, or refused and
+        // discarded, it is never touched again. `discard` abandons one that will never be
+        // submitted, once its passes have ended — the cleanup a failed frame owes — and cannot
+        // fail (ADR-0035, `hardening.md` §7).
         expectFn(C, label, "submit", &.{*C}, CommandError!void);
+        expectFn(C, label, "discard", &.{*C}, void);
 
         expectFn(R, label, "setPipeline", &.{ *R, pipeline.RenderPipelineHandle }, void);
         expectFn(R, label, "setBindGroup", &.{ *R, u32, pipeline.BindGroupHandle }, void);

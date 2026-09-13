@@ -1,8 +1,8 @@
 # Hardening: close the known faults without changing Foundry's shape
 
-**Status:** designed 2026-09-13; **4/9 implementation steps complete**.
+**Status:** designed 2026-09-13; **5/9 implementation steps complete**.
 **Baseline:** `180ef4f`, M0–M10 complete; M10's verification remains accepted.
-**Stop point:** immediately before Step 5. Resolutions at the end record what each step settled.
+**Stop point:** immediately before Step 6. Resolutions at the end record what each step settled.
 
 Specification for M11, **Solid: "its known faults are fixed"**, in
 [`ROADMAP.md`](../ROADMAP.md). Rests on [ADR-0035](../adr/0035-rhi-lifetime-and-validation.md),
@@ -355,7 +355,7 @@ named implementation seams, check local links/whitespace and scope consistency o
 do not rerun them to prove prose. No compile failure is fixed, no new guard is implemented,
 and no milestone implementation count advances during planning.
 
-**Next action, only when implementation is requested: Step 5 above.**
+**Next action, only when implementation is requested: Step 6 above.**
 
 ## Resolution — Step 1, 2026-09-13
 
@@ -563,3 +563,68 @@ disabled setter check, so it was run again alone: one test failed, the two-path 
 buffer bound without vertex usage. The files were restored byte-for-byte. Both samples ran 30 and
 600 null frames with no validation report. The bar passed. 1,323 declared / 1,314 headless,
 nine of them Metal-only.
+
+## Resolution — Step 5, 2026-09-13
+
+**Three outcomes, one of them routine.** `FrameError` gained `SurfaceUnavailable`, and it is the
+only outcome a host may skip. Metal reports it for a nil drawable — a minimised or occluded
+window, or every drawable in flight — and keeps `SurfaceLost` for a drawable without a texture,
+which is no documented transient. `SurfaceLost` and `DeviceLost` stay fatal in this host, and
+running out of memory stays separate. `app.Engine.frameSkippable` is the one place the rule is
+written, and both samples use it: a skippable frame is skipped — the sandbox counts them and says
+so at exit — and anything else is logged and returned, so the run ends through the ordinary
+failure path and the session's marker says `failed` rather than `clean`. Once the session is
+`running`, that failure is described as `stopped` rather than `could not start`.
+
+**A failed acquisition opens nothing.** Both backends wait a slot's marker before asking for an
+image, so older work may still finish; on failure no frame opens and no frame index is spent.
+Metal already behaved so, and the validation backend now does too.
+
+**A frame that opened is closed on every path.** `renderFrame` ends a pass whose recording
+failed, discards a recording that never reached `submit`, and finishes the frame, in that order,
+before returning the error that stopped it; a cleanup that fails as well is logged at `warn` and
+does not replace it. Two contract points make that possible, both written into `rhi.md` §§7–8 and
+the interface check: `submit` consumes its command buffer whatever it returns, and
+`CommandBuffer.discard` abandons one that will never be submitted, once its passes have ended,
+and cannot fail. The interface now names 41 functions. Discarding releases nothing early — what
+the recording could have used simply stops waiting on it — and it closes the limitation Steps 2
+and 3 recorded, where a recording left open by an error held later retirements until teardown.
+
+**Finishing leaves its evidence even when it fails.** `endFrame` sets the slot's marker before it
+can fail, so what the frame submitted is still waited for before anything it used is released. On
+Metal the drawable is let go on those failure paths rather than held into the next frame, and it
+is presented only if submitted work drew into it, so a frame that failed before its pass reached
+the queue no longer presents an image nothing rendered. Metal's `beginRenderPass` no longer leaks
+an encoder when allocating the pass fails, and its pass list now reserves room when a pass is
+allocated, so `end` cannot swallow an allocation failure — the repair Step 2 made to the
+validation backend.
+
+**Deterministic faults.** The validation device has test-only `faults` for acquisition,
+submission and finish, each consumed by the call it names; failing recorders cover preparation
+and recording. `FOUNDRY_SANDBOX_FRAME_FAULT=<frame>:<outcome>` arms an acquisition fault on the
+validation backend, so an outcome can be watched through a whole sample run.
+
+**Not done here.** Device and surface recovery, Vulkan swapchain recreation and backend
+replacement remain M13 decisions. The Metal minimise-and-restore run §7 asks for was not
+performed: minimising a window from this environment needs accessibility automation it was not
+permitted to use. That evidence is owed to Step 9, from a person minimising and restoring the
+window during a run. Resizing was exercised on Metal.
+
+**Evidence.** Ten tests. Five are in the validation backend: a failed acquisition for each
+outcome; a failed finish keeping its marker through the slot's wait; a refused submission
+consuming its buffer; a discarded recording holding nothing back; and rule 8 for a discard with a
+pass still open. Four are in `app`: the skip rule; a failed acquisition followed by a frame that
+draws; failures at preparation, recording, submission and finish — and a failing cleanup behind a
+failed recording — each closed with its own error returned; and a failed finish whose submission
+is still waited for. One is on Metal: a pass ended, its command buffer discarded uncommitted, its
+resource released, and the ring carrying on. Breaking the guards took two runs, split so that no
+two breaks shared a test: removing frame cleanup, dropping a failed finish's marker and making a
+lost surface skippable failed 4 of 1,323 tests; removing the discard and spending a frame index
+on a failed acquisition failed 3. The files were restored byte-for-byte after each.
+`zig build test -Drhi=metal` passed under `MTL_DEBUG_LAYER=1` with no validation error. The null
+sandbox with an unavailable surface injected at frame 10 skipped one frame and exited cleanly
+after 30. With a lost device injected at frame 10 and diagnostics on in a scratch home, it exited
+1; its log reads `f10 err(sandbox): frame 10 failed: DeviceLost` then `stopped: DeviceLost`, and
+its marker `state failed`, `stage running`. The windowed Metal sandbox resized six times in 600
+frames under `MTL_DEBUG_LAYER=1` with no error and a clean exit. The bar passed. 1,333 declared /
+1,323 headless, ten of them Metal-only.

@@ -86,6 +86,16 @@ pub const Rule = enum(u8) {
     usage = 11,
 };
 
+/// Failures a test can make the next call fail with, each consumed by the call it names. They
+/// drive a caller's cleanup through the points a real device fails a frame — acquiring it,
+/// submitting to it and finishing it — deterministically (`hardening.md` §7). Never set outside
+/// a test.
+pub const Faults = struct {
+    begin_frame: ?interface.FrameError = null,
+    submit: ?interface.CommandError = null,
+    end_frame: ?interface.FrameError = null,
+};
+
 pub const Violation = struct {
     rule: Rule,
     /// Owned by the device; freed by `clearViolations` and `deinit`.
@@ -199,6 +209,7 @@ pub const Device = struct {
     /// habit rule 2 exists to prevent. It exists so a caller's unified-memory branch can be
     /// validated as well as its staging-copy branch, deterministically, on any host.
     unified_memory: bool = false,
+    faults: Faults = .{},
 
     surface_texture: resource.TextureHandle = .none,
     surface_size: resource.Extent2D,
@@ -689,17 +700,26 @@ pub const Device = struct {
         if (self.in_frame) {
             self.violate(.encoder_discipline, "beginFrame called while frame {d} is still open", .{self.frame_index});
         }
-        self.in_frame = true;
-        self.frame_index += 1;
-        self.frame_slot = @intCast((self.frame_index - 1) % self.desc.frames_in_flight);
+        const index = self.frame_index + 1;
+        const slot: u32 = @intCast((index - 1) % self.desc.frames_in_flight);
 
         // The ring's wait. Everything submitted before this slot's previous frame ended has
-        // finished, and so has whatever was retired waiting on it.
-        const marker = self.slot_markers[self.frame_slot];
+        // finished, and so has whatever was retired waiting on it. Before the image is asked
+        // for, as on Metal, so a failed acquisition may still finish older work.
+        const marker = self.slot_markers[slot];
         if (marker != 0) {
-            self.slot_markers[self.frame_slot] = 0;
+            self.slot_markers[slot] = 0;
             self.waitThrough(marker);
         }
+
+        // A failed acquisition opens no frame and spends no frame index.
+        if (self.faults.begin_frame) |err| {
+            self.faults.begin_frame = null;
+            return err;
+        }
+        self.in_frame = true;
+        self.frame_index = index;
+        self.frame_slot = slot;
 
         // The surface arrives with nothing worth preserving, which is what makes the
         // first transition of the frame free on every backend.
@@ -719,6 +739,12 @@ pub const Device = struct {
         }
         self.in_frame = false;
         self.slot_markers[self.frame_slot] = self.timeline.submitted;
+        // A frame that fails to finish still leaves its marker first: what it submitted is
+        // queued, and whatever that uses must wait for it however the frame ended.
+        if (self.faults.end_frame) |err| {
+            self.faults.end_frame = null;
+            return err;
+        }
     }
 
     pub fn resizeSurface(self: *Device, size: resource.Extent2D) interface.FrameError!void {
@@ -977,6 +1003,15 @@ pub const CommandBuffer = struct {
             dev.violate(.encoder_discipline, "command buffer submitted twice", .{});
             return error.ValidationFailed;
         }
+        if (dev.faults.submit) |err| {
+            dev.faults.submit = null;
+            // Refused before the queue took it, so nothing it recorded will run. `submit`
+            // consumes a command buffer whatever it returns, so the recording is discarded here.
+            self.submitted = true;
+            dev.timeline.discard(self.recording);
+            dev.recycleCommandBuffer(self);
+            return err;
+        }
         self.submitted = true;
         // Queued even when it broke a rule. The caller is told, but a recording that reached
         // submit is treated as executing, so what it could use stays retained until a wait
@@ -986,6 +1021,18 @@ pub const CommandBuffer = struct {
         const failed = dev.violation_list.items.len > self.violations_at_start;
         dev.recycleCommandBuffer(self);
         if (failed) return error.ValidationFailed;
+    }
+
+    /// Abandons a recording that will never be submitted. What it could have used stops
+    /// waiting on it, and the command buffer is gone. Its passes must have ended first: a pass
+    /// still open is rule 8 here, as it is at submission.
+    pub fn discard(self: *CommandBuffer) void {
+        const dev = self.device;
+        if (self.open_pass) {
+            dev.violate(.encoder_discipline, "command buffer discarded with a render pass still open", .{});
+        }
+        dev.timeline.discard(self.recording);
+        dev.recycleCommandBuffer(self);
     }
 };
 
@@ -2675,6 +2722,101 @@ fn createUseAndRetire(gpa: Allocator) !void {
 
 test "no allocation failure leaks, and no destroy needs an allocation" {
     try std.testing.checkAllAllocationFailures(testing.allocator, createUseAndRetire, .{});
+}
+
+// -- failed frames and abandoned recordings -------------------------------------------
+
+test "a failed acquisition opens no frame and spends no frame index" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    inline for (.{ error.SurfaceUnavailable, error.SurfaceLost, error.DeviceLost }) |outcome| {
+        dev.faults.begin_frame = outcome;
+        try testing.expectError(outcome, dev.beginFrame());
+        try testing.expect(!dev.in_frame);
+        try testing.expectEqual(@as(u64, 0), dev.frame_index);
+    }
+    // Nothing is owed to `endFrame` for them, and the next acquisition is frame 1.
+    const frame = try dev.beginFrame();
+    try testing.expectEqual(@as(u64, 1), frame.index);
+    try dev.endFrame();
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
+}
+
+test "a frame that fails to finish still leaves the marker its submissions are waited through" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    const buffer = try dev.createBuffer(.{ .size = 16, .usage = .{ .vertex = true } });
+    _ = try dev.beginFrame();
+    const cmd = try dev.beginCommandBuffer();
+    try cmd.bufferBarrier(&.{.{ .buffer = buffer, .from = .undefined, .to = .shader_read }});
+    try cmd.submit();
+    dev.faults.end_frame = error.DeviceLost;
+    try testing.expectError(error.DeviceLost, dev.endFrame());
+    try testing.expect(!dev.in_frame);
+
+    dev.destroyBuffer(buffer);
+    try testing.expectEqual(@as(usize, 1), dev.retiredCount());
+    // Round the ring to the failed frame's slot. The frame between waits for nothing of it;
+    // the slot's own wait covers its submission, and only then is the buffer released.
+    for ([_]usize{ 1, 0 }) |retained| {
+        _ = try dev.beginFrame();
+        try testing.expectEqual(retained, dev.retiredCount());
+        try dev.endFrame();
+    }
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
+}
+
+test "a submission the device refuses consumes the command buffer and holds nothing back" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    const buffer = try dev.createBuffer(.{ .size = 16, .usage = .{ .vertex = true } });
+    const cmd = try dev.beginCommandBuffer();
+    dev.destroyBuffer(buffer);
+    dev.faults.submit = error.DeviceLost;
+    try testing.expectError(error.DeviceLost, cmd.submit());
+
+    try testing.expectEqual(@as(usize, 0), dev.timeline.open.items.len);
+    try testing.expectEqual(@as(u64, 0), dev.timeline.submitted);
+    dev.waitIdle();
+    try testing.expectEqual(@as(usize, 0), dev.retiredCount());
+}
+
+test "a discarded recording holds nothing back" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    const buffer = try dev.createBuffer(.{ .size = 16, .usage = .{ .vertex = true } });
+    const cmd = try dev.beginCommandBuffer();
+    dev.destroyBuffer(buffer);
+    // Open when the buffer was destroyed, so it could have used it.
+    try testing.expectEqual(@as(usize, 1), dev.retiredCount());
+
+    cmd.discard();
+    try testing.expectEqual(@as(usize, 0), dev.timeline.open.items.len);
+    // Nothing was submitted, so the wait has nothing to finish and the buffer goes.
+    dev.waitIdle();
+    try testing.expectEqual(@as(usize, 0), dev.retiredCount());
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
+}
+
+test "rule 8: a recording is discarded only once its passes have ended" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    const frame = try dev.beginFrame();
+    const cmd = try dev.beginCommandBuffer();
+    _ = try cmd.beginRenderPass(.{ .color = &.{.{ .texture = frame.surface_texture, .final_state = .present }} });
+    cmd.discard();
+    try testing.expect(dev.hasViolation(.encoder_discipline));
+    try dev.endFrame();
 }
 
 // -- rule 10: limits -----------------------------------------------------------------

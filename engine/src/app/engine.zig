@@ -804,9 +804,9 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             // replaced between two draws of one frame is a class of bug worth never having,
             // so the swap happens here, before events, before input, before simulation.
             //
-            // Safe against the GPU for a reason worth naming: `render2d` retires a
-            // destroyed texture behind the frames that could still reference it, so an
-            // unload at the top of a frame does not free something in flight.
+            // Safe against the GPU for a reason worth naming: the RHI keeps a destroyed
+            // texture's objects until the work that could use them has finished, so an unload
+            // at the top of a frame does not free something in flight (`rhi.md` §3).
             if (self.hot_reload and self.frame_index % self.hot_reload_frames == 0) {
                 if (profiling) self.profile.open(span.content, mark);
                 self.pollContent();
@@ -1082,6 +1082,16 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             return self.platform.setWindowSize(self.window, logical);
         }
 
+        /// Whether a failed `renderFrame` may be skipped and the loop carry on.
+        ///
+        /// **Only `SurfaceUnavailable`**: no presentation image this frame, which is what a
+        /// minimised or occluded window gives. A lost surface, a lost device or running out of
+        /// memory is a failure the host reports and stops on, because this host implements no
+        /// recovery from any of them (ADR-0035). One function, so the samples cannot drift.
+        pub fn frameSkippable(err: anyerror) bool {
+            return err == error.SurfaceUnavailable;
+        }
+
         /// What a frame does besides draw: clear, and label itself in a GPU capture.
         pub const FrameOptions = struct {
             /// `null` keeps the previous contents, which is almost never what a 2D game
@@ -1111,6 +1121,9 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         ///
         /// The game calls this and never sees either argument, which is what keeps the
         /// RHI out of the game-facing surface (CLAUDE.md §4.2).
+        ///
+        /// **A frame that fails is closed before this returns**, and the error is the one that
+        /// stopped it. `frameSkippable` says whether the caller may carry on.
         pub fn renderFrame(self: *Self, options: FrameOptions, recorder: anytype) !void {
             // **`acquire` is where a windowed build waits**, and it is worth knowing which
             // end of the frame that is: the Metal backend's `beginFrame` both waits on the
@@ -1120,8 +1133,8 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             // the GPU; a frame that is mostly the other three is one this program is
             // spending.
             //
-            // Closed explicitly on the error path, unlike the three below: a lost surface
-            // is the *routine* answer for a minimised or occluded window, so leaving this
+            // Closed explicitly on the error path, unlike the three below: an unavailable
+            // surface is the *routine* answer for a minimised or occluded window, so leaving this
             // span open on every one of those frames would report a nonsense span rather
             // than a fault. A genuine failure in the other three is rare enough to be worth
             // seeing as the unbalanced count `core.profile` keeps.
@@ -1132,8 +1145,22 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             };
             self.closeScope();
 
+            // **From here the frame is open, and every way out closes it** (ADR-0035). Cleanup
+            // runs in reverse order: a recording that never reached `submit` is discarded, then
+            // the frame is finished — which leaves the slot's marker, so whatever was already
+            // submitted is still waited for. The error returned is the one that stopped the
+            // frame; a cleanup that fails as well is logged rather than put in its place.
+            var finished = false;
+            errdefer if (!finished) self.gpu.endFrame() catch |cleanup| {
+                log.warn("closing a failed frame also failed: {t}", .{cleanup});
+            };
+
             self.openScope(span.render_prepare);
             const cmd = try self.gpu.beginCommandBuffer();
+            // `submit` consumes the command buffer whatever it returns, so only a recording
+            // that never reached it is discarded.
+            var consumed = false;
+            errdefer if (!consumed) cmd.discard();
             try recorder.prepare(cmd, frame);
             self.closeScope();
 
@@ -1150,15 +1177,21 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                     .final_state = .present,
                 }},
             });
-            try recorder.record(pass);
+            recorder.record(pass) catch |err| {
+                // Ended before the recording is discarded, which needs its passes closed.
+                pass.end();
+                return err;
+            };
             pass.end();
             self.closeScope();
 
             self.openScope(span.render_submit);
+            consumed = true;
             try cmd.submit();
             self.closeScope();
 
             self.openScope(span.render_present);
+            finished = true;
             try self.gpu.endFrame();
             self.closeScope();
         }
@@ -1788,6 +1821,117 @@ const NothingRecorder = struct {
     pub fn prepare(_: NothingRecorder, _: *rhi.null_backend.CommandBuffer, _: rhi.FrameContext) !void {}
     pub fn record(_: NothingRecorder, _: *rhi.null_backend.RenderPass) !void {}
 };
+
+/// A recorder that fails where it is told to, for driving `renderFrame`'s cleanup.
+const FailingRecorder = struct {
+    at: enum { nowhere, prepare, record },
+
+    pub fn prepare(self: FailingRecorder, _: *rhi.null_backend.CommandBuffer, _: rhi.FrameContext) !void {
+        if (self.at == .prepare) return error.InjectedPrepareFailure;
+    }
+    pub fn record(self: FailingRecorder, _: *rhi.null_backend.RenderPass) !void {
+        if (self.at == .record) return error.InjectedRecordFailure;
+    }
+};
+
+test "only an unavailable surface is a frame the loop may skip" {
+    try testing.expect(TestEngine.frameSkippable(error.SurfaceUnavailable));
+    for ([_]anyerror{ error.SurfaceLost, error.DeviceLost, error.OutOfMemory, error.ValidationFailed }) |err| {
+        try testing.expect(!TestEngine.frameSkippable(err));
+    }
+}
+
+test "a failed acquisition is returned as it was, opens no frame, and the next frame draws" {
+    const engine = try testEngine(.{ .hot_reload = false });
+    defer engine.deinit();
+    const gpu = engine.gpu;
+    const before = gpu.frame_index;
+
+    inline for (.{ error.SurfaceUnavailable, error.SurfaceLost, error.DeviceLost }) |outcome| {
+        gpu.faults.begin_frame = outcome;
+        engine.beginFrame();
+        try testing.expectError(outcome, engine.renderFrame(.{}, NothingRecorder{}));
+        engine.endFrame();
+        try testing.expect(!gpu.in_frame);
+        try testing.expectEqual(before, gpu.frame_index);
+    }
+
+    engine.beginFrame();
+    try engine.renderFrame(.{}, NothingRecorder{});
+    engine.endFrame();
+    try testing.expectEqual(before + 1, gpu.frame_index);
+    try testing.expectEqual(@as(usize, 0), gpu.violationCount());
+}
+
+test "a frame that fails after acquisition is closed, and returns the failure that stopped it" {
+    const engine = try testEngine(.{ .hot_reload = false });
+    defer engine.deinit();
+    const gpu = engine.gpu;
+
+    const Case = struct {
+        recorder: FailingRecorder,
+        submit: ?rhi.CommandError = null,
+        end_frame: ?rhi.FrameError = null,
+        expected: anyerror,
+    };
+    const cases = [_]Case{
+        .{ .recorder = .{ .at = .prepare }, .expected = error.InjectedPrepareFailure },
+        .{ .recorder = .{ .at = .record }, .expected = error.InjectedRecordFailure },
+        .{ .recorder = .{ .at = .nowhere }, .submit = error.DeviceLost, .expected = error.DeviceLost },
+        .{ .recorder = .{ .at = .nowhere }, .end_frame = error.DeviceLost, .expected = error.DeviceLost },
+        // A cleanup that fails as well does not take the place of what stopped the frame.
+        .{ .recorder = .{ .at = .record }, .end_frame = error.OutOfMemory, .expected = error.InjectedRecordFailure },
+    };
+    for (cases) |case| {
+        const before = gpu.frame_index;
+        gpu.faults.submit = case.submit;
+        gpu.faults.end_frame = case.end_frame;
+        engine.beginFrame();
+        try testing.expectError(case.expected, engine.renderFrame(.{}, case.recorder));
+        engine.endFrame();
+
+        // Acquired, so it counts. Closed, with nothing left recording and every fault spent.
+        try testing.expectEqual(before + 1, gpu.frame_index);
+        try testing.expect(!gpu.in_frame);
+        try testing.expectEqual(@as(usize, 0), gpu.timeline.open.items.len);
+        try testing.expect(gpu.faults.submit == null and gpu.faults.end_frame == null);
+    }
+
+    engine.beginFrame();
+    try engine.renderFrame(.{}, NothingRecorder{});
+    engine.endFrame();
+    try testing.expectEqual(@as(usize, 0), gpu.violationCount());
+}
+
+test "what a frame that failed to finish had submitted is still waited for before its resources go" {
+    const engine = try testEngine(.{ .hot_reload = false });
+    defer engine.deinit();
+    const gpu = engine.gpu;
+
+    const buffer = try gpu.createBuffer(.{ .size = 16, .usage = .{ .vertex = true } });
+    const Binds = struct {
+        buffer: rhi.BufferHandle,
+        pub fn prepare(_: @This(), _: *rhi.null_backend.CommandBuffer, _: rhi.FrameContext) !void {}
+        pub fn record(self: @This(), pass: *rhi.null_backend.RenderPass) !void {
+            pass.setVertexBuffer(0, self.buffer, 0);
+        }
+    };
+
+    gpu.faults.end_frame = error.DeviceLost;
+    engine.beginFrame();
+    try testing.expectError(error.DeviceLost, engine.renderFrame(.{}, Binds{ .buffer = buffer }));
+    engine.endFrame();
+    gpu.destroyBuffer(buffer);
+    try testing.expectEqual(@as(usize, 1), gpu.retiredCount());
+
+    // Round the ring to the failed frame's slot. Its wait, and only its wait, releases it.
+    for ([_]usize{ 1, 0 }) |retained| {
+        engine.beginFrame();
+        try engine.renderFrame(.{}, NothingRecorder{});
+        engine.endFrame();
+        try testing.expectEqual(retained, gpu.retiredCount());
+    }
+}
 
 test "a disabled profiler is not a null pointer the caller has to guard twice" {
     const engine = try testEngine(.{});

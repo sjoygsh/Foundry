@@ -459,7 +459,7 @@ pub fn main(init: std.process.Init) !void {
 
     run(gpa, env, os, session) catch |err| {
         // §10: a concise named cause, and where to find the rest, before a nonzero exit.
-        log.err("could not start: {t}", .{err});
+        log.err("{s}: {t}", .{ stoppedAt(session), err });
         if (session.logPath()) |leaf| {
             log.err("what happened is in {s}/{s}, under this application's data directory", .{
                 app.diagnostics.dir_name, leaf,
@@ -607,13 +607,14 @@ fn run(
         room.present(engine);
         try room.submit(engine);
 
-        engine.renderFrame(.{ .label = "room", .clear = room.clearColor() }, &room.renderer) catch |err| switch (err) {
-            // No drawable this frame: minimised, occluded, or all of them still in flight.
-            error.SurfaceLost => {},
-            else => {
+        engine.renderFrame(.{ .label = "room", .clear = room.clearColor() }, &room.renderer) catch |err| {
+            // Only an image that is not there this frame — a minimised or occluded window — is
+            // skipped. Anything else ends the run, and the session records a failure rather
+            // than a clean exit (ADR-0035).
+            if (!app.Engine.frameSkippable(err)) {
                 log.err("frame {d} failed: {t}", .{ engine.frame_index, err });
-                engine.requestQuit();
-            },
+                return err;
+            }
         };
 
         engine.endFrame();
@@ -2911,3 +2912,12 @@ const Room = struct {
         self.renderer.deinit();
     }
 };
+
+/// How a failure that ended the run is described: before the frame loop it stopped the program
+/// starting, and inside it, it stopped a program that was running.
+fn stoppedAt(session: *const app.diagnostics.Session) []const u8 {
+    return switch (session.stage) {
+        .start, .discovery, .startup => "could not start",
+        .running, .shutdown => "stopped",
+    };
+}

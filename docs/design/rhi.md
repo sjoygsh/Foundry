@@ -16,8 +16,8 @@ frame-outcome contracts. **Step 2 implemented §3's deferred destruction and the
 included, and a destroyed handle's backing is kept until every recording that could use it
 has finished. **Step 3 moved `render2d` onto that contract**: the renderer keeps no retirement
 of its own, and its uploads declare a texture's tracked state rather than `undefined`. **Step 4
-added usage conformance as §11 rule 11.** Distinct presentation outcomes are not implemented
-yet.
+added usage conformance as §11 rule 11, and Step 5 the frame outcomes in §7 and `discard` in
+§8.**
 
 `rhi` is layer L2. It depends on `core` and `platform`. **Graphics API symbols appear
 nowhere outside it** (I7, enforced by the build graph).
@@ -200,6 +200,17 @@ which covers every earlier submission too, uploads outside the frame included, b
 queue executes in order — and `waitIdle` waits through the newest submission of all. Neither
 can finish a command buffer that was never submitted.
 
+**A frame can fail three ways, and only one of them is routine** (ADR-0035, M11). `beginFrame`
+returns `SurfaceUnavailable` when there is no presentation image this frame — a minimised or
+occluded window, or every image still in flight — and that is the only outcome a caller may
+answer by skipping the frame. `SurfaceLost` means the surface cannot be used again without
+recovery, and `DeviceLost` that the device is unusable. The current host implements neither
+recovery, so both are reported and stop the loop; running out of memory stays a failure of its
+own. A failed `beginFrame` opens no frame and spends no frame index, though a slot it waited
+for is still finished. A frame that did open is closed by `endFrame` on every path, a failed
+frame's included. `endFrame` leaves the slot's marker even when it fails, so what the frame
+submitted is still waited for, and it presents only an image that submitted work drew into.
+
 This is the piece Metal's conveniences hide most thoroughly: `MTLCommandBuffer` completion
 handlers make it easy to never think about it, and Vulkan makes it impossible not to. The
 RHI takes Vulkan's shape.
@@ -241,6 +252,12 @@ pass.end();
 
 try cmd.submit();
 ```
+
+**`submit` consumes the command buffer whatever it returns**: queued, or refused and discarded,
+it is never touched again. A recording that will never reach `submit` — because the frame
+recording it failed — is abandoned with `discard`, once its passes have ended. Discarding
+releases nothing early and cannot fail; what the recording could have used simply stops waiting
+on it (§3).
 
 Load actions are `load`, `clear` or `discard`; store actions are `store` or `discard`.
 **`discard` is not a micro-optimisation on a tiler** — on Apple Silicon, and on every mobile

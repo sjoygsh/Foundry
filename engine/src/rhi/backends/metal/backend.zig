@@ -398,6 +398,9 @@ pub const Device = struct {
     offscreen: ?*c.FdMtlTexture = null,
 
     drawable: ?*c.FdMtlDrawable = null,
+    /// Whether a submission this frame drew into the drawable. Only then does `endFrame`
+    /// present it.
+    frame_presents: bool = false,
 
     frame_index: u64 = 0,
     frame_slot: u32 = 0,
@@ -1044,6 +1047,7 @@ pub const Device = struct {
     }
 
     pub fn beginFrame(self: *Device) interface.FrameError!command.FrameContext {
+        self.frame_presents = false;
         self.frame_index += 1;
         self.frame_slot = @intCast((self.frame_index - 1) % self.desc.frames_in_flight);
 
@@ -1058,15 +1062,16 @@ pub const Device = struct {
 
         if (self.layer) |l| {
             const drawable = c.fd_mtl_layer_next_drawable(l) orelse {
-                // Transient: a minimised or fully occluded window, or every drawable still
-                // in flight. The RHI has one error for "the swapchain did not give us an
-                // image", so this reports `SurfaceLost` and the caller skips the frame.
+                // Transient: a minimised or fully occluded window, or every drawable still in
+                // flight. The one outcome a caller may skip (ADR-0035), and no frame opens.
                 self.frame_index -= 1;
-                return error.SurfaceLost;
+                return error.SurfaceUnavailable;
             };
             self.drawable = drawable;
 
             const texture = c.fd_mtl_drawable_texture(drawable) orelse {
+                // A drawable without a texture is no documented transient, so it is not
+                // reported as one.
                 c.fd_mtl_drawable_destroy(drawable);
                 self.drawable = null;
                 self.frame_index -= 1;
@@ -1095,17 +1100,28 @@ pub const Device = struct {
         // round, and it keeps the headless path identical to the windowed one.
         //
         // Without its own command buffer the slot still has to wait for this frame's work. The
-        // newest submission covers everything before it, which is all a marker is for.
+        // newest submission covers everything before it, which is all a marker is for. The
+        // drawable is let go on those paths too, rather than held into the next frame.
+        //
+        // **Presented only if submitted work drew into it.** A frame that failed before its pass
+        // was submitted still ends here, and presenting an image nothing rendered would show
+        // whatever the drawable held.
+        const presents = self.frame_presents;
+        self.frame_presents = false;
         self.timeline.reserveMarker(self.gpa) catch {
             self.slot_markers[self.frame_slot] = self.timeline.submitted;
+            self.releaseDrawable();
             return error.OutOfMemory;
         };
         const cb = c.fd_mtl_command_buffer_create(self.queue, "frame end") orelse {
             self.slot_markers[self.frame_slot] = self.timeline.submitted;
+            self.releaseDrawable();
             return error.OutOfMemory;
         };
 
-        if (self.drawable) |d| c.fd_mtl_command_buffer_present(cb, d);
+        if (presents) {
+            if (self.drawable) |d| c.fd_mtl_command_buffer_present(cb, d);
+        }
         c.fd_mtl_command_buffer_commit(cb);
 
         self.slot_markers[self.frame_slot] = self.timeline.submitMarker(cb);
@@ -1179,6 +1195,9 @@ pub const CommandBuffer = struct {
     recording: u64,
     /// Begun, and neither submitted nor discarded.
     open: bool,
+    /// Whether a pass in it draws into the device's surface, so that submitting it is what
+    /// lets the frame present.
+    presents: bool = false,
 
     pub fn beginRenderPass(self: *CommandBuffer, desc: command.RenderPassDesc) interface.CommandError!*RenderPass {
         const dev = self.device;
@@ -1187,6 +1206,7 @@ pub const CommandBuffer = struct {
         const color_count = @min(desc.color.len, color.len);
         for (desc.color[0..color_count], 0..) |a, i| {
             const texture = if (dev.textures.getConst(a.texture)) |t| t.mtl else null;
+            if (a.texture.eql(dev.surface_texture)) self.presents = true;
             const clear: [4]f32 = switch (a.load) {
                 .clear => |v| switch (v) {
                     .color => |rgba| rgba,
@@ -1235,9 +1255,18 @@ pub const CommandBuffer = struct {
 
         const enc = c.fd_mtl_render_encoder_begin(self.mtl, &pass_desc) orelse
             return error.OutOfMemory;
+        // Ended on failure, so no encoder is left open on a command buffer that is about to be
+        // discarded.
+        errdefer {
+            c.fd_mtl_render_encoder_end(enc);
+            c.fd_mtl_render_encoder_destroy(enc);
+        }
 
         const pass = if (dev.free_render_passes.pop()) |reused| reused else blk: {
             const fresh = try dev.gpa.create(RenderPass);
+            errdefer dev.gpa.destroy(fresh);
+            // Room to recycle it is reserved with it, so that `end` cannot fail to return it.
+            try dev.free_render_passes.ensureTotalCapacity(dev.gpa, dev.render_passes.items.len + 1);
             try dev.render_passes.append(dev.gpa, fresh);
             break :blk fresh;
         };
@@ -1305,10 +1334,23 @@ pub const CommandBuffer = struct {
         // A second submit is a caller's mistake the null backend reports as rule 8. This
         // backend does not validate, but it must still not queue one command buffer twice.
         if (!self.open) return;
+        if (self.presents) dev.frame_presents = true;
         c.fd_mtl_command_buffer_commit(self.mtl);
         // The reference is kept rather than released: the timeline holds it until a wait has
         // covered it, because it is what `waitIdle` and a slot's wait block on.
         _ = dev.timeline.submit(self.recording, self.mtl);
+        self.open = false;
+        dev.free_command_buffers.appendAssumeCapacity(self);
+    }
+
+    /// Abandons a recording that will never be submitted: the command buffer is released
+    /// uncommitted, and what it could have used stops waiting on it. Its passes must have
+    /// ended first; the null backend reports one that has not.
+    pub fn discard(self: *CommandBuffer) void {
+        if (!self.open) return;
+        const dev = self.device;
+        c.fd_mtl_command_buffer_destroy(self.mtl);
+        dev.timeline.discard(self.recording);
         self.open = false;
         dev.free_command_buffers.appendAssumeCapacity(self);
     }
@@ -1483,7 +1525,7 @@ pub const RenderPass = struct {
             c.fd_mtl_render_encoder_destroy(enc);
             self.enc = null;
         }
-        dev.free_render_passes.append(dev.gpa, self) catch {};
+        dev.free_render_passes.appendAssumeCapacity(self);
     }
 };
 
@@ -1621,6 +1663,31 @@ test "a pipeline builds and a frame of it completes" {
 
     // The ring's own wait is the proof the GPU finished: a second frame in the same slot
     // cannot begin until it has.
+    _ = try dev.beginFrame();
+    try dev.endFrame();
+}
+
+test "a discarded recording is never committed, and holds nothing back" {
+    // The cleanup a failed frame performs, against the real queue: a pass ended, its command
+    // buffer released uncommitted, and a resource destroyed while that buffer was open.
+    const dev = try headlessDevice();
+    defer dev.deinit();
+
+    const buffer = try dev.createBuffer(.{ .label = "held", .size = 64, .usage = .{ .vertex = true } });
+    const frame = try dev.beginFrame();
+    const cmd = try dev.beginCommandBuffer();
+    const pass = try cmd.beginRenderPass(.{
+        .color = &.{.{ .texture = frame.surface_texture, .final_state = .present }},
+    });
+    pass.end();
+    dev.destroyBuffer(buffer);
+    try testing.expectEqual(@as(usize, 1), dev.retiredCount());
+
+    cmd.discard();
+    // The frame still closes, nothing is left waiting, and the ring carries on.
+    try dev.endFrame();
+    dev.waitIdle();
+    try testing.expectEqual(@as(usize, 0), dev.retiredCount());
     _ = try dev.beginFrame();
     try dev.endFrame();
 }

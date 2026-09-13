@@ -907,7 +907,7 @@ on Metal it does not. `Device.beginFrame` both waits on the command buffer that 
 ring slot *and* asks the layer for the next drawable, which is what blocks; `endFrame` only
 schedules the present and commits. A profile built on the document's six spans would have shown
 the wait as time that vanished between frames. It is closed explicitly on its error path too,
-unlike the three after it, because `SurfaceLost` is the *routine* answer for a minimised window
+unlike the three after it, because `SurfaceLost` — `SurfaceUnavailable` since M11 — is the *routine* answer for a minimised window
 rather than a fault, and a span left open on every minimised frame would be noise rather than a
 signal.
 

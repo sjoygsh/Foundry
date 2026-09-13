@@ -1,8 +1,25 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-13
-**Current handoff: M0 through M10 are complete. M11 is under way, 4/9 steps implemented.
-Stop immediately before M11 Step 5. M12 through M17 remain unstarted.**
+**Current handoff: M0 through M10 are complete. M11 is under way, 5/9 steps implemented.
+Stop immediately before M11 Step 6. M12 through M17 remain unstarted.**
+
+**Implemented in M11 Step 5, 2026-09-13:** frame failures are told apart and cleaned up.
+`FrameError.SurfaceUnavailable` — no presentation image this frame — is the only outcome a host
+may skip, and `app.Engine.frameSkippable` says so for both samples; a lost surface or device, or
+running out of memory, ends the run through the ordinary failure path, so the session marker says
+`failed`. A failed acquisition opens no frame and spends no frame index. `renderFrame` closes a
+failed frame before returning its error: it ends the pass, discards a recording that never
+reached `submit` — the new `CommandBuffer.discard`, while `submit` consumes whatever it returns —
+and finishes the frame, keeping the first error. `endFrame` leaves the slot's marker even when it
+fails. Metal lets the drawable go on failure, presents only what submitted work drew into, and no
+longer leaks an encoder or swallows a pass-list allocation failure. The recording an error used
+to leave open until teardown (Steps 2–3) is now closed. **Owed:** a Metal minimise/restore run,
+which needs a person; resizing was exercised. Evidence: faults injected at acquisition,
+preparation, recording, submission and finish; breaking the guards failed 4 and then 3 of 1,323
+tests in two runs; the Metal-selected tests passed under Metal API Validation; an injected lost
+device left a session log naming frame 10 and a `failed` marker; the bar passed. **1,333 declared
+/ 1,323 headless**, ten Metal-only. Resolution: `hardening.md`, Step 5.
 
 **Implemented in M11 Step 4, 2026-09-13:** declared resource usage is **validation rule 11**,
 written into `rhi.md` §11 before the code. The validation backend reports a resource used as
@@ -1356,18 +1373,19 @@ closed.** What a public macOS release still owes is operator certification — D
 signing, notarization and a clean recipient Mac (ADR-0032) — not engine work. **Phase 4,
 "Hardening and reach" (M10-M17), is under way**: it gathers the deferred work rather than
 adding to it, only M10 was new, and **M10 is complete (2026-09-13)**. M11 is under way with
-4/9 steps implemented; M12 through M17 are unstarted.
+5/9 steps implemented; M12 through M17 are unstarted.
 
 ## Current milestone
 
-**M11 — Solid: "its known faults are fixed." Designed, 2026-09-13; 4/9 implemented.**
+**M11 — Solid: "its known faults are fixed." Designed, 2026-09-13; 5/9 implemented.**
 Read `docs/design/hardening.md` and ADR-0035. Step 1 is done: the Metal-selected graph, test
 binaries included, compiles and its tests pass. Step 2 is done: both RHI backends retain a
 destroyed resource until every recording that could use it has finished. Step 3 is done:
 `render2d` relies on that retirement instead of its own, and textures replace safely through
 the ordinary loader with frames in flight. Step 4 is done: declared resource usage is
-validation rule 11. Implementation is paused before §12 Step 5; the remaining known-debt
-entries are not claimed repaired.
+validation rule 11. Step 5 is done: only an unavailable surface is a skippable frame, and a
+failed frame is closed before it is reported. Implementation is paused before §12 Step 6; the
+remaining known-debt entries are not claimed repaired.
 
 **M10 — Identity: "it knows its own name." Complete, 2026-09-13.** The marks, the icon the
 release path stages and the plist names, and ADR-0034's rule that reference is permitted and
@@ -2237,7 +2255,7 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M11 Steps 1–4 are complete; implementation is paused before Step 5.** M0–M10 are complete.
+**M11 Steps 1–5 are complete; implementation is paused before Step 6.** M0–M10 are complete.
 The specification is `docs/design/hardening.md`; the M5 material below is historical.
 
 ### `samples/room`, and what a second consumer proved
@@ -2883,10 +2901,10 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M11 Step 5, when implementation is requested** — distinct transient and fatal frame
-outcomes and failure cleanup, `hardening.md` §7, including closing a recording an error leaves
-open. Steps 1–4 are done; five steps remain. Stop after each step; preserve the later milestone
-triggers below.
+**Next: M11 Step 6, when implementation is requested** — sharing the UI font texture for solid
+rectangles, `hardening.md` §8, with before/after batch counts on the existing attribution
+fixture. Steps 1–5 are done; four steps remain. Stop after each step; preserve the later
+milestone triggers below.
 
 **M0 through M10 are complete and tagged, and everything is pushed.** Phase 3 is closed;
 Phase 4 is under way. The completed M8/M7 checklists and subsequent M5/M6 material below are

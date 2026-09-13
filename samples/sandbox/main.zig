@@ -421,7 +421,7 @@ pub fn main(init: std.process.Init) !void {
 
     run(gpa, env, os, session) catch |err| {
         // §10: a concise named cause, and where to find the rest, before a nonzero exit.
-        log.err("could not start: {t}", .{err});
+        log.err("{s}: {t}", .{ stoppedAt(session), err });
         if (session.logPath()) |leaf| {
             log.err("what happened is in {s}/{s}, under this application's data directory", .{
                 app.diagnostics.dir_name, leaf,
@@ -587,6 +587,11 @@ fn run(
     const auto_resize_every = everyFrames(engine, "FOUNDRY_SANDBOX_RESIZE_EVERY");
 
     session.setStage(.running);
+    // `FOUNDRY_SANDBOX_FRAME_FAULT`, read once. Frames skipped for want of an image are counted,
+    // so a run that was minimised says so at exit.
+    const frame_fault = frameFault(engine);
+    var skipped_frames: u64 = 0;
+
     while (!engine.shouldQuit()) {
         engine.beginFrame();
 
@@ -679,16 +684,16 @@ fn run(
             try field.submit(engine);
         }
 
-        engine.renderFrame(.{ .label = "sprites", .clear = clearColor(engine) }, &field.renderer) catch |err| switch (err) {
-            // No drawable this frame: minimised, occluded, or all of them still in flight.
-            // Transient, so the frame is skipped rather than treated as fatal. The RHI has
-            // a single error for "the swapchain gave us nothing", which is a known gap
-            // recorded in `PROJECT_STATE.md` rather than papered over here.
-            error.SurfaceLost => {},
-            else => {
+        armFrameFault(engine, frame_fault);
+        engine.renderFrame(.{ .label = "sprites", .clear = clearColor(engine) }, &field.renderer) catch |err| {
+            // Only an image that is not there this frame — minimised, occluded, or every one
+            // still in flight — is skipped, and counted. Anything else ends the run, and the
+            // session records a failure rather than a clean exit (ADR-0035).
+            if (!app.Engine.frameSkippable(err)) {
                 log.err("frame {d} failed: {t}", .{ engine.frame_index, err });
-                engine.requestQuit();
-            },
+                return err;
+            }
+            skipped_frames += 1;
         };
 
         engine.endFrame();
@@ -765,6 +770,7 @@ fn run(
         });
     }
 
+    if (skipped_frames > 0) log.info("{d} frame(s) skipped: no presentation image", .{skipped_frames});
     log.info("clean exit after {d} frames, {d} ticks, {d}ms simulated, {d} sound(s) started", .{
         engine.frame_index,
         engine.stepper.tick,
@@ -3143,4 +3149,55 @@ fn modifierSuffix(mods: platform.Modifiers) []const u8 {
     if (mods.alt) return " +alt";
     if (mods.shift) return " +shift";
     return "";
+}
+
+/// How a failure that ended the run is described: before the frame loop it stopped the program
+/// starting, and inside it, it stopped a program that was running.
+fn stoppedAt(session: *const app.diagnostics.Session) []const u8 {
+    return switch (session.stage) {
+        .start, .discovery, .startup => "could not start",
+        .running, .shutdown => "stopped",
+    };
+}
+
+/// `FOUNDRY_SANDBOX_FRAME_FAULT=<frame>:<outcome>` fails that frame's image acquisition on the
+/// validation backend, so each outcome a real device reports can be watched end to end: a
+/// skipped frame for `surface_unavailable`, and a failed session for `surface_lost` or
+/// `device_lost`. Metal cannot be told to fail, so there it is refused with a warning.
+const FrameFault = struct {
+    frame: u64,
+    outcome: Outcome,
+
+    const Outcome = enum { surface_unavailable, surface_lost, device_lost };
+};
+
+fn frameFault(engine: *app.Engine) ?FrameFault {
+    const raw = engine.os.envVar("FOUNDRY_SANDBOX_FRAME_FAULT") orelse return null;
+    const text = std.mem.trim(u8, raw, " ");
+    const colon = std.mem.indexOfScalar(u8, text, ':') orelse return badFrameFault(raw);
+    const frame = std.fmt.parseInt(u64, text[0..colon], 10) catch return badFrameFault(raw);
+    const outcome = std.meta.stringToEnum(FrameFault.Outcome, text[colon + 1 ..]) orelse return badFrameFault(raw);
+    if (rhi.backend != .null) {
+        log.warn("FOUNDRY_SANDBOX_FRAME_FAULT needs the validation backend; ignoring", .{});
+        return null;
+    }
+    return .{ .frame = frame, .outcome = outcome };
+}
+
+fn badFrameFault(raw: []const u8) ?FrameFault {
+    log.warn("FOUNDRY_SANDBOX_FRAME_FAULT='{s}' is not <frame>:<surface_unavailable|surface_lost|device_lost>; ignoring", .{raw});
+    return null;
+}
+
+/// Arms the fault on the frame it names, as the device's next acquisition.
+fn armFrameFault(engine: *app.Engine, fault: ?FrameFault) void {
+    const f = fault orelse return;
+    if (engine.frame_index != f.frame) return;
+    if (rhi.backend == .null) {
+        engine.gpu.faults.begin_frame = switch (f.outcome) {
+            .surface_unavailable => error.SurfaceUnavailable,
+            .surface_lost => error.SurfaceLost,
+            .device_lost => error.DeviceLost,
+        };
+    }
 }
