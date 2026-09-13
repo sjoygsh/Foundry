@@ -87,14 +87,16 @@ Strict ad-hoc integrity passed and Gatekeeper rejection is expected. Actual Deve
 signing, Apple notarization and a quarantine-preserving launch on a genuinely clean Mac remain
 mandatory deferred work for the first public release; the current artifact does not claim it.
 
-**M10 is complete; M11 is under way, 2/9 steps implemented (2026-09-13).** M10 added
+**M10 is complete; M11 is under way, 3/9 steps implemented (2026-09-13).** M10 added
 Foundry's marks and an application-supplied release icon (ADR-0034); its full verification is
 recorded in PROJECT_STATE. For M11 read ADR-0035 and `docs/design/hardening.md`; §12 is the
 nine-step order. Step 1 repaired the Metal-selected test graph, and its compile check is now
 in the bar below. Step 2 made both RHI backends retain a destroyed resource until the
 recordings that could use it finish (`engine/src/rhi/lifetime.zig`); **rule 9 now rejects
-recording through a dead handle, not the destroy itself.** **Next is Step 3, safe texture
-replacement through the ordinary loader.** M12–M17 remain unstarted.
+recording through a dead handle, not the destroy itself.** Step 3 moved `render2d` onto that
+contract: it keeps no retirement of its own, uploads declare a texture's tracked state, and a
+failed atlas upload claims no space. **Next is Step 4, usage validation (rule 11).** M12–M17
+remain unstarted.
 
 ## 3. Building and verifying
 

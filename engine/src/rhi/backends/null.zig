@@ -107,6 +107,10 @@ const TextureState = struct {
     desc: resource.TextureDesc,
     state: resource.ResourceState,
     is_surface: bool = false,
+    /// Transitions that declared `undefined` while the texture was tracked as something
+    /// else. Legal — rule 1 says so — but each one tells a backend it may throw the
+    /// contents away, so a caller that meant to keep them can be caught doing it.
+    discarded: u32 = 0,
 };
 
 const SamplerState = struct { desc: resource.SamplerDesc };
@@ -360,6 +364,14 @@ pub const Device = struct {
     /// sees that a destroy was deferred, and that the deferral ended.
     pub fn retiredCount(self: *const Device) usize {
         return self.retired.count();
+    }
+
+    /// How many recorded transitions declared a texture's tracked contents not worth
+    /// keeping, or null for a handle that does not resolve. Tests only: a caller that
+    /// preserves what a texture holds, an atlas in particular, should leave this at zero.
+    pub fn contentsDiscarded(self: *Device, handle: resource.TextureHandle) ?u32 {
+        const tex = self.textures.get(handle) orelse return null;
+        return tex.discarded;
     }
 
     fn liveCount(self: *const Device) usize {
@@ -778,6 +790,7 @@ pub const CommandBuffer = struct {
                 label, what, tex.desc.label, initial, tex.state,
             });
         }
+        if (initial == .undefined and tex.state != .undefined) tex.discarded += 1;
         tex.state = final;
     }
 
@@ -796,6 +809,7 @@ pub const CommandBuffer = struct {
                     tex.desc.label, b.from, tex.state,
                 });
             }
+            if (b.from == .undefined and tex.state != .undefined) tex.discarded += 1;
             tex.state = b.to;
         }
     }
@@ -1381,6 +1395,38 @@ test "rule 1: transitioning from undefined is always legal" {
     try cmd.textureBarrier(&.{.{ .texture = tex, .from = .undefined, .to = .shader_read }});
     try cmd.submit();
     try testing.expectEqual(@as(usize, 0), dev.violationCount());
+}
+
+test "rule 1: declaring undefined over tracked contents is legal, and is counted as a discard" {
+    // Legal, because it cannot be wrong about what is there. Counted, because it is wrong
+    // about what the caller wanted whenever the caller meant to keep the contents, and no
+    // rule can tell the two apart.
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    const tex = try dev.createTexture(.{
+        .size = .{ .width = 8, .height = 8 },
+        .format = .rgba8_unorm,
+        .usage = .{ .sampled = true, .copy_dst = true },
+    });
+
+    var cmd = try dev.beginCommandBuffer();
+    // A new texture holds nothing, so the first transition discards nothing.
+    try cmd.textureBarrier(&.{.{ .texture = tex, .from = .undefined, .to = .copy_dst }});
+    try cmd.textureBarrier(&.{.{ .texture = tex, .from = .copy_dst, .to = .shader_read }});
+    try testing.expectEqual(@as(?u32, 0), dev.contentsDiscarded(tex));
+
+    // Declaring what it is tracked as keeps the contents; declaring undefined does not.
+    try cmd.textureBarrier(&.{.{ .texture = tex, .from = .shader_read, .to = .copy_dst }});
+    try testing.expectEqual(@as(?u32, 0), dev.contentsDiscarded(tex));
+    try cmd.textureBarrier(&.{.{ .texture = tex, .from = .undefined, .to = .shader_read }});
+    try testing.expectEqual(@as(?u32, 1), dev.contentsDiscarded(tex));
+    try cmd.submit();
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
+
+    dev.destroyTexture(tex);
+    try testing.expectEqual(@as(?u32, null), dev.contentsDiscarded(tex));
 }
 
 // -- rule 2: device_local is never mapped --------------------------------------------

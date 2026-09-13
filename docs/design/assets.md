@@ -277,8 +277,8 @@ itself.
 
 ## 10. Deliberately not here
 
-* **GPU resources.** `render2d` owns textures, including their retirement queue
-  (`render2d.md` §9).
+* **GPU resources.** `render2d` owns textures and their handles; the device decides when a
+  destroyed texture's GPU objects are released (`render2d.md` §9).
 * **The content model.** Schemas, packages, merge and the `.fdt` and `.fpk` formats are
   `content-schemas.md`.
 * **Mod discovery and load order.** M7. `asset` consumes a merged store; it does not assemble

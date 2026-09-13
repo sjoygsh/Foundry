@@ -135,6 +135,15 @@ pub const Region = struct {
 /// Where the packer decided an image goes, in texels from the atlas's top-left.
 pub const Placement = struct { x: u32, y: u32 };
 
+/// A placement `Packer.fit` found and has not yet taken.
+pub const Fit = struct {
+    placement: Placement,
+    /// The existing shelf it lands on, or `null` for a new shelf.
+    shelf: ?usize,
+    w: u32,
+    h: u32,
+};
+
 /// A shelf packer: rows of a fixed height, filled left to right.
 ///
 /// **Not a skyline or MAXRECTS packer.** Shelf is a hundred lines, gets within a few
@@ -184,13 +193,24 @@ pub const Packer = struct {
         self.* = undefined;
     }
 
-    /// Finds room for a `w` by `h` image, or says why there is none.
+    /// Finds room for a `w` by `h` image and takes it, or says why there is none.
     pub fn add(self: *Packer, gpa: Allocator, w: u32, h: u32) (Error || Allocator.Error)!Placement {
+        const found = try self.fit(gpa, w, h);
+        self.commit(found);
+        return found.placement;
+    }
+
+    /// Where `add` would put the image, **without taking the space.**
+    ///
+    /// Split from `commit` for the renderer, whose upload can fail after the packer has
+    /// answered. Packing first and uploading second would leave a failed image holding room
+    /// nothing was written to; this way the space is taken only once the pixels are there.
+    /// Any allocation happens here, so `commit` cannot fail.
+    pub fn fit(self: *Packer, gpa: Allocator, w: u32, h: u32) (Error || Allocator.Error)!Fit {
         if (w == 0 or h == 0) return error.RegionTooLarge;
         // Padded, because the reservation is what has to fit — an image flush against the
         // right edge with no padding beyond it is fine, but one that needs its padding to
         // hang off the edge is not.
-        const need_w = w +| self.padding;
         const need_h = h +| self.padding;
         // A distinct answer from `AtlasFull`: this will not fit in a *fresh* atlas of this
         // size either, so the caller must do something other than retry.
@@ -215,20 +235,31 @@ pub const Packer = struct {
             }
         }
 
-        const shelf = if (best) |i| &self.shelves.items[i] else blk: {
-            if (self.used_height + h > self.size.height) return error.AtlasFull;
-            try self.shelves.append(gpa, .{ .y = self.used_height, .height = need_h, .cursor = 0 });
+        if (best) |i| {
+            const shelf = self.shelves.items[i];
+            return .{ .placement = .{ .x = shelf.cursor, .y = shelf.y }, .shelf = i, .w = w, .h = h };
+        }
+        if (self.used_height + h > self.size.height) return error.AtlasFull;
+        try self.shelves.ensureUnusedCapacity(gpa, 1);
+        return .{ .placement = .{ .x = 0, .y = self.used_height }, .shelf = null, .w = w, .h = h };
+    }
+
+    /// Takes the space `fit` found. The packer must not have changed since that `fit`.
+    pub fn commit(self: *Packer, found: Fit) void {
+        const need_w = found.w +| self.padding;
+        const need_h = found.h +| self.padding;
+        const shelf = if (found.shelf) |i| &self.shelves.items[i] else blk: {
+            std.debug.assert(found.placement.y == self.used_height);
+            self.shelves.appendAssumeCapacity(.{ .y = self.used_height, .height = need_h, .cursor = 0 });
             // Advanced by the padded height, so the next shelf starts clear of this one.
             // It may now sit one texel past the bottom edge, which is exactly the case the
-            // check above is written to reject on the next call rather than this one.
+            // check in `fit` is written to reject on the next call rather than this one.
             self.used_height +|= need_h;
             break :blk &self.shelves.items[self.shelves.items.len - 1];
         };
-
-        const placement: Placement = .{ .x = shelf.cursor, .y = shelf.y };
+        std.debug.assert(shelf.cursor == found.placement.x);
         shelf.cursor += need_w;
-        self.used_area += @as(u64, w) * h;
-        return placement;
+        self.used_area += @as(u64, found.w) * found.h;
     }
 
     /// The fraction of the atlas the images occupy, padding and offcuts excluded.
@@ -439,6 +470,30 @@ test "a full atlas and an oversized image are different answers" {
     // same way for both would allocate atlases until it ran out of memory.
     try testing.expectError(error.RegionTooLarge, fresh.add(testing.allocator, 64, 8));
     try testing.expectError(error.RegionTooLarge, fresh.add(testing.allocator, 0, 8));
+}
+
+test "a fit that is never committed takes no space" {
+    // The renderer's upload can fail between `fit` and `commit`. The next image must land
+    // where the failed one would have, and the fill must not count pixels never written.
+    var packer: Packer = .init(.{ .width = 64, .height = 64 }, 1);
+    defer packer.deinit(testing.allocator);
+    var reference: Packer = .init(.{ .width = 64, .height = 64 }, 1);
+    defer reference.deinit(testing.allocator);
+
+    _ = try packer.add(testing.allocator, 10, 10);
+    _ = try reference.add(testing.allocator, 10, 10);
+
+    // One abandoned on the existing shelf, one that would have opened a new shelf.
+    _ = try packer.fit(testing.allocator, 10, 10);
+    _ = try packer.fit(testing.allocator, 10, 30);
+    try testing.expectEqual(reference.fill(), packer.fill());
+
+    for ([_][2]u32{ .{ 10, 10 }, .{ 10, 30 }, .{ 20, 5 } }) |size| {
+        try testing.expectEqual(
+            try reference.add(testing.allocator, size[0], size[1]),
+            try packer.add(testing.allocator, size[0], size[1]),
+        );
+    }
 }
 
 test "packing is a pure function of insertion order" {

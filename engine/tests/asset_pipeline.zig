@@ -58,8 +58,11 @@ const Stack = struct {
     assets: asset.Registry,
 
     fn init() !*Stack {
-        const gpa = testing.allocator;
+        return initWith(testing.allocator);
+    }
 
+    /// With every allocation in the stack coming from `gpa`, so a test can make one fail.
+    fn initWith(gpa: Allocator) !*Stack {
         const os = try platform.os.Os.init(gpa, .{ .app_name = "foundry-integration", .env = &.{} });
         errdefer os.deinit();
 
@@ -238,4 +241,125 @@ test "a texture the content never named is a value, not a crash" {
     ));
     // A mod naming a texture that is not installed must not take the frame with it.
     try stack.frame(null);
+}
+
+fn spriteOf(texture: render2d.TextureHandle) render2d.Sprite {
+    return .{ .texture = texture, .position = .init(0, 0), .size = .init(64, 64) };
+}
+
+fn textureOf(stack: *Stack, handle: asset.AssetHandle) render2d.TextureHandle {
+    return stack.assets.payloadOf(handle).?.asHandle(render2d.TextureHandle);
+}
+
+test "a texture replaced while frames are in flight keeps drawing, and the old one waits for them" {
+    const stack = try Stack.init();
+    defer stack.deinit();
+
+    try stack.writeFile("textures/sprites.png", &one_pixel_png);
+    try stack.loadPackage("foundry:core", package_source);
+    const handle = try stack.assets.acquire(stack.gpa, sprites_id);
+    defer stack.assets.release(handle);
+
+    // Through the registry and the registered loader, as a hot reload does it, and with no
+    // wait anywhere: every replacement happens with the frame that drew the old texture
+    // still unfinished.
+    var most_retained: usize = 0;
+    for (0..6) |_| {
+        const before = textureOf(stack, handle);
+        try stack.frame(spriteOf(before));
+
+        try stack.assets.reload(stack.gpa, handle);
+        const after = textureOf(stack, handle);
+        try testing.expect(!after.eql(before));
+        try testing.expect(stack.renderer.textureSize(before) == null);
+        // The texture, sampler and group the frame drew with are dead but still held.
+        try testing.expect(stack.device.retiredCount() >= 3);
+        most_retained = @max(most_retained, stack.device.retiredCount());
+
+        try stack.frame(spriteOf(after));
+        try testing.expectEqual(@as(u32, 1), stack.renderer.frameStats().draw_calls);
+    }
+
+    // Repetition does not accumulate: at most two replacements' objects — a texture, its
+    // sampler, its group and the staging buffer each — are waiting at once, because each
+    // slot's wait releases what the frame before it outlived.
+    try testing.expect(most_retained <= 8);
+    stack.device.waitIdle();
+    try testing.expectEqual(@as(usize, 0), stack.device.retiredCount());
+}
+
+test "a replacement that fails leaves the texture that worked, and the next good file replaces it" {
+    const stack = try Stack.init();
+    defer stack.deinit();
+
+    try stack.writeFile("textures/sprites.png", &one_pixel_png);
+    try stack.loadPackage("foundry:core", package_source);
+    const handle = try stack.assets.acquire(stack.gpa, sprites_id);
+    defer stack.assets.release(handle);
+
+    const good = textureOf(stack, handle);
+    try stack.frame(spriteOf(good));
+
+    // Half-written, as a file mid-save is.
+    try stack.writeFile("textures/sprites.png", one_pixel_png[0..40]);
+    try testing.expectError(error.InvalidAsset, stack.assets.reload(stack.gpa, handle));
+    try testing.expect(textureOf(stack, handle).eql(good));
+    try stack.frame(spriteOf(good));
+    try testing.expectEqual(@as(u32, 1), stack.renderer.frameStats().draw_calls);
+
+    try stack.writeFile("textures/sprites.png", &one_pixel_png);
+    try stack.assets.reload(stack.gpa, handle);
+    const replaced = textureOf(stack, handle);
+    try testing.expect(!replaced.eql(good));
+    try stack.frame(spriteOf(replaced));
+    try testing.expectEqual(@as(u32, 1), stack.renderer.frameStats().draw_calls);
+
+    stack.device.waitIdle();
+    try testing.expectEqual(@as(usize, 0), stack.device.retiredCount());
+}
+
+test "every allocation a replacement makes can fail, and each failure leaves the old texture drawing" {
+    // Injected into the allocator the whole stack shares. On Metal the device's objects do
+    // not come from it, so only the validation backend reaches every step this way.
+    if (rhi.backend != .null) return error.SkipZigTest;
+
+    var failing: std.testing.FailingAllocator = .init(testing.allocator, .{});
+    const stack = try Stack.initWith(failing.allocator());
+    defer stack.deinit();
+
+    try stack.writeFile("textures/sprites.png", &one_pixel_png);
+    try stack.loadPackage("foundry:core", package_source);
+    const handle = try stack.assets.acquire(stack.gpa, sprites_id);
+    defer stack.assets.release(handle);
+
+    // Reading the source, decoding it, the device's texture, sampler, group and staging
+    // buffer, the recording, and the renderer's own slot: each is failed in turn, with the
+    // old texture's last frame in flight each time.
+    const good = textureOf(stack, handle);
+    var failures: usize = 0;
+    while (true) : (failures += 1) {
+        try stack.frame(spriteOf(good));
+
+        failing.fail_index = failing.alloc_index + failures;
+        const result = stack.assets.reload(stack.gpa, handle);
+        failing.fail_index = std.math.maxInt(usize);
+        result catch |err| {
+            try testing.expectEqual(error.OutOfMemory, err);
+            try testing.expect(textureOf(stack, handle).eql(good));
+            try stack.frame(spriteOf(good));
+            try testing.expectEqual(@as(u32, 1), stack.renderer.frameStats().draw_calls);
+            continue;
+        };
+        break;
+    }
+    try testing.expect(failures > 0);
+
+    const replaced = textureOf(stack, handle);
+    try testing.expect(!replaced.eql(good));
+    try stack.frame(spriteOf(replaced));
+    try testing.expectEqual(@as(u32, 1), stack.renderer.frameStats().draw_calls);
+
+    // Nothing a failed candidate created is left behind once the work has finished.
+    stack.device.waitIdle();
+    try testing.expectEqual(@as(usize, 0), stack.device.retiredCount());
 }

@@ -101,7 +101,7 @@ Frame shape:
 | `Renderer.beginFrame(frame)` | `app` | Resets the draw list and stats, adopts `frame.slot` |
 | `Renderer.drawSprite/drawText/...` | **The game** | Appends to the draw list. No GPU work. |
 | `Renderer.record(pass)` | `app` | Sorts, uploads, emits draw calls |
-| `Renderer.endFrame()` | `app` | Publishes stats, advances the retirement queue |
+| `Renderer.endFrame()` | `app` | Publishes stats |
 
 ## 4. Coordinate spaces
 
@@ -457,37 +457,48 @@ optimisation of the same mechanism.
 Texture size is validated against `capabilities().max_texture_dimension` and refused with an
 error, never asserted: the image came from a file, and files come from mods.
 
-## 9. Destruction, and the debt this design refuses to lean on
+## 9. Destruction and uploads
 
-**M11 planning note, 2026-09-13:** the paragraphs below describe the current workaround.
-[ADR-0035](../adr/0035-rhi-lifetime-and-validation.md) and [hardening.md](hardening.md) §5
-plan completion-backed RHI retirement and safe renderer integration, including upload
-staging and allocation failure. Renderer handles remain separate from RHI handles. The
-implementation has not changed; the workaround is not yet retired.
+**M11 Step 3, 2026-09-13:** this section replaces the workaround it used to describe. Both RHI
+backends now keep `rhi.md` §3's deferred destruction
+([ADR-0035](../adr/0035-rhi-lifetime-and-validation.md), [hardening.md](hardening.md) §5),
+so the renderer relies on it instead of working around it. Renderer handles remain separate
+from RHI handles.
 
-`rhi/interface.zig` documents deferred destruction that **no backend implements** (recorded
-in PROJECT_STATE). Destroying a texture that a frame in flight still references is undefined
-behaviour today, and it would be reached by the most ordinary game code imaginable —
-unloading a level while two frames are in flight.
+Destroying a texture ends two lifetimes, and each has one owner:
 
-`render2d` therefore does not rely on the RHI's promise. It keeps its own **retirement
-queue**:
+* **The renderer's handle dies at once.** `destroyTexture` removes it from the pool, so a
+  stale handle is a clean `error.InvalidTexture` at the call site rather than a draw from freed
+  GPU memory — the concrete payoff of I1. A sprite submitted before the destroy is dropped at
+  `record`, not drawn.
+* **The GPU objects belong to the device.** The texture, its sampler and its bind group are
+  destroyed through the RHI immediately, and the device keeps each until every recording that
+  could have used it has finished. Destroy cannot fail and allocates nothing: the device
+  reserved each object's retirement when it was created.
 
-```
-destroyTexture(h):
-    invalidate h's generation immediately   // stale handle now fails a lookup, not a crash
-    push { rhi_handle, retire_after = frame_index + frames_in_flight }
+The renderer used to keep its own retirement queue, releasing objects `frames_in_flight`
+frames after a destroy. It was removed rather than kept beside the RHI's: a timeline counting
+frames above one counting submissions can only disagree with it, and an upload made outside
+any frame is where it did. Its out-of-memory path, which leaked the texture, went with it.
 
-endFrame():
-    pop everything whose retire_after <= frame_index, and call rhi.destroyTexture
-```
+**Uploads are asynchronous, and nothing waits.** `createTexture`, the clear inside
+`createAtlas` and `atlasAdd` each record and submit one copy, then destroy the staging buffer
+straight away — legal with or without frames in flight. Being outside a frame says nothing
+about whether the GPU is idle, and a device-wide wait in every texture load would hide a
+lifetime bug rather than fix one. `Renderer.deinit` does not wait either; the device's own
+teardown does.
 
-Two frames of latency on a texture free is nothing. A use-after-free in a renderer is a
-week. This is the concrete payoff of I1: the generation bump means a stale handle produces a
-clean `error.InvalidTexture` at the call site instead of sampling freed GPU memory.
+**An upload declares the state the texture is actually in.** Each texture tracks the state its
+last submitted upload left it in, and the next barrier starts from there. Declaring `undefined`
+tells a backend the contents may be discarded, which is right for a new texture and wrong for
+an atlas that already holds images — and it is what every atlas upload used to declare.
 
-This does **not** discharge the RHI debt — the interface still promises something it does
-not do, and that stays on the list. It means the renderer is correct regardless.
+**A failure changes nothing a caller can see.** `atlasAdd` asks the packer where the image
+goes (`Packer.fit`), uploads, and claims the space (`Packer.commit`) only once the copy is
+submitted: no region is published for pixels that never arrived, and the next image lands
+where the failed one would have. A texture replaced by hot reload keeps the registry's
+transaction (`assets.md` §6) — the candidate is built first and the old texture destroyed only
+once it exists — so a failed read, decode, allocation or upload leaves the old one drawing.
 
 ## 10. Text
 

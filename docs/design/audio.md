@@ -428,9 +428,9 @@ The game cannot drop the last reference to something it can still hear.
 
 **Hazard two: hot reload replaces the sound while it is playing.** `asset.Registry.reload`
 calls the loader's `unload` at the top of a frame (`assets.md` §6), and the callback thread is
-in the middle of the old samples. Answer: **the mixer keeps its own retirement**, exactly as
-`render2d` keeps its own retirement queue rather than trusting the RHI's deferred destroy
-(`render2d.md` §9). `unload` marks the `Sound` retired and returns; the samples are freed in a
+in the middle of the old samples. Answer: **the mixer keeps its own retirement** — the shape the
+RHI gives a destroyed GPU object, a dead handle whose backing outlives the work still using it
+(`rhi.md` §3). `unload` marks the `Sound` retired and returns; the samples are freed in a
 later `update()`, once no voice references them — which the game thread knows, because a voice
 only stops referencing a sound by pushing a retirement, and the acquire/release pair in §4 is
 what makes that knowledge sound.

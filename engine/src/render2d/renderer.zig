@@ -64,8 +64,8 @@ pub const Config = struct {
     /// Quads per vertex buffer. A frame needing more simply uses more buffers, so this
     /// trades allocation granularity against draw-call count, and is not a limit.
     quads_per_buffer: u32 = 16 * 1024,
-    /// Must match the value the device was created with. The retirement queue and the
-    /// per-slot buffer pools are both sized by it.
+    /// Must match the value the device was created with. The per-slot vertex buffer pools
+    /// are sized by it.
     frames_in_flight: u32 = 2,
 };
 
@@ -266,7 +266,7 @@ pub const Renderer = struct {
             .pipeline_layout = pipeline_layout,
             .pipelines = pipelines,
             .indices = indices,
-            .textures = .init(config.frames_in_flight),
+            .textures = .empty,
             .atlases = .empty,
             .batcher = .init(config.quads_per_buffer),
             .views = .empty,
@@ -291,14 +291,11 @@ pub const Renderer = struct {
 
     /// Releases everything.
     ///
-    /// Idles the device first, because a renderer is destroyed *before* the device it
-    /// borrows — that is the order every consumer creates them in, reversed — and
-    /// releasing a resource a frame in flight still references is undefined behaviour.
-    /// This is what `rhi`'s `waitIdle` exists for; M2 added it because this teardown is
-    /// the ordinary case, not a corner.
+    /// **Without waiting.** A renderer is destroyed before the device it borrows, often with
+    /// the last frames still on the GPU. Destroying what they use is legal: the device keeps
+    /// each object until the work that could use it has finished, and its own teardown waits
+    /// for that (`rhi.md` §3). Idling the device here would only hide a lifetime bug.
     pub fn deinit(self: *Self) void {
-        self.device.waitIdle();
-
         for (self.slots) |*slot| {
             for (slot.buffers.items) |buffer| {
                 self.device.destroyBuffer(buffer.upload);
@@ -348,13 +345,13 @@ pub const Renderer = struct {
         );
         errdefer self.destroyTexture(handle);
 
-        const state = self.textures.get(handle).?;
-        try self.uploadRegion(state.gpu, image, .{});
+        try self.uploadRegion(handle, image, .{});
         return handle;
     }
 
-    /// Requests destruction. The handle stops resolving immediately; the GPU objects are
-    /// released once no in-flight frame can reference them (`texture.Pool`).
+    /// The handle stops resolving immediately; the device keeps the GPU objects until the
+    /// work that could use them has finished (`texture.Pool`). Legal with frames in flight,
+    /// which is where a hot reload replaces a texture.
     pub fn destroyTexture(self: *Self, handle: TextureHandle) void {
         // The blank texture is the renderer's, not the caller's. Refused rather than
         // asserted: the caller is a game today and a mod from M7, and destroying it would
@@ -363,8 +360,7 @@ pub const Renderer = struct {
             log.warn("refusing to destroy the renderer's own blank texture", .{});
             return;
         }
-        const frame_index = if (self.frame) |f| f.index else 0;
-        _ = self.textures.destroy(self.gpa, handle, frame_index);
+        _ = self.textures.destroy(self.device, handle);
     }
 
     /// A region of solid white the renderer owns, for drawing filled rectangles: panels,
@@ -423,7 +419,7 @@ pub const Renderer = struct {
             .label = options.label,
         });
         errdefer self.destroyTexture(handle);
-        try self.clearTexture(self.textures.get(handle).?.gpu, size);
+        try self.clearTexture(handle, size);
 
         return self.atlases.add(self.gpa, .{
             .texture = handle,
@@ -438,20 +434,24 @@ pub const Renderer = struct {
     /// deliberately distinct from `error.RegionTooLarge`, which no atlas of this size will
     /// ever accept.
     ///
-    /// Call this outside a frame. It records and submits a copy of its own, and destroys
-    /// the staging buffer immediately afterwards, which is safe exactly because nothing is
-    /// in flight — the same reasoning `createTexture` relies on. Doing it mid-frame is a
-    /// rule 9 violation, which the validation backend names.
+    /// Callable whenever a game may call the renderer, with frames in flight or without. The
+    /// copy is submitted on its own and not waited for (`submitCopy`), and the images the
+    /// atlas already holds are kept.
+    ///
+    /// **A failure takes nothing.** The space is claimed only once the upload has been
+    /// submitted, so no region is published for pixels that never arrived, and the next
+    /// image lands where this one would have.
     pub fn atlasAdd(self: *Self, handle: AtlasHandle, image: asset.Image) Error!Region {
         const state = self.atlases.get(handle) orelse return error.InvalidAtlas;
-        const gpu = self.textures.get(state.texture) orelse return error.InvalidTexture;
-        const gpu_handle = gpu.gpu;
+        if (self.textures.get(state.texture) == null) return error.InvalidTexture;
 
-        const placement = try state.packer.add(self.gpa, image.width, image.height);
-        try self.uploadRegion(gpu_handle, image, .{ .x = placement.x, .y = placement.y });
+        const found = try state.packer.fit(self.gpa, image.width, image.height);
+        const at = found.placement;
+        try self.uploadRegion(state.texture, image, .{ .x = at.x, .y = at.y });
+        state.packer.commit(found);
 
         const whole: Region = .whole(state.texture, state.size);
-        return whole.sub(placement.x, placement.y, image.width, image.height);
+        return whole.sub(at.x, at.y, image.width, image.height);
     }
 
     /// The atlas as one region, which is how a font packed whole into one is addressed.
@@ -539,14 +539,14 @@ pub const Renderer = struct {
         });
     }
 
-    /// Writes `image` into `gpu` at `origin`.
+    /// Writes `image` into the texture at `origin`.
     ///
     /// A whole-texture upload is this with the default origin, and packing into an atlas
     /// is this with a computed one — one path, so an atlas cannot drift from a texture in
     /// how its pixels get there.
     fn uploadRegion(
         self: *Self,
-        gpu: rhi.TextureHandle,
+        handle: TextureHandle,
         image: asset.Image,
         origin: rhi.Origin2D,
     ) Error!void {
@@ -556,9 +556,6 @@ pub const Renderer = struct {
             .usage = .{ .copy_src = true },
             .memory = .upload,
         });
-        // Destroyed at the end of this function, which is safe specifically because it is
-        // not inside a frame: nothing is in flight, so the deferred-destroy guarantee the
-        // RHI documents but does not implement is not being leaned on.
         defer self.device.destroyBuffer(staging);
 
         {
@@ -567,20 +564,42 @@ pub const Renderer = struct {
             @memcpy(bytes[0..image.byteSize()], image.pixels);
         }
 
-        var cmd = try self.device.beginCommandBuffer();
-        // From `undefined` every time, including for an atlas that already has pixels in
-        // it: the region being written has no contents worth preserving, and the texels
-        // outside it are untouched by a copy. Declaring `shader_read` here instead would
-        // be a lie the moment two uploads ran back to back.
-        try cmd.textureBarrier(&.{.{ .texture = gpu, .from = .undefined, .to = .copy_dst }});
+        try self.submitCopy(handle, staging, origin, image.width, image.height);
+    }
+
+    /// Records and submits one copy from `staging` into the texture, and does not wait.
+    ///
+    /// **Asynchronous, and its callers destroy the staging buffer straight afterwards.** That
+    /// is legal with or without frames in flight: the device keeps a destroyed buffer until
+    /// every recording begun before the destroy has finished (`rhi.md` §3), and this copy is
+    /// one of them. Being outside a frame says nothing about whether the GPU is idle, and a
+    /// device-wide wait in every texture load would hide a lifetime bug rather than fix one.
+    ///
+    /// The first barrier declares the state the texture is tracked in, not `undefined`.
+    /// `undefined` tells a backend the contents may be discarded, which is true of a new
+    /// texture and false of an atlas with images already in it. The tracked state moves
+    /// only once the copy has been submitted.
+    fn submitCopy(
+        self: *Self,
+        handle: TextureHandle,
+        staging: rhi.BufferHandle,
+        origin: rhi.Origin2D,
+        width: u32,
+        height: u32,
+    ) Error!void {
+        const state = self.textures.get(handle) orelse return error.InvalidTexture;
+
+        const cmd = try self.device.beginCommandBuffer();
+        try cmd.textureBarrier(&.{.{ .texture = state.gpu, .from = state.state, .to = .copy_dst }});
         try cmd.copyBufferToTexture(.{
             .src = staging,
-            .dst = gpu,
+            .dst = state.gpu,
             .dst_origin = origin,
-            .size = .{ .width = image.width, .height = image.height },
+            .size = .{ .width = width, .height = height },
         });
-        try cmd.textureBarrier(&.{.{ .texture = gpu, .from = .copy_dst, .to = .shader_read }});
+        try cmd.textureBarrier(&.{.{ .texture = state.gpu, .from = .copy_dst, .to = .shader_read }});
         try cmd.submit();
+        state.state = .shader_read;
     }
 
     /// Fills a whole texture with transparent black.
@@ -588,8 +607,8 @@ pub const Renderer = struct {
     /// Through a zeroed staging buffer rather than a render pass, which would need
     /// `render_target` usage and a pipeline for something that happens once per atlas.
     /// The buffer is the atlas's full size — four megabytes for 1024 squared — and is
-    /// released immediately.
-    fn clearTexture(self: *Self, gpu: rhi.TextureHandle, size: Extent2D) Error!void {
+    /// destroyed as soon as the copy is submitted.
+    fn clearTexture(self: *Self, handle: TextureHandle, size: Extent2D) Error!void {
         const bytes_needed = @as(u64, size.width) * size.height * asset.Image.channels;
         const staging = try self.device.createBuffer(.{
             .label = "render2d atlas clear",
@@ -605,15 +624,7 @@ pub const Renderer = struct {
             @memset(bytes[0..@intCast(bytes_needed)], 0);
         }
 
-        var cmd = try self.device.beginCommandBuffer();
-        try cmd.textureBarrier(&.{.{ .texture = gpu, .from = .undefined, .to = .copy_dst }});
-        try cmd.copyBufferToTexture(.{
-            .src = staging,
-            .dst = gpu,
-            .size = .{ .width = size.width, .height = size.height },
-        });
-        try cmd.textureBarrier(&.{.{ .texture = gpu, .from = .copy_dst, .to = .shader_read }});
-        try cmd.submit();
+        try self.submitCopy(handle, staging, .{}, size.width, size.height);
     }
 
     // -- the frame -------------------------------------------------------------------
@@ -828,7 +839,6 @@ pub const Renderer = struct {
     /// reach one would be reaching the RHI (CLAUDE.md §4.2).
     pub fn prepare(self: *Self, cmd: *rhi.CommandBuffer, frame: rhi.FrameContext) Error!void {
         self.frame = frame;
-        self.textures.collect(self.device, frame.index);
 
         try self.batcher.plan(self.gpa);
 
@@ -1110,6 +1120,8 @@ pub const Renderer = struct {
             .usage = .{ .copy_src = true },
             .memory = .upload,
         });
+        // Destroyed while the copy below may still be queued, which is legal: the device
+        // keeps it until that copy has finished (`submitCopy` says why nothing waits).
         defer device.destroyBuffer(staging);
 
         const indices = try device.createBuffer(.{
@@ -1148,6 +1160,28 @@ pub const Renderer = struct {
 
 const testing = std.testing;
 
+/// One complete frame, driven the way `app` drives it.
+fn drawFrame(device: *rhi.Device, renderer: *Renderer) !void {
+    const ctx = try device.beginFrame();
+    const cmd = try device.beginCommandBuffer();
+    try renderer.prepare(cmd, ctx);
+
+    const pass = try cmd.beginRenderPass(.{
+        .label = "test",
+        .color = &.{.{
+            .texture = ctx.surface_texture,
+            .load = .{ .clear = .{ .color = .{ 0, 0, 0, 1 } } },
+            .store = .store,
+            .initial_state = .undefined,
+            .final_state = .present,
+        }},
+    });
+    try renderer.record(pass);
+    pass.end();
+    try cmd.submit();
+    try device.endFrame();
+}
+
 /// A device, a renderer and one texture: the smallest thing that can draw.
 ///
 /// Under `-Drhi=null` this runs against the validation backend with violation logging on,
@@ -1184,26 +1218,8 @@ const Fixture = struct {
         self.device.deinit();
     }
 
-    /// One complete frame, driven the way `app` drives it.
     fn frame(self: *Fixture) !void {
-        const ctx = try self.device.beginFrame();
-        const cmd = try self.device.beginCommandBuffer();
-        try self.renderer.prepare(cmd, ctx);
-
-        const pass = try cmd.beginRenderPass(.{
-            .label = "test",
-            .color = &.{.{
-                .texture = ctx.surface_texture,
-                .load = .{ .clear = .{ .color = .{ 0, 0, 0, 1 } } },
-                .store = .store,
-                .initial_state = .undefined,
-                .final_state = .present,
-            }},
-        });
-        try self.renderer.record(pass);
-        pass.end();
-        try cmd.submit();
-        try self.device.endFrame();
+        return drawFrame(self.device, &self.renderer);
     }
 
     fn sprite(self: *Fixture, which: TextureHandle, layer: i16, blend: BlendMode) Sprite {
@@ -1319,8 +1335,8 @@ test "a destroyed texture is refused at the draw call that uses it" {
     try fx.frame();
     try testing.expectEqual(@as(u32, 0), fx.renderer.frameStats().draw_calls);
 
-    // And the GPU objects survive until no in-flight frame can reference them, which is
-    // why the frames above did not trip rule 9.
+    // The device keeps the GPU objects until the frames that could use them have finished,
+    // so the frames after the destroy break no rule either.
     for (0..3) |_| {
         try fx.renderer.begin(fx.view());
         try fx.frame();
@@ -1961,4 +1977,127 @@ test "a clip is in screen points and is scaled to pixels when recorded" {
     try testing.expectEqual(@as(u32, 40), scissor.y);
     try testing.expectEqual(@as(u32, 200), scissor.width);
     try testing.expectEqual(@as(u32, 100), scissor.height);
+}
+
+test "adding to an atlas keeps the images already in it" {
+    // Only the validation backend can see a discard: it counts each transition declaring
+    // `undefined` over contents it has tracked. Metal keeps no such state, which is why an
+    // upload that declared the whole atlas `undefined` went unnoticed there.
+    if (rhi.backend != .null) return error.SkipZigTest;
+
+    var fx = try Fixture.init(64);
+    defer fx.deinit();
+
+    var image = try asset.Image.alloc(testing.allocator, 4, 4);
+    defer image.deinit(testing.allocator);
+    @memset(image.pixels, 0xFF);
+
+    const atlas = try fx.renderer.createAtlas(.{ .width = 32, .height = 32 }, .{ .label = "kept" });
+    const gpu = fx.renderer.textures.get(fx.renderer.atlasTexture(atlas).?).?.gpu;
+    // Clearing a new texture discards nothing, because there was nothing in it.
+    try testing.expectEqual(@as(?u32, 0), fx.device.contentsDiscarded(gpu));
+
+    // Before any frame, between frames with one in flight, and back to back.
+    _ = try fx.renderer.atlasAdd(atlas, image);
+    try fx.renderer.begin(fx.view());
+    try fx.frame();
+    _ = try fx.renderer.atlasAdd(atlas, image);
+    _ = try fx.renderer.atlasAdd(atlas, image);
+    try testing.expectEqual(@as(?u32, 0), fx.device.contentsDiscarded(gpu));
+}
+
+test "a failed atlas upload publishes no region, and the next image lands where it would have" {
+    // Failures are injected into the allocator the device and renderer share, which only
+    // reaches every step of an upload on the validation backend; Metal's buffers are not
+    // allocated from it.
+    if (rhi.backend != .null) return error.SkipZigTest;
+
+    var failing: std.testing.FailingAllocator = .init(testing.allocator, .{});
+    const gpa = failing.allocator();
+    const device = try rhi.Device.init(gpa, .{});
+    defer device.deinit();
+    var renderer = try Renderer.init(gpa, device, .{ .quads_per_buffer = 64 });
+    defer renderer.deinit();
+
+    var image = try asset.Image.alloc(testing.allocator, 4, 4);
+    defer image.deinit(testing.allocator);
+    @memset(image.pixels, 0xFF);
+
+    const size: Extent2D = .{ .width = 32, .height = 32 };
+    const atlas = try renderer.createAtlas(size, .{ .label = "failing" });
+    const first = try renderer.atlasAdd(atlas, image);
+    const fill = renderer.atlasFill(atlas).?;
+
+    // Where the second image belongs, according to a packer nothing has failed on.
+    var reference: atlas_mod.Packer = .init(size, (AtlasOptions{}).padding);
+    defer reference.deinit(testing.allocator);
+    _ = try reference.add(testing.allocator, 4, 4);
+    const expected = try reference.add(testing.allocator, 4, 4);
+
+    const view: FrameView = .{ .camera = .{ .viewport = .init(0, 0, 1280, 720) } };
+    var failures: usize = 0;
+    const second = while (true) : (failures += 1) {
+        // A frame in flight on every attempt, drawing what the atlas already holds.
+        try renderer.begin(view);
+        try renderer.drawSprite(.{
+            .texture = first.texture,
+            .uv = first.uv,
+            .position = .init(0, 0),
+            .size = .init(4, 4),
+        });
+        try drawFrame(device, &renderer);
+        try testing.expectEqual(@as(u32, 1), renderer.frameStats().draw_calls);
+
+        failing.fail_index = failing.alloc_index + failures;
+        const result = renderer.atlasAdd(atlas, image);
+        failing.fail_index = std.math.maxInt(usize);
+        break result catch |err| {
+            try testing.expectEqual(error.OutOfMemory, err);
+            try testing.expectEqual(fill, renderer.atlasFill(atlas).?);
+            continue;
+        };
+    };
+
+    try testing.expect(failures > 0);
+    try testing.expectEqual(renderer.atlasRegion(atlas).?.sub(expected.x, expected.y, 4, 4), second);
+}
+
+/// Everything the renderer creates, draws with and destroys, in one pass that a failing
+/// allocator can cut short anywhere.
+fn createDrawAndDestroy(gpa: Allocator) !void {
+    const device = try rhi.Device.init(gpa, .{});
+    defer device.deinit();
+    var renderer = try Renderer.init(gpa, device, .{ .quads_per_buffer = 8 });
+    defer renderer.deinit();
+
+    var image = try asset.Image.alloc(gpa, 2, 2);
+    defer image.deinit(gpa);
+    @memset(image.pixels, 0xFF);
+
+    const texture = try renderer.createTexture(image, .{ .label = "sweep" });
+    const atlas = try renderer.createAtlas(.{ .width = 16, .height = 16 }, .{ .label = "sweep" });
+    const region = try renderer.atlasAdd(atlas, image);
+
+    const view: FrameView = .{ .camera = .{ .viewport = .init(0, 0, 64, 64) } };
+    try renderer.begin(view);
+    try renderer.drawSprite(.{ .texture = texture, .position = .init(0, 0), .size = .init(2, 2) });
+    try renderer.drawSprite(.{
+        .texture = region.texture,
+        .uv = region.uv,
+        .position = .init(4, 0),
+        .size = .init(2, 2),
+    });
+    try drawFrame(device, &renderer);
+
+    // With that frame still in flight. Neither may allocate: a destroy has no error to
+    // report a failure with, so one that tried would surface as a swallowed failure.
+    renderer.destroyTexture(texture);
+    renderer.destroyAtlas(atlas);
+    try renderer.begin(view);
+    try drawFrame(device, &renderer);
+}
+
+test "no allocation failure in creating, drawing or destroying leaks, and no destroy swallows one" {
+    if (rhi.backend != .null) return error.SkipZigTest;
+    try testing.checkAllAllocationFailures(testing.allocator, createDrawAndDestroy, .{});
 }

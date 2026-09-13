@@ -14,8 +14,10 @@ and [hardening.md](hardening.md) §§5–7 govern this document's lifetime, usag
 frame-outcome contracts. **Step 2 implemented §3's deferred destruction and the corrected
 §11 rule 9 in both backends**: completion covers every submission, uploads outside a frame
 included, and a destroyed handle's backing is kept until every recording that could use it
-has finished. Usage conformance (rule 11) and distinct presentation outcomes are not
-implemented yet, so the rule counts below still describe ten rules.
+has finished. **Step 3 moved `render2d` onto that contract**: the renderer keeps no retirement
+of its own, and its uploads declare a texture's tracked state rather than `undefined`. Usage
+conformance (rule 11) and distinct presentation outcomes are not implemented yet, so the rule
+counts below still describe ten rules.
 
 `rhi` is layer L2. It depends on `core` and `platform`. **Graphics API symbols appear
 nowhere outside it** (I7, enforced by the build graph).

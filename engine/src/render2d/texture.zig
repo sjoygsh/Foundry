@@ -1,11 +1,10 @@
-//! GPU textures, and the retirement queue that makes destroying one safe.
+//! GPU textures, as the renderer hands them out.
 
 const std = @import("std");
 const core = @import("core");
 const rhi = @import("rhi");
 
 const Allocator = std.mem.Allocator;
-const log = core.log.scoped(.render2d);
 
 /// Phantom tag for `TextureHandle`. Never instantiated; it exists so that a renderer
 /// texture cannot be confused with any other handle (I1).
@@ -57,50 +56,34 @@ pub const State = struct {
     sampler: rhi.SamplerHandle,
     width: u32,
     height: u32,
-};
-
-/// A resource whose destruction has been requested but which a frame in flight may still
-/// be reading.
-const Retired = struct {
-    state: State,
-    /// The frame index after which no in-flight frame can reference it.
-    safe_after: u64,
+    /// The state the renderer's submitted work leaves the texture in, so that the next
+    /// upload's barrier declares the truth (`rhi.md` §6). `undefined` until the first write.
+    ///
+    /// Tracked rather than assumed because `undefined` is not a neutral answer: it says the
+    /// contents are not worth preserving, and a backend is entitled to discard them. That
+    /// is right for a new texture and wrong for an atlas with images already in it.
+    state: rhi.ResourceState = .undefined,
 };
 
 /// Owns every GPU texture the renderer has handed out.
 ///
-/// The retirement queue is the point of this type. `rhi/interface.zig` documents deferred
-/// destruction that **no backend implements** — destroying a texture a frame in flight
-/// still references is undefined behaviour today, and unloading a level while two frames
-/// are in flight is the most ordinary way imaginable to reach it.
-///
-/// So the renderer does not rely on the RHI's promise. `destroy` invalidates the handle
-/// immediately and queues the GPU objects for release once `frames_in_flight` further
-/// frames have begun. Two frames of latency on a texture free is nothing; a use-after-free
-/// in a renderer is a week.
-///
-/// This is the concrete payoff of I1: the generation bump means a stale handle produces a
-/// clean lookup failure at the call site rather than sampling freed GPU memory.
+/// **Destruction is two lifetimes, and each has one owner.** The renderer's handle dies
+/// the moment `destroy` is called, so a stale handle is a lookup that fails at the call
+/// site rather than a draw from freed memory — the payoff of I1. The GPU objects belong to
+/// the device, which keeps them until every recording that could have used them has
+/// finished (`rhi.md` §3, ADR-0035). The renderer keeps no retirement of its own: a second
+/// timeline counting frames above the one counting submissions could only disagree with it,
+/// and an upload made outside any frame is exactly where it would.
 pub const Pool = struct {
     live: core.HandlePool(Texture, State) = .empty,
-    retired: std.ArrayList(Retired) = .empty,
-    frames_in_flight: u64,
 
-    pub fn init(frames_in_flight: u32) Pool {
-        return .{ .frames_in_flight = frames_in_flight };
-    }
+    pub const empty: Pool = .{};
 
-    /// Releases everything, live and retired, without waiting.
-    ///
-    /// Safe only because the device has been idled first — `rhi`'s `Device.deinit` waits
-    /// on every in-flight command buffer. Teardown is the one moment the queue can be
-    /// short-circuited, and it is short-circuited explicitly rather than by forgetting.
+    /// Destroys everything still live.
     pub fn deinit(self: *Pool, gpa: Allocator, device: *rhi.Device) void {
         var it = self.live.iterator();
         while (it.next()) |entry| releaseState(device, entry.value.*);
-        for (self.retired.items) |item| releaseState(device, item.state);
         self.live.deinit(gpa);
-        self.retired.deinit(gpa);
         self.* = undefined;
     }
 
@@ -116,38 +99,18 @@ pub const Pool = struct {
         return self.live.count();
     }
 
-    /// Requests destruction. The handle stops resolving immediately; the GPU objects go
-    /// later. Returns false if the handle was already stale, which is not an error — a
-    /// double unload is a normal thing for game code to do.
-    pub fn destroy(self: *Pool, gpa: Allocator, handle: TextureHandle, frame_index: u64) bool {
+    /// The handle stops resolving now; the device decides when the GPU objects go.
+    /// Returns false if the handle was already stale, which is not an error — a double
+    /// unload is a normal thing for game code to do.
+    ///
+    /// Cannot fail and allocates nothing: the device reserved each object's retirement
+    /// when it was created.
+    pub fn destroy(self: *Pool, device: *rhi.Device, handle: TextureHandle) bool {
         const state = self.live.get(handle) orelse return false;
         const copy = state.*;
         _ = self.live.remove(handle);
-
-        self.retired.append(gpa, .{
-            .state = copy,
-            .safe_after = frame_index + self.frames_in_flight,
-        }) catch {
-            // Out of memory while freeing is a genuinely awkward corner: leaking is the
-            // only alternative to a use-after-free, and it is the right one. Saying so is
-            // better than an error the caller cannot act on.
-            log.warn("texture retirement queue is out of memory; leaking one texture", .{});
-            return true;
-        };
+        releaseState(device, copy);
         return true;
-    }
-
-    /// Releases everything no in-flight frame can still reference. Called once a frame.
-    pub fn collect(self: *Pool, device: *rhi.Device, frame_index: u64) void {
-        var i: usize = 0;
-        while (i < self.retired.items.len) {
-            if (self.retired.items[i].safe_after <= frame_index) {
-                releaseState(device, self.retired.items[i].state);
-                _ = self.retired.swapRemove(i);
-            } else {
-                i += 1;
-            }
-        }
     }
 
     fn releaseState(device: *rhi.Device, state: State) void {
@@ -159,69 +122,82 @@ pub const Pool = struct {
 
 const testing = std.testing;
 
-test "a destroyed handle stops resolving before the GPU objects are released" {
-    var pool: Pool = .init(2);
-    defer {
-        pool.live.deinit(testing.allocator);
-        pool.retired.deinit(testing.allocator);
-    }
-
-    const handle = try pool.add(testing.allocator, .{
-        .gpu = .none,
-        .group = .none,
-        .sampler = .none,
-        .width = 4,
-        .height = 4,
+/// A texture, its sampler and a group naming both: the three objects a `State` holds.
+fn createState(device: *rhi.Device, layout: rhi.BindGroupLayoutHandle) !State {
+    const gpu = try device.createTexture(.{
+        .label = "pool test",
+        .size = .{ .width = 4, .height = 4 },
+        .format = .rgba8_unorm_srgb,
+        .usage = .{ .sampled = true, .copy_dst = true },
     });
-    try testing.expect(pool.get(handle) != null);
+    const sampler = try device.createSampler(.{ .label = "pool test" });
+    const group = try device.createBindGroup(.{
+        .label = "pool test",
+        .layout = layout,
+        .entries = &.{
+            .{ .binding = 0, .resource = .{ .sampled_texture = gpu } },
+            .{ .binding = 1, .resource = .{ .sampler = sampler } },
+        },
+    });
+    return .{ .gpu = gpu, .group = group, .sampler = sampler, .width = 4, .height = 4 };
+}
 
-    // Frame 10 asks for it to go away.
-    try testing.expect(pool.destroy(testing.allocator, handle, 10));
+fn createLayout(device: *rhi.Device) !rhi.BindGroupLayoutHandle {
+    return device.createBindGroupLayout(.{
+        .label = "pool test",
+        .entries = &.{
+            .{ .binding = 0, .type = .sampled_texture, .visibility = .{ .fragment = true } },
+            .{ .binding = 1, .type = .sampler, .visibility = .{ .fragment = true } },
+        },
+    });
+}
+
+test "a destroyed handle stops resolving at once, and the device keeps its objects for unfinished work" {
+    const device = try rhi.Device.init(testing.allocator, .{});
+    defer device.deinit();
+    const layout = try createLayout(device);
+    defer device.destroyBindGroupLayout(layout);
+
+    var pool: Pool = .empty;
+    defer pool.deinit(testing.allocator, device);
+    const handle = try pool.add(testing.allocator, try createState(device, layout));
+
+    // A recording begun before the destroy may use the texture, so the device must keep it.
+    const cmd = try device.beginCommandBuffer();
+    try testing.expect(pool.destroy(device, handle));
 
     // The handle is dead immediately: this is the property that turns a use-after-free
     // into a lookup that fails.
     try testing.expect(pool.get(handle) == null);
-    // But the GPU objects are still queued, because frames 10 and 11 may reference them.
-    try testing.expectEqual(@as(usize, 1), pool.retired.items.len);
+    // The texture, its sampler and its group are all still held by the device.
+    try testing.expectEqual(@as(usize, 3), device.retiredCount());
 
     // Destroying it again is a no-op rather than a crash: double unload is normal.
-    try testing.expect(!pool.destroy(testing.allocator, handle, 10));
-}
+    try testing.expect(!pool.destroy(device, handle));
 
-test "retirement waits exactly frames_in_flight frames" {
-    var pool: Pool = .init(2);
-    defer {
-        pool.live.deinit(testing.allocator);
-        pool.retired.deinit(testing.allocator);
-    }
-
-    const handle = try pool.add(testing.allocator, .{
-        .gpu = .none,
-        .group = .none,
-        .sampler = .none,
-        .width = 1,
-        .height = 1,
-    });
-    _ = pool.destroy(testing.allocator, handle, 10);
-    try testing.expectEqual(@as(u64, 12), pool.retired.items[0].safe_after);
+    try cmd.submit();
+    device.waitIdle();
+    try testing.expectEqual(@as(usize, 0), device.retiredCount());
 }
 
 test "a handle from one pool never resolves in another" {
     // The generation makes this a lookup failure rather than a wrong texture, which is
     // the difference between a clear error and a mystery.
-    var a: Pool = .init(2);
-    var b: Pool = .init(2);
+    const device = try rhi.Device.init(testing.allocator, .{});
+    defer device.deinit();
+    const layout = try createLayout(device);
+    defer device.destroyBindGroupLayout(layout);
+
+    var a: Pool = .empty;
+    var b: Pool = .empty;
     defer {
-        a.live.deinit(testing.allocator);
-        a.retired.deinit(testing.allocator);
-        b.live.deinit(testing.allocator);
-        b.retired.deinit(testing.allocator);
+        a.deinit(testing.allocator, device);
+        b.deinit(testing.allocator, device);
     }
 
-    const state: State = .{ .gpu = .none, .group = .none, .sampler = .none, .width = 1, .height = 1 };
-    const from_a = try a.add(testing.allocator, state);
-    _ = a.destroy(testing.allocator, from_a, 0);
-    _ = try b.add(testing.allocator, state);
+    const from_a = try a.add(testing.allocator, try createState(device, layout));
+    _ = a.destroy(device, from_a);
+    _ = try b.add(testing.allocator, try createState(device, layout));
 
     // Same index, but `a` has moved on: the stale handle does not resolve.
     try testing.expect(a.get(from_a) == null);

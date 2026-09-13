@@ -1,8 +1,8 @@
 # Hardening: close the known faults without changing Foundry's shape
 
-**Status:** designed 2026-09-13; **2/9 implementation steps complete**.
+**Status:** designed 2026-09-13; **3/9 implementation steps complete**.
 **Baseline:** `180ef4f`, M0–M10 complete; M10's verification remains accepted.
-**Stop point:** immediately before Step 3. Resolutions at the end record what each step settled.
+**Stop point:** immediately before Step 4. Resolutions at the end record what each step settled.
 
 Specification for M11, **Solid: "its known faults are fixed"**, in
 [`ROADMAP.md`](../ROADMAP.md). Rests on [ADR-0035](../adr/0035-rhi-lifetime-and-validation.md),
@@ -355,7 +355,7 @@ named implementation seams, check local links/whitespace and scope consistency o
 do not rerun them to prove prose. No compile failure is fixed, no new guard is implemented,
 and no milestone implementation count advances during planning.
 
-**Next action, only when implementation is requested: Step 3 above.**
+**Next action, only when implementation is requested: Step 4 above.**
 
 ## Resolution — Step 1, 2026-09-13
 
@@ -451,3 +451,66 @@ were restored byte-for-byte. `zig build test -Drhi=metal` passed under `MTL_DEBU
 Metal API Validation enabled in each test process and no validation error, including the new
 test's upload, frames and retirement on the device. The bar passed. 1,308 declared / 1,299
 headless, nine of them Metal-only.
+
+## Resolution — Step 3, 2026-09-13
+
+**The renderer relies on the RHI's retirement instead of keeping its own.** `texture.Pool`
+lost its frame-index queue, its per-frame `collect` and its out-of-memory path, which leaked a
+texture rather than fail a destroy that cannot report failure. `destroy` now removes the
+renderer handle and destroys the texture, sampler and bind group through the RHI at once; the
+device keeps them until every recording that could use them has finished, and nothing on that
+path allocates, because creation reserved each retirement. §5.3 allowed delegating to the RHI
+or reserving the renderer's own bookkeeping. Delegating was the smaller change, and it removes
+the second completion timeline §5.3 forbids instead of reconciling it with the first. Renderer
+handles keep their own identity: a stale one still fails at the call site, and a sprite drawn
+before its texture's destroy is still dropped at `record`. `Renderer.deinit` no longer idles the
+device, since nothing it destroys needs that and the device's own teardown waits.
+
+**Uploads stay asynchronous.** `createTexture`, the atlas clear and `atlasAdd` share one
+`submitCopy`, which records and submits a copy and returns; the staging buffer is destroyed
+straight afterwards, as the index buffer's staging already was. The comments claiming that
+being outside a frame meant nothing was in flight are gone, from the code and from
+`render2d.md` §9, and no wait replaced them.
+
+**An atlas keeps what it holds.** Each renderer texture tracks the state its last submitted
+upload left it in, and the next barrier declares that state instead of `undefined`. To make the
+difference observable without a GPU, the validation backend counts, per texture, transitions
+that declare `undefined` over contents it has tracked (`contentsDiscarded`). That is an
+observation for tests, not a rule: rule 1 still accepts `undefined` unconditionally, because no
+rule can tell a discard the caller wanted from one it did not.
+
+**A failed atlas upload takes nothing.** The packer's `add` is now `fit` followed by `commit`:
+`fit` finds the place and makes any allocation, and `commit` claims it and cannot fail.
+`atlasAdd` commits only once the copy is submitted, so no region is published for pixels that
+never arrived, and the next image lands where the failed one would have. The asset registry's
+transaction — build the candidate, then unload the old payload — was already right and is
+unchanged, and the texture loader needed no change.
+
+**Not done here.** A recording that fails between `beginCommandBuffer` and `submit` is still
+left open and holds later retirements until teardown; closing it is Step 5, as Step 2 recorded.
+In an upload, that can happen on Metal if an encoder cannot be created, and on the validation
+backend only after a violation has already been reported. The renderer's tracked state then
+stays at what submitted work left, which is what a real GPU holds; the validation backend tracks
+state as commands are recorded, so it may also report the next upload's barrier.
+
+**Evidence.** Eight tests were added and one removed. `atlas.zig`: a fit never committed takes no
+space. Validation backend: declaring `undefined` over tracked contents is legal and counted.
+`renderer.zig`: adding to an atlas before, between and after frames discards nothing; a failed
+atlas upload publishes no region, keeps the fill and lands the next image where it belonged;
+and `std.testing.checkAllAllocationFailures` over creating, drawing with and destroying a
+texture and an atlas finds no leak and no swallowed failure. `engine/tests/asset_pipeline.zig`,
+through the ordinary registry and the registered texture loader: six replacements, each with the
+frame that drew the old texture unfinished, retaining at most two replacements' objects and none
+after `waitIdle`; a half-written file refused, the old texture drawing, then replaced by the
+good file; and every allocation a replacement makes failed in turn, the old texture drawing
+after each failure. The pool's two frame-index tests became one device-backed test of immediate
+invalidation and retained objects. Breaking the guards — declaring the atlas `undefined`,
+claiming its space before the upload, and releasing retired backings regardless of completion —
+failed 13 of 1,306 tests: one each for the first two and eleven for the third, the new reload
+and pool tests among them. The files were restored byte-for-byte. `zig build test -Drhi=metal`
+passed under `MTL_DEBUG_LAYER=1` with no validation error. `samples/sandbox` on the null
+platform and validation backend ran 3,000 frames while its installed texture was touched
+continuously: 100 hot reloads, one per watcher pass, no violation and a clean exit. The same
+run windowed on Metal, under `MTL_DEBUG_LAYER=1`, reloaded the texture 20 times in 600 frames
+with no validation error and exited cleanly. The bar passed. 1,315 declared / 1,306 headless,
+nine of them Metal-only.
