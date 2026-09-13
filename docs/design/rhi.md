@@ -9,6 +9,13 @@ cannot do: a test checks our arithmetic against this document, not that Metal ag
 **Date:** 2026-09-03, revised 2026-09-04
 **Implements:** I1, I7, I8 · **Informed by:** ADR-0003, ADR-0012, ADR-0015, ADR-0007
 
+**M11 planned correction, 2026-09-13:** [ADR-0035](../adr/0035-rhi-lifetime-and-validation.md)
+and [hardening.md](hardening.md) §§5–7 govern the next implementation. They retain §3's
+deferred destruction, correct §11 rule 9 to prohibit premature physical release and new use
+of dead handles, add usage conformance as rule 11, and distinguish temporary presentation
+unavailability from fatal surface/device errors. The old ten-rule implementation and test
+counts below describe the baseline; **none of these M11 changes is implemented yet**.
+
 `rhi` is layer L2. It depends on `core` and `platform`. **Graphics API symbols appear
 nowhere outside it** (I7, enforced by the build graph).
 
@@ -553,3 +560,17 @@ headlessly — the same reason the null *platform* backend exists.
    there is a second backend. Recorded so that it is a known gap rather than an oversight —
    the handle model at least makes recovery expressible, since every resource is already
    addressed indirectly.
+
+## Resolution — 2026-09-13, M11 planning only
+
+ADR-0035 resolves the disagreement between §3 and §11 rule 9 in favor of §3's original
+promise. A destroy request is valid while prior work is in flight; releasing its backing
+resource before that work completes is not. The backend owns retirement and tracks uploads
+outside the presentation frame ring too. Rule 9 continues to reject new stale-handle use.
+`hardening.md` §5 specifies reservation, pending recordings, completion and failure evidence.
+
+Open question 4 is decided for M11: usage declarations will be enforced as rule 11, with
+the exact operation matrix in `hardening.md` §6. The other five questions remain open.
+Distinguishing `SurfaceUnavailable`, `SurfaceLost` and `DeviceLost` is the present host's
+error contract; it does not decide device recovery in question 6. Code still implements the
+old behavior until the relevant M11 steps land.

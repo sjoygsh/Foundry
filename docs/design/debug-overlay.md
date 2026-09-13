@@ -326,6 +326,11 @@ does not show is a breakdown by call site, which needs stack capture and is §16
 
 ## 6. The log console
 
+**M11 planned extension, 2026-09-13:** [hardening.md](hardening.md) §9 adds optional sampled
+host elapsed time beside frame identity in internal capture and versioned session text.
+`logFn` acquires no clock, simulation gets no new time input, and C log-record layouts remain
+unchanged. This is planned behavior; the implementation below still records frame/sequence.
+
 `app/log_sink.zig` already carries the argument this section extends. Logging is the one piece of
 genuinely ambient state in Foundry, "defensible only because logging is ambient by nature:
 `std.log` reaches it from code that has no engine pointer to ask." A console needs the log lines

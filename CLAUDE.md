@@ -161,6 +161,7 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Platform layer | SDL3 behind Foundry's own platform interface, via a Zig package | [0002](docs/adr/0002-platform-layer-sdl3.md) |
 | Rendering | Foundry's own RHI with native backends; Metal first, null backend validates | [0003](docs/adr/0003-renderer-own-rhi-metal-first.md) |
 | Second backend | Vulkan, covering Windows and Linux with one backend; D3D12 not planned | [0033](docs/adr/0033-vulkan-second-backend.md) |
+| RHI hardening | Completion-backed retirement, usage validation and distinct transient/fatal frame outcomes; designed for M11 | [0035](docs/adr/0035-rhi-lifetime-and-validation.md) |
 | Metal bridge | Thin Objective-C shim exposing a C API | [0012](docs/adr/0012-metal-objc-shim.md) |
 | Shaders | MSL now; shaders are assets with per-backend variants | [0015](docs/adr/0015-shader-strategy.md) |
 | Shader ownership | Engine-owned shaders embedded; content-owned shaders are assets | [0019](docs/adr/0019-builtin-versus-content-shaders.md) |

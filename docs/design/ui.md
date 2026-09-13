@@ -289,6 +289,12 @@ The kernel measures; the walker draws.
 
 ## 8. The walker, and the one hazard the seam creates
 
+**M11 planned extension, 2026-09-13:** [hardening.md](hardening.md) §8 specifies an optional
+caller-supplied solid region in the walker's options. It lets rectangles share the font's
+texture while preserving paint/clip order and all text metrics. Missing or invalid input uses
+the existing renderer-owned blank. The reference atlas and its coordinates remain ordinary
+content; the walker gains no font ID or glyph-layout assumption. Not implemented yet.
+
 The walker turns a `ui.DrawList` into `render2d` calls. **It lives in `app`**, which is the only
 layer that can see both, exactly as §4.3 describes. Roughly:
 

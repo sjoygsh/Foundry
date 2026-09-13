@@ -459,6 +459,12 @@ error, never asserted: the image came from a file, and files come from mods.
 
 ## 9. Destruction, and the debt this design refuses to lean on
 
+**M11 planning note, 2026-09-13:** the paragraphs below describe the current workaround.
+[ADR-0035](../adr/0035-rhi-lifetime-and-validation.md) and [hardening.md](hardening.md) §5
+plan completion-backed RHI retirement and safe renderer integration, including upload
+staging and allocation failure. Renderer handles remain separate from RHI handles. The
+implementation has not changed; the workaround is not yet retired.
+
 `rhi/interface.zig` documents deferred destruction that **no backend implements** (recorded
 in PROJECT_STATE). Destroying a texture that a frame in flight still references is undefined
 behaviour today, and it would be reached by the most ordinary game code imaginable —

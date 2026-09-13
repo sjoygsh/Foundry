@@ -87,6 +87,12 @@ Strict ad-hoc integrity passed and Gatekeeper rejection is expected. Actual Deve
 signing, Apple notarization and a quarantine-preserving launch on a genuinely clean Mac remain
 mandatory deferred work for the first public release; the current artifact does not claim it.
 
+**M10 is complete; M11 is designed and 0/9 steps are implemented (2026-09-13).** M10 added
+Foundry's marks and an application-supplied release icon (ADR-0034); its full verification is
+recorded in PROJECT_STATE. For M11 read ADR-0035 and `docs/design/hardening.md`; §12 is the
+nine-step order. **Next is Step 1, the Metal-selected app test compilation repair.** No M11
+code, tests or assets have changed during planning. M12–M17 remain unstarted.
+
 ## 3. Building and verifying
 
 The pinned toolchain is **Zig 0.16.0**, and it is not on `PATH`:

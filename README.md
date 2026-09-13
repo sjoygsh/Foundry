@@ -54,6 +54,10 @@ a mod manager, the editor, networking, and last of all the certified public rele
 strangers come last. It gathers work the project had already deferred. See the
 [roadmap](docs/ROADMAP.md).
 
+**M11 is designed, with implementation paused before Step 1.** Its
+[nine-step plan](docs/design/hardening.md#12-implementation-order) covers resource lifetime,
+Metal test coverage, usage validation, frame/file errors, UI batching and diagnostic timing.
+
 All three modding tiers work — see [docs/modding](docs/modding/). Tier 2 is restricted
 Lua 5.5.1, one VM per package, bounded in memory, instructions and engine calls, reaching the
 engine only through the same public ABI table a native mod is handed. Replacing a package's

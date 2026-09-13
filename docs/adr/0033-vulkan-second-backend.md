@@ -82,3 +82,9 @@ A reason to ship on Xbox or to use a Windows-only capability appears; a Windows 
 Vulkan driver proves unusable for this engine's workload on hardware that matters; or bring-up
 shows the RHI is Metal-shaped in some way a different second API would have exposed sooner —
 which would be a reason to change the RHI, not to change this choice.
+
+## Subsequent decision — 2026-09-13
+
+[ADR-0035](0035-rhi-lifetime-and-validation.md) brings the usage-enforcement question in
+this record forward into M11, whose roadmap explicitly names that debt. The second-backend
+choice and all other M13 questions remain as recorded above. M11 is designed, not implemented.

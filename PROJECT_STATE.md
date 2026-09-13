@@ -1,8 +1,28 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-13
-**Current handoff: M0 through M10 are complete. Phase 4's remaining milestones, M11 through
-M17, are unstarted.**
+**Current handoff: M0 through M10 are complete. M11 is designed, 0/9 steps implemented.
+Stop immediately before M11 Step 1. M12 through M17 remain unstarted.**
+
+**M11 planning, 2026-09-13:** `docs/design/hardening.md` specifies Solid, and §12 orders
+nine steps: Metal-selected test compilation, RHI retirement, renderer texture-reload
+integration, usage validation, frame outcomes, shared UI atlas batches, log timestamps,
+file-kind errors and the recorded-debt exit proof. Planning starts from Claude's clean,
+pushed `180ef4f` handoff and accepts M10's **1,280 headless / 1,288 declared tests** and
+completed integration evidence. No M11 implementation, tests or assets changed.
+
+ADR-0035 resolves a real contract conflict: the RHI promises deferred destruction but its
+validation rule rejects the retirement request itself. The design retains that promise,
+requires completion to cover uploads outside frames as well as frame submissions, and makes
+rule 9 test physical release and stale-handle use. It also settles usage rule 11 here, ahead
+of M13, and separates temporary drawable unavailability from fatal surface/device failure.
+Public C table layouts, module layering and deterministic simulation remain unchanged.
+
+The plan includes focused negative tests, failure-safe ownership, a bounded integration
+gate per step and one final disposition pass over this file's existing debt section. It does
+not perform M17's whole-main review or begin later milestones. Planning verification passed:
+132 local documentation links resolve, code fences balance, whitespace checks are clean and
+all 14 changed files are Markdown. Unchanged engineering checks were not rerun.
 
 **Implemented in M10, 2026-09-13:** the engine has an identity, and the line between its
 identity and a game's is drawn where the release path already draws every other one. `brand/`
@@ -1274,10 +1294,14 @@ external-consumer recipient proof obtainable without private Apple credentials. 
 closed.** What a public macOS release still owes is operator certification — Developer ID
 signing, notarization and a clean recipient Mac (ADR-0032) — not engine work. **Phase 4,
 "Hardening and reach" (M10-M17), is under way**: it gathers the deferred work rather than
-adding to it, only M10 was new, and **M10 is complete (2026-09-13)**. M11 through M17 are
-unstarted.
+adding to it, only M10 was new, and **M10 is complete (2026-09-13)**. M11 is designed with
+0/9 steps implemented; M12 through M17 are unstarted.
 
 ## Current milestone
+
+**M11 — Solid: "its known faults are fixed." Designed, 2026-09-13; 0/9 implemented.**
+Read `docs/design/hardening.md` and ADR-0035. Implementation is paused before §12 Step 1;
+the existing known-debt entries are not claimed repaired by the plan.
 
 **M10 — Identity: "it knows its own name." Complete, 2026-09-13.** The marks, the icon the
 release path stages and the plist names, and ADR-0034's rule that reference is permitted and
@@ -2147,8 +2171,8 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**Nothing is in progress. M9 is complete and tagged `m9`, closing Phase 3**, and no post-M9
-or deferred work has been started. The M5 material below is historical.
+**M11 planning is complete; implementation is paused before Step 1.** M0–M10 are complete.
+The new specification is `docs/design/hardening.md`; the M5 material below is historical.
 
 ### `samples/room`, and what a second consumer proved
 
@@ -2793,6 +2817,10 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
+**Next: M11 Step 1, when implementation is requested.** Follow `hardening.md` §12 and
+ADR-0035, starting with the Metal-selected app test recorder mismatch. Nine steps are planned,
+none implemented. Stop after each step; preserve the later milestone triggers below.
+
 **M0 through M10 are complete and tagged, and everything is pushed.** Phase 3 is closed;
 Phase 4 is under way. The completed M8/M7 checklists and subsequent M5/M6 material below are
 historical.
@@ -2809,7 +2837,8 @@ review of `main` rather than beginning on a schedule.
 * ~~**M10 — Identity.**~~ **Done 2026-09-13**, tagged `m10`. One manual step is left and is
   not code: uploading `brand/social-preview.png` as the repository's social preview, which
   GitHub exposes through no API.
-* **M11 — Solid.** The carried correctness debt: the `render2d` texture staging buffer
+* **M11 — Solid. Designed, 0/9 implemented** in `docs/design/hardening.md`. The carried
+  correctness debt: the `render2d` texture staging buffer
   destroyed while frames are in flight, the `-Drhi=metal` `app` test-binary compile failure,
   the blank-patch/font-atlas batching fix, and the smaller entries in this file's known-bugs
   section.
@@ -4111,11 +4140,9 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 
 ## Notes for the next session
 
-**Resume point, 2026-09-10:** M8 step 3 complete, 3/8 steps implemented. Read ADR-0028,
-ADR-0029 and `docs/design/scripting.md` before implementation. Keep existing M7 behavior,
-v1 compatibility and the typed v2 source-copy contract; step 4 adds only the bounded binding-1
-content/world surface. Stop before package lifecycle and scheduling. The environment notes below
-still apply.
+**Resume point, 2026-09-13:** M0–M10 complete. M11 planning is complete; read ADR-0035 and
+`docs/design/hardening.md`, then begin only Step 1 when implementation is requested. No M11
+step has run. The environment notes below still apply.
 
 * Read `CLAUDE.md` first, then this file, then `docs/ROADMAP.md`.
 * The architecture is settled. Do not relitigate ADRs without a concrete reason; each records

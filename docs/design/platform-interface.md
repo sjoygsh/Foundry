@@ -202,6 +202,11 @@ identifiers and are not renamed casually.
 
 ## 5. Filesystem
 
+**M11 planned correction, 2026-09-13:** [hardening.md](hardening.md) §10 requires ordinary
+`Os.readFile` to classify the object it opened and return `WrongFileKind` for a directory.
+It preserves bounded reads and the distinct ordinary/confined symlink contracts. No code
+changes or new platform operation have landed during planning.
+
 `platform` provides **raw filesystem access only**:
 
 * Read a file, write a file, replace a file atomically, check existence, get modification
