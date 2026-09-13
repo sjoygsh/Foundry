@@ -657,6 +657,24 @@ fn run(
         room.sounds_played,
     });
 
+    // Every span's median, the report the sandbox makes too (`jobs-and-threading.md` §8).
+    // Present only when the engine profiled, which by default is a Debug build.
+    if (engine.profiler()) |recorder| {
+        if (core.profile.spanMedians(recorder, gpa)) |medians| {
+            defer gpa.free(medians);
+            for (medians) |m| {
+                log.info("span '{s}': median {d:.3}ms over {d} of {d} frames", .{
+                    recorder.nameOf(m.name),
+                    @as(f32, @floatFromInt(m.median_ns)) / @as(f32, @floatFromInt(core.time.ns_per_ms)),
+                    m.frames,
+                    recorder.frameCount(),
+                });
+            }
+        } else |_| {
+            // A summary that cannot allocate at exit says less, and nothing depends on it.
+        }
+    }
+
     // The other thing a scripted run is for. "0 failures" is the line that says the hall
     // never acted on an input the card had taken (`auditCapture`); the counts either side
     // of it are how much of a chance it had to.

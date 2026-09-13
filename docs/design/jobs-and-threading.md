@@ -1,6 +1,6 @@
 # Jobs and threading: parallel work that cannot change a result
 
-**Status:** designed and **accepted 2026-09-13** (ADR-0036); Steps 1–2 of six implemented.
+**Status:** designed and **accepted 2026-09-13** (ADR-0036); Steps 1–3 of six implemented.
 **Baseline:** `b101745`, M0–M11 complete and tagged `m11`.
 **Stop point:** after each step of §11. Resolutions at the end record what each settled.
 
@@ -524,3 +524,86 @@ Evidence:
 * The bar passed. **1,359 declared / 1,349 headless**, ten Metal-only.
 
 Step 3 builds the measurement.
+
+## Resolution — Step 3, 2026-09-13
+
+Both samples report every span's median at exit, and `render.prepare` is timed in its two halves.
+Nothing splits work yet.
+
+What implementation settled:
+
+* **`core.profile.spanMedians(recorder, gpa)`** returns, for each span name in the order it was
+  first recorded, the median of each frame's total time in that name over the frames it appeared
+  in, and how many frames that was. It sums within a frame, so the sandbox's one-per-step `step`
+  spans count as the step cost a frame actually paid.
+* **A median over mixed frames can mislead, and the report shows how.** At a 120 Hz display and
+  a 60 Hz simulation half the frames run no step, so `simulate`, present on every frame, has a
+  median of 0.000 ms while `step`, present on 120 of 240, shows the real cost. Every median is
+  printed with its frame count for this reason.
+* **One line per span:** `span '<name>': median <ms>ms over <n> of <m> frames`. The sandbox
+  prints them after its existing summary; the room prints them when its engine profiles, which by
+  default is a Debug build.
+* **`render.plan` and `render.write`** are new engine span names, nested inside
+  `render.prepare`, which keeps its name and still covers both. `renderFrame` times them only for
+  a recorder with `plan() !void`, found at compile time through a pointer or a value. A recorder
+  without one keeps the frame's shape from before M12, which a test pins.
+* **`Renderer.plan()` is public.** `prepare` plans for itself unless a plan is current: the
+  renderer records how many items the plan covered, and items are only ever appended within a
+  frame, so an equal count means nothing was drawn since. Every existing caller, none of which
+  plans, is unchanged.
+* **The workload is §8's user package.** `stress:content` requires `sandbox:content`, is
+  compiled with `fpack` into a scratch home's `mods` directory, is selected with
+  `FOUNDRY_SANDBOX_PACKAGES`, and was removed afterwards. It carries a copy of the sandbox's
+  `settings` schema, spelled `sandbox:settings`, because a package carries every schema its
+  records use (`docs/modding/content-mods.md`); a first attempt that left the schema out was
+  refused by `fpack` for exactly that. Each run's log names the package in the load order and
+  reports 50,000 sprites.
+
+**Baseline.** Windowed sandbox, Metal, ReleaseSafe, API validation off, this machine; 900 frames
+per run, medians over the last 240; three runs of each workload, alternated. Ranges are across
+the three runs.
+
+| Span (ms) | Sandbox content, 4,952 draws | 50,000-sprite package, 50,954 draws |
+| --- | --- | --- |
+| `render.prepare` | 1.047–1.059 | 3.690–3.782 |
+| — `render.plan` | 0.684–0.702 | 2.846–2.917 |
+| — `render.write` | 0.348–0.351 | 0.845–0.865 |
+| `submit`, the game's draw list | 0.588–0.590 | 1.096–1.142 |
+| `step`, on 120 of 240 frames | 0.377–0.379 | 0.954–0.967 |
+| `describe ui` | 0.080–0.081 | 0.017 |
+| `render.acquire` | 6.330–6.332 | 2.532–2.533 |
+| Frame median / p95 | 8.30–8.34 / 9.25–9.46 | 8.41–8.46 / 8.90–9.30 |
+
+Three readings follow from it:
+
+1. **Frame time is still the display's** in both workloads; even the 50,000-sprite frame waits
+   2.5 ms for its drawable. §8's claims are about spans.
+2. **Small spans get faster when the frame is busier** — `describe ui` falls from 0.081 to
+   0.017 ms for the same work — most plausibly the processor's performance state that Step 2
+   measured. Serial and parallel runs at Step 6 are therefore compared on the same workload only.
+3. **The largest CPU costs are `render.plan`, then `submit`, `step` and `render.write`.**
+
+**§6.3's rule applies: the sort is replaced, not parallelised.** `render.plan` is 66% of
+`render.prepare` at the sandbox's own content and 77% at 50,000 sprites. It holds the batch walk
+as well as the sort, but the planning benchmark (§2.3) put the walk at about a tenth of the sort,
+so the sort is the largest cost inside `prepare` either way. Step 5 replaces `Batcher.plan`'s
+comparison sort with a serial stable bucketing by `(view, layer)`, proven to produce the same
+permutation, and splits only the vertex writes. `submit`, at 1.1 ms, is §9's trigger to watch
+once Steps 4 and 5 land.
+
+Tests: two in `core.profile` — medians over the frames a span appears in, summed within each and
+in first-recorded order; and nothing recorded, nothing reported. One in `app` — a planning
+recorder's frame is `input`, `render.acquire`, `render.prepare` with `render.plan` and
+`render.write` at depth one, `render.record`, `render.submit` and `render.present`, and a recorder
+without `plan` has neither nested span. One in `render2d` — a draw after `plan` makes the plan
+stale and `prepare` orders all three sprites, while a current plan and no plan give the same
+order.
+
+Evidence:
+
+* Breaking the guards one at a time: trusting any plan however stale aborted the renderer test on
+  an out-of-bounds index; never timing the halves failed the engine's span test; counting frames
+  in which a span was absent failed the medians test, 5 frames where 3 were expected. Each file was
+  restored byte for byte.
+* The bar passed, and the room's headless Debug run printed its nine span medians. **1,363
+  declared / 1,353 headless**, ten Metal-only.

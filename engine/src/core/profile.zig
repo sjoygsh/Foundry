@@ -411,6 +411,79 @@ fn rankIndex(n: usize, percentile: u32) usize {
     return @min(n - 1, if (rank == 0) 0 else rank - 1);
 }
 
+// -- spans across frames ------------------------------------------------------------
+
+/// One span name's cost across the recorded frames.
+pub const SpanMedian = struct {
+    /// Index into the recorder's name table; `Recorder.nameOf` spells it.
+    name: u16,
+    /// How many recorded frames contained this span at least once.
+    frames: u16,
+    /// The median, over those frames, of each frame's total time inside spans of this name.
+    median_ns: i64,
+};
+
+/// For every span name in the recorded frames, the median time a frame spent in it — in the
+/// order the names were first recorded, which is the order a frame opens them.
+///
+/// **Summed within a frame.** A span a frame opens several times, such as one per simulation
+/// step, counts as its total for that frame, which is the cost the frame actually paid. A span
+/// nested inside another of the same name would count twice; nothing names spans that way.
+///
+/// **Over the frames it appeared in**, with `frames` saying how many. A span most frames skip —
+/// a content reload, a frame with no simulation step — would otherwise have a median of zero,
+/// which is true and useless.
+///
+/// The latest frame alone is one reading, and a stage's cost is a distribution; this is what
+/// M12 measures stages with (`jobs-and-threading.md` §8). The caller frees the result.
+pub fn spanMedians(recorder: *const Recorder, gpa: Allocator) Allocator.Error![]SpanMedian {
+    const names: usize = recorder.name_count;
+    const history: usize = recorder.recorded;
+    if (names == 0 or history == 0) return gpa.alloc(SpanMedian, 0);
+
+    // A column of per-frame totals for each name, filled only on the frames it appears in.
+    const columns = try gpa.alloc(i64, names * history);
+    defer gpa.free(columns);
+    const counts = try gpa.alloc(u16, names);
+    defer gpa.free(counts);
+    const frame_total = try gpa.alloc(i64, names);
+    defer gpa.free(frame_total);
+    const present = try gpa.alloc(bool, names);
+    defer gpa.free(present);
+    const scratch = try gpa.alloc(i64, history);
+    defer gpa.free(scratch);
+
+    @memset(counts, 0);
+    var it = recorder.frames();
+    while (it.next()) |frame| {
+        @memset(frame_total, 0);
+        @memset(present, false);
+        for (frame.spans) |s| {
+            // `unnamed`: the name table was full when this span was opened.
+            if (s.name >= names) continue;
+            frame_total[s.name] += s.durationNs();
+            present[s.name] = true;
+        }
+        for (0..names) |n| {
+            if (!present[n]) continue;
+            columns[n * history + counts[n]] = frame_total[n];
+            counts[n] += 1;
+        }
+    }
+
+    var used: usize = 0;
+    for (counts) |c| used += @intFromBool(c > 0);
+    const out = try gpa.alloc(SpanMedian, used);
+    var i: usize = 0;
+    for (0..names) |n| {
+        if (counts[n] == 0) continue;
+        const summary = summarise(columns[n * history ..][0..counts[n]], scratch);
+        out[i] = .{ .name = @intCast(n), .frames = counts[n], .median_ns = summary.median_ns };
+        i += 1;
+    }
+    return out;
+}
+
 // -- tests ---------------------------------------------------------------------------
 
 const testing = std.testing;
@@ -773,4 +846,58 @@ test "init refuses to allocate for a history nobody asked for" {
     var r = try testRecorder(.{ .history = 0 });
     defer r.deinit(testing.allocator);
     try testing.expect(!r.enabled());
+}
+
+test "a span's median is over the frames it appears in, summed within each frame" {
+    var r = try testRecorder(.{ .history = 8, .max_spans_per_frame = 8 });
+    defer r.deinit(testing.allocator);
+
+    // `work` in every frame; `step` twice, never, once, twice and never — so three frames, with
+    // totals 10, 5 and 10; `rare` once. Odd counts, so there is one middle value to agree on.
+    const Plan = struct { work: i64, steps: u8, rare: bool };
+    const plans = [_]Plan{
+        .{ .work = 100, .steps = 2, .rare = false },
+        .{ .work = 300, .steps = 0, .rare = false },
+        .{ .work = 200, .steps = 1, .rare = false },
+        .{ .work = 500, .steps = 2, .rare = false },
+        .{ .work = 400, .steps = 0, .rare = true },
+    };
+    for (plans, 0..) |p, f| {
+        const base: i64 = @as(i64, @intCast(f)) * 10_000;
+        r.beginFrame(f, stamp(base));
+        r.open("work", stamp(base));
+        r.close(stamp(base + p.work));
+        var at = base + 1000;
+        for (0..p.steps) |_| {
+            r.open("step", stamp(at));
+            r.close(stamp(at + 5));
+            at += 10;
+        }
+        if (p.rare) {
+            r.open("rare", stamp(at));
+            r.close(stamp(at + 7));
+        }
+        r.endFrame(stamp(base + 2000));
+    }
+
+    const medians = try spanMedians(&r, testing.allocator);
+    defer testing.allocator.free(medians);
+
+    try testing.expectEqual(@as(usize, 3), medians.len);
+    try testing.expectEqualStrings("work", r.nameOf(medians[0].name));
+    try testing.expectEqual(@as(u16, 5), medians[0].frames);
+    try testing.expectEqual(@as(i64, 300), medians[0].median_ns);
+    try testing.expectEqualStrings("step", r.nameOf(medians[1].name));
+    try testing.expectEqual(@as(u16, 3), medians[1].frames);
+    try testing.expectEqual(@as(i64, 10), medians[1].median_ns);
+    try testing.expectEqualStrings("rare", r.nameOf(medians[2].name));
+    try testing.expectEqual(@as(u16, 1), medians[2].frames);
+    try testing.expectEqual(@as(i64, 7), medians[2].median_ns);
+}
+
+test "a recorder with nothing recorded has no span medians" {
+    const off: Recorder = .off;
+    const none = try spanMedians(&off, testing.allocator);
+    defer testing.allocator.free(none);
+    try testing.expectEqual(@as(usize, 0), none.len);
 }

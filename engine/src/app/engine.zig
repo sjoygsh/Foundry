@@ -169,6 +169,12 @@ pub const span = struct {
     pub const render_acquire = "render.acquire";
     /// Sorting, uploads and copies, before the pass opens.
     pub const render_prepare = "render.prepare";
+    /// Inside `render.prepare`, for a recorder that plans as a step of its own: ordering the
+    /// frame's draws and working out its draw calls. Added in M12 so that the sort and the
+    /// writes can be told apart (`jobs-and-threading.md` §8).
+    pub const render_plan = "render.plan";
+    /// Inside `render.prepare`, after `render.plan`: writing vertices and recording copies.
+    pub const render_write = "render.write";
     /// The render pass, and the draw calls recorded into it.
     pub const render_record = "render.record";
     /// Handing the command buffer to the queue.
@@ -1156,6 +1162,9 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         ///
         /// * `prepare(*CommandBuffer, rhi.FrameContext) !void` — sorting, uploads and
         ///   copies, before the pass opens, because copies cannot be recorded inside one.
+        /// * optionally `plan() !void` — the ordering half of `prepare`, called just before
+        ///   it. A recorder that has one is timed as `render.plan` and `render.write` inside
+        ///   `render.prepare`, which still covers both.
         /// * `record(*RenderPass) !void` — the draw calls.
         ///
         /// Both are the types of the backend `G` comes from: `rhi.CommandBuffer` and
@@ -1203,7 +1212,16 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             // that never reached it is discarded.
             var consumed = false;
             errdefer if (!consumed) cmd.discard();
-            try recorder.prepare(cmd, frame);
+            if (comptime recorderPlans(@TypeOf(recorder))) {
+                self.openScope(span.render_plan);
+                try recorder.plan();
+                self.closeScope();
+                self.openScope(span.render_write);
+                try recorder.prepare(cmd, frame);
+                self.closeScope();
+            } else {
+                try recorder.prepare(cmd, frame);
+            }
             self.closeScope();
 
             self.openScope(span.render_record);
@@ -1238,6 +1256,15 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             self.closeScope();
         }
     };
+}
+
+/// Whether a recorder handed to `renderFrame` plans as a step of its own.
+fn recorderPlans(comptime Recorder: type) bool {
+    const T = switch (@typeInfo(Recorder)) {
+        .pointer => |p| p.child,
+        else => Recorder,
+    };
+    return @hasDecl(T, "plan");
 }
 
 /// The engine, with whichever backends the build selected.
@@ -2100,6 +2127,69 @@ test "the engine's jobs split over its configured workers, and zero workers is s
         const squares: Squares = .{ .out = &got };
         engine.jobs().forChunks(len, 256, &squares, Squares.chunk);
         try testing.expectEqualSlices(u64, &expected, &got);
+    }
+}
+
+test "a recorder that plans is timed as render.plan and render.write, inside render.prepare" {
+    const engine = try profiledEngine(.{ .hot_reload = false });
+    defer engine.deinit();
+    engine.platform.setClockStep(.fromMillis(1));
+
+    const Planning = struct {
+        planned: *bool,
+
+        pub fn plan(self: @This()) !void {
+            self.planned.* = true;
+        }
+        pub fn prepare(self: @This(), _: *rhi.null_backend.CommandBuffer, _: rhi.FrameContext) !void {
+            try testing.expect(self.planned.*);
+        }
+        pub fn record(_: @This(), _: *rhi.null_backend.RenderPass) !void {}
+    };
+
+    const Expected = struct { name: []const u8, depth: u16 };
+    const planning = [_]Expected{
+        .{ .name = span.input, .depth = 0 },
+        .{ .name = span.render_acquire, .depth = 0 },
+        .{ .name = span.render_prepare, .depth = 0 },
+        .{ .name = span.render_plan, .depth = 1 },
+        .{ .name = span.render_write, .depth = 1 },
+        .{ .name = span.render_record, .depth = 0 },
+        .{ .name = span.render_submit, .depth = 0 },
+        .{ .name = span.render_present, .depth = 0 },
+    };
+    // A recorder with no `plan` keeps the frame's shape from before M12.
+    const plain = [_]Expected{
+        .{ .name = span.input, .depth = 0 },
+        .{ .name = span.render_acquire, .depth = 0 },
+        .{ .name = span.render_prepare, .depth = 0 },
+        .{ .name = span.render_record, .depth = 0 },
+        .{ .name = span.render_submit, .depth = 0 },
+        .{ .name = span.render_present, .depth = 0 },
+    };
+
+    var planned = false;
+    engine.beginFrame();
+    try engine.renderFrame(.{}, Planning{ .planned = &planned });
+    engine.endFrame();
+    try testing.expect(planned);
+
+    const recorder = engine.profiler().?;
+    var frame = recorder.latest().?;
+    try testing.expectEqual(planning.len, frame.spans.len);
+    for (planning, frame.spans) |e, s| {
+        try testing.expectEqualStrings(e.name, recorder.nameOf(s.name));
+        try testing.expectEqual(e.depth, s.depth);
+    }
+
+    engine.beginFrame();
+    try engine.renderFrame(.{}, NothingRecorder{});
+    engine.endFrame();
+    frame = recorder.latest().?;
+    try testing.expectEqual(plain.len, frame.spans.len);
+    for (plain, frame.spans) |e, s| {
+        try testing.expectEqualStrings(e.name, recorder.nameOf(s.name));
+        try testing.expectEqual(e.depth, s.depth);
     }
 }
 

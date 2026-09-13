@@ -158,6 +158,10 @@ pub const Renderer = struct {
     textures: texture_mod.Pool,
     atlases: core.HandlePool(atlas_mod.Atlas, AtlasState),
     batcher: batch_mod.Batcher,
+    /// How many items `batcher` held when `plan` last ordered them this frame, or null. Items
+    /// are only appended between `begin` and `prepare`, so an equal count means the plan is
+    /// still current.
+    planned_items: ?u32 = null,
     /// This frame's spaces. Rebuilt by `begin`, so it never outlives the camera it was
     /// derived from.
     views: std.ArrayList(view_mod.View),
@@ -656,6 +660,7 @@ pub const Renderer = struct {
         self.current_clip = null;
 
         self.batcher.reset();
+        self.planned_items = null;
         self.stats = .{};
         self.recording = true;
     }
@@ -833,6 +838,17 @@ pub const Renderer = struct {
         }
     }
 
+    /// Orders the frame's draws and works out its draw calls: the first half of `prepare`,
+    /// callable on its own so that `app` can time the two halves apart
+    /// (`jobs-and-threading.md` §8).
+    ///
+    /// Never required: `prepare` plans itself if this was not called, or if anything was
+    /// drawn after it was.
+    pub fn plan(self: *Self) Error!void {
+        try self.batcher.plan(self.gpa);
+        self.planned_items = self.batcher.count();
+    }
+
     /// Sorts, writes vertices, and records any copies the memory model needs.
     ///
     /// Called by `app`, not by the game: it takes a command buffer, and a game that could
@@ -840,7 +856,9 @@ pub const Renderer = struct {
     pub fn prepare(self: *Self, cmd: *rhi.CommandBuffer, frame: rhi.FrameContext) Error!void {
         self.frame = frame;
 
-        try self.batcher.plan(self.gpa);
+        const planned = if (self.planned_items) |n| n == self.batcher.count() else false;
+        if (!planned) try self.plan();
+        self.planned_items = null;
 
         const slot = &self.slots[frame.slot];
         const needed = self.batcher.bufferCount();
@@ -2004,6 +2022,55 @@ test "adding to an atlas keeps the images already in it" {
     _ = try fx.renderer.atlasAdd(atlas, image);
     _ = try fx.renderer.atlasAdd(atlas, image);
     try testing.expectEqual(@as(?u32, 0), fx.device.contentsDiscarded(gpu));
+}
+
+test "prepare plans for itself unless a plan is current, and a draw after planning makes it stale" {
+    const device = try rhi.Device.init(testing.allocator, .{});
+    defer device.deinit();
+    var renderer = try Renderer.init(testing.allocator, device, .{ .quads_per_buffer = 64 });
+    defer renderer.deinit();
+
+    var image = try asset.Image.alloc(testing.allocator, 4, 4);
+    defer image.deinit(testing.allocator);
+    @memset(image.pixels, 0xFF);
+    const atlas = try renderer.createAtlas(.{ .width = 32, .height = 32 }, .{ .label = "plan" });
+    const region = try renderer.atlasAdd(atlas, image);
+
+    const view: FrameView = .{ .camera = .{ .viewport = .init(0, 0, 1280, 720) } };
+    const Draw = struct {
+        fn at(r: *Renderer, texture: TextureHandle, uv: core.math.Rect, layer: i16) !void {
+            try r.drawSprite(.{ .texture = texture, .uv = uv, .position = .init(0, 0), .size = .init(4, 4), .layer = layer });
+        }
+    };
+
+    // Planned with two sprites, then a third drawn: `prepare` must order all three, and the
+    // third — layer 0, submitted last — sorts between the first two.
+    try renderer.begin(view);
+    try Draw.at(&renderer, region.texture, region.uv, 1);
+    try Draw.at(&renderer, region.texture, region.uv, 0);
+    try renderer.plan();
+    try Draw.at(&renderer, region.texture, region.uv, 0);
+    try drawFrame(device, &renderer);
+    try testing.expectEqual(@as(u32, 3), renderer.frameStats().sprites);
+    try testing.expectEqualSlices(u32, &.{ 1, 2, 0 }, renderer.batcher.order.items);
+
+    // Planned after the last draw: the same order, whether or not `prepare` plans again.
+    try renderer.begin(view);
+    try Draw.at(&renderer, region.texture, region.uv, 1);
+    try Draw.at(&renderer, region.texture, region.uv, 0);
+    try Draw.at(&renderer, region.texture, region.uv, 0);
+    try renderer.plan();
+    try drawFrame(device, &renderer);
+    try testing.expectEqual(@as(u32, 3), renderer.frameStats().sprites);
+    try testing.expectEqualSlices(u32, &.{ 1, 2, 0 }, renderer.batcher.order.items);
+
+    // And never planned at all, which is every caller from before M12.
+    try renderer.begin(view);
+    try Draw.at(&renderer, region.texture, region.uv, 1);
+    try Draw.at(&renderer, region.texture, region.uv, 0);
+    try Draw.at(&renderer, region.texture, region.uv, 0);
+    try drawFrame(device, &renderer);
+    try testing.expectEqualSlices(u32, &.{ 1, 2, 0 }, renderer.batcher.order.items);
 }
 
 test "a failed atlas upload publishes no region, and the next image lands where it would have" {

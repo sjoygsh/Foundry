@@ -591,7 +591,7 @@ an external font override, persisted diagnostics and the local ad-hoc shipped la
 Xcode GPU-frame-capture usability and an automated Metal minimise/restore remain honestly
 unverified rather than being represented as defects or completed evidence.
 
-### M12 — Parallel: "it uses more than one core" — **in progress, 2/6**
+### M12 — Parallel: "it uses more than one core" — **in progress, 3/6**
 
 `CLAUDE.md` §9 dates the job system and threading model to post-M5. Four milestones have
 passed. The decision is overdue and has never been made, which is the only reason it is still

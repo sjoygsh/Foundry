@@ -868,6 +868,20 @@ fn summariseResources(engine: *app.Engine) void {
         recorder.nameOf(top[2].name),
         millis(@intCast(top[2].durationNs())),
     });
+
+    // **Every span's median**, which is what M12 measures stages by (`jobs-and-threading.md`
+    // §8): the lines above are one frame, and a stage's cost is a distribution. One line per
+    // span, so a script can read them back. A summary that cannot allocate at exit says less.
+    const medians = core.profile.spanMedians(recorder, engine.gpa) catch return;
+    defer engine.gpa.free(medians);
+    for (medians) |m| {
+        log.info("span '{s}': median {d:.3}ms over {d} of {d} frames", .{
+            recorder.nameOf(m.name),
+            millis(m.median_ns),
+            m.frames,
+            recorder.frameCount(),
+        });
+    }
 }
 
 /// Nanoseconds as milliseconds, for display only. Never fed back into anything: statistics
