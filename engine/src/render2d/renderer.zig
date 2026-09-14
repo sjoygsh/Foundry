@@ -40,6 +40,9 @@ const log = core.log.scoped(.render2d);
 const sprite_shader: []const u8 = switch (rhi.backend) {
     .metal => @embedFile("sprite_metallib"),
     .null => "null-backend-shader",
+    // Only a `-Drhi=vulkan` graph reaches this, and until M13 Step 7 that graph builds no
+    // renderer. The SPIR-V stages that replace it are Step 5's (`docs/design/vulkan.md` §11).
+    .vulkan => @compileError("render2d's Vulkan shader stages arrive in M13 Step 5"),
 };
 
 /// The blank patch is larger than the region taken out of it so that filtering at the

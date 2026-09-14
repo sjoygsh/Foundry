@@ -635,8 +635,9 @@ Accepted [ADR-0038](adr/0038-vulkan-shaders-and-toolchain.md) covers hand-writte
 GLSL variants compiled to SPIR-V with pinned tools and an OS loader opened at runtime.
 Step 1 qualified a Windows x64 Intel Arc target, recorded a same-machine Linux route and
 pinned the SDK, headers and tools. Step 2 added native window payloads and the safe
-system-library open, and the native Windows test suite was then repaired. No Vulkan
-implementation exists yet.
+system-library open, and the native Windows test suite was then repaired. Step 3 created a
+validated Vulkan device with its submission timeline on the target; resources, shaders, drawing
+and presentation remain.
 
 The ten steps are qualification/tools, native surfaces/loader, device/submission timeline,
 resources/copies/retirement, shaders/bindings, offscreen drawing, presentation/resize/failure
@@ -659,8 +660,8 @@ have made M1 a months-long wall; that wall was moved here, not removed.
 either survived the encounter or changed by ADR. ADR-0033's two-platform promise requires
 native runtime evidence on both Windows x64 and Linux x64; the design separately exercises
 Linux X11 and Wayland. Cross-compilation, a Mac SDK or a software-only offscreen test cannot
-replace that presentation proof. Stop after Step 2 in the current handoff; the native Windows
-test repair comes next.
+replace that presentation proof. Stop after Step 3 in the current handoff; Step 4 comes
+next.
 
 ### M14 — Managed: "players choose their mods" — **not started**
 

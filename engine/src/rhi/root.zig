@@ -32,14 +32,16 @@ const lifetime = @import("lifetime.zig");
 
 /// The graphics backends Foundry can be built against.
 ///
-/// A backend is an engine port, chosen when the build graph is constructed. Metal joins
-/// this list at M1 (ADR-0003); Vulkan and D3D12 are unscheduled and start when there is a
-/// reason, not when the roadmap reaches them.
+/// A backend is an engine port, chosen when the build graph is constructed. Metal joined
+/// this list at M1 (ADR-0003) and Vulkan joins it in M13 (ADR-0033); D3D12 is not planned.
 pub const Backend = enum {
     /// Draws nothing, validates everything. See `backends/null.zig`.
     null,
     /// Metal, via the Objective-C shim (ADR-0012). macOS only.
     metal,
+    /// Vulkan, for Windows and Linux. Being brought up: until M13 Step 7 completes the interface,
+    /// only `zig build vulkan-test -Drhi=vulkan` selects it (`docs/design/vulkan.md` §11).
+    vulkan,
 };
 
 pub const backend: Backend = std.meta.stringToEnum(Backend, build_options.rhi_backend) orelse
@@ -57,10 +59,13 @@ pub const null_backend = @import("backends/null.zig");
 const selected = switch (backend) {
     .null => null_backend,
     .metal => @import("backends/metal/backend.zig"),
+    .vulkan => @import("backends/vulkan/backend.zig"),
 };
 
 comptime {
-    interface.check(selected, @tagName(backend));
+    // Vulkan is exempt only while M13 brings it up. Its bring-up graph builds this module's tests
+    // and nothing that uses the interface; Step 7 completes the backend and removes the exemption.
+    if (backend != .vulkan) interface.check(selected, @tagName(backend));
     // The validation backend must satisfy the interface too, always. It is the reference
     // implementation, and an interface change that only suits the graphics API of the day
     // fails here rather than at M1.
@@ -115,6 +120,9 @@ test {
     // Always tested, whichever backend is selected — a file imported only for its types
     // contributes no tests.
     _ = null_backend;
+    // Vulkan's device-selection rules are plain data with no Vulkan header, so they are tested
+    // on every host and with every backend, including this Mac's.
+    _ = @import("backends/vulkan/selection.zig");
     // And the selected one, which for Metal means the tests that need a real device. Not a
     // duplicate when the selection *is* null: Zig collects tests per file.
     _ = selected;

@@ -45,10 +45,11 @@ widget set already supports, and could not have been written before it existed.
 ## Written
 
 **M13 is in progress:** [`vulkan.md`](vulkan.md), 2026-09-14, with accepted ADR-0037/0038.
-Steps 1 and 2 of ten are complete: a Windows x64 Vulkan target is qualified, the SDK, headers
-and tools are pinned, and native window payloads and the system-library open are implemented.
-Linux x64 has a recorded route; Mac cross-builds do not establish runtime support. The native
-Windows test suite is repaired; Step 3 is next.
+Steps 1 to 3 of ten are complete: a Windows x64 Vulkan target is qualified, the SDK, headers
+and tools are pinned, native window payloads and the system-library open are implemented, and a
+validated Vulkan device submits and waits for work on the target. Linux x64 has a recorded route;
+Mac cross-builds do not establish runtime support. The native Windows test suite is repaired;
+Step 4 is next.
 
 | Document | Covers | Decisions worth knowing about |
 | --- | --- | --- |

@@ -1,10 +1,25 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-14
-**Current handoff: M0 through M12 are complete and tagged. M13 Steps 1 and 2 of 10 are
-complete: the Windows x64 Vulkan target is qualified, the tools are pinned, and native window
-payloads and the safe system-library open are implemented, and the native Windows test suite
-passes. Next: Step 3. M14 through M17 remain unstarted.**
+**Current handoff: M0 through M12 are complete and tagged. M13 Steps 1 to 3 of 10 are
+complete: the Windows x64 Vulkan target is qualified and its tools pinned, native window payloads
+and the safe system-library open are implemented, the native Windows test suite passes, and a
+validated Vulkan device submits and waits for work on the target. Next: Step 4. M14 through M17
+remain unstarted.**
+
+**Completed M13 Step 3, 2026-09-14:** a Vulkan device and its submission timeline.
+`rhi/backends/vulkan/` loads the system Vulkan loader into name-checked dispatch tables, requires
+Vulkan 1.3, creates an instance whose validation can be required, a Win32, Xlib or Wayland surface
+when given one, chooses the device by §5.1's pure ranking, and creates one queue, a timeline
+semaphore and a command pool; one teardown unwinds all of it. Each submission signals its timeline
+serial, so waits and polls feed `lifetime.Timeline` directly. `-Drhi=vulkan` builds only
+`vulkan-test` and `vulkan-check` until Step 7. On the Arc A750, with validation and synchronization
+validation required, `vulkan-test` passed 144 of 144, including a real window's present-capable
+queue, failure injected at all fifteen initialization stages and every host allocation failing in
+turn; a teardown mutated to leak the command pool was caught by validation. **1,388 declared /
+1,378 headless** on the Mac, ten Metal-only and one Windows-only test skipped there, plus seven
+native-window tests and fourteen Vulkan device tests in their own steps. New license entry:
+`vulkan-validation-layers.md` (build-time only). The bar passed. Resolution: `vulkan.md`, Step 3.
 
 **Repaired the native Windows test suite, 2026-09-14,** by the owner's direction before Step 3.
 The first native `zig build test` on the target had 50 failures and 72 crashes, none involving
@@ -3182,11 +3197,12 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M13 Step 3.** Steps 1 and 2 are complete, and the native Windows test suite the owner
-had repaired before Step 3 now passes on the target (`docs/design/vulkan.md` and their
-Resolutions). Native builds on that target use at most two jobs at below-normal priority, because
-it is the owner's gaming PC. Linux x64 still needs the owner's second-drive installation before
-Step 9. M14 waits.
+**Next: M13 Step 4.** Steps 1 to 3 are complete, with the native Windows test repair the owner
+directed before Step 3 (`docs/design/vulkan.md` and their Resolutions). Step 4 allocates, copies
+and retires resources on the device Step 3 created; its native evidence comes from `zig build
+vulkan-test -Drhi=vulkan` on the target with validation required. Native builds on that target
+use at most two jobs at below-normal priority, because it is the owner's gaming PC. Linux x64
+still needs the owner's second-drive installation before Step 9. M14 waits.
 
 **M0 through M12 are complete and tagged, and everything is pushed.** Phase 3 is closed;
 Phase 4 is under way. The completed M8/M7 checklists and subsequent M5/M6 material below are

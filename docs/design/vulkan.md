@@ -1,10 +1,10 @@
 # Design: M13 — Vulkan, and the second test of the RHI
 
 **Status:** Design accepted 2026-09-14 (ADR-0037/0038), its windowed floor revised before
-acceptance; **2 of 10 steps complete**, and the native Windows test suite repaired. Next: Step 3.
+acceptance; **3 of 10 steps complete**. Next: Step 4.
 **Date:** 2026-09-14
 **Baseline:** `f14caac` / `m12`; M0–M12 complete, 1,370 declared / 1,360 headless tests.
-**Decisions:** ADR-0033 selects Vulkan; proposed [ADR-0037](../adr/0037-vulkan-execution-and-presentation.md)
+**Decisions:** ADR-0033 selects Vulkan; accepted [ADR-0037](../adr/0037-vulkan-execution-and-presentation.md)
 and [ADR-0038](../adr/0038-vulkan-shaders-and-toolchain.md) specify execution and tooling.
 
 ## 1. Purpose and boundary
@@ -369,7 +369,7 @@ M13 ends only when its rules survived or their necessary changes were recorded b
 
 ## 11. Implementation order — ten bounded steps
 
-Steps 1 and 2 are complete; every later step is **not started**. Stop after each with its
+Steps 1 to 3 are complete; every later step is **not started**. Stop after each with its
 Resolution, PROJECT_STATE update, verification and commit; no automatic chaining. Before Step 3
 the owner directed a repair of the native Windows test suite; its Resolution follows Step 2's.
 
@@ -646,3 +646,69 @@ compiled alone, passed; with the label left as `std` sets it, the first of them 
 `readFilePositionalWindows`, and `os.zig` was restored byte for byte.
 
 **Consequence.** Native Windows `zig build test` is now a usable signal for Steps 3–10.
+
+## Resolution — 2026-09-14, Step 3: a Vulkan device and its submission timeline
+
+**What landed.** `engine/src/rhi/backends/vulkan/` holds the backend's first files. `vk.zig`
+imports the pinned headers with `VK_NO_PROTOTYPES` — `vulkan.h` on Windows; the core, Wayland and
+Xlib headers on Linux, with Xlib's three types declared opaquely in `xlib_opaque.h` — and checks
+`VK_HEADER_VERSION` is 357. `dispatch.zig` fills global, instance, debug-utils, surface and device
+tables by field name through `vkGetInstanceProcAddr` and `vkGetDeviceProcAddr`, from
+`vulkan-1.dll` or `libvulkan.so.1` opened with `Library.openSystem`; a function the loader lacks
+is an initialization failure naming it. `selection.zig` holds §5.1's floor and ranking as plain
+data with no header, so its tests run in the ordinary suite on every host. `backend.zig`'s
+`Device` opens the loader, requires Vulkan 1.3 of it, creates the instance, the messenger and —
+when given a Win32, Xlib or Wayland payload — the surface, chooses the device, creates it with
+exactly `dynamicRendering`, `synchronization2` and `timelineSemaphore` (plus `VK_KHR_swapchain`
+when presenting) and one queue, then a timeline semaphore and a resettable command pool. One
+`teardown` releases whatever exists, newest first, and closes the loader last, so a failed
+initialization and `deinit` unwind through the same code. Each submission signals the timeline
+semaphore with its `lifetime.Timeline` serial: `waitIdle` waits for that value,
+`beginCommandBuffer` polls the counter first, and a native command buffer begins again only after
+its submission finished, or at once when it was discarded or refused. Device loss is sticky and
+waits for nothing.
+
+**Validation mode.** `Validation.required` enables `VK_LAYER_KHRONOS_validation` with
+synchronization validation through `VK_EXT_layer_settings`, and a messenger covering instance
+creation and destruction as well as everything between. Errors reach `core.log` at error level, so
+Zig's test runner fails a test that provokes one; warnings at warning level. A missing layer or
+extension refuses the device rather than running unvalidated. The layer receives its license entry
+now (`vulkan-validation-layers.md`, build-time only), because this is the first Foundry
+configuration that requires it.
+
+**Build.** `-Drhi=vulkan` is accepted for Windows and Linux targets and refused elsewhere with the
+alternatives named. Until Step 7 it defines two working steps, `vulkan-test` and the compile-only
+`vulkan-check`, rooted at the ordinary `rhi` module with the Vulkan backend selected; installing,
+`test` and `check` fail with the reason. Only that branch fetches Vulkan-Headers and attaches
+their include path, to `rhi` alone. `rhi/root.zig` exempts Vulkan from `interface.check` until
+Step 7, and `render2d`'s shader switch gains a Vulkan arm that is a compile error naming Step 5;
+no ordinary graph reaches either.
+
+**Found.** A surface payload's `HWND` is a handle, not the address of an aligned structure, so the
+first native run's alignment-checked cast into the header's pointer type panicked. The backend now
+copies handle bits into those fields.
+
+**Evidence.** On the Mac: the bar, with 1,377 of 1,378 ordinary tests passing and the Windows-only
+lookalike test skipped; `vulkan-check` for `x86_64-windows-gnu` and `x86_64-linux-gnu`; and
+`-Drhi=vulkan` refused on macOS with its message. Two mutations of a scratch copy of
+`selection.zig` — ranking inverted, and presentation ignored when choosing the queue — each failed
+exactly one test. On the Windows target (Intel Arc A750, driver 32.0.101.8991, loader and
+validation layer 1.4.357, implicit layers disabled), with byte-identical sources,
+`zig build vulkan-test -Drhi=vulkan` at two jobs and below-normal priority passed 144 of 144: the
+`rhi` module's tests, the fourteen device tests among them. Those cover an offscreen device with
+the messenger heard and no error; empty work submitted, waited for and its command buffer begun
+again; recordings finishing in the order they began, whatever order they reached the queue;
+reclamation by poll without a wait; discard; a recording left open at teardown; a refused
+submission; sticky device loss; failure injected at each of the fifteen initialization stages;
+every host allocation of initialization, and of beginning a recording, failing in turn; an absent
+validation layer refused; unusable surface kinds refused; and a real SDL window whose surface the
+chosen queue presents to, with failures injected at and after the surface stage. The messenger
+reported no validation warning or error in any of them. With teardown mutated to forget the
+command pool, validation reported the leak at error level and the run failed; the file was
+restored byte for byte. The window test ran from the target's SSH session, so it proves surface
+creation and present support, not a visible window. The new license entry, with the five
+already recorded, passed the release packager's own parser in a scratch harness. Linux ran
+nothing natively.
+
+**Not yet.** Resources, bindings, pipelines, passes, frames, presentation and `capabilities` are
+Steps 4–7; the backend implements only what the tests above use.

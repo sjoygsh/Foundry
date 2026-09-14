@@ -164,9 +164,8 @@ const PlatformBackend = enum {
 
 /// Which graphics backend to build against.
 ///
-/// `metal` joins this list at M1 (ADR-0003). Vulkan and D3D12 are deliberately
-/// unscheduled: they start when there is a reason — shipping Windows or Linux, or
-/// validating the RHI against a second API — not when the roadmap reaches them.
+/// `metal` joined this list at M1 (ADR-0003); `vulkan` joins it in M13 (ADR-0033), and
+/// D3D12 is not planned.
 const RhiBackend = enum {
     /// Draws nothing and validates everything. Not scaffolding: it is the agreed
     /// mitigation for designing an abstraction against a single graphics API.
@@ -174,6 +173,9 @@ const RhiBackend = enum {
     /// Metal, through the Objective-C shim (ADR-0012). macOS only, and the only backend
     /// that puts pixels on a screen.
     metal,
+    /// Vulkan, for Windows and Linux (ADR-0037, ADR-0038). Being brought up: until M13 Step 7
+    /// it builds only its own tests (`vulkanBringUp`).
+    vulkan,
 };
 
 /// Which sample `zig build dist` stages.
@@ -309,6 +311,13 @@ pub fn build(b: *std.Build) void {
         if (b.lazyDependency("sdl", .{ .target = target, .optimize = optimize })) |sdl| {
             platform_module.linkLibrary(sdl.artifact("SDL3"));
         }
+    }
+
+    // Vulkan's own graph while M13 brings it up, and nothing else: its backend does not yet
+    // implement the interface, so no sample, tool or ordinary test step can build against it.
+    if (rhi_backend == .vulkan) {
+        vulkanBringUp(b, target, platform_backend, rhi_module, platform_module);
+        return;
     }
 
     // The renderer's own shader, compiled by the build and embedded in the module
@@ -947,6 +956,56 @@ pub fn build(b: *std.Build) void {
         b.step("native-window-test", "Open real native windows through SDL3 (needs a desktop session)")
             .dependOn(&b.addRunArtifact(native_window_tests).step);
     }
+}
+
+/// The graph `-Drhi=vulkan` builds while M13 brings the backend up (`docs/design/vulkan.md` §11).
+///
+/// Two steps work: `vulkan-test` runs the backend's tests against this machine's driver with
+/// validation required, and `vulkan-check` compiles them for a target this host cannot run.
+/// Everything else refuses with the reason, because a sample built against a backend that does
+/// not implement the RHI would not be a working configuration. Step 7 completes the interface and
+/// replaces this with the ordinary graph.
+fn vulkanBringUp(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    platform_backend: PlatformBackend,
+    rhi_module: *std.Build.Module,
+    platform_module: *std.Build.Module,
+) void {
+    switch (target.result.os.tag) {
+        .windows, .linux => {},
+        else => std.debug.panic(
+            "-Drhi=vulkan targets Windows and Linux; target is '{s}'. Use -Drhi=metal on macOS, " ++
+                "or -Dtarget=x86_64-windows-gnu or -Dtarget=x86_64-linux-gnu to cross-compile.",
+            .{@tagName(target.result.os.tag)},
+        ),
+    }
+    if (platform_backend != .sdl3) {
+        std.debug.panic("-Drhi=vulkan needs -Dplatform=sdl3: its tests create a surface for a real window", .{});
+    }
+
+    const refusal = b.addFail(
+        "-Drhi=vulkan builds only `zig build vulkan-test` and `vulkan-check` until M13 Step 7 " ++
+            "completes the backend (docs/design/vulkan.md §11)",
+    );
+    b.getInstallStep().dependOn(&refusal.step);
+    b.step("test", "Unavailable with -Drhi=vulkan until M13 Step 7").dependOn(&refusal.step);
+    b.step("check", "Unavailable with -Drhi=vulkan until M13 Step 7").dependOn(&refusal.step);
+
+    // **The only place the Vulkan headers enter the build graph**, attached to `rhi` and to
+    // nothing else (ADR-0038). Lazy, so no other configuration ever fetches them.
+    const headers = b.lazyDependency("vulkan_headers", .{}) orelse return;
+    rhi_module.addIncludePath(headers.path("include"));
+    // `xlib_opaque.h`, so a Linux build needs no system X11 headers.
+    rhi_module.addIncludePath(b.path("engine/src/rhi/backends/vulkan"));
+    // Linux opens the system loader with the C runtime's `dlopen` (`Library.openSystem`).
+    rhi_module.link_libc = true;
+    platform_module.link_libc = true;
+
+    const tests = b.addTest(.{ .name = "rhi-vulkan", .root_module = rhi_module });
+    b.step("vulkan-check", "Compile the Vulkan backend's tests without running them").dependOn(&tests.step);
+    b.step("vulkan-test", "Run the Vulkan backend's tests on this machine's driver, validation required")
+        .dependOn(&b.addRunArtifact(tests).step);
 }
 
 /// Why this build cannot stage a release, or null if it can.
