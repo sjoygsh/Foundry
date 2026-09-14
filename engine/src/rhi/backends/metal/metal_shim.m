@@ -192,6 +192,12 @@ uint32_t fd_mtl_device_max_texture_dimension(FdMtlDevice *dev) {
     return 8192;
 }
 
+uint64_t fd_mtl_device_max_buffer_length(FdMtlDevice *dev) {
+    if (dev == NULL) return 0;
+    id<MTLDevice> device = (__bridge id<MTLDevice>)dev;
+    return (uint64_t)[device maxBufferLength];
+}
+
 /* -- queue --------------------------------------------------------------------------- */
 
 FdMtlQueue *fd_mtl_queue_create(FdMtlDevice *dev, const char *label) {

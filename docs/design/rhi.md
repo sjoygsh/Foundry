@@ -134,6 +134,12 @@ discover something worse than they designed for.
 exists so that a backend can take a shortcut internally, and so profiling can explain a
 difference between machines.
 
+**Binding limits are capabilities too** (added before M13 Step 4, `vulkan.md` §5.3). Each
+backend reports the alignment a uniform or storage buffer binding's offset must have and the
+largest range such a binding may cover. They vary by Vulkan device, so they are queried rather
+than written down here; rule 10 holds a bind group to the device's own values, and the
+validation backend reports a strict profile so that code tested against it fits every device.
+
 ## 5. Memory: intent, not mechanism
 
 Resources declare **what they are for**, not where they live:
@@ -412,7 +418,7 @@ The vertex-buffer block is reserved at a fixed eight rather than sized per pipel
 same reason. A vertex buffer's index does not move when some bind group gains a binding, so
 `[[buffer(0)]]` in a vertex shader means RHI vertex slot 0 in every pipeline in the engine.
 
-### Vulkan binding convention — proposed for M13, 2026-09-14
+### Vulkan binding convention — accepted for M13, 2026-09-14
 
 ADR-0037/0038 and [vulkan.md](vulkan.md) §6 define the second backend's shader contract:
 
@@ -532,7 +538,7 @@ caches it and re-runs it exactly when a source changes.
 **Shader ownership was settled by ADR-0019.** The engine-owned sprite shader is built and
 embedded in `render2d`; the sandbox retains its demonstration shader. Content-owned shaders
 remain future material assets with backend variants, not an implemented `fpack` shader
-loader. M13's proposed producer is pinned GLSL-to-SPIR-V tooling (ADR-0038); Metal's existing
+loader. M13's producer is pinned GLSL-to-SPIR-V tooling (ADR-0038); Metal's existing
 producer stays in place. Runtime compilation remains a backend capability, not a requirement.
 
 ## 11. The validation backend
@@ -570,7 +576,15 @@ forgives:
     exists. A texture's extent is a bound on writes to it in exactly the way the other
     numbers here are bounds, so this is a clarification of rule 10's scope rather than an
     eleventh rule — the same reading rule 8 already gets. Written here before it appeared
-    in code, which is what the paragraph below asks of any tightening.
+    in code, which is what the paragraph below asks of any tightening. **Clarified again
+    before M13 Step 4:** the region is bounded in its *source* as well: a buffer copy's source
+    and destination ranges, and a buffer-to-texture copy's source rows, lie inside their
+    buffers, and a nonzero `src_bytes_per_row` holds at least one row of texels. A zero-sized
+    copy copies nothing and is legal. A uniform or storage binding's offset is a multiple of
+    that kind's reported alignment (§4), and its range — `size`, or the rest of the buffer
+    when `size` is zero — is not empty, lies inside the buffer and is no larger than the
+    reported maximum. A bind group that breaks this is refused with `InvalidDescriptor`; a
+    copy is reported when it is recorded.
 11. **Usage.** A resource is used only as its declared usage allows, whatever state it is
     in: a correct state does not make up for a missing flag. Binding a buffer as vertex or
     index data needs `vertex` or `index`; a uniform or storage binding needs `uniform` or
@@ -586,7 +600,10 @@ forgives:
     express yet, such as storage textures or compute. A bind group or texture descriptor that
     breaks this is refused with `InvalidDescriptor`, as a group breaking rule 4 is; a command
     that breaks it is reported when it is recorded and fails at submission. Added at M11
-    (ADR-0035), written here before it appeared in code.
+    (ADR-0035), written here before it appeared in code. **Clarified before M13 Step 4:** a
+    buffer or texture declares at least one usage. Vulkan and D3D12 cannot create one that
+    declares none, and here it would permit no operation; its descriptor is refused with
+    `InvalidDescriptor`.
 
 Rules 1, 3, 5 and 9 are the ones that would otherwise be discovered by a second backend
 producing garbage, months later, with no obvious cause. Rules 2 and 6 are the ones that

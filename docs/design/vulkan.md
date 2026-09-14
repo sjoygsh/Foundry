@@ -1,7 +1,7 @@
 # Design: M13 — Vulkan, and the second test of the RHI
 
 **Status:** Design accepted 2026-09-14 (ADR-0037/0038), its windowed floor revised before
-acceptance; **3 of 10 steps complete**. Next: Step 4.
+acceptance; **4 of 10 steps complete**. Next: Step 5.
 **Date:** 2026-09-14
 **Baseline:** `f14caac` / `m12`; M0–M12 complete, 1,370 declared / 1,360 headless tests.
 **Decisions:** ADR-0033 selects Vulkan; accepted [ADR-0037](../adr/0037-vulkan-execution-and-presentation.md)
@@ -369,7 +369,7 @@ M13 ends only when its rules survived or their necessary changes were recorded b
 
 ## 11. Implementation order — ten bounded steps
 
-Steps 1 to 3 are complete; every later step is **not started**. Stop after each with its
+Steps 1 to 4 are complete; every later step is **not started**. Stop after each with its
 Resolution, PROJECT_STATE update, verification and commit; no automatic chaining. Before Step 3
 the owner directed a repair of the native Windows test suite; its Resolution follows Step 2's.
 
@@ -712,3 +712,83 @@ nothing natively.
 
 **Not yet.** Resources, bindings, pipelines, passes, frames, presentation and `capabilities` are
 Steps 4–7; the backend implements only what the tests above use.
+
+## Resolution — 2026-09-14, before Step 4: three contract clarifications
+
+Step 4 reached three places where the RHI contract was silent, or narrower than Vulkan needs.
+Each is written into `rhi.md` §4 and §11 before any code, as ADR-0037 decision 7 requires, and
+none changes a public C table, asset format or mod capability.
+
+1. **Every buffer and texture declares a usage.** Vulkan and D3D12 cannot create either with an
+   empty usage set, and under rule 11 such a resource permits no operation. Every backend now
+   refuses the descriptor with `InvalidDescriptor`. No engine code creates one; two
+   validation-backend test helpers did, and they now declare a copy flag the case under test
+   does not rely on.
+2. **Copy sources are bounded too.** Rule 10 already put a copy's region inside the resource it
+   addresses, but the validation backend checked only destinations. It now checks each buffer
+   copy's source and destination ranges, a buffer-to-texture copy's source rows, and that a
+   nonzero `src_bytes_per_row` holds a row of texels; without them a Vulkan copy may read past
+   its buffer. A zero-sized copy stays legal and copies nothing.
+3. **Binding offset alignment and range are capabilities.** §5.3's limits join `Capabilities` as
+   `uniform_buffer_offset_alignment`, `storage_buffer_offset_alignment`,
+   `max_uniform_buffer_binding_size` and `max_storage_buffer_binding_size`. Vulkan reports its
+   device's limits. Metal reports 256-byte uniform and 16-byte storage offset alignment — Apple's
+   documented macOS requirements for constant- and device-address-space buffer offsets — and
+   `MTLDevice.maxBufferLength` for both ranges. The validation backend's strict profile reports
+   256-byte alignment for both and Vulkan's guaranteed minimum ranges, 16,384 bytes uniform and
+   2^27 bytes storage. Rule 10 checks a bind group against the device's own values.
+
+## Resolution — 2026-09-14, Step 4: resources, copies and retirement
+
+**What landed.** Vulkan buffers, images, image views and samplers now use the RHI's existing
+generational pools. One resource gets one `VkDeviceMemory` allocation selected only from its
+`memoryTypeBits`: device-local prefers private memory and never maps; uploads require host-visible
+memory and prefer coherent; readbacks require host-visible memory and prefer cached. Required or
+preferred dedicated allocations are honoured, and `maxMemoryAllocationCount` is checked before a
+Vulkan allocation. Upload and readback buffers stay mapped; non-coherent memory flushes or
+invalidates the complete allocation, which is atom-aligned without running past it. Format
+features, extents, mip counts and declared usage are checked before an image is published. Images
+begin undefined and a requested initial state is reached by an ordered submission. Copy-only
+images have no view; sampled and attachment images get a view over every declared mip and their
+format's aspects.
+
+Destroying a handle removes it immediately and places its native backing in the existing
+`lifetime.Retirement`, whose capacity was reserved before publication. Collection follows the
+submission timeline's resolved recording number, so submitted, open and later-discarded
+recordings all preserve the backing they could have named. Backend-owned repack buffers use the
+same retirement path. Allocation and handle-publication failures unwind in reverse order, and
+teardown releases live and retired backing before destroying the device.
+
+**Copies and synchronization.** Texture states map to synchronization2 layout, stage and access
+barriers; buffer barriers now express the copy-to-vertex/index/uniform/storage dependency the
+renderer already records. Every command recording begins with the conservative prior-submission
+write-to-next-use dependency §7 requires. Within one recording, a later transfer read or write is
+separated from an earlier transfer write, including the private staging buffer and successive
+image updates. A buffer-to-texture source whose offset and row stride are whole texels maps
+directly to `VkBufferImageCopy`; every other legal byte layout is copied row-by-row on the GPU to
+a tightly packed device-local buffer first. Nonzero texture origins and mip levels remain native
+Vulkan fields rather than being narrowed.
+
+The RHI contract gained the three clarifications above before their code. Null, Metal and Vulkan
+now report uniform/storage binding alignment and maximum range capabilities. Null rule 10 checks
+both ends of buffer copies, the complete byte span of buffer-to-texture source rows without
+overflow, and buffer-binding alignment/range. All three backends refuse a buffer or texture with
+no declared usage. This changes no public ABI or asset format.
+
+**Recovery and evidence.** Claude's recovered tree had already implemented most of the unit and
+had run it once on the qualified Windows target. That run passed 160 of 163 tests and exposed the
+unfinished boundary precisely: synchronization validation reported transfer read-after-write and
+write-after-write hazards, and Vulkan rejected views made for copy-only images. The copy-only view
+condition had already been corrected locally; completing the transfer and submission barriers
+made the same validation-required target run pass **163/163** on the Intel Arc A750, with zero
+validation warnings or errors. It covers upload → device-local → readback bytes across independent
+submissions, forced flush/invalidate paths, tight and odd-row texture copies into two mip levels,
+initial transitions, submitted and discarded retirement, every Vulkan resource-creation failure,
+every host allocation made by resource creation/repacking, device allocation-count refusal and
+reported device limits. Removing the null source-bound predicate failed exactly the two new copy
+limit tests, then restoration passed them.
+
+On the Mac, the required bar passed at **1,399 declared / 1,389 headless tests**, ten Metal-only
+and one Windows-only test skipped there. `vulkan-check` compiled the selected backend for both
+`x86_64-windows-gnu` and `x86_64-linux-gnu`. Linux still ran nothing natively. Shaders, persistent
+bindings and pipelines remain entirely Step 5.

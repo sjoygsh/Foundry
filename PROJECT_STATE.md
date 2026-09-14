@@ -1,11 +1,28 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-14
-**Current handoff: M0 through M12 are complete and tagged. M13 Steps 1 to 3 of 10 are
+**Current handoff: M0 through M12 are complete and tagged. M13 Steps 1 to 4 of 10 are
 complete: the Windows x64 Vulkan target is qualified and its tools pinned, native window payloads
 and the safe system-library open are implemented, the native Windows test suite passes, and a
-validated Vulkan device submits and waits for work on the target. Next: Step 4. M14 through M17
-remain unstarted.**
+validated Vulkan device allocates, copies and retires resources on the target. Next: Step 5. M14
+through M17 remain unstarted.**
+
+**Completed M13 Step 4, 2026-09-14:** Vulkan resources, copies and retirement.
+`rhi/backends/vulkan/` now selects one permitted memory type per resource, respects dedicated
+allocation requests and the device's allocation-count ceiling, keeps upload/readback mappings
+coherent explicitly where required, and never maps device-local resources. Generational buffers,
+textures, all-mip views and samplers die immediately at their handles and release native backing
+only after every older recording resolves. Synchronization2 barriers cover declared image and
+buffer transitions, submission boundaries and the transfer hazards internal repacking creates.
+Buffer-to-texture uploads preserve nonzero origins, mip levels, odd byte offsets and byte strides
+by GPU-repacking layouts Vulkan cannot express. New binding alignment/range capabilities are
+reported by null, Metal and Vulkan; null rule 10 now bounds copy sources as well as destinations,
+and every backend refuses resources with no usage. The recovered first Windows run failed 3 of
+163 tests with synchronization hazards and an invalid copy-only image view; after repair, the
+same validation-required run passed 163/163 on the Arc A750. Removing the null source-bound guard
+failed exactly its two new tests. The Mac bar and both Vulkan cross-checks passed. **1,399 declared
+/ 1,389 headless**, ten Metal-only and one Windows-only test skipped on macOS, plus 22 Vulkan
+device/resource tests in their own step. Resolution: `vulkan.md`, Step 4.
 
 **Completed M13 Step 3, 2026-09-14:** a Vulkan device and its submission timeline.
 `rhi/backends/vulkan/` loads the system Vulkan loader into name-checked dispatch tables, requires
@@ -3197,12 +3214,13 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M13 Step 4.** Steps 1 to 3 are complete, with the native Windows test repair the owner
-directed before Step 3 (`docs/design/vulkan.md` and their Resolutions). Step 4 allocates, copies
-and retires resources on the device Step 3 created; its native evidence comes from `zig build
-vulkan-test -Drhi=vulkan` on the target with validation required. Native builds on that target
-use at most two jobs at below-normal priority, because it is the owner's gaming PC. Linux x64
-still needs the owner's second-drive installation before Step 9. M14 waits.
+**Next: M13 Step 5.** Steps 1 to 4 are complete, with the native Windows test repair the owner
+directed before Step 3 (`docs/design/vulkan.md` and their Resolutions). Step 5 compiles the two
+engine-owned shader pairs and builds persistent bindings and pipelines over the resource and
+retirement work Step 4 completed. Its native evidence comes from `zig build vulkan-test
+-Drhi=vulkan` on the target with validation required. Native builds on that target use at most
+two jobs at below-normal priority, because it is the owner's gaming PC. Linux x64 still needs the
+owner's second-drive installation before Step 9. M14 waits.
 
 **M0 through M12 are complete and tagged, and everything is pushed.** Phase 3 is closed;
 Phase 4 is under way. The completed M8/M7 checklists and subsequent M5/M6 material below are
@@ -3225,13 +3243,13 @@ review of `main` rather than beginning on a schedule.
   `docs/design/jobs-and-threading.md` are implemented. Split spans are measurably faster at
   50,000 sprites, every determinism test is unchanged, and a pool's cost to the calling thread's
   unsplit work is recorded as debt.
-* **M13 — Portable.** Design accepted 2026-09-14, trigger activated; **2/10 steps complete**.
+* **M13 — Portable.** Design accepted 2026-09-14, trigger activated; **4/10 steps complete**.
   Read `docs/design/vulkan.md` and ADR-0037/0038. **Vulkan was decided
   2026-09-13 in [ADR-0033](docs/adr/0033-vulkan-second-backend.md)**, covering Windows and
   Linux with one backend; D3D12 is not planned and Metal stays macOS's. With it: the shader
   cross-compiler decision, which Vulkan's SPIR-V-only input brings due, Vulkan's own binding
-  convention now accepted in `rhi.md` §9, the unimplemented `win32_hwnd`/X11/Wayland surfaces and
-  non-Metal frame pacing. The largest milestone in the phase.
+  convention now accepted in `rhi.md` §9, the implemented native window payloads, and non-Metal
+  frame pacing. The largest milestone in the phase.
 * **M14 — Managed.** The mod manager capability `CLAUDE.md` §5 records as unbuilt, the
   content-driven widget set ADR-0024 deferred, preference profiles and concurrent merging, and
   settings migrations once a second schema exists.

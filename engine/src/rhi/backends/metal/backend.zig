@@ -663,6 +663,12 @@ pub const Device = struct {
             .unified_memory = c.fd_mtl_device_has_unified_memory(self.dev),
             .runtime_shader_compilation = true,
             .surface_format = self.surface_format,
+            // Apple's documented macOS requirements for a buffer offset: 256 bytes in the constant
+            // address space, where uniforms live, and no more than 16 in the device address space.
+            .uniform_buffer_offset_alignment = 256,
+            .storage_buffer_offset_alignment = 16,
+            .max_uniform_buffer_binding_size = c.fd_mtl_device_max_buffer_length(self.dev),
+            .max_storage_buffer_binding_size = c.fd_mtl_device_max_buffer_length(self.dev),
         };
     }
 
@@ -670,6 +676,8 @@ pub const Device = struct {
 
     pub fn createBuffer(self: *Device, desc: resource.BufferDesc) interface.ResourceError!resource.BufferHandle {
         if (desc.size == 0) return error.InvalidDescriptor;
+        // Rule 11: a buffer declares a usage, as Vulkan and D3D12 require (`rhi.md` §11).
+        if (!desc.usage.any()) return error.InvalidDescriptor;
         try self.reserveRetirement();
 
         var buf: [label_max + 1]u8 = undefined;
@@ -713,6 +721,7 @@ pub const Device = struct {
 
     pub fn createTexture(self: *Device, desc: resource.TextureDesc) interface.ResourceError!resource.TextureHandle {
         if (desc.size.isEmpty()) return error.InvalidDescriptor;
+        if (!desc.usage.any()) return error.InvalidDescriptor;
         try self.reserveRetirement();
 
         const d: c.FdMtlTextureDesc = .{

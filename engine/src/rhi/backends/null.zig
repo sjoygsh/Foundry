@@ -96,11 +96,39 @@ pub const Faults = struct {
     end_frame: ?interface.FrameError = null,
 };
 
+/// The validation backend's binding limits (`rhi.md` §4): 256-byte offset alignment, which
+/// Metal requires of a uniform buffer on macOS, and the ranges Vulkan guarantees on every device.
+pub const strict_offset_alignment: u32 = 256;
+pub const strict_max_uniform_binding: u64 = 16384;
+pub const strict_max_storage_binding: u64 = 1 << 27;
+
 pub const Violation = struct {
     rule: Rule,
     /// Owned by the device; freed by `clearViolations` and `deinit`.
     detail: []const u8,
 };
+
+/// Whether `size` bytes at `offset` lie inside `total`, without overflow.
+fn rangeInside(offset: u64, size: u64, total: u64) bool {
+    return offset <= total and size <= total - offset;
+}
+
+/// Bytes occupied by `height` rows when the last row carries no trailing padding.
+fn copyRowsSize(row_bytes: u64, stride: u64, height: u32) ?u64 {
+    if (row_bytes == 0 or height == 0) return 0;
+    const preceding = std.math.mul(u64, height - 1, stride) catch return null;
+    return std.math.add(u64, preceding, row_bytes) catch null;
+}
+
+/// Why a uniform or storage binding breaks rule 10, or null (`rhi.md` §4, §11).
+pub fn bindingRangeProblem(binding: pipeline.BufferBinding, buffer_size: u64, alignment: u32, max: u64) ?[]const u8 {
+    if (alignment != 0 and binding.offset % alignment != 0) return "the offset is not a multiple of the device's alignment";
+    if (binding.offset >= buffer_size) return "the offset leaves no bytes to bind";
+    if (binding.size > buffer_size - binding.offset) return "the range runs past the end of the buffer";
+    const range = if (binding.size == 0) buffer_size - binding.offset else binding.size;
+    if (range > max) return "the range is larger than the device allows";
+    return null;
+}
 
 // -- tracked resource state ----------------------------------------------------------
 
@@ -315,6 +343,12 @@ pub const Device = struct {
                 t.desc.format
             else
                 .bgra8_unorm_srgb,
+            // The strict profile: the largest offset alignment any target requires, and Vulkan's
+            // guaranteed minimum ranges, so code that fits here fits every device.
+            .uniform_buffer_offset_alignment = strict_offset_alignment,
+            .storage_buffer_offset_alignment = strict_offset_alignment,
+            .max_uniform_buffer_binding_size = strict_max_uniform_binding,
+            .max_storage_buffer_binding_size = strict_max_storage_binding,
         };
     }
 
@@ -463,6 +497,11 @@ pub const Device = struct {
         // defines for it. Deliberately *not* a violation record: the rules are the
         // validation backend's whole remit, and zero-size is not among them.
         if (desc.size == 0) return error.InvalidDescriptor;
+        // Rule 11: a buffer that declares no usage permits no operation, and Vulkan cannot make one.
+        if (!desc.usage.any()) {
+            self.violate(.usage, "buffer '{s}' declares no usage", .{desc.label});
+            return error.InvalidDescriptor;
+        }
         try self.reserveRetirement();
         const storage = try self.gpa.alloc(u8, @intCast(desc.size));
         @memset(storage, 0);
@@ -503,6 +542,10 @@ pub const Device = struct {
 
     pub fn createTexture(self: *Device, desc: resource.TextureDesc) interface.ResourceError!resource.TextureHandle {
         if (desc.size.isEmpty()) return error.InvalidDescriptor;
+        if (!desc.usage.any()) {
+            self.violate(.usage, "texture '{s}' declares no usage", .{desc.label});
+            return error.InvalidDescriptor;
+        }
         // Rule 11, at creation: a texture cannot start in a state its usage forbids.
         const candidate: TextureState = .{ .desc = desc, .state = desc.initial_state };
         if (!textureAllows(&candidate, desc.initial_state)) {
@@ -599,6 +642,24 @@ pub const Device = struct {
             if (!allowed) {
                 self.violate(.usage, "bind group '{s}' binding {d} is a {t}, which its resource's usage does not allow", .{
                     desc.label, e.binding, @as(pipeline.BindingType, e.resource),
+                });
+                return error.InvalidDescriptor;
+            }
+        }
+
+        // Rule 10: a buffer binding's offset is aligned for its kind, and its range is not empty,
+        // lies inside the buffer and fits the device's limit (`rhi.md` §4).
+        const caps = self.capabilities();
+        for (desc.entries) |e| {
+            const binding, const alignment, const max = switch (e.resource) {
+                .uniform_buffer => |b| .{ b, caps.uniform_buffer_offset_alignment, caps.max_uniform_buffer_binding_size },
+                .storage_buffer => |b| .{ b, caps.storage_buffer_offset_alignment, caps.max_storage_buffer_binding_size },
+                .sampled_texture, .sampler => continue,
+            };
+            const buf = self.buffers.getConst(binding.buffer) orelse continue;
+            if (bindingRangeProblem(binding, buf.desc.size, alignment, max)) |problem| {
+                self.violate(.limits, "bind group '{s}' binding {d} (offset {d}, size {d}, buffer '{s}' of {d}): {s}", .{
+                    desc.label, e.binding, binding.offset, binding.size, buf.desc.label, buf.desc.size, problem,
                 });
                 return error.InvalidDescriptor;
             }
@@ -942,6 +1003,21 @@ pub const CommandBuffer = struct {
         if (dev.buffers.getConst(copy.dst)) |dst| {
             if (!dst.desc.usage.copy_dst) dev.violate(.usage, "copy writes buffer '{s}', which lacks copy_dst usage", .{dst.desc.label});
         }
+        // Rule 10: both ranges lie inside their buffers.
+        if (dev.buffers.getConst(copy.src)) |src| {
+            if (!rangeInside(copy.src_offset, copy.size, src.desc.size)) {
+                dev.violate(.limits, "copy reads {d} bytes at {d} from buffer '{s}', which holds {d}", .{
+                    copy.size, copy.src_offset, src.desc.label, src.desc.size,
+                });
+            }
+        }
+        if (dev.buffers.getConst(copy.dst)) |dst| {
+            if (!rangeInside(copy.dst_offset, copy.size, dst.desc.size)) {
+                dev.violate(.limits, "copy writes {d} bytes at {d} into buffer '{s}', which holds {d}", .{
+                    copy.size, copy.dst_offset, dst.desc.label, dst.desc.size,
+                });
+            }
+        }
         if (dev.deadBuffer(copy.src)) dev.violate(.lifetime, "copy reads a destroyed buffer", .{});
         if (dev.deadBuffer(copy.dst)) dev.violate(.lifetime, "copy writes a destroyed buffer", .{});
         dev.touchBuffer(copy.src, self.recording);
@@ -981,6 +1057,24 @@ pub const CommandBuffer = struct {
                         copy.dst_origin.y, dst.desc.label,   copy.dst_mip_level,
                         level.width,       level.height,
                     });
+                }
+            }
+            // Rule 10, the source half: a nonzero stride holds a row of texels, and every row the
+            // copy reads lies inside the buffer.
+            if (dev.buffers.getConst(copy.src)) |src| {
+                const row = @as(u64, copy.size.width) * dst.desc.format.bytesPerTexel();
+                if (copy.src_bytes_per_row != 0 and copy.src_bytes_per_row < row) {
+                    dev.violate(.limits, "copy's rows are {d} bytes apart, and a row of {d} texels is {d} bytes", .{
+                        copy.src_bytes_per_row, copy.size.width, row,
+                    });
+                } else if (copy.size.width != 0 and copy.size.height != 0) {
+                    const stride: u64 = if (copy.src_bytes_per_row != 0) copy.src_bytes_per_row else row;
+                    const needed = copyRowsSize(row, stride, copy.size.height);
+                    if (needed == null or !rangeInside(copy.src_offset, needed.?, src.desc.size)) {
+                        dev.violate(.limits, "copy reads {d} bytes at {d} from buffer '{s}', which holds {d}", .{
+                            needed orelse std.math.maxInt(u64), copy.src_offset, src.desc.label, src.desc.size,
+                        });
+                    }
                 }
             }
         } else if (!copy.dst.isNone()) {
@@ -3044,20 +3138,141 @@ test "rule 10: writing more than 128 bytes is caught even with no pipeline bound
     try testing.expect(fx.dev.hasViolation(.limits));
 }
 
+test "rule 10: a buffer copy whose range runs past either buffer is caught" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    const src = try dev.createBuffer(.{ .label = "src", .size = 64, .usage = .{ .copy_src = true } });
+    const dst = try dev.createBuffer(.{ .label = "dst", .size = 32, .usage = .{ .copy_dst = true } });
+    for ([_]struct { src_offset: u64, dst_offset: u64, size: u64, ok: bool }{
+        .{ .src_offset = 32, .dst_offset = 0, .size = 32, .ok = true },
+        // Nothing, at the very end of both: legal, and copies nothing.
+        .{ .src_offset = 64, .dst_offset = 32, .size = 0, .ok = true },
+        .{ .src_offset = 33, .dst_offset = 0, .size = 32, .ok = false },
+        .{ .src_offset = 0, .dst_offset = 1, .size = 32, .ok = false },
+        // An offset that would wrap a naive sum is still outside.
+        .{ .src_offset = std.math.maxInt(u64), .dst_offset = 0, .size = 2, .ok = false },
+    }) |case| {
+        const cmd = try dev.beginCommandBuffer();
+        try cmd.copyBufferToBuffer(.{
+            .src = src,
+            .src_offset = case.src_offset,
+            .dst = dst,
+            .dst_offset = case.dst_offset,
+            .size = case.size,
+        });
+        if (case.ok) {
+            try cmd.submit();
+            try testing.expectEqual(@as(usize, 0), dev.violationCount());
+        } else {
+            try testing.expectError(error.ValidationFailed, cmd.submit());
+            try testing.expect(dev.hasViolation(.limits));
+            dev.clearViolations();
+        }
+    }
+}
+
+test "rule 10: a buffer-to-texture copy reads only rows its buffer holds" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    const tex = try dev.createTexture(.{
+        .label = "target",
+        .size = .{ .width = 4, .height = 4 },
+        .format = .rgba8_unorm,
+        .usage = .{ .copy_dst = true },
+    });
+    const tight = try dev.createBuffer(.{ .label = "tight", .size = 64, .usage = .{ .copy_src = true } });
+    // Four rows 20 bytes apart need 3 * 20 + 16 bytes: the last row carries no padding.
+    const padded = try dev.createBuffer(.{ .label = "padded", .size = 76, .usage = .{ .copy_src = true } });
+    for ([_]struct { src: resource.BufferHandle, offset: u64, stride: u32, ok: bool }{
+        .{ .src = tight, .offset = 0, .stride = 0, .ok = true },
+        .{ .src = tight, .offset = 4, .stride = 0, .ok = false },
+        .{ .src = tight, .offset = 0, .stride = 20, .ok = false },
+        .{ .src = padded, .offset = 0, .stride = 20, .ok = true },
+        // Twelve bytes cannot hold a row of four four-byte texels.
+        .{ .src = padded, .offset = 0, .stride = 12, .ok = false },
+    }) |case| {
+        const cmd = try dev.beginCommandBuffer();
+        try cmd.textureBarrier(&.{.{ .texture = tex, .from = .undefined, .to = .copy_dst }});
+        try cmd.copyBufferToTexture(.{
+            .src = case.src,
+            .src_offset = case.offset,
+            .src_bytes_per_row = case.stride,
+            .dst = tex,
+            .size = .{ .width = 4, .height = 4 },
+        });
+        if (case.ok) {
+            try cmd.submit();
+            try testing.expectEqual(@as(usize, 0), dev.violationCount());
+        } else {
+            try testing.expectError(error.ValidationFailed, cmd.submit());
+            try testing.expect(dev.hasViolation(.limits));
+            dev.clearViolations();
+        }
+    }
+}
+
+test "rule 10: a buffer binding is aligned, inside its buffer and within the device's range" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    const layout = try dev.createBindGroupLayout(.{
+        .entries = &.{.{ .binding = 0, .type = .uniform_buffer, .visibility = .both }},
+    });
+    const small = try dev.createBuffer(.{ .label = "uniforms", .size = 1024, .usage = .{ .uniform = true } });
+    const large = try dev.createBuffer(.{
+        .label = "larger than one binding",
+        .size = strict_max_uniform_binding + strict_offset_alignment,
+        .usage = .{ .uniform = true },
+    });
+    for ([_]struct { buffer: resource.BufferHandle, offset: u64, size: u64, ok: bool }{
+        .{ .buffer = small, .offset = 0, .size = 0, .ok = true },
+        .{ .buffer = small, .offset = 256, .size = 0, .ok = true },
+        .{ .buffer = small, .offset = 512, .size = 512, .ok = true },
+        .{ .buffer = small, .offset = 100, .size = 16, .ok = false },
+        .{ .buffer = small, .offset = 1024, .size = 0, .ok = false },
+        .{ .buffer = small, .offset = 768, .size = 512, .ok = false },
+        // The rest of a buffer larger than the range is too large; skipping one alignment is not.
+        .{ .buffer = large, .offset = 0, .size = 0, .ok = false },
+        .{ .buffer = large, .offset = 256, .size = 0, .ok = true },
+    }) |case| {
+        const result = dev.createBindGroup(.{ .layout = layout, .entries = &.{.{
+            .binding = 0,
+            .resource = .{ .uniform_buffer = .{ .buffer = case.buffer, .offset = case.offset, .size = case.size } },
+        }} });
+        if (case.ok) {
+            _ = try result;
+            try testing.expectEqual(@as(usize, 0), dev.violationCount());
+        } else {
+            try testing.expectError(error.InvalidDescriptor, result);
+            try testing.expect(dev.hasViolation(.limits));
+            dev.clearViolations();
+        }
+    }
+}
+
 // -- rule 11: usage ------------------------------------------------------------------
 //
 // Every row is tested both ways, on two resources that differ only in the flag the row is
 // about, so the legal case is evidence that the check reads that flag and nothing else.
 
+/// Without `flag`, the resource still declares a usage (rule 11 refuses none): a copy flag, which
+/// grants no binding, no GPU read and nothing the case under test relies on.
 fn bufferWith(dev: *Device, comptime flag: []const u8, has: bool) !resource.BufferHandle {
     var usage: resource.BufferUsage = .{};
     @field(usage, flag) = has;
+    if (!has) @field(usage, if (std.mem.eql(u8, flag, "copy_src")) "copy_dst" else "copy_src") = true;
     return dev.createBuffer(.{ .label = flag, .size = 64, .usage = usage });
 }
 
 fn textureWith(dev: *Device, comptime flag: []const u8, has: bool, texture_format: format.TextureFormat) !resource.TextureHandle {
     var usage: resource.TextureUsage = .{};
     @field(usage, flag) = has;
+    if (!has) @field(usage, if (std.mem.eql(u8, flag, "copy_src")) "copy_dst" else "copy_src") = true;
     return dev.createTexture(.{
         .label = flag,
         .size = .{ .width = 8, .height = 8 },
@@ -3260,6 +3475,23 @@ test "rule 11: only the device's surface is presented, whatever another texture'
     try dev.endFrame();
 }
 
+test "rule 11: a buffer or texture that declares no usage is refused" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    try testing.expectError(error.InvalidDescriptor, dev.createBuffer(.{ .label = "nothing", .size = 16, .usage = .{} }));
+    try testing.expect(dev.hasViolation(.usage));
+    dev.clearViolations();
+    try testing.expectError(error.InvalidDescriptor, dev.createTexture(.{
+        .label = "nothing",
+        .size = .{ .width = 4, .height = 4 },
+        .format = .rgba8_unorm,
+        .usage = .{},
+    }));
+    try testing.expect(dev.hasViolation(.usage));
+}
+
 // -- the mechanism itself ------------------------------------------------------------
 
 test "the rules are exactly the eleven the design document lists" {
@@ -3343,6 +3575,11 @@ test "capabilities report the guaranteed minimums, not something better" {
     try testing.expect(!caps.unified_memory);
     try testing.expect(caps.runtime_shader_compilation);
     try testing.expectEqual(format.TextureFormat.bgra8_unorm_srgb, caps.surface_format);
+    // The strict binding profile: code tested against it fits every device.
+    try testing.expectEqual(@as(u32, 256), caps.uniform_buffer_offset_alignment);
+    try testing.expectEqual(@as(u32, 256), caps.storage_buffer_offset_alignment);
+    try testing.expectEqual(@as(u64, 16384), caps.max_uniform_buffer_binding_size);
+    try testing.expectEqual(@as(u64, 1 << 27), caps.max_storage_buffer_binding_size);
 }
 
 test "a destroyed resource's handle resolves to nothing" {

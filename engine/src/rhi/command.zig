@@ -196,6 +196,14 @@ pub const Capabilities = struct {
     runtime_shader_compilation: bool,
     /// The swapchain's pixel format, which a pipeline drawing to it must match.
     surface_format: format.TextureFormat,
+    /// A uniform buffer binding's offset must be a multiple of this (§11 rule 10).
+    uniform_buffer_offset_alignment: u32,
+    /// A storage buffer binding's offset must be a multiple of this (§11 rule 10).
+    storage_buffer_offset_alignment: u32,
+    /// The largest range one uniform buffer binding may cover.
+    max_uniform_buffer_binding_size: u64,
+    /// The largest range one storage buffer binding may cover.
+    max_storage_buffer_binding_size: u64,
 };
 
 // -- tests ---------------------------------------------------------------------------

@@ -50,6 +50,8 @@ pub const Instance = struct {
     vkCreateDevice: Fn(c.PFN_vkCreateDevice),
     vkGetDeviceProcAddr: Fn(c.PFN_vkGetDeviceProcAddr),
     vkDestroyDevice: Fn(c.PFN_vkDestroyDevice),
+    vkGetPhysicalDeviceMemoryProperties: Fn(c.PFN_vkGetPhysicalDeviceMemoryProperties),
+    vkGetPhysicalDeviceFormatProperties: Fn(c.PFN_vkGetPhysicalDeviceFormatProperties),
 };
 
 /// `VK_EXT_debug_utils`, when validation is required.
@@ -91,6 +93,29 @@ pub const Device = struct {
     vkEndCommandBuffer: Fn(c.PFN_vkEndCommandBuffer),
     vkResetCommandBuffer: Fn(c.PFN_vkResetCommandBuffer),
     vkQueueSubmit2: Fn(c.PFN_vkQueueSubmit2),
+
+    vkAllocateMemory: Fn(c.PFN_vkAllocateMemory),
+    vkFreeMemory: Fn(c.PFN_vkFreeMemory),
+    vkMapMemory: Fn(c.PFN_vkMapMemory),
+    vkFlushMappedMemoryRanges: Fn(c.PFN_vkFlushMappedMemoryRanges),
+    vkInvalidateMappedMemoryRanges: Fn(c.PFN_vkInvalidateMappedMemoryRanges),
+    vkCreateBuffer: Fn(c.PFN_vkCreateBuffer),
+    vkDestroyBuffer: Fn(c.PFN_vkDestroyBuffer),
+    vkGetBufferMemoryRequirements2: Fn(c.PFN_vkGetBufferMemoryRequirements2),
+    vkBindBufferMemory: Fn(c.PFN_vkBindBufferMemory),
+    vkCreateImage: Fn(c.PFN_vkCreateImage),
+    vkDestroyImage: Fn(c.PFN_vkDestroyImage),
+    vkGetImageMemoryRequirements2: Fn(c.PFN_vkGetImageMemoryRequirements2),
+    vkBindImageMemory: Fn(c.PFN_vkBindImageMemory),
+    vkCreateImageView: Fn(c.PFN_vkCreateImageView),
+    vkDestroyImageView: Fn(c.PFN_vkDestroyImageView),
+    vkCreateSampler: Fn(c.PFN_vkCreateSampler),
+    vkDestroySampler: Fn(c.PFN_vkDestroySampler),
+    vkCmdPipelineBarrier2: Fn(c.PFN_vkCmdPipelineBarrier2),
+    vkCmdCopyBuffer: Fn(c.PFN_vkCmdCopyBuffer),
+    vkCmdCopyBufferToImage: Fn(c.PFN_vkCmdCopyBufferToImage),
+    /// No RHI operation reads a texture back; the backend's own tests do, to check copied texels.
+    vkCmdCopyImageToBuffer: Fn(c.PFN_vkCmdCopyImageToBuffer),
 };
 
 pub const LoadError = error{MissingFunction};

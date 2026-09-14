@@ -189,6 +189,9 @@ bool fd_mtl_device_has_unified_memory(FdMtlDevice *dev);
 /* Largest 2D texture dimension the device supports, derived from its GPU family. */
 uint32_t fd_mtl_device_max_texture_dimension(FdMtlDevice *dev);
 
+/* The largest buffer the device can allocate, in bytes (`MTLDevice.maxBufferLength`). */
+uint64_t fd_mtl_device_max_buffer_length(FdMtlDevice *dev);
+
 /* -- queue -------------------------------------------------------------------------- */
 
 FdMtlQueue *fd_mtl_queue_create(FdMtlDevice *dev, const char *label);
