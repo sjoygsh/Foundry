@@ -629,8 +629,9 @@ decision to validate the RHI against a second API, not the roadmap reaching this
 **Trigger activated 2026-09-14:** the owner requested M13's design to validate the RHI after
 M12. [`design/vulkan.md`](design/vulkan.md) now specifies ten steps; no implementation has
 begun. Proposed [ADR-0037](adr/0037-vulkan-execution-and-presentation.md) covers Vulkan 1.3,
-maintenance1 presentation completion, persistent descriptor lifetime and native surface
-payloads. Proposed [ADR-0038](adr/0038-vulkan-shaders-and-toolchain.md) covers hand-written
+one unextended presentation path — maintenance1 left the floor when the first Windows target
+lacked it — persistent descriptor lifetime and native surface payloads.
+Proposed [ADR-0038](adr/0038-vulkan-shaders-and-toolchain.md) covers hand-written
 GLSL variants compiled to SPIR-V with pinned tools and an OS loader opened at runtime.
 Accept those proposals before Step 1; its first work is real target qualification and exact
 tool/header pins. No machine access, SDK installation or Vulkan implementation is claimed.

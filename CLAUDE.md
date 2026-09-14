@@ -193,7 +193,7 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Process | CLAUDE.md + PROJECT_STATE.md + numbered ADRs | [0009](docs/adr/0009-documentation-process.md) |
 
 **M13 proposals, not accepted decisions:** [ADR-0037](docs/adr/0037-vulkan-execution-and-presentation.md)
-specifies Vulkan execution, presentation completion and the native-window seam;
+specifies Vulkan execution, presentation-resource lifetime and the native-window seam;
 [ADR-0038](docs/adr/0038-vulkan-shaders-and-toolchain.md) specifies GLSL variants, SPIR-V tools
 and runtime loader ownership. [The design](docs/design/vulkan.md) stops before Step 1.
 Accept the proposals and qualify the target environment before implementing them.

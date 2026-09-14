@@ -2,8 +2,21 @@
 
 **Last updated:** 2026-09-14
 **Current handoff: M0 through M12 are complete and tagged. M13's design is written;
-0 of 10 implementation steps begun. ADR-0037/0038 are proposed. Stop before Step 1.
+0 of 10 implementation steps begun. ADR-0037/0038 are proposed; ADR-0037's windowed floor
+was revised after the first target's capability report. Stop before Step 1.
 M14 through M17 remain unstarted.**
+
+**Revised M13's floor, 2026-09-14:** the owner's candidate Windows target, an Intel Arc A750
+on Windows 11 x64 with driver 32.0.101.8991, reports Vulkan 1.4.356, dynamic rendering,
+synchronization2, timeline semaphores, a present-capable graphics queue and sRGB BGRA8/RGBA8
+FIFO Win32 surfaces, but no KHR/EXT swapchain or surface maintenance1. At that ADR-0037
+revisit trigger the owner chose to remove the requirement rather than qualify Linux first,
+keep two presentation paths or change hardware. ADR-0037 and `vulkan.md` §8 now use one
+unextended WSI path: per-image present-wait semaphores, an undrawn acquired image held for the
+next frame, and presentation teardown after submission completion plus queue idleness, with
+Khronos's documented gap recorded. This is a capability check before Step 1, not Step 1;
+nothing was installed and no code changed. The AGENTS.md bar passed once for this
+documentation-only change, and local links and line wrapping were checked.
 
 **Designed M13, 2026-09-14:** the owner requested Vulkan architecture and steps after Claude
 closed M12 at `f14caac` / `m12`, supplying the RHI-validation trigger. Read
@@ -14,17 +27,18 @@ Windows plus Linux X11/Wayland proof, and milestone closure. No code, dependency
 tool changed; **1,370 declared / 1,360 headless** remains the implementation baseline.
 
 The proposed floor is Vulkan 1.3 with dynamic rendering, synchronization2 and timeline
-semaphores, plus KHR or EXT swapchain maintenance1 for windowed presentation. Separate
-presentation fences preserve M11's lifetime/failed-frame contract; persistent descriptors
-reuse existing retirement. GLSL variants for the two small shader pairs compile to SPIR-V
+semaphores, a shared graphics/present queue and unextended swapchain support for windowed
+presentation. Per-image present semaphores and held undrawn images preserve M11's
+lifetime/failed-frame contract without maintenance1; persistent descriptors reuse existing
+retirement. GLSL variants for the two small shader pairs compile to SPIR-V
 through pinned host tools; Metal remains native macOS. The design corrects stale RHI prose:
 pipeline entry-name fields already exist, and ADR-0019 already settled shader ownership.
 
-**Before Step 1:** accept the two proposals, including the driver-coverage tradeoff, and
-identify an actual Windows/Linux x64 Vulkan test environment. Step 1 pins SDK/header/tool
-versions, qualifies at least one target and records access to the other. This Mac can supply
-cross-build and pure-test evidence; it cannot replace native presentation testing. No remote
-environment was supplied or accessed, and Vulkan tools were not on PATH during planning.
+**Before Step 1:** accept the two proposals, including ADR-0037's revised floor and its
+recorded teardown gap. The Windows x64 candidate above passes that floor on its capability
+report; Step 1 still exercises the SDK's windowed sample there, pins SDK/header/tool versions
+and records the route to Linux. This Mac can supply cross-build and pure-test evidence; it
+cannot replace native presentation testing. Vulkan tools remain absent from this Mac.
 Both OSes and Linux's two window systems must be exercised before M13 closes. No MoltenVK,
 public ABI change, material system, new-platform installer or M14 work is included.
 

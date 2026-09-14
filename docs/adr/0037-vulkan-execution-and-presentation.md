@@ -1,7 +1,9 @@
-# ADR-0037: Vulkan keeps submission and presentation completion separate
+# ADR-0037: Vulkan keeps submission and presentation-resource lifetime separate
 
 **Status:** Proposed (M13 design; no implementation)
 **Date:** 2026-09-14
+**Revised:** 2026-09-14 — windowed operation no longer requires swapchain maintenance1, after
+the first candidate target's driver lacked it; one unextended presentation path replaces it.
 **Builds on:** ADR-0003, ADR-0008, ADR-0033 and ADR-0035
 
 ## Context
@@ -21,22 +23,30 @@ The native surface seam currently carries a tagged pointer. An X11 window ID alo
 display connection; a Wayland surface lacks its display; Windows surface creation needs the
 instance as well as the window. Completing the existing seam does not require SDL in `rhi`.
 
+The first candidate target, an Intel Arc A750 on Windows 11 x64 with driver 32.0.101.8991,
+meets this proposal's Vulkan 1.3 requirements but exposes neither swapchain nor surface
+maintenance1. Its capability report and the owner's choice are recorded in
+[`vulkan.md`](../design/vulkan.md)'s floor-revision Resolution.
+
 ## Decision
 
 1. **Target Vulkan 1.3**, with `dynamicRendering`, `synchronization2` and `timelineSemaphore`
    queried and enabled. Use a single graphics queue that also supports presentation to the
    chosen surface. An incompatible device is refused with a diagnostic listing unmet needs.
    There is no Vulkan 1.0/1.1 fallback or second presentation queue in M13.
-2. **Windowed operation requires swapchain maintenance1**, accepting the KHR extension or
-   its EXT predecessor, with the matching surface extension, dependencies and feature bit.
-   Use its presentation fences and acquired-image release. Prefer KHR when both are usable.
-   This deliberately narrows driver coverage: Vulkan 1.3 alone is insufficient for a window.
-   Headless offscreen Vulkan requires neither WSI nor maintenance1.
+2. **Windowed operation uses unextended WSI only.** `VK_KHR_swapchain` and the matching surface
+   extensions are required. Swapchain maintenance1 is neither required nor enabled, even where
+   offered, so every driver runs one presentation path. Present-wait semaphores belong to
+   swapchain images, indexed by acquired image index; reacquiring an index is the evidence
+   that the presentation which waited on its semaphore consumed it. An opened frame that drew
+   nothing holds its acquired image for the next frame rather than presenting undrawn
+   contents. Retired presentation resources are destroyed after submission completion and
+   queue idleness. Headless offscreen Vulkan requires no WSI.
 3. **Keep `rhi/lifetime.zig` as the retirement authority.** A timeline semaphore measures
    submissions on the one queue, uploads included. Command pools and buffers recycle only
-   after the corresponding submission completes. Presentation fences separately govern
-   reuse and destruction of presentation resources; they never masquerade as submission
-   serials or simulation time.
+   after the corresponding submission completes. Presentation resources follow swapchain-image
+   identity and swapchain retirement instead; frame slots, submission serials and simulation
+   time never stand in for them.
 4. **Keep persistent, immutable bind groups.** Descriptor sets come from device-owned pools
    and retire through the existing recording/completion model. No frame reset invalidates a
    public handle. Pools reclaim only sets whose retirement is complete. A pipeline retains
@@ -73,10 +83,13 @@ and run pure tests, but cannot provide those results. MoltenVK remains excluded 
 Step 1 qualifies an actual target and records a concrete route to the other platform before
 backend implementation proceeds. No remote access or machine availability is assumed here.
 
-Requiring maintenance1 buys a specified way to release an unused acquired image and to prove
-presentation-resource teardown. It excludes older or incomplete drivers even when their core
-Vulkan version suffices. Step 1 must expose that tradeoff with actual capability reports; it
-must not quietly remove the requirement when the first device fails it.
+Unextended WSI keeps every driver meeting the Vulkan 1.3 requirements on one path, including
+the first candidate target. Its cost is recorded rather than hidden: presentation has no
+completion signal, so destroying present-wait semaphores and retired swapchains after queue
+idleness relies on practice the specification does not guarantee. Khronos documents that gap
+and validation does not report it. An undrawn acquired image cannot be returned, so at most
+one is held, and a rebuild discards it once its submitted uses finish. Step 1 still records
+each qualified target's actual capability report.
 
 Descriptor persistence and separate completion tracking cost bookkeeping, but preserve the
 engine's existing handle and asynchronous upload contracts. Resource allocation may start
@@ -87,11 +100,16 @@ measured follow-up, not a new allocator dependency purchased in advance.
 
 * Vulkan 1.1 plus extension fallbacks: broader coverage, but several execution paths before
   any real workload demands them. Revisit if intended hardware cannot meet the proposed floor.
-* Treat `vkDeviceWaitIdle` as proof of presentation completion: rejected; the unextended WSI
-  shutdown gap is explicitly documented by Khronos, and a quiet validation run cannot fix it.
-* Make maintenance1 optional immediately: requires a second resize, abort and retirement
-  strategy whose purpose is compatibility not yet requested. The proposed floor makes that
-  cost visible before implementation rather than obscuring it in a fallback.
+* Require swapchain maintenance1, this proposal's original floor: presentation fences and
+  acquired-image release would close the teardown gap, but the first candidate target's
+  Windows driver lacks both extensions. The owner rejected excluding it on 2026-09-14.
+* Make maintenance1 optional: two resize, abort and retirement paths, each needing its own
+  native evidence, for a guarantee the single path has not yet shown it needs.
+* Present an undrawn image after clearing it, or rebuild the swapchain after every undrawn
+  frame: the first shows contents no draw produced, contrary to ADR-0035's frame contract; the
+  second churns presentation resources for a routine outcome.
+* Treat queue idleness as proof of presentation completion: not claimed. It is the accepted
+  practical boundary, recorded as a gap, and a quiet validation run does not close it.
 * Pool bind groups per frame: breaks existing persistent handle semantics.
 * Let SDL create Vulkan surfaces or give `rhi` an SDL window: breaks Foundry's established
   native-surface boundary. Native OS payloads already express the required information.
@@ -101,17 +119,23 @@ measured follow-up, not a new allocator dependency purchased in advance.
 ## Revisit if
 
 Required target hardware fails the floor; separate graphics/present families are needed on
-a supported machine; descriptor or memory allocation churn becomes measurable; or a valid
-existing RHI command cannot be implemented under this model. Such a finding changes the
+a supported machine; a supported driver shows a presentation-teardown fault attributable to
+the idle boundary, or a needed capability such as present-mode change or multiple windows
+must release acquired images, which makes maintenance1 a decision rather than a fallback;
+descriptor or memory allocation churn becomes measurable; or a valid existing RHI command
+cannot be implemented under this model. Such a finding changes the
 proposal before implementation, or gets a subsequent ADR after code depends on it.
 
 ## Technical references
 
 * [Khronos: swapchain semaphore reuse](https://docs.vulkan.org/guide/latest/swapchain_semaphore_reuse.html)
-  explains why queue completion is insufficient for presentation-resource reuse and shutdown.
+  explains why queue completion does not formally cover presentation resources, indexes
+  present semaphores by acquired image, and records the practical idle-wait gap.
+* [`vkDestroySwapchainKHR`](https://docs.vulkan.org/refpages/latest/refpages/source/vkDestroySwapchainKHR.html)
+  requires only that outstanding operations on acquired images have completed;
+  [`VkSwapchainCreateInfoKHR`](https://docs.vulkan.org/refpages/latest/refpages/source/VkSwapchainCreateInfoKHR.html)
+  retires `oldSwapchain` even when creation fails.
 * [KHR swapchain maintenance1](https://docs.vulkan.org/refpages/latest/refpages/source/VK_KHR_swapchain_maintenance1.html)
-  specifies presentation fences, image release and extension dependencies;
-  [the EXT predecessor](https://docs.vulkan.org/refpages/latest/refpages/source/VK_EXT_swapchain_maintenance1.html)
-  documents its promotion and aliases.
+  is the extension deliberately not used.
 * [SDL window properties](https://wiki.libsdl.org/SDL3/SDL_GetWindowProperties) describe the
   native handle data, corroborated against Foundry's pinned SDL 3.4.14 source during planning.

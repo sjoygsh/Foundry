@@ -229,8 +229,9 @@ must be told rather than have happen underneath it.
 resize event. Vulkan may rebuild an out-of-date swapchain between frames after reporting
 `SurfaceUnavailable`, using fresh surface capabilities. That exception never changes the
 device's negotiated surface format or hides a lost surface/device. Presentation resources
-have separate completion fences; the submission timeline alone cannot retire them. The
-complete acquired-image, abort, resize and teardown protocol is [vulkan.md](vulkan.md) §8.
+follow swapchain-image identity, not frame slots: the submission timeline alone cannot retire
+them, and maintenance1 is not used. The complete acquired-image, undrawn-frame, resize and
+teardown protocol is [vulkan.md](vulkan.md) §8.
 
 ## 8. Recording commands
 

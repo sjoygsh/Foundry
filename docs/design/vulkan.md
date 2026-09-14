@@ -1,6 +1,7 @@
 # Design: M13 — Vulkan, and the second test of the RHI
 
-**Status:** Design proposal complete; **0 of 10 steps implemented**. Stop before Step 1.
+**Status:** Design proposal complete, windowed floor revised 2026-09-14; **0 of 10 steps
+implemented**. Stop before Step 1.
 **Date:** 2026-09-14
 **Baseline:** `f14caac` / `m12`; M0–M12 complete, 1,370 declared / 1,360 headless tests.
 **Decisions:** ADR-0033 selects Vulkan; proposed [ADR-0037](../adr/0037-vulkan-execution-and-presentation.md)
@@ -61,10 +62,11 @@ windowed exit run must use a hardware Vulkan driver. Record any untested discret
 path explicitly; no performance or universal hardware-support claim follows from one GPU.
 
 The proposed windowed floor is Vulkan 1.3 plus dynamic rendering, synchronization2, timeline
-semaphores, a shared graphics/present queue family, swapchain support and maintenance1
-(KHR preferred, EXT accepted with its matching dependencies). Missing support is refusal,
-not a fallback to Metal/null. Offscreen tests omit WSI requirements. Exact OS, GPU, driver,
-extensions, SDK/tool versions and window system go in each implementation Resolution.
+semaphores, a shared graphics/present queue family and unextended swapchain support. Swapchain
+maintenance1 is neither required nor enabled; §8 has one presentation path for every driver
+(see the floor-revision Resolution). Missing support is refusal, not a fallback to Metal/null.
+Offscreen tests omit WSI requirements. Exact OS, GPU, driver, extensions, SDK/tool versions
+and window system go in each implementation Resolution.
 
 ## 3. Module and build boundaries
 
@@ -254,22 +256,28 @@ BGRA8 then RGBA8 with the matching color space, and keep it for the device lifet
 is usable, report unsupported surface rather than rendering with different color semantics.
 
 There are three identities: CPU frame slot, acquired swapchain image, and submission serial.
-Frame slots own acquire synchronization; swapchain images own present-wait semaphores and
-maintenance1 presentation fences. Acquire synchronization must be consumed before reuse.
-Presentation resources wait for presentation completion, not merely the frame-slot timeline.
+Frame slots own acquire synchronization, which must be consumed before reuse and recycles
+after its consuming submission completes. Swapchain images own their present-wait semaphores,
+indexed by acquired image index, never by frame slot: acquiring an index again is unextended
+Vulkan's only evidence that the presentation which waited on that semaphore has consumed it.
+Presentation resources therefore never recycle on the frame-slot timeline.
 
 `beginFrame` waits for the previous use of its slot, performs pending between-frame rebuilds,
-and acquires. Only a successful acquisition opens a frame and advances frame identity. The
+then takes a held undrawn image (below) or acquires. Only a frame with an image opens and
+advances frame identity. The
 first submission using the image consumes its acquire semaphore once; later submissions may
 use the same image. `endFrame` submits an ordered final marker/signals present synchronization
 after all submitted image work, records the slot's last submission and presents only if
 submitted work drew into the image.
 
-If no draw reached the queue, consume any remaining acquire signal with a cleanup submission,
-wait for all actual uses to finish, and release the image through maintenance1 without
-presenting uninitialized contents. Reserve cleanup bookkeeping before acquiring so an OOM
-does not make closing the frame impossible. If submission itself fails, latch device failure
-and tear down without waiting on synchronization that was never signaled. Never mark a
+If no draw reached the queue, consume any remaining acquire signal with a cleanup submission
+recorded as the slot's marker, and hold the image, unpresented, for the next opened frame; that
+frame has no acquire signal left to consume. Unextended Vulkan cannot return an acquired image,
+and presenting undrawn contents is forbidden, so at most one image is held and repeated empty
+frames reuse it. A rebuild or teardown discards it with its swapchain after its submitted uses
+complete, which `vkDestroySwapchainKHR` permits. Reserve cleanup bookkeeping before acquiring
+so an OOM does not make closing the frame impossible. If submission itself fails, latch device
+failure and tear down without waiting on synchronization that was never signaled. Never mark a
 discarded draw as having rendered the image.
 
 | Driver result | Foundry outcome / required state |
@@ -283,8 +291,10 @@ discarded draw as having rendered the image.
 | Host/device allocation failure | Existing error set's representable allocation failure plus precise backend diagnostic; no success-shaped skip |
 
 `resizeSurface` accepts zero extent as suspension and rebuilds at a nonzero extent between
-frames. Wait for old image submissions and maintenance1 presentation fences, then release
-views, semaphores and swapchain. Never infer presentation completion from `waitIdle` alone.
+frames. Wait for old image submissions on the timeline and then for queue idleness before
+releasing views, present-wait semaphores, a held image and the swapchain. Unextended
+presentation has no completion signal, so that idle wait is the practical boundary Khronos
+documents, not proof that presentation finished; record the gap rather than claiming more.
 On a failed rebuild, retain valid old backing where Vulkan permits it, otherwise remain
 suspended or fatal with correct ownership; passing `oldSwapchain` can retire it even when the
 new creation fails. Do not advertise transactional rollback that Vulkan does not guarantee.
@@ -292,7 +302,8 @@ The renderer cannot reuse old surface handles across rebuilds. Keep format uncha
 with `SurfaceLost`; no silent pipeline mismatch. Fatal resize errors remain latched for the
 next render call despite the existing event handler logging them.
 
-Teardown waits for both kinds of completion on a healthy device. A lost device follows the
+Teardown on a healthy device waits for submission completion, then idleness, under the same
+recorded gap. A lost device follows the
 API's lost-device destruction rules and releases host ownership without unbounded waits;
 `waitIdle`'s void signature logs/latches a failure rather than inventing an error return.
 Real recoverable device loss and multi-window support remain deferred.
@@ -414,7 +425,8 @@ clipping and culling. Inject submission failure and pending recording lifetime c
 ### Step 7 — Present, resize and close failed frames
 
 Implement §8's frame/image/submission identities, FIFO, acquisition/presentation synchronization,
-maintenance1 release/fences, offscreen frame targets, resize and sticky errors. Complete
+per-image present semaphores, held undrawn images, idle-bounded teardown, offscreen frame
+targets, resize and sticky errors. Complete
 `interface.check` and enable the full `-Drhi=vulkan` build/test graph. Keep missing-feature
 refusal explicit. **Exit:** a real window clears/presents, repeatedly resizes/minimizes/restores,
 and every injected acquisition/recording/submit/present failure preserves ownership and markers.
@@ -447,7 +459,9 @@ the two-platform sample evidence and RHI contract agree, with explicit tested li
 
 The proposed Vulkan floor and toolchain need acceptance; actual machine availability and
 exact pins are Step 1's entry work. No machine, installed SDK or API compatibility is assumed.
-If the floor excludes the intended hardware, revise the unimplemented ADR with evidence.
+If the floor excludes the intended hardware, revise the unimplemented ADR with evidence, as
+the floor-revision Resolution did. Adopting maintenance1 later is ADR-0037's revisit, never
+a silent fallback.
 
 Device recovery, transient bind-group API, adaptive frame counts, memory suballocation beyond
 measured need, shader cross-compilation at material scale, content shader compilation,
@@ -463,7 +477,8 @@ dependency pins or evidence that Foundry implements this design:
 * [Vulkan 1.3 dynamic rendering sample](https://docs.vulkan.org/samples/latest/samples/api/hello_triangle_1_3/README.html)
 * [Vulkan synchronization guide](https://docs.vulkan.org/guide/latest/synchronization.html)
 * [Swapchain semaphore lifetime](https://docs.vulkan.org/guide/latest/swapchain_semaphore_reuse.html)
-* [Swapchain maintenance1 and its dependencies](https://docs.vulkan.org/refpages/latest/refpages/source/VK_KHR_swapchain_maintenance1.html)
+* [Destroying a swapchain with acquired images](https://docs.vulkan.org/refpages/latest/refpages/source/vkDestroySwapchainKHR.html)
+  and [retiring `oldSwapchain`](https://docs.vulkan.org/refpages/latest/refpages/source/VkSwapchainCreateInfoKHR.html)
 * [SDL native window properties](https://wiki.libsdl.org/SDL3/SDL_GetWindowProperties)
 
 ## Resolution — 2026-09-14, planning only
@@ -478,3 +493,23 @@ The existing AGENTS.md bar passed for this documentation-only change: format, te
 and Metal checks, Windows/Linux null cross-checks and both 30-frame null sample runs. Local
 documentation links and the consistency pass were clean. M12's performance evidence remains
 accepted; no Vulkan runtime evidence is claimed.
+
+## Resolution — 2026-09-14, floor revision before Step 1
+
+The owner's candidate Windows target is an Intel Arc A750 on Windows 11 x64, driver
+32.0.101.8991. Its `vulkaninfo` report shows Vulkan 1.4.356, dynamic rendering,
+synchronization2, timeline semaphores, a graphics queue family with present support, and Win32
+surfaces offering sRGB BGRA8/RGBA8 with FIFO. It reports no KHR or EXT swapchain maintenance1
+and no surface maintenance1, so the proposed floor refused it: ADR-0037's revisit condition.
+Offered keeping the floor and qualifying Linux first, making maintenance1 optional with two
+presentation paths, requiring other Windows hardware, or removing the requirement, the owner
+chose removal. §8 now uses one unextended path on every driver: per-image present-wait
+semaphores, an undrawn acquired image held for the next frame instead of released, and
+presentation teardown after submission completion and queue idleness, with Khronos's
+documented gap recorded rather than hidden. The specification permits destroying a swapchain
+whose acquired images have no outstanding operations, which is what discarding a held image
+relies on.
+
+This was a capability check before Step 1, not Step 1: the SDK's windowed sample, exact pins,
+host shader tooling and the recorded route to Linux remain its work. No code, dependency or
+tool changed, and ADR-0037/0038 remain proposed pending the owner's acceptance.
