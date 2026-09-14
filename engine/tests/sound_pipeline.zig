@@ -72,6 +72,7 @@ const Stack = struct {
     gpa: Allocator,
     os: *platform.os.Os,
     plat: *null_backend.Platform,
+    tmp: std.testing.TmpDir,
     dir: []u8,
     schemas: data.Registry,
     diags: data.Diagnostics,
@@ -89,9 +90,13 @@ const Stack = struct {
         const plat = try null_backend.Platform.init(gpa, .{});
         errdefer plat.deinit();
 
-        const temp = try os.tempDirAlloc(gpa);
-        defer gpa.free(temp);
-        const dir = try platform.os.joinPath(gpa, &.{ temp, "foundry-sound-pipeline" });
+        // `std`'s temporary directory, not `Os.tempDirAlloc`: this `Os` is handed no
+        // environment, and on Windows only the environment names a temporary directory.
+        var tmp = testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+        var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const path_len = try tmp.dir.realPath(testing.io, &path_buf);
+        const dir = try platform.os.joinPath(gpa, &.{ path_buf[0..path_len], "foundry-sound-pipeline" });
         errdefer gpa.free(dir);
 
         const self = try gpa.create(Stack);
@@ -99,6 +104,7 @@ const Stack = struct {
         self.* = .{
             .gpa = gpa,
             .os = os,
+            .tmp = tmp,
             .plat = plat,
             .dir = dir,
             .schemas = .init(gpa, .default),
@@ -132,6 +138,7 @@ const Stack = struct {
         self.bytes.deinit(self.gpa);
         self.gpa.free(self.dir);
         self.os.deinit();
+        self.tmp.cleanup();
         self.gpa.destroy(self);
     }
 

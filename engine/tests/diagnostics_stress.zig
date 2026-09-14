@@ -56,18 +56,26 @@ pub fn main(init: std.process.Init) !u8 {
         const scenario = std.meta.stringToEnum(Scenario, scenario_text) orelse return 3;
         return child(gpa, scenario, home);
     }
-    return parent(gpa, init.io);
+    return parent(gpa, init);
 }
 
 // -- the child --------------------------------------------------------------------------
 
-fn child(gpa: std.mem.Allocator, scenario: Scenario, home: []const u8) !u8 {
-    const env = [_]platform.os.EnvVar{
+/// Every variable `userDataDirAlloc` consults, all pointing at the run's home, so the child
+/// derives its directory the way a player's machine would on whichever system this runs.
+fn childEnv(home: []const u8) [3]platform.os.EnvVar {
+    return .{
         .{ .name = "HOME", .value = home },
         .{ .name = "XDG_DATA_HOME", .value = home },
         .{ .name = "APPDATA", .value = home },
     };
-    const os = try Os.init(gpa, .{ .app_name = "foundry-diagnostics-child", .env = &env });
+}
+
+const child_app_name = "foundry-diagnostics-child";
+
+fn child(gpa: std.mem.Allocator, scenario: Scenario, home: []const u8) !u8 {
+    const env = childEnv(home);
+    const os = try Os.init(gpa, .{ .app_name = child_app_name, .env = &env });
     defer os.deinit();
 
     const session = try Session.open(gpa, os, build, .{});
@@ -99,11 +107,16 @@ fn child(gpa: std.mem.Allocator, scenario: Scenario, home: []const u8) !u8 {
 
 // -- the parent -------------------------------------------------------------------------
 
-fn parent(gpa: std.mem.Allocator, io: std.Io) !u8 {
+fn parent(gpa: std.mem.Allocator, init: std.process.Init) !u8 {
+    const io = init.io;
     const executable = try std.process.executablePathAlloc(io, gpa);
     defer gpa.free(executable);
 
-    const os = try Os.init(gpa, .{});
+    // The environment this process was given, handed on the way a sample's `main` hands
+    // it: `makeHome`'s temporary directory is named by it, and on Windows only by it.
+    const env = try app.environment(gpa, init);
+    defer gpa.free(env);
+    const os = try Os.init(gpa, .{ .env = env });
     defer os.deinit();
 
     var home_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -118,11 +131,15 @@ fn parent(gpa: std.mem.Allocator, io: std.Io) !u8 {
     defer gpa.free(first.stderr);
     failures += check("an unclean child exits with its own code", exited(first.term) == 3);
 
-    const logs = try platform.os.joinPath(gpa, &.{ home, "Library/Application Support/foundry-diagnostics-child/logs" });
-    defer gpa.free(logs);
-    const fallback = try platform.os.joinPath(gpa, &.{ home, ".local/share/foundry-diagnostics-child/logs" });
-    defer gpa.free(fallback);
-    const dir = if (os.exists(logs)) logs else fallback;
+    // Where the child writes, asked of an `Os` holding the child's own environment, so the
+    // two agree on every system instead of this listing each system's layout.
+    const child_env = childEnv(home);
+    const child_os = try Os.init(gpa, .{ .app_name = child_app_name, .env = &child_env });
+    defer child_os.deinit();
+    const user_data = try child_os.userDataDirAlloc(gpa);
+    defer gpa.free(user_data);
+    const dir = try platform.os.joinPath(gpa, &.{ user_data, "logs" });
+    defer gpa.free(dir);
 
     {
         const text = try read(gpa, os, dir, "session-1.log");

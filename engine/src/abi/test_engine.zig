@@ -42,6 +42,8 @@ pub const TestEngine = struct {
     /// A directory of this engine's own, for the tests that need an asset to have bytes.
     /// Created lazily, because most of them do not.
     dir: ?[]u8 = null,
+    /// The temporary directory `dir` names, removed with the engine.
+    tmp: ?std.testing.TmpDir = null,
     /// Bumped by `reloadContent`, so a test can prove that a view opened before a reload
     /// fails to resolve after one.
     content_generation: u64 = 0,
@@ -98,6 +100,7 @@ pub const TestEngine = struct {
         self.arena.deinit();
         self.assets.deinit(self.gpa);
         if (self.dir) |d| self.gpa.free(d);
+        if (self.tmp) |*t| t.cleanup();
         self.os.deinit();
         self.store.deinit(self.gpa);
         self.schemas.deinit(self.gpa);
@@ -139,15 +142,15 @@ pub const TestEngine = struct {
     pub fn contentDir(self: *Self) ![]const u8 {
         if (self.dir) |d| return d;
 
-        const temp = try self.os.tempDirAlloc(self.gpa);
-        defer self.gpa.free(temp);
+        // `std`'s temporary directory, not `Os.tempDirAlloc`: this `Os` is handed no
+        // environment, and on Windows only the environment names a temporary directory.
+        var tmp = std.testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+        var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const path_len = try tmp.dir.realPath(std.testing.io, &path_buf);
+        const dir = try self.gpa.dupe(u8, path_buf[0..path_len]);
 
-        var name_buf: [64]u8 = undefined;
-        const unique = std.fmt.bufPrint(&name_buf, "foundry-abi-{d}", .{std.testing.random_seed}) catch unreachable;
-        const dir = try platform.os.joinPath(self.gpa, &.{ temp, unique });
-        errdefer self.gpa.free(dir);
-        try self.os.createDirPath(dir);
-
+        self.tmp = tmp;
         self.dir = dir;
         return dir;
     }

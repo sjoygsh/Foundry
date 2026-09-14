@@ -1354,6 +1354,7 @@ fn profiledEngine(config: Config) !*TestEngine {
 /// precisely the part that reads a disk: everything below `app` is already hermetic.
 const ContentFixture = struct {
     os: *platform.Os,
+    tmp: std.testing.TmpDir,
     dir: []u8,
 
     fn init(source: []const u8) !ContentFixture {
@@ -1361,9 +1362,13 @@ const ContentFixture = struct {
         const os = try platform.Os.init(gpa, .{ .app_name = "foundry-app-test", .env = &.{} });
         errdefer os.deinit();
 
-        const temp = try os.tempDirAlloc(gpa);
-        defer gpa.free(temp);
-        const dir = try platform.os.joinPath(gpa, &.{ temp, "foundry-app-content" });
+        // `std`'s temporary directory, not `Os.tempDirAlloc`: this `Os` is handed no
+        // environment, and on Windows only the environment names a temporary directory.
+        var tmp = testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+        var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const path_len = try tmp.dir.realPath(testing.io, &path_buf);
+        const dir = try platform.os.joinPath(gpa, &.{ path_buf[0..path_len], "foundry-app-content" });
         errdefer gpa.free(dir);
         try os.createDirPath(dir);
 
@@ -1386,12 +1391,13 @@ const ContentFixture = struct {
         defer gpa.free(path);
         try os.writeFile(path, bytes.items);
 
-        return .{ .os = os, .dir = dir };
+        return .{ .os = os, .tmp = tmp, .dir = dir };
     }
 
     fn deinit(self: *ContentFixture) void {
         testing.allocator.free(self.dir);
         self.os.deinit();
+        self.tmp.cleanup();
     }
 
     /// Recompiles the package with different content, the way `zig build` would after an

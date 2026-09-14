@@ -1080,7 +1080,11 @@ const Fixture = struct {
         var found: std.ArrayList([]const u8) = .empty;
         while (try walker.next(testing.io)) |entry| {
             if (entry.kind != .file) continue;
-            try found.append(self.a(), try self.a().dupe(u8, entry.path));
+            // The walker joins components with the host's separator, and every expectation
+            // here is written with `/`.
+            const path = try self.a().dupe(u8, entry.path);
+            std.mem.replaceScalar(u8, path, std.fs.path.sep, '/');
+            try found.append(self.a(), path);
         }
         const items = found.items;
         std.mem.sort([]const u8, items, {}, lessThanString);

@@ -1,7 +1,7 @@
 # Design: M13 — Vulkan, and the second test of the RHI
 
 **Status:** Design accepted 2026-09-14 (ADR-0037/0038), its windowed floor revised before
-acceptance; **2 of 10 steps complete**. Next: repair the native Windows test suite, then Step 3.
+acceptance; **2 of 10 steps complete**, and the native Windows test suite repaired. Next: Step 3.
 **Date:** 2026-09-14
 **Baseline:** `f14caac` / `m12`; M0–M12 complete, 1,370 declared / 1,360 headless tests.
 **Decisions:** ADR-0033 selects Vulkan; proposed [ADR-0037](../adr/0037-vulkan-execution-and-presentation.md)
@@ -371,7 +371,7 @@ M13 ends only when its rules survived or their necessary changes were recorded b
 
 Steps 1 and 2 are complete; every later step is **not started**. Stop after each with its
 Resolution, PROJECT_STATE update, verification and commit; no automatic chaining. Before Step 3
-the owner directed a repair of the native Windows test suite (Step 2 Resolution).
+the owner directed a repair of the native Windows test suite; its Resolution follows Step 2's.
 
 ### Step 1 — Qualify the targets and pin the Vulkan tools
 
@@ -603,3 +603,46 @@ sound and tilemap pipelines, settings, the engine, and four M9 confined-file tes
 is Step 2 code, and cross-compilation had never exercised them. Every later step needs Windows
 test runs, so the owner directed that the suite be repaired as its own bounded unit, with its own
 Resolution, before Step 3. Native builds on that target use at most two jobs.
+
+## Resolution — 2026-09-14, the native Windows test suite
+
+**What was wrong.** The first native run's 72 crashes shared one site and its 50 failures one
+cause, and none involved graphics: the run used the null RHI.
+
+* **A mislabelled file handle in Zig 0.16.0's `std`.** On Windows, opening a file with
+  `follow_symlinks = false` asks `NtCreateFile` for asynchronous I/O, yet the `File` returned
+  says `nonblocking = false`. `std` chooses how to wait for a read from that label, so
+  `NtReadFile`'s `STATUS_PENDING` reached `unreachable` in `readFilePositionalWindows`. Every
+  crash came through `Os.readFileConfined`, the M9 no-follow read that packing, staging, scripts,
+  settings, diagnostics and mods share; directories opened the same way are synchronous. On
+  Windows `openFileConfined` now sets the label to what `File.Flags` documents for such a handle,
+  with a note to delete the line once a toolchain upgrade labels the handle itself.
+* **Fixtures that leaned on POSIX's `/tmp` fallback.** Seven test fixtures handed `Os` no
+  environment and asked `tempDirAlloc` for scratch space. That answers `/tmp` on macOS and Linux,
+  but Windows names a temporary directory only through `TEMP` or `TMP`, so it correctly said
+  `PathUnavailable`. The fixtures in `asset.registry`, `app.engine`, the ABI's test engine and
+  the asset, sound, tilemap and ABI render pipelines now use `std.testing.tmpDir`, as the `os`,
+  diagnostics and settings tests already did; each fixture also gets its own directory, removed
+  afterwards.
+
+Two more were hidden behind those. `stage`'s test helper compared paths from `Dir.walk`, which
+joins with `\` on Windows, against expectations written with `/`; the helper now normalises the
+separator, and the staging code, whose inventory test passed, is unchanged. The
+`foundry-diagnostics-stress` program, a run step of `zig build test`, gave its parent `Os` no
+environment and then looked for the child's logs in the macOS and default XDG layouts only —
+wrong on Windows, and on Linux too, where the child's `XDG_DATA_HOME` wins. The parent now hands
+its `Os` the process environment through `app.environment`, as the samples do, and asks an `Os`
+holding the child's environment where the child writes.
+
+Only the Windows handle label changes engine behaviour. `tempDirAlloc` keeps its contract: an
+`Os` given no environment still has no temporary directory on Windows.
+
+**Evidence.** On the Mac, the bar passed. On the Windows target, with byte-identical sources
+reset onto `4bc3707`, every step of `zig build test` at two jobs and below-normal priority
+succeeded: 1,367 of 1,372 tests passed and 5 skipped, the last run answering unchanged binaries
+from the build cache of the one before. Four of the skips create symlinks and one relies on POSIX
+directory permissions, all by design. The four crashed `os` confined-file tests,
+compiled alone, passed; with the label left as `std` sets it, the first of them crashed again in
+`readFilePositionalWindows`, and `os.zig` was restored byte for byte.
+
+**Consequence.** Native Windows `zig build test` is now a usable signal for Steps 3–10.

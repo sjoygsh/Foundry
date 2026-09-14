@@ -48,7 +48,7 @@ widget set already supports, and could not have been written before it existed.
 Steps 1 and 2 of ten are complete: a Windows x64 Vulkan target is qualified, the SDK, headers
 and tools are pinned, and native window payloads and the system-library open are implemented.
 Linux x64 has a recorded route; Mac cross-builds do not establish runtime support. The native
-Windows test suite is repaired before Step 3.
+Windows test suite is repaired; Step 3 is next.
 
 | Document | Covers | Decisions worth knowing about |
 | --- | --- | --- |

@@ -3,8 +3,20 @@
 **Last updated:** 2026-09-14
 **Current handoff: M0 through M12 are complete and tagged. M13 Steps 1 and 2 of 10 are
 complete: the Windows x64 Vulkan target is qualified, the tools are pinned, and native window
-payloads and the safe system-library open are implemented. Next, by the owner's direction:
-repair the native Windows test suite, then Step 3. M14 through M17 remain unstarted.**
+payloads and the safe system-library open are implemented, and the native Windows test suite
+passes. Next: Step 3. M14 through M17 remain unstarted.**
+
+**Repaired the native Windows test suite, 2026-09-14,** by the owner's direction before Step 3.
+The first native `zig build test` on the target had 50 failures and 72 crashes, none involving
+graphics. The crashes were one Zig 0.16.0 `std` bug: a file opened without following links on
+Windows is asynchronous but labelled blocking, so its first read reached `unreachable`;
+`Os.openFileConfined` corrects the label on Windows only. The failures were seven test fixtures
+relying on POSIX's `/tmp` fallback with no environment; they now use `std.testing.tmpDir`. Behind
+them, `stage`'s test helper compared `\`-joined walker paths, and the diagnostics stress program
+had no environment and guessed the child's log directory; both are fixed in the tests. On the
+target every step of `zig build test` succeeded, 1,367 of 1,372 tests passing and five
+POSIX-only tests skipped, and leaving `std`'s label alone brought the crash back. No public
+behaviour changed; the Mac bar passed. Resolution: `vulkan.md`, after Step 2's.
 
 **Completed M13 Step 2, 2026-09-14:** native window payloads and the system-library open.
 `platform` now hands out `Win32Window`, `XlibWindow` and `WaylandSurface` payloads behind the
@@ -3170,12 +3182,11 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: repair the native Windows test suite, then M13 Step 3.** Steps 1 and 2 are complete
-(`docs/design/vulkan.md` and their Resolutions). The first native `zig build test` on the
-Windows target left 50 tests failing and 72 crashing in pre-existing modules; the owner directed
-a bounded repair before Step 3, which needs Windows test runs. Native builds on that target use
-at most two jobs. Linux x64 still needs the owner's second-drive installation before Step 9.
-M14 waits.
+**Next: M13 Step 3.** Steps 1 and 2 are complete, and the native Windows test suite the owner
+had repaired before Step 3 now passes on the target (`docs/design/vulkan.md` and their
+Resolutions). Native builds on that target use at most two jobs at below-normal priority, because
+it is the owner's gaming PC. Linux x64 still needs the owner's second-drive installation before
+Step 9. M14 waits.
 
 **M0 through M12 are complete and tagged, and everything is pushed.** Phase 3 is closed;
 Phase 4 is under way. The completed M8/M7 checklists and subsequent M5/M6 material below are

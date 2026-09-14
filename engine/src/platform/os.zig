@@ -462,11 +462,17 @@ pub const Os = struct {
         var parent = try self.openParentConfined(root, relative);
         defer parent.dir.close(the_io);
 
-        return parent.dir.openFile(the_io, parent.leaf, .{
+        var file = parent.dir.openFile(the_io, parent.leaf, .{
             .allow_directory = false,
             .follow_symlinks = false,
             .resolve_beneath = true,
         }) catch |err| return mapConfinedError(err, "open", relative);
+        // Zig 0.16.0 opens a file it must not follow for asynchronous I/O on Windows yet labels
+        // the handle blocking, and `std` chooses how to wait for a read from that label, so the
+        // first read reached `unreachable`. Correct the label to what `File.Flags` documents
+        // for such a handle; remove this when a toolchain upgrade labels it itself.
+        if (builtin.os.tag == .windows) file.flags.nonblocking = true;
+        return file;
     }
 
     /// Writes a whole file, replacing anything already there.

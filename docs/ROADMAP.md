@@ -635,8 +635,8 @@ Accepted [ADR-0038](adr/0038-vulkan-shaders-and-toolchain.md) covers hand-writte
 GLSL variants compiled to SPIR-V with pinned tools and an OS loader opened at runtime.
 Step 1 qualified a Windows x64 Intel Arc target, recorded a same-machine Linux route and
 pinned the SDK, headers and tools. Step 2 added native window payloads and the safe
-system-library open. No Vulkan implementation exists yet; the native Windows test suite is
-repaired before Step 3.
+system-library open, and the native Windows test suite was then repaired. No Vulkan
+implementation exists yet.
 
 The ten steps are qualification/tools, native surfaces/loader, device/submission timeline,
 resources/copies/retirement, shaders/bindings, offscreen drawing, presentation/resize/failure

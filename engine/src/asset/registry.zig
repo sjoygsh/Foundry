@@ -780,6 +780,7 @@ const parser = @import("data").parser;
 const Fixture = struct {
     gpa: Allocator,
     os: *platform.os.Os,
+    tmp: std.testing.TmpDir,
     dir: []u8,
     schemas_registry: data.Registry,
     diags: data.Diagnostics,
@@ -793,20 +794,21 @@ const Fixture = struct {
         const os = try platform.os.Os.init(gpa, .{ .app_name = "foundry-asset-test", .env = &.{} });
         errdefer os.deinit();
 
-        const temp = try os.tempDirAlloc(gpa);
-        defer gpa.free(temp);
-        // A directory of its own per fixture, so two tests running over the same temp
-        // directory cannot see each other's files.
-        var name_buf: [64]u8 = undefined;
-        const unique = std.fmt.bufPrint(&name_buf, "foundry-assets-{d}", .{std.testing.random_seed}) catch unreachable;
-        const dir = try platform.os.joinPath(gpa, &.{ temp, unique });
+        // A directory of its own per fixture, so no two tests can see each other's files.
+        // `std`'s temporary directory, not `Os.tempDirAlloc`: this `Os` is handed no
+        // environment, and on Windows only the environment names a temporary directory.
+        var tmp = testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+        var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const path_len = try tmp.dir.realPath(testing.io, &path_buf);
+        const dir = try gpa.dupe(u8, path_buf[0..path_len]);
         errdefer gpa.free(dir);
-        try os.createDirPath(dir);
 
         const self = try gpa.create(Fixture);
         self.* = .{
             .gpa = gpa,
             .os = os,
+            .tmp = tmp,
             .dir = dir,
             .schemas_registry = .init(gpa, .default),
             .diags = .init(gpa, .default),
@@ -827,6 +829,7 @@ const Fixture = struct {
         self.blobs.deinit(self.gpa);
         self.gpa.free(self.dir);
         self.os.deinit();
+        self.tmp.cleanup();
         self.gpa.destroy(self);
     }
 

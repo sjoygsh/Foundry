@@ -55,6 +55,7 @@ const Fixture = struct {
     renderer_a: *render2d.Renderer,
     renderer_b: *render2d.Renderer,
     host: Host,
+    tmp: std.testing.TmpDir,
     dir: []u8,
     package_bytes: std.ArrayList([]u8) = .empty,
 
@@ -69,13 +70,18 @@ const Fixture = struct {
             .renderer_a = undefined,
             .renderer_b = undefined,
             .host = .{},
+            .tmp = undefined,
             .dir = undefined,
         };
         errdefer self.engine.deinit();
 
-        const temp = try self.engine.os.tempDirAlloc(gpa);
-        defer gpa.free(temp);
-        self.dir = try platform.os.joinPath(gpa, &.{ temp, "foundry-abi-render" });
+        // `std`'s temporary directory, not `Os.tempDirAlloc`: the engine is handed no
+        // environment, and on Windows only the environment names a temporary directory.
+        self.tmp = testing.tmpDir(.{});
+        errdefer self.tmp.cleanup();
+        var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const path_len = try self.tmp.dir.realPath(testing.io, &path_buf);
+        self.dir = try platform.os.joinPath(gpa, &.{ path_buf[0..path_len], "foundry-abi-render" });
         errdefer gpa.free(self.dir);
         try self.engine.os.createDirPath(self.dir);
 
@@ -106,6 +112,7 @@ const Fixture = struct {
         for (self.package_bytes.items) |bytes| self.gpa.free(bytes);
         self.package_bytes.deinit(self.gpa);
         self.gpa.free(self.dir);
+        self.tmp.cleanup();
         self.gpa.destroy(self);
     }
 

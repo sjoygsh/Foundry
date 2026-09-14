@@ -106,8 +106,8 @@ pool, `0` for none. M12 closed at **1,370 declared / 1,360 headless tests**.
 `docs/design/vulkan.md`. A Windows x64 Vulkan target is qualified and reached over SSH, Linux
 x64 has a recorded route, the Vulkan tools are pinned in §3 below, and `platform` hands out
 native window payloads and opens system libraries safely. No Foundry Vulkan code exists yet.
-The native Windows `zig build test` is not green; repairing it comes before Step 3, and native
-builds on the target use at most two jobs. Mac cross-compilation never substitutes for runtime
+The native Windows `zig build test` passes on the target, and native builds there use at most
+two jobs. Mac cross-compilation never substitutes for runtime
 proof. M14–M17 remain unstarted.
 The bar below remains the current one until M13 adds its verified target commands.
 
@@ -284,6 +284,12 @@ Each of these cost real time to discover.
   not worth opting out of; split the logging from the pure part and test the pure part.
 * **In a test binary the root is the test runner**, so `std.log` never reaches `app.log_sink`.
   Seed the ring by calling `app.log_sink.logFn(...)` directly.
+* **An `Os` handed no environment has no temporary directory on Windows.** `tempDirAlloc`
+  falls back to `/tmp` only on POSIX. A test needing scratch space uses `std.testing.tmpDir`;
+  a program's `main` hands its environment on through `app.environment`.
+* **Zig 0.16.0 labels a no-follow file handle on Windows as blocking when it is not**, and its
+  first read reaches `unreachable`. `Os.openFileConfined` corrects the label; after a toolchain
+  upgrade, delete that line if the confined-file tests pass on Windows without it.
 * **A C file's object is cached against the C file, not its headers.** Editing a `.h` alone can
   leave the build green. `engine/src/abi/agreement.zig` `@embedFile`s `foundry.h` specifically
   to defeat this; if you add another C translation unit that a header must keep honest, it
