@@ -98,10 +98,13 @@ pub const NativeSurfaceHandle = window.NativeSurfaceHandle;
 pub const Os = os.Os;
 pub const Size = window.Size;
 pub const SurfaceKind = window.SurfaceKind;
+pub const WaylandSurface = window.WaylandSurface;
+pub const Win32Window = window.Win32Window;
 pub const WindowConfig = window.WindowConfig;
 pub const WindowHandle = window.WindowHandle;
 pub const WindowInfo = window.WindowInfo;
 pub const Workers = workers.Workers;
+pub const XlibWindow = window.XlibWindow;
 
 pub const AudioError = interface.AudioError;
 pub const InitError = interface.InitError;

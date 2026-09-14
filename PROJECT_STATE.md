@@ -1,9 +1,25 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-14
-**Current handoff: M0 through M12 are complete and tagged. M13 Step 1 of 10 is complete:
-ADR-0037/0038 are accepted, a Windows x64 Vulkan target is qualified, and the Vulkan SDK,
-Vulkan-Headers and Windows Zig are pinned. Stop before Step 2. M14 through M17 remain unstarted.**
+**Current handoff: M0 through M12 are complete and tagged. M13 Steps 1 and 2 of 10 are
+complete: the Windows x64 Vulkan target is qualified, the tools are pinned, and native window
+payloads and the safe system-library open are implemented. Next, by the owner's direction:
+repair the native Windows test suite, then Step 3. M14 through M17 remain unstarted.**
+
+**Completed M13 Step 2, 2026-09-14:** native window payloads and the system-library open.
+`platform` now hands out `Win32Window`, `XlibWindow` and `WaylandSurface` payloads behind the
+unchanged tagged handle, accepts a request-only `native_window` kind that resolves to the running
+window system's concrete kind, and keeps each payload in its own allocation so pool growth never
+moves it. `Library.openSystem` opens a bare-named library from the system location only:
+`System32` on Windows, the C runtime's `dlopen` elsewhere. On the Windows target the platform
+tests passed, including a planted lookalike DLL the system search never loads, and
+`zig build native-window-test` passed in the desktop session with a real HWND, resize, pool
+growth, stale handles, out-of-memory cleanup and `vulkan-1.dll` from `System32`. Two guards on
+the Mac and the lookalike guard on Windows were each broken once and caught. **1,382 declared /
+1,372 headless**, ten Metal-only and one Windows-only test skipped on macOS, plus seven
+native-window tests in their own step. The bar passed. **Found:** the first native Windows
+`zig build test` ran 1,372 tests with 50 failing and 72 crashing in pre-existing modules; the
+owner directed their repair before Step 3 (`vulkan.md`'s Step 2 Resolution).
 
 **Completed M13 Step 1, 2026-09-14:** the owner accepted ADR-0037/0038, and `vulkan.md`'s Step 1
 Resolution records the qualification. Windows x64 is the qualified target: an Intel Arc A750
@@ -3154,11 +3170,12 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M13 Step 2, when requested.** Step 1 is complete: ADR-0037/0038 are accepted, the
-Windows x64 Intel Arc target is qualified over SSH and the Vulkan tools are pinned
-(`docs/design/vulkan.md` and its Step 1 Resolution). Step 2 carries native window payloads and
-adds the safe system-library open, exercised on that target and cross-built for Linux. Linux
-x64 still needs the owner's second-drive installation before Step 9. M14 waits.
+**Next: repair the native Windows test suite, then M13 Step 3.** Steps 1 and 2 are complete
+(`docs/design/vulkan.md` and their Resolutions). The first native `zig build test` on the
+Windows target left 50 tests failing and 72 crashing in pre-existing modules; the owner directed
+a bounded repair before Step 3, which needs Windows test runs. Native builds on that target use
+at most two jobs. Linux x64 still needs the owner's second-drive installation before Step 9.
+M14 waits.
 
 **M0 through M12 are complete and tagged, and everything is pushed.** Phase 3 is closed;
 Phase 4 is under way. The completed M8/M7 checklists and subsequent M5/M6 material below are
@@ -3181,7 +3198,7 @@ review of `main` rather than beginning on a schedule.
   `docs/design/jobs-and-threading.md` are implemented. Split spans are measurably faster at
   50,000 sprites, every determinism test is unchanged, and a pool's cost to the calling thread's
   unsplit work is recorded as debt.
-* **M13 — Portable.** Design accepted 2026-09-14, trigger activated; **1/10 steps complete**.
+* **M13 — Portable.** Design accepted 2026-09-14, trigger activated; **2/10 steps complete**.
   Read `docs/design/vulkan.md` and ADR-0037/0038. **Vulkan was decided
   2026-09-13 in [ADR-0033](docs/adr/0033-vulkan-second-backend.md)**, covering Windows and
   Linux with one backend; D3D12 is not planned and Metal stays macOS's. With it: the shader

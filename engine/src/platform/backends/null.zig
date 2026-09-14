@@ -449,6 +449,10 @@ test "a headless backend refuses to invent a GPU surface" {
     const p = try open(testing.allocator);
     defer p.deinit();
     try testing.expectError(error.SurfaceUnavailable, p.openWindow(.{ .surface = .metal_layer }));
+    // Nor a native window, whichever window system is named: there is none behind it.
+    for ([_]win.SurfaceKind{ .native_window, .win32_hwnd, .xlib_window, .wayland_surface }) |kind| {
+        try testing.expectError(error.SurfaceUnavailable, p.openWindow(.{ .surface = kind }));
+    }
 }
 
 test "events become visible at the pump, not when they happen" {

@@ -93,6 +93,8 @@ pub fn check(comptime Impl: type, comptime label: []const u8) void {
         expectFn(P, label, "openWindow", &.{ *P, window.WindowConfig }, WindowError!window.WindowHandle);
         expectFn(P, label, "closeWindow", &.{ *P, window.WindowHandle }, void);
         expectFn(P, label, "windowInfo", &.{ *P, window.WindowHandle }, ?window.WindowInfo);
+        // A window opened with `native_window` reports the concrete kind it received; no
+        // handle ever carries the request kind itself (`window.SurfaceKind`).
         expectFn(P, label, "nativeSurface", &.{ *P, window.WindowHandle }, ?window.NativeSurfaceHandle);
 
         // Resizing from inside the process. **The size is logical**, because logical is

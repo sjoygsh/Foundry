@@ -1,7 +1,7 @@
 # Design: M13 — Vulkan, and the second test of the RHI
 
 **Status:** Design accepted 2026-09-14 (ADR-0037/0038), its windowed floor revised before
-acceptance; **1 of 10 steps complete**. Stop before Step 2.
+acceptance; **2 of 10 steps complete**. Next: repair the native Windows test suite, then Step 3.
 **Date:** 2026-09-14
 **Baseline:** `f14caac` / `m12`; M0–M12 complete, 1,370 declared / 1,360 headless tests.
 **Decisions:** ADR-0033 selects Vulkan; proposed [ADR-0037](../adr/0037-vulkan-execution-and-presentation.md)
@@ -18,7 +18,7 @@ the caller thread.
 
 The design was written before any implementation. ADR-0037/0038, including the hardware
 floor, were accepted on 2026-09-14. Tool versions and target machines were Step 1 inputs,
-recorded in its Resolution rather than guessed. No backend code exists before Step 2.
+recorded in its Resolution rather than guessed. No Vulkan backend code exists before Step 3.
 
 ## 2. What exists, and what the environment must provide
 
@@ -369,8 +369,9 @@ M13 ends only when its rules survived or their necessary changes were recorded b
 
 ## 11. Implementation order — ten bounded steps
 
-Step 1 is complete; every later step is **not started**. Stop after each with its Resolution,
-PROJECT_STATE update, verification and commit; no automatic chaining.
+Steps 1 and 2 are complete; every later step is **not started**. Stop after each with its
+Resolution, PROJECT_STATE update, verification and commit; no automatic chaining. Before Step 3
+the owner directed a repair of the native Windows test suite (Step 2 Resolution).
 
 ### Step 1 — Qualify the targets and pin the Vulkan tools
 
@@ -557,3 +558,48 @@ backend, build option or Foundry Vulkan code exists yet.
 The AGENTS.md bar passed once with the new dependency pin. The three license entries passed the
 release packager's own parser in a scratch harness that also confirmed a drifted entry is
 refused, and local links and wrapping were checked.
+
+## Resolution — 2026-09-14, Step 2: native window payloads and the system library
+
+**What landed.** `platform.window` gains `extern` payloads `Win32Window` (`hinstance`, `hwnd`),
+`XlibWindow` (`display` and a pointer-width `window`) and `WaylandSurface` (`display`,
+`surface`), read through `NativeSurfaceHandle.win32()`, `xlib()` and `wayland()`. The outer
+`kind`/`ptr` layout and Metal's meaning are unchanged, and `native_window` is appended as value 5:
+a request that no handle carries. The SDL3 backend maps the running video driver to a kind
+(`windows`, `x11`, `wayland`; `cocoa`, `offscreen` and `dummy` provide none), refuses an explicit
+request for another window system before creating a window, reads SDL's Win32, X11 or Wayland
+window properties once, refuses an incomplete set, and keeps the copy in its own allocation,
+freed after `SDL_DestroyWindow`, because handle-pool slots move as the pool grows. No
+`SDL_WINDOW_VULKAN` flag is set, so SDL never loads the loader. The null backend refuses every
+native kind, and Metal reports `native_window` as unsupported. `Library.openSystem`, reached as
+`Os.openSystemLibrary`, accepts a bare file name only: Windows calls `LoadLibraryExW` with
+`LOAD_LIBRARY_SEARCH_SYSTEM32` and reports a missing module as `LibraryNotFound`; Linux and macOS
+use the C runtime's `dlopen`, and a Linux build without libc refuses. `zig build
+native-window-test`, defined for SDL3 builds and compiled by `check`, holds the real-window
+tests. New refusals log at warning level, because Zig's test runner fails a test that logs an
+error.
+
+**Evidence.** On the Mac: the bar; `zig build test` with 1,371 of 1,372 tests passing and the
+Windows-only lookalike test skipped; `native-window-test`'s macOS refusal; SDL3 `check` for
+`x86_64-windows-gnu` and `x86_64-linux-gnu`; and `check -Drhi=metal`. Two guards were broken on
+purpose — dropping `:` from the name check, and letting an explicit request ignore the window
+system — and exactly their two tests failed. On the Windows x64 target, with byte-identical
+sources, the platform tests compiled alone with `zig test` passed 13 of 13. They include the
+lookalike test, which plants a non-image DLL on the ordinary search path through
+`SetDllDirectoryW`, shows the ordinary loader reaching it (Windows error 193), and shows
+`openSystem` reporting `LibraryNotFound`; with the `System32`-only flag cleared, that test failed,
+and the file was restored byte for byte. `native-window-test` passed in the logged-in desktop
+session: `win32_hwnd` from the automatic request, refusal of explicit X11 and Wayland requests, a
+payload unchanged through pool growth and a resize, a stale handle after close, out-of-memory
+cleanup including the payload allocation, and `vulkan-1.dll` from `System32` exporting
+`vkGetInstanceProcAddr`. Linux ran nothing natively: X11 and Wayland stay cross-compiled until
+Step 9.
+
+**Found: the native Windows test suite was never green.** The first native `zig build test` on
+the target (SDL3 platform, null RHI) passed 1,245 of 1,372 tests, skipped 5, failed 50 and
+crashed 72 with `reached unreachable code`. The failures are in pre-existing modules: content
+packing and staging, registries, script bindings, the ABI's asset calls, diagnostics, the asset,
+sound and tilemap pipelines, settings, the engine, and four M9 confined-file tests in `os`. None
+is Step 2 code, and cross-compilation had never exercised them. Every later step needs Windows
+test runs, so the owner directed that the suite be repaired as its own bounded unit, with its own
+Resolution, before Step 3. Native builds on that target use at most two jobs.

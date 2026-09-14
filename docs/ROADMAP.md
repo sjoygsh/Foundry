@@ -619,7 +619,7 @@ are unchanged since `m11`. Frame time is the display's and is not claimed, and a
 measured slowing the calling thread's unsplit work, which is recorded as debt with a revisit
 trigger.
 
-### M13 — Portable: "the RHI was real" — **in progress; 1/10 steps complete**
+### M13 — Portable: "the RHI was real" — **in progress; 2/10 steps complete**
 
 **The backend is Vulkan** ([ADR-0033](adr/0033-vulkan-second-backend.md)), which covers Windows
 and Linux with one backend. D3D12 is not planned, and Metal stays macOS's — nothing is routed
@@ -634,7 +634,9 @@ lacked it — persistent descriptor lifetime and native surface payloads.
 Accepted [ADR-0038](adr/0038-vulkan-shaders-and-toolchain.md) covers hand-written
 GLSL variants compiled to SPIR-V with pinned tools and an OS loader opened at runtime.
 Step 1 qualified a Windows x64 Intel Arc target, recorded a same-machine Linux route and
-pinned the SDK, headers and tools; no Vulkan implementation exists yet.
+pinned the SDK, headers and tools. Step 2 added native window payloads and the safe
+system-library open. No Vulkan implementation exists yet; the native Windows test suite is
+repaired before Step 3.
 
 The ten steps are qualification/tools, native surfaces/loader, device/submission timeline,
 resources/copies/retirement, shaders/bindings, offscreen drawing, presentation/resize/failure
@@ -657,7 +659,8 @@ have made M1 a months-long wall; that wall was moved here, not removed.
 either survived the encounter or changed by ADR. ADR-0033's two-platform promise requires
 native runtime evidence on both Windows x64 and Linux x64; the design separately exercises
 Linux X11 and Wayland. Cross-compilation, a Mac SDK or a software-only offscreen test cannot
-replace that presentation proof. Stop before Step 2 in the current handoff.
+replace that presentation proof. Stop after Step 2 in the current handoff; the native Windows
+test repair comes next.
 
 ### M14 — Managed: "players choose their mods" — **not started**
 

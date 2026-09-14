@@ -780,6 +780,12 @@ pub const Os = struct {
     pub fn openLibrary(self: *Os, path: []const u8) LibraryError!Library {
         return Library.open(self.gpa, path);
     }
+
+    /// Opens a library the operating system provides, by bare name, from the system's own
+    /// location only (`Library.openSystem`).
+    pub fn openSystemLibrary(self: *Os, name: []const u8) LibraryError!Library {
+        return Library.openSystem(self.gpa, name);
+    }
 };
 
 // -- paths ---------------------------------------------------------------------------

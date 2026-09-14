@@ -38,12 +38,39 @@ pub const SurfaceKind = enum(u32) {
     none = 0,
     /// `CAMetalLayer` (macOS, iOS).
     metal_layer,
-    /// `HWND` (Windows).
+    /// `HWND` and `HINSTANCE` (Windows). `ptr` points at a `Win32Window`.
     win32_hwnd,
-    /// Xlib `Window` (Linux/X11).
+    /// Xlib `Display` and `Window` (Linux/X11). `ptr` points at an `XlibWindow`.
     xlib_window,
-    /// `wl_surface` (Linux/Wayland).
+    /// `wl_display` and `wl_surface` (Linux/Wayland). `ptr` points at a `WaylandSurface`.
     wayland_surface,
+    /// **A request, never a surface.** Whichever of `win32_hwnd`, `xlib_window` and
+    /// `wayland_surface` the running window system provides — which on Linux is only known
+    /// at runtime. A window opened with it reports the concrete kind it got; no
+    /// `NativeSurfaceHandle` ever carries this one. Appended, so no existing value moved.
+    native_window,
+};
+
+/// The OS handles behind a `win32_hwnd` surface. A graphics API needs the module instance
+/// as well as the window, so both travel together. Opaque here: `platform` hands them on
+/// and never calls Win32 with them.
+pub const Win32Window = extern struct {
+    hinstance: *anyopaque,
+    hwnd: *anyopaque,
+};
+
+/// The OS handles behind an `xlib_window` surface. An X11 window ID means nothing without
+/// the display connection it belongs to. The ID is an XID: an unsigned integer as wide as
+/// a pointer on the supported targets.
+pub const XlibWindow = extern struct {
+    display: *anyopaque,
+    window: usize,
+};
+
+/// The OS handles behind a `wayland_surface` surface: the surface and its display.
+pub const WaylandSurface = extern struct {
+    display: *anyopaque,
+    surface: *anyopaque,
 };
 
 /// The one thing `platform` hands to `rhi`, and the only place the two meet.
@@ -56,6 +83,11 @@ pub const SurfaceKind = enum(u32) {
 ///
 /// `extern` because this eventually crosses the C ABI into the Metal shim (ADR-0012),
 /// so its layout is a compatibility decision rather than an implementation detail.
+///
+/// For `metal_layer`, `ptr` is the layer itself. For the three native window kinds it
+/// points at a payload `platform` owns — `Win32Window`, `XlibWindow` or `WaylandSurface` —
+/// whose address is stable until the window closes. A consumer copies the values it needs
+/// when it takes the handle, and is destroyed before the window is (`vulkan.md` §4).
 pub const NativeSurfaceHandle = extern struct {
     kind: SurfaceKind = .none,
     ptr: ?*anyopaque = null,
@@ -64,6 +96,24 @@ pub const NativeSurfaceHandle = extern struct {
 
     pub fn isNone(self: NativeSurfaceHandle) bool {
         return self.kind == .none or self.ptr == null;
+    }
+
+    /// The Win32 handles, if this is a `win32_hwnd` surface.
+    pub fn win32(self: NativeSurfaceHandle) ?*const Win32Window {
+        if (self.kind != .win32_hwnd) return null;
+        return @ptrCast(@alignCast(self.ptr orelse return null));
+    }
+
+    /// The Xlib handles, if this is an `xlib_window` surface.
+    pub fn xlib(self: NativeSurfaceHandle) ?*const XlibWindow {
+        if (self.kind != .xlib_window) return null;
+        return @ptrCast(@alignCast(self.ptr orelse return null));
+    }
+
+    /// The Wayland handles, if this is a `wayland_surface` surface.
+    pub fn wayland(self: NativeSurfaceHandle) ?*const WaylandSurface {
+        if (self.kind != .wayland_surface) return null;
+        return @ptrCast(@alignCast(self.ptr orelse return null));
     }
 };
 
@@ -78,7 +128,8 @@ pub const WindowConfig = struct {
     /// OS upscales a lower-resolution surface, which is occasionally wanted for
     /// performance and never wanted by default.
     high_dpi: bool = true,
-    /// The surface the renderer will want from this window.
+    /// The surface the renderer will want from this window. `native_window` asks for
+    /// whatever this machine's window system provides.
     surface: SurfaceKind = .none,
 };
 
@@ -127,4 +178,40 @@ test "size comparison" {
     try testing.expect((Size{ .width = 1280, .height = 720 }).eql(.{ .width = 1280, .height = 720 }));
     try testing.expect(!(Size{ .width = 1280, .height = 720 }).eql(.{ .width = 1280, .height = 721 }));
     try testing.expect((Size{ .width = 0, .height = 720 }).isEmpty());
+}
+
+test "surface kinds keep their values" {
+    // The handle's layout is a compatibility decision, so a new kind is appended rather
+    // than inserted: every value a compiled consumer already knows stays where it was.
+    try testing.expectEqual(@as(u32, 1), @intFromEnum(SurfaceKind.metal_layer));
+    try testing.expectEqual(@as(u32, 2), @intFromEnum(SurfaceKind.win32_hwnd));
+    try testing.expectEqual(@as(u32, 3), @intFromEnum(SurfaceKind.xlib_window));
+    try testing.expectEqual(@as(u32, 4), @intFromEnum(SurfaceKind.wayland_surface));
+    try testing.expectEqual(@as(u32, 5), @intFromEnum(SurfaceKind.native_window));
+}
+
+test "native payloads are two pointer-width fields" {
+    try testing.expectEqual(2 * @sizeOf(usize), @sizeOf(Win32Window));
+    try testing.expectEqual(2 * @sizeOf(usize), @sizeOf(XlibWindow));
+    try testing.expectEqual(2 * @sizeOf(usize), @sizeOf(WaylandSurface));
+}
+
+test "a surface exposes only the payload its kind names" {
+    var handles: Win32Window = .{ .hinstance = @ptrFromInt(0x1000), .hwnd = @ptrFromInt(0x2000) };
+    const surface: NativeSurfaceHandle = .{ .kind = .win32_hwnd, .ptr = &handles };
+    try testing.expectEqual(@as(usize, 0x2000), @intFromPtr(surface.win32().?.hwnd));
+    try testing.expectEqual(@as(?*const XlibWindow, null), surface.xlib());
+    try testing.expectEqual(@as(?*const WaylandSurface, null), surface.wayland());
+
+    // A kind with no pointer behind it has no payload, whatever the tag claims.
+    const empty: NativeSurfaceHandle = .{ .kind = .xlib_window, .ptr = null };
+    try testing.expectEqual(@as(?*const XlibWindow, null), empty.xlib());
+}
+
+test "the request-only kind is never read as a surface" {
+    var handles: WaylandSurface = .{ .display = @ptrFromInt(0x1000), .surface = @ptrFromInt(0x2000) };
+    const surface: NativeSurfaceHandle = .{ .kind = .native_window, .ptr = &handles };
+    try testing.expectEqual(@as(?*const Win32Window, null), surface.win32());
+    try testing.expectEqual(@as(?*const XlibWindow, null), surface.xlib());
+    try testing.expectEqual(@as(?*const WaylandSurface, null), surface.wayland());
 }

@@ -102,11 +102,13 @@ ten Metal-only. **M12 is complete (2026-09-14).** Parallel work goes through an 
 never allocates or calls the RHI, and every call site that splits work is tested under `serial`,
 `reversed` and a real pool. `FOUNDRY_SANDBOX_WORKERS` and `FOUNDRY_ROOM_WORKERS` set a sample's
 pool, `0` for none. M12 closed at **1,370 declared / 1,360 headless tests**.
-**M13 Step 1 is complete (2026-09-14).** ADR-0037/0038 are accepted; read
+**M13 Steps 1 and 2 are complete (2026-09-14).** ADR-0037/0038 are accepted; read
 `docs/design/vulkan.md`. A Windows x64 Vulkan target is qualified and reached over SSH, Linux
-x64 has a recorded route, and the Vulkan tools are pinned in §3 below. No Foundry Vulkan code
-exists yet, and Mac cross-compilation never substitutes for runtime proof. Stop before Step 2.
-M14–M17 remain unstarted.
+x64 has a recorded route, the Vulkan tools are pinned in §3 below, and `platform` hands out
+native window payloads and opens system libraries safely. No Foundry Vulkan code exists yet.
+The native Windows `zig build test` is not green; repairing it comes before Step 3, and native
+builds on the target use at most two jobs. Mac cross-compilation never substitutes for runtime
+proof. M14–M17 remain unstarted.
 The bar below remains the current one until M13 adds its verified target commands.
 
 ## 3. Building and verifying
@@ -206,6 +208,10 @@ archive with the same versioned layout, never a package manager (ADR-0014):
 `https://ziglang.org/download/0.16.0/zig-x86_64-windows-0.16.0.zip`, SHA-256
 `68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e`, extracted to
 `%USERPROFILE%\.local\zig\0.16.0`.
+
+`zig build native-window-test` opens real native windows through SDL3 and is not part of the
+bar, because it needs a desktop session. On a Windows target reached over SSH, start it inside
+the logged-in session — a scheduled task with an interactive logon — never an RDP session.
 
 ### Staging a release
 

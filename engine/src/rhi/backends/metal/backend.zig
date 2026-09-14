@@ -441,7 +441,7 @@ pub const Device = struct {
         const layer: ?*anyopaque = switch (desc.surface.kind) {
             .none => null,
             .metal_layer => desc.surface.ptr,
-            .win32_hwnd, .xlib_window, .wayland_surface => {
+            .win32_hwnd, .xlib_window, .wayland_surface, .native_window => {
                 log.warn("metal backend cannot use a '{t}' surface", .{desc.surface.kind});
                 return error.SurfaceUnsupported;
             },

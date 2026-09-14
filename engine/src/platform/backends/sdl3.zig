@@ -48,6 +48,10 @@ const WindowState = struct {
     surface_kind: win.SurfaceKind,
     /// Owned by us, and destroyed *before* the window, as SDL requires.
     metal_view: c.SDL_MetalView = null,
+    /// The OS handles behind a native window kind, copied out of SDL's window properties
+    /// when the window opened. A separate allocation because pool slots move as the pool
+    /// grows, and a `NativeSurfaceHandle` points here until the window closes.
+    native: ?*NativeWindow = null,
 
     /// What was last reported upward, so that SDL's several overlapping resize events
     /// collapse into one Foundry event only when something actually changed.
@@ -146,7 +150,7 @@ pub const Platform = struct {
         self.audio_devices.deinit(gpa);
 
         var it = self.windows.iterator();
-        while (it.next()) |entry| destroyWindow(entry.value);
+        while (it.next()) |entry| destroyWindow(gpa, entry.value);
         self.windows.deinit(gpa);
 
         self.ready.deinit(gpa);
@@ -154,10 +158,12 @@ pub const Platform = struct {
         gpa.destroy(self);
     }
 
-    fn destroyWindow(state: *WindowState) void {
+    fn destroyWindow(gpa: Allocator, state: *WindowState) void {
         // SDL requires the Metal view to go before the window it belongs to.
         if (state.metal_view != null) c.SDL_Metal_DestroyView(state.metal_view);
         c.SDL_DestroyWindow(state.ptr);
+        // Copies of handles that died with the window; nothing reads them after this.
+        if (state.native) |native| gpa.destroy(native);
     }
 
     pub fn openWindow(self: *Platform, config: win.WindowConfig) interface.WindowError!win.WindowHandle {
@@ -165,6 +171,7 @@ pub const Platform = struct {
         if (config.resizable) flags |= c.SDL_WINDOW_RESIZABLE;
         if (config.high_dpi) flags |= c.SDL_WINDOW_HIGH_PIXEL_DENSITY;
 
+        var native_kind: win.SurfaceKind = .none;
         switch (config.surface) {
             .none => {},
             .metal_layer => {
@@ -173,12 +180,13 @@ pub const Platform = struct {
                 if (!metal_supported) return error.SurfaceUnavailable;
                 flags |= c.SDL_WINDOW_METAL;
             },
-            // These arrive with the backends that consume them. Reporting rather than
-            // asserting, because asking for the wrong surface is a configuration
-            // mistake, not a programmer error.
-            .win32_hwnd, .xlib_window, .wayland_surface => {
-                log.err("surface kind '{t}' is not implemented by the SDL3 backend yet", .{config.surface});
-                return error.SurfaceUnavailable;
+            // Decided before a window exists: once SDL is initialised it knows which window
+            // system it runs on, and a request that system cannot answer is a configuration
+            // mistake to report, not a window to create and then throw away. No graphics
+            // flag is added — `SDL_WINDOW_VULKAN` would have SDL load the Vulkan loader
+            // itself, and that belongs to `rhi` (ADR-0038).
+            .native_window, .win32_hwnd, .xlib_window, .wayland_surface => {
+                native_kind = try nativeKindFor(config.surface, currentVideoDriver());
             },
         }
 
@@ -211,6 +219,15 @@ pub const Platform = struct {
         }
         errdefer if (state.metal_view != null) c.SDL_Metal_DestroyView(state.metal_view);
 
+        if (native_kind != .none) {
+            const native = try self.gpa.create(NativeWindow);
+            errdefer self.gpa.destroy(native);
+            native.* = try nativeWindowFrom(native_kind, nativeProperties(ptr));
+            state.native = native;
+            state.surface_kind = native_kind;
+        }
+        errdefer if (state.native) |native| self.gpa.destroy(native);
+
         state.reported_logical = state.logicalSize();
         state.reported_pixel = state.pixelSize();
 
@@ -226,7 +243,7 @@ pub const Platform = struct {
 
     pub fn closeWindow(self: *Platform, handle: win.WindowHandle) void {
         const state = self.windows.get(handle) orelse return;
-        destroyWindow(state);
+        destroyWindow(self.gpa, state);
         _ = self.windows.remove(handle);
     }
 
@@ -263,7 +280,12 @@ pub const Platform = struct {
                 // has no idea what Metal is (ADR-0002, ADR-0012).
                 .ptr = c.SDL_Metal_GetLayer(state.metal_view),
             },
-            else => .none,
+            // Payloads this backend owns, at addresses that outlive any pool growth. The
+            // handle points at them; `rhi` copies the values it needs (`vulkan.md` §4).
+            .win32_hwnd => .{ .kind = .win32_hwnd, .ptr = &state.native.?.win32 },
+            .xlib_window => .{ .kind = .xlib_window, .ptr = &state.native.?.xlib },
+            .wayland_surface => .{ .kind = .wayland_surface, .ptr = &state.native.?.wayland },
+            .none, .native_window => .none,
         };
     }
 
@@ -586,6 +608,89 @@ const metal_supported = switch (builtin.os.tag) {
     else => false,
 };
 
+/// A native window's OS handles, in whichever form its window system uses.
+const NativeWindow = union {
+    win32: win.Win32Window,
+    xlib: win.XlibWindow,
+    wayland: win.WaylandSurface,
+};
+
+/// SDL's name for the window system it is running on: `windows`, `x11`, `wayland`, `cocoa`.
+fn currentVideoDriver() []const u8 {
+    const name = c.SDL_GetCurrentVideoDriver();
+    if (name == null) return "";
+    return std.mem.span(name);
+}
+
+/// The native window kind a window system provides, or null for one that provides none a
+/// renderer can take: `cocoa`, whose surface is Metal's, or `offscreen` and `dummy`, which
+/// have no window to hand over at all.
+fn nativeKindOfDriver(driver: []const u8) ?win.SurfaceKind {
+    if (std.mem.eql(u8, driver, "windows")) return .win32_hwnd;
+    if (std.mem.eql(u8, driver, "x11")) return .xlib_window;
+    if (std.mem.eql(u8, driver, "wayland")) return .wayland_surface;
+    return null;
+}
+
+/// The concrete kind a native request receives from the running window system. An automatic
+/// request takes whatever it provides; an explicit one must name exactly that, because a
+/// Wayland session hands out no X11 window however it is asked.
+fn nativeKindFor(requested: win.SurfaceKind, driver: []const u8) error{SurfaceUnavailable}!win.SurfaceKind {
+    const provided = nativeKindOfDriver(driver) orelse {
+        log.warn("surface kind '{t}' was requested, but video driver '{s}' provides no native window", .{ requested, driver });
+        return error.SurfaceUnavailable;
+    };
+    if (requested != .native_window and requested != provided) {
+        log.warn("surface kind '{t}' was requested, but video driver '{s}' provides '{t}'", .{ requested, driver, provided });
+        return error.SurfaceUnavailable;
+    }
+    return provided;
+}
+
+/// What SDL's window properties report about a window's OS handles. Absent values stay null
+/// or zero; `nativeWindowFrom` decides whether what is present is enough.
+const NativeProperties = struct {
+    win32_hwnd: ?*anyopaque = null,
+    win32_instance: ?*anyopaque = null,
+    x11_display: ?*anyopaque = null,
+    x11_window: i64 = 0,
+    wayland_display: ?*anyopaque = null,
+    wayland_surface: ?*anyopaque = null,
+};
+
+fn nativeProperties(window: *c.SDL_Window) NativeProperties {
+    const props = c.SDL_GetWindowProperties(window);
+    return .{
+        .win32_hwnd = c.SDL_GetPointerProperty(props, c.SDL_PROP_WINDOW_WIN32_HWND_POINTER, null),
+        .win32_instance = c.SDL_GetPointerProperty(props, c.SDL_PROP_WINDOW_WIN32_INSTANCE_POINTER, null),
+        .x11_display = c.SDL_GetPointerProperty(props, c.SDL_PROP_WINDOW_X11_DISPLAY_POINTER, null),
+        .x11_window = c.SDL_GetNumberProperty(props, c.SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0),
+        .wayland_display = c.SDL_GetPointerProperty(props, c.SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, null),
+        .wayland_surface = c.SDL_GetPointerProperty(props, c.SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, null),
+    };
+}
+
+/// The payload for `kind`, built from a window's properties and refused if incomplete. Only
+/// a whole set is a usable surface: a window ID without its display connection, or a surface
+/// without its display, would reach `rhi` as a handle nothing can use.
+fn nativeWindowFrom(kind: win.SurfaceKind, props: NativeProperties) error{SurfaceUnavailable}!NativeWindow {
+    switch (kind) {
+        .win32_hwnd => if (props.win32_hwnd) |hwnd| {
+            if (props.win32_instance) |instance| return .{ .win32 = .{ .hinstance = instance, .hwnd = hwnd } };
+        },
+        .xlib_window => if (props.x11_display) |display| {
+            const id = std.math.cast(usize, props.x11_window) orelse 0;
+            if (id != 0) return .{ .xlib = .{ .display = display, .window = id } };
+        },
+        .wayland_surface => if (props.wayland_display) |display| {
+            if (props.wayland_surface) |surface| return .{ .wayland = .{ .display = display, .surface = surface } };
+        },
+        else => {},
+    }
+    log.warn("the window's properties lack the handles a '{t}' surface needs", .{kind});
+    return error.SurfaceUnavailable;
+}
+
 fn modifiersFromSdl(mod: c.SDL_Keymod) key.Modifiers {
     return .{
         .shift = (mod & c.SDL_KMOD_SHIFT) != 0,
@@ -821,6 +926,80 @@ test "modifier translation" {
     try testing.expect(both.ctrl);
     try testing.expect(both.caps_lock);
     try testing.expect(!both.alt);
+}
+
+test "each window system names the native kind it provides" {
+    try testing.expectEqual(@as(?win.SurfaceKind, .win32_hwnd), nativeKindOfDriver("windows"));
+    try testing.expectEqual(@as(?win.SurfaceKind, .xlib_window), nativeKindOfDriver("x11"));
+    try testing.expectEqual(@as(?win.SurfaceKind, .wayland_surface), nativeKindOfDriver("wayland"));
+    // Metal's window system, and the ones with no window to hand over.
+    for ([_][]const u8{ "cocoa", "offscreen", "dummy", "" }) |driver| {
+        try testing.expectEqual(@as(?win.SurfaceKind, null), nativeKindOfDriver(driver));
+    }
+}
+
+test "an automatic request takes the window system's kind, and an explicit one must match it" {
+    try testing.expectEqual(win.SurfaceKind.wayland_surface, try nativeKindFor(.native_window, "wayland"));
+    try testing.expectEqual(win.SurfaceKind.xlib_window, try nativeKindFor(.xlib_window, "x11"));
+    try testing.expectEqual(win.SurfaceKind.win32_hwnd, try nativeKindFor(.native_window, "windows"));
+    try testing.expectError(error.SurfaceUnavailable, nativeKindFor(.xlib_window, "wayland"));
+    try testing.expectError(error.SurfaceUnavailable, nativeKindFor(.win32_hwnd, "x11"));
+    try testing.expectError(error.SurfaceUnavailable, nativeKindFor(.native_window, "offscreen"));
+    try testing.expectError(error.SurfaceUnavailable, nativeKindFor(.native_window, "cocoa"));
+}
+
+test "a native payload is built only from a whole set of handles" {
+    const hwnd: *anyopaque = @ptrFromInt(0x1000);
+    const instance: *anyopaque = @ptrFromInt(0x2000);
+    const display: *anyopaque = @ptrFromInt(0x3000);
+    const surface: *anyopaque = @ptrFromInt(0x4000);
+
+    const win32 = try nativeWindowFrom(.win32_hwnd, .{ .win32_hwnd = hwnd, .win32_instance = instance });
+    try testing.expectEqual(hwnd, win32.win32.hwnd);
+    try testing.expectEqual(instance, win32.win32.hinstance);
+    try testing.expectError(error.SurfaceUnavailable, nativeWindowFrom(.win32_hwnd, .{ .win32_hwnd = hwnd }));
+    try testing.expectError(error.SurfaceUnavailable, nativeWindowFrom(.win32_hwnd, .{ .win32_instance = instance }));
+
+    const xlib = try nativeWindowFrom(.xlib_window, .{ .x11_display = display, .x11_window = 0x5a00007 });
+    try testing.expectEqual(display, xlib.xlib.display);
+    try testing.expectEqual(@as(usize, 0x5a00007), xlib.xlib.window);
+    try testing.expectError(error.SurfaceUnavailable, nativeWindowFrom(.xlib_window, .{ .x11_display = display }));
+    try testing.expectError(error.SurfaceUnavailable, nativeWindowFrom(.xlib_window, .{ .x11_display = display, .x11_window = -1 }));
+    try testing.expectError(error.SurfaceUnavailable, nativeWindowFrom(.xlib_window, .{ .x11_window = 0x5a00007 }));
+
+    const wayland = try nativeWindowFrom(.wayland_surface, .{ .wayland_display = display, .wayland_surface = surface });
+    try testing.expectEqual(display, wayland.wayland.display);
+    try testing.expectEqual(surface, wayland.wayland.surface);
+    try testing.expectError(error.SurfaceUnavailable, nativeWindowFrom(.wayland_surface, .{ .wayland_surface = surface }));
+
+    // Another window system's handles do not stand in for this one's.
+    try testing.expectError(error.SurfaceUnavailable, nativeWindowFrom(.wayland_surface, .{ .x11_display = display, .x11_window = 7 }));
+}
+
+test "a native surface points at its window's payload through pool growth, and nowhere once closed" {
+    // No SDL here: the pool and the payloads are this file's, so a platform value with no SDL
+    // initialised behind it is enough, provided nothing below calls into SDL.
+    var p: Platform = .{ .gpa = testing.allocator };
+    defer p.windows.deinit(testing.allocator);
+
+    var payloads: [9]NativeWindow = undefined;
+    var handles: [9]win.WindowHandle = undefined;
+    for (&payloads, &handles, 0..) |*payload, *handle, i| {
+        payload.* = .{ .wayland = .{ .display = @ptrFromInt(0x1000), .surface = @ptrFromInt(0x2000 + i) } };
+        handle.* = try p.windows.add(testing.allocator, .{
+            .ptr = @ptrFromInt(0x8000),
+            .id = @intCast(i + 1),
+            .surface_kind = .wayland_surface,
+            .native = payload,
+        });
+        // The first window's surface is unchanged however far the pool has grown.
+        const first = p.nativeSurface(handles[0]).?;
+        try testing.expectEqual(@as(?*anyopaque, &payloads[0].wayland), first.ptr);
+        try testing.expectEqual(@as(usize, 0x2000), @intFromPtr(first.wayland().?.surface));
+    }
+
+    _ = p.windows.remove(handles[0]);
+    try testing.expectEqual(@as(?win.NativeSurfaceHandle, null), p.nativeSurface(handles[0]));
 }
 
 test "scale is the ratio of the two sizes, and never divides by zero" {

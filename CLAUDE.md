@@ -297,8 +297,10 @@ walker is the only piece that knows both vocabularies, and it is the price of th
 
 **The native surface seam.** `platform` exposes an opaque `NativeSurfaceHandle` — a tagged
 pointer whose tag names the surface kind — and `rhi` interprets it per backend. On macOS that
-carries the `CAMetalLayer` obtained from SDL3. `rhi` already depends on `platform`, so this
-needs no sideways dependency, and no SDL or Metal type appears in any interface.
+carries the `CAMetalLayer` obtained from SDL3; on Windows and Linux it points at a
+platform-owned payload of the OS window handles (ADR-0037). `rhi` already depends on
+`platform`, so this needs no sideways dependency, and no SDL or Metal type appears in any
+interface.
 
 **Rule:** if a new subsystem does not fit this layering, that is a signal to re-examine either
 the subsystem or the layering — explicitly, with the user — not to add a sideways dependency.

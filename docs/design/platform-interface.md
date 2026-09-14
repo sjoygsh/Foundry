@@ -123,13 +123,18 @@ backends arrive. An `rhi` backend encountering a `kind` it does not handle retur
 it does not assert, because the combination is a configuration mistake rather than a
 programmer error.
 
-**M13 design, accepted 2026-09-14:** the Windows/X11/Wayland enum values now exist but SDL
-still refuses them. [vulkan.md](vulkan.md) §4 and ADR-0037 complete them with stable
-platform-owned payloads containing the full OS handle pairs, while preserving the outer
-tagged-pointer shape and Metal's payload meaning. An automatic native-window request selects
-the active Linux window system; the returned kind is concrete. No SDL/Vulkan type crosses
-this seam. Payloads remain valid until the window closes and the RHI copies their values
-during initialization. No implementation is included in this design update.
+**M13 Step 2, implemented 2026-09-14** ([vulkan.md](vulkan.md) §4, ADR-0037): the three
+native kinds carry platform-owned payloads — `Win32Window` (`hinstance`, `hwnd`),
+`XlibWindow` (`display` and a pointer-width `window` ID) and `WaylandSurface` (`display`,
+`surface`) — read through `NativeSurfaceHandle.win32()`, `xlib()` and `wayland()`. The outer
+tagged pointer and Metal's meaning are unchanged. `native_window` was appended as a
+request-only kind: a window opened with it reports the concrete kind the running window
+system provides, and an explicit request naming a different window system is
+`SurfaceUnavailable` before any window exists. The SDL3 backend reads SDL's window properties
+once, refuses an incomplete set, and keeps the payload in its own allocation, because pool
+slots move as the pool grows; the payload stays valid until the window closes. SDL is never
+asked for a Vulkan window, so it never loads the loader `rhi` owns, and no SDL or graphics
+type crosses the seam. The null backend refuses every native kind.
 
 M10's deferred application-supplied window icon is specified in [vulkan.md](vulkan.md) §9
 for M13 Step 8: validated RGBA8 bytes at the platform boundary, no engine default mark and
@@ -306,6 +311,15 @@ expected symbol, or may be built against an incompatible ABI version (I8). Every
 is a reported error. **Loading a native mod is a consenting-adults operation** (`CLAUDE.md`
 §5) — but consenting to run someone's code is not consenting to crash on a typo in a filename.
 
+**A system library is opened by name, from the system's own location only** (M13 Step 2,
+ADR-0038). `Library.openSystem`, reached as `Os.openSystemLibrary`, takes a bare file name and
+refuses anything that could name a location. On Windows it searches `System32` alone, for the
+library and its imports, so a same-named DLL planted beside the executable — the ordinary
+loader's first stop — is never loaded; a Windows test plants one and checks both searches.
+On Linux and macOS the name goes to the C runtime's `dlopen` and the system loader's own
+policy; a Linux build that links no libc refuses. Native mods keep `open`, by explicit path.
+`platform` names no library itself: `rhi` supplies `vulkan-1.dll` or `libvulkan.so.1`.
+
 ---
 
 ## 7. Clock
@@ -364,6 +378,10 @@ of the snapshot design in §4.
 * Clock: monotonic never decreases; the null backend's synthetic clock is exactly reproducible.
 * Cross-compilation: `platform` builds for `x86_64-windows-gnu` and `x86_64-linux-gnu` every
   milestone (ADR-0008). Verified achievable during M0 setup — SDL itself cross-compiles.
+* Native windows (M13): `zig build native-window-test` opens real windows through SDL3 on
+  Windows or Linux and checks the concrete kind, explicit-kind refusal, payload stability
+  through pool growth and resize, stale handles and out-of-memory cleanup. It needs a desktop
+  session, so it is not part of `zig build test`; on macOS it checks only the refusal.
 
 ---
 

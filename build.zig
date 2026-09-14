@@ -930,6 +930,23 @@ pub fn build(b: *std.Build) void {
     const integration_tests = b.addTest(.{ .root_module = integration_mod });
     check_step.dependOn(&integration_tests.step);
     test_step.dependOn(&b.addRunArtifact(integration_tests).step);
+
+    // Real native windows on this machine's own window system (`vulkan.md` §4, M13 Step 2).
+    // Its own step rather than part of `test`: it opens windows, so it needs a desktop
+    // session, and the headless bar has none. `check` still compiles it, so it cannot rot
+    // between the runs that need it.
+    if (platform_backend == .sdl3) {
+        const native_window_mod = b.createModule(.{
+            .root_source_file = b.path("engine/tests/native_window.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        native_window_mod.addImport("platform", platform_module);
+        const native_window_tests = b.addTest(.{ .root_module = native_window_mod });
+        check_step.dependOn(&native_window_tests.step);
+        b.step("native-window-test", "Open real native windows through SDL3 (needs a desktop session)")
+            .dependOn(&b.addRunArtifact(native_window_tests).step);
+    }
 }
 
 /// Why this build cannot stage a release, or null if it can.
