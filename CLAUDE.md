@@ -161,6 +161,8 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Platform layer | SDL3 behind Foundry's own platform interface, via a Zig package | [0002](docs/adr/0002-platform-layer-sdl3.md) |
 | Rendering | Foundry's own RHI with native backends; Metal first, null backend validates | [0003](docs/adr/0003-renderer-own-rhi-metal-first.md) |
 | Second backend | Vulkan, covering Windows and Linux with one backend; D3D12 not planned | [0033](docs/adr/0033-vulkan-second-backend.md) |
+| Vulkan execution | Vulkan 1.3, one graphics/present queue, unextended WSI; submission and presentation-resource lifetime kept separate; platform-owned native window payloads | [0037](docs/adr/0037-vulkan-execution-and-presentation.md) |
+| Vulkan shaders and tools | Hand-written GLSL variants compiled to SPIR-V by pinned Vulkan SDK tools; Khronos headers inside `rhi` only; the OS loader opened at runtime | [0038](docs/adr/0038-vulkan-shaders-and-toolchain.md) |
 | RHI hardening | Completion-backed retirement, usage validation and distinct transient/fatal frame outcomes; implemented in M11 | [0035](docs/adr/0035-rhi-lifetime-and-validation.md) |
 | Threading | Parallelism is an explicit `core.Jobs`; fork-join over data-determined chunks, combined in chunk order; systems keep their order; nothing in the ABI yet | [0036](docs/adr/0036-explicit-deterministic-jobs.md) |
 | Metal bridge | Thin Objective-C shim exposing a C API | [0012](docs/adr/0012-metal-objc-shim.md) |
@@ -191,12 +193,6 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Brand | The marks identify Foundry; an application supplies its own icon | [0034](docs/adr/0034-brand-and-trademark.md) |
 | Repository | Engine is a standalone public repo; games are separate consumers | [0017](docs/adr/0017-repository-scope.md) |
 | Process | CLAUDE.md + PROJECT_STATE.md + numbered ADRs | [0009](docs/adr/0009-documentation-process.md) |
-
-**M13 proposals, not accepted decisions:** [ADR-0037](docs/adr/0037-vulkan-execution-and-presentation.md)
-specifies Vulkan execution, presentation-resource lifetime and the native-window seam;
-[ADR-0038](docs/adr/0038-vulkan-shaders-and-toolchain.md) specifies GLSL variants, SPIR-V tools
-and runtime loader ownership. [The design](docs/design/vulkan.md) stops before Step 1.
-Accept the proposals and qualify the target environment before implementing them.
 
 **Language note.** Zig is pre-1.0 and both the language and `std` break between releases. This
 is an accepted, managed risk: pinned to a stable release, **never master or nightly**, upgraded
@@ -312,6 +308,10 @@ the subsystem or the layering — explicitly, with the user — not to add a sid
 **Installed deliberately:** Zig, a specific stable release from the official tarball at a
 versioned path, with version and SHA256 recorded in-repo. Never via a package manager, so an
 unrelated upgrade cannot silently move the compiler.
+
+**Installed for Vulkan work only:** the LunarG Vulkan SDK at an exact release, for host shader
+compilation, SPIR-V validation and development layers (ADR-0038). Null and Metal builds never
+need it; `AGENTS.md` records the pin and its hashes.
 
 **Already present and sufficient:** Xcode 26 (SDK 26.5) for the Metal framework, Objective-C
 compilation and GPU frame capture; the on-demand Metal toolchain for shader compilation —
@@ -556,8 +556,8 @@ milestone named below is where `docs/ROADMAP.md` now places it.
 | Decision | Due | Notes |
 | --- | --- | --- |
 | Separate editor application | **M15** | In-process debug overlay first; the editor re-hosts its introspection (ADR-0025). |
-| Second graphics backend | **M13**, design written; implementation unstarted | **Vulkan is decided (ADR-0033)**. The owner's 2026-09-14 design request activates the RHI-validation trigger. [vulkan.md](docs/design/vulkan.md) has ten steps; proposed ADR-0037's hardware floor and actual Windows/Linux test access are entry gates. |
-| Shader cross-compiler vs. hand-written variants | **M13**, proposal written | ADR-0038 proposes hand-written GLSL variants for the two existing shader pairs, compiled to SPIR-V with pinned SDK tools; remains proposed until accepted. ADR-0015's future material/mod shader constraint remains. |
+| Second graphics backend | **M13**, design accepted; implementation under way | **Vulkan is decided (ADR-0033)**, and its execution and toolchain were accepted as ADR-0037/0038 on 2026-09-14. [vulkan.md](docs/design/vulkan.md) has ten steps; `PROJECT_STATE.md` records how far they have been walked. Windows and Linux runtime evidence are both owed before M13 closes. |
+| Shader cross-compiler vs. hand-written variants | **Decided in M13** (ADR-0038, 2026-09-14) | Hand-written GLSL variants for the two existing shader pairs, compiled to SPIR-V with pinned SDK tools. ADR-0015's future material/mod shader constraint remains. |
 | Job system / threading model | **Done in M12** (was dated post-M5) | **Decided by ADR-0036 and implemented, 2026-09-14** — explicit `core.Jobs`, fork-join over data-determined chunks, systems kept in order, nothing in the ABI. What it deliberately left out — parallel system scheduling, task graphs, a render thread — has no date: each waits on a measured trigger in `docs/design/jobs-and-threading.md` §9. |
 | Bit-exact determinism for a subset | **M16**, and only if lockstep | ADR-0013 keeps this open without paying for it now; an authoritative server does not need it. |
 | Networking | **M16**, trigger-started | I1, I2, I8 and I9 keep it possible. Nothing else is owed to it now. |

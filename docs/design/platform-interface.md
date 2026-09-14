@@ -123,8 +123,8 @@ backends arrive. An `rhi` backend encountering a `kind` it does not handle retur
 it does not assert, because the combination is a configuration mistake rather than a
 programmer error.
 
-**M13 proposal, 2026-09-14:** the Windows/X11/Wayland enum values now exist but SDL still
-refuses them. [vulkan.md](vulkan.md) §4 and proposed ADR-0037 complete them with stable
+**M13 design, accepted 2026-09-14:** the Windows/X11/Wayland enum values now exist but SDL
+still refuses them. [vulkan.md](vulkan.md) §4 and ADR-0037 complete them with stable
 platform-owned payloads containing the full OS handle pairs, while preserving the outer
 tagged-pointer shape and Metal's payload meaning. An automatic native-window request selects
 the active Linux window system; the returned kind is concrete. No SDL/Vulkan type crosses

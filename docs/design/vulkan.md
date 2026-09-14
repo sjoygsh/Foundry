@@ -1,7 +1,7 @@
 # Design: M13 — Vulkan, and the second test of the RHI
 
-**Status:** Design proposal complete, windowed floor revised 2026-09-14; **0 of 10 steps
-implemented**. Stop before Step 1.
+**Status:** Design accepted 2026-09-14 (ADR-0037/0038), its windowed floor revised before
+acceptance; **1 of 10 steps complete**. Stop before Step 2.
 **Date:** 2026-09-14
 **Baseline:** `f14caac` / `m12`; M0–M12 complete, 1,370 declared / 1,360 headless tests.
 **Decisions:** ADR-0033 selects Vulkan; proposed [ADR-0037](../adr/0037-vulkan-execution-and-presentation.md)
@@ -16,9 +16,9 @@ backend. There is no MoltenVK path, D3D12 backend, new renderer, material system
 version in this milestone. M12's workers never call the RHI; all graphics calls remain on
 the caller thread.
 
-This is a design-only handoff. The two proposed ADRs, especially their hardware floor, need
-acceptance before Step 1. Tool versions and target-machine availability are explicit Step 1
-inputs, not guessed facts. No dependency, tool installation or backend code lands here.
+The design was written before any implementation. ADR-0037/0038, including the hardware
+floor, were accepted on 2026-09-14. Tool versions and target machines were Step 1 inputs,
+recorded in its Resolution rather than guessed. No backend code exists before Step 2.
 
 ## 2. What exists, and what the environment must provide
 
@@ -48,8 +48,8 @@ null/Metal today. Existing cross-checks use null RHI and do not prove SDL/Vulkan
 | Linux x64 with a qualified Vulkan driver and desktop session | Native tests, real sample, X11 and Wayland surface paths (separate runs) | Windows evidence |
 | VM or software Vulkan implementation | Only the API/features/WSI actually exposed and exercised | An untested hardware driver, discrete-memory behavior or GPU performance |
 
-The Mac's Vulkan tools are not currently on PATH; no remote Vulkan environment was supplied
-or accessed for this plan. Installing an SDK does not create a native Vulkan driver on macOS.
+The Mac holds only the pinned SDK's host tools, off PATH; the Windows target is reached
+remotely (Step 1). Installing an SDK does not create a native Vulkan driver on macOS.
 An ARM guest or x64 emulation on this Mac does not by itself establish the x64 target claim.
 An ordinary desktop VM may expose no Vulkan device at all. Qualify with `vulkaninfo`, feature
 reports and a windowed SDK sample instead of inferring support from an OS name. A remote
@@ -369,8 +369,8 @@ M13 ends only when its rules survived or their necessary changes were recorded b
 
 ## 11. Implementation order — ten bounded steps
 
-Every step is **not started**. Stop after each with its Resolution, PROJECT_STATE update,
-verification and commit; no automatic chaining. Step 1 begins only after design acceptance.
+Step 1 is complete; every later step is **not started**. Stop after each with its Resolution,
+PROJECT_STATE update, verification and commit; no automatic chaining.
 
 ### Step 1 — Qualify the targets and pin the Vulkan tools
 
@@ -457,8 +457,8 @@ the two-platform sample evidence and RHI contract agree, with explicit tested li
 
 ## 12. What stays open
 
-The proposed Vulkan floor and toolchain need acceptance; actual machine availability and
-exact pins are Step 1's entry work. No machine, installed SDK or API compatibility is assumed.
+The floor and toolchain are accepted and pinned (Step 1). Linux runtime access is a recorded
+route, not yet an available machine; no Linux driver or window-system behaviour is assumed.
 If the floor excludes the intended hardware, revise the unimplemented ADR with evidence, as
 the floor-revision Resolution did. Adopting maintenance1 later is ADR-0037's revisit, never
 a silent fallback.
@@ -513,3 +513,47 @@ relies on.
 This was a capability check before Step 1, not Step 1: the SDK's windowed sample, exact pins,
 host shader tooling and the recorded route to Linux remain its work. No code, dependency or
 tool changed, and ADR-0037/0038 remain proposed pending the owner's acceptance.
+
+## Resolution — 2026-09-14, Step 1: targets qualified and tools pinned
+
+**Qualified target: Windows x64.** An Intel Arc A750 (discrete, device `0x56a1`) on Windows 11
+Pro build 26200 with Intel driver 32.0.101.8991 (Vulkan 1.4.356, conformance 1.4.0.0), on a
+desktop PC reached from the Mac over SSH. Windowed runs start in the logged-in desktop session,
+never a remote-desktop session or VM. It meets the accepted floor (the floor-revision Resolution
+above). The SDK's `vkcube` selected the A750, opened its window on the Win32 WSI path, presented
+600 FIFO frames in 10 s and exited 0 with `VK_LAYER_KHRONOS_validation` enabled through its
+layer settings: core, synchronization, stateless, object-lifetime and thread-safety checks,
+logged to a file with zero errors and zero warnings, and the layer's own startup information
+message showing the log was live. A capture of the window showed the textured cube. Implicit
+layers installed by RTSS and Steam were disabled for these runs; the capture stays out of the
+tree. The SDK installer also updated the system Vulkan loader from 1.4.350 to 1.4.357, so later
+Resolutions state the loader they ran against.
+
+**Route to Linux x64.** The same PC and GPU, with a Linux installation on a second drive using
+Mesa's ANV driver and a desktop offering both X11 and Wayland sessions, driven the same way.
+It requires the owner to install it and is owed before Step 9; until then Linux evidence is
+cross-compilation only, and no Linux driver behaviour is claimed.
+
+**Pins.** LunarG Vulkan SDK 1.4.357.0 on every host, with archive SHA-256s and the headless
+core-only installs in AGENTS.md §3. Both hosts used report `glslangValidator` 16.4.0 and
+SPIRV-Tools v2026.3. Vulkan-Headers v1.4.357 (commit `e3b1eec08173d6b825cd3ac88c885a63b621504a`)
+is a lazy `build.zig.zon` dependency; with it absent from the global cache, an ordinary
+`zig build check` neither downloaded nor extracted it. Windows Zig 0.16.0 comes from the
+official archive at the pinned hash. License entries landed with the pins: `vulkan-headers.md`
+(distributed, `Apache-2.0` elected), `glslang.md` and `spirv-tools.md` (build-time only;
+glslang's license file carries the Bison-exception GPL text and NVIDIA preprocessor terms, and
+the entry records why neither reaches Foundry). The validation layers and RenderDoc receive
+entries when a Foundry configuration first requires them.
+
+**Shader and header proofs, scratch only.** A GLSL 450 vertex stage with a push-constant block
+and a fragment stage with separate texture and sampler descriptors compiled with
+`--target-env vulkan1.3` and passed `spirv-val`; a copy with a corrupted word count failed it.
+The Windows and Mac tools produced byte-identical SPIR-V for both stages. The pinned headers
+imported with `VK_NO_PROTOTYPES` for `x86_64-windows-gnu` (core and Win32 through `vulkan.h`)
+and `x86_64-linux-gnu` (core, Wayland, and Xlib through opaque `Display`, `Window` and
+`VisualID` declarations instead of system X11 headers), including `PFN_vkCreateInstance`. No
+backend, build option or Foundry Vulkan code exists yet.
+
+The AGENTS.md bar passed once with the new dependency pin. The three license entries passed the
+release packager's own parser in a scratch harness that also confirmed a drifted entry is
+refused, and local links and wrapping were checked.

@@ -102,11 +102,12 @@ ten Metal-only. **M12 is complete (2026-09-14).** Parallel work goes through an 
 never allocates or calls the RHI, and every call site that splits work is tested under `serial`,
 `reversed` and a real pool. `FOUNDRY_SANDBOX_WORKERS` and `FOUNDRY_ROOM_WORKERS` set a sample's
 pool, `0` for none. M12 closed at **1,370 declared / 1,360 headless tests**.
-**M13's design is written (2026-09-14), with no implementation begun.** Read
-`docs/design/vulkan.md` and proposed ADR-0037/0038. Its ten steps start with environment/tool
-qualification after proposal acceptance; Vulkan runtime proof requires Windows/Linux x64
-test access, not just Mac cross-compilation. Stop before Step 1 at this handoff. M14–M17 remain
-unstarted. The bar below remains the current one until M13 adds its verified target commands.
+**M13 Step 1 is complete (2026-09-14).** ADR-0037/0038 are accepted; read
+`docs/design/vulkan.md`. A Windows x64 Vulkan target is qualified and reached over SSH, Linux
+x64 has a recorded route, and the Vulkan tools are pinned in §3 below. No Foundry Vulkan code
+exists yet, and Mac cross-compilation never substitutes for runtime proof. Stop before Step 2.
+M14–M17 remain unstarted.
+The bar below remains the current one until M13 adds its verified target commands.
 
 ## 3. Building and verifying
 
@@ -159,6 +160,52 @@ zig c++ -x c++ -std=c++17 -Wall -Wextra -Werror -Izig-out/include -c mod.c -o /d
 This is not ceremony. Step 4 found three defects this way and none of them by any other route:
 a type a C mod had no way to construct, a header that did not compile as C++ at all, and an
 agreement that stopped firing.
+
+### Vulkan work (M13)
+
+Null and Metal builds need none of this; install it only on a host doing Vulkan work
+(ADR-0038). **LunarG Vulkan SDK 1.4.357.0**, core component only, at a versioned root, from
+`https://sdk.lunarg.com/sdk/download/1.4.357.0/<windows|mac|linux>/<archive>`. Verify the
+archive against its recorded SHA-256 before installing:
+
+| Host | Archive | SHA-256 |
+| --- | --- | --- |
+| Windows x64 | `vulkansdk-windows-X64-1.4.357.0.exe` | `81f474711e9042f4cd22b31b2f7a8870db2e428b21586fb43dd80150be97310d` |
+| macOS, host tools only | `vulkansdk-macos-1.4.357.0.zip` | `539433589c83522e6f31b1c7b418a4167e21597a4a361ab119e1dc0760cf3865` |
+| Linux x64, not yet used | `vulkansdk-linux-x86_64-1.4.357.0.tar.xz` | `0f09bf6a0625e346bf004be70b92907e934a4c76606b323441b2baf3a5a0e66d` |
+
+```sh
+# macOS, from the unzipped archive; nothing is placed in /usr/local
+vulkansdk-macOS-1.4.357.0.app/Contents/MacOS/vulkansdk-macOS-1.4.357.0 \
+  --root "$HOME/VulkanSDK/1.4.357.0" --accept-licenses --default-answer \
+  --confirm-command install com.lunarg.vulkan.core
+```
+
+```powershell
+# Windows, elevated. It also registers the SDK's explicit layers, adds its Bin to the system
+# PATH and updates the system Vulkan runtime.
+.\vulkansdk-windows-X64-1.4.357.0.exe --root C:\VulkanSDK\1.4.357.0 --accept-licenses `
+  --default-answer --confirm-command install com.lunarg.vulkan.core
+```
+
+Both hosts then have `glslangValidator` 16.4.0 and `spirv-val` from SPIRV-Tools v2026.3, and
+they produce byte-identical SPIR-V from the same source. Always name the target environment:
+
+```sh
+glslangValidator -V --target-env vulkan1.3 -S frag -o stage.frag.spv stage.frag
+spirv-val --target-env vulkan1.3 stage.frag.spv
+```
+
+On Windows the SDK's `vulkaninfo` is `vulkaninfoSDK.exe`. Implicit layers other software
+installs — overlays, capture hooks — are not part of the evidence: set
+`VK_LOADER_LAYERS_DISABLE=~implicit~` for a qualifying run. Vulkan-Headers come only from the
+lazy `build.zig.zon` pin, never from a system or SDK include directory.
+
+**Zig on Windows** has no install script; `install-zig.sh` is POSIX-only. Use the official
+archive with the same versioned layout, never a package manager (ADR-0014):
+`https://ziglang.org/download/0.16.0/zig-x86_64-windows-0.16.0.zip`, SHA-256
+`68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e`, extracted to
+`%USERPROFILE%\.local\zig\0.16.0`.
 
 ### Staging a release
 

@@ -1,10 +1,24 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-14
-**Current handoff: M0 through M12 are complete and tagged. M13's design is written;
-0 of 10 implementation steps begun. ADR-0037/0038 are proposed; ADR-0037's windowed floor
-was revised after the first target's capability report. Stop before Step 1.
-M14 through M17 remain unstarted.**
+**Current handoff: M0 through M12 are complete and tagged. M13 Step 1 of 10 is complete:
+ADR-0037/0038 are accepted, a Windows x64 Vulkan target is qualified, and the Vulkan SDK,
+Vulkan-Headers and Windows Zig are pinned. Stop before Step 2. M14 through M17 remain unstarted.**
+
+**Completed M13 Step 1, 2026-09-14:** the owner accepted ADR-0037/0038, and `vulkan.md`'s Step 1
+Resolution records the qualification. Windows x64 is the qualified target: an Intel Arc A750
+on Windows 11 with driver 32.0.101.8991, reached over SSH, where the SDK's `vkcube` presented
+600 FIFO frames in a real desktop window while the validation layer's core and synchronization
+checks logged zero errors and warnings. Linux x64's route is the same PC with a second-drive
+Linux installation offering X11 and Wayland sessions, which the owner must install before
+Step 9. Pinned: LunarG Vulkan SDK 1.4.357.0 on every host (hashes and install commands in
+AGENTS.md §3), Vulkan-Headers v1.4.357 as a lazy `build.zig.zon` dependency, and the official
+Windows Zig 0.16.0 archive. New license entries: `vulkan-headers.md` (distributed), `glslang.md`
+and `spirv-tools.md` (build-time only). Scratch GLSL stages compiled and validated against
+Vulkan 1.3 with byte-identical SPIR-V on the Mac and Windows, and the pinned headers imported
+for both targets. No Foundry code changed; **1,370 declared / 1,360 headless** remains the
+baseline. The AGENTS.md bar passed once with the new pin, the three entries passed the
+release packager's own parser in a scratch harness, and local links and wrapping were checked.
 
 **Revised M13's floor, 2026-09-14:** the owner's candidate Windows target, an Intel Arc A750
 on Windows 11 x64 with driver 32.0.101.8991, reports Vulkan 1.4.356, dynamic rendering,
@@ -3140,10 +3154,11 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M13 Step 1, when requested after design acceptance.** The owner's 2026-09-14 request
-activated the RHI-validation trigger. `docs/design/vulkan.md` specifies ten steps, all unstarted.
-ADR-0037/0038 remain proposed. Begin with Vulkan environment/tool qualification; do not assume
-that this Mac or a VM has a usable Windows/Linux x64 Vulkan device. M14 waits.
+**Next: M13 Step 2, when requested.** Step 1 is complete: ADR-0037/0038 are accepted, the
+Windows x64 Intel Arc target is qualified over SSH and the Vulkan tools are pinned
+(`docs/design/vulkan.md` and its Step 1 Resolution). Step 2 carries native window payloads and
+adds the safe system-library open, exercised on that target and cross-built for Linux. Linux
+x64 still needs the owner's second-drive installation before Step 9. M14 waits.
 
 **M0 through M12 are complete and tagged, and everything is pushed.** Phase 3 is closed;
 Phase 4 is under way. The completed M8/M7 checklists and subsequent M5/M6 material below are
@@ -3166,12 +3181,12 @@ review of `main` rather than beginning on a schedule.
   `docs/design/jobs-and-threading.md` are implemented. Split spans are measurably faster at
   50,000 sprites, every determinism test is unchanged, and a pool's cost to the calling thread's
   unsplit work is recorded as debt.
-* **M13 — Portable.** Design written 2026-09-14, trigger activated; **0/10 steps implemented**.
-  Read `docs/design/vulkan.md` and proposed ADR-0037/0038. **Vulkan was decided
+* **M13 — Portable.** Design accepted 2026-09-14, trigger activated; **1/10 steps complete**.
+  Read `docs/design/vulkan.md` and ADR-0037/0038. **Vulkan was decided
   2026-09-13 in [ADR-0033](docs/adr/0033-vulkan-second-backend.md)**, covering Windows and
   Linux with one backend; D3D12 is not planned and Metal stays macOS's. With it: the shader
   cross-compiler decision, which Vulkan's SPIR-V-only input brings due, Vulkan's own binding
-  convention now proposed in `rhi.md` §9, the unimplemented `win32_hwnd`/X11/Wayland surfaces and
+  convention now accepted in `rhi.md` §9, the unimplemented `win32_hwnd`/X11/Wayland surfaces and
   non-Metal frame pacing. The largest milestone in the phase.
 * **M14 — Managed.** The mod manager capability `CLAUDE.md` §5 records as unbuilt, the
   content-driven widget set ADR-0024 deferred, preference profiles and concurrent merging, and

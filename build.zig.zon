@@ -31,6 +31,16 @@
             .hash = "sdl-0.5.3+3.4.14-SDL--v4eqAGuIKFsspMVxBxZf1OIEmmH-yHDdEl9ZRdX",
             .lazy = true,
         },
+        // Khronos Vulkan C headers for M13's Vulkan backend, included only by `rhi`
+        // with VK_NO_PROTOTYPES (ADR-0038). The tag matches the pinned Vulkan SDK
+        // 1.4.357.0. Lazy: null and Metal builds never ask for it, and a checkout whose
+        // global cache lacks it neither downloads nor extracts it (checked 2026-09-14).
+        // License entry: THIRD_PARTY_LICENSES/vulkan-headers.md (Apache-2.0 elected)
+        .vulkan_headers = .{
+            .url = "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.357.tar.gz",
+            .hash = "N-V-__8AAO2WewIbm0OeFBxoD5LxmEzZigF1yXmgGLuahMD5",
+            .lazy = true,
+        },
     },
 
     .paths = .{

@@ -13,8 +13,9 @@ painful; maintaining it as you go costs a few minutes per dependency.
 
 ## Current dependencies
 
-SDL3 and Lua. Their exact versions, provenance, elected licenses and distribution status are
-recorded in the entries beside this file.
+SDL3, Lua and Vulkan-Headers, plus glslang and SPIRV-Tools as build-time tools from the
+pinned Vulkan SDK. Their exact versions, provenance, elected licenses and distribution status
+are recorded in the entries beside this file.
 
 ## What to record
 

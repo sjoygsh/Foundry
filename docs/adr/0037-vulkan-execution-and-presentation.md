@@ -1,6 +1,6 @@
 # ADR-0037: Vulkan keeps submission and presentation-resource lifetime separate
 
-**Status:** Proposed (M13 design; no implementation)
+**Status:** Accepted 2026-09-14 (M13)
 **Date:** 2026-09-14
 **Revised:** 2026-09-14 — windowed operation no longer requires swapchain maintenance1, after
 the first candidate target's driver lacked it; one unextended presentation path replaces it.

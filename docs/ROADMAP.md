@@ -619,7 +619,7 @@ are unchanged since `m11`. Frame time is the display's and is not claimed, and a
 measured slowing the calling thread's unsplit work, which is recorded as debt with a revisit
 trigger.
 
-### M13 — Portable: "the RHI was real" — **designed; 0/10 steps implemented**
+### M13 — Portable: "the RHI was real" — **in progress; 1/10 steps complete**
 
 **The backend is Vulkan** ([ADR-0033](adr/0033-vulkan-second-backend.md)), which covers Windows
 and Linux with one backend. D3D12 is not planned, and Metal stays macOS's — nothing is routed
@@ -627,14 +627,14 @@ through MoltenVK. *When* remains trigger-started: a decision to ship either plat
 decision to validate the RHI against a second API, not the roadmap reaching this line.
 
 **Trigger activated 2026-09-14:** the owner requested M13's design to validate the RHI after
-M12. [`design/vulkan.md`](design/vulkan.md) now specifies ten steps; no implementation has
-begun. Proposed [ADR-0037](adr/0037-vulkan-execution-and-presentation.md) covers Vulkan 1.3,
+M12. [`design/vulkan.md`](design/vulkan.md) specifies ten steps.
+Accepted [ADR-0037](adr/0037-vulkan-execution-and-presentation.md) covers Vulkan 1.3,
 one unextended presentation path — maintenance1 left the floor when the first Windows target
 lacked it — persistent descriptor lifetime and native surface payloads.
-Proposed [ADR-0038](adr/0038-vulkan-shaders-and-toolchain.md) covers hand-written
+Accepted [ADR-0038](adr/0038-vulkan-shaders-and-toolchain.md) covers hand-written
 GLSL variants compiled to SPIR-V with pinned tools and an OS loader opened at runtime.
-Accept those proposals before Step 1; its first work is real target qualification and exact
-tool/header pins. No machine access, SDK installation or Vulkan implementation is claimed.
+Step 1 qualified a Windows x64 Intel Arc target, recorded a same-machine Linux route and
+pinned the SDK, headers and tools; no Vulkan implementation exists yet.
 
 The ten steps are qualification/tools, native surfaces/loader, device/submission timeline,
 resources/copies/retirement, shaders/bindings, offscreen drawing, presentation/resize/failure
@@ -657,7 +657,7 @@ have made M1 a months-long wall; that wall was moved here, not removed.
 either survived the encounter or changed by ADR. ADR-0033's two-platform promise requires
 native runtime evidence on both Windows x64 and Linux x64; the design separately exercises
 Linux X11 and Wayland. Cross-compilation, a Mac SDK or a software-only offscreen test cannot
-replace that presentation proof. Stop before Step 1 in the current planning handoff.
+replace that presentation proof. Stop before Step 2 in the current handoff.
 
 ### M14 — Managed: "players choose their mods" — **not started**
 

@@ -22,9 +22,9 @@ added usage conformance as §11 rule 11, and Step 5 the frame outcomes in §7 an
 `rhi` is layer L2. It depends on `core` and `platform`. **Graphics API symbols appear
 nowhere outside it** (I7, enforced by the build graph).
 
-**M13 planning, 2026-09-14:** [vulkan.md](vulkan.md) specifies ten steps, none begun.
-ADR-0037/0038 are proposed. The marked M13 additions below are the proposed Vulkan contract,
-not claims about a backend that exists. Metal/null remain the implemented backends.
+**M13, 2026-09-14:** [vulkan.md](vulkan.md) specifies ten steps; `PROJECT_STATE.md` tracks
+them. ADR-0037/0038 are accepted. The marked M13 additions below are the accepted Vulkan
+contract, not claims about a backend that exists. Metal/null remain the implemented backends.
 
 This is the document ADR-0003 demands before any Metal code exists, and it is written
 under an explicit warning from that ADR:
@@ -225,7 +225,7 @@ must be recreated. It is not detected implicitly inside `beginFrame`, because a 
 invalidates textures the caller may be holding handles to, and that is a fact the caller
 must be told rather than have happen underneath it.
 
-**M13 proposed clarification (ADR-0037):** window-system invalidation can arrive without a
+**M13 clarification (ADR-0037):** window-system invalidation can arrive without a
 resize event. Vulkan may rebuild an out-of-date swapchain between frames after reporting
 `SurfaceUnavailable`, using fresh surface capabilities. That exception never changes the
 device's negotiated surface format or hides a lost surface/device. Presentation resources
