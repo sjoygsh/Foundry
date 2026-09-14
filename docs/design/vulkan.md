@@ -1,7 +1,7 @@
 # Design: M13 — Vulkan, and the second test of the RHI
 
 **Status:** Design accepted 2026-09-14 (ADR-0037/0038), its windowed floor revised before
-acceptance; **4 of 10 steps complete**. Next: Step 5.
+acceptance; **5 of 10 steps complete**. Next: Step 6.
 **Date:** 2026-09-14
 **Baseline:** `f14caac` / `m12`; M0–M12 complete, 1,370 declared / 1,360 headless tests.
 **Decisions:** ADR-0033 selects Vulkan; accepted [ADR-0037](../adr/0037-vulkan-execution-and-presentation.md)
@@ -369,7 +369,7 @@ M13 ends only when its rules survived or their necessary changes were recorded b
 
 ## 11. Implementation order — ten bounded steps
 
-Steps 1 to 4 are complete; every later step is **not started**. Stop after each with its
+Steps 1 to 5 are complete; every later step is **not started**. Stop after each with its
 Resolution, PROJECT_STATE update, verification and commit; no automatic chaining. Before Step 3
 the owner directed a repair of the native Windows test suite; its Resolution follows Step 2's.
 
@@ -792,3 +792,50 @@ On the Mac, the required bar passed at **1,399 declared / 1,389 headless tests**
 and one Windows-only test skipped there. `vulkan-check` compiled the selected backend for both
 `x86_64-windows-gnu` and `x86_64-linux-gnu`. Linux still ran nothing natively. Shaders, persistent
 bindings and pipelines remain entirely Step 5.
+
+## Resolution — 2026-09-15, Step 5: checked shaders, persistent bindings and pipelines
+
+**The producer is part of the selected build graph.** The render2d sprite and sandbox quad each
+gain one GLSL 450 vertex stage and one fragment stage. For every stage `build.zig` runs the pinned
+host `glslangValidator -V --target-env vulkan1.3`, then `spirv-val --target-env vulkan1.3`, then
+the host `fshadercheck`; only the last tool's copied output enters an anonymous module import.
+That small checker is deliberately not material reflection. It recognizes exactly these four
+profiles and checks the `main` stage, vertex and varying locations, fragment output, descriptor
+sets and bindings, distinct image/sampler types, uniform/push storage, member offsets,
+column-major matrix decoration and matrix stride. The sandbox stages remain demonstration
+sources, not content assets, and no `.fdt`/`.fpk` format or public ABI changes.
+
+`render2d` now presents neutral vertex and fragment bytes plus entry names to the RHI. Metal keeps
+the existing metallib and `vertexMain`/`fragmentMain`; Vulkan embeds separate checked SPIR-V
+modules and selects `main`. Runtime Vulkan shader creation bounds the envelope, copies it into
+four-byte-aligned retained storage and creates `VkShaderModule`; the retained bytes let pipeline
+creation refuse a missing or wrong-stage entry before the driver. Runtime source compilation is
+`RuntimeCompilationUnsupported`, as ADR-0038 requires.
+
+**Bindings and pipelines preserve public-handle semantics.** Immutable descriptor sets come from
+growable device-owned pools with `FREE_DESCRIPTOR_SET`; a pool is never reset under live sets,
+and an individual set is freed only through completion-backed retirement. Bind-group creation
+requires exactly one correctly typed resource for each copied layout entry and checks live
+handles, usage, buffer alignment and resolved range before updating the set. Pipeline layouts use
+one immutable device-lifetime empty set layout for holes so later group indices do not move.
+Ref-counted native set-layout and pipeline-layout backings outlive their public handles while sets,
+pipeline layouts or pipelines retain them; retirement cascades only after the recording timeline
+allows it. Per-set, aggregate pipeline and per-stage descriptor limits are checked before Vulkan.
+
+Graphics pipelines are monolithic dynamic-rendering pipelines over the existing RHI descriptor:
+separate stages and entries, explicit vertex locations/bindings, topology, raster/culling,
+multisampling, depth/stencil format, color formats, blend/write masks and dynamic viewport/scissor.
+The front-face translation anticipates §6's negative viewport so Foundry's declared winding does
+not change. This step creates and destroys these objects; it deliberately records no pass and
+draws no pixels. Pass state, commands and offscreen probes remain Step 6.
+
+**Evidence.** On the qualified Windows Arc A750, `vulkan-test` required the Khronos validation
+layer and synchronization validation and passed **171/171**. The six Step 5 backend tests cover
+four ABI-checked modules and native pipelines, malformed envelopes and wrong-stage entries,
+persistent sets and pool growth, layout holes, aligned resolved buffer ranges, dependency
+retirement, every added Vulkan-call failure and every host allocation failing in turn. The
+messenger reported no validation warning or error. Moving the sprite sampler from binding 1 to 3
+made the producer fail specifically with `DecorationMismatch`; restoring it passed. Windows and
+Linux `vulkan-check` each compiled the backend and ran all four producer chains. The Mac bar passed
+at **1,401 declared / 1,391 headless tests**, ten Metal-only and one Windows-only test skipped on
+macOS, plus 28 Vulkan backend tests in their own graph. Linux still ran nothing natively.

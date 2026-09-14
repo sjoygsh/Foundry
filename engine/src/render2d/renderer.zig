@@ -37,12 +37,34 @@ const log = core.log.scoped(.render2d);
 ///
 /// An engine-owned shader: the renderer cannot function without it, which makes it
 /// machinery rather than content, so it does not wait for the content system.
-const sprite_shader: []const u8 = switch (rhi.backend) {
-    .metal => @embedFile("sprite_metallib"),
-    .null => "null-backend-shader",
-    // Only a `-Drhi=vulkan` graph reaches this, and until M13 Step 7 that graph builds no
-    // renderer. The SPIR-V stages that replace it are Step 5's (`docs/design/vulkan.md` §11).
-    .vulkan => @compileError("render2d's Vulkan shader stages arrive in M13 Step 5"),
+const ShaderStages = struct {
+    vertex: []const u8,
+    vertex_entry: []const u8,
+    fragment: []const u8,
+    fragment_entry: []const u8,
+};
+
+const sprite_stages: ShaderStages = switch (rhi.backend) {
+    // Metal libraries contain both entry points, so the neutral pair intentionally shares
+    // one byte slice and one RHI handle. Vulkan consumes independent SPIR-V modules.
+    .metal => .{
+        .vertex = @embedFile("sprite_metallib"),
+        .vertex_entry = "vertexMain",
+        .fragment = @embedFile("sprite_metallib"),
+        .fragment_entry = "fragmentMain",
+    },
+    .null => .{
+        .vertex = "null-backend-shader",
+        .vertex_entry = "vertexMain",
+        .fragment = "null-backend-shader",
+        .fragment_entry = "fragmentMain",
+    },
+    .vulkan => .{
+        .vertex = @embedFile("sprite_vertex_spirv"),
+        .vertex_entry = "main",
+        .fragment = @embedFile("sprite_fragment_spirv"),
+        .fragment_entry = "main",
+    },
 };
 
 /// The blank patch is larger than the region taken out of it so that filtering at the
@@ -185,7 +207,8 @@ pub const Renderer = struct {
     config: Config,
     unified: bool,
 
-    shader: rhi.ShaderModuleHandle,
+    vertex_shader: rhi.ShaderModuleHandle,
+    fragment_shader: rhi.ShaderModuleHandle,
     group_layout: rhi.BindGroupLayoutHandle,
     pipeline_layout: rhi.PipelineLayoutHandle,
     /// One per blend mode. The permutation count is exactly this because the CPU
@@ -234,11 +257,21 @@ pub const Renderer = struct {
 
         const caps = device.capabilities();
 
-        const shader = try device.createShaderModule(.{
-            .label = "render2d sprite",
-            .bytes = sprite_shader,
+        const vertex_shader = try device.createShaderModule(.{
+            .label = "render2d sprite vertex",
+            .bytes = sprite_stages.vertex,
         });
-        errdefer device.destroyShaderModule(shader);
+        errdefer device.destroyShaderModule(vertex_shader);
+        const stages_share_module = sprite_stages.vertex.ptr == sprite_stages.fragment.ptr and
+            sprite_stages.vertex.len == sprite_stages.fragment.len;
+        const fragment_shader = if (stages_share_module)
+            vertex_shader
+        else
+            try device.createShaderModule(.{
+                .label = "render2d sprite fragment",
+                .bytes = sprite_stages.fragment,
+            });
+        errdefer if (!fragment_shader.eql(vertex_shader)) device.destroyShaderModule(fragment_shader);
 
         // Group 0 is the material: a texture and its sampler. Ascending `binding` is what
         // §9's walk uses, which is what puts them at texture(0) and sampler(0).
@@ -268,8 +301,10 @@ pub const Renderer = struct {
             pipelines[i] = try device.createRenderPipeline(.{
                 .label = "render2d sprite " ++ @tagName(mode),
                 .layout = pipeline_layout,
-                .vertex_shader = shader,
-                .fragment_shader = shader,
+                .vertex_shader = vertex_shader,
+                .vertex_entry = sprite_stages.vertex_entry,
+                .fragment_shader = fragment_shader,
+                .fragment_entry = sprite_stages.fragment_entry,
                 .vertex_buffers = &.{.{
                     .stride = @sizeOf(Vertex),
                     .attributes = &.{
@@ -307,7 +342,8 @@ pub const Renderer = struct {
             .device = device,
             .config = config,
             .unified = caps.unified_memory,
-            .shader = shader,
+            .vertex_shader = vertex_shader,
+            .fragment_shader = fragment_shader,
             .group_layout = group_layout,
             .pipeline_layout = pipeline_layout,
             .pipelines = pipelines,
@@ -366,7 +402,8 @@ pub const Renderer = struct {
         for (self.pipelines) |p| self.device.destroyRenderPipeline(p);
         self.device.destroyPipelineLayout(self.pipeline_layout);
         self.device.destroyBindGroupLayout(self.group_layout);
-        self.device.destroyShaderModule(self.shader);
+        if (!self.fragment_shader.eql(self.vertex_shader)) self.device.destroyShaderModule(self.fragment_shader);
+        self.device.destroyShaderModule(self.vertex_shader);
         self.* = undefined;
     }
 

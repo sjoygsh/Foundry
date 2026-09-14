@@ -316,7 +316,14 @@ pub fn build(b: *std.Build) void {
     // Vulkan's own graph while M13 brings it up, and nothing else: its backend does not yet
     // implement the interface, so no sample, tool or ordinary test step can build against it.
     if (rhi_backend == .vulkan) {
-        vulkanBringUp(b, target, platform_backend, rhi_module, platform_module);
+        vulkanBringUp(
+            b,
+            target,
+            platform_backend,
+            rhi_module,
+            platform_module,
+            modules.get("render2d").?,
+        );
         return;
     }
 
@@ -971,6 +978,7 @@ fn vulkanBringUp(
     platform_backend: PlatformBackend,
     rhi_module: *std.Build.Module,
     platform_module: *std.Build.Module,
+    render2d_module: *std.Build.Module,
 ) void {
     switch (target.result.os.tag) {
         .windows, .linux => {},
@@ -1002,10 +1010,67 @@ fn vulkanBringUp(
     rhi_module.link_libc = true;
     platform_module.link_libc = true;
 
+    // ADR-0038's producer runs on the build host, never the target. `glslangValidator`
+    // emits one Vulkan 1.3 SPIR-V module per GLSL stage; `spirv-val` checks the binary,
+    // then Foundry's small agreement tool checks the exact locations, sets, bindings and
+    // block offsets that the CPU producers rely on. Its copied output is the only byte
+    // path the runtime can embed, so neither validation gate is advisory.
+    const spirv_module = b.createModule(.{
+        .root_source_file = b.path("engine/src/rhi/backends/vulkan/spirv.zig"),
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+    });
+    const checker_module = b.createModule(.{
+        .root_source_file = b.path("tools/shadercheck/main.zig"),
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+    });
+    checker_module.addImport("spirv", spirv_module);
+    const checker = b.addExecutable(.{ .name = "fshadercheck", .root_module = checker_module });
+
+    const sprite_vertex = vulkanShaderStage(b, checker, "sprite-vertex", "engine/src/render2d/shaders/sprite.vert.glsl", "vert", "sprite_vertex");
+    const sprite_fragment = vulkanShaderStage(b, checker, "sprite-fragment", "engine/src/render2d/shaders/sprite.frag.glsl", "frag", "sprite_fragment");
+    const quad_vertex = vulkanShaderStage(b, checker, "quad-vertex", "samples/sandbox/shaders/quad.vert.glsl", "vert", "quad_vertex");
+    const quad_fragment = vulkanShaderStage(b, checker, "quad-fragment", "samples/sandbox/shaders/quad.frag.glsl", "frag", "quad_fragment");
+
+    for ([_]struct { name: []const u8, bytes: std.Build.LazyPath }{
+        .{ .name = "sprite_vertex_spirv", .bytes = sprite_vertex },
+        .{ .name = "sprite_fragment_spirv", .bytes = sprite_fragment },
+        .{ .name = "quad_vertex_spirv", .bytes = quad_vertex },
+        .{ .name = "quad_fragment_spirv", .bytes = quad_fragment },
+    }) |stage| rhi_module.addAnonymousImport(stage.name, .{ .root_source_file = stage.bytes });
+    render2d_module.addAnonymousImport("sprite_vertex_spirv", .{ .root_source_file = sprite_vertex });
+    render2d_module.addAnonymousImport("sprite_fragment_spirv", .{ .root_source_file = sprite_fragment });
+
     const tests = b.addTest(.{ .name = "rhi-vulkan", .root_module = rhi_module });
     b.step("vulkan-check", "Compile the Vulkan backend's tests without running them").dependOn(&tests.step);
     b.step("vulkan-test", "Run the Vulkan backend's tests on this machine's driver, validation required")
         .dependOn(&b.addRunArtifact(tests).step);
+}
+
+/// One declared GLSL input to one checked SPIR-V output. Tool names intentionally resolve
+/// through the operator's PATH, like `xcrun` for Metal: AGENTS.md pins their versions and
+/// installation roots, while no workstation path enters the build description.
+fn vulkanShaderStage(
+    b: *std.Build,
+    checker: *std.Build.Step.Compile,
+    name: []const u8,
+    source: []const u8,
+    stage: []const u8,
+    profile: []const u8,
+) std.Build.LazyPath {
+    const compile = b.addSystemCommand(&.{ "glslangValidator", "-V", "--target-env", "vulkan1.3", "-S", stage, "-o" });
+    const compiled = compile.addOutputFileArg(b.fmt("{s}.unchecked.spv", .{name}));
+    compile.addFileArg(b.path(source));
+
+    const validate = b.addSystemCommand(&.{ "spirv-val", "--target-env", "vulkan1.3" });
+    validate.addFileArg(compiled);
+
+    const agreement = b.addRunArtifact(checker);
+    agreement.step.dependOn(&validate.step);
+    agreement.addFileArg(compiled);
+    agreement.addArg(profile);
+    return agreement.addOutputFileArg(b.fmt("{s}.spv", .{name}));
 }
 
 /// Why this build cannot stage a release, or null if it can.

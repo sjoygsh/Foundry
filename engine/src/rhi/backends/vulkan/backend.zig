@@ -1,11 +1,10 @@
 //! The Vulkan backend (ADR-0033, ADR-0037, ADR-0038), being brought up in M13.
 //!
-//! **What exists from Step 3:** the system loader and its dispatch tables, an instance with
-//! validation that can be required, a surface for a native window, device selection, one logical
-//! device with its one queue, and the submission timeline — enough to record, submit and wait for
-//! empty work, and to tear all of it down. Resources, bindings, passes and presentation arrive in
-//! Steps 4–7. Until Step 7 completes `interface.check`, only `zig build vulkan-test -Drhi=vulkan`
-//! builds this file (`docs/design/vulkan.md` §11).
+//! **What exists through Step 5:** the system loader and dispatch tables; a validated device and
+//! submission timeline; resources, copies and completion-backed retirement; and SPIR-V shader
+//! modules, persistent descriptor sets, layouts and monolithic graphics pipelines. Pass commands
+//! and presentation arrive in Steps 6–7. Until Step 7 completes `interface.check`, only
+//! `zig build vulkan-test -Drhi=vulkan` builds this file (`docs/design/vulkan.md` §11).
 //!
 //! **Ownership.** A `Device` owns, in creation order: the loader, the instance, the validation
 //! messenger, the surface, the logical device, the timeline semaphore and the command pool.
@@ -18,7 +17,7 @@
 //! covers everything before S as well. A command buffer is begun again only once a wait or a poll
 //! has seen its submission finish, or when it never reached the queue.
 //!
-//! Design: `docs/design/vulkan.md` §§4, 5 and 7.
+//! Design: `docs/design/vulkan.md` §§4–7.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -35,6 +34,7 @@ const dispatch = @import("dispatch.zig");
 const layout = @import("layout.zig");
 const memory = @import("memory.zig");
 const selection = @import("selection.zig");
+const spirv = @import("spirv.zig");
 const vk = @import("vk.zig");
 const c = vk.c;
 
@@ -69,6 +69,7 @@ pub const Stage = enum {
     load_device,
     create_timeline,
     create_command_pool,
+    create_empty_set_layout,
 };
 
 /// How a device is brought up. `init` takes the defaults.
@@ -100,6 +101,12 @@ pub const ResourceStage = enum {
     create_view,
     create_sampler,
     initial_transition,
+    create_shader,
+    create_bind_group_layout,
+    create_descriptor_pool,
+    allocate_descriptor_set,
+    create_pipeline_layout,
+    create_render_pipeline,
 };
 
 pub const ResourceFault = struct { stage: ResourceStage, result: c.VkResult };
@@ -153,12 +160,65 @@ const TextureState = struct {
 
 const SamplerState = struct { native: c.VkSampler };
 
+const ShaderState = struct {
+    native: c.VkShaderModule,
+    /// Retained only to validate entry-point stage/name before pipeline creation. The driver
+    /// copied the code during `vkCreateShaderModule`; no command ever reads this slice.
+    bytes: []align(4) u8,
+};
+
+/// Native set layouts are shared by their public handle, every allocated set and every
+/// pipeline-layout backing that names them. The small owner allocation stays until device
+/// teardown so refcount cascades never leave dangling bookkeeping pointers.
+const BindGroupLayoutBacking = struct {
+    native: c.VkDescriptorSetLayout,
+    entries: []pipeline.BindGroupLayoutEntry,
+    refs: usize = 1,
+    released: bool = false,
+};
+
+const BindGroupLayoutState = struct { backing: *BindGroupLayoutBacking };
+
+const DescriptorPool = struct {
+    native: c.VkDescriptorPool,
+    live_sets: u32 = 0,
+};
+
+const BindGroupState = struct {
+    native: c.VkDescriptorSet,
+    pool: *DescriptorPool,
+    layout: *BindGroupLayoutBacking,
+    entries: []pipeline.BindGroupEntry,
+};
+
+/// A render pipeline retains this independently of the public pipeline-layout handle.
+const PipelineLayoutBacking = struct {
+    native: c.VkPipelineLayout,
+    groups: []?*BindGroupLayoutBacking,
+    inline_constant_bytes: u32,
+    refs: usize = 1,
+    released: bool = false,
+};
+
+const PipelineLayoutState = struct { backing: *PipelineLayoutBacking };
+
+const RenderPipelineState = struct {
+    native: c.VkPipeline,
+    layout: *PipelineLayoutBacking,
+    primitive: pipeline.PrimitiveState,
+};
+
 /// What a destroyed resource leaves behind until the recordings that could use it finish. The
 /// staging buffer a repacked copy made is retired the same way, after that one recording.
 const Retired = union(enum) {
     buffer: struct { native: c.VkBuffer, allocation: c.VkDeviceMemory },
     texture: struct { image: c.VkImage, view: c.VkImageView, allocation: c.VkDeviceMemory },
     sampler: c.VkSampler,
+    shader: ShaderState,
+    bind_group_layout: *BindGroupLayoutBacking,
+    bind_group: BindGroupState,
+    pipeline_layout: *PipelineLayoutBacking,
+    render_pipeline: RenderPipelineState,
 
     fn release(self: Retired, dev: *Device) void {
         const fns = &dev.device_fns;
@@ -173,6 +233,26 @@ const Retired = union(enum) {
                 dev.freeMemory(t.allocation);
             },
             .sampler => |sampler| fns.vkDestroySampler(dev.device, sampler, null),
+            .shader => |shader| {
+                fns.vkDestroyShaderModule(dev.device, shader.native, null);
+                dev.gpa.free(shader.bytes);
+            },
+            .bind_group_layout => |backing| dev.releaseBindGroupLayout(backing),
+            .bind_group => |group| {
+                const freed = fns.vkFreeDescriptorSets(dev.device, group.pool.native, 1, &group.native);
+                if (freed != c.VK_SUCCESS) {
+                    log.warn("vulkan: freeing a descriptor set failed: {s}", .{vk.resultName(freed)});
+                } else {
+                    group.pool.live_sets -= 1;
+                }
+                dev.gpa.free(group.entries);
+                dev.dropBindGroupLayout(group.layout);
+            },
+            .pipeline_layout => |backing| dev.releasePipelineLayout(backing),
+            .render_pipeline => |render_pipeline| {
+                fns.vkDestroyPipeline(dev.device, render_pipeline.native, null);
+                dev.dropPipelineLayout(render_pipeline.layout);
+            },
         }
     }
 };
@@ -238,6 +318,17 @@ pub const Device = struct {
     buffers: core.HandlePool(resource.Buffer, BufferState) = .empty,
     textures: core.HandlePool(resource.Texture, TextureState) = .empty,
     samplers: core.HandlePool(resource.Sampler, SamplerState) = .empty,
+    shaders: core.HandlePool(resource.ShaderModule, ShaderState) = .empty,
+    bind_group_layouts: core.HandlePool(pipeline.BindGroupLayout, BindGroupLayoutState) = .empty,
+    bind_groups: core.HandlePool(pipeline.BindGroup, BindGroupState) = .empty,
+    pipeline_layouts: core.HandlePool(pipeline.PipelineLayout, PipelineLayoutState) = .empty,
+    pipelines: core.HandlePool(pipeline.RenderPipeline, RenderPipelineState) = .empty,
+    descriptor_pools: std.ArrayList(*DescriptorPool) = .empty,
+    bind_group_layout_backings: std.ArrayList(*BindGroupLayoutBacking) = .empty,
+    pipeline_layout_backings: std.ArrayList(*PipelineLayoutBacking) = .empty,
+    /// The immutable empty layout occupies holes without renumbering later descriptor sets.
+    empty_set_layout: c.VkDescriptorSetLayout = null,
+    tearing_down: bool = false,
     retired: lifetime.Retirement(Retired) = .{},
 
     pub fn init(gpa: Allocator, desc: interface.DeviceDesc) interface.InitError!*Device {
@@ -258,6 +349,7 @@ pub const Device = struct {
         try self.chooseDevice(wsi != null);
         try self.createDevice(wsi != null);
         try self.createQueueObjects();
+        try self.createEmptySetLayout();
 
         log.info("rhi backend: vulkan on '{s}' ({t}, Vulkan {d}.{d}), queue family {d}, {s}{s}", .{
             self.adapter.name(),
@@ -381,7 +473,9 @@ pub const Device = struct {
     // -- resources -----------------------------------------------------------------------
 
     fn liveCount(self: *const Device) usize {
-        return @as(usize, self.buffers.count()) + self.textures.count() + self.samplers.count();
+        return @as(usize, self.buffers.count()) + self.textures.count() + self.samplers.count() +
+            self.shaders.count() + self.bind_group_layouts.count() + self.bind_groups.count() +
+            self.pipeline_layouts.count() + self.pipelines.count();
     }
 
     /// Makes room to retire everything live plus `extra` more, before anything is published, so a
@@ -678,6 +772,552 @@ pub const Device = struct {
         const native = state.native;
         _ = self.samplers.remove(handle);
         self.retire(.{ .sampler = native });
+    }
+
+    // -- shaders and persistent bindings ----------------------------------------------
+
+    pub fn createShaderModule(self: *Device, desc: resource.ShaderModuleDesc) interface.ResourceError!resource.ShaderModuleHandle {
+        spirv.validate(desc.bytes) catch {
+            log.warn("vulkan: shader module '{s}' is not a bounded SPIR-V 1.6-or-earlier envelope", .{desc.label});
+            return error.ShaderCompilationFailed;
+        };
+        try self.reserveRetirement(1);
+
+        // VkShaderModuleCreateInfo requires a four-byte-aligned pCode even though the RHI
+        // accepts an ordinary byte slice. Retaining this copy also lets pipeline creation
+        // validate the selected entry without asking the driver to diagnose caller input.
+        const bytes = try self.gpa.alignedAlloc(u8, .fromByteUnits(4), desc.bytes.len);
+        errdefer self.gpa.free(bytes);
+        @memcpy(bytes, desc.bytes);
+        const info: c.VkShaderModuleCreateInfo = .{
+            .sType = c.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+            .codeSize = bytes.len,
+            .pCode = @ptrCast(bytes.ptr),
+        };
+        var native: c.VkShaderModule = null;
+        const created = self.injectedResource(.create_shader) orelse
+            self.device_fns.vkCreateShaderModule(self.device, &info, null, &native);
+        if (created != c.VK_SUCCESS) return shaderFailure(created, "vkCreateShaderModule");
+        errdefer self.device_fns.vkDestroyShaderModule(self.device, native, null);
+        return self.shaders.add(self.gpa, .{ .native = native, .bytes = bytes });
+    }
+
+    pub fn createShaderModuleFromSource(_: *Device, _: resource.ShaderSourceDesc) interface.ResourceError!resource.ShaderModuleHandle {
+        return error.RuntimeCompilationUnsupported;
+    }
+
+    pub fn destroyShaderModule(self: *Device, handle: resource.ShaderModuleHandle) void {
+        const state = self.shaders.getConst(handle) orelse return;
+        const retired = state.*;
+        _ = self.shaders.remove(handle);
+        self.retire(.{ .shader = retired });
+    }
+
+    fn releaseBindGroupLayout(self: *Device, backing: *BindGroupLayoutBacking) void {
+        if (backing.released or self.tearing_down) return;
+        self.device_fns.vkDestroyDescriptorSetLayout(self.device, backing.native, null);
+        self.gpa.free(backing.entries);
+        backing.released = true;
+        backing.native = null;
+    }
+
+    fn dropBindGroupLayout(self: *Device, backing: *BindGroupLayoutBacking) void {
+        assert.debugOnly(backing.refs > 0, "bind-group layout reference underflow", .{});
+        backing.refs -= 1;
+        if (backing.refs == 0 and !self.tearing_down) {
+            self.retired.retire(.{ .bind_group_layout = backing }, self.timeline.begun);
+        }
+    }
+
+    pub fn createBindGroupLayout(self: *Device, desc: pipeline.BindGroupLayoutDesc) interface.ResourceError!pipeline.BindGroupLayoutHandle {
+        for (desc.entries, 0..) |entry, i| {
+            if (!entry.visibility.any()) return error.InvalidDescriptor;
+            for (desc.entries[0..i]) |earlier| {
+                if (earlier.binding == entry.binding) return error.InvalidDescriptor;
+            }
+        }
+        if (!layoutWithinLimits(&self.limits, desc.entries)) return error.InvalidDescriptor;
+        try self.reserveRetirement(1);
+
+        const entries = try self.gpa.dupe(pipeline.BindGroupLayoutEntry, desc.entries);
+        var entries_owned_by_backing = false;
+        errdefer if (!entries_owned_by_backing) self.gpa.free(entries);
+        const native_entries = try self.gpa.alloc(c.VkDescriptorSetLayoutBinding, entries.len);
+        defer self.gpa.free(native_entries);
+        for (entries, native_entries) |entry, *native| {
+            native.* = .{
+                .binding = entry.binding,
+                .descriptorType = descriptorType(entry.type),
+                .descriptorCount = 1,
+                .stageFlags = shaderStages(entry.visibility),
+            };
+        }
+        const info: c.VkDescriptorSetLayoutCreateInfo = .{
+            .sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .bindingCount = @intCast(native_entries.len),
+            .pBindings = native_entries.ptr,
+        };
+        var native: c.VkDescriptorSetLayout = null;
+        const created = self.injectedResource(.create_bind_group_layout) orelse
+            self.device_fns.vkCreateDescriptorSetLayout(self.device, &info, null, &native);
+        if (created != c.VK_SUCCESS) return descriptorFailure(created, "vkCreateDescriptorSetLayout");
+        var native_owned_by_backing = false;
+        errdefer if (!native_owned_by_backing) self.device_fns.vkDestroyDescriptorSetLayout(self.device, native, null);
+
+        const backing = try self.gpa.create(BindGroupLayoutBacking);
+        var backing_tracked = false;
+        errdefer if (!backing_tracked) self.gpa.destroy(backing);
+        backing.* = .{ .native = native, .entries = entries };
+        try self.bind_group_layout_backings.append(self.gpa, backing);
+        backing_tracked = true;
+        entries_owned_by_backing = true;
+        native_owned_by_backing = true;
+        return self.bind_group_layouts.add(self.gpa, .{ .backing = backing }) catch |err| {
+            self.releaseBindGroupLayout(backing);
+            return err;
+        };
+    }
+
+    pub fn destroyBindGroupLayout(self: *Device, handle: pipeline.BindGroupLayoutHandle) void {
+        const state = self.bind_group_layouts.getConst(handle) orelse return;
+        const backing = state.backing;
+        _ = self.bind_group_layouts.remove(handle);
+        self.dropBindGroupLayout(backing);
+        self.collect();
+    }
+
+    const descriptor_sets_per_pool: u32 = 64;
+    const descriptors_per_kind_per_pool: u32 = 256;
+
+    fn createDescriptorPool(self: *Device) interface.ResourceError!*DescriptorPool {
+        const sizes = [_]c.VkDescriptorPoolSize{
+            .{ .type = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = descriptors_per_kind_per_pool },
+            .{ .type = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = descriptors_per_kind_per_pool },
+            .{ .type = c.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .descriptorCount = descriptors_per_kind_per_pool },
+            .{ .type = c.VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = descriptors_per_kind_per_pool },
+        };
+        const info: c.VkDescriptorPoolCreateInfo = .{
+            .sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .flags = @as(u32, c.VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT),
+            .maxSets = descriptor_sets_per_pool,
+            .poolSizeCount = sizes.len,
+            .pPoolSizes = &sizes,
+        };
+        var native: c.VkDescriptorPool = null;
+        const created = self.injectedResource(.create_descriptor_pool) orelse
+            self.device_fns.vkCreateDescriptorPool(self.device, &info, null, &native);
+        if (created != c.VK_SUCCESS) return descriptorFailure(created, "vkCreateDescriptorPool");
+        errdefer self.device_fns.vkDestroyDescriptorPool(self.device, native, null);
+        const pool = try self.gpa.create(DescriptorPool);
+        errdefer self.gpa.destroy(pool);
+        pool.* = .{ .native = native };
+        try self.descriptor_pools.append(self.gpa, pool);
+        return pool;
+    }
+
+    fn allocateDescriptorSet(
+        self: *Device,
+        set_layout: c.VkDescriptorSetLayout,
+    ) interface.ResourceError!struct { set: c.VkDescriptorSet, pool: *DescriptorPool } {
+        if (self.injectedResource(.allocate_descriptor_set)) |result| {
+            return descriptorFailure(result, "vkAllocateDescriptorSets");
+        }
+        for (self.descriptor_pools.items) |pool| {
+            if (pool.live_sets == descriptor_sets_per_pool) continue;
+            const info: c.VkDescriptorSetAllocateInfo = .{
+                .sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                .descriptorPool = pool.native,
+                .descriptorSetCount = 1,
+                .pSetLayouts = &set_layout,
+            };
+            var set: c.VkDescriptorSet = null;
+            const allocated = self.device_fns.vkAllocateDescriptorSets(self.device, &info, &set);
+            if (allocated == c.VK_SUCCESS) {
+                pool.live_sets += 1;
+                return .{ .set = set, .pool = pool };
+            }
+            if (allocated != c.VK_ERROR_OUT_OF_POOL_MEMORY and allocated != c.VK_ERROR_FRAGMENTED_POOL) {
+                return descriptorFailure(allocated, "vkAllocateDescriptorSets");
+            }
+        }
+
+        const pool = try self.createDescriptorPool();
+        const info: c.VkDescriptorSetAllocateInfo = .{
+            .sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = pool.native,
+            .descriptorSetCount = 1,
+            .pSetLayouts = &set_layout,
+        };
+        var set: c.VkDescriptorSet = null;
+        const allocated = self.device_fns.vkAllocateDescriptorSets(self.device, &info, &set);
+        if (allocated != c.VK_SUCCESS) return descriptorFailure(allocated, "vkAllocateDescriptorSets from a fresh pool");
+        pool.live_sets = 1;
+        return .{ .set = set, .pool = pool };
+    }
+
+    pub fn createBindGroup(self: *Device, desc: pipeline.BindGroupDesc) interface.ResourceError!pipeline.BindGroupHandle {
+        const layout_state = self.bind_group_layouts.getConst(desc.layout) orelse return error.InvalidDescriptor;
+        const layout_backing = layout_state.backing;
+        if (desc.entries.len != layout_backing.entries.len) return error.InvalidDescriptor;
+
+        for (layout_backing.entries) |wanted| {
+            const found = findBindGroupEntry(desc.entries, wanted.binding) orelse return error.InvalidDescriptor;
+            if (@as(pipeline.BindingType, found.resource) != wanted.type) return error.InvalidDescriptor;
+        }
+        for (desc.entries, 0..) |entry, i| {
+            for (desc.entries[0..i]) |earlier| {
+                if (earlier.binding == entry.binding) return error.InvalidDescriptor;
+            }
+            try self.validateBinding(entry);
+        }
+        try self.reserveRetirement(1);
+
+        const entries = try self.gpa.dupe(pipeline.BindGroupEntry, desc.entries);
+        errdefer self.gpa.free(entries);
+        const allocated = try self.allocateDescriptorSet(layout_backing.native);
+        errdefer {
+            _ = self.device_fns.vkFreeDescriptorSets(self.device, allocated.pool.native, 1, &allocated.set);
+            allocated.pool.live_sets -= 1;
+        }
+
+        const writes = try self.gpa.alloc(c.VkWriteDescriptorSet, entries.len);
+        defer self.gpa.free(writes);
+        const buffers = try self.gpa.alloc(c.VkDescriptorBufferInfo, entries.len);
+        defer self.gpa.free(buffers);
+        const images = try self.gpa.alloc(c.VkDescriptorImageInfo, entries.len);
+        defer self.gpa.free(images);
+        for (entries, 0..) |entry, i| {
+            writes[i] = .{
+                .sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = allocated.set,
+                .dstBinding = entry.binding,
+                .descriptorCount = 1,
+                .descriptorType = descriptorType(@as(pipeline.BindingType, entry.resource)),
+            };
+            switch (entry.resource) {
+                .uniform_buffer, .storage_buffer => |binding| {
+                    const state = self.buffers.getConst(binding.buffer).?;
+                    buffers[i] = .{
+                        .buffer = state.native,
+                        .offset = binding.offset,
+                        .range = resolvedBindingSize(binding, state.desc.size).?,
+                    };
+                    writes[i].pBufferInfo = &buffers[i];
+                },
+                .sampled_texture => |handle| {
+                    images[i] = .{
+                        .imageView = self.textures.getConst(handle).?.view,
+                        .imageLayout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    };
+                    writes[i].pImageInfo = &images[i];
+                },
+                .sampler => |handle| {
+                    images[i] = .{ .sampler = self.samplers.getConst(handle).?.native };
+                    writes[i].pImageInfo = &images[i];
+                },
+            }
+        }
+        self.device_fns.vkUpdateDescriptorSets(self.device, @intCast(writes.len), writes.ptr, 0, null);
+
+        layout_backing.refs += 1;
+        return self.bind_groups.add(self.gpa, .{
+            .native = allocated.set,
+            .pool = allocated.pool,
+            .layout = layout_backing,
+            .entries = entries,
+        }) catch |err| {
+            layout_backing.refs -= 1;
+            return err;
+        };
+    }
+
+    fn validateBinding(self: *Device, entry: pipeline.BindGroupEntry) interface.ResourceError!void {
+        switch (entry.resource) {
+            .uniform_buffer => |binding| {
+                const state = self.buffers.getConst(binding.buffer) orelse return error.InvalidDescriptor;
+                if (!state.desc.usage.uniform or
+                    !bindingRangeValid(binding, state.desc.size, self.capabilities().uniform_buffer_offset_alignment, self.capabilities().max_uniform_buffer_binding_size))
+                    return error.InvalidDescriptor;
+            },
+            .storage_buffer => |binding| {
+                const state = self.buffers.getConst(binding.buffer) orelse return error.InvalidDescriptor;
+                if (!state.desc.usage.storage or
+                    !bindingRangeValid(binding, state.desc.size, self.capabilities().storage_buffer_offset_alignment, self.capabilities().max_storage_buffer_binding_size))
+                    return error.InvalidDescriptor;
+            },
+            .sampled_texture => |handle| {
+                const state = self.textures.getConst(handle) orelse return error.InvalidDescriptor;
+                if (!state.desc.usage.sampled or state.view == null) return error.InvalidDescriptor;
+            },
+            .sampler => |handle| if (self.samplers.getConst(handle) == null) return error.InvalidDescriptor,
+        }
+    }
+
+    pub fn destroyBindGroup(self: *Device, handle: pipeline.BindGroupHandle) void {
+        const state = self.bind_groups.getConst(handle) orelse return;
+        const retired = state.*;
+        _ = self.bind_groups.remove(handle);
+        self.retire(.{ .bind_group = retired });
+    }
+
+    fn releasePipelineLayout(self: *Device, backing: *PipelineLayoutBacking) void {
+        if (backing.released or self.tearing_down) return;
+        self.device_fns.vkDestroyPipelineLayout(self.device, backing.native, null);
+        for (backing.groups) |group| {
+            if (group) |present| self.dropBindGroupLayout(present);
+        }
+        self.gpa.free(backing.groups);
+        backing.released = true;
+        backing.native = null;
+    }
+
+    fn dropPipelineLayout(self: *Device, backing: *PipelineLayoutBacking) void {
+        assert.debugOnly(backing.refs > 0, "pipeline layout reference underflow", .{});
+        backing.refs -= 1;
+        if (backing.refs == 0 and !self.tearing_down) {
+            self.retired.retire(.{ .pipeline_layout = backing }, self.timeline.begun);
+        }
+    }
+
+    pub fn createPipelineLayout(self: *Device, desc: pipeline.PipelineLayoutDesc) interface.ResourceError!pipeline.PipelineLayoutHandle {
+        if (desc.bind_group_layouts.len > pipeline.max_bind_groups or
+            desc.inline_constant_bytes > pipeline.max_inline_constant_bytes) return error.InvalidDescriptor;
+        try self.reserveRetirement(1);
+
+        const groups = try self.gpa.alloc(?*BindGroupLayoutBacking, desc.bind_group_layouts.len);
+        var groups_owned_by_backing = false;
+        errdefer if (!groups_owned_by_backing) self.gpa.free(groups);
+        const native_groups = try self.gpa.alloc(c.VkDescriptorSetLayout, groups.len);
+        defer self.gpa.free(native_groups);
+        for (desc.bind_group_layouts, groups, native_groups) |handle, *group, *native| {
+            if (handle.isNone()) {
+                group.* = null;
+                native.* = self.empty_set_layout;
+            } else {
+                const state = self.bind_group_layouts.getConst(handle) orelse return error.InvalidDescriptor;
+                group.* = state.backing;
+                native.* = state.backing.native;
+            }
+        }
+        if (!pipelineLayoutWithinLimits(&self.limits, groups)) return error.InvalidDescriptor;
+
+        const padded_constants = std.mem.alignForward(u32, desc.inline_constant_bytes, 4);
+        const push_range: c.VkPushConstantRange = .{
+            .stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT,
+            .size = padded_constants,
+        };
+        const info: c.VkPipelineLayoutCreateInfo = .{
+            .sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = @intCast(native_groups.len),
+            .pSetLayouts = native_groups.ptr,
+            .pushConstantRangeCount = if (padded_constants == 0) 0 else 1,
+            .pPushConstantRanges = if (padded_constants == 0) null else &push_range,
+        };
+        var native: c.VkPipelineLayout = null;
+        const created = self.injectedResource(.create_pipeline_layout) orelse
+            self.device_fns.vkCreatePipelineLayout(self.device, &info, null, &native);
+        if (created != c.VK_SUCCESS) return descriptorFailure(created, "vkCreatePipelineLayout");
+        var native_owned_by_backing = false;
+        errdefer if (!native_owned_by_backing) self.device_fns.vkDestroyPipelineLayout(self.device, native, null);
+
+        const backing = try self.gpa.create(PipelineLayoutBacking);
+        var backing_tracked = false;
+        errdefer if (!backing_tracked) self.gpa.destroy(backing);
+        backing.* = .{
+            .native = native,
+            .groups = groups,
+            .inline_constant_bytes = desc.inline_constant_bytes,
+        };
+        try self.pipeline_layout_backings.append(self.gpa, backing);
+        backing_tracked = true;
+        groups_owned_by_backing = true;
+        native_owned_by_backing = true;
+        for (groups) |group| {
+            if (group) |present| present.refs += 1;
+        }
+        return self.pipeline_layouts.add(self.gpa, .{ .backing = backing }) catch |err| {
+            self.releasePipelineLayout(backing);
+            return err;
+        };
+    }
+
+    pub fn destroyPipelineLayout(self: *Device, handle: pipeline.PipelineLayoutHandle) void {
+        const state = self.pipeline_layouts.getConst(handle) orelse return;
+        const backing = state.backing;
+        _ = self.pipeline_layouts.remove(handle);
+        self.dropPipelineLayout(backing);
+        self.collect();
+    }
+
+    pub fn createRenderPipeline(self: *Device, desc: pipeline.RenderPipelineDesc) interface.ResourceError!pipeline.RenderPipelineHandle {
+        const vertex_shader = self.shaders.getConst(desc.vertex_shader) orelse return error.InvalidDescriptor;
+        const fragment_shader = self.shaders.getConst(desc.fragment_shader) orelse return error.InvalidDescriptor;
+        const layout_backing = (self.pipeline_layouts.getConst(desc.layout) orelse return error.InvalidDescriptor).backing;
+        if (!(spirv.hasEntry(vertex_shader.bytes, .vertex, desc.vertex_entry) catch false) or
+            !(spirv.hasEntry(fragment_shader.bytes, .fragment, desc.fragment_entry) catch false))
+        {
+            log.warn("vulkan: pipeline '{s}' selects a missing or wrong-stage shader entry", .{desc.label});
+            return error.InvalidDescriptor;
+        }
+        if (!pipelineDescriptorValid(&self.limits, desc)) return error.InvalidDescriptor;
+        try self.reserveRetirement(1);
+
+        const vertex_name = try self.gpa.dupeZ(u8, desc.vertex_entry);
+        defer self.gpa.free(vertex_name);
+        const fragment_name = try self.gpa.dupeZ(u8, desc.fragment_entry);
+        defer self.gpa.free(fragment_name);
+        const stages = [_]c.VkPipelineShaderStageCreateInfo{
+            .{
+                .sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .stage = c.VK_SHADER_STAGE_VERTEX_BIT,
+                .module = vertex_shader.native,
+                .pName = vertex_name.ptr,
+            },
+            .{
+                .sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .stage = c.VK_SHADER_STAGE_FRAGMENT_BIT,
+                .module = fragment_shader.native,
+                .pName = fragment_name.ptr,
+            },
+        };
+
+        const bindings = try self.gpa.alloc(c.VkVertexInputBindingDescription, desc.vertex_buffers.len);
+        defer self.gpa.free(bindings);
+        var attribute_count: usize = 0;
+        for (desc.vertex_buffers) |binding| attribute_count += binding.attributes.len;
+        const attributes = try self.gpa.alloc(c.VkVertexInputAttributeDescription, attribute_count);
+        defer self.gpa.free(attributes);
+        var next_attribute: usize = 0;
+        for (desc.vertex_buffers, 0..) |binding, binding_index| {
+            bindings[binding_index] = .{
+                .binding = @intCast(binding_index),
+                .stride = binding.stride,
+                .inputRate = vertexStep(binding.step_mode),
+            };
+            for (binding.attributes) |attribute| {
+                attributes[next_attribute] = .{
+                    .location = attribute.location,
+                    .binding = @intCast(binding_index),
+                    .format = vertexFormat(attribute.format),
+                    .offset = attribute.offset,
+                };
+                next_attribute += 1;
+            }
+        }
+        const vertex_input: c.VkPipelineVertexInputStateCreateInfo = .{
+            .sType = c.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+            .vertexBindingDescriptionCount = @intCast(bindings.len),
+            .pVertexBindingDescriptions = bindings.ptr,
+            .vertexAttributeDescriptionCount = @intCast(attributes.len),
+            .pVertexAttributeDescriptions = attributes.ptr,
+        };
+        const assembly: c.VkPipelineInputAssemblyStateCreateInfo = .{
+            .sType = c.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+            .topology = primitiveTopology(desc.primitive.topology),
+        };
+        const viewport: c.VkPipelineViewportStateCreateInfo = .{
+            .sType = c.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+            .viewportCount = 1,
+            .scissorCount = 1,
+        };
+        const raster: c.VkPipelineRasterizationStateCreateInfo = .{
+            .sType = c.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+            .polygonMode = c.VK_POLYGON_MODE_FILL,
+            .cullMode = cullMode(desc.primitive.cull_mode),
+            // Step 6 uses a negative-height viewport; invert here so Foundry's winding
+            // convention remains the one the pipeline descriptor states.
+            .frontFace = frontFace(desc.primitive.front_face),
+            .lineWidth = 1,
+        };
+        const multisample: c.VkPipelineMultisampleStateCreateInfo = .{
+            .sType = c.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+            .rasterizationSamples = c.VK_SAMPLE_COUNT_1_BIT,
+        };
+        const depth_desc = desc.depth_stencil orelse pipeline.DepthStencilState{ .format = .depth32_float };
+        const depth_stencil: c.VkPipelineDepthStencilStateCreateInfo = .{
+            .sType = c.VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+            .depthTestEnable = if (desc.depth_stencil != null) c.VK_TRUE else c.VK_FALSE,
+            .depthWriteEnable = if (depth_desc.depth_write_enabled) c.VK_TRUE else c.VK_FALSE,
+            .depthCompareOp = compareFunction(depth_desc.depth_compare),
+        };
+
+        const targets = try self.gpa.alloc(c.VkPipelineColorBlendAttachmentState, desc.color_targets.len);
+        defer self.gpa.free(targets);
+        const color_formats = try self.gpa.alloc(c.VkFormat, desc.color_targets.len);
+        defer self.gpa.free(color_formats);
+        for (desc.color_targets, targets, color_formats) |target, *native, *native_format| {
+            const blend = target.blend orelse pipeline.BlendState{};
+            native.* = .{
+                .blendEnable = if (target.blend != null) c.VK_TRUE else c.VK_FALSE,
+                .srcColorBlendFactor = blendFactor(blend.color.src),
+                .dstColorBlendFactor = blendFactor(blend.color.dst),
+                .colorBlendOp = blendOp(blend.color.op),
+                .srcAlphaBlendFactor = blendFactor(blend.alpha.src),
+                .dstAlphaBlendFactor = blendFactor(blend.alpha.dst),
+                .alphaBlendOp = blendOp(blend.alpha.op),
+                .colorWriteMask = colorWriteMask(target.write_mask),
+            };
+            native_format.* = vkFormat(target.format);
+        }
+        const color_blend: c.VkPipelineColorBlendStateCreateInfo = .{
+            .sType = c.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+            .attachmentCount = @intCast(targets.len),
+            .pAttachments = targets.ptr,
+        };
+        const dynamic_states = [_]c.VkDynamicState{ c.VK_DYNAMIC_STATE_VIEWPORT, c.VK_DYNAMIC_STATE_SCISSOR };
+        const dynamic: c.VkPipelineDynamicStateCreateInfo = .{
+            .sType = c.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+            .dynamicStateCount = dynamic_states.len,
+            .pDynamicStates = &dynamic_states,
+        };
+        const depth_format = if (desc.depth_stencil) |depth| vkFormat(depth.format) else c.VK_FORMAT_UNDEFINED;
+        const rendering: c.VkPipelineRenderingCreateInfo = .{
+            .sType = c.VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+            .colorAttachmentCount = @intCast(color_formats.len),
+            .pColorAttachmentFormats = color_formats.ptr,
+            .depthAttachmentFormat = depth_format,
+            .stencilAttachmentFormat = if (desc.depth_stencil) |depth|
+                if (depth.format.hasStencil()) depth_format else c.VK_FORMAT_UNDEFINED
+            else
+                c.VK_FORMAT_UNDEFINED,
+        };
+        const info: c.VkGraphicsPipelineCreateInfo = .{
+            .sType = c.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+            .pNext = &rendering,
+            .stageCount = stages.len,
+            .pStages = &stages,
+            .pVertexInputState = &vertex_input,
+            .pInputAssemblyState = &assembly,
+            .pViewportState = &viewport,
+            .pRasterizationState = &raster,
+            .pMultisampleState = &multisample,
+            .pDepthStencilState = &depth_stencil,
+            .pColorBlendState = &color_blend,
+            .pDynamicState = &dynamic,
+            .layout = layout_backing.native,
+        };
+        var native: c.VkPipeline = null;
+        const created = self.injectedResource(.create_render_pipeline) orelse
+            self.device_fns.vkCreateGraphicsPipelines(self.device, null, 1, &info, null, &native);
+        if (created != c.VK_SUCCESS) return pipelineFailure(created, "vkCreateGraphicsPipelines");
+        errdefer self.device_fns.vkDestroyPipeline(self.device, native, null);
+
+        layout_backing.refs += 1;
+        return self.pipelines.add(self.gpa, .{
+            .native = native,
+            .layout = layout_backing,
+            .primitive = desc.primitive,
+        }) catch |err| {
+            layout_backing.refs -= 1;
+            return err;
+        };
+    }
+
+    pub fn destroyRenderPipeline(self: *Device, handle: pipeline.RenderPipelineHandle) void {
+        const state = self.pipelines.getConst(handle) orelse return;
+        const retired = state.*;
+        _ = self.pipelines.remove(handle);
+        self.retire(.{ .render_pipeline = retired });
     }
 
     // -- recording -----------------------------------------------------------------
@@ -1211,15 +1851,67 @@ pub const Device = struct {
         }
     }
 
+    fn createEmptySetLayout(self: *Device) interface.InitError!void {
+        const info: c.VkDescriptorSetLayoutCreateInfo = .{
+            .sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        };
+        const created = self.injected(.create_empty_set_layout) orelse
+            self.device_fns.vkCreateDescriptorSetLayout(self.device, &info, null, &self.empty_set_layout);
+        if (created != c.VK_SUCCESS) {
+            self.empty_set_layout = null;
+            return failed(created, "creating the empty descriptor-set layout");
+        }
+    }
+
     /// Releases everything this device created, newest first, then the device itself. Waits for
     /// nothing: `deinit` has already waited, and a device that failed to initialize submitted
     /// nothing. Destroying the pool frees every command buffer it allocated.
     fn teardown(self: *Device) void {
         const gpa = self.gpa;
         if (self.device != null) {
+            // Dependency backings are destroyed in one ordered sweep below. A lost device may
+            // leave retirement entries unresolved, so ref drops during this sweep must not append
+            // new entries or destroy a set layout ahead of a descriptor pool that still uses it.
+            self.tearing_down = true;
             // Only a device whose table loaded can have made a resource, so these loops are empty
             // on every path that could not call them.
             for (self.retired.entries.items) |entry| entry.backing.release(self);
+
+            var pipelines = self.pipelines.iterator();
+            while (pipelines.next()) |entry| self.device_fns.vkDestroyPipeline(self.device, entry.value.native, null);
+            var shaders = self.shaders.iterator();
+            while (shaders.next()) |entry| {
+                self.device_fns.vkDestroyShaderModule(self.device, entry.value.native, null);
+                gpa.free(entry.value.bytes);
+            }
+            var bind_groups = self.bind_groups.iterator();
+            while (bind_groups.next()) |entry| {
+                _ = self.device_fns.vkFreeDescriptorSets(self.device, entry.value.pool.native, 1, &entry.value.native);
+                gpa.free(entry.value.entries);
+            }
+            for (self.descriptor_pools.items) |pool| {
+                self.device_fns.vkDestroyDescriptorPool(self.device, pool.native, null);
+                gpa.destroy(pool);
+            }
+            // Pipeline layouts before the descriptor-set layouts they contain.
+            for (self.pipeline_layout_backings.items) |backing| {
+                if (!backing.released) {
+                    self.device_fns.vkDestroyPipelineLayout(self.device, backing.native, null);
+                    gpa.free(backing.groups);
+                }
+                gpa.destroy(backing);
+            }
+            for (self.bind_group_layout_backings.items) |backing| {
+                if (!backing.released) {
+                    self.device_fns.vkDestroyDescriptorSetLayout(self.device, backing.native, null);
+                    gpa.free(backing.entries);
+                }
+                gpa.destroy(backing);
+            }
+            if (self.empty_set_layout != null) {
+                self.device_fns.vkDestroyDescriptorSetLayout(self.device, self.empty_set_layout, null);
+            }
+
             var buffers = self.buffers.iterator();
             while (buffers.next()) |e| Retired.release(.{ .buffer = .{ .native = e.value.native, .allocation = e.value.allocation } }, self);
             var textures = self.textures.iterator();
@@ -1255,6 +1947,14 @@ pub const Device = struct {
         self.buffers.deinit(gpa);
         self.textures.deinit(gpa);
         self.samplers.deinit(gpa);
+        self.shaders.deinit(gpa);
+        self.bind_group_layouts.deinit(gpa);
+        self.bind_groups.deinit(gpa);
+        self.pipeline_layouts.deinit(gpa);
+        self.pipelines.deinit(gpa);
+        self.descriptor_pools.deinit(gpa);
+        self.bind_group_layout_backings.deinit(gpa);
+        self.pipeline_layout_backings.deinit(gpa);
         gpa.destroy(self);
     }
 
@@ -1600,6 +2300,283 @@ fn resourceFailure(result: c.VkResult, comptime what: []const u8) interface.Reso
             break :blk error.OutOfDeviceMemory;
         },
     };
+}
+
+fn shaderFailure(result: c.VkResult, comptime what: []const u8) interface.ResourceError {
+    return switch (result) {
+        c.VK_ERROR_OUT_OF_HOST_MEMORY => error.OutOfMemory,
+        c.VK_ERROR_OUT_OF_DEVICE_MEMORY => error.OutOfDeviceMemory,
+        else => blk: {
+            log.warn("vulkan: " ++ what ++ " rejected SPIR-V: {s}", .{vk.resultName(result)});
+            break :blk error.ShaderCompilationFailed;
+        },
+    };
+}
+
+fn descriptorFailure(result: c.VkResult, comptime what: []const u8) interface.ResourceError {
+    return switch (result) {
+        c.VK_ERROR_OUT_OF_HOST_MEMORY => error.OutOfMemory,
+        c.VK_ERROR_OUT_OF_DEVICE_MEMORY, c.VK_ERROR_OUT_OF_POOL_MEMORY, c.VK_ERROR_FRAGMENTED_POOL => error.OutOfDeviceMemory,
+        else => blk: {
+            log.warn("vulkan: " ++ what ++ " failed: {s}", .{vk.resultName(result)});
+            break :blk error.InvalidDescriptor;
+        },
+    };
+}
+
+fn pipelineFailure(result: c.VkResult, comptime what: []const u8) interface.ResourceError {
+    return switch (result) {
+        c.VK_ERROR_OUT_OF_HOST_MEMORY => error.OutOfMemory,
+        c.VK_ERROR_OUT_OF_DEVICE_MEMORY => error.OutOfDeviceMemory,
+        else => blk: {
+            log.warn("vulkan: " ++ what ++ " rejected the pipeline: {s}", .{vk.resultName(result)});
+            break :blk error.InvalidDescriptor;
+        },
+    };
+}
+
+fn descriptorType(binding_type: pipeline.BindingType) c.VkDescriptorType {
+    return switch (binding_type) {
+        .uniform_buffer => c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .storage_buffer => c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        .sampled_texture => c.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+        .sampler => c.VK_DESCRIPTOR_TYPE_SAMPLER,
+    };
+}
+
+fn shaderStages(stages: pipeline.ShaderStages) c.VkShaderStageFlags {
+    var flags: u32 = 0;
+    if (stages.vertex) flags |= @as(u32, c.VK_SHADER_STAGE_VERTEX_BIT);
+    if (stages.fragment) flags |= @as(u32, c.VK_SHADER_STAGE_FRAGMENT_BIT);
+    return flags;
+}
+
+const DescriptorCounts = struct {
+    uniform: u32 = 0,
+    storage: u32 = 0,
+    image: u32 = 0,
+    sampler: u32 = 0,
+    resources: u32 = 0,
+};
+
+fn addLayoutCounts(
+    entries: []const pipeline.BindGroupLayoutEntry,
+    total: *DescriptorCounts,
+    vertex: *DescriptorCounts,
+    fragment: *DescriptorCounts,
+) void {
+    for (entries) |entry| {
+        switch (entry.type) {
+            .uniform_buffer => {
+                total.uniform += 1;
+                if (entry.visibility.vertex) vertex.uniform += 1;
+                if (entry.visibility.fragment) fragment.uniform += 1;
+            },
+            .storage_buffer => {
+                total.storage += 1;
+                if (entry.visibility.vertex) vertex.storage += 1;
+                if (entry.visibility.fragment) fragment.storage += 1;
+            },
+            .sampled_texture => {
+                total.image += 1;
+                if (entry.visibility.vertex) vertex.image += 1;
+                if (entry.visibility.fragment) fragment.image += 1;
+            },
+            .sampler => {
+                total.sampler += 1;
+                if (entry.visibility.vertex) vertex.sampler += 1;
+                if (entry.visibility.fragment) fragment.sampler += 1;
+            },
+        }
+        if (entry.visibility.vertex) vertex.resources += 1;
+        if (entry.visibility.fragment) fragment.resources += 1;
+    }
+}
+
+fn countsWithinLimits(
+    limits: *const c.VkPhysicalDeviceLimits,
+    total: DescriptorCounts,
+    vertex: DescriptorCounts,
+    fragment: DescriptorCounts,
+) bool {
+    if (total.uniform > limits.maxDescriptorSetUniformBuffers or
+        total.storage > limits.maxDescriptorSetStorageBuffers or
+        total.image > limits.maxDescriptorSetSampledImages or
+        total.sampler > limits.maxDescriptorSetSamplers) return false;
+    for ([_]DescriptorCounts{ vertex, fragment }) |stage| {
+        if (stage.uniform > limits.maxPerStageDescriptorUniformBuffers or
+            stage.storage > limits.maxPerStageDescriptorStorageBuffers or
+            stage.image > limits.maxPerStageDescriptorSampledImages or
+            stage.sampler > limits.maxPerStageDescriptorSamplers or
+            stage.resources > limits.maxPerStageResources) return false;
+    }
+    return true;
+}
+
+fn layoutWithinLimits(limits: *const c.VkPhysicalDeviceLimits, entries: []const pipeline.BindGroupLayoutEntry) bool {
+    var total: DescriptorCounts = .{};
+    var vertex: DescriptorCounts = .{};
+    var fragment: DescriptorCounts = .{};
+    addLayoutCounts(entries, &total, &vertex, &fragment);
+    return countsWithinLimits(limits, total, vertex, fragment);
+}
+
+/// Vulkan's descriptor-set limits apply to the sum of every set in a pipeline layout, not
+/// merely to each set layout in isolation. Keep this refusal ahead of the validation layer.
+fn pipelineLayoutWithinLimits(limits: *const c.VkPhysicalDeviceLimits, groups: []const ?*BindGroupLayoutBacking) bool {
+    var total: DescriptorCounts = .{};
+    var vertex: DescriptorCounts = .{};
+    var fragment: DescriptorCounts = .{};
+    for (groups) |group| {
+        if (group) |present| addLayoutCounts(present.entries, &total, &vertex, &fragment);
+    }
+    return countsWithinLimits(limits, total, vertex, fragment);
+}
+
+fn findBindGroupEntry(entries: []const pipeline.BindGroupEntry, binding: u32) ?pipeline.BindGroupEntry {
+    for (entries) |entry| {
+        if (entry.binding == binding) return entry;
+    }
+    return null;
+}
+
+fn resolvedBindingSize(binding: pipeline.BufferBinding, buffer_size: u64) ?u64 {
+    if (binding.offset >= buffer_size) return null;
+    const remaining = buffer_size - binding.offset;
+    const size = if (binding.size == 0) remaining else binding.size;
+    if (size == 0 or size > remaining) return null;
+    return size;
+}
+
+fn bindingRangeValid(binding: pipeline.BufferBinding, buffer_size: u64, alignment: u32, maximum: u64) bool {
+    if (alignment == 0 or binding.offset % alignment != 0) return false;
+    const size = resolvedBindingSize(binding, buffer_size) orelse return false;
+    return size <= maximum;
+}
+
+fn pipelineDescriptorValid(limits: *const c.VkPhysicalDeviceLimits, desc: pipeline.RenderPipelineDesc) bool {
+    if (desc.vertex_buffers.len > pipeline.max_vertex_buffers or
+        desc.vertex_buffers.len > limits.maxVertexInputBindings or
+        desc.color_targets.len > limits.maxColorAttachments) return false;
+
+    var attribute_count: usize = 0;
+    for (desc.vertex_buffers) |binding| {
+        if (binding.stride == 0 or binding.stride > limits.maxVertexInputBindingStride) return false;
+        attribute_count += binding.attributes.len;
+        for (binding.attributes, 0..) |attribute, i| {
+            if (attribute.location >= limits.maxVertexInputAttributes or
+                attribute.offset > limits.maxVertexInputAttributeOffset or
+                attribute.offset +| attribute.format.size() > binding.stride) return false;
+            for (binding.attributes[0..i]) |earlier| {
+                if (earlier.location == attribute.location) return false;
+            }
+        }
+    }
+    if (attribute_count > limits.maxVertexInputAttributes) return false;
+    // Locations are one namespace across all vertex buffers.
+    for (desc.vertex_buffers, 0..) |binding, binding_index| {
+        for (binding.attributes) |attribute| {
+            for (desc.vertex_buffers[0..binding_index]) |earlier_binding| {
+                for (earlier_binding.attributes) |earlier| {
+                    if (earlier.location == attribute.location) return false;
+                }
+            }
+        }
+    }
+    for (desc.color_targets) |target| {
+        if (!target.format.isColor()) return false;
+    }
+    if (desc.depth_stencil) |depth| if (!depth.format.isDepth()) return false;
+    return true;
+}
+
+fn vertexFormat(vertex_format: format.VertexFormat) c.VkFormat {
+    return switch (vertex_format) {
+        .float32 => c.VK_FORMAT_R32_SFLOAT,
+        .float32x2 => c.VK_FORMAT_R32G32_SFLOAT,
+        .float32x3 => c.VK_FORMAT_R32G32B32_SFLOAT,
+        .float32x4 => c.VK_FORMAT_R32G32B32A32_SFLOAT,
+        .unorm8x4 => c.VK_FORMAT_R8G8B8A8_UNORM,
+        .uint8x4 => c.VK_FORMAT_R8G8B8A8_UINT,
+        .uint16x2 => c.VK_FORMAT_R16G16_UINT,
+        .uint32 => c.VK_FORMAT_R32_UINT,
+    };
+}
+
+fn vertexStep(step: pipeline.VertexStepMode) c.VkVertexInputRate {
+    return switch (step) {
+        .vertex => c.VK_VERTEX_INPUT_RATE_VERTEX,
+        .instance => c.VK_VERTEX_INPUT_RATE_INSTANCE,
+    };
+}
+
+fn primitiveTopology(topology: pipeline.PrimitiveTopology) c.VkPrimitiveTopology {
+    return switch (topology) {
+        .triangle_list => c.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        .triangle_strip => c.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP,
+        .line_list => c.VK_PRIMITIVE_TOPOLOGY_LINE_LIST,
+        .point_list => c.VK_PRIMITIVE_TOPOLOGY_POINT_LIST,
+    };
+}
+
+fn cullMode(mode: pipeline.CullMode) c.VkCullModeFlags {
+    return switch (mode) {
+        .none => c.VK_CULL_MODE_NONE,
+        .front => c.VK_CULL_MODE_FRONT_BIT,
+        .back => c.VK_CULL_MODE_BACK_BIT,
+    };
+}
+
+fn frontFace(face: pipeline.FrontFace) c.VkFrontFace {
+    return switch (face) {
+        .counter_clockwise => c.VK_FRONT_FACE_CLOCKWISE,
+        .clockwise => c.VK_FRONT_FACE_COUNTER_CLOCKWISE,
+    };
+}
+
+fn compareFunction(compare: pipeline.CompareFunction) c.VkCompareOp {
+    return switch (compare) {
+        .never => c.VK_COMPARE_OP_NEVER,
+        .less => c.VK_COMPARE_OP_LESS,
+        .equal => c.VK_COMPARE_OP_EQUAL,
+        .less_equal => c.VK_COMPARE_OP_LESS_OR_EQUAL,
+        .greater => c.VK_COMPARE_OP_GREATER,
+        .not_equal => c.VK_COMPARE_OP_NOT_EQUAL,
+        .greater_equal => c.VK_COMPARE_OP_GREATER_OR_EQUAL,
+        .always => c.VK_COMPARE_OP_ALWAYS,
+    };
+}
+
+fn blendFactor(factor: pipeline.BlendFactor) c.VkBlendFactor {
+    return switch (factor) {
+        .zero => c.VK_BLEND_FACTOR_ZERO,
+        .one => c.VK_BLEND_FACTOR_ONE,
+        .src_alpha => c.VK_BLEND_FACTOR_SRC_ALPHA,
+        .one_minus_src_alpha => c.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .dst_alpha => c.VK_BLEND_FACTOR_DST_ALPHA,
+        .one_minus_dst_alpha => c.VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA,
+        .src_color => c.VK_BLEND_FACTOR_SRC_COLOR,
+        .one_minus_src_color => c.VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR,
+    };
+}
+
+fn blendOp(op: pipeline.BlendOp) c.VkBlendOp {
+    return switch (op) {
+        .add => c.VK_BLEND_OP_ADD,
+        .subtract => c.VK_BLEND_OP_SUBTRACT,
+        .reverse_subtract => c.VK_BLEND_OP_REVERSE_SUBTRACT,
+        .min => c.VK_BLEND_OP_MIN,
+        .max => c.VK_BLEND_OP_MAX,
+    };
+}
+
+fn colorWriteMask(mask: pipeline.ColorWriteMask) c.VkColorComponentFlags {
+    var flags: u32 = 0;
+    if (mask.r) flags |= @as(u32, c.VK_COLOR_COMPONENT_R_BIT);
+    if (mask.g) flags |= @as(u32, c.VK_COLOR_COMPONENT_G_BIT);
+    if (mask.b) flags |= @as(u32, c.VK_COLOR_COMPONENT_B_BIT);
+    if (mask.a) flags |= @as(u32, c.VK_COLOR_COMPONENT_A_BIT);
+    return flags;
 }
 
 /// The most mip levels an extent can have: down to 1x1, and never more.
@@ -2422,5 +3399,302 @@ test "a descriptor Vulkan cannot build is refused before anything is created" {
 
     try testing.expectEqual(baseline, dev.allocations);
     try testing.expectEqual(@as(usize, 0), dev.liveCount());
+    try expectValidationHeard(dev);
+}
+
+// -- shaders, persistent bindings and pipelines (Step 5) ------------------------------
+
+const builtin_stages = struct {
+    const sprite_vertex = @embedFile("sprite_vertex_spirv");
+    const sprite_fragment = @embedFile("sprite_fragment_spirv");
+    const quad_vertex = @embedFile("quad_vertex_spirv");
+    const quad_fragment = @embedFile("quad_fragment_spirv");
+};
+
+fn createSpritePipeline(
+    dev: *Device,
+    pipeline_layout: pipeline.PipelineLayoutHandle,
+    vertex: resource.ShaderModuleHandle,
+    fragment: resource.ShaderModuleHandle,
+) !pipeline.RenderPipelineHandle {
+    return dev.createRenderPipeline(.{
+        .label = "sprite pipeline",
+        .layout = pipeline_layout,
+        .vertex_shader = vertex,
+        .vertex_entry = "main",
+        .fragment_shader = fragment,
+        .fragment_entry = "main",
+        .vertex_buffers = &.{.{
+            .stride = 20,
+            .attributes = &.{
+                .{ .location = 0, .offset = 0, .format = .float32x2 },
+                .{ .location = 1, .offset = 8, .format = .float32x2 },
+                .{ .location = 2, .offset = 16, .format = .unorm8x4 },
+            },
+        }},
+        .color_targets = &.{.{
+            .format = .bgra8_unorm_srgb,
+            .blend = pipeline.BlendState.premultiplied_alpha,
+        }},
+    });
+}
+
+test "the four produced stages carry the documented shader ABI" {
+    try spirv.validateProfile(builtin_stages.sprite_vertex, .sprite_vertex);
+    try spirv.validateProfile(builtin_stages.sprite_fragment, .sprite_fragment);
+    try spirv.validateProfile(builtin_stages.quad_vertex, .quad_vertex);
+    try spirv.validateProfile(builtin_stages.quad_fragment, .quad_fragment);
+}
+
+test "malformed shader envelopes and wrong-stage entries are refused before a pipeline call" {
+    const dev = try validated(.{});
+    defer dev.deinit();
+
+    try testing.expectError(error.ShaderCompilationFailed, dev.createShaderModule(.{ .bytes = "not SPIR-V" }));
+    var corrupted = builtin_stages.sprite_vertex[0..24].*;
+    corrupted[0] = 0;
+    try testing.expectError(error.ShaderCompilationFailed, dev.createShaderModule(.{ .bytes = &corrupted }));
+    try testing.expectError(error.RuntimeCompilationUnsupported, dev.createShaderModuleFromSource(.{ .source = "void main(){}" }));
+
+    const vertex = try dev.createShaderModule(.{ .label = "sprite vertex", .bytes = builtin_stages.sprite_vertex });
+    const fragment = try dev.createShaderModule(.{ .label = "sprite fragment", .bytes = builtin_stages.sprite_fragment });
+    const group_layout = try dev.createBindGroupLayout(.{ .entries = &.{
+        .{ .binding = 0, .type = .sampled_texture, .visibility = .{ .fragment = true } },
+        .{ .binding = 1, .type = .sampler, .visibility = .{ .fragment = true } },
+    } });
+    const layout_handle = try dev.createPipelineLayout(.{
+        .bind_group_layouts = &.{group_layout},
+        .inline_constant_bytes = 64,
+    });
+    try testing.expectError(error.InvalidDescriptor, dev.createRenderPipeline(.{
+        .layout = layout_handle,
+        .vertex_shader = vertex,
+        .vertex_entry = "vertexMain",
+        .fragment_shader = fragment,
+        .fragment_entry = "main",
+    }));
+    try testing.expectError(error.InvalidDescriptor, dev.createRenderPipeline(.{
+        .layout = layout_handle,
+        .vertex_shader = fragment,
+        .vertex_entry = "main",
+        .fragment_shader = fragment,
+        .fragment_entry = "main",
+    }));
+
+    dev.destroyPipelineLayout(layout_handle);
+    dev.destroyBindGroupLayout(group_layout);
+    dev.destroyShaderModule(fragment);
+    dev.destroyShaderModule(vertex);
+    try expectValidationHeard(dev);
+}
+
+test "persistent descriptor sets preserve holes, aligned ranges and dependency lifetimes" {
+    const dev = try validated(.{});
+    defer dev.deinit();
+
+    const vertex = try dev.createShaderModule(.{ .label = "sprite vertex", .bytes = builtin_stages.sprite_vertex });
+    const fragment = try dev.createShaderModule(.{ .label = "sprite fragment", .bytes = builtin_stages.sprite_fragment });
+    const group_layout = try dev.createBindGroupLayout(.{ .label = "material", .entries = &.{
+        .{ .binding = 0, .type = .sampled_texture, .visibility = .{ .fragment = true } },
+        .{ .binding = 1, .type = .sampler, .visibility = .{ .fragment = true } },
+    } });
+    const pipeline_layout = try dev.createPipelineLayout(.{
+        .bind_group_layouts = &.{group_layout},
+        .inline_constant_bytes = 64,
+    });
+    const hole_layout = try dev.createPipelineLayout(.{ .bind_group_layouts = &.{ .none, .none, group_layout } });
+    const hole_backing = dev.pipeline_layouts.getConst(hole_layout).?.backing;
+    try testing.expect(hole_backing.groups[0] == null and hole_backing.groups[1] == null);
+    try testing.expect(hole_backing.groups[2].? == dev.bind_group_layouts.getConst(group_layout).?.backing);
+
+    const texture = try dev.createTexture(.{
+        .size = .{ .width = 4, .height = 4 },
+        .format = .rgba8_unorm_srgb,
+        .usage = .{ .sampled = true },
+        .initial_state = .shader_read,
+    });
+    const sampler = try dev.createSampler(.{});
+    const group = try dev.createBindGroup(.{ .layout = group_layout, .entries = &.{
+        .{ .binding = 1, .resource = .{ .sampler = sampler } },
+        .{ .binding = 0, .resource = .{ .sampled_texture = texture } },
+    } });
+    const render_pipeline = try createSpritePipeline(dev, pipeline_layout, vertex, fragment);
+    dev.waitIdle();
+
+    // Handles die now; backings wait for the open recording and for their dependency refs.
+    const cb = try dev.beginCommandBuffer();
+    dev.destroyRenderPipeline(render_pipeline);
+    dev.destroyPipelineLayout(pipeline_layout);
+    dev.destroyPipelineLayout(hole_layout);
+    dev.destroyBindGroup(group);
+    dev.destroyBindGroupLayout(group_layout);
+    dev.destroyShaderModule(vertex);
+    dev.destroyShaderModule(fragment);
+    dev.destroyTexture(texture);
+    dev.destroySampler(sampler);
+    try testing.expect(dev.retiredCount() > 0);
+    try cb.submit();
+    dev.waitIdle();
+    try testing.expectEqual(@as(usize, 0), dev.retiredCount());
+    try testing.expectEqual(@as(usize, 0), dev.liveCount());
+    try expectValidationHeard(dev);
+}
+
+test "buffer bindings use resolved aligned ranges and descriptor pools grow without resetting live sets" {
+    const dev = try validated(.{});
+    defer dev.deinit();
+    const caps = dev.capabilities();
+    const alignment = @max(caps.uniform_buffer_offset_alignment, caps.storage_buffer_offset_alignment);
+    const buffer_size = @as(u64, alignment) * 2 + 16;
+    const buffer = try dev.createBuffer(.{
+        .size = buffer_size,
+        .usage = .{ .uniform = true, .storage = true },
+        .memory = .upload,
+    });
+    const layout_handle = try dev.createBindGroupLayout(.{ .entries = &.{
+        .{ .binding = 7, .type = .uniform_buffer, .visibility = .both },
+        .{ .binding = 9, .type = .storage_buffer, .visibility = .{ .vertex = true } },
+    } });
+    try testing.expectError(error.InvalidDescriptor, dev.createBindGroup(.{ .layout = layout_handle, .entries = &.{
+        .{ .binding = 7, .resource = .{ .uniform_buffer = .{ .buffer = buffer, .offset = 1, .size = 16 } } },
+        .{ .binding = 9, .resource = .{ .storage_buffer = .{ .buffer = buffer, .offset = alignment, .size = 16 } } },
+    } }));
+    const group = try dev.createBindGroup(.{ .layout = layout_handle, .entries = &.{
+        .{ .binding = 7, .resource = .{ .uniform_buffer = .{ .buffer = buffer, .offset = alignment, .size = 0 } } },
+        .{ .binding = 9, .resource = .{ .storage_buffer = .{ .buffer = buffer, .offset = alignment, .size = 16 } } },
+    } });
+    const stored_binding = dev.bind_groups.getConst(group).?.entries[0].resource.uniform_buffer;
+    try testing.expectEqual(buffer_size - alignment, resolvedBindingSize(stored_binding, buffer_size).?);
+
+    // Each set is legal alone, but Vulkan applies maxDescriptorSet* to their aggregate in a
+    // pipeline layout. A backend must refuse that caller-controlled descriptor before the driver.
+    const saved_uniform_limit = dev.limits.maxDescriptorSetUniformBuffers;
+    dev.limits.maxDescriptorSetUniformBuffers = 1;
+    try testing.expectError(error.InvalidDescriptor, dev.createPipelineLayout(.{
+        .bind_group_layouts = &.{ layout_handle, layout_handle },
+    }));
+    dev.limits.maxDescriptorSetUniformBuffers = saved_uniform_limit;
+
+    const empty_layout = try dev.createBindGroupLayout(.{ .entries = &.{} });
+    var groups: [Device.descriptor_sets_per_pool + 1]pipeline.BindGroupHandle = undefined;
+    for (&groups) |*handle| handle.* = try dev.createBindGroup(.{ .layout = empty_layout, .entries = &.{} });
+    try testing.expectEqual(@as(usize, 2), dev.descriptor_pools.items.len);
+    try testing.expectEqual(Device.descriptor_sets_per_pool, dev.descriptor_pools.items[0].live_sets);
+    for (groups) |handle| dev.destroyBindGroup(handle);
+    dev.destroyBindGroup(group);
+    dev.destroyBindGroupLayout(empty_layout);
+    dev.destroyBindGroupLayout(layout_handle);
+    dev.destroyBuffer(buffer);
+    try testing.expectEqual(@as(u32, 0), dev.descriptor_pools.items[0].live_sets);
+    try expectValidationHeard(dev);
+}
+
+test "every Vulkan call added for shaders bindings and pipelines unwinds before publishing a handle" {
+    const dev = try validated(.{});
+    defer dev.deinit();
+
+    dev.faults.resource = .{ .stage = .create_shader, .result = c.VK_ERROR_OUT_OF_DEVICE_MEMORY };
+    try testing.expectError(error.OutOfDeviceMemory, dev.createShaderModule(.{ .bytes = builtin_stages.sprite_vertex }));
+    dev.faults.resource = .{ .stage = .create_bind_group_layout, .result = c.VK_ERROR_OUT_OF_HOST_MEMORY };
+    try testing.expectError(error.OutOfMemory, dev.createBindGroupLayout(.{ .entries = &.{} }));
+
+    const vertex = try dev.createShaderModule(.{ .bytes = builtin_stages.sprite_vertex });
+    const fragment = try dev.createShaderModule(.{ .bytes = builtin_stages.sprite_fragment });
+    const group_layout = try dev.createBindGroupLayout(.{ .entries = &.{
+        .{ .binding = 0, .type = .sampled_texture, .visibility = .{ .fragment = true } },
+        .{ .binding = 1, .type = .sampler, .visibility = .{ .fragment = true } },
+    } });
+    const texture = try dev.createTexture(.{
+        .size = .{ .width = 2, .height = 2 },
+        .format = .rgba8_unorm_srgb,
+        .usage = .{ .sampled = true },
+        .initial_state = .shader_read,
+    });
+    const sampler = try dev.createSampler(.{});
+    const group_desc: pipeline.BindGroupDesc = .{ .layout = group_layout, .entries = &.{
+        .{ .binding = 0, .resource = .{ .sampled_texture = texture } },
+        .{ .binding = 1, .resource = .{ .sampler = sampler } },
+    } };
+
+    dev.faults.resource = .{ .stage = .create_descriptor_pool, .result = c.VK_ERROR_OUT_OF_DEVICE_MEMORY };
+    try testing.expectError(error.OutOfDeviceMemory, dev.createBindGroup(group_desc));
+    dev.faults.resource = .{ .stage = .allocate_descriptor_set, .result = c.VK_ERROR_OUT_OF_HOST_MEMORY };
+    try testing.expectError(error.OutOfMemory, dev.createBindGroup(group_desc));
+    const group = try dev.createBindGroup(group_desc);
+
+    const layout_desc: pipeline.PipelineLayoutDesc = .{
+        .bind_group_layouts = &.{group_layout},
+        .inline_constant_bytes = 64,
+    };
+    dev.faults.resource = .{ .stage = .create_pipeline_layout, .result = c.VK_ERROR_OUT_OF_DEVICE_MEMORY };
+    try testing.expectError(error.OutOfDeviceMemory, dev.createPipelineLayout(layout_desc));
+    const pipeline_layout = try dev.createPipelineLayout(layout_desc);
+    dev.faults.resource = .{ .stage = .create_render_pipeline, .result = c.VK_ERROR_OUT_OF_HOST_MEMORY };
+    try testing.expectError(error.OutOfMemory, createSpritePipeline(dev, pipeline_layout, vertex, fragment));
+    try testing.expect(dev.faults.resource == null);
+
+    dev.destroyPipelineLayout(pipeline_layout);
+    dev.destroyBindGroup(group);
+    dev.destroySampler(sampler);
+    dev.destroyTexture(texture);
+    dev.destroyBindGroupLayout(group_layout);
+    dev.destroyShaderModule(fragment);
+    dev.destroyShaderModule(vertex);
+    dev.waitIdle();
+    try testing.expectEqual(@as(usize, 0), dev.liveCount());
+    try testing.expectEqual(@as(usize, 0), dev.retiredCount());
+    try expectValidationHeard(dev);
+}
+
+fn step5ObjectsUnderPressure(dev: *Device) !void {
+    const vertex = try dev.createShaderModule(.{ .bytes = builtin_stages.sprite_vertex });
+    defer dev.destroyShaderModule(vertex);
+    const fragment = try dev.createShaderModule(.{ .bytes = builtin_stages.sprite_fragment });
+    defer dev.destroyShaderModule(fragment);
+    const group_layout = try dev.createBindGroupLayout(.{ .entries = &.{
+        .{ .binding = 0, .type = .sampled_texture, .visibility = .{ .fragment = true } },
+        .{ .binding = 1, .type = .sampler, .visibility = .{ .fragment = true } },
+    } });
+    defer dev.destroyBindGroupLayout(group_layout);
+    const texture = try dev.createTexture(.{
+        .size = .{ .width = 2, .height = 2 },
+        .format = .rgba8_unorm_srgb,
+        .usage = .{ .sampled = true },
+        .initial_state = .shader_read,
+    });
+    defer dev.destroyTexture(texture);
+    const sampler = try dev.createSampler(.{});
+    defer dev.destroySampler(sampler);
+    const group = try dev.createBindGroup(.{ .layout = group_layout, .entries = &.{
+        .{ .binding = 0, .resource = .{ .sampled_texture = texture } },
+        .{ .binding = 1, .resource = .{ .sampler = sampler } },
+    } });
+    defer dev.destroyBindGroup(group);
+    const pipeline_layout = try dev.createPipelineLayout(.{
+        .bind_group_layouts = &.{group_layout},
+        .inline_constant_bytes = 64,
+    });
+    defer dev.destroyPipelineLayout(pipeline_layout);
+    const render_pipeline = try createSpritePipeline(dev, pipeline_layout, vertex, fragment);
+    defer dev.destroyRenderPipeline(render_pipeline);
+}
+
+test "every host allocation in the Step 5 object graph can fail without a leak" {
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{});
+    const dev = try Device.initWith(failing.allocator(), .{}, .{ .validation = .required });
+    defer dev.deinit();
+
+    var extra: usize = 0;
+    while (true) : (extra += 1) {
+        failing.fail_index = failing.alloc_index + extra;
+        const outcome = step5ObjectsUnderPressure(dev);
+        failing.fail_index = std.math.maxInt(usize);
+        dev.waitIdle();
+        if (outcome) |_| break else |err| try testing.expectEqual(error.OutOfMemory, err);
+        try testing.expectEqual(@as(usize, 0), dev.liveCount());
+        try testing.expectEqual(@as(usize, 0), dev.retiredCount());
+    }
+    try testing.expectEqual(@as(usize, 0), dev.liveCount());
+    try testing.expectEqual(@as(usize, 0), dev.retiredCount());
     try expectValidationHeard(dev);
 }

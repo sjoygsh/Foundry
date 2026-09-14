@@ -619,7 +619,7 @@ are unchanged since `m11`. Frame time is the display's and is not claimed, and a
 measured slowing the calling thread's unsplit work, which is recorded as debt with a revisit
 trigger.
 
-### M13 — Portable: "the RHI was real" — **in progress; 4/10 steps complete**
+### M13 — Portable: "the RHI was real" — **in progress; 5/10 steps complete**
 
 **The backend is Vulkan** ([ADR-0033](adr/0033-vulkan-second-backend.md)), which covers Windows
 and Linux with one backend. D3D12 is not planned, and Metal stays macOS's — nothing is routed
@@ -638,7 +638,9 @@ pinned the SDK, headers and tools. Step 2 added native window payloads and the s
 system-library open, and the native Windows test suite was then repaired. Step 3 created a
 validated Vulkan device with its submission timeline on the target. Step 4 added memory-backed
 resources, copies, barriers, cache handling and completion-backed retirement under synchronization
-validation; shaders, drawing and presentation remain.
+validation. Step 5 added the pinned four-stage GLSL-to-SPIR-V producer and exact layout agreement,
+then native shader modules, persistent descriptor sets, pipeline layouts and monolithic graphics
+pipelines under validation; drawing and presentation remain.
 
 The ten steps are qualification/tools, native surfaces/loader, device/submission timeline,
 resources/copies/retirement, shaders/bindings, offscreen drawing, presentation/resize/failure
@@ -660,7 +662,7 @@ have made M1 a months-long wall; that wall was moved here, not removed.
 either survived the encounter or changed by ADR. ADR-0033's two-platform promise requires
 native runtime evidence on both Windows x64 and Linux x64; the design separately exercises
 Linux X11 and Wayland. Cross-compilation, a Mac SDK or a software-only offscreen test cannot
-replace that presentation proof. Stop after Step 4 in the current handoff; Step 5 comes next.
+replace that presentation proof. Stop after Step 5 in the current handoff; Step 6 comes next.
 
 ### M14 — Managed: "players choose their mods" — **not started**
 

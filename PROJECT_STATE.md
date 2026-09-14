@@ -1,11 +1,35 @@
 # Foundry Project State
 
-**Last updated:** 2026-09-14
-**Current handoff: M0 through M12 are complete and tagged. M13 Steps 1 to 4 of 10 are
+**Last updated:** 2026-09-15
+**Current handoff: M0 through M12 are complete and tagged. M13 Steps 1 to 5 of 10 are
 complete: the Windows x64 Vulkan target is qualified and its tools pinned, native window payloads
 and the safe system-library open are implemented, the native Windows test suite passes, and a
-validated Vulkan device allocates, copies and retires resources on the target. Next: Step 5. M14
-through M17 remain unstarted.**
+validated Vulkan device now owns resources, checked shader modules, persistent bindings and
+graphics pipelines. Next: Step 6, offscreen drawing. M14 through M17 remain unstarted.**
+
+**Completed M13 Step 5, 2026-09-15:** checked shaders, persistent bindings and pipelines. The
+Vulkan-selected build graph now compiles the render2d sprite pair and sandbox quad pair from GLSL
+450 with the pinned host `glslangValidator`, validates each Vulkan 1.3 module with `spirv-val`,
+then admits it through `fshadercheck` only when entry stages, vertex/varying/output locations,
+set/binding identities, image/sampler types, block storage, member offsets, matrix stride and
+column-major layout match Foundry's documented ABI. Runtime shader creation accepts only a bounded
+SPIR-V envelope and retains aligned bytes for pre-driver entry selection; runtime source compiling
+is explicitly unsupported. `render2d` now supplies neutral vertex/fragment stage bytes and entry
+names while Metal keeps its existing metallib producer.
+
+The backend implements ref-counted descriptor-set layouts, grow-only device-owned pools with
+individually retired persistent sets, exact binding/resource validation, empty layouts preserving
+set holes, retained pipeline-layout dependencies and dynamic-rendering graphics pipelines.
+Alignment/range, declared usage, per-set and aggregate pipeline descriptor limits are refused
+before driver calls. Shader, set, layout and pipeline backing all retire through the existing
+recording timeline; allocation and injected Vulkan-call failures unwind before handle publication.
+On the qualified Arc A750 the validation-required graph passed **171/171**, including all four
+native pipelines, pool growth, layout holes, destroyed-handle dependency retirement and every new
+failure/allocation path, with no validation warning or error. Deliberately moving the sprite
+sampler from binding 1 to 3 made `fshadercheck` fail with `DecorationMismatch`, then restoration
+passed. Both Windows and Linux Vulkan cross-checks passed through all four producer chains. The
+Mac bar passed at **1,401 declared / 1,391 headless**, ten Metal-only and one Windows-only test
+skipped on macOS, plus 28 Vulkan backend tests in their own step. Resolution: `vulkan.md`, Step 5.
 
 **Completed M13 Step 4, 2026-09-14:** Vulkan resources, copies and retirement.
 `rhi/backends/vulkan/` now selects one permitted memory type per resource, respects dedicated
@@ -3214,13 +3238,13 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M13 Step 5.** Steps 1 to 4 are complete, with the native Windows test repair the owner
-directed before Step 3 (`docs/design/vulkan.md` and their Resolutions). Step 5 compiles the two
-engine-owned shader pairs and builds persistent bindings and pipelines over the resource and
-retirement work Step 4 completed. Its native evidence comes from `zig build vulkan-test
--Drhi=vulkan` on the target with validation required. Native builds on that target use at most
-two jobs at below-normal priority, because it is the owner's gaming PC. Linux x64 still needs the
-owner's second-drive installation before Step 9. M14 waits.
+**Next: M13 Step 6.** Steps 1 to 5 are complete, with the native Windows test repair the owner
+directed before Step 3 (`docs/design/vulkan.md` and their Resolutions). Step 6 adds pass and draw
+commands over Step 5's checked pipelines and persistent bindings, then proves the sprite contract
+offscreen with pixel probes. Its native evidence comes from `zig build vulkan-test -Drhi=vulkan`
+on the target with validation required. Native builds on that target use at most two jobs at
+below-normal priority, because it is the owner's gaming PC. Linux x64 still needs the owner's
+second-drive installation before Step 9. M14 waits.
 
 **M0 through M12 are complete and tagged, and everything is pushed.** Phase 3 is closed;
 Phase 4 is under way. The completed M8/M7 checklists and subsequent M5/M6 material below are
@@ -3243,7 +3267,7 @@ review of `main` rather than beginning on a schedule.
   `docs/design/jobs-and-threading.md` are implemented. Split spans are measurably faster at
   50,000 sprites, every determinism test is unchanged, and a pool's cost to the calling thread's
   unsplit work is recorded as debt.
-* **M13 — Portable.** Design accepted 2026-09-14, trigger activated; **4/10 steps complete**.
+* **M13 — Portable.** Design accepted 2026-09-14, trigger activated; **5/10 steps complete**.
   Read `docs/design/vulkan.md` and ADR-0037/0038. **Vulkan was decided
   2026-09-13 in [ADR-0033](docs/adr/0033-vulkan-second-backend.md)**, covering Windows and
   Linux with one backend; D3D12 is not planned and Metal stays macOS's. With it: the shader

@@ -125,6 +125,7 @@ test {
     _ = @import("backends/vulkan/selection.zig");
     _ = @import("backends/vulkan/layout.zig");
     _ = @import("backends/vulkan/memory.zig");
+    _ = @import("backends/vulkan/spirv.zig");
     // And the selected one, which for Metal means the tests that need a real device. Not a
     // duplicate when the selection *is* null: Zig collects tests per file.
     _ = selected;

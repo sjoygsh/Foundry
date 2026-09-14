@@ -448,8 +448,10 @@ matrix strides and bindings with their CPU producers.
 Descriptor-buffer alignment and range limits become neutral capabilities in M13 Step 4,
 with rule-10 checks on all backends before driver calls. Backend-private copy repacking preserves
 the existing byte-stride contract where Vulkan cannot represent it directly; see
-[vulkan.md](vulkan.md) §5.3. These changes are not implemented by this planning edit.
-Persistent group lifetime remains unchanged (§3/§13).
+[vulkan.md](vulkan.md) §5.3. Step 4 implemented those changes. Step 5 implements Vulkan's
+persistent descriptor sets, preserves unused set positions with empty layouts, checks aggregate
+pipeline-layout limits and retains native layout dependencies through completion. Persistent group
+lifetime remains unchanged (§3/§13).
 
 ### Clip space, which is the other shader-visible contract
 

@@ -102,13 +102,15 @@ ten Metal-only. **M12 is complete (2026-09-14).** Parallel work goes through an 
 never allocates or calls the RHI, and every call site that splits work is tested under `serial`,
 `reversed` and a real pool. `FOUNDRY_SANDBOX_WORKERS` and `FOUNDRY_ROOM_WORKERS` set a sample's
 pool, `0` for none. M12 closed at **1,370 declared / 1,360 headless tests**.
-**M13 Steps 1 to 4 are complete (2026-09-14).** ADR-0037/0038 are accepted; read
+**M13 Steps 1 to 5 are complete (2026-09-15).** ADR-0037/0038 are accepted; read
 `docs/design/vulkan.md`. A Windows x64 Vulkan target is qualified and reached over SSH, Linux
 x64 has a recorded route, the Vulkan tools are pinned in §3 below, `platform` hands out native
 window payloads and opens system libraries safely, and `rhi/backends/vulkan/` creates a validated
-device, tracks its submissions, and allocates, copies and retires resources under synchronization
-validation. The backend is incomplete until Step 7, so `-Drhi=vulkan` builds only its own tests
-(§3).
+device, tracks submissions, allocates/copies/retires resources, and creates checked SPIR-V shader
+modules, persistent descriptor sets, layouts and graphics pipelines under validation. The four
+GLSL stages pass `glslangValidator`, `spirv-val` and Foundry's layout agreement tool before their
+bytes can enter a target. The backend is incomplete until Step 7, so `-Drhi=vulkan` builds only
+its own tests (§3).
 The native Windows `zig build test` passes on the target, and native builds there use at most
 two jobs. Mac cross-compilation never substitutes for runtime
 proof. M14–M17 remain unstarted.
@@ -184,6 +186,7 @@ archive against its recorded SHA-256 before installing:
 vulkansdk-macOS-1.4.357.0.app/Contents/MacOS/vulkansdk-macOS-1.4.357.0 \
   --root "$HOME/VulkanSDK/1.4.357.0" --accept-licenses --default-answer \
   --confirm-command install com.lunarg.vulkan.core
+export PATH="$HOME/VulkanSDK/1.4.357.0/macOS/bin:$PATH"
 ```
 
 ```powershell
