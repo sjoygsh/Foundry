@@ -153,10 +153,13 @@ directory is laid out.
 ### Some of what a game overrides is not in the game
 
 An application may keep a record for its own presentation — both samples do, as
-`room:config.main` and `sandbox:config.main` — holding a window width, a height and a master
-volume. It is an ordinary record of an ordinary schema, so overriding it is the same act as
-overriding a lamp, and a package that does so changes the size of the window the game opens
-in.
+`room:config.main` and `sandbox:config.main` — holding a window width, a height, a master
+volume and the window's icon. It is an ordinary record of an ordinary schema, so overriding it
+is the same act as overriding a lamp, and a package that does so changes the size of the window
+the game opens in. The icon is a record of the sample's own `icon` asset kind — a `source`
+naming a PNG of at most 256 pixels a side — so a package can ship its own image, declare the
+kind as it declares any schema it uses, and point `window_icon` at it. The window takes it at
+startup.
 
 Two limits are worth knowing, and both are deliberate. **A player outranks you.** These
 particular fields can also be set in the player's own preferences file, and a value they

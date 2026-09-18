@@ -56,6 +56,19 @@ pub const WindowError = error{
     WindowResizeRefused,
 };
 
+pub const WindowIconError = error{
+    /// The handle does not name a live window — closed, or from another pool (I1).
+    InvalidWindow,
+    /// Sides outside 1 to `WindowIcon.max_dimension`, a stride shorter than a row, or fewer bytes
+    /// than the rows need. The image came from the application or a package, which is untrusted
+    /// input, so it is reported rather than asserted.
+    InvalidWindowIcon,
+    /// The window system declined the icon or has no way to take one from an application. Some
+    /// Wayland compositors choose an application's icon themselves (`vulkan.md` §9). The window
+    /// carries on without it.
+    WindowIconRefused,
+};
+
 pub const AudioError = error{
     OutOfMemory,
     /// No output device, or the OS declined to open one. **Not a programmer error**: a
@@ -106,6 +119,10 @@ pub fn check(comptime Impl: type, comptime label: []const u8) void {
         // program that resizes itself takes the identical path as a user dragging an
         // edge — which is what makes the one testable by exercising the other.
         expectFn(P, label, "setWindowSize", &.{ *P, window.WindowHandle, window.Size }, WindowError!void);
+
+        // The window's icon, from bytes the application decoded and lends for the call alone.
+        // Host window configuration, so nothing in the public C ABI reaches it (`vulkan.md` §9).
+        expectFn(P, label, "setWindowIcon", &.{ *P, window.WindowHandle, window.WindowIcon }, WindowIconError!void);
 
         // The frame's input boundary, in the order it is called:
         //   pumpEvents  — drain the OS queue, once, at one known point in the frame
@@ -216,6 +233,11 @@ test "the check accepts a conforming implementation" {
                 _ = self;
                 _ = handle;
                 _ = logical;
+            }
+            pub fn setWindowIcon(self: *@This(), handle: window.WindowHandle, icon: window.WindowIcon) WindowIconError!void {
+                _ = self;
+                _ = handle;
+                _ = icon;
             }
             pub fn pumpEvents(self: *@This()) void {
                 _ = self;

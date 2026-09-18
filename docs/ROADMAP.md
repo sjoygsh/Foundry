@@ -555,7 +555,8 @@ used by engine artifacts, never an engine assumption baked into a product.
 **One thing was deliberately not done.** A window icon through `platform` was in the plan and
 is not here: on macOS the Dock and the title bar read the bundle's icon, and `SDL_SetWindowIcon`
 changes nothing a person can see. Writing it now would be code whose only proof is that it
-compiles. It belongs to M13, where a second platform makes it visible.
+compiles. It belongs to M13, where a second platform makes it visible. *Built in M13 Step 8
+and read back from a Windows window.*
 
 **Exit criteria — met.** `Foundry Room.app` and `Foundry Sandbox.app` carry the mark in Finder
 and the Dock; the README shows the wordmark; and [`brand/README.md`](../brand/README.md) tells a
@@ -643,7 +644,10 @@ then native shader modules, persistent descriptor sets, pipeline layouts and mon
 pipelines under validation. Step 6 drew the sprite contract correctly offscreen, proved by pixel
 probes. Step 7 completed the RHI interface: frames, a FIFO swapchain presenting to a real window,
 resize, minimise and restore, held undrawn images and every failed-frame outcome §8 names, with the
-whole test graph passing with Vulkan selected on the target.
+whole test graph passing with Vulkan selected on the target. Step 8 ran both samples on it on
+Windows. They ran from a relocated install with no SDK or compiler, under validation, reloading
+textures with frames in flight. Each wears a window icon it supplies through `platform`, which M10
+deferred here.
 
 The ten steps are qualification/tools, native surfaces/loader, device/submission timeline,
 resources/copies/retirement, shaders/bindings, offscreen drawing, presentation/resize/failure
@@ -656,8 +660,7 @@ place. It also brings: real hardware or VM testing for both platforms, the Vulka
 RenderDoc, Vulkan's own shader-visible binding convention written into `rhi.md` §9 the way
 Metal's was, and the shader cross-compiler decision (ADR-0015), which comes due here because
 Vulkan consumes SPIR-V only. Its native `win32_hwnd` and X11/Wayland payloads are implemented,
-and Windows presents through them; the samples arrive in Step 8 and non-Metal frame pacing is
-measured in Step 9.
+and both samples present through them on Windows; non-Metal frame pacing is measured in Step 9.
 
 **It is the largest milestone in this phase.** ADR-0003 recorded that a Vulkan-first plan would
 have made M1 a months-long wall; that wall was moved here, not removed.
@@ -666,7 +669,7 @@ have made M1 a months-long wall; that wall was moved here, not removed.
 either survived the encounter or changed by ADR. ADR-0033's two-platform promise requires
 native runtime evidence on both Windows x64 and Linux x64; the design separately exercises
 Linux X11 and Wayland. Cross-compilation, a Mac SDK or a software-only offscreen test cannot
-replace that presentation proof. Stop after Step 7 in the current handoff; Step 8 comes next.
+replace that presentation proof. Stop after Step 8 in the current handoff; Step 9 comes next.
 
 ### M14 — Managed: "players choose their mods" — **not started**
 

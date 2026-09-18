@@ -133,6 +133,40 @@ pub const WindowConfig = struct {
     surface: SurfaceKind = .none,
 };
 
+/// An icon for a window, supplied by the application (`vulkan.md` §9).
+///
+/// **8-bit RGBA, straight alpha, sRGB, rows top to bottom**: the layout Foundry's image decoders
+/// produce, so a decoded image is handed over as it is. The engine supplies no default mark, reads
+/// no icon file and decodes nothing here. The application owns its icon, decodes it wherever it
+/// decodes images, and lends the bytes for one call; no backend keeps the pointer. Every field is
+/// untrusted, because a package may have supplied the image, so `validate` refuses rather than
+/// asserts.
+pub const WindowIcon = struct {
+    width: u32,
+    height: u32,
+    /// Bytes from the start of one row to the next: at least `width * 4`, and no more than a
+    /// signed 32-bit pitch holds.
+    stride: u32,
+    /// At least `stride * (height - 1) + width * 4` bytes, borrowed for the call.
+    pixels: []const u8,
+
+    /// The largest side accepted. Window systems draw icons at 16 to 256 pixels and Windows' own
+    /// icon format stops at 256, so a larger image only costs a copy on its way to being shrunk.
+    pub const max_dimension: u32 = 256;
+    pub const bytes_per_pixel: u32 = 4;
+
+    /// Whether the fields describe an image of a size an icon may have, readable without leaving
+    /// `pixels`.
+    pub fn validate(self: WindowIcon) error{InvalidWindowIcon}!void {
+        if (self.width == 0 or self.height == 0) return error.InvalidWindowIcon;
+        if (self.width > max_dimension or self.height > max_dimension) return error.InvalidWindowIcon;
+        const row: u64 = @as(u64, self.width) * bytes_per_pixel;
+        if (self.stride < row or self.stride > std.math.maxInt(i32)) return error.InvalidWindowIcon;
+        const needed: u64 = @as(u64, self.stride) * (self.height - 1) + row;
+        if (self.pixels.len < needed) return error.InvalidWindowIcon;
+    }
+};
+
 /// The current state of a window.
 ///
 /// **`logical_size` and `pixel_size` are different numbers and neither is "the size".**
@@ -154,6 +188,46 @@ pub const WindowInfo = struct {
 // -- tests -------------------------------------------------------------------------
 
 const testing = std.testing;
+
+test "an icon is validated against its bound, its stride and its bytes" {
+    var bytes: [8 * 3 * 4]u8 = @splat(0);
+    const good: WindowIcon = .{ .width = 2, .height = 3, .stride = 8 * 4, .pixels = &bytes };
+    try good.validate();
+    // Exactly enough: the last row needs only its own pixels, not a whole stride.
+    var tight = good;
+    tight.pixels = bytes[0 .. 8 * 4 * 2 + 2 * 4];
+    try tight.validate();
+
+    var short = good;
+    short.pixels = bytes[0 .. 8 * 4 * 2 + 2 * 4 - 1];
+    try testing.expectError(error.InvalidWindowIcon, short.validate());
+    var narrow = good;
+    narrow.stride = 2 * 4 - 1;
+    try testing.expectError(error.InvalidWindowIcon, narrow.validate());
+    var empty = good;
+    empty.width = 0;
+    try testing.expectError(error.InvalidWindowIcon, empty.validate());
+    empty = good;
+    empty.height = 0;
+    try testing.expectError(error.InvalidWindowIcon, empty.validate());
+    var wide = good;
+    wide.width = WindowIcon.max_dimension + 1;
+    try testing.expectError(error.InvalidWindowIcon, wide.validate());
+    var tall = good;
+    tall.height = WindowIcon.max_dimension + 1;
+    try testing.expectError(error.InvalidWindowIcon, tall.validate());
+    // A stride no pitch can carry is refused even when one row would fit.
+    var huge = good;
+    huge.height = 1;
+    huge.stride = @as(u32, std.math.maxInt(i32)) + 1;
+    try testing.expectError(error.InvalidWindowIcon, huge.validate());
+
+    // The largest icon, exactly.
+    const side = WindowIcon.max_dimension;
+    const big = try testing.allocator.alloc(u8, side * side * 4);
+    defer testing.allocator.free(big);
+    try (WindowIcon{ .width = side, .height = side, .stride = side * 4, .pixels = big }).validate();
+}
 
 test "a zeroed window handle is none" {
     const h: WindowHandle = std.mem.zeroes(WindowHandle);

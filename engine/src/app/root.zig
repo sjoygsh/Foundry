@@ -36,6 +36,10 @@ pub const MemoryReport = engine.MemoryReport;
 /// The names the engine gives its own timing spans (`debug-overlay.md` §4.3).
 pub const span = engine.span;
 pub const environment = engine.environment;
+/// The surface a game's window asks for: whichever one the selected graphics backend presents
+/// to. A game sets `WindowConfig.surface` to this rather than naming Metal or Vulkan, which it
+/// has no business knowing (`CLAUDE.md` §4.2).
+pub const window_surface = engine.window_surface;
 /// Where content lives, answerable before an `Engine` exists — which is when a host that
 /// discovers its packages needs it (`public-abi.md` §13).
 pub const contentDirOf = engine.contentDirOf;

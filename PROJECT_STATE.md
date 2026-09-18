@@ -1,13 +1,37 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-18
-**Current handoff: M0 through M12 are complete and tagged. M13 Steps 1 to 7 of 10 are
+**Current handoff: M0 through M12 are complete and tagged. M13 Steps 1 to 8 of 10 are
 complete: the Windows x64 Vulkan target is qualified and its tools pinned, native window payloads
 and the safe system-library open are implemented, the native Windows test suite passes, and a
 validated Vulkan device owns resources, checked shader modules, persistent bindings and graphics
 pipelines, draws the sprite contract correctly offscreen, and presents to a real window through a
-FIFO swapchain with resize and failed-frame closure. Next: Step 8, the samples on Vulkan. M14
-through M17 remain unstarted.**
+FIFO swapchain with resize and failed-frame closure. Both samples run on it on Windows from a
+relocated install, and each wears an icon it supplies. Next: Step 9, Windows and both Linux window
+systems proved. M14 through M17 remain unstarted.**
+
+**Completed M13 Step 8, 2026-09-18:** both samples on Vulkan, and the window icon. A window asks
+for `app.window_surface`, the surface the selected backend presents to, so neither sample names a
+graphics API and `-Drhi=vulkan` installs and runs them; their shaders are `render2d`'s, which
+already had SPIR-V variants. M10's deferred icon is `platform`'s `setWindowIcon`: validated,
+bounded RGBA8 bytes borrowed for the call, copied by SDL3, recorded by the null backend, and only
+validated when headless. Each sample declares an `icon` asset kind, ships a 64×64 PNG of Foundry's
+mark in its own package and names it in its `config` record, so a user package can replace it; the
+engine supplies no mark and the C API gains nothing. **Found:** `fpack` derived a second texture
+record from any file a package's own asset kind already claimed; any record with a string
+`source` now speaks for its file. Headless Vulkan stays refused (Step 3), so determinism was
+compared on the validation backend. A minimised window's skipped frames run unpaced, about 1.7 ms
+each; recorded for Step 9's pacing, not fixed. On the Mac the bar passed with **1,394 of 1,395**
+headless tests, four new. On the Arc A750: `native-window-test` 8 of 9, one skipped, reading the
+supplied icon back from the window with its channels in order; the whole `zig build test
+-Drhi=vulkan` **1,427 of 1,437**, ten expected skips. In the desktop session, from a relocated
+install with no Zig, SDK or compiler on `PATH`, under validation and synchronization validation,
+the sandbox reloaded its texture **29** times with two frames in flight; it also resized, was
+minimised and restored twice, and closed. The room played on autopilot with the overlay and its
+card, a user package set the window size, volume and icon, and a run with every layer disabled
+exited cleanly. There were **no validation errors or warnings**. Headless saves matched across 0
+and 4 workers and across the Mac and the PC. Three mutations — the old `fpack` check, a missing
+stride check and swapped icon channels — each failed their test. Resolution: `vulkan.md`, Step 8.
 
 **Completed M13 Step 7, 2026-09-16:** presentation, resize and failed frames. The Vulkan backend now
 implements the whole RHI interface. Frames wait through their slot's previous marker, reserve their
@@ -485,7 +509,7 @@ carries the sentence a redistributor needs.
 **One thing in the plan was deliberately not built.** A window icon through `platform`: on
 macOS the Dock and title bar read the bundle's icon and `SDL_SetWindowIcon` changes nothing
 visible, so it would be code whose only proof is that it compiles. It belongs to M13, where a
-second platform makes it visible.
+second platform makes it visible. *Built in M13 Step 8 and read back from a Windows window.*
 
 **Verification:** the full AGENTS.md §3 bar passes, **1,280 headless of 1,288 declared** (+2),
 both new guards were broken narrowly and both failed their tests — an icon named but not
@@ -3276,16 +3300,16 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M13 Step 8.** Steps 1 to 7 are complete, with the native Windows test repair the owner
-directed before Step 3 (`docs/design/vulkan.md` and their Resolutions). Step 8 runs both samples
-on Vulkan: their surface choice and shader variants, the application-supplied window icon, real
-sprites, text, tilemaps and UI, room play, sandbox scripts and texture reload with frames in
-flight, outside the source tree with no runtime SDK or compiler. Windowed runs on the target go
-through a scheduled task in the owner's desktop session. Native builds on that target use at most
-two jobs at below-normal priority, because it is the owner's gaming PC. Linux x64 still needs the owner's
-second-drive installation before Step 9. M14 waits.
+**Next: M13 Step 9.** Steps 1 to 8 are complete, with the native Windows test repair the owner
+directed before Step 3 (`docs/design/vulkan.md` and their Resolutions). Step 9 proves Windows and
+both Linux window systems: the second OS's native tests, separate X11 and Wayland runs, one
+RenderDoc capture inspected on each OS, and user packages, input, icons and pacing on each.
+Step 8 recorded that a minimised window's skipped frames run unpaced. Windowed runs on the
+Windows target go through a scheduled task in the owner's desktop session. Native builds on that
+target use at most two jobs at below-normal priority, because it is the owner's gaming PC. Linux
+x64 still needs the owner's second-drive installation. M14 waits.
 
-**M0 through M12 are complete and tagged, and everything is pushed.** Phase 3 is closed;
+**M0 through M12 are complete, tagged and pushed.** Phase 3 is closed;
 Phase 4 is under way. The completed M8/M7 checklists and subsequent M5/M6 material below are
 historical.
 

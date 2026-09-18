@@ -271,6 +271,30 @@ pub const Platform = struct {
         }
     }
 
+    pub fn setWindowIcon(self: *Platform, handle: win.WindowHandle, icon: win.WindowIcon) interface.WindowIconError!void {
+        try icon.validate();
+        const state = self.windows.getConst(handle) orelse return error.InvalidWindow;
+        // A surface over the caller's bytes, not a copy of them. `SDL_SetWindowIcon` converts it
+        // into a surface SDL owns before returning, so the borrow ends with this call. SDL never
+        // writes through the pointer. `RGBA32` names the byte order on either endianness.
+        const surface = c.SDL_CreateSurfaceFrom(
+            @intCast(icon.width),
+            @intCast(icon.height),
+            c.SDL_PIXELFORMAT_RGBA32,
+            @constCast(icon.pixels.ptr),
+            @intCast(icon.stride),
+        ) orelse {
+            log.warn("SDL_CreateSurfaceFrom for a {d}x{d} icon failed: {s}", .{ icon.width, icon.height, sdlError() });
+            return error.WindowIconRefused;
+        };
+        defer c.SDL_DestroySurface(surface);
+        if (!c.SDL_SetWindowIcon(state.ptr, surface)) {
+            // Not a programmer error: a window system may simply have no way to take one.
+            log.warn("SDL_SetWindowIcon failed: {s}", .{sdlError()});
+            return error.WindowIconRefused;
+        }
+    }
+
     pub fn nativeSurface(self: *Platform, handle: win.WindowHandle) ?win.NativeSurfaceHandle {
         const state = self.windows.getConst(handle) orelse return null;
         return switch (state.surface_kind) {

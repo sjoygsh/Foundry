@@ -18,6 +18,7 @@
 
 const std = @import("std");
 const build_options = @import("build_options");
+const platform = @import("platform");
 
 pub const command = @import("command.zig");
 pub const format = @import("format.zig");
@@ -45,6 +46,18 @@ pub const Backend = enum {
 
 pub const backend: Backend = std.meta.stringToEnum(Backend, build_options.rhi_backend) orelse
     @compileError("unknown rhi backend '" ++ build_options.rhi_backend ++ "'");
+
+/// The surface a window must provide for the selected backend to present to it.
+///
+/// A property of the backend, stated here once, so that a window asks for what the renderer
+/// will draw to without its owner naming a graphics API (`vulkan.md` §9). Vulkan asks for the
+/// request-only `native_window`, which the platform resolves to whichever window system is
+/// running. The validation backend presents nowhere and draws offscreen behind any window.
+pub const window_surface: platform.SurfaceKind = switch (backend) {
+    .null => .none,
+    .metal => .metal_layer,
+    .vulkan => .native_window,
+};
 
 /// The validation backend, reachable by name as well as by selection.
 ///

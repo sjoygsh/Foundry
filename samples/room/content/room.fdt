@@ -102,6 +102,9 @@
     window_height u32 (default 720)
     # Everything the mixer plays, scaled by this. 0..1.
     master_volume f32 (default 1)
+    # The image the window wears, of the `icon` kind below. Without one the window system's
+    # own default stands: the engine has no mark to supply (`vulkan.md` §9).
+    window_icon id (since 2) (optional)
 }
 
 @schema clip {
@@ -201,7 +204,17 @@ config room:config.main {
     window_width  1280
     window_height 720
     master_volume 0.8
+    window_icon   room:icons.foundry
 }
+
+# An image a window wears: a kind of asset the engine does not define. The sample decodes it
+# with a loader of its own, registered exactly as a mod's would be (I6), and lends the pixels
+# to the window for one call. `source` is what makes a record an asset.
+@schema icon { source string }
+
+# Foundry's glyph, because the room is Foundry demonstrating itself (`brand/README.md`). A game
+# supplies its own. 64x64, from the master by `sips -z 64 64`.
+icon room:icons.foundry { source "icon.png" }
 
 clip room:clip.walk {
     sheet   room:textures.room

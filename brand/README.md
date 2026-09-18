@@ -15,6 +15,10 @@ reproducible: the icon by `sips` into an `.iconset` and `iconutil -c icns`, the 
 [`scripts/brand_card.py`](../scripts/brand_card.py). The masters are the source of truth; if
 one changes, regenerate rather than editing a derivative.
 
+The samples' window icons, `samples/sandbox/content/icon.png` and `samples/room/content/icon.png`,
+are the glyph at 64×64 by `sips -z 64 64`. They are each sample's own content, named by its
+`config` record, because the engine supplies no window icon of its own.
+
 ## What the marks are for
 
 **These marks identify Foundry.** They belong on Foundry's own artifacts — this repository, its

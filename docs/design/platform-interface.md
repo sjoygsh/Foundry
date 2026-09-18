@@ -136,9 +136,23 @@ slots move as the pool grows; the payload stays valid until the window closes. S
 asked for a Vulkan window, so it never loads the loader `rhi` owns, and no SDL or graphics
 type crosses the seam. The null backend refuses every native kind.
 
-M10's deferred application-supplied window icon is specified in [vulkan.md](vulkan.md) §9
-for M13 Step 8: validated RGBA8 bytes at the platform boundary, no engine default mark and
-no image-loading dependency in this layer.
+**M13 Step 8, implemented 2026-09-18** ([vulkan.md](vulkan.md) §9): M10's deferred window
+icon is `setWindowIcon(window, WindowIcon)`. A `WindowIcon` is 8-bit RGBA with straight alpha,
+rows top to bottom, a stride and a byte slice, borrowed for the call alone. Its sides are
+bounded to 1–256, its stride must cover a row and fit a signed 32-bit pitch, and its bytes
+must cover every row; anything else is `InvalidWindowIcon`, reported rather than asserted,
+because the image comes from a package. The SDL3 backend wraps the bytes in a surface that SDL
+converts into its own copy before returning. A window system that cannot take an application
+icon is `WindowIconRefused`, and the window keeps its default. The null backend validates and
+records the size it accepted. `app.Engine.setWindowIcon` forwards to the window, or only
+validates when headless. The engine supplies no default mark, reads no icon file and decodes no
+image in this layer: each sample decodes its own through an asset kind it declares, and the C
+mod API gains nothing, because the icon is host window configuration.
+
+A window asks for the surface the selected graphics backend presents to through
+`app.window_surface` (`rhi.window_surface`): `metal_layer` for Metal, the request-only
+`native_window` for Vulkan, and `none` for the validation backend. No sample names a graphics
+API to choose it.
 
 ### Deliberately excluded
 

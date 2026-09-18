@@ -1130,6 +1130,16 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             return self.platform.setWindowSize(self.window, logical);
         }
 
+        /// Gives the window the application's icon, from bytes borrowed for the call
+        /// (`vulkan.md` §9). The engine has no icon of its own to fall back on.
+        ///
+        /// Headless, there is no window to wear it and the icon is only validated, so a package
+        /// supplying a malformed one is caught by a headless run as well as a windowed one.
+        pub fn setWindowIcon(self: *Self, icon: platform.WindowIcon) platform.WindowIconError!void {
+            if (self.window.isNone()) return icon.validate();
+            return self.platform.setWindowIcon(self.window, icon);
+        }
+
         /// Whether a failed `renderFrame` may be skipped and the loop carry on.
         ///
         /// **Only `SurfaceUnavailable`**: no presentation image this frame, which is what a
@@ -1269,6 +1279,9 @@ fn recorderPlans(comptime Recorder: type) bool {
 
 /// The engine, with whichever backends the build selected.
 pub const Engine = EngineOf(platform.Platform, rhi.Device);
+
+/// The surface a window must provide for the selected graphics backend to present to it.
+pub const window_surface: platform.SurfaceKind = rhi.window_surface;
 
 /// Marshals Zig's process environment into the form `platform.Os` takes.
 ///
@@ -1613,6 +1626,24 @@ test "a windowed engine opens and closes its window" {
 
     const info = engine.windowInfo().?;
     try testing.expect(info.logical_size.eql(.{ .width = 640, .height = 480 }));
+}
+
+test "a window takes the application's icon, and a headless engine only validates one" {
+    var pixels: [4 * 4 * 4]u8 = @splat(0xff);
+    const icon: platform.WindowIcon = .{ .width = 4, .height = 4, .stride = 16, .pixels = &pixels };
+    var malformed = icon;
+    malformed.pixels = pixels[0..63];
+
+    const windowed = try TestEngine.init(testing.allocator, .{});
+    defer windowed.deinit();
+    try windowed.setWindowIcon(icon);
+    try testing.expectEqual(platform.Size{ .width = 4, .height = 4 }, windowed.platform.windowIconSize(windowed.window).?);
+    try testing.expectError(error.InvalidWindowIcon, windowed.setWindowIcon(malformed));
+
+    const headless = try testEngine(.{});
+    defer headless.deinit();
+    try headless.setWindowIcon(icon);
+    try testing.expectError(error.InvalidWindowIcon, headless.setWindowIcon(malformed));
 }
 
 test "a headless engine has no window, and says so rather than pretending" {

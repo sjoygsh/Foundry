@@ -39,6 +39,8 @@ const WindowState = struct {
     scale: f32,
     focused: bool,
     minimized: bool,
+    /// The size of the last icon accepted. There is no window manager to show it to.
+    icon: ?win.Size = null,
 
     fn pixelSize(self: WindowState) win.Size {
         return .{
@@ -155,6 +157,13 @@ pub const Platform = struct {
             .pixel_size = pending.pixelSize(),
             .scale = pending.scale,
         } }) catch return error.OutOfMemory;
+    }
+
+    /// Validates exactly as a real backend does, then remembers the size it accepted.
+    pub fn setWindowIcon(self: *Platform, handle: win.WindowHandle, icon: win.WindowIcon) interface.WindowIconError!void {
+        try icon.validate();
+        const state = self.windows.get(handle) orelse return error.InvalidWindow;
+        state.icon = .{ .width = icon.width, .height = icon.height };
     }
 
     pub fn nativeSurface(self: *Platform, handle: win.WindowHandle) ?win.NativeSurfaceHandle {
@@ -320,6 +329,12 @@ pub const Platform = struct {
         } });
     }
 
+    /// The size of the icon a window last accepted, or null if it has none or is closed.
+    pub fn windowIconSize(self: *Platform, handle: win.WindowHandle) ?win.Size {
+        const state = self.windows.getConst(handle) orelse return null;
+        return state.icon;
+    }
+
     /// Gives or takes keyboard focus, queueing the matching event.
     pub fn setFocus(self: *Platform, handle: win.WindowHandle, focused: bool) Allocator.Error!void {
         try self.pushEvent(if (focused)
@@ -443,6 +458,30 @@ test "setWindowSize validates rather than asserts" {
     // And a dead handle resolves to nothing rather than to whatever took its slot (I1).
     p.closeWindow(w);
     try testing.expectError(error.InvalidWindow, p.setWindowSize(w, .{ .width = 640, .height = 480 }));
+}
+
+test "setWindowIcon validates the application's bytes and borrows them only for the call" {
+    const p = try open(testing.allocator);
+    defer p.deinit();
+    const w = try p.openWindow(.{});
+    try testing.expectEqual(@as(?win.Size, null), p.windowIconSize(w));
+
+    const pixels = try testing.allocator.alloc(u8, 32 * 32 * 4);
+    @memset(pixels, 0x7f);
+    try p.setWindowIcon(w, .{ .width = 32, .height = 32, .stride = 32 * 4, .pixels = pixels });
+    // Freed before anything reads the window again: nothing kept the pointer.
+    testing.allocator.free(pixels);
+    try testing.expectEqual(win.Size{ .width = 32, .height = 32 }, p.windowIconSize(w).?);
+
+    // A refused icon leaves the one already accepted.
+    var few: [16]u8 = @splat(0);
+    try testing.expectError(error.InvalidWindowIcon, p.setWindowIcon(w, .{ .width = 2, .height = 2, .stride = 8, .pixels = few[0..15] }));
+    try testing.expectError(error.InvalidWindowIcon, p.setWindowIcon(w, .{ .width = 0, .height = 2, .stride = 8, .pixels = &few }));
+    try testing.expectEqual(win.Size{ .width = 32, .height = 32 }, p.windowIconSize(w).?);
+
+    p.closeWindow(w);
+    try testing.expectError(error.InvalidWindow, p.setWindowIcon(w, .{ .width = 2, .height = 2, .stride = 8, .pixels = &few }));
+    try testing.expectEqual(@as(?win.Size, null), p.windowIconSize(w));
 }
 
 test "a headless backend refuses to invent a GPU surface" {

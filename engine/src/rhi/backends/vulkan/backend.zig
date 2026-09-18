@@ -5,7 +5,7 @@
 //! persistent descriptor sets, layouts and monolithic graphics pipelines; dynamic-rendering passes;
 //! and the frame ring, with an offscreen target on a headless device and a FIFO swapchain on a
 //! window's (§8). The whole of `interface.check` holds, so every `-Drhi=vulkan` test builds against
-//! this file; the samples are wired to it in Step 8 (`docs/design/vulkan.md` §11).
+//! this file, and since Step 8 both samples draw through it (`docs/design/vulkan.md` §11).
 //!
 //! **Ownership.** A `Device` owns, in creation order: the loader, the instance, the validation
 //! messenger, the surface, the logical device, the timeline semaphore, the command pool, and on a

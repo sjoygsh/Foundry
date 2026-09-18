@@ -170,12 +170,10 @@ const RhiBackend = enum {
     /// Draws nothing and validates everything. Not scaffolding: it is the agreed
     /// mitigation for designing an abstraction against a single graphics API.
     null,
-    /// Metal, through the Objective-C shim (ADR-0012). macOS only, and the only backend
-    /// that puts pixels on a screen.
+    /// Metal, through the Objective-C shim (ADR-0012). macOS only.
     metal,
-    /// Vulkan, for Windows and Linux (ADR-0037, ADR-0038). Every test and check builds against
-    /// it; the samples are not installed or run under it until M13 Step 8 gives them a Vulkan
-    /// surface (`vulkanGraph`).
+    /// Vulkan, for Windows and Linux (ADR-0037, ADR-0038). The whole graph builds against it,
+    /// the samples included; `vulkanGraph` adds its shader producers and its own test steps.
     vulkan,
 };
 
@@ -633,17 +631,6 @@ pub fn build(b: *std.Build) void {
         .header,
         "foundry.h",
     ).step);
-
-    // The samples still ask for no surface except on macOS, so under Vulkan they would draw into
-    // an offscreen target behind a blank window. Step 8 gives them a Vulkan surface; until then
-    // installing them, and so running them, refuses rather than producing that.
-    if (rhi_backend == .vulkan) {
-        b.getInstallStep().dependOn(&b.addFail(
-            "-Drhi=vulkan does not install or run the samples until M13 Step 8 gives them a Vulkan " ++
-                "surface; `test`, `check`, `vulkan-test` and `vulkan-window-test` build against it " ++
-                "(docs/design/vulkan.md §11)",
-        ).step);
-    }
 
     const run_sandbox = b.addRunArtifact(sandbox);
     run_sandbox.step.dependOn(b.getInstallStep());

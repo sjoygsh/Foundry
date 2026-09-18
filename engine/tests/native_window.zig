@@ -133,6 +133,135 @@ test "a resize arrives as an event and leaves the payload alone" {
     try testing.expect(std.meta.eql(values, Payload.of(after).?));
 }
 
+/// Win32 calls that read an icon back out of a window, so a test can see what the window
+/// system was given rather than only that nothing failed.
+const icon_readback = struct {
+    const wm_geticon: u32 = 0x007f;
+    const icon_small: usize = 0;
+    const icon_big: usize = 1;
+    const dib_rgb_colors: u32 = 0;
+
+    const IconInfo = extern struct {
+        is_icon: i32,
+        hotspot_x: u32,
+        hotspot_y: u32,
+        mask: ?*anyopaque,
+        color: ?*anyopaque,
+    };
+    const Bitmap = extern struct {
+        kind: i32,
+        width: i32,
+        height: i32,
+        width_bytes: i32,
+        planes: u16,
+        bits_per_pixel: u16,
+        bits: ?*anyopaque,
+    };
+    const BitmapInfo = extern struct {
+        size: u32 = @sizeOf(BitmapInfo) - 4,
+        width: i32,
+        height: i32,
+        planes: u16 = 1,
+        bit_count: u16 = 32,
+        compression: u32 = 0,
+        size_image: u32 = 0,
+        x_per_meter: i32 = 0,
+        y_per_meter: i32 = 0,
+        colors_used: u32 = 0,
+        colors_important: u32 = 0,
+        colors: [1]u32 = .{0},
+    };
+
+    extern "user32" fn SendMessageW(hwnd: *anyopaque, message: u32, wparam: usize, lparam: isize) callconv(.winapi) isize;
+    extern "user32" fn GetIconInfo(icon: *anyopaque, info: *IconInfo) callconv(.winapi) i32;
+    extern "user32" fn GetDC(hwnd: ?*anyopaque) callconv(.winapi) ?*anyopaque;
+    extern "user32" fn ReleaseDC(hwnd: ?*anyopaque, dc: *anyopaque) callconv(.winapi) i32;
+    extern "gdi32" fn GetObjectW(object: *anyopaque, size: i32, out: *anyopaque) callconv(.winapi) i32;
+    extern "gdi32" fn GetDIBits(dc: *anyopaque, bitmap: *anyopaque, start: u32, lines: u32, bits: ?*anyopaque, info: *BitmapInfo, usage: u32) callconv(.winapi) i32;
+    extern "gdi32" fn DeleteObject(object: *anyopaque) callconv(.winapi) i32;
+
+    /// The window's icon of one size, as top-down BGRA rows, and its side.
+    fn read(gpa: std.mem.Allocator, hwnd: *anyopaque, which: usize) !struct { side: u32, bgra: []u8 } {
+        const raw = SendMessageW(hwnd, wm_geticon, which, 0);
+        if (raw == 0) return error.NoIcon;
+        var info: IconInfo = undefined;
+        if (GetIconInfo(@ptrFromInt(@as(usize, @bitCast(raw))), &info) == 0) return error.NoIconInfo;
+        defer if (info.mask) |m| {
+            _ = DeleteObject(m);
+        };
+        const color = info.color orelse return error.MonochromeIcon;
+        defer _ = DeleteObject(color);
+
+        var bitmap: Bitmap = undefined;
+        if (GetObjectW(color, @sizeOf(Bitmap), &bitmap) == 0) return error.NoBitmap;
+        if (bitmap.width <= 0 or bitmap.width != bitmap.height) return error.UnexpectedIconShape;
+        const side: u32 = @intCast(bitmap.width);
+
+        const bgra = try gpa.alloc(u8, @as(usize, side) * side * 4);
+        errdefer gpa.free(bgra);
+        const dc = GetDC(null) orelse return error.NoDeviceContext;
+        defer _ = ReleaseDC(null, dc);
+        // A negative height asks for rows top to bottom.
+        var request: BitmapInfo = .{ .width = bitmap.width, .height = -bitmap.height };
+        if (GetDIBits(dc, color, 0, side, bgra.ptr, &request, dib_rgb_colors) != bitmap.height) return error.NoBits;
+        return .{ .side = side, .bgra = bgra };
+    }
+};
+
+test "an application's icon reaches the window with its channels in order, borrowed only for the call" {
+    const p = try Platform.init(testing.allocator, .{});
+    defer p.deinit();
+    const w = try p.openWindow(.{ .title = "Foundry icon test", .logical_width = 320, .logical_height = 240 });
+
+    // Red on the left, blue on the right: a swapped red and blue would show, and so would a
+    // mirrored or transposed copy.
+    const side = 32;
+    const pixels = try testing.allocator.alloc(u8, side * side * 4);
+    for (0..side) |y| for (0..side) |x| {
+        const texel = pixels[(y * side + x) * 4 ..][0..4];
+        texel.* = if (x < side / 2) .{ 255, 0, 0, 255 } else .{ 0, 0, 255, 255 };
+    };
+    try p.setWindowIcon(w, .{ .width = side, .height = side, .stride = side * 4, .pixels = pixels });
+    // Gone before anything reads the icon back, so the window system cannot be reading it.
+    testing.allocator.free(pixels);
+
+    // Refused before the window system is asked: bad bytes, then a closed window.
+    var few: [15]u8 = @splat(0);
+    try testing.expectError(error.InvalidWindowIcon, p.setWindowIcon(w, .{ .width = 2, .height = 2, .stride = 8, .pixels = &few }));
+
+    p.closeWindow(w);
+    try testing.expectError(error.InvalidWindow, p.setWindowIcon(w, .{ .width = 1, .height = 1, .stride = 4, .pixels = &few }));
+}
+
+test "on Windows the icon a window wears is the one the application supplied" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    const p = try Platform.init(testing.allocator, .{});
+    defer p.deinit();
+    const w = try openNative(p);
+    const hwnd = p.nativeSurface(w).?.win32().?.hwnd;
+
+    const side = 32;
+    var pixels: [side * side * 4]u8 = undefined;
+    for (0..side) |y| for (0..side) |x| {
+        const texel = pixels[(y * side + x) * 4 ..][0..4];
+        texel.* = if (x < side / 2) .{ 255, 0, 0, 255 } else .{ 0, 0, 255, 255 };
+    };
+    try p.setWindowIcon(w, .{ .width = side, .height = side, .stride = side * 4, .pixels = &pixels });
+    @memset(&pixels, 0);
+
+    // Both sizes the window system asks for, each scaled to its own metric by Windows, so the
+    // probes sit a quarter in from each side rather than at fixed texels.
+    for ([_]usize{ icon_readback.icon_small, icon_readback.icon_big }) |which| {
+        const icon = try icon_readback.read(testing.allocator, hwnd, which);
+        defer testing.allocator.free(icon.bgra);
+        const row = icon.side / 2;
+        const left = icon.bgra[(row * icon.side + icon.side / 4) * 4 ..][0..4];
+        const right = icon.bgra[(row * icon.side + icon.side * 3 / 4) * 4 ..][0..4];
+        try testing.expectEqualSlices(u8, &.{ 0, 0, 255 }, left[0..3]);
+        try testing.expectEqualSlices(u8, &.{ 255, 0, 0 }, right[0..3]);
+    }
+}
+
 test "running out of memory while opening a native window releases everything" {
     if (!has_native_window) return error.SkipZigTest;
     // Fail each allocation in turn, including the payload's, which comes after the OS window

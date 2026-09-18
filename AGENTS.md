@@ -102,16 +102,17 @@ ten Metal-only. **M12 is complete (2026-09-14).** Parallel work goes through an 
 never allocates or calls the RHI, and every call site that splits work is tested under `serial`,
 `reversed` and a real pool. `FOUNDRY_SANDBOX_WORKERS` and `FOUNDRY_ROOM_WORKERS` set a sample's
 pool, `0` for none. M12 closed at **1,370 declared / 1,360 headless tests**.
-**M13 Steps 1 to 7 are complete (2026-09-16).** ADR-0037/0038 are accepted; read
+**M13 Steps 1 to 8 are complete (2026-09-18).** ADR-0037/0038 are accepted; read
 `docs/design/vulkan.md`. A Windows x64 Vulkan target is qualified and reached over SSH, Linux
 x64 has a recorded route, the Vulkan tools are pinned in §3 below, `platform` hands out native
 window payloads and opens system libraries safely, and `rhi/backends/vulkan/` creates a validated
 device, tracks submissions, allocates/copies/retires resources, and creates checked SPIR-V shader
 modules, persistent descriptor sets, layouts and graphics pipelines, draws offscreen, and presents
-to a real window through a FIFO swapchain, under validation. The four
+to a real window through a FIFO swapchain, under validation; both samples run on it on Windows,
+each wearing a window icon it supplies. The four
 GLSL stages pass `glslangValidator`, `spirv-val` and Foundry's layout agreement tool before their
 bytes can enter a target. The backend implements the whole RHI interface, so `-Drhi=vulkan` builds
-the ordinary test and check graph; the samples are not installed or run under it until Step 8 (§3).
+the ordinary test and check graph and installs and runs the samples (§3).
 The native Windows `zig build test` passes on the target, and native builds there use at most
 two jobs. Mac cross-compilation never substitutes for runtime
 proof. M14–M17 remain unstarted.
@@ -222,16 +223,28 @@ the logged-in session — a scheduled task with an interactive logon — never a
 
 **The Vulkan backend's tests** need a Vulkan driver and the SDK's validation layer, so they run on
 the target and not in the bar. `-Drhi=vulkan` builds the ordinary test and check graph against the
-Vulkan backend, plus three steps of its own; installing or running the samples refuses until M13
-Step 8:
+Vulkan backend, plus three steps of its own, and since M13 Step 8 it installs and runs both
+samples. It needs the SDL3 platform; `-Dplatform=null` is refused at configure time:
 
 ```sh
 zig build vulkan-test        -Drhi=vulkan                             # on Windows or Linux
 zig build vulkan-window-test -Drhi=vulkan                             # in a desktop session
 zig build test               -Drhi=vulkan                             # the whole graph, on the target
+zig build install            -Drhi=vulkan --prefix <dir>              # the samples, on the target
 zig build vulkan-check       -Drhi=vulkan -Dtarget=x86_64-windows-gnu # any host; compile only
 zig build check              -Drhi=vulkan -Dtarget=x86_64-linux-gnu   # any host; compile only
 ```
+
+Content compiles only for a native install, so build the samples on the target itself. A sample
+run is evidence when it starts from a copy of that prefix moved elsewhere, with Zig and the SDK off
+`PATH` and `APPDATA` (or `HOME`) pointed at a scratch root. Enable validation for it through the
+loader (`VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`, with the layer's `LOG_FILENAME`,
+`REPORT_FLAGS=error,warn,info` and `VALIDATE_SYNC=true` settings), because the samples do not
+require it themselves; and once with `VK_LOADER_LAYERS_DISABLE=~all~`, to show nothing from the
+SDK is needed. On Windows, run them in the desktop session like `vulkan-window-test`. Find a
+sample's window by its title as well as its process, since the process can own other visible
+windows. A minimised window's frames are skipped without pacing, so bound a run that minimises by
+closing the window, not by a frame count.
 
 The backend tests require validation and fail, never skip, without it. Set
 `VK_LOADER_LAYERS_DISABLE=~implicit~` for them as for any qualifying run. Their surface test opens

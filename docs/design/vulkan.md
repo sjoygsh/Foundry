@@ -1,7 +1,7 @@
 # Design: M13 — Vulkan, and the second test of the RHI
 
 **Status:** Design accepted 2026-09-14 (ADR-0037/0038), its windowed floor revised before
-acceptance; **7 of 10 steps complete**. Next: Step 8.
+acceptance; **8 of 10 steps complete**. Next: Step 9.
 **Date:** 2026-09-14
 **Baseline:** `f14caac` / `m12`; M0–M12 complete, 1,370 declared / 1,360 headless tests.
 **Decisions:** ADR-0033 selects Vulkan; accepted [ADR-0037](../adr/0037-vulkan-execution-and-presentation.md)
@@ -369,7 +369,7 @@ M13 ends only when its rules survived or their necessary changes were recorded b
 
 ## 11. Implementation order — ten bounded steps
 
-Steps 1 to 7 are complete; every later step is **not started**. Stop after each with its
+Steps 1 to 8 are complete; every later step is **not started**. Stop after each with its
 Resolution, PROJECT_STATE update, verification and commit; no automatic chaining. Before Step 3
 the owner directed a repair of the native Windows test suite; its Resolution follows Step 2's.
 
@@ -963,3 +963,92 @@ graph gained no tests — and the headless `zig build test -Dplatform=null -Drhi
 
 **Not yet.** The samples' Vulkan surface and shaders, the window icon and frames in flight under
 real content are Step 8; Linux X11 and Wayland, pacing and RenderDoc captures are Step 9.
+
+## Resolution — 2026-09-18, Step 8: both samples on Vulkan, and the window icon
+
+**What landed.** A window asks for the surface the selected backend presents to. `rhi.window_surface`
+is `metal_layer` for Metal, the request-only `native_window` for Vulkan and `none` for the
+validation backend, and `app.window_surface` passes it on. Both samples open their window with it,
+so neither names a graphics API, and `-Drhi=vulkan` no longer refuses to install or run them. Their
+shader variants needed no sample change: the samples draw only through `render2d`, whose
+engine-owned sprite shader has carried a SPIR-V variant, chosen by the build, since Step 5.
+
+The window icon is §9's platform operation, `setWindowIcon(window, WindowIcon)`, specified in
+`platform-interface.md`: straight-alpha RGBA8 rows with a stride, borrowed for the call alone, and
+`InvalidWindowIcon` unless the sides are 1–256, the stride covers a row and fits a signed pitch,
+and the bytes cover every row. SDL3 wraps the bytes in a surface it copies before returning; a
+window system that will not take an icon is `WindowIconRefused`, and the window keeps its default.
+The null backend validates and records the size it accepted, and `app.Engine.setWindowIcon` only
+validates when headless. The engine supplies no mark, reads no file and decodes nothing for it.
+Each sample declares an `icon` asset kind with a `source`, ships a 64×64 PNG generated from
+Foundry's mark in its own package, and names it in an optional `window_icon` field of its `config`
+record, the schema's version 2. After applying preferences it registers a loader for its own kind,
+decodes the image bounded to the platform's limit, hands it to the window and releases it; any
+failure is a warning, and the window keeps its default. A later package overriding the config
+record chooses another icon, as it chooses the window size. The C mod API gains nothing.
+
+**Found.** `fpack`'s derivation decided which files authored records already spoke for by asking
+whether each record's schema was an engine asset kind. A package's own kind was not, so each
+sample's `icon.png` was compiled twice — once as its icon and once as a derived texture with an id
+of its own — against `assets.md` §3's rule that explicit beats implicit and never duplicates it.
+Any record with a string `source` now speaks for its file, which is what the registry takes an
+asset kind to be.
+
+`-Drhi=vulkan` still requires the SDL3 platform, as Step 3 decided, so there is no headless Vulkan
+run. M12's deterministic saves were compared headless on the validation backend, where they have
+always been compared; the renderer takes no part in simulation.
+
+A minimised window's surface has zero extent, so each frame reports unavailability at once and is
+skipped, as §8 states — but the sample loop then runs unpaced, at about 1.7 ms a frame against
+FIFO's 16.7 ms: 1,571 frames in roughly three seconds minimised. The contract holds. A minimised
+game spinning a core is a pacing question, and pacing is Step 9's, so it is recorded rather than
+fixed here. How a minimised Metal window paces was not measured.
+
+**Evidence.** On the Mac, the bar passed with **1,394 of 1,395** headless tests, the Windows-only
+test skipped — four new — and `zig build test -Dplatform=null -Drhi=null` passed **1,382 of
+1,383**. A windowed Metal sandbox asked for `metal_layer` and wore its 64×64 icon. Headless, both
+samples decoded and validated theirs, and a user package overriding the sandbox's config set
+960×540, volume 0.50 and a 16×16 icon, loading after `sandbox:content`. Restoring the old schema
+check failed the new `fpack` test, and dropping the stride check failed the icon validation test;
+each file was restored byte for byte.
+
+On the Windows target (Intel Arc A750, Windows 11 build 26200, SDL 3.4.14's `windows` video
+driver), at two jobs and below-normal priority, over SSH: `native-window-test` passed **8 of 9**,
+one skipped, and the icon read back from the window with `WM_GETICON` at both sizes was red where
+red was supplied and blue where blue was; handing SDL the bytes as BGRA failed that test, and the
+file was restored. The whole `zig build test -Drhi=vulkan` passed **1,427 of 1,437**, the same ten
+skipped as Step 7. `zig build install -Drhi=vulkan` built both samples and compiled their content;
+the prefix was copied to a new directory whose name holds a space and the original deleted, and
+the copy's own `fpack` compiled the user package into a scratch `APPDATA`. Headless saves after 600
+frames were byte-identical with no workers and with four, and identical to the Mac's.
+
+Then, in the owner's desktop session from a scheduled task with an interactive logon, each run
+started from the moved copy with `PATH` holding only the system directories — no Zig, SDK or
+compiler — and `APPDATA` at the scratch root. Four enabled validation and synchronization
+validation through the loader; the fifth disabled every layer. Each window was found by its
+process and title, and its client area and title bar were captured from the screen:
+
+* the sandbox for 900 frames with its scripted walk, a pick every 90 frames and its installed
+  texture touched every 200 ms: **29** reloads of `sandbox:textures.sprites` with two frames in
+  flight, nine picks, its script lighting and dousing beacons, a 16.6 ms p95 and a clean exit;
+* the sandbox resizing itself every 120 frames, minimised and restored twice from outside, then
+  closed with `WM_CLOSE`: presentation resumed after each restore and seven requested sizes
+  arrived as resizes, requests made while minimised raised none, and the close exited cleanly;
+* the room on autopilot with the overlay open for 600 frames: four of six lamps lit, 114
+  contacts and 43 sounds, and the character card opened, typed into and clicked out of with none
+  of that input reaching the hall;
+* the sandbox with the user package: 960×540, volume 0.50 and the package's 16×16 icon;
+* the sandbox with every layer disabled: 600 frames at a 16.62 ms median and p95, clean exit.
+
+Every validation log held only the layer's start-up notice: **no error and no warning**. The
+captures show sprites, text, the tilemap, the overlay and the room's card drawn correctly, and
+every title bar wears the sample's mark, or in the user package's run its green square;
+`WM_GETICON` returned both icon sizes for every window. The validation layer was found through
+the SDK's registry entry, not `PATH`, so the run with every layer disabled is the one showing that
+nothing from the SDK is needed. A first desktop pass had taken the process's first visible window,
+which was not always the sample's, and bounded the minimise run by a frame count that unpaced
+minimised frames used up before the restore; both were harness faults, fixed before the runs above.
+
+**Not yet.** Linux X11 and Wayland, the icon there, frame pacing — a minimised window's included —
+RenderDoc captures and the second OS's native tests are Step 9. The Windows claims are this
+machine's.

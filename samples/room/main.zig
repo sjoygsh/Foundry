@@ -413,6 +413,73 @@ const Preferences = struct {
     }
 };
 
+/// The window's icon: an asset of this package's own `icon` kind, named by `window_icon` in
+/// `room:config.main`, so a package loaded after this one can change it (`vulkan.md` §9).
+///
+/// The engine supplies no icon and decodes none for a window. The sample registers a loader for
+/// its own kind, as a mod adding an asset kind would (I6), decodes the PNG with Foundry's own
+/// decoder, lends the pixels to the window for one call and releases the image. Every failure
+/// is the package's or the window system's, so it is reported and the window keeps its default.
+const WindowIcon = struct {
+    const schema = data.SchemaId.parse("room:icon") catch unreachable;
+
+    fn apply(engine: *app.Engine) void {
+        const config = engine.store.lookup(core.ContentId.fromString(Preferences.record_id)) orelse return;
+        const field = config.schema.fieldIndex("window_icon") orelse return;
+        const id = (config.fields.idAt(field) catch null) orelse return;
+
+        engine.assets.registerLoader(engine.gpa, loader) catch |err| {
+            log.warn("window icon: no loader ({t})", .{err});
+            return;
+        };
+        defer _ = engine.assets.unregisterLoader(engine.gpa, schema);
+        const handle = engine.assets.acquireOf(engine.gpa, id, schema) catch |err| {
+            log.warn("window icon {f} did not load ({t}); the window keeps its default", .{ id, err });
+            return;
+        };
+        defer engine.assets.release(handle);
+
+        const image: *const asset.Image = @ptrCast(@alignCast(engine.assets.payloadOf(handle).?.pointer().?));
+        engine.setWindowIcon(.{
+            .width = image.width,
+            .height = image.height,
+            .stride = @intCast(image.strideBytes()),
+            .pixels = image.pixels,
+        }) catch |err| {
+            log.warn("window icon {f} refused ({t}); the window keeps its default", .{ id, err });
+            return;
+        };
+        log.info("window icon: {f}, {d}x{d}", .{ id, image.width, image.height });
+    }
+
+    const loader: asset.Loader = .{ .schema = schema, .load = load, .unload = unload };
+
+    fn load(ctx: ?*anyopaque, gpa: std.mem.Allocator, record: asset.Record, bytes: []const u8) asset.LoadError!asset.Payload {
+        _ = ctx;
+        _ = record;
+        const image = try gpa.create(asset.Image);
+        errdefer gpa.destroy(image);
+        // Bounded by what a window accepts, so an oversized image is refused before it is
+        // expanded rather than after.
+        image.* = asset.png.decode(gpa, bytes, .{
+            .max_dimension = platform.WindowIcon.max_dimension,
+        }) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.UnsupportedImage => error.UnsupportedVersion,
+            error.ImageTooLarge => error.LoadFailed,
+            error.InvalidImage => error.InvalidAsset,
+        };
+        return .fromPointer(image);
+    }
+
+    fn unload(ctx: ?*anyopaque, gpa: std.mem.Allocator, payload: asset.Payload) void {
+        _ = ctx;
+        const image: *asset.Image = @ptrCast(@alignCast(payload.pointer().?));
+        image.deinit(gpa);
+        gpa.destroy(image);
+    }
+};
+
 /// A headless build has no window and no way to deliver a quit event, so it bounds itself.
 ///
 /// **A cap on the walk, not its length**: the run quits the moment the autopilot steps out
@@ -537,7 +604,7 @@ fn run(
             .title = "The Long Hall",
             .logical_width = 1280,
             .logical_height = 720,
-            .surface = wanted_surface,
+            .surface = app.window_surface,
         },
         .content_dir = content_dir,
         .content = packages,
@@ -554,6 +621,7 @@ fn run(
     // that already existed, before the first ordinary frame.
     prefs.resolve(engine);
     prefs.apply(engine, room.mixer);
+    WindowIcon.apply(engine);
     room.volume = prefs.volume.value;
     log.info("window {d}x{d} ({t}), volume {d:.2} ({t})", .{
         prefs.width.value,  prefs.height.value,  prefs.width.origin,
@@ -716,12 +784,6 @@ fn installedContentDir(gpa: std.mem.Allocator, os: *platform.os.Os) ![]u8 {
     if (!std.mem.eql(u8, std.fs.path.basename(contents), "Contents")) return error.ContentUnavailable;
     return platform.os.joinPath(gpa, &.{ contents, "Resources", "content" });
 }
-
-/// Which surface kind the platform is asked for. macOS is the only one with a backend.
-const wanted_surface: platform.SurfaceKind = switch (builtin.os.tag) {
-    .macos => .metal_layer,
-    else => .none,
-};
 
 /// A frame cap, from `FOUNDRY_ROOM_FRAMES`, or the headless default.
 fn frameLimit(engine: *app.Engine, headless: bool) ?u64 {

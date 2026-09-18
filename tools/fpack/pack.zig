@@ -628,12 +628,13 @@ fn derive(
     diags: *Diagnostics,
 ) (error{ContentInvalid} || Allocator.Error)!?[]const u8 {
     // Which files authored records already speak for. Explicit always beats implicit, and
-    // never silently duplicates it (`assets.md` §3).
+    // never silently duplicates it (`assets.md` §3). Any record with a string `source` does,
+    // which is what the registry takes an asset kind to be: a package's own kind with its own
+    // loader is not a special case, and its file must not also become an engine kind's record.
     var spoken_for: std.StringHashMapUnmanaged(void) = .empty;
     defer spoken_for.deinit(gpa);
     for (pkg.records()) |record| {
         const schema = registry.get(record.schema) orelse continue;
-        if (asset.schemas.kindForSchema(record.schema_id) == null) continue;
         const index = schema.fieldIndex(asset.schemas.source_field) orelse continue;
         const value = record.value(schema.*, index) orelse continue;
         if (value != .string) continue;
@@ -1121,6 +1122,29 @@ test "an authored record beats derivation, and is not duplicated by it" {
     try testing.expectEqual(@as(u32, 2 + manifest_records), r.record_count);
     try testing.expect(recordNamed(&r, "foundry:texture.sprites") != null);
     try testing.expect(recordNamed(&r, "foundry:textures.other") != null);
+}
+
+test "a package's own asset kind speaks for its source, which is then not derived as well" {
+    var f = try Fixture.init();
+    defer f.deinit();
+
+    try f.write("assets.fdt",
+        \\@schema icon { source string }
+        \\icon foundry:icon.window { source "textures/mark.png" }
+    );
+    try f.write("textures/mark.png", &one_pixel_png);
+    try f.write("textures/other.png", &one_pixel_png);
+
+    try f.compileIt("foundry:core");
+
+    var r = try f.open();
+    defer r.deinit();
+
+    // The authored record and the one file nobody spoke for. No texture for the mark.
+    try testing.expectEqual(@as(u32, 2 + manifest_records), r.record_count);
+    try testing.expect(recordNamed(&r, "foundry:icon.window") != null);
+    try testing.expect(recordNamed(&r, "foundry:textures.other") != null);
+    try testing.expect(recordNamed(&r, "foundry:textures.mark") == null);
 }
 
 test "two files that derive one id are an error naming both" {
