@@ -717,6 +717,9 @@ pub fn build(b: *std.Build) void {
                 // The samples are Foundry's own artifacts, so they wear Foundry's mark. A
                 // game supplies its own here; the engine never supplies one for it.
                 .icon = b.path("brand/foundry.icns"),
+                // The window icon is an asset of the sample's own kind, which the stager
+                // cannot resolve by itself and requires by name (`distribution.md` §8).
+                .extra_files = &.{.{ .staged = "content/room/icon.png", .source = b.path("samples/room/content/icon.png") }},
                 .revision = revision,
             },
             // The second artifact, and not for symmetry: it is the one that carries scripts,
@@ -736,6 +739,7 @@ pub fn build(b: *std.Build) void {
                 .notice_file = b.path("NOTICE"),
                 .licenses_dir = "THIRD_PARTY_LICENSES",
                 .icon = b.path("brand/foundry.icns"),
+                .extra_files = &.{.{ .staged = "content/sandbox/icon.png", .source = b.path("samples/sandbox/content/icon.png") }},
                 .revision = revision,
             },
         };

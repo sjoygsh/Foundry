@@ -1,7 +1,7 @@
 # Design: M13 — Vulkan, and the second test of the RHI
 
 **Status:** Design accepted 2026-09-14 (ADR-0037/0038), its windowed floor revised before
-acceptance; **8 of 10 steps complete**. Next: Step 9. **Linux left M13 on 2026-09-18**
+acceptance; **9 of 10 steps complete**. Next: Step 10. **Linux left M13 on 2026-09-18**
 ([ADR-0039](../adr/0039-linux-after-the-first-game.md), the scope Resolution): M13 proves
 Windows x64, and Linux's runtime proof is M18, after the first game and before 3D.
 **Date:** 2026-09-14
@@ -379,7 +379,7 @@ M13 ends only when its rules survived or their necessary changes were recorded b
 
 ## 11. Implementation order — ten bounded steps
 
-Steps 1 to 8 are complete; every later step is **not started**. Stop after each with its
+Steps 1 to 9 are complete; Step 10 is **not started**. Stop after each with its
 Resolution, PROJECT_STATE update, verification and commit; no automatic chaining. Before Step 3
 the owner directed a repair of the native Windows test suite; its Resolution follows Step 2's.
 
@@ -1092,3 +1092,132 @@ Earlier Resolutions stand as written; where they say Linux is Step 9's, read M18
 `zig build check -Drhi=vulkan` and `vulkan-check` for `x86_64-linux-gnu` stay part of Vulkan
 work, and the bar keeps its null Linux cross-check. A Linux compile failure is still a bug. Nothing has run them natively, and no document may call
 Linux supported at runtime until M18 proves it. Vulkan remains Linux's backend.
+
+## Resolution — 2026-09-19, Step 9: Windows proven, with its limits
+
+**Tested on.** Every Windows result below came from hardware, and no software rasterizer ran
+anything:
+- an Intel Arc A750 (discrete, Vulkan 1.4) with driver 32.0.101.8991, and an Intel Core i3-10105F;
+- Windows 11 build 26200, one 1920×1080 display at 60 Hz, scale 1.00;
+- the Vulkan loader 1.4.357.0 and the validation layer from LunarG SDK 1.4.357.0;
+- SDL 3.4.14's `windows` video driver, Zig 0.16.0 and RenderDoc 1.46.
+
+**Found: the SSH evidence carried an overlay's layer.** The owner's SSH session belongs to an
+administrator and runs at high integrity. There the Vulkan loader ignores
+`VK_LOADER_LAYERS_DISABLE` and every layer-path variable, and says so only under
+`VK_LOADER_DEBUG=all`. So RivaTuner Statistics Server's implicit layer was inserted into every
+Vulkan process started over SSH since Step 3, while the Resolutions said implicit layers were
+filtered out. Desktop-session runs, the source of Step 8's validation evidence, run at normal
+integrity. A probe there with the filter set inserted no layer and printed no elevation notice.
+Over SSH, the layer's own `DISABLE_RTSS_LAYER=1` removes it, confirmed with
+`VK_LOADER_DEBUG=layer`. With it set, the whole `zig build test -Drhi=vulkan` ran again with
+nothing from cache and passed 69 of 69 steps and **1,427 of 1,437** tests, the same ten skipped. No
+earlier conclusion changes. AGENTS.md now says how to run clean over SSH.
+
+**Found: Step 8 broke both releases.** `zig build dist` refused both samples. Each package's
+`icon.png` is an asset of the sample's own kind, which the stager cannot resolve and requires by
+name (`distribution.md` §8), and Step 8 named neither. The bar stages no release, so nothing
+noticed. Each release description now lists its icon under `extra_files`. Both apps stage, and
+the staged room wears its icon. AGENTS.md now stages both releases whenever sample content, asset
+kinds or release descriptions change.
+
+**Found: a minimised window spun a core.** Step 8 recorded unpaced skipped frames; measured, the
+Step 8 build used **102%** of a core while minimised, by the process's CPU time, skipping 1,932
+frames in about 3.7 seconds. Pacing is the samples' policy, not `Engine`'s, as the null-backend
+yield beside the fix already says. So both samples now sleep one simulation step after a frame
+whose rendering was skipped. The same sequence on this build used **35.8%** minimised against
+38.0% presenting, with 161 frames skipped. Cycle counters place the main thread's minimised cost
+at 952 million cycles a second against the 3.7 GHz reference: a quarter of a core, doing real work
+rather than spinning.
+
+Closing the window while it was still minimised made the sample's last-240-frame summary cover
+skipped frames alone. There were about 43 a second, each with a 6.3 ms median of work before its
+sleep: the tick, the UI description and the submission of 3,712 sprites. Each span took about 2.3
+times as long as when presenting: simulate 2.08 ms against 0.76, submit 3.33 against 1.42. That
+fits the processor clocking down under a load that sleeps most of each frame, but it was not
+measured.
+
+**RenderDoc.** In the desktop session, RenderDoc 1.46 launched the relocated sandbox through
+`ExecuteAndInject`, with its layer named by `VK_ADD_LAYER_PATH` and nothing registered. It
+captured frame 244 (1.9 MB) through target control and replayed it locally on the Arc: supported,
+not degraded. The frame is one command buffer: a buffer copy, dynamic rendering that clears, eleven
+indexed draws, a store and a present. The sprite draw, event 20 with 22,272 indices (3,712 quads),
+was inspected in detail:
+* **stages and bindings:** the engine's SPIR-V vertex and fragment modules, entry `main`. The
+  fragment stage reads the 64×64 `R8G8B8A8_SRGB` sprite sheet at set 0, binding 0, through a
+  point-filtered, clamp-to-edge sampler. The bound image read back as the sandbox's sixteen
+  sprites.
+* **constants:** the 64-byte push-constant block `view_projection`, holding
+  diag(2/1152, 2/648, 1, 1): the camera at the origin, at zoom 1, for the 1152×648 window.
+* **vertex data:** 20-byte vertices. Position and UV are two floats at offsets 0 and 8, and colour
+  is normalised RGBA8 at 16. The indices are 32-bit, and the first quad's are 0, 1, 2, 0, 2, 3.
+  Its first vertex, (−96, −80) with UV (0.25, 0.25), left the vertex stage at (−0.1667, −0.2469):
+  exactly the constants applied.
+* **viewport:** anchored at y = 648 with height −648, the flip Step 6 implemented.
+* **resulting target:** the `B8G8R8A8_SRGB` swapchain image holds the sprite field after event 20,
+  and the overlay's panels and text over it after the last draw.
+
+The capture tool has two limits here, neither of them Foundry's:
+- Its layer loads only where the loader honours `VK_ADD_LAYER_PATH`, so a capture needs a
+  normal-integrity process: the desktop session, not SSH.
+- A fresh qrenderdoc waits on a first-run question before it runs a script.
+
+**Pacing.** Presenting, FIFO held the display's rate:
+- the sandbox's last 240 frames after a restore: 16.49 ms median, 16.62 ms p95, 16.63 ms maximum;
+- the same during the input run: 16.62 ms, 16.63 ms and 21.47 ms;
+- the room's present span: a 15.71 ms median.
+
+On the Mac, a windowed Metal sandbox on a 120 Hz display ran at an 8.04 ms median.
+
+**Real input.** Step 8's input came from the samples' own scripts. These runs sent keys and the
+mouse through Windows' input queue to the foreground sample, in the desktop session:
+`keybd_event` with scan codes, and `mouse_event`.
+* **The sandbox:** held W and D walked the player from the origin to (74, 58), with 17 contacts,
+  and each key also arrived as text. A click at the window's centre picked entity 4000. Three
+  wheel notches zoomed about the cursor from 1.00 to 1.57. F5 saved 4,002 entities, and Escape quit
+  cleanly.
+* **The room:** D walked, and a click sent the walker, one walk command. Tab opened the card,
+  Escape closed it, and a second Escape quit.
+* **The room's card, typed into:** a click focused the name field. The keys w, a, s, d, space and
+  w, four of them walking keys, typed "wasd w" into it, and the walker stayed where it stood. The
+  card took the click, the hall took no walk command, and the audit counted **no capture
+  failures**. A screenshot shows the renamed walker unmoved. The text went in before the default
+  name, because a click focuses a field without moving its caret; `ui.md` never offered that, and
+  it is not a platform matter.
+
+User-package and icon evidence was already complete after Step 8. It covered:
+- a user package's size, volume and icon, from the relocated install;
+- `WM_GETICON` from every window.
+
+Nothing was added there.
+
+**The bar.** AGENTS.md's bar section now carries the conditional checks this milestone needs:
+- `vulkan-check` and `check -Drhi=vulkan` for both targets, when Vulkan, shader or native-window
+  code changes;
+- both releases staged, when sample content, asset kinds or release descriptions change.
+
+Its Vulkan section now records:
+- the high-integrity loader rule;
+- RenderDoc's pinned archive and folder, and how to run it unattended.
+
+The native target commands were already there. `THIRD_PARTY_LICENSES/renderdoc.md` records
+RenderDoc as a build-time tool, never distributed: its archive's hash, its signed binaries, its MIT
+licence and the libraries its package bundles.
+
+**Evidence.** On the Mac, the bar passed with **1,394 of 1,395** headless tests, the Windows-only
+test skipped. `vulkan-check` and `check -Drhi=vulkan` passed for both targets, and both releases
+staged. On the Arc, over SSH with the overlay's layer disabled, the whole Vulkan graph passed as
+above. In the desktop session, from the relocated install with only system directories on `PATH`,
+the probe, the capture, the pacing runs and the input runs above all exited cleanly.
+
+**Limits of the claim.** Windows x64 is now a runtime claim, for this machine only:
+- one Intel GPU and one driver; no AMD or NVIDIA part, and no other Windows build;
+- one 60 Hz display at scale 1.00; no high or variable refresh rate, HDR, second monitor or
+  display scaling;
+- text typed with Latin keys; no IME composition. Synthetic keys carry no auto-repeat, so a held
+  key repeating into a field never ran.
+
+A minimised sample still costs about a quarter of this processor's core. A minimised Metal
+window's pacing is still unmeasured, because scripting the Mac's minimise needs an Accessibility
+permission this terminal lacks. The samples' sleep follows a skipped frame, whichever backend
+skipped it; whether Metal skips there at all is the open question.

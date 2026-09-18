@@ -687,6 +687,7 @@ fn run(
         room.present(engine);
         try room.submit(engine);
 
+        var skipped = false;
         engine.renderFrame(.{ .label = "room", .clear = room.clearColor() }, &room.renderer) catch |err| {
             // Only an image that is not there this frame — a minimised or occluded window — is
             // skipped. Anything else ends the run, and the session records a failure rather
@@ -695,6 +696,7 @@ fn run(
                 log.err("frame {d} failed: {t}", .{ engine.frame_index, err });
                 return err;
             }
+            skipped = true;
         };
 
         engine.endFrame();
@@ -710,6 +712,11 @@ fn run(
         // A windowed Metal build is paced by the display. The null backend has no swapchain
         // to wait on and would otherwise spin as fast as the CPU allows.
         if (!headless and rhi.backend == .null) engine.os.sleep(.fromMillis(2));
+
+        // Nor does a skipped frame, which presented nothing: a minimised Vulkan window would
+        // otherwise spin a core. One simulation step, after the frame's own work, is a little
+        // under the rate a presenting frame gives.
+        if (skipped) engine.os.sleep(engine.step_delta);
 
         if (frame_limit) |limit| {
             if (engine.frame_index >= limit) break;

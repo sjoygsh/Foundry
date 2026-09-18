@@ -754,6 +754,7 @@ fn run(
         }
 
         armFrameFault(engine, frame_fault);
+        var skipped = false;
         engine.renderFrame(.{ .label = "sprites", .clear = clearColor(engine) }, &field.renderer) catch |err| {
             // Only an image that is not there this frame — minimised, occluded, or every one
             // still in flight — is skipped, and counted. Anything else ends the run, and the
@@ -763,6 +764,7 @@ fn run(
                 return err;
             }
             skipped_frames += 1;
+            skipped = true;
         };
 
         engine.endFrame();
@@ -793,6 +795,13 @@ fn run(
         // and would otherwise spin as fast as the CPU allows, so that path keeps the crude
         // yield. Still deliberately not inside `Engine` — pacing is renderer policy.
         if (!headless and rhi.backend == .null) engine.os.sleep(.fromMillis(2));
+
+        // A skipped frame presented nothing, so nothing waited for the display. A minimised
+        // Vulkan window reports an unavailable surface at once, and without this the loop ran
+        // over 500 frames a second on a whole core (`vulkan.md`, Step 9). One simulation step,
+        // slept after the frame's own work, keeps input, audio and the fixed step moving at a
+        // little under the rate a presenting frame gives them.
+        if (skipped) engine.os.sleep(engine.step_delta);
 
         // A change that has stopped changing gets written. Never inside the frame that
         // made it, so a drag costs one write rather than one per frame.

@@ -620,7 +620,7 @@ are unchanged since `m11`. Frame time is the display's and is not claimed, and a
 measured slowing the calling thread's unsplit work, which is recorded as debt with a revisit
 trigger.
 
-### M13 — Portable: "the RHI was real" — **in progress; 8/10 steps complete; Windows only**
+### M13 — Portable: "the RHI was real" — **in progress; 9/10 steps complete; Windows only**
 
 **The backend is Vulkan** ([ADR-0033](adr/0033-vulkan-second-backend.md)), which covers Windows
 and Linux with one backend. D3D12 is not planned, and Metal stays macOS's — nothing is routed
@@ -667,7 +667,9 @@ RenderDoc, Vulkan's own shader-visible binding convention written into `rhi.md` 
 Metal's was, and the shader cross-compiler decision (ADR-0015), which comes due here because
 Vulkan consumes SPIR-V only. Its native `win32_hwnd`, X11 and Wayland payloads are implemented.
 Both samples present through the first on Windows, and the other two stay build-checked until
-M18. Non-Metal frame pacing is measured in Step 9.
+M18. Step 9 proved Windows: an inspected RenderDoc capture, measured frame pacing — a minimised
+sample no longer spins a core — and real keyboard and mouse input, with the claim's limits
+recorded.
 
 **It is the largest milestone in this phase.** ADR-0003 recorded that a Vulkan-first plan would
 have made M1 a months-long wall; that wall was moved here, not removed.
@@ -675,8 +677,8 @@ have made M1 a months-long wall; that wall was moved here, not removed.
 **Exit criteria:** a sample runs on Vulkan on a second platform, Windows x64, and the RHI's
 written rules either survived the encounter or changed by ADR. Cross-compilation, a Mac SDK or a
 software-only offscreen test cannot replace that presentation proof. ADR-0033 promised Linux at
-the same time; ADR-0039 moved that promise to M18. Stop after Step 8 in the current handoff;
-Step 9 comes next.
+the same time; ADR-0039 moved that promise to M18. Stop after Step 9 in the current handoff;
+Step 10, the milestone's close, comes next.
 
 ### M14 — Managed: "players choose their mods" — **not started**
 

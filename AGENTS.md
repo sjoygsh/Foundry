@@ -102,7 +102,7 @@ ten Metal-only. **M12 is complete (2026-09-14).** Parallel work goes through an 
 never allocates or calls the RHI, and every call site that splits work is tested under `serial`,
 `reversed` and a real pool. `FOUNDRY_SANDBOX_WORKERS` and `FOUNDRY_ROOM_WORKERS` set a sample's
 pool, `0` for none. M12 closed at **1,370 declared / 1,360 headless tests**.
-**M13 Steps 1 to 8 are complete (2026-09-18).** ADR-0037/0038 are accepted; read
+**M13 Steps 1 to 9 are complete (2026-09-19).** ADR-0037/0038 are accepted; read
 `docs/design/vulkan.md`. A Windows x64 Vulkan target is qualified and reached over SSH. Linux
 x64 left M13 by ADR-0039: its runtime proof is M18, after the first game and before 3D, and
 until then it is compile-checked only. The Vulkan tools are pinned in §3 below, and `platform`
@@ -110,13 +110,14 @@ hands out native window payloads and opens system libraries safely. `rhi/backend
 creates a validated device, tracks submissions and allocates, copies and retires resources. It
 creates checked SPIR-V shader modules, persistent descriptor sets, layouts and graphics
 pipelines. It draws offscreen and presents to a real window through a FIFO swapchain, under
-validation. Both samples run on it on Windows, each wearing a window icon it supplies. The four
+validation. Both samples run on it on Windows, each wearing a window icon it supplies, and
+Windows is a runtime claim for the tested machine, with its limits in `vulkan.md`. The four
 GLSL stages pass `glslangValidator`, `spirv-val` and Foundry's layout agreement tool before their
 bytes can enter a target. The backend implements the whole RHI interface, so `-Drhi=vulkan`
 builds the ordinary test and check graph and installs and runs the samples (§3). The native
 Windows `zig build test` passes on the target, and native builds there use at most two jobs.
 Mac cross-compilation never substitutes for runtime proof. M14–M17 remain unstarted.
-The bar below remains the current one until M13 adds its verified target commands.
+The bar below is the current one; Step 9 added the checks Vulkan and release work need to it.
 
 ## 3. Building and verifying
 
@@ -170,6 +171,21 @@ This is not ceremony. Step 4 found three defects this way and none of them by an
 a type a C mod had no way to construct, a header that did not compile as C++ at all, and an
 agreement that stopped firing.
 
+When a sample's content, a package's asset kinds or a release description changed, also stage
+both releases (*Staging a release*, below). M13 Step 8 gave the samples an asset kind of their
+own, and `dist` refused it until the release declared the file; nothing in the bar noticed.
+
+When Vulkan code, shaders or the platform's native window changed, also run the Vulkan checks
+on a host with the SDK tools on `PATH`, and the native commands on the Windows target
+(*Vulkan work*, below):
+
+```sh
+zig build vulkan-check -Drhi=vulkan -Dtarget=x86_64-windows-gnu
+zig build vulkan-check -Drhi=vulkan -Dtarget=x86_64-linux-gnu
+zig build check        -Drhi=vulkan -Dtarget=x86_64-windows-gnu
+zig build check        -Drhi=vulkan -Dtarget=x86_64-linux-gnu
+```
+
 ### Vulkan work (M13)
 
 Null and Metal builds need none of this; install it only on a host doing Vulkan work
@@ -208,7 +224,13 @@ spirv-val --target-env vulkan1.3 stage.frag.spv
 
 On Windows the SDK's `vulkaninfo` is `vulkaninfoSDK.exe`. Implicit layers other software
 installs — overlays, capture hooks — are not part of the evidence: set
-`VK_LOADER_LAYERS_DISABLE=~implicit~` for a qualifying run. Vulkan-Headers come only from the
+`VK_LOADER_LAYERS_DISABLE=~implicit~` for a qualifying run. **An elevated process ignores it.**
+An administrator's SSH session on Windows runs at high integrity. There the loader ignores
+`VK_LOADER_LAYERS_DISABLE` and every layer-path variable (`VK_ADD_LAYER_PATH` among them), and
+says so only under `VK_LOADER_DEBUG=all`. So over SSH, also set each installed implicit layer's
+own `disable_environment` variable from its manifest, and confirm with `VK_LOADER_DEBUG=layer`
+that no implicit layer is inserted. A desktop-session run started by a scheduled task runs at
+normal integrity and honours the filter. Vulkan-Headers come only from the
 lazy `build.zig.zon` pin, never from a system or SDK include directory.
 
 **Zig on Windows** has no install script; `install-zig.sh` is POSIX-only. Use the official
@@ -216,6 +238,17 @@ archive with the same versioned layout, never a package manager (ADR-0014):
 `https://ziglang.org/download/0.16.0/zig-x86_64-windows-0.16.0.zip`, SHA-256
 `68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e`, extracted to
 `%USERPROFILE%\.local\zig\0.16.0`.
+
+**RenderDoc 1.46** inspects a captured frame. Use the portable
+`https://renderdoc.org/stable/1.46/RenderDoc_1.46_64.zip`, SHA-256
+`9ca4d09ecaba2cc791168660d6fc2a7e3d70fe67146e87ec05c5f8dea70772f7`, unpacked to
+`%USERPROFILE%\tools\RenderDoc_1.46_64`. Do not register its layer. For a normal-integrity process,
+name the folder with `VK_ADD_LAYER_PATH` and enable `VK_LAYER_RENDERDOC_Capture` with
+`VK_INSTANCE_LAYERS`; elevated, neither variable is honoured. For an unattended capture,
+`qrenderdoc.exe --python <script>` runs the script before the UI opens. The script can launch the
+sample with `ExecuteAndInject`, capture through target control, replay, and exit with
+`os._exit`. With a fresh configuration, qrenderdoc first opens an "Analytics" question and waits
+on it, invisibly over SSH, so close that window when it appears.
 
 `zig build native-window-test` opens real native windows through SDL3 and is not part of the
 bar, because it needs a desktop session. On a Windows target reached over SSH, start it inside
@@ -243,8 +276,8 @@ loader (`VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`, with the layer's `LOG_
 require it themselves; and once with `VK_LOADER_LAYERS_DISABLE=~all~`, to show nothing from the
 SDK is needed. On Windows, run them in the desktop session like `vulkan-window-test`. Find a
 sample's window by its title as well as its process, since the process can own other visible
-windows. A minimised window's frames are skipped without pacing, so bound a run that minimises by
-closing the window, not by a frame count.
+windows. A minimised window's frames are skipped, paced only by the samples' one-step sleep, so
+bound a run that minimises by closing the window, not by a frame count.
 
 The backend tests require validation and fail, never skip, without it. Set
 `VK_LOADER_LAYERS_DISABLE=~implicit~` for them as for any qualifying run. Their surface test opens

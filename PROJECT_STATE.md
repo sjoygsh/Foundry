@@ -1,15 +1,37 @@
 # Foundry Project State
 
-**Last updated:** 2026-09-18
-**Current handoff: M0 through M12 are complete and tagged. M13 Steps 1 to 8 of 10 are
+**Last updated:** 2026-09-19
+**Current handoff: M0 through M12 are complete and tagged. M13 Steps 1 to 9 of 10 are
 complete: the Windows x64 Vulkan target is qualified and its tools pinned, native window payloads
 and the safe system-library open are implemented, the native Windows test suite passes, and a
 validated Vulkan device owns resources, checked shader modules, persistent bindings and graphics
 pipelines, draws the sprite contract correctly offscreen, and presents to a real window through a
 FIFO swapchain with resize and failed-frame closure. Both samples run on it on Windows from a
-relocated install, and each wears an icon it supplies. Next: Step 9, the rest of Windows'
-proof. Linux left M13 by ADR-0039: it is M18, after the first game and before 3D. M14 through M17
+relocated install, and each wears an icon it supplies. Step 9 proved Windows with an inspected
+RenderDoc capture, measured pacing and real input, and recorded the claim's limits. Next: Step 10,
+the milestone's close. Linux left M13 by ADR-0039: it is M18, after the first game and before 3D. M14 through M17
 remain unstarted.**
+
+**Completed M13 Step 9, 2026-09-19:** Windows proven, with its limits. RenderDoc 1.46, a portable
+folder with nothing registered, captured the relocated sandbox's frame 244 in the desktop session
+and replayed it on the Arc. The sprite draw's stages, binding, sampler, push constants, vertex
+layout and data, post-vertex positions, flipped viewport and resulting target were inspected and
+agree with the design. FIFO held 60 Hz: 16.49–16.62 ms medians, p95 16.63 ms. Real keys, clicks,
+wheel and typing through Windows' input queue walked, picked, zoomed, saved and quit the sandbox.
+They opened, typed into and closed the room's card; its walking keys typed into the name field
+and moved no one, with no capture failure. **Found:**
+- An administrator's SSH session runs at high integrity, where the loader ignores
+  `VK_LOADER_LAYERS_DISABLE`. So RivaTuner's implicit layer sat in every Vulkan run over SSH since
+  Step 3. The whole graph passed again without it, 1,427 of 1,437, and desktop runs were clean.
+- Step 8 broke `zig build dist` for both samples: their icon asset needed `extra_files`.
+- A minimised window spun a core, at 102%. Both samples now sleep a step after a skipped frame,
+  and the sample falls to about a quarter of a core, all of it real per-frame work.
+
+AGENTS.md gained conditional Vulkan checks and release staging in its bar, the high-integrity
+loader rule and RenderDoc's pin; `THIRD_PARTY_LICENSES/renderdoc.md` records the tool. On the Mac
+the bar passed **1,394 of 1,395**, Vulkan checks passed for both targets, and both releases
+staged. Limits: one Intel GPU, one 60 Hz display at scale 1.00, no IME, and a minimised Metal
+window still unmeasured. Resolution: `vulkan.md`, Step 9.
 
 **Rescoped M13, 2026-09-18:** Linux is removed from the current milestones. The first game built
 on Foundry, in its own repository, targets macOS and Windows. Linux x64 runtime support is added
@@ -3319,12 +3341,13 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M13 Step 9.** Steps 1 to 8 are complete, with the native Windows test repair the owner
-directed before Step 3 (`docs/design/vulkan.md` and their Resolutions). Step 9 proves Windows
-alone. It inspects one RenderDoc capture, which needs RenderDoc installed on the target with the
-owner's go. It measures frame pacing, including the unpaced frames of a minimised window that
-Step 8 recorded, and covers any user-package, input or icon evidence still missing. Linux is not
-M13's (ADR-0039); it is M18, after the first game and before 3D. Windowed runs on the Windows
+**Next: M13 Step 10, the milestone's close.** Steps 1 to 9 are complete, with the native Windows
+test repair the owner directed before Step 3 (`docs/design/vulkan.md` and their Resolutions).
+Step 10 runs §10's remaining integration gate, accepting unchanged successful evidence, and
+resolves every M13 contract discrepancy in its originating design or ADR. It updates `CLAUDE.md`
+§§4 and 9, AGENTS.md, this file, the roadmap, README, the design index, `rhi.md`,
+`platform-interface.md` and the ADR statuses. Then it commits, tags `m13`, pushes and stops before
+M14. Linux is not M13's (ADR-0039); it is M18, after the first game and before 3D. Windowed runs on the Windows
 target go through a scheduled task in the owner's desktop session. Native builds on that
 target use at most two jobs at below-normal priority, because it is the owner's gaming PC.
 M14 waits.
@@ -3350,7 +3373,7 @@ review of `main` rather than beginning on a schedule.
   `docs/design/jobs-and-threading.md` are implemented. Split spans are measurably faster at
   50,000 sprites, every determinism test is unchanged, and a pool's cost to the calling thread's
   unsplit work is recorded as debt.
-* **M13 — Portable.** Design accepted 2026-09-14, trigger activated; **8/10 steps complete**.
+* **M13 — Portable.** Design accepted 2026-09-14, trigger activated; **9/10 steps complete**.
   Read `docs/design/vulkan.md` and ADR-0037/0038. **Vulkan was decided
   2026-09-13 in [ADR-0033](docs/adr/0033-vulkan-second-backend.md)**, covering Windows and
   Linux with one backend; D3D12 is not planned and Metal stays macOS's. Since ADR-0039
