@@ -48,9 +48,10 @@ widget set already supports, and could not have been written before it existed.
 Steps 1 to 5 of ten are complete: a Windows x64 Vulkan target is qualified, the SDK, headers
 and tools are pinned, native window payloads and the system-library open are implemented, and a
 validated Vulkan device allocates, copies and retires resources, consumes checked engine-owned
-SPIR-V, and creates persistent bindings and pipelines on the target. Linux x64 has a recorded
+SPIR-V, creates persistent bindings and pipelines, and draws the sprite contract offscreen on the
+target. Linux x64 has a recorded
 route; Mac cross-builds do not establish runtime support. The native Windows test suite is
-repaired; Step 6 is next.
+repaired; Step 7 is next.
 
 | Document | Covers | Decisions worth knowing about |
 | --- | --- | --- |

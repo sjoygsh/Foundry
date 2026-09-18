@@ -1,7 +1,7 @@
 # Design: M13 — Vulkan, and the second test of the RHI
 
 **Status:** Design accepted 2026-09-14 (ADR-0037/0038), its windowed floor revised before
-acceptance; **5 of 10 steps complete**. Next: Step 6.
+acceptance; **6 of 10 steps complete**. Next: Step 7.
 **Date:** 2026-09-14
 **Baseline:** `f14caac` / `m12`; M0–M12 complete, 1,370 declared / 1,360 headless tests.
 **Decisions:** ADR-0033 selects Vulkan; accepted [ADR-0037](../adr/0037-vulkan-execution-and-presentation.md)
@@ -369,7 +369,7 @@ M13 ends only when its rules survived or their necessary changes were recorded b
 
 ## 11. Implementation order — ten bounded steps
 
-Steps 1 to 5 are complete; every later step is **not started**. Stop after each with its
+Steps 1 to 6 are complete; every later step is **not started**. Stop after each with its
 Resolution, PROJECT_STATE update, verification and commit; no automatic chaining. Before Step 3
 the owner directed a repair of the native Windows test suite; its Resolution follows Step 2's.
 
@@ -839,3 +839,50 @@ made the producer fail specifically with `DecorationMismatch`; restoring it pass
 Linux `vulkan-check` each compiled the backend and ran all four producer chains. The Mac bar passed
 at **1,401 declared / 1,391 headless tests**, ten Metal-only and one Windows-only test skipped on
 macOS, plus 28 Vulkan backend tests in their own graph. Linux still ran nothing natively.
+
+## Resolution — 2026-09-16, Step 6: drawing correctly offscreen
+
+**What landed.** `CommandBuffer.beginRenderPass` opens a dynamic-rendering pass. Each colour and
+depth attachment is barriered from its declared initial state into its attachment layout before
+`vkCmdBeginRendering`; the render area is the attachments' common extent; load and store actions
+map to Vulkan's, `discard` to `DONT_CARE`; clear values carry over; and a stencil-bearing depth
+format is the stencil attachment too. Viewport and scissor start covering the render area, as
+Metal's do, so a draw that sets neither is valid. `RenderPass.end` ends rendering and barriers each
+live attachment to its declared final state; passes are pooled like command buffers, so ending one
+cannot fail. `setPipeline` binds the monolithic pipeline, and a change of pipeline layout marks
+every group for rebinding and drops the inline constants, as `rhi.md` §9 states. Bind groups and
+constants are remembered and flushed at the draw against the bound layout: sets only for the
+groups the layout declares, so holes stay empty, and constants copied at the call, padded privately
+to four bytes and pushed no larger than the layout declares. Vertex and index buffers bind at once.
+`setViewport` implements Foundry's y-up clip space with a viewport of negative height anchored at
+the rectangle's bottom edge, and `setScissor` stays in top-left framebuffer coordinates. `draw`
+and `drawIndexed` map directly. A pass begun on a recording that is no longer open records nothing.
+
+**Found: Step 5's front-face inversion was wrong.** Step 5 translated a pipeline's declared front
+face inverted, anticipating the flipped viewport. Vulkan judges facing in framebuffer coordinates,
+after the viewport transform, and the negative-height viewport already makes Foundry's
+counter-clockwise triangles counter-clockwise there. The inversion therefore culled front faces:
+the first native run's culling probe read black where a front-facing triangle belonged, and passed
+178 of 179. The descriptor's front face now maps directly, with the reason beside it.
+
+**Evidence.** On the Windows target (Intel Arc A750, validation and synchronization validation
+required, implicit layers disabled), with byte-identical sources, `zig build vulkan-test
+-Drhi=vulkan` at two jobs and below-normal priority passed **179/179** with no validation warning
+or error. The eight Step 6 tests draw render2d's produced sprite stages into offscreen targets and
+read the pixels back through the backend-private copy §10 permits. A quad in clip space's top-left
+quadrant lands in the top-left pixels. An indexed draw takes its push-constant transform, and a
+scissor clips it. A straight-alpha sRGB texel decodes when sampled, blends premultiplied in linear
+light over black and encodes within two levels of the computed value, with opaque alpha. A depth
+clear of 1 lets the sprite's depth of 0 draw and a clear of 0 rejects it. With culling off, a
+counter-clockwise and a clockwise triangle both draw; with back faces culled, only the
+counter-clockwise one does. A cleared target survives a later pass that loads it and is then
+sampled by a third. A drawing recording refused at submission, or discarded, keeps its destroyed
+pipeline, group, buffer and target retired until a wait, then releases all of them. A pass whose
+allocation fails leaves its recording discardable. With the viewport's flip removed, the
+orientation and culling probes both failed; the file was restored byte for byte. The pass and draw
+code compiled for `x86_64-windows-gnu` and `x86_64-linux-gnu`. Linux ran nothing natively. The
+Mac bar, run on 2026-09-18 once the Xcode licence let the macOS SDK link, passed with 1,390 of
+1,391 headless tests and one Windows-only test skipped — Step 5's figures, since nothing macOS
+builds changed.
+
+**Not yet.** Frames, the swapchain, presentation, resize and `interface.check` are Step 7.

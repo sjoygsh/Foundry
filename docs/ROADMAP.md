@@ -640,7 +640,8 @@ validated Vulkan device with its submission timeline on the target. Step 4 added
 resources, copies, barriers, cache handling and completion-backed retirement under synchronization
 validation. Step 5 added the pinned four-stage GLSL-to-SPIR-V producer and exact layout agreement,
 then native shader modules, persistent descriptor sets, pipeline layouts and monolithic graphics
-pipelines under validation; drawing and presentation remain.
+pipelines under validation. Step 6 drew the sprite contract correctly offscreen, proved by pixel
+probes; presentation remains.
 
 The ten steps are qualification/tools, native surfaces/loader, device/submission timeline,
 resources/copies/retirement, shaders/bindings, offscreen drawing, presentation/resize/failure
@@ -662,7 +663,7 @@ have made M1 a months-long wall; that wall was moved here, not removed.
 either survived the encounter or changed by ADR. ADR-0033's two-platform promise requires
 native runtime evidence on both Windows x64 and Linux x64; the design separately exercises
 Linux X11 and Wayland. Cross-compilation, a Mac SDK or a software-only offscreen test cannot
-replace that presentation proof. Stop after Step 5 in the current handoff; Step 6 comes next.
+replace that presentation proof. Stop after Step 6 in the current handoff; Step 7 comes next.
 
 ### M14 — Managed: "players choose their mods" — **not started**
 

@@ -1,11 +1,27 @@
 # Foundry Project State
 
-**Last updated:** 2026-09-15
-**Current handoff: M0 through M12 are complete and tagged. M13 Steps 1 to 5 of 10 are
+**Last updated:** 2026-09-18
+**Current handoff: M0 through M12 are complete and tagged. M13 Steps 1 to 6 of 10 are
 complete: the Windows x64 Vulkan target is qualified and its tools pinned, native window payloads
 and the safe system-library open are implemented, the native Windows test suite passes, and a
-validated Vulkan device now owns resources, checked shader modules, persistent bindings and
-graphics pipelines. Next: Step 6, offscreen drawing. M14 through M17 remain unstarted.**
+validated Vulkan device owns resources, checked shader modules, persistent bindings and graphics
+pipelines, and draws the sprite contract correctly offscreen. Next: Step 7, presentation. M14
+through M17 remain unstarted.**
+
+**Completed M13 Step 6, 2026-09-16:** drawing correctly offscreen. The Vulkan backend's render
+pass opens dynamic rendering with attachment transitions both ways, maps load, store and clear
+values, starts viewport and scissor over the render area, and implements Foundry's y-up clip space
+with a negative-height viewport. Pipelines, bind groups, vertex and index buffers, padded inline
+constants, scissor and both draws are recorded; groups and constants flush at the draw, and a
+layout change drops them as `rhi.md` §9 says. **Found:** Step 5 inverted the pipeline front face
+in anticipation of that viewport, but Vulkan judges facing after the viewport transform, so front
+faces were culled; the face now maps directly. On the Arc A750 with validation and synchronization
+validation required, `vulkan-test` passed **179/179** with no validation message, including eight
+pixel-probe tests of orientation, constants and scissor, sRGB and premultiplied alpha, depth,
+culling, load/store and sampling a rendered target, and refused, discarded and unallocatable passes.
+Removing the viewport flip failed the orientation and culling probes. 36 Vulkan backend tests run
+in their own step. The Mac bar passed with Step 5's figures on 2026-09-18, once the Xcode licence
+let it link. Resolution: `vulkan.md`, Step 6.
 
 **Completed M13 Step 5, 2026-09-15:** checked shaders, persistent bindings and pipelines. The
 Vulkan-selected build graph now compiles the render2d sprite pair and sandbox quad pair from GLSL
@@ -3238,11 +3254,12 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M13 Step 6.** Steps 1 to 5 are complete, with the native Windows test repair the owner
-directed before Step 3 (`docs/design/vulkan.md` and their Resolutions). Step 6 adds pass and draw
-commands over Step 5's checked pipelines and persistent bindings, then proves the sprite contract
-offscreen with pixel probes. Its native evidence comes from `zig build vulkan-test -Drhi=vulkan`
-on the target with validation required. Native builds on that target use at most two jobs at
+**Next: M13 Step 7.** Steps 1 to 6 are complete, with the native Windows test repair the owner
+directed before Step 3 (`docs/design/vulkan.md` and their Resolutions). Step 7 presents: frame,
+image and submission identities, FIFO acquisition and presentation, per-image present semaphores,
+held undrawn images, resize and sticky errors, then `interface.check` and the full `-Drhi=vulkan`
+graph. Its real window belongs on the target's desktop session, so check with the owner before a
+windowed run. Native builds on that target use at most two jobs at
 below-normal priority, because it is the owner's gaming PC. Linux x64 still needs the owner's
 second-drive installation before Step 9. M14 waits.
 

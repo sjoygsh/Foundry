@@ -300,6 +300,8 @@ pub const Device = struct {
 
     command_buffers: std.ArrayList(*CommandBuffer) = .empty,
     free_command_buffers: std.ArrayList(*CommandBuffer) = .empty,
+    render_passes: std.ArrayList(*RenderPass) = .empty,
+    free_render_passes: std.ArrayList(*RenderPass) = .empty,
     /// How many native command buffers the pool has allocated. `free_native` always has room for
     /// all of them, so returning one can never fail.
     native_count: usize = 0,
@@ -1224,8 +1226,9 @@ pub const Device = struct {
             .sType = c.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
             .polygonMode = c.VK_POLYGON_MODE_FILL,
             .cullMode = cullMode(desc.primitive.cull_mode),
-            // Step 6 uses a negative-height viewport; invert here so Foundry's winding
-            // convention remains the one the pipeline descriptor states.
+            // Vulkan judges facing in framebuffer coordinates, after the viewport. The negative-height
+            // viewport (§6) already turns Foundry's y-up winding into the same winding there, so the
+            // descriptor's front face maps directly (Step 6 Resolution).
             .frontFace = frontFace(desc.primitive.front_face),
             .lineWidth = 1,
         };
@@ -1942,6 +1945,9 @@ pub const Device = struct {
         for (self.command_buffers.items) |cb| gpa.destroy(cb);
         self.command_buffers.deinit(gpa);
         self.free_command_buffers.deinit(gpa);
+        for (self.render_passes.items) |rp| gpa.destroy(rp);
+        self.render_passes.deinit(gpa);
+        self.free_render_passes.deinit(gpa);
         self.free_native.deinit(gpa);
         self.retired.deinit(gpa);
         self.buffers.deinit(gpa);
@@ -2064,6 +2070,93 @@ pub const CommandBuffer = struct {
         const submitted = dev.timeline.submit(self.recording, self.native);
         assert.debugOnly(submitted == serial, "submission {d} signalled timeline value {d}", .{ submitted, serial });
         dev.free_command_buffers.appendAssumeCapacity(self);
+    }
+
+    /// Opens a dynamic-rendering pass. Each attachment first moves from the state it is declared to
+    /// arrive in to its attachment layout, and `end` moves it to its declared final state (§7). The
+    /// render area is the attachments' common extent, and viewport and scissor start covering it,
+    /// as Metal's do.
+    pub fn beginRenderPass(self: *CommandBuffer, desc: command.RenderPassDesc) interface.CommandError!*RenderPass {
+        const dev = self.device;
+        const gpa = dev.gpa;
+        const pass = if (dev.free_render_passes.pop()) |reused| reused else blk: {
+            const fresh = try gpa.create(RenderPass);
+            errdefer gpa.destroy(fresh);
+            // Room to recycle it is reserved with it, so `end` can never fail to return it.
+            try dev.free_render_passes.ensureTotalCapacity(gpa, dev.render_passes.items.len + 1);
+            try dev.render_passes.append(gpa, fresh);
+            break :blk fresh;
+        };
+        pass.* = .{ .device = dev, .cmd = self, .live = self.open };
+        if (!self.open) return pass;
+
+        var barriers: [max_attachments + 1]c.VkImageMemoryBarrier2 = undefined;
+        var barrier_count: usize = 0;
+        var area: ?resource.Extent2D = null;
+
+        var colors: [max_attachments]c.VkRenderingAttachmentInfo = undefined;
+        const color_count = @min(desc.color.len, max_attachments);
+        for (desc.color[0..color_count], colors[0..color_count]) |attachment, *native| {
+            const state = dev.textures.get(attachment.texture);
+            native.* = .{
+                .sType = c.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                .imageView = if (state) |s| s.view else null,
+                .imageLayout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .loadOp = loadOp(attachment.load),
+                .storeOp = storeOp(attachment.store),
+                .clearValue = clearValue(attachment.load),
+            };
+            const s = state orelse continue;
+            if (attachment.initial_state != .render_target) {
+                barriers[barrier_count] = imageBarrier(s, attachment.initial_state, .render_target);
+                barrier_count += 1;
+            }
+            // The barrier into the attachment layout isolates the pass from any earlier transfer.
+            s.last_write = 0;
+            area = commonExtent(area, s.desc.size);
+            pass.addFinal(attachment.texture, .render_target, attachment.final_state);
+        }
+
+        var depth: c.VkRenderingAttachmentInfo = undefined;
+        var depth_ptr: ?*const c.VkRenderingAttachmentInfo = null;
+        var stencil_ptr: ?*const c.VkRenderingAttachmentInfo = null;
+        if (desc.depth) |attachment| {
+            if (dev.textures.get(attachment.texture)) |s| {
+                depth = .{
+                    .sType = c.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                    .imageView = s.view,
+                    .imageLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                    .loadOp = loadOp(attachment.load),
+                    .storeOp = storeOp(attachment.store),
+                    .clearValue = clearValue(attachment.load),
+                };
+                depth_ptr = &depth;
+                if (s.desc.format.hasStencil()) stencil_ptr = &depth;
+                if (attachment.initial_state != .depth_stencil) {
+                    barriers[barrier_count] = imageBarrier(s, attachment.initial_state, .depth_stencil);
+                    barrier_count += 1;
+                }
+                s.last_write = 0;
+                area = commonExtent(area, s.desc.size);
+                pass.addFinal(attachment.texture, .depth_stencil, attachment.final_state);
+            }
+        }
+        if (barrier_count > 0) self.imageBarriers(barriers[0..barrier_count]);
+
+        const extent = area orelse resource.Extent2D{ .width = 1, .height = 1 };
+        const info: c.VkRenderingInfo = .{
+            .sType = c.VK_STRUCTURE_TYPE_RENDERING_INFO,
+            .renderArea = .{ .extent = .{ .width = extent.width, .height = extent.height } },
+            .layerCount = 1,
+            .colorAttachmentCount = @intCast(color_count),
+            .pColorAttachments = &colors,
+            .pDepthAttachment = depth_ptr,
+            .pStencilAttachment = stencil_ptr,
+        };
+        dev.device_fns.vkCmdBeginRendering(self.native, &info);
+        pass.setViewport(.{ .width = @floatFromInt(extent.width), .height = @floatFromInt(extent.height) });
+        pass.setScissor(.{ .width = extent.width, .height = extent.height });
+        return pass;
     }
 
     /// §7's texture states as synchronization2 barriers, recorded in batches.
@@ -2351,6 +2444,218 @@ fn shaderStages(stages: pipeline.ShaderStages) c.VkShaderStageFlags {
     return flags;
 }
 
+// -- render pass --------------------------------------------------------------------
+
+/// Colour attachments a pass may name; the RHI's other backends allow the same eight.
+const max_attachments = 8;
+
+pub const RenderPass = struct {
+    device: *Device,
+    cmd: *CommandBuffer,
+    /// False once ended, and for a pass begun on a recording that was no longer open: nothing more
+    /// is recorded through it.
+    live: bool,
+    ended: bool = false,
+    finals: [max_attachments + 1]command.TextureBarrier = undefined,
+    final_count: usize = 0,
+
+    /// The bound pipeline's layout. Vulkan scopes set bindings and push constants to it (§9).
+    layout: ?*PipelineLayoutBacking = null,
+    groups: [pipeline.max_bind_groups]pipeline.BindGroupHandle = @splat(.none),
+    dirty_groups: u8 = 0,
+    /// The caller's bytes, padded privately to Vulkan's four-byte granularity (§6).
+    constants: [pipeline.max_inline_constant_bytes]u8 = @splat(0),
+    constant_bytes: u32 = 0,
+    constants_dirty: bool = false,
+
+    fn addFinal(self: *RenderPass, texture: resource.TextureHandle, from: resource.ResourceState, to: resource.ResourceState) void {
+        self.finals[self.final_count] = .{ .texture = texture, .from = from, .to = to };
+        self.final_count += 1;
+    }
+
+    pub fn setPipeline(self: *RenderPass, handle: pipeline.RenderPipelineHandle) void {
+        if (!self.live) return;
+        const state = self.device.pipelines.getConst(handle) orelse return;
+        if (self.layout != state.layout) {
+            // A different layout invalidates what the old one scoped: every group is bound again,
+            // and the constants must be set again before the next draw (`rhi.md` §9).
+            self.layout = state.layout;
+            self.dirty_groups = (1 << pipeline.max_bind_groups) - 1;
+            self.constant_bytes = 0;
+            self.constants_dirty = false;
+        }
+        self.device.device_fns.vkCmdBindPipeline(self.cmd.native, c.VK_PIPELINE_BIND_POINT_GRAPHICS, state.native);
+    }
+
+    /// Remembered, and bound at the next draw against whichever layout is bound then.
+    pub fn setBindGroup(self: *RenderPass, index: u32, group: pipeline.BindGroupHandle) void {
+        if (!self.live or index >= pipeline.max_bind_groups) return;
+        self.groups[index] = group;
+        self.dirty_groups |= @as(u8, 1) << @intCast(index);
+    }
+
+    pub fn setVertexBuffer(self: *RenderPass, slot: u32, buffer: resource.BufferHandle, offset: u64) void {
+        if (!self.live or slot >= pipeline.max_vertex_buffers) return;
+        const state = self.device.buffers.getConst(buffer) orelse return;
+        const natives = [_]c.VkBuffer{state.native};
+        const offsets = [_]u64{offset};
+        self.device.device_fns.vkCmdBindVertexBuffers(self.cmd.native, slot, 1, &natives, &offsets);
+    }
+
+    pub fn setIndexBuffer(self: *RenderPass, buffer: resource.BufferHandle, index_format: format.IndexFormat, offset: u64) void {
+        if (!self.live) return;
+        const state = self.device.buffers.getConst(buffer) orelse return;
+        self.device.device_fns.vkCmdBindIndexBuffer(self.cmd.native, state.native, offset, indexType(index_format));
+    }
+
+    /// Copied at the call, whole-block. Pushed at the next draw, when the layout it belongs to is
+    /// known; nothing past the caller's slice is read.
+    pub fn setInlineConstants(self: *RenderPass, bytes: []const u8) void {
+        if (!self.live or bytes.len > pipeline.max_inline_constant_bytes) return;
+        @memcpy(self.constants[0..bytes.len], bytes);
+        const padded = std.mem.alignForward(usize, bytes.len, 4);
+        @memset(self.constants[bytes.len..padded], 0);
+        self.constant_bytes = @intCast(padded);
+        self.constants_dirty = true;
+    }
+
+    /// Foundry's clip space is y-up and Vulkan's y-down. A viewport of negative height anchored at
+    /// the rectangle's bottom edge maps one onto the other, and pipelines invert their front face
+    /// to match (§6).
+    pub fn setViewport(self: *RenderPass, viewport: command.Viewport) void {
+        if (!self.live) return;
+        const native = [_]c.VkViewport{.{
+            .x = viewport.x,
+            .y = viewport.y + viewport.height,
+            .width = viewport.width,
+            .height = -viewport.height,
+            .minDepth = viewport.min_depth,
+            .maxDepth = viewport.max_depth,
+        }};
+        self.device.device_fns.vkCmdSetViewport(self.cmd.native, 0, 1, &native);
+    }
+
+    /// Framebuffer coordinates, top-left origin, which the viewport's flip does not move.
+    pub fn setScissor(self: *RenderPass, rect: command.ScissorRect) void {
+        if (!self.live) return;
+        const native = [_]c.VkRect2D{.{
+            .offset = .{ .x = std.math.cast(i32, rect.x) orelse std.math.maxInt(i32), .y = std.math.cast(i32, rect.y) orelse std.math.maxInt(i32) },
+            .extent = .{ .width = rect.width, .height = rect.height },
+        }};
+        self.device.device_fns.vkCmdSetScissor(self.cmd.native, 0, 1, &native);
+    }
+
+    pub fn draw(self: *RenderPass, params: command.Draw) void {
+        if (!self.flush()) return;
+        self.device.device_fns.vkCmdDraw(self.cmd.native, params.vertex_count, params.instance_count, params.first_vertex, params.first_instance);
+    }
+
+    pub fn drawIndexed(self: *RenderPass, params: command.DrawIndexed) void {
+        if (!self.flush()) return;
+        self.device.device_fns.vkCmdDrawIndexed(
+            self.cmd.native,
+            params.index_count,
+            params.instance_count,
+            params.first_index,
+            params.base_vertex,
+            params.first_instance,
+        );
+    }
+
+    /// Binds what changed since the last draw against the bound layout. False when nothing valid
+    /// could be drawn: no pipeline, or a pass that records nothing.
+    fn flush(self: *RenderPass) bool {
+        if (!self.live) return false;
+        const bound_layout = self.layout orelse return false;
+        const dev = self.device;
+        for (0..pipeline.max_bind_groups) |i| {
+            if ((self.dirty_groups >> @intCast(i)) & 1 == 0) continue;
+            // A hole in the layout is an empty set nothing reads; nothing is bound there.
+            if (i >= bound_layout.groups.len or bound_layout.groups[i] == null) continue;
+            const group = dev.bind_groups.getConst(self.groups[i]) orelse continue;
+            const set = [_]c.VkDescriptorSet{group.native};
+            dev.device_fns.vkCmdBindDescriptorSets(self.cmd.native, c.VK_PIPELINE_BIND_POINT_GRAPHICS, bound_layout.native, @intCast(i), 1, &set, 0, null);
+        }
+        self.dirty_groups = 0;
+        if (self.constants_dirty) {
+            self.constants_dirty = false;
+            // Bytes a layout does not declare go nowhere (`rhi.md` §9).
+            const size = @min(self.constant_bytes, std.mem.alignForward(u32, bound_layout.inline_constant_bytes, 4));
+            if (size > 0) {
+                dev.device_fns.vkCmdPushConstants(
+                    self.cmd.native,
+                    bound_layout.native,
+                    c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT,
+                    0,
+                    size,
+                    &self.constants,
+                );
+            }
+        }
+        return true;
+    }
+
+    /// Ends rendering, moves each attachment to its declared final state, and returns the pass.
+    pub fn end(self: *RenderPass) void {
+        if (self.ended) return;
+        self.ended = true;
+        const dev = self.device;
+        if (self.live) {
+            self.live = false;
+            dev.device_fns.vkCmdEndRendering(self.cmd.native);
+            var barriers: [max_attachments + 1]c.VkImageMemoryBarrier2 = undefined;
+            var count: usize = 0;
+            for (self.finals[0..self.final_count]) |final| {
+                if (final.from == final.to) continue;
+                // Destroyed during the pass: its backing waits for this recording, and nothing can
+                // name it again, so no layout is owed.
+                const state = dev.textures.getConst(final.texture) orelse continue;
+                barriers[count] = imageBarrier(state, final.from, final.to);
+                count += 1;
+            }
+            if (count > 0) self.cmd.imageBarriers(barriers[0..count]);
+        }
+        dev.free_render_passes.appendAssumeCapacity(self);
+    }
+};
+
+fn commonExtent(so_far: ?resource.Extent2D, size: resource.Extent2D) resource.Extent2D {
+    const current = so_far orelse return size;
+    return .{ .width = @min(current.width, size.width), .height = @min(current.height, size.height) };
+}
+
+fn loadOp(action: command.LoadAction) c.VkAttachmentLoadOp {
+    return switch (action) {
+        .load => c.VK_ATTACHMENT_LOAD_OP_LOAD,
+        .clear => c.VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .discard => c.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+    };
+}
+
+fn storeOp(action: command.StoreAction) c.VkAttachmentStoreOp {
+    return switch (action) {
+        .store => c.VK_ATTACHMENT_STORE_OP_STORE,
+        .discard => c.VK_ATTACHMENT_STORE_OP_DONT_CARE,
+    };
+}
+
+fn clearValue(action: command.LoadAction) c.VkClearValue {
+    return switch (action) {
+        .clear => |value| switch (value) {
+            .color => |rgba| .{ .color = .{ .float32 = rgba } },
+            .depth_stencil => |ds| .{ .depthStencil = .{ .depth = ds.depth, .stencil = ds.stencil } },
+        },
+        .load, .discard => std.mem.zeroes(c.VkClearValue),
+    };
+}
+
+fn indexType(index_format: format.IndexFormat) c.VkIndexType {
+    return switch (index_format) {
+        .uint16 => c.VK_INDEX_TYPE_UINT16,
+        .uint32 => c.VK_INDEX_TYPE_UINT32,
+    };
+}
+
 const DescriptorCounts = struct {
     uniform: u32 = 0,
     storage: u32 = 0,
@@ -2529,8 +2834,8 @@ fn cullMode(mode: pipeline.CullMode) c.VkCullModeFlags {
 
 fn frontFace(face: pipeline.FrontFace) c.VkFrontFace {
     return switch (face) {
-        .counter_clockwise => c.VK_FRONT_FACE_CLOCKWISE,
-        .clockwise => c.VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        .counter_clockwise => c.VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        .clockwise => c.VK_FRONT_FACE_CLOCKWISE,
     };
 }
 
@@ -3697,4 +4002,408 @@ test "every host allocation in the Step 5 object graph can fail without a leak" 
     try testing.expectEqual(@as(usize, 0), dev.liveCount());
     try testing.expectEqual(@as(usize, 0), dev.retiredCount());
     try expectValidationHeard(dev);
+}
+
+// -- drawing offscreen (Step 6) -------------------------------------------------------
+
+const SpriteVertex = extern struct { position: [2]f32, uv: [2]f32, color: [4]u8 };
+
+/// Column-major, as the sprite stage reads its push block.
+fn scaleMatrix(x: f32, y: f32) [64]u8 {
+    return @bitCast([16]f32{ x, 0, 0, 0, 0, y, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 });
+}
+
+fn corner(x: f32, y: f32, u: f32, v: f32, color: [4]u8) SpriteVertex {
+    return .{ .position = .{ x, y }, .uv = .{ u, v }, .color = color };
+}
+
+/// Two triangles, counter-clockwise with +y up, covering the clip-space rectangle.
+fn quad(x0: f32, y0: f32, x1: f32, y1: f32, color: [4]u8) [6]SpriteVertex {
+    return .{
+        corner(x0, y0, 0, 1, color), corner(x1, y0, 1, 1, color), corner(x1, y1, 1, 0, color),
+        corner(x0, y0, 0, 1, color), corner(x1, y1, 1, 0, color), corner(x0, y1, 0, 0, color),
+    };
+}
+
+fn texelAt(pixels: []const u8, size: u32, x: u32, y: u32) [4]u8 {
+    const at = (y * size + x) * 4;
+    return pixels[at..][0..4].*;
+}
+
+/// render2d's sprite contract on a device — its two produced stages, its material layout, a
+/// 64-byte constant block and a nearest sampler — with what the probes draw with.
+const Canvas = struct {
+    dev: *Device,
+    vertex: resource.ShaderModuleHandle,
+    fragment: resource.ShaderModuleHandle,
+    group_layout: pipeline.BindGroupLayoutHandle,
+    pipeline_layout: pipeline.PipelineLayoutHandle,
+    sampler: resource.SamplerHandle,
+
+    fn init(dev: *Device) !Canvas {
+        const group_layout = try dev.createBindGroupLayout(.{ .label = "material", .entries = &.{
+            .{ .binding = 0, .type = .sampled_texture, .visibility = .{ .fragment = true } },
+            .{ .binding = 1, .type = .sampler, .visibility = .{ .fragment = true } },
+        } });
+        return .{
+            .dev = dev,
+            .vertex = try dev.createShaderModule(.{ .label = "sprite vertex", .bytes = builtin_stages.sprite_vertex }),
+            .fragment = try dev.createShaderModule(.{ .label = "sprite fragment", .bytes = builtin_stages.sprite_fragment }),
+            .group_layout = group_layout,
+            .pipeline_layout = try dev.createPipelineLayout(.{ .bind_group_layouts = &.{group_layout}, .inline_constant_bytes = 64 }),
+            .sampler = try dev.createSampler(.{}),
+        };
+    }
+
+    const PipelineOptions = struct {
+        target: format.TextureFormat = .rgba8_unorm,
+        blend: ?pipeline.BlendState = null,
+        depth: ?pipeline.DepthStencilState = null,
+        cull: pipeline.CullMode = .none,
+    };
+
+    fn pipelineWith(self: Canvas, options: PipelineOptions) !pipeline.RenderPipelineHandle {
+        return self.dev.createRenderPipeline(.{
+            .label = "probe sprite",
+            .layout = self.pipeline_layout,
+            .vertex_shader = self.vertex,
+            .vertex_entry = "main",
+            .fragment_shader = self.fragment,
+            .fragment_entry = "main",
+            .vertex_buffers = &.{.{ .stride = @sizeOf(SpriteVertex), .attributes = &.{
+                .{ .location = 0, .offset = 0, .format = .float32x2 },
+                .{ .location = 1, .offset = 8, .format = .float32x2 },
+                .{ .location = 2, .offset = 16, .format = .unorm8x4 },
+            } }},
+            .color_targets = &.{.{ .format = options.target, .blend = options.blend }},
+            .depth_stencil = options.depth,
+            .primitive = .{ .cull_mode = options.cull },
+        });
+    }
+
+    /// A 1x1 texture holding `texel`, uploaded, made readable and grouped with the sampler.
+    fn swatch(self: Canvas, texture_format: format.TextureFormat, texel: [4]u8) !pipeline.BindGroupHandle {
+        const dev = self.dev;
+        const texture = try dev.createTexture(.{
+            .label = "swatch",
+            .size = .{ .width = 1, .height = 1 },
+            .format = texture_format,
+            .usage = .{ .sampled = true, .copy_dst = true },
+            .initial_state = .copy_dst,
+        });
+        const upload = try dev.createBuffer(.{ .size = 4, .usage = .{ .copy_src = true }, .memory = .upload });
+        defer dev.destroyBuffer(upload);
+        try fill(dev, upload, &texel);
+        const cb = try dev.beginCommandBuffer();
+        try cb.copyBufferToTexture(.{ .src = upload, .dst = texture, .size = .{ .width = 1, .height = 1 } });
+        try cb.textureBarrier(&.{.{ .texture = texture, .from = .copy_dst, .to = .shader_read }});
+        try finish(dev, cb);
+        return self.group(texture);
+    }
+
+    fn group(self: Canvas, texture: resource.TextureHandle) !pipeline.BindGroupHandle {
+        return self.dev.createBindGroup(.{ .layout = self.group_layout, .entries = &.{
+            .{ .binding = 0, .resource = .{ .sampled_texture = texture } },
+            .{ .binding = 1, .resource = .{ .sampler = self.sampler } },
+        } });
+    }
+
+    /// A target the probes render into and read back. It rests in `copy_dst` between passes.
+    fn target(self: Canvas, size: u32, target_format: format.TextureFormat) !resource.TextureHandle {
+        return self.dev.createTexture(.{
+            .label = "probe target",
+            .size = .{ .width = size, .height = size },
+            .format = target_format,
+            .usage = .{ .render_target = true, .sampled = true, .copy_src = true, .copy_dst = true },
+            .initial_state = .copy_dst,
+        });
+    }
+
+    /// Host-visible vertices, bound where they are: the direct path a unified-memory renderer takes.
+    fn vertices(self: Canvas, list: []const SpriteVertex) !resource.BufferHandle {
+        const buffer = try self.dev.createBuffer(.{ .size = @sizeOf(SpriteVertex) * list.len, .usage = .{ .vertex = true }, .memory = .upload });
+        try fill(self.dev, buffer, std.mem.sliceAsBytes(list));
+        return buffer;
+    }
+};
+
+const Probe = struct {
+    target: resource.TextureHandle,
+    render_pipeline: pipeline.RenderPipelineHandle = .none,
+    group: pipeline.BindGroupHandle = .none,
+    vertices: resource.BufferHandle = .none,
+    vertex_count: u32 = 6,
+    constants: [64]u8 = scaleMatrix(1, 1),
+    depth: ?command.DepthAttachment = null,
+    load: command.LoadAction = .{ .clear = .{ .color = .{ 0, 0, 0, 1 } } },
+    draw: bool = true,
+};
+
+/// One recording: a pass over `probe.target` that draws once, then level 0 read back.
+fn render(dev: *Device, probe: Probe) ![]u8 {
+    const cb = try dev.beginCommandBuffer();
+    const pass = try cb.beginRenderPass(.{
+        .color = &.{.{ .texture = probe.target, .load = probe.load, .initial_state = .copy_dst, .final_state = .copy_dst }},
+        .depth = probe.depth,
+    });
+    if (probe.draw) {
+        pass.setPipeline(probe.render_pipeline);
+        pass.setBindGroup(0, probe.group);
+        pass.setVertexBuffer(0, probe.vertices, 0);
+        pass.setInlineConstants(&probe.constants);
+        pass.draw(.{ .vertex_count = probe.vertex_count });
+    }
+    pass.end();
+    try finish(dev, cb);
+    return readTexels(dev, probe.target, 0);
+}
+
+const red = [4]u8{ 255, 0, 0, 255 };
+const green = [4]u8{ 0, 255, 0, 255 };
+const blue = [4]u8{ 0, 0, 255, 255 };
+const black = [4]u8{ 0, 0, 0, 255 };
+const white = [4]u8{ 255, 255, 255, 255 };
+
+test "a sprite lands where Foundry's clip space puts it, the right way up" {
+    const dev = try validated(.{});
+    defer dev.deinit();
+    const canvas = try Canvas.init(dev);
+
+    // The top-left quadrant of clip space: x from -1 to 0 and y from 0 to +1, with +y up.
+    const top_left = quad(-1, 0, 0, 1, red);
+    const pixels = try render(dev, .{
+        .target = try canvas.target(16, .rgba8_unorm),
+        .render_pipeline = try canvas.pipelineWith(.{}),
+        .group = try canvas.swatch(.rgba8_unorm, white),
+        .vertices = try canvas.vertices(&top_left),
+    });
+    defer testing.allocator.free(pixels);
+
+    try testing.expectEqual(red, texelAt(pixels, 16, 0, 0));
+    try testing.expectEqual(red, texelAt(pixels, 16, 7, 7));
+    try testing.expectEqual(black, texelAt(pixels, 16, 8, 7));
+    try testing.expectEqual(black, texelAt(pixels, 16, 7, 8));
+    try testing.expectEqual(black, texelAt(pixels, 16, 15, 15));
+    try expectValidationHeard(dev);
+}
+
+test "an indexed draw takes its constants, and a scissor clips it" {
+    const dev = try validated(.{});
+    defer dev.deinit();
+    const canvas = try Canvas.init(dev);
+    const target = try canvas.target(16, .rgba8_unorm);
+
+    const corners = [_]SpriteVertex{
+        corner(-1, -1, 0, 1, green), corner(1, -1, 1, 1, green),
+        corner(1, 1, 1, 0, green),   corner(-1, 1, 0, 0, green),
+    };
+    const vertices = try canvas.vertices(&corners);
+    const indices = try dev.createBuffer(.{ .size = 12, .usage = .{ .index = true }, .memory = .upload });
+    try fill(dev, indices, std.mem.sliceAsBytes(&[_]u16{ 0, 1, 2, 0, 2, 3 }));
+    const halved = scaleMatrix(0.5, 0.5);
+
+    const cb = try dev.beginCommandBuffer();
+    const pass = try cb.beginRenderPass(.{
+        .color = &.{.{ .texture = target, .initial_state = .copy_dst, .final_state = .copy_dst }},
+    });
+    pass.setPipeline(try canvas.pipelineWith(.{}));
+    pass.setBindGroup(0, try canvas.swatch(.rgba8_unorm, white));
+    pass.setVertexBuffer(0, vertices, 0);
+    pass.setIndexBuffer(indices, .uint16, 0);
+    pass.setInlineConstants(&halved);
+    pass.setScissor(.{ .x = 0, .y = 0, .width = 8, .height = 16 });
+    pass.drawIndexed(.{ .index_count = 6 });
+    pass.end();
+    try finish(dev, cb);
+    const pixels = try readTexels(dev, target, 0);
+    defer testing.allocator.free(pixels);
+
+    // Halved, the quad covers pixels 4 to 11 on both axes, and the scissor keeps columns below 8.
+    try testing.expectEqual(green, texelAt(pixels, 16, 4, 4));
+    try testing.expectEqual(green, texelAt(pixels, 16, 7, 11));
+    try testing.expectEqual(black, texelAt(pixels, 16, 8, 4));
+    try testing.expectEqual(black, texelAt(pixels, 16, 3, 4));
+    try testing.expectEqual(black, texelAt(pixels, 16, 4, 12));
+    try expectValidationHeard(dev);
+}
+
+fn srgbToLinear(v: f32) f32 {
+    return if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
+}
+
+fn linearToSrgb(v: f32) f32 {
+    return if (v <= 0.0031308) v * 12.92 else 1.055 * std.math.pow(f32, v, 1.0 / 2.4) - 0.055;
+}
+
+test "sRGB decodes when sampled, blends premultiplied in linear light, and encodes when written" {
+    const dev = try validated(.{});
+    defer dev.deinit();
+    const canvas = try Canvas.init(dev);
+
+    const everywhere = quad(-1, -1, 1, 1, white);
+    const pixels = try render(dev, .{
+        .target = try canvas.target(4, .rgba8_unorm_srgb),
+        .render_pipeline = try canvas.pipelineWith(.{ .target = .rgba8_unorm_srgb, .blend = pipeline.BlendState.premultiplied_alpha }),
+        .group = try canvas.swatch(.rgba8_unorm_srgb, .{ 188, 188, 188, 128 }),
+        .vertices = try canvas.vertices(&everywhere),
+    });
+    defer testing.allocator.free(pixels);
+
+    // The fragment stage premultiplies the decoded texel; the blend lays it over opaque black.
+    const alpha: f32 = 128.0 / 255.0;
+    const expected: f32 = linearToSrgb(srgbToLinear(188.0 / 255.0) * alpha) * 255.0;
+    const got = texelAt(pixels, 4, 1, 1);
+    for (got[0..3]) |channel| try testing.expectApproxEqAbs(expected, @as(f32, @floatFromInt(channel)), 2.0);
+    try testing.expectEqual(@as(u8, 255), got[3]);
+    try expectValidationHeard(dev);
+}
+
+test "a depth attachment clears, and its test decides what draws" {
+    const dev = try validated(.{});
+    defer dev.deinit();
+    const canvas = try Canvas.init(dev);
+    const target = try canvas.target(4, .rgba8_unorm);
+    const depth = try dev.createTexture(.{
+        .label = "probe depth",
+        .size = .{ .width = 4, .height = 4 },
+        .format = .depth32_float,
+        .usage = .{ .depth_stencil = true },
+    });
+    const render_pipeline = try canvas.pipelineWith(.{ .depth = .{ .format = .depth32_float, .depth_compare = .less } });
+    const group = try canvas.swatch(.rgba8_unorm, white);
+    const everywhere = quad(-1, -1, 1, 1, red);
+    const vertices = try canvas.vertices(&everywhere);
+
+    // The sprite stage writes depth 0: nearer than a clear of 1, and not nearer than a clear of 0.
+    for ([_]struct { clear: f32, expected: [4]u8 }{
+        .{ .clear = 1.0, .expected = red },
+        .{ .clear = 0.0, .expected = black },
+    }) |case| {
+        const pixels = try render(dev, .{
+            .target = target,
+            .render_pipeline = render_pipeline,
+            .group = group,
+            .vertices = vertices,
+            .depth = .{ .texture = depth, .load = .{ .clear = .{ .depth_stencil = .{ .depth = case.clear } } } },
+        });
+        defer testing.allocator.free(pixels);
+        try testing.expectEqual(case.expected, texelAt(pixels, 4, 1, 2));
+    }
+    try expectValidationHeard(dev);
+}
+
+test "back faces are culled by Foundry's winding, not by Vulkan's" {
+    const dev = try validated(.{});
+    defer dev.deinit();
+    const canvas = try Canvas.init(dev);
+    const target = try canvas.target(16, .rgba8_unorm);
+    const group = try canvas.swatch(.rgba8_unorm, white);
+    // Left: counter-clockwise with +y up. Right: clockwise.
+    const triangles = [_]SpriteVertex{
+        corner(-1, -1, 0, 1, blue),  corner(0, -1, 0, 1, blue),  corner(-1, 1, 0, 1, blue),
+        corner(0.2, -1, 0, 1, blue), corner(0.2, 1, 0, 1, blue), corner(1, -1, 0, 1, blue),
+    };
+    const vertices = try canvas.vertices(&triangles);
+
+    for ([_]struct { cull: pipeline.CullMode, right: [4]u8 }{
+        .{ .cull = .none, .right = blue },
+        .{ .cull = .back, .right = black },
+    }) |case| {
+        const pixels = try render(dev, .{
+            .target = target,
+            .render_pipeline = try canvas.pipelineWith(.{ .cull = case.cull }),
+            .group = group,
+            .vertices = vertices,
+        });
+        defer testing.allocator.free(pixels);
+        // +y is up, so both triangles' interiors sit near the bottom row.
+        try testing.expectEqual(blue, texelAt(pixels, 16, 1, 14));
+        try testing.expectEqual(case.right, texelAt(pixels, 16, 14, 14));
+    }
+    try expectValidationHeard(dev);
+}
+
+test "a stored target is loaded by a later pass and sampled by another" {
+    const dev = try validated(.{});
+    defer dev.deinit();
+    const canvas = try Canvas.init(dev);
+    const source = try canvas.target(4, .rgba8_unorm);
+
+    const cleared = try render(dev, .{ .target = source, .draw = false, .load = .{ .clear = .{ .color = .{ 1, 0, 0, 1 } } } });
+    defer testing.allocator.free(cleared);
+    try testing.expectEqual(red, texelAt(cleared, 4, 3, 3));
+    const loaded = try render(dev, .{ .target = source, .draw = false, .load = .load });
+    defer testing.allocator.free(loaded);
+    try testing.expectEqualSlices(u8, cleared, loaded);
+
+    const cb = try dev.beginCommandBuffer();
+    try cb.textureBarrier(&.{.{ .texture = source, .from = .copy_dst, .to = .shader_read }});
+    try finish(dev, cb);
+    const everywhere = quad(-1, -1, 1, 1, white);
+    const sampled = try render(dev, .{
+        .target = try canvas.target(4, .rgba8_unorm),
+        .render_pipeline = try canvas.pipelineWith(.{}),
+        .group = try canvas.group(source),
+        .vertices = try canvas.vertices(&everywhere),
+    });
+    defer testing.allocator.free(sampled);
+    try testing.expectEqual(red, texelAt(sampled, 4, 2, 1));
+    try expectValidationHeard(dev);
+}
+
+test "a drawing recording that is refused or discarded releases what it used, and nothing sooner" {
+    const dev = try validated(.{});
+    defer dev.deinit();
+    const canvas = try Canvas.init(dev);
+
+    for ([_]bool{ true, false }) |refused| {
+        const target = try canvas.target(4, .rgba8_unorm);
+        const render_pipeline = try canvas.pipelineWith(.{});
+        const group = try canvas.swatch(.rgba8_unorm, white);
+        const everywhere = quad(-1, -1, 1, 1, red);
+        const vertices = try canvas.vertices(&everywhere);
+        const halved = scaleMatrix(0.5, 0.5);
+
+        const cb = try dev.beginCommandBuffer();
+        const pass = try cb.beginRenderPass(.{
+            .color = &.{.{ .texture = target, .initial_state = .copy_dst, .final_state = .copy_dst }},
+        });
+        pass.setPipeline(render_pipeline);
+        pass.setBindGroup(0, group);
+        pass.setVertexBuffer(0, vertices, 0);
+        pass.setInlineConstants(&halved);
+        pass.draw(.{ .vertex_count = 6 });
+        pass.end();
+
+        dev.destroyRenderPipeline(render_pipeline);
+        dev.destroyBindGroup(group);
+        dev.destroyBuffer(vertices);
+        dev.destroyTexture(target);
+        try testing.expect(dev.retiredCount() >= 4);
+
+        if (refused) {
+            dev.faults.submit = c.VK_ERROR_OUT_OF_DEVICE_MEMORY;
+            try testing.expectError(error.OutOfMemory, cb.submit());
+        } else {
+            cb.discard();
+        }
+        try testing.expect(dev.retiredCount() >= 4);
+        dev.waitIdle();
+        try testing.expectEqual(@as(usize, 0), dev.retiredCount());
+    }
+    try expectValidationHeard(dev);
+}
+
+test "a pass that cannot be allocated leaves its recording discardable" {
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{});
+    const dev = try Device.initWith(failing.allocator(), .{}, .{ .validation = .required });
+    defer dev.deinit();
+
+    const cb = try dev.beginCommandBuffer();
+    failing.fail_index = failing.alloc_index;
+    try testing.expectError(error.OutOfMemory, cb.beginRenderPass(.{}));
+    failing.fail_index = std.math.maxInt(usize);
+    cb.discard();
+    dev.waitIdle();
+    try testing.expectEqual(@as(u64, 0), dev.timeline.submitted);
 }
