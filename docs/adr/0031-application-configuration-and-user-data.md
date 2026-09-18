@@ -67,3 +67,11 @@ the engine own game configuration or constructing a second content-loading imple
 A concrete consumer needs settings before window creation beyond bootstrap defaults; an
 editor needs public preference access; multiple profiles/cloud synchronization are required;
 or package replacement rather than content override becomes a separately designed feature.
+
+## Subsequent decision — 2026-09-19
+
+This record's profile revisit arrived with M14.
+[ADR-0040](0040-ordered-profiles-applied-at-next-start.md) makes a player's mod selection a named,
+ordered profile in a file of its own under the user-data directory. Settings record which one is
+active. The three-way separation above is unchanged. A profile is user state, not content, and
+native consent in it is given only by the host's own screen.

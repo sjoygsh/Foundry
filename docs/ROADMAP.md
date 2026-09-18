@@ -691,14 +691,14 @@ The faults the milestone found were the backend's own, such as Step 5's inverted
 Windows faults that predated it, which the native test repair fixed. Device recovery stays an
 open question. M14 is next and unstarted.
 
-### M14 — Managed: "players choose their mods" — **designed 2026-09-19; not started**
+### M14 — Managed: "players choose their mods" — **designed and accepted 2026-09-19; not started**
 
 **Designed 2026-09-19:** [`design/mod-management.md`](design/mod-management.md) specifies nine
-steps, with proposed [ADR-0040](adr/0040-ordered-profiles-applied-at-next-start.md) (ordered
+steps, with accepted [ADR-0040](adr/0040-ordered-profiles-applied-at-next-start.md) (ordered
 profiles, applied at the next start) and
 [ADR-0041](adr/0041-game-widget-set-and-content-themes.md) (the game widget set and content
-themes). The room gains a mod screen modelled on Mod Organizer 2. Implementation waits for the
-owner to accept both ADRs.
+themes). The room gains a mod screen modelled on Mod Organizer 2. Step 1, the mod set, is
+next.
 
 `CLAUDE.md` §5 records it plainly: a mod manager UI is still unbuilt. Every mechanism under it
 exists — discovery, dependency resolution, deterministic order, user package roots — and

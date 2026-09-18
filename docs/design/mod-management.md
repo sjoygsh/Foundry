@@ -1,8 +1,8 @@
 # Design: M14 — Managed, and what a player chooses
 
-**Status:** Proposed 2026-09-19 with [ADR-0040](../adr/0040-ordered-profiles-applied-at-next-start.md)
-and [ADR-0041](../adr/0041-game-widget-set-and-content-themes.md), both proposed. Nothing is
-implemented. Stop before Step 1 until the owner accepts both ADRs.
+**Status:** Design accepted 2026-09-19 with [ADR-0040](../adr/0040-ordered-profiles-applied-at-next-start.md)
+and [ADR-0041](../adr/0041-game-widget-set-and-content-themes.md). Nothing is implemented; **Step 1
+is next**, and not started.
 **Date:** 2026-09-19
 **Baseline:** `754665a` / `m13`; M0–M13 complete, 1,405 declared / 1,395 headless tests.
 **Builds on:** ADR-0024 (one UI kernel, two widget sets), ADR-0026 (the host supplies
@@ -585,3 +585,15 @@ Two decisions are proposed rather than taken:
   `ui.md` §14 anticipated.
 
 No code changed. The bar was run for this documentation-only change.
+
+## Resolution — 2026-09-19, the design accepted
+
+The owner accepted ADR-0040 and ADR-0041 as written, the same day. The records they change now
+carry dated notes:
+- ADR-0024 and ADR-0031;
+- `public-abi.md` §12.1, for the duplicate rule;
+- `distribution.md` §5, for the enabled list;
+- `ui.md` §14, for the draw commands.
+
+`CLAUDE.md` §4.1 indexes both ADRs. The code still behaves as those records described until the
+steps that change it land. No code changed, and Step 1 is next.

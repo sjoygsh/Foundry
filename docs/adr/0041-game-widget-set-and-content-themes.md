@@ -1,6 +1,6 @@
 # ADR-0041: The game widget set draws from content themes, and the kernel stays below the renderer
 
-**Status:** Proposed
+**Status:** Accepted 2026-09-19 (M14; not yet implemented)
 **Date:** 2026-09-19
 **Builds on:** [ADR-0024](0024-ui-own-immediate-mode.md), [ADR-0021](0021-asset-identity.md) and
 [ADR-0026](0026-abi-module-and-host.md)

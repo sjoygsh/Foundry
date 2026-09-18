@@ -217,3 +217,15 @@ work (`docs/design/ui.md`).
 * The kernel is finished and the game widget layer, when it is designed, cannot use it without
   changing it. That would mean the "one kernel, two widget sets" claim was wrong, and the honest
   response is a superseding ADR rather than quietly maintaining two.
+
+## Subsequent decision — 2026-09-19
+
+[ADR-0041](0041-game-widget-set-and-content-themes.md) designs the game widget layer this record
+postponed:
+- themes are `foundry:ui_theme` content records;
+- the kernel stays at L1 and gains `image` and `nine_slice` commands, over opaque image
+  references, plus a disabled scope;
+- skin and strings are content, and layout stays code.
+
+These additions are the additive kind this record allowed, so "one kernel, two widget sets"
+stands. They are implemented in M14.

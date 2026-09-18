@@ -481,6 +481,11 @@ property was predicted for. Nothing is merged to find out what is installed.
 1. **Index by id.** Two candidates with the same id is an **error naming both files**, not a
    silent pick. Two copies of one mod installed is a common, real user mistake and choosing one
    quietly produces a bug report nobody can reproduce.
+   > **Superseded for user packages by [ADR-0040](../adr/0040-ordered-profiles-applied-at-next-start.md),
+   > accepted 2026-09-19, when M14 Step 1 implements it.** Two installed packages with one id stay
+   > fatal. A user package claiming an installed package's id is skipped, and user packages sharing
+   > an id are all skipped. Each case gets a diagnostic naming both files, so there is still no
+   > silent pick. Until that step lands, the code refuses every duplicate as written here.
 2. **Seed** with `required` plus `enabled`.
 3. **Close over `requires`.** A dependency that is absent, or present at a version outside the
    range, **skips the dependent and everything transitively depending on it**, each with its own

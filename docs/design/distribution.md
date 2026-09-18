@@ -130,6 +130,13 @@ must be finite in [0,1]. The host may impose tighter usable limits. IDs must val
 `data.contentId`; duplicates in the enabled list are rejected. The list is a selected set,
 not an instruction to override dependency order. Native execution is not consented by it.
 
+> **Superseded by [ADR-0040](../adr/0040-ordered-profiles-applied-at-next-start.md), accepted
+> 2026-09-19, when M14 implements it.** The enabled list moves out of settings into ordered
+> profiles, one file each, and is stored in the player's order rather than sorted. Dependencies
+> still win. Settings gain the active profile, schema v1 becomes v2 through the first registered
+> migration, and saves merge by field. Until M14 Steps 2 and 3 land, the code behaves as this
+> section says.
+
 Missing file means defaults. Malformed values/format mean a warning and defaults, with the
 original retained; explicit user preference changes may replace a malformed current-version
 file after a bounded backup. A future envelope/schema version is read-only to this build:

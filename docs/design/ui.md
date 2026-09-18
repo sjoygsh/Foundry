@@ -487,7 +487,9 @@ break.
   certainly: a nine-slice for a skinned panel, an image by content ID, and a rotated or clipped
   glyph run for a stylised HUD. `Command` is a tagged union and adding a case is additive, but
   the *walker* then needs the corresponding `render2d` capability. Recorded so the vocabulary is
-  not assumed final.
+  not assumed final. **Answered 2026-09-19 by [ADR-0041](../adr/0041-game-widget-set-and-content-themes.md):**
+  `image` and `nine_slice`, naming images by an opaque reference the walker resolves. A rotated
+  glyph run is not needed yet and stays open.
 * **Multi-line text editing with selection.** Out at M6 (§15). When a game needs a dialogue
   editor or a chat box, it is a substantial subsystem, not a widget.
 * **Whether a game UI defined in content addresses widgets by `ContentId`.** §3 forbids a UI id

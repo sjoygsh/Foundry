@@ -179,12 +179,14 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Authoring format | Foundry's own `.fdt` text format; IDs are bare tokens, directives are `@`-prefixed | [0020](docs/adr/0020-authoring-text-format.md) |
 | Asset identity | Assets are content records; a path derives an ID but never defines identity | [0021](docs/adr/0021-asset-identity.md) |
 | Mods | A mod is a content package; its manifest is a record inside it; discovery and load order are `mod` at L2 | [0027](docs/adr/0027-mods-are-content-packages.md) |
+| Mod selection | A player's selection is an ordered profile in its own file, applied at the next start; user duplicates are skipped; native consent is the host's alone; published in `FoundryApi_v3` | [0040](docs/adr/0040-ordered-profiles-applied-at-next-start.md) |
 | Images | Foundry decodes its own PNG; no third-party image library | [0018](docs/adr/0018-image-decoding.md) |
 | Modularity | Layering enforced by the Zig build graph | [0007](docs/adr/0007-module-layering.md) |
 | Entities | Type-erased component storage with runtime-registered types | [0010](docs/adr/0010-entity-component-constraints.md) |
 | Collision | Foundry's own 2D collision, scoped to collision rather than dynamics | [0022](docs/adr/0022-2d-collision-own.md) |
 | Audio | Foundry's own mixer and WAV decoding; `platform` owns the device | [0023](docs/adr/0023-audio-own-mixer.md) |
 | UI | Foundry's own immediate-mode UI; one kernel, a debug widget set now, a content-driven game one later | [0024](docs/adr/0024-ui-own-immediate-mode.md) |
+| Game widget set | Themes are `foundry:ui_theme` content records; the kernel stays at L1 with opaque-image `image`/`nine_slice` commands; layout stays code | [0041](docs/adr/0041-game-widget-set-and-content-themes.md) |
 | Debug overlay | A module `debug` above `app`, reaching only for calls the public ABI could expose | [0025](docs/adr/0025-debug-overlay-module.md) |
 | Determinism | Deterministic-friendly, not bit-exact | [0013](docs/adr/0013-determinism.md) |
 | Tooling | Tools are Foundry applications built on the public API | [0011](docs/adr/0011-tooling-architecture.md) |
