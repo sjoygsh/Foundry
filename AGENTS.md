@@ -103,19 +103,19 @@ never allocates or calls the RHI, and every call site that splits work is tested
 `reversed` and a real pool. `FOUNDRY_SANDBOX_WORKERS` and `FOUNDRY_ROOM_WORKERS` set a sample's
 pool, `0` for none. M12 closed at **1,370 declared / 1,360 headless tests**.
 **M13 Steps 1 to 8 are complete (2026-09-18).** ADR-0037/0038 are accepted; read
-`docs/design/vulkan.md`. A Windows x64 Vulkan target is qualified and reached over SSH, Linux
-x64 has a recorded route, the Vulkan tools are pinned in §3 below, `platform` hands out native
-window payloads and opens system libraries safely, and `rhi/backends/vulkan/` creates a validated
-device, tracks submissions, allocates/copies/retires resources, and creates checked SPIR-V shader
-modules, persistent descriptor sets, layouts and graphics pipelines, draws offscreen, and presents
-to a real window through a FIFO swapchain, under validation; both samples run on it on Windows,
-each wearing a window icon it supplies. The four
+`docs/design/vulkan.md`. A Windows x64 Vulkan target is qualified and reached over SSH. Linux
+x64 left M13 by ADR-0039: its runtime proof is M18, after the first game and before 3D, and
+until then it is compile-checked only. The Vulkan tools are pinned in §3 below, and `platform`
+hands out native window payloads and opens system libraries safely. `rhi/backends/vulkan/`
+creates a validated device, tracks submissions and allocates, copies and retires resources. It
+creates checked SPIR-V shader modules, persistent descriptor sets, layouts and graphics
+pipelines. It draws offscreen and presents to a real window through a FIFO swapchain, under
+validation. Both samples run on it on Windows, each wearing a window icon it supplies. The four
 GLSL stages pass `glslangValidator`, `spirv-val` and Foundry's layout agreement tool before their
-bytes can enter a target. The backend implements the whole RHI interface, so `-Drhi=vulkan` builds
-the ordinary test and check graph and installs and runs the samples (§3).
-The native Windows `zig build test` passes on the target, and native builds there use at most
-two jobs. Mac cross-compilation never substitutes for runtime
-proof. M14–M17 remain unstarted.
+bytes can enter a target. The backend implements the whole RHI interface, so `-Drhi=vulkan`
+builds the ordinary test and check graph and installs and runs the samples (§3). The native
+Windows `zig build test` passes on the target, and native builds there use at most two jobs.
+Mac cross-compilation never substitutes for runtime proof. M14–M17 remain unstarted.
 The bar below remains the current one until M13 adds its verified target commands.
 
 ## 3. Building and verifying
@@ -181,7 +181,7 @@ archive against its recorded SHA-256 before installing:
 | --- | --- | --- |
 | Windows x64 | `vulkansdk-windows-X64-1.4.357.0.exe` | `81f474711e9042f4cd22b31b2f7a8870db2e428b21586fb43dd80150be97310d` |
 | macOS, host tools only | `vulkansdk-macos-1.4.357.0.zip` | `539433589c83522e6f31b1c7b418a4167e21597a4a361ab119e1dc0760cf3865` |
-| Linux x64, not yet used | `vulkansdk-linux-x86_64-1.4.357.0.tar.xz` | `0f09bf6a0625e346bf004be70b92907e934a4c76606b323441b2baf3a5a0e66d` |
+| Linux x64, unused until M18 | `vulkansdk-linux-x86_64-1.4.357.0.tar.xz` | `0f09bf6a0625e346bf004be70b92907e934a4c76606b323441b2baf3a5a0e66d` |
 
 ```sh
 # macOS, from the unzipped archive; nothing is placed in /usr/local
@@ -227,7 +227,7 @@ Vulkan backend, plus three steps of its own, and since M13 Step 8 it installs an
 samples. It needs the SDL3 platform; `-Dplatform=null` is refused at configure time:
 
 ```sh
-zig build vulkan-test        -Drhi=vulkan                             # on Windows or Linux
+zig build vulkan-test        -Drhi=vulkan                             # on Windows (Linux: M18)
 zig build vulkan-window-test -Drhi=vulkan                             # in a desktop session
 zig build test               -Drhi=vulkan                             # the whole graph, on the target
 zig build install            -Drhi=vulkan --prefix <dir>              # the samples, on the target

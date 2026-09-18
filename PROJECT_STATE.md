@@ -7,8 +7,27 @@ and the safe system-library open are implemented, the native Windows test suite 
 validated Vulkan device owns resources, checked shader modules, persistent bindings and graphics
 pipelines, draws the sprite contract correctly offscreen, and presents to a real window through a
 FIFO swapchain with resize and failed-frame closure. Both samples run on it on Windows from a
-relocated install, and each wears an icon it supplies. Next: Step 9, Windows and both Linux window
-systems proved. M14 through M17 remain unstarted.**
+relocated install, and each wears an icon it supplies. Next: Step 9, the rest of Windows'
+proof. Linux left M13 by ADR-0039: it is M18, after the first game and before 3D. M14 through M17
+remain unstarted.**
+
+**Rescoped M13, 2026-09-18:** Linux is removed from the current milestones. The first game built
+on Foundry, in its own repository, targets macOS and Windows. Linux x64 runtime support is added
+once that game is complete, immediately before any 3D work, as **M18**, the first milestone of
+the roadmap's Phase 5 (now "Linux, then 3D").
+[ADR-0039](docs/adr/0039-linux-after-the-first-game.md) records this, superseding only the M13
+Linux obligation of ADR-0033 and ADR-0037. Vulkan remains
+Linux's backend. M13 closes on Windows x64: Step 9 now proves Windows alone. The Linux paths stay
+implemented and build-checked. The bar keeps its null `x86_64-linux-gnu` check, and Vulkan work
+keeps `check -Drhi=vulkan` and `vulkan-check` for that target:
+- the X11 and Wayland payloads;
+- the automatic choice of window system;
+- the loader opened through `dlopen`;
+- Xlib and Wayland surfaces.
+
+Nothing has run them natively, and nothing may call Linux supported at runtime until M18 does.
+No code changed. `CLAUDE.md` §§4.1 and 9, the roadmap, `vulkan.md` (a scope Resolution),
+AGENTS.md, README and the design index were updated to match.
 
 **Completed M13 Step 8, 2026-09-18:** both samples on Vulkan, and the window icon. A window asks
 for `app.window_surface`, the surface the selected backend presents to, so neither sample names a
@@ -3301,13 +3320,14 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 ## Immediate next steps
 
 **Next: M13 Step 9.** Steps 1 to 8 are complete, with the native Windows test repair the owner
-directed before Step 3 (`docs/design/vulkan.md` and their Resolutions). Step 9 proves Windows and
-both Linux window systems: the second OS's native tests, separate X11 and Wayland runs, one
-RenderDoc capture inspected on each OS, and user packages, input, icons and pacing on each.
-Step 8 recorded that a minimised window's skipped frames run unpaced. Windowed runs on the
-Windows target go through a scheduled task in the owner's desktop session. Native builds on that
-target use at most two jobs at below-normal priority, because it is the owner's gaming PC. Linux
-x64 still needs the owner's second-drive installation. M14 waits.
+directed before Step 3 (`docs/design/vulkan.md` and their Resolutions). Step 9 proves Windows
+alone. It inspects one RenderDoc capture, which needs RenderDoc installed on the target with the
+owner's go. It measures frame pacing, including the unpaced frames of a minimised window that
+Step 8 recorded, and covers any user-package, input or icon evidence still missing. Linux is not
+M13's (ADR-0039); it is M18, after the first game and before 3D. Windowed runs on the Windows
+target go through a scheduled task in the owner's desktop session. Native builds on that
+target use at most two jobs at below-normal priority, because it is the owner's gaming PC.
+M14 waits.
 
 **M0 through M12 are complete, tagged and pushed.** Phase 3 is closed;
 Phase 4 is under way. The completed M8/M7 checklists and subsequent M5/M6 material below are
@@ -3330,10 +3350,11 @@ review of `main` rather than beginning on a schedule.
   `docs/design/jobs-and-threading.md` are implemented. Split spans are measurably faster at
   50,000 sprites, every determinism test is unchanged, and a pool's cost to the calling thread's
   unsplit work is recorded as debt.
-* **M13 — Portable.** Design accepted 2026-09-14, trigger activated; **5/10 steps complete**.
+* **M13 — Portable.** Design accepted 2026-09-14, trigger activated; **8/10 steps complete**.
   Read `docs/design/vulkan.md` and ADR-0037/0038. **Vulkan was decided
   2026-09-13 in [ADR-0033](docs/adr/0033-vulkan-second-backend.md)**, covering Windows and
-  Linux with one backend; D3D12 is not planned and Metal stays macOS's. With it: the shader
+  Linux with one backend; D3D12 is not planned and Metal stays macOS's. Since ADR-0039
+  (2026-09-18) M13 proves Windows only. With it: the shader
   cross-compiler decision, which Vulkan's SPIR-V-only input brings due, Vulkan's own binding
   convention now accepted in `rhi.md` §9, the implemented native window payloads, and non-Metal
   frame pacing. The largest milestone in the phase.
@@ -3353,6 +3374,10 @@ review of `main` rather than beginning on a schedule.
   `dist-developer-id` already performs the sequence; what is missing is operator credentials
   and an untouched Mac, not code. Until then Foundry has no verified public release and the
   ad-hoc zip is not one.
+* **M18 — Native (Phase 5).** Linux x64 runtime support, moved out of M13 by ADR-0039. It is
+  trigger-started once the first game, which targets macOS and Windows, is complete, and it
+  comes before any 3D work. It owes a qualified Linux machine, the native test graph, separate
+  X11 and Wayland runs of both samples, the icon, a RenderDoc capture and pacing.
 
 Storefront-specific signing and a runtime container stay unplaced: both are triggered by a
 decision nobody has made. The design documents' own open questions stay open by standing

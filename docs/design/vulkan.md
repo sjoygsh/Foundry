@@ -1,17 +1,21 @@
 # Design: M13 — Vulkan, and the second test of the RHI
 
 **Status:** Design accepted 2026-09-14 (ADR-0037/0038), its windowed floor revised before
-acceptance; **8 of 10 steps complete**. Next: Step 9.
+acceptance; **8 of 10 steps complete**. Next: Step 9. **Linux left M13 on 2026-09-18**
+([ADR-0039](../adr/0039-linux-after-the-first-game.md), the scope Resolution): M13 proves
+Windows x64, and Linux's runtime proof is M18, after the first game and before 3D.
 **Date:** 2026-09-14
 **Baseline:** `f14caac` / `m12`; M0–M12 complete, 1,370 declared / 1,360 headless tests.
 **Decisions:** ADR-0033 selects Vulkan; accepted [ADR-0037](../adr/0037-vulkan-execution-and-presentation.md)
-and [ADR-0038](../adr/0038-vulkan-shaders-and-toolchain.md) specify execution and tooling.
+and [ADR-0038](../adr/0038-vulkan-shaders-and-toolchain.md) specify execution and tooling;
+[ADR-0039](../adr/0039-linux-after-the-first-game.md) moves Linux's runtime proof to M18.
 
 ## 1. Purpose and boundary
 
 The owner requested M13's design after M12, activating the recorded trigger of validating
-Foundry's abstraction against a second API. The result is the existing samples on Windows x64
-and Linux x64, through the existing renderer and ordinary packages. Metal remains macOS's
+Foundry's abstraction against a second API. The result is the existing samples on Windows x64,
+through the existing renderer and ordinary packages. Linux x64 was part of this result until
+ADR-0039 moved its runtime proof to M18; its code paths stay, build-checked. Metal remains macOS's
 backend. There is no MoltenVK path, D3D12 backend, new renderer, material system or public ABI
 version in this milestone. M12's workers never call the RHI; all graphics calls remain on
 the caller thread.
@@ -56,10 +60,11 @@ reports and a windowed SDK sample instead of inferring support from an OS name. 
 desktop must use the same adapter/window session being reported.
 
 Before backend implementation, Step 1 must demonstrate at least one usable x64 target and
-record an available, specific route to the other OS. Closing M13 requires both, including
-Linux X11 and Wayland. Software rendering is useful supplementary evidence; at least one
-windowed exit run must use a hardware Vulkan driver. Record any untested discrete-memory
-path explicitly; no performance or universal hardware-support claim follows from one GPU.
+record an available, specific route to the other OS. Closing M13 required both, including
+Linux X11 and Wayland, until ADR-0039 moved Linux to M18; it now requires Windows. Software
+rendering is useful supplementary evidence; at least one windowed exit run must use a hardware
+Vulkan driver. Record any untested discrete-memory path explicitly; no performance or universal
+hardware-support claim follows from one GPU.
 
 The proposed windowed floor is Vulkan 1.3 plus dynamic rendering, synchronization2, timeline
 semaphores, a shared graphics/present queue family and unextended swapchain support. Swapchain
@@ -111,9 +116,9 @@ Add a `native_window` request kind for automatic selection; returned handles alw
 concrete Win32/X11/Wayland kind. Explicit concrete requests reject a different active driver.
 Use SDL's native window properties, not `SDL_Vulkan_CreateSurface` or a Vulkan include in
 `platform`. Start with a native window without an OpenGL/Metal context; verify the pinned
-SDL driver's creation/configure behavior on both Linux window systems. If SDL requires a
-creation flag internally, keep that SDL detail in `platform`; it conveys no Vulkan object
-across the seam. Do not force X11 merely because it was the first successful desktop run.
+SDL driver's creation/configure behavior on both Linux window systems in M18 (ADR-0039). If
+SDL requires a creation flag internally, keep that SDL detail in `platform`; it conveys no
+Vulkan object across the seam. Do not force X11 merely because it was the first successful desktop run.
 
 `rhi` creates/destroys `VkSurfaceKHR`, enables only the matching WSI extensions, and owns
 dispatch tables and the loader reference. `platform.Library` gains a generic system-only
@@ -321,8 +326,9 @@ RGBA8 image supplied by the application, validates dimensions/stride/length and 
 only for the call. The SDL backend copies/sets it; null validates without a window manager.
 Use sample-owned content to supply Foundry's sample mark. The engine supplies no default mark,
 reads no icon file and imports no image decoder into `platform`. The operation is host window
-configuration, so it adds nothing to the C mod API in M13. Verify it visibly on Windows/X11;
-Wayland may let the compositor choose the app icon and must document that limitation honestly.
+configuration, so it adds nothing to the C mod API in M13. Verify it visibly on Windows. X11
+and Wayland are M18's (ADR-0039). Wayland may let the compositor choose the app icon, and M18
+must document that limitation honestly.
 
 Run outside the source tree using compiled packages and explicit asset roots. This is a
 development runtime proof, not an extension of macOS `dist` to new release formats. Test an
@@ -346,25 +352,29 @@ Distinct evidence required during M13:
 * Null reference tests: every tightened portability rule, both renderer memory paths, all
   existing eleven rules and the unchanged M12 determinism/job tests. No test-count regression
   disguised as GPU tests being silently skipped.
-* Native Windows/Linux Vulkan-selected full test graphs with validation and synchronization
+* The native Windows Vulkan-selected full test graph with validation and synchronization
   validation explicitly required; known environment failure is reported, never a passing skip.
   Driver diagnostics pass through `core.log`; callbacks retain no temporary message pointer.
-* Each target's bounded windowed sandbox and room runs, resize, minimize/restore, input/UI,
+* Bounded windowed sandbox and room runs on Windows, with resize, minimize/restore, input/UI,
   pacing, texture reload while frames are in flight and clean exit. Use at least 600 frames
-  for stable rendering and 20 texture replacements with two frames in flight. Linux exercises
-  X11 and Wayland separately. Window controls are manual where automation is unavailable;
-  process completion is not proof the window was visually correct.
-* One RenderDoc capture opened and inspected on each OS: inspect a real sprite draw, stage
+  for stable rendering and 20 texture replacements with two frames in flight. Window controls
+  are manual where automation is unavailable; process completion is not proof the window was
+  visually correct.
+* One RenderDoc capture opened and inspected on Windows: inspect a real sprite draw, stage
   bindings, constants, vertex data and resulting target. Record capture-tool compatibility
-  limitations separately from a passing native Wayland run. No cross-backend bit-exact pixel
-  guarantee: compare exact simple probes where defined, tolerances for filtering/raster edges.
-* Relocated runtime tree on both OSes with Zig/SDK/compiler absent from PATH, ordinary user
+  limitations. No cross-backend bit-exact pixel guarantee: compare exact simple probes where
+  defined, tolerances for filtering/raster edges.
+* Relocated runtime tree on Windows with Zig/SDK/compiler absent from PATH, ordinary user
   package override and script lifecycle, no backend-aware game code, no validation errors.
+
+Linux owed the same list, with X11 and Wayland as separate runs, until ADR-0039 moved it to
+M18. The list is the starting point for that milestone's design.
 
 At final closure run the existing Mac bar, Vulkan cross-checks for both targets, and the
 remaining distinct native evidence above. Report actual skips, failures and environment
-limits. A windowed hardware sample on a second API is essential; ADR-0033 additionally owes
-runtime proof for both Windows and Linux. Missing machine evidence leaves M13 incomplete.
+limits. A windowed hardware sample on a second API is essential. ADR-0033 also promised Linux
+runtime proof, and ADR-0039 moved that promise to M18. Missing Windows evidence leaves M13
+incomplete.
 M13 ends only when its rules survived or their necessary changes were recorded by ADR.
 
 ## 11. Implementation order — ten bounded steps
@@ -439,13 +449,17 @@ and exercise real sprites/text/tilemaps/UI, room play, sandbox scripts and textu
 with frames in flight. Preserve M12 jobs and deterministic saves. **Exit:** both samples
 work on the first qualified platform, outside the source tree, with no runtime SDK/compiler.
 
-### Step 9 — Prove Windows and both Linux window systems
+### Step 9 — Prove Windows
 
-Complete the second OS's native tests and both Linux WSI runs, fix concrete portability
-failures, inspect both RenderDoc captures, and prove user packages, input, icons and pacing.
-Record actual tested driver/OS/tool versions and software-versus-hardware evidence. Extend
-AGENTS.md's bar with reproducible Vulkan compile and native test commands as they now exist.
-**Exit:** both target claims are runtime claims; no missing machine is waved through.
+Complete what Step 8 left on Windows:
+- inspect one RenderDoc capture;
+- measure frame pacing, including the unpaced frames of a minimised window that Step 8 recorded;
+- prove whatever user-package, input and icon evidence is still missing.
+
+Fix concrete failures. Record the actual driver, OS and tool versions tested, and whether each
+result came from hardware or software. Extend AGENTS.md's bar with reproducible Vulkan compile
+and native test commands as they now exist. **Exit:** Windows is a runtime claim with its limits
+recorded. This step was also to prove Linux X11 and Wayland; that is M18's now (ADR-0039).
 
 ### Step 10 — Close the RHI proof and M13
 
@@ -454,12 +468,14 @@ M13 contract discrepancy in its originating design/ADR; do not silently weaken v
 Update `CLAUDE.md` §§4/9, AGENTS.md, PROJECT_STATE, ROADMAP, README, design index, `rhi.md`,
 `platform-interface.md`, relevant renderer/frame-loop sections and ADR statuses. Remove only
 the deferred items actually proven. Commit, tag `m13`, push and stop before M14. **Exit:**
-the two-platform sample evidence and RHI contract agree, with explicit tested limitations.
+the Windows sample evidence and RHI contract agree, with explicit tested limitations, and
+Linux is recorded as M18's.
 
 ## 12. What stays open
 
-The floor and toolchain are accepted and pinned (Step 1). Linux runtime access is a recorded
-route, not yet an available machine; no Linux driver or window-system behaviour is assumed.
+The floor and toolchain are accepted and pinned (Step 1). Linux runtime is M18's (ADR-0039).
+Step 1's Resolution keeps its route on record, and no Linux driver or window-system behaviour is
+assumed.
 If the floor excludes the intended hardware, revise the unimplemented ADR with evidence, as
 the floor-revision Resolution did. Adopting maintenance1 later is ADR-0037's revisit, never
 a silent fallback.
@@ -1052,3 +1068,27 @@ minimised frames used up before the restore; both were harness faults, fixed bef
 **Not yet.** Linux X11 and Wayland, the icon there, frame pacing — a minimised window's included —
 RenderDoc captures and the second OS's native tests are Step 9. The Windows claims are this
 machine's.
+
+## Resolution — 2026-09-18, scope: Linux leaves M13
+
+**Decision.** After Step 8 the owner removed Linux from the current milestones. The first game
+built on Foundry targets macOS and Windows, and Linux is added once that game is complete,
+immediately before any 3D work. [ADR-0039](../adr/0039-linux-after-the-first-game.md) records
+it, superseding ADR-0033's and ADR-0037's M13 Linux obligation and nothing else. Linux x64
+runtime support is now M18, the first milestone of the roadmap's Phase 5.
+
+**What changed here.** §1, §2.2, §4, §9, §10, Steps 9 and 10, and §12 now close M13 on Windows
+x64, each saying where Linux went. Step 9 proves Windows alone. §10 keeps the Linux evidence
+list as the starting point for M18's own design, and Step 1's recorded route stays on record.
+Earlier Resolutions stand as written; where they say Linux is Step 9's, read M18.
+
+**What did not change.** No code changed. These Linux paths stay implemented:
+- the X11 and Wayland payloads;
+- the automatic choice of window system;
+- the loader opened through `dlopen`;
+- Xlib and Wayland surface creation;
+- the Linux shader and header imports.
+
+`zig build check -Drhi=vulkan` and `vulkan-check` for `x86_64-linux-gnu` stay part of Vulkan
+work, and the bar keeps its null Linux cross-check. A Linux compile failure is still a bug. Nothing has run them natively, and no document may call
+Linux supported at runtime until M18 proves it. Vulkan remains Linux's backend.

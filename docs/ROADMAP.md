@@ -620,12 +620,17 @@ are unchanged since `m11`. Frame time is the display's and is not claimed, and a
 measured slowing the calling thread's unsplit work, which is recorded as debt with a revisit
 trigger.
 
-### M13 — Portable: "the RHI was real" — **in progress; 7/10 steps complete**
+### M13 — Portable: "the RHI was real" — **in progress; 8/10 steps complete; Windows only**
 
 **The backend is Vulkan** ([ADR-0033](adr/0033-vulkan-second-backend.md)), which covers Windows
 and Linux with one backend. D3D12 is not planned, and Metal stays macOS's — nothing is routed
 through MoltenVK. *When* remains trigger-started: a decision to ship either platform, or a
 decision to validate the RHI against a second API, not the roadmap reaching this line.
+
+**Linux left this milestone on 2026-09-18** ([ADR-0039](adr/0039-linux-after-the-first-game.md)).
+The first game built on Foundry targets macOS and Windows. M13 therefore proves Windows x64,
+and Linux x64 runtime support is M18, after that game and before any 3D. The Linux payloads
+and surface paths already written stay, build-checked and unproven.
 
 **Trigger activated 2026-09-14:** the owner requested M13's design to validate the RHI after
 M12. [`design/vulkan.md`](design/vulkan.md) specifies ten steps.
@@ -651,25 +656,27 @@ deferred here.
 
 The ten steps are qualification/tools, native surfaces/loader, device/submission timeline,
 resources/copies/retirement, shaders/bindings, offscreen drawing, presentation/resize/failure
-closure, samples/window icon, Windows and Linux X11/Wayland proof, and the milestone exit.
+closure, samples/window icon, Windows proof, and the milestone exit. Step 9 was also to prove
+Linux X11 and Wayland; that work is M18's now.
 
 Expect this milestone to surface RHI design errors. That is its second purpose, and budgeting
 for it is more honest than being surprised by it — and Vulkan is where they will surface,
 because the RHI's strict rules were copied from Vulkan's guaranteed minimums in the first
-place. It also brings: real hardware or VM testing for both platforms, the Vulkan SDK and
+place. It also brings: real hardware testing on Windows, the Vulkan SDK and
 RenderDoc, Vulkan's own shader-visible binding convention written into `rhi.md` §9 the way
 Metal's was, and the shader cross-compiler decision (ADR-0015), which comes due here because
-Vulkan consumes SPIR-V only. Its native `win32_hwnd` and X11/Wayland payloads are implemented,
-and both samples present through them on Windows; non-Metal frame pacing is measured in Step 9.
+Vulkan consumes SPIR-V only. Its native `win32_hwnd`, X11 and Wayland payloads are implemented.
+Both samples present through the first on Windows, and the other two stay build-checked until
+M18. Non-Metal frame pacing is measured in Step 9.
 
 **It is the largest milestone in this phase.** ADR-0003 recorded that a Vulkan-first plan would
 have made M1 a months-long wall; that wall was moved here, not removed.
 
-**Exit criteria:** a sample runs on Vulkan on a second platform, and the RHI's written rules
-either survived the encounter or changed by ADR. ADR-0033's two-platform promise requires
-native runtime evidence on both Windows x64 and Linux x64; the design separately exercises
-Linux X11 and Wayland. Cross-compilation, a Mac SDK or a software-only offscreen test cannot
-replace that presentation proof. Stop after Step 8 in the current handoff; Step 9 comes next.
+**Exit criteria:** a sample runs on Vulkan on a second platform, Windows x64, and the RHI's
+written rules either survived the encounter or changed by ADR. Cross-compilation, a Mac SDK or a
+software-only offscreen test cannot replace that presentation proof. ADR-0033 promised Linux at
+the same time; ADR-0039 moved that promise to M18. Stop after Step 8 in the current handoff;
+Step 9 comes next.
 
 ### M14 — Managed: "players choose their mods" — **not started**
 
@@ -754,7 +761,46 @@ trusted. Until then no artifact is a verified release, and the ad-hoc zip never 
 
 ---
 
-## Phase 5 — 3D
+## Phase 5 — Linux, then 3D
+
+**Nothing in this phase starts before the first game built on Foundry is complete.** That game
+lives in its own repository (ADR-0017) and targets macOS and Windows, the two platforms Phases
+1 to 4 prove. Linux comes next, and 3D after it
+([ADR-0039](adr/0039-linux-after-the-first-game.md)).
+
+### M18 — Native: "it runs on Linux" — **not started; trigger-started, before any 3D**
+
+The Vulkan backend already serves Linux on paper. The following were written in M13 and have
+never run:
+- the X11 and Wayland window payloads;
+- the automatic choice of window system;
+- the loader opened through `dlopen`;
+- Xlib and Wayland surface creation.
+
+Every milestone compiles them for `x86_64-linux-gnu`. This milestone makes them a runtime claim.
+It owes exactly what M13 owed Linux before ADR-0039 moved it here:
+
+* A qualified Linux x64 machine with a hardware Vulkan driver, recorded with its distribution,
+  kernel, driver, window systems and tool versions. The route M13 recorded was a Linux
+  installation on a second drive of the Windows target's PC, with Mesa's ANV driver and both X11
+  and Wayland sessions; any qualified machine will do. The SDK pin in AGENTS.md is re-qualified
+  first, and any upgrade happens deliberately.
+* The whole test graph with Vulkan selected and validation required, natively.
+* X11 and Wayland as separate runs, each with both samples from a relocated install, a user
+  package, input, resize, minimise and restore, and texture reload with frames in flight.
+* The window icon, visibly on X11. Wayland may leave the icon to the compositor, and that is
+  documented honestly rather than worked around.
+* One RenderDoc capture opened and inspected, and frame pacing measured.
+
+**It comes before 3D on purpose.** Phase 5's 3D work widens `rhi` with depth, MSAA, cubemaps,
+mipmapping and compute. A Linux fault found against the 2D surface first is a platform fault,
+not one entangled with new capability.
+
+**Exit criteria:** both samples run on Vulkan on Linux, under X11 and under Wayland, with a
+hardware driver and no validation error. ADR-0008's Linux build-check becomes a runtime claim,
+and the RHI's rules survived or changed by ADR.
+
+### 3D — **not planned in detail**
 
 Deliberately unplanned in detail. Reuses `core`, `platform`, `rhi`, `data`, `asset` and `scene`
 unchanged; that reuse is the entire point of the earlier architecture.
@@ -771,5 +817,5 @@ Expected shape, in rough order:
 * 3D physics — likely the largest single item in this phase, and constrained by I9.
 * Skeletal animation.
 
-**This phase is not designed yet, and must not be designed until Phase 2 is complete.**
+**3D is not designed yet, and must not be designed until Phase 2 is complete.**
 Recording it here is a commitment to compatibility, not a plan.

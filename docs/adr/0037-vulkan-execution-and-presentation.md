@@ -1,6 +1,7 @@
 # ADR-0037: Vulkan keeps submission and presentation-resource lifetime separate
 
-**Status:** Accepted 2026-09-14 (M13)
+**Status:** Accepted 2026-09-14 (M13). Superseded by [0039](0039-linux-after-the-first-game.md)
+in its M13 Linux completion clause only.
 **Date:** 2026-09-14
 **Revised:** 2026-09-14 — windowed operation no longer requires swapchain maintenance1, after
 the first candidate target's driver lacked it; one unextended presentation path replaces it.
@@ -139,3 +140,11 @@ proposal before implementation, or gets a subsequent ADR after code depends on i
   is the extension deliberately not used.
 * [SDL window properties](https://wiki.libsdl.org/SDL3/SDL_GetWindowProperties) describe the
   native handle data, corroborated against Foundry's pinned SDL 3.4.14 source during planning.
+
+## Subsequent decision — 2026-09-18
+
+[ADR-0039](0039-linux-after-the-first-game.md) closes M13 on Windows x64 alone. The Linux
+qualification and the X11 and Wayland surface evidence required under Consequences move to M18.
+That milestone follows the first game built on Foundry and precedes any 3D work. The Linux
+payloads and surface paths this record specifies stay implemented and build-checked. The
+execution model is unchanged.

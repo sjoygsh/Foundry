@@ -1,6 +1,8 @@
 # ADR-0033: Vulkan is the second graphics backend
 
-**Status:** Accepted (constraint only; implementation is M13)
+**Status:** Accepted (constraint only; implementation is M13). Superseded by
+[0039](0039-linux-after-the-first-game.md) in its promise that M13 proves Linux as well; the
+backend choice stands.
 **Date:** 2026-09-13
 
 ## Context
@@ -88,3 +90,10 @@ which would be a reason to change the RHI, not to change this choice.
 [ADR-0035](0035-rhi-lifetime-and-validation.md) brings the usage-enforcement question in
 this record forward into M11, whose roadmap explicitly names that debt. The second-backend
 choice and all other M13 questions remain as recorded above. M11 is designed, not implemented.
+
+## Subsequent decision — 2026-09-18
+
+[ADR-0039](0039-linux-after-the-first-game.md) removes Linux from M13. Windows x64 became a
+runtime claim in M13. Linux x64 stays compile-only until M18, which begins once the first game
+built on Foundry is complete and comes before any 3D work. The consequence above that Windows
+and Linux "stop being compile-only together" is withdrawn. Vulkan remains Linux's backend.

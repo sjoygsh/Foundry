@@ -69,10 +69,13 @@ and its simulation steps about two and a half. See
 [ADR-0036](docs/adr/0036-explicit-deterministic-jobs.md) and its
 [design](docs/design/jobs-and-threading.md).
 
-**M13's Vulkan design is written; implementation has not begun.** The
-[ten-step plan](docs/design/vulkan.md) begins with Windows/Linux test-environment qualification.
-Its execution and shader-toolchain ADRs remain proposed. Metal stays macOS's backend;
-cross-compiling on a Mac will not substitute for native Vulkan runtime proof.
+**M13 is under way: Foundry draws through Vulkan on Windows.** Eight of the
+[ten steps](docs/design/vulkan.md) are done. Both samples run on an Intel Arc GPU from a
+relocated install, under Vulkan's validation layers, and each wears a window icon it supplies.
+Metal stays macOS's backend. Linux is not part of M13
+([ADR-0039](docs/adr/0039-linux-after-the-first-game.md)). The first game built on Foundry
+targets macOS and Windows, so Linux runtime support follows that game and precedes any 3D
+work.
 
 All three modding tiers work — see [docs/modding](docs/modding/). Tier 2 is restricted
 Lua 5.5.1, one VM per package, bounded in memory, instructions and engine calls, reaching the
@@ -157,11 +160,13 @@ constraints everything else follows from, and most of them exist to keep modding
 | Platform | Role | Graphics |
 | --- | --- | --- |
 | macOS on Apple Silicon | Primary development target, first-class supported | Metal (native) |
-| Windows x64 | Intended supported target | Backend deferred until there is a reason |
-| Linux x64 | Intended supported target | Backend deferred until there is a reason |
+| Windows x64 | Second target, runtime-tested in M13 | Vulkan |
+| Linux x64 | Intended target; runtime support after the first game, before 3D | Vulkan, compile-checked only |
 
-Windows and Linux are cross-compiled as a portability check each milestone; they are not yet
-tested at runtime. See [ADR-0008](docs/adr/0008-target-platforms.md).
+Windows and Linux are cross-compiled as a portability check each milestone. Windows also runs,
+on one tested Intel Arc machine so far; Linux is not yet tested at runtime. See
+[ADR-0008](docs/adr/0008-target-platforms.md) and
+[ADR-0039](docs/adr/0039-linux-after-the-first-game.md).
 
 ## Toolchain
 

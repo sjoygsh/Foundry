@@ -160,7 +160,7 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Platforms | macOS/Apple Silicon primary; Windows x64 and Linux x64 build-checked | [0008](docs/adr/0008-target-platforms.md) |
 | Platform layer | SDL3 behind Foundry's own platform interface, via a Zig package | [0002](docs/adr/0002-platform-layer-sdl3.md) |
 | Rendering | Foundry's own RHI with native backends; Metal first, null backend validates | [0003](docs/adr/0003-renderer-own-rhi-metal-first.md) |
-| Second backend | Vulkan, covering Windows and Linux with one backend; D3D12 not planned | [0033](docs/adr/0033-vulkan-second-backend.md) |
+| Second backend | Vulkan, covering Windows and Linux with one backend; D3D12 not planned. Windows is proven in M13; Linux waits for the first game and precedes 3D | [0033](docs/adr/0033-vulkan-second-backend.md), whose M13 Linux gate [0039](docs/adr/0039-linux-after-the-first-game.md) supersedes |
 | Vulkan execution | Vulkan 1.3, one graphics/present queue, unextended WSI; submission and presentation-resource lifetime kept separate; platform-owned native window payloads | [0037](docs/adr/0037-vulkan-execution-and-presentation.md) |
 | Vulkan shaders and tools | Hand-written GLSL variants compiled to SPIR-V by pinned Vulkan SDK tools; Khronos headers inside `rhi` only; the OS loader opened at runtime | [0038](docs/adr/0038-vulkan-shaders-and-toolchain.md) |
 | RHI hardening | Completion-backed retirement, usage validation and distinct transient/fatal frame outcomes; implemented in M11 | [0035](docs/adr/0035-rhi-lifetime-and-validation.md) |
@@ -558,12 +558,13 @@ milestone named below is where `docs/ROADMAP.md` now places it.
 | Decision | Due | Notes |
 | --- | --- | --- |
 | Separate editor application | **M15** | In-process debug overlay first; the editor re-hosts its introspection (ADR-0025). |
-| Second graphics backend | **M13**, design accepted; implementation under way | **Vulkan is decided (ADR-0033)**, and its execution and toolchain were accepted as ADR-0037/0038 on 2026-09-14. [vulkan.md](docs/design/vulkan.md) has ten steps; `PROJECT_STATE.md` records how far they have been walked. Windows and Linux runtime evidence are both owed before M13 closes. |
+| Second graphics backend | **M13**, design accepted; implementation under way | **Vulkan is decided (ADR-0033)**, and its execution and toolchain were accepted as ADR-0037/0038 on 2026-09-14. [vulkan.md](docs/design/vulkan.md) has ten steps; `PROJECT_STATE.md` records how far they have been walked. M13 closes on Windows runtime evidence; Linux left it by ADR-0039. |
 | Shader cross-compiler vs. hand-written variants | **Decided in M13** (ADR-0038, 2026-09-14) | Hand-written GLSL variants for the two existing shader pairs, compiled to SPIR-V with pinned SDK tools. ADR-0015's future material/mod shader constraint remains. |
 | Job system / threading model | **Done in M12** (was dated post-M5) | **Decided by ADR-0036 and implemented, 2026-09-14** — explicit `core.Jobs`, fork-join over data-determined chunks, systems kept in order, nothing in the ABI. What it deliberately left out — parallel system scheduling, task graphs, a render thread — has no date: each waits on a measured trigger in `docs/design/jobs-and-threading.md` §9. |
 | Bit-exact determinism for a subset | **M16**, and only if lockstep | ADR-0013 keeps this open without paying for it now; an authoritative server does not need it. |
 | Networking | **M16**, trigger-started | I1, I2, I8 and I9 keep it possible. Nothing else is owed to it now. |
 | Public macOS release certification | **M17**, credential-gated — last in its phase | Use the implemented Developer ID/notary path, then verify the exact quarantined download on a genuinely clean recipient Mac. The current ad-hoc artifact is not equivalent (ADR-0032). |
+| Linux runtime support | **M18**, trigger-started — after the first game is complete, before any 3D | **Removed from M13 by ADR-0039, 2026-09-18.** The first game targets macOS and Windows. The Linux Vulkan paths are written and build-checked; no X11, Wayland or Linux driver has run them. |
 
 **Out of scope indefinitely, not constraining the initial architecture:** consoles, mobile, web,
 VR, x86-64 macOS.
