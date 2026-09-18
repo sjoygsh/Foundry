@@ -11,7 +11,29 @@ drawing through Vulkan on Windows x64:**
 **Both samples run on it from a relocated install, each wearing an icon it supplies. Windows is a
 runtime claim for the tested machine, with its limits recorded, and the RHI's rules survived with
 none relaxed. Linux left M13 by ADR-0039: it is M18, after the first game and before 3D. Next is
-M14, unstarted; it owes a design document before any code. M15 through M17 remain unstarted.**
+M14, designed on 2026-09-19 (`docs/design/mod-management.md`) and waiting for the owner to
+accept proposed ADR-0040 and ADR-0041 before Step 1. M15 through M17 remain unstarted.**
+
+**Designed M14, 2026-09-19:** the owner asked for M14's documents, with a mod screen modelled on
+Mod Organizer 2 and Foundry's own additions. `docs/design/mod-management.md` specifies nine steps:
+- `app.ModSet` over host-granted roots, with record-level conflicts read from `.fpk` record
+  tables;
+- ordered profiles, one file each;
+- migrations with a backup, and merge-by-field concurrent writes;
+- the kernel's `image`, `nine_slice` and disabled scope;
+- `foundry:ui_theme` content themes, the game widget set and `FoundryApi_v3`;
+- the room's mod screen;
+- the exit proof in a `dist` room.
+
+Two decisions are proposed, not taken:
+- **ADR-0040** makes the selection an ordered profile applied at the next start. It keeps the
+  player's order, which `distribution.md` §5's sorted write threw away, and skips user duplicates
+  instead of failing to start. Native consent stays the host's alone, per version, and it answers
+  ADR-0031's profile revisit.
+- **ADR-0041** makes themes content. The kernel stays at L1 behind opaque image references.
+
+Everything else stays open: keyboard navigation, content-authored layouts, popups, live
+application, per-mod ABI policy, per-save load order and `@patch`. No code changed.
 
 **Completed M13 Step 10 and M13, 2026-09-19:** the RHI proof closed. §10's gate was met item by
 item, accepting unchanged native evidence. On the Mac:
@@ -1821,8 +1843,8 @@ Windows x64 through Vulkan; M14 through M17 are unstarted.
 
 ## Current milestone
 
-**M14 — Managed is next and unstarted.** It owes a design document, and an ADR for anything
-that constrains the future, before implementation (`docs/ROADMAP.md`).
+**M14 — Managed is designed and not started.** Read `docs/design/mod-management.md` and
+proposed ADR-0040/0041. Step 1, the mod set, waits for the owner to accept both ADRs.
 
 **M13 — Portable: "the RHI was real." Complete, 2026-09-19.** Read `docs/design/vulkan.md`
 and ADR-0033/0037/0038/0039. All ten steps are implemented:
@@ -2730,7 +2752,7 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M0–M13 are complete, and nothing is in progress.** M14 has not been started. M13's
+**M0–M13 are complete, and nothing is in progress.** M14 is designed but not started. M13's
 specification and its Resolutions are in `docs/design/vulkan.md`. M12's specification and all
 six Resolutions are in
 `docs/design/jobs-and-threading.md`, and M11's nine are in `docs/design/hardening.md`; the M5
@@ -3379,9 +3401,9 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M14 — Managed, when the owner starts it.** It is unstarted. Like every Phase 4
-milestone it owes a design document before implementation, and an ADR for anything that
-constrains the future (`docs/ROADMAP.md`). M13 is complete and tagged `m13`. Its record is
+**Next: the owner's decision on proposed ADR-0040 and ADR-0041, then M14 Step 1, the mod set.**
+M14's design is `docs/design/mod-management.md`: nine steps, each stopping with its Resolution.
+M13 is complete and tagged `m13`. Its record is
 `docs/design/vulkan.md` and its Resolutions. Linux is M18's (ADR-0039), after the first game and
 before 3D.
 
@@ -3421,7 +3443,8 @@ review of `main` rather than beginning on a schedule.
   cross-compiler decision, which Vulkan's SPIR-V-only input brings due, Vulkan's own binding
   convention now accepted in `rhi.md` §9, the implemented native window payloads, and non-Metal
   frame pacing. The largest milestone in the phase.
-* **M14 — Managed.** The mod manager capability `CLAUDE.md` §5 records as unbuilt, the
+* **M14 — Managed.** Designed 2026-09-19 (`docs/design/mod-management.md`, proposed
+  ADR-0040/0041); not started. The mod manager capability `CLAUDE.md` §5 records as unbuilt, the
   content-driven widget set ADR-0024 deferred, preference profiles and concurrent merging, and
   settings migrations once a second schema exists.
 * **M15 — Editor.** §9's oldest item, dated M6+; ADR-0011 and ADR-0025 already decided its
@@ -4643,8 +4666,8 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 - **M12's record** is `docs/design/jobs-and-threading.md` and ADR-0036:
   `FOUNDRY_SANDBOX_WORKERS` / `FOUNDRY_ROOM_WORKERS` set a sample's pool, `0` for none, for
   comparisons.
-- **M14–M17 remain unstarted.** M14 is next, and begins with its design document when the owner
-  starts it.
+- **M14 is designed** (`docs/design/mod-management.md`) with ADR-0040/0041 proposed; Step 1
+  waits for their acceptance. M15–M17 remain unstarted.
 `zig build check -Drhi=metal` is now part of the bar. The environment notes below still apply.
 
 * Read `CLAUDE.md` first, then this file, then `docs/ROADMAP.md`.
