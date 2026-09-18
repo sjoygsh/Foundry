@@ -102,7 +102,7 @@ ten Metal-only. **M12 is complete (2026-09-14).** Parallel work goes through an 
 never allocates or calls the RHI, and every call site that splits work is tested under `serial`,
 `reversed` and a real pool. `FOUNDRY_SANDBOX_WORKERS` and `FOUNDRY_ROOM_WORKERS` set a sample's
 pool, `0` for none. M12 closed at **1,370 declared / 1,360 headless tests**.
-**M13 Steps 1 to 9 are complete (2026-09-19).** ADR-0037/0038 are accepted; read
+**M13 is complete (2026-09-19), tagged `m13`.** ADR-0037/0038 are accepted; read
 `docs/design/vulkan.md`. A Windows x64 Vulkan target is qualified and reached over SSH. Linux
 x64 left M13 by ADR-0039: its runtime proof is M18, after the first game and before 3D, and
 until then it is compile-checked only. The Vulkan tools are pinned in §3 below, and `platform`

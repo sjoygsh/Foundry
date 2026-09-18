@@ -10,7 +10,7 @@ leave behind something that runs.
 
 ## Status
 
-**M0 through M11 complete.** Foundry is a playable, inspectable, fully moddable,
+**M0 through M13 complete.** Foundry is a playable, inspectable, fully moddable,
 packageable and hardened 2D engine, and it now has a face of its own.
 Content packages are discovered and dependency-ordered; native C mods load through the
 versioned public ABI and can add component types, systems and behaviour without engine source
@@ -69,10 +69,11 @@ and its simulation steps about two and a half. See
 [ADR-0036](docs/adr/0036-explicit-deterministic-jobs.md) and its
 [design](docs/design/jobs-and-threading.md).
 
-**M13 is under way: Foundry draws through Vulkan on Windows.** Eight of the
+**M13 is complete: Foundry draws through Vulkan on Windows.** All
 [ten steps](docs/design/vulkan.md) are done. Both samples run on an Intel Arc GPU from a
 relocated install, under Vulkan's validation layers, and each wears a window icon it supplies.
-Metal stays macOS's backend. Linux is not part of M13
+A RenderDoc capture was inspected, frame pacing was measured, and real keyboard and mouse input
+drove both samples through Windows. Metal stays macOS's backend. Linux is not part of M13
 ([ADR-0039](docs/adr/0039-linux-after-the-first-game.md)). The first game built on Foundry
 targets macOS and Windows, so Linux runtime support follows that game and precedes any 3D
 work.
@@ -88,7 +89,7 @@ and then rebuilt from its own listings to check that it says what the engine doe
 ```sh
 ./scripts/install-zig.sh   # the only tool you need
 zig build run -Drhi=metal  # opens a window and draws; escape quits
-zig build test             # 1334 headless tests
+zig build test             # 1395 headless tests
 ```
 
 Implemented so far:
@@ -98,9 +99,10 @@ Implemented so far:
   and a headless one, kept honest by a `comptime` conformance check.
 * **`data`** — schemas and their runtime registry, the `.fdt` authoring format and its
   diagnostics, the `.fpk` runtime format, and the store that merges packages by load order.
-* **`rhi`** — the render hardware interface, with a Metal backend and a **validation
-  backend** that enforces the strict rules Metal forgives. Not scaffolding: it is what
-  substitutes for a second graphics backend until there is one.
+* **`rhi`** — the render hardware interface, with Metal and Vulkan backends and a
+  **validation backend** that enforces the strict rules Metal forgives. Not scaffolding: every
+  rendering test runs against it headlessly, and when Vulkan arrived in M13 three of its rules
+  were tightened and none relaxed.
 * **`asset`** — Foundry's own PNG decoder, and the registry that turns a content ID into a
   loaded asset through loaders registered at runtime, including bounded/revisioned script
   source. Nothing is addressable by path.

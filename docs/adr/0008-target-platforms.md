@@ -73,3 +73,12 @@ cross-compilation a blocker for M0 and without pretending untested cross-builds 
 A decision to ship Windows or Linux arrives, which triggers backend #2 and the corresponding
 testing logistics; or the build-check proves to catch nothing useful, in which case it is
 ceremony and should be dropped.
+
+## Subsequent decisions — 2026-09-19
+
+This record's revisit condition arrived. The owner decided to validate the RHI against a second
+API, and [ADR-0033](0033-vulkan-second-backend.md) chose Vulkan as backend #2. M13 made Windows
+x64 a runtime claim, completed on 2026-09-19. It holds for one tested Intel Arc machine, within
+the limits `docs/design/vulkan.md` records at Step 9.
+[ADR-0039](0039-linux-after-the-first-game.md) keeps Linux x64 at this record's build-check
+until M18. macOS stays primary.

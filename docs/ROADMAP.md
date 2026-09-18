@@ -620,7 +620,7 @@ are unchanged since `m11`. Frame time is the display's and is not claimed, and a
 measured slowing the calling thread's unsplit work, which is recorded as debt with a revisit
 trigger.
 
-### M13 — Portable: "the RHI was real" — **in progress; 9/10 steps complete; Windows only**
+### M13 — Portable: "the RHI was real" — **complete (2026-09-19); Windows only**
 
 **The backend is Vulkan** ([ADR-0033](adr/0033-vulkan-second-backend.md)), which covers Windows
 and Linux with one backend. D3D12 is not planned, and Metal stays macOS's — nothing is routed
@@ -677,8 +677,19 @@ have made M1 a months-long wall; that wall was moved here, not removed.
 **Exit criteria:** a sample runs on Vulkan on a second platform, Windows x64, and the RHI's
 written rules either survived the encounter or changed by ADR. Cross-compilation, a Mac SDK or a
 software-only offscreen test cannot replace that presentation proof. ADR-0033 promised Linux at
-the same time; ADR-0039 moved that promise to M18. Stop after Step 9 in the current handoff;
-Step 10, the milestone's close, comes next.
+the same time; ADR-0039 moved that promise to M18.
+
+**Met 2026-09-19, and tagged `m13`.** Both samples run on Vulkan on Windows x64. The RHI's
+written rules survived, and none was relaxed. Three were tightened before Step 4, each written
+into `rhi.md` under ADR-0037's decision 7 before its code:
+- every resource declares a usage;
+- copy sources are bounded;
+- binding alignment and range are capabilities.
+
+The one extension, rebuilding an out-of-date swapchain without a resize event, is ADR-0037's.
+The faults the milestone found were the backend's own, such as Step 5's inverted front face, or
+Windows faults that predated it, which the native test repair fixed. Device recovery stays an
+open question. M14 is next and unstarted.
 
 ### M14 — Managed: "players choose their mods" — **not started**
 

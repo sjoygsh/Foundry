@@ -22,9 +22,10 @@ added usage conformance as §11 rule 11, and Step 5 the frame outcomes in §7 an
 `rhi` is layer L2. It depends on `core` and `platform`. **Graphics API symbols appear
 nowhere outside it** (I7, enforced by the build graph).
 
-**M13, 2026-09-14:** [vulkan.md](vulkan.md) specifies ten steps; `PROJECT_STATE.md` tracks
-them. ADR-0037/0038 are accepted. The marked M13 additions below are the accepted Vulkan
-contract, not claims about a backend that exists. Metal/null remain the implemented backends.
+**M13, complete 2026-09-19:** [vulkan.md](vulkan.md)'s ten steps are implemented under
+ADR-0037/0038, and the marked M13 additions below are the Vulkan contract as built. Null, Metal
+and Vulkan are the implemented backends. Vulkan runs on Windows x64, proven on one Intel Arc
+machine; its Linux paths are build-checked until M18 (ADR-0039).
 
 This is the document ADR-0003 demands before any Metal code exists, and it is written
 under an explicit warning from that ADR:
@@ -217,9 +218,11 @@ answer by skipping the frame. `SurfaceLost` means the surface cannot be used aga
 recovery, and `DeviceLost` that the device is unusable. The current host implements neither
 recovery, so both are reported and stop the loop; running out of memory stays a failure of its
 own. A failed `beginFrame` opens no frame and spends no frame index, though a slot it waited
-for is still finished. A frame that did open is closed by `endFrame` on every path, a failed
-frame's included. `endFrame` leaves the slot's marker even when it fails, so what the frame
-submitted is still waited for, and it presents only an image that submitted work drew into.
+for is still finished. A skipped frame presented nothing, so it waited for no display; pacing
+it is the caller's (`app-and-frame-loop.md` §2). A frame that did open is closed by `endFrame`
+on every path, a failed frame's included. `endFrame` leaves the slot's marker even when it
+fails, so what the frame submitted is still waited for, and it presents only an image that
+submitted work drew into.
 
 This is the piece Metal's conveniences hide most thoroughly: `MTLCommandBuffer` completion
 handlers make it easy to never think about it, and Vulkan makes it impossible not to. The
@@ -669,7 +672,9 @@ headlessly — the same reason the null *platform* backend exists.
 6. **What happens on device loss.** Real on Windows, rare on macOS, and untestable until
    there is a second backend. Recorded so that it is a known gap rather than an oversight —
    the handle model at least makes recovery expressible, since every resource is already
-   addressed indirectly.
+   addressed indirectly. **Still open after M13, 2026-09-19:** the second backend exists, and
+   Vulkan's device loss is injected and tested as sticky: reported, stopping the loop, as
+   `SurfaceLost` does. M13 implemented no recovery (`vulkan.md` §8 and §12).
 
 ## Resolution — 2026-09-13, M11 planning only
 

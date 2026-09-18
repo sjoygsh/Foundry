@@ -1,6 +1,6 @@
 # ADR-0038: Compile small GLSL variants to SPIR-V at build time
 
-**Status:** Accepted 2026-09-14 (M13)
+**Status:** Accepted 2026-09-14; implemented in M13, complete 2026-09-19
 **Date:** 2026-09-14
 **Builds on:** ADR-0014, ADR-0015, ADR-0016, ADR-0019 and ADR-0033
 

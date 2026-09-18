@@ -1,6 +1,6 @@
 # ADR-0037: Vulkan keeps submission and presentation-resource lifetime separate
 
-**Status:** Accepted 2026-09-14 (M13). Superseded by [0039](0039-linux-after-the-first-game.md)
+**Status:** Accepted 2026-09-14; implemented in M13, complete 2026-09-19. Superseded by [0039](0039-linux-after-the-first-game.md)
 in its M13 Linux completion clause only.
 **Date:** 2026-09-14
 **Revised:** 2026-09-14 — windowed operation no longer requires swapchain maintenance1, after

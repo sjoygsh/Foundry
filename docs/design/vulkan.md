@@ -1,9 +1,9 @@
 # Design: M13 — Vulkan, and the second test of the RHI
 
 **Status:** Design accepted 2026-09-14 (ADR-0037/0038), its windowed floor revised before
-acceptance; **9 of 10 steps complete**. Next: Step 10. **Linux left M13 on 2026-09-18**
-([ADR-0039](../adr/0039-linux-after-the-first-game.md), the scope Resolution): M13 proves
-Windows x64, and Linux's runtime proof is M18, after the first game and before 3D.
+acceptance; **implemented in full, M13 complete 2026-09-19** on Windows x64. **Linux left M13
+on 2026-09-18** ([ADR-0039](../adr/0039-linux-after-the-first-game.md), the scope Resolution):
+M13 proves Windows x64, and Linux's runtime proof is M18, after the first game and before 3D.
 **Date:** 2026-09-14
 **Baseline:** `f14caac` / `m12`; M0–M12 complete, 1,370 declared / 1,360 headless tests.
 **Decisions:** ADR-0033 selects Vulkan; accepted [ADR-0037](../adr/0037-vulkan-execution-and-presentation.md)
@@ -379,8 +379,8 @@ M13 ends only when its rules survived or their necessary changes were recorded b
 
 ## 11. Implementation order — ten bounded steps
 
-Steps 1 to 9 are complete; Step 10 is **not started**. Stop after each with its
-Resolution, PROJECT_STATE update, verification and commit; no automatic chaining. Before Step 3
+All ten steps are complete. Each stopped with its Resolution, PROJECT_STATE update,
+verification and commit; there was no automatic chaining. Before Step 3
 the owner directed a repair of the native Windows test suite; its Resolution follows Step 2's.
 
 ### Step 1 — Qualify the targets and pin the Vulkan tools
@@ -1221,3 +1221,94 @@ A minimised sample still costs about a quarter of this processor's core. A minim
 window's pacing is still unmeasured, because scripting the Mac's minimise needs an Accessibility
 permission this terminal lacks. The samples' sleep follows a skipped frame, whichever backend
 skipped it; whether Metal skips there at all is the open question.
+
+## Resolution — 2026-09-19, Step 10: the RHI proof closed, and M13 with it
+
+**The gate.** §10's distinct evidence, and where each item was met:
+- **Pure tests:** Steps 3–7, in the ordinary graph on every host.
+- **Offscreen Vulkan tests:** Step 4's bytes and Step 6's pixel probes, read back through the
+  backend-private copy.
+- **Null reference tests:** the bar below. M12's determinism and job tests are unchanged.
+- **The native Windows graph:** 1,427 of 1,437 tests, with validation and synchronization
+  validation required.
+  - Ten skipped, all named: five POSIX-only, and five that reach every step of an upload only
+    through the validation backend's CPU-side buffers.
+  - Last run in Step 9 with the overlay's layer removed, on a tree whose code differs from this
+    commit only in comment wording and the macOS-only release descriptions.
+  - Driver diagnostics reach `core.log` (Step 3). The messenger's callback formats each message
+    into its log line before returning and keeps no pointer to it.
+- **Windowed sandbox and room runs:**
+  - Step 8: resize, minimise and restore, 29 texture reloads over 900 frames with two in flight,
+    a clean exit and no validation error.
+  - Step 9: pacing and real input.
+- **The RenderDoc capture:** Step 9.
+- **The relocated runtime tree, with a user package:** Steps 8 and 9.
+
+That evidence is unchanged, so no native run was repeated. At closure on the Mac:
+- the bar passed with **1,394 of 1,395** tests, the Windows-only test skipped;
+- `zig build test -Dplatform=null -Drhi=null` passed 1,382 of 1,383;
+- the Metal-selected graph passed 1,399 of 1,405, skipping the Windows-only test and the same
+  five validation-backend tests;
+- `vulkan-check` and `check -Drhi=vulkan` compiled for both targets;
+- both releases staged, their notices naming only distributed dependencies.
+
+M13 closes at **1,405 declared / 1,395 headless tests**, ten Metal-only. The Vulkan-selected
+graph declares 1,437.
+
+**The RHI's rules survived.** None was relaxed. Three were tightened before Step 4, each written
+into `rhi.md` under ADR-0037's decision 7 before its code:
+- every resource declares a usage;
+- copy sources are bounded;
+- binding alignment and range are capabilities.
+
+The one extension is ADR-0037's: an out-of-date swapchain is rebuilt between frames without a
+resize event (`rhi.md` §7). The faults M13 found were the backend's own or older than it:
+- Step 3's alignment-checked handle cast;
+- Step 5's inverted front face;
+- Step 7's leak count;
+- `std`'s mislabelled Windows file handle and POSIX-only test fixtures;
+- the elevated loader;
+- Step 8's release regression;
+- the unpaced minimised loop.
+
+None changed the contract. Validation was not weakened: the backend's tests still require the
+Khronos layer with synchronization validation, and fail rather than skip without it.
+
+**Discrepancies, resolved in their originating records:**
+- **Device and surface recovery, and backend replacement.** ADR-0035 and `hardening.md` handed
+  them to M13, but §8 and §12 here left them unimplemented. Each record now has a dated note:
+  loss stays sticky on every backend. `rhi.md`'s open question 6 is annotated and stays open, by
+  standing instruction.
+- **Pacing.** It was written down only in the samples' comments. `app-and-frame-loop.md` §2 now
+  records that it is the game's, and `rhi.md` §7 points there.
+- **The backends.** `rhi.md` still called Vulkan unbuilt, and `platform-interface.md`'s status
+  predated M13's additions; both are corrected.
+- **ADR-0008.** Its revisit condition had arrived, so it gains a note. `CLAUDE.md`'s platform row
+  had called Windows build-checked only.
+- **Multi-threaded recording.** `jobs-and-threading.md` §9 named M13's backend as a possible
+  trigger for it. Recording was measured at a 0.04 ms median in the sandbox and 0.04–0.06 ms in
+  the room, so the trigger did not fire. ADR-0036's matching revisit condition likewise did not
+  arrive.
+- **Statuses.** ADR-0033, ADR-0037 and ADR-0038 now say they were implemented.
+
+**Deferred items.** Removed only what M13 proved:
+- the second backend, in `CLAUDE.md` §9;
+- M10's window icon, marked built at Step 8.
+
+Still deferred, each where it was already recorded:
+- Linux x64, as M18;
+- device recovery;
+- IME composition, gamepads and OS file watching;
+- multiple windows and queues;
+- the rest of §12.
+
+The limits of the Windows claim are Step 9's.
+
+**Updated:**
+- `CLAUDE.md` §§4.1, 4.3, 4.4, 4.5 and 9;
+- AGENTS.md, PROJECT_STATE, the roadmap, README and the design index;
+- `rhi.md`, `platform-interface.md`, `app-and-frame-loop.md`, `jobs-and-threading.md` and
+  `hardening.md`;
+- ADRs 0008, 0033, 0035, 0037 and 0038.
+
+M13 is complete and tagged `m13`. M14 has not been started.

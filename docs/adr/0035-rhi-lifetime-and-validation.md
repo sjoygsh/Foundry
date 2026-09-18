@@ -85,3 +85,10 @@ contracts; the ordinary renderer reload path relies on that retirement; and the 
 distinguishes `SurfaceUnavailable`, `SurfaceLost` and `DeviceLost` while closing every opened
 frame. `docs/design/hardening.md` records the nine steps and final evidence. No public ABI
 layout changed.
+
+## Subsequent note — 2026-09-19
+
+M13 implemented what this record left to it: Vulkan's loader, shader toolchain and descriptor
+allocation, under ADR-0037 and ADR-0038. The Vulkan backend reports the same three frame
+outcomes. M13 did not take device recovery. `vulkan.md` §8 and §12 keep device and surface loss
+sticky on every backend, and `rhi.md`'s open question 6 stays open, with no milestone assigned.

@@ -1,6 +1,6 @@
 # ADR-0033: Vulkan is the second graphics backend
 
-**Status:** Accepted (constraint only; implementation is M13). Superseded by
+**Status:** Accepted; implemented in M13, complete 2026-09-19, on Windows x64. Superseded by
 [0039](0039-linux-after-the-first-game.md) in its promise that M13 proves Linux as well; the
 backend choice stands.
 **Date:** 2026-09-13

@@ -1,16 +1,37 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-19
-**Current handoff: M0 through M12 are complete and tagged. M13 Steps 1 to 9 of 10 are
-complete: the Windows x64 Vulkan target is qualified and its tools pinned, native window payloads
-and the safe system-library open are implemented, the native Windows test suite passes, and a
-validated Vulkan device owns resources, checked shader modules, persistent bindings and graphics
-pipelines, draws the sprite contract correctly offscreen, and presents to a real window through a
-FIFO swapchain with resize and failed-frame closure. Both samples run on it on Windows from a
-relocated install, and each wears an icon it supplies. Step 9 proved Windows with an inspected
-RenderDoc capture, measured pacing and real input, and recorded the claim's limits. Next: Step 10,
-the milestone's close. Linux left M13 by ADR-0039: it is M18, after the first game and before 3D. M14 through M17
-remain unstarted.**
+**Current handoff: M0 through M13 are complete and tagged. M13 closed on 2026-09-19 with Foundry
+drawing through Vulkan on Windows x64:**
+- **a qualified target with pinned tools, native window payloads and a safe system-library open;**
+- **a native Windows test suite that passes;**
+- **a validated device that owns resources, checked shaders, persistent bindings and pipelines,
+  and presents through a FIFO swapchain with resize and failed-frame closure.**
+
+**Both samples run on it from a relocated install, each wearing an icon it supplies. Windows is a
+runtime claim for the tested machine, with its limits recorded, and the RHI's rules survived with
+none relaxed. Linux left M13 by ADR-0039: it is M18, after the first game and before 3D. Next is
+M14, unstarted; it owes a design document before any code. M15 through M17 remain unstarted.**
+
+**Completed M13 Step 10 and M13, 2026-09-19:** the RHI proof closed. §10's gate was met item by
+item, accepting unchanged native evidence. On the Mac:
+- the bar passed **1,394 of 1,395**;
+- headless, 1,382 of 1,383;
+- the Metal-selected graph, 1,399 of 1,405, with six expected skips;
+- both Vulkan checks and both releases passed.
+
+M13 closes at **1,405 declared / 1,395 headless tests**, and the Vulkan-selected graph declares
+1,437, of which 1,427 pass on the Arc. The RHI's rules survived: three were tightened before
+Step 4 and none relaxed, and the one extension, out-of-date swapchain rebuilds, is ADR-0037's.
+Discrepancies were resolved where they started:
+- ADR-0035 and `hardening.md` had handed device recovery to M13; notes now say M13 left it open,
+  with loss sticky and `rhi.md` question 6 still open.
+- Pacing is recorded as the game's in `app-and-frame-loop.md` §2.
+- `jobs-and-threading.md` §9's recording trigger did not fire, at a 0.04 ms median.
+- ADR-0008 gains a note, and ADR-0033, ADR-0037 and ADR-0038 say they were implemented.
+
+`CLAUDE.md` §§4 and 9, AGENTS.md, the roadmap, README, the design index, `rhi.md` and
+`platform-interface.md` were updated. Tagged `m13`. Resolution: `vulkan.md`, Step 10.
 
 **Completed M13 Step 9, 2026-09-19:** Windows proven, with its limits. RenderDoc 1.46, a portable
 folder with nothing registered, captured the relocated sandbox's frame 244 in the desktop session
@@ -1795,15 +1816,27 @@ closed.** What a public macOS release still owes is operator certification — D
 signing, notarization and a clean recipient Mac (ADR-0032) — not engine work. **Phase 4,
 "Hardening and reach" (M10-M17), is under way**: it gathers the deferred work rather than
 adding to it, only M10 was new, **M10 and M11 are complete (2026-09-13)** and **M12 is
-complete (2026-09-14)**. M13's design proposal is written, with 0/10 steps implemented;
-M14 through M17 are unstarted.
+complete (2026-09-14)**. **M13 is complete (2026-09-19)**, proving
+Windows x64 through Vulkan; M14 through M17 are unstarted.
 
 ## Current milestone
 
-**M13 — Portable: "the RHI was real." Designed, implementation unstarted.** Read
-`docs/design/vulkan.md`, ADR-0033 and proposed ADR-0037/0038. The next unit is Step 1's
-environment/tool qualification after proposal acceptance. Windows/Linux runtime evidence
-is required; a Mac-only cross-build is not completion. Stop before Step 1 in this handoff.
+**M14 — Managed is next and unstarted.** It owes a design document, and an ADR for anything
+that constrains the future, before implementation (`docs/ROADMAP.md`).
+
+**M13 — Portable: "the RHI was real." Complete, 2026-09-19.** Read `docs/design/vulkan.md`
+and ADR-0033/0037/0038/0039. All ten steps are implemented:
+- the qualified Windows target and pinned tools;
+- native window payloads and the system-library open;
+- a validated device with resources, checked SPIR-V, persistent bindings and pipelines;
+- offscreen drawing, and presentation with resize and failed-frame closure;
+- both samples, with their icons;
+- Windows' proof: a RenderDoc capture, pacing and real input;
+- the closing gate.
+
+The RHI's rules survived with none relaxed. Linux left the milestone for M18 (ADR-0039). M13
+closed at **1,405 declared / 1,395 headless tests**, ten Metal-only, with 1,437 in the
+Vulkan-selected graph, and is tagged `m13`.
 
 **M12 — Parallel: "it uses more than one core." Complete, 2026-09-14.** Read
 `docs/design/jobs-and-threading.md` and ADR-0036. All six steps are implemented: `core.Jobs`, the
@@ -1961,7 +1994,8 @@ the deserializer matches by position, so an unchecked mismatch would read `y` in
 
 ## What has been implemented
 
-**`core` (L0), `platform`, `data`, `physics2d` and `ui` (L1), `rhi` (L2) with two backends,
+**`core` (L0), `platform`, `data`, `physics2d` and `ui` (L1), `rhi` (L2) with three backends —
+validation, Metal and Vulkan —
 `asset` and `mod` (L2), `render2d`, `scene` and `audio` (L3), `app` (L4), `debug` and `abi`
 (L5), `script` (L6), plus `tools/fpack`. It draws thousands
 of sprites under a camera that pans, zooms and picks, and it loads content by content id.
@@ -2526,6 +2560,11 @@ and the published repository.
 
 ## What currently works
 
+**At M13's close, 2026-09-19:** `zig build test` passes 1,394 of 1,395 tests on the Mac, 1,405
+are declared under `-Drhi=metal`, and on Windows the Vulkan-selected graph passes 1,427 of 1,437.
+Both samples run on macOS through Metal and on Windows x64 through Vulkan, from a relocated
+install. The per-module figures below are older and kept as history.
+
 **`zig build test` passes 1,272 tests** of 1,280 declared (84 `core`, 90 `platform`,
 106 `data`, 82 `physics2d`, 83 `ui`, 92 `rhi`, 76 `asset`, 24 `mod`, 139 `render2d`,
 84 `scene`, 34 `audio`, 81 `app`, 23 `debug`, 111 `abi`, 56 `script`, 54 integration,
@@ -2691,12 +2730,11 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M0–M12 are complete.** M12's specification and all six Resolutions are in
+**M0–M13 are complete, and nothing is in progress.** M14 has not been started. M13's
+specification and its Resolutions are in `docs/design/vulkan.md`. M12's specification and all
+six Resolutions are in
 `docs/design/jobs-and-threading.md`, and M11's nine are in `docs/design/hardening.md`; the M5
 material below is historical.
-
-**M13 planning is complete, 2026-09-14; implementation has not begun.** Its ten-step design
-and two proposed ADRs are the current handoff above. No prior milestone work is reopened.
 
 ### `samples/room`, and what a second consumer proved
 
@@ -3341,18 +3379,20 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M13 Step 10, the milestone's close.** Steps 1 to 9 are complete, with the native Windows
-test repair the owner directed before Step 3 (`docs/design/vulkan.md` and their Resolutions).
-Step 10 runs §10's remaining integration gate, accepting unchanged successful evidence, and
-resolves every M13 contract discrepancy in its originating design or ADR. It updates `CLAUDE.md`
-§§4 and 9, AGENTS.md, this file, the roadmap, README, the design index, `rhi.md`,
-`platform-interface.md` and the ADR statuses. Then it commits, tags `m13`, pushes and stops before
-M14. Linux is not M13's (ADR-0039); it is M18, after the first game and before 3D. Windowed runs on the Windows
-target go through a scheduled task in the owner's desktop session. Native builds on that
-target use at most two jobs at below-normal priority, because it is the owner's gaming PC.
-M14 waits.
+**Next: M14 — Managed, when the owner starts it.** It is unstarted. Like every Phase 4
+milestone it owes a design document before implementation, and an ADR for anything that
+constrains the future (`docs/ROADMAP.md`). M13 is complete and tagged `m13`. Its record is
+`docs/design/vulkan.md` and its Resolutions. Linux is M18's (ADR-0039), after the first game and
+before 3D.
 
-**M0 through M12 are complete, tagged and pushed.** Phase 3 is closed;
+Later Windows work follows M13's practice:
+- Windowed runs on the Windows target go through a scheduled task in the owner's desktop session.
+- Native builds there use at most two jobs at below-normal priority, because it is the owner's
+  gaming PC.
+- Over SSH, the loader ignores the layer filter, so each implicit layer is disabled by its own
+  variable (AGENTS.md).
+
+**M0 through M13 are complete, tagged and pushed.** Phase 3 is closed;
 Phase 4 is under way. The completed M8/M7 checklists and subsequent M5/M6 material below are
 historical.
 
@@ -3373,7 +3413,7 @@ review of `main` rather than beginning on a schedule.
   `docs/design/jobs-and-threading.md` are implemented. Split spans are measurably faster at
   50,000 sprites, every determinism test is unchanged, and a pool's cost to the calling thread's
   unsplit work is recorded as debt.
-* **M13 — Portable.** Design accepted 2026-09-14, trigger activated; **9/10 steps complete**.
+* **M13 — Portable.** **Complete, 2026-09-19, tagged `m13`**; Windows x64 only.
   Read `docs/design/vulkan.md` and ADR-0037/0038. **Vulkan was decided
   2026-09-13 in [ADR-0033](docs/adr/0033-vulkan-second-backend.md)**, covering Windows and
   Linux with one backend; D3D12 is not planned and Metal stays macOS's. Since ADR-0039
@@ -3848,11 +3888,17 @@ UI-batching, log-time and file-kind entries; `docs/design/hardening.md` records 
 evidence. A person had already listened to the mixer when M5 closed at `c8ecbb8`. Real-window
 resize remains closed since 2026-09-04, and ADR-0019 remains the settled shader-ownership rule.
 
-* **Metal is still the only real RHI backend and `metal_layer` the only implemented native
-  surface.** `win32_hwnd` and X11/Wayland surfaces remain M13 work with Vulkan (ADR-0033), as
-  do per-backend shader variants and a second real-backend validation of the RHI. Display
-  pacing consequently has only Metal evidence; the null backend still sleeps 2 ms so a
-  headless run does not peg a core. These are explicit platform limits, not portability claims.
+* **Vulkan is proven on Windows x64 alone, and on one machine** (M13, 2026-09-19). The claim
+  holds for one Intel Arc A750 driver, one 60 Hz display at scale 1.00 and Latin keys
+  (`vulkan.md`, Step 9). X11 and Wayland surfaces are implemented and build-checked only, until
+  M18.
+  - Device and surface loss are sticky on every backend; recovery is `rhi.md`'s open
+    question 6.
+  - Pacing a skipped frame is the game's (`app-and-frame-loop.md` §2). A minimised sample still
+    spends about a quarter of a core on its own frames' work, and a minimised Metal window's
+    pacing is unmeasured.
+
+  These are explicit platform limits, not portability claims.
 * **Platform input and change notification are deliberately incomplete.** There is no gamepad
   support, OS file-notification API or IME preedit/control, and text input remains enabled for
   a window's lifetime. Hot reload is implemented by polling package files; no documentation or
@@ -4545,9 +4591,9 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
    means *every* milestone boundary or only when there is a reason is still unresolved. Two
    concrete inputs now: each upgrade must re-verify the SDL3 port, and 0.16 showed that a
    single release can move `std.fs`, the clock and dynamic library loading at once.
-5. **When backend #2 is triggered.** Deliberately unscheduled (ADR-0003). The trigger is a
-   reason, not a date — but it is worth noticing if that reason never arrives, since the RHI
-   stays unvalidated until it does.
+5. ~~**When backend #2 is triggered.**~~ **Settled.** The owner triggered it on 2026-09-14 to
+   validate the RHI (ADR-0033), and M13 completed it on 2026-09-19. Vulkan runs on Windows x64,
+   and the RHI's rules survived with none relaxed.
 6. ~~**Where the tilemap content types live.**~~ **Settled 2026-09-05 by M5 step 5**, by its
    own stated trigger arriving sooner than expected. `tilemaps-and-collision.md` §11 put the
    three schemas and the `foundry:tilegrid` loader in `render2d` and named the trigger as *the
@@ -4591,13 +4637,14 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 
 ## Notes for the next session
 
-**Resume point, 2026-09-14:** M0–M12 complete and tagged. M12's record is
-`docs/design/jobs-and-threading.md` and ADR-0036: parallel work goes through an explicit
-`core.Jobs`, and `FOUNDRY_SANDBOX_WORKERS` / `FOUNDRY_ROOM_WORKERS` set a sample's pool, `0` for
-none, for comparisons. M13's design is now written in `docs/design/vulkan.md`; ADR-0037/0038
-remain proposed, and no implementation step has begun. Stop before Step 1: accept the design
-and establish Windows/Linux x64 Vulkan test access before the environment qualification step.
-M14–M17 remain unstarted.
+**Resume point, 2026-09-19:** M0–M13 complete and tagged.
+- **M13's record** is `docs/design/vulkan.md` with ADR-0037/0038/0039. Vulkan runs on Windows x64,
+  and `-Drhi=vulkan` builds, tests and installs there (AGENTS.md, *Vulkan work*).
+- **M12's record** is `docs/design/jobs-and-threading.md` and ADR-0036:
+  `FOUNDRY_SANDBOX_WORKERS` / `FOUNDRY_ROOM_WORKERS` set a sample's pool, `0` for none, for
+  comparisons.
+- **M14–M17 remain unstarted.** M14 is next, and begins with its design document when the owner
+  starts it.
 `zig build check -Drhi=metal` is now part of the bar. The environment notes below still apply.
 
 * Read `CLAUDE.md` first, then this file, then `docs/ROADMAP.md`.

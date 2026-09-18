@@ -847,3 +847,24 @@ still named the staged `AppIcon.icns`. There are **1,344 declared / 1,334 headle
 Metal-only.
 
 M11 is complete and may be tagged `m11`. M12 was not designed or begun here.
+
+## Note — 2026-09-19, what M13 did with this milestone's hand-offs
+
+§7 and Step 5 left four decisions to M13:
+- full device recovery;
+- surface recovery;
+- Vulkan swapchain recreation;
+- backend replacement.
+
+The disposition table left it two limitations: display pacing and the missing native surfaces.
+M13 (`vulkan.md`) settled three of those six and left the rest open:
+- Swapchain recreation is ADR-0037 and `vulkan.md` §8. It happens between frames, after the
+  queue is idle, and a zero extent suspends it.
+- `win32_hwnd` is implemented and proven on Windows x64. X11 and Wayland are build-checked until
+  M18 (ADR-0039).
+- Pacing has Vulkan evidence at 60 Hz, and the samples pace skipped frames
+  (`app-and-frame-loop.md` §2).
+- Device and surface recovery and backend replacement were not implemented. Loss stays sticky on
+  every backend, and `rhi.md`'s open question 6 stays open.
+
+The Metal minimise-and-restore run is still unperformed, for the reason Step 5 gave.

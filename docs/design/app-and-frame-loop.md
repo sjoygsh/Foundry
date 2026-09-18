@@ -71,6 +71,20 @@ interpolating what is drawn between two simulation states. Feeding it back into 
 state would make the simulation depend on frame timing, which is precisely what the fixed
 step exists to prevent.
 
+### Pacing belongs to the game — recorded at M13's close, 2026-09-19
+
+The engine's loop never sleeps. A frame that presents is paced by presentation itself, as the
+backend waits for an image the display has released: Metal's drawables, Vulkan's FIFO
+swapchain. A frame the renderer skips presented nothing and waited for nothing: a
+`SurfaceUnavailable` frame from a minimised or occluded window. The validation backend has no
+display at all. Pacing those frames is the caller's policy, like the rest of rendering, so
+`Engine` takes no position on it.
+
+Both samples sleep one simulation step after a skipped frame, and 2 ms a frame when windowed on
+the validation backend. On Vulkan, a minimised sandbox fell from over 500 frames a second on a
+whole core to about 43, paying only for its own frames' work (`vulkan.md`, Step 9). Sleeping never
+touches simulation: the fixed step catches up from the clock as it always does.
+
 ### Events the engine consumes itself
 
 `quit_requested` and `window_closed` set the quit flag; the event is still passed on, because

@@ -1,7 +1,9 @@
 # Design: `platform` — the interface Foundry owns
 
-**Status:** Implemented 2026-09-03, both backends. `setWindowSize` added 2026-09-04.
-See the Resolution at the end.
+**Status:** Implemented 2026-09-03, both backends. `setWindowSize` added 2026-09-04. Native
+window payloads and system libraries added in M13 Step 2, and `setWindowIcon` in Step 8; the
+`windows` driver's path ran on Windows x64 in M13, and X11 and Wayland are build-checked until
+M18. See the Resolution at the end.
 **Date:** 2026-09-02
 **Implements:** I7, I9 · **Informed by:** ADR-0002, ADR-0003, ADR-0007, ADR-0008
 
@@ -393,9 +395,9 @@ of the snapshot design in §4.
 * Cross-compilation: `platform` builds for `x86_64-windows-gnu` and `x86_64-linux-gnu` every
   milestone (ADR-0008). Verified achievable during M0 setup — SDL itself cross-compiles.
 * Native windows (M13): `zig build native-window-test` opens real windows through SDL3 on
-  Windows or Linux and checks the concrete kind, explicit-kind refusal, payload stability
-  through pool growth and resize, stale handles and out-of-memory cleanup. It needs a desktop
-  session, so it is not part of `zig build test`; on macOS it checks only the refusal.
+  Windows (Linux's run is M18's) and checks the concrete kind, explicit-kind refusal, payload
+  stability through pool growth and resize, stale handles and out-of-memory cleanup. It needs a
+  desktop session, so it is not part of `zig build test`; on macOS it checks only the refusal.
 
 ---
 

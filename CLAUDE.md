@@ -157,7 +157,7 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Area | Decision | ADR |
 | --- | --- | --- |
 | Language | Zig, pinned stable release, never master; C ABI only at the public boundary | [0001](docs/adr/0001-language-zig.md) |
-| Platforms | macOS/Apple Silicon primary; Windows x64 and Linux x64 build-checked | [0008](docs/adr/0008-target-platforms.md) |
+| Platforms | macOS/Apple Silicon primary; Windows x64 runtime-proven on Vulkan in M13; Linux x64 build-checked until M18 | [0008](docs/adr/0008-target-platforms.md), with [0033](docs/adr/0033-vulkan-second-backend.md) and [0039](docs/adr/0039-linux-after-the-first-game.md) |
 | Platform layer | SDL3 behind Foundry's own platform interface, via a Zig package | [0002](docs/adr/0002-platform-layer-sdl3.md) |
 | Rendering | Foundry's own RHI with native backends; Metal first, null backend validates | [0003](docs/adr/0003-renderer-own-rhi-metal-first.md) |
 | Second backend | Vulkan, covering Windows and Linux with one backend; D3D12 not planned. Windows is proven in M13; Linux waits for the first game and precedes 3D | [0033](docs/adr/0033-vulkan-second-backend.md), whose M13 Linux gate [0039](docs/adr/0039-linux-after-the-first-game.md) supersedes |
@@ -237,7 +237,8 @@ L1  ui          -> core, platform.  Immediate-mode UI kernel: widget identity, i
 
 L2  rhi         -> core, platform.  Render hardware interface + backends.
                                 *** Metal/Vulkan/D3D are referenced ONLY here. ***
-                                backends/null, backends/metal (+ its ObjC shim).
+                                backends/null, backends/metal (+ its ObjC shim),
+                                backends/vulkan.
 L2  asset       -> core, data, platform.  Asset registry, loading, hot reload.
 L2  mod         -> core, data, platform.  Mod discovery, manifests, dependency
                                 resolution, deterministic load order. Produces the
@@ -313,7 +314,9 @@ unrelated upgrade cannot silently move the compiler.
 
 **Installed for Vulkan work only:** the LunarG Vulkan SDK at an exact release, for host shader
 compilation, SPIR-V validation and development layers (ADR-0038). Null and Metal builds never
-need it; `AGENTS.md` records the pin and its hashes.
+need it; `AGENTS.md` records the pin and its hashes. RenderDoc, Vulkan's frame-capture tool, is
+used the same way: an exact release, unpacked rather than installed, run by hand on the Vulkan
+target and never part of a build.
 
 **Already present and sufficient:** Xcode 26 (SDK 26.5) for the Metal framework, Objective-C
 compilation and GPU frame capture; the on-demand Metal toolchain for shader compilation —
@@ -351,7 +354,7 @@ Foundry/
     src/
       core/  platform/  data/  physics2d/  ui/  rhi/  asset/  mod/  render2d/
       scene/  audio/  app/  debug/  abi/  script/
-      rhi/backends/      null/  metal/ (Zig backend + Objective-C shim)
+      rhi/backends/      null/  metal/ (Zig backend + Objective-C shim)  vulkan/
     tests/               Integration tests. Unit tests are colocated with source.
 
   tools/
@@ -558,7 +561,7 @@ milestone named below is where `docs/ROADMAP.md` now places it.
 | Decision | Due | Notes |
 | --- | --- | --- |
 | Separate editor application | **M15** | In-process debug overlay first; the editor re-hosts its introspection (ADR-0025). |
-| Second graphics backend | **M13**, design accepted; implementation under way | **Vulkan is decided (ADR-0033)**, and its execution and toolchain were accepted as ADR-0037/0038 on 2026-09-14. [vulkan.md](docs/design/vulkan.md) has ten steps; `PROJECT_STATE.md` records how far they have been walked. M13 closes on Windows runtime evidence; Linux left it by ADR-0039. |
+| Second graphics backend | **Done in M13** (2026-09-19) | **Vulkan (ADR-0033)**, built to ADR-0037/0038 in [vulkan.md](docs/design/vulkan.md)'s ten steps. Windows x64 is a runtime claim on the tested machine, with its limits recorded there. Linux left M13 by ADR-0039 and is M18's. Device recovery stays an open `rhi.md` question. |
 | Shader cross-compiler vs. hand-written variants | **Decided in M13** (ADR-0038, 2026-09-14) | Hand-written GLSL variants for the two existing shader pairs, compiled to SPIR-V with pinned SDK tools. ADR-0015's future material/mod shader constraint remains. |
 | Job system / threading model | **Done in M12** (was dated post-M5) | **Decided by ADR-0036 and implemented, 2026-09-14** — explicit `core.Jobs`, fork-join over data-determined chunks, systems kept in order, nothing in the ABI. What it deliberately left out — parallel system scheduling, task graphs, a render thread — has no date: each waits on a measured trigger in `docs/design/jobs-and-threading.md` §9. |
 | Bit-exact determinism for a subset | **M16**, and only if lockstep | ADR-0013 keeps this open without paying for it now; an authoritative server does not need it. |
