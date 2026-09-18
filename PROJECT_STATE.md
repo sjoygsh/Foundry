@@ -1,12 +1,34 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-18
-**Current handoff: M0 through M12 are complete and tagged. M13 Steps 1 to 6 of 10 are
+**Current handoff: M0 through M12 are complete and tagged. M13 Steps 1 to 7 of 10 are
 complete: the Windows x64 Vulkan target is qualified and its tools pinned, native window payloads
 and the safe system-library open are implemented, the native Windows test suite passes, and a
 validated Vulkan device owns resources, checked shader modules, persistent bindings and graphics
-pipelines, and draws the sprite contract correctly offscreen. Next: Step 7, presentation. M14
+pipelines, draws the sprite contract correctly offscreen, and presents to a real window through a
+FIFO swapchain with resize and failed-frame closure. Next: Step 8, the samples on Vulkan. M14
 through M17 remain unstarted.**
+
+**Completed M13 Step 7, 2026-09-16:** presentation, resize and failed frames. The Vulkan backend now
+implements the whole RHI interface. Frames wait through their slot's previous marker, reserve their
+own before acquiring, and close with a marker submission. A headless device draws into an offscreen
+target behind a stable handle; a window's device negotiates BGRA8 or RGBA8 sRGB, keeps per-slot
+acquire semaphores and per-image present-wait semaphores, and presents FIFO. The first submission to
+use a new image consumes its acquire signal, only a submitted draw earns a present, and a frame that
+drew nothing holds its image for the next. Rebuilds happen between frames after the timeline and
+then the queue are idle; a zero extent suspends; timeout, out-of-date and suboptimal follow §8's
+table; surface and device loss are sticky; a failed marker latches device failure. `-Drhi=vulkan`
+now builds the ordinary test and check graph plus `vulkan-window-test`; installing and running the
+samples refuses until Step 8. **Found:** the headless surface counted as a caller-owned resource and
+failed seven leak tests until excluded. On the Arc A750 with synchronization validation required:
+`vulkan-test` **185/185**; in the desktop session `vulkan-window-test` **10/10**, including a
+captured window reading the expected sRGB clear colour, five resizes, suspension, three
+minimise/restore cycles, held images, and injected acquisition, submission, presentation, creation
+and marker failures; and the whole `zig build test -Drhi=vulkan` **1,423 of 1,433**, ten expected
+skips. Presenting undrawn frames failed three window tests and validation. 42 Vulkan backend tests
+and 10 window tests run in their own steps. The Mac bar, run on 2026-09-18 after the Xcode licence,
+passed with Step 6's figures, as did both targets' null and Vulkan cross-checks. Resolution:
+`vulkan.md`, Step 7.
 
 **Completed M13 Step 6, 2026-09-16:** drawing correctly offscreen. The Vulkan backend's render
 pass opens dynamic rendering with attachment transitions both ways, maps load, store and clear
@@ -3254,13 +3276,13 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M13 Step 7.** Steps 1 to 6 are complete, with the native Windows test repair the owner
-directed before Step 3 (`docs/design/vulkan.md` and their Resolutions). Step 7 presents: frame,
-image and submission identities, FIFO acquisition and presentation, per-image present semaphores,
-held undrawn images, resize and sticky errors, then `interface.check` and the full `-Drhi=vulkan`
-graph. Its real window belongs on the target's desktop session, so check with the owner before a
-windowed run. Native builds on that target use at most two jobs at
-below-normal priority, because it is the owner's gaming PC. Linux x64 still needs the owner's
+**Next: M13 Step 8.** Steps 1 to 7 are complete, with the native Windows test repair the owner
+directed before Step 3 (`docs/design/vulkan.md` and their Resolutions). Step 8 runs both samples
+on Vulkan: their surface choice and shader variants, the application-supplied window icon, real
+sprites, text, tilemaps and UI, room play, sandbox scripts and texture reload with frames in
+flight, outside the source tree with no runtime SDK or compiler. Windowed runs on the target go
+through a scheduled task in the owner's desktop session. Native builds on that target use at most
+two jobs at below-normal priority, because it is the owner's gaming PC. Linux x64 still needs the owner's
 second-drive installation before Step 9. M14 waits.
 
 **M0 through M12 are complete and tagged, and everything is pushed.** Phase 3 is closed;

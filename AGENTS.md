@@ -102,16 +102,16 @@ ten Metal-only. **M12 is complete (2026-09-14).** Parallel work goes through an 
 never allocates or calls the RHI, and every call site that splits work is tested under `serial`,
 `reversed` and a real pool. `FOUNDRY_SANDBOX_WORKERS` and `FOUNDRY_ROOM_WORKERS` set a sample's
 pool, `0` for none. M12 closed at **1,370 declared / 1,360 headless tests**.
-**M13 Steps 1 to 6 are complete (2026-09-16).** ADR-0037/0038 are accepted; read
+**M13 Steps 1 to 7 are complete (2026-09-16).** ADR-0037/0038 are accepted; read
 `docs/design/vulkan.md`. A Windows x64 Vulkan target is qualified and reached over SSH, Linux
 x64 has a recorded route, the Vulkan tools are pinned in §3 below, `platform` hands out native
 window payloads and opens system libraries safely, and `rhi/backends/vulkan/` creates a validated
 device, tracks submissions, allocates/copies/retires resources, and creates checked SPIR-V shader
-modules, persistent descriptor sets, layouts and graphics pipelines, and draws offscreen, under
-validation. The four
+modules, persistent descriptor sets, layouts and graphics pipelines, draws offscreen, and presents
+to a real window through a FIFO swapchain, under validation. The four
 GLSL stages pass `glslangValidator`, `spirv-val` and Foundry's layout agreement tool before their
-bytes can enter a target. The backend is incomplete until Step 7, so `-Drhi=vulkan` builds only
-its own tests (§3).
+bytes can enter a target. The backend implements the whole RHI interface, so `-Drhi=vulkan` builds
+the ordinary test and check graph; the samples are not installed or run under it until Step 8 (§3).
 The native Windows `zig build test` passes on the target, and native builds there use at most
 two jobs. Mac cross-compilation never substitutes for runtime
 proof. M14–M17 remain unstarted.
@@ -221,18 +221,23 @@ bar, because it needs a desktop session. On a Windows target reached over SSH, s
 the logged-in session — a scheduled task with an interactive logon — never an RDP session.
 
 **The Vulkan backend's tests** need a Vulkan driver and the SDK's validation layer, so they run on
-the target and not in the bar. Until M13 Step 7, `-Drhi=vulkan` defines only these two steps; every
-other step refuses:
+the target and not in the bar. `-Drhi=vulkan` builds the ordinary test and check graph against the
+Vulkan backend, plus three steps of its own; installing or running the samples refuses until M13
+Step 8:
 
 ```sh
-zig build vulkan-test  -Drhi=vulkan                               # on Windows or Linux
-zig build vulkan-check -Drhi=vulkan -Dtarget=x86_64-windows-gnu   # any host; compile only
+zig build vulkan-test        -Drhi=vulkan                             # on Windows or Linux
+zig build vulkan-window-test -Drhi=vulkan                             # in a desktop session
+zig build test               -Drhi=vulkan                             # the whole graph, on the target
+zig build vulkan-check       -Drhi=vulkan -Dtarget=x86_64-windows-gnu # any host; compile only
+zig build check              -Drhi=vulkan -Dtarget=x86_64-linux-gnu   # any host; compile only
 ```
 
-The tests require validation and fail, never skip, without it. Set
+The backend tests require validation and fail, never skip, without it. Set
 `VK_LOADER_LAYERS_DISABLE=~implicit~` for them as for any qualifying run. Their surface test opens
 an SDL window; started over SSH on Windows, that window stays in the SSH session and never reaches
-the desktop.
+the desktop. `vulkan-window-test` presents to real windows, minimises and restores them, so on a
+Windows target start it like `native-window-test`: a scheduled task with an interactive logon.
 
 ### Staging a release
 

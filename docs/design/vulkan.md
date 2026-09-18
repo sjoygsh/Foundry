@@ -1,7 +1,7 @@
 # Design: M13 — Vulkan, and the second test of the RHI
 
 **Status:** Design accepted 2026-09-14 (ADR-0037/0038), its windowed floor revised before
-acceptance; **6 of 10 steps complete**. Next: Step 7.
+acceptance; **7 of 10 steps complete**. Next: Step 8.
 **Date:** 2026-09-14
 **Baseline:** `f14caac` / `m12`; M0–M12 complete, 1,370 declared / 1,360 headless tests.
 **Decisions:** ADR-0033 selects Vulkan; accepted [ADR-0037](../adr/0037-vulkan-execution-and-presentation.md)
@@ -369,7 +369,7 @@ M13 ends only when its rules survived or their necessary changes were recorded b
 
 ## 11. Implementation order — ten bounded steps
 
-Steps 1 to 6 are complete; every later step is **not started**. Stop after each with its
+Steps 1 to 7 are complete; every later step is **not started**. Stop after each with its
 Resolution, PROJECT_STATE update, verification and commit; no automatic chaining. Before Step 3
 the owner directed a repair of the native Windows test suite; its Resolution follows Step 2's.
 
@@ -886,3 +886,80 @@ Mac bar, run on 2026-09-18 once the Xcode licence let the macOS SDK link, passed
 builds changed.
 
 **Not yet.** Frames, the swapchain, presentation, resize and `interface.check` are Step 7.
+
+## Resolution — 2026-09-16, Step 7: presentation, resize and failed frames
+
+**What landed.** The frame ring is the other backends': `beginFrame` waits through the marker its
+slot's previous frame left, reserves room for its own marker before anything is acquired, and only
+then opens a frame and spends an index; `endFrame` leaves a marker, an empty submission signalling
+the next timeline value. A headless device draws into an offscreen target behind a stable surface
+handle, which `resizeSurface` rebuilds behind the same handle while the old target is retired after
+the frames that drew into it. A window's device negotiates BGRA8 then RGBA8 sRGB in the sRGB colour
+space for its lifetime, or refuses the surface as unsupported; creates one acquire semaphore per
+frame slot; and gives its stable surface handle the view of whichever swapchain image the frame
+holds. The swapchain is FIFO with one image more than the surface's minimum, the surface's current
+transform, opaque composition where offered, and transfer-source usage where the surface allows it.
+
+Acquisition waits at most 100 ms and maps §8's table: timeout and not-ready are routine
+unavailability; out-of-date queues a rebuild and is unavailability; suboptimal keeps the acquired
+image and its signalled semaphore, finishes the frame and rebuilds after it; surface loss and device
+loss are sticky. The first submission to use the frame's new image waits on its acquire semaphore,
+and only a drawing submission that reached the queue marks the image drawn — a discarded or refused
+one never does. `endFrame`'s marker consumes whatever acquire signal is left. If the image was
+drawn, the marker also signals that image's present-wait semaphore and the image is presented;
+out-of-date or suboptimal presentation closes the frame with its marker preserved and queues a
+rebuild, out-of-date reporting unavailability. If it was not drawn, the image is held, unpresented,
+and taken by the next frame without acquiring; repeated empty frames reuse it, and a rebuild or
+teardown discards it with its swapchain. A marker that cannot be queued in a window's frame latches
+the device as failed, since synchronization that frame promised may never be signalled.
+
+A rebuild runs only between frames, after every submission has finished and then the queue is idle —
+the documented practical boundary, not proof that presentation finished, which unextended Vulkan
+cannot give. A zero surface extent keeps the current swapchain and reports unavailability, which is
+how a minimised window's frames are skipped. Creation passes the old swapchain, which Vulkan retires
+whether or not creation succeeds, so a failed creation leaves none: out of memory is reported with
+the rebuild still pending, and any other failure is sticky surface loss. `resizeSurface` treats a
+zero extent as suspension; any other extent marks a rebuild the next frame performs, so a drag's
+resizes coalesce into one rebuild and a fatal rebuild error is returned by the next render call
+rather than only logged. Teardown releases image views, present-wait semaphores, the swapchain and
+the slots' acquire semaphores before the device; swapchain images are never destroyed as textures.
+
+`interface.check` now holds for Vulkan and `rhi/root.zig` exempts nothing. `-Drhi=vulkan` builds the
+ordinary graph — `test`, `check` and every test step — and adds `vulkan-test`, `vulkan-check` and
+the desktop-session `vulkan-window-test`. Installing or running the samples still refuses with the
+reason, because they ask for no surface outside macOS until Step 8.
+
+**Found.** Step 7's first native run failed seven earlier leak tests: the headless device's own
+surface texture counted as a caller-owned live resource. The count of what a caller owns now
+excludes it; retirement capacity is unaffected, since `reserve` counts existing entries too.
+
+**Evidence.** On the Windows target (Intel Arc A750, validation and synchronization validation
+required, implicit layers disabled), at two jobs and below-normal priority: `zig build vulkan-test
+-Drhi=vulkan` passed **185/185**, including six headless frame-ring tests and the real-window test
+now building its first swapchain over SSH. In the owner's desktop session, started by a scheduled
+task with an interactive logon, `zig build vulkan-window-test -Drhi=vulkan` passed **10/10** with no
+validation error. A real window presented one clear colour for more than four seconds; its 480×320
+client area, captured from the screen and separately through `PrintWindow`, read **244, 89, 218** at
+its centre and corner — linear (0.9, 0.1, 0.7) encoded to sRGB. Five resizes, a zero-extent
+suspension and three minimise/restore cycles rebuilt the swapchain between frames, with minimised
+frames skipped as unavailability. Empty frames held one image, a discarded draw left it held, a
+barrier-only submission consumed the acquire signal without earning a present, and the next drawing
+frame presented the held image. Injected acquisition timeout, out-of-date, out of memory and
+suboptimal; presentation suboptimal, out-of-date and out of memory; a refused drawing submission; a
+failed swapchain creation; surface and device loss at acquisition, presentation and creation; a
+failed marker; and teardown with a frame open or an image held each kept frame identity, markers and
+ownership as §8 states, with teardown leak-checked. The whole test graph with Vulkan selected, `zig
+build test -Drhi=vulkan`, succeeded at every step: **1,423 of 1,433** tests passed and ten skipped —
+the five POSIX-only tests, and five that reach every step of an upload only through the validation
+backend's CPU-side buffers. With every frame presenting whether or not anything drew into its image,
+three window tests failed — the held image, the refused draw and teardown while holding — and
+validation reported an undrawn image presented in the undefined layout; the file was restored byte
+for byte and the suite passed again. The frame and presentation code compiled for
+`x86_64-windows-gnu` and `x86_64-linux-gnu` under `zig build check -Drhi=vulkan`. Linux ran nothing
+natively. The Mac bar, run on 2026-09-18 once the Xcode licence let the macOS SDK link, passed with
+1,390 of 1,391 headless tests and one Windows-only test skipped — Step 6's figures, since the macOS
+graph gained no tests — and the headless `zig build test -Dplatform=null -Drhi=null` passed 1,378 of
+1,379.
+
+**Not yet.** The samples' Vulkan surface and shaders, the window icon and frames in flight under
+real content are Step 8; Linux X11 and Wayland, pacing and RenderDoc captures are Step 9.

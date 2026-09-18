@@ -39,8 +39,7 @@ pub const Backend = enum {
     null,
     /// Metal, via the Objective-C shim (ADR-0012). macOS only.
     metal,
-    /// Vulkan, for Windows and Linux. Being brought up: until M13 Step 7 completes the interface,
-    /// only `zig build vulkan-test -Drhi=vulkan` selects it (`docs/design/vulkan.md` §11).
+    /// Vulkan, for Windows and Linux (`docs/design/vulkan.md`). Selected with `-Drhi=vulkan`.
     vulkan,
 };
 
@@ -63,9 +62,7 @@ const selected = switch (backend) {
 };
 
 comptime {
-    // Vulkan is exempt only while M13 brings it up. Its bring-up graph builds this module's tests
-    // and nothing that uses the interface; Step 7 completes the backend and removes the exemption.
-    if (backend != .vulkan) interface.check(selected, @tagName(backend));
+    interface.check(selected, @tagName(backend));
     // The validation backend must satisfy the interface too, always. It is the reference
     // implementation, and an interface change that only suits the graphics API of the day
     // fails here rather than at M1.

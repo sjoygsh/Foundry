@@ -173,8 +173,9 @@ const RhiBackend = enum {
     /// Metal, through the Objective-C shim (ADR-0012). macOS only, and the only backend
     /// that puts pixels on a screen.
     metal,
-    /// Vulkan, for Windows and Linux (ADR-0037, ADR-0038). Being brought up: until M13 Step 7
-    /// it builds only its own tests (`vulkanBringUp`).
+    /// Vulkan, for Windows and Linux (ADR-0037, ADR-0038). Every test and check builds against
+    /// it; the samples are not installed or run under it until M13 Step 8 gives them a Vulkan
+    /// surface (`vulkanGraph`).
     vulkan,
 };
 
@@ -313,10 +314,10 @@ pub fn build(b: *std.Build) void {
         }
     }
 
-    // Vulkan's own graph while M13 brings it up, and nothing else: its backend does not yet
-    // implement the interface, so no sample, tool or ordinary test step can build against it.
+    // Vulkan's headers, checked shaders and backend test steps. The ordinary graph follows: the
+    // backend implements the whole interface, so every test and check builds against it.
     if (rhi_backend == .vulkan) {
-        vulkanBringUp(
+        vulkanGraph(
             b,
             target,
             platform_backend,
@@ -324,7 +325,6 @@ pub fn build(b: *std.Build) void {
             platform_module,
             modules.get("render2d").?,
         );
-        return;
     }
 
     // The renderer's own shader, compiled by the build and embedded in the module
@@ -633,6 +633,17 @@ pub fn build(b: *std.Build) void {
         .header,
         "foundry.h",
     ).step);
+
+    // The samples still ask for no surface except on macOS, so under Vulkan they would draw into
+    // an offscreen target behind a blank window. Step 8 gives them a Vulkan surface; until then
+    // installing them, and so running them, refuses rather than producing that.
+    if (rhi_backend == .vulkan) {
+        b.getInstallStep().dependOn(&b.addFail(
+            "-Drhi=vulkan does not install or run the samples until M13 Step 8 gives them a Vulkan " ++
+                "surface; `test`, `check`, `vulkan-test` and `vulkan-window-test` build against it " ++
+                "(docs/design/vulkan.md §11)",
+        ).step);
+    }
 
     const run_sandbox = b.addRunArtifact(sandbox);
     run_sandbox.step.dependOn(b.getInstallStep());
@@ -963,16 +974,29 @@ pub fn build(b: *std.Build) void {
         b.step("native-window-test", "Open real native windows through SDL3 (needs a desktop session)")
             .dependOn(&b.addRunArtifact(native_window_tests).step);
     }
+
+    // Presentation to real windows through Vulkan (`vulkan.md` §8, M13 Step 7), apart from `test`
+    // for the same reason: a swapchain presents only in a desktop session.
+    if (rhi_backend == .vulkan) {
+        const vulkan_window_mod = b.createModule(.{
+            .root_source_file = b.path("engine/tests/vulkan_window.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        vulkan_window_mod.addImport("platform", platform_module);
+        vulkan_window_mod.addImport("rhi", rhi_module);
+        const vulkan_window_tests = b.addTest(.{ .name = "vulkan-window", .root_module = vulkan_window_mod });
+        check_step.dependOn(&vulkan_window_tests.step);
+        b.step("vulkan-window-test", "Present to real windows through Vulkan, validation required (needs a desktop session)")
+            .dependOn(&b.addRunArtifact(vulkan_window_tests).step);
+    }
 }
 
-/// The graph `-Drhi=vulkan` builds while M13 brings the backend up (`docs/design/vulkan.md` §11).
-///
-/// Two steps work: `vulkan-test` runs the backend's tests against this machine's driver with
-/// validation required, and `vulkan-check` compiles them for a target this host cannot run.
-/// Everything else refuses with the reason, because a sample built against a backend that does
-/// not implement the RHI would not be a working configuration. Step 7 completes the interface and
-/// replaces this with the ordinary graph.
-fn vulkanBringUp(
+/// What `-Drhi=vulkan` adds to the ordinary graph (`docs/design/vulkan.md` §3): the headers, the
+/// checked SPIR-V the backend and renderer embed, and two steps of the backend's own. `vulkan-test`
+/// runs the backend's tests against this machine's driver with validation required, and
+/// `vulkan-check` compiles them for a target this host cannot run.
+fn vulkanGraph(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     platform_backend: PlatformBackend,
@@ -991,14 +1015,6 @@ fn vulkanBringUp(
     if (platform_backend != .sdl3) {
         std.debug.panic("-Drhi=vulkan needs -Dplatform=sdl3: its tests create a surface for a real window", .{});
     }
-
-    const refusal = b.addFail(
-        "-Drhi=vulkan builds only `zig build vulkan-test` and `vulkan-check` until M13 Step 7 " ++
-            "completes the backend (docs/design/vulkan.md §11)",
-    );
-    b.getInstallStep().dependOn(&refusal.step);
-    b.step("test", "Unavailable with -Drhi=vulkan until M13 Step 7").dependOn(&refusal.step);
-    b.step("check", "Unavailable with -Drhi=vulkan until M13 Step 7").dependOn(&refusal.step);
 
     // **The only place the Vulkan headers enter the build graph**, attached to `rhi` and to
     // nothing else (ADR-0038). Lazy, so no other configuration ever fetches them.
@@ -1108,7 +1124,7 @@ fn distComplaint(
         wrong.append(b.allocator, "the platform backend is null, and a release opens a window") catch @panic("OOM");
     }
     if (rhi_backend != .metal) {
-        wrong.append(b.allocator, "the graphics backend is null, and a release draws") catch @panic("OOM");
+        wrong.append(b.allocator, b.fmt("the graphics backend is {t}, and a release draws with Metal", .{rhi_backend})) catch @panic("OOM");
     }
     if (wrong.items.len == 0) return null;
 

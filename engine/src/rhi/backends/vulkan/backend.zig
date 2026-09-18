@@ -1,15 +1,17 @@
-//! The Vulkan backend (ADR-0033, ADR-0037, ADR-0038), being brought up in M13.
+//! The Vulkan backend (ADR-0033, ADR-0037, ADR-0038), built in M13.
 //!
-//! **What exists through Step 5:** the system loader and dispatch tables; a validated device and
-//! submission timeline; resources, copies and completion-backed retirement; and SPIR-V shader
-//! modules, persistent descriptor sets, layouts and monolithic graphics pipelines. Pass commands
-//! and presentation arrive in Steps 6–7. Until Step 7 completes `interface.check`, only
-//! `zig build vulkan-test -Drhi=vulkan` builds this file (`docs/design/vulkan.md` §11).
+//! **What exists through Step 7:** the system loader and dispatch tables; a validated device and
+//! submission timeline; resources, copies and completion-backed retirement; SPIR-V shader modules,
+//! persistent descriptor sets, layouts and monolithic graphics pipelines; dynamic-rendering passes;
+//! and the frame ring, with an offscreen target on a headless device and a FIFO swapchain on a
+//! window's (§8). The whole of `interface.check` holds, so every `-Drhi=vulkan` test builds against
+//! this file; the samples are wired to it in Step 8 (`docs/design/vulkan.md` §11).
 //!
 //! **Ownership.** A `Device` owns, in creation order: the loader, the instance, the validation
-//! messenger, the surface, the logical device, the timeline semaphore and the command pool.
-//! `teardown` releases whichever of those exist, newest first, and closes the loader last, so a
-//! failed initialization and an ordinary `deinit` leave through the same code.
+//! messenger, the surface, the logical device, the timeline semaphore, the command pool, and on a
+//! window's device the slots' acquire semaphores and the swapchain with its views and present-wait
+//! semaphores. `teardown` releases whichever of those exist, newest first, and closes the loader
+//! last, so a failed initialization and an ordinary `deinit` leave through the same code.
 //!
 //! **Completion.** Every submission signals the device's one timeline semaphore with its own
 //! serial, the strictly increasing number `lifetime.Timeline` gives it. Waiting for serial S is
@@ -17,7 +19,7 @@
 //! covers everything before S as well. A command buffer is begun again only once a wait or a poll
 //! has seen its submission finish, or when it never reached the queue.
 //!
-//! Design: `docs/design/vulkan.md` §§4–7.
+//! Design: `docs/design/vulkan.md` §§4–8.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -70,6 +72,8 @@ pub const Stage = enum {
     create_timeline,
     create_command_pool,
     create_empty_set_layout,
+    /// The first swapchain of a device created for a window.
+    create_swapchain,
 };
 
 /// How a device is brought up. `init` takes the defaults.
@@ -87,6 +91,14 @@ pub const Options = struct {
 /// Results a test can make the next call return, each consumed by the call it names.
 pub const Faults = struct {
     submit: ?c.VkResult = null,
+    /// The next `beginFrame` fails with this before acquiring anything, as the null backend's does.
+    begin_frame: ?interface.FrameError = null,
+    /// The next `endFrame` returns this after leaving its marker, as the null backend's does.
+    end_frame: ?interface.FrameError = null,
+    /// The next frame-closing marker submission gets this result instead of its Vulkan call.
+    marker: ?c.VkResult = null,
+    /// The next presentation call named reports this result (§8's table).
+    presentation: ?PresentationFault = null,
     /// The next resource creation that reaches `stage` gets `result` instead of its Vulkan call.
     resource: ?ResourceFault = null,
 };
@@ -110,6 +122,44 @@ pub const ResourceStage = enum {
 };
 
 pub const ResourceFault = struct { stage: ResourceStage, result: c.VkResult };
+
+/// The presentation calls a test can make fail.
+pub const PresentationCall = enum { create_swapchain, acquire, present };
+
+/// The driver results §8 gives an outcome, named so a windowed test needs no Vulkan header. An
+/// injected acquisition that would have acquired nothing makes no call; an injected suboptimal
+/// acquisition, and every injected presentation, makes the real call and reports this instead, so
+/// that what Vulkan consumed is what a real result of that kind would have consumed.
+pub const PresentationResult = enum {
+    suboptimal,
+    out_of_date,
+    timeout,
+    surface_lost,
+    device_lost,
+    out_of_memory,
+
+    fn native(self: PresentationResult) c.VkResult {
+        return switch (self) {
+            .suboptimal => c.VK_SUBOPTIMAL_KHR,
+            .out_of_date => c.VK_ERROR_OUT_OF_DATE_KHR,
+            .timeout => c.VK_TIMEOUT,
+            .surface_lost => c.VK_ERROR_SURFACE_LOST_KHR,
+            .device_lost => c.VK_ERROR_DEVICE_LOST,
+            .out_of_memory => c.VK_ERROR_OUT_OF_DEVICE_MEMORY,
+        };
+    }
+};
+
+pub const PresentationFault = struct { call: PresentationCall, result: PresentationResult };
+
+/// One image of the current swapchain. Its present-wait semaphore belongs to the image, never to
+/// a frame slot: acquiring the index again is the only evidence Vulkan gives that the presentation
+/// which waited on it consumed it (§8).
+const SwapchainImage = struct {
+    image: c.VkImage,
+    view: c.VkImageView = null,
+    present_wait: c.VkSemaphore = null,
+};
 
 /// What the validation messenger has reported. Counted atomically, because a layer may call
 /// back from a thread of its own.
@@ -151,6 +201,10 @@ const BufferState = struct {
 
 const TextureState = struct {
     desc: resource.TextureDesc,
+    /// The device's surface handle, which the frame loop owns and a caller cannot destroy.
+    is_surface: bool = false,
+    /// Backed by a swapchain image, which alone may enter the present layout.
+    swapchain: bool = false,
     image: c.VkImage,
     view: c.VkImageView,
     allocation: c.VkDeviceMemory,
@@ -333,11 +387,53 @@ pub const Device = struct {
     tearing_down: bool = false,
     retired: lifetime.Retirement(Retired) = .{},
 
+    /// The stable handle every frame draws into: an offscreen target on a headless device.
+    surface_texture: resource.TextureHandle = .none,
+    surface_format: format.TextureFormat = .bgra8_unorm_srgb,
+    frame_index: u64 = 0,
+    frame_slot: u32 = 0,
+    in_frame: bool = false,
+    /// The marker each slot's previous frame left, or 0: what reusing the slot waits through.
+    slot_markers: [max_frames_in_flight]u64 = @splat(0),
+    /// Sticky, like `lost`: no automatic surface reconstruction (§8).
+    surface_lost: bool = false,
+
+    // Presentation, on a device created for a window (§8). Unused offscreen.
+    swapchain_fns: dispatch.Swapchain = undefined,
+    swapchain: c.VkSwapchainKHR = null,
+    swapchain_images: []SwapchainImage = &.{},
+    /// The color space negotiated with `surface_format`, kept for the device's lifetime.
+    color_space: c.VkColorSpaceKHR = c.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+    /// The image usage every swapchain is built with, fixed when the first one is.
+    swapchain_usage: c.VkImageUsageFlags = 0,
+    /// One per frame slot, handed to the acquisition that slot makes and consumed by the first
+    /// submission of that frame to use the image, or else by the frame's marker.
+    acquire_semaphores: [max_frames_in_flight]c.VkSemaphore = @splat(null),
+    /// The image the open frame draws into.
+    acquired: ?u32 = null,
+    /// The open frame's acquire semaphore is signalled, or will be, and nothing has consumed it.
+    acquire_pending: bool = false,
+    /// A submission of the open frame that reached the queue drew into its image.
+    frame_drew: bool = false,
+    /// An image a frame acquired and drew nothing into, kept unpresented for the next frame (§8).
+    held: ?u32 = null,
+    /// The swapchain is built again before the next acquisition.
+    rebuild_pending: bool = false,
+    /// A zero extent was asked for: no frame opens until a nonzero one is.
+    suspended: bool = false,
+    /// The extent the host last asked for, which decides the swapchain's where the surface lets it.
+    requested_extent: resource.Extent2D = .{ .width = 0, .height = 0 },
+
     pub fn init(gpa: Allocator, desc: interface.DeviceDesc) interface.InitError!*Device {
         return initWith(gpa, desc, .{});
     }
 
     pub fn initWith(gpa: Allocator, desc: interface.DeviceDesc, options: Options) interface.InitError!*Device {
+        assert.debugOnly(
+            desc.frames_in_flight >= 1 and desc.frames_in_flight <= max_frames_in_flight,
+            "frames_in_flight must be 1..{d}, got {d}",
+            .{ max_frames_in_flight, desc.frames_in_flight },
+        );
         const wsi = try surfaceExtension(desc.surface);
 
         const self = try gpa.create(Device);
@@ -352,6 +448,7 @@ pub const Device = struct {
         try self.createDevice(wsi != null);
         try self.createQueueObjects();
         try self.createEmptySetLayout();
+        if (wsi == null) try self.createOffscreenSurface() else try self.createPresentation();
 
         log.info("rhi backend: vulkan on '{s}' ({t}, Vulkan {d}.{d}), queue family {d}, {s}{s}", .{
             self.adapter.name(),
@@ -375,8 +472,7 @@ pub const Device = struct {
             .unified_memory = self.unified_override orelse memory.unified(self.memory_types[0..self.memory_type_count]),
             // SPIR-V is compiled at build time; there is no runtime compiler (ADR-0038).
             .runtime_shader_compilation = false,
-            // Negotiated with a swapchain in Step 7. Offscreen, the format a surface would prefer.
-            .surface_format = .bgra8_unorm_srgb,
+            .surface_format = self.surface_format,
             .uniform_buffer_offset_alignment = @intCast(limits.minUniformBufferOffsetAlignment),
             .storage_buffer_offset_alignment = @intCast(limits.minStorageBufferOffsetAlignment),
             .max_uniform_buffer_binding_size = limits.maxUniformBufferRange,
@@ -450,7 +546,10 @@ pub const Device = struct {
     /// Returns every finished submission's command buffer to the free list, then releases every
     /// retired backing no unfinished recording could still use.
     fn collect(self: *Device) void {
-        while (self.timeline.popCompleted()) |submission| self.free_native.appendAssumeCapacity(submission.token);
+        while (self.timeline.popCompleted()) |submission| {
+            // A frame's marker submits no command buffer.
+            if (submission.token != null) self.free_native.appendAssumeCapacity(submission.token);
+        }
         const through = self.timeline.resolvedThrough();
         while (self.retired.next(through)) |backing| backing.release(self);
     }
@@ -474,8 +573,11 @@ pub const Device = struct {
 
     // -- resources -----------------------------------------------------------------------
 
+    /// Resources the caller owns. The surface texture is the device's and is never destroyed through
+    /// its handle, so it is not one of them.
     fn liveCount(self: *const Device) usize {
-        return @as(usize, self.buffers.count()) + self.textures.count() + self.samplers.count() +
+        const surface = @intFromBool(self.textures.getConst(self.surface_texture) != null);
+        return @as(usize, self.buffers.count()) + self.textures.count() - surface + self.samplers.count() +
             self.shaders.count() + self.bind_group_layouts.count() + self.bind_groups.count() +
             self.pipeline_layouts.count() + self.pipelines.count();
     }
@@ -743,6 +845,8 @@ pub const Device = struct {
 
     pub fn destroyTexture(self: *Device, handle: resource.TextureHandle) void {
         const state = self.textures.getConst(handle) orelse return;
+        // The frame loop owns the surface, not whoever holds its handle.
+        if (state.is_surface) return;
         const backing: Retired = .{ .texture = .{ .image = state.image, .view = state.view, .allocation = state.allocation } };
         _ = self.textures.remove(handle);
         self.retire(backing);
@@ -1323,6 +1427,493 @@ pub const Device = struct {
         self.retire(.{ .render_pipeline = retired });
     }
 
+    // -- frames ---------------------------------------------------------------------------
+
+    fn surfaceDesc(self: *const Device, size: resource.Extent2D) resource.TextureDesc {
+        return .{
+            .label = "surface",
+            .size = size,
+            .format = self.surface_format,
+            .usage = .{ .render_target = true, .sampled = true, .copy_src = true, .copy_dst = true },
+        };
+    }
+
+    fn createOffscreenSurface(self: *Device) interface.InitError!void {
+        self.surface_texture = self.createTexture(self.surfaceDesc(self.desc.surface_size)) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            else => error.DeviceCreationFailed,
+        };
+        self.textures.get(self.surface_texture).?.is_surface = true;
+    }
+
+    /// Opens a frame on the ring's next slot, after waiting through the marker that slot's previous
+    /// frame left: everything submitted before it, uploads outside frames included, has finished
+    /// (`rhi.md` §7). A window's frame then rebuilds a swapchain that needs it and takes the image
+    /// an earlier frame held, or acquires one (§8). A failure opens no frame and spends no index.
+    pub fn beginFrame(self: *Device) interface.FrameError!command.FrameContext {
+        if (self.lost) return error.DeviceLost;
+        if (self.surface_lost) return error.SurfaceLost;
+        assert.debugOnly(!self.in_frame, "beginFrame while frame {d} is still open", .{self.frame_index});
+        if (self.suspended) return error.SurfaceUnavailable;
+        const index = self.frame_index + 1;
+        const slot: u32 = @intCast((index - 1) % self.desc.frames_in_flight);
+
+        const marker = self.slot_markers[slot];
+        if (marker != 0) {
+            self.slot_markers[slot] = 0;
+            self.waitThrough(marker);
+            if (self.lost) return error.DeviceLost;
+        }
+        // Before anything is acquired, room for the marker `endFrame` must leave (§8).
+        self.timeline.reserveMarker(self.gpa) catch return error.OutOfMemory;
+        if (self.faults.begin_frame) |err| {
+            self.faults.begin_frame = null;
+            return err;
+        }
+        if (self.surface != null) try self.takeImage(slot);
+
+        self.in_frame = true;
+        self.frame_index = index;
+        self.frame_slot = slot;
+        return .{ .surface_texture = self.surface_texture, .slot = slot, .index = index };
+    }
+
+    /// Closes the frame with its marker. On every path the slot is left something to wait through:
+    /// the marker, or, when the marker could not be queued, the newest submission the frame made.
+    /// A window's frame presents its image if a submission drew into it, and holds it otherwise.
+    pub fn endFrame(self: *Device) interface.FrameError!void {
+        if (!self.in_frame) return;
+        self.in_frame = false;
+        self.slot_markers[self.frame_slot] = self.timeline.submitted;
+        if (self.surface == null) {
+            self.slot_markers[self.frame_slot] = try self.submitMarker(null, null);
+        } else {
+            try self.closeWindowFrame();
+        }
+        if (self.faults.end_frame) |err| {
+            self.faults.end_frame = null;
+            return err;
+        }
+    }
+
+    /// A submission of no commands that signals the next timeline value after everything queued
+    /// before it: what a frame leaves its slot to wait on. It can also consume an acquire semaphore
+    /// and signal a present-wait semaphore (§8).
+    fn submitMarker(self: *Device, wait: c.VkSemaphore, signal: c.VkSemaphore) interface.FrameError!u64 {
+        if (self.lost) return error.DeviceLost;
+        // Already reserved by `beginFrame` and every recording begun since; this allocates nothing.
+        self.timeline.reserveMarker(self.gpa) catch return error.OutOfMemory;
+        const serial = self.timeline.submitted + 1;
+        const waits = [_]c.VkSemaphoreSubmitInfo{.{
+            .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+            .semaphore = wait,
+            .stageMask = c.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        }};
+        const signals = [_]c.VkSemaphoreSubmitInfo{
+            .{
+                .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                .semaphore = self.timeline_semaphore,
+                .value = serial,
+                .stageMask = c.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            },
+            .{
+                .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                .semaphore = signal,
+                .stageMask = c.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            },
+        };
+        const info: c.VkSubmitInfo2 = .{
+            .sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+            .waitSemaphoreInfoCount = if (wait != null) 1 else 0,
+            .pWaitSemaphoreInfos = &waits,
+            .signalSemaphoreInfoCount = if (signal != null) 2 else 1,
+            .pSignalSemaphoreInfos = &signals,
+        };
+        const fault = self.faults.marker;
+        self.faults.marker = null;
+        const queued = fault orelse self.device_fns.vkQueueSubmit2(self.queue, 1, &info, null);
+        if (queued != c.VK_SUCCESS) {
+            if (queued == c.VK_ERROR_DEVICE_LOST) {
+                self.markLost("queueing a frame's marker", fault != null);
+                return error.DeviceLost;
+            }
+            log.warn("vulkan: queueing a frame's marker failed: {s}", .{vk.resultName(queued)});
+            return error.OutOfMemory;
+        }
+        const submitted = self.timeline.submitMarker(null);
+        assert.debugOnly(submitted == serial, "marker {d} signalled timeline value {d}", .{ submitted, serial });
+        return serial;
+    }
+
+    /// Applied between frames. A headless surface is rebuilt behind the same handle, and the target
+    /// it replaces is retired after the frames that drew into it; an empty extent changes nothing. A
+    /// window's zero extent suspends it, and any other extent is applied by the next frame to open.
+    pub fn resizeSurface(self: *Device, size: resource.Extent2D) interface.FrameError!void {
+        if (self.lost) return error.DeviceLost;
+        if (self.surface_lost) return error.SurfaceLost;
+        if (self.surface == null) {
+            if (size.isEmpty()) return;
+            return self.resizeOffscreen(size);
+        }
+        self.suspended = size.isEmpty();
+        if (self.suspended) return;
+        self.requested_extent = size;
+        const built = self.textures.getConst(self.surface_texture).?.desc.size;
+        if (self.swapchain == null or !built.eql(size)) self.rebuild_pending = true;
+    }
+
+    fn resizeOffscreen(self: *Device, size: resource.Extent2D) interface.FrameError!void {
+        const current = self.textures.getConst(self.surface_texture) orelse return;
+        if (current.desc.size.eql(size)) return;
+        const replacement = self.createTexture(self.surfaceDesc(size)) catch return error.OutOfMemory;
+        const fresh = self.textures.getConst(replacement).?.*;
+        _ = self.textures.remove(replacement);
+        const surface = self.textures.get(self.surface_texture).?;
+        const old: Retired = .{ .texture = .{ .image = surface.image, .view = surface.view, .allocation = surface.allocation } };
+        surface.image = fresh.image;
+        surface.view = fresh.view;
+        surface.allocation = fresh.allocation;
+        surface.desc.size = size;
+        surface.last_write = 0;
+        self.retire(old);
+    }
+
+    // -- presentation ----------------------------------------------------------------------
+
+    /// Negotiates the surface format, creates each slot's acquire semaphore and the stable surface
+    /// handle, and builds the first swapchain. A window with no extent yet starts with its swapchain
+    /// pending, as a minimised one does.
+    fn createPresentation(self: *Device) interface.InitError!void {
+        self.swapchain_fns = dispatch.load(dispatch.Swapchain, self.instance_fns.vkGetDeviceProcAddr, self.device) catch
+            return error.DeviceCreationFailed;
+        try self.chooseSurfaceFormat();
+
+        var caps: c.VkSurfaceCapabilitiesKHR = undefined;
+        const asked = self.surface_fns.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(self.physical, self.surface, &caps);
+        if (asked != c.VK_SUCCESS) return failed(asked, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
+        // Colour attachment is guaranteed; reading the image back is kept where the surface allows it.
+        var usage: resource.TextureUsage = .{ .render_target = true };
+        self.swapchain_usage = c.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        if (caps.supportedUsageFlags & c.VK_IMAGE_USAGE_TRANSFER_SRC_BIT != 0) {
+            usage.copy_src = true;
+            self.swapchain_usage |= c.VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        }
+
+        const semaphore_info: c.VkSemaphoreCreateInfo = .{ .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+        for (self.acquire_semaphores[0..self.desc.frames_in_flight]) |*semaphore| {
+            const created = self.device_fns.vkCreateSemaphore(self.device, &semaphore_info, null, semaphore);
+            if (created != c.VK_SUCCESS) {
+                semaphore.* = null;
+                return failed(created, "creating an acquire semaphore");
+            }
+        }
+
+        self.surface_texture = try self.textures.add(self.gpa, .{
+            .desc = .{ .label = "surface", .size = self.desc.surface_size, .format = self.surface_format, .usage = usage },
+            .is_surface = true,
+            .swapchain = true,
+            .image = null,
+            .view = null,
+            .allocation = null,
+        });
+        self.requested_extent = self.desc.surface_size;
+        self.rebuildSwapchain() catch |err| switch (err) {
+            error.SurfaceUnavailable => {},
+            error.OutOfMemory => return error.OutOfMemory,
+            error.SurfaceLost, error.DeviceLost => return error.DeviceCreationFailed,
+        };
+    }
+
+    /// The first of BGRA8 and RGBA8 sRGB the surface offers with the sRGB color space, kept for the
+    /// device's lifetime. Rendering with other colour semantics is refused, not attempted (§8).
+    fn chooseSurfaceFormat(self: *Device) interface.InitError!void {
+        const Context = struct { device: *Device };
+        const Fetch = struct {
+            fn call(context: Context, count: *u32, items: ?[*]c.VkSurfaceFormatKHR) c.VkResult {
+                const dev = context.device;
+                return dev.surface_fns.vkGetPhysicalDeviceSurfaceFormatsKHR(dev.physical, dev.surface, count, items);
+            }
+        };
+        const context: Context = .{ .device = self };
+        const offered = try enumerate(self.gpa, c.VkSurfaceFormatKHR, context, Fetch.call, "vkGetPhysicalDeviceSurfaceFormatsKHR");
+        defer self.gpa.free(offered);
+        for ([_]format.TextureFormat{ .bgra8_unorm_srgb, .rgba8_unorm_srgb }) |candidate| {
+            for (offered) |surface_format| {
+                if (surface_format.format == vkFormat(candidate) and
+                    surface_format.colorSpace == c.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+                {
+                    self.surface_format = candidate;
+                    self.color_space = surface_format.colorSpace;
+                    return;
+                }
+            }
+        }
+        log.warn("vulkan: the window's surface offers neither BGRA8 nor RGBA8 sRGB in the sRGB color space", .{});
+        return error.SurfaceUnsupported;
+    }
+
+    /// Gives the frame about to open an image: the one an earlier frame held, or a new acquisition
+    /// bounded by `acquire_timeout_ns`, after a pending rebuild.
+    fn takeImage(self: *Device, slot: u32) interface.FrameError!void {
+        if (self.rebuild_pending or self.swapchain == null) try self.rebuildSwapchain();
+        const image = if (self.held) |held| blk: {
+            // The frame that held it consumed its acquire signal; this one has none to consume.
+            self.held = null;
+            break :blk held;
+        } else blk: {
+            const fault = self.takePresentationFault(.acquire);
+            var index: u32 = 0;
+            var result = if (fault != null and fault.? != .suboptimal)
+                fault.?.native()
+            else
+                self.swapchain_fns.vkAcquireNextImageKHR(
+                    self.device,
+                    self.swapchain,
+                    acquire_timeout_ns,
+                    self.acquire_semaphores[slot],
+                    null,
+                    &index,
+                );
+            if (fault != null and fault.? == .suboptimal and result == c.VK_SUCCESS) result = c.VK_SUBOPTIMAL_KHR;
+            switch (result) {
+                c.VK_SUCCESS => {},
+                // The image is acquired and its semaphore will be signalled: finish this frame first.
+                c.VK_SUBOPTIMAL_KHR => self.rebuild_pending = true,
+                c.VK_TIMEOUT, c.VK_NOT_READY => return error.SurfaceUnavailable,
+                c.VK_ERROR_OUT_OF_DATE_KHR => {
+                    self.rebuild_pending = true;
+                    return error.SurfaceUnavailable;
+                },
+                else => return self.presentationFailure(result, "vkAcquireNextImageKHR", fault != null),
+            }
+            self.acquire_pending = true;
+            break :blk index;
+        };
+        const state = self.textures.get(self.surface_texture).?;
+        state.image = self.swapchain_images[image].image;
+        state.view = self.swapchain_images[image].view;
+        state.last_write = 0;
+        self.acquired = image;
+        self.frame_drew = false;
+    }
+
+    /// Leaves the slot its marker, which consumes whatever acquire signal no submission did. The
+    /// marker signals the image's present-wait semaphore and the image is presented if a submission
+    /// drew into it; otherwise the image is held, unpresented, for the next frame (§8).
+    fn closeWindowFrame(self: *Device) interface.FrameError!void {
+        const image = self.acquired orelse return;
+        self.acquired = null;
+        const drew = self.frame_drew;
+        self.frame_drew = false;
+        const wait = if (self.acquire_pending) self.acquire_semaphores[self.frame_slot] else null;
+        const signal = if (drew) self.swapchain_images[image].present_wait else null;
+        self.slot_markers[self.frame_slot] = self.submitMarker(wait, signal) catch |err| {
+            // Synchronization this frame promised may now never be signalled, so nothing may wait
+            // on it again: the device is latched as failed and torn down without those waits.
+            if (!self.lost) {
+                log.warn("vulkan: a frame that could not close leaves the device unusable", .{});
+                self.lost = true;
+            }
+            return err;
+        };
+        self.acquire_pending = false;
+        if (!drew) {
+            self.held = image;
+            return;
+        }
+        return self.presentImage(image);
+    }
+
+    fn presentImage(self: *Device, image: u32) interface.FrameError!void {
+        const indices = [_]u32{image};
+        const info: c.VkPresentInfoKHR = .{
+            .sType = c.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &self.swapchain_images[image].present_wait,
+            .swapchainCount = 1,
+            .pSwapchains = &self.swapchain,
+            .pImageIndices = &indices,
+        };
+        const fault = self.takePresentationFault(.present);
+        const presented = self.swapchain_fns.vkQueuePresentKHR(self.queue, &info);
+        const result = if (fault) |injected_result| injected_result.native() else presented;
+        switch (result) {
+            c.VK_SUCCESS => {},
+            c.VK_SUBOPTIMAL_KHR => self.rebuild_pending = true,
+            // Presentation was skipped, and nothing is wrong: the frame still closed with its marker.
+            c.VK_ERROR_OUT_OF_DATE_KHR => {
+                self.rebuild_pending = true;
+                return error.SurfaceUnavailable;
+            },
+            else => {
+                // An image the presentation engine did not take stays acquired; only a rebuild,
+                // releasing it with its swapchain, gives it back.
+                self.rebuild_pending = true;
+                return self.presentationFailure(result, "vkQueuePresentKHR", fault != null);
+            },
+        }
+    }
+
+    /// Builds the swapchain again, between frames, after everything submitted has finished and the
+    /// queue has gone idle. Unextended presentation signals no completion, so that idle wait is the
+    /// practical boundary Khronos documents, not proof the last presentation finished (§8). A zero
+    /// extent keeps the current swapchain and opens nothing; a failed creation leaves none, since
+    /// passing the old swapchain retires it either way, and the rebuild stays pending.
+    fn rebuildSwapchain(self: *Device) interface.FrameError!void {
+        assert.debugOnly(!self.in_frame, "a swapchain rebuilt inside frame {d}", .{self.frame_index});
+        self.rebuild_pending = true;
+        try self.waitForPresentation();
+
+        var caps: c.VkSurfaceCapabilitiesKHR = undefined;
+        const asked = self.surface_fns.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(self.physical, self.surface, &caps);
+        if (asked != c.VK_SUCCESS) return self.presentationFailure(asked, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR", false);
+        const extent = swapchainExtent(&caps, self.requested_extent);
+        if (extent.width == 0 or extent.height == 0) return error.SurfaceUnavailable;
+        if (caps.supportedUsageFlags & self.swapchain_usage != self.swapchain_usage) {
+            log.err("vulkan: the window's surface no longer supports the usage its swapchain was built with", .{});
+            self.surface_lost = true;
+            return error.SurfaceLost;
+        }
+
+        const info: c.VkSwapchainCreateInfoKHR = .{
+            .sType = c.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+            .surface = self.surface,
+            .minImageCount = swapchainImageCount(&caps),
+            .imageFormat = vkFormat(self.surface_format),
+            .imageColorSpace = self.color_space,
+            .imageExtent = extent,
+            .imageArrayLayers = 1,
+            .imageUsage = self.swapchain_usage,
+            .imageSharingMode = c.VK_SHARING_MODE_EXCLUSIVE,
+            .preTransform = caps.currentTransform,
+            .compositeAlpha = compositeAlpha(caps.supportedCompositeAlpha),
+            .presentMode = c.VK_PRESENT_MODE_FIFO_KHR,
+            .clipped = c.VK_TRUE,
+            .oldSwapchain = self.swapchain,
+        };
+        const fault = self.takePresentationFault(.create_swapchain);
+        const stage_fault = self.injected(.create_swapchain);
+        var created: c.VkSwapchainKHR = null;
+        const result = if (fault) |injected_result|
+            injected_result.native()
+        else
+            stage_fault orelse self.swapchain_fns.vkCreateSwapchainKHR(self.device, &info, null, &created);
+        self.releaseSwapchain();
+        if (result != c.VK_SUCCESS) {
+            return self.presentationFailure(result, "vkCreateSwapchainKHR", fault != null or stage_fault != null);
+        }
+        self.swapchain = created;
+        errdefer self.releaseSwapchain();
+        try self.adoptImages(extent);
+        self.rebuild_pending = false;
+    }
+
+    /// Everything submitted has finished, and then the queue is idle.
+    fn waitForPresentation(self: *Device) interface.FrameError!void {
+        self.waitIdle();
+        if (self.lost) return error.DeviceLost;
+        const idle = self.device_fns.vkQueueWaitIdle(self.queue);
+        if (idle != c.VK_SUCCESS) return self.presentationFailure(idle, "vkQueueWaitIdle", false);
+    }
+
+    /// A view and a present-wait semaphore for each of the new swapchain's images.
+    fn adoptImages(self: *Device, extent: c.VkExtent2D) interface.FrameError!void {
+        const Context = struct { device: *Device };
+        const Fetch = struct {
+            fn call(context: Context, count: *u32, items: ?[*]c.VkImage) c.VkResult {
+                const dev = context.device;
+                return dev.swapchain_fns.vkGetSwapchainImagesKHR(dev.device, dev.swapchain, count, items);
+            }
+        };
+        const context: Context = .{ .device = self };
+        // Listing images fails only for want of memory, whatever `enumerate` calls it.
+        const images = enumerate(self.gpa, c.VkImage, context, Fetch.call, "vkGetSwapchainImagesKHR") catch
+            return error.OutOfMemory;
+        defer self.gpa.free(images);
+
+        const entries = try self.gpa.alloc(SwapchainImage, images.len);
+        for (entries, images) |*entry, image| entry.* = .{ .image = image };
+        self.swapchain_images = entries;
+
+        const semaphore_info: c.VkSemaphoreCreateInfo = .{ .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+        for (entries) |*entry| {
+            const view_info: c.VkImageViewCreateInfo = .{
+                .sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                .image = entry.image,
+                .viewType = c.VK_IMAGE_VIEW_TYPE_2D,
+                .format = vkFormat(self.surface_format),
+                .subresourceRange = .{
+                    .aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+                    .levelCount = 1,
+                    .layerCount = 1,
+                },
+            };
+            const viewed = self.device_fns.vkCreateImageView(self.device, &view_info, null, &entry.view);
+            if (viewed != c.VK_SUCCESS) {
+                entry.view = null;
+                return self.presentationFailure(viewed, "creating a swapchain image view", false);
+            }
+            const created = self.device_fns.vkCreateSemaphore(self.device, &semaphore_info, null, &entry.present_wait);
+            if (created != c.VK_SUCCESS) {
+                entry.present_wait = null;
+                return self.presentationFailure(created, "creating a present-wait semaphore", false);
+            }
+        }
+        self.textures.get(self.surface_texture).?.desc.size = .{ .width = extent.width, .height = extent.height };
+    }
+
+    /// Releases the swapchain with its views, present-wait semaphores and any image a frame held.
+    /// The queue is idle, or the device is lost.
+    fn releaseSwapchain(self: *Device) void {
+        for (self.swapchain_images) |entry| {
+            if (entry.view != null) self.device_fns.vkDestroyImageView(self.device, entry.view, null);
+            if (entry.present_wait != null) self.device_fns.vkDestroySemaphore(self.device, entry.present_wait, null);
+        }
+        self.gpa.free(self.swapchain_images);
+        self.swapchain_images = &.{};
+        if (self.swapchain != null) self.swapchain_fns.vkDestroySwapchainKHR(self.device, self.swapchain, null);
+        self.swapchain = null;
+        self.held = null;
+        if (self.textures.get(self.surface_texture)) |state| {
+            state.image = null;
+            state.view = null;
+        }
+    }
+
+    fn takePresentationFault(self: *Device, call: PresentationCall) ?PresentationResult {
+        const fault = self.faults.presentation orelse return null;
+        if (fault.call != call) return null;
+        self.faults.presentation = null;
+        return fault.result;
+    }
+
+    /// The outcome §8 gives a presentation call's failure: device loss and surface loss are sticky,
+    /// running out of memory is reported as that, and a result no row names is treated as surface
+    /// loss, since nothing reconstructs a surface automatically.
+    fn presentationFailure(self: *Device, result: c.VkResult, comptime what: []const u8, was_injected: bool) interface.FrameError {
+        switch (result) {
+            c.VK_ERROR_DEVICE_LOST => {
+                self.markLost(what, was_injected);
+                return error.DeviceLost;
+            },
+            c.VK_ERROR_OUT_OF_HOST_MEMORY, c.VK_ERROR_OUT_OF_DEVICE_MEMORY => {
+                log.warn("vulkan: " ++ what ++ " failed: {s}", .{vk.resultName(result)});
+                return error.OutOfMemory;
+            },
+            else => {
+                if (!self.surface_lost) {
+                    if (was_injected) {
+                        log.warn("vulkan: surface lost at " ++ what ++ " (injected)", .{});
+                    } else {
+                        log.err("vulkan: surface lost at " ++ what ++ ": {s}", .{vk.resultName(result)});
+                    }
+                }
+                self.surface_lost = true;
+                return error.SurfaceLost;
+            },
+        }
+    }
+
     // -- recording -----------------------------------------------------------------
 
     pub fn beginCommandBuffer(self: *Device) interface.CommandError!*CommandBuffer {
@@ -1334,6 +1925,9 @@ pub const Device = struct {
         const gpa = self.gpa;
         const recording = try self.timeline.begin(gpa);
         errdefer self.timeline.discard(recording);
+        // Inside a frame, keep room for every open recording and the frame's own marker, so that
+        // closing the frame never needs memory it may not get (§8).
+        if (self.in_frame) try self.timeline.reserveMarker(gpa);
 
         const cb = if (self.free_command_buffers.pop()) |reused| reused else blk: {
             const fresh = try gpa.create(CommandBuffer);
@@ -1918,13 +2512,23 @@ pub const Device = struct {
             var buffers = self.buffers.iterator();
             while (buffers.next()) |e| Retired.release(.{ .buffer = .{ .native = e.value.native, .allocation = e.value.allocation } }, self);
             var textures = self.textures.iterator();
-            while (textures.next()) |e| Retired.release(.{ .texture = .{
-                .image = e.value.image,
-                .view = e.value.view,
-                .allocation = e.value.allocation,
-            } }, self);
+            while (textures.next()) |e| {
+                // A swapchain image belongs to its swapchain, released below.
+                if (e.value.swapchain) continue;
+                Retired.release(.{ .texture = .{
+                    .image = e.value.image,
+                    .view = e.value.view,
+                    .allocation = e.value.allocation,
+                } }, self);
+            }
             var samplers = self.samplers.iterator();
             while (samplers.next()) |e| Retired.release(.{ .sampler = e.value.native }, self);
+            // Views and present-wait semaphores, then the swapchain, then the slots' acquire
+            // semaphores: `deinit` waited for the queue to go idle first, or the device is lost.
+            self.releaseSwapchain();
+            for (self.acquire_semaphores) |semaphore| {
+                if (semaphore != null) self.device_fns.vkDestroySemaphore(self.device, semaphore, null);
+            }
             if (self.command_pool != null) self.device_fns.vkDestroyCommandPool(self.device, self.command_pool, null);
             if (self.timeline_semaphore != null) self.device_fns.vkDestroySemaphore(self.device, self.timeline_semaphore, null);
             self.instance_fns.vkDestroyDevice(self.device, null);
@@ -2031,6 +2635,10 @@ pub const CommandBuffer = struct {
     recording: u64,
     /// Begun, and neither submitted nor discarded.
     open: bool,
+    /// The recording names a swapchain image, so its submission may have to consume the frame's
+    /// acquire signal; `draws_surface` when it renders into one, which is what earns a present.
+    uses_surface: bool = false,
+    draws_surface: bool = false,
 
     /// Closes the recording and hands it to the queue, signalling the timeline with its serial.
     /// Consumes the command buffer whatever it returns. A second submit is a caller's mistake the
@@ -2049,6 +2657,13 @@ pub const CommandBuffer = struct {
             .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
             .commandBuffer = self.native,
         }};
+        // The first submission to use the frame's newly acquired image waits for it to be ready (§8).
+        const waits_for_image = self.uses_surface and dev.acquire_pending;
+        const waits = [_]c.VkSemaphoreSubmitInfo{.{
+            .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+            .semaphore = dev.acquire_semaphores[dev.frame_slot],
+            .stageMask = c.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        }};
         const signals = [_]c.VkSemaphoreSubmitInfo{.{
             .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
             .semaphore = dev.timeline_semaphore,
@@ -2057,6 +2672,8 @@ pub const CommandBuffer = struct {
         }};
         const info: c.VkSubmitInfo2 = .{
             .sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+            .waitSemaphoreInfoCount = if (waits_for_image) 1 else 0,
+            .pWaitSemaphoreInfos = &waits,
             .commandBufferInfoCount = buffers.len,
             .pCommandBufferInfos = &buffers,
             .signalSemaphoreInfoCount = signals.len,
@@ -2069,6 +2686,9 @@ pub const CommandBuffer = struct {
 
         const submitted = dev.timeline.submit(self.recording, self.native);
         assert.debugOnly(submitted == serial, "submission {d} signalled timeline value {d}", .{ submitted, serial });
+        if (waits_for_image) dev.acquire_pending = false;
+        // Only a draw that reached the queue has rendered the image; a discarded one never has.
+        if (self.draws_surface and dev.in_frame) dev.frame_drew = true;
         dev.free_command_buffers.appendAssumeCapacity(self);
     }
 
@@ -2107,6 +2727,10 @@ pub const CommandBuffer = struct {
                 .clearValue = clearValue(attachment.load),
             };
             const s = state orelse continue;
+            if (s.swapchain) {
+                self.uses_surface = true;
+                self.draws_surface = true;
+            }
             if (attachment.initial_state != .render_target) {
                 barriers[barrier_count] = imageBarrier(s, attachment.initial_state, .render_target);
                 barrier_count += 1;
@@ -2168,6 +2792,7 @@ pub const CommandBuffer = struct {
         for (barriers) |b| {
             // A dead handle is rule 9's to report; a real backend records nothing through it.
             const state = dev.textures.getConst(b.texture) orelse continue;
+            if (state.swapchain) self.uses_surface = true;
             batch[len] = imageBarrier(state, b.from, b.to);
             len += 1;
             if (len == batch.len) {
@@ -2448,6 +3073,44 @@ fn shaderStages(stages: pipeline.ShaderStages) c.VkShaderStageFlags {
 
 /// Colour attachments a pass may name; the RHI's other backends allow the same eight.
 const max_attachments = 8;
+
+/// The frame ring's slots, as the other backends allow (`interface.DeviceDesc.frames_in_flight`).
+const max_frames_in_flight = 4;
+
+/// How long `beginFrame` waits for a swapchain image before reporting the surface unavailable, so a
+/// window that presents nothing cannot stall input handling (§8).
+const acquire_timeout_ns: u64 = 100 * std.time.ns_per_ms;
+
+/// The surface decides the extent, unless it reports the special value that leaves it to the
+/// swapchain; then the host's request is clamped to what the surface allows.
+fn swapchainExtent(caps: *const c.VkSurfaceCapabilitiesKHR, requested: resource.Extent2D) c.VkExtent2D {
+    if (caps.currentExtent.width != std.math.maxInt(u32)) return caps.currentExtent;
+    return .{
+        .width = @max(caps.minImageExtent.width, @min(requested.width, caps.maxImageExtent.width)),
+        .height = @max(caps.minImageExtent.height, @min(requested.height, caps.maxImageExtent.height)),
+    };
+}
+
+/// One more image than the surface's minimum, so a frame can acquire while another is presented,
+/// within the surface's maximum when it has one. Independent of `frames_in_flight` (§8).
+fn swapchainImageCount(caps: *const c.VkSurfaceCapabilitiesKHR) u32 {
+    const wanted = caps.minImageCount + 1;
+    return if (caps.maxImageCount != 0) @min(wanted, caps.maxImageCount) else wanted;
+}
+
+/// Opaque where the surface allows it; otherwise the first mode it does, so a compositor that only
+/// inherits or premultiplies still gets a swapchain.
+fn compositeAlpha(supported: c.VkCompositeAlphaFlagsKHR) c.VkCompositeAlphaFlagBitsKHR {
+    for ([_]c.VkCompositeAlphaFlagBitsKHR{
+        c.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+        c.VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR,
+        c.VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
+        c.VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
+    }) |mode| {
+        if (supported & mode != 0) return mode;
+    }
+    return c.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+}
 
 pub const RenderPass = struct {
     device: *Device,
@@ -2890,8 +3553,8 @@ fn maxMipLevels(size: resource.Extent2D) u32 {
 }
 
 fn imageBarrier(state: *const TextureState, from: resource.ResourceState, to: resource.ResourceState) c.VkImageMemoryBarrier2 {
-    const src = textureState(from);
-    const dst = textureState(to);
+    const src = stateFor(state, from);
+    const dst = stateFor(state, to);
     return .{
         .sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .srcStageMask = src.stages,
@@ -2992,6 +3655,13 @@ fn samplerAddress(m: resource.AddressMode) c.VkSamplerAddressMode {
 /// §7's table: the layout, access and pipeline stages a declared texture state means.
 const StateAccess = struct { layout: c.VkImageLayout, access: u64, stages: u64 };
 
+/// A declared state for this texture. `present` belongs to swapchain images: a device without
+/// presentation has no present layout, so its offscreen surface rests in the transfer-source layout
+/// there instead, where it can still be read.
+fn stateFor(state: *const TextureState, declared: resource.ResourceState) StateAccess {
+    return textureState(if (declared == .present and !state.swapchain) .copy_src else declared);
+}
+
 fn textureState(state: resource.ResourceState) StateAccess {
     return switch (state) {
         // No preserved content and no access: the source of a transition that discards.
@@ -3022,7 +3692,7 @@ fn textureState(state: resource.ResourceState) StateAccess {
             .access = c.VK_ACCESS_2_TRANSFER_WRITE_BIT,
             .stages = c.VK_PIPELINE_STAGE_2_TRANSFER_BIT,
         },
-        // A WSI semaphore dependency, not a shader access; presentation arrives in Step 7.
+        // A WSI semaphore dependency, not a shader access (§8).
         .present => .{ .layout = c.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, .access = 0, .stages = 0 },
     };
 }
@@ -3286,8 +3956,8 @@ test "initialization that fails at any stage unwinds everything before it" {
     inline for (@typeInfo(Stage).@"enum".fields) |field| {
         const stage = @field(Stage, field.name);
         const result = Device.initWith(testing.allocator, .{}, .{ .validation = .required, .fail_at = stage });
-        if (stage == .create_surface) {
-            // Offscreen, there is no surface stage to fail; the window test covers it.
+        if (stage == .create_surface or stage == .create_swapchain) {
+            // Offscreen, there is no surface or swapchain stage to fail; the window test covers them.
             (try result).deinit();
         } else {
             try testing.expectError(error.DeviceCreationFailed, result);
@@ -3386,7 +4056,7 @@ test "a device for a real window takes a queue that presents to it" {
     }
 
     // Failing at the surface, and after it, unwinds the surface too.
-    for ([_]Stage{ .create_surface, .select_device, .create_command_pool }) |stage| {
+    for ([_]Stage{ .create_surface, .select_device, .create_command_pool, .create_swapchain }) |stage| {
         try testing.expectError(error.DeviceCreationFailed, Device.initWith(testing.allocator, .{ .surface = surface }, .{
             .validation = .required,
             .fail_at = stage,
@@ -4406,4 +5076,155 @@ test "a pass that cannot be allocated leaves its recording discardable" {
     cb.discard();
     dev.waitIdle();
     try testing.expectEqual(@as(u64, 0), dev.timeline.submitted);
+}
+
+// -- frames (Step 7) ------------------------------------------------------------------
+
+/// The surface read back after frames: out of `present`, into `copy_dst` where `readTexels` wants it.
+fn readSurface(dev: *Device) ![]u8 {
+    const cb = try dev.beginCommandBuffer();
+    try cb.textureBarrier(&.{.{ .texture = dev.surface_texture, .from = .present, .to = .copy_dst }});
+    try finish(dev, cb);
+    return readTexels(dev, dev.surface_texture, 0);
+}
+
+/// One frame as `app.Engine.renderFrame` records it: undefined in, cleared, present out.
+fn clearFrame(dev: *Device, color: [4]f32) !command.FrameContext {
+    const frame = try dev.beginFrame();
+    const cb = try dev.beginCommandBuffer();
+    const pass = try cb.beginRenderPass(.{ .color = &.{.{
+        .texture = frame.surface_texture,
+        .load = .{ .clear = .{ .color = color } },
+        .initial_state = .undefined,
+        .final_state = .present,
+    }} });
+    pass.end();
+    try cb.submit();
+    try dev.endFrame();
+    return frame;
+}
+
+test "a headless device's frames draw into one surface texture and cycle their slots" {
+    const dev = try validated(.{ .surface_size = .{ .width = 8, .height = 6 } });
+    defer dev.deinit();
+    try testing.expectEqual(format.TextureFormat.bgra8_unorm_srgb, dev.capabilities().surface_format);
+
+    var previous: u64 = 0;
+    for (0..5) |i| {
+        const frame = try clearFrame(dev, .{ 0, 0, 1, 1 });
+        try testing.expectEqual(previous + 1, frame.index);
+        previous = frame.index;
+        try testing.expectEqual(@as(u32, @intCast(i % 2)), frame.slot);
+        try testing.expect(frame.surface_texture.eql(dev.surface_texture));
+    }
+    dev.waitIdle();
+    const pixels = try readSurface(dev);
+    defer testing.allocator.free(pixels);
+    try testing.expectEqual(@as(usize, 8 * 6 * 4), pixels.len);
+    // BGRA: opaque blue.
+    try testing.expectEqual([4]u8{ 255, 0, 0, 255 }, texelAt(pixels, 8, 3, 2));
+    // The frame loop owns the surface; destroying its handle is refused quietly.
+    dev.destroyTexture(dev.surface_texture);
+    try testing.expect(dev.textures.contains(dev.surface_texture));
+    try expectValidationHeard(dev);
+}
+
+test "the headless surface resizes behind the same handle, and the old target waits for its frames" {
+    const dev = try validated(.{ .surface_size = .{ .width = 8, .height = 8 } });
+    defer dev.deinit();
+
+    _ = try clearFrame(dev, .{ 1, 0, 0, 1 });
+    const handle = dev.surface_texture;
+    try dev.resizeSurface(.{ .width = 4, .height = 2 });
+    try dev.resizeSurface(.{ .width = 0, .height = 0 });
+    try testing.expect(handle.eql(dev.surface_texture));
+    _ = try clearFrame(dev, .{ 0, 1, 0, 1 });
+    dev.waitIdle();
+    try testing.expectEqual(@as(usize, 0), dev.retiredCount());
+
+    const pixels = try readSurface(dev);
+    defer testing.allocator.free(pixels);
+    try testing.expectEqual(@as(usize, 4 * 2 * 4), pixels.len);
+    try testing.expectEqual([4]u8{ 0, 255, 0, 255 }, texelAt(pixels, 4, 3, 1));
+    try expectValidationHeard(dev);
+}
+
+test "a failed acquisition opens no frame, and a frame that fails to close still leaves a marker" {
+    const dev = try validated(.{});
+    defer dev.deinit();
+
+    dev.faults.begin_frame = error.SurfaceUnavailable;
+    try testing.expectError(error.SurfaceUnavailable, dev.beginFrame());
+    try testing.expectEqual(@as(u64, 0), dev.frame_index);
+    try testing.expect(!dev.in_frame);
+
+    const first = try dev.beginFrame();
+    try testing.expectEqual(@as(u64, 1), first.index);
+    const cb = try dev.beginCommandBuffer();
+    try cb.submit();
+    dev.faults.marker = c.VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    try testing.expectError(error.OutOfMemory, dev.endFrame());
+    try testing.expect(!dev.in_frame);
+    // Without a marker of its own, the slot waits for what the frame submitted.
+    try testing.expectEqual(dev.timeline.submitted, dev.slot_markers[first.slot]);
+
+    const second = try dev.beginFrame();
+    dev.faults.end_frame = error.SurfaceLost;
+    try testing.expectError(error.SurfaceLost, dev.endFrame());
+    try testing.expectEqual(dev.timeline.submitted, dev.slot_markers[second.slot]);
+    dev.waitIdle();
+    try expectValidationHeard(dev);
+}
+
+test "a device lost as a frame closes is lost for every frame after it" {
+    const dev = try validated(.{});
+    defer dev.deinit();
+
+    _ = try dev.beginFrame();
+    dev.faults.marker = c.VK_ERROR_DEVICE_LOST;
+    try testing.expectError(error.DeviceLost, dev.endFrame());
+    try testing.expectError(error.DeviceLost, dev.beginFrame());
+    try testing.expectError(error.DeviceLost, dev.resizeSurface(.{ .width = 2, .height = 2 }));
+    try expectValidationHeard(dev);
+}
+
+test "a slot waits for everything submitted before its previous frame closed, uploads included" {
+    const dev = try validated(.{});
+    defer dev.deinit();
+
+    // Before any frame: a copy whose buffers are destroyed at once and so wait on it.
+    const src = try dev.createBuffer(.{ .size = 16, .usage = .{ .copy_src = true }, .memory = .upload });
+    const dst = try dev.createBuffer(.{ .size = 16, .usage = .{ .copy_dst = true } });
+    const cb = try dev.beginCommandBuffer();
+    try cb.copyBufferToBuffer(.{ .src = src, .dst = dst, .size = 16 });
+    try cb.submit();
+    dev.destroyBuffer(src);
+    dev.destroyBuffer(dst);
+
+    _ = try clearFrame(dev, .{ 0, 0, 0, 1 });
+    const marker = dev.slot_markers[0];
+    try testing.expect(marker > 1);
+    _ = try clearFrame(dev, .{ 0, 0, 0, 1 });
+
+    // Slot 0 again: its wait covers the upload, so nothing the upload used is still retired.
+    const frame = try dev.beginFrame();
+    try testing.expectEqual(@as(u32, 0), frame.slot);
+    try testing.expect(dev.timeline.completed >= marker);
+    try testing.expectEqual(@as(usize, 0), dev.retiredCount());
+    try dev.endFrame();
+    try expectValidationHeard(dev);
+}
+
+test "a frame that cannot reserve its marker does not open" {
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{});
+    const dev = try Device.initWith(failing.allocator(), .{}, .{ .validation = .required });
+    defer dev.deinit();
+
+    failing.fail_index = failing.alloc_index;
+    try testing.expectError(error.OutOfMemory, dev.beginFrame());
+    failing.fail_index = std.math.maxInt(usize);
+    try testing.expect(!dev.in_frame);
+    try testing.expectEqual(@as(u64, 0), dev.frame_index);
+    _ = try clearFrame(dev, .{ 0, 0, 0, 1 });
+    dev.waitIdle();
 }

@@ -64,6 +64,18 @@ pub const DebugUtils = struct {
 pub const Surface = struct {
     vkDestroySurfaceKHR: Fn(c.PFN_vkDestroySurfaceKHR),
     vkGetPhysicalDeviceSurfaceSupportKHR: Fn(c.PFN_vkGetPhysicalDeviceSurfaceSupportKHR),
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR: Fn(c.PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR),
+    vkGetPhysicalDeviceSurfaceFormatsKHR: Fn(c.PFN_vkGetPhysicalDeviceSurfaceFormatsKHR),
+};
+
+/// `VK_KHR_swapchain`, resolved from a device created for a window. FIFO is the one present mode
+/// every implementation supports and the only one used (§8), so present modes are never listed.
+pub const Swapchain = struct {
+    vkCreateSwapchainKHR: Fn(c.PFN_vkCreateSwapchainKHR),
+    vkDestroySwapchainKHR: Fn(c.PFN_vkDestroySwapchainKHR),
+    vkGetSwapchainImagesKHR: Fn(c.PFN_vkGetSwapchainImagesKHR),
+    vkAcquireNextImageKHR: Fn(c.PFN_vkAcquireNextImageKHR),
+    vkQueuePresentKHR: Fn(c.PFN_vkQueuePresentKHR),
 };
 
 pub const Win32Surface = if (builtin.os.tag == .windows) struct {
@@ -82,6 +94,7 @@ pub const WaylandSurface = if (builtin.os.tag == .linux) struct {
 pub const Device = struct {
     vkGetDeviceQueue: Fn(c.PFN_vkGetDeviceQueue),
     vkDeviceWaitIdle: Fn(c.PFN_vkDeviceWaitIdle),
+    vkQueueWaitIdle: Fn(c.PFN_vkQueueWaitIdle),
     vkCreateSemaphore: Fn(c.PFN_vkCreateSemaphore),
     vkDestroySemaphore: Fn(c.PFN_vkDestroySemaphore),
     vkWaitSemaphores: Fn(c.PFN_vkWaitSemaphores),

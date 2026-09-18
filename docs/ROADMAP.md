@@ -619,7 +619,7 @@ are unchanged since `m11`. Frame time is the display's and is not claimed, and a
 measured slowing the calling thread's unsplit work, which is recorded as debt with a revisit
 trigger.
 
-### M13 — Portable: "the RHI was real" — **in progress; 5/10 steps complete**
+### M13 — Portable: "the RHI was real" — **in progress; 7/10 steps complete**
 
 **The backend is Vulkan** ([ADR-0033](adr/0033-vulkan-second-backend.md)), which covers Windows
 and Linux with one backend. D3D12 is not planned, and Metal stays macOS's — nothing is routed
@@ -641,7 +641,9 @@ resources, copies, barriers, cache handling and completion-backed retirement und
 validation. Step 5 added the pinned four-stage GLSL-to-SPIR-V producer and exact layout agreement,
 then native shader modules, persistent descriptor sets, pipeline layouts and monolithic graphics
 pipelines under validation. Step 6 drew the sprite contract correctly offscreen, proved by pixel
-probes; presentation remains.
+probes. Step 7 completed the RHI interface: frames, a FIFO swapchain presenting to a real window,
+resize, minimise and restore, held undrawn images and every failed-frame outcome §8 names, with the
+whole test graph passing with Vulkan selected on the target.
 
 The ten steps are qualification/tools, native surfaces/loader, device/submission timeline,
 resources/copies/retirement, shaders/bindings, offscreen drawing, presentation/resize/failure
@@ -653,8 +655,9 @@ because the RHI's strict rules were copied from Vulkan's guaranteed minimums in 
 place. It also brings: real hardware or VM testing for both platforms, the Vulkan SDK and
 RenderDoc, Vulkan's own shader-visible binding convention written into `rhi.md` §9 the way
 Metal's was, and the shader cross-compiler decision (ADR-0015), which comes due here because
-Vulkan consumes SPIR-V only. Its native `win32_hwnd` and X11/Wayland payloads are implemented;
-presentation and non-Metal frame pacing arrive in Step 7.
+Vulkan consumes SPIR-V only. Its native `win32_hwnd` and X11/Wayland payloads are implemented,
+and Windows presents through them; the samples arrive in Step 8 and non-Metal frame pacing is
+measured in Step 9.
 
 **It is the largest milestone in this phase.** ADR-0003 recorded that a Vulkan-first plan would
 have made M1 a months-long wall; that wall was moved here, not removed.
@@ -663,7 +666,7 @@ have made M1 a months-long wall; that wall was moved here, not removed.
 either survived the encounter or changed by ADR. ADR-0033's two-platform promise requires
 native runtime evidence on both Windows x64 and Linux x64; the design separately exercises
 Linux X11 and Wayland. Cross-compilation, a Mac SDK or a software-only offscreen test cannot
-replace that presentation proof. Stop after Step 6 in the current handoff; Step 7 comes next.
+replace that presentation proof. Stop after Step 7 in the current handoff; Step 8 comes next.
 
 ### M14 — Managed: "players choose their mods" — **not started**
 
