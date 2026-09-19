@@ -31,6 +31,7 @@
 
 pub const context = @import("context.zig");
 pub const draw = @import("draw.zig");
+pub const game = @import("game.zig");
 pub const id = @import("id.zig");
 pub const input = @import("input.zig");
 pub const layout = @import("layout.zig");
@@ -92,9 +93,25 @@ pub const sliderInt = widget.sliderInt;
 pub const spacer = widget.spacer;
 pub const textField = widget.textField;
 
+// The additions the content-skinned game widget set needs (ADR-0041). Existing controls
+// above use the same functions and become skinned when `Context.skin` is non-null; these
+// are new interactions rather than a parallel implementation of buttons or fields.
+pub const tabs = game.tabs;
+pub const selectable = game.selectable;
+pub const selectableIn = game.selectableIn;
+pub const image = game.image;
+pub const imageIn = game.imageIn;
+pub const icon = game.icon;
+pub const iconIn = game.iconIn;
+pub const reorderList = game.reorderList;
+pub const reorderButton = game.reorderButton;
+pub const ReorderMove = game.ReorderMove;
+pub const ReorderDirection = game.ReorderDirection;
+
 test {
     _ = context;
     _ = draw;
+    _ = game;
     _ = id;
     _ = input;
     _ = layout;

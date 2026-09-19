@@ -125,7 +125,9 @@ both samples are on settings version 2 and profiles; their M9-era files, in `sam
 convert. The samples have tests of their own now. Step 4 gave the UI kernel `image` and
 `nine_slice` commands, naming images by opaque numbers the walker resolves, and a disabled
 scope. Step 5 made themes content: `foundry:ui_theme`, resolved by `app.resolveUiTheme`, and
-the room's card drawn from `room:ui.theme`. M15–M17 remain unstarted.
+the room's card drawn from `room:ui.theme`. Step 6 made existing widgets skin-aware and added
+tabs, selectable rows, reorder controls, icons and placed images without moving `ui` above L1.
+Step 7, `FoundryApi_v3`, is next. M15–M17 remain unstarted.
 The bar below is the current one; Step 9 added the checks Vulkan and release work need to it.
 
 ## 3. Building and verifying

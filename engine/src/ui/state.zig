@@ -40,6 +40,12 @@ pub const State = struct {
     /// The caret's offset in a text field's buffer, in bytes, always on a codepoint
     /// boundary.
     caret: u32 = 0,
+    /// The row whose reorder grip is being dragged, or no row. Reordering is interaction
+    /// state rather than the caller's list state: the caller owns and applies the move;
+    /// the kernel remembers only the gesture between press and release.
+    reorder_from: ?u32 = null,
+    /// The insertion slot currently under that drag, in `0..count`.
+    reorder_slot: u32 = 0,
     /// The frame this entry was last asked for.
     ///
     /// **`Input.frame`, which the caller supplies** — the kernel reads no clock (I9), so

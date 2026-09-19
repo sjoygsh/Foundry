@@ -11,8 +11,22 @@ drawing through Vulkan on Windows x64:**
 **Both samples run on it from a relocated install, each wearing an icon it supplies. Windows is a
 runtime claim for the tested machine, with its limits recorded, and the RHI's rules survived with
 none relaxed. Linux left M13 by ADR-0039: it is M18, after the first game and before 3D. M14 is in
-progress (`docs/design/mod-management.md`, ADR-0040/0041): Steps 1 to 5 are done, and Step 6,
-the game widget set, is next. M15 through M17 remain unstarted.**
+progress (`docs/design/mod-management.md`, ADR-0040/0041): Steps 1 to 6 are done, and Step 7,
+the public `FoundryApi_v3`, is next. M15 through M17 remain unstarted.**
+
+**Completed M14 Step 6, 2026-09-19: the game widget set.**
+- `ui.Context` accepts an optional borrowed `ui.Skin`. Existing panels, buttons, checks, rows,
+  fields and scroll controls draw their fixed nine-slice part when supplied, with the exact flat
+  path retained for a missing skin or part.
+- `ui/game.zig` adds tabs, selectable rows, opaque images and named icons. The room installs the
+  skin resolved from `room:ui.theme` each frame and clears that borrow before releasing it.
+- A reorder list overlays caller-drawn rows with grips and an insertion marker, owns no game
+  data, and returns the same final-index move for drag or Up/Down/Top/Bottom buttons. Drag
+  capture survives leaving the list, and an omitted release cannot leave a phantom gesture.
+
+The bar passed **1,448 of 1,449**, with the existing skip. Deliberately removing downward
+destination normalisation made its interaction test return 3 instead of 2; the guard was
+restored. Resolution: `mod-management.md`, Step 6.
 
 **Completed M14 Step 5, 2026-09-19: themes as content.**
 - `foundry:ui_theme` is declared in `asset/ui_theme.zig` and registered by the engine and
@@ -1916,15 +1930,15 @@ signing, notarization and a clean recipient Mac (ADR-0032) — not engine work. 
 "Hardening and reach" (M10-M17), is under way**: it gathers the deferred work rather than
 adding to it, only M10 was new, **M10 and M11 are complete (2026-09-13)** and **M12 is
 complete (2026-09-14)**. **M13 is complete (2026-09-19)**, proving
-Windows x64 through Vulkan. **M14 is in progress**, Steps 1 to 5 of nine done; M15 through
+Windows x64 through Vulkan. **M14 is in progress**, Steps 1 to 6 of nine done; M15 through
 M17 are unstarted.
 
 ## Current milestone
 
 **M14 — Managed is in progress.** Read `docs/design/mod-management.md` and ADR-0040/0041.
-Steps 1 to 5 are done (2026-09-19): the mod set, profiles on disk, migrations with merged
-writes (both samples on profiles), the UI kernel's image commands and disabled scope, and
-themes as content. Step 6, the game widget set, is next.
+Steps 1 to 6 are done (2026-09-19): the mod set, profiles on disk, migrations with merged
+writes (both samples on profiles), the UI kernel's image commands and disabled scope, themes
+as content, and the skinned game widget set. Step 7, `FoundryApi_v3`, is next.
 
 **M13 — Portable: "the RHI was real." Complete, 2026-09-19.** Read `docs/design/vulkan.md`
 and ADR-0033/0037/0038/0039. All ten steps are implemented:
@@ -2832,7 +2846,7 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M0–M13 are complete. M14 is in progress:** Steps 1 to 5 are done, and nothing is
+**M0–M13 are complete. M14 is in progress:** Steps 1 to 6 are done, and nothing is
 half-built. M13's
 specification and its Resolutions are in `docs/design/vulkan.md`. M12's specification and all
 six Resolutions are in
@@ -3482,13 +3496,15 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M14 Step 6, the game widget set** (`docs/design/mod-management.md` §§10 and 13,
-ADR-0041 decision 4).
-- Skinned drawing for the existing widgets from `ui.Skin`, with a patch where the theme has one
-  and the flat colour where it has none.
-- The new `tabs`, `selectable`, reorder list (drag, and Up/Down/Top/Bottom), `icon` and `image`.
+**Next: M14 Step 7, the public API** (`docs/design/mod-management.md` §§9 and 13,
+ADR-0041 decision 6).
+- Add `FoundryApi_v3` with the mod-set, theme, disabled-scope and game-widget calls and the
+  host's write grant.
+- Keep v1 and v2 byte-identical, extend the C header and agreement/sweep/empty-host proofs, and
+  update the mod author documentation.
 
-Its exit is headless interaction tests for each, capture included. Steps 1 to 5 are done.
+Its exit is v1/v2 identity, v3 agreement, and writes refused without the grant. Steps 1 to 6
+are done.
 M14's design is `docs/design/mod-management.md`: nine steps, each stopping with its Resolution.
 M13 is complete and tagged `m13`. Its record is
 `docs/design/vulkan.md` and its Resolutions. Linux is M18's (ADR-0039), after the first game and
@@ -4753,10 +4769,10 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 - **M12's record** is `docs/design/jobs-and-threading.md` and ADR-0036:
   `FOUNDRY_SANDBOX_WORKERS` / `FOUNDRY_ROOM_WORKERS` set a sample's pool, `0` for none, for
   comparisons.
-- **M14 is in progress** (`docs/design/mod-management.md`, ADR-0040/0041). Steps 1 to 5
+- **M14 is in progress** (`docs/design/mod-management.md`, ADR-0040/0041). Steps 1 to 6
   (`app.ModSet`, `app.profiles`, settings migrations and merged writes, the UI kernel's image
-  commands and disabled scope, `foundry:ui_theme` and `app.resolveUiTheme`) are done; Step 6,
-  the game widget set, is next. M15–M17 remain unstarted.
+  commands and disabled scope, `foundry:ui_theme`, `app.resolveUiTheme`, and the skinned game
+  widget set) are done; Step 7, `FoundryApi_v3`, is next. M15–M17 remain unstarted.
 `zig build check -Drhi=metal` is now part of the bar. The environment notes below still apply.
 
 * Read `CLAUDE.md` first, then this file, then `docs/ROADMAP.md`.

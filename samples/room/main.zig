@@ -2598,6 +2598,7 @@ const Room = struct {
         // different font underneath the sample between one frame and the next, and a style
         // is a value the kernel only ever reads.
         self.ui.style = if (self.theme) |*theme| theme.style else cardStyle(uiFontOf(self.font));
+        self.ui.skin = if (self.theme) |*theme| theme.skin else null;
 
         self.pointer = self.drivePointer(engine);
 
@@ -3022,6 +3023,7 @@ const Room = struct {
         if (fresh != null) log.info("the card is drawn from {s}", .{theme_id});
         // The new theme first and then the old one released, so a texture both hold is not
         // unloaded and loaded again in between.
+        self.ui.skin = null;
         if (self.theme) |*old| old.deinit(&engine.assets);
         self.theme = fresh;
     }
@@ -3066,6 +3068,7 @@ const Room = struct {
         // below goes; nothing between here and there ticks.
         self.clips.deinit(self.gpa);
 
+        self.ui.skin = null;
         if (self.theme) |*theme| theme.deinit(&engine.assets);
         self.theme = null;
         engine.assets.release(self.sheet_asset);

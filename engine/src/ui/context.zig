@@ -23,6 +23,7 @@ const Id = @import("id.zig").Id;
 const Input = @import("input.zig").Input;
 const draw = @import("draw.zig");
 const layout = @import("layout.zig");
+const Skin = @import("skin.zig").Skin;
 const state_mod = @import("state.zig");
 const style_mod = @import("style.zig");
 const Style = style_mod.Style;
@@ -54,6 +55,12 @@ pub const Interaction = struct {
 pub const Context = struct {
     gpa: Allocator,
     style: Style,
+    /// The optional image-backed half of a game's theme (ADR-0041). A value beside
+    /// `style`, replaced by the host when content changes and read but never written by
+    /// the kernel. Null is the debug widget set: every widget keeps its flat drawing.
+    /// The slices inside a skin are borrowed, so its producer must outlive every frame
+    /// that installs it here.
+    skin: ?Skin = null,
     input: Input = .{},
     list: draw.DrawList = .{},
     /// The open regions, outermost first (`layout.zig`). Reset every frame to one region

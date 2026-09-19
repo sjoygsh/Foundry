@@ -2,7 +2,9 @@
 
 **Status:** Accepted 2026-09-19 (M14). Decision 2, the kernel's additions, was implemented in
 Step 4 on 2026-09-19. Decisions 1 and 3, the theme record type and its resolver, were
-implemented in Step 5 the same day. Decisions 4 to 6 are not yet implemented
+implemented in Step 5 the same day. Decisions 4 and 5, the skinned game widget set while
+layout stays in code, were implemented in Step 6. Decision 6, `FoundryApi_v3`, is Step 7 and
+is not yet implemented.
 **Date:** 2026-09-19
 **Builds on:** [ADR-0024](0024-ui-own-immediate-mode.md), [ADR-0021](0021-asset-identity.md) and
 [ADR-0026](0026-abi-module-and-host.md)

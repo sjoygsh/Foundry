@@ -1,9 +1,10 @@
 # Design: M14 — Managed, and what a player chooses
 
 **Status:** Design accepted 2026-09-19 with [ADR-0040](../adr/0040-ordered-profiles-applied-at-next-start.md)
-and [ADR-0041](../adr/0041-game-widget-set-and-content-themes.md). **Steps 1 to 5 are implemented
+and [ADR-0041](../adr/0041-game-widget-set-and-content-themes.md). **Steps 1 to 6 are implemented
 (2026-09-19): the mod set, profiles on disk, migrations with concurrent writes, the UI
-kernel's additions, and themes as content. Step 6, the game widget set, is next.** Step 2 was re-scoped when it began; see §13.
+kernel's additions, themes as content, and the game widget set. Step 7, the public API, is
+next.** Step 2 was re-scoped when it began; see §13.
 **Date:** 2026-09-19
 **Baseline:** `754665a` / `m13`; M0–M13 complete, 1,405 declared / 1,395 headless tests.
 **Builds on:** ADR-0024 (one UI kernel, two widget sets), ADR-0026 (the host supplies
@@ -959,3 +960,37 @@ check, and accepting a part named twice. Three real runs:
 **Not yet:** no widget draws a patch or an icon, so the room's card looks as it did. That is
 Step 6.
 
+## Resolution — 2026-09-19, Step 6: the game widget set
+
+**Landed:**
+- **The optional skin is part of `ui.Context`.** It is a borrowed value beside `Style`, read
+  but never written by the kernel. Null preserves the debug set's flat draw list exactly.
+- **Existing widgets use their fixed skin parts when present.** Panels, buttons in each state,
+  checkboxes, collapsing rows, fields, scroll tracks and thumbs draw nine-slices; any missing
+  part falls back to the widget's former flat colour. Interaction remains the same function.
+- **`ui/game.zig` holds the additions:** `tabs`, `selectable`, placed `image` and named `icon`,
+  plus drag and button reorder operations. Images remain opaque `ImageRef`s, icon lookup is
+  only a read of the skin, and no content or renderer type crosses into `ui`.
+- **The room installs both halves of its resolved theme.** Every frame uses its `Style` and
+  `Skin`, and reload or shutdown clears the borrowed skin before releasing the theme.
+
+**The reorder list is an overlay, not a container.** Its caller lays out and draws the rows,
+then gives the widget their bounds and count. The widget draws only grips and the insertion
+marker and returns one final `{ from, to }`, with `to` already expressed after removal in the
+shape `app.ModSet.move` accepts. This keeps the rich rows in §11 composable from ordinary
+controls. A drag retains capture outside the list, clamps to its ends, and a list omitted on the
+release frame cannot leave a phantom gesture behind. Up, Down, Top and Bottom buttons return
+the same value; impossible moves use the ordinary disabled scope.
+
+**A tab strip draws the selection its caller supplied and returns the next one.** A release
+therefore cannot paint both the old and new tabs selected in one frame. Widget identity derives
+from the strip's id and the tab index, never display text. A missing icon still consumes its
+requested slot, so an optional image cannot move the columns after it.
+
+**Evidence.** Headless tests cover the flat fallback and every existing skinned part; tabs,
+selectable rows, opaque images and named or missing icons; drag capture inside and outside the
+list, downward index normalisation and stale-gesture closure; and all four reorder buttons,
+including disabled capture. Deliberately removing downward normalisation made the drag test
+return index 3 instead of 2 and fail; the guard was restored.
+
+**Not yet:** `FoundryApi_v3` is Step 7, and the room's mod screen is Step 8.

@@ -26,6 +26,7 @@ const Context = @import("context.zig").Context;
 const Interaction = @import("context.zig").Interaction;
 const Id = @import("id.zig").Id;
 const layout = @import("layout.zig");
+const SkinPart = @import("skin.zig").Part;
 const state_mod = @import("state.zig");
 const Color = @import("style.zig").Color;
 const Style = @import("style.zig").Style;
@@ -42,7 +43,7 @@ pub fn beginPanel(ctx: *Context, id: Id, bounds: Rect) Allocator.Error!void {
     const clean = layout.sanitize(bounds);
     const style = ctx.style;
 
-    try ctx.list.addRect(ctx.gpa, clean, style.surface);
+    _ = try drawPart(ctx, clean, .panel, style.surface);
     try ctx.pushClip(clean);
     ctx.blockPointer(clean);
 
@@ -124,7 +125,7 @@ pub fn buttonIn(ctx: *Context, id: Id, text: []const u8, bounds: Rect) Allocator
 
     // A duplicate id still draws. An inert control is easier to find than a missing one,
     // and the log line from `interact` says which id was reused.
-    try ctx.list.addRect(ctx.gpa, bounds, fillFor(ctx.style, state));
+    _ = try drawPart(ctx, bounds, buttonPart(state), fillFor(ctx.style, state));
     try drawText(ctx, text, bounds, ctx.style.text, .center);
     return state.clicked;
 }
@@ -146,8 +147,8 @@ pub fn checkbox(ctx: *Context, id: Id, text: []const u8, value: *bool) Allocator
     if (changed) value.* = !value.*;
 
     const tick = squareIn(bounds, style, side);
-    try ctx.list.addRect(ctx.gpa, tick, fillFor(style, state));
-    if (value.*) {
+    const skinned = try drawPart(ctx, tick, if (value.*) .check_on else .check_off, fillFor(style, state));
+    if (value.* and !skinned) {
         // The mark is the box inset by the same padding everything else uses, clamped so a
         // generous padding cannot swallow it. **A quarter of the box, not a half**: half
         // insets the rectangle to zero width, which prevents an inside-out mark by drawing
@@ -279,7 +280,7 @@ pub fn collapsingHeader(ctx: *Context, id: Id, text: []const u8) Allocator.Error
     if (interaction.clicked) state.open = !state.open;
     const open = state.open;
 
-    try ctx.list.addRect(ctx.gpa, bounds, fillFor(style, interaction));
+    _ = try drawPart(ctx, bounds, .row, fillFor(style, interaction));
 
     // A filled square when open and a hollow one when closed. A triangle would read better
     // and the draw list has no triangle in it (`ui.md` §6); adding one to the vocabulary
@@ -368,7 +369,7 @@ pub fn plot(ctx: *Context, samples: []const f32, options: PlotOptions) Allocator
     const style = ctx.style;
     const height = @max(0, finiteOr(options.height, style.line_height));
     const bounds = ctx.take(.init(height, height));
-    try ctx.list.addRect(ctx.gpa, bounds, style.control);
+    _ = try drawPart(ctx, bounds, .field, style.control);
     if (samples.len == 0 or bounds.isEmpty()) return;
 
     // Auto-scaled from the data unless the caller says otherwise, because a frame-time plot
@@ -450,7 +451,7 @@ pub fn textField(ctx: *Context, id: Id, buffer: []u8, len: *usize) Allocator.Err
         changed = edit(ctx, buffer, len, state);
     }
 
-    try ctx.list.addRect(ctx.gpa, bounds, fillFor(style, interaction));
+    _ = try drawPart(ctx, bounds, .field, fillFor(style, interaction));
     const text = buffer[0..len.*];
     const inner = inset(bounds, .init(style.padding.x, 0));
     try drawText(ctx, text, inner, style.text, .left);
@@ -478,6 +479,27 @@ fn fillFor(style: Style, state: Interaction) Color {
     if (state.active) return style.control_active;
     if (state.hot) return style.control_hot;
     return style.control;
+}
+
+fn buttonPart(state: Interaction) SkinPart {
+    if (state.disabled) return .button_disabled;
+    if (state.active) return .button_active;
+    if (state.hot) return .button_hot;
+    return .button;
+}
+
+/// Draw a themed nine-slice when this skin supplies one, otherwise the exact flat fill the
+/// debug set has always used. The boolean lets a checkbox avoid painting its old inset mark
+/// over a themed `check_on` image.
+fn drawPart(ctx: *Context, bounds: Rect, part: SkinPart, fallback: Color) Allocator.Error!bool {
+    if (ctx.skin) |skin| {
+        if (skin.patch(part)) |patch| {
+            try ctx.list.addNineSlice(ctx.gpa, bounds, patch.source, patch.insets, skin.patch_scale, .white);
+            return true;
+        }
+    }
+    try ctx.list.addRect(ctx.gpa, bounds, fallback);
+    return false;
 }
 
 fn finiteOr(v: f32, fallback: f32) f32 {
@@ -531,7 +553,7 @@ fn valueAtWide(x: f32, bounds: Rect, min: f64, max: f64) f64 {
 /// A slider's two rectangles: the whole row, and the part of it left of the value.
 fn drawTrack(ctx: *Context, bounds: Rect, state: Interaction, t: f32) Allocator.Error!void {
     const style = ctx.style;
-    try ctx.list.addRect(ctx.gpa, bounds, fillFor(style, state));
+    _ = try drawPart(ctx, bounds, .field, fillFor(style, state));
     try ctx.list.addRect(ctx.gpa, .init(bounds.x, bounds.y, bounds.w * t, bounds.h), style.accent);
 }
 
@@ -552,7 +574,7 @@ fn scrollbar(
 ) Allocator.Error!void {
     const style = ctx.style;
     const track: Rect = .init(view.x + view.w - width, view.y, width, view.h);
-    try ctx.list.addRect(ctx.gpa, track, style.control);
+    _ = try drawPart(ctx, track, .scroll_track, style.control);
 
     // The thumb is as much of the track as the view is of the content, never smaller than
     // it is wide — a thumb thinner than that is unhittable, and `scrollbar` is the metric
@@ -576,9 +598,10 @@ fn scrollbar(
         state.scroll = at * span;
     }
 
-    try ctx.list.addRect(
-        ctx.gpa,
+    _ = try drawPart(
+        ctx,
         .init(track.x, track.y + travel * at, width, thumb_h),
+        .scroll_thumb,
         fillFor(style, interaction),
     );
 }

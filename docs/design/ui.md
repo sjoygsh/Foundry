@@ -35,8 +35,8 @@ had to say "I took that."
 **ADR-0024** fixed these; this document does not reopen them.
 
 * Foundry writes its own immediate-mode UI. No Dear ImGui, no cimgui.
-* **One kernel, two widget sets.** M6 builds the kernel and a debug set. The content-driven,
-  skinnable game widget layer is designed for and postponed.
+* **One kernel, two widget sets.** M6 built the kernel and a debug set. M14 Step 6 added the
+  content-driven, skinnable game widget layer without moving the kernel.
 * **No colour, font, metric or string in the kernel is a literal.** Style is a value passed in.
 * **`ui -> core, platform`, at L1.** It never sees `rhi` and never sees `render2d`.
 * The kernel emits a draw list. Something above walks it into `render2d` calls.
@@ -289,8 +289,9 @@ pub const Style = struct {
 
 Held on the `Context`, replaceable between frames, and **the kernel reads it and never writes
 it.** The debug widget set ships a `Style` value — that is where the dark grey and the blue
-live, in a widget set, not in the kernel. The game layer will build one from content, and
-because the kernel already only reads, that is a new producer rather than a rewrite.
+live, in a widget set, not in the kernel. Since M14 Step 6, a game installs the `Style` and the
+optional borrowed `Skin` that `app` resolved from content. Null keeps the exact flat debug path,
+so this is a second producer rather than a rewrite.
 
 **`FontMetrics` is the piece ADR-0024 turned on**, so it is worth showing:
 
@@ -476,11 +477,9 @@ class never arises.
 UI's pipe, because that is the material system's job and ADR-0015 already says why it is not
 ready.
 
-**The one deliberate asymmetry**, recorded so it is a decision and not an oversight: a mod
-cannot yet supply a `Style` from content, because the content-driven style layer does not exist.
-At M7 a mod gets the same built-in style the overlay uses. When the game widget layer lands, a
-style becomes a content record and the ABI gains a call to resolve one — additive, `_v2`, no
-break.
+**The one deliberate asymmetry at M7** was that a mod could not supply a `Style` from content.
+The content-driven style and skin now exist (`foundry:ui_theme`, M14 Steps 5 and 6), while the
+public calls do not: Step 7 adds them in `FoundryApi_v3`, additively without changing v1 or v2.
 
 ## 14. Open questions
 
