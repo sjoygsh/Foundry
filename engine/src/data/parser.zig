@@ -72,6 +72,82 @@ pub const FieldDecl = struct {
     value_origin: Origin,
 };
 
+/// A half-open byte range in one of a document's files (`Document.files`).
+///
+/// Produced only when parsing with `Options.spans`, for an editor that has to change one
+/// construct and leave every other byte alone (ADR-0043). Offsets index the bytes that file
+/// was parsed from, a byte-order mark included, so `bytes[start..end]` is the construct
+/// exactly as written. They are never serialized: a span means something only beside the
+/// bytes its file's `len` and `digest` describe.
+pub const Span = struct {
+    file: u32,
+    start: u32,
+    end: u32,
+
+    pub fn len(self: Span) u32 {
+        return self.end - self.start;
+    }
+};
+
+/// One file of a document parsed with spans, in the order its parse began: the root first,
+/// then each import where it was first reached.
+///
+/// Imports are spliced into one `Document`, but their bytes stay in their own files, and an
+/// edit to an imported record belongs in the file that wrote it — once, not in a copy.
+pub const SourceFile = struct {
+    /// The resolver's canonical name, the same text as `Origin.file`.
+    name: []const u8,
+    /// The file whose `@import` reached this one first. Null for the root.
+    importer: ?u32,
+    /// The bytes the spans describe, by length and digest. An edit checks both before it
+    /// trusts a span, so bytes that changed after the parse are refused rather than cut in
+    /// the wrong place. The digest is `std.hash.Wyhash` with seed 0, held in memory only.
+    len: u32,
+    digest: u64,
+};
+
+/// Where an `@import` was written, and what it brought in.
+pub const ImportSource = struct {
+    /// From `@import` through the closing quote of its path.
+    span: Span,
+    /// The file it reached, or null when that file had already been parsed: a repeated
+    /// import is a no-op, because diamonds are normal.
+    file: ?u32,
+};
+
+/// Where a value was written. The shape follows the `Value` it describes: `items` for a
+/// list, `fields` for an inline struct, both empty for a scalar.
+pub const ValueSource = struct {
+    /// A scalar's token, or a list or struct from its opening bracket through its closing
+    /// one — so a container's last byte is where an insertion at its end goes before.
+    span: Span,
+    items: []const ValueSource = &.{},
+    fields: []const FieldSource = &.{},
+};
+
+/// Where a field was written: its name, and its value.
+pub const FieldSource = struct {
+    name: Span,
+    value: ValueSource,
+
+    /// The whole field, from its name through the end of its value.
+    pub fn span(self: FieldSource) Span {
+        return .{ .file = self.name.file, .start = self.name.start, .end = self.value.span.end };
+    }
+};
+
+/// Where a record was written. `fields` follows `RecordDecl.fields`, index for index.
+pub const RecordSource = struct {
+    /// From its first token through its closing brace, or through its id for `@remove`.
+    span: Span,
+    /// The schema name, or the directive for `@patch` and `@remove`.
+    head: Span,
+    id: Span,
+    /// The braces and everything between them. Null for `@remove`, which has no body.
+    body: ?Span,
+    fields: []const FieldSource,
+};
+
 pub const SchemaDecl = struct {
     id: SchemaId,
     /// The source spelling, kept for diagnostics and for hash-collision reporting.
@@ -81,6 +157,10 @@ pub const SchemaDecl = struct {
     version: u32,
     fields: []const Field,
     origin: Origin,
+    /// From `@schema` through its closing brace, when parsed with `Options.spans`. A schema
+    /// declaration is inspected rather than edited (`editor.md` §5), so its whole extent is
+    /// all an editor needs in order to leave it alone.
+    source: ?Span = null,
 };
 
 pub const RecordDecl = struct {
@@ -97,6 +177,8 @@ pub const RecordDecl = struct {
     text: []const u8,
     fields: []const FieldDecl,
     origin: Origin,
+    /// Where it was written, when parsed with `Options.spans`.
+    source: ?*const RecordSource = null,
 };
 
 /// The parsed contents of one package.
@@ -105,6 +187,10 @@ pub const Document = struct {
     namespace: []const u8,
     schemas: []const SchemaDecl = &.{},
     records: []const RecordDecl = &.{},
+    /// Every file parsed, and every `@import` in the order written. Empty unless parsed
+    /// with `Options.spans`.
+    files: []const SourceFile = &.{},
+    imports: []const ImportSource = &.{},
     /// Every identifier string seen, by hash — the table ADR-0005 asks for so that a hash
     /// collision is a build error naming both strings rather than a runtime mystery. It is
     /// also what turns a numeric id back into a readable name in a diagnostic.
@@ -153,6 +239,9 @@ pub const Options = struct {
     /// Absent means `@import` is unavailable, and using it is a diagnostic rather than a
     /// crash. Tests that do not import need supply nothing.
     resolver: ?Resolver = null,
+    /// Also record where every record, field, value, schema and import was written
+    /// (`Span`). Off by default: a compiler has no use for them, and off costs nothing.
+    spans: bool = false,
 };
 
 pub const Error = error{
@@ -179,6 +268,7 @@ pub fn parse(
         .diags = diags,
         .limits = options.limits,
         .resolver = options.resolver,
+        .spans = options.spans,
     };
     defer parser.deinit();
 
@@ -186,6 +276,8 @@ pub fn parse(
 
     doc.schemas = try doc.arena.allocator().dupe(SchemaDecl, parser.schemas.items);
     doc.records = try doc.arena.allocator().dupe(RecordDecl, parser.records.items);
+    doc.files = try doc.arena.allocator().dupe(SourceFile, parser.files.items);
+    doc.imports = try doc.arena.allocator().dupe(ImportSource, parser.imports.items);
 
     if (diags.failed) return error.ContentInvalid;
     return doc;
@@ -214,9 +306,13 @@ const Parser = struct {
     diags: *Diagnostics,
     limits: Limits,
     resolver: ?Resolver,
+    spans: bool = false,
 
     schemas: std.ArrayList(SchemaDecl) = .empty,
     records: std.ArrayList(RecordDecl) = .empty,
+    /// Filled only when `spans` is set.
+    files: std.ArrayList(SourceFile) = .empty,
+    imports: std.ArrayList(ImportSource) = .empty,
     /// Canonical names currently being parsed, innermost last. Cycle detection reports
     /// this as a chain, because "cyclic import" alone is useless in a tree of forty files.
     stack: std.ArrayList([]const u8) = .empty,
@@ -231,6 +327,8 @@ const Parser = struct {
     /// Unclosed brackets before the current token. Recovery uses it to find its way back
     /// to the top level without guessing.
     depth: u32 = 0,
+    /// The current file's index in `files`, when spans are recorded.
+    file_index: u32 = 0,
     /// The last source line copied into the arena, and the slice it was copied from. See
     /// `lineText`.
     last_line: ?struct { source: []const u8, copy: []const u8 } = null,
@@ -238,6 +336,8 @@ const Parser = struct {
     fn deinit(self: *Parser) void {
         self.schemas.deinit(self.gpa);
         self.records.deinit(self.gpa);
+        self.files.deinit(self.gpa);
+        self.imports.deinit(self.gpa);
         self.stack.deinit(self.gpa);
         self.seen.deinit(self.gpa);
     }
@@ -249,13 +349,16 @@ const Parser = struct {
     // --- files ----------------------------------------------------------------
 
     fn parseFile(self: *Parser, name: []const u8, bytes: []const u8, depth: u32) Allocator.Error!void {
-        if (bytes.len > self.limits.max_source_bytes) {
-            try self.diags.addFmt(self.gpa, .err, .{ .file = name, .line = 1, .column = 1 }, 1, "", "'{s}' is {d} bytes, over the {d}-byte limit for a content file", .{ name, bytes.len, self.limits.max_source_bytes });
+        // Token offsets are `u32`, so a limit raised past 4 GiB still stops there.
+        const limit = @min(self.limits.max_source_bytes, std.math.maxInt(u32));
+        if (bytes.len > limit) {
+            try self.diags.addFmt(self.gpa, .err, .{ .file = name, .line = 1, .column = 1 }, 1, "", "'{s}' is {d} bytes, over the {d}-byte limit for a content file", .{ name, bytes.len, limit });
             return;
         }
 
         const owned_name = try self.arena().dupe(u8, name);
         try self.seen.put(self.gpa, owned_name, {});
+        const importer: ?u32 = if (self.stack.items.len == 0) null else self.file_index;
         try self.stack.append(self.gpa, owned_name);
         defer _ = self.stack.pop();
 
@@ -264,12 +367,24 @@ const Parser = struct {
         const saved_lexer = self.lexer;
         const saved_token = self.token;
         const saved_depth = self.depth;
+        const saved_file = self.file_index;
         defer {
             self.source = saved_source;
             self.lexer = saved_lexer;
             self.token = saved_token;
             self.depth = saved_depth;
+            self.file_index = saved_file;
             self.last_line = null;
+        }
+
+        if (self.spans) {
+            self.file_index = @intCast(self.files.items.len);
+            try self.files.append(self.gpa, .{
+                .name = owned_name,
+                .importer = importer,
+                .len = @intCast(bytes.len),
+                .digest = std.hash.Wyhash.hash(0, bytes),
+            });
         }
 
         self.source = .{ .name = owned_name, .bytes = bytes };
@@ -354,9 +469,19 @@ const Parser = struct {
                     try self.reportCycle(path_token, i, file.name);
                     return error.Recorded;
                 }
+                const at = self.span(token.start, path_token.end);
                 // Importing the same file twice is a no-op. Diamond imports are normal.
-                if (self.seen.contains(file.name)) return;
+                if (self.seen.contains(file.name)) {
+                    if (self.spans) try self.imports.append(self.gpa, .{ .span = at, .file = null });
+                    return;
+                }
+                // Appended before the parse, so imports stay in the order they are written.
+                const entry = self.imports.items.len;
+                const next: u32 = @intCast(self.files.items.len);
+                if (self.spans) try self.imports.append(self.gpa, .{ .span = at, .file = next });
                 try self.parseFile(file.name, file.bytes, depth + 1);
+                // A file refused before its parse began (its size) was never added.
+                if (self.spans and self.files.items.len == next) self.imports.items[entry].file = null;
             },
         }
     }
@@ -375,6 +500,7 @@ const Parser = struct {
     // --- schemas --------------------------------------------------------------
 
     fn schemaDirective(self: *Parser) ParseError!void {
+        const start = self.token.start;
         self.advance();
         const ref = self.token;
         const schema_id, const text = try self.schemaRef();
@@ -385,6 +511,7 @@ const Parser = struct {
         defer fields.deinit(self.gpa);
         var version: u32 = 1;
         try self.fieldDecls(&fields, &version, 0);
+        const close = self.token;
         try self.expect(.rbrace);
 
         try self.schemas.append(self.gpa, .{
@@ -393,6 +520,7 @@ const Parser = struct {
             .version = version,
             .fields = try self.arena().dupe(Field, fields.items),
             .origin = try self.originOf(ref),
+            .source = if (self.spans) self.span(start, close.end) else null,
         });
     }
 
@@ -512,7 +640,7 @@ const Parser = struct {
         const content_id, const text = try self.contentRef();
         self.advance();
 
-        const fields = try self.recordBody();
+        const body = try self.recordBody();
         try self.records.append(self.gpa, .{
             .kind = .define,
             .schema = schema_id,
@@ -520,8 +648,9 @@ const Parser = struct {
             .schema_origin = try self.originOf(schema_token),
             .id = content_id,
             .text = text,
-            .fields = fields,
+            .fields = body.fields,
             .origin = try self.originOf(id_token),
+            .source = try self.recordSource(schema_token, id_token, body),
         });
     }
 
@@ -532,8 +661,8 @@ const Parser = struct {
         const content_id, const text = try self.contentRef();
         self.advance();
 
-        const fields: []const FieldDecl = switch (kind) {
-            .remove => &.{},
+        const body: ?Body = switch (kind) {
+            .remove => null,
             else => try self.recordBody(),
         };
         try self.records.append(self.gpa, .{
@@ -543,18 +672,43 @@ const Parser = struct {
             .schema_origin = try self.originOf(directive_token),
             .id = content_id,
             .text = text,
-            .fields = fields,
+            .fields = if (body) |b| b.fields else &.{},
             .origin = try self.originOf(id_token),
+            .source = try self.recordSource(directive_token, id_token, body),
         });
+    }
+
+    const Body = struct {
+        fields: []const FieldDecl,
+        /// Empty unless spans are recorded; otherwise one per field.
+        sources: []const FieldSource,
+        /// `{` through `}`.
+        span: Span,
+    };
+
+    fn recordSource(self: *Parser, head: Token, id_token: Token, body: ?Body) Allocator.Error!?*const RecordSource {
+        if (!self.spans) return null;
+        const source = try self.arena().create(RecordSource);
+        source.* = .{
+            .span = self.span(head.start, if (body) |b| b.span.end else id_token.end),
+            .head = self.span(head.start, head.end),
+            .id = self.span(id_token.start, id_token.end),
+            .body = if (body) |b| b.span else null,
+            .fields = if (body) |b| b.sources else &.{},
+        };
+        return source;
     }
 
     /// A record's own fields, which carry locations. The fields *inside* a value do not
     /// (`fieldValues`): an inline struct is a handful of names on a line or two, and a
     /// complaint about one of them points at the field that contains it.
-    fn recordBody(self: *Parser) ParseError![]const FieldDecl {
+    fn recordBody(self: *Parser) ParseError!Body {
+        const open = self.token;
         try self.expect(.lbrace);
         var fields: std.ArrayList(FieldDecl) = .empty;
         defer fields.deinit(self.gpa);
+        var sources: std.ArrayList(FieldSource) = .empty;
+        defer sources.deinit(self.gpa);
 
         while (self.token.tag == .identifier or self.token.tag == .content_id) {
             if (fields.items.len >= self.limits.max_fields_per_record) {
@@ -565,40 +719,68 @@ const Parser = struct {
             const name = try self.fieldName(name_token);
             self.advance();
             const value_token = self.token;
-            const v = try self.value(0);
+            var where: ValueSource = undefined;
+            const v = try self.valueAt(0, if (self.spans) &where else null);
             try fields.append(self.gpa, .{
                 .name = name,
                 .value = v,
                 .name_origin = try self.originOf(name_token),
                 .value_origin = try self.originOf(value_token),
             });
+            if (self.spans) try sources.append(self.gpa, .{
+                .name = self.span(name_token.start, name_token.end),
+                .value = where,
+            });
         }
 
+        const close = self.token;
         try self.expect(.rbrace);
-        return self.arena().dupe(FieldDecl, fields.items);
+        return .{
+            .fields = try self.arena().dupe(FieldDecl, fields.items),
+            .sources = try self.arena().dupe(FieldSource, sources.items),
+            .span = self.span(open.start, close.end),
+        };
     }
 
-    fn fieldValues(self: *Parser, out: *std.ArrayList(NamedValue), depth: u32) ParseError!void {
+    fn fieldValues(
+        self: *Parser,
+        out: *std.ArrayList(NamedValue),
+        sources: ?*std.ArrayList(FieldSource),
+        depth: u32,
+    ) ParseError!void {
         while (self.token.tag == .identifier or self.token.tag == .content_id) {
             if (out.items.len >= self.limits.max_fields_per_record) {
                 try self.errAt(self.token, "more than {d} fields in one record", .{self.limits.max_fields_per_record});
                 return error.Recorded;
             }
-            const name = try self.fieldName(self.token);
+            const name_token = self.token;
+            const name = try self.fieldName(name_token);
             self.advance();
-            const v = try self.value(depth);
+            var where: ValueSource = undefined;
+            const v = try self.valueAt(depth, if (sources != null) &where else null);
             try out.append(self.gpa, .{ .name = name, .value = v });
+            if (sources) |list| try list.append(self.gpa, .{
+                .name = self.span(name_token.start, name_token.end),
+                .value = where,
+            });
         }
     }
 
     // --- values ---------------------------------------------------------------
 
     fn value(self: *Parser, depth: u32) ParseError!Value {
+        return self.valueAt(depth, null);
+    }
+
+    /// A value, and — when `where` is supplied — where it was written.
+    fn valueAt(self: *Parser, depth: u32, where: ?*ValueSource) ParseError!Value {
         if (depth >= self.limits.max_nesting_depth) {
             try self.errAt(self.token, "value nested more than {d} deep", .{self.limits.max_nesting_depth});
             return error.Recorded;
         }
         const token = self.token;
+        // Every scalar is one token; a container overwrites this with its brackets.
+        if (where) |w| w.* = .{ .span = self.span(token.start, token.end) };
         switch (token.tag) {
             .identifier => {
                 const text = token.text(self.source.bytes);
@@ -637,22 +819,38 @@ const Parser = struct {
                 self.advance();
                 var items: std.ArrayList(Value) = .empty;
                 defer items.deinit(self.gpa);
+                var sources: std.ArrayList(ValueSource) = .empty;
+                defer sources.deinit(self.gpa);
                 while (self.token.tag != .rbracket and self.token.tag != .eof) {
                     if (items.items.len >= self.limits.max_list_elements) {
                         try self.errAt(self.token, "more than {d} elements in one list", .{self.limits.max_list_elements});
                         return error.Recorded;
                     }
-                    try items.append(self.gpa, try self.value(depth + 1));
+                    var item_where: ValueSource = undefined;
+                    try items.append(self.gpa, try self.valueAt(depth + 1, if (where != null) &item_where else null));
+                    if (where != null) try sources.append(self.gpa, item_where);
                 }
+                const close = self.token;
                 try self.expect(.rbracket);
+                if (where) |w| w.* = .{
+                    .span = self.span(token.start, close.end),
+                    .items = try self.arena().dupe(ValueSource, sources.items),
+                };
                 return .{ .list = try self.arena().dupe(Value, items.items) };
             },
             .lbrace => {
                 self.advance();
                 var fields: std.ArrayList(NamedValue) = .empty;
                 defer fields.deinit(self.gpa);
-                try self.fieldValues(&fields, depth + 1);
+                var sources: std.ArrayList(FieldSource) = .empty;
+                defer sources.deinit(self.gpa);
+                try self.fieldValues(&fields, if (where != null) &sources else null, depth + 1);
+                const close = self.token;
                 try self.expect(.rbrace);
+                if (where) |w| w.* = .{
+                    .span = self.span(token.start, close.end),
+                    .fields = try self.arena().dupe(FieldSource, sources.items),
+                };
                 return .{ .nested = try self.arena().dupe(NamedValue, fields.items) };
             },
             .unterminated_string => {
@@ -856,6 +1054,10 @@ const Parser = struct {
     }
 
     // --- cursor ---------------------------------------------------------------
+
+    fn span(self: *const Parser, start: u32, end: u32) Span {
+        return .{ .file = self.file_index, .start = start, .end = end };
+    }
 
     fn advance(self: *Parser) void {
         switch (self.token.tag) {

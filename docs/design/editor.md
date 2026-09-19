@@ -2,7 +2,8 @@
 
 **Milestone:** M15 — Editor: “content is authored in Foundry”
 **Status:** Designed 2026-09-19. The owner accepted it on 2026-09-20, adding that the editor's
-UI and UX follow Unreal Engine 5's (§10). Implementation not started.
+UI and UX follow Unreal Engine 5's (§10). Step 1 is implemented (2026-09-20); Steps 2–9 are not
+started.
 **Decisions:** accepted [ADR-0042](../adr/0042-authoring-through-the-public-api.md) and
 [ADR-0043](../adr/0043-source-preserving-authoring-and-explicit-builds.md).
 **Built on:** ADR-0004/0006/0011/0017/0020/0025/0026/0041; `content-schemas.md`,
@@ -27,8 +28,9 @@ saves, build, reload and a real external-package proof. Design for later: more c
 the public authoring service. Postpone: scene gizmos, tile painting, raw text/code editing,
 asset painting/import conversion, docking, project generators and plugin execution.
 
-M0–M14's completed results remain the baseline. This document specifies future implementation;
-none of the following module names, new calls or build targets exist yet.
+M0–M14's completed results remain the baseline. This document specifies future implementation.
+Apart from Step 1's additions to `data`, none of the following module names, new calls or build
+targets exist yet.
 
 ## 2. What the current code supplies
 
@@ -465,12 +467,12 @@ work: Step 1's smallest parser-span representation preserving imports, and Step 
 layouts/call count. They may refine this design, not bypass its
 boundaries. Any contradiction requiring a different architecture gets an ADR/Resolution first.
 
-## 14. Implementation order — nine steps, all not started
+## 14. Implementation order — nine steps, Step 1 done
 
 Each step is one handoff: its tests, bar, Resolution, project-state update and commit, then stop.
 ADR-0042/0043 were accepted on 2026-09-20, before any Step 1 code.
 
-### Step 1 — Source ranges and deterministic value emission
+### Step 1 — Source ranges and deterministic value emission — done 2026-09-20
 
 Add opt-in source ranges to the existing parser and pure emission/splice helpers in `data`.
 Preserve source identities through imports. Record the selected span representation before
@@ -568,3 +570,104 @@ single-file replacement cannot honestly provide a package-wide transaction. ADR-
 propose the corresponding boundaries. Both are proposed, with acceptance before implementation.
 Nine steps are specified. No source code, API header, build graph or content asset changes in
 this handoff; Step 1 has not begun.
+
+## Resolution — 2026-09-20, Step 1: source ranges and value emission
+
+**The span representation, chosen before use (§13).** Spans are opt-in, through
+`parser.Options.spans`, and cost nothing when off. A `Span` is a half-open byte range in one
+file: `{ file, start, end }`, where `file` indexes `Document.files` and the offsets index that
+file's own bytes, with any byte-order mark counted. Spans are a tree beside the values, not
+fields inside `Value`:
+
+- `RecordDecl.source` is a `RecordSource`: the whole record, its head, its ID, its braces, and a
+  `FieldSource` per field;
+- a `FieldSource` is a name span and a `ValueSource`;
+- a `ValueSource` has the same shape as its `Value`: one span, plus `items` for a list or
+  `fields` for a struct;
+- `SchemaDecl.source` is only the declaration's whole extent, since schemas are inspected, not
+  edited;
+- `Document.imports` lists each `@import` with the file it reached, or none for a repeat.
+
+`Value` is shared by the checker, schema defaults and the `.fpk` writer. Putting offsets into it
+would make each of them carry offsets they never use. A tree of the same shape needs no index
+arithmetic and no kind tags. The "insertion positions" §5 asked for are the containers' bracket
+bytes, so there are no separate offsets for them.
+
+**Imports keep their identity.** Each `SourceFile` is one parse of one resolver name, and
+`importer` records the file that reached it first. A diamond import is parsed once, and its
+repeat is listed with no file. A record's spans name its own file, so editing an imported
+record edits that file's bytes, once. A span offered against another file's text is refused.
+
+**Stale spans are refused.** A `SourceFile` also records its bytes' length and a Wyhash digest,
+held in memory only. Every splice operation checks both first, then checks that each span lies
+inside those bytes, names that file, and has the brackets its operation expects:
+- `StaleSource` for changed bytes;
+- `InvalidSpan` for a span that fails those checks;
+- `IndexOutOfRange` for an index past the end.
+
+This is the pure layer's own refusal. Step 3's revisions order edits.
+
+**Emission, `data/emit.zig`.**
+- **Integers** are exact decimal, with ranges from `schema.checkValue`, the checker's own rule.
+- **Floats** are narrowed to their field's width first. They are written in the shortest spelling
+  that reads back through the compiler's path, an `f64` parse narrowed as `BlockWriter.putFloat`
+  narrows. If that spelling fails the check, the exact `f64` spelling is used instead.
+  - The form is decimal for zero or `1e-4 ≤ |x| < 1e15`, and has an exponent otherwise.
+  - `.0` is appended when neither a point nor an exponent appears.
+  - Signed zero is kept, and NaN, infinity and an `f64` beyond `f32` range are refused.
+- **Strings** use the parser's five escapes, plus `\u{..}` for every other control character, and
+  are checked as UTF-8.
+- **IDs** are written by their spelling from a caller's table (`Document.strings`), which is
+  rehashed before it is trusted. `checkSpelling` refuses a malformed new spelling, and one whose
+  hash another spelling already has.
+- **Layout.** A list or struct holding only scalars stays on one line. Struct fields are
+  separated by two spaces, as §4.1 of `content-schemas.md` writes them. Anything deeper is a
+  block, indented four spaces per level from the line it opens on, in the file's first line
+  ending.
+- **Records.** A record is written in schema order, and a field it does not set is left out, so
+  an incomplete draft stays incomplete. Unknown and repeated names are refused at every depth.
+  Missing ones are not, at any depth, since drafts are allowed.
+
+**Splicing, `data/splice.zig`.** Each operation returns one `Edit`: a range and its replacement.
+`apply` requires edits in order, not overlapping, and no larger than the parser accepts.
+- **Replace** covers exactly the value's span.
+- **Insert, into a container on several lines**, starts a new line. It goes after the last
+  element's line and any comment that ends it, or before the closing bracket if that bracket is
+  on the same line. It takes the last element's indentation, or else the closing or opening
+  bracket's plus four spaces.
+- **Insert, on one line**, joins the line, after two spaces for a field and one for a list
+  element. An empty `{}` becomes `{ x }`, and an empty `[]` becomes `[x]`.
+- **Remove.** An element alone on its lines takes those lines, and one line ending, with it.
+  Otherwise the element goes with the blanks that separate it from its neighbours. A comment
+  beside it stays, at its indentation.
+- **Move.** Elements trade places, and the gaps between them stay where they are. A comment
+  between two list elements therefore stays in its gap rather than travelling with either one.
+- **Records.** An appended record gets exactly one blank line before it, and the file's line
+  endings. Insert-after goes past any comment that ends the neighbour's last line. Remove takes
+  whole lines. Duplicate copies the record's own text under a new ID. A byte-order mark always
+  stays at the start of its file.
+
+**One parser change beyond spans.** The configured source limit now also stops at 4 GiB, since
+token offsets are `u32`. A larger limit used to let a larger file reach the lexer and overflow
+it.
+
+**Left for later steps.** Step 1 adds no documents, workspaces, file access, history or ABI.
+Choosing an edit from a schema, and re-parsing and checking the candidate before committing it
+(§5), belong to Step 3. These helpers decide where bytes go, not whether an edit is right.
+
+**Evidence.**
+- **Tests.** Twenty-eight new tests: twelve in `emit.zig` and sixteen in `splice.zig`.
+  - Every splice operation is checked for its exact output, and the result still parses.
+  - Removals are checked to take only blanks and at most one line ending besides the construct.
+  - A canonical file with a byte-order mark, CRLF endings and comments comes back byte-identical
+    when every value is rewritten in place, and when no edit is made.
+  - Integer endpoints of all four widths round-trip, and one past each is refused.
+  - 200,000 `f32` bit patterns from a fixed seed read back through the compiler's path.
+  - An edit to an imported record touches only that file.
+  - Stale bytes, foreign or inverted spans, a list offered as a body, bad indices, overlapping
+    edits and an oversized result are all refused.
+  - Out-of-memory sweeps cover writing a record, and parsing with spans followed by every
+    operation.
+- **Mutation.** Whole-line removal was made to require only blanks before an element, not
+  after it. Two tests failed, because a comment beside a removed field or list element was
+  deleted with it. The guard was restored.

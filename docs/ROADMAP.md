@@ -736,7 +736,7 @@ is not Foundry's business.
 **Exit criteria:** a packaged sample where a player — not an environment variable — turns a mod
 on, and preferences survive a schema change without losing what the player chose.
 
-### M15 — Editor: "content is authored in Foundry" — **design accepted; implementation not started**
+### M15 — Editor: "content is authored in Foundry" — **in progress: Step 1 of 9 done**
 
 `CLAUDE.md` §9's oldest deferred item, dated M6+. Its shape is already decided: tools are
 Foundry applications (ADR-0011), and the editor is a **re-host of the debug overlay's
@@ -753,7 +753,7 @@ editing or saving; an additive authoring capability must precede the editor cons
 [ADR-0043](adr/0043-source-preserving-authoring-and-explicit-builds.md). Nine steps: source
 ranges/emission; reusable compiler and workspaces; typed edits and history; saves and isolated
 builds; public ABI v4; standalone host and inspection client; authoring workflow; external
-author/consumer proof; closure. All are unstarted. The first editor authors records using
+author/consumer proof; closure. Step 1 is done (2026-09-20); the rest are unstarted. The first editor authors records using
 existing schemas, preserves source text, and proves its output through the sample's normal
 mod path. A scene editor, schema designer and executing game/plugin host are outside this scope.
 The editor's UI and UX follow Unreal Engine 5's editor, within M15's fixed regions (§10).

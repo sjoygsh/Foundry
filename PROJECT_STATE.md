@@ -1,8 +1,9 @@
 # Foundry Project State
 
-**Last updated:** 2026-09-19
-**Current handoff: M0 through M14 are complete and tagged. M14 closed on 2026-09-19 with a
-player choosing their mods in a packaged sample, on macOS and on Windows:**
+**Last updated:** 2026-09-20
+**Current handoff: M15 Step 1 is done; stop before Step 2.** M0 through M14 are complete and
+tagged. **M14 closed on 2026-09-19 with a player choosing their mods in a packaged sample, on
+macOS and on Windows:**
 - **the mod set, with record-level conflicts, and ordered profiles on disk, applied at the next
   start (ADR-0040);**
 - **settings migrations with a one-time backup, and merged concurrent writes;**
@@ -10,8 +11,30 @@ player choosing their mods in a packaged sample, on macOS and on Windows:**
 - **the room's MO2-style mod screen, built from that table alone.**
 
 **M13 before it proved Windows x64 through Vulkan. Linux is M18, after the first game and before
-3D (ADR-0039). M15's design is written; implementation has not begun. M16 and M17 remain
-unstarted.**
+3D (ADR-0039). M15 is under way: Step 1 of nine is done, and the handoff stops before Step 2.
+M16 and M17 remain unstarted.**
+
+**Completed M15 Step 1, 2026-09-20: source ranges and value emission.**
+- The parser records, on request (`Options.spans`), where every record, field, value, list
+  element, nested field, schema and `@import` was written. Each span is a byte range in its
+  own file, so an imported record's spans are in the file that wrote it, and a diamond import
+  is parsed once.
+- `data/emit.zig` writes typed `.fdt` literals that read back exactly at their field's width.
+  That covers integer endpoints, the shortest round-tripping floats, signed zero, the parser's
+  escapes, and IDs by their known spelling. NaN, infinity, a value outside its range and an ID
+  with no known spelling are refused. Records are written in schema order, leaving unset
+  fields out.
+- `data/splice.zig` turns spans into one-range edits: replace, insert and remove fields,
+  insert, remove and move list elements, and append, insert, remove and duplicate records.
+  Every byte outside the construct and its separating blanks is kept, including comments
+  beside it, CRLF endings and a byte-order mark. Stale bytes, foreign spans and bad indices
+  are refused.
+- The span representation is recorded in `editor.md`'s Step 1 Resolution, as §13 asked.
+  Nothing outside `data` changed: no workspace, file access, history or ABI yet.
+
+The bar passed **1,487 of 1,488**, with the existing skip, and 28 new tests. Making whole-line
+removal ignore what follows an element deleted a neighbouring comment, and two tests caught it;
+the guard was restored. Resolution: `editor.md`, Step 1.
 
 **M15's design accepted, 2026-09-20.** The owner accepted `docs/design/editor.md` and
 ADR-0042/0043, and added one direction: the editor's UI and UX follow Unreal Engine 5's
@@ -2013,8 +2036,10 @@ unstarted.
 
 ## Current milestone
 
-**M15 — Editor is designed and accepted; implementation has not started.** Read
-`docs/design/editor.md`, especially §14's nine steps, and ADR-0042/0043, accepted 2026-09-20.
+**M15 — Editor is under way: Step 1 of nine is done (2026-09-20).** Read
+`docs/design/editor.md`, especially §14's nine steps and the Step 1 Resolution, and ADR-0042/0043,
+accepted 2026-09-20. The editor's UI and UX follow Unreal Engine 5's (§10). The tree stands at
+**1,559 declared / 1,488 headless tests**.
 
 **M14 — Managed: "players choose their mods." Complete, 2026-09-19.** Read
 `docs/design/mod-management.md` and ADR-0040/0041. All nine steps are implemented:
@@ -2935,8 +2960,9 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M0–M14 are complete, and nothing is half-built.** M15's design is written in
-`docs/design/editor.md`; no implementation has begun. M14's specification and its Resolutions
+**M0–M14 are complete, and M15's Step 1 is done; nothing is half-built.** M15's design and its
+Step 1 Resolution are in `docs/design/editor.md`. Step 1 added source spans to the parser and
+`data/emit.zig` and `data/splice.zig`; nothing else in M15 exists yet. M14's specification and its Resolutions
 are in `docs/design/mod-management.md`. M13's
 specification and its Resolutions are in `docs/design/vulkan.md`. M12's specification and all
 six Resolutions are in
@@ -3586,8 +3612,8 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M15 Step 1 — Source ranges and deterministic value emission.** M14 is complete and
-tagged `m14`. M15's design is `docs/design/editor.md`, with nine steps and ADR-0042/0043,
+**Next: M15 Step 2 — One reusable compiler and bounded workspaces**, when the owner asks for
+it. Step 1 is done (2026-09-20). M15's design is `docs/design/editor.md`, with nine steps and ADR-0042/0043,
 accepted 2026-09-20 with a UI modelled on Unreal Engine 5's. The editor re-hosts public
 introspection (ADR-0025), and authoring is published in v4 before any editor client can use
 it (I4).
@@ -3643,8 +3669,8 @@ review of `main` rather than beginning on a schedule.
   screen. The exit proof passed on macOS and on Windows.
 * **M15 — Editor.** §9's oldest item, dated M6+; ADR-0011 and ADR-0025 already decided its
   shape as a re-host of the overlay's introspection. Designed 2026-09-19 in
-  `docs/design/editor.md`, with ADR-0042/0043, accepted 2026-09-20; all nine implementation
-  steps remain.
+  `docs/design/editor.md`, with ADR-0042/0043, accepted 2026-09-20. Step 1 is done; Steps 2–9
+  remain.
 * **M16 — Connected.** Networking, trigger-started, carrying ADR-0013's bit-exact determinism
   question only if lockstep is chosen.
 * **M17 — Released.** ADR-0032's deferred gate, and last in the phase on purpose: Developer ID
@@ -4867,9 +4893,11 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 
 ## Notes for the next session
 
-**Resume point, 2026-09-19:** M0–M14 complete and tagged.
+**Resume point, 2026-09-20:** M0–M14 complete and tagged; M15 Step 1 done.
 - **M15's design is accepted:** `docs/design/editor.md`, ADR-0042/0043, with a UI and UX modelled
-  on Unreal Engine 5's (§10). All nine implementation steps remain.
+  on Unreal Engine 5's (§10). Step 1 (source spans, `data/emit.zig`, `data/splice.zig`) is done;
+  stop before Step 2 until the owner starts it. Step 2 moves `fpack`'s compiler into `author`
+  without changing its output.
 - **M13's record** is `docs/design/vulkan.md` with ADR-0037/0038/0039. Vulkan runs on Windows x64,
   and `-Drhi=vulkan` builds, tests and installs there (AGENTS.md, *Vulkan work*).
 - **M12's record** is `docs/design/jobs-and-threading.md` and ADR-0036:

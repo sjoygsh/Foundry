@@ -90,8 +90,9 @@ drawn from a theme that is ordinary content
 exit proof passed on macOS and on Windows through Vulkan, in release builds driven by real
 input. Both wrote the same files byte for byte, apart from the volume a slider click chose.
 
-**Next: M15, the standalone content editor.** Its [nine-step design](docs/design/editor.md)
-is accepted; implementation has not begun. It specifies schema-driven record forms,
+**Under way: M15, the standalone content editor.** Its [nine-step design](docs/design/editor.md)
+is accepted, and Step 1 is done: the parser can say where everything was written, and
+`data` can put a value back without disturbing the bytes around it. It specifies schema-driven record forms,
 source-preserving saves and package builds through the public ABI, in a UI modelled on
 Unreal Engine 5's editor.
 

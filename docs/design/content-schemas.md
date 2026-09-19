@@ -417,6 +417,10 @@ fields, and under the additive-only rule of §3 the only change that can bump a 
 adding a field. An author who forgets `since 2` on a new field gets a loud `DuplicateSchema`
 from the registry rather than a silent reinterpretation.
 
+> **M15 Step 1, 2026-09-20:** the parser can also record where each construct was written
+> (`Options.spans`), and `data/emit.zig` writes the format back. The grammar is unchanged.
+> [editor.md](editor.md)'s Step 1 Resolution describes both.
+
 ---
 
 ## 5. The runtime format: `.fpk`

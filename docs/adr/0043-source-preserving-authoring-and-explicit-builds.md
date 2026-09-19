@@ -89,3 +89,9 @@ Real authors need atomic multi-file refactors, collaborative editing, background
 build-on-edit; source-splice complexity exceeds a measured lossless syntax-tree alternative;
 or large assets make bounded input snapshots impractical. Each requires evidence and its own
 scope, rather than weakening source preservation or silently extending M15.
+
+## Implementation
+
+- **Step 1, 2026-09-20:** decision 1's source ranges and deterministic emission are in `data`:
+  opt-in parser spans, `emit.zig` and `splice.zig`. The chosen span representation is in
+  `editor.md`'s Step 1 Resolution. Decisions 2–5 wait on Steps 3–7.

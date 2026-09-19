@@ -21,12 +21,14 @@
 
 pub const check = @import("check.zig");
 pub const diagnostic = @import("diagnostic.zig");
+pub const emit = @import("emit.zig");
 pub const fpk = @import("fpk.zig");
 pub const id = @import("id.zig");
 pub const lexer = @import("lexer.zig");
 pub const parser = @import("parser.zig");
 pub const limits = @import("limits.zig");
 pub const schema = @import("schema.zig");
+pub const splice = @import("splice.zig");
 pub const store = @import("store.zig");
 pub const value = @import("value.zig");
 
@@ -64,12 +66,14 @@ pub const contentId = id.contentId;
 test {
     _ = check;
     _ = diagnostic;
+    _ = emit;
     _ = fpk;
     _ = id;
     _ = lexer;
     _ = parser;
     _ = limits;
     _ = schema;
+    _ = splice;
     _ = store;
     _ = value;
 }
