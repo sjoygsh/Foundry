@@ -1,8 +1,9 @@
 # Content authoring and the standalone editor
 
 **Milestone:** M15 — Editor: “content is authored in Foundry”
-**Status:** Designed 2026-09-19; implementation not started. Stop before §14 Step 1.
-**Decisions:** proposed [ADR-0042](../adr/0042-authoring-through-the-public-api.md) and
+**Status:** Designed 2026-09-19. The owner accepted it on 2026-09-20, adding that the editor's
+UI and UX follow Unreal Engine 5's (§10). Implementation not started.
+**Decisions:** accepted [ADR-0042](../adr/0042-authoring-through-the-public-api.md) and
 [ADR-0043](../adr/0043-source-preserving-authoring-and-explicit-builds.md).
 **Built on:** ADR-0004/0006/0011/0017/0020/0025/0026/0041; `content-schemas.md`,
 `public-abi.md`, `debug-overlay.md`, `mod-management.md` and `distribution.md`.
@@ -49,7 +50,7 @@ dependency-package CLI option; adding explicit schema inputs belongs to §14 Ste
 
 ## 3. Ownership and layering
 
-The proposed addition, preserving the established graph:
+The addition, preserving the established graph:
 
 ```
 data (L1)       core; optional source ranges and deterministic literal emission
@@ -328,6 +329,31 @@ One window, fixed regions, existing immediate-mode controls:
 - a diagnostics region with source locations and a loaded-content browser;
 - an explicit dirty/build/loaded revision indicator and confirmation region.
 
+**The editor's UI and UX follow Unreal Engine 5's editor** (the owner's direction, 2026-09-20).
+Someone who knows UE5 should find each region where they expect it, and each command under the
+name they know:
+
+- the command bar is UE5's main toolbar, across the top; a status bar along the bottom carries
+  the dirty/build/loaded indicator;
+- the browser works like UE5's Content Browser and Outliner: a filterable tree, with read-only
+  dependency definitions marked by where they come from;
+- the property form works like UE5's Details panel. It has a search filter, and nested fields
+  and lists are collapsible groups. Beside each optional or defaulted value that is set, a
+  reset-to-default arrow unsets it. List elements have add, insert, remove and move controls;
+- diagnostics work like UE5's Message Log, where each entry selects its record and field; the
+  re-hosted log is its Output Log;
+- unsaved documents are marked as UE5 marks unsaved assets, and the close confirmation lists
+  them;
+- commands UE5 has keep its shortcuts: Ctrl+S, Ctrl+Shift+S for Save All, Ctrl+Z and Ctrl+Y,
+  with Cmd in place of Ctrl on macOS.
+
+The dark palette is the editor's own theme, in `foundry:editor` content (ADR-0041). UE5 is the
+reference for layout, naming and interaction only. No Epic artwork, icons, fonts, code or marks
+are copied, and the editor does not present itself as Unreal. UE5 relies on some things M15
+leaves out: docking and tab tear-off, popup and context menus, modal dialogs and a level
+viewport. M15 uses this section's fixed regions and in-window confirmation instead, and §13
+keeps those questions open.
+
 Use visible-row culling from the overlay's established pattern. Re-host content/schema/asset
 inspection and log presentation using the public calls that already expose them. Do not rewrite
 the in-process overlay or invent another engine-side inspector. Entity/profiler/memory views
@@ -442,7 +468,7 @@ boundaries. Any contradiction requiring a different architecture gets an ADR/Res
 ## 14. Implementation order — nine steps, all not started
 
 Each step is one handoff: its tests, bar, Resolution, project-state update and commit, then stop.
-Accept or deliberately revise ADR-0042/0043 before Step 1 code. The planning handoff ends here.
+ADR-0042/0043 were accepted on 2026-09-20, before any Step 1 code.
 
 ### Step 1 — Source ranges and deterministic value emission
 

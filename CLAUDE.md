@@ -180,6 +180,8 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Asset identity | Assets are content records; a path derives an ID but never defines identity | [0021](docs/adr/0021-asset-identity.md) |
 | Mods | A mod is a content package; its manifest is a record inside it; discovery and load order are `mod` at L2 | [0027](docs/adr/0027-mods-are-content-packages.md) |
 | Mod selection | A player's selection is an ordered profile in its own file, applied at the next start; user duplicates are skipped; native consent is the host's alone; published in `FoundryApi_v3` | [0040](docs/adr/0040-ordered-profiles-applied-at-next-start.md) |
+| Authoring | An optional `author` service at L4, beside `app`, owns the one package compiler and source workspaces; authoring is published in additive `FoundryApi_v4` before the ABI-only editor client uses it; roots are host grants | [0042](docs/adr/0042-authoring-through-the-public-api.md) |
+| Source edits | Source bytes are authoritative, and an edit splices only its construct; save is per file against a baseline; build takes a saved snapshot into an isolated candidate; reload is explicit | [0043](docs/adr/0043-source-preserving-authoring-and-explicit-builds.md) |
 | Images | Foundry decodes its own PNG; no third-party image library | [0018](docs/adr/0018-image-decoding.md) |
 | Modularity | Layering enforced by the Zig build graph | [0007](docs/adr/0007-module-layering.md) |
 | Entities | Type-erased component storage with runtime-registered types | [0010](docs/adr/0010-entity-component-constraints.md) |
@@ -555,13 +557,9 @@ Decisions live in `docs/adr/NNNN-short-title.md`, using the template in `docs/ad
 Write an ADR when a choice constrains future work, is expensive to reverse, or will look
 arbitrary to a future session. Do not write one for routine implementation choices.
 
-**Pending M15 design (2026-09-19; not part of the implemented layer graph):**
-[ADR-0042](docs/adr/0042-authoring-through-the-public-api.md) proposes an optional authoring
-service and an ABI-only editor client;
-[ADR-0043](docs/adr/0043-source-preserving-authoring-and-explicit-builds.md) proposes
-source-preserving edits and explicit save/build/reload boundaries. Both are proposed, with
-acceptance before implementation. [editor.md](docs/design/editor.md) is the nine-step plan;
-Step 1 has not begun. Add accepted decisions to §4.1 when accepted, not merely planned.
+**M15 (accepted 2026-09-20):** ADR-0042 and ADR-0043 are in the §4.1 table, and
+[editor.md](docs/design/editor.md) is the nine-step plan. Its `author` module joins §4.3's
+layer graph when Step 2 adds it to the build, not before.
 
 ---
 
@@ -573,7 +571,7 @@ milestone named below is where `docs/ROADMAP.md` now places it.
 
 | Decision | Due | Notes |
 | --- | --- | --- |
-| Separate editor application | **M15, designed; implementation not started** | In-process debug overlay first; the editor re-hosts its introspection (ADR-0025). [editor.md](docs/design/editor.md) specifies nine steps; ADR-0042/0043 are proposed. |
+| Separate editor application | **M15, design accepted 2026-09-20** | In-process debug overlay first; the editor re-hosts its introspection (ADR-0025). [editor.md](docs/design/editor.md) specifies nine steps under ADR-0042/0043; its UI and UX follow Unreal Engine 5's editor. |
 | Second graphics backend | **Done in M13** (2026-09-19) | **Vulkan (ADR-0033)**, built to ADR-0037/0038 in [vulkan.md](docs/design/vulkan.md)'s ten steps. Windows x64 is a runtime claim on the tested machine, with its limits recorded there. Linux left M13 by ADR-0039 and is M18's. Device recovery stays an open `rhi.md` question. |
 | Shader cross-compiler vs. hand-written variants | **Decided in M13** (ADR-0038, 2026-09-14) | Hand-written GLSL variants for the two existing shader pairs, compiled to SPIR-V with pinned SDK tools. ADR-0015's future material/mod shader constraint remains. |
 | Job system / threading model | **Done in M12** (was dated post-M5) | **Decided by ADR-0036 and implemented, 2026-09-14** — explicit `core.Jobs`, fork-join over data-determined chunks, systems kept in order, nothing in the ABI. What it deliberately left out — parallel system scheduling, task graphs, a render thread — has no date: each waits on a measured trigger in `docs/design/jobs-and-threading.md` §9. |

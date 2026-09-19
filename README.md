@@ -91,8 +91,9 @@ exit proof passed on macOS and on Windows through Vulkan, in release builds driv
 input. Both wrote the same files byte for byte, apart from the volume a slider click chose.
 
 **Next: M15, the standalone content editor.** Its [nine-step design](docs/design/editor.md)
-is written; implementation has not begun. It specifies schema-driven record forms,
-source-preserving saves and package builds through the public ABI.
+is accepted; implementation has not begun. It specifies schema-driven record forms,
+source-preserving saves and package builds through the public ABI, in a UI modelled on
+Unreal Engine 5's editor.
 
 All three modding tiers work — see [docs/modding](docs/modding/). Tier 2 is restricted
 Lua 5.5.1, one VM per package, bounded in memory, instructions and engine calls, reaching the

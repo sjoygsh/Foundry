@@ -1,7 +1,7 @@
 # ADR-0042: Authoring is a host-supplied capability of the public API
 
-**Status:** Proposed — M15 planning only; no implementation
-**Date:** 2026-09-19
+**Status:** Accepted, 2026-09-20. The owner accepted M15's design and asked for Step 1.
+**Date:** 2026-09-19 (proposed); 2026-09-20 (accepted)
 
 ## Context
 

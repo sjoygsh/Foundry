@@ -131,9 +131,9 @@ Step 7 published it all as `FoundryApi_v3`: 28 calls after v2's, with changes re
 the host grants writes, and v1 and v2 unchanged. Step 8 built the room's mod screen (M) from
 that table alone, in `samples/room/mods_screen.zig`. Step 9's exit proof passed in ReleaseSafe
 builds driven by real input, on macOS and on Windows through Vulkan, and **M14 is complete**,
-tagged `m14`. **M15 is designed, not implemented:** read `docs/design/editor.md` and proposed
-ADR-0042/0043. Its nine steps cover public authoring and a standalone content-record editor;
-the planning handoff stops before Step 1. M16–M17 remain unstarted.
+tagged `m14`. **M15 is designed and accepted, not implemented:** read `docs/design/editor.md`
+and ADR-0042/0043. Its nine steps cover public authoring and a standalone content-record
+editor whose UI follows Unreal Engine 5's. M16–M17 remain unstarted.
 The bar below is the current one. M13's Step 9 added the checks Vulkan and release work need,
 and M14 added an optimized Windows check to them.
 

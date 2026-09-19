@@ -13,6 +13,10 @@ player choosing their mods in a packaged sample, on macOS and on Windows:**
 3D (ADR-0039). M15's design is written; implementation has not begun. M16 and M17 remain
 unstarted.**
 
+**M15's design accepted, 2026-09-20.** The owner accepted `docs/design/editor.md` and
+ADR-0042/0043, and added one direction: the editor's UI and UX follow Unreal Engine 5's
+(`editor.md` §10), within its fixed regions. Docking, popups and modal dialogs stay open.
+
 **M15 planning handoff, 2026-09-19 — stop before Step 1.**
 
 - `docs/design/editor.md` specifies the standalone content-record editor and nine implementation
@@ -2009,8 +2013,8 @@ unstarted.
 
 ## Current milestone
 
-**M15 — Editor is designed; implementation has not started.** Read `docs/design/editor.md`,
-especially §14's nine steps, and proposed ADR-0042/0043. The handoff is before Step 1.
+**M15 — Editor is designed and accepted; implementation has not started.** Read
+`docs/design/editor.md`, especially §14's nine steps, and ADR-0042/0043, accepted 2026-09-20.
 
 **M14 — Managed: "players choose their mods." Complete, 2026-09-19.** Read
 `docs/design/mod-management.md` and ADR-0040/0041. All nine steps are implemented:
@@ -3583,10 +3587,10 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 ## Immediate next steps
 
 **Next: M15 Step 1 — Source ranges and deterministic value emission.** M14 is complete and
-tagged `m14`. M15's design is `docs/design/editor.md`, with nine steps and proposed
-ADR-0042/0043. Implementation waits for the owner's go; no Step 1 work is included in the
-planning handoff. The editor re-hosts public introspection (ADR-0025), and authoring is
-published in v4 before any editor client can use it (I4).
+tagged `m14`. M15's design is `docs/design/editor.md`, with nine steps and ADR-0042/0043,
+accepted 2026-09-20 with a UI modelled on Unreal Engine 5's. The editor re-hosts public
+introspection (ADR-0025), and authoring is published in v4 before any editor client can use
+it (I4).
 
 One small recorded item can be taken on the owner's word before or beside it: the flaky
 Windows sleep test (Known bugs). `mod-management.md` §14's questions stay open until a
@@ -3639,7 +3643,8 @@ review of `main` rather than beginning on a schedule.
   screen. The exit proof passed on macOS and on Windows.
 * **M15 — Editor.** §9's oldest item, dated M6+; ADR-0011 and ADR-0025 already decided its
   shape as a re-host of the overlay's introspection. Designed 2026-09-19 in
-  `docs/design/editor.md`, with proposed ADR-0042/0043; all nine implementation steps remain.
+  `docs/design/editor.md`, with ADR-0042/0043, accepted 2026-09-20; all nine implementation
+  steps remain.
 * **M16 — Connected.** Networking, trigger-started, carrying ADR-0013's bit-exact determinism
   question only if lockstep is chosen.
 * **M17 — Released.** ADR-0032's deferred gate, and last in the phase on purpose: Developer ID
@@ -4863,9 +4868,8 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 ## Notes for the next session
 
 **Resume point, 2026-09-19:** M0–M14 complete and tagged.
-- **M15's design is written:** `docs/design/editor.md`, proposed ADR-0042/0043. All nine
-  implementation steps remain; stop before Step 1 until the owner starts it. M14's verification
-  remains accepted; no code changed in this planning handoff.
+- **M15's design is accepted:** `docs/design/editor.md`, ADR-0042/0043, with a UI and UX modelled
+  on Unreal Engine 5's (§10). All nine implementation steps remain.
 - **M13's record** is `docs/design/vulkan.md` with ADR-0037/0038/0039. Vulkan runs on Windows x64,
   and `-Drhi=vulkan` builds, tests and installs there (AGENTS.md, *Vulkan work*).
 - **M12's record** is `docs/design/jobs-and-threading.md` and ADR-0036:
