@@ -2,8 +2,8 @@
 
 **Milestone:** M15 — Editor: “content is authored in Foundry”
 **Status:** Designed 2026-09-19. The owner accepted it on 2026-09-20, adding that the editor's
-UI and UX follow Unreal Engine 5's (§10). Step 1 is implemented (2026-09-20); Steps 2–9 are not
-started.
+UI and UX follow Unreal Engine 5's (§10). Steps 1 and 2 are implemented (2026-09-20); Steps 3–9
+are not started.
 **Decisions:** accepted [ADR-0042](../adr/0042-authoring-through-the-public-api.md) and
 [ADR-0043](../adr/0043-source-preserving-authoring-and-explicit-builds.md).
 **Built on:** ADR-0004/0006/0011/0017/0020/0025/0026/0041; `content-schemas.md`,
@@ -467,7 +467,7 @@ work: Step 1's smallest parser-span representation preserving imports, and Step 
 layouts/call count. They may refine this design, not bypass its
 boundaries. Any contradiction requiring a different architecture gets an ADR/Resolution first.
 
-## 14. Implementation order — nine steps, Step 1 done
+## 14. Implementation order — nine steps, Steps 1–2 done
 
 Each step is one handoff: its tests, bar, Resolution, project-state update and commit, then stop.
 ADR-0042/0043 were accepted on 2026-09-20, before any Step 1 code.
@@ -481,7 +481,7 @@ using it. Do not add workspace I/O or UI.
 **Exit:** exact unaffected-byte tests and typed literal round trips cover §5; hostile bounds
 and allocation failures refuse safely. Deliberately break one preservation guard and restore it.
 
-### Step 2 — One reusable compiler and bounded workspaces
+### Step 2 — One reusable compiler and bounded workspaces — done 2026-09-20
 
 Introduce `author` at the specified layer; extract fpack's implementation without changing its
 CLI behaviour/output. Add explicit dependency-schema inputs, deterministic source discovery,
@@ -671,3 +671,87 @@ Choosing an edit from a schema, and re-parsing and checking the candidate before
 - **Mutation.** Whole-line removal was made to require only blanks before an element, not
   after it. Two tests failed, because a comment beside a removed field or list element was
   deleted with it. The guard was restored.
+
+## Resolution — 2026-09-20, Step 2: one reusable compiler and bounded workspaces
+
+**`author` is at L4, and `fpack` is its first consumer.** `engine/src/author/` is one module
+whose dependencies are `core`, `data`, `platform`, `asset`, `mod` and `scene`, beside `app` in
+`build.zig`'s layering table and with no `rhi`, `render2d`, `ui` or `audio` — so a workspace
+unit-tests with no device, no window and no frame. `asset`, `mod` and `scene` are there because
+the schemas a package's records are checked against are declared by them, and `platform`
+because `data` cannot open a file. `tools/fpack` imports `author` and no longer carries a
+compiler of its own (ADR-0042): a tool and an editor that each had one would be two compilers
+that must agree, and the place they must agree is the output bytes.
+
+**The extraction is a move, not a rewrite.** `tools/fpack/pack.zig` became
+`engine/src/author/compiler.zig`, with `--out`/`--assets-out`/`--quiet`, the four passes, the
+manifest pre-pass, the path-derived record ids and the grid compilation unchanged. Evidence:
+the three packages in the tree compiled through the old tool and the new one are byte-identical
+— `core.fpk` 965 bytes, `room.fpk` 11,077, `sandbox.fpk` 5,328 — and so are the generated asset
+trees (`room-assets/grids/hall.fgrid`, `sandbox-assets/grids/room.fgrid`), with neither tool
+writing an asset directory for `core`, which has nothing to compile.
+
+**A dependency is a named file, never a search.** `dependency.Set` holds the `.fpk` files a host
+granted, in the order it named them. Each is read through `platform`'s confined, no-follow
+primitive with the host's own directory as the root and the file itself as the one component, so
+a `.fpk` reached through a symlink is refused rather than followed; §4's bounds are enforced as
+the bytes arrive (16 MiB per package, 64 MiB in total, 64 packages), and a file named twice is
+one dependency because a set is a set. `mod.manifest.read` gives each package its identity, and
+`registerSchemas` registers every package's schemas *before* the authoring package's own
+declarations — so a local `@schema` that disagrees with a dependency's is reported against the
+local declaration, which is the one an author can change.
+
+**`fpack --dependency <file.fpk>`, repeatable, is that same set** — §8's "dependency schema
+inputs shared by the service and CLI". End to end, outside the tree: a package whose record
+uses a granted package's type compiles with `--dependency` and is refused with
+`unknown schema 'acme:torch'` without it; a file named twice produces identical bytes (793);
+`room` with `core` granted is byte-identical to `room` alone, because `core` declares no
+schemas; and a file that is not a package, or is not there, reports one diagnostic naming the
+file and exits 1. `--help` states that they register in the order given, because that order is
+the caller's and never the filesystem's (I9).
+
+**`workspace.Workspace` is the bounded state an editor's later steps change.** `open` reads the
+manifest, loads the granted dependencies, discovers sources deterministically (directory
+listings sorted, asset paths sorted, never the filesystem's order), reads each one, and reports
+a requirement no grant satisfies. §4's limits are one public `Limits`, so a host configures one
+object, and a tighter bound is never raised. Nothing here edits, saves or compiles.
+
+**What refuses, and what is only a diagnostic.** A tree past its walk, source or total budget, a
+dependency that is not a package, a file that is not there, and a manifest that is not a
+manifest all refuse before anything half-built is returned. An empty directory opens, because
+that is where a new package starts; a malformed manifest opens with its diagnostic and no
+identity, because the file that needs fixing must stay reachable by the tool that fixes it; and
+an unsatisfied requirement is a diagnostic beside a workspace that still opens, because a
+missing dependency is what the author is about to write down, not a reason to show them nothing.
+
+**`readSelf` answers identity and requirements in one parse**, and reports nothing itself: it
+runs before the ordinary passes, and a manifest the ordinary pass will diagnose as malformed
+yields no requirements here, so one defect is one diagnostic, against `foundry:mod`, from the
+pass that owns that rule.
+
+**A defect the extraction surfaced, and the guard that now covers it.** `readSelf` returned an
+`Origin` whose `line_text` was borrowed from the parse's document arena, which is deinited
+before the caller reports; the requirement diagnostic then copied freed bytes — a segfault in
+`memcpy`, inside `workspace.test.a requirement nothing granted provides is reported, and the
+workspace still opens`. The line is now copied into the caller's arena, for the same reason the
+requirement's `name` already was: a caret drawn from freed bytes is a crash rather than a
+diagnostic.
+
+**The bar.** `zig build test`: **1,507 of 1,508** headless tests passed, with the one skip it had
+before, from **1,579 declared**. Nineteen new tests: 10 in `dependency.zig` and 9 in
+`workspace.zig`. `zig fmt --check`, `check`, `check -Drhi=metal`, both cross-target checks
+(`x86_64-linux-gnu` and `x86_64-windows-gnu`, `-Dplatform=null -Drhi=null`), and both samples at
+30 frames under the null platform all pass.
+
+- **Mutation.** The `findByPath` dedup was removed from `Set.load`, so a package named twice was
+  read twice: `dependency.test.the same package named twice is one dependency` failed with
+  `expected 1, found 2`. Restored.
+- **Mutation.** `readRequirementList` was made to hand back the parser's own `line_text` instead
+  of a copy: the workspace test named above aborted with a segmentation fault. Restored.
+
+**Left for later steps, deliberately.** Nothing edits, saves, builds or publishes. A granted
+dependency's `assets_root` is recorded and not used — Step 4's snapshot is what reads one. No ABI
+changed: `FoundryApi_v4` is Step 5. And the CLI checks schemas where the workspace checks
+requirements: §8 asks `fpack` for "dependency schema inputs", so a compile is held to the
+schemas it was given, while a requirement no grant satisfies is the workspace's diagnostic.
+`fpack --help` says what it does rather than more than it does.

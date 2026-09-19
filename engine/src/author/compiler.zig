@@ -1,7 +1,11 @@
 //! Compiling a package directory into a `.fpk`.
 //!
 //! Everything that is not argument parsing or writing to a terminal, so that the whole
-//! compile is one call a test can make (`main.zig` is the shell around it).
+//! compile is one call a test can make. `fpack`'s `main.zig` is the shell around it, and so
+//! is a workspace's build: **this is `author`'s compiler** (`editor.md` §3), and it moved
+//! here at M15 step 2 from `tools/fpack/pack.zig` because the editor needs the same compile
+//! and `fpack` needs the editor's dependency handling — two hosts, one implementation,
+//! rather than two compilers that must agree.
 //!
 //! **`data` cannot open a file; this is the module that can.** The parser is handed bytes
 //! and answers `@import` through a callback, and here is where that callback finally reads
@@ -13,7 +17,8 @@
 //! compiles to the same bytes on any machine whose files are the same. A filesystem's own
 //! enumeration order is not a specification and must never reach the output.
 //!
-//! Design: `docs/design/content-schemas.md` §6, `docs/design/assets.md` §3.
+//! Design: `docs/design/content-schemas.md` §6, `docs/design/assets.md` §3,
+//! `docs/design/editor.md` §3 and §4.
 
 const std = @import("std");
 const core = @import("core");
@@ -23,10 +28,14 @@ const mod = @import("mod");
 const scene = @import("scene");
 const platform = @import("platform");
 
+const dependency = @import("dependency.zig");
+
 const Allocator = std.mem.Allocator;
 const Diagnostics = data.Diagnostics;
 const Document = data.Document;
-const Limits = data.Limits;
+/// The parser's bounds, under a name of its own because `Walk` has bounds of its own too
+/// and the two must not be spelled the same inside it.
+const ContentLimits = data.Limits;
 const Location = data.diagnostic.Location;
 const Os = platform.os.Os;
 const Registry = data.Registry;
@@ -42,6 +51,13 @@ pub const Error = error{
     /// The package directory could not be read, or the output could not be written. Not a
     /// content problem, and reported separately from one.
     IoFailed,
+    /// The directory is larger than a package may be: more sources, more entries or more
+    /// depth than `Walk.Limits` allows.
+    ///
+    /// Its own member rather than `ContentInvalid`, because nothing about the package's
+    /// content is wrong — there is simply too much of it to look at, and the difference
+    /// decides whether an author edits a file or moves a tree.
+    OverBudget,
 } || Allocator.Error;
 
 /// Where a package's manifest is written.
@@ -64,7 +80,7 @@ pub const Identity = struct {
 };
 
 pub const Options = struct {
-    limits: Limits = .default,
+    limits: ContentLimits = .default,
     /// Cap on one source file, so a directory full of something else is refused rather
     /// than read.
     max_source_bytes: usize = 16 * 1024 * 1024,
@@ -78,6 +94,16 @@ pub const Options = struct {
     /// containing something that needs compiling and no place to put it is a usage error,
     /// reported as one.
     assets_out: ?[]const u8 = null,
+    /// The packages this one is compiled *against*, or null when it is compiled alone.
+    ///
+    /// **Explicit, and never discovered** (`editor.md` §4). A compile that searched for
+    /// dependencies would compile differently on two machines with the same source, which
+    /// is the one thing a content compiler may not do (I9) — so a host that wants a
+    /// package's records checked against a dependency's schemas names the `.fpk` files it
+    /// means, and a dependency it forgets is a diagnostic rather than a lucky find.
+    dependencies: ?*const dependency.Set = null,
+    /// How much of the package directory the walk may look at.
+    walk: Walk.Limits = .default,
 };
 
 /// Compiles the package rooted at `dir` and appends the `.fpk` bytes to `out`.
@@ -113,8 +139,21 @@ pub fn compile(
     };
     defer pkg.deinit(gpa);
 
-    var walk = try Walk.run(gpa, arena.allocator(), os, dir, diags);
+    var walk = try Walk.run(gpa, arena.allocator(), os, dir, options.walk, diags);
     defer walk.deinit(gpa);
+
+    // **Dependencies first.** Their schemas are what this package's records are checked
+    // against, so they register before anything this package declares — which is also what
+    // makes a local `@schema` that disagrees with a dependency's get reported against the
+    // local declaration, the one an author can change (`editor.md` §4).
+    if (options.dependencies) |set| {
+        set.registerSchemas(gpa, registry, diags) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.ContentInvalid => return error.ContentInvalid,
+            // `registerSchemas` reads nothing: it walks packages the set already opened.
+            error.IoFailed, error.OverBudget => unreachable,
+        };
+    }
 
     // `foundry:mod` — the manifest this package's identity was just read out of. It is
     // registered like any other engine-declared record type, so the manifest is checked by
@@ -282,6 +321,67 @@ fn readIdentity(
     options: Options,
     diags: *Diagnostics,
 ) Error!Identity {
+    // The requirements `readSelf` also reads are a workspace's business, not a compile's,
+    // so they go in an arena that dies here rather than being carried and ignored.
+    var scratch = core.Arena.init(gpa);
+    defer scratch.deinit();
+    const self = try readSelf(gpa, scratch.allocator(), os, dir, options, diags);
+    return self.identity;
+}
+
+/// The name derived records are reported against.
+///
+/// Angle brackets because it is not a path and must never be mistaken for one: nothing on
+/// disk can be opened to find the line a diagnostic points at, and the whole point of
+/// derivation is that the file it describes was not written by anyone.
+pub const derived_file = "<derived>";
+
+/// What a source package says about itself: who it is, and what must load before it.
+pub const Self = struct {
+    /// The package's id and version, from its manifest record. `name` is allocated with
+    /// the gpa, as `Identity` documents.
+    identity: Identity,
+    /// What the package says must load before it, in declaration order, in `arena`.
+    requires: []const SourceRequirement = &.{},
+};
+
+/// One entry of a source package's `requires`.
+pub const SourceRequirement = struct {
+    requirement: mod.Requirement,
+    /// The `namespace:name` as the author wrote it.
+    ///
+    /// Carried beside the id rather than recovered from it: an id is a hash and nothing
+    /// else (I2, ADR-0005), so a diagnostic that said `content(0x…)` where the author wrote
+    /// `demo:torch` would be worse than saying nothing at all.
+    name: []const u8,
+    /// The `requires` field it was written in, so that a caller checking it against a
+    /// granted set points at the line rather than at the file. Borrows the parse, so it
+    /// lives in the arena `readSelf` was handed, like `requires` itself.
+    origin: data.parser.Origin,
+};
+
+/// Reads `mod.fdt` once and answers both questions a caller can have about it: what the
+/// package is, and what it needs.
+///
+/// **Read from the manifest, because a workspace has source and nothing else.** A compiled
+/// package carries the same requirement list in its manifest record, and the runtime reads
+/// it from there; a session that is about to hand an editor a set of dependency files has
+/// to decide *before* compiling whether those are the files this package is written against
+/// (`editor.md` §4), and the only place that says so is the source.
+///
+/// **A `requires` this cannot follow is not reported here.** The ordinary pass checks the
+/// manifest record against `foundry:mod` like any other record, so a malformed one is a
+/// compile error with a type name attached to it; saying so here as well would be two
+/// messages for one mistake. What this does instead is refuse to guess: an unreadable
+/// `requires` yields no requirements rather than wrong ones.
+pub fn readSelf(
+    gpa: Allocator,
+    arena: Allocator,
+    os: *Os,
+    dir: []const u8,
+    options: Options,
+    diags: *Diagnostics,
+) Error!Self {
     const read = os.readFileConfined(gpa, dir, manifest_file, options.max_source_bytes) catch |err| {
         try diags.addFmt(gpa, .err, .whole(manifest_file), 0, "", "every package states its own identity here and this one could not be read: {s}", .{@errorName(err)});
         return error.ContentInvalid;
@@ -321,21 +421,97 @@ fn readIdentity(
         };
     }
 
-    return .{
-        .name = try gpa.dupe(u8, record.text),
+    // Freed if anything below refuses, because a caller that gets an error has no way to
+    // free a name it was never handed.
+    const name = try gpa.dupe(u8, record.text);
+    errdefer gpa.free(name);
+
+    const identity: Identity = .{
+        .name = name,
         .version = version orelse {
             try diags.addFmt(gpa, .err, .whole(manifest_file), 0, "", "'{s}' needs a '{s}' field holding a whole number one or greater", .{ record.text, mod.schemas.version_field });
             return error.ContentInvalid;
         },
     };
+
+    for (record.fields) |field| {
+        if (!std.mem.eql(u8, field.name, mod.schemas.requires_field)) continue;
+        return .{
+            .identity = identity,
+            .requires = try readRequirementList(arena, &doc, field),
+        };
+    }
+    return .{ .identity = identity };
 }
 
-/// The name derived records are reported against.
-///
-/// Angle brackets because it is not a path and must never be mistaken for one: nothing on
-/// disk can be opened to find the line a diagnostic points at, and the whole point of
-/// derivation is that the file it describes was not written by anyone.
-pub const derived_file = "<derived>";
+/// The requirements in one `requires` field, or none if it is not shaped like a list of
+/// `{ id … }` records — see `readSelf` for why that is silence rather than a diagnostic.
+fn readRequirementList(
+    arena: Allocator,
+    doc: *const data.parser.Document,
+    field: data.parser.FieldDecl,
+) Error![]const SourceRequirement {
+    const items = switch (field.value) {
+        .list => |items| items,
+        else => return &.{},
+    };
+
+    const out = try arena.alloc(SourceRequirement, items.len);
+    for (out, 0..) |*slot, i| {
+        const nested = switch (items[i]) {
+            .nested => |fields| fields,
+            else => return &.{},
+        };
+
+        var id: ?core.ContentId = null;
+        var min: ?u32 = null;
+        var max: ?u32 = null;
+        for (nested) |named| {
+            if (std.mem.eql(u8, named.name, "id")) {
+                id = switch (named.value) {
+                    .id => |value| value,
+                    else => return &.{},
+                };
+            } else if (std.mem.eql(u8, named.name, "min")) {
+                min = wholeNumber(named.value) orelse return &.{};
+            } else if (std.mem.eql(u8, named.name, "max")) {
+                max = wholeNumber(named.value) orelse return &.{};
+            }
+        }
+
+        const requirement: mod.Requirement = .{
+            .id = id orelse return &.{},
+            // `min 1` is what the schema defaults to, so a requirement that leaves it out
+            // means "any version" here exactly as it does in a compiled package.
+            .range = .{ .min = min orelse 1, .max = max },
+        };
+        slot.* = .{
+            .requirement = requirement,
+            // Copied out of the document, which is deinited before this returns.
+            .name = try arena.dupe(u8, doc.stringOf(requirement.id.hash) orelse ""),
+            // The `requires` field's own name, not its value: a caller's message begins
+            // with the field, and underlining a whole list of records to say one of them is
+            // wrong would be a caret that covers everything and points at nothing.
+            //
+            // The line is copied out of the parse for the same reason `name` is: the
+            // parser's copies live in the document's arena, which dies before this returns,
+            // and a caret drawn from freed bytes is a crash rather than a diagnostic.
+            .origin = origin: {
+                var origin = field.name_origin;
+                origin.line_text = try arena.dupe(u8, origin.line_text);
+                break :origin origin;
+            },
+        };
+    }
+    return out;
+}
+
+fn wholeNumber(value: data.Value) ?u32 {
+    return switch (value) {
+        .int => |n| if (n >= 0 and n <= std.math.maxInt(u32)) @intCast(n) else null,
+        else => null,
+    };
+}
 
 // ---------------------------------------------------------------------------
 // Walking the package
@@ -353,6 +529,28 @@ pub const Walk = struct {
     /// downstream may reference one, and the file that ends up in the package is the one
     /// this compiles to.
     grids: std.ArrayList([]const u8) = .empty,
+
+    /// How much of a directory the walk is willing to look at.
+    ///
+    /// **A refusal has to happen before the thing it refuses exists.** A package is
+    /// untrusted input like everything else the compiler reads, so a tree with a million
+    /// files in it must be an `OverBudget` diagnostic rather than a build that allocates a
+    /// million names and then runs out of memory. The counts are checked as entries are
+    /// taken, not after the lists are built — except the listing itself, which is
+    /// `platform`'s primitive and is bounded by the directory's real size; what this
+    /// bounds is everything the walk keeps and descends into.
+    pub const Limits = struct {
+        /// Source files one package may contain. `editor.md` §4's row, and the same number
+        /// a workspace reports, because a workspace discovers with this walk.
+        max_sources: u32 = 1024,
+        /// Every entry the walk may look at, sources included.
+        max_entries: u32 = 16 * 1024,
+        /// How deep below the package root a source may sit. A tree deeper than this is
+        /// not an organisation, it is a mistake.
+        max_depth: u32 = 32,
+
+        pub const default: Limits = .{};
+    };
 
     pub fn deinit(self: *Walk, gpa: Allocator) void {
         self.sources.deinit(gpa);
@@ -372,11 +570,13 @@ pub const Walk = struct {
         arena: Allocator,
         os: *Os,
         root: []const u8,
+        limits: Limits,
         diags: *Diagnostics,
     ) Error!Walk {
         var self: Walk = .{};
         errdefer self.deinit(gpa);
-        try self.descend(gpa, arena, os, root, "", diags);
+        var seen: u32 = 0;
+        try self.descend(gpa, arena, os, root, "", limits, &seen, diags);
         return self;
     }
 
@@ -387,8 +587,16 @@ pub const Walk = struct {
         os: *Os,
         root: []const u8,
         prefix: []const u8,
+        limits: Limits,
+        seen: *u32,
         diags: *Diagnostics,
     ) Error!void {
+        const depth = if (prefix.len == 0) 0 else std.mem.count(u8, prefix, "/") + 1;
+        if (depth > limits.max_depth) {
+            try diags.addFmt(gpa, .err, .whole(prefix), 1, "", "is deeper than {d} directories below the package root", .{limits.max_depth});
+            return error.OverBudget;
+        }
+
         const absolute = if (prefix.len == 0)
             try arena.dupe(u8, root)
         else
@@ -412,16 +620,25 @@ pub const Walk = struct {
 
         for (entries) |entry| {
             if (entry.name.len == 0 or entry.name[0] == '.') continue;
+            if (seen.* >= limits.max_entries) {
+                try diags.addFmt(gpa, .err, .whole(absolute), 1, "", "holds more than {d} entries, which is more than a package may contain", .{limits.max_entries});
+                return error.OverBudget;
+            }
+            seen.* += 1;
             const rel = if (prefix.len == 0)
                 try arena.dupe(u8, entry.name)
             else
                 try std.fmt.allocPrint(arena, "{s}/{s}", .{ prefix, entry.name });
 
             switch (entry.kind) {
-                .directory => try self.descend(gpa, arena, os, root, rel, diags),
+                .directory => try self.descend(gpa, arena, os, root, rel, limits, seen, diags),
                 .file => {
                     const ext = extensionOf(entry.name);
                     if (std.mem.eql(u8, ext, source_extension)) {
+                        if (self.sources.items.len >= limits.max_sources) {
+                            try diags.addFmt(gpa, .err, .whole(rel), 1, "", "is one source file more than the {d} a package may contain", .{limits.max_sources});
+                            return error.OverBudget;
+                        }
                         try self.sources.append(gpa, rel);
                     } else if (std.mem.eql(u8, ext, asset.tilegrid.text_extension)) {
                         try self.grids.append(gpa, rel);
@@ -561,7 +778,7 @@ fn compileGrids(
     walk: *Walk,
     loader: *Loader,
     diags: *Diagnostics,
-) Error!void {
+) (error{ ContentInvalid, IoFailed } || Allocator.Error)!void {
     if (walk.grids.items.len == 0) return;
 
     const out_root = options.assets_out orelse {

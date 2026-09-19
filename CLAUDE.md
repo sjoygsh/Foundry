@@ -254,6 +254,13 @@ L3  scene       -> core, data, asset.     Entities, components, world, systems.
 L3  audio       -> core, platform, asset. Mixer, voices, playback by content ID.
 
 L4  app         -> all of the above.      Engine loop, subsystem lifecycle, config.
+L4  author      -> core, data, platform, asset, mod, scene.
+                The one content-package compiler, the dependency packages a host grants,
+                and bounded source workspaces (ADR-0042). Beside `app`, not inside it: a
+                tool that authors content is not the engine that runs it, and a game that
+                never opens a source file never builds it. No `rhi`, no `render2d`, no
+                `ui`, no `audio` — it reads text and writes packages, so a workspace
+                unit-tests with no device, no window and no frame.
 
 L5  debug       -> core, data, ui, asset, render2d, scene, audio, app.
                 The in-process debug overlay: profiler, memory, log console, entity

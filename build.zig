@@ -99,6 +99,18 @@ const layering = [_]Module{
     // simulation structurally rather than by a rule someone has to remember (I9).
     .{ .name = "audio", .deps = &.{ "core", "platform", "asset" } },
 
+    // L4 — authoring: reading a package as text, and compiling one (ADR-0042,
+    // docs/design/editor.md). Beside `app` rather than inside it, because a tool that
+    // authors content is not the engine that runs it: `fpack` and the editor both consume
+    // this module, and a game that never opens a source file never builds it.
+    //
+    // What it does *not* get is the decision, as it is for `ui`: no `rhi`, no `render2d`,
+    // no `ui` and no `audio`. Authoring reads text and writes packages, so a workspace
+    // unit-tests with no device, no window and no frame. `asset`, `mod` and `scene` are
+    // here because the schemas a package's records are checked against are declared by
+    // them, and `platform` because `data` cannot open a file and the content is in files.
+    .{ .name = "author", .deps = &.{ "core", "data", "platform", "asset", "mod", "scene" } },
+
     // L4 — the engine loop and subsystem lifecycle. Gains dependencies as the layers
     // between it and `platform` arrive; it is allowed to see all of them (ADR-0007).
     // `data` and `asset` joined at M3 step 9: the engine loads package zero and mounts it
@@ -509,17 +521,22 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(room);
 
     // `tools/fpack` — the content compiler (ADR-0011). A consumer of the engine's modules
-    // like a sample is, not a privileged member of the layering: it gets `data` because it
-    // compiles content, `platform` because `data` cannot open a file, and `asset` because
-    // that is where the asset kinds a path can derive are declared. It does not get `rhi`
-    // or `render2d`, and a content compiler that needed a GPU would be a design mistake
-    // announcing itself.
+    // like a sample is, not a privileged member of the layering: it gets `author` because
+    // that is the compiler, `platform` because the compiler needs a filesystem to read,
+    // and `data` because that is where a diagnostic is rendered and a registry built. It
+    // does not get `rhi` or `render2d`, and a content compiler that needed a GPU would be a
+    // design mistake announcing itself.
+    //
+    // **`author` and not a compiler of its own** (ADR-0042): a tool and an editor that each
+    // had their own would be two compilers that must agree, and the one place they must
+    // agree is the output bytes.
     const fpack_mod = b.createModule(.{
         .root_source_file = b.path("tools/fpack/main.zig"),
         .target = target,
         .optimize = optimize,
     });
     fpack_mod.addImport("asset", modules.get("asset").?);
+    fpack_mod.addImport("author", modules.get("author").?);
     fpack_mod.addImport("core", modules.get("core").?);
     fpack_mod.addImport("data", modules.get("data").?);
     fpack_mod.addImport("platform", platform_module);

@@ -1,7 +1,7 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-20
-**Current handoff: M15 Step 1 is done; stop before Step 2.** M0 through M14 are complete and
+**Current handoff: M15 Step 2 is done; stop before Step 3.** M0 through M14 are complete and
 tagged. **M14 closed on 2026-09-19 with a player choosing their mods in a packaged sample, on
 macOS and on Windows:**
 - **the mod set, with record-level conflicts, and ordered profiles on disk, applied at the next
@@ -11,8 +11,33 @@ macOS and on Windows:**
 - **the room's MO2-style mod screen, built from that table alone.**
 
 **M13 before it proved Windows x64 through Vulkan. Linux is M18, after the first game and before
-3D (ADR-0039). M15 is under way: Step 1 of nine is done, and the handoff stops before Step 2.
-M16 and M17 remain unstarted.**
+3D (ADR-0039). M15 is under way: Steps 1–2 of nine are done, and the handoff stops before
+Step 3. M16 and M17 remain unstarted.**
+
+**Completed M15 Step 2, 2026-09-20: one reusable compiler and bounded workspaces.**
+- `engine/src/author/` is a new L4 module beside `app`, depending on `core`, `data`,
+  `platform`, `asset`, `mod` and `scene` and on nothing above them, so a workspace unit-tests
+  with no device, no window and no frame. `tools/fpack` imports it and no longer carries a
+  compiler of its own (ADR-0042).
+- The extraction is a move, not a rewrite: `fpack --out/--assets-out/--quiet` and the four
+  passes are unchanged, and the tree's three packages compile byte-identical through the old
+  tool and the new one (`core.fpk` 965 B, `room.fpk` 11,077 B, `sandbox.fpk` 5,328 B), as do
+  the generated asset trees.
+- `author/dependency.zig` holds the `.fpk` files a host granted, in the order it named them:
+  confined and no-follow reads, one package per file, the same file named twice is one
+  dependency, §4's byte and count bounds, and every package's schemas registered before the
+  authoring package's own declarations.
+- `fpack --dependency <file.fpk>` is repeatable and shares that set. A record using a granted
+  package's type compiles with it and is refused without it; a file that is not a package, or
+  is not there, is one diagnostic and exit 1.
+- `author/workspace.zig` is the bounded workspace: manifest, granted dependencies,
+  deterministic source discovery and reads, and a requirement no grant satisfies reported
+  beside a workspace that still opens. An empty directory and a malformed manifest also open,
+  with diagnostics, because those are the states an author fixes.
+- Fixed a defect the extraction surfaced: a requirement's caret borrowed the parse's arena and
+  was copied after it died. It is copied into the caller's arena now, and a test covers it.
+- The bar passed **1,507 of 1,508**, with the one skip it had before, from 1,579 declared. 19
+  new tests. Two mutations were caught and restored: the dependency dedup, and the caret copy.
 
 **Completed M15 Step 1, 2026-09-20: source ranges and value emission.**
 - The parser records, on request (`Options.spans`), where every record, field, value, list
@@ -2036,10 +2061,11 @@ unstarted.
 
 ## Current milestone
 
-**M15 — Editor is under way: Step 1 of nine is done (2026-09-20).** Read
-`docs/design/editor.md`, especially §14's nine steps and the Step 1 Resolution, and ADR-0042/0043,
-accepted 2026-09-20. The editor's UI and UX follow Unreal Engine 5's (§10). The tree stands at
-**1,559 declared / 1,488 headless tests**.
+**M15 — Editor is under way: Steps 1–2 of nine are done (2026-09-20).** Read
+`docs/design/editor.md`, especially §14's nine steps and the Step 1 and Step 2 Resolutions, and
+ADR-0042/0043, accepted 2026-09-20. The editor's UI and UX follow Unreal Engine 5's (§10). The
+tree stands at **1,579 declared / 1,507 headless tests**, with the one skip it has had since
+Step 1.
 
 **M14 — Managed: "players choose their mods." Complete, 2026-09-19.** Read
 `docs/design/mod-management.md` and ADR-0040/0041. All nine steps are implemented:
@@ -2960,9 +2986,11 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M0–M14 are complete, and M15's Step 1 is done; nothing is half-built.** M15's design and its
-Step 1 Resolution are in `docs/design/editor.md`. Step 1 added source spans to the parser and
-`data/emit.zig` and `data/splice.zig`; nothing else in M15 exists yet. M14's specification and its Resolutions
+**M0–M14 are complete, and M15's Steps 1–2 are done; nothing is half-built.** M15's design and
+its Step 1 and Step 2 Resolutions are in `docs/design/editor.md`. Step 1 added source spans to
+the parser and `data/emit.zig` and `data/splice.zig`; Step 2 added `engine/src/author/` — the
+one compiler `fpack` and the editor share, the granted dependency set, and bounded workspaces —
+and moved `fpack` onto it. Nothing else in M15 exists yet. M14's specification and its Resolutions
 are in `docs/design/mod-management.md`. M13's
 specification and its Resolutions are in `docs/design/vulkan.md`. M12's specification and all
 six Resolutions are in
@@ -3612,8 +3640,8 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M15 Step 2 — One reusable compiler and bounded workspaces**, when the owner asks for
-it. Step 1 is done (2026-09-20). M15's design is `docs/design/editor.md`, with nine steps and ADR-0042/0043,
+**Next: M15 Step 3 — Typed record commands and undo/redo**, when the owner asks for
+it. Steps 1 and 2 are done (2026-09-20). M15's design is `docs/design/editor.md`, with nine steps and ADR-0042/0043,
 accepted 2026-09-20 with a UI modelled on Unreal Engine 5's. The editor re-hosts public
 introspection (ADR-0025), and authoring is published in v4 before any editor client can use
 it (I4).
@@ -3669,7 +3697,7 @@ review of `main` rather than beginning on a schedule.
   screen. The exit proof passed on macOS and on Windows.
 * **M15 — Editor.** §9's oldest item, dated M6+; ADR-0011 and ADR-0025 already decided its
   shape as a re-host of the overlay's introspection. Designed 2026-09-19 in
-  `docs/design/editor.md`, with ADR-0042/0043, accepted 2026-09-20. Step 1 is done; Steps 2–9
+  `docs/design/editor.md`, with ADR-0042/0043, accepted 2026-09-20. Steps 1–2 are done; Steps 3–9
   remain.
 * **M16 — Connected.** Networking, trigger-started, carrying ADR-0013's bit-exact determinism
   question only if lockstep is chosen.

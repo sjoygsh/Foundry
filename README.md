@@ -133,6 +133,9 @@ Implemented so far:
 * **`app`** — the engine loop, subsystem lifecycle, the log sink, loading content packages in
   the order it is given them, and the mod set: a player's ordered profiles, conflicts between
   packages, and versioned settings that migrate.
+* **`author`** — the content compiler, at L4 beside `app`: a package directory read as text
+  and compiled to one `.fpk`, the dependency packages a host grants it, and bounded source
+  workspaces. `fpack` and, in M15, the editor are its hosts.
 * **`debug`** — the in-process profiler, memory report, log console, entity inspector and
   content browser.
 * **`mod`** — manifests, package discovery, dependency resolution and deterministic order.
@@ -143,7 +146,8 @@ Implemented so far:
   and the world stay.
 * **`abi`** — the installed C99/C++ header, frozen 135-call `FoundryApi_v1`, additive
   `FoundryApi_v2` and `FoundryApi_v3`, host boundary and native-library lifecycle.
-* **`tools/fpack`** — the content compiler: a package directory in, one `.fpk` out.
+* **`tools/fpack`** — the content compiler's command line: a package directory in, one `.fpk`
+  out, checked against the `--dependency` packages it is named.
 * **`content/core`** — package zero. The engine's own content, loaded through exactly the
   path a mod's package uses, because that is the only durable way to know that path works.
 

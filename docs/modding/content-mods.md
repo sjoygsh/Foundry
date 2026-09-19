@@ -94,6 +94,20 @@ falls back to the working directory when the platform user-data root is unavaila
 There is no `--name` and no `--version`: both come out of your `mod.fdt`, so there is
 nowhere for a second answer to disagree from.
 
+**A package that uses another package's record types is compiled against it.** Dependencies
+are named, never searched for, so the compiler is told which compiled packages your records
+are written against:
+
+```sh
+zig build fpack -- --out "$MODS_ROOT/mymod.fpk" \
+    --dependency "$MODS_ROOT/other.fpk" mymod
+```
+
+`--dependency` takes a `.fpk`, is repeatable, and the schemas it declares register before
+your own declarations, in the order you gave them. Naming the same package twice is the same
+as naming it once. Without it, a record whose schema only the other package declares is an
+unknown schema rather than a lucky find.
+
 Then load it. The sandbox is handed a list of **content IDs**, not filenames — where your
 file sits stopped mattering the moment your package started naming itself. The sandbox has no
 mod screen, so it is told which packages to add; the room has one (press M), where a player
