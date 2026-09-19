@@ -116,8 +116,8 @@ GLSL stages pass `glslangValidator`, `spirv-val` and Foundry's layout agreement 
 bytes can enter a target. The backend implements the whole RHI interface, so `-Drhi=vulkan`
 builds the ordinary test and check graph and installs and runs the samples (§3). The native
 Windows `zig build test` passes on the target, and native builds there use at most two jobs.
-Mac cross-compilation never substitutes for runtime proof. **M14 is in progress**: read
-`docs/design/mod-management.md` and ADR-0040/0041. Steps 1 and 2 are done. `app.ModSet` owns
+Mac cross-compilation never substitutes for runtime proof. **M14 is complete**: read
+`docs/design/mod-management.md` and ADR-0040/0041. All nine steps are done. `app.ModSet` owns
 discovery, resolution and record-level conflicts for both samples, and a player's duplicate
 package is skipped rather than fatal. `app.profiles` keeps ordered profiles on disk, which the
 mod set starts from, edits and applies. Step 3 added settings migrations and merged writes, and
@@ -129,10 +129,11 @@ the room's card drawn from `room:ui.theme`. Step 6 made existing widgets skin-aw
 tabs, selectable rows, reorder controls, icons and placed images without moving `ui` above L1.
 Step 7 published it all as `FoundryApi_v3`: 28 calls after v2's, with changes refused unless
 the host grants writes, and v1 and v2 unchanged. Step 8 built the room's mod screen (M) from
-that table alone, in `samples/room/mods_screen.zig`. Step 9's exit proof passed on macOS in a
-ReleaseSafe release driven by real input; the Windows run and the tag are left.
-M15–M17 remain unstarted.
-The bar below is the current one; Step 9 added the checks Vulkan and release work need to it.
+that table alone, in `samples/room/mods_screen.zig`. Step 9's exit proof passed in ReleaseSafe
+builds driven by real input, on macOS and on Windows through Vulkan, and **M14 is complete**,
+tagged `m14`. M15–M17 remain unstarted.
+The bar below is the current one. M13's Step 9 added the checks Vulkan and release work need,
+and M14 added an optimized Windows check to them.
 
 ## 3. Building and verifying
 
@@ -199,7 +200,12 @@ zig build vulkan-check -Drhi=vulkan -Dtarget=x86_64-windows-gnu
 zig build vulkan-check -Drhi=vulkan -Dtarget=x86_64-linux-gnu
 zig build check        -Drhi=vulkan -Dtarget=x86_64-windows-gnu
 zig build check        -Drhi=vulkan -Dtarget=x86_64-linux-gnu
+zig build check        -Drhi=vulkan -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe
 ```
+
+The last line is there because a Windows release is optimized, and until M14 no optimized
+Windows build had been compiled. The first one failed in translated MinGW headers, which a Debug
+check cannot see (`vulkan.md`, the M14 note at its end). Run it also when an `@cImport` changes.
 
 ### Vulkan work (M13)
 

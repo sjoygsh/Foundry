@@ -691,7 +691,7 @@ The faults the milestone found were the backend's own, such as Step 5's inverted
 Windows faults that predated it, which the native test repair fixed. Device recovery stays an
 open question.
 
-### M14 — Managed: "players choose their mods" — **in progress: Steps 1 to 8 done and Step 9's macOS proof passed, 2026-09-19**
+### M14 — Managed: "players choose their mods" — **complete, 2026-09-19**
 
 **Designed 2026-09-19:** [`design/mod-management.md`](design/mod-management.md) specifies nine
 steps, with accepted [ADR-0040](adr/0040-ordered-profiles-applied-at-next-start.md) (ordered
@@ -714,7 +714,11 @@ changing it with the host's grant, plus themes and the game widgets. v1 and v2 a
 and look as content. **Step 9:** the exit proof passed on macOS in a ReleaseSafe release
 driven by real input. An M13-era settings file migrated, and a click turned a mod on that the
 next start loaded. A theme mod re-skinned the screen, and two instances kept each other's
-changes. The Windows run and the tag `m14` are left.
+changes. The same proof then passed on Windows through Vulkan, in a ReleaseSafe install moved
+from where it was built. Every file it wrote matched the Mac's byte for byte, apart from the
+volume a slider click chose. That run found that an optimized Windows build had never compiled.
+Zig 0.16.0 cannot translate MinGW's fortified string wrappers, so the SDL3 and Vulkan imports now
+leave them out. M14 is tagged `m14`.
 
 `CLAUDE.md` §5 recorded it plainly until M14: a mod manager UI was unbuilt. Every mechanism under it
 existed — discovery, dependency resolution, deterministic order, user package roots — and

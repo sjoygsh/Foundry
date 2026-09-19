@@ -4,7 +4,11 @@
 step 3, `engine/src/app/ui_draw.zig` for step 4, and both samples for steps 4-6). §10's widget
 set is complete and §4's capture is proven by a game rather than only by a test. Written before
 any UI code existed, so implementation was transcription rather than invention; see the
-Resolution sections at the end for what each step corrected and settled.
+Resolution sections at the end for what each step corrected and settled. **M14 (2026-09-19,
+[ADR-0041](../adr/0041-game-widget-set-and-content-themes.md)) added the second widget set:**
+the `image` and `nine_slice` commands, a disabled scope, a skin drawn from `foundry:ui_theme`
+content, and the game widgets, published in `FoundryApi_v3`, with `ui` still at L1. The room's
+mod screen is built from them (§§6, 7 and 13 carry the dated notes).
 **Date:** 2026-09-07
 **Implements:** I1, I4, I5, I6, I8, I9 · **Informed by:** ADR-0004, ADR-0007, ADR-0011,
 ADR-0021, ADR-0024

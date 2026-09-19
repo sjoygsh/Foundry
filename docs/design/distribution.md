@@ -142,6 +142,12 @@ not an instruction to override dependency order. Native execution is not consent
 >
 > `IdSet` still exists and still sorts, for a host that keeps a selected set in its settings;
 > the samples no longer do (`mod-management.md`, Step 3).
+>
+> **M14 Step 9, 2026-09-19:** a player's M13-era file converted in a ReleaseSafe release on macOS
+> and in a ReleaseSafe Windows install, moved from where it was built. The version 2 file, the
+> kept `settings.fset.v1` and the profile were byte-identical on the two. Windows has no `dist`
+> step (§8), and the first optimized Windows build needed a translation workaround
+> (`vulkan.md`, the M14 note).
 
 Missing file means defaults. Malformed values/format mean a warning and defaults, with the
 original retained; explicit user preference changes may replace a malformed current-version

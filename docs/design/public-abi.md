@@ -682,6 +682,17 @@ must not settle them opportunistically. Question 1 was resolved by the M7 exit p
 > both layouts and signatures. Gameplay bindings and VM replacement remain later M8 steps;
 > questions 2–6 remain open.
 
+> **M14, 2026-09-19 ([ADR-0040](../adr/0040-ordered-profiles-applied-at-next-start.md),
+> [ADR-0041](../adr/0041-game-widget-set-and-content-themes.md)):** `FoundryApi_v3` is v2
+> unchanged plus 28 calls, 164 in all, offered by `get_api(3)` and the native loader beside v1
+> and v2, whose declarations are byte-identical. It publishes the mod set (`mods_*`: installed
+> copies, the player's order, dependencies, conflicts, provider chains and profiles), content
+> themes as host-owned handles, and the game widget set. Every change to a selection needs the
+> host's `abi.Host.mods_write` grant; without it the call answers `FOUNDRY_ERR_REFUSED`, so a
+> host that lends its mod set for reading has not lent it for writing. The specification is
+> `mod-management.md` §9 and its Step 7 Resolution. The room's mod screen is built from this
+> table alone. Questions 2–6 remain open.
+
 ## 19. Implementation order
 
 Each step ends with something that runs and something that is tested.

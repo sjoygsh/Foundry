@@ -1,38 +1,40 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-19
-**Current handoff: M0 through M13 are complete and tagged. M13 closed on 2026-09-19 with Foundry
-drawing through Vulkan on Windows x64:**
-- **a qualified target with pinned tools, native window payloads and a safe system-library open;**
-- **a native Windows test suite that passes;**
-- **a validated device that owns resources, checked shaders, persistent bindings and pipelines,
-  and presents through a FIFO swapchain with resize and failed-frame closure.**
+**Current handoff: M0 through M14 are complete and tagged. M14 closed on 2026-09-19 with a
+player choosing their mods in a packaged sample, on macOS and on Windows:**
+- **the mod set, with record-level conflicts, and ordered profiles on disk, applied at the next
+  start (ADR-0040);**
+- **settings migrations with a one-time backup, and merged concurrent writes;**
+- **the game widget set, drawn from `foundry:ui_theme` content (ADR-0041), and `FoundryApi_v3`;**
+- **the room's MO2-style mod screen, built from that table alone.**
 
-**Both samples run on it from a relocated install, each wearing an icon it supplies. Windows is a
-runtime claim for the tested machine, with its limits recorded, and the RHI's rules survived with
-none relaxed. Linux left M13 by ADR-0039: it is M18, after the first game and before 3D. M14 is in
-progress (`docs/design/mod-management.md`, ADR-0040/0041): Steps 1 to 8 are done, and Step 9's
-exit proof passed on macOS. The Windows run is left, then the tag `m14`. M15 through M17
-remain unstarted.**
+**M13 before it proved Windows x64 through Vulkan. Linux is M18, after the first game and before
+3D (ADR-0039). M15 through M17 remain unstarted, and nothing of M15 has been begun.**
 
-**M14 Step 9, 2026-09-19: the exit proof passed on macOS; the Windows run is outstanding.**
-- **§12's five parts passed in a ReleaseSafe room release** unpacked from its zip, with the
-  operating system's own keys and clicks and mods built outside the tree:
+**Completed M14 Step 9, 2026-09-19: the exit proof, on both platforms, and M14's close.**
+- **§12's five parts passed in ReleaseSafe builds driven by the operating system's own input**,
+  with mods built outside the tree:
   1. an M13-era version 1 settings file, written by M13's own code, migrated;
   2. a click turned a mod on and Apply saved it, with the version 1 bytes kept once;
-  3. the next start loaded it and the hall's lamps were drawn lit;
+  3. the next start loaded it, and the hall's lamps were drawn lit;
   4. a theme mod re-skinned the screen and the card;
   5. two instances at once kept each other's volume, list and profile name.
-- **The hall's hint now names M,** a change of content. Before, only the log said how to open
-  the screen.
-- **A theme installed without its files folder** fell back to the room's own look with one
-  warning per resolver.
-- **The bar passed 1,459 of 1,460**, and the Metal graph 1,464 of 1,470. Both releases staged,
-  and the Vulkan checks for Windows passed.
-- **Not yet:** the Windows run. The PC's GPU was busy at about 89% 3D load, and this session's
-  permissions refused copying files to it and registering M13's desktop-session task.
+- **On macOS** it ran in the room's release, unpacked from its zip.
+- **On Windows it ran through Vulkan** in a ReleaseSafe install moved from where it was built,
+  in the owner's desktop session. Every file matched the Mac's byte for byte, apart from the
+  volume a slider click chose, and so did the three mods the moved `fpack` compiled.
+- **What the proof found:**
+  - the hall's hint never named M, and now does;
+  - a theme without its files folder falls back, as designed;
+  - an optimized Windows build had never compiled. Zig 0.16.0 cannot translate MinGW's
+    fortified string wrappers, so the SDL3 and Vulkan imports leave them out, and AGENTS.md
+    now has a ReleaseSafe Windows check;
+  - one Windows timing test is flaky, and is recorded as debt.
+- **The bar passed 1,459 of 1,460 on the Mac.** On the PC the default graph passed 1,455 of
+  1,460, with M13's five skips, and the Vulkan graph 1,492 of 1,502.
 
-Resolution: `mod-management.md`, Step 9.
+Resolutions: `mod-management.md`, Step 9 on macOS and Step 9's Windows run.
 
 **Completed M14 Step 8, 2026-09-19: the room's mod screen.**
 - `samples/room/mods_screen.zig` is `mod-management.md` §11's screen, built only from
@@ -1986,17 +1988,26 @@ signing, notarization and a clean recipient Mac (ADR-0032) — not engine work. 
 "Hardening and reach" (M10-M17), is under way**: it gathers the deferred work rather than
 adding to it, only M10 was new, **M10 and M11 are complete (2026-09-13)** and **M12 is
 complete (2026-09-14)**. **M13 is complete (2026-09-19)**, proving
-Windows x64 through Vulkan. **M14 is in progress**, Steps 1 to 8 of nine done and Step 9's macOS
-proof passed; M15 through
-M17 are unstarted.
+Windows x64 through Vulkan. **M14 is complete (2026-09-19)**: a player chooses their mods in a
+packaged sample, on macOS and on Windows. M15 through M17 are unstarted.
 
 ## Current milestone
 
-**M14 — Managed is in progress.** Read `docs/design/mod-management.md` and ADR-0040/0041.
-Steps 1 to 8 are done (2026-09-19): the mod set, profiles on disk, migrations with merged
-writes (both samples on profiles), the UI kernel's image commands and disabled scope, themes
-as content, the skinned game widget set, `FoundryApi_v3`, and the room's mod screen. Step 9's
-exit proof passed on macOS; the Windows run and the tag are left.
+**M15 — Editor has not been started.** It owes a design document before any code
+(`docs/ROADMAP.md`).
+
+**M14 — Managed: "players choose their mods." Complete, 2026-09-19.** Read
+`docs/design/mod-management.md` and ADR-0040/0041. All nine steps are implemented:
+- the mod set, with record-level conflicts, and profiles on disk;
+- migrations with merged writes, with both samples on profiles;
+- the UI kernel's image commands and disabled scope, themes as content, and the skinned game
+  widget set;
+- `FoundryApi_v3`, and the room's mod screen built from it alone;
+- the exit proof, in ReleaseSafe builds driven by real input, on macOS and on Windows through
+  Vulkan.
+
+M14 closed at **1,531 declared / 1,460 headless tests**, with 1,502 in the Vulkan-selected
+graph on Windows, and is tagged `m14`.
 
 **M13 — Portable: "the RHI was real." Complete, 2026-09-19.** Read `docs/design/vulkan.md`
 and ADR-0033/0037/0038/0039. All ten steps are implemented:
@@ -2904,8 +2915,8 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M0–M13 are complete. M14 is in progress:** Steps 1 to 8 are done, and Step 9's macOS exit
-proof passed. Only the Windows run and the tag are left, and nothing is half-built. M13's
+**M0–M14 are complete, and nothing is half-built.** M14's specification and its Resolutions
+are in `docs/design/mod-management.md`. M13's
 specification and its Resolutions are in `docs/design/vulkan.md`. M12's specification and all
 six Resolutions are in
 `docs/design/jobs-and-threading.md`, and M11's nine are in `docs/design/hardening.md`; the M5
@@ -3554,27 +3565,17 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: finish M14 Step 9 — the Windows run, then close** (`docs/design/mod-management.md`
-§§12 and 13, and its Step 9 Resolution). The macOS exit proof has passed, and `CLAUDE.md` §5 is
-updated.
-- **The Windows run needs two things the last session did not have:** the PC free, since its
-  GPU showed about 89% 3D load, and permission to copy files to it and to register M13's
-  desktop-session scheduled task. The owner decides both.
-- **Over SSH** (AGENTS.md, *Vulkan work*): overlay the tree, run the native test graph at two
-  jobs and below-normal priority, and install the room with `-Drhi=vulkan` and relocate it.
-- **In the desktop session:** give the relocated room a user-data folder (`APPDATA` pointed at a
-  scratch folder, as M13 did) holding the M13-era file and the proof's mods. Then drive it by
-  real input: M, a click on a mod's box, Apply, a restart that loads it, and a capture of the
-  screen through Vulkan.
-- **Then close:** update AGENTS.md, this file, the roadmap, the README, the design index,
-  `public-abi.md`, `ui.md` and `distribution.md`, set the ADR statuses, commit, tag `m14`, and
-  stop before M15.
+**Next: M15 — Editor, not started.** M14 is complete and tagged `m14`. M15 begins with its
+design document, and implementation waits for the owner to accept it (`docs/ROADMAP.md`). Its
+shape is already decided: the editor re-hosts the debug overlay's introspection (ADR-0025) and
+uses only calls the public ABI exposes (I4).
 
-Steps 1 to 8 are done.
-M14's design is `docs/design/mod-management.md`: nine steps, each stopping with its Resolution.
-M13 is complete and tagged `m13`. Its record is
-`docs/design/vulkan.md` and its Resolutions. Linux is M18's (ADR-0039), after the first game and
-before 3D.
+One small recorded item can be taken on the owner's word before or beside it: the flaky
+Windows sleep test (Known bugs). `mod-management.md` §14's questions stay open until a
+milestone's work forces one.
+
+M14's design is `docs/design/mod-management.md`, nine steps with their Resolutions. M13's is
+`docs/design/vulkan.md`. Linux is M18's (ADR-0039), after the first game and before 3D.
 
 Later Windows work follows M13's practice:
 - Windowed runs on the Windows target go through a scheduled task in the owner's desktop session.
@@ -3582,12 +3583,14 @@ Later Windows work follows M13's practice:
   gaming PC.
 - Over SSH, the loader ignores the layer filter, so each implicit layer is disabled by its own
   variable (AGENTS.md).
+- Since M14, the PC builds from a worktree of the pushed tree, `src\Foundry-m14`, beside its old
+  clone. Changes not yet pushed are copied over and checked by hash.
 
-**M0 through M13 are complete, tagged and pushed.** Phase 3 is closed;
+**M0 through M14 are complete, tagged and pushed.** Phase 3 is closed;
 Phase 4 is under way. The completed M8/M7 checklists and subsequent M5/M6 material below are
 historical.
 
-**What remains is `docs/ROADMAP.md` Phase 4, "Hardening and reach", M13 through M17.** The
+**What remains is `docs/ROADMAP.md` Phase 4, "Hardening and reach", M15 through M17.** The
 phase gathers work that was already recorded rather than inventing any, and `CLAUDE.md` §9's
 postponed table names the milestone each decision belongs to. **The intent as of 2026-09-13 is
 to work through them over the following two weeks**, in roadmap order unless a trigger moves
@@ -3612,10 +3615,10 @@ review of `main` rather than beginning on a schedule.
   cross-compiler decision, which Vulkan's SPIR-V-only input brings due, Vulkan's own binding
   convention now accepted in `rhi.md` §9, the implemented native window payloads, and non-Metal
   frame pacing. The largest milestone in the phase.
-* **M14 — Managed.** Designed 2026-09-19 (`docs/design/mod-management.md`, proposed
-  ADR-0040/0041, accepted); not started. The mod manager capability `CLAUDE.md` §5 records as unbuilt, the
-  content-driven widget set ADR-0024 deferred, preference profiles and concurrent merging, and
-  settings migrations once a second schema exists.
+* ~~**M14 — Managed.**~~ **Done 2026-09-19**, tagged `m14`. All nine steps in
+  `docs/design/mod-management.md`, with ADR-0040/0041: the mod set and profiles, migrations and
+  merged writes, content themes and the game widget set, `FoundryApi_v3`, and the room's mod
+  screen. The exit proof passed on macOS and on Windows.
 * **M15 — Editor.** §9's oldest item, dated M6+; ADR-0011 and ADR-0025 already decided its
   shape as a re-host of the overlay's introspection.
 * **M16 — Connected.** Networking, trigger-started, carrying ADR-0013's bit-exact determinism
@@ -4121,6 +4124,17 @@ resize remains closed since 2026-09-04, and ADR-0019 remains the settled shader-
 * **Toolchain compatibility is a maintenance obligation.** SDL3 arrives through a third-party
   build script that must be rechecked at each deliberate Zig upgrade. The milestone retains
   pinned Zig 0.16.0 and does not manufacture an upgrade to test that future event.
+  - Since M14, the SDL3 and Vulkan `@cImport`s also `@cUndef("_FORTIFY_SOURCE")`. Zig 0.16.0
+    cannot translate the fortified wrappers MinGW declares in optimized builds (`vulkan.md`, the
+    M14 note). Remove the workaround when an upgraded Zig can, and keep the ReleaseSafe Windows
+    check passing.
+* **One platform test is flaky on Windows** (found 2026-09-19, M14 Step 9). `os.zig`'s "sleeping
+  advances real time and refuses nonsense" failed once on the Windows PC, between two runs that
+  passed: a 5 ms sleep measured shorter than 5 ms. The test times a sleep on the monotonic clock
+  by reading the wall clock, and Windows' timed wait follows neither clock. `os.sleep` promises
+  only an approximation, and nothing depends on its duration, so this is a test defect, not an
+  engine one. Deciding what the test may assert on Windows is owed; it was not loosened during
+  M14's closure.
 
 ---
 
@@ -4829,17 +4843,20 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 
 ## Notes for the next session
 
-**Resume point, 2026-09-19:** M0–M13 complete and tagged.
+**Resume point, 2026-09-19:** M0–M14 complete and tagged.
 - **M13's record** is `docs/design/vulkan.md` with ADR-0037/0038/0039. Vulkan runs on Windows x64,
   and `-Drhi=vulkan` builds, tests and installs there (AGENTS.md, *Vulkan work*).
 - **M12's record** is `docs/design/jobs-and-threading.md` and ADR-0036:
   `FOUNDRY_SANDBOX_WORKERS` / `FOUNDRY_ROOM_WORKERS` set a sample's pool, `0` for none, for
   comparisons.
-- **M14 is in progress** (`docs/design/mod-management.md`, ADR-0040/0041). Steps 1 to 8
-  (`app.ModSet`, `app.profiles`, settings migrations and merged writes, the UI kernel's image
-  commands and disabled scope, `foundry:ui_theme`, `app.resolveUiTheme`, the skinned game
-  widget set, `FoundryApi_v3`, and the room's mod screen) are done. Step 9's macOS exit proof
-  passed; its Windows run and the tag are left. M15–M17 remain unstarted.
+- **M14's record** is `docs/design/mod-management.md` with ADR-0040/0041: `app.ModSet`,
+  `app.profiles`, settings migrations and merged writes, the UI kernel's image commands and
+  disabled scope, `foundry:ui_theme` and `app.resolveUiTheme`, the skinned game widget set,
+  `FoundryApi_v3`, and the room's mod screen (M). M15–M17 remain unstarted.
+- **Driving a windowed room on Windows:** from a scheduled task in the desktop session,
+  `keybd_event` and `mouse_event`, sent only while the room is the foreground window and, for a
+  click, the window under the point. A development install lists both samples' packages, so a
+  proof that means the release's package set moves the sandbox's aside first.
 - **Driving a windowed room on this Mac:** keys posted to the room's process arrive once the
   room is active. Clicks posted to the process alone were lost or repeated under SDL, so the
   Step 9 proof used the system cursor, guarded so that it clicked only when the room was

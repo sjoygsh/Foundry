@@ -32,6 +32,10 @@ const Allocator = std.mem.Allocator;
 const log = core.log.scoped(.platform);
 
 const c = @cImport({
+    // An optimized Windows build defines _FORTIFY_SOURCE, and MinGW's string headers then
+    // declare checked inline wrappers that Zig 0.16.0 translates into Zig it rejects (an
+    // unused local constant). This import only declares; SDL's own C keeps its flags.
+    @cUndef("_FORTIFY_SOURCE");
     @cInclude("SDL3/SDL.h");
 });
 

@@ -19,6 +19,9 @@ comptime {
 }
 
 pub const c = @cImport({
+    // As in the SDL3 backend: MinGW's fortified wrappers, which an optimized Windows build
+    // enables, do not survive Zig 0.16.0's translation, and a declaration needs none of them.
+    @cUndef("_FORTIFY_SOURCE");
     @cDefine("VK_NO_PROTOTYPES", "1");
     if (builtin.os.tag == .windows) {
         @cDefine("WIN32_LEAN_AND_MEAN", "1");

@@ -1312,3 +1312,11 @@ The limits of the Windows claim are Step 9's.
 - ADRs 0008, 0033, 0035, 0037 and 0038.
 
 M13 is complete and tagged `m13`. M14 has not been started.
+
+> **M14 Step 9, 2026-09-19: the first optimized Windows build.** M13 built Debug on Windows only.
+> With any other `-Doptimize`, Zig defines `_FORTIFY_SOURCE`, and Zig 0.16.0 cannot translate
+> the fortified string wrappers MinGW's headers then declare. `vk.zig` and the SDL3 backend
+> therefore `@cUndef("_FORTIFY_SOURCE")` before their includes. A ReleaseSafe room then ran
+> M14's exit proof on this backend. `zig build check -Drhi=vulkan -Dtarget=x86_64-windows-gnu
+> -Doptimize=ReleaseSafe` keeps it building (AGENTS.md). See `mod-management.md`, Step 9's
+> Windows Resolution.

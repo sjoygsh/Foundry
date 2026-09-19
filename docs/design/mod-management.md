@@ -1,12 +1,12 @@
 # Design: M14 — Managed, and what a player chooses
 
 **Status:** Design accepted 2026-09-19 with [ADR-0040](../adr/0040-ordered-profiles-applied-at-next-start.md)
-and [ADR-0041](../adr/0041-game-widget-set-and-content-themes.md). **Steps 1 to 8 are implemented
+and [ADR-0041](../adr/0041-game-widget-set-and-content-themes.md). **All nine steps are implemented
 (2026-09-19): the mod set, profiles on disk, migrations with concurrent writes, the UI
 kernel's additions, themes as content, the game widget set, `FoundryApi_v3`, and the room's
-mod screen. Step 9's exit proof passed on macOS the same day, in a ReleaseSafe release driven by
-real input. Its Windows run is outstanding, and M14 closes with it.** Step 2 was re-scoped when
-it began; see §13.
+mod screen. Step 9's exit proof passed the same day on macOS and on Windows through Vulkan, in
+ReleaseSafe builds driven by real input. M14 is complete.** Step 2 was re-scoped when it began;
+see §13.
 **Date:** 2026-09-19
 **Baseline:** `754665a` / `m13`; M0–M13 complete, 1,405 declared / 1,395 headless tests.
 **Builds on:** ADR-0024 (one UI kernel, two widget sets), ADR-0026 (the host supplies
@@ -1226,3 +1226,71 @@ After the first start, the apply and the next start, every file had the same has
   task that M13's windowed runs used.
 
 M14 closes with that run and the tag `m14`.
+
+## Resolution — 2026-09-19, Step 9: the Windows run, and M14's close
+
+**§12's exit proof passed again on Windows x64, through Vulkan, in the owner's desktop session.**
+The target was the Intel Arc machine M13 proved.
+- **The build:** a worktree of `c560e8e` beside the PC's old clone, installed with
+  `zig build install -Drhi=vulkan -Doptimize=ReleaseSafe` and moved away from the prefix it was
+  built into. There is no Windows `dist` step (`distribution.md` §8), so the moved install
+  stood in for a release. It was trimmed to the packages the room's release holds,
+  `foundry:core` and `room:content`, with the sandbox's package moved aside, not deleted.
+- **The user data** was a scratch folder named by `APPDATA`. It held the same M13-era
+  version 1 file, and the three mods were compiled from the same sources by the moved `fpack`.
+  All three `.fpk` files matched the Mac's byte for byte.
+- **The player was Windows' own input:** `keybd_event` and `mouse_event`, from a scheduled task
+  in the signed-in session. A key went only while the room was the foreground window. A click
+  went only when the room's window was the one under the point, and the cursor went back
+  afterwards. No key or click was refused.
+
+**The five parts passed in order,** with the same clicks and keys as on macOS.
+- **Byte-identical files.** Every file matched the Mac's after the first start, after the apply,
+  after the next start and after the theme:
+  - `profiles/1.fset` and the version 2 `settings.fset`;
+  - `settings.fset.v1`, the M13 bytes, kept once.
+- **The next start** loaded `brighter:lamps` after `night:palette`, drew the north and south
+  lamps lit, and wrote nothing.
+- **`dusk:theme`** re-skinned the screen and the card.
+- **Two instances.** B's volume survived A's apply, and B's rename wrote the name only. The
+  profile then matched the Mac's final one byte for byte: "evening", with `brighter:lamps` and
+  `dusk:theme`. The settings differed only in the volume the slider click landed on, 0.75
+  here and 0.74 there. A third start loaded that list at 0.75 and wrote nothing.
+- **Every run logged 0 capture failures,** and the hall took no walk command from a screen's
+  click.
+
+**What the Windows run found:**
+- **An optimized Windows build did not compile.** M13 had only ever built Debug there.
+  - With `-Doptimize` other than Debug, Zig defines `_FORTIFY_SOURCE`. MinGW's string headers
+    then declare checked inline wrappers (`wcscat`, `wcscpy`), which Zig 0.16.0's C translation
+    turns into Zig with an unused local constant, a compile error.
+  - The SDL3 and Vulkan `@cImport`s now `@cUndef("_FORTIFY_SOURCE")` first. They only
+    declare, and the C that SDL compiles keeps its own flags.
+  - `zig build check -Drhi=vulkan -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe` failed on
+    the Mac before the change and passes after it, and AGENTS.md now lists it. The workaround
+    should be removed when an upgraded Zig translates these wrappers.
+- **The development install lists the other sample.** `zig build install` puts both samples'
+  packages in `content/`, so the first attempt's screen showed Foundry Sandbox as an installed
+  package. The click for row 4 turned Sandbox on instead of Brighter Lamps. The screen was right
+  and the harness's rows were wrong, so the run was repeated from untouched user data with the
+  release's package set.
+- **A second instance started within a minute of five earlier sessions kept no local log.**
+  Every slot had been written in the last minute, and `distribution.md` §10 retires none of
+  those. That is the designed refusal, with its one warning. The next start, 31 seconds later,
+  retired the oldest slot as usual.
+
+**Evidence around it:**
+- **On the PC, before the fix:** the default graph passed 1,455 of 1,460 tests in 60 steps, with
+  M13's five skips. The Vulkan-selected graph passed 1,492 of 1,502 in 73 steps.
+- **On the PC, after the fix:** the Vulkan-selected graph passed 1,492 of 1,502 again.
+  - The default graph's first run failed one test, `os.zig`'s "sleeping advances real time and
+    refuses nonsense": a 5 ms sleep measured shorter than 5 ms. It passed on the next run,
+    1,455 of 1,460.
+  - The test times a sleep on the monotonic clock by reading the wall clock, and Windows' timed
+    wait follows neither. It is a rare flake from M8 that this change could not reach: Debug
+    defines no `_FORTIFY_SOURCE`. It is recorded as debt in PROJECT_STATE, not loosened here.
+- **On the Mac:** the bar passed 1,459 of 1,460, with the existing skip. `vulkan-check` and the
+  Windows Vulkan `check` passed in Debug and in ReleaseSafe.
+
+**M14 is complete.** A player, not an environment variable, turned a mod on in a packaged
+sample on both platforms, and their choices survived a schema change. §14's questions stay open.

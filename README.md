@@ -10,7 +10,7 @@ leave behind something that runs.
 
 ## Status
 
-**M0 through M13 complete.** Foundry is a playable, inspectable, fully moddable,
+**M0 through M14 complete.** Foundry is a playable, inspectable, fully moddable,
 packageable and hardened 2D engine, and it now has a face of its own.
 Content packages are discovered and dependency-ordered; native C mods load through the
 versioned public ABI and can add component types, systems and behaviour without engine source
@@ -78,6 +78,18 @@ drove both samples through Windows. Metal stays macOS's backend. Linux is not pa
 targets macOS and Windows, so Linux runtime support follows that game and precedes any 3D
 work.
 
+**M14 is complete: players choose their mods.** All
+[nine steps](docs/design/mod-management.md) are done. A player's selection is an ordered
+profile in its own file, applied at the next start
+([ADR-0040](docs/adr/0040-ordered-profiles-applied-at-next-start.md)). Settings migrate between
+schema versions and keep the old file once. Two running copies of a game keep each other's
+changes. The room has a mod screen modelled on Mod Organizer 2 (press M), showing load order,
+per-record conflicts and pending changes. It is built only from the public `FoundryApi_v3`, and
+drawn from a theme that is ordinary content
+([ADR-0041](docs/adr/0041-game-widget-set-and-content-themes.md)), so a mod can re-skin it. The
+exit proof passed on macOS and on Windows through Vulkan, in release builds driven by real
+input. Both wrote the same files byte for byte, apart from the volume a slider click chose.
+
 All three modding tiers work — see [docs/modding](docs/modding/). Tier 2 is restricted
 Lua 5.5.1, one VM per package, bounded in memory, instructions and engine calls, reaching the
 engine only through the same public ABI table a native mod is handed. Replacing a package's
@@ -89,7 +101,7 @@ and then rebuilt from its own listings to check that it says what the engine doe
 ```sh
 ./scripts/install-zig.sh   # the only tool you need
 zig build run -Drhi=metal  # opens a window and draws; escape quits
-zig build test             # 1395 headless tests
+zig build test             # 1460 headless tests
 ```
 
 Implemented so far:
@@ -108,11 +120,13 @@ Implemented so far:
   source. Nothing is addressable by path.
 * **`render2d`** — sprite and text batching, atlases, cameras.
 * **`physics2d`** — shapes, tile grids, broadphase, collision queries and response.
-* **`ui`** — an immediate-mode kernel that emits a renderer-independent draw list.
+* **`ui`** — an immediate-mode kernel that emits a renderer-independent draw list, a debug
+  widget set, and a game widget set drawn from content themes.
 * **`scene`** — runtime-registered components and systems, entities, queries and world saves.
 * **`audio`** — Foundry's WAV decoder and lock-free mixer over the platform audio device.
-* **`app`** — the engine loop, subsystem lifecycle, the log sink, and loading content
-  packages in the order it is given them.
+* **`app`** — the engine loop, subsystem lifecycle, the log sink, loading content packages in
+  the order it is given them, and the mod set: a player's ordered profiles, conflicts between
+  packages, and versioned settings that migrate.
 * **`debug`** — the in-process profiler, memory report, log console, entity inspector and
   content browser.
 * **`mod`** — manifests, package discovery, dependency resolution and deterministic order.
@@ -122,7 +136,7 @@ Implemented so far:
   and the candidate-VM transaction that replaces a package's code while its state, its entities
   and the world stay.
 * **`abi`** — the installed C99/C++ header, frozen 135-call `FoundryApi_v1`, additive
-  `FoundryApi_v2`, host boundary and native-library lifecycle.
+  `FoundryApi_v2` and `FoundryApi_v3`, host boundary and native-library lifecycle.
 * **`tools/fpack`** — the content compiler: a package directory in, one `.fpk` out.
 * **`content/core`** — package zero. The engine's own content, loaded through exactly the
   path a mod's package uses, because that is the only durable way to know that path works.
