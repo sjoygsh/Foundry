@@ -29,8 +29,8 @@ the public authoring service. Postpone: scene gizmos, tile painting, raw text/co
 asset painting/import conversion, docking, project generators and plugin execution.
 
 M0–M14's completed results remain the baseline. This document specifies future implementation.
-Apart from Step 1's additions to `data`, none of the following module names, new calls or build
-targets exist yet.
+Apart from Step 1's additions to `data` and Step 2's `author` module (with `fpack
+--dependency`), none of the following module names, new calls or build targets exist yet.
 
 ## 2. What the current code supplies
 
@@ -695,8 +695,11 @@ writing an asset directory for `core`, which has nothing to compile.
 granted, in the order it named them. Each is read through `platform`'s confined, no-follow
 primitive with the host's own directory as the root and the file itself as the one component, so
 a `.fpk` reached through a symlink is refused rather than followed; §4's bounds are enforced as
-the bytes arrive (16 MiB per package, 64 MiB in total, 64 packages), and a file named twice is
-one dependency because a set is a set. `mod.manifest.read` gives each package its identity, and
+the bytes arrive (16 MiB per package, 64 MiB in total, 64 packages). A file named twice, under
+any spelling of its path, or a byte-identical copy of one, is one dependency because a set is a
+set; two different files that are the same package are refused, naming both, because which one
+a record was checked against would otherwise be decided by the order they were named in.
+`mod.manifest.read` gives each package its identity, and
 `registerSchemas` registers every package's schemas *before* the authoring package's own
 declarations — so a local `@schema` that disagrees with a dependency's is reported against the
 local declaration, which is the one an author can change.
@@ -714,7 +717,13 @@ the caller's and never the filesystem's (I9).
 manifest, loads the granted dependencies, discovers sources deterministically (directory
 listings sorted, asset paths sorted, never the filesystem's order), reads each one, and reports
 a requirement no grant satisfies. §4's limits are one public `Limits`, so a host configures one
-object, and a tighter bound is never raised. Nothing here edits, saves or compiles.
+object, and a tighter bound is never raised. Discovery's own bounds are 1,024 sources (§4's
+row), and two that are not rows of §4: 16,384 entries and 32 directories deep, because the
+sources bound alone would let a tree of anything else be walked without end. **They are a
+workspace's, not `fpack`'s.** A compile's walk is unbounded unless its host passes limits, which
+is what keeps §8's "existing CLI invocations remain compatible": a person compiling their own
+directory has already chosen its size, and an editor, which holds what it discovers, has not.
+Nothing here edits, saves or compiles.
 
 **What refuses, and what is only a diagnostic.** A tree past its walk, source or total budget, a
 dependency that is not a package, a file that is not there, and a manifest that is not a
@@ -730,24 +739,61 @@ yields no requirements here, so one defect is one diagnostic, against `foundry:m
 pass that owns that rule.
 
 **A defect the extraction surfaced, and the guard that now covers it.** `readSelf` returned an
-`Origin` whose `line_text` was borrowed from the parse's document arena, which is deinited
-before the caller reports; the requirement diagnostic then copied freed bytes — a segfault in
-`memcpy`, inside `workspace.test.a requirement nothing granted provides is reported, and the
-workspace still opens`. The line is now copied into the caller's arena, for the same reason the
-requirement's `name` already was: a caret drawn from freed bytes is a crash rather than a
-diagnostic.
+`Origin` whose slices — `file` and `line_text` — were borrowed from the parse's document arena,
+which is deinited before the caller reports; the requirement diagnostic then copied freed bytes,
+a segfault in `memcpy`. Both are now copied into the caller's arena, for the same reason the
+requirement's `name` already was: a diagnostic drawn from freed bytes is a crash rather than a
+message. The first fix copied only `line_text` (see the review below).
 
-**The bar.** `zig build test`: **1,507 of 1,508** headless tests passed, with the one skip it had
-before, from **1,579 declared**. Nineteen new tests: 10 in `dependency.zig` and 9 in
-`workspace.zig`. `zig fmt --check`, `check`, `check -Drhi=metal`, both cross-target checks
+**The bar.** `zig build test`: **1,511 of 1,512** headless tests passed, with the one skip it had
+before, from **1,583 declared**. Twenty-three new tests: 12 in `dependency.zig`, 9 in
+`workspace.zig` and 2 in `compiler.zig`. `zig fmt --check`, `check`, `check -Drhi=metal`, both cross-target checks
 (`x86_64-linux-gnu` and `x86_64-windows-gnu`, `-Dplatform=null -Drhi=null`), and both samples at
 30 frames under the null platform all pass.
 
 - **Mutation.** The `findByPath` dedup was removed from `Set.load`, so a package named twice was
   read twice: `dependency.test.the same package named twice is one dependency` failed with
-  `expected 1, found 2`. Restored.
+  `expected 1, found 2`. Restored. Since the review this mutation passes, correctly: the byte
+  comparison it added also finds a file named twice, and the path check only saves the read.
 - **Mutation.** `readRequirementList` was made to hand back the parser's own `line_text` instead
-  of a copy: the workspace test named above aborted with a segmentation fault. Restored.
+  of a copy: a workspace test aborted with a segmentation fault. Restored.
+- **Mutations, after review.** The `origin.file` copy was removed, and then the `line_text` one:
+  each time `compiler.test.what readSelf hands back outlives the parse it was read from` aborted
+  — the first time in the checkout where the workspace tests had passed with the same bug.
+  Restored.
+- **Mutations, after review.** `fpack`'s walk was given the workspace's bounds, and the refusal of
+  two files that are one package was removed: `compiler.test.fpack's walk is bounded only when a
+  host asks for bounds` and `dependency.test.a copy of a package is the same package, and a
+  different file claiming it is refused` failed. Restored.
+
+**Review, 2026-09-20.** Step 2 was implemented by another model, and a review before it was
+pushed found four things, fixed in the commit after it:
+
+- **`origin.file` was still borrowed.** Only `line_text` had been copied, so the requirement's
+  file name still pointed into the freed parse. Whether that crashed depended on the layout of
+  earlier allocations: the bar passed in the owner's checkout, while the same commit checked out
+  at another path failed `zig build test` with three crashed workspace tests. A test now reads
+  `readSelf`'s answer through an allocator that overwrites what it frees, so a borrowed slice
+  fails every time rather than some of the time.
+- **`fpack` had become bounded.** The walk's limits applied to every compile, so a package with
+  more than 1,024 sources, 16,384 entries or 32 levels of directories — each compiled by the old
+  `fpack` — was refused, contradicting this step's "without changing its CLI behaviour". They
+  now apply to a workspace only (above), and those three packages compile to the same bytes as
+  before.
+- **One package could be granted twice.** Two different files with the same package id were both
+  loaded, and `find` and `satisfies` answered with whichever came first. Now refused (above).
+- **Smaller gaps.** A test named for a package with no manifest tested a truncated file; it is
+  now two tests, each of what its name says. The entries and depth bounds had no tests; they
+  have. `fpack --help` listed `--help` below the prose; the build gave `fpack` four module
+  imports it no longer uses.
+
+The re-check: the three packages in the tree and their generated asset trees are byte-identical
+to the pre-Step-2 `fpack`'s, and so is the installed content; nineteen edge cases (imports,
+climbing paths, symlinks, CRLF and a byte-order mark, malformed manifests, usage errors) give
+the same bytes, diagnostics and exit codes, except `--help`'s text and a leak the old tool had
+on a manifest without a valid version. A package compiled with `--dependency` loads beside its
+dependency in the sandbox. An allocation-failure sweep over opening a workspace and compiling
+from it leaks nothing.
 
 **Left for later steps, deliberately.** Nothing edits, saves, builds or publishes. A granted
 dependency's `assets_root` is recorded and not used — Step 4's snapshot is what reads one. No ABI

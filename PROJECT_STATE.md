@@ -14,7 +14,9 @@ macOS and on Windows:**
 3D (ADR-0039). M15 is under way: Steps 1–2 of nine are done, and the handoff stops before
 Step 3. M16 and M17 remain unstarted.**
 
-**Completed M15 Step 2, 2026-09-20: one reusable compiler and bounded workspaces.**
+**Completed M15 Step 2, 2026-09-20: one reusable compiler and bounded workspaces.** Implemented
+by another model (DeepSeek V4.1 Flash) in `d50f564`, then reviewed and fixed before pushing; the
+Resolution's review paragraph says what was found.
 - `engine/src/author/` is a new L4 module beside `app`, depending on `core`, `data`,
   `platform`, `asset`, `mod` and `scene` and on nothing above them, so a workspace unit-tests
   with no device, no window and no frame. `tools/fpack` imports it and no longer carries a
@@ -24,8 +26,9 @@ Step 3. M16 and M17 remain unstarted.**
   tool and the new one (`core.fpk` 965 B, `room.fpk` 11,077 B, `sandbox.fpk` 5,328 B), as do
   the generated asset trees.
 - `author/dependency.zig` holds the `.fpk` files a host granted, in the order it named them:
-  confined and no-follow reads, one package per file, the same file named twice is one
-  dependency, §4's byte and count bounds, and every package's schemas registered before the
+  confined and no-follow reads, one package per file, the same file named twice (or a copy of
+  it) is one dependency, two different files that are one package are refused, §4's byte and
+  count bounds, and every package's schemas registered before the
   authoring package's own declarations.
 - `fpack --dependency <file.fpk>` is repeatable and shares that set. A record using a granted
   package's type compiles with it and is refused without it; a file that is not a package, or
@@ -33,11 +36,18 @@ Step 3. M16 and M17 remain unstarted.**
 - `author/workspace.zig` is the bounded workspace: manifest, granted dependencies,
   deterministic source discovery and reads, and a requirement no grant satisfies reported
   beside a workspace that still opens. An empty directory and a malformed manifest also open,
-  with diagnostics, because those are the states an author fixes.
-- Fixed a defect the extraction surfaced: a requirement's caret borrowed the parse's arena and
-  was copied after it died. It is copied into the caller's arena now, and a test covers it.
-- The bar passed **1,507 of 1,508**, with the one skip it had before, from 1,579 declared. 19
-  new tests. Two mutations were caught and restored: the dependency dedup, and the caret copy.
+  with diagnostics, because those are the states an author fixes. Discovery refuses more than
+  1,024 sources, 16,384 entries or 32 directories deep — in a workspace only: `fpack`'s walk
+  stays unbounded, so every package it compiled before still compiles to the same bytes.
+- Fixed a use-after-free the extraction surfaced: a requirement's origin (its file name and
+  line) borrowed the parse's arena and was read after it died. The first fix copied only the
+  line, and the file name still crashed `zig build test` in a checkout at another path; both
+  are copied now, and a test reads them through an allocator that overwrites freed memory, so
+  the bug fails every time rather than by layout.
+- The bar passed **1,511 of 1,512**, with the one skip it had before, from 1,583 declared. 23
+  new tests. Mutations caught and restored: the file-name and line copies, `fpack`'s unbounded
+  walk, and the refusal of one package granted twice. The path dedup is now only a shortcut
+  past a read, because the byte comparison also finds a file named twice.
 
 **Completed M15 Step 1, 2026-09-20: source ranges and value emission.**
 - The parser records, on request (`Options.spans`), where every record, field, value, list
@@ -2064,7 +2074,7 @@ unstarted.
 **M15 — Editor is under way: Steps 1–2 of nine are done (2026-09-20).** Read
 `docs/design/editor.md`, especially §14's nine steps and the Step 1 and Step 2 Resolutions, and
 ADR-0042/0043, accepted 2026-09-20. The editor's UI and UX follow Unreal Engine 5's (§10). The
-tree stands at **1,579 declared / 1,507 headless tests**, with the one skip it has had since
+tree stands at **1,583 declared / 1,512 headless tests**, with the one skip it has had since
 Step 1.
 
 **M14 — Managed: "players choose their mods." Complete, 2026-09-19.** Read

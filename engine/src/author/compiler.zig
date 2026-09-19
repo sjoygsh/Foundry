@@ -51,8 +51,8 @@ pub const Error = error{
     /// The package directory could not be read, or the output could not be written. Not a
     /// content problem, and reported separately from one.
     IoFailed,
-    /// The directory is larger than a package may be: more sources, more entries or more
-    /// depth than `Walk.Limits` allows.
+    /// The directory is larger than the caller allows: more sources, more entries or more
+    /// depth than the `Walk.Limits` it passed. `fpack` passes none, so it never sees this.
     ///
     /// Its own member rather than `ContentInvalid`, because nothing about the package's
     /// content is wrong — there is simply too much of it to look at, and the difference
@@ -103,7 +103,12 @@ pub const Options = struct {
     /// means, and a dependency it forgets is a diagnostic rather than a lucky find.
     dependencies: ?*const dependency.Set = null,
     /// How much of the package directory the walk may look at.
-    walk: Walk.Limits = .default,
+    ///
+    /// **Unbounded unless a host asks**, which is what `fpack` has always compiled under:
+    /// its existing invocations stay compatible (`editor.md` §8), and a person compiling
+    /// their own directory from a command line has already chosen its size. A workspace
+    /// passes `editor.md` §4's bounds instead, because an editor holds what it discovers.
+    walk: Walk.Limits = .unbounded,
 };
 
 /// Compiles the package rooted at `dir` and appends the `.fpk` bytes to `out`.
@@ -355,8 +360,9 @@ pub const SourceRequirement = struct {
     /// `demo:torch` would be worse than saying nothing at all.
     name: []const u8,
     /// The `requires` field it was written in, so that a caller checking it against a
-    /// granted set points at the line rather than at the file. Borrows the parse, so it
-    /// lives in the arena `readSelf` was handed, like `requires` itself.
+    /// granted set points at the line rather than at the file. Copied out of the parse —
+    /// `file` and `line_text` both — into the arena `readSelf` was handed, like `requires`
+    /// itself, because the parse is gone by the time anyone reads it.
     origin: data.parser.Origin,
 };
 
@@ -493,11 +499,13 @@ fn readRequirementList(
             // with the field, and underlining a whole list of records to say one of them is
             // wrong would be a caret that covers everything and points at nothing.
             //
-            // The line is copied out of the parse for the same reason `name` is: the
-            // parser's copies live in the document's arena, which dies before this returns,
-            // and a caret drawn from freed bytes is a crash rather than a diagnostic.
+            // Every slice in it is copied out of the parse for the same reason `name` is:
+            // the file's name and the line's text both live in the document's arena, which
+            // dies before this returns, and a diagnostic drawn from freed bytes is a crash
+            // rather than a message.
             .origin = origin: {
                 var origin = field.name_origin;
+                origin.file = try arena.dupe(u8, origin.file);
                 origin.line_text = try arena.dupe(u8, origin.line_text);
                 break :origin origin;
             },
@@ -532,24 +540,32 @@ pub const Walk = struct {
 
     /// How much of a directory the walk is willing to look at.
     ///
-    /// **A refusal has to happen before the thing it refuses exists.** A package is
-    /// untrusted input like everything else the compiler reads, so a tree with a million
-    /// files in it must be an `OverBudget` diagnostic rather than a build that allocates a
-    /// million names and then runs out of memory. The counts are checked as entries are
-    /// taken, not after the lists are built — except the listing itself, which is
-    /// `platform`'s primitive and is bounded by the directory's real size; what this
-    /// bounds is everything the walk keeps and descends into.
+    /// **A refusal has to happen before the thing it refuses exists.** A workspace holds
+    /// what it discovers, so a granted tree with a million files in it must be an
+    /// `OverBudget` diagnostic rather than a session that allocates a million names and
+    /// then runs out of memory. The counts are checked as entries are taken, not after the
+    /// lists are built — except the listing itself, which is `platform`'s primitive and is
+    /// bounded by the directory's real size; what this bounds is everything the walk keeps
+    /// and descends into.
     pub const Limits = struct {
         /// Source files one package may contain. `editor.md` §4's row, and the same number
         /// a workspace reports, because a workspace discovers with this walk.
         max_sources: u32 = 1024,
-        /// Every entry the walk may look at, sources included.
+        /// Every entry the walk may look at, sources included. Not a row of §4's table:
+        /// the sources bound alone would let a tree of anything else be walked without end.
         max_entries: u32 = 16 * 1024,
-        /// How deep below the package root a source may sit. A tree deeper than this is
-        /// not an organisation, it is a mistake.
+        /// How deep below the package root a source may sit, for the same reason. A tree
+        /// deeper than this is not an organisation, it is a mistake.
         max_depth: u32 = 32,
 
+        /// A workspace's bounds (`editor.md` §4).
         pub const default: Limits = .{};
+        /// `fpack`'s: nothing past the directory's own size, as before M15.
+        pub const unbounded: Limits = .{
+            .max_sources = std.math.maxInt(u32),
+            .max_entries = std.math.maxInt(u32),
+            .max_depth = std.math.maxInt(u32),
+        };
     };
 
     pub fn deinit(self: *Walk, gpa: Allocator) void {
@@ -621,7 +637,9 @@ pub const Walk = struct {
         for (entries) |entry| {
             if (entry.name.len == 0 or entry.name[0] == '.') continue;
             if (seen.* >= limits.max_entries) {
-                try diags.addFmt(gpa, .err, .whole(absolute), 1, "", "holds more than {d} entries, which is more than a package may contain", .{limits.max_entries});
+                // Named by its package-relative path, as the depth refusal above is: the
+                // caller's spelling of the root says nothing about the package.
+                try diags.addFmt(gpa, .err, .whole(if (prefix.len == 0) "." else prefix), 1, "", "holds more than {d} entries, which is more than a package may contain", .{limits.max_entries});
                 return error.OverBudget;
             }
             seen.* += 1;
@@ -1787,4 +1805,99 @@ test "a manifest naming a library outside its own directory is refused at the ma
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     try testing.expectError(error.InvalidNativeName, mod.manifest.read(arena.allocator(), &r));
+}
+
+/// An allocator that overwrites memory as it is freed, so a slice still pointing into it
+/// reads garbage every time rather than the old bytes most of the time.
+///
+/// The testing allocator promises neither: whether freed memory is still readable, unmapped
+/// or reused depends on the layout of everything allocated before it — which is how a
+/// requirement's dangling `origin.file` passed in one checkout and crashed in another.
+const Scrubbing = struct {
+    child: Allocator,
+
+    fn allocator(self: *Scrubbing) Allocator {
+        return .{ .ptr = self, .vtable = &.{
+            .alloc = alloc,
+            .resize = resize,
+            .remap = remap,
+            .free = free,
+        } };
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const self: *Scrubbing = @ptrCast(@alignCast(ctx));
+        return self.child.rawAlloc(len, alignment, ret_addr);
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        const self: *Scrubbing = @ptrCast(@alignCast(ctx));
+        return self.child.rawResize(memory, alignment, new_len, ret_addr);
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const self: *Scrubbing = @ptrCast(@alignCast(ctx));
+        return self.child.rawRemap(memory, alignment, new_len, ret_addr);
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        const self: *Scrubbing = @ptrCast(@alignCast(ctx));
+        @memset(memory, 0xdd);
+        self.child.rawFree(memory, alignment, ret_addr);
+    }
+};
+
+test "what readSelf hands back outlives the parse it was read from" {
+    var f = try Fixture.init();
+    defer f.deinit();
+
+    try f.write(manifest_file,
+        \\foundry:mod demo:root {
+        \\  name "Root" version 1 license "MIT"
+        \\  requires [ { id demo:core min 2 } ]
+        \\}
+        \\
+    );
+
+    // Every allocation `readSelf` makes goes through the scrubber, the parse's included, so
+    // anything it hands back that still points into the parse reads as garbage here.
+    var scrubbing: Scrubbing = .{ .child = testing.allocator };
+    const gpa = scrubbing.allocator();
+    var arena: core.Arena = .init(gpa);
+    defer arena.deinit();
+    var diags = Diagnostics.init(gpa, .default);
+    defer diags.deinit(gpa);
+
+    const self = try readSelf(gpa, arena.allocator(), f.os, f.root, .{}, &diags);
+    defer gpa.free(self.identity.name);
+
+    try testing.expectEqualStrings("demo:root", self.identity.name);
+    try testing.expectEqual(@as(usize, 1), self.requires.len);
+    const required = self.requires[0];
+    try testing.expectEqualStrings("demo:core", required.name);
+    try testing.expectEqualStrings(manifest_file, required.origin.file);
+    try testing.expectEqualStrings("  requires [ { id demo:core min 2 } ]", required.origin.line_text);
+    try testing.expect(!diags.failed);
+}
+
+test "fpack's walk is bounded only when a host asks for bounds" {
+    var f = try Fixture.init();
+    defer f.deinit();
+
+    // What `fpack` has always accepted, it still accepts: its options leave the walk
+    // unbounded, and only a workspace passes `editor.md` §4's numbers.
+    try testing.expectEqual(Walk.Limits.unbounded, (Options{}).walk);
+
+    try f.write("a.fdt", "@schema demo:a { n u32 }\n");
+    try f.write("b.fdt", "@schema demo:b { n u32 }\n");
+    try f.writeManifest("demo:bounded");
+
+    f.bytes.clearRetainingCapacity();
+    try testing.expectError(error.OverBudget, compile(testing.allocator, f.os, f.root, .{
+        .walk = .{ .max_sources = 2 },
+    }, &f.registry, &f.diags, &f.bytes));
+
+    var buf: [1024]u8 = undefined;
+    const text = try f.rendered(&buf);
+    try testing.expect(std.mem.containsAtLeast(u8, text, 1, "one source file more than the 2"));
 }

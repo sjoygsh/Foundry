@@ -104,8 +104,9 @@ zig build fpack -- --out "$MODS_ROOT/mymod.fpk" \
 ```
 
 `--dependency` takes a `.fpk`, is repeatable, and the schemas it declares register before
-your own declarations, in the order you gave them. Naming the same package twice is the same
-as naming it once. Without it, a record whose schema only the other package declares is an
+your own declarations, in the order you gave them. Naming the same file twice, or a copy of
+it, is the same as naming it once; two different files that are the same package are refused,
+because which one your records were checked against would be a guess. Without it, a record whose schema only the other package declares is an
 unknown schema rather than a lucky find.
 
 Then load it. The sandbox is handed a list of **content IDs**, not filenames — where your

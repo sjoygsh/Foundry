@@ -147,11 +147,20 @@ pub const Set = struct {
         return null;
     }
 
-    /// The package the host spelled as `path`. Used to ignore a file named twice, so that
-    /// the set is a set.
+    /// The package the host spelled as `path`. A shortcut, so that a file named twice is not
+    /// read twice; `findByBytes` is what makes the set a set under any spelling.
     pub fn findByPath(self: *const Set, path: []const u8) ?*const Package {
         for (self.packages.items) |*package| {
             if (std.mem.eql(u8, package.path, path)) return package;
+        }
+        return null;
+    }
+
+    /// The package whose file holds exactly `bytes`: the same file under another spelling
+    /// of its path, or a copy of it, which is the same package again rather than a second.
+    fn findByBytes(self: *const Set, bytes: []const u8) ?*const Package {
+        for (self.packages.items) |*package| {
+            if (std.mem.eql(u8, package.bytes, bytes)) return package;
         }
         return null;
     }
@@ -192,7 +201,8 @@ pub const Set = struct {
         var total: usize = 0;
         for (sources) |source| {
             // The same file named twice is one dependency: a set is a set, and registering
-            // one package's schemas twice would say nothing new.
+            // one package's schemas twice would say nothing new. Only a shortcut past the
+            // read — the byte comparison below is what holds under any spelling of a path.
             if (self.findByPath(source.path) != null) continue;
 
             // Split so that the confinement starts at the directory the host named. A path
@@ -204,6 +214,13 @@ pub const Set = struct {
                 try diags.addFmt(gpa, .err, .whole(source.path), 1, "", "could not be read as a dependency package: {s}", .{@errorName(err)});
                 return error.IoFailed;
             };
+
+            // A second spelling of a path already read, or a byte-identical copy of a
+            // package, is the same package, and a set is a set.
+            if (self.findByBytes(read.bytes) != null) {
+                gpa.free(read.bytes);
+                continue;
+            }
             errdefer gpa.free(read.bytes);
 
             total += read.bytes.len;
@@ -224,6 +241,15 @@ pub const Set = struct {
                 try diags.addFmt(gpa, .err, .whole(source.path), 1, "", "has no manifest this build can read: {s}", .{@errorName(err)});
                 return error.ContentInvalid;
             };
+
+            // **Two different files that are one package is a grant that means two
+            // things.** Which of them a record was checked against, and which one a
+            // requirement was satisfied by, would be decided by the order they were named
+            // in — a guess, where the host meant a grant. So it is refused, naming both.
+            if (self.find(manifest.id)) |other| {
+                try diags.addFmt(gpa, .err, .whole(source.path), 1, "", "is '{s}', and so is '{s}', which was granted first; a package is granted once", .{ manifest.id_name, other.path });
+                return error.ContentInvalid;
+            }
 
             try self.packages.append(gpa, .{
                 .path = try self.arena.allocator().dupe(u8, source.path),
@@ -443,19 +469,37 @@ test "a file that is not a package is refused, and the refusal names it" {
 test "a package with no manifest is refused" {
     const f = try Fixture.init();
     defer f.deinit();
+    const gpa = testing.allocator;
 
-    // A real `.fpk` of a kind this build will not accept as a dependency: it parses as a
+    // A real `.fpk` of a kind this build will not accept as a dependency: it opens as a
     // package and carries no `foundry:mod`, which is what a hand-built file looks like.
+    // Written by `data` directly, because the compiler will not write one.
+    var pkg = try data.Package.init(gpa, "demo:bare", 1, .default);
+    defer pkg.deinit(gpa);
+    var registry = data.Registry.init(gpa, .default);
+    defer registry.deinit(gpa);
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(gpa);
+    try data.fpk.write(gpa, &pkg, &registry, &bytes);
+    try f.write("bare.fpk", bytes.items);
+    const path = try f.own(try std.fmt.allocPrint(gpa, "{s}/bare.fpk", .{f.root}));
+
+    var diags = Diagnostics.init(gpa, .default);
+    defer diags.deinit(gpa);
+    try testing.expectError(error.ContentInvalid, Set.load(gpa, f.os, &.{.{ .path = path }}, .{}, &diags));
+    try testing.expect(std.mem.indexOf(u8, diags.items.items[0].message, "has no manifest this build can read: NoManifest") != null);
+}
+
+test "a truncated package is refused before its manifest is looked for" {
+    const f = try Fixture.init();
+    defer f.deinit();
+
     const path = try f.pack("alpha", "foundry:mod demo:alpha { name \"Alpha\" version 1 license \"MIT\" }", "");
     const bytes = try f.os.readFile(testing.allocator, path, 1 << 20);
     defer testing.allocator.free(bytes);
-    const stripped = try std.fmt.allocPrint(testing.allocator, "{s}/stripped.fpk", .{f.root});
-    defer testing.allocator.free(stripped);
-    try f.os.writeFile(stripped, bytes);
 
     // Truncated rather than re-written: the manifest lives in the record section, so a
-    // file whose records are gone is exactly the case. `open` refuses it, which is the
-    // other half of the same rule and is asserted here so both answers are pinned.
+    // file whose records are gone cannot even be opened as a package.
     const half = bytes[0 .. bytes.len / 2];
     const truncated = try std.fmt.allocPrint(testing.allocator, "{s}/truncated.fpk", .{f.root});
     defer testing.allocator.free(truncated);
@@ -465,7 +509,43 @@ test "a package with no manifest is refused" {
     var diags = Diagnostics.init(gpa, .default);
     defer diags.deinit(gpa);
     try testing.expectError(error.ContentInvalid, Set.load(gpa, f.os, &.{.{ .path = truncated }}, .{}, &diags));
-    try testing.expect(diags.failed);
+    try testing.expect(std.mem.indexOf(u8, diags.items.items[0].message, "is not a usable content package") != null);
+}
+
+test "a copy of a package is the same package, and a different file claiming it is refused" {
+    const f = try Fixture.init();
+    defer f.deinit();
+    const gpa = testing.allocator;
+
+    const original = try f.pack("alpha", "foundry:mod demo:alpha { name \"Alpha\" version 1 license \"MIT\" }", "");
+    const bytes = try f.os.readFile(gpa, original, 1 << 20);
+    defer gpa.free(bytes);
+    try f.write("copy.fpk", bytes);
+    const copy = try f.own(try std.fmt.allocPrint(gpa, "{s}/copy.fpk", .{f.root}));
+
+    // The same bytes under another name, which is also what a second spelling of one
+    // path reads as: one package, and nothing to report.
+    {
+        var diags = Diagnostics.init(gpa, .default);
+        defer diags.deinit(gpa);
+        var set = try Set.load(gpa, f.os, &.{ .{ .path = original }, .{ .path = copy } }, .{}, &diags);
+        defer set.deinit();
+        try testing.expectEqual(@as(u32, 1), set.count());
+        try testing.expect(!diags.failed);
+    }
+
+    // The same package id in a different file — here, a later version — is a grant that
+    // would mean whichever was named first. Refused, naming both.
+    const newer = try f.pack("alpha2", "foundry:mod demo:alpha { name \"Alpha\" version 2 license \"MIT\" }", "");
+    {
+        var diags = Diagnostics.init(gpa, .default);
+        defer diags.deinit(gpa);
+        try testing.expectError(error.ContentInvalid, Set.load(gpa, f.os, &.{ .{ .path = original }, .{ .path = newer } }, .{}, &diags));
+        const message = diags.items.items[0].message;
+        try testing.expect(std.mem.indexOf(u8, message, "is 'demo:alpha', and so is") != null);
+        try testing.expect(std.mem.indexOf(u8, message, "alpha.fpk") != null);
+        try testing.expect(std.mem.indexOf(u8, diags.items.items[0].location.file, "alpha2.fpk") != null);
+    }
 }
 
 test "a dependency reached through a symlink is refused rather than followed" {

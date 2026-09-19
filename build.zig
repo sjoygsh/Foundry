@@ -535,19 +535,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    fpack_mod.addImport("asset", modules.get("asset").?);
+    // Nothing else: the `asset`, `mod` and `scene` schemas a package is checked against are
+    // `author`'s to register now, so they reach this program through it.
     fpack_mod.addImport("author", modules.get("author").?);
-    fpack_mod.addImport("core", modules.get("core").?);
     fpack_mod.addImport("data", modules.get("data").?);
     fpack_mod.addImport("platform", platform_module);
-    // And `mod`, because a package now states its own id and version in a `foundry:mod`
-    // record and the compiler reads it from there (ADR-0027). That is the whole of what
-    // `--name` and `--version` used to be.
-    fpack_mod.addImport("mod", modules.get("mod").?);
-    // And `scene`, for the same reason it gets `asset`: that is where the record types for
-    // entity templates and scenes are declared, and content using one must not have to
-    // declare an engine-owned schema itself.
-    fpack_mod.addImport("scene", modules.get("scene").?);
 
     const fpack = b.addExecutable(.{ .name = "fpack", .root_module = fpack_mod });
     b.installArtifact(fpack);

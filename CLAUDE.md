@@ -364,7 +364,7 @@ Foundry/
   engine/
     src/
       core/  platform/  data/  physics2d/  ui/  rhi/  asset/  mod/  render2d/
-      scene/  audio/  app/  debug/  abi/  script/
+      scene/  audio/  app/  author/  debug/  abi/  script/
       rhi/backends/      null/  metal/ (Zig backend + Objective-C shim)  vulkan/
     tests/               Integration tests. Unit tests are colocated with source.
 
@@ -565,8 +565,8 @@ Write an ADR when a choice constrains future work, is expensive to reverse, or w
 arbitrary to a future session. Do not write one for routine implementation choices.
 
 **M15 (accepted 2026-09-20):** ADR-0042 and ADR-0043 are in the §4.1 table, and
-[editor.md](docs/design/editor.md) is the nine-step plan. Its `author` module joins §4.3's
-layer graph when Step 2 adds it to the build, not before.
+[editor.md](docs/design/editor.md) is the nine-step plan. Its `author` module is in §4.3's
+layer graph, since Step 2 added it to the build.
 
 ---
 

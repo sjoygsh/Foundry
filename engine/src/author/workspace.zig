@@ -587,6 +587,42 @@ test "a workspace's configured budgets refuse rather than truncate" {
         try testing.expect(diags.failed);
         try testing.expect(std.mem.indexOf(u8, diags.items.items[0].message, "totalling more than 30 bytes") != null);
     }
+
+    // More entries than the walk may look at, none of them sources: the sources bound
+    // alone would walk a tree of anything else without end.
+    {
+        const f = try Fixture.init();
+        defer f.deinit();
+        try f.write("pkg/a.txt", "");
+        try f.write("pkg/b.txt", "");
+        try f.write("pkg/c.txt", "");
+
+        var diags = Diagnostics.init(gpa, .default);
+        defer diags.deinit(gpa);
+
+        try testing.expectError(error.OverBudget, Workspace.open(gpa, f.os, try f.at("pkg"), .{
+            .limits = .{ .walk = .{ .max_entries = 2 } },
+        }, &diags));
+        try testing.expect(std.mem.indexOf(u8, diags.items.items[0].message, "more than 2 entries") != null);
+        // Named by where it is in the package, not by where the host keeps the package.
+        try testing.expectEqualStrings(".", diags.items.items[0].location.file);
+    }
+
+    // A source deeper than the walk may descend.
+    {
+        const f = try Fixture.init();
+        defer f.deinit();
+        try f.write("pkg/one/two/three/deep.fdt", "foundry:thing demo:deep { }\n");
+
+        var diags = Diagnostics.init(gpa, .default);
+        defer diags.deinit(gpa);
+
+        try testing.expectError(error.OverBudget, Workspace.open(gpa, f.os, try f.at("pkg"), .{
+            .limits = .{ .walk = .{ .max_depth = 2 } },
+        }, &diags));
+        try testing.expect(std.mem.indexOf(u8, diags.items.items[0].message, "deeper than 2 directories") != null);
+        try testing.expectEqualStrings("one/two/three", diags.items.items[0].location.file);
+    }
 }
 
 test "a source reached through a symlink is not read, and a link out is not followed" {

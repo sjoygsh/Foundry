@@ -44,13 +44,15 @@ const usage =
     \\  --assets-out <dir>        where to write compiled assets (required if any)
     \\  --dependency <file.fpk>   a package this one is compiled against (repeatable)
     \\  --quiet                   report nothing on success
+    \\  --help                    this text
     \\
     \\The package's id and version are read from its mod.fdt (ADR-0027).
+    \\
     \\Dependencies are named, never searched for: a package nobody names is not read, so
     \\its schemas are not registered and a record of its that this package uses is an
     \\unknown schema rather than a lucky find. They register in the order they were given,
-    \\before this package's own declarations.
-    \\  --help                    this text
+    \\before this package's own declarations. A file named twice, or a copy of one, is
+    \\read once; two different files that are the same package are refused.
     \\
 ;
 
