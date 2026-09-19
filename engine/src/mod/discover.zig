@@ -26,11 +26,28 @@ const log = core.log.scoped(.mod);
 
 pub const extension = ".fpk";
 
+/// Whose directory a package was found in. **Host authority** (ADR-0031, ADR-0040): the
+/// host says which root is which when it discovers, and nothing a package says about
+/// itself can change it.
+///
+/// It matters in one place. Two packages with one id are an installation fault when both
+/// shipped with the game and a player's mistake when either came from `mods/`, and
+/// ADR-0040 treats the two differently.
+pub const Origin = enum {
+    /// Shipped with the application: its installed content directory.
+    installed,
+    /// The player's own, from the user-data `mods/` directory.
+    user,
+};
+
 pub const Options = struct {
     limits: data.Limits = .default,
     /// Bound on one compiled package, matching `app.Config.max_package_bytes`. Generous,
     /// because a package is records rather than payloads.
     max_package_bytes: usize = 64 << 20,
+    /// Stamped on every candidate this call finds. Defaults to the stricter case, so a
+    /// caller that never says keeps every duplicate fatal (`public-abi.md` §12.1).
+    origin: Origin = .installed,
 };
 
 /// One installed package: what it says about itself, and where its two halves are.
@@ -49,6 +66,8 @@ pub const Candidate = struct {
     /// own name, so a package is one file and one directory beside it and there is nothing
     /// further to configure.
     root: []const u8,
+    /// Which host-granted root this came from. Never read from the package.
+    origin: Origin = .installed,
 };
 
 /// Everything found, owning its strings.
@@ -136,6 +155,7 @@ pub fn discover(
             .base_dir = try arena.dupe(u8, dir),
             .file = try arena.dupe(u8, file_name),
             .root = try arena.dupe(u8, stem),
+            .origin = options.origin,
         });
         log.debug("found {s} version {d} in {s}", .{ m.id_name, m.version, file_name });
     }

@@ -57,7 +57,6 @@ const data = @import("data");
 // engine depends on it, and the key that shows it is this sample's to choose.
 const debug = @import("debug");
 const physics2d = @import("physics2d");
-const mod = @import("mod");
 const platform = @import("platform");
 const render2d = @import("render2d");
 const rhi = @import("rhi");
@@ -68,21 +67,20 @@ const ui = @import("ui");
 
 const log = core.log.scoped(.room);
 
-/// **What loads, and in what order — discovered rather than written down.**
+/// **What loads, and in what order — the mod set's answer, not this sample's.**
 ///
 /// The sample names two things: the package it cannot run without (`foundry:core`, package
-/// zero) and the package it *is*. Everything else comes from the content directory, and the
-/// order comes from the manifests those packages carry (ADR-0027). Nothing here knows a
-/// filename; `mod` reads each candidate's manifest out of its own `.fpk`, resolves the
-/// dependencies and hands back the list `app.Config.content` takes.
+/// zero) and the package it *is*. Both are required, so neither is ever a player's choice.
+/// Everything else comes from the roots it grants, and the order from the manifests those
+/// packages carry and the order the player saved (ADR-0027, ADR-0040). `app.ModSet` finds,
+/// resolves and remembers all of it, so a mod screen asks the same object startup did.
 ///
-/// **`FOUNDRY_ROOM_PACKAGES` is now a list of content ids**, not of filenames — enable
-/// `brighter:content`, not `brighter`. That is the change worth noticing: a mod is
-/// identified by what it calls itself, and where its file sits stopped mattering.
+/// **`FOUNDRY_ROOM_PACKAGES` is a list of content ids**, not of filenames — enable
+/// `brighter:content`, not `brighter`. It is appended after the saved selection for this
+/// session only and never saved: a developer's override, not a player's choice.
 ///
-/// The result borrows nothing from the caller and is freed by it. `Engine.init` copies what
-/// it keeps.
-fn contentPackages(
+/// The set is returned started: its `loaded` order is the one `Engine.init` is given.
+fn openMods(
     gpa: std.mem.Allocator,
     os: *platform.os.Os,
     content_dir: []const u8,
@@ -90,54 +88,43 @@ fn contentPackages(
     selected: app.settings.IdSet,
     include_user_packages: bool,
     session: *app.diagnostics.Session,
-) ![]app.ContentPackage {
+) !app.ModSet {
     var diags: data.Diagnostics = .init(gpa, .default);
     defer diags.deinit(gpa);
 
-    var installed = try mod.discover(gpa, os, content_dir, .{}, &diags);
-    defer installed.deinit();
+    // The installation and the player's `mods/` are two host-granted roots, and which is
+    // which is the host's to say: a player's copy of an installed package is skipped, not
+    // fatal (ADR-0040). A missing `mods/` is the ordinary first-run state; an unavailable
+    // user-data location leaves installed content usable.
+    const user_dir = if (include_user_packages) try app.mods.userRoot(gpa, os) else null;
+    defer if (user_dir) |dir| gpa.free(dir);
+    const both = [_]app.mods.Root{
+        .{ .dir = content_dir, .origin = .installed },
+        .{ .dir = user_dir orelse "", .origin = .user },
+    };
+    const roots = if (user_dir != null) both[0..] else both[0..1];
 
-    // The user root is a second host-granted capability, never a path content can name.
-    // A missing `mods/` directory is the ordinary first-run state and discovery reports
-    // it as empty. An unavailable user-data location leaves installed content usable.
-    var user: ?mod.Discovery = null;
-    defer if (user) |*found| found.deinit();
-    if (include_user_packages) {
-        const user_data = os.userDataDirAlloc(gpa) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => blk: {
-                log.warn("user packages are unavailable ({t})", .{err});
-                break :blk null;
-            },
-        };
-        if (user_data) |dir| {
-            defer gpa.free(dir);
-            const mods_dir = try platform.os.joinPath(gpa, &.{ dir, "mods" });
-            defer gpa.free(mods_dir);
-            user = try mod.discover(gpa, os, mods_dir, .{}, &diags);
-        }
-    }
-
-    var candidates: std.ArrayList(mod.Candidate) = .empty;
-    defer candidates.deinit(gpa);
-    try candidates.appendSlice(gpa, installed.candidates);
-    if (user) |found| try candidates.appendSlice(gpa, found.candidates);
-
-    var enabled: std.ArrayList(core.ContentId) = .empty;
-    defer enabled.deinit(gpa);
-    try enabled.append(gpa, try data.contentId("room:content"));
+    var mods = try app.ModSet.init(gpa, os, roots, .{
+        .required = &.{ try data.contentId("foundry:core"), try data.contentId("room:content") },
+    }, &diags);
+    errdefer mods.deinit();
 
     // **What the player enabled**, read out of their own preferences before anything was
     // discovered — which is why §4 puts settings ahead of discovery in the startup order.
     // Each spelling was validated when it was read, so this cannot fail on one.
+    var saved: std.ArrayList(core.ContentId) = .empty;
+    defer saved.deinit(gpa);
     for (selected.ids) |id| {
         if (std.mem.eql(u8, id, "room:content")) continue;
         log.info("enabling '{s}' (saved)", .{id});
-        try enabled.append(gpa, data.contentId(id) catch continue);
+        try saved.append(gpa, data.contentId(id) catch continue);
     }
+    try mods.restore(saved.items);
 
-    if (envValue(env, "FOUNDRY_ROOM_PACKAGES")) |extra| {
-        var it = std.mem.splitScalar(u8, extra, ',');
+    var extra: std.ArrayList(core.ContentId) = .empty;
+    defer extra.deinit(gpa);
+    if (envValue(env, "FOUNDRY_ROOM_PACKAGES")) |text| {
+        var it = std.mem.splitScalar(u8, text, ',');
         while (it.next()) |raw| {
             const name = std.mem.trim(u8, raw, " ");
             if (name.len == 0) continue;
@@ -146,18 +133,17 @@ fn contentPackages(
                 continue;
             };
             log.info("enabling '{s}'", .{name});
-            try enabled.append(gpa, id);
+            try extra.append(gpa, id);
         }
     }
 
-    var resolution = try mod.resolve(gpa, candidates.items, .{
-        .required = &.{try data.contentId("foundry:core")},
-        .enabled = enabled.items,
-    }, &diags);
-    defer resolution.deinit();
-
-    // Everything `mod` had to say about what it found. A skipped mod is a message, not a
-    // failure to start, and the message is the whole point of it being one.
+    // Everything the set had to say about what it found: a skipped mod is a message, not a
+    // failure to start, and the message is the whole point of it being one. A fatal one is
+    // said too, before the error that stops the sample.
+    const loaded = mods.start(extra.items, &diags) catch |err| {
+        for (diags.items.items) |d| log.err("content: {s}", .{d.message});
+        return err;
+    };
     for (diags.items.items) |d| log.warn("content: {s}", .{d.message});
 
     // The resolved load order, into the session's header. It is the first thing anyone
@@ -165,32 +151,12 @@ fn contentPackages(
     // (`distribution.md` §10).
     var summary: std.ArrayList(app.diagnostics.Package) = .empty;
     defer summary.deinit(gpa);
-    for (resolution.order) |entry| {
+    for (loaded.order) |entry| {
+        log.info("load order: {s} version {d}", .{ entry.name, entry.version });
         try summary.append(gpa, .{ .id = entry.name, .version = entry.version });
     }
     session.notePackages(summary.items);
-
-    var list: std.ArrayList(app.ContentPackage) = .empty;
-    errdefer freePackages(gpa, list.items);
-    errdefer list.deinit(gpa);
-    for (resolution.order) |entry| {
-        log.info("load order: {s} version {d}", .{ entry.name, entry.version });
-        const package = try copyPackage(gpa, entry);
-        list.append(gpa, package) catch |err| {
-            freePackage(gpa, package);
-            return err;
-        };
-    }
-    return list.toOwnedSlice(gpa);
-}
-
-fn copyPackage(gpa: std.mem.Allocator, entry: mod.Entry) !app.ContentPackage {
-    const base = try gpa.dupe(u8, entry.base_dir);
-    errdefer gpa.free(base);
-    const file = try gpa.dupe(u8, entry.file);
-    errdefer gpa.free(file);
-    const root = try gpa.dupe(u8, entry.root);
-    return .{ .base_dir = base, .file = file, .root = root };
+    return mods;
 }
 
 fn envValue(env: []const platform.os.EnvVar, name: []const u8) ?[]const u8 {
@@ -209,16 +175,6 @@ fn workersFrom(env: []const platform.os.EnvVar) ?u16 {
         log.warn("FOUNDRY_ROOM_WORKERS='{s}' is not a thread count; the engine chooses", .{text});
         return null;
     };
-}
-
-fn freePackages(gpa: std.mem.Allocator, packages: []const app.ContentPackage) void {
-    for (packages) |pkg| freePackage(gpa, pkg);
-}
-
-fn freePackage(gpa: std.mem.Allocator, package: app.ContentPackage) void {
-    if (package.base_dir) |base| gpa.free(base);
-    gpa.free(package.file);
-    gpa.free(package.root);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -578,7 +534,7 @@ fn run(
     // user packages unless the caller explicitly supplies the package-list input.
     const include_user_packages = !headless or prefs.selected.ids.len > 0 or
         envValue(env, "FOUNDRY_ROOM_PACKAGES") != null;
-    const packages = try contentPackages(
+    var mods = try openMods(
         gpa,
         discovery_os,
         content_dir,
@@ -587,10 +543,10 @@ fn run(
         include_user_packages,
         session,
     );
-    defer {
-        freePackages(gpa, packages);
-        gpa.free(packages);
-    }
+    defer mods.deinit();
+    // Borrowed from the set, which outlives the engine's copy of them.
+    const packages = try mods.contentPackages(gpa);
+    defer gpa.free(packages);
 
     session.setStage(.startup);
     var engine = try app.Engine.init(gpa, .{

@@ -19,8 +19,10 @@
 //! Everything it reads comes from a directory a player has been putting files into, which
 //! makes all of it untrusted input: validated and reported, never asserted.
 //!
-//! Design: `docs/design/public-abi.md` §11 and §12.
+//! Design: `docs/design/public-abi.md` §11 and §12; conflicts and ADR-0040's duplicate rules,
+//! `docs/design/mod-management.md` §§4 and 7.
 
+pub const conflicts_mod = @import("conflicts.zig");
 pub const discover_mod = @import("discover.zig");
 pub const manifest = @import("manifest.zig");
 pub const resolve_mod = @import("resolve.zig");
@@ -30,9 +32,11 @@ pub const schemas = @import("schemas.zig");
 // fields, which `schemas.zig` freezes — but a host does, and a host is a consumer we do
 // not control either (CLAUDE.md §7).
 pub const Candidate = discover_mod.Candidate;
+pub const Conflicts = conflicts_mod.Conflicts;
 pub const Discovery = discover_mod.Discovery;
 pub const Entry = resolve_mod.Entry;
 pub const Manifest = manifest.Manifest;
+pub const Origin = discover_mod.Origin;
 pub const Range = manifest.Range;
 pub const Request = resolve_mod.Request;
 pub const Requirement = manifest.Requirement;
@@ -45,8 +49,11 @@ pub const SkipReason = resolve_mod.SkipReason;
 pub const discover = discover_mod.discover;
 /// Turn candidates and a player's enabled list into a load order.
 pub const resolve = resolve_mod.resolve;
+/// Who overrides whom in a load order, from each package's record table.
+pub const conflicts = conflicts_mod.compute;
 
 test {
+    _ = conflicts_mod;
     _ = discover_mod;
     _ = manifest;
     _ = resolve_mod;

@@ -18,6 +18,12 @@
 //! message, not a failure to launch. The exception is `required` — there is no game
 //! without package zero.
 //!
+//! **So is a duplicated one, when a player put it there** (ADR-0040). Two packages with one
+//! id both shipped with the game is a broken installation and stays fatal. A player's
+//! package claiming an installed package's id is skipped and the installed one loads, and
+//! two or more of the player's own packages sharing an id are all skipped. Each case names
+//! both files; none is a silent pick.
+//!
 //! Design: `docs/design/public-abi.md` §12.
 
 const std = @import("std");
@@ -30,6 +36,7 @@ const manifest_mod = @import("manifest.zig");
 const Allocator = std.mem.Allocator;
 const Candidate = discover_mod.Candidate;
 const ContentId = core.ContentId;
+const Origin = discover_mod.Origin;
 const Diagnostics = data.Diagnostics;
 
 const log = core.log.scoped(.mod);
@@ -40,8 +47,9 @@ const log = core.log.scoped(.mod);
 const unordered: u32 = std.math.maxInt(u32);
 
 pub const Error = error{
-    /// Two candidates claim the same id. There is no correct one to choose, and choosing
-    /// quietly produces a bug report nobody can reproduce.
+    /// Two **installed** candidates claim the same id. The application shipped a broken
+    /// installation, there is no correct one to choose, and choosing quietly produces a bug
+    /// report nobody can reproduce. Duplicates involving a player's package are skips.
     DuplicatePackage,
     /// Something in `required` is not installed.
     RequiredPackageMissing,
@@ -59,6 +67,12 @@ pub const SkipReason = enum {
     dependency_skipped,
     /// In a dependency cycle, or behind one.
     cycle,
+    /// Two or more of the player's packages share an id, and none of them loads. Reported
+    /// whether or not anything enabled it: it is a fault in what is installed.
+    duplicate,
+    /// A player's package has the id of one the application installed. The installed one
+    /// loads; replacing a package is not content override (ADR-0031).
+    shadows_installed,
 
     pub fn text(self: SkipReason) []const u8 {
         return switch (self) {
@@ -67,6 +81,8 @@ pub const SkipReason = enum {
             .dependency_version => "requires a version of a package that is not installed",
             .dependency_skipped => "requires a package that was itself skipped",
             .cycle => "is in a dependency cycle, or behind one",
+            .duplicate => "shares its id with another of the player's packages, so neither loads",
+            .shadows_installed => "has the id of an installed package, which loads instead",
         };
     }
 };
@@ -80,6 +96,10 @@ pub const Skip = struct {
     /// The dependency this is about, for the three reasons that have one.
     other: ContentId = .none,
     other_name: []const u8 = "",
+    /// The copy this is about, as discovery found it. Empty for `not_installed`, the one
+    /// reason with no file, and the only way to tell two duplicated copies apart.
+    base_dir: []const u8 = "",
+    file: []const u8 = "",
 };
 
 /// One package to load, in order. Exactly what `app.Config.content` takes, plus the code-tier
@@ -120,9 +140,18 @@ pub const Resolution = struct {
     }
 };
 
+/// A group of candidates sharing one id, while duplicates are sorted out.
+const Group = struct {
+    installed: ?u32 = null,
+    /// The first and second of the player's copies, in canonical order: enough to name a
+    /// sibling in every diagnostic.
+    first_user: ?u32 = null,
+    second_user: ?u32 = null,
+};
+
 pub fn resolve(
     gpa: Allocator,
-    candidates: []const Candidate,
+    discovered: []const Candidate,
     request: Request,
     diags: *Diagnostics,
 ) Error!Resolution {
@@ -130,26 +159,93 @@ pub fn resolve(
     errdefer out.arena.deinit();
     const arena = out.arena.allocator();
 
+    // 0. **Canonical order before anything else.** Discovery order is the one thing a
+    //    filesystem, or a host combining roots, can vary. Every loop below runs in index
+    //    order — which duplicate is named first, which failing dependency a skip reports,
+    //    the order skips are listed in — so each has to be a function of the packages
+    //    rather than of the order they arrived in (I9).
+    const candidates = try gpa.dupe(Candidate, discovered);
+    defer gpa.free(candidates);
+    std.mem.sort(Candidate, candidates, {}, lessCanonical);
+
     const n = candidates.len;
+
+    // 1. Index by id, with ADR-0040's three duplicate cases.
+    var groups: std.AutoHashMapUnmanaged(u64, Group) = .empty;
+    defer groups.deinit(gpa);
+    try groups.ensureTotalCapacity(gpa, @intCast(n));
+    for (candidates, 0..) |c, i| {
+        const gop = groups.getOrPutAssumeCapacity(c.manifest.id.hash);
+        if (!gop.found_existing) gop.value_ptr.* = .{};
+        const group = gop.value_ptr;
+        switch (c.origin) {
+            .installed => if (group.installed) |first_index| {
+                // Named as the skips below are, never by an absolute path: now that a
+                // host logs it, this line reaches the session log too.
+                const first = candidates[first_index];
+                try diags.addFmt(gpa, .err, .whole(c.file), 0, "", "'{s}/{s}' declares the same package id as '{s}/{s}': {s}", .{
+                    placeName(c.origin),
+                    c.file,
+                    placeName(first.origin),
+                    first.file,
+                    c.manifest.id_name,
+                });
+                return error.DuplicatePackage;
+            } else {
+                group.installed = @intCast(i);
+            },
+            .user => if (group.first_user == null) {
+                group.first_user = @intCast(i);
+            } else if (group.second_user == null) {
+                group.second_user = @intCast(i);
+            },
+        }
+    }
 
     var by_id: std.AutoHashMapUnmanaged(u64, u32) = .empty;
     defer by_id.deinit(gpa);
     try by_id.ensureTotalCapacity(gpa, @intCast(n));
+    // Why each candidate can never load, whatever was asked for. A player's package that
+    // an id's other copies rule out stays in `by_id` when it is the id's only
+    // representative, so what depends on it is skipped as depending on a skip rather than
+    // on something missing.
+    const dropped = try gpa.alloc(?SkipReason, n);
+    defer gpa.free(dropped);
+    @memset(dropped, null);
+
+    var skips: std.ArrayList(Skip) = .empty;
+    defer skips.deinit(gpa);
 
     for (candidates, 0..) |c, i| {
-        const gop = by_id.getOrPutAssumeCapacity(c.manifest.id.hash);
-        if (gop.found_existing) {
-            const first = candidates[gop.value_ptr.*];
-            try diags.addFmt(gpa, .err, .whole(c.file), 0, "", "package '{s}/{s}' declares the same package id as '{s}/{s}': {s}", .{
-                c.base_dir,
-                c.file,
-                first.base_dir,
-                first.file,
-                c.manifest.id_name,
-            });
-            return error.DuplicatePackage;
+        const group = groups.get(c.manifest.id.hash).?;
+        by_id.putAssumeCapacity(c.manifest.id.hash, group.installed orelse group.first_user.?);
+        if (c.origin != .user) continue;
+
+        const reason: SkipReason, const sibling: u32 = if (group.installed) |installed|
+            .{ .shadows_installed, installed }
+        else if (group.second_user) |second|
+            .{ .duplicate, if (group.first_user.? == i) second else group.first_user.? }
+        else
+            continue;
+        dropped[i] = reason;
+        try skips.append(gpa, .{
+            .id = c.manifest.id,
+            .name = c.manifest.id_name,
+            .reason = reason,
+            .base_dir = c.base_dir,
+            .file = c.file,
+        });
+        // Named by where each copy sits and its file, never by an absolute path: this
+        // reaches the session log, which collects no home paths (`distribution.md` §10).
+        const other = candidates[sibling];
+        switch (reason) {
+            .shadows_installed => try diags.addFmt(gpa, .warning, .whole(c.file), 0, "", "'{s}/{s}' declares '{s}', which '{s}/{s}' already provides; the installed package loads instead", .{
+                placeName(c.origin), c.file, c.manifest.id_name, placeName(other.origin), other.file,
+            }),
+            else => try diags.addFmt(gpa, .warning, .whole(c.file), 0, "", "'{s}/{s}' and '{s}/{s}' both declare '{s}'; neither loads", .{
+                placeName(c.origin), c.file, placeName(other.origin), other.file, c.manifest.id_name,
+            }),
         }
-        gop.value_ptr.* = @intCast(i);
     }
 
     const pos = try gpa.alloc(u32, n);
@@ -164,9 +260,9 @@ pub fn resolve(
     @memset(selected, false);
     @memset(ok, true);
     @memset(placed, false);
-
-    var skips: std.ArrayList(Skip) = .empty;
-    defer skips.deinit(gpa);
+    for (dropped, ok) |d, *o| {
+        if (d != null) o.* = false;
+    }
 
     // 1. Seed. `required` first, so package zero is position zero and stays there unless
     //    something depends on it — which nothing can, because it depends on nothing.
@@ -176,6 +272,8 @@ pub fn resolve(
             try diags.addFmt(gpa, .err, .whole("<load order>"), 0, "", "required package {x} is not installed", .{id.hash});
             return error.RequiredPackageMissing;
         };
+        // Only a player's copies can be dropped; step 6 finds it unplaced, and says so.
+        if (dropped[index] != null) continue;
         if (!selected[index]) {
             selected[index] = true;
             pos[index] = next_pos;
@@ -188,6 +286,8 @@ pub fn resolve(
             try diags.addFmt(gpa, .warning, .whole("<load order>"), 0, "", "enabled package {x} is not installed", .{id.hash});
             continue;
         };
+        // Already reported, once, whether or not anything enabled it.
+        if (dropped[index] != null) continue;
         if (!selected[index]) {
             selected[index] = true;
             pos[index] = next_pos;
@@ -204,7 +304,8 @@ pub fn resolve(
     while (pending.pop()) |index| {
         for (candidates[index].manifest.requires) |req| {
             const dep = by_id.get(req.id.hash) orelse continue;
-            if (selected[dep]) continue;
+            // A dropped copy pulls in nothing: it is not going to load.
+            if (selected[dep] or dropped[dep] != null) continue;
             selected[dep] = true;
             try pending.append(gpa, dep);
         }
@@ -221,6 +322,9 @@ pub fn resolve(
                 const dep_index = by_id.get(req.id.hash);
                 const reason: SkipReason = blk: {
                     const dep = dep_index orelse break :blk .missing_dependency;
+                    // Before the version: a duplicated dependency cannot load at any
+                    // version, and which copy's version to quote is not a question to answer.
+                    if (dropped[dep] != null) break :blk .dependency_skipped;
                     if (!req.range.accepts(candidates[dep].manifest.version)) break :blk .dependency_version;
                     if (!ok[dep]) break :blk .dependency_skipped;
                     continue;
@@ -233,6 +337,8 @@ pub fn resolve(
                     .reason = reason,
                     .other = req.id,
                     .other_name = if (dep_index) |d| candidates[d].manifest.id_name else "",
+                    .base_dir = candidates[i].base_dir,
+                    .file = candidates[i].file,
                 });
                 try report(gpa, diags, candidates[i], reason, req.id, dep_index, candidates);
                 break;
@@ -280,6 +386,8 @@ pub fn resolve(
             .id = candidates[i].manifest.id,
             .name = candidates[i].manifest.id_name,
             .reason = .cycle,
+            .base_dir = candidates[i].base_dir,
+            .file = candidates[i].file,
         });
         try diags.addFmt(gpa, .warning, .whole(candidates[i].file), 0, "", "'{s}' {s}", .{
             candidates[i].manifest.id_name,
@@ -306,10 +414,37 @@ pub fn resolve(
     for (skipped) |*s| {
         s.name = try arena.dupe(u8, s.name);
         s.other_name = try arena.dupe(u8, s.other_name);
+        s.base_dir = try arena.dupe(u8, s.base_dir);
+        s.file = try arena.dupe(u8, s.file);
     }
     out.skipped = skipped;
     log.debug("resolved {d} packages, skipped {d}", .{ out.order.len, out.skipped.len });
     return out;
+}
+
+/// The canonical order: the id's spelling, then where the copy sits. A total order over
+/// anything discovery can return, since one root holds one file of one name.
+fn lessCanonical(_: void, a: Candidate, b: Candidate) bool {
+    switch (std.mem.order(u8, a.manifest.id_name, b.manifest.id_name)) {
+        .lt => return true,
+        .gt => return false,
+        .eq => {},
+    }
+    if (a.origin != b.origin) return @intFromEnum(a.origin) < @intFromEnum(b.origin);
+    switch (std.mem.order(u8, a.base_dir, b.base_dir)) {
+        .lt => return true,
+        .gt => return false,
+        .eq => {},
+    }
+    return std.mem.order(u8, a.file, b.file) == .lt;
+}
+
+/// How a diagnostic names a root: by whose it is, not where it is on this machine.
+fn placeName(origin: Origin) []const u8 {
+    return switch (origin) {
+        .installed => "installed",
+        .user => "mods",
+    };
 }
 
 fn dependenciesPlaced(
@@ -370,6 +505,9 @@ const testing = std.testing;
 const TestPackage = struct {
     name: []const u8,
     base_dir: []const u8 = "test-root",
+    origin: Origin = .installed,
+    /// Defaults to the id's spelling with `.fpk`; two copies of one id need two files.
+    file: ?[]const u8 = null,
     version: u32 = 1,
     requires: []const []const u8 = &.{},
     /// Version ranges, parallel to `requires`. Empty means "any".
@@ -394,8 +532,9 @@ fn makeCandidate(arena: Allocator, spec: TestPackage) !Candidate {
             .requires = reqs,
         },
         .base_dir = spec.base_dir,
-        .file = try std.fmt.allocPrint(arena, "{s}.fpk", .{spec.name}),
+        .file = spec.file orelse try std.fmt.allocPrint(arena, "{s}.fpk", .{spec.name}),
         .root = spec.name,
+        .origin = spec.origin,
     };
 }
 
@@ -612,24 +751,186 @@ test "a cycle skips everyone in it and the game still starts" {
     for (res.skipped) |s| try testing.expectEqual(SkipReason.cycle, s.reason);
 }
 
-test "two packages claiming one id is an error naming both files" {
+test "two installed packages claiming one id is an error naming both files" {
     var h: Harness = .init();
     defer h.deinit();
 
     const candidates = try makeAll(h.a(), &.{
         .{ .name = "foundry:core" },
-        .{ .name = "a:twice", .base_dir = "installed", .version = 1 },
-        .{ .name = "a:twice", .base_dir = "user-mods", .version = 2 },
+        .{ .name = "a:twice", .base_dir = "installed", .file = "twice.fpk", .version = 1 },
+        .{ .name = "a:twice", .base_dir = "second-install", .file = "twice-again.fpk", .version = 2 },
     });
 
-    // Two copies of one mod installed is a common mistake, and choosing one quietly
-    // produces a bug report nobody can reproduce.
+    // Both shipped with the application: a broken installation, not a player's mistake,
+    // and choosing one quietly produces a bug report nobody can reproduce.
     try testing.expectError(error.DuplicatePackage, resolve(testing.allocator, candidates, .{
         .required = try ids(h.a(), &.{"foundry:core"}),
     }, &h.diags));
     try testing.expect(h.diags.failed);
-    try testing.expect(std.mem.indexOf(u8, h.diags.items.items[0].message, "installed") != null);
-    try testing.expect(std.mem.indexOf(u8, h.diags.items.items[0].message, "user-mods") != null);
+    try testing.expect(std.mem.indexOf(u8, h.diags.items.items[0].message, "'installed/twice.fpk'") != null);
+    try testing.expect(std.mem.indexOf(u8, h.diags.items.items[0].message, "'installed/twice-again.fpk'") != null);
+    try testing.expect(std.mem.indexOf(u8, h.diags.items.items[0].message, "second-install") == null);
+}
+
+test "a player's package claiming an installed id is skipped, and the installed one loads" {
+    var h: Harness = .init();
+    defer h.deinit();
+
+    const candidates = try makeAll(h.a(), &.{
+        .{ .name = "foundry:core" },
+        .{ .name = "a:thing", .base_dir = "install", .version = 1 },
+        .{ .name = "a:thing", .base_dir = "user", .origin = .user, .file = "thing-v2.fpk", .version = 2 },
+        // A copy of package zero in `mods/` is the same case, not a way to replace it.
+        .{ .name = "foundry:core", .base_dir = "user", .origin = .user, .file = "core.fpk" },
+    });
+
+    var res = try resolve(testing.allocator, candidates, .{
+        .required = try ids(h.a(), &.{"foundry:core"}),
+        .enabled = try ids(h.a(), &.{"a:thing"}),
+    }, &h.diags);
+    defer res.deinit();
+
+    var buf: [8][]const u8 = undefined;
+    try testing.expectEqualDeep(@as([]const []const u8, &.{ "foundry:core", "a:thing" }), orderNames(res, &buf));
+    try testing.expectEqualStrings("install", res.order[1].base_dir);
+    try testing.expectEqual(@as(u32, 1), res.order[1].version);
+    try testing.expectEqualStrings("test-root", res.order[0].base_dir);
+
+    try testing.expectEqual(@as(usize, 2), res.skipped.len);
+    for (res.skipped) |skip| {
+        try testing.expectEqual(SkipReason.shadows_installed, skip.reason);
+        try testing.expectEqualStrings("user", skip.base_dir);
+    }
+    try testing.expectEqualStrings("thing-v2.fpk", res.skipped[0].file);
+    try testing.expectEqualStrings("core.fpk", res.skipped[1].file);
+
+    // A message, not a failure; both files named, and by whose they are rather than where.
+    try testing.expect(!h.diags.failed);
+    try testing.expectEqual(@as(usize, 2), h.diags.count());
+    const message = h.diags.items.items[0].message;
+    try testing.expect(std.mem.indexOf(u8, message, "mods/thing-v2.fpk") != null);
+    try testing.expect(std.mem.indexOf(u8, message, "installed/a:thing.fpk") != null);
+    try testing.expect(std.mem.indexOf(u8, message, "user/") == null);
+}
+
+test "the player's own packages sharing an id are all skipped, with what needs them" {
+    var h: Harness = .init();
+    defer h.deinit();
+
+    const candidates = try makeAll(h.a(), &.{
+        .{ .name = "foundry:core" },
+        .{ .name = "a:twice", .base_dir = "user", .origin = .user, .file = "twice.fpk", .version = 1 },
+        .{ .name = "a:twice", .base_dir = "user", .origin = .user, .file = "twice copy.fpk", .version = 3 },
+        .{ .name = "a:twice", .base_dir = "user", .origin = .user, .file = "twice (2).fpk", .version = 2 },
+        .{ .name = "b:needs", .base_dir = "user", .origin = .user, .requires = &.{"a:twice"}, .ranges = &.{.{ .min = 9 }} },
+        .{ .name = "c:fine", .base_dir = "user", .origin = .user },
+        // Never enabled, and still reported: two copies is a fault in what is installed.
+        .{ .name = "d:idle", .base_dir = "user", .origin = .user, .file = "idle.fpk" },
+        .{ .name = "d:idle", .base_dir = "user", .origin = .user, .file = "idle2.fpk" },
+    });
+
+    var res = try resolve(testing.allocator, candidates, .{
+        .required = try ids(h.a(), &.{"foundry:core"}),
+        .enabled = try ids(h.a(), &.{ "a:twice", "b:needs", "c:fine" }),
+    }, &h.diags);
+    defer res.deinit();
+
+    // One copy is not chosen. The mod nobody duplicated still loads.
+    var buf: [8][]const u8 = undefined;
+    try testing.expectEqualDeep(@as([]const []const u8, &.{ "foundry:core", "c:fine" }), orderNames(res, &buf));
+
+    try testing.expectEqual(@as(usize, 6), res.skipped.len);
+    const files = [_][]const u8{ "twice (2).fpk", "twice copy.fpk", "twice.fpk" };
+    for (res.skipped[0..3], files) |skip, file| {
+        try testing.expectEqual(SkipReason.duplicate, skip.reason);
+        try testing.expectEqualStrings("a:twice", skip.name);
+        try testing.expectEqualStrings(file, skip.file);
+    }
+    try testing.expectEqual(SkipReason.duplicate, res.skipped[3].reason);
+    try testing.expectEqualStrings("idle.fpk", res.skipped[3].file);
+    try testing.expectEqual(SkipReason.duplicate, res.skipped[4].reason);
+    try testing.expectEqualStrings("idle2.fpk", res.skipped[4].file);
+    // The dependent is skipped as depending on a skip, whatever range it asked for: no
+    // copy's version is the one to quote.
+    try testing.expectEqual(SkipReason.dependency_skipped, res.skipped[5].reason);
+    try testing.expectEqualStrings("b:needs", res.skipped[5].name);
+    try testing.expectEqualStrings("a:twice", res.skipped[5].other_name);
+
+    // Nothing reports the duplicated id as not installed, and nothing is fatal.
+    try testing.expect(!h.diags.failed);
+    try testing.expectEqual(@as(usize, 6), h.diags.count());
+    try testing.expect(std.mem.indexOf(u8, h.diags.items.items[0].message, "'mods/twice (2).fpk' and 'mods/twice copy.fpk'") != null);
+}
+
+test "a required package the player duplicated is still fatal" {
+    var h: Harness = .init();
+    defer h.deinit();
+
+    // Only a host would ever require a user package, and then it is required all the same.
+    const candidates = try makeAll(h.a(), &.{
+        .{ .name = "foundry:core", .base_dir = "user", .origin = .user, .file = "core.fpk" },
+        .{ .name = "foundry:core", .base_dir = "user", .origin = .user, .file = "core copy.fpk" },
+    });
+    try testing.expectError(error.RequiredPackageSkipped, resolve(testing.allocator, candidates, .{
+        .required = try ids(h.a(), &.{"foundry:core"}),
+    }, &h.diags));
+    try testing.expect(h.diags.failed);
+}
+
+test "shuffled candidates give byte-identical resolutions, skips and diagnostics included" {
+    var h: Harness = .init();
+    defer h.deinit();
+
+    // Every kind of outcome at once, so that any loop whose answer followed its input
+    // order would show it: duplicates of both kinds, a missing dependency behind which a
+    // second package is skipped, a version range, a cycle, and unordered dependencies.
+    const specs = [_]TestPackage{
+        .{ .name = "foundry:core" },
+        .{ .name = "g:game", .requires = &.{"foundry:core"} },
+        .{ .name = "g:game", .base_dir = "user", .origin = .user, .file = "game.fpk" },
+        .{ .name = "a:twice", .base_dir = "user", .origin = .user, .file = "twice.fpk" },
+        .{ .name = "a:twice", .base_dir = "user", .origin = .user, .file = "twice2.fpk", .version = 2 },
+        .{ .name = "b:onto", .base_dir = "user", .origin = .user, .requires = &.{ "c:gone", "a:twice" } },
+        .{ .name = "c:behind", .base_dir = "user", .origin = .user, .requires = &.{"b:onto"} },
+        .{ .name = "d:old", .base_dir = "user", .origin = .user },
+        .{ .name = "e:wants", .base_dir = "user", .origin = .user, .requires = &.{"d:old"}, .ranges = &.{.{ .min = 4 }} },
+        .{ .name = "f:one", .base_dir = "user", .origin = .user, .requires = &.{"f:two"} },
+        .{ .name = "f:two", .base_dir = "user", .origin = .user, .requires = &.{"f:one"} },
+        .{ .name = "h:dep1", .base_dir = "user", .origin = .user },
+        .{ .name = "h:dep2", .base_dir = "user", .origin = .user },
+        .{ .name = "i:top", .base_dir = "user", .origin = .user, .requires = &.{ "h:dep2", "h:dep1" } },
+    };
+    const request: Request = .{
+        .required = try ids(h.a(), &.{ "foundry:core", "g:game" }),
+        .enabled = try ids(h.a(), &.{ "i:top", "e:wants", "c:behind", "f:one", "b:onto", "a:twice", "d:old", "gone:mod" }),
+    };
+
+    var reference: ?[]const u8 = null;
+    var prng: std.Random.DefaultPrng = .init(0x5eed);
+    for (0..12) |round| {
+        var shuffled = specs;
+        if (round == 1) std.mem.reverse(TestPackage, &shuffled) else if (round > 1) prng.random().shuffle(TestPackage, &shuffled);
+
+        var diags: Diagnostics = .init(testing.allocator, .default);
+        defer diags.deinit(testing.allocator);
+        var res = try resolve(testing.allocator, try makeAll(h.a(), &shuffled), request, &diags);
+        defer res.deinit();
+
+        const text = try describe(h.a(), res, diags);
+        if (reference) |expected| {
+            try testing.expectEqualStrings(expected, text);
+        } else reference = text;
+    }
+}
+
+/// Everything a resolution says, and every diagnostic, as one string to compare.
+fn describe(arena: Allocator, res: Resolution, diags: Diagnostics) ![]const u8 {
+    var out: std.Io.Writer.Allocating = .init(arena);
+    const w = &out.writer;
+    for (res.order) |e| try w.print("load {s} v{d} {s}/{s}\n", .{ e.name, e.version, e.base_dir, e.file });
+    for (res.skipped) |s| try w.print("skip {s} {t} {s} {s}/{s}\n", .{ s.name, s.reason, s.other_name, s.base_dir, s.file });
+    for (diags.items.items) |d| try w.print("diag {t} {s}\n", .{ d.severity, d.message });
+    return out.written();
 }
 
 test "a required package that is not installed is fatal, and one that is skipped is too" {

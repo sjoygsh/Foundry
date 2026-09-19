@@ -108,7 +108,11 @@ const layering = [_]Module{
     // renderer — `app.Engine` still has no field for one and still registers no texture
     // loader — so what the engine gained is a function, not an opinion about what a
     // texture is.
-    .{ .name = "app", .deps = &.{ "core", "data", "platform", "ui", "rhi", "asset", "render2d" } },
+    // `mod` joined at M14 step 1 for the mod set (`mod-management.md` §4): the object that
+    // turns a host's roots, its required packages and a player's pending selection into a
+    // load order, a preview and a conflict report. `mod` stays below and computes each
+    // answer from files alone; `app` is where they meet the settings a selection is saved in.
+    .{ .name = "app", .deps = &.{ "core", "data", "platform", "ui", "rhi", "asset", "render2d", "mod" } },
 
     // L5 — the in-process debug overlay (ADR-0025, docs/design/debug-overlay.md). Above
     // `app` rather than inside it, because it needs `scene` and the engine loop does not:
@@ -494,7 +498,6 @@ pub fn build(b: *std.Build) void {
     // second consumer needed**: one import and a key, with no engine change between them —
     // which is the claim ADR-0025 makes about a game getting an overlay by importing a
     // module, checked by a game that is not the one the overlay grew up next to.
-    room_mod.addImport("mod", modules.get("mod").?);
     room_mod.addImport("debug", modules.get("debug").?);
     room_mod.addImport("build_options", build_options_module);
 

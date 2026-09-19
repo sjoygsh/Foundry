@@ -187,7 +187,12 @@ add a save format or serialize script state. Logs/settings must not collide acro
 Discover `Resources/content` and `<user-data>/mods` using existing discovery validation.
 Retain host-assigned origin per candidate and combine candidates before `mod.resolve`.
 Duplicate package IDs anywhere are an explicit conflict even if versions differ; never
-pick the last directory visited. Missing required packages fail startup with their names.
+pick the last directory visited.
+> **M14 Step 1, 2026-09-19 ([ADR-0040](../adr/0040-ordered-profiles-applied-at-next-start.md)):**
+> still never a pick, but no longer always fatal. Two installed packages with one id stop
+> startup; a user package claiming an installed id is skipped, and user packages sharing an id
+> are all skipped, each with a diagnostic naming both files. The origin retained above is what
+> tells the cases apart. Missing required packages fail startup with their names.
 Installed optional or user packages are enabled only by an explicit selected ID set.
 
 Extend `app.ContentPackage` with an optional host-supplied base directory, defaulting to

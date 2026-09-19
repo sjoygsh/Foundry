@@ -104,10 +104,13 @@ FOUNDRY_SANDBOX_PACKAGES=mymod:changes zig build run -Drhi=metal
 
 The sandbox discovers installed and user packages separately, combines them before resolving
 the order from what the manifests say, and loads `foundry:core`, then its own package, then
-yours. A duplicate package ID in either place is an error, not a filesystem-precedence rule. Your
-`requires` line is what guarantees the first of those is underneath you. Walk the player around
-with WASD: the animation is a different colour and three times faster, and nothing was
-rebuilt but your mod.
+yours. Your `requires` line is what guarantees the first of those is underneath you. Walk the
+player around with WASD: the animation is a different colour and three times faster, and
+nothing was rebuilt but your mod.
+
+A duplicate package ID is never settled by which folder was read last. A package in `mods/`
+with the ID of one the game installed is skipped with a warning, and the game's copy loads. Two
+or more in `mods/` sharing an ID are all skipped, and each warning names both files.
 
 **Overriding replaces the whole record**, so every field you want has to be in yours — a
 field you leave out takes its schema default, it does not keep the original's value. §4 says

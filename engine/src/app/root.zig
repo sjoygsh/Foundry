@@ -22,9 +22,14 @@ pub const log_sink = @import("log_sink.zig");
 /// Local evidence a session leaves behind: a bounded log, and whether the last one closed
 /// cleanly. Opt-in, and not crash recovery (`distribution.md` §10).
 pub const diagnostics = @import("diagnostics.zig");
+/// What is installed, what the player chose and in what order, and what that order
+/// overrides (`mod-management.md` §4, ADR-0040). Opt-in, like settings: a host that loads
+/// only its own packages constructs none of it.
+pub const mods = @import("mods.zig");
 pub const settings = @import("settings.zig");
 pub const ui_draw = @import("ui_draw.zig");
 
+pub const ModSet = mods.ModSet;
 pub const Engine = engine.Engine;
 pub const EngineOf = engine.EngineOf;
 pub const Config = engine.Config;
@@ -70,6 +75,7 @@ test {
     _ = engine;
     _ = log_sink;
     _ = diagnostics;
+    _ = mods;
     _ = settings;
     _ = ui_draw;
 }

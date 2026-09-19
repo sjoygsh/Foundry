@@ -1,8 +1,8 @@
 # Design: M14 — Managed, and what a player chooses
 
 **Status:** Design accepted 2026-09-19 with [ADR-0040](../adr/0040-ordered-profiles-applied-at-next-start.md)
-and [ADR-0041](../adr/0041-game-widget-set-and-content-themes.md). Nothing is implemented; **Step 1
-is next**, and not started.
+and [ADR-0041](../adr/0041-game-widget-set-and-content-themes.md). **Step 1, the mod set, is
+implemented (2026-09-19); Step 2, profiles on disk, is next.**
 **Date:** 2026-09-19
 **Baseline:** `754665a` / `m13`; M0–M13 complete, 1,405 declared / 1,395 headless tests.
 **Builds on:** ADR-0024 (one UI kernel, two widget sets), ADR-0026 (the host supplies
@@ -404,9 +404,9 @@ screen takes the pointer and keyboard by the same capture rules. At 1280×720:
 │  ·   🔒  The Room                       1     built-in   −         │ Requires  The Room ≥ 1   ✓               │
 │  1   ☑   Brighter Lamps                 3     user       +         │ Provides  14 records, 3 textures         │
 │  2   ☑   Night Palette                  1     user       ±         │ Wins 4 · Loses 2                         │
-│  3   ☐   Old Lamps                      2     user       −         │ Loaded now: yes                          │
-│  4   ⚠   Broken Thing                   1     user                 │                                          │
-│      after The Room, which it requires                             │                                          │
+│  3   ⚠   Broken Thing                   1     user                 │ Loaded now: yes                          │
+│      needs Lamp Kit, which is not installed                        │                                          │
+│      ☐   Old Lamps                      2     user                 │                                          │
 │  [Up] [Down] [Top] [Bottom]                                        │                                          │
 ├──────────────────────────────────────────────────────────────────────────────────────────────┤
 │ 2 changes take effect the next time the hall opens.  [Apply] [Revert]   Drop mods into …/mods │
@@ -597,3 +597,71 @@ carry dated notes:
 
 `CLAUDE.md` §4.1 indexes both ADRs. The code still behaves as those records described until the
 steps that change it land. No code changed, and Step 1 is next.
+
+## Resolution — 2026-09-19, Step 1: the mod set
+
+**Landed.** `mod` gained the three things the mod set needs, and `app.ModSet` joins them:
+- **Origin.** `mod.Origin` (`installed`, `user`) is stamped on every candidate by the host's
+  discovery call and never read from a package. It defaults to `installed`, so a caller that
+  never says keeps every duplicate fatal.
+- **ADR-0040's duplicate rules**, in `mod.resolve`. Two installed candidates with one id stay
+  `DuplicatePackage`. A user candidate claiming an installed id is skipped as
+  `shadows_installed`, and user candidates sharing an id are all skipped as `duplicate`. These
+  are reported whether or not anything enabled them, since they are faults in what is installed.
+  A dependent of a duplicated id is `dependency_skipped`, whatever range it asked for. A `Skip`
+  now carries its copy's `base_dir` and `file`, the only way to tell two copies apart.
+- **Conflicts**, as `mod.conflicts` over a load order. Each package's `.fpk` record table is read
+  alone, with the manifest record left out. Per package, the report gives provides, wins, loses
+  and `redundant()`. Contested records are listed by spelling, each with its providers in load
+  order. `providers(id)` answers any record, contested or not, which the Records tab will need.
+  A package that can no longer be read is a diagnostic, and `readable = false`.
+- **`app.ModSet`** takes host roots with their origins and the required ids. It offers
+  `restore`, `start`, `loaded`, `environment`, `pending`, `changed`, `isEnabled`, `setEnabled`,
+  `move`, `revert`, `preview`, `conflicts` and `contentPackages`, plus `app.mods.userRoot`.
+  Preview and conflicts are cached until the pending selection changes, and nothing changes what
+  `start` loaded. `app` gains `mod` in the build graph, which L4 allows.
+- **Both samples moved to it.** Their copies of discovery, resolution and package copying are
+  gone. Each names `foundry:core` and its own package as required, restores the saved selection,
+  appends its environment override and starts. The room no longer imports `mod` at all.
+
+**Decided by the implementation, within the accepted records:**
+- **Resolution iterates a canonical order.** Candidates are sorted by id spelling, origin, root
+  and file before anything else. That fixes three answers that had followed discovery order: the
+  order skips were listed in, which failing dependency a skip named when two failed in one pass,
+  and which duplicate a diagnostic named. The old determinism test compared only the load order,
+  so none of it showed. The new test shuffles every kind of outcome twelve ways and compares the
+  whole resolution and every diagnostic, byte for byte.
+- **Diagnostics name a copy by whose root it is**, as in `mods/twice.fpk` or
+  `installed/room.fpk`, and never by an absolute path. The samples now log the diagnostics of a
+  fatal resolution before failing, where before they dropped them, so the installed-duplicate
+  message reaches the session log. The log collects no home paths (`distribution.md` §10).
+- **The game's own package is required**, as §4 says. Its load position is unchanged; a missing
+  one now stops the sample instead of producing a warning and a room with no content.
+- **The preview includes the environment override.** The next start in the same environment
+  applies it too, and leaving it out would count every environment package as a pending change.
+  `pending` and `changed` never include it.
+- **Enabling appends to the end of the player's order; disabling forgets the position.** That is
+  ADR-0040 decision 1: a profile holds enabled ids and nothing else. §11's mock numbered a
+  disabled row, contradicting it, and now lists disabled mods unnumbered after the order.
+
+**Evidence.** The bar passed, **1,405 of 1,406** with the one skip it had before. Focused tests:
+- `mod`: the three duplicate cases, a required package the player duplicated staying fatal, the
+  shuffled resolution, and three conflict tests: the last provider winning with every count, the
+  player's order moving winners under rotated discovery, and an unreadable package.
+- `app.ModSet`: two roots with duplicates starting the game; edits changing the preview and the
+  conflicts but never what loaded; the environment override; roots in either order giving
+  byte-identical previews and conflicts.
+
+Three mutations were each caught, then restored byte for byte:
+- dropping the canonical sort failed the shuffle test;
+- reversing provider order failed all three conflict tests;
+- leaving the environment out of the preview failed its test.
+
+A throwaway mod was built outside the tree into a temporary `HOME`, as two copies alongside a
+copy of `room.fpk`. The room started, printed three warnings naming both files each time, and
+loaded `foundry:core` and `room:content`; the old rule refused every duplicate. A second copy of
+`room.fpk` in the installed directory still stopped it, naming both files.
+
+**Unchanged.** Settings still store the sorted `enabled` set, the saved selection is still read
+from it, and a headless run still reads no user packages unless asked. There is no profile,
+no ABI surface and no screen yet. Step 2, profiles on disk, is next.

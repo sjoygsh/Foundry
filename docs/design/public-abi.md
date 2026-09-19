@@ -482,10 +482,12 @@ property was predicted for. Nothing is merged to find out what is installed.
    silent pick. Two copies of one mod installed is a common, real user mistake and choosing one
    quietly produces a bug report nobody can reproduce.
    > **Superseded for user packages by [ADR-0040](../adr/0040-ordered-profiles-applied-at-next-start.md),
-   > accepted 2026-09-19, when M14 Step 1 implements it.** Two installed packages with one id stay
-   > fatal. A user package claiming an installed package's id is skipped, and user packages sharing
-   > an id are all skipped. Each case gets a diagnostic naming both files, so there is still no
-   > silent pick. Until that step lands, the code refuses every duplicate as written here.
+   > accepted 2026-09-19 and implemented by M14 Step 1 the same day.** Two installed packages with
+   > one id stay fatal. A user package claiming an installed package's id is skipped
+   > (`shadows_installed`), and user packages sharing an id are all skipped (`duplicate`). Each case
+   > gets a diagnostic naming both files by root and file, never by absolute path, so there is still
+   > no silent pick. A candidate's origin is the host's, passed to `discover`
+   > (`mod-management.md`, Step 1 Resolution).
 2. **Seed** with `required` plus `enabled`.
 3. **Close over `requires`.** A dependency that is absent, or present at a version outside the
    range, **skips the dependent and everything transitively depending on it**, each with its own
@@ -511,6 +513,11 @@ still land somewhere reproducible.
 set produce the same order on every machine, and the test that says so shuffles the discovery
 order — which is the only thing a filesystem can vary — and asserts the resolution is
 byte-identical.
+
+> **M14 Step 1, 2026-09-19:** until then only the load order was compared, and the skips' order,
+> which failing dependency a skip named, and which duplicate a diagnostic named all followed
+> discovery order. `resolve` now sorts candidates by id spelling, origin, root and file before
+> anything else, and the test compares the whole resolution and every diagnostic.
 
 ## 13. The mod lifecycle
 

@@ -10,9 +10,30 @@ drawing through Vulkan on Windows x64:**
 
 **Both samples run on it from a relocated install, each wearing an icon it supplies. Windows is a
 runtime claim for the tested machine, with its limits recorded, and the RHI's rules survived with
-none relaxed. Linux left M13 by ADR-0039: it is M18, after the first game and before 3D. Next is
-M14, designed and accepted on 2026-09-19 (`docs/design/mod-management.md`, ADR-0040/0041):
-Step 1, the mod set, is next and not started. M15 through M17 remain unstarted.**
+none relaxed. Linux left M13 by ADR-0039: it is M18, after the first game and before 3D. M14 is in
+progress (`docs/design/mod-management.md`, ADR-0040/0041): Step 1, the mod set, is done, and
+Step 2, profiles on disk, is next. M15 through M17 remain unstarted.**
+
+**Completed M14 Step 1, 2026-09-19: the mod set.** `app.ModSet` now answers what is installed,
+what is chosen, in what order, and what that order overrides. Both samples start on it, and their
+copies of discovery are gone.
+- `mod` stamps each candidate with its host-given origin, `installed` or `user`.
+- `mod.resolve` applies ADR-0040's duplicate rules. Two installed copies stay fatal. A user copy
+  of an installed id is skipped as `shadows_installed`, and user copies sharing an id are all
+  skipped as `duplicate`. Every diagnostic names both files by root and file.
+- `mod.resolve` now sorts candidates canonically first. Skip order, skip reasons and duplicate
+  diagnostics had followed discovery order, which the old test never compared.
+- `mod.conflicts` reads each package's record table and reports provides, wins, loses and
+  redundancy, the contested records with their providers in load order, and every record's
+  providers.
+- `app` gains `mod` in the build graph. Each sample requires `foundry:core` and its own package,
+  restores the saved selection and appends its environment override. A fatal resolution now logs
+  its cause first.
+
+The bar passed **1,405 of 1,406**, with the skip it had before. Three mutations were each caught
+and restored. A throwaway duplicated mod in a temporary `HOME` gave warnings and a running room
+where the old rule refused to start. Settings still store the sorted `enabled` set until Steps 2
+and 3. Resolution: `mod-management.md`, Step 1.
 
 **Designed M14, 2026-09-19:** the owner asked for M14's documents, with a mod screen modelled on
 Mod Organizer 2 and Foundry's own additions. `docs/design/mod-management.md` specifies nine steps:
@@ -1840,12 +1861,13 @@ signing, notarization and a clean recipient Mac (ADR-0032) — not engine work. 
 "Hardening and reach" (M10-M17), is under way**: it gathers the deferred work rather than
 adding to it, only M10 was new, **M10 and M11 are complete (2026-09-13)** and **M12 is
 complete (2026-09-14)**. **M13 is complete (2026-09-19)**, proving
-Windows x64 through Vulkan; M14 through M17 are unstarted.
+Windows x64 through Vulkan. **M14 is in progress**, Step 1 of nine done; M15 through M17 are
+unstarted.
 
 ## Current milestone
 
-**M14 — Managed is designed, accepted and not started.** Read `docs/design/mod-management.md`
-and ADR-0040/0041. Step 1, the mod set, is next.
+**M14 — Managed is in progress.** Read `docs/design/mod-management.md` and ADR-0040/0041.
+Step 1, the mod set, is done (2026-09-19); Step 2, profiles on disk, is next.
 
 **M13 — Portable: "the RHI was real." Complete, 2026-09-19.** Read `docs/design/vulkan.md`
 and ADR-0033/0037/0038/0039. All ten steps are implemented:
@@ -2753,7 +2775,7 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M0–M13 are complete, and nothing is in progress.** M14 is designed but not started. M13's
+**M0–M13 are complete. M14 is in progress:** Step 1 is done, and nothing is half-built. M13's
 specification and its Resolutions are in `docs/design/vulkan.md`. M12's specification and all
 six Resolutions are in
 `docs/design/jobs-and-threading.md`, and M11's nine are in `docs/design/hardening.md`; the M5
@@ -3402,9 +3424,11 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M14 Step 1, the mod set** (`docs/design/mod-management.md` §13): `app.ModSet` over
-host-granted roots with origin, and record-level conflicts in `mod`. It also brings ADR-0040's
-duplicate rules, and both samples move to the mod set.
+**Next: M14 Step 2, profiles on disk** (`docs/design/mod-management.md` §§5 and 13). It covers
+the profile schema and one file per profile, with keys, bounds, and create, copy, rename, delete
+and select, plus the ordered list and consents. Settings gain the active profile key, and the
+samples start from their active profile through `app.ModSet.restore`. Step 1, the mod set, is
+done.
 M14's design is `docs/design/mod-management.md`: nine steps, each stopping with its Resolution.
 M13 is complete and tagged `m13`. Its record is
 `docs/design/vulkan.md` and its Resolutions. Linux is M18's (ADR-0039), after the first game and
@@ -4669,8 +4693,8 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 - **M12's record** is `docs/design/jobs-and-threading.md` and ADR-0036:
   `FOUNDRY_SANDBOX_WORKERS` / `FOUNDRY_ROOM_WORKERS` set a sample's pool, `0` for none, for
   comparisons.
-- **M14 is designed and accepted** (`docs/design/mod-management.md`, ADR-0040/0041). Step 1 is
-  next. M15–M17 remain unstarted.
+- **M14 is in progress** (`docs/design/mod-management.md`, ADR-0040/0041). Step 1, `app.ModSet`,
+  is done; Step 2, profiles on disk, is next. M15–M17 remain unstarted.
 `zig build check -Drhi=metal` is now part of the bar. The environment notes below still apply.
 
 * Read `CLAUDE.md` first, then this file, then `docs/ROADMAP.md`.

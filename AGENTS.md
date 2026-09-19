@@ -116,7 +116,10 @@ GLSL stages pass `glslangValidator`, `spirv-val` and Foundry's layout agreement 
 bytes can enter a target. The backend implements the whole RHI interface, so `-Drhi=vulkan`
 builds the ordinary test and check graph and installs and runs the samples (§3). The native
 Windows `zig build test` passes on the target, and native builds there use at most two jobs.
-Mac cross-compilation never substitutes for runtime proof. M14–M17 remain unstarted.
+Mac cross-compilation never substitutes for runtime proof. **M14 is in progress**: read
+`docs/design/mod-management.md` and ADR-0040/0041. Step 1 is done: `app.ModSet` owns
+discovery, resolution and record-level conflicts for both samples, and a player's duplicate
+package is skipped rather than fatal. M15–M17 remain unstarted.
 The bar below is the current one; Step 9 added the checks Vulkan and release work need to it.
 
 ## 3. Building and verifying
