@@ -691,7 +691,7 @@ The faults the milestone found were the backend's own, such as Step 5's inverted
 Windows faults that predated it, which the native test repair fixed. Device recovery stays an
 open question.
 
-### M14 — Managed: "players choose their mods" — **in progress: Step 1 of nine done, 2026-09-19**
+### M14 — Managed: "players choose their mods" — **in progress: Steps 1 and 2 of nine done, 2026-09-19**
 
 **Designed 2026-09-19:** [`design/mod-management.md`](design/mod-management.md) specifies nine
 steps, with accepted [ADR-0040](adr/0040-ordered-profiles-applied-at-next-start.md) (ordered
@@ -700,8 +700,9 @@ profiles, applied at the next start) and
 themes). The room gains a mod screen modelled on Mod Organizer 2.
 
 **Step 1, 2026-09-19:** `app.ModSet` finds, resolves and reports conflicts for both samples,
-with the player's duplicate packages skipped rather than fatal. Step 2, profiles on disk, is
-next.
+with the player's duplicate packages skipped rather than fatal. **Step 2, the same day:**
+profiles on disk, one file each, kept in the player's order, with consent per version. Step 3,
+migrations and concurrent writes, is next, and it moves the samples onto profiles.
 
 `CLAUDE.md` §5 records it plainly: a mod manager UI is still unbuilt. Every mechanism under it
 exists — discovery, dependency resolution, deterministic order, user package roots — and

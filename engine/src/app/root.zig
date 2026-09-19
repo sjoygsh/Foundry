@@ -26,6 +26,9 @@ pub const diagnostics = @import("diagnostics.zig");
 /// overrides (`mod-management.md` §4, ADR-0040). Opt-in, like settings: a host that loads
 /// only its own packages constructs none of it.
 pub const mods = @import("mods.zig");
+/// A player's named, ordered selections, one file each (ADR-0040). What `mods` restores from
+/// and applies to.
+pub const profiles = @import("profiles.zig");
 pub const settings = @import("settings.zig");
 pub const ui_draw = @import("ui_draw.zig");
 
@@ -76,6 +79,7 @@ test {
     _ = log_sink;
     _ = diagnostics;
     _ = mods;
+    _ = profiles;
     _ = settings;
     _ = ui_draw;
 }

@@ -11,8 +11,25 @@ drawing through Vulkan on Windows x64:**
 **Both samples run on it from a relocated install, each wearing an icon it supplies. Windows is a
 runtime claim for the tested machine, with its limits recorded, and the RHI's rules survived with
 none relaxed. Linux left M13 by ADR-0039: it is M18, after the first game and before 3D. M14 is in
-progress (`docs/design/mod-management.md`, ADR-0040/0041): Step 1, the mod set, is done, and
-Step 2, profiles on disk, is next. M15 through M17 remain unstarted.**
+progress (`docs/design/mod-management.md`, ADR-0040/0041): Steps 1 and 2, the mod set and
+profiles on disk, are done, and Step 3, migrations and concurrent writes, is next. M15 through
+M17 remain unstarted.**
+
+**Completed M14 Step 2, 2026-09-19: profiles on disk, re-scoped.** The step was re-scoped before
+any code was written. A settings schema cannot gain a field inside its version, so the samples'
+active-profile key must arrive with Step 3's migration. The design's §13 records the move.
+- `app.profiles` holds the `foundry:profile` schema, with one `<user data>/profiles/<key>.fset`
+  per profile in the settings envelope. It enforces ADR-0040's bounds and canonical keys from 1
+  to 64. A hostile file is refused whole and left untouched, and nothing another build wrote is
+  ever replaced.
+- `app.ModSet` attaches a store and starts from the host's key, falling back with a warning. It
+  can select, create, copy, rename, delete and apply profiles, and holds consent per
+  `(id, version)`. It keeps every id's spelling, and `restore` now takes spellings.
+- Starting writes nothing. A fresh first-run profile stays in memory until the player applies,
+  renames or copies it. Managing profiles is immediate; choosing one is pending until `apply`.
+
+The bar passed **1,415 of 1,416**, and two mutations were caught and restored. The samples only
+hand `restore` their spellings until Step 3. Resolution: `mod-management.md`, Step 2.
 
 **Completed M14 Step 1, 2026-09-19: the mod set.** `app.ModSet` now answers what is installed,
 what is chosen, in what order, and what that order overrides. Both samples start on it, and their
@@ -1861,13 +1878,14 @@ signing, notarization and a clean recipient Mac (ADR-0032) — not engine work. 
 "Hardening and reach" (M10-M17), is under way**: it gathers the deferred work rather than
 adding to it, only M10 was new, **M10 and M11 are complete (2026-09-13)** and **M12 is
 complete (2026-09-14)**. **M13 is complete (2026-09-19)**, proving
-Windows x64 through Vulkan. **M14 is in progress**, Step 1 of nine done; M15 through M17 are
-unstarted.
+Windows x64 through Vulkan. **M14 is in progress**, Steps 1 and 2 of nine done; M15 through
+M17 are unstarted.
 
 ## Current milestone
 
 **M14 — Managed is in progress.** Read `docs/design/mod-management.md` and ADR-0040/0041.
-Step 1, the mod set, is done (2026-09-19); Step 2, profiles on disk, is next.
+Steps 1 and 2, the mod set and profiles on disk, are done (2026-09-19). Step 3, migrations and
+concurrent writes, is next, and it moves the samples onto profiles.
 
 **M13 — Portable: "the RHI was real." Complete, 2026-09-19.** Read `docs/design/vulkan.md`
 and ADR-0033/0037/0038/0039. All ten steps are implemented:
@@ -2775,7 +2793,8 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M0–M13 are complete. M14 is in progress:** Step 1 is done, and nothing is half-built. M13's
+**M0–M13 are complete. M14 is in progress:** Steps 1 and 2 are done, and nothing is
+half-built. M13's
 specification and its Resolutions are in `docs/design/vulkan.md`. M12's specification and all
 six Resolutions are in
 `docs/design/jobs-and-threading.md`, and M11's nine are in `docs/design/hardening.md`; the M5
@@ -3424,11 +3443,16 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M14 Step 2, profiles on disk** (`docs/design/mod-management.md` §§5 and 13). It covers
-the profile schema and one file per profile, with keys, bounds, and create, copy, rename, delete
-and select, plus the ordered list and consents. Settings gain the active profile key, and the
-samples start from their active profile through `app.ModSet.restore`. Step 1, the mod set, is
-done.
+**Next: M14 Step 3, migrations and concurrent writes** (`docs/design/mod-management.md` §§6
+and 13).
+- A migration chain with a one-time backup.
+- The samples' settings v1 → v2: `enabled` leaves settings for a "Default" profile, and a
+  `profile` key arrives. Real M9-era v1 files serve as fixtures.
+- Merge-by-field writes for settings and profiles.
+- Since Step 2's re-scope, the samples also attach `app.profiles` and start from their active
+  profile.
+
+Steps 1 and 2 are done.
 M14's design is `docs/design/mod-management.md`: nine steps, each stopping with its Resolution.
 M13 is complete and tagged `m13`. Its record is
 `docs/design/vulkan.md` and its Resolutions. Linux is M18's (ADR-0039), after the first game and
@@ -4693,8 +4717,9 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 - **M12's record** is `docs/design/jobs-and-threading.md` and ADR-0036:
   `FOUNDRY_SANDBOX_WORKERS` / `FOUNDRY_ROOM_WORKERS` set a sample's pool, `0` for none, for
   comparisons.
-- **M14 is in progress** (`docs/design/mod-management.md`, ADR-0040/0041). Step 1, `app.ModSet`,
-  is done; Step 2, profiles on disk, is next. M15–M17 remain unstarted.
+- **M14 is in progress** (`docs/design/mod-management.md`, ADR-0040/0041). Steps 1 and 2
+  (`app.ModSet`, `app.profiles`) are done; Step 3, migrations and the samples' move to profiles,
+  is next. M15–M17 remain unstarted.
 `zig build check -Drhi=metal` is now part of the bar. The environment notes below still apply.
 
 * Read `CLAUDE.md` first, then this file, then `docs/ROADMAP.md`.

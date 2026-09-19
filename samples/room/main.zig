@@ -111,15 +111,12 @@ fn openMods(
 
     // **What the player enabled**, read out of their own preferences before anything was
     // discovered — which is why §4 puts settings ahead of discovery in the startup order.
-    // Each spelling was validated when it was read, so this cannot fail on one.
-    var saved: std.ArrayList(core.ContentId) = .empty;
-    defer saved.deinit(gpa);
+    // Each spelling was validated when it was read, and the set drops the required ones.
     for (selected.ids) |id| {
         if (std.mem.eql(u8, id, "room:content")) continue;
         log.info("enabling '{s}' (saved)", .{id});
-        try saved.append(gpa, data.contentId(id) catch continue);
     }
-    try mods.restore(saved.items);
+    try mods.restore(selected.ids);
 
     var extra: std.ArrayList(core.ContentId) = .empty;
     defer extra.deinit(gpa);

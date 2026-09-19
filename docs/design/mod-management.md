@@ -1,8 +1,9 @@
 # Design: M14 — Managed, and what a player chooses
 
 **Status:** Design accepted 2026-09-19 with [ADR-0040](../adr/0040-ordered-profiles-applied-at-next-start.md)
-and [ADR-0041](../adr/0041-game-widget-set-and-content-themes.md). **Step 1, the mod set, is
-implemented (2026-09-19); Step 2, profiles on disk, is next.**
+and [ADR-0041](../adr/0041-game-widget-set-and-content-themes.md). **Steps 1 and 2, the mod set and
+profiles on disk, are implemented (2026-09-19); Step 3, migrations and concurrent writes, is
+next.** Step 2 was re-scoped when it began; see §13.
 **Date:** 2026-09-19
 **Baseline:** `754665a` / `m13`; M0–M13 complete, 1,405 declared / 1,395 headless tests.
 **Builds on:** ADR-0024 (one UI kernel, two widget sets), ADR-0026 (the host supplies
@@ -504,11 +505,27 @@ The profile schema and files: keys, bounds, create, copy, rename, delete and sel
 list and consents. Settings gain the active profile key. **Exit:** the samples start from their
 active profile, hostile files are refused, and order survives a round trip.
 
+> **Re-scoped 2026-09-19, when Step 2 began.** A settings schema cannot gain a field inside its
+> version. Fields sit at offsets behind a presence bitmap whose width is the field count, so the
+> field has to arrive as version 2. `app.settings` reads a file of any other version as
+> `PastVersion` and keeps it read-only. So without Step 3's migration, giving the samples an
+> active-profile key would stop every existing preferences file from being read or written.
+>
+> The samples' adoption therefore moves to Step 3, where their v2 schema and its migration land
+> together, and this step's exit criterion moves with it.
+> - **Step 2** builds the profile files and their operations as engine capability, with the mod
+>   set starting from, switching and applying a profile. The host passes the active key in.
+>   **Exit:** hostile files refused, order and consents surviving a round trip, keys and bounds,
+>   all in headless tests.
+> - **Step 3** adds the samples' settings v2 with the active key, and the samples starting from
+>   their active profile.
+
 ### Step 3 — Migrations and concurrent writes
 
 The migration chain with its backup, and the samples' v1 → v2 conversion over real fixtures.
-Merge-on-write for settings and profiles. **Exit:** fixtures convert, two writers keep each
-other's fields, and future files are untouched.
+Merge-on-write for settings and profiles. Since the re-scope above, also the samples' active
+profile key and their start from it. **Exit:** fixtures convert, two writers keep each other's
+fields, future files are untouched, and the samples start from their active profile.
 
 ### Step 4 — The kernel's additions
 
@@ -665,3 +682,65 @@ loaded `foundry:core` and `room:content`; the old rule refused every duplicate. 
 **Unchanged.** Settings still store the sorted `enabled` set, the saved selection is still read
 from it, and a headless run still reads no user packages unless asked. There is no profile,
 no ABI surface and no screen yet. Step 2, profiles on disk, is next.
+
+## Resolution — 2026-09-19, Step 2: profiles on disk
+
+**Re-scoped first, as §13's note records.** A settings schema cannot gain a field inside its
+version, and `app.settings` keeps a file of any other version read-only. So the samples' active
+key waits for Step 3's migration, and this step built the capability without them.
+
+**Landed:**
+- **`app.profiles`** holds the engine's `foundry:profile` schema, version 1, with fields `name`,
+  `enabled` (spellings, ordered) and `consents` (`id`, `version`). Files use the settings
+  envelope at `<user data>/profiles/<key>.fset`. A `Store` lists, reads, writes and removes them.
+  - The bounds are ADR-0040's: 64 profiles, 1,024 enabled, 256 consents, 256 KiB per file, and
+    64 bytes of name. A name must be UTF-8 with no control characters.
+  - Only a canonical key between 1 and 64 is a profile. `007.fset`, `65.fset` and
+    `3.fset.bak` are not.
+  - A profile read from disk is refused whole, and left untouched, when it is past a bound, has
+    no usable name, or repeats an id or a consent. A write refuses the same contents, so the
+    store never writes what it would not read back. A write also never replaces a file another
+    build wrote, and copies a damaged one aside first, as a settings file does.
+- **`app.ModSet` gained profiles**, and a table of every id's spelling, because a profile names
+  packages by spelling and an uninstalled one still has to be written back. `restore` now takes
+  spellings.
+  - `attachProfiles(store, active, fresh_name)` starts from the host's key. A key that cannot be
+    used falls back to the first usable profile, then to a fresh one, with a warning.
+  - `selectProfile`, `createProfile` (empty, or a copy), `renameProfile`, `deleteProfile`,
+    `apply`, `savedProfile`, `pendingProfile` and `profileList` manage them.
+  - `consented` and `setConsent` hold consent per `(id, version)`. The ABI never reaches them.
+
+**Decided by the implementation:**
+- **Nothing is written by starting.** A first run's fresh profile lives in memory, listed like
+  the others, until the player applies, renames or copies it. A scripted run leaves no file, and
+  a first run with no key and no profiles says nothing. A run that may not write keeps every
+  change in memory, and `apply` answers `ReadOnly`.
+- **Managing profiles is immediate; choosing one is pending.** Create, copy, rename and delete
+  change files at once, as MO2's do. Which profile is active, and its selection and consents,
+  wait for `apply`. Selecting another profile drops unapplied edits to the current one, and
+  selecting the saved one again is `revert`.
+- **Neither the saved profile nor the pending one can be deleted.** So the last one never can
+  be, which is §5's rule without a separate count.
+- **A copy is what the player sees.** Copying the pending profile includes its unapplied edits.
+- **The fresh profile's name is the host's**, passed to `attachProfiles`, because it is a string
+  a player reads and a translation replaces (I5).
+
+**Evidence.** The bar passed, **1,415 of 1,416** with the one skip it had before. The new tests
+cover:
+- the profile store: a round trip keeping order, consents and a name full of path separators,
+  in a file named `1.fset`; keys and canonical names; eleven hostile files, each refused or
+  kept, and all byte-identical afterwards; a run that may not write;
+- the mod set: starting from a key, from a missing one and from a damaged one; the silent first
+  run that writes only on apply; select, revert and apply, with the player's order written
+  unsorted and read back; create, copy, rename and delete, with in-use refusals and key reuse;
+  consent by version, and a set with no profiles refusing to apply; a read-only run.
+
+Two mutations were each caught, then restored byte for byte:
+- dropping the repeated-id check failed the hostile-profile test;
+- sorting the list on write failed the round-trip test.
+
+**Unchanged.** The samples still read their sorted `enabled` settings, now handed to `restore` as
+the spellings they are, and never attach profiles.
+That is Step 3, with the migration that makes it safe. Merge-by-field writes are Step 3's too;
+until then a profile write replaces the file whole.
+
