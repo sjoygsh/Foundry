@@ -1,10 +1,10 @@
 # Design: M14 — Managed, and what a player chooses
 
 **Status:** Design accepted 2026-09-19 with [ADR-0040](../adr/0040-ordered-profiles-applied-at-next-start.md)
-and [ADR-0041](../adr/0041-game-widget-set-and-content-themes.md). **Steps 1 to 7 are implemented
+and [ADR-0041](../adr/0041-game-widget-set-and-content-themes.md). **Steps 1 to 8 are implemented
 (2026-09-19): the mod set, profiles on disk, migrations with concurrent writes, the UI
-kernel's additions, themes as content, the game widget set, and `FoundryApi_v3`. Step 8, the
-room's mod screen, is next.** Step 2 was re-scoped when it began; see §13.
+kernel's additions, themes as content, the game widget set, `FoundryApi_v3`, and the room's
+mod screen. Step 9, the proof and closure, is next.** Step 2 was re-scoped when it began; see §13.
 **Date:** 2026-09-19
 **Baseline:** `754665a` / `m13`; M0–M13 complete, 1,405 declared / 1,395 headless tests.
 **Builds on:** ADR-0024 (one UI kernel, two widget sets), ADR-0026 (the host supplies
@@ -1072,3 +1072,82 @@ is frozen once published:
 
 **Not yet:** no host lends the ABI a mod set or a theme yet. The room's screen, which will, is
 Step 8. Lua gains nothing (§9).
+
+## Resolution — 2026-09-19, Step 8: the room's mod screen
+
+**Landed:**
+- **`samples/room/mods_screen.zig` is §11's screen, built only from `FoundryApi_v3`.** Every
+  package, conflict, profile, word, style, theme and widget comes through the table a native
+  mod receives (I4). A click is recorded while the screen is described, and carried out after
+  `ui_end`, because a change ends every walk and borrowed string the description is reading.
+- **The room lends the table what the screen needs.** It binds an `abi.Host` with the engine,
+  its renderer, a UI context of the screen's own, the `ModSet` it started from, and the write
+  grant. The grant's callback records the saved profile's key in the room's settings, and
+  writes them at once. The room and its release build gain `abi`.
+- **The layout follows §11:**
+  - the profile strip: previous and next, and New, Copy, Rename and Delete by a name field;
+  - a filter, with the installed, on and problem counts;
+  - the list: required packages locked, then the player's list under reorder grips, then the
+    rest;
+  - four tabs: Details, Conflicts, Records and Problems;
+  - Up, Down, Top and Bottom;
+  - the pending bar, with Apply, Revert and where mods go.
+- **Its words are content:** the 58 fields of `room:screen.mods`, of the room's new `screen`
+  schema, read through `content_find` and copied whenever content moves. Its look is
+  `room:ui.theme`.
+- **M opens it and Escape closes it.** The card and the screen never open together. The card's
+  capture rules cover both contexts, and the hall's counter and hint give way while it is open.
+- **The autopilot visits once,** at frame 500 for 440 frames. It selects the first choice,
+  opens Conflicts, turns the choice off or on, opens Problems, reverts, and closes. Each state
+  is held long enough to capture.
+
+**What building it decided, and found:**
+- **Two UI contexts.** The table's host describes one frame of one context at a time, and the
+  card and the overlay already share theirs. A second context keeps the screen's frame its
+  own. The room asks both about capture.
+- **Delete means "delete the profile being browsed".** The saved and the pending profile are
+  never deleted, so Delete first reverts to the saved one, then deletes the one that was
+  pending. With nothing else pending, it is disabled.
+- **The rows it beats and the rows that beat it get a column, not a tint.** A selectable takes
+  no tint, so a relation column shows the theme's win, lose or both icons against the selected
+  package.
+- **A dependency nobody installed is a hash.** The screen names the package a skip is about
+  only when a name exists; the words it appends to are written to read either way.
+- **The theme's vertical padding went from 8 to 4,** and the fallback style's with it. A
+  checkbox and a reorder grip are a line tall less that padding twice, and at 8 both were 4
+  points.
+- **Two Step 6 widgets were corrected in the kernel** (`ui.md` §13):
+  - `selectable` inside a row takes what the row has left, not a square;
+  - a reorder grip's lines are inset by at most a quarter of the grip, where they had been
+    left with no width.
+- **The mods folder is shown by its last two parts**, `.../foundry-room/mods`. The rest runs
+  through a home directory, and the table never gives out a path at all.
+- **A development tree's shared `content/` also holds `sandbox.fpk`.** A headless room
+  therefore lists it as an installed package that is a choice, and the scripted visit turns it
+  on and back off. A staged room holds only its own two packages.
+
+**Evidence.**
+- **The bar:** 1,459 of 1,460 tests passed, with the existing skip. Both releases staged, and
+  the staged ReleaseSafe room opened the screen from its own bundle.
+- **A room test drives the screen through the table,** over a real mod set. It shows a click on
+  a row's box taking the entry off the player's list, Revert restoring it with nothing saved,
+  Close asking the room to close it, and the pointer captured while it was over the screen.
+- **A full headless room finished in 1,510 frames.** Its screen line reads "opened 1 time(s),
+  1 change(s) made, 1 revert(s), pending selection as saved", and its capture line reports 0
+  failures after 12 clicks taken.
+- **Captures on Metal.** A windowed autopilot run used a temporary home holding the M9-era
+  settings fixture and four mods built outside the tree. `broken:thing` was added for the
+  session. Captures of the room's own window, by its id, show:
+  - the migrated "Default" profile with both of its mods on;
+  - locks, conflict and code icons, and the relation column;
+  - Brighter Lamps' details: its dependency met, 2 records provided, 2 wins, 1 loss, loaded;
+  - its conflicts: the north lamp won by Night Palette, the south lamp won by itself;
+  - after the scripted click, the mod off, "Changes not applied yet.", Apply and Revert
+    enabled, and the Problems tab naming Broken Thing's missing dependency.
+- **The windowed run logged 0 capture failures.**
+- **Three deliberate breakages, each caught and restored:** the grip's inset, the row
+  selectable's width, and the room asking only the card's context about the pointer. The
+  last made the headless run report 6 capture failures.
+
+**Not yet:** Step 9's exit proof — Apply taking effect at the next start, a theme mod
+re-skinning the screen, two instances keeping each other's changes — and the Windows run.

@@ -11,8 +11,27 @@ drawing through Vulkan on Windows x64:**
 **Both samples run on it from a relocated install, each wearing an icon it supplies. Windows is a
 runtime claim for the tested machine, with its limits recorded, and the RHI's rules survived with
 none relaxed. Linux left M13 by ADR-0039: it is M18, after the first game and before 3D. M14 is in
-progress (`docs/design/mod-management.md`, ADR-0040/0041): Steps 1 to 7 are done, and Step 8,
-the room's mod screen, is next. M15 through M17 remain unstarted.**
+progress (`docs/design/mod-management.md`, ADR-0040/0041): Steps 1 to 8 are done, and Step 9,
+the proof and closure, is next. M15 through M17 remain unstarted.**
+
+**Completed M14 Step 8, 2026-09-19: the room's mod screen.**
+- `samples/room/mods_screen.zig` is `mod-management.md` §11's screen, built only from
+  `FoundryApi_v3`. The room opens it with M.
+- The room binds an `abi.Host` with a second UI context, its `ModSet` and the write grant, whose
+  callback records the saved profile key.
+- It shows profiles, a filter, the player's list under reorder grips, and conflict and relation
+  icons. Its four tabs are Details, Conflicts, Records and Problems, and a pending bar has Apply
+  and Revert.
+- Its 58 words are content (`room:screen.mods`), and its look is `room:ui.theme`, whose
+  vertical padding went from 8 to 4 so that checkboxes and grips are visible.
+- Building it corrected two Step 6 widgets: a row `selectable` fills its row, and grips keep a
+  width.
+- The autopilot visits once, changes a pending selection and reverts it.
+
+The bar passed **1,459 of 1,460**, both releases staged, and a room test drives the screen by
+clicks. A headless run and a windowed Metal run both logged 0 capture failures. Captures of the
+window showed the migrated profile, conflicts, a toggled mod and a problem. Three deliberate
+breakages were caught. Resolution: `mod-management.md`, Step 8.
 
 **Completed M14 Step 7, 2026-09-19: the public API.**
 - `FoundryApi_v3` is v2 unchanged plus 28 calls (164 in all), offered by `get_api(3)` and the
@@ -1947,16 +1966,16 @@ signing, notarization and a clean recipient Mac (ADR-0032) — not engine work. 
 "Hardening and reach" (M10-M17), is under way**: it gathers the deferred work rather than
 adding to it, only M10 was new, **M10 and M11 are complete (2026-09-13)** and **M12 is
 complete (2026-09-14)**. **M13 is complete (2026-09-19)**, proving
-Windows x64 through Vulkan. **M14 is in progress**, Steps 1 to 7 of nine done; M15 through
+Windows x64 through Vulkan. **M14 is in progress**, Steps 1 to 8 of nine done; M15 through
 M17 are unstarted.
 
 ## Current milestone
 
 **M14 — Managed is in progress.** Read `docs/design/mod-management.md` and ADR-0040/0041.
-Steps 1 to 7 are done (2026-09-19): the mod set, profiles on disk, migrations with merged
+Steps 1 to 8 are done (2026-09-19): the mod set, profiles on disk, migrations with merged
 writes (both samples on profiles), the UI kernel's image commands and disabled scope, themes
-as content, the skinned game widget set, and `FoundryApi_v3`. Step 8, the room's mod screen,
-is next.
+as content, the skinned game widget set, `FoundryApi_v3`, and the room's mod screen. Step 9,
+the proof and closure, is next.
 
 **M13 — Portable: "the RHI was real." Complete, 2026-09-19.** Read `docs/design/vulkan.md`
 and ADR-0033/0037/0038/0039. All ten steps are implemented:
@@ -2864,7 +2883,7 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M0–M13 are complete. M14 is in progress:** Steps 1 to 7 are done, and nothing is
+**M0–M13 are complete. M14 is in progress:** Steps 1 to 8 are done, and nothing is
 half-built. M13's
 specification and its Resolutions are in `docs/design/vulkan.md`. M12's specification and all
 six Resolutions are in
@@ -3514,15 +3533,19 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M14 Step 8, the room's mod screen** (`docs/design/mod-management.md` §§11 and 13).
-- Build §11's screen in the room from Steps 1 to 7 alone. The room lends its `ModSet` and write
-  grant to an `abi.Host` with its UI context, and draws through `FoundryApi_v3` (I4).
-- Keep its strings and its theme as content, and walk each frame with
-  `abi.Host.completedUiTheme()`.
-- Have the autopilot visit it, change a pending selection and revert it without saving.
+**Next: M14 Step 9, prove and close** (`docs/design/mod-management.md` §§12 and 13).
+- Run §12's exit proof on a ReleaseSafe room `dist`, with mods built outside the tree:
+  1. an M13-era v1 settings file migrates;
+  2. a player turns a mod on by a click and applies;
+  3. the next start loads it, and it changes the hall visibly;
+  4. a theme mod re-skins the screen;
+  5. two instances keep each other's changes.
+- Do the Windows run, with the owner's go.
+- Update `CLAUDE.md`, whose §5 still says a mod manager is unbuilt, together with AGENTS.md,
+  this file, the roadmap, the README, the design index, `public-abi.md`, `ui.md` and
+  `distribution.md`. Set the ADR statuses, commit, tag `m14`, and stop before M15.
 
-Its exit is captures of the screen on Metal, and a scripted visit with no capture failure.
-Steps 1 to 7 are done.
+Steps 1 to 8 are done.
 M14's design is `docs/design/mod-management.md`: nine steps, each stopping with its Resolution.
 M13 is complete and tagged `m13`. Its record is
 `docs/design/vulkan.md` and its Resolutions. Linux is M18's (ADR-0039), after the first game and
@@ -4787,11 +4810,11 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 - **M12's record** is `docs/design/jobs-and-threading.md` and ADR-0036:
   `FOUNDRY_SANDBOX_WORKERS` / `FOUNDRY_ROOM_WORKERS` set a sample's pool, `0` for none, for
   comparisons.
-- **M14 is in progress** (`docs/design/mod-management.md`, ADR-0040/0041). Steps 1 to 7
+- **M14 is in progress** (`docs/design/mod-management.md`, ADR-0040/0041). Steps 1 to 8
   (`app.ModSet`, `app.profiles`, settings migrations and merged writes, the UI kernel's image
   commands and disabled scope, `foundry:ui_theme`, `app.resolveUiTheme`, the skinned game
-  widget set, and `FoundryApi_v3`) are done; Step 8, the room's mod screen, is next. M15–M17
-  remain unstarted.
+  widget set, `FoundryApi_v3`, and the room's mod screen) are done; Step 9, proof and closure,
+  is next. M15–M17 remain unstarted.
 `zig build check -Drhi=metal` is now part of the bar. The environment notes below still apply.
 
 * Read `CLAUDE.md` first, then this file, then `docs/ROADMAP.md`.

@@ -22,10 +22,16 @@
 //! is the smallest game where getting it wrong is visible. The autopilot opens the card and
 //! clicks it too, so a scripted run answers the question rather than a person having to.
 //!
+//! **M opens the mod screen** (`mod-management.md` §11): what is installed, the player's own
+//! order, conflicts, profiles, and what waits for the next start. It is `mods_screen.zig`, and
+//! it is built only from the public table a native mod receives (I4), through a UI context of
+//! its own lent to an `abi.Host`. The card's capture rules cover it, and the autopilot visits
+//! it once, changing a pending selection and taking it back.
+//!
 //! **Everything is content.** The map, the art, the sounds, the six lamp placements, the
 //! walker's speed, the camera's zoom and every string on screen live in
 //! `samples/room/content/`, and a package loaded after it changes any of them with nothing
-//! rebuilt (I3, I5). The sample names ten content ids and no paths at all (ADR-0021).
+//! rebuilt (I3, I5). The sample names content ids and no paths at all (ADR-0021).
 //!
 //! **Author coordinates.** Content places things by column and row of the map *as written*
 //! — row 0 is the first row of `hall.grid`, the one at the top of the screen. The world is
@@ -48,6 +54,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 const build_options = @import("build_options");
 
+// The public table (ADR-0004). The room builds its mod screen through it, as a mod would
+// have to, and lends the host behind it the mod set it started from (I4, ADR-0040).
+const abi = @import("abi");
 const app = @import("app");
 const asset = @import("asset");
 const audio = @import("audio");
@@ -64,6 +73,8 @@ const scene = @import("scene");
 // The kernel, named directly. A game reaches `ui` for the same reason it reaches `scene`:
 // `app` composes the engine, it does not stand in front of it (CLAUDE.md §4.3).
 const ui = @import("ui");
+
+const mods_screen = @import("mods_screen.zig");
 
 const log = core.log.scoped(.room);
 
@@ -390,6 +401,15 @@ const Preferences = struct {
         self.file.touch();
     }
 
+    /// The profile the next start uses, recorded when the mod screen applies one. Written at
+    /// once rather than when things settle: the profile file already says what to load, and
+    /// a crash in between would start the next run from the previous one.
+    fn noteProfile(self: *Preferences, gpa: std.mem.Allocator, key: u32) void {
+        self.profile = key;
+        self.file.touch();
+        self.flush(gpa);
+    }
+
     fn noteVolume(self: *Preferences, value: f32) void {
         if (!std.math.isFinite(value)) return;
         const chosen = std.math.clamp(value, 0, 1);
@@ -624,6 +644,7 @@ fn run(
     defer room.deinit(engine);
     room.prefs = &prefs;
     try room.load(engine);
+    room.attachMods(engine, &mods);
 
     // §4 step 4: the built-in fallback, then the package's own record, then whatever the
     // player saved — resolved once content is loaded, and applied through the interfaces
@@ -646,6 +667,9 @@ fn run(
     // path a scripted run proves nothing about, and this one is the second consumer's — the
     // whole point of the room adopting it.
     room.overlay_open = engine.os.envVar("FOUNDRY_ROOM_OVERLAY") != null;
+    // `FOUNDRY_ROOM_MODS` starts with the mod screen open, for the same reason: a screen
+    // nobody can hold open in a scripted run is one no capture of it can be taken of.
+    if (engine.os.envVar("FOUNDRY_ROOM_MODS") != null) room.openScreen();
 
     const frame_limit = frameLimit(engine, headless);
 
@@ -660,7 +684,7 @@ fn run(
             info.pixel_size.width,   info.pixel_size.height,
             info.scale,
         });
-        log.info("light every lamp in the hall. wasd or the arrows walk, a click sends the walker there, tab opens the card; escape closes it, or quits", .{});
+        log.info("light every lamp in the hall. wasd or the arrows walk, a click sends the walker there, tab opens the card and m the mods; escape closes either, or quits", .{});
         if (room.autopilot) log.info("autopilot is on; the walker finds them itself", .{});
     }
 
@@ -780,6 +804,12 @@ fn run(
         room.name[0..room.name_len],
         room.walk_commands,
         room.capture_failures,
+    });
+    log.info("mods: screen opened {d} time(s), {d} change(s) made, {d} revert(s), pending selection {s}", .{
+        room.screen_opens,
+        room.screen.changes,
+        room.screen.reverts,
+        if (mods.changed()) "changed" else "as saved",
     });
     if (room.capture_failures != 0) log.err("capture is broken: see the lines above", .{});
 }
@@ -1054,6 +1084,34 @@ const Script = struct {
     }
 };
 
+/// What a scripted run does with the mod screen: one visit, between the card's first two.
+///
+/// It selects the first package that is a choice, looks at its conflicts, turns it off or on,
+/// looks at the problems, reverts, and closes. So a scripted run changes a pending selection
+/// and takes it back without saving, and every click it makes is one the hall must not also
+/// act on. Each state is held for well over a second, so a capture of a windowed run can
+/// find it.
+const ScreenScript = struct {
+    const first: u64 = 500;
+    const length: u64 = 440;
+
+    const Aim = enum { choice_row, conflicts, choice_toggle, problems, revert, close };
+
+    const presses = [_]struct { at: u64, aim: Aim }{
+        .{ .at = 12, .aim = .choice_row },
+        .{ .at = 120, .aim = .conflicts },
+        .{ .at = 220, .aim = .choice_toggle },
+        .{ .at = 300, .aim = .problems },
+        .{ .at = 380, .aim = .revert },
+        .{ .at = 420, .aim = .close },
+    };
+
+    fn phase(frame: u64) ?u64 {
+        if (frame < first or frame >= first + length) return null;
+        return frame - first;
+    }
+};
+
 /// The rectangle the next widget in a vertical region will occupy.
 ///
 /// A cursor layout knows where a widget went by putting it there, so this is the same
@@ -1083,7 +1141,7 @@ fn cardStyle(font: app.UiFont) ui.Style {
         .font = font.metrics(),
         .text_scale = 1.5,
         .line_height = 20,
-        .padding = .init(10, 8),
+        .padding = .init(10, 4),
         .spacing = 5,
         .separator_thickness = 1,
 
@@ -1645,6 +1703,27 @@ const Room = struct {
     name_rect: core.math.Rect = .init(0, 0, 0, 0),
     close_rect: core.math.Rect = .init(0, 0, 0, 0),
 
+    // -- the mod screen (`mod-management.md` §11) ----------------------------------------
+
+    /// **A context of its own, lent to the public table's host.** The screen is described
+    /// through `FoundryApi_v3`, as a mod would describe it (I4), and a context holds one frame
+    /// at a time, so it cannot share the card's.
+    screen_ui: ui.Context,
+    /// What the table reaches: the engine, the renderer, the screen's context, the mod set
+    /// the room started from, and the grant to change it. Bound once the room has its final
+    /// address, and never moved after.
+    host: abi.Host = .{},
+    screen: mods_screen.Screen,
+    screen_open: bool = false,
+    /// Whether the screen was described this frame, so a closed one's last answers about the
+    /// pointer are not read as this frame's.
+    screen_described: bool = false,
+    screen_opens: u64 = 0,
+    /// Where a player drops mods, as the host knows it and shows it: the last two parts of
+    /// the path only, since the rest runs through a home directory.
+    drop_path: [96]u8 = undefined,
+    drop_path_len: usize = 0,
+
     autopilot: bool = false,
     /// How close the autopilot has ever got to what it is walking at, and how long since
     /// that improved. A walker that has stopped making progress is one wedged on a corner.
@@ -1732,6 +1811,8 @@ const Room = struct {
             .sheet = .{ .texture = .none, .uv = .{}, .size_px = .{} },
             .font = font,
             .ui = .init(gpa, cardStyle(uiFontOf(font))),
+            .screen_ui = .init(gpa, cardStyle(uiFontOf(font))),
+            .screen = .init(gpa, @ptrCast(@alignCast(abi.TableOf(abi.Host).getApi(abi.api_version_3).?))),
             .overlay = try .init(gpa, .{}),
             // `World.init` needs the registry's final address and this struct is returned
             // by value, so both are built in `load`.
@@ -1779,6 +1860,38 @@ const Room = struct {
         self.camera.zoom = self.settings.zoom;
         self.camera.center = self.playerAt() orelse self.map.center();
         self.clampToMap();
+    }
+
+    /// Lends the public table what the mod screen needs, and says where mods go.
+    ///
+    /// **The grant is given because this host has its own mod screen** (ADR-0040 decision 6).
+    /// Consent to run native code is not part of it, and the room loads none.
+    fn attachMods(self: *Room, engine: *app.Engine, mods: *app.ModSet) void {
+        self.host = .{
+            .engine = engine,
+            .renderer = &self.renderer,
+            .ui_context = &self.screen_ui,
+            .mod_set = mods,
+            .mods_write = .{ .ctx = self, .save_active_profile = saveActiveProfile },
+        };
+        self.host.bind();
+
+        const root = app.mods.userRoot(self.gpa, engine.os) catch null;
+        defer if (root) |r| self.gpa.free(r);
+        const path = root orelse return;
+        const leaf = std.fs.path.basename(path);
+        const parent = std.fs.path.basename(std.fs.path.dirname(path) orelse "");
+        const shown = std.fmt.bufPrint(&self.drop_path, ".../{s}/{s}", .{ parent, leaf }) catch return;
+        self.drop_path_len = shown.len;
+    }
+
+    /// The grant's one callback: `mods_apply` has written the profile, and the settings now
+    /// name it as the one the next start uses.
+    fn saveActiveProfile(ctx: ?*anyopaque, key: u32) bool {
+        const self: *Room = @ptrCast(@alignCast(ctx orelse return false));
+        const prefs = self.prefs orelse return false;
+        prefs.noteProfile(self.gpa, key);
+        return true;
     }
 
     fn registerTypes(self: *Room) !void {
@@ -2487,13 +2600,14 @@ const Room = struct {
         try self.renderer.setView(.screen);
         defer self.renderer.setView(.world) catch {};
 
+        // The counter and the hint sit where the mod screen does, so they give way to it.
         var buffer: [128]u8 = undefined;
         const counter = std.fmt.bufPrint(&buffer, "{d} of {d} {s}", .{
             self.lit, self.lamps, self.text.label[0..self.text.label_len],
         }) catch return;
-        try self.panelled(counter, .init(hud_margin, hud_margin), 2, .srgb8(255, 214, 150, 235));
+        if (!self.screen_described) try self.panelled(counter, .init(hud_margin, hud_margin), 2, .srgb8(255, 214, 150, 235));
 
-        if (self.text.hint_len > 0 and self.lit == 0) {
+        if (self.text.hint_len > 0 and self.lit == 0 and !self.screen_described) {
             const hint = self.text.hint[0..self.text.hint_len];
             const size = render2d.measureText(self.font, hint, .{ .position = .zero, .scale = 1.5 });
             try self.panelled(
@@ -2513,6 +2627,16 @@ const Room = struct {
         var card: app.UiDrawOptions = if (self.theme) |*theme| theme.drawOptions(2) else .{ .layer = 2 };
         card.solid = self.ui_solid;
         try app.drawUi(&self.ui.list, &self.renderer, card_font, .screen, card);
+
+        // The screen, with the theme the host says its frame was described in: the font it
+        // was measured with and the atlas its icons name (`abi.Host.completedUiTheme`).
+        if (self.screen_described) {
+            const used = self.host.completedUiTheme();
+            const font = if (used) |theme| theme.font else uiFontOf(self.font);
+            var options: app.UiDrawOptions = if (used) |theme| theme.drawOptions(3) else .{ .layer = 3 };
+            options.solid = self.ui_solid;
+            try app.drawUi(&self.screen_ui.list, &self.renderer, font, .screen, options);
+        }
 
         if (self.finished and self.text.won_len > 0) {
             const won = self.text.won[0..self.text.won_len];
@@ -2612,13 +2736,30 @@ const Room = struct {
         platform.key.setButton(&keys.mouse.buttons_held, .left, self.pointer.held);
         platform.key.setButton(&keys.mouse.buttons_released, .left, self.pointer.released);
 
-        self.ui.begin(.{
+        const input: ui.Input = .{
             .keys = keys,
             .pointer = self.pointer.at,
             .wheel = engine.input.mouse.wheel,
             .text = self.typed[0..self.typed_len],
             .frame = engine.frame_index,
-        }, .init(0, 0, width, height));
+        };
+        try self.describeCardFrame(input, width, height, engine);
+
+        // **The mod screen, through the public table**, after the card and with the same
+        // input, so both answer about the same frame before `command` asks either of them.
+        self.screen_described = false;
+        if (self.screen_open) {
+            self.screen_ui.style = cardStyle(uiFontOf(self.font));
+            self.screen_ui.skin = null;
+            self.host.ui_input = input;
+            self.screen.frame(.{ .w = width, .h = height }, self.drop_path[0..self.drop_path_len]);
+            self.screen_described = true;
+        }
+    }
+
+    /// The card's context, for one frame: the overlay when it is open, then the card.
+    fn describeCardFrame(self: *Room, input: ui.Input, width: f32, height: f32, engine: *app.Engine) !void {
+        self.ui.begin(input, .init(0, 0, width, height));
         defer self.ui.end();
 
         // **Described before the card and before `command` reads a key**, which is the same
@@ -2642,6 +2783,15 @@ const Room = struct {
         // has. The card being closed is not a special case anywhere else in this file.
         if (!self.card_open) return;
         try self.describeCard(width, height);
+    }
+
+    /// Whether either context took the pointer or the keyboard this frame.
+    fn uiWantsPointer(self: *Room) bool {
+        return self.ui.wantsPointer() or (self.screen_described and self.screen_ui.wantsPointer());
+    }
+
+    fn uiWantsKeyboard(self: *Room) bool {
+        return self.ui.wantsKeyboard() or (self.screen_described and self.screen_ui.wantsKeyboard());
     }
 
     /// Who is walking, how loud it is, and a way out of the card.
@@ -2729,12 +2879,16 @@ const Room = struct {
     /// nothing below reads a device, so there is exactly one place to get it wrong and
     /// exactly one place to check.
     fn command(self: *Room, engine: *app.Engine) void {
-        self.took_pointer = self.ui.wantsPointer();
-        self.took_keyboard = self.ui.wantsKeyboard();
+        self.took_pointer = self.uiWantsPointer();
+        self.took_keyboard = self.uiWantsKeyboard();
 
         if (self.close_requested) {
             self.close_requested = false;
             self.closeCard();
+        }
+        if (self.screen.close_requested) {
+            self.screen.close_requested = false;
+            self.closeScreen();
         }
 
         const in = &engine.input;
@@ -2743,7 +2897,7 @@ const Room = struct {
         // edit them; it does not consume the way out, and a game that gave up its quit key
         // while a field had focus would be a game you could get stuck in a text box in.
         if (in.wasPressed(.escape)) {
-            if (self.card_open) self.closeCard() else engine.requestQuit();
+            if (self.screen_open) self.closeScreen() else if (self.card_open) self.closeCard() else engine.requestQuit();
         }
         // F1 shows the overlay. Held back like tab, because the overlay has a filter box in
         // it and a function key is still a key a field could one day want — and because the
@@ -2755,6 +2909,10 @@ const Room = struct {
         // Tab is held back, because tab is a key a field could want.
         if (in.wasPressed(.tab) and !self.took_keyboard) {
             if (self.card_open) self.closeCard() else self.openCard();
+        }
+        // M, likewise: an "m" typed into the screen's filter is a letter, not a way out.
+        if (in.wasPressed(.m) and !self.took_keyboard) {
+            if (self.screen_open) self.closeScreen() else self.openScreen();
         }
 
         if (!self.pointer.pressed) return;
@@ -2789,11 +2947,11 @@ const Room = struct {
     /// walking the player into a wall. Nothing fires while the order above is right, which
     /// is exactly what it is here to assert.
     fn auditCapture(self: *Room) void {
-        if (self.walked_from_pointer and self.ui.wantsPointer()) {
+        if (self.walked_from_pointer and self.uiWantsPointer()) {
             self.capture_failures += 1;
             log.err("the hall walked on a click the card had taken", .{});
         }
-        if (self.walked_from_keys and self.ui.wantsKeyboard()) {
+        if (self.walked_from_keys and self.uiWantsKeyboard()) {
             self.capture_failures += 1;
             log.err("the hall walked on keys the card was typing with", .{});
         }
@@ -2801,9 +2959,25 @@ const Room = struct {
         self.walked_from_keys = false;
     }
 
+    /// The card and the screen are never open together: each covers the hall, and one
+    /// opening closes the other.
     fn openCard(self: *Room) void {
+        if (self.screen_open) self.closeScreen();
         self.card_open = true;
         self.card_opens += 1;
+    }
+
+    fn openScreen(self: *Room) void {
+        if (self.card_open) self.closeCard();
+        self.screen_open = true;
+        self.screen_opens += 1;
+    }
+
+    /// `closeCard`'s rule, for the screen's own context.
+    fn closeScreen(self: *Room) void {
+        self.screen_open = false;
+        self.screen.close();
+        self.screen_ui.clearInteraction();
     }
 
     /// Closing gives back the pointer and the keyboard in the same breath.
@@ -2848,6 +3022,8 @@ const Room = struct {
             };
         }
 
+        if (ScreenScript.phase(engine.frame_index)) |f| return self.driveScreen(f);
+
         const f = Script.phase(engine.frame_index) orelse {
             if (self.card_open) self.closeCard();
             return .{ .at = Script.parked };
@@ -2869,6 +3045,43 @@ const Room = struct {
             };
         }
         return .{ .at = Script.parked };
+    }
+
+    /// The screen's visit. It ends with the screen shut whatever became of the click on
+    /// Close, so a failed click is a line in the log rather than a screen left over the hall.
+    fn driveScreen(self: *Room, f: u64) Pointer {
+        if (f == 0 and !self.screen_open) self.openScreen();
+        if (f + 1 == ScreenScript.length and self.screen_open) {
+            log.warn("the scripted visit to the mod screen did not close it; closing it", .{});
+            self.closeScreen();
+        }
+        for (ScreenScript.presses) |press| {
+            if (f + 2 < press.at or f > press.at + 3) continue;
+            const at = self.screenAim(press.aim) orelse return .{ .at = Script.parked };
+            return .{
+                .at = at,
+                .pressed = f == press.at,
+                .held = f == press.at or f == press.at + 1,
+                .released = f == press.at + 2,
+            };
+        }
+        return .{ .at = Script.parked };
+    }
+
+    /// Just inside the left of what the screen recorded, half-way down its row. Nothing to
+    /// aim at is a press not made: a room with no package that is a choice has nothing to
+    /// turn off.
+    fn screenAim(self: *const Room, aim: ScreenScript.Aim) ?core.math.Vec2 {
+        const targets = self.screen.targets;
+        const rect = switch (aim) {
+            .choice_row => targets.choice_row,
+            .conflicts => targets.tabs[1],
+            .choice_toggle => targets.choice_toggle,
+            .problems => targets.tabs[3],
+            .revert => targets.revert,
+            .close => targets.close,
+        } orelse return null;
+        return .init(rect.x + 8, rect.y + self.screen_ui.style.line_height / 2);
     }
 
     /// The middle of what the script is aiming at, from where the card last put it.
@@ -3068,6 +3281,11 @@ const Room = struct {
         // below goes; nothing between here and there ticks.
         self.clips.deinit(self.gpa);
 
+        // The host first: it holds the screen's theme and lends the screen's context.
+        self.host.unbind();
+        self.screen.deinit();
+        self.screen_ui.deinit();
+
         self.ui.skin = null;
         if (self.theme) |*theme| theme.deinit(&engine.assets);
         self.theme = null;
@@ -3185,4 +3403,97 @@ test "an M9-era preferences file keeps its window, volume and mods through the m
         try std.testing.expectEqual(want.len, mods.pending().len);
         for (want, mods.pending()) |name, id| try std.testing.expectEqualStrings(name, mods.spelling(id).?);
     }
+}
+
+test "the mod screen, through the public table, changes the player's list by a click and takes it back" {
+    const gpa = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const home = buf[0..try tmp.dir.realPath(std.testing.io, &buf)];
+    var os = try platform.os.Os.init(gpa, .{ .env = &.{}, .app_name = app_name });
+    defer os.deinit();
+    var diags: data.Diagnostics = .init(gpa, .default);
+    defer diags.deinit(gpa);
+
+    // A player whose list names two packages no longer installed: both are rows, both are
+    // choices, and taking one off the list is a change a click makes.
+    var mods = try app.ModSet.init(gpa, os, &.{}, .{ .required = &.{} }, &diags);
+    defer mods.deinit();
+    try mods.attachProfiles(try app.profiles.Store.open(gpa, os, home, false), null, .{
+        .name = "Default",
+        .enabled = &.{ "gone:lamps", "gone:rug" },
+    });
+    _ = try mods.start(&.{}, &diags);
+
+    const font: render2d.BitmapFont = .{
+        .glyphs = .{ .texture = .none, .uv = .{}, .size_px = .{} },
+        .cell = .{ .width = 8, .height = 8 },
+        .columns = 16,
+        .glyph_count = 95,
+    };
+    var context: ui.Context = .init(gpa, cardStyle(uiFontOf(font)));
+    defer context.deinit();
+    const Saves = struct {
+        fn record(_: ?*anyopaque, _: u32) bool {
+            return true;
+        }
+    };
+    var host: abi.Host = .{
+        .ui_context = &context,
+        .mod_set = &mods,
+        .mods_write = .{ .save_active_profile = Saves.record },
+    };
+    host.bind();
+    defer host.unbind();
+
+    var screen: mods_screen.Screen = .init(gpa, @ptrCast(@alignCast(abi.TableOf(abi.Host).getApi(abi.api_version_3).?)));
+    defer screen.deinit();
+    const viewport: abi.UiRect = .{ .w = 1280, .h = 720 };
+    const Frame = struct {
+        fn at(h: *abi.Host, s: *mods_screen.Screen, where: core.math.Vec2, phase: @TypeOf(.up)) void {
+            h.ui_input = ui.Input.at(where, phase);
+            s.frame(viewport, ".../mods");
+        }
+        fn middle(rect: ?abi.UiRect) !core.math.Vec2 {
+            const r = rect orelse return error.TestUnexpectedResult;
+            return .init(r.x + 8, r.y + 10);
+        }
+    };
+
+    Frame.at(&host, &screen, .init(-1, -1), .up);
+    try std.testing.expect(!context.wantsPointer());
+
+    // A click on the first row's box: hot, pressed, released, and acted on after the frame.
+    const toggle = try Frame.middle(screen.targets.choice_toggle);
+    Frame.at(&host, &screen, toggle, .up);
+    Frame.at(&host, &screen, toggle, .pressed);
+    try std.testing.expect(context.wantsPointer());
+    Frame.at(&host, &screen, toggle, .released);
+    try std.testing.expectEqual(@as(usize, 1), mods.pending().len);
+    try std.testing.expectEqualStrings("gone:rug", mods.spelling(mods.pending()[0]).?);
+    try std.testing.expect(mods.changed());
+    try std.testing.expectEqual(@as(u64, 1), screen.changes);
+
+    // Revert, which the change enabled, takes it back without anything being saved.
+    Frame.at(&host, &screen, .init(-1, -1), .up);
+    const revert = try Frame.middle(screen.targets.revert);
+    Frame.at(&host, &screen, revert, .up);
+    Frame.at(&host, &screen, revert, .pressed);
+    Frame.at(&host, &screen, revert, .released);
+    try std.testing.expectEqual(@as(usize, 2), mods.pending().len);
+    try std.testing.expect(!mods.changed());
+    try std.testing.expectEqual(@as(u64, 1), screen.reverts);
+
+    // And Close asks the room to close it, after the frame.
+    const close = try Frame.middle(screen.targets.close);
+    Frame.at(&host, &screen, close, .up);
+    Frame.at(&host, &screen, close, .pressed);
+    Frame.at(&host, &screen, close, .released);
+    try std.testing.expect(screen.close_requested);
+}
+
+test {
+    _ = mods_screen;
 }

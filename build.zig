@@ -494,6 +494,10 @@ pub fn build(b: *std.Build) void {
     room_mod.addImport("rhi", modules.get("rhi").?);
     room_mod.addImport("scene", modules.get("scene").?);
     room_mod.addImport("ui", modules.get("ui").?);
+    // The public table, for the mod screen (`mod-management.md` §11). The room builds that
+    // screen only from what `FoundryApi_v3` publishes, and lends the host behind it the mod
+    // set it started from: a host with a mod screen is a host that imports `abi` (I4).
+    room_mod.addImport("abi", modules.get("abi").?);
     // The overlay, on the same terms the sandbox gets it. **This is the whole of what the
     // second consumer needed**: one import and a key, with no engine change between them —
     // which is the claim ADR-0025 makes about a game getting an overlay by importing a
@@ -693,6 +697,8 @@ pub fn build(b: *std.Build) void {
         }) |name| release_mod.addImport(name, modules.get(name).?);
         release_mod.addImport("platform", platform_module);
         release_mod.addImport("build_options", bundle_options.createModule());
+        // The room's mod screen is built through the public table, as the room's own module is.
+        if (dist_app == .room) release_mod.addImport("abi", modules.get("abi").?);
         if (dist_app == .sandbox) {
             release_mod.addImport("scripting", scripting_mod);
             release_mod.addAnonymousImport("quad_metallib", .{

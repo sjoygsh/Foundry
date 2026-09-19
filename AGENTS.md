@@ -128,8 +128,9 @@ scope. Step 5 made themes content: `foundry:ui_theme`, resolved by `app.resolveU
 the room's card drawn from `room:ui.theme`. Step 6 made existing widgets skin-aware and added
 tabs, selectable rows, reorder controls, icons and placed images without moving `ui` above L1.
 Step 7 published it all as `FoundryApi_v3`: 28 calls after v2's, with changes refused unless
-the host grants writes, and v1 and v2 unchanged. Step 8, the room's mod screen, is next. M15–M17
-remain unstarted.
+the host grants writes, and v1 and v2 unchanged. Step 8 built the room's mod screen (M) from
+that table alone, in `samples/room/mods_screen.zig`. Step 9, proof and closure, is next.
+M15–M17 remain unstarted.
 The bar below is the current one; Step 9 added the checks Vulkan and release work need to it.
 
 ## 3. Building and verifying

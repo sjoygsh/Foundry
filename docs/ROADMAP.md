@@ -691,7 +691,7 @@ The faults the milestone found were the backend's own, such as Step 5's inverted
 Windows faults that predated it, which the native test repair fixed. Device recovery stays an
 open question.
 
-### M14 — Managed: "players choose their mods" — **in progress: Steps 1 to 7 of nine done, 2026-09-19**
+### M14 — Managed: "players choose their mods" — **in progress: Steps 1 to 8 of nine done, 2026-09-19**
 
 **Designed 2026-09-19:** [`design/mod-management.md`](design/mod-management.md) specifies nine
 steps, with accepted [ADR-0040](adr/0040-ordered-profiles-applied-at-next-start.md) (ordered
@@ -710,7 +710,8 @@ walker's table, with the room's card drawn from `room:ui.theme`. **Step 6:** the
 widgets draw from that skin, and `tabs`, `selectable`, reorder, `icon` and `image` complete the
 game widget set. **Step 7:** `FoundryApi_v3` publishes all of it: reading the mod set, and
 changing it with the host's grant, plus themes and the game widgets. v1 and v2 are unchanged.
-Step 8, the room's mod screen, is next.
+**Step 8:** the room's mod screen, opened with M, built only from that table, with its words
+and look as content. Step 9, the proof and closure, is next.
 
 `CLAUDE.md` §5 records it plainly: a mod manager UI is still unbuilt. Every mechanism under it
 exists — discovery, dependency resolution, deterministic order, user package roots — and

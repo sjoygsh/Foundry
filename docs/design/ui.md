@@ -483,6 +483,13 @@ Step 7 published them in `FoundryApi_v3`, additively, with v1 and v2 unchanged. 
 a theme, pushes it around whole frames, and describes the game widgets. It also gains
 `ui_region_remaining`, so it can find where a reorder list's rows began.
 
+**M14 Step 8, 2026-09-19:** the room's mod screen is built from those calls alone, and building
+it corrected two Step 6 widgets.
+- **`selectable` inside a row takes what the row has left.** It had taken a square there, so a
+  list row could not lead with a checkbox and still be selectable by its length.
+- **A reorder grip's lines are inset by at most a quarter of the grip.** They were inset by the
+  padding either side, which with the room's theme left lines of no width.
+
 ## 14. Open questions
 
 * **Input that arrives already inside a control.** The one frame `hot` costs is invisible to a

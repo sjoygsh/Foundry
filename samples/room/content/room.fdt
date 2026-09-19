@@ -213,7 +213,8 @@ foundry:ui_theme room:ui.theme {
     text_scale  1.5
     line_height 20
     padding_x   10
-    padding_y   8
+    # Four, not more: a checkbox and a reorder grip are a line less this padding twice.
+    padding_y   4
     spacing     5
     separator   1
     # The atlas's four-pixel borders, drawn at twice their size.
@@ -252,6 +253,134 @@ foundry:ui_theme room:ui.theme {
         { name "warning"   x 48  y 36  w 8  h 8 }
         { name "lock"      x 56  y 36  w 8  h 8 }
     ]
+}
+
+# The mod screen's words (`mod-management.md` §11). M opens it over the hall.
+#
+# Every one is here rather than in the source, for the card's reason: a translation is then a
+# package, not a patch. The screen is built through the public table and reads these through
+# it too, so it supplies only the shapes -- "3 installed", "...: lamps:kit" -- and a
+# package can change any word without being able to crash it with a format string.
+@schema screen {
+    title string (default "")
+    profile string (default "")
+    profile_name string (default "")
+    new string (default "")
+    copy string (default "")
+    rename string (default "")
+    delete string (default "")
+    close string (default "")
+    filter string (default "")
+    installed string (default "")
+    enabled string (default "")
+    problems string (default "")
+    tab_details string (default "")
+    tab_conflicts string (default "")
+    tab_records string (default "")
+    tab_problems string (default "")
+    origin_installed string (default "")
+    origin_user string (default "")
+    environment string (default "")
+    not_installed string (default "")
+    version string (default "")
+    requires string (default "")
+    requirement_met string (default "")
+    requirement_unmet string (default "")
+    provides string (default "")
+    records string (default "")
+    wins string (default "")
+    loses string (default "")
+    loaded_now string (default "")
+    yes string (default "")
+    no string (default "")
+    no_native string (default "")
+    select_prompt string (default "")
+    conflicts_none string (default "")
+    conflict_won string (default "")
+    conflict_lost string (default "")
+    record_prompt string (default "")
+    record_invalid string (default "")
+    record_none string (default "")
+    record_winner string (default "")
+    problems_none string (default "")
+    skip_not_installed string (default "")
+    skip_missing_dependency string (default "")
+    skip_dependency_version string (default "")
+    skip_dependency_skipped string (default "")
+    skip_cycle string (default "")
+    skip_duplicate string (default "")
+    skip_shadows_installed string (default "")
+    unsaved string (default "")
+    next_start string (default "")
+    apply string (default "")
+    revert string (default "")
+    drop_into string (default "")
+    up string (default "")
+    down string (default "")
+    top string (default "")
+    bottom string (default "")
+    profile_unusable string (default "")
+}
+
+screen room:screen.mods {
+    title                   "Mods"
+    profile                 "Profile"
+    profile_name            "Name"
+    new                     "New"
+    copy                    "Copy"
+    rename                  "Rename"
+    delete                  "Delete"
+    close                   "Close"
+    filter                  "Filter"
+    installed               "installed"
+    enabled                 "on"
+    problems                "problems"
+    tab_details             "Details"
+    tab_conflicts           "Conflicts"
+    tab_records             "Records"
+    tab_problems            "Problems"
+    origin_installed        "built-in"
+    origin_user             "yours"
+    environment             "On for this session only."
+    not_installed           "not installed"
+    version                 "version"
+    requires                "Requires"
+    requirement_met         "ok"
+    requirement_unmet       "missing"
+    provides                "Provides"
+    records                 "records"
+    wins                    "wins"
+    loses                   "loses"
+    loaded_now              "Loaded now:"
+    yes                     "yes"
+    no                      "no"
+    no_native               "This game does not load native code."
+    select_prompt           "Select a mod to see it here."
+    conflicts_none          "Nothing it provides is in dispute."
+    conflict_won            "this mod wins"
+    conflict_lost           "won by"
+    record_prompt           "Record"
+    record_invalid          "That is not a content id."
+    record_none             "No package provides it."
+    record_winner           "wins"
+    problems_none           "Nothing is wrong."
+    skip_not_installed      "is on your list but not installed"
+    skip_missing_dependency "needs a package that is not here"
+    skip_dependency_version "needs a different version of a package"
+    skip_dependency_skipped "needs a package that cannot load"
+    skip_cycle              "requires itself, through others"
+    skip_duplicate          "shares its id with another of your mods; neither loads"
+    skip_shadows_installed  "has the id of a built-in package, which loads instead"
+    unsaved                 "Changes not applied yet."
+    next_start              "change(s) take effect the next time the hall opens."
+    apply                   "Apply"
+    revert                  "Revert"
+    drop_into               "Drop mods into"
+    up                      "Up"
+    down                    "Down"
+    top                     "Top"
+    bottom                  "Bottom"
+    profile_unusable        "(cannot be used)"
 }
 
 # The window the hall opens in, and how loud it is, until a player says otherwise.

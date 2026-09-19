@@ -95,8 +95,9 @@ There is no `--name` and no `--version`: both come out of your `mod.fdt`, so the
 nowhere for a second answer to disagree from.
 
 Then load it. The sandbox is handed a list of **content IDs**, not filenames — where your
-file sits stopped mattering the moment your package started naming itself. A real game will
-have a mod manager, and does not yet:
+file sits stopped mattering the moment your package started naming itself. The sandbox has no
+mod screen, so it is told which packages to add; the room has one (press M), where a player
+turns your package on and applies, and it loads from the next start:
 
 ```sh
 FOUNDRY_SANDBOX_PACKAGES=mymod:changes zig build run -Drhi=metal
@@ -476,8 +477,8 @@ deliberate and tested.
 
 ## 12. What this does not cover yet
 
-See [`README.md`](README.md) for the honest list. The short version: no mod manager, no
-partial edits (`@patch` and `@remove` are reserved but refused), and no signing or sandboxing
-for native code. Code tiers are documented separately: [`script-mods.md`](script-mods.md) for a
+See [`README.md`](README.md) for the honest list. The short version: the room's mod screen is
+the only mod manager so far; there are no partial edits (`@patch` and `@remove` are reserved
+but refused); and native code has no signing or sandboxing. Code tiers are documented separately: [`script-mods.md`](script-mods.md) for a
 sandboxed Lua file that runs on the world's tick and can be edited while it runs, and
 [`native-mods.md`](native-mods.md) for native package loading and the C ABI.

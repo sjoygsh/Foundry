@@ -89,8 +89,13 @@ pub fn tabs(
 }
 
 /// A full-width row with a caller-owned selected state. True only on a completed click.
+///
+/// **Full width in either kind of region.** Down a panel it is a band across it; inside a row
+/// it takes what the row has left, so a list row can lead with a checkbox or an icon and still
+/// be selected by its whole remaining length.
 pub fn selectable(ctx: *Context, id: Id, text: []const u8, selected: bool) Allocator.Error!bool {
-    const bounds = ctx.take(.init(ctx.style.line_height, ctx.style.line_height));
+    const line = ctx.style.line_height;
+    const bounds = ctx.take(.init(ctx.region().remaining().w, line));
     return selectableIn(ctx, id, text, selected, bounds);
 }
 
@@ -270,8 +275,12 @@ fn drawGrip(ctx: *Context, bounds: Rect, active: bool) Allocator.Error!void {
     const style = ctx.style;
     const thickness = @max(0, style.separator_thickness);
     if (thickness == 0 or bounds.isEmpty()) return;
-    const width = @max(0, bounds.w - style.padding.x * 2);
-    const x = bounds.x + (bounds.w - width) / 2;
+    // Inset by the padding, but never by more than a quarter of the grip either side: a grip
+    // is a square a line tall, and a padding wider than half of it would leave lines of no
+    // width at all, which is a grip nobody can see (`checkbox`'s mark has the same rule).
+    const margin = @min(style.padding.x, bounds.w / 4);
+    const width = @max(0, bounds.w - margin * 2);
+    const x = bounds.x + margin;
     const gap = @max(thickness, style.spacing);
     const middle = bounds.y + bounds.h / 2 - thickness / 2;
     const color = if (active) selectedColor(ctx) else style.text_dim;
@@ -534,6 +543,28 @@ test "a selectable row clicks, captures, and uses the selected part" {
     ctx.end();
 }
 
+test "inside a row, a selectable takes what the row has left" {
+    var ctx: Context = .init(testing.allocator, testStyle());
+    defer ctx.deinit();
+    const row = Id.root.child("row");
+
+    ctx.begin(frameOf(away, .up), viewport);
+    try widget.beginRow(&ctx, row, ctx.style.line_height);
+    widget.spacer(&ctx, 30);
+    const before = ctx.region().remaining();
+    _ = try selectable(&ctx, row.child("item"), "item", false);
+    const after = ctx.region().remaining();
+    widget.endRow(&ctx);
+    ctx.end();
+
+    // The whole rest of the row, and nothing left over but the spacing after it.
+    try testing.expectEqual(@as(f32, 0), after.w);
+    try testing.expectEqual(before.x + before.w + ctx.style.spacing, after.x);
+    const drawn = ctx.list.items()[0].rect.bounds;
+    try testing.expectEqual(before.x, drawn.x);
+    try testing.expectEqual(before.w, drawn.w);
+}
+
 test "image and icon place opaque image references and a missing icon keeps its slot" {
     var ctx: Context = .init(testing.allocator, testStyle());
     defer ctx.deinit();
@@ -552,6 +583,28 @@ test "image and icon place opaque image references and a missing icon keeps its 
     try testing.expectEqual(@as(u32, 200), ctx.list.items()[1].image.source.x);
     // Three vertical slots, including the absent icon: 24 + 2 + 8 + 2 + 8 + 2.
     try testing.expectEqual(@as(f32, 46), next);
+}
+
+test "a grip stays visible when the padding is wider than the grip" {
+    var style = testStyle();
+    style.padding = .init(10, style.line_height / 2 - 6);
+    var ctx: Context = .init(testing.allocator, style);
+    defer ctx.deinit();
+
+    ctx.begin(frameOf(away, .up), viewport);
+    _ = try reorderList(&ctx, Id.root.child("list"), .init(0, 0, 200, style.line_height), 1);
+    ctx.end();
+
+    // Three lines, each half the twelve-point grip wide.
+    var lines: usize = 0;
+    for (ctx.list.items()) |command| switch (command) {
+        .rect => |r| {
+            try testing.expectEqual(@as(f32, 6), r.bounds.w);
+            lines += 1;
+        },
+        else => {},
+    };
+    try testing.expectEqual(@as(usize, 3), lines);
 }
 
 fn reorderFrame(ctx: *Context, input: Input) !?ReorderMove {
