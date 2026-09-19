@@ -281,6 +281,11 @@ pub const Style = struct {
 
 > **M14 Step 4, 2026-09-19:** `disabled_alpha` (default 0.5) joined, the fraction of its own
 > alpha a widget in a disabled scope is drawn at.
+>
+> **M14 Step 5, 2026-09-19:** a second value, `ui.Skin`, carries what a theme gives beyond
+> `Style`: a nine-slice patch per part, icons by name, and four colours for game screens. `app`
+> builds both from a `foundry:ui_theme` record (ADR-0041, `mod-management.md` Step 5), so the
+> content-driven producer this section anticipated exists.
 
 Held on the `Context`, replaceable between frames, and **the kernel reads it and never writes
 it.** The debug widget set ships a `Style` value — that is where the dark grey and the blue

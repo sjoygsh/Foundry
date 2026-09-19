@@ -199,6 +199,61 @@ settings room:settings.main {
 # The sheet's first row is the tileset and the rest is everything drawn as a sprite, which
 # is why one texture serves both and there is only one to load.
 
+# ---------------------------------------------------------------------------------------
+# How the room's screens look (M14, ADR-0041).
+#
+# A `foundry:ui_theme`: the card's colours and sizes, and the atlas the game widget set draws
+# its patches and icons from -- `textures/ui.png`, which `scripts/gen-room-assets.py` draws.
+# A package loaded after this one re-skins every screen by overriding this one record, and a
+# theme that cannot be used leaves the card as it looked before themes were content.
+# Colours are sRGB, 0xRRGGBBAA.
+foundry:ui_theme room:ui.theme {
+    atlas       room:textures.ui
+    font        { texture foundry:fonts.debug  cell_w 8  cell_h 8  columns 16  count 95 }
+    text_scale  1.5
+    line_height 20
+    padding_x   10
+    padding_y   8
+    spacing     5
+    separator   1
+    # The atlas's four-pixel borders, drawn at twice their size.
+    patch_scale 2
+    colors {
+        text     0xffe2b4f0   text_dim    0x96826ec8   surface        0x0a0806e1
+        control  0x2e261eeb   control_hot 0x4a3c2cf5   control_active 0x6e583cff
+        accent   0xffbe6eff
+        positive 0x7ccf7cff   negative    0xe06a5aff   warning        0xf0c050ff
+        selection 0xffbe6e46
+    }
+    patches [
+        { part "panel"           x 0   y 0   w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "button"          x 12  y 0   w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "button_hot"      x 24  y 0   w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "button_active"   x 36  y 0   w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "button_disabled" x 48  y 0   w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "field"           x 0   y 12  w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "check_off"       x 12  y 12  w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "check_on"        x 24  y 12  w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "row"             x 36  y 12  w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "row_selected"    x 48  y 12  w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "tab"             x 0   y 24  w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "tab_on"          x 12  y 24  w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "scroll_track"    x 24  y 24  w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "scroll_thumb"    x 36  y 24  w 12  h 12  left 4  top 4  right 4  bottom 4 }
+    ]
+    # The mod screen's icons, by the room's own names for them.
+    icons [
+        { name "native"    x 0   y 36  w 8  h 8 }
+        { name "script"    x 8   y 36  w 8  h 8 }
+        { name "win"       x 16  y 36  w 8  h 8 }
+        { name "lose"      x 24  y 36  w 8  h 8 }
+        { name "both"      x 32  y 36  w 8  h 8 }
+        { name "redundant" x 40  y 36  w 8  h 8 }
+        { name "warning"   x 48  y 36  w 8  h 8 }
+        { name "lock"      x 56  y 36  w 8  h 8 }
+    ]
+}
+
 # The window the hall opens in, and how loud it is, until a player says otherwise.
 config room:config.main {
     window_width  1280

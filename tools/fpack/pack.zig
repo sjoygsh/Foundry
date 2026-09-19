@@ -149,6 +149,16 @@ pub fn compile(
         },
     };
 
+    // `foundry:ui_theme` (ADR-0041), for the same reason: a theme is checked here, against
+    // the engine's own record type, before any game reads it.
+    asset.ui_theme.registerAll(gpa, registry) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            try diags.addFmt(gpa, .err, .whole("<engine>"), 1, "", "the engine's ui theme schema did not register: {s}", .{data.schema.describeRegisterError(err)});
+            return error.ContentInvalid;
+        },
+    };
+
     // `foundry:entity` and `foundry:scene`, for the same reason: an author describing a
     // scene must not have to declare an engine-owned record type themselves.
     scene.schemas.registerAll(gpa, registry) catch |err| switch (err) {

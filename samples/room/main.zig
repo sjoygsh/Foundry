@@ -186,6 +186,9 @@ pub const std_options = app.std_options;
 
 const app_name = "foundry-room";
 
+/// The room's look, as a record content may override (ADR-0041).
+const theme_id = "room:ui.theme";
+
 /// The product's own version, which is not the engine's and not the ABI's (§4). A game
 /// states its own; this is the sample stating the one its release description carries.
 const product_version = "0.9.0";
@@ -1068,16 +1071,13 @@ fn uiFontOf(font: render2d.BitmapFont) app.UiFont {
     return .{ .font = font };
 }
 
-/// What the card looks like.
+/// What the card looks like **when no theme can be used**.
 ///
-/// **All of it is the game's**, because the kernel contains no colour, no metric and no
-/// string of its own (ADR-0024). Warm and dim, like the hall: a card that looked like a
-/// debug overlay would be the first thing to tell a person this was a tech demo, which is
-/// what this sample exists not to be.
-///
-/// The colours are written here rather than read from content only because they are the
-/// one thing on the card that is not text; when the content-driven widget layer arrives
-/// this is the function that goes away.
+/// The card's look is content since M14: `room:ui.theme`, which states these same values
+/// (ADR-0041). This stays as the fallback a theme that fails validation leaves in place — the
+/// kernel has no style of its own, and `app` cannot reach `debug`'s — so a broken theme mod
+/// costs a warning and the room's old look, never a failed frame (`mod-management.md` §10).
+/// Warm and dim, like the hall.
 fn cardStyle(font: app.UiFont) ui.Style {
     return .{
         .font = font.metrics(),
@@ -1536,6 +1536,9 @@ const Room = struct {
     /// The region the UI's rectangles are drawn from when content declares a patch in the font,
     /// resolved again whenever content changes; null draws them from the renderer's blank.
     ui_solid: ?render2d.Region = null,
+    /// The card's look, from `room:ui.theme` (ADR-0041), or null while no usable theme is
+    /// loaded, when the card keeps `cardStyle`. Resolved again on every content change.
+    theme: ?app.UiTheme = null,
 
     map: Map = .{},
     clips: Clips = .{},
@@ -1759,6 +1762,7 @@ const Room = struct {
         self.sheet_asset = try engine.assets.acquire(gpa, self.settings.sheet);
         self.font_asset = try engine.assets.acquire(gpa, self.settings.font);
         self.deriveRegions(engine);
+        self.resolveTheme(engine);
 
         self.map.build(gpa, engine, &self.renderer, &self.physics, self.settings.map);
         self.clips.build(gpa, engine);
@@ -2503,7 +2507,12 @@ const Room = struct {
         // The card, **drawn**: one call, and the only line in the sample that knows the
         // kernel and the renderer are two different things. Above the room's own panels,
         // because it is over the hall and they are part of it.
-        try app.drawUi(&self.ui.list, &self.renderer, uiFontOf(self.font), .screen, .{ .layer = 2, .solid = self.ui_solid });
+        // The theme's font and atlas when there is one: the font the card was measured with is
+        // the font it is drawn with (`ui.md` §8).
+        const card_font = if (self.theme) |*theme| theme.font else uiFontOf(self.font);
+        var card: app.UiDrawOptions = if (self.theme) |*theme| theme.drawOptions(2) else .{ .layer = 2 };
+        card.solid = self.ui_solid;
+        try app.drawUi(&self.ui.list, &self.renderer, card_font, .screen, card);
 
         if (self.finished and self.text.won_len > 0) {
             const won = self.text.won[0..self.text.won_len];
@@ -2588,7 +2597,7 @@ const Room = struct {
         // Rebuilt from the font every frame rather than cached: a content reload can put a
         // different font underneath the sample between one frame and the next, and a style
         // is a value the kernel only ever reads.
-        self.ui.style = cardStyle(uiFontOf(self.font));
+        self.ui.style = if (self.theme) |*theme| theme.style else cardStyle(uiFontOf(self.font));
 
         self.pointer = self.drivePointer(engine);
 
@@ -2939,6 +2948,7 @@ const Room = struct {
         self.reacquire(engine, &self.sheet_asset, previous.sheet, self.settings.sheet);
         self.reacquire(engine, &self.font_asset, previous.font, self.settings.font);
         self.deriveRegions(engine);
+        self.resolveTheme(engine);
 
         self.map.build(self.gpa, engine, &self.renderer, &self.physics, self.settings.map);
         self.clips.build(self.gpa, engine);
@@ -2998,6 +3008,24 @@ const Room = struct {
             null;
     }
 
+    /// The card's look, from content. Resolved again whenever content changes, so a reload or
+    /// a mod overriding `room:ui.theme` re-skins the card without a restart. A theme that
+    /// cannot be used is one warning, and the card keeps `cardStyle`.
+    fn resolveTheme(self: *Room, engine: *app.Engine) void {
+        var diags: data.Diagnostics = .init(self.gpa, .default);
+        defer diags.deinit(self.gpa);
+        const fresh = app.resolveUiTheme(self.gpa, &engine.store, &engine.assets, &self.renderer, core.ContentId.fromString(theme_id), &diags) catch |err| blk: {
+            log.warn("the ui theme could not be resolved ({t})", .{err});
+            break :blk null;
+        };
+        for (diags.items.items) |d| log.warn("{s}", .{d.message});
+        if (fresh != null) log.info("the card is drawn from {s}", .{theme_id});
+        // The new theme first and then the old one released, so a texture both hold is not
+        // unloaded and loaded again in between.
+        if (self.theme) |*old| old.deinit(&engine.assets);
+        self.theme = fresh;
+    }
+
     fn reacquire(
         self: *Room,
         engine: *app.Engine,
@@ -3038,6 +3066,8 @@ const Room = struct {
         // below goes; nothing between here and there ticks.
         self.clips.deinit(self.gpa);
 
+        if (self.theme) |*theme| theme.deinit(&engine.assets);
+        self.theme = null;
         engine.assets.release(self.sheet_asset);
         engine.assets.release(self.font_asset);
         _ = engine.assets.unregisterLoader(self.gpa, asset.schemas.texture.id);

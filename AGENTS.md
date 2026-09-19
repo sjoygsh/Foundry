@@ -124,7 +124,8 @@ mod set starts from, edits and applies. Step 3 added settings migrations and mer
 both samples are on settings version 2 and profiles; their M9-era files, in `samples/*/testdata`,
 convert. The samples have tests of their own now. Step 4 gave the UI kernel `image` and
 `nine_slice` commands, naming images by opaque numbers the walker resolves, and a disabled
-scope. M15–M17 remain unstarted.
+scope. Step 5 made themes content: `foundry:ui_theme`, resolved by `app.resolveUiTheme`, and
+the room's card drawn from `room:ui.theme`. M15–M17 remain unstarted.
 The bar below is the current one; Step 9 added the checks Vulkan and release work need to it.
 
 ## 3. Building and verifying

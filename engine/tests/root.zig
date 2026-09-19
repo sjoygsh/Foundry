@@ -29,6 +29,7 @@ pub const sound_pipeline = @import("sound_pipeline.zig");
 pub const sprite_animation = @import("sprite_animation.zig");
 pub const tilemap_pipeline = @import("tilemap_pipeline.zig");
 pub const ui_text = @import("ui_text.zig");
+pub const ui_theme = @import("ui_theme.zig");
 pub const world_jobs = @import("world_jobs.zig");
 pub const world_pipeline = @import("world_pipeline.zig");
 
@@ -44,6 +45,7 @@ test {
     _ = sprite_animation;
     _ = tilemap_pipeline;
     _ = ui_text;
+    _ = ui_theme;
     _ = world_jobs;
     _ = world_pipeline;
 }

@@ -691,7 +691,7 @@ The faults the milestone found were the backend's own, such as Step 5's inverted
 Windows faults that predated it, which the native test repair fixed. Device recovery stays an
 open question.
 
-### M14 — Managed: "players choose their mods" — **in progress: Steps 1 to 4 of nine done, 2026-09-19**
+### M14 — Managed: "players choose their mods" — **in progress: Steps 1 to 5 of nine done, 2026-09-19**
 
 **Designed 2026-09-19:** [`design/mod-management.md`](design/mod-management.md) specifies nine
 steps, with accepted [ADR-0040](adr/0040-ordered-profiles-applied-at-next-start.md) (ordered
@@ -705,7 +705,9 @@ profiles on disk, one file each, kept in the player's order, with consent per ve
 **Step 3:** settings migrations with a one-time backup, and writes merged by field. Both samples
 are on settings version 2 and profiles, and their M9-era files convert. **Step 4:** the UI
 kernel's `image` and `nine_slice` commands, by opaque image numbers, and a disabled scope.
-Step 5, themes as content, is next.
+**Step 5:** themes as content: `foundry:ui_theme`, resolved into a style, a skin and the
+walker's table, with the room's card drawn from `room:ui.theme`. Step 6, the game widget set,
+is next.
 
 `CLAUDE.md` §5 records it plainly: a mod manager UI is still unbuilt. Every mechanism under it
 exists — discovery, dependency resolution, deterministic order, user package roots — and

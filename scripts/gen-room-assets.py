@@ -21,6 +21,16 @@ the room draws as a sprite:
   12        the door
   13        flat white, for the text panel to tint
 
+One 64x48 UI atlas, `ui.png`, which the room's `foundry:ui_theme` record cuts up (M14,
+ADR-0041). Twelve-pixel nine-slice patches with four-pixel borders, in rows of five:
+
+  row 0   panel  button  button_hot  button_active  button_disabled
+  row 1   field  check_off  check_on  row  row_selected
+  row 2   tab  tab_on  scroll_track  scroll_thumb
+
+and at y 36, eight 8x8 icons, the mod screen's: native script win lose both redundant
+warning lock.
+
 Five sounds, all mono 16-bit PCM at four different rates, because a game hands the mixer
 whatever its authors had:
 
@@ -249,6 +259,112 @@ def write_sheet() -> None:
     print(f"wrote {out}, {len(png)} bytes, {SIZE}x{SIZE}, {GRID * GRID} cells")
 
 
+# -- the UI atlas --------------------------------------------------------------------
+
+ATLAS_W = 64
+ATLAS_H = 48
+PATCH = 12
+
+# The card's palette, as `room:ui.theme` states it: warm and dim, like the hall.
+INK = (255, 226, 180, 255)
+DIM = (150, 130, 110, 255)
+DARK = (10, 8, 6, 225)
+CONTROL = (46, 38, 30, 235)
+HOT = (74, 60, 44, 245)
+ACTIVE = (110, 88, 60, 255)
+ACCENT = (255, 190, 110, 255)
+CLEAR = (0, 0, 0, 0)
+
+
+class Atlas:
+    def __init__(self):
+        self.buf = bytearray(ATLAS_W * ATLAS_H * 4)
+
+    def put(self, x: int, y: int, rgba) -> None:
+        at = (y * ATLAS_W + x) * 4
+        self.buf[at:at + 4] = bytes(rgba)
+
+    def patch(self, col: int, row: int, fill, edge, bevel=None) -> None:
+        """A 12x12 patch: a one-pixel edge with its corners cut, an optional one-pixel bevel
+        inside the top and left, and the fill. The corners stay inside the four-pixel inset,
+        so a nine-slice keeps them square at any size."""
+        ox, oy = col * PATCH, row * PATCH
+        for y in range(PATCH):
+            for x in range(PATCH):
+                outer = x in (0, PATCH - 1) or y in (0, PATCH - 1)
+                corner = x in (0, PATCH - 1) and y in (0, PATCH - 1)
+                if corner:
+                    c = CLEAR
+                elif outer:
+                    c = edge
+                elif bevel is not None and (x == 1 or y == 1):
+                    c = bevel
+                else:
+                    c = fill
+                self.put(ox + x, oy + y, c)
+
+    def icon(self, index: int, rows, colour) -> None:
+        """An 8x8 icon from eight strings of eight: '#' is `colour`, anything else is clear."""
+        ox, oy = index * 8, 36
+        for y, line in enumerate(rows):
+            for x, ch in enumerate(line):
+                self.put(ox + x, oy + y, colour if ch == "#" else CLEAR)
+
+
+def write_ui_atlas() -> None:
+    a = Atlas()
+    muted = (40, 34, 28, 160)
+    a.patch(0, 0, DARK, (90, 72, 50, 255))                  # panel
+    a.patch(1, 0, CONTROL, ACTIVE, HOT)                     # button
+    a.patch(2, 0, HOT, (150, 120, 80, 255), ACTIVE)         # button_hot
+    a.patch(3, 0, ACTIVE, ACCENT)                           # button_active
+    a.patch(4, 0, muted, (70, 60, 50, 160))                 # button_disabled
+    a.patch(0, 1, (20, 16, 12, 240), ACTIVE)                # field
+    a.patch(1, 1, (20, 16, 12, 240), DIM)                   # check_off
+    a.patch(2, 1, ACCENT, INK, (255, 214, 150, 255))        # check_on
+    a.patch(3, 1, (0, 0, 0, 40), (0, 0, 0, 0))              # row
+    a.patch(4, 1, (255, 190, 110, 70), ACCENT)              # row_selected
+    a.patch(0, 2, CONTROL, (90, 72, 50, 255))               # tab
+    a.patch(1, 2, HOT, ACCENT, ACTIVE)                      # tab_on
+    a.patch(2, 2, (14, 11, 8, 200), (30, 25, 20, 220))      # scroll_track
+    a.patch(3, 2, ACTIVE, (150, 120, 80, 255), HOT)         # scroll_thumb
+
+    good = (124, 207, 124, 255)
+    bad = (224, 106, 90, 255)
+    amber = (240, 192, 80, 255)
+    a.icon(0, [".##..##.", "########", ".##..##.", ".##..##.",
+               ".##..##.", "########", ".##..##.", "........"], DIM)         # native
+    a.icon(1, ["..####..", ".#......", ".#......", "..###...",
+               ".....#..", ".....#..", ".####...", "........"], DIM)         # script
+    a.icon(2, ["........", "...##...", "...##...", ".######.",
+               ".######.", "...##...", "...##...", "........"], good)        # win
+    a.icon(3, ["........", "........", "........", ".######.",
+               ".######.", "........", "........", "........"], bad)         # lose
+    a.icon(4, ["...##...", ".######.", "...##...", "........",
+               ".######.", "........", "........", "........"], amber)       # both
+    a.icon(5, ["..####..", ".#....#.", "#......#", "#......#",
+               "#......#", "#......#", ".#....#.", "..####.."], DIM)         # redundant
+    a.icon(6, ["...##...", "...##...", "..#..#..", "..#..#..",
+               ".#.##.#.", ".#....#.", "#..##..#", "########"], amber)       # warning
+    a.icon(7, ["..####..", ".#....#.", ".#....#.", "########",
+               "########", "###..###", "########", "########"], DIM)         # lock
+
+    raw = bytearray()
+    for y in range(ATLAS_H):
+        raw.append(0)
+        raw += a.buf[y * ATLAS_W * 4:(y + 1) * ATLAS_W * 4]
+    png = bytearray(b"\x89PNG\r\n\x1a\n")
+    png += chunk(b"IHDR", struct.pack(">IIBBBBB", ATLAS_W, ATLAS_H, 8, 6, 0, 0, 0))
+    png += chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+    png += chunk(b"IEND", b"")
+
+    os.makedirs(TEXTURES, exist_ok=True)
+    out = os.path.join(TEXTURES, "ui.png")
+    with open(out, "wb") as f:
+        f.write(png)
+    print(f"wrote {out}, {len(png)} bytes, {ATLAS_W}x{ATLAS_H}, 14 patches and 8 icons")
+
+
 # -- the sounds ----------------------------------------------------------------------
 
 def write_wav(name: str, rate: int, frames) -> None:
@@ -349,6 +465,7 @@ def hum(rate: int = 24000, ms: int = 1000):
 
 def main():
     write_sheet()
+    write_ui_atlas()
     write_wav("step.wav", 22050, step())
     write_wav("bump.wav", 48000, bump())
     write_wav("chime.wav", 32000, chime())

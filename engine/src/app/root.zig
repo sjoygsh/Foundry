@@ -31,6 +31,11 @@ pub const mods = @import("mods.zig");
 pub const profiles = @import("profiles.zig");
 pub const settings = @import("settings.zig");
 pub const ui_draw = @import("ui_draw.zig");
+/// A `foundry:ui_theme` record resolved into a style, a skin, a font and the walker's image
+/// table, or one warning and the host's fallback (ADR-0041).
+pub const ui_theme = @import("ui_theme.zig");
+pub const UiTheme = ui_theme.Theme;
+pub const resolveUiTheme = ui_theme.resolve;
 
 pub const ModSet = mods.ModSet;
 pub const Engine = engine.Engine;
@@ -82,4 +87,5 @@ test {
     _ = profiles;
     _ = settings;
     _ = ui_draw;
+    _ = ui_theme;
 }

@@ -29,6 +29,9 @@ pub const script = @import("script.zig");
 pub const sound = @import("sound.zig");
 pub const tilegrid = @import("tilegrid.zig");
 pub const tilemap = @import("tilemap.zig");
+/// `foundry:ui_theme`, the record type a game's look is (ADR-0041). Here for `tilemap`'s
+/// reason: `fpack` checks it without a renderer.
+pub const ui_theme = @import("ui_theme.zig");
 pub const wav = @import("wav.zig");
 
 pub const Image = image.Image;
@@ -81,5 +84,6 @@ test {
     _ = sound;
     _ = tilegrid;
     _ = tilemap;
+    _ = ui_theme;
     _ = wav;
 }

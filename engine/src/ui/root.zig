@@ -34,6 +34,7 @@ pub const draw = @import("draw.zig");
 pub const id = @import("id.zig");
 pub const input = @import("input.zig");
 pub const layout = @import("layout.zig");
+pub const skin = @import("skin.zig");
 pub const state = @import("state.zig");
 pub const style = @import("style.zig");
 pub const widget = @import("widget.zig");
@@ -54,6 +55,11 @@ pub const Input = input.Input;
 pub const Interaction = context.Interaction;
 pub const Region = layout.Region;
 pub const Style = style.Style;
+/// A theme's images and extra colours for the game widget set (ADR-0041).
+pub const Skin = skin.Skin;
+pub const SkinPart = skin.Part;
+pub const SkinPatch = skin.Patch;
+pub const SkinIcon = skin.Icon;
 /// What the kernel remembers between frames for the few widgets that need it. Not a
 /// caller's storage: see `state.zig` for where that line is drawn and why.
 pub const WidgetState = state.State;
@@ -92,6 +98,7 @@ test {
     _ = id;
     _ = input;
     _ = layout;
+    _ = skin;
     _ = state;
     _ = style;
     _ = widget;

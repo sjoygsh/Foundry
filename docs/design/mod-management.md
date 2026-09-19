@@ -1,9 +1,9 @@
 # Design: M14 — Managed, and what a player chooses
 
 **Status:** Design accepted 2026-09-19 with [ADR-0040](../adr/0040-ordered-profiles-applied-at-next-start.md)
-and [ADR-0041](../adr/0041-game-widget-set-and-content-themes.md). **Steps 1 to 4 are implemented
-(2026-09-19): the mod set, profiles on disk, migrations with concurrent writes, and the UI
-kernel's additions. Step 5, themes as content, is next.** Step 2 was re-scoped when it began; see §13.
+and [ADR-0041](../adr/0041-game-widget-set-and-content-themes.md). **Steps 1 to 5 are implemented
+(2026-09-19): the mod set, profiles on disk, migrations with concurrent writes, the UI
+kernel's additions, and themes as content. Step 6, the game widget set, is next.** Step 2 was re-scoped when it began; see §13.
 **Date:** 2026-09-19
 **Baseline:** `754665a` / `m13`; M0–M13 complete, 1,405 declared / 1,395 headless tests.
 **Builds on:** ADR-0024 (one UI kernel, two widget sets), ADR-0026 (the host supplies
@@ -876,4 +876,86 @@ Three mutations were each caught, then restored byte for byte:
 
 **Not yet:** no widget draws an image, no theme exists, and no sample uses either. Those are
 Steps 5, 6 and 8.
+
+## Resolution — 2026-09-19, Step 5: themes as content
+
+**Landed:**
+- **The record type.** `foundry:ui_theme` is declared in `asset/ui_theme.zig`, for
+  `asset.tilemap`'s reason: `fpack` checks it without a renderer, and `ui` has no `data` to hold
+  a schema. Both the engine and `fpack` register it at runtime, beside `foundry:texture`.
+- **`ui.Skin`,** in the kernel. It holds a nine-slice patch per `ui.SkinPart` (§10's fourteen
+  names), `patch_scale`, icons by the game's own names, and four colours only a game screen
+  uses: positive, negative, warning and selection. It is a value that carries `ImageRef`s and
+  never textures.
+- **`app.resolveUiTheme`.** It turns a record into a `UiTheme`, holding a `ui.Style`, a
+  `ui.Skin`, the `UiFont` the walker draws with, and the image table (`ImageRef` 0 is the
+  atlas). It acquires the atlas and font as `foundry:texture` assets and holds them until
+  `deinit`.
+- **The room's theme.** `room:ui.theme` states the card's former colours and metrics, and
+  `textures/ui.png` is a 64×48 atlas that `scripts/gen-room-assets.py` now draws, with the
+  fourteen patches and the mod screen's eight icons. The room resolves the theme on load and on
+  every content change, draws its card and overlay from it, and releases it before its
+  textures go.
+
+**The names are now fixed** (`CLAUDE.md` §7). ADR-0041 fixed the names when it was accepted,
+but §10 gave only a sketch, so the implementation settled these:
+- **Top-level fields:** `atlas`, `font`, `text_scale`, `line_height`, `padding_x`, `padding_y`,
+  `spacing`, `separator`, `scrollbar`, `disabled_alpha`, `patch_scale`, `colors`, `patches` and
+  `icons`.
+- **`font`:** `texture`, `cell_w`, `cell_h`, `columns`, `first` (default 32), `count`,
+  `letter_spacing` and `line_spacing`.
+- **`colors`:** `text`, `text_dim`, `surface`, `control`, `control_hot`, `control_active`,
+  `accent`, `positive`, `negative`, `warning` and `selection`. Each is sRGB `0xRRGGBBAA`,
+  converted above the kernel with the renderer's own function. The sketch's `dim` is
+  `text_dim`, to match `ui.Style`, and its `…` became the four colours `ui.Skin` holds.
+- **`patches`:** `part`, `x`, `y`, `w`, `h`, `left`, `top`, `right` and `bottom`.
+- **`icons`:** `name`, `x`, `y`, `w` and `h`.
+
+**Beyond the sketch, and why:**
+- `patch_scale` is added, because a nine-slice needs screen units per image pixel.
+- `separator`, `scrollbar` and `disabled_alpha` are optional; absent, they are `ui.Style`'s
+  defaults.
+- The font's spacing fields are added, because `UiFont` has them.
+
+**Decided by the implementation:**
+- **"The debug style" is the host's own built-in style.** §10 and ADR-0041 decision 3 say a
+  failed theme falls back to "the debug style". The kernel has no style of its own, `app`
+  cannot reach `debug`, and the overlay has none either: it draws with whatever style its
+  host's context holds. So the resolver returns null and one warning, and the host keeps its
+  own style. The room keeps `cardStyle`, now documented as that fallback, rather than deleting
+  it as its comment once planned.
+- **One bad field refuses the whole theme, with one warning naming it.** §12's "each malformed
+  field falls back with one warning", read with decision 3: a theme half-applied is a screen
+  nobody designed. The fields are checked before any texture is acquired, so a malformed theme
+  acquires nothing.
+- **An unknown part is ignored, not refused**, so a theme written for a later engine, with a
+  part this one lacks, still loads. A part or an icon named twice is refused.
+- **A warning names the theme by its spelling**, taken from the store's record. A theme that
+  is not loaded has no spelling anywhere, so only its hash can be named.
+- **The room names `room:ui.theme` in code**, as it already names `room:settings.main` and
+  `room:config.main`. A mod re-skins it by overriding that record.
+
+**Found, and left as it was.** Running `gen-room-assets.py` to add the atlas showed that the
+committed `room.png` no longer matches what the script draws: the walker's four frames, cells 4
+to 7, differ. The committed sheet was kept byte for byte, and only `ui.png` is new. Bringing
+the script back into agreement with the sheet is a separate piece of work.
+
+**Evidence.** The bar passed, **1,440 of 1,441**, with the one skip it had before, and both
+releases staged. `engine/tests/ui_theme.zig` loads real packages and PNGs through the texture
+loader, and shows:
+- a valid theme resolving to every value, and a panel patch drawing as nine sprites from the
+  acquired atlas;
+- fourteen malformed variants each refused with exactly one warning naming their field;
+- a missing theme and a non-theme record refused;
+- a later package's override winning when resolved again.
+
+Two mutations were each caught, then restored byte for byte: dropping the inside-the-atlas
+check, and accepting a part named twice. Three real runs:
+- the headless room logged "the card is drawn from room:ui.theme";
+- a throwaway mod built outside the tree, overriding the theme with a zero `text_scale`, gave
+  one warning naming the field, and the room ran on its fallback;
+- the staged release resolved its theme from its own bundle.
+
+**Not yet:** no widget draws a patch or an icon, so the room's card looks as it did. That is
+Step 6.
 
