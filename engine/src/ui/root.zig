@@ -58,6 +58,12 @@ pub const Style = style.Style;
 /// caller's storage: see `state.zig` for where that line is drawn and why.
 pub const WidgetState = state.State;
 pub const TextRef = draw.TextRef;
+/// An image the caller numbers, a rectangle of it, and a nine-slice's borders: what the
+/// `image` and `nine_slice` commands carry instead of textures (ADR-0041).
+pub const ImageRef = draw.ImageRef;
+pub const ImageSource = draw.Source;
+pub const Insets = draw.Insets;
+pub const nineSlice = draw.nineSlice;
 
 // The debug widget set of `ui.md` §10, complete. These are names a game sees today and a
 // mod sees from M7, so renaming one is a compatibility decision (CLAUDE.md §7).

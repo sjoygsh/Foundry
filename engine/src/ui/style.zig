@@ -145,6 +145,10 @@ pub const Style = struct {
     /// to animate counts the frame number the caller passes in — which is what makes a
     /// hundred frames of a test blink the same way on every machine.
     caret_blink_frames: u32 = 30,
+    /// How opaque a widget in a disabled scope is, as a fraction of its own colours' alpha
+    /// (`Context.beginDisabled`). The one look every disabled widget shares, so a skin
+    /// changes it in one place.
+    disabled_alpha: f32 = 0.5,
 
     text: Color,
     text_dim: Color,

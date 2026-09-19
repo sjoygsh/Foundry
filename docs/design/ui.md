@@ -248,6 +248,19 @@ share the type that does not break the layering.
 that wants to assert a rectangle is where it should be, and the walker all read the same array.
 That is what makes §11's tests possible.
 
+> **M14 Step 4, 2026-09-19 ([ADR-0041](../adr/0041-game-widget-set-and-content-themes.md)):**
+> two cases joined the union.
+> - `image` has `bounds`, a `source` and a `tint`.
+> - `nine_slice` has `bounds`, a `source`, `insets`, a `scale` and a `tint`.
+>
+> A source is an `ImageRef` plus a rectangle in that image's pixels. An `ImageRef` is an opaque
+> `u32` the caller numbers, never a texture. The walker resolves it through
+> `app.UiDrawOptions.images`, and draws nothing for a number that names nothing, or for a
+> rectangle outside its texture. `ui.nineSlice` cuts a nine-slice into its pieces as pure
+> arithmetic: corners keep their size, and borders shrink in proportion when the bounds are too
+> small for them. A disabled scope, `Context.beginDisabled`, fades everything recorded inside it
+> through `DrawList.fade` (`mod-management.md`, Step 4).
+
 ## 7. Style is a value
 
 ```zig
@@ -265,6 +278,9 @@ pub const Style = struct {
     accent: Color,
 };
 ```
+
+> **M14 Step 4, 2026-09-19:** `disabled_alpha` (default 0.5) joined, the fraction of its own
+> alpha a widget in a disabled scope is drawn at.
 
 Held on the `Context`, replaceable between frames, and **the kernel reads it and never writes
 it.** The debug widget set ships a `Style` value — that is where the dark grey and the blue
@@ -488,8 +504,8 @@ break.
   glyph run for a stylised HUD. `Command` is a tagged union and adding a case is additive, but
   the *walker* then needs the corresponding `render2d` capability. Recorded so the vocabulary is
   not assumed final. **Answered 2026-09-19 by [ADR-0041](../adr/0041-game-widget-set-and-content-themes.md):**
-  `image` and `nine_slice`, naming images by an opaque reference the walker resolves. A rotated
-  glyph run is not needed yet and stays open.
+  `image` and `nine_slice`, naming images by an opaque reference the walker resolves;
+  implemented in M14 Step 4. A rotated glyph run is not needed yet and stays open.
 * **Multi-line text editing with selection.** Out at M6 (§15). When a game needs a dialogue
   editor or a chat box, it is a substantial subsystem, not a widget.
 * **Whether a game UI defined in content addresses widgets by `ContentId`.** §3 forbids a UI id

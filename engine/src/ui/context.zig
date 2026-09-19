@@ -46,6 +46,9 @@ pub const Interaction = struct {
     /// The widget was refused because another widget already used its id this frame. Its
     /// caller should still draw it — an inert control is easier to find than a missing one.
     duplicate: bool = false,
+    /// The widget is inside a disabled scope. It is drawn, faded, and nothing else in this
+    /// answer is ever true for it.
+    disabled: bool = false,
 };
 
 pub const Context = struct {
@@ -114,6 +117,10 @@ pub const Context = struct {
     /// read. Only a text field says yes.
     keyboard_blocked: bool = false,
 
+    /// How many disabled scopes are open (`beginDisabled`). Nested scopes are one scope: a
+    /// widget is disabled when any scope around it is.
+    disabled_depth: u32 = 0,
+
     in_frame: bool = false,
 
     pub fn init(gpa: Allocator, style: Style) Context {
@@ -148,6 +155,7 @@ pub const Context = struct {
         self.next_hot = .none;
         self.pointer_blocked = false;
         self.keyboard_blocked = false;
+        self.disabled_depth = 0;
         self.states.sweep(input.frame);
     }
 
@@ -168,6 +176,9 @@ pub const Context = struct {
         }
         if (self.duplicates != 0) {
             log.warn("{d} widget id(s) were used more than once this frame", .{self.duplicates});
+        }
+        if (self.disabled_depth != 0) {
+            log.warn("frame ended with {d} disabled scope(s) open", .{self.disabled_depth});
         }
 
         // A release no widget consumed ends the drag anyway. This has to happen *after* the
@@ -195,6 +206,7 @@ pub const Context = struct {
     /// choose its appearance from the answer.
     pub fn interact(self: *Context, id: Id, bounds: Rect) Interaction {
         if (id.isNone()) return .{};
+        if (self.disabled_depth != 0) return self.inert(id, bounds);
         if (!self.claim(id)) return .{ .duplicate = true };
 
         const inside = bounds.contains(self.input.pointer);
@@ -340,6 +352,46 @@ pub const Context = struct {
         if (!try self.list.popClip(self.gpa)) {
             log.warn("popClip without a matching pushClip", .{});
         }
+    }
+
+    // -- disabled scopes ---------------------------------------------------------------
+
+    /// Everything described until the matching `endDisabled` is disabled: drawn faded by
+    /// `Style.disabled_alpha`, and taking no hover, press or focus (ADR-0041). It still
+    /// keeps the pointer from the game — a click on a greyed-out button must not walk the
+    /// player — and it hides whatever is under it from the pointer, as any widget on top
+    /// does.
+    pub fn beginDisabled(self: *Context) void {
+        self.disabled_depth += 1;
+        self.list.fade = self.style.disabled_alpha;
+    }
+
+    /// Closes the innermost disabled scope. An unmatched call is reported, not asserted: from
+    /// Step 7 a mod may be the caller (CLAUDE.md §7).
+    pub fn endDisabled(self: *Context) void {
+        if (self.disabled_depth == 0) {
+            log.warn("endDisabled without a matching beginDisabled", .{});
+            return;
+        }
+        self.disabled_depth -= 1;
+        if (self.disabled_depth == 0) self.list.fade = 1;
+    }
+
+    pub fn isDisabled(self: *const Context) bool {
+        return self.disabled_depth != 0;
+    }
+
+    /// `interact` for a widget in a disabled scope. The id is still claimed, so a duplicate
+    /// is still found; a widget disabled while held or focused lets go of both.
+    fn inert(self: *Context, id: Id, bounds: Rect) Interaction {
+        const duplicate = !self.claim(id);
+        if (bounds.contains(self.input.pointer)) {
+            self.next_hot = .none;
+            self.pointer_blocked = true;
+        }
+        if (self.active == id) self.active = .none;
+        if (self.focus == id) self.focus = .none;
+        return .{ .disabled = true, .duplicate = duplicate };
     }
 
     /// Take the pointer away from the game while it is inside `bounds`, without competing

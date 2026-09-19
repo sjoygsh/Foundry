@@ -162,6 +162,9 @@ const Attribution = struct {
         var previous: ?struct { blank: bool, clip: ?core.math.Rect } = null;
 
         for (list.items()) |command| switch (command) {
+            // The overlay draws no images. A model meeting one would be attributing batches
+            // it was never written to understand, so it says so rather than guessing.
+            .image, .nine_slice => @panic("the overlay drew an image, which this model does not attribute"),
             .rect, .text => {
                 const blank = command == .rect;
                 if (blank) out.rects += 1 else out.texts += 1;

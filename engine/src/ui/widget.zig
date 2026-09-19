@@ -1504,3 +1504,110 @@ test "a plot reads a ring buffer where it starts, and survives nothing to draw" 
     ctx.end();
     try testing.expectEqual(@as(usize, 4), ctx.list.items().len);
 }
+
+test "a disabled scope fades what it draws, and takes no hover, press or focus" {
+    var ctx: Context = .init(testing.allocator, testStyle());
+    defer ctx.deinit();
+    const style = testStyle();
+
+    const disabledFrame = struct {
+        fn run(c: *Context, input: Input) Allocator.Error!bool {
+            c.begin(input, viewport);
+            c.beginDisabled();
+            const clicked = try buttonIn(c, Id.root.child("ok"), "Save", box);
+            c.endDisabled();
+            c.end();
+            return clicked;
+        }
+    }.run;
+
+    // The golden list: the button's two commands, each at half its colour's alpha.
+    _ = try disabledFrame(&ctx, .at(away, .up));
+    const items = ctx.list.items();
+    try testing.expectEqual(@as(usize, 2), items.len);
+    try testing.expectEqual(Color{ .r = 0.2, .g = 0.2, .b = 0.2, .a = 0.5 }, items[0].rect.color);
+    try testing.expectEqual(style.text.withAlpha(0.5), items[1].text.color);
+
+    // Hovered, pressed and released over it: never hot, never active, never clicked, and
+    // still drawn in its resting colour.
+    for ([_]Input{ .at(over, .up), .at(over, .up), .at(over, .pressed), .at(over, .released) }) |input| {
+        try testing.expect(!try disabledFrame(&ctx, input));
+        try testing.expectEqual(style.control.withAlpha(0.5), ctx.list.items()[0].rect.color);
+        try testing.expect(!ctx.isHot(Id.root.child("ok")));
+        try testing.expect(!ctx.isActive(Id.root.child("ok")));
+        try testing.expect(!ctx.isFocused(Id.root.child("ok")));
+        // But the click is still kept from the game behind it.
+        try testing.expect(ctx.wantsPointer());
+    }
+}
+
+test "a disabled widget on top hides the one under it, and one disabled mid-drag lets go" {
+    var ctx: Context = .init(testing.allocator, testStyle());
+    defer ctx.deinit();
+
+    const under = Id.root.child("under");
+    const layered = struct {
+        fn run(c: *Context, input: Input, disable_top: bool) Allocator.Error!bool {
+            c.begin(input, viewport);
+            const clicked = try buttonIn(c, Id.root.child("under"), "Under", box);
+            if (disable_top) c.beginDisabled();
+            _ = try buttonIn(c, Id.root.child("top"), "Top", box);
+            if (disable_top) c.endDisabled();
+            c.end();
+            return clicked;
+        }
+    }.run;
+    for (0..3) |_| _ = try layered(&ctx, .at(over, .up), true);
+    try testing.expect(!ctx.isHot(under));
+    _ = try layered(&ctx, .at(over, .pressed), true);
+    try testing.expect(!try layered(&ctx, .at(over, .released), true));
+
+    // A button held down, then disabled before the release: the release clicks nothing and
+    // leaves nothing active.
+    const held = struct {
+        fn run(c: *Context, input: Input, disabled: bool) Allocator.Error!bool {
+            c.begin(input, viewport);
+            if (disabled) c.beginDisabled();
+            const clicked = try buttonIn(c, Id.root.child("ok"), "Save", box);
+            if (disabled) c.endDisabled();
+            c.end();
+            return clicked;
+        }
+    }.run;
+    _ = try held(&ctx, .at(over, .up), false);
+    _ = try held(&ctx, .at(over, .up), false);
+    _ = try held(&ctx, .at(over, .pressed), false);
+    try testing.expect(ctx.isActive(Id.root.child("ok")));
+    _ = try held(&ctx, .at(over, .held), true);
+    try testing.expect(!ctx.isActive(Id.root.child("ok")));
+    try testing.expect(!try held(&ctx, .at(over, .released), false));
+}
+
+test "disabled scopes nest, an unmatched end is reported, and an open one ends with the frame" {
+    var ctx: Context = .init(testing.allocator, testStyle());
+    defer ctx.deinit();
+
+    ctx.begin(.at(away, .up), viewport);
+    ctx.beginDisabled();
+    ctx.beginDisabled();
+    ctx.endDisabled();
+    // Still inside the outer scope.
+    try testing.expect(ctx.isDisabled());
+    try ctx.list.addRect(ctx.gpa, box, .white);
+    ctx.endDisabled();
+    try testing.expect(!ctx.isDisabled());
+    try ctx.list.addRect(ctx.gpa, box, .white);
+    ctx.endDisabled();
+    try testing.expect(!ctx.isDisabled());
+    try testing.expectEqual(@as(f32, 0.5), ctx.list.items()[0].rect.color.a);
+    try testing.expectEqual(@as(f32, 1), ctx.list.items()[1].rect.color.a);
+
+    // A scope left open is closed by the next frame, not carried into it.
+    ctx.beginDisabled();
+    ctx.end();
+    ctx.begin(.at(away, .up), viewport);
+    try testing.expect(!ctx.isDisabled());
+    try ctx.list.addRect(ctx.gpa, box, .white);
+    try testing.expectEqual(@as(f32, 1), ctx.list.items()[0].rect.color.a);
+    ctx.end();
+}

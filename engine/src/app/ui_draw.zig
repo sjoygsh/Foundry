@@ -5,9 +5,11 @@
 //! vocabularies meet — and it is deliberately the *only* place, because a second translator
 //! is a second thing that can disagree with the kernel about where a rectangle goes.
 //!
-//! It is small on purpose: a switch over four commands, a clip stack and a colour
-//! conversion. That smallness is the argument for the seam. What the seam costs is named
-//! below and answered with `Font`.
+//! It is small on purpose: a switch over six commands, a clip stack, a colour conversion,
+//! and a table lookup that turns the kernel's image numbers into textures. That smallness is
+//! the argument for the seam. What the seam costs is named below and answered with `Font`.
+//! The image commands measure no text, so they cost nothing there; their hazard is a number
+//! that names nothing, and the answer is to draw nothing (ADR-0041).
 //!
 //! **The hazard is measurement drift** (`ui.md` §8). The kernel lays text out with
 //! `ui.FontMetrics.measure`; the renderer draws it with `render2d.measureText`. Neither can
@@ -93,6 +95,13 @@ pub const Options = struct {
     /// the blank is, without a word, because this runs every frame. The warning belongs to
     /// `solidRegion`, which runs when content changes.
     solid: ?render2d.Region = null,
+    /// What each `ui.ImageRef` means: the texture at that index. The caller's table, built
+    /// with the numbers it gave the kernel; a theme builds one from its atlas (Step 5).
+    ///
+    /// A reference past the table's end, to a texture no longer loaded, or to a rectangle not
+    /// wholly inside its texture draws nothing, without a word, because this runs every
+    /// frame. Whoever builds the table checks it when content changes, as `solidRegion` does.
+    images: []const render2d.TextureHandle = &.{},
 };
 
 /// A patch of solid colour inside a texture, in texels from its top-left: what content
@@ -130,6 +139,23 @@ pub fn solidRegion(
         return null;
     }
     return render2d.Region.whole(texture, size).sub(patch.x, patch.y, patch.width, patch.height);
+}
+
+/// A texture the caller's table names, and its size, or null when nothing usable is there.
+const Resolved = struct { texture: render2d.TextureHandle, size: render2d.Extent2D };
+
+fn resolveImage(r: *render2d.Renderer, images: []const render2d.TextureHandle, ref: ui.ImageRef) ?Resolved {
+    if (ref.index() >= images.len) return null;
+    const texture = images[ref.index()];
+    const size = r.textureSize(texture) orelse return null;
+    return .{ .texture = texture, .size = size };
+}
+
+/// The texels at `x, y, w, h`, or null unless the rectangle is non-empty and wholly inside.
+fn cut(image: Resolved, x: u32, y: u32, w: u32, h: u32) ?render2d.Region {
+    if (w == 0 or h == 0) return null;
+    if (@as(u64, x) + w > image.size.width or @as(u64, y) + h > image.size.height) return null;
+    return render2d.Region.whole(image.texture, image.size).sub(x, y, w, h);
 }
 
 /// Whether `region` still names a non-empty part of a live texture. Cheap enough to ask every
@@ -192,6 +218,38 @@ pub fn draw(
             .tint = tintOf(c.color),
             .layer = options.layer,
         }),
+        .image => |c| {
+            const image = resolveImage(r, options.images, c.source.image) orelse continue;
+            const region = cut(image, c.source.x, c.source.y, c.source.w, c.source.h) orelse continue;
+            try r.drawSprite(.{
+                .texture = region.texture,
+                .uv = region.uv,
+                .position = .init(c.bounds.x, c.bounds.y),
+                .size = .init(c.bounds.w, c.bounds.h),
+                .origin = .init(0, 0),
+                .tint = tintOf(c.tint),
+                .layer = options.layer,
+            });
+        },
+        .nine_slice => |c| {
+            const image = resolveImage(r, options.images, c.source.image) orelse continue;
+            // The whole source first: a nine-slice that reaches past its image draws none of
+            // itself rather than the pieces that happen to fit.
+            _ = cut(image, c.source.x, c.source.y, c.source.w, c.source.h) orelse continue;
+            const pieces = ui.nineSlice(c);
+            for (pieces.slice()) |piece| {
+                const region = cut(image, piece.x, piece.y, piece.w, piece.h) orelse continue;
+                try r.drawSprite(.{
+                    .texture = region.texture,
+                    .uv = region.uv,
+                    .position = .init(piece.dest.x, piece.dest.y),
+                    .size = .init(piece.dest.w, piece.dest.h),
+                    .origin = .init(0, 0),
+                    .tint = tintOf(c.tint),
+                    .layer = options.layer,
+                });
+            }
+        },
         .text => |c| try r.drawText(font.font, list.textOf(c.text), .{
             .position = c.at,
             .scale = c.scale,
@@ -569,4 +627,116 @@ test "clipping deeper than the walker tracks still balances" {
     try draw(&list, &fx.renderer, fx.font, .screen, .{});
     try testing.expectEqual(@as(?Rect, null), fx.renderer.currentClip());
     try fx.endFrame();
+}
+
+/// A 64x32 atlas beside the fixture's font, and the table that names both.
+fn withAtlas(fx: *Fixture) !render2d.TextureHandle {
+    var image = try asset.Image.alloc(testing.allocator, 64, 32);
+    defer image.deinit(testing.allocator);
+    @memset(image.pixels, 0xFF);
+    return fx.renderer.createTexture(image, .{ .label = "walker atlas" });
+}
+
+test "an image draws one sprite from the rectangle of the texture its number names" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const gpa = testing.allocator;
+    const atlas = try withAtlas(&fx);
+    const table = [_]render2d.TextureHandle{ fx.font.font.glyphs.texture, atlas };
+
+    var list: ui.DrawList = .{};
+    defer list.deinit(gpa);
+    const tint: ui.Color = .{ .r = 1, .g = 0.5, .b = 0.25, .a = 0.75 };
+    try list.addImage(gpa, .init(10, 20, 32, 16), .{ .image = .of(1), .x = 16, .y = 8, .w = 8, .h = 8 }, tint);
+
+    try fx.beginFrame();
+    try draw(&list, &fx.renderer, fx.font, .screen, .{ .images = &table });
+    try fx.endFrame();
+
+    try testing.expectEqual(@as(u32, 1), fx.renderer.frameStats().sprites);
+    const drawn = fx.renderer.batcher.items.items[0].sprite;
+    try testing.expect(drawn.texture.eql(atlas));
+    try testing.expectEqual(Rect{ .x = 16.0 / 64.0, .y = 8.0 / 32.0, .w = 8.0 / 64.0, .h = 8.0 / 32.0 }, drawn.uv);
+    try testing.expectEqual(core.math.Vec2.init(10, 20), drawn.position);
+    try testing.expectEqual(core.math.Vec2.init(32, 16), drawn.size);
+    try testing.expectEqual(render2d.Color{ .r = 1, .g = 0.5, .b = 0.25, .a = 0.75 }, drawn.tint);
+}
+
+test "a nine-slice draws its nine pieces from its texture, in one batch" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const gpa = testing.allocator;
+    const atlas = try withAtlas(&fx);
+    const table = [_]render2d.TextureHandle{ fx.font.font.glyphs.texture, atlas };
+
+    var list: ui.DrawList = .{};
+    defer list.deinit(gpa);
+    try list.addNineSlice(gpa, .init(0, 0, 100, 40), .{ .image = .of(1), .x = 32, .y = 0, .w = 16, .h = 16 }, .all(4), 2, .white);
+
+    try fx.beginFrame();
+    try draw(&list, &fx.renderer, fx.font, .screen, .{ .images = &table });
+    try fx.endFrame();
+
+    const stats = fx.renderer.frameStats();
+    try testing.expectEqual(@as(u32, 9), stats.sprites);
+    try testing.expectEqual(@as(u32, 1), stats.batches);
+    // The top-left corner: its own four texels, drawn at twice their size.
+    const corner = fx.renderer.batcher.items.items[0].sprite;
+    try testing.expectEqual(Rect{ .x = 32.0 / 64.0, .y = 0, .w = 4.0 / 64.0, .h = 4.0 / 32.0 }, corner.uv);
+    try testing.expectEqual(core.math.Vec2.init(8, 8), corner.size);
+    // The centre, stretched both ways.
+    const centre = fx.renderer.batcher.items.items[4].sprite;
+    try testing.expectEqual(core.math.Vec2.init(84, 24), centre.size);
+}
+
+test "an image from the font's own texture shares the text's batch" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const gpa = testing.allocator;
+    // One texture for glyphs and icons is the reason a theme names a single atlas.
+    const table = [_]render2d.TextureHandle{fx.font.font.glyphs.texture};
+
+    var list: ui.DrawList = .{};
+    defer list.deinit(gpa);
+    try list.addText(gpa, .init(0, 0), "a", .white, 1);
+    try list.addImage(gpa, .init(10, 0, 8, 8), .{ .image = .of(0), .x = 120, .y = 40, .w = 8, .h = 8 }, .white);
+    try list.addText(gpa, .init(20, 0), "b", .white, 1);
+
+    try fx.beginFrame();
+    try draw(&list, &fx.renderer, fx.font, .screen, .{ .images = &table });
+    try fx.endFrame();
+    try testing.expectEqual(@as(u32, 3), fx.renderer.frameStats().sprites);
+    try testing.expectEqual(@as(u32, 1), fx.renderer.frameStats().batches);
+}
+
+test "an image number that names nothing, or a rectangle outside its texture, draws nothing" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const gpa = testing.allocator;
+    const atlas = try withAtlas(&fx);
+    const gone = try withAtlas(&fx);
+    fx.renderer.destroyTexture(gone);
+    const table = [_]render2d.TextureHandle{ atlas, gone, .none };
+
+    var list: ui.DrawList = .{};
+    defer list.deinit(gpa);
+    // Past the table, a destroyed texture, a handle that was never one, and two rectangles
+    // reaching past the atlas's edges.
+    for ([_]u32{ 3, 1, 2 }) |n| try list.addImage(gpa, .init(0, 0, 8, 8), .{ .image = .of(n), .w = 8, .h = 8 }, .white);
+    try list.addImage(gpa, .init(0, 0, 8, 8), .{ .image = .of(0), .x = 60, .w = 8, .h = 8 }, .white);
+    try list.addNineSlice(gpa, .init(0, 0, 40, 40), .{ .image = .of(0), .x = 0, .y = 24, .w = 16, .h = 16 }, .all(4), 1, .white);
+    try list.addNineSlice(gpa, .init(0, 0, 40, 40), .{ .image = .of(7), .w = 16, .h = 16 }, .all(4), 1, .white);
+    // And one that is fine, so the frame is known to have been walked.
+    try list.addImage(gpa, .init(0, 0, 8, 8), .{ .image = .of(0), .w = 8, .h = 8 }, .white);
+
+    try fx.beginFrame();
+    try draw(&list, &fx.renderer, fx.font, .screen, .{ .images = &table });
+    try fx.endFrame();
+    try testing.expectEqual(@as(u32, 1), fx.renderer.frameStats().sprites);
+
+    // With no table at all, every image is a number that names nothing.
+    try fx.beginFrame();
+    try draw(&list, &fx.renderer, fx.font, .screen, .{});
+    try fx.endFrame();
+    try testing.expectEqual(@as(u32, 0), fx.renderer.frameStats().sprites);
 }

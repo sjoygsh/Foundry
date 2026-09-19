@@ -1,9 +1,9 @@
 # Design: M14 — Managed, and what a player chooses
 
 **Status:** Design accepted 2026-09-19 with [ADR-0040](../adr/0040-ordered-profiles-applied-at-next-start.md)
-and [ADR-0041](../adr/0041-game-widget-set-and-content-themes.md). **Steps 1 to 3 are implemented
-(2026-09-19): the mod set, profiles on disk, and migrations with concurrent writes. Step 4,
-the kernel's additions, is next.** Step 2 was re-scoped when it began; see §13.
+and [ADR-0041](../adr/0041-game-widget-set-and-content-themes.md). **Steps 1 to 4 are implemented
+(2026-09-19): the mod set, profiles on disk, migrations with concurrent writes, and the UI
+kernel's additions. Step 5, themes as content, is next.** Step 2 was re-scoped when it began; see §13.
 **Date:** 2026-09-19
 **Baseline:** `754665a` / `m13`; M0–M13 complete, 1,405 declared / 1,395 headless tests.
 **Builds on:** ADR-0024 (one UI kernel, two widget sets), ADR-0026 (the host supplies
@@ -814,4 +814,66 @@ outside the tree into a temporary `HOME`. It converted the file, opened at 1600�
 0.25, and loaded both mods in version 1's order. Being frame-limited, it wrote nothing: the
 settings file stayed byte-identical and no profile directory appeared. The sandbox did the same
 with its own fixture.
+
+## Resolution — 2026-09-19, Step 4: the kernel's additions
+
+**Landed, in `ui` at L1 with nothing new linked:**
+- **The two commands.** `image` stretches a rectangle of an image over its bounds.
+  `nine_slice` cuts a rectangle by four insets, and carries a `scale` of screen units per image
+  pixel for its borders.
+  - Both name the image by `ui.ImageRef`, an opaque `u32` the caller numbers, and carry numbers
+    only.
+  - `DrawList.addImage` and `addNineSlice` record nothing for empty bounds, an empty source, or a
+    scale that is not a positive finite number.
+- **`ui.nineSlice`**, the cut as pure arithmetic.
+  - Corners keep their size, edges stretch one way, and the centre both.
+  - Insets past the source are clamped to it, left and top first. Borders too wide for the
+    bounds shrink in proportion.
+  - A source past the end of `u32` cuts to nothing instead of overflowing.
+- **The disabled scope.**
+  - `beginDisabled`, `endDisabled` and `isDisabled`. Scopes nest, an unmatched end is a warning,
+    and a scope left open ends with the frame.
+  - A widget inside takes no hover, press or focus. `Interaction.disabled` says so, and one
+    disabled mid-drag or while focused lets go.
+  - It still keeps the pointer from the game, and it hides what is under it from the pointer.
+  - What it draws is faded by `Style.disabled_alpha` through `DrawList.fade`.
+
+**Landed in the walker (`app.drawUi`).** `UiDrawOptions.images` is the caller's table: the
+texture at each `ImageRef`'s index. An image is one sprite from its rectangle, and a nine-slice is
+up to nine sprites. A number past the table, a texture no longer loaded, or a rectangle not wholly
+inside its texture draws nothing, without a word, as `solid` already did, because this runs every
+frame. A nine-slice reaching past its image draws none of itself rather than the pieces that fit.
+
+**Decided by the implementation:**
+- **The cut belongs to the kernel, and the texture coordinates to the walker.** The geometry is
+  the part worth testing, and in the kernel it tests with nothing linked. The walker only turns
+  pixels into texture coordinates against the texture it resolved.
+- **The disabled look is a fade, applied where commands are recorded.** Every widget, and every
+  later one, looks disabled without being told how. The amount is style, per ADR-0024. Step 6's
+  skinned widgets may draw a `button_disabled` part instead.
+- **A disabled widget is not a hole.** Stopping hover and press is not enough: a click on a
+  greyed-out button must not reach the game, or the widget under it.
+- **The overlay's batch model now names what it does not model.**
+  `engine/tests/overlay_batches.zig` reproduces the walker's batching for the debug overlay,
+  which draws no images. It now panics with a message on an image command, rather than
+  attributing batches it was never written for.
+
+**Evidence.** The bar passed, **1,432 of 1,433** with the one skip it had before. The new tests
+cover:
+- golden lists for both commands and for a disabled scope;
+- the cut's corners, edges, centre, exact tiling, proportional shrink, clamping and overflow;
+- disabled widgets over a hover, press and release, layered over another, and disabled mid-drag;
+- nesting and unbalanced scopes;
+- walker tests for an image's texture coordinates, position, size and tint, and for a
+  nine-slice's nine sprites in one batch;
+- an image from the font's texture sharing the text's batch, and every unresolvable case
+  drawing nothing.
+
+Three mutations were each caught, then restored byte for byte:
+- removing the proportional shrink failed the shrink test;
+- dropping the disabled pointer block failed the disabled-scope test;
+- dropping the walker's whole-source check drew three pieces of a nine-slice past its image.
+
+**Not yet:** no widget draws an image, no theme exists, and no sample uses either. Those are
+Steps 5, 6 and 8.
 
