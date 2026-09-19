@@ -20,8 +20,9 @@
 //! or disagreeing with itself, is refused whole with a warning and left untouched: a
 //! selection that is partly understood is worse than none.
 //!
-//! Merge-on-write and schema migrations are M14 Step 3's. Until then a write replaces the
-//! file whole, and never one another build wrote.
+//! **Writes merge by field**, as settings do (`mod-management.md` §6): name, enabled list
+//! and consents are separate fields, so an instance renaming a profile and another applying
+//! its selection keep both changes. A write never replaces a file another build wrote.
 //!
 //! Design: `docs/design/mod-management.md` §5.
 
@@ -316,9 +317,12 @@ pub const Store = struct {
         return profile;
     }
 
-    /// Replaces profile `key` with `contents`, atomically. Never over a file another build
-    /// wrote; a damaged one is copied aside first, as a settings file is.
-    pub fn write(self: *Store, gpa: Allocator, key: u32, contents: Contents) WriteError!void {
+    /// Writes profile `key`, atomically, merged over the file as it is now: a field whose
+    /// value in `contents` equals its value in `baseline`, what this process read, keeps
+    /// the file's current value. With no `baseline`, the file becomes `contents`. Never
+    /// over a file another build wrote; a damaged one is copied aside first, as a settings
+    /// file is.
+    pub fn write(self: *Store, gpa: Allocator, key: u32, contents: Contents, baseline: ?Contents) WriteError!void {
         if (!self.persist) return error.ReadOnly;
         var buf: [16]u8 = undefined;
         const leaf = leafOf(&buf, key) orelse return error.ReadOnly;
@@ -329,18 +333,12 @@ pub const Store = struct {
 
         var storage = settings.Storage.open(self.os, self.dir, leaf) catch return error.WriteFailed;
         storage.limits = limits;
-        var loaded = try storage.load(gpa, schema);
-        defer loaded.deinit(gpa);
-        switch (loaded.state) {
-            .preserved => return error.OtherBuild,
-            .unavailable => return error.WriteFailed,
-            .loaded, .absent, .damaged => {},
-        }
 
         var arena: std.heap.ArenaAllocator = .init(gpa);
         defer arena.deinit();
         const values = try encodeContents(arena.allocator(), contents);
-        storage.save(gpa, schema, &values) catch |err| switch (err) {
+        const base = if (baseline) |b| try encodeContents(arena.allocator(), b) else null;
+        storage.save(gpa, schema, &values, if (base) |*b| b else null) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.TooLarge => return error.TooLarge,
             error.Preserved => return error.OtherBuild,
@@ -484,7 +482,7 @@ test "a profile round trips with its order and its consents, and the name never 
         .enabled = &.{ "z:last", "a:first", "m:middle" },
         .consents = &.{ .{ .id = "n:native", .version = 3 }, .{ .id = "n:native", .version = 2 } },
     };
-    try f.store.write(testing.allocator, 1, contents);
+    try f.store.write(testing.allocator, 1, contents, null);
 
     var profile = try f.store.read(testing.allocator, 1);
     defer profile.deinit();
@@ -499,7 +497,7 @@ test "a profile round trips with its order and its consents, and the name never 
     try testing.expectEqualStrings("FSET", bytes[0..4]);
 
     // An empty profile is a profile, and absent lists read back as empty.
-    try f.store.write(testing.allocator, 2, .{ .name = "Empty" });
+    try f.store.write(testing.allocator, 2, .{ .name = "Empty" }, null);
     var empty = try f.store.read(testing.allocator, 2);
     defer empty.deinit();
     try testing.expectEqual(@as(usize, 0), empty.contents.enabled.len);
@@ -515,7 +513,7 @@ test "keys are the smallest unused number, and only canonical names are profiles
     try testing.expectEqual(@as(?u32, 1), none.freeKey());
     none.deinit();
 
-    for ([_]u32{ 4, 1, 2 }) |key| try f.store.write(testing.allocator, key, .{ .name = "P" });
+    for ([_]u32{ 4, 1, 2 }) |key| try f.store.write(testing.allocator, key, .{ .name = "P" }, null);
     for ([_][]const u8{ "007.fset", "65.fset", "0.fset", "3.fset.bak", "notes.txt", "x.fset" }) |leaf| {
         try f.raw(leaf, "not a profile");
     }
@@ -530,8 +528,8 @@ test "keys are the smallest unused number, and only canonical names are profiles
     try testing.expectEqual(@as(?u32, 3), listing.freeKey());
 
     // Keys outside 1..64 are not writable at all.
-    try testing.expectError(error.ReadOnly, f.store.write(testing.allocator, 0, .{ .name = "P" }));
-    try testing.expectError(error.ReadOnly, f.store.write(testing.allocator, max_profiles + 1, .{ .name = "P" }));
+    try testing.expectError(error.ReadOnly, f.store.write(testing.allocator, 0, .{ .name = "P" }, null));
+    try testing.expectError(error.ReadOnly, f.store.write(testing.allocator, max_profiles + 1, .{ .name = "P" }, null));
 
     try f.store.remove(2);
     try f.store.remove(2);
@@ -593,7 +591,7 @@ test "hostile profiles are refused whole and left exactly as they were" {
     try testing.expectEqual(@as(?Problem, .other_build), listing.entries[10].problem);
 
     // A future file is never replaced, and nothing was touched by reading.
-    try testing.expectError(error.OtherBuild, f.store.write(testing.allocator, 10, .{ .name = "Mine" }));
+    try testing.expectError(error.OtherBuild, f.store.write(testing.allocator, 10, .{ .name = "Mine" }, null));
     for (before, 1..) |b, key| {
         var buf: [16]u8 = undefined;
         const now = try f.bytesOf(leafOf(&buf, @intCast(key)).?);
@@ -602,14 +600,14 @@ test "hostile profiles are refused whole and left exactly as they were" {
     }
 
     // And the store will not write what it would refuse to read.
-    try testing.expectError(error.Refused, f.store.write(testing.allocator, 12, .{ .name = "" }));
-    try testing.expectError(error.Refused, f.store.write(testing.allocator, 12, .{ .name = "P", .enabled = &.{ "a:one", "a:one" } }));
+    try testing.expectError(error.Refused, f.store.write(testing.allocator, 12, .{ .name = "" }, null));
+    try testing.expectError(error.Refused, f.store.write(testing.allocator, 12, .{ .name = "P", .enabled = &.{ "a:one", "a:one" } }, null));
 }
 
 test "a run that may not write leaves the directory as it found it" {
     var f = try Fixture.init(false);
     defer f.deinit();
-    try testing.expectError(error.ReadOnly, f.store.write(testing.allocator, 1, .{ .name = "P" }));
+    try testing.expectError(error.ReadOnly, f.store.write(testing.allocator, 1, .{ .name = "P" }, null));
     try testing.expectError(error.ReadOnly, f.store.remove(1));
     var listing = try f.store.list(testing.allocator);
     defer listing.deinit();

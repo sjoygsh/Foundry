@@ -820,6 +820,14 @@ pub fn build(b: *std.Build) void {
     // that out at release time is the expensive way.
     check_step.dependOn(&sandbox.step);
     check_step.dependOn(&room.step);
+
+    // The samples' own tests, since M14: what each keeps on disk, read the way it reads it —
+    // above all, a file an earlier build wrote (`mod-management.md` §6).
+    for ([_]*std.Build.Module{ sandbox_mod, room_mod }) |sample_mod| {
+        const sample_tests = b.addTest(.{ .root_module = sample_mod });
+        test_step.dependOn(&b.addRunArtifact(sample_tests).step);
+        check_step.dependOn(&sample_tests.step);
+    }
     check_step.dependOn(&fpack.step);
     check_step.dependOn(&fstage.step);
     check_step.dependOn(&fmacos_verify.step);

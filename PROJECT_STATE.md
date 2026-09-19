@@ -11,9 +11,22 @@ drawing through Vulkan on Windows x64:**
 **Both samples run on it from a relocated install, each wearing an icon it supplies. Windows is a
 runtime claim for the tested machine, with its limits recorded, and the RHI's rules survived with
 none relaxed. Linux left M13 by ADR-0039: it is M18, after the first game and before 3D. M14 is in
-progress (`docs/design/mod-management.md`, ADR-0040/0041): Steps 1 and 2, the mod set and
-profiles on disk, are done, and Step 3, migrations and concurrent writes, is next. M15 through
-M17 remain unstarted.**
+progress (`docs/design/mod-management.md`, ADR-0040/0041): Steps 1 to 3 are done, and Step 4,
+the UI kernel's `image`, `nine_slice` and disabled scope, is next. M15 through M17 remain
+unstarted.**
+
+**Completed M14 Step 3, 2026-09-19: migrations, merged writes, and the samples on profiles.**
+- `app.settings.Migration` converts an older file in memory through an explicit chain. The
+  first save keeps the old file once as `<leaf>.v<old>`.
+- Saves re-read the file and merge by field against a baseline, and so do profile writes.
+- Both samples' settings are version 2: `enabled` left for a profile, and `profile` arrived.
+  Version 1's list becomes the first "Default" profile, only when no profile exists.
+- The M9-era fixtures in `samples/*/testdata` are M9's own bytes, written from a worktree of
+  tag `m9`. The samples now have tests of their own in `zig build test`.
+
+The bar passed **1,421 of 1,422**, and three mutations were caught and restored. A frame-limited
+Metal room, given the M9 file, opened at 1600×900 with volume 0.25 and both mods, and wrote
+nothing. AGENTS.md's test-count formula was corrected. Resolution: `mod-management.md`, Step 3.
 
 **Completed M14 Step 2, 2026-09-19: profiles on disk, re-scoped.** The step was re-scoped before
 any code was written. A settings schema cannot gain a field inside its version, so the samples'
@@ -1878,14 +1891,14 @@ signing, notarization and a clean recipient Mac (ADR-0032) — not engine work. 
 "Hardening and reach" (M10-M17), is under way**: it gathers the deferred work rather than
 adding to it, only M10 was new, **M10 and M11 are complete (2026-09-13)** and **M12 is
 complete (2026-09-14)**. **M13 is complete (2026-09-19)**, proving
-Windows x64 through Vulkan. **M14 is in progress**, Steps 1 and 2 of nine done; M15 through
+Windows x64 through Vulkan. **M14 is in progress**, Steps 1 to 3 of nine done; M15 through
 M17 are unstarted.
 
 ## Current milestone
 
 **M14 — Managed is in progress.** Read `docs/design/mod-management.md` and ADR-0040/0041.
-Steps 1 and 2, the mod set and profiles on disk, are done (2026-09-19). Step 3, migrations and
-concurrent writes, is next, and it moves the samples onto profiles.
+Steps 1 to 3 are done (2026-09-19): the mod set, profiles on disk, and migrations with merged
+writes, with both samples on profiles. Step 4, the kernel's additions, is next.
 
 **M13 — Portable: "the RHI was real." Complete, 2026-09-19.** Read `docs/design/vulkan.md`
 and ADR-0033/0037/0038/0039. All ten steps are implemented:
@@ -2793,7 +2806,7 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M0–M13 are complete. M14 is in progress:** Steps 1 and 2 are done, and nothing is
+**M0–M13 are complete. M14 is in progress:** Steps 1 to 3 are done, and nothing is
 half-built. M13's
 specification and its Resolutions are in `docs/design/vulkan.md`. M12's specification and all
 six Resolutions are in
@@ -3443,16 +3456,13 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M14 Step 3, migrations and concurrent writes** (`docs/design/mod-management.md` §§6
-and 13).
-- A migration chain with a one-time backup.
-- The samples' settings v1 → v2: `enabled` leaves settings for a "Default" profile, and a
-  `profile` key arrives. Real M9-era v1 files serve as fixtures.
-- Merge-by-field writes for settings and profiles.
-- Since Step 2's re-scope, the samples also attach `app.profiles` and start from their active
-  profile.
+**Next: M14 Step 4, the kernel's additions** (`docs/design/mod-management.md` §§10 and 13,
+ADR-0041).
+- The `image` and `nine_slice` draw commands, naming images by opaque `u32` references.
+- A disabled scope.
+- The walker in `app` drawing both.
 
-Steps 1 and 2 are done.
+Its exit is golden draw lists and walker tests. Steps 1 to 3 are done.
 M14's design is `docs/design/mod-management.md`: nine steps, each stopping with its Resolution.
 M13 is complete and tagged `m13`. Its record is
 `docs/design/vulkan.md` and its Resolutions. Linux is M18's (ADR-0039), after the first game and
@@ -4717,9 +4727,10 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 - **M12's record** is `docs/design/jobs-and-threading.md` and ADR-0036:
   `FOUNDRY_SANDBOX_WORKERS` / `FOUNDRY_ROOM_WORKERS` set a sample's pool, `0` for none, for
   comparisons.
-- **M14 is in progress** (`docs/design/mod-management.md`, ADR-0040/0041). Steps 1 and 2
-  (`app.ModSet`, `app.profiles`) are done; Step 3, migrations and the samples' move to profiles,
-  is next. M15–M17 remain unstarted.
+- **M14 is in progress** (`docs/design/mod-management.md`, ADR-0040/0041). Steps 1 to 3
+  (`app.ModSet`, `app.profiles`, settings migrations and merged writes) are done, with both
+  samples on settings v2 and profiles; Step 4, the kernel's additions, is next. M15–M17 remain
+  unstarted.
 `zig build check -Drhi=metal` is now part of the bar. The environment notes below still apply.
 
 * Read `CLAUDE.md` first, then this file, then `docs/ROADMAP.md`.

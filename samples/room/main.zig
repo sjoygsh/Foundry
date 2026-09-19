@@ -85,7 +85,7 @@ fn openMods(
     os: *platform.os.Os,
     content_dir: []const u8,
     env: []const platform.os.EnvVar,
-    selected: app.settings.IdSet,
+    prefs: *Preferences,
     include_user_packages: bool,
     session: *app.diagnostics.Session,
 ) !app.ModSet {
@@ -109,14 +109,10 @@ fn openMods(
     }, &diags);
     errdefer mods.deinit();
 
-    // **What the player enabled**, read out of their own preferences before anything was
-    // discovered — which is why §4 puts settings ahead of discovery in the startup order.
-    // Each spelling was validated when it was read, and the set drops the required ones.
-    for (selected.ids) |id| {
-        if (std.mem.eql(u8, id, "room:content")) continue;
-        log.info("enabling '{s}' (saved)", .{id});
-    }
-    try mods.restore(selected.ids);
+    // **What the player enabled**: their active profile, named by the preferences read
+    // before anything was discovered — which is why §4 puts settings ahead of discovery.
+    try prefs.attachProfiles(gpa, os, &mods);
+    for (mods.pending()) |id| log.info("enabling '{s}' (profile {?d})", .{ mods.spelling(id).?, mods.savedProfile() });
 
     var extra: std.ArrayList(core.ContentId) = .empty;
     defer extra.deinit(gpa);
@@ -216,10 +212,12 @@ const product_version = "0.9.0";
 ///     watching, and such a run must leave a person's choices exactly as it found them.
 const Preferences = struct {
     file: app.settings.File = .{},
-    /// The packages the player enabled, as spellings. Read here and written back unchanged:
-    /// nothing in this sample can add one, and a mod manager is not M9's
-    /// (`docs/modding/README.md`).
-    selected: app.settings.IdSet = .{},
+    /// The packages a version 1 file had enabled, which this start moves into the first
+    /// profile (`mod-management.md` §6). Empty unless this run converted such a file.
+    carried: app.settings.IdSet = .{},
+    /// The profile the file names; after `attachProfiles`, the one the next start uses, or
+    /// null while that is a fresh profile no file holds yet.
+    profile: ?u32 = null,
 
     width: app.settings.Resolved(u32) = .{ .value = fallback_width, .origin = .fallback },
     height: app.settings.Resolved(u32) = .{ .value = fallback_height, .origin = .fallback },
@@ -228,8 +226,23 @@ const Preferences = struct {
     /// The application's own settings schema. Held here rather than registered with the
     /// content store: preferences are not content, carry no manifest and are not merged
     /// (ADR-0031). `app.settings` validates and encodes against it.
+    ///
+    /// **Version 2 (M14):** the enabled packages left for a profile of their own, in the
+    /// player's order, and the active profile's key arrived (ADR-0040).
     const schema: data.Schema = .{
         .id = data.SchemaId.parse("room:preferences") catch unreachable,
+        .version = 2,
+        .fields = &.{
+            .{ .name = "window_width", .type = .u32, .presence = .optional },
+            .{ .name = "window_height", .type = .u32, .presence = .optional },
+            .{ .name = "master_volume", .type = .f32, .presence = .optional },
+            .{ .name = "profile", .type = .u32, .presence = .optional },
+        },
+    };
+
+    /// Version 1, exactly as M9 shipped it, so that a file it wrote is still read.
+    const schema_v1: data.Schema = .{
+        .id = schema.id,
         .version = 1,
         .fields = &.{
             .{ .name = "window_width", .type = .u32, .presence = .optional },
@@ -238,6 +251,15 @@ const Preferences = struct {
             .{ .name = "enabled", .type = .{ .list = &.string }, .presence = .optional },
         },
     };
+
+    const migrations = [_]app.settings.Migration{.{ .from = schema_v1, .convert = fromVersion1 }};
+
+    /// Version 1 to 2: the window and the volume carry over as they were. The enabled list
+    /// has no field to go to; `open` reads it from the old file, and `attachProfiles` moves
+    /// it into the first profile.
+    fn fromVersion1(_: std.mem.Allocator, old: []const ?data.Value, new: []?data.Value) std.mem.Allocator.Error!void {
+        @memcpy(new[0..3], old[0..3]);
+    }
 
     /// The package's own defaults, as an ordinary record a mod can override.
     const record_id = "room:config.main";
@@ -253,9 +275,8 @@ const Preferences = struct {
     const min_size: u32 = 320;
     const max_size: u32 = 8192;
 
-    /// How many packages a saved selection may name. Bounded because the file is untrusted
-    /// like any other.
-    const max_selected = 64;
+    /// How many packages a version 1 selection may name, as version 1 bounded it.
+    const max_carried = 64;
 
     fn open(
         gpa: std.mem.Allocator,
@@ -266,19 +287,49 @@ const Preferences = struct {
         if (headless) return .{};
 
         var self: Preferences = .{
-            .file = try app.settings.File.open(gpa, os, schema, .{ .persist = !budgeted }),
+            .file = try app.settings.File.open(gpa, os, schema, .{ .persist = !budgeted, .migrations = &migrations }),
         };
-        if (self.file.layer(schema)) |layer| {
-            self.selected = try app.settings.IdSet.read(gpa, layer, "enabled", max_selected);
+        if (self.file.older(gpa, schema_v1)) |v1| {
+            self.carried = try app.settings.IdSet.read(gpa, v1, "enabled", max_carried);
         }
-        log.info("preferences: {t}, {d} package(s) selected", .{ self.file.state(), self.selected.ids.len });
+        if (self.file.layer(schema)) |layer| {
+            const index = schema.fieldIndex("profile").?;
+            const key = (layer.fields.intAt(index) catch null) orelse null;
+            self.profile = if (key) |k| std.math.cast(u32, k) else null;
+        }
+        log.info("preferences: {t}, profile {?d}, {d} package(s) carried from version 1", .{
+            self.file.state(), self.profile, self.carried.ids.len,
+        });
         return self;
     }
 
     fn deinit(self: *Preferences, gpa: std.mem.Allocator) void {
-        self.selected.deinit(gpa);
+        self.carried.deinit(gpa);
         self.file.deinit(gpa);
         self.* = .{};
+    }
+
+    /// Starts `mods` from the profile this file names, falling back as ADR-0040 says, and
+    /// finishes the version 1 → 2 conversion: packages version 1 enabled become the first
+    /// profile, "Default", in the content-id order version 1 kept them. That happens only
+    /// when no profile exists yet, so a second start before settings are saved creates
+    /// nothing twice. A run that does not write keeps it in memory.
+    ///
+    /// A run with no user data (every headless one) has no profiles and starts with none.
+    fn attachProfiles(self: *Preferences, gpa: std.mem.Allocator, os: *platform.os.Os, mods: *app.ModSet) !void {
+        if (self.file.dir.len == 0) return;
+        const store = app.profiles.Store.open(gpa, os, self.file.dir, self.file.persist) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {
+                log.warn("profiles are unavailable ({t})", .{err});
+                return;
+            },
+        };
+        try mods.attachProfiles(store, self.profile, .{ .name = "Default", .enabled = self.carried.ids });
+        if (self.carried.ids.len != 0 and self.file.persist) {
+            mods.saveFresh() catch |err| log.warn("the first profile could not be written ({t}); it is kept for this run", .{err});
+        }
+        self.profile = if (mods.savedIsFresh()) null else mods.savedProfile();
     }
 
     /// Resolves every value the player has not already chosen in this session.
@@ -292,6 +343,11 @@ const Preferences = struct {
             .{ .schema = r.schema, .fields = r.fields, .origin = .content }
         else
             null;
+        self.resolveFrom(content);
+    }
+
+    /// `resolve`, with the content layer already found.
+    fn resolveFrom(self: *Preferences, content: ?app.settings.Layer) void {
         const layers = [_]?app.settings.Layer{ content, self.file.layer(schema) };
 
         if (!self.width.isUser())
@@ -344,24 +400,22 @@ const Preferences = struct {
     /// A value still coming from content is deliberately left absent. Writing it back would
     /// freeze it — the package that supplied it could never change it again, because the
     /// file would outrank it forever after.
-    fn values(self: *const Preferences, list: []data.Value) [4]?data.Value {
+    fn values(self: *const Preferences) [4]?data.Value {
         return .{
             if (self.width.isUser()) data.Value{ .int = self.width.value } else null,
             if (self.height.isUser()) data.Value{ .int = self.height.value } else null,
             if (self.volume.isUser()) data.Value{ .float = self.volume.value } else null,
-            if (self.selected.ids.len == 0) null else self.selected.toValue(list),
+            if (self.profile) |key| data.Value{ .int = key } else null,
         };
     }
 
     fn tick(self: *Preferences, gpa: std.mem.Allocator) void {
-        var list: [max_selected]data.Value = undefined;
-        const chosen = self.values(&list);
+        const chosen = self.values();
         self.file.tick(gpa, schema, &chosen);
     }
 
     fn flush(self: *Preferences, gpa: std.mem.Allocator) void {
-        var list: [max_selected]data.Value = undefined;
-        const chosen = self.values(&list);
+        const chosen = self.values();
         self.file.flush(gpa, schema, &chosen);
     }
 };
@@ -529,14 +583,13 @@ fn run(
     // An ordinary windowed run considers the user's installed packages. A headless bar
     // run has deliberately read no user preferences (Step 2), so it also avoids ambient
     // user packages unless the caller explicitly supplies the package-list input.
-    const include_user_packages = !headless or prefs.selected.ids.len > 0 or
-        envValue(env, "FOUNDRY_ROOM_PACKAGES") != null;
+    const include_user_packages = !headless or envValue(env, "FOUNDRY_ROOM_PACKAGES") != null;
     var mods = try openMods(
         gpa,
         discovery_os,
         content_dir,
         env,
-        prefs.selected,
+        &prefs,
         include_user_packages,
         session,
     );
@@ -3014,4 +3067,89 @@ fn stoppedAt(session: *const app.diagnostics.Session) []const u8 {
         .start, .discovery, .startup => "could not start",
         .running, .shutdown => "stopped",
     };
+}
+
+// -- tests -------------------------------------------------------------------------------
+
+test "an M9-era preferences file keeps its window, volume and mods through the move to profiles" {
+    const gpa = std.testing.allocator;
+    const fixture = @embedFile("testdata/settings-v1.fset");
+
+    // Every platform's user-data variable, pointed at a temporary directory.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const home = buf[0..try tmp.dir.realPath(std.testing.io, &buf)];
+    const env = [_]platform.os.EnvVar{
+        .{ .name = "HOME", .value = home },
+        .{ .name = "XDG_DATA_HOME", .value = home },
+        .{ .name = "APPDATA", .value = home },
+    };
+    var os = try platform.os.Os.init(gpa, .{ .env = &env, .app_name = app_name });
+    defer os.deinit();
+    const data_dir = try os.userDataDirAlloc(gpa);
+    defer gpa.free(data_dir);
+    try os.createDirPath(data_dir);
+    const settings_path = try platform.os.joinPath(gpa, &.{ data_dir, app.settings.default_leaf });
+    defer gpa.free(settings_path);
+    try os.writeFile(settings_path, fixture);
+
+    var diags: data.Diagnostics = .init(gpa, .default);
+    defer diags.deinit(gpa);
+
+    // The first start of this build: converted in memory, and the mods become "Default".
+    {
+        var prefs = try Preferences.open(gpa, os, false, false);
+        defer prefs.deinit(gpa);
+        prefs.resolveFrom(null);
+        try std.testing.expectEqual(@as(u32, 1600), prefs.width.value);
+        try std.testing.expectEqual(@as(u32, 900), prefs.height.value);
+        try std.testing.expectEqual(@as(f32, 0.25), prefs.volume.value);
+        try std.testing.expect(prefs.width.isUser() and prefs.volume.isUser());
+        var mods = try app.ModSet.init(gpa, os, &.{}, .{ .required = &.{} }, &diags);
+        defer mods.deinit();
+        try prefs.attachProfiles(gpa, os, &mods);
+        try std.testing.expectEqual(@as(?u32, 1), prefs.profile);
+        // Version 1 kept them sorted, so the profile starts in content-id order.
+        const want = [_][]const u8{ "brighter:lamps", "night:palette" };
+        try std.testing.expectEqual(want.len, mods.pending().len);
+        for (want, mods.pending()) |name, id| try std.testing.expectEqualStrings(name, mods.spelling(id).?);
+        // The settings file is untouched until the player saves...
+        const unsaved = try os.readFile(gpa, settings_path, 1 << 16);
+        defer gpa.free(unsaved);
+        try std.testing.expectEqualSlices(u8, fixture, unsaved);
+
+        // ...and a save writes version 2, keeping version 1 beside it.
+        prefs.file.touch();
+        prefs.flush(gpa);
+    }
+    const saved = try os.readFile(gpa, settings_path, 1 << 16);
+    defer gpa.free(saved);
+    try std.testing.expectEqual(@as(u32, 2), std.mem.readInt(u32, saved[16..20], .little));
+    const kept_path = try platform.os.joinPath(gpa, &.{ data_dir, app.settings.default_leaf ++ ".v1" });
+    defer gpa.free(kept_path);
+    const kept = try os.readFile(gpa, kept_path, 1 << 16);
+    defer gpa.free(kept);
+    try std.testing.expectEqualSlices(u8, fixture, kept);
+
+    // The next start reads version 2, finds its profile by key, and creates nothing more.
+    {
+        var prefs = try Preferences.open(gpa, os, false, false);
+        defer prefs.deinit(gpa);
+        prefs.resolveFrom(null);
+        try std.testing.expectEqual(@as(usize, 0), prefs.carried.ids.len);
+        try std.testing.expectEqual(@as(?u32, 1), prefs.profile);
+        try std.testing.expectEqual(@as(u32, 1600), prefs.width.value);
+        try std.testing.expectEqual(@as(u32, 900), prefs.height.value);
+        try std.testing.expectEqual(@as(f32, 0.25), prefs.volume.value);
+        try std.testing.expect(prefs.width.isUser() and prefs.volume.isUser());
+        var mods = try app.ModSet.init(gpa, os, &.{}, .{ .required = &.{} }, &diags);
+        defer mods.deinit();
+        try prefs.attachProfiles(gpa, os, &mods);
+        try std.testing.expectEqual(@as(usize, 1), mods.profileList().len);
+        // Version 1 kept them sorted, so the profile starts in content-id order.
+        const want = [_][]const u8{ "brighter:lamps", "night:palette" };
+        try std.testing.expectEqual(want.len, mods.pending().len);
+        for (want, mods.pending()) |name, id| try std.testing.expectEqualStrings(name, mods.spelling(id).?);
+    }
 }

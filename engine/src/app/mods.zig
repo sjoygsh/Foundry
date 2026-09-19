@@ -172,6 +172,9 @@ pub const ModSet = struct {
     saved: Selection = .{},
     /// Being edited, in the player's order.
     edited: Selection = .{},
+    /// The pending profile as last read or written: what `apply` compares against, so it
+    /// writes only the fields this process changed (`mod-management.md` §6).
+    base: Selection = .{},
     /// This session's developer override: after the selection, and never saved.
     extra: std.ArrayList(ContentId) = .empty,
 
@@ -244,6 +247,7 @@ pub const ModSet = struct {
         if (self.listing) |*l| l.deinit();
         if (self.store) |*s| s.deinit(gpa);
         self.extra.deinit(gpa);
+        self.base.deinit(gpa);
         self.edited.deinit(gpa);
         self.saved.deinit(gpa);
         self.strings.deinit();
@@ -375,6 +379,7 @@ pub const ModSet = struct {
     /// Discards every pending change, the profile selected included.
     pub fn revert(self: *ModSet) Allocator.Error!void {
         try self.edited.copyFrom(self.gpa, &self.saved);
+        try self.base.copyFrom(self.gpa, &self.saved);
         self.pending_key = self.saved_key;
         self.invalidate();
     }
@@ -431,14 +436,20 @@ pub const ModSet = struct {
     /// Takes `store` and starts from profile `active`, the key the host saved.
     ///
     /// A key that is missing or unusable falls back to the first usable profile, then to a
-    /// fresh one named `fresh_name`, with a warning; a first run with no key and no profiles
+    /// fresh one holding `fresh`, with a warning; a first run with no key and no profiles
     /// takes the fresh one silently (ADR-0040 decision 1). A fresh profile is not written
-    /// until the player changes something: starting writes nothing. `fresh_name` is the
-    /// host's, because it is a string a player reads.
-    pub fn attachProfiles(self: *ModSet, store: profiles.Store, active: ?u32, fresh_name: []const u8) Error!void {
+    /// until the player changes something or the host calls `saveFresh`: starting writes
+    /// nothing.
+    ///
+    /// `fresh` is the host's. Its name is a string a player reads. Its selection is empty,
+    /// unless the host is moving a selection out of older settings: then the move happens
+    /// only when no profile exists yet, so doing it twice creates nothing twice
+    /// (`mod-management.md` §6).
+    pub fn attachProfiles(self: *ModSet, store: profiles.Store, active: ?u32, fresh: profiles.Contents) Error!void {
         std.debug.assert(self.store == null);
-        if (!profiles.validName(fresh_name)) return error.InvalidName;
+        // Owned from here, whatever follows: `deinit` closes it.
         self.store = store;
+        if (!profiles.validName(fresh.name)) return error.InvalidName;
         try self.refresh();
 
         var tried: ?u32 = null;
@@ -456,11 +467,28 @@ pub const ModSet = struct {
         if (active != null or self.listing.?.entries.len != 0) {
             log.warn("no profile could be used; starting from a fresh one", .{});
         }
-        self.fresh_name = try self.strings.allocator().dupe(u8, fresh_name);
+        self.fresh_name = try self.strings.allocator().dupe(u8, fresh.name);
         self.saved_key = key;
-        try self.fill(&self.saved, .{ .name = fresh_name });
+        try self.fill(&self.saved, fresh);
         try self.revert();
         try self.rebuildEntries();
+    }
+
+    /// Whether the saved profile is a fresh one no file holds yet.
+    pub fn savedIsFresh(self: *const ModSet) bool {
+        return self.fresh_name != null;
+    }
+
+    /// Writes the saved profile when it is a fresh one, and does nothing otherwise. A host
+    /// that moved a selection into it calls this, so the next start finds it on disk.
+    pub fn saveFresh(self: *ModSet) Error!void {
+        const name = self.fresh_name orelse return;
+        const store = if (self.store) |*s| s else return error.NoProfiles;
+        var arena: std.heap.ArenaAllocator = .init(self.gpa);
+        defer arena.deinit();
+        try store.write(self.gpa, self.saved_key.?, try self.contentsOf(arena.allocator(), &self.saved, name), null);
+        self.fresh_name = null;
+        try self.refresh();
     }
 
     /// Every profile, by key: the files found, with any problem, and the saved profile
@@ -487,7 +515,8 @@ pub const ModSet = struct {
         if (key == self.saved_key) return self.revert();
         var profile = try self.readProfile(key);
         defer profile.deinit();
-        try self.fill(&self.edited, profile.contents);
+        try self.fill(&self.base, profile.contents);
+        try self.edited.copyFrom(self.gpa, &self.base);
         self.pending_key = key;
         self.invalidate();
     }
@@ -511,7 +540,7 @@ pub const ModSet = struct {
             copied.name = name;
             break :blk copied;
         } else .{ .name = name };
-        try self.store.?.write(self.gpa, key, contents);
+        try self.store.?.write(self.gpa, key, contents, null);
         try self.refresh();
         return key;
     }
@@ -525,14 +554,15 @@ pub const ModSet = struct {
         defer arena.deinit();
 
         if (key == self.saved_key and self.fresh_name != null) {
-            try store.write(self.gpa, key, try self.contentsOf(arena.allocator(), &self.saved, name));
+            try store.write(self.gpa, key, try self.contentsOf(arena.allocator(), &self.saved, name), null);
             self.fresh_name = null;
         } else {
+            // Merged over the file: only the name is this process's change.
             var profile = try self.readProfile(key);
             defer profile.deinit();
             var contents = profile.contents;
             contents.name = name;
-            try store.write(self.gpa, key, contents);
+            try store.write(self.gpa, key, contents, profile.contents);
         }
         try self.refresh();
     }
@@ -549,17 +579,24 @@ pub const ModSet = struct {
 
     /// Writes the pending selection to the pending profile, which the next start uses.
     /// This session is unchanged (ADR-0040): `loaded` still says what it started with.
+    ///
+    /// Merged over the file as it is now: the enabled list and the consents are written
+    /// only when this process changed them, and the name never is.
     pub fn apply(self: *ModSet) Error!void {
         const store = if (self.store) |*s| s else return error.NoProfiles;
         const key = self.pending_key.?;
         const name = self.nameOf(key) orelse return error.UnknownProfile;
+        const fresh = key == self.saved_key and self.fresh_name != null;
         var arena: std.heap.ArenaAllocator = .init(self.gpa);
         defer arena.deinit();
-        try store.write(self.gpa, key, try self.contentsOf(arena.allocator(), &self.edited, name));
+        const ours = try self.contentsOf(arena.allocator(), &self.edited, name);
+        const baseline = if (fresh) null else try self.contentsOf(arena.allocator(), &self.base, name);
+        try store.write(self.gpa, key, ours, baseline);
 
-        if (key == self.saved_key) self.fresh_name = null;
+        if (fresh) self.fresh_name = null;
         self.saved_key = key;
         try self.saved.copyFrom(self.gpa, &self.edited);
+        try self.base.copyFrom(self.gpa, &self.edited);
         try self.refresh();
     }
 
@@ -815,14 +852,14 @@ const Fixture = struct {
         const roots = self.grants();
         var set = try self.open(&roots);
         errdefer set.deinit();
-        try set.attachProfiles(try self.storeAt(persist), active, "Default");
+        try set.attachProfiles(try self.storeAt(persist), active, .{ .name = "Default" });
         return set;
     }
 
     fn seed(self: *Fixture, key: u32, contents: profiles.Contents) !void {
         var store = try self.storeAt(true);
         defer store.deinit(testing.allocator);
-        try store.write(testing.allocator, key, contents);
+        try store.write(testing.allocator, key, contents, null);
     }
 
     fn stored(self: *Fixture, key: u32) !profiles.Profile {
@@ -1187,4 +1224,67 @@ test "a run that may not write keeps every change in memory" {
     var profile = try f.stored(1);
     defer profile.deinit();
     try testing.expectEqual(@as(usize, 1), profile.contents.enabled.len);
+}
+
+test "a selection moved out of older settings becomes the first profile, once" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    try f.standard();
+    const carried: profiles.Contents = .{ .name = "Default", .enabled = &.{ "night:content", "rug:content" } };
+    const roots = f.grants();
+
+    {
+        var set = try f.open(&roots);
+        defer set.deinit();
+        try set.attachProfiles(try f.storeAt(true), null, carried);
+        try testing.expect(set.savedIsFresh());
+        try testing.expectEqualDeep(@as([]const ContentId, &.{ cid("night:content"), cid("rug:content") }), set.pending());
+        try set.saveFresh();
+        try testing.expect(!set.savedIsFresh());
+        try set.saveFresh();
+    }
+    {
+        // The same move again, as a second start before settings were ever saved: the
+        // profile exists now, so it is used and nothing is created.
+        var set = try f.open(&roots);
+        defer set.deinit();
+        try set.attachProfiles(try f.storeAt(true), null, carried);
+        try testing.expect(!set.savedIsFresh());
+        try testing.expectEqual(@as(usize, 1), set.profileList().len);
+        try testing.expectEqualDeep(@as([]const ContentId, &.{ cid("night:content"), cid("rug:content") }), set.pending());
+    }
+}
+
+test "two instances editing one profile keep each other's changes to different fields" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    try f.standard();
+    try f.seed(1, .{ .name = "Default", .enabled = &.{"night:content"} });
+    var a = try f.withProfiles(1, true);
+    defer a.deinit();
+    var b = try f.withProfiles(1, true);
+    defer b.deinit();
+
+    try a.setEnabled(cid("rug:content"), true);
+    try a.apply();
+    // `b` read the profile before `a` wrote it, and changes other fields.
+    try b.renameProfile(1, "Renamed");
+    try b.setConsent(cid("night:content"), 1, true);
+    try b.apply();
+
+    var profile = try f.stored(1);
+    defer profile.deinit();
+    try testing.expectEqualStrings("Renamed", profile.contents.name);
+    try testing.expectEqual(@as(usize, 2), profile.contents.enabled.len);
+    try testing.expectEqualStrings("rug:content", profile.contents.enabled[1]);
+    try testing.expectEqual(@as(usize, 1), profile.contents.consents.len);
+
+    // The same field changed in both is the last writer's.
+    try a.setEnabled(cid("lamps:content"), true);
+    try a.apply();
+    try b.setEnabled(cid("night:content"), false);
+    try b.apply();
+    var last = try f.stored(1);
+    defer last.deinit();
+    try testing.expectEqual(@as(usize, 0), last.contents.enabled.len);
 }

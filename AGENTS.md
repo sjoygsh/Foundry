@@ -120,8 +120,9 @@ Mac cross-compilation never substitutes for runtime proof. **M14 is in progress*
 `docs/design/mod-management.md` and ADR-0040/0041. Steps 1 and 2 are done. `app.ModSet` owns
 discovery, resolution and record-level conflicts for both samples, and a player's duplicate
 package is skipped rather than fatal. `app.profiles` keeps ordered profiles on disk, which the
-mod set starts from, edits and applies; the samples adopt them in Step 3. M15–M17 remain
-unstarted.
+mod set starts from, edits and applies. Step 3 added settings migrations and merged writes, and
+both samples are on settings version 2 and profiles; their M9-era files, in `samples/*/testdata`,
+convert. The samples have tests of their own now. M15–M17 remain unstarted.
 The bar below is the current one; Step 9 added the checks Vulkan and release work need to it.
 
 ## 3. Building and verifying
@@ -334,12 +335,14 @@ owner's authorization to use that identity, Keychain profile and network service
 
 ### Counting tests
 
-`PROJECT_STATE.md` quotes a number. It is `^test "` plus `^test {` across `engine/src`,
-`engine/tests` and `tools`, minus the 10 Metal-only tests that do not run headlessly:
+`PROJECT_STATE.md` quotes the bar's `zig build test` summary line: the headless graph,
+passed of declared. The grep below counts every test declaration, including the ones only the
+Metal, Vulkan and desktop-window graphs run, so it is larger. It is useful for the size of a
+change, not as the quoted number. Since M14 the samples carry tests too:
 
 ```sh
-{ grep -rhc '^test "' --include='*.zig' engine/src engine/tests tools;
-  grep -rhc '^test {' --include='*.zig' engine/src engine/tests tools; } | paste -sd+ - | bc
+{ grep -rhc '^test "' --include='*.zig' engine/src engine/tests tools samples;
+  grep -rhc '^test {' --include='*.zig' engine/src engine/tests tools samples; } | paste -sd+ - | bc
 ```
 
 ## 4. Environment gotchas

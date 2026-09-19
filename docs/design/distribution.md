@@ -131,11 +131,17 @@ must be finite in [0,1]. The host may impose tighter usable limits. IDs must val
 not an instruction to override dependency order. Native execution is not consented by it.
 
 > **Superseded by [ADR-0040](../adr/0040-ordered-profiles-applied-at-next-start.md), accepted
-> 2026-09-19, when M14 implements it.** The enabled list moves out of settings into ordered
-> profiles, one file each, and is stored in the player's order rather than sorted. Dependencies
-> still win. Settings gain the active profile, schema v1 becomes v2 through the first registered
-> migration, and saves merge by field. Until M14 Steps 2 and 3 land, the code behaves as this
-> section says.
+> 2026-09-19 and implemented by M14 Steps 2 and 3 the same day.** The enabled list moved out of
+> settings into ordered profiles, one file each, stored in the player's order rather than
+> sorted. Dependencies still win.
+> - Both samples' settings are version 2, with the active profile's key.
+> - `app.settings` registers explicit migrations. The M9-era version 1 files, kept as
+>   fixtures, convert on load, and the first save keeps the old file once as
+>   `settings.fset.v1`.
+> - Saves merge by field.
+>
+> `IdSet` still exists and still sorts, for a host that keeps a selected set in its settings;
+> the samples no longer do (`mod-management.md`, Step 3).
 
 Missing file means defaults. Malformed values/format mean a warning and defaults, with the
 original retained; explicit user preference changes may replace a malformed current-version
@@ -386,7 +392,8 @@ networking and scripting open questions stay open.
 Deferred work: actual Developer ID signing, Apple notarization and a quarantined launch of the
 exact public archive on a genuinely clean recipient Mac; older macOS support;
 storefront-specific signing; settings migrations once a second schema exists;
-profiles/concurrent preference merging; crash collection beyond OS reports; and a runtime
+profiles/concurrent preference merging (both done in M14 Step 3, 2026-09-19); crash collection
+beyond OS reports; and a runtime
 container if measured file overhead warrants one. These are not silently answered by helper
 implementation. The first item is mandatory before a public macOS release is called verified.
 

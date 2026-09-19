@@ -1,9 +1,13 @@
 # ADR-0040: A player's mod selection is an ordered profile, applied at the next start
 
-**Status:** Accepted 2026-09-19 (M14). Decision 4, the duplicate rules, was implemented in Step 1
-on 2026-09-19. Step 2 the same day implemented profile files, their order and consent storage in
-the engine (decisions 1, 2, 3 and 5). The samples adopt them in Step 3, with decision 7's
-migrations; decision 6 is Step 7
+**Status:** Accepted 2026-09-19 (M14). On 2026-09-19:
+- Step 1 implemented decision 4, the duplicate rules.
+- Step 2 implemented profile files, their order and consent storage in the engine (decisions
+  1, 2, 3 and 5).
+- Step 3 implemented decision 7's migrations and merged writes, and moved both samples onto
+  profiles.
+
+Decision 6, the public API, is Step 7
 **Date:** 2026-09-19
 **Builds on:** [ADR-0026](0026-abi-module-and-host.md), [ADR-0027](0027-mods-are-content-packages.md)
 and [ADR-0031](0031-application-configuration-and-user-data.md)

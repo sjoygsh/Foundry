@@ -1,9 +1,9 @@
 # Design: M14 — Managed, and what a player chooses
 
 **Status:** Design accepted 2026-09-19 with [ADR-0040](../adr/0040-ordered-profiles-applied-at-next-start.md)
-and [ADR-0041](../adr/0041-game-widget-set-and-content-themes.md). **Steps 1 and 2, the mod set and
-profiles on disk, are implemented (2026-09-19); Step 3, migrations and concurrent writes, is
-next.** Step 2 was re-scoped when it began; see §13.
+and [ADR-0041](../adr/0041-game-widget-set-and-content-themes.md). **Steps 1 to 3 are implemented
+(2026-09-19): the mod set, profiles on disk, and migrations with concurrent writes. Step 4,
+the kernel's additions, is next.** Step 2 was re-scoped when it began; see §13.
 **Date:** 2026-09-19
 **Baseline:** `754665a` / `m13`; M0–M13 complete, 1,405 declared / 1,395 headless tests.
 **Builds on:** ADR-0024 (one UI kernel, two widget sets), ADR-0026 (the host supplies
@@ -743,4 +743,75 @@ Two mutations were each caught, then restored byte for byte:
 the spellings they are, and never attach profiles.
 That is Step 3, with the migration that makes it safe. Merge-by-field writes are Step 3's too;
 until then a profile write replaces the file whole.
+
+## Resolution — 2026-09-19, Step 3: migrations, concurrent writes, and the samples on profiles
+
+**Landed:**
+- **`app.settings.Migration`:** one explicit conversion per older version, `from` schema plus a
+  `convert` over its values, listed oldest first. There is no schema diff.
+  - `Storage.load` converts an older file in memory through the whole chain and records
+    `migrated_from`. It keeps the original bytes, and `File.older` reads them against an old
+    schema.
+  - A chain that does not reach the current version converts nothing, and the file is kept,
+    exactly as before.
+  - A malformed older file counts as damaged, as a current one does.
+- **Saves merge by field.** `Storage.save` re-reads the file first and takes a baseline, what the
+  process read or last wrote. A field whose value still equals the baseline is one this process
+  did not change, so the file's current value is kept.
+  - `File` holds the baseline and moves it to what it wrote after each save.
+  - A file that is older at save time is converted first, then copied once to `<leaf>.v<old>`.
+    That copy is not best effort: if it cannot be kept, nothing is replaced.
+  - A newer file is still never replaced.
+- **Profiles merge the same way.** `profiles.Store.write` takes a baseline. `ModSet.apply`
+  writes the enabled list and the consents only when this process changed them, and never the
+  name. `renameProfile` writes only the name.
+- **Both samples are on version 2 and profiles.**
+  - `enabled` left settings, and `profile` arrived. Version 1 is kept verbatim, with a
+    conversion that carries the window and the volume.
+  - `Preferences.attachProfiles` finishes the move. Version 1's list becomes the fresh
+    "Default" through `ModSet.attachProfiles`, and a run that may write saves it with
+    `saveFresh`. The move happens only when no profile exists, so a second start creates nothing.
+  - A headless run still reads no user data, so it has no profiles.
+- **The samples have tests.** `zig build test` and `zig build check` now build both samples'
+  own tests, because the only honest test of a sample's conversion runs the sample's code.
+
+**Decided by the implementation:**
+- **The conversion only maps values; the host moves the list.** A conversion is a pure
+  function, and it may run again when a save finds the file older. Creating a profile is a side
+  effect, so it belongs to the host, which reads the old list through `File.older` and hands it
+  to `attachProfiles`. The profile is written at startup, before settings are ever saved, so
+  that a start which never saves still finds it. That is the one write a start makes, and only
+  a run that may write makes it.
+- **The fixtures are M9's own bytes.** They were written by M9's `app.settings.Storage.save`,
+  from a worktree of tag `m9`, with the samples' version 1 schemas. Between `m9` and this step,
+  `settings.zig`, `fpk.zig` and `value.zig` had not changed.
+- **Merging is by field equality, not by change tracking.** A field is "changed" when the
+  in-memory value differs from the baseline. A preference cleared in memory is a change, which
+  is why a caller resolves before it saves.
+- **AGENTS.md's test-count formula is corrected.** It had counted every declaration since the
+  Vulkan tests arrived, so it no longer matched the quoted headless number, and it now includes
+  `samples`.
+
+**Evidence.** The bar passed, **1,421 of 1,422**, with the one skip it had before.
+- `app.settings`: a version 1 file converted through two steps to version 3, loading writing
+  nothing, the backup kept once across a later conversion, an older build refused over a newer
+  file, and a broken chain kept.
+- Two writers keeping each other's fields, the same field going to the last writer, and a newer
+  file never replaced.
+- `app.ModSet`: a moved selection becoming the first profile exactly once, and two instances
+  editing one profile keeping each other's changes.
+- Each sample: its M9 fixture keeping window, volume and mods through the move, the settings
+  file untouched until a save, the save writing version 2 beside a byte-identical `.v1`, and
+  the next start creating nothing more.
+
+Three mutations were each caught, then restored byte for byte:
+- turning merging off failed both two-writer tests;
+- re-copying an existing backup failed the backup check;
+- dropping the volume from the sandbox's conversion failed its sample test.
+
+The real Metal room was started against the M9 room fixture, with the two mods it names built
+outside the tree into a temporary `HOME`. It converted the file, opened at 1600×900 with volume
+0.25, and loaded both mods in version 1's order. Being frame-limited, it wrote nothing: the
+settings file stayed byte-identical and no profile directory appeared. The sandbox did the same
+with its own fixture.
 

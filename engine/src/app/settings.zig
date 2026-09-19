@@ -339,6 +339,91 @@ fn checkDecoded(v: data.Value, limits: Limits) DecodeError!void {
 }
 
 // ---------------------------------------------------------------------------
+// Migrations
+// ---------------------------------------------------------------------------
+
+/// One step of a settings schema's history: how a file at `from.version` becomes a file at
+/// the next version.
+///
+/// **Ordinary code over the old version's values** (`mod-management.md` §6). There is no
+/// generic schema diff: a framework guessing at intent would guess wrong exactly when a
+/// field changed meaning rather than shape, and that is when a migration matters.
+///
+/// An application lists one per older version, oldest first, ending at the version before
+/// its current one. A file at an older version is converted in memory when it is loaded,
+/// and nothing is written until the application saves; before the first save at the new
+/// version, the old file is copied once to `<leaf>.v<old>`.
+pub const Migration = struct {
+    /// The schema a file at this step was written against, exactly as it was.
+    from: data.Schema,
+    /// Fills `new`, one slot per field of the next version and all null on entry, from
+    /// `old`, one slot per field of `from`. Anything it allocates comes from `arena`, which
+    /// lives as long as the values do.
+    convert: *const fn (arena: Allocator, old: []const ?data.Value, new: []?data.Value) Allocator.Error!void,
+};
+
+/// The chain from `version` to `schema`, or null when `migrations` cannot make that walk:
+/// no step starts there, a step is missing, or a step names another schema.
+fn chainFrom(migrations: []const Migration, schema: data.Schema, version: u32) ?[]const Migration {
+    const start = for (migrations, 0..) |m, i| {
+        if (m.from.version == version) break i;
+    } else return null;
+    const chain = migrations[start..];
+    for (chain, 0..) |m, i| {
+        if (!m.from.id.eql(schema.id)) return null;
+        if (m.from.version != version + i) return null;
+    }
+    if (chain[chain.len - 1].from.version + 1 != schema.version) return null;
+    return chain;
+}
+
+/// A file's values, one optional per field, copied into `arena`.
+fn valuesOf(arena: Allocator, fields: data.fpk.Fields, count: usize) DecodeError![]?data.Value {
+    const out = try arena.alloc(?data.Value, count);
+    for (out, 0..) |*slot, i| {
+        slot.* = fields.valueAt(arena, @intCast(i)) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.Malformed,
+        };
+    }
+    return out;
+}
+
+/// Converts `bytes`, a file at an older version, into `schema`'s current version and
+/// encodes the result. Null when there is no chain for it.
+fn migrate(
+    gpa: Allocator,
+    bytes: []const u8,
+    schema: data.Schema,
+    migrations: []const Migration,
+    limits: Limits,
+) (DecodeError || EncodeError)!?[]u8 {
+    const chain = chainFrom(migrations, schema, readU32(bytes, 16)) orelse return null;
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+
+    const fields = try decode(gpa, bytes, chain[0].from, limits);
+    var values = try valuesOf(arena.allocator(), fields, chain[0].from.fields.len);
+    for (chain, 0..) |step, i| {
+        const next = if (i + 1 < chain.len) chain[i + 1].from else schema;
+        const converted = try arena.allocator().alloc(?data.Value, next.fields.len);
+        @memset(converted, null);
+        try step.convert(arena.allocator(), values, converted);
+        values = converted;
+    }
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    try encode(gpa, schema, values, limits, &out);
+    return try out.toOwnedSlice(gpa);
+}
+
+fn optionalEql(a: ?data.Value, b: ?data.Value) bool {
+    if (a == null or b == null) return a == null and b == null;
+    return a.?.eql(b.?);
+}
+
+// ---------------------------------------------------------------------------
 // Resolving a value out of the layers that may supply it
 // ---------------------------------------------------------------------------
 
@@ -559,9 +644,14 @@ pub const Loaded = struct {
     bytes: []u8 = &.{},
     /// The decoded fields, or null whenever `state` is not `.loaded`.
     fields: ?data.fpk.Fields = null,
+    /// The version the file on disk had, when it was older and `bytes` is its conversion.
+    migrated_from: ?u32 = null,
+    /// That older file, exactly as read, when there was one.
+    original: []u8 = &.{},
 
     pub fn deinit(self: *Loaded, gpa: Allocator) void {
         if (self.bytes.len != 0) gpa.free(self.bytes);
+        if (self.original.len != 0) gpa.free(self.original);
         self.* = undefined;
     }
 };
@@ -583,6 +673,9 @@ pub const Storage = struct {
     dir: []const u8,
     leaf: []const u8 = default_leaf,
     limits: Limits = .default,
+    /// How files at older versions of the schema become the current one. Empty: an older
+    /// file is kept and never replaced, as a newer one is.
+    migrations: []const Migration = &.{},
 
     /// Cleared by a load that found something this build must not replace. A `Storage`
     /// nobody has loaded from starts writable: it has nothing it could destroy.
@@ -620,76 +713,158 @@ pub const Storage = struct {
         // answers outright rather than narrowing ones an earlier load left behind. A
         // directory that was unreadable a moment ago and is readable now is a `Storage`
         // that may write again.
-        self.writable = true;
-        self.backup_pending = false;
+        const loaded = try self.inspect(gpa, schema, true);
+        self.writable = switch (loaded.state) {
+            .preserved, .unavailable => false,
+            .loaded, .absent, .damaged => true,
+        };
+        self.backup_pending = loaded.state == .damaged;
+        return loaded;
+    }
 
-        const read = self.os.readFileConfined(gpa, self.dir, self.leaf, self.limits.max_file_bytes) catch |err| switch (err) {
+    /// The file as it is now, converted when it is older. `report` says whether to log
+    /// what was found: a load does, and the re-read before a save does not repeat it.
+    fn inspect(self: *Storage, gpa: Allocator, schema: data.Schema, report: bool) Allocator.Error!Loaded {
+        const file = self.os.readFileConfined(gpa, self.dir, self.leaf, self.limits.max_file_bytes) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             // The file, or the directory holding it, is not there: a first run.
             error.FileNotFound => return .{ .state = .absent },
             error.FileTooLarge => {
-                log.warn("settings: '{s}' is larger than {d} bytes; keeping it and using defaults", .{
+                if (report) log.warn("settings: '{s}' is larger than {d} bytes; keeping it and using defaults", .{
                     self.leaf, self.limits.max_file_bytes,
                 });
-                self.writable = false;
                 return .{ .state = .preserved };
             },
             else => {
-                log.warn("settings: '{s}' could not be read ({t}); using defaults", .{ self.leaf, err });
-                self.writable = false;
+                if (report) log.warn("settings: '{s}' could not be read ({t}); using defaults", .{ self.leaf, err });
                 return .{ .state = .unavailable };
             },
         };
-        errdefer gpa.free(read.bytes);
+        const fields = decode(gpa, file.bytes, schema, self.limits) catch |err| switch (err) {
+            error.OutOfMemory => {
+                gpa.free(file.bytes);
+                return error.OutOfMemory;
+            },
+            error.PastVersion => return self.convert(gpa, file.bytes, schema, report),
+            else => {
+                gpa.free(file.bytes);
+                return self.refusal(err, report);
+            },
+        };
+        return .{ .state = .loaded, .bytes = file.bytes, .fields = fields };
+    }
 
-        const fields = decode(gpa, read.bytes, schema, self.limits) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
+    /// An older file, converted in memory. The file itself is not touched until a save.
+    /// Takes ownership of `original`.
+    fn convert(self: *Storage, gpa: Allocator, original: []u8, schema: data.Schema, report: bool) Allocator.Error!Loaded {
+        const version = readU32(original, 16);
+        const converted = migrate(gpa, original, schema, self.migrations, self.limits) catch |err| {
+            gpa.free(original);
+            return switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                // The older file itself is damaged: as for a current one, copy it aside.
+                error.NotSettings, error.Malformed => self.refusal(error.Malformed, report),
+                else => blk: {
+                    if (report) log.warn("settings: '{s}' at version {d} did not convert ({t}); keeping it and using defaults", .{ self.leaf, version, err });
+                    break :blk .{ .state = .preserved };
+                },
+            };
+        } orelse {
+            gpa.free(original);
+            if (report) log.warn("settings: '{s}' is at version {d}, which this build cannot convert; keeping it and using defaults", .{ self.leaf, version });
+            return .{ .state = .preserved };
+        };
+        const fields = decode(gpa, converted, schema, self.limits) catch |err| {
+            // Encoded against this schema a moment ago; a failure here is the conversion's.
+            gpa.free(converted);
+            gpa.free(original);
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            if (report) log.warn("settings: '{s}' converted to something unreadable ({t}); keeping it and using defaults", .{ self.leaf, err });
+            return .{ .state = .preserved };
+        };
+        if (report) log.info("settings: '{s}' converted from version {d} to {d}; written at the next save", .{ self.leaf, version, schema.version });
+        return .{ .state = .loaded, .bytes = converted, .fields = fields, .migrated_from = version, .original = original };
+    }
+
+    /// What a file this build will not use means, said once when `report` asks.
+    fn refusal(self: *Storage, err: DecodeError, report: bool) Loaded {
+        switch (err) {
             error.FutureVersion, error.PastVersion, error.ForeignSchema, error.TooLarge => {
-                log.warn("settings: '{s}' was written by another build or schema ({t}); keeping it and using defaults", .{ self.leaf, err });
-                gpa.free(read.bytes);
-                self.writable = false;
+                if (report) log.warn("settings: '{s}' was written by another build or schema ({t}); keeping it and using defaults", .{ self.leaf, err });
                 return .{ .state = .preserved };
             },
             error.MissingSchemaId, error.InvalidVersion, error.TooManyFields, error.TooDeep => {
                 // The application's own schema, not the file. Nothing on disk is at fault
                 // and nothing on disk may be replaced on account of it.
-                log.warn("settings: the schema this build asked for is not one a settings file may hold ({t})", .{err});
-                gpa.free(read.bytes);
-                self.writable = false;
+                if (report) log.warn("settings: the schema this build asked for is not one a settings file may hold ({t})", .{err});
                 return .{ .state = .unavailable };
             },
             error.NotSettings, error.Malformed => {
-                log.warn("settings: '{s}' is damaged ({t}); using defaults, and saving will copy it aside", .{ self.leaf, err });
-                gpa.free(read.bytes);
-                self.backup_pending = true;
+                if (report) log.warn("settings: '{s}' is damaged ({t}); using defaults, and saving will copy it aside", .{ self.leaf, err });
                 return .{ .state = .damaged };
             },
-        };
-
-        return .{ .state = .loaded, .bytes = read.bytes, .fields = fields };
+            error.OutOfMemory => unreachable,
+        }
     }
 
-    /// Writes `values`, replacing what is stored.
+    /// Writes `values`, merged over the file as it is now, replacing what is stored.
     ///
-    /// The directory is created here and not at startup: an application that never changes
-    /// a preference leaves nothing behind, and a run that only reads never has to be able
-    /// to write.
+    /// **Merged by field** (`mod-management.md` §6). The file is read again, and a field
+    /// whose value in `values` still equals its value in `baseline` — what this process
+    /// read, or last wrote — is one this process did not change, so the file's current
+    /// value is kept. Two running instances therefore keep each other's changes to
+    /// different fields; the same field changed in both is the last writer's. With no
+    /// `baseline`, every field is this process's.
+    ///
+    /// A file that is older now is converted first, and copied once to `<leaf>.v<old>`
+    /// before it is replaced. A newer one is never replaced. The directory is created here
+    /// and not at startup: an application that never changes a preference leaves nothing
+    /// behind, and a run that only reads never has to be able to write.
     pub fn save(
         self: *Storage,
         gpa: Allocator,
         schema: data.Schema,
         values: []const ?data.Value,
+        baseline: ?[]const ?data.Value,
     ) SaveError!void {
         if (!self.writable) return error.Preserved;
+        if (values.len != schema.fields.len) return error.FieldCountMismatch;
+        if (baseline) |b| if (b.len != values.len) return error.FieldCountMismatch;
+
+        var current = try self.inspect(gpa, schema, false);
+        defer current.deinit(gpa);
+        switch (current.state) {
+            .preserved => {
+                self.writable = false;
+                return error.Preserved;
+            },
+            .damaged => self.backup_pending = true,
+            .loaded, .absent, .unavailable => {},
+        }
+
+        var arena: std.heap.ArenaAllocator = .init(gpa);
+        defer arena.deinit();
+        const merged = try arena.allocator().dupe(?data.Value, values);
+        if (baseline) |base| if (current.fields) |fields| {
+            const now: []const ?data.Value = valuesOf(arena.allocator(), fields, schema.fields.len) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                // Decoded a moment ago; a field that will not read now keeps ours.
+                else => values,
+            };
+            for (merged, base, now) |*slot, before, disk| {
+                if (optionalEql(slot.*, before)) slot.* = disk;
+            }
+        };
 
         var bytes: std.ArrayList(u8) = .empty;
         defer bytes.deinit(gpa);
         // Encoded before anything on disk is touched. A value the schema refuses must not
         // be able to cost the user the settings they already had.
-        try encode(gpa, schema, values, self.limits, &bytes);
+        try encode(gpa, schema, merged, self.limits, &bytes);
 
         try self.os.createDirPath(self.dir);
         if (self.backup_pending) self.copyAside(gpa);
+        if (current.migrated_from) |version| try self.keepOlder(current.original, version);
 
         const durability = try self.os.replaceFileConfined(
             self.dir,
@@ -700,6 +875,21 @@ pub const Storage = struct {
         if (durability == .entry_unflushed) {
             log.debug("settings: '{s}' was replaced but its directory entry was not flushed", .{self.leaf});
         }
+    }
+
+    /// Keeps a file of an older version as `<leaf>.v<version>`, once: the first save at the
+    /// new version copies it, and later ones leave that copy alone. Not best effort, unlike
+    /// a damaged file's copy: this is what a player who goes back to an older build puts
+    /// back, so a save that cannot keep it does not replace it either.
+    fn keepOlder(self: *Storage, original: []const u8, version: u32) SaveError!void {
+        var name_buf: [platform.os.max_replaceable_name + 16]u8 = undefined;
+        const name = std.fmt.bufPrint(&name_buf, "{s}.v{d}", .{ self.leaf, version }) catch return error.InvalidPath;
+        if (self.os.statFileConfined(self.dir, name)) |_| return else |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        }
+        _ = try self.os.replaceFileConfined(self.dir, name, original, self.limits.max_file_bytes);
+        log.info("settings: the version {d} file was kept as '{s}'", .{ version, name });
     }
 
     /// Moves a damaged file out of the way, once, before it is replaced.
@@ -741,6 +931,8 @@ pub const FileOptions = struct {
     /// without this the file would be rewritten sixty times a second while a slider is held
     /// (`distribution.md` §6).
     settle_frames: u32 = 60,
+    /// The schema's history, oldest first (`Migration`). Borrowed for the file's life.
+    migrations: []const Migration = &.{},
 };
 
 /// An application's settings file, from opening it to deciding when to write it.
@@ -761,6 +953,10 @@ pub const File = struct {
     /// A change that has not reached the disk.
     dirty: bool = false,
     settled: u32 = 0,
+    /// The values as read, or as this process last wrote them: what a save compares
+    /// against to know which fields this process changed.
+    baseline: ?[]?data.Value = null,
+    baseline_arena: ?std.heap.ArenaAllocator = null,
 
     /// Opens the application's settings under the OS's per-user location and reads them.
     ///
@@ -789,21 +985,48 @@ pub const File = struct {
             return .{};
         };
         storage.limits = options.limits;
+        storage.migrations = options.migrations;
 
-        const loaded = try storage.load(gpa, schema);
+        var loaded = try storage.load(gpa, schema);
+        errdefer loaded.deinit(gpa);
+        var baseline_arena: ?std.heap.ArenaAllocator = null;
+        errdefer if (baseline_arena) |*a| a.deinit();
+        var baseline: ?[]?data.Value = null;
+        if (loaded.fields) |fields| {
+            baseline_arena = .init(gpa);
+            baseline = valuesOf(baseline_arena.?.allocator(), fields, schema.fields.len) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                // Decoded whole a moment ago; nothing to compare against is the safe answer.
+                else => null,
+            };
+        }
         return .{
             .dir = dir,
             .storage = storage,
             .loaded = loaded,
             .persist = options.persist and storage.writable,
             .settle_frames = options.settle_frames,
+            .baseline = baseline,
+            .baseline_arena = baseline_arena,
         };
     }
 
     pub fn deinit(self: *File, gpa: Allocator) void {
         self.loaded.deinit(gpa);
+        if (self.baseline_arena) |*a| a.deinit();
         if (self.dir.len != 0) gpa.free(self.dir);
         self.* = .{};
+    }
+
+    /// The file as it was on disk before it was converted, read against `older`, when it
+    /// was at exactly that version. A host moving a field out of its settings reads the
+    /// old value here (`mod-management.md` §6).
+    pub fn older(self: File, gpa: Allocator, older_schema: data.Schema) ?Layer {
+        const from = self.loaded.migrated_from orelse return null;
+        if (from != older_schema.version) return null;
+        const limits = if (self.storage) |s| s.limits else Limits.default;
+        const fields = decode(gpa, self.loaded.original, older_schema, limits) catch return null;
+        return .{ .schema = older_schema, .fields = fields, .origin = .user };
     }
 
     pub fn state(self: File) State {
@@ -842,7 +1065,7 @@ pub const File = struct {
         if (!self.persist) return;
 
         const storage = if (self.storage) |*s| s else return;
-        storage.save(gpa, schema, values) catch |err| {
+        storage.save(gpa, schema, values, self.baseline) catch |err| {
             // Said once. A warning repeated every time a slider moves is a warning nobody
             // reads, and the condition that caused it does not change within a run.
             self.persist = false;
@@ -853,7 +1076,26 @@ pub const File = struct {
                 ),
                 else => log.warn("settings: could not be saved ({t}); not trying again this run", .{err}),
             }
+            return;
         };
+        self.rebase(gpa, values) catch {
+            // Without a baseline every field is this process's, which is what a save was
+            // before merging existed: correct, and only less generous to another instance.
+            if (self.baseline_arena) |*a| a.deinit();
+            self.baseline_arena = null;
+            self.baseline = null;
+        };
+    }
+
+    /// What was just written becomes what the next save compares against.
+    fn rebase(self: *File, gpa: Allocator, values: []const ?data.Value) !void {
+        var arena: std.heap.ArenaAllocator = .init(gpa);
+        errdefer arena.deinit();
+        const copy = try arena.allocator().alloc(?data.Value, values.len);
+        for (copy, values) |*slot, v| slot.* = if (v) |value| try value.clone(arena.allocator(), .default) else null;
+        if (self.baseline_arena) |*old| old.deinit();
+        self.baseline_arena = arena;
+        self.baseline = copy;
     }
 };
 
@@ -1372,7 +1614,7 @@ test "preferences survive a process that is no longer running" {
     try testing.expect(first.fields == null);
 
     const values = sampleValues();
-    try writing.save(gpa, testSchema(), &values);
+    try writing.save(gpa, testSchema(), &values, null);
 
     // A second `Storage` over the same directory: nothing is carried in memory, so this
     // is the same question a relaunch asks.
@@ -1399,7 +1641,7 @@ test "a damaged file is kept beside the one that replaces it" {
     try testing.expect(storage.writable);
 
     const values = sampleValues();
-    try storage.save(gpa, testSchema(), &values);
+    try storage.save(gpa, testSchema(), &values, null);
 
     const kept = try fixture.readRaw(default_leaf ++ ".bak");
     defer gpa.free(kept);
@@ -1430,7 +1672,7 @@ test "a file this build does not understand is preserved, not overwritten" {
 
     // The user's newer preferences are what this refuses to destroy, so the refusal has
     // to reach the caller rather than being a quiet no-op.
-    try testing.expectError(error.Preserved, storage.save(gpa, testSchema(), &values));
+    try testing.expectError(error.Preserved, storage.save(gpa, testSchema(), &values, null));
 
     const on_disk = try fixture.readRaw(default_leaf);
     defer gpa.free(on_disk);
@@ -1454,7 +1696,7 @@ test "a user-data root that cannot be read disables writing rather than moving" 
     try testing.expect(!storage.writable);
 
     const values = sampleValues();
-    try testing.expectError(error.Preserved, storage.save(gpa, testSchema(), &values));
+    try testing.expectError(error.Preserved, storage.save(gpa, testSchema(), &values, null));
 }
 
 test "a relative root or a leaf that is not one name is refused" {
@@ -1477,4 +1719,163 @@ test "a relative root or a leaf that is not one name is refused" {
         error.InvalidLeaf,
         Storage.open(fixture.os, fixture.dir, ""),
     );
+}
+
+// -- migrations and merged writes (M14 Step 3) ------------------------------------
+
+/// The test schema's history: version 1 had a selection that version 2 moved out and
+/// replaced with a key, and version 3 added a flag.
+const history = struct {
+    const v1: data.Schema = testSchema();
+    const v2: data.Schema = .{
+        .id = testSchema().id,
+        .version = 2,
+        .fields = &.{
+            .{ .name = "window_width", .type = .u32, .presence = .optional },
+            .{ .name = "window_height", .type = .u32, .presence = .optional },
+            .{ .name = "master_volume", .type = .f32, .presence = .optional },
+            .{ .name = "profile", .type = .u32, .presence = .optional },
+        },
+    };
+    const v3: data.Schema = .{
+        .id = testSchema().id,
+        .version = 3,
+        .fields = &.{
+            .{ .name = "window_width", .type = .u32, .presence = .optional },
+            .{ .name = "window_height", .type = .u32, .presence = .optional },
+            .{ .name = "master_volume", .type = .f32, .presence = .optional },
+            .{ .name = "profile", .type = .u32, .presence = .optional },
+            .{ .name = "vsync", .type = .bool, .presence = .optional },
+        },
+    };
+
+    fn oneToTwo(_: Allocator, old: []const ?data.Value, new: []?data.Value) Allocator.Error!void {
+        @memcpy(new[0..3], old[0..3]);
+    }
+    fn twoToThree(_: Allocator, old: []const ?data.Value, new: []?data.Value) Allocator.Error!void {
+        @memcpy(new[0..4], old[0..4]);
+        new[4] = .{ .bool = true };
+    }
+
+    const to_v2 = [_]Migration{.{ .from = v1, .convert = oneToTwo }};
+    const to_v3 = [_]Migration{ .{ .from = v1, .convert = oneToTwo }, .{ .from = v2, .convert = twoToThree } };
+};
+
+test "an older file converts in memory through every step, and the first save keeps it once" {
+    const gpa = testing.allocator;
+    var f = try StorageFixture.init();
+    defer f.deinit();
+
+    var old = try f.storage();
+    const v1_values = sampleValues();
+    try old.save(gpa, history.v1, &v1_values, null);
+    const original = try f.readRaw(default_leaf);
+    defer gpa.free(original);
+
+    var storage = try f.storage();
+    storage.migrations = &history.to_v3;
+    var loaded = try storage.load(gpa, history.v3);
+    defer loaded.deinit(gpa);
+    try testing.expectEqual(State.loaded, loaded.state);
+    try testing.expectEqual(@as(?u32, 1), loaded.migrated_from);
+    const fields = loaded.fields.?;
+    try testing.expectEqual(@as(?i128, 1280), try fields.intAt(0));
+    try testing.expectEqual(@as(?f64, 0.25), try fields.floatAt(2));
+    try testing.expectEqual(@as(?i128, null), try fields.intAt(3));
+    try testing.expectEqual(@as(?bool, true), try fields.boolAt(4));
+
+    // Loading wrote nothing.
+    const untouched = try f.readRaw(default_leaf);
+    defer gpa.free(untouched);
+    try testing.expectEqualSlices(u8, original, untouched);
+
+    // The first save at the new version keeps the old file beside it, once.
+    var values: [5]?data.Value = .{ .{ .int = 1280 }, .{ .int = 720 }, .{ .float = 0.25 }, .{ .int = 1 }, .{ .bool = true } };
+    try storage.save(gpa, history.v3, &values, null);
+    const kept = try f.readRaw(default_leaf ++ ".v1");
+    defer gpa.free(kept);
+    try testing.expectEqualSlices(u8, original, kept);
+    const now = try f.readRaw(default_leaf);
+    defer gpa.free(now);
+    try testing.expectEqual(@as(u32, 3), readU32(now, 16));
+    // The older build, meanwhile, will not save over what the newer one wrote.
+    var older_build = try f.storage();
+    try testing.expectError(error.Preserved, older_build.save(gpa, history.v1, &v1_values, null));
+
+    // A player can put a version 1 file back by hand. The next save converts it and keeps
+    // the first copy rather than this one.
+    var different = sampleValues();
+    different[0] = .{ .int = 999 };
+    var older_bytes: std.ArrayList(u8) = .empty;
+    defer older_bytes.deinit(gpa);
+    try encode(gpa, history.v1, &different, .default, &older_bytes);
+    try f.writeRaw(default_leaf, older_bytes.items);
+    values[1] = .{ .int = 800 };
+    try storage.save(gpa, history.v3, &values, null);
+    const still = try f.readRaw(default_leaf ++ ".v1");
+    defer gpa.free(still);
+    try testing.expectEqualSlices(u8, original, still);
+
+    // A chain that does not reach the current version converts nothing, and keeps the file.
+    try f.writeRaw(default_leaf, original);
+    var gap = try f.storage();
+    gap.migrations = history.to_v3[1..];
+    var refused = try gap.load(gpa, history.v3);
+    defer refused.deinit(gpa);
+    try testing.expectEqual(State.preserved, refused.state);
+}
+
+test "two writers keep each other's fields, and the same field is the last writer's" {
+    const gpa = testing.allocator;
+    var f = try StorageFixture.init();
+    defer f.deinit();
+
+    var seed = try f.storage();
+    const first: [4]?data.Value = .{ .{ .int = 1000 }, .{ .int = 700 }, .{ .float = 0.5 }, null };
+    try seed.save(gpa, testSchema(), &first, null);
+
+    // Both read the same file, and each keeps what it read as its baseline.
+    var a = try f.storage();
+    var a_loaded = try a.load(gpa, testSchema());
+    defer a_loaded.deinit(gpa);
+    var b = try f.storage();
+    var b_loaded = try b.load(gpa, testSchema());
+    defer b_loaded.deinit(gpa);
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a_base = try valuesOf(arena.allocator(), a_loaded.fields.?, 4);
+    const b_base = try valuesOf(arena.allocator(), b_loaded.fields.?, 4);
+
+    // `a` changes the width; `b`, whose width is stale, changes only the volume.
+    var a_values: [4]?data.Value = first;
+    a_values[0] = .{ .int = 1200 };
+    try a.save(gpa, testSchema(), &a_values, a_base);
+    var b_values: [4]?data.Value = first;
+    b_values[2] = .{ .float = 0.75 };
+    try b.save(gpa, testSchema(), &b_values, b_base);
+
+    var after = try seed.load(gpa, testSchema());
+    defer after.deinit(gpa);
+    try testing.expectEqual(@as(?i128, 1200), try after.fields.?.intAt(0));
+    try testing.expectEqual(@as(?f64, 0.75), try after.fields.?.floatAt(2));
+
+    // Both change the height: the last save wins that field, and only that field.
+    a_values[1] = .{ .int = 710 };
+    try a.save(gpa, testSchema(), &a_values, a_base);
+    b_values[1] = .{ .int = 720 };
+    try b.save(gpa, testSchema(), &b_values, b_base);
+    var last = try seed.load(gpa, testSchema());
+    defer last.deinit(gpa);
+    try testing.expectEqual(@as(?i128, 720), try last.fields.?.intAt(1));
+    try testing.expectEqual(@as(?i128, 1200), try last.fields.?.intAt(0));
+
+    // A newer build's file appears: neither writer replaces it.
+    var future: std.ArrayList(u8) = .empty;
+    defer future.deinit(gpa);
+    try encode(gpa, history.v2, &.{ null, null, null, .{ .int = 3 } }, .default, &future);
+    try f.writeRaw(default_leaf, future.items);
+    try testing.expectError(error.Preserved, a.save(gpa, testSchema(), &a_values, a_base));
+    const kept = try f.readRaw(default_leaf);
+    defer gpa.free(kept);
+    try testing.expectEqualSlices(u8, future.items, kept);
 }
