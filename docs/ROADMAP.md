@@ -736,7 +736,7 @@ is not Foundry's business.
 **Exit criteria:** a packaged sample where a player — not an environment variable — turns a mod
 on, and preferences survive a schema change without losing what the player chose.
 
-### M15 — Editor: "content is authored in Foundry" — **not started**
+### M15 — Editor: "content is authored in Foundry" — **designed; implementation not started**
 
 `CLAUDE.md` §9's oldest deferred item, dated M6+. Its shape is already decided: tools are
 Foundry applications (ADR-0011), and the editor is a **re-host of the debug overlay's
@@ -744,8 +744,18 @@ introspection, not a rewrite of it** (ADR-0025). The overlay was built as packag
 API precisely so this milestone would not need a private path.
 
 **Exit criteria:** a content package authored, saved and reloaded without hand-editing `.fdt`,
-using only calls the public ABI already exposes — an editor with a back door has failed I4
-regardless of what it can do.
+using only calls published in the public ABI before the editor consumes them — an editor with
+a back door has failed I4 regardless of what it can do. V3 supplies introspection, not source
+editing or saving; an additive authoring capability must precede the editor consumer.
+
+**Design written 2026-09-19:** [editor.md](design/editor.md), with proposed
+[ADR-0042](adr/0042-authoring-through-the-public-api.md) and
+[ADR-0043](adr/0043-source-preserving-authoring-and-explicit-builds.md). Nine steps: source
+ranges/emission; reusable compiler and workspaces; typed edits and history; saves and isolated
+builds; public ABI v4; standalone host and inspection client; authoring workflow; external
+author/consumer proof; closure. All are unstarted. The first editor authors records using
+existing schemas, preserves source text, and proves its output through the sample's normal
+mod path. A scene editor, schema designer and executing game/plugin host are outside this scope.
 
 ### M16 — Connected: "it plays with others" — **not started; trigger-started**
 

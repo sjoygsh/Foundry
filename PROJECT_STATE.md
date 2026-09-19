@@ -10,7 +10,22 @@ player choosing their mods in a packaged sample, on macOS and on Windows:**
 - **the room's MO2-style mod screen, built from that table alone.**
 
 **M13 before it proved Windows x64 through Vulkan. Linux is M18, after the first game and before
-3D (ADR-0039). M15 through M17 remain unstarted, and nothing of M15 has been begun.**
+3D (ADR-0039). M15's design is written; implementation has not begun. M16 and M17 remain
+unstarted.**
+
+**M15 planning handoff, 2026-09-19 — stop before Step 1.**
+
+- `docs/design/editor.md` specifies the standalone content-record editor and nine implementation
+  steps, all not started, from the completed `be89db6` / `m14` baseline.
+- Proposed ADR-0042 places an optional authoring service at L4, reuses the package compiler,
+  and publishes it through additive `FoundryApi_v4` before its editor client uses it.
+- Proposed ADR-0043 separates source-preserving drafts, per-file saves, isolated builds and
+  runtime reload. Root grants, exact numeric values, undo/redo and failure recovery are specified.
+- The editor client is header-only; source/dependency/loaded inspection uses public calls.
+  The exit includes real UI authoring outside the tree and the ordinary sample mod path.
+- No implementation, build graph, header or content changes. M14's completed verification is
+  accepted without repetition. This documentation handoff checks links and diff consistency only.
+  Next: accept or deliberately revise ADR-0042/0043, then implement **Step 1 only** when requested.
 
 **Completed M14 Step 9, 2026-09-19: the exit proof, on both platforms, and M14's close.**
 - **§12's five parts passed in ReleaseSafe builds driven by the operating system's own input**,
@@ -1989,12 +2004,13 @@ signing, notarization and a clean recipient Mac (ADR-0032) — not engine work. 
 adding to it, only M10 was new, **M10 and M11 are complete (2026-09-13)** and **M12 is
 complete (2026-09-14)**. **M13 is complete (2026-09-19)**, proving
 Windows x64 through Vulkan. **M14 is complete (2026-09-19)**: a player chooses their mods in a
-packaged sample, on macOS and on Windows. M15 through M17 are unstarted.
+packaged sample, on macOS and on Windows. M15 is designed but unimplemented; M16 and M17 are
+unstarted.
 
 ## Current milestone
 
-**M15 — Editor has not been started.** It owes a design document before any code
-(`docs/ROADMAP.md`).
+**M15 — Editor is designed; implementation has not started.** Read `docs/design/editor.md`,
+especially §14's nine steps, and proposed ADR-0042/0043. The handoff is before Step 1.
 
 **M14 — Managed: "players choose their mods." Complete, 2026-09-19.** Read
 `docs/design/mod-management.md` and ADR-0040/0041. All nine steps are implemented:
@@ -2915,7 +2931,8 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M0–M14 are complete, and nothing is half-built.** M14's specification and its Resolutions
+**M0–M14 are complete, and nothing is half-built.** M15's design is written in
+`docs/design/editor.md`; no implementation has begun. M14's specification and its Resolutions
 are in `docs/design/mod-management.md`. M13's
 specification and its Resolutions are in `docs/design/vulkan.md`. M12's specification and all
 six Resolutions are in
@@ -3565,10 +3582,11 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M15 — Editor, not started.** M14 is complete and tagged `m14`. M15 begins with its
-design document, and implementation waits for the owner to accept it (`docs/ROADMAP.md`). Its
-shape is already decided: the editor re-hosts the debug overlay's introspection (ADR-0025) and
-uses only calls the public ABI exposes (I4).
+**Next: M15 Step 1 — Source ranges and deterministic value emission.** M14 is complete and
+tagged `m14`. M15's design is `docs/design/editor.md`, with nine steps and proposed
+ADR-0042/0043. Implementation waits for the owner's go; no Step 1 work is included in the
+planning handoff. The editor re-hosts public introspection (ADR-0025), and authoring is
+published in v4 before any editor client can use it (I4).
 
 One small recorded item can be taken on the owner's word before or beside it: the flaky
 Windows sleep test (Known bugs). `mod-management.md` §14's questions stay open until a
@@ -3620,7 +3638,8 @@ review of `main` rather than beginning on a schedule.
   merged writes, content themes and the game widget set, `FoundryApi_v3`, and the room's mod
   screen. The exit proof passed on macOS and on Windows.
 * **M15 — Editor.** §9's oldest item, dated M6+; ADR-0011 and ADR-0025 already decided its
-  shape as a re-host of the overlay's introspection.
+  shape as a re-host of the overlay's introspection. Designed 2026-09-19 in
+  `docs/design/editor.md`, with proposed ADR-0042/0043; all nine implementation steps remain.
 * **M16 — Connected.** Networking, trigger-started, carrying ADR-0013's bit-exact determinism
   question only if lockstep is chosen.
 * **M17 — Released.** ADR-0032's deferred gate, and last in the phase on purpose: Developer ID
@@ -4844,6 +4863,9 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 ## Notes for the next session
 
 **Resume point, 2026-09-19:** M0–M14 complete and tagged.
+- **M15's design is written:** `docs/design/editor.md`, proposed ADR-0042/0043. All nine
+  implementation steps remain; stop before Step 1 until the owner starts it. M14's verification
+  remains accepted; no code changed in this planning handoff.
 - **M13's record** is `docs/design/vulkan.md` with ADR-0037/0038/0039. Vulkan runs on Windows x64,
   and `-Drhi=vulkan` builds, tests and installs there (AGENTS.md, *Vulkan work*).
 - **M12's record** is `docs/design/jobs-and-threading.md` and ADR-0036:
@@ -4852,7 +4874,8 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 - **M14's record** is `docs/design/mod-management.md` with ADR-0040/0041: `app.ModSet`,
   `app.profiles`, settings migrations and merged writes, the UI kernel's image commands and
   disabled scope, `foundry:ui_theme` and `app.resolveUiTheme`, the skinned game widget set,
-  `FoundryApi_v3`, and the room's mod screen (M). M15–M17 remain unstarted.
+  `FoundryApi_v3`, and the room's mod screen (M). M15 is designed but unimplemented;
+  M16–M17 remain unstarted.
 - **Driving a windowed room on Windows:** from a scheduled task in the desktop session,
   `keybd_event` and `mouse_event`, sent only while the room is the foreground window and, for a
   click, the window under the point. A development install lists both samples' packages, so a

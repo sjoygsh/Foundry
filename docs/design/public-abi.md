@@ -693,6 +693,13 @@ must not settle them opportunistically. Question 1 was resolved by the M7 exit p
 > `mod-management.md` §9 and its Step 7 Resolution. The room's mod screen is built from this
 > table alone. Questions 2–6 remain open.
 
+> **M15 planning, 2026-09-19:** [editor.md](editor.md) and proposed
+> [ADR-0042](../adr/0042-authoring-through-the-public-api.md) specify an additive v4 authoring
+> service. It publishes bounded host-granted source workspaces, exact-value inspection and
+> edits, history, saves, builds and loaded-preview inspection before the editor consumes them.
+> No v4 code or header exists yet; v1–v3 remain unchanged. This is not general mod-private
+> storage, per-mod tables, native unloading or an expansion of Lua's binding.
+
 ## 19. Implementation order
 
 Each step ends with something that runs and something that is tested.

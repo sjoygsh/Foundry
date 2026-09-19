@@ -555,6 +555,14 @@ Decisions live in `docs/adr/NNNN-short-title.md`, using the template in `docs/ad
 Write an ADR when a choice constrains future work, is expensive to reverse, or will look
 arbitrary to a future session. Do not write one for routine implementation choices.
 
+**Pending M15 design (2026-09-19; not part of the implemented layer graph):**
+[ADR-0042](docs/adr/0042-authoring-through-the-public-api.md) proposes an optional authoring
+service and an ABI-only editor client;
+[ADR-0043](docs/adr/0043-source-preserving-authoring-and-explicit-builds.md) proposes
+source-preserving edits and explicit save/build/reload boundaries. Both are proposed, with
+acceptance before implementation. [editor.md](docs/design/editor.md) is the nine-step plan;
+Step 1 has not begun. Add accepted decisions to §4.1 when accepted, not merely planned.
+
 ---
 
 ## 9. Deliberately postponed decisions
@@ -565,7 +573,7 @@ milestone named below is where `docs/ROADMAP.md` now places it.
 
 | Decision | Due | Notes |
 | --- | --- | --- |
-| Separate editor application | **M15** | In-process debug overlay first; the editor re-hosts its introspection (ADR-0025). |
+| Separate editor application | **M15, designed; implementation not started** | In-process debug overlay first; the editor re-hosts its introspection (ADR-0025). [editor.md](docs/design/editor.md) specifies nine steps; ADR-0042/0043 are proposed. |
 | Second graphics backend | **Done in M13** (2026-09-19) | **Vulkan (ADR-0033)**, built to ADR-0037/0038 in [vulkan.md](docs/design/vulkan.md)'s ten steps. Windows x64 is a runtime claim on the tested machine, with its limits recorded there. Linux left M13 by ADR-0039 and is M18's. Device recovery stays an open `rhi.md` question. |
 | Shader cross-compiler vs. hand-written variants | **Decided in M13** (ADR-0038, 2026-09-14) | Hand-written GLSL variants for the two existing shader pairs, compiled to SPIR-V with pinned SDK tools. ADR-0015's future material/mod shader constraint remains. |
 | Job system / threading model | **Done in M12** (was dated post-M5) | **Decided by ADR-0036 and implemented, 2026-09-14** — explicit `core.Jobs`, fork-join over data-determined chunks, systems kept in order, nothing in the ABI. What it deliberately left out — parallel system scheduling, task graphs, a render thread — has no date: each waits on a measured trigger in `docs/design/jobs-and-threading.md` §9. |
