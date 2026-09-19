@@ -11,8 +11,28 @@ drawing through Vulkan on Windows x64:**
 **Both samples run on it from a relocated install, each wearing an icon it supplies. Windows is a
 runtime claim for the tested machine, with its limits recorded, and the RHI's rules survived with
 none relaxed. Linux left M13 by ADR-0039: it is M18, after the first game and before 3D. M14 is in
-progress (`docs/design/mod-management.md`, ADR-0040/0041): Steps 1 to 8 are done, and Step 9,
-the proof and closure, is next. M15 through M17 remain unstarted.**
+progress (`docs/design/mod-management.md`, ADR-0040/0041): Steps 1 to 8 are done, and Step 9's
+exit proof passed on macOS. The Windows run is left, then the tag `m14`. M15 through M17
+remain unstarted.**
+
+**M14 Step 9, 2026-09-19: the exit proof passed on macOS; the Windows run is outstanding.**
+- **§12's five parts passed in a ReleaseSafe room release** unpacked from its zip, with the
+  operating system's own keys and clicks and mods built outside the tree:
+  1. an M13-era version 1 settings file, written by M13's own code, migrated;
+  2. a click turned a mod on and Apply saved it, with the version 1 bytes kept once;
+  3. the next start loaded it and the hall's lamps were drawn lit;
+  4. a theme mod re-skinned the screen and the card;
+  5. two instances at once kept each other's volume, list and profile name.
+- **The hall's hint now names M,** a change of content. Before, only the log said how to open
+  the screen.
+- **A theme installed without its files folder** fell back to the room's own look with one
+  warning per resolver.
+- **The bar passed 1,459 of 1,460**, and the Metal graph 1,464 of 1,470. Both releases staged,
+  and the Vulkan checks for Windows passed.
+- **Not yet:** the Windows run. The PC's GPU was busy at about 89% 3D load, and this session's
+  permissions refused copying files to it and registering M13's desktop-session task.
+
+Resolution: `mod-management.md`, Step 9.
 
 **Completed M14 Step 8, 2026-09-19: the room's mod screen.**
 - `samples/room/mods_screen.zig` is `mod-management.md` §11's screen, built only from
@@ -1966,7 +1986,8 @@ signing, notarization and a clean recipient Mac (ADR-0032) — not engine work. 
 "Hardening and reach" (M10-M17), is under way**: it gathers the deferred work rather than
 adding to it, only M10 was new, **M10 and M11 are complete (2026-09-13)** and **M12 is
 complete (2026-09-14)**. **M13 is complete (2026-09-19)**, proving
-Windows x64 through Vulkan. **M14 is in progress**, Steps 1 to 8 of nine done; M15 through
+Windows x64 through Vulkan. **M14 is in progress**, Steps 1 to 8 of nine done and Step 9's macOS
+proof passed; M15 through
 M17 are unstarted.
 
 ## Current milestone
@@ -1974,8 +1995,8 @@ M17 are unstarted.
 **M14 — Managed is in progress.** Read `docs/design/mod-management.md` and ADR-0040/0041.
 Steps 1 to 8 are done (2026-09-19): the mod set, profiles on disk, migrations with merged
 writes (both samples on profiles), the UI kernel's image commands and disabled scope, themes
-as content, the skinned game widget set, `FoundryApi_v3`, and the room's mod screen. Step 9,
-the proof and closure, is next.
+as content, the skinned game widget set, `FoundryApi_v3`, and the room's mod screen. Step 9's
+exit proof passed on macOS; the Windows run and the tag are left.
 
 **M13 — Portable: "the RHI was real." Complete, 2026-09-19.** Read `docs/design/vulkan.md`
 and ADR-0033/0037/0038/0039. All ten steps are implemented:
@@ -2883,8 +2904,8 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M0–M13 are complete. M14 is in progress:** Steps 1 to 8 are done, and nothing is
-half-built. M13's
+**M0–M13 are complete. M14 is in progress:** Steps 1 to 8 are done, and Step 9's macOS exit
+proof passed. Only the Windows run and the tag are left, and nothing is half-built. M13's
 specification and its Resolutions are in `docs/design/vulkan.md`. M12's specification and all
 six Resolutions are in
 `docs/design/jobs-and-threading.md`, and M11's nine are in `docs/design/hardening.md`; the M5
@@ -3533,17 +3554,21 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M14 Step 9, prove and close** (`docs/design/mod-management.md` §§12 and 13).
-- Run §12's exit proof on a ReleaseSafe room `dist`, with mods built outside the tree:
-  1. an M13-era v1 settings file migrates;
-  2. a player turns a mod on by a click and applies;
-  3. the next start loads it, and it changes the hall visibly;
-  4. a theme mod re-skins the screen;
-  5. two instances keep each other's changes.
-- Do the Windows run, with the owner's go.
-- Update `CLAUDE.md`, whose §5 still says a mod manager is unbuilt, together with AGENTS.md,
-  this file, the roadmap, the README, the design index, `public-abi.md`, `ui.md` and
-  `distribution.md`. Set the ADR statuses, commit, tag `m14`, and stop before M15.
+**Next: finish M14 Step 9 — the Windows run, then close** (`docs/design/mod-management.md`
+§§12 and 13, and its Step 9 Resolution). The macOS exit proof has passed, and `CLAUDE.md` §5 is
+updated.
+- **The Windows run needs two things the last session did not have:** the PC free, since its
+  GPU showed about 89% 3D load, and permission to copy files to it and to register M13's
+  desktop-session scheduled task. The owner decides both.
+- **Over SSH** (AGENTS.md, *Vulkan work*): overlay the tree, run the native test graph at two
+  jobs and below-normal priority, and install the room with `-Drhi=vulkan` and relocate it.
+- **In the desktop session:** give the relocated room a user-data folder (`APPDATA` pointed at a
+  scratch folder, as M13 did) holding the M13-era file and the proof's mods. Then drive it by
+  real input: M, a click on a mod's box, Apply, a restart that loads it, and a capture of the
+  screen through Vulkan.
+- **Then close:** update AGENTS.md, this file, the roadmap, the README, the design index,
+  `public-abi.md`, `ui.md` and `distribution.md`, set the ADR statuses, commit, tag `m14`, and
+  stop before M15.
 
 Steps 1 to 8 are done.
 M14's design is `docs/design/mod-management.md`: nine steps, each stopping with its Resolution.
@@ -4813,8 +4838,13 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 - **M14 is in progress** (`docs/design/mod-management.md`, ADR-0040/0041). Steps 1 to 8
   (`app.ModSet`, `app.profiles`, settings migrations and merged writes, the UI kernel's image
   commands and disabled scope, `foundry:ui_theme`, `app.resolveUiTheme`, the skinned game
-  widget set, `FoundryApi_v3`, and the room's mod screen) are done; Step 9, proof and closure,
-  is next. M15–M17 remain unstarted.
+  widget set, `FoundryApi_v3`, and the room's mod screen) are done. Step 9's macOS exit proof
+  passed; its Windows run and the tag are left. M15–M17 remain unstarted.
+- **Driving a windowed room on this Mac:** keys posted to the room's process arrive once the
+  room is active. Clicks posted to the process alone were lost or repeated under SDL, so the
+  Step 9 proof used the system cursor, guarded so that it clicked only when the room was
+  frontmost and its window topmost at the point, and put the cursor back. A room started by
+  its binary does not activate itself; activate it through `NSRunningApplication`.
 `zig build check -Drhi=metal` is now part of the bar. The environment notes below still apply.
 
 * Read `CLAUDE.md` first, then this file, then `docs/ROADMAP.md`.

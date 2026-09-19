@@ -455,7 +455,10 @@ same order on every machine (I9).
 
 The *disciplines* that make modding possible were in force from day one, before any of the above
 was built, and they are exactly Invariants I1–I9. That is why neither M7 nor M8 required a
-retrofit below it. A mod manager UI is still unbuilt.
+retrofit below it, and M14's mod manager did not either. A player's selection is an ordered
+profile, applied at the next start (ADR-0040). The screen that edits it is built from the public
+table alone and drawn from a content theme (ADR-0041), so a game's own mod manager, or a mod's,
+has the same reach as the reference one.
 
 The Metal shim (ADR-0012) is a small, low-risk C ABI boundary inside the engine that exercised
 the same discipline early.

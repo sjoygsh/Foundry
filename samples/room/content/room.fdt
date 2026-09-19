@@ -185,7 +185,7 @@ settings room:settings.main {
     hum_sound    room:sounds.hum
 
     title "the long hall"
-    hint  "wasd walks. click to go. tab opens the card"
+    hint  "wasd walks. click to go. tab opens the card, m the mods"
     won   "the hall is lit.\nthe way out is open."
     lamp_label "lamps lit"
 

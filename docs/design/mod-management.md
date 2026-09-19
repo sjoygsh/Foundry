@@ -4,7 +4,9 @@
 and [ADR-0041](../adr/0041-game-widget-set-and-content-themes.md). **Steps 1 to 8 are implemented
 (2026-09-19): the mod set, profiles on disk, migrations with concurrent writes, the UI
 kernel's additions, themes as content, the game widget set, `FoundryApi_v3`, and the room's
-mod screen. Step 9, the proof and closure, is next.** Step 2 was re-scoped when it began; see §13.
+mod screen. Step 9's exit proof passed on macOS the same day, in a ReleaseSafe release driven by
+real input. Its Windows run is outstanding, and M14 closes with it.** Step 2 was re-scoped when
+it began; see §13.
 **Date:** 2026-09-19
 **Baseline:** `754665a` / `m13`; M0–M13 complete, 1,405 declared / 1,395 headless tests.
 **Builds on:** ADR-0024 (one UI kernel, two widget sets), ADR-0026 (the host supplies
@@ -1151,3 +1153,76 @@ Step 8. Lua gains nothing (§9).
 
 **Not yet:** Step 9's exit proof — Apply taking effect at the next start, a theme mod
 re-skinning the screen, two instances keeping each other's changes — and the Windows run.
+
+## Resolution — 2026-09-19, Step 9: the exit proof on macOS
+
+**§12's exit proof passed, in order, in a ReleaseSafe release of the room, with real input.**
+- **The build:** `zig build dist -Dapp=room -Dplatform=sdl3 -Drhi=metal -Doptimize=ReleaseSafe`,
+  whose zip was unpacked into a scratch folder and run from there, against a temporary `HOME`.
+- **The settings file** was written by M13's own `app.settings.Storage.save`, from a worktree
+  of tag `m13`, with M13's version 1 room schema: 1344×756, volume 0.4, and `night:palette`
+  enabled.
+- **The mods were built outside the tree** with `fpack`:
+  - `night:palette`, the file's own;
+  - `brighter:lamps`, whose lamps look lit before anyone reaches them;
+  - `dusk:theme`, the room's theme record overridden with cool colours and an atlas of its own.
+- **The player was the operating system's input.** Keys went to the room's process. Clicks moved
+  the system cursor, and only after checking that the room was the frontmost application and
+  that its window was topmost at the point. The cursor went back afterwards. Clicks posted to
+  the process alone were unreliable under SDL (lost or repeated), so the proof did not use them.
+
+**The five parts:**
+1. **Migration.** The first start converted version 1 in memory, and carried one package into a
+   fresh "Default" profile, written at startup as `profiles/1.fset`. It opened at 1344×756 with
+   volume 0.40, both from the player's file. The settings file stayed byte-identical until the
+   first save.
+2. **A click, and Apply.** M opened the screen. A click on Brighter Lamps' box showed "Changes
+   not applied yet." with Apply and Revert enabled, and a click on Apply saved it.
+   - The settings became version 2: the same window and volume, plus profile 1.
+   - The M13 bytes were kept, unchanged, as `settings.fset.v1`.
+   - "Default" lists `night:palette`, then `brighter:lamps`.
+   - The shutdown line read "screen opened 1 time(s), 1 change(s) made, 0 revert(s), pending
+     selection as saved".
+3. **The next start** loaded `brighter:lamps` after `night:palette`, and the north and south
+   lamps were drawn lit before the walker moved. That start wrote nothing.
+4. **A theme mod re-skinned the screen.** `dusk:theme` was dropped into `mods/`, turned on with
+   a click and applied. On the next start the screen and the card were drawn in its colours
+   from its atlas, and the screen's relation column showed it winning over the room.
+5. **Two instances at once kept each other's changes.** Both ran against one home.
+   - B moved the card's volume slider from 0.40 to 0.74, which saved it.
+   - A turned Night Palette off and applied. That changed the profile's list, and B's volume
+     stayed.
+   - B's screen still showed Night Palette on. B renamed the profile "evening", which writes
+     the name only.
+   - After both quit, the profile held B's name and A's list (`brighter:lamps`,
+     `dusk:theme`). The settings held B's volume beside the profile key.
+   - A third start loaded exactly that list at volume 0.74, showed "evening" with Night Palette
+     off, and wrote nothing.
+
+Every run logged 0 capture failures, and the hall took no walk command from a click meant for
+a screen. The proof ran twice from a fresh home, the first time before the hint change below.
+After the first start, the apply and the next start, every file had the same hash in both runs.
+
+**What the proof found:**
+- **The hall's hint never mentioned M.** Only the log did, so a player had no way to find the
+  screen. The room's hint now reads "wasd walks. click to go. tab opens the card, m the mods",
+  a change of content alone.
+- **A theme with files is installed as two things,** the `.fpk` and the package's own folder
+  beside it (`content-mods.md`, "Your files have to travel with your package"). The first
+  attempt copied only the `.fpk`. The room then warned once for its card and once through the
+  table, said the screen's theme could not be used, and kept its own look. That is §10's
+  fallback, seen in a release build.
+
+**Evidence around it:**
+- The bar passed 1,459 of 1,460 tests, with the existing skip, in 60 steps.
+- The Metal-selected graph passed 1,464 of 1,470, with 6 skipped, in 64 steps.
+- Both releases staged.
+- `check` and `vulkan-check` passed for Windows with Vulkan selected.
+- 1,531 test declarations in all.
+
+**Not yet: the Windows run.** Two things stopped it:
+- The PC's GPU showed a sustained 3D load of about 89%.
+- This session's permissions refused copying files to it and registering the desktop-session
+  task that M13's windowed runs used.
+
+M14 closes with that run and the tag `m14`.
