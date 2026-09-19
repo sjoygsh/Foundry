@@ -2,7 +2,7 @@
 
 **Milestone:** M15 — Editor: “content is authored in Foundry”
 **Status:** Designed 2026-09-19. The owner accepted it on 2026-09-20, adding that the editor's
-UI and UX follow Unreal Engine 5's (§10). Steps 1 and 2 are implemented (2026-09-20); Steps 3–9
+UI and UX follow Unreal Engine 5's (§10). Steps 1–3 are implemented (2026-09-20); Steps 4–9
 are not started.
 **Decisions:** accepted [ADR-0042](../adr/0042-authoring-through-the-public-api.md) and
 [ADR-0043](../adr/0043-source-preserving-authoring-and-explicit-builds.md).
@@ -28,9 +28,9 @@ saves, build, reload and a real external-package proof. Design for later: more c
 the public authoring service. Postpone: scene gizmos, tile painting, raw text/code editing,
 asset painting/import conversion, docking, project generators and plugin execution.
 
-M0–M14's completed results remain the baseline. This document specifies future implementation.
-Apart from Step 1's additions to `data` and Step 2's `author` module (with `fpack
---dependency`), none of the following module names, new calls or build targets exist yet.
+M0–M14's completed results remain the baseline. Steps 1–3 have implemented the source model,
+bounded workspaces and typed in-memory commands; the save/build, ABI and application surfaces
+specified below remain future implementation.
 
 ## 2. What the current code supplies
 
@@ -47,8 +47,9 @@ Apart from Step 1's additions to `data` and Step 2's `author` module (with `fpac
 
 Do not rebuild these mechanisms. In particular, runtime getters narrow floats to `f32` and
 cannot reconstruct authored values, omitted fields or source comments. They serve the loaded
-browser, not the source serializer. `fpack` currently starts with a fresh registry and has no
-dependency-package CLI option; adding explicit schema inputs belongs to §14 Step 2.
+browser, not the source serializer. Since Step 2, `fpack` and workspaces share `author`'s one
+compiler and explicit dependency-package inputs; Step 3 reads dependency values through the
+full-precision package reader.
 
 ## 3. Ownership and layering
 
@@ -467,7 +468,7 @@ work: Step 1's smallest parser-span representation preserving imports, and Step 
 layouts/call count. They may refine this design, not bypass its
 boundaries. Any contradiction requiring a different architecture gets an ADR/Resolution first.
 
-## 14. Implementation order — nine steps, Steps 1–2 done
+## 14. Implementation order — nine steps, Steps 1–3 done
 
 Each step is one handoff: its tests, bar, Resolution, project-state update and commit, then stop.
 ADR-0042/0043 were accepted on 2026-09-20, before any Step 1 code.
@@ -491,7 +492,7 @@ and enforce dependencies in the build graph. No editing, saves or ABI publicatio
 **Exit:** existing fpack tests/byte fixtures pass, CLI dependency schemas work, and workspace
 discovery refuses malformed/escaping/over-budget inputs without executing package code.
 
-### Step 3 — Typed record commands and undo/redo
+### Step 3 — Typed record commands and undo/redo — done 2026-09-20
 
 Implement §5–6 over workspace documents: create/duplicate/override/delete, nested/list/scalar
 edits, presence/default metadata, revisions, dirty tracking and bounded history. Use full-precision
@@ -801,3 +802,67 @@ changed: `FoundryApi_v4` is Step 5. And the CLI checks schemas where the workspa
 requirements: §8 asks `fpack` for "dependency schema inputs", so a compile is held to the
 schemas it was given, while a requirement no grant satisfies is the workspace's diagnostic.
 `fpack --help` says what it does rather than more than it does.
+
+## Resolution — 2026-09-20, Step 3: typed record commands and undo/redo
+
+**A command is typed intent, never submitted source text.** `author/edit.zig` accepts a record
+reference, structural field/list selectors and a `data.Value` with the spellings of IDs the
+caller introduced. It resolves those selectors against the workspace's schema registry, asks
+Step 1's splice helpers for one byte edit, reparses and validates the candidate, and installs it
+only after the history entry and every other fallible allocation are ready. Create, duplicate,
+whole-record dependency override, delete, set/unset, list insert/remove/move and Undo/Redo are
+all reached through `workspace.Workspace`; schema declarations remain inspect-only.
+
+**Parses are operation snapshots; source bytes remain the persistent model.** A workspace keeps
+current bytes, a separately owned disk baseline and only the schema registry between commands.
+An operation parses the documents it needs with source spans and releases those trees when it
+finishes. This avoids retaining an expanded tree for every possible import root and means a
+command always validates the bytes at its stated revision. The compiler and editor share the
+same package-relative path normalizer and the same dependency/engine schema registration
+function, so an import or available schema cannot mean one thing in `fpack` and another in a
+workspace.
+
+**Incomplete and invalid are different states.** Missing required record or nested fields emit
+diagnostics but remain editable drafts. A syntax error, unknown schema, wrong value type,
+repeated field or unsupported patch/remove construct makes that document read-only while other
+valid documents stay usable. Each parser invocation owns a fresh bounded diagnostic collector
+whose result is appended to the caller's collector; otherwise an earlier workspace diagnostic's
+`failed` bit would make a later valid parse return `ContentInvalid` without reference to its
+own bytes.
+
+**Exact dependency copies do not cross the runtime ABI.** A whole-record override reads every
+stored field through `fpk.Fields.valueAt`, including 128-bit integer transport for `u64`/`i64`,
+`f64`, nested values, lists and the presence bitmap. Recoverable ID spellings come from the
+dependency's package, schema and record names plus source spellings already in the workspace.
+If a stored hash has no such spelling, emission returns `UnspelledId`; it never manufactures a
+name. Optional absence stays absent, and a future upstream field is not silently merged into an
+already-created override (§5).
+
+**History owns bounded source fragments and structural selections.** One accepted command keeps
+its before/after fragment and before/after locator. Undo and Redo replay those exact fragments,
+validate the resulting source again and advance the workspace revision. A new edit clears Redo.
+The 128-command/64-MiB defaults evict only oldest complete commands and expose that truncation;
+a command larger than the configured history budget is refused. The 256-MiB persistent editing
+budget counts current drafts, independent baselines and retained history, and candidate checks
+also count the temporary old draft and emitted replacement present during validation.
+
+**Atomicity includes allocation failure.** Candidate bytes replace the document only after
+parse, structural validation, uniqueness, budget projection, owned history creation and stack
+capacity all succeed. An allocation-failure sweep found two error cleanups freeing the same
+snapshot array; removing the obsolete pre-ownership cleanup makes every induced failure leak-
+free and leaves old bytes, revision and history intact. Stale revisions are refused before any
+snapshot or candidate work.
+
+**Evidence.** Six workspace tests cover all scalar widths/kinds, signed zero-capable float
+transport, IDs, nested fields, scalar and nested lists, presence/default metadata, incomplete
+drafts, create/duplicate/delete, exact dependency overrides and absence, an unspellable ID,
+history eviction/branching, a command larger than its history budget and every allocation
+failure point. All commands are driven back through inspection and exact Undo/Redo source
+restoration. Disabling the expected-revision comparison made the stale-command test accept and
+mutate old intent; the assertion failed, and the guard was restored. The full bar passes
+**1,517 of 1,518** headless tests (one existing skip), from **1,589 declared**, including native,
+Metal, Linux/Windows cross checks and both 30-frame null sample runs.
+
+**Left for Step 4.** Step 3 changes memory only. It does not create files, acquire a workspace
+lock, compare disk baselines, save, snapshot assets or build packages. Undo therefore never
+writes to disk, and the baseline does not move. No ABI changed; publication remains Step 5.

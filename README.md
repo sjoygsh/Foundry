@@ -91,10 +91,11 @@ exit proof passed on macOS and on Windows through Vulkan, in release builds driv
 input. Both wrote the same files byte for byte, apart from the volume a slider click chose.
 
 **Under way: M15, the standalone content editor.** Its [nine-step design](docs/design/editor.md)
-is accepted, and Step 1 is done: the parser can say where everything was written, and
-`data` can put a value back without disturbing the bytes around it. It specifies schema-driven record forms,
-source-preserving saves and package builds through the public ABI, in a UI modelled on
-Unreal Engine 5's editor.
+is accepted, and Steps 1–3 are done: the parser can say where everything was written; `data`
+can put a value back without disturbing the bytes around it; and `author` now owns bounded,
+revisioned typed record commands with exact dependency overrides and Undo/Redo. The remaining
+steps provide safe saves/builds and publish them before the standalone client consumes them,
+in a UI modelled on Unreal Engine 5's editor.
 
 All three modding tiers work — see [docs/modding](docs/modding/). Tier 2 is restricted
 Lua 5.5.1, one VM per package, bounded in memory, instructions and engine calls, reaching the

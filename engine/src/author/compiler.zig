@@ -147,71 +147,7 @@ pub fn compile(
     var walk = try Walk.run(gpa, arena.allocator(), os, dir, options.walk, diags);
     defer walk.deinit(gpa);
 
-    // **Dependencies first.** Their schemas are what this package's records are checked
-    // against, so they register before anything this package declares — which is also what
-    // makes a local `@schema` that disagrees with a dependency's get reported against the
-    // local declaration, the one an author can change (`editor.md` §4).
-    if (options.dependencies) |set| {
-        set.registerSchemas(gpa, registry, diags) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            error.ContentInvalid => return error.ContentInvalid,
-            // `registerSchemas` reads nothing: it walks packages the set already opened.
-            error.IoFailed, error.OverBudget => unreachable,
-        };
-    }
-
-    // `foundry:mod` — the manifest this package's identity was just read out of. It is
-    // registered like any other engine-declared record type, so the manifest is checked by
-    // the ordinary checker against the ordinary schema and is not a special case anywhere
-    // past this line.
-    mod.schemas.registerAll(gpa, registry) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => {
-            try diags.addFmt(gpa, .err, .whole("<engine>"), 1, "", "the engine's manifest schema did not register: {s}", .{data.schema.describeRegisterError(err)});
-            return error.ContentInvalid;
-        },
-    };
-
-    asset.schemas.registerAll(gpa, registry) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        // The engine's own schemas failing to register is a bug in the engine, not in the
-        // package being compiled, and saying so is the only honest report.
-        else => {
-            try diags.addFmt(gpa, .err, .whole("<engine>"), 1, "", "the engine's asset schemas did not register: {s}", .{data.schema.describeRegisterError(err)});
-            return error.ContentInvalid;
-        },
-    };
-
-    // The tilemap record types. They live in `asset` rather than in `render2d` precisely so
-    // that this line can exist: `fpack` has to check a map without linking a renderer
-    // (`tilemaps-and-collision.md` §11).
-    asset.tilemap.registerAll(gpa, registry) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => {
-            try diags.addFmt(gpa, .err, .whole("<engine>"), 1, "", "the engine's tilemap schemas did not register: {s}", .{data.schema.describeRegisterError(err)});
-            return error.ContentInvalid;
-        },
-    };
-
-    // `foundry:ui_theme` (ADR-0041), for the same reason: a theme is checked here, against
-    // the engine's own record type, before any game reads it.
-    asset.ui_theme.registerAll(gpa, registry) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => {
-            try diags.addFmt(gpa, .err, .whole("<engine>"), 1, "", "the engine's ui theme schema did not register: {s}", .{data.schema.describeRegisterError(err)});
-            return error.ContentInvalid;
-        },
-    };
-
-    // `foundry:entity` and `foundry:scene`, for the same reason: an author describing a
-    // scene must not have to declare an engine-owned record type themselves.
-    scene.schemas.registerAll(gpa, registry) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => {
-            try diags.addFmt(gpa, .err, .whole("<engine>"), 1, "", "the engine's entity schemas did not register: {s}", .{data.schema.describeRegisterError(err)});
-            return error.ContentInvalid;
-        },
-    };
+    try registerAvailableSchemas(gpa, options.dependencies, registry, diags);
 
     var loader: Loader = .{ .gpa = gpa, .arena = arena.allocator(), .os = os, .root = dir, .options = options };
     defer loader.deinit();
@@ -307,6 +243,71 @@ pub fn compile(
     };
 
     return identity;
+}
+
+/// Registers the schemas an author can use before the package's own declarations.
+///
+/// The compiler and an interactive workspace must begin with exactly the same registry or
+/// a record can be accepted in one and refused in the other. This is therefore part of the
+/// reusable compiler boundary, not a second list maintained by the editor. Dependency
+/// schemas come first so that a disagreeing local declaration is reported against the local
+/// source the author can change (`editor.md` §4).
+pub fn registerAvailableSchemas(
+    gpa: Allocator,
+    dependencies: ?*const dependency.Set,
+    registry: *Registry,
+    diags: *Diagnostics,
+) Error!void {
+    if (dependencies) |set| {
+        set.registerSchemas(gpa, registry, diags) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.ContentInvalid => return error.ContentInvalid,
+            // `registerSchemas` reads nothing: it walks packages the set already opened.
+            error.IoFailed, error.OverBudget => unreachable,
+        };
+    }
+
+    // `foundry:mod` is checked like every other record rather than by a compiler-only
+    // special case.
+    mod.schemas.registerAll(gpa, registry) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            try diags.addFmt(gpa, .err, .whole("<engine>"), 1, "", "the engine's manifest schema did not register: {s}", .{data.schema.describeRegisterError(err)});
+            return error.ContentInvalid;
+        },
+    };
+
+    asset.schemas.registerAll(gpa, registry) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            try diags.addFmt(gpa, .err, .whole("<engine>"), 1, "", "the engine's asset schemas did not register: {s}", .{data.schema.describeRegisterError(err)});
+            return error.ContentInvalid;
+        },
+    };
+
+    asset.tilemap.registerAll(gpa, registry) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            try diags.addFmt(gpa, .err, .whole("<engine>"), 1, "", "the engine's tilemap schemas did not register: {s}", .{data.schema.describeRegisterError(err)});
+            return error.ContentInvalid;
+        },
+    };
+
+    asset.ui_theme.registerAll(gpa, registry) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            try diags.addFmt(gpa, .err, .whole("<engine>"), 1, "", "the engine's ui theme schema did not register: {s}", .{data.schema.describeRegisterError(err)});
+            return error.ContentInvalid;
+        },
+    };
+
+    scene.schemas.registerAll(gpa, registry) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            try diags.addFmt(gpa, .err, .whole("<engine>"), 1, "", "the engine's entity schemas did not register: {s}", .{data.schema.describeRegisterError(err)});
+            return error.ContentInvalid;
+        },
+    };
 }
 
 /// Reads `mod.fdt` and takes the package's id and version from the manifest record in it.
@@ -732,7 +733,7 @@ const Loader = struct {
         else
             std.fmt.allocPrint(self.arena, "{s}/{s}", .{ dir, requested }) catch return .not_found;
 
-        const canonical = (normalize(self.arena, joined) catch return .not_found) orelse return .outside_package;
+        const canonical = (normalizePackagePath(self.arena, joined) catch return .not_found) orelse return .outside_package;
         const bytes = self.read(canonical) catch return .not_found;
         return .{ .found = .{ .name = canonical, .bytes = bytes } };
     }
@@ -743,7 +744,10 @@ const Loader = struct {
 /// Textual, and deliberately so: it never asks the filesystem, so it cannot be defeated by
 /// a symlink that exists between the check and the read, and it gives the same answer on
 /// every machine.
-fn normalize(arena: Allocator, path: []const u8) Allocator.Error!?[]const u8 {
+/// Resolves `.` and `..` in a package-relative path without consulting the filesystem.
+/// Null means the path climbed above the package root (or named no file). Workspaces use
+/// the same function as the compiler so an import cannot mean two paths in the two hosts.
+pub fn normalizePackagePath(arena: Allocator, path: []const u8) Allocator.Error!?[]const u8 {
     var parts: std.ArrayList([]const u8) = .empty;
     defer parts.deinit(arena);
 
@@ -1015,12 +1019,12 @@ test "an import path is resolved textually, and cannot climb out of the package"
     defer arena.deinit();
     const a = arena.allocator();
 
-    try testing.expectEqualStrings("items/torch.fdt", (try normalize(a, "items/torch.fdt")).?);
-    try testing.expectEqualStrings("items/torch.fdt", (try normalize(a, "./items/./torch.fdt")).?);
-    try testing.expectEqualStrings("torch.fdt", (try normalize(a, "items/../torch.fdt")).?);
-    try testing.expect((try normalize(a, "../secrets.fdt")) == null);
-    try testing.expect((try normalize(a, "items/../../secrets.fdt")) == null);
-    try testing.expect((try normalize(a, "")) == null);
+    try testing.expectEqualStrings("items/torch.fdt", (try normalizePackagePath(a, "items/torch.fdt")).?);
+    try testing.expectEqualStrings("items/torch.fdt", (try normalizePackagePath(a, "./items/./torch.fdt")).?);
+    try testing.expectEqualStrings("torch.fdt", (try normalizePackagePath(a, "items/../torch.fdt")).?);
+    try testing.expect((try normalizePackagePath(a, "../secrets.fdt")) == null);
+    try testing.expect((try normalizePackagePath(a, "items/../../secrets.fdt")) == null);
+    try testing.expect((try normalizePackagePath(a, "")) == null);
 }
 
 /// A package directory built in a temp dir, compiled, and read back.

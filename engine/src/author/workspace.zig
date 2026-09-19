@@ -2,9 +2,9 @@
 //!
 //! **What a session holds while an author works on a package**: the source documents it
 //! found, the dependency packages its host granted, what its manifest says it is and needs,
-//! and the bounds all of that was read under. Nothing here edits, saves or compiles — a
-//! workspace is the state an editor's later steps change, and this step is what makes that
-//! state exist and refuse to exist when it should not (`docs/design/editor.md` §4 and §5).
+//! and the bounds all of that was read under. Typed commands edit its in-memory documents,
+//! with revision checks and bounded undo/redo; persistence and compilation remain later-step
+//! concerns (`docs/design/editor.md` §4–§6).
 //!
 //! **A workspace is a capability, and its root is borrowed.** The host owns the directory
 //! and grants it; nothing in a package can name another one, and no call here reaches a
@@ -34,6 +34,7 @@ const platform = @import("platform");
 
 const compiler = @import("compiler.zig");
 const dependency = @import("dependency.zig");
+const edit = @import("edit.zig");
 
 const Allocator = std.mem.Allocator;
 const Diagnostics = data.Diagnostics;
@@ -56,6 +57,13 @@ pub const Limits = struct {
     max_source_bytes: usize = 16 * 1024 * 1024,
     /// Every source file together.
     max_total_source_bytes: usize = 64 * 1024 * 1024,
+    /// Current drafts, disk baselines and retained history together. Parser allocations
+    /// are operation-scoped; this is the persistent editing budget from `editor.md` §4.
+    max_document_bytes: usize = 256 * 1024 * 1024,
+    /// Complete commands retained for Undo.
+    max_history_commands: u32 = 128,
+    /// Before/after fragments and their selection locators retained by Undo and Redo.
+    max_history_bytes: usize = 64 * 1024 * 1024,
     /// How much of the granted directory discovery may look at.
     walk: compiler.Walk.Limits = .default,
     /// The bounds a document is parsed under — nesting, fields, list lengths, identifier
@@ -91,25 +99,7 @@ pub const Error = error{
 } || Allocator.Error;
 
 /// One source file, open in a workspace.
-pub const Document = struct {
-    /// The package-relative path, with `/` on every platform, owned by the workspace's
-    /// arena.
-    path: []const u8,
-    /// The document's current bytes, owned by the workspace.
-    ///
-    /// **Current and baseline are the same bytes at open**, which is all this step can
-    /// have: nothing edits yet, so there is nothing for a baseline to differ from, and §6's
-    /// dirty comparison is these bytes against themselves until the step that adds edits
-    /// puts a second set beside them.
-    bytes: []const u8,
-    /// What the disk said when those bytes were read: size, kind, execute bit and
-    /// modification time.
-    ///
-    /// Kept so that a refresh (§7) can ask its first question — "did this change under us?"
-    /// — cheaply, and it is a fact to compare with a fresh stat rather than an answer on its
-    /// own, because §7 is explicit that a modification time is not equality.
-    disk: platform.os.FileInfo,
-};
+pub const Document = edit.Document;
 
 /// A granted package directory, open for authoring.
 pub const Workspace = struct {
@@ -124,7 +114,7 @@ pub const Workspace = struct {
     limits: Limits,
     /// Every source file, in discovery order — sorted by path, so the same tree gives the
     /// same list on every machine (I9).
-    documents: []const Document = &.{},
+    documents: []Document = &.{},
     /// The granted dependency packages, read and checked. Empty is a valid set: a package
     /// with no dependencies has none.
     dependencies: dependency.Set,
@@ -136,6 +126,9 @@ pub const Workspace = struct {
     identity: ?compiler.Identity = null,
     /// What the manifest says must load before this package, in declaration order.
     requires: []const compiler.SourceRequirement = &.{},
+    /// Schemas, revision and bounded command history. It owns no source paths or files;
+    /// those remain visibly workspace state above.
+    editing: edit.State,
 
     /// Opens `root`: reads the manifest, loads the granted dependencies, discovers the
     /// sources and reads every one, and reports what the manifest requires that was not
@@ -154,6 +147,7 @@ pub const Workspace = struct {
             .root = root,
             .limits = options.limits,
             .dependencies = .init(gpa),
+            .editing = .init(gpa, options.limits.content),
         };
         errdefer self.deinit();
 
@@ -161,17 +155,114 @@ pub const Workspace = struct {
         self.dependencies = try dependency.Set.load(gpa, os, options.dependencies, options.limits.dependencies, diags);
         try self.readDocuments(diags);
         try self.reportUnsatisfied(diags);
+        try self.editing.prepare(gpa, self.documents, &self.dependencies, if (self.identity) |identity| identity.name else null, self.editLimits(), diags);
 
         return self;
     }
 
     pub fn deinit(self: *Workspace) void {
-        for (self.documents) |document| self.gpa.free(document.bytes);
+        for (self.documents) |*document| document.deinit(self.gpa);
         self.gpa.free(self.documents);
         if (self.identity) |identity| self.gpa.free(identity.name);
+        self.editing.deinit(self.gpa);
         self.dependencies.deinit();
         self.arena.deinit();
         self.* = undefined;
+    }
+
+    pub fn revision(self: *const Workspace) u64 {
+        return self.editing.revision;
+    }
+
+    pub fn dirty(self: *const Workspace) bool {
+        for (self.documents) |document| if (document.dirty()) return true;
+        return false;
+    }
+
+    pub fn historyTruncated(self: *const Workspace) bool {
+        return self.editing.history.truncated;
+    }
+
+    pub fn canUndo(self: *const Workspace) bool {
+        return self.editing.history.undo.items.len != 0;
+    }
+
+    pub fn canRedo(self: *const Workspace) bool {
+        return self.editing.history.redo.items.len != 0;
+    }
+
+    pub fn schemas(self: *Workspace) *data.Registry {
+        return &self.editing.registry;
+    }
+
+    pub fn inspectRecord(self: *Workspace, ref: edit.RecordRef, diags: *Diagnostics) edit.Error!edit.Inspection {
+        return edit.inspect(self.editContext(), ref, diags);
+    }
+
+    pub fn createRecord(self: *Workspace, expected_revision: u64, document: u32, schema: []const u8, id: []const u8, diags: *Diagnostics) edit.Error!edit.Result {
+        return edit.createRecord(self.editContext(), expected_revision, document, schema, id, diags);
+    }
+
+    pub fn duplicateRecord(self: *Workspace, expected_revision: u64, source: edit.RecordRef, destination: u32, id: []const u8, diags: *Diagnostics) edit.Error!edit.Result {
+        return edit.duplicateRecord(self.editContext(), expected_revision, source, destination, id, diags);
+    }
+
+    pub fn createOverride(self: *Workspace, expected_revision: u64, destination: u32, source: edit.DependencyRecordRef, diags: *Diagnostics) edit.Error!edit.Result {
+        return edit.createOverride(self.editContext(), expected_revision, destination, source, diags);
+    }
+
+    pub fn deleteRecord(self: *Workspace, expected_revision: u64, ref: edit.RecordRef, diags: *Diagnostics) edit.Error!edit.Result {
+        return edit.deleteRecord(self.editContext(), expected_revision, ref, diags);
+    }
+
+    pub fn setValue(self: *Workspace, expected_revision: u64, ref: edit.RecordRef, path: []const edit.Selector, value: edit.TypedValue, diags: *Diagnostics) edit.Error!edit.Result {
+        return edit.setValue(self.editContext(), expected_revision, ref, path, value, diags);
+    }
+
+    pub fn unsetField(self: *Workspace, expected_revision: u64, ref: edit.RecordRef, path: []const edit.Selector, diags: *Diagnostics) edit.Error!edit.Result {
+        return edit.unsetField(self.editContext(), expected_revision, ref, path, diags);
+    }
+
+    pub fn insertListItem(self: *Workspace, expected_revision: u64, ref: edit.RecordRef, path: []const edit.Selector, index: u32, value: edit.TypedValue, diags: *Diagnostics) edit.Error!edit.Result {
+        return edit.insertListItem(self.editContext(), expected_revision, ref, path, index, value, diags);
+    }
+
+    pub fn removeListItem(self: *Workspace, expected_revision: u64, ref: edit.RecordRef, path: []const edit.Selector, index: u32, diags: *Diagnostics) edit.Error!edit.Result {
+        return edit.removeListItem(self.editContext(), expected_revision, ref, path, index, diags);
+    }
+
+    pub fn moveListItem(self: *Workspace, expected_revision: u64, ref: edit.RecordRef, path: []const edit.Selector, from: u32, to: u32, diags: *Diagnostics) edit.Error!edit.Result {
+        return edit.moveListItem(self.editContext(), expected_revision, ref, path, from, to, diags);
+    }
+
+    pub fn undo(self: *Workspace, expected_revision: u64, diags: *Diagnostics) edit.Error!edit.Result {
+        return edit.undo(self.editContext(), expected_revision, diags);
+    }
+
+    pub fn redo(self: *Workspace, expected_revision: u64, diags: *Diagnostics) edit.Error!edit.Result {
+        return edit.redo(self.editContext(), expected_revision, diags);
+    }
+
+    fn editLimits(self: *const Workspace) edit.Limits {
+        return .{
+            .max_source_bytes = self.limits.max_source_bytes,
+            .max_total_source_bytes = self.limits.max_total_source_bytes,
+            .max_document_bytes = self.limits.max_document_bytes,
+            .max_history_commands = self.limits.max_history_commands,
+            .max_history_bytes = self.limits.max_history_bytes,
+            .content = self.limits.content,
+        };
+    }
+
+    fn editContext(self: *Workspace) edit.Context {
+        return .{
+            .gpa = self.gpa,
+            .documents = self.documents,
+            .dependencies = &self.dependencies,
+            .state = &self.editing,
+            .package_name = if (self.identity) |identity| identity.name else null,
+            .limits = self.editLimits(),
+        };
     }
 
     /// Reads `mod.fdt` if it is there, and takes the package's identity and requirements.
@@ -216,7 +307,7 @@ pub const Workspace = struct {
         // Only what has been kept: the array is one allocation and the bytes are many, so
         // an error part-way through frees the files already read rather than all of them.
         var kept: usize = 0;
-        errdefer for (documents[0..kept]) |document| self.gpa.free(document.bytes);
+        errdefer for (documents[0..kept]) |*document| document.deinit(self.gpa);
 
         var total: usize = 0;
         for (walk.sources.items) |path| {
@@ -244,8 +335,22 @@ pub const Workspace = struct {
                 try diags.addFmt(self.gpa, .err, .whole(path), 1, "", "leaves the workspace's sources totalling more than {d} bytes", .{self.limits.max_total_source_bytes});
                 return error.OverBudget;
             }
+            if (total > self.limits.max_document_bytes / 2) {
+                self.gpa.free(read.bytes);
+                try diags.addFmt(self.gpa, .err, .whole(path), 1, "", "leaves the workspace's drafts and disk baselines totalling more than the {d}-byte document budget", .{self.limits.max_document_bytes});
+                return error.OverBudget;
+            }
 
-            documents[kept] = .{ .path = path, .bytes = read.bytes, .disk = read.info };
+            const baseline = self.gpa.dupe(u8, read.bytes) catch |err| {
+                self.gpa.free(read.bytes);
+                return err;
+            };
+            documents[kept] = .{
+                .path = path,
+                .bytes = read.bytes,
+                .baseline = baseline,
+                .disk = read.info,
+            };
             kept += 1;
         }
 
@@ -382,7 +487,7 @@ test "sources are discovered in path order, and the manifest is one of them" {
     // so that a walk which kept the listing's order or walked breadth-first would fail here.
     try f.write("pkg/z/last.fdt", "foundry:thing demo:last { }\n");
     try f.write("pkg/b.fdt", "foundry:thing demo:b { }\n");
-    try f.write("pkg/a.fdt", "foundry:thing demo:a { }\n");
+    try f.write("pkg/a.fdt", "@schema foundry:thing { }\nfoundry:thing demo:a { }\n");
     try f.write("pkg/notes.txt", "not content\n");
     try f.write("pkg/.hidden/ignored.fdt", "foundry:thing demo:hidden { }\n");
     try f.manifest("foundry:mod demo:root { name \"Root\" version 1 license \"MIT\" }\n");
@@ -399,7 +504,7 @@ test "sources are discovered in path order, and the manifest is one of them" {
     try testing.expectEqualStrings("b.fdt", workspace.documents[1].path);
     try testing.expectEqualStrings("mod.fdt", workspace.documents[2].path);
     try testing.expectEqualStrings("z/last.fdt", workspace.documents[3].path);
-    try testing.expectEqualStrings("foundry:thing demo:a { }\n", workspace.documents[0].bytes);
+    try testing.expectEqualStrings("@schema foundry:thing { }\nfoundry:thing demo:a { }\n", workspace.documents[0].bytes);
 
     // The baseline is the same read that produced the bytes, not a second stat of a file
     // that may have changed in between.
@@ -483,7 +588,7 @@ test "a requirement nothing granted provides is reported, and the workspace stil
     const f = try Fixture.init();
     defer f.deinit();
 
-    try f.write("pkg/a.fdt", "foundry:thing demo:a { }\n");
+    try f.write("pkg/a.fdt", "@schema foundry:thing { }\nfoundry:thing demo:a { }\n");
     try f.manifest("foundry:mod demo:root { name \"Root\" version 1 license \"MIT\" requires [ { id demo:core } ] }\n");
 
     const gpa = testing.allocator;
@@ -634,7 +739,7 @@ test "a source reached through a symlink is not read, and a link out is not foll
     // The granted directory is `pkg`, and both of these point out of it: one file and one
     // directory, because a walk that followed either would be reading content the host did
     // not grant.
-    try f.write("pkg/inside.fdt", "foundry:thing demo:inside { }\n");
+    try f.write("pkg/inside.fdt", "@schema foundry:thing { }\nfoundry:thing demo:inside { }\n");
     try f.write("outside.fdt", "foundry:thing demo:outside { }\n");
     try f.write("elsewhere/other.fdt", "foundry:thing demo:other { }\n");
     try f.tmp.dir.symLink(testing.io, try f.at("outside.fdt"), "pkg/linked.fdt", .{});
@@ -725,4 +830,310 @@ test "a workspace's granted set is what a compile is handed" {
     try testing.expect(!diags.failed);
     try testing.expectEqualStrings("demo:root", identity.name);
     try testing.expect(bytes.items.len > 0);
+}
+
+test "typed commands preserve every value kind through undo and redo" {
+    const f = try Fixture.init();
+    defer f.deinit();
+    try f.manifest("foundry:mod demo:root { name \"Root\" version 1 license \"MIT\" }\n");
+    try f.write("pkg/records.fdt",
+        \\@schema demo:item {
+        \\    name       string
+        \\    flag       bool                         (optional)
+        \\    small      i32                          (optional)
+        \\    signed     i64                          (optional)
+        \\    count      u32                          (optional)
+        \\    wide       u64                          (optional)
+        \\    ratio      f32                          (optional)
+        \\    precise    f64                          (optional)
+        \\    target     id                           (optional)
+        \\    detail     { amount u64  note string (optional) } (optional)
+        \\    numbers    [u64]                        (optional)
+        \\    rows       [{ n i64  label string (optional) }] (optional)
+        \\    defaulted  u32                          (default 7)
+        \\}
+        \\demo:item demo:one { name "before" }
+        \\
+    );
+
+    const gpa = testing.allocator;
+    var open_diags = Diagnostics.init(gpa, .default);
+    defer open_diags.deinit(gpa);
+    var workspace = try Workspace.open(gpa, f.os, try f.at("pkg"), .{}, &open_diags);
+    defer workspace.deinit();
+    try testing.expect(!open_diags.failed);
+    try testing.expectEqualStrings("records.fdt", workspace.documents[1].path);
+
+    const record: edit.RecordRef = .{ .document = 1, .record = 0 };
+    const edits = [_]struct { field: u32, value: edit.TypedValue }{
+        .{ .field = 0, .value = .{ .value = .{ .string = "after" } } },
+        .{ .field = 1, .value = .{ .value = .{ .bool = true } } },
+        .{ .field = 2, .value = .{ .value = .{ .int = std.math.minInt(i32) } } },
+        .{ .field = 3, .value = .{ .value = .{ .int = std.math.minInt(i64) } } },
+        .{ .field = 4, .value = .{ .value = .{ .int = std.math.maxInt(u32) } } },
+        .{ .field = 5, .value = .{ .value = .{ .int = std.math.maxInt(u64) } } },
+        .{ .field = 6, .value = .{ .value = .{ .float = 1.5 } } },
+        .{ .field = 7, .value = .{ .value = .{ .float = 1.2345678901234567 } } },
+        .{ .field = 8, .value = .{
+            .value = .{ .id = core.ContentId.fromString("demo:external") },
+            .id_spellings = &.{"demo:external"},
+        } },
+        .{ .field = 9, .value = .{ .value = .{ .nested = &.{.{ .name = "amount", .value = .{ .int = std.math.maxInt(u64) } }} } } },
+        .{ .field = 10, .value = .{ .value = .{ .list = &.{} } } },
+        .{ .field = 11, .value = .{ .value = .{ .list = &.{} } } },
+    };
+
+    var op_diags = Diagnostics.init(gpa, .default);
+    defer op_diags.deinit(gpa);
+    var revision = workspace.revision();
+    for (edits) |operation| {
+        const result = try workspace.setValue(revision, record, &.{.{ .field = operation.field }}, operation.value, &op_diags);
+        revision = result.revision;
+    }
+    revision = (try workspace.setValue(revision, record, &.{ .{ .field = 9 }, .{ .field = 1 } }, .{ .value = .{ .string = "nested" } }, &op_diags)).revision;
+    revision = (try workspace.insertListItem(revision, record, &.{.{ .field = 10 }}, 0, .{ .value = .{ .int = 0 } }, &op_diags)).revision;
+    revision = (try workspace.insertListItem(revision, record, &.{.{ .field = 10 }}, 1, .{ .value = .{ .int = std.math.maxInt(u64) } }, &op_diags)).revision;
+    revision = (try workspace.insertListItem(revision, record, &.{.{ .field = 11 }}, 0, .{ .value = .{ .nested = &.{.{ .name = "n", .value = .{ .int = std.math.minInt(i64) } }} } }, &op_diags)).revision;
+    revision = (try workspace.setValue(revision, record, &.{ .{ .field = 11 }, .{ .item = 0 }, .{ .field = 1 } }, .{ .value = .{ .string = "row" } }, &op_diags)).revision;
+    revision = (try workspace.moveListItem(revision, record, &.{.{ .field = 10 }}, 1, 0, &op_diags)).revision;
+    revision = (try workspace.removeListItem(revision, record, &.{.{ .field = 10 }}, 1, &op_diags)).revision;
+    try testing.expect(!op_diags.failed);
+    try testing.expect(workspace.dirty());
+
+    var inspect_diags = Diagnostics.init(gpa, .default);
+    defer inspect_diags.deinit(gpa);
+    var inspection = try workspace.inspectRecord(record, &inspect_diags);
+    const wide = try inspection.node(&.{.{ .field = 5 }});
+    try testing.expect(wide.authored);
+    try testing.expectEqual(@as(i128, std.math.maxInt(u64)), wide.value.?.int);
+    const precise = try inspection.node(&.{.{ .field = 7 }});
+    try testing.expectEqual(@as(u64, @bitCast(@as(f64, 1.2345678901234567))), @as(u64, @bitCast(precise.value.?.float)));
+    const absent_default = try inspection.node(&.{.{ .field = 12 }});
+    try testing.expect(!absent_default.authored);
+    try testing.expect(absent_default.presence.? == .default);
+    try testing.expectEqual(@as(i128, 7), absent_default.presence.?.default.int);
+    const nested = try inspection.node(&.{ .{ .field = 9 }, .{ .field = 1 } });
+    try testing.expectEqualStrings("nested", nested.value.?.string);
+    const moved = try inspection.node(&.{ .{ .field = 10 }, .{ .item = 0 } });
+    try testing.expectEqual(@as(i128, std.math.maxInt(u64)), moved.value.?.int);
+    const row = try inspection.node(&.{ .{ .field = 11 }, .{ .item = 0 }, .{ .field = 1 } });
+    try testing.expectEqualStrings("row", row.value.?.string);
+    inspection.deinit();
+
+    while (workspace.canUndo()) revision = (try workspace.undo(revision, &op_diags)).revision;
+    try testing.expect(!workspace.dirty());
+    try testing.expectEqualSlices(u8, workspace.documents[1].baseline, workspace.documents[1].bytes);
+    while (workspace.canRedo()) revision = (try workspace.redo(revision, &op_diags)).revision;
+    try testing.expect(workspace.dirty());
+}
+
+test "incomplete drafts commit, while stale and ill-typed commands are atomic" {
+    const f = try Fixture.init();
+    defer f.deinit();
+    try f.manifest("foundry:mod demo:root { name \"Root\" version 1 license \"MIT\" }\n");
+    try f.write("pkg/records.fdt", "@schema demo:item { name string  count u64 (optional) }\ndemo:item demo:one { name \"one\" }\n");
+
+    const gpa = testing.allocator;
+    var diags = Diagnostics.init(gpa, .default);
+    defer diags.deinit(gpa);
+    var workspace = try Workspace.open(gpa, f.os, try f.at("pkg"), .{}, &diags);
+    defer workspace.deinit();
+    const record: edit.RecordRef = .{ .document = 1, .record = 0 };
+
+    const before = try gpa.dupe(u8, workspace.documents[1].bytes);
+    defer gpa.free(before);
+    const original_revision = workspace.revision();
+    try testing.expectError(error.WrongType, workspace.setValue(original_revision, record, &.{.{ .field = 1 }}, .{ .value = .{ .string = "wrong" } }, &diags));
+    try testing.expectEqual(original_revision, workspace.revision());
+    try testing.expectEqualSlices(u8, before, workspace.documents[1].bytes);
+    try testing.expect(!workspace.canUndo());
+
+    var result = try workspace.setValue(original_revision, record, &.{.{ .field = 1 }}, .{ .value = .{ .int = std.math.maxInt(u64) } }, &diags);
+    const after_valid = try gpa.dupe(u8, workspace.documents[1].bytes);
+    defer gpa.free(after_valid);
+    try testing.expectError(error.StaleRevision, workspace.unsetField(original_revision, record, &.{.{ .field = 0 }}, &diags));
+    try testing.expectEqualSlices(u8, after_valid, workspace.documents[1].bytes);
+
+    var incomplete_diags = Diagnostics.init(gpa, .default);
+    defer incomplete_diags.deinit(gpa);
+    result = try workspace.unsetField(result.revision, record, &.{.{ .field = 0 }}, &incomplete_diags);
+    try testing.expect(incomplete_diags.failed);
+    try testing.expect(std.mem.indexOf(u8, incomplete_diags.items.items[0].message, "incomplete draft") != null);
+    var inspect_diags = Diagnostics.init(gpa, .default);
+    defer inspect_diags.deinit(gpa);
+    var view = try workspace.inspectRecord(record, &inspect_diags);
+    const name = try view.node(&.{.{ .field = 0 }});
+    try testing.expect(!name.authored);
+    try testing.expect(name.presence.? == .required);
+    view.deinit();
+
+    _ = try workspace.undo(result.revision, &diags);
+    try testing.expectEqualSlices(u8, after_valid, workspace.documents[1].bytes);
+
+    var create_diags = Diagnostics.init(gpa, .default);
+    defer create_diags.deinit(gpa);
+    const created = try workspace.createRecord(workspace.revision(), 1, "demo:item", "demo:draft", &create_diags);
+    try testing.expect(create_diags.failed);
+    try testing.expect(std.mem.indexOf(u8, create_diags.items.items[0].message, "incomplete draft") != null);
+    var draft = try workspace.inspectRecord(.{ .document = 1, .record = 1 }, &inspect_diags);
+    try testing.expect(!(try draft.node(&.{.{ .field = 0 }})).authored);
+    draft.deinit();
+    _ = try workspace.undo(created.revision, &diags);
+    try testing.expect(std.mem.indexOf(u8, workspace.documents[1].bytes, "demo:draft") == null);
+}
+
+test "create duplicate delete and bounded history preserve exact source" {
+    const f = try Fixture.init();
+    defer f.deinit();
+    try f.manifest("foundry:mod demo:root { name \"Root\" version 1 license \"MIT\" }\n");
+    try f.write("pkg/records.fdt",
+        \\@schema demo:item { name string }
+        \\demo:item demo:one {
+        \\    # copied with the record
+        \\    name "one"
+        \\}
+        \\
+    );
+
+    const gpa = testing.allocator;
+    var diags = Diagnostics.init(gpa, .default);
+    defer diags.deinit(gpa);
+    var workspace = try Workspace.open(gpa, f.os, try f.at("pkg"), .{
+        .limits = .{ .max_history_commands = 2 },
+    }, &diags);
+    defer workspace.deinit();
+    const one: edit.RecordRef = .{ .document = 1, .record = 0 };
+    var revision = workspace.revision();
+    revision = (try workspace.duplicateRecord(revision, one, 1, "demo:two", &diags)).revision;
+    try testing.expectEqual(@as(usize, 2), std.mem.count(u8, workspace.documents[1].bytes, "# copied with the record"));
+
+    // The duplicate is the second local record in the same parse.
+    const two: edit.RecordRef = .{ .document = 1, .record = 1 };
+    revision = (try workspace.setValue(revision, two, &.{.{ .field = 0 }}, .{ .value = .{ .string = "two" } }, &diags)).revision;
+    revision = (try workspace.deleteRecord(revision, one, &diags)).revision;
+    try testing.expect(workspace.historyTruncated());
+    try testing.expect(std.mem.indexOf(u8, workspace.documents[1].bytes, "demo:one") == null);
+    try testing.expect(std.mem.indexOf(u8, workspace.documents[1].bytes, "demo:two") != null);
+
+    revision = (try workspace.undo(revision, &diags)).revision;
+    revision = (try workspace.undo(revision, &diags)).revision;
+    try testing.expectError(error.HistoryEmpty, workspace.undo(revision, &diags));
+    // The oldest command was evicted, so the original duplicate remains.
+    try testing.expect(std.mem.indexOf(u8, workspace.documents[1].bytes, "demo:two") != null);
+
+    // A new command after Undo clears Redo.
+    _ = try workspace.setValue(revision, two, &.{.{ .field = 0 }}, .{ .value = .{ .string = "new branch" } }, &diags);
+    try testing.expect(!workspace.canRedo());
+}
+
+test "a dependency override uses exact readers and refuses an unspellable id" {
+    const f = try Fixture.init();
+    defer f.deinit();
+    const granted = try f.pack("dep", "foundry:mod dep:root { name \"Dependency\" version 1 license \"MIT\" }",
+        \\@schema dep:exact {
+        \\    wide u64
+        \\    precise f64
+        \\    target id
+        \\    values [u64]
+        \\    detail { signed i64 }
+        \\    absent string (optional)
+        \\}
+        \\dep:exact dep:source {
+        \\    wide 18446744073709551615
+        \\    precise 1.2345678901234567
+        \\    target dep:target
+        \\    values [0 18446744073709551615]
+        \\    detail { signed -9223372036854775808 }
+        \\}
+        \\dep:exact dep:target {
+        \\    wide 0 precise 0.0 target dep:target values [] detail { signed 0 }
+        \\}
+        \\dep:exact dep:unknown {
+        \\    wide 1 precise 1.0 target dep:missing values [] detail { signed 1 }
+        \\}
+    );
+    try f.manifest("foundry:mod demo:root { name \"Root\" version 1 license \"MIT\" requires [ { id dep:root } ] }\n");
+    try f.write("pkg/records.fdt", "");
+
+    const gpa = testing.allocator;
+    var diags = Diagnostics.init(gpa, .default);
+    defer diags.deinit(gpa);
+    var workspace = try Workspace.open(gpa, f.os, try f.at("pkg"), .{
+        .dependencies = &.{.{ .path = granted }},
+    }, &diags);
+    defer workspace.deinit();
+    try testing.expect(!diags.failed);
+
+    const result = try workspace.createOverride(workspace.revision(), 1, .{ .package = 0, .record = 1 }, &diags);
+    try testing.expect(std.mem.indexOf(u8, workspace.documents[1].bytes, "wide 18446744073709551615") != null);
+    try testing.expect(std.mem.indexOf(u8, workspace.documents[1].bytes, "precise 1.2345678901234567") != null);
+    try testing.expect(std.mem.indexOf(u8, workspace.documents[1].bytes, "target dep:target") != null);
+
+    var inspect_diags = Diagnostics.init(gpa, .default);
+    defer inspect_diags.deinit(gpa);
+    var view = try workspace.inspectRecord(.{ .document = 1, .record = 0 }, &inspect_diags);
+    try testing.expectEqual(@as(i128, std.math.maxInt(u64)), (try view.node(&.{.{ .field = 0 }})).value.?.int);
+    try testing.expect(!(try view.node(&.{.{ .field = 5 }})).authored);
+    view.deinit();
+    _ = try workspace.undo(result.revision, &diags);
+    try testing.expectEqual(@as(usize, 0), workspace.documents[1].bytes.len);
+    const revision = workspace.revision();
+    try testing.expectError(error.UnspelledId, workspace.createOverride(revision, 1, .{ .package = 0, .record = 3 }, &diags));
+    try testing.expectEqual(revision, workspace.revision());
+    try testing.expectEqual(@as(usize, 0), workspace.documents[1].bytes.len);
+}
+
+test "a command larger than the history budget changes neither bytes nor revision" {
+    const f = try Fixture.init();
+    defer f.deinit();
+    try f.manifest("foundry:mod demo:root { name \"Root\" version 1 license \"MIT\" }\n");
+    try f.write("pkg/records.fdt", "@schema demo:item { name string }\ndemo:item demo:one { name \"one\" }\n");
+
+    const gpa = testing.allocator;
+    var diags = Diagnostics.init(gpa, .default);
+    defer diags.deinit(gpa);
+    var workspace = try Workspace.open(gpa, f.os, try f.at("pkg"), .{
+        .limits = .{ .max_history_bytes = 1 },
+    }, &diags);
+    defer workspace.deinit();
+    const before = try gpa.dupe(u8, workspace.documents[1].bytes);
+    defer gpa.free(before);
+    const revision = workspace.revision();
+    try testing.expectError(error.HistoryLimit, workspace.setValue(revision, .{ .document = 1, .record = 0 }, &.{.{ .field = 0 }}, .{ .value = .{ .string = "a change larger than one byte" } }, &diags));
+    try testing.expectEqual(revision, workspace.revision());
+    try testing.expectEqualSlices(u8, before, workspace.documents[1].bytes);
+    try testing.expect(!workspace.canUndo());
+}
+
+test "allocation failure during a command preserves bytes revision and history" {
+    const f = try Fixture.init();
+    defer f.deinit();
+    try f.manifest("foundry:mod demo:root { name \"Root\" version 1 license \"MIT\" }\n");
+    try f.write("pkg/records.fdt", "@schema demo:item { name string }\ndemo:item demo:one { name \"one\" }\n");
+    const root = try f.at("pkg");
+
+    try testing.checkAllAllocationFailures(testing.allocator, struct {
+        fn run(gpa: Allocator, os: *Os, package_root: []const u8) !void {
+            var diags = Diagnostics.init(gpa, .default);
+            defer diags.deinit(gpa);
+            var workspace = try Workspace.open(gpa, os, package_root, .{}, &diags);
+            defer workspace.deinit();
+
+            const document = &workspace.documents[1];
+            const before = try gpa.dupe(u8, document.bytes);
+            defer gpa.free(before);
+            const revision = workspace.revision();
+            const result = workspace.setValue(revision, .{ .document = 1, .record = 0 }, &.{.{ .field = 0 }}, .{ .value = .{ .string = "after" } }, &diags) catch |err| {
+                if (err == error.OutOfMemory) {
+                    try testing.expectEqual(revision, workspace.revision());
+                    try testing.expectEqualSlices(u8, before, document.bytes);
+                    try testing.expect(!workspace.canUndo());
+                }
+                return err;
+            };
+            try testing.expectEqual(revision + 1, result.revision);
+            try testing.expect(workspace.canUndo());
+            try testing.expect(std.mem.indexOf(u8, document.bytes, "\"after\"") != null);
+        }
+    }.run, .{ f.os, root });
 }

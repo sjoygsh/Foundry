@@ -94,4 +94,9 @@ scope, rather than weakening source preservation or silently extending M15.
 
 - **Step 1, 2026-09-20:** decision 1's source ranges and deterministic emission are in `data`:
   opt-in parser spans, `emit.zig` and `splice.zig`. The chosen span representation is in
-  `editor.md`'s Step 1 Resolution. Decisions 2–5 wait on Steps 3–7.
+  `editor.md`'s Step 1 Resolution.
+- **Step 3, 2026-09-20:** decision 2's revisioned drafts and bounded exact-byte history are in
+  `author/edit.zig` and `author/workspace.zig`. Typed commands validate candidates before an
+  atomic in-memory install; incomplete required fields remain diagnosed drafts; exact
+  dependency values come from `.fpk` readers rather than narrowed runtime getters. Decisions
+  3–5 wait on Steps 4–7. Details and evidence are in `editor.md`'s Step 3 Resolution.
