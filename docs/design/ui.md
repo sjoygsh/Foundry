@@ -478,8 +478,10 @@ UI's pipe, because that is the material system's job and ADR-0015 already says w
 ready.
 
 **The one deliberate asymmetry at M7** was that a mod could not supply a `Style` from content.
-The content-driven style and skin now exist (`foundry:ui_theme`, M14 Steps 5 and 6), while the
-public calls do not: Step 7 adds them in `FoundryApi_v3`, additively without changing v1 or v2.
+The content-driven style and skin now exist (`foundry:ui_theme`, M14 Steps 5 and 6), and M14
+Step 7 published them in `FoundryApi_v3`, additively, with v1 and v2 unchanged. A mod resolves
+a theme, pushes it around whole frames, and describes the game widgets. It also gains
+`ui_region_remaining`, so it can find where a reorder list's rows began.
 
 ## 14. Open questions
 

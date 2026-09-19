@@ -1,10 +1,10 @@
 # Design: M14 — Managed, and what a player chooses
 
 **Status:** Design accepted 2026-09-19 with [ADR-0040](../adr/0040-ordered-profiles-applied-at-next-start.md)
-and [ADR-0041](../adr/0041-game-widget-set-and-content-themes.md). **Steps 1 to 6 are implemented
+and [ADR-0041](../adr/0041-game-widget-set-and-content-themes.md). **Steps 1 to 7 are implemented
 (2026-09-19): the mod set, profiles on disk, migrations with concurrent writes, the UI
-kernel's additions, themes as content, and the game widget set. Step 7, the public API, is
-next.** Step 2 was re-scoped when it began; see §13.
+kernel's additions, themes as content, the game widget set, and `FoundryApi_v3`. Step 8, the
+room's mod screen, is next.** Step 2 was re-scoped when it began; see §13.
 **Date:** 2026-09-19
 **Baseline:** `754665a` / `m13`; M0–M13 complete, 1,405 declared / 1,395 headless tests.
 **Builds on:** ADR-0024 (one UI kernel, two widget sets), ADR-0026 (the host supplies
@@ -994,3 +994,81 @@ including disabled capture. Deliberately removing downward normalisation made th
 return index 3 instead of 2 and fail; the guard was restored.
 
 **Not yet:** `FoundryApi_v3` is Step 7, and the room's mod screen is Step 8.
+
+## Resolution — 2026-09-19, Step 7: the public API
+
+**Landed:**
+- **`FoundryApi_v3` is v2 unchanged, followed by 28 calls, 164 in all.** `get_api(3)` hands it
+  out beside v1 and v2, and the native loader offers all three versions.
+- **The `mods_*` calls** (`abi/calls_mods.zig`) read and edit an `app.ModSet` that the host lends
+  as `abi.Host.mod_set`. Reads need only the set. Every change also needs `abi.Host.mods_write`,
+  an `abi.ModsWriteGrant`. Its callback records the saved profile's key in the host's settings
+  once `mods_apply` has written the profile.
+- **Themes.** `ui_theme_resolve` returns a handle the host owns, from 16 slots, released
+  together when the content generation moves or the host unbinds. `ui_theme_push` and `_pop`
+  work between frames only, up to 8 deep. The host walks a frame's draw list with
+  `abi.Host.completedUiTheme()`.
+- **The widget calls:** tabs, selectable rows, the reorder list and its buttons, icons, images,
+  the disabled scope, and `ui_region_remaining`.
+- **Around them:** the header, `agreement.c` and `agreement.zig`, the sweep, and `docs/modding`.
+  `native-mods.md` gains §7, `content-mods.md` explains overriding a theme, and the README's
+  tier table counts v3.
+
+**Where the step went beyond §9's list, and why.** §9 calls its names "illustrative in shape".
+Checking §11's screen against the list found four gaps. Each is closed here, because a table
+is frozen once published:
+- **The player's order.** `mods_move` takes an index into the player's list, and no read gave
+  one. `FoundryModInfo.pending_index` now does. `mods_pending_next` walks the list itself,
+  including entries that are no longer installed, which no walk over installed packages can
+  show.
+- **Details and Problems.** Those panes need a package's id spelling, licence and
+  dependencies, and the dependency a skip is about. They get `id_name`, `license`,
+  `skip_other`, `skip_other_name` and `mods_requirement_next`. `id_to_string` cannot spell a
+  package that is not loaded.
+- **Conflict counts.** A row's conflict flag and the "Wins 4 · Loses 2" line need counts:
+  `provides`, `wins` and `loses`. Two flags join them: `ENVIRONMENT`, the environment mark §4
+  asks for, and `UNREADABLE`.
+- **Where the rows are.** The reorder list overlays rows its caller described. A caller that
+  sees no layout state could not know where those rows began; `ui_region_remaining` tells it.
+
+**Decisions:**
+- **A required package answers `FOUNDRY_ERR_REFUSED`, not "not found".** It exists; it is
+  simply not a choice. Deleting the saved or pending profile, or selecting one whose file cannot
+  be used, is refused the same way.
+- **A cursor carries a generation.** It combines the host's counter, the length of the list
+  being walked and a salt for each kind of walk. Every successful change moves the counter, and
+  a host that edits the set directly calls `changedMods`. Borrowed strings last exactly as long.
+- **`ui_icon` and `ui_image` need a pushed theme.** The walker resolves image numbers through one
+  table per frame, and the only atlas a mod can name is the one in the theme it pushed.
+- **`mods_apply` writes the profile before the host records the key.** If recording fails, the
+  answer is `FOUNDRY_ERR_INTERNAL`, and the written profile stands.
+
+**Evidence.**
+- **The bar:** 1,455 of 1,456 tests passed, with the existing skip.
+- **v1 and v2 are unchanged.** Their header declarations are byte-identical to Step 6's commit.
+  The header's only removed line is `FOUNDRY_API_VERSION`, which moved to 3 as it moved to 2
+  in M8. A table test checks that every v2 entry keeps its offset and its implementation in v3.
+- **Agreement:** C and Zig agree on every v3 offset and name, and `agreement.c` asserts each new
+  layout and constant.
+- **The sweep:** it walks all 164 calls. Zeroed calls are refused whether or not an ungranted
+  mod set is bound, and every call on an empty host answers unavailable.
+- **The integration test:** `engine/tests/abi_mod_manager.zig` makes every call through
+  `get_api(3)`, over ten real packages in an installation and a `mods/` folder. It shows:
+  - Reads report duplicates, shadows, a dependency-version skip naming its dependency, the
+    environment mark, an entry no longer installed, requirements, conflicts, provider chains
+    and a fresh profile.
+  - Without the grant, all nine changing calls are refused, and nothing changes in memory or
+    on disk.
+  - With the grant, the pending state is edited, `mods_apply` writes the profile in the
+    player's order, and the running session stays unchanged.
+  - Walks begun before a change are refused, and the profile rules hold.
+  - Themes: resolving, the 17th theme refused while the textures stay held, whole-frame
+    push/pop, icons and images drawn from the atlas by the walker, a reload retiring the
+    handle and re-skinning, and every reference released at unbind.
+- **Compiled as C and C++:** a C mod using every new type and call compiles against the
+  installed header as C99 for macOS, Linux x64 and Windows x64, and as C++17.
+- **Three deliberate breakages, each caught, then restored byte for byte:** ignoring the grant,
+  not moving the generation after a change, and not retiring themes at a frame's start.
+
+**Not yet:** no host lends the ABI a mod set or a theme yet. The room's screen, which will, is
+Step 8. Lua gains nothing (§9).

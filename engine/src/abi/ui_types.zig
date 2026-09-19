@@ -51,12 +51,14 @@ pub const State = struct {
     depth: u32 = 0,
     containers: [max_container_depth]Container = @splat(.{}),
     container_depth: u32 = 0,
+    disabled_depth: u32 = 0,
 
     pub fn reset(self: *State) void {
         self.ids = @splat(.{});
         self.depth = 0;
         self.containers = @splat(.{});
         self.container_depth = 0;
+        self.disabled_depth = 0;
     }
 
     pub fn pushContainer(self: *State, kind: ContainerKind, region_depth: u32, clip_depth: u32) bool {
@@ -82,6 +84,38 @@ pub const State = struct {
         self.container_depth -= 1;
         self.containers[self.container_depth] = .{};
         return true;
+    }
+};
+
+/// A source rectangle in the atlas of the currently pushed v3 theme.
+pub const ImageSource = extern struct {
+    x: u32 = 0,
+    y: u32 = 0,
+    w: u32 = 0,
+    h: u32 = 0,
+};
+
+pub const ReorderMove = extern struct {
+    from: u32 = 0,
+    to: u32 = 0,
+    moved: types.Bool = 0,
+    _padding: [3]u8 = .{ 0, 0, 0 },
+};
+
+pub const ReorderDirection = enum(i32) {
+    up = 0,
+    down = 1,
+    top = 2,
+    bottom = 3,
+
+    pub fn fromCode(code: i32) ?ReorderDirection {
+        return switch (code) {
+            0 => .up,
+            1 => .down,
+            2 => .top,
+            3 => .bottom,
+            else => null,
+        };
     }
 };
 
@@ -172,6 +206,12 @@ comptime {
         @offsetOf(Color, "b") != 8 or @offsetOf(Color, "a") != 12)
     {
         @compileError("FoundryUiColor layout changed");
+    }
+    if (@sizeOf(ImageSource) != 16 or @offsetOf(ImageSource, "w") != 8) {
+        @compileError("FoundryUiImageSource layout changed");
+    }
+    if (@sizeOf(ReorderMove) != 12 or @offsetOf(ReorderMove, "moved") != 8) {
+        @compileError("FoundryUiReorderMove layout changed");
     }
     if (@sizeOf(FontMetrics) != 16 or @offsetOf(FontMetrics, "cell") != 0 or
         @offsetOf(FontMetrics, "letter_spacing") != 8 or @offsetOf(FontMetrics, "line_spacing") != 12)

@@ -31,6 +31,7 @@ comptime {
 /// by gaining a sibling and never by being incremented in place.
 pub const api_version_1: u32 = 1;
 pub const api_version_2: u32 = 2;
+pub const api_version_3: u32 = 3;
 
 // == Booleans ==========================================================================
 
@@ -293,6 +294,10 @@ pub const Grid = Opaque("grid");
 /// handed, and this names the counter `abi` holds on the mod's behalf, because a mod has no
 /// place to keep a `core.mem.Counted` of its own.
 pub const MemoryCounter = Opaque("memory counter");
+
+/// A content-derived UI theme resolved and owned by the host. It is valid only for the
+/// content generation in which it was issued.
+pub const Theme = Opaque("UI theme");
 
 // == Enumerations ======================================================================
 

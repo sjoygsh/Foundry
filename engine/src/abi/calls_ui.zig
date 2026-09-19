@@ -8,7 +8,10 @@
 //! Design: `docs/design/public-abi.md` §6 and §9; `docs/design/ui.md` §13.
 
 const std = @import("std");
+const app = @import("app");
+const asset = @import("asset");
 const core = @import("core");
+const data = @import("data");
 const ui = @import("ui");
 
 const types = @import("types.zig");
@@ -22,11 +25,15 @@ const Id = ui_types.Id;
 const Rect = ui_types.Rect;
 const Style = ui_types.Style;
 const PlotOptions = ui_types.PlotOptions;
+const ImageSource = ui_types.ImageSource;
+const ReorderMove = ui_types.ReorderMove;
+const log = core.log.scoped(.abi);
 
 /// A mod cannot make the kernel allocate an unbounded command or temporary text buffer in one
 /// call. This is a bound, not a promise that a whole frame fits in it.
 pub const max_text_bytes: u64 = 1 << 20;
 pub const max_plot_samples: u64 = 1 << 20;
+pub const max_tabs: u32 = 256;
 
 pub fn Of(comptime H: type) type {
     return struct {
@@ -67,6 +74,10 @@ pub fn Of(comptime H: type) type {
 
         fn toRect(value: Rect) core.math.Rect {
             return .init(value.x, value.y, value.w, value.h);
+        }
+
+        fn toVec(value: ui_types.Vec2) core.math.Vec2 {
+            return .init(value.x, value.y);
         }
 
         fn validId(value: Id) bool {
@@ -186,6 +197,89 @@ pub fn Of(comptime H: type) type {
             };
         }
 
+        fn frameTheme(h: *H) ?*const app.UiTheme {
+            if (h.ui_frame_theme.isNone()) return null;
+            return h.uiTheme(h.ui_frame_theme);
+        }
+
+        // -- v3 themes -----------------------------------------------------------------
+
+        pub fn uiThemeResolve(id: types.ContentId, out: ?*types.Theme) callconv(.c) Result {
+            const destination = out orelse return .invalid_argument;
+            const h = H.current() orelse return .unavailable;
+            const engine = h.engine orelse return .unavailable;
+            const renderer = h.renderer orelse return .unavailable;
+            if (id.isNone()) return .invalid_argument;
+            if (h.ui_context) |ctx| if (ctx.in_frame) return .refused;
+            h.syncUiThemes() catch return .refused;
+            if (h.findUiTheme(id)) |handle| {
+                destination.* = handle;
+                return .ok;
+            }
+            const record = engine.store.lookup(id) orelse return .not_found;
+            if (!record.schema.id.eql(asset.ui_theme.ui_theme.id)) return .refused;
+            var diags: data.Diagnostics = .init(engine.gpa, .default);
+            defer diags.deinit(engine.gpa);
+            const resolved = app.resolveUiTheme(
+                engine.gpa,
+                &engine.store,
+                &engine.assets,
+                renderer,
+                id,
+                &diags,
+            ) catch return .out_of_memory;
+            for (diags.items.items) |diagnostic| log.warn("{s}", .{diagnostic.message});
+            const theme = resolved orelse return .refused;
+            const handle = h.putUiTheme(id, theme) catch {
+                var owned = theme;
+                owned.deinit(&engine.assets);
+                return .limit;
+            };
+            destination.* = handle;
+            return .ok;
+        }
+
+        /// A theme scope wraps whole ABI frames. The draw-list walker takes one font and one
+        /// image table, so changing either halfway through a list would make its earlier
+        /// commands ambiguous.
+        pub fn uiThemePush(handle: types.Theme) callconv(.c) Result {
+            const h = H.current() orelse return .unavailable;
+            const ctx = h.ui_context orelse return .unavailable;
+            if (handle.isNone()) return .invalid_handle;
+            if (ctx.in_frame) return .refused;
+            h.syncUiThemes() catch return .refused;
+            const theme = h.uiTheme(handle) orelse return .invalid_handle;
+            if (h.ui_theme_depth == h.ui_theme_stack.len) return .limit;
+            if (h.ui_theme_depth == 0) {
+                h.ui_theme_base_style = ctx.style;
+                h.ui_theme_base_skin = ctx.skin;
+            }
+            h.ui_theme_stack[h.ui_theme_depth] = handle;
+            h.ui_theme_depth += 1;
+            ctx.style = theme.style;
+            ctx.skin = theme.skin;
+            return .ok;
+        }
+
+        pub fn uiThemePop() callconv(.c) Result {
+            const h = H.current() orelse return .unavailable;
+            const ctx = h.ui_context orelse return .unavailable;
+            if (ctx.in_frame or h.ui_theme_depth == 0) return .refused;
+            h.ui_theme_depth -= 1;
+            h.ui_theme_stack[h.ui_theme_depth] = .none;
+            if (h.ui_theme_depth == 0) {
+                ctx.style = h.ui_theme_base_style orelse ctx.style;
+                ctx.skin = h.ui_theme_base_skin;
+                h.ui_theme_base_style = null;
+                h.ui_theme_base_skin = null;
+            } else {
+                const theme = h.activeUiTheme() orelse return .invalid_handle;
+                ctx.style = theme.style;
+                ctx.skin = theme.skin;
+            }
+            return .ok;
+        }
+
         // -- frame and identity -------------------------------------------------------
 
         /// Begins the mod's UI description for the current host frame.
@@ -197,12 +291,15 @@ pub fn Of(comptime H: type) type {
             const view = viewport orelse return .invalid_argument;
             const h = H.current() orelse return .unavailable;
             const ctx = h.ui_context orelse return .unavailable;
-            if (ctx.in_frame or h.ui_state.depth != 0 or h.ui_state.container_depth != 0) return .refused;
+            if (ctx.in_frame or h.ui_state.depth != 0 or h.ui_state.container_depth != 0 or
+                h.ui_state.disabled_depth != 0) return .refused;
+            h.syncUiThemes() catch return .refused;
             const input = h.ui_input orelse return .unavailable;
             if (!validRect(view.*)) return .invalid_argument;
 
             ctx.begin(input, toRect(view.*));
             h.ui_state.reset();
+            h.ui_frame_theme = if (h.ui_theme_depth == 0) .none else h.ui_theme_stack[h.ui_theme_depth - 1];
             return .ok;
         }
 
@@ -215,9 +312,16 @@ pub fn Of(comptime H: type) type {
 
             const balanced = h.ui_state.depth == 0 and
                 h.ui_state.container_depth == 0 and
+                h.ui_state.disabled_depth == 0 and
                 ctx.regions.depth() == 0 and
                 ctx.list.clipDepth() == 0;
+            while (h.ui_state.disabled_depth != 0) {
+                ctx.endDisabled();
+                h.ui_state.disabled_depth -= 1;
+            }
             ctx.end();
+            h.ui_completed_theme = if (balanced) h.ui_frame_theme else .none;
+            h.ui_frame_theme = .none;
             h.ui_state.reset();
             return if (balanced) .ok else .refused;
         }
@@ -468,6 +572,138 @@ pub fn Of(comptime H: type) type {
             return .ok;
         }
 
+        // -- v3 game widgets -----------------------------------------------------------
+
+        pub fn uiBeginDisabled() callconv(.c) Result {
+            const active = frame() orelse return frameFailure();
+            if (active.host.ui_state.disabled_depth == std.math.maxInt(u32)) return .limit;
+            active.context.beginDisabled();
+            active.host.ui_state.disabled_depth += 1;
+            return .ok;
+        }
+
+        pub fn uiEndDisabled() callconv(.c) Result {
+            const active = frame() orelse return frameFailure();
+            if (active.host.ui_state.disabled_depth == 0) return .refused;
+            active.context.endDisabled();
+            active.host.ui_state.disabled_depth -= 1;
+            return .ok;
+        }
+
+        /// What the current region has left, from where its next widget goes. A reorder
+        /// list overlays rows its caller described, and this is how a caller that sees no
+        /// layout state learns where those rows began.
+        pub fn uiRegionRemaining(out: ?*Rect) callconv(.c) Result {
+            const destination = out orelse return .invalid_argument;
+            const active = frame() orelse return frameFailure();
+            const left = active.context.region().remaining();
+            destination.* = .{ .x = left.x, .y = left.y, .w = left.w, .h = left.h };
+            return .ok;
+        }
+
+        pub fn uiTabs(id: Id, labels: ?[*]const Str, count: u32, selected: ?*u32) callconv(.c) Result {
+            const destination = selected orelse return .invalid_argument;
+            const source = labels orelse return .invalid_argument;
+            const active = frame() orelse return frameFailure();
+            if (count == 0 or count > max_tabs or destination.* >= count) return .invalid_argument;
+            const effective = resultId(active.context, active.host, id) orelse return .invalid_argument;
+            const translated = active.context.gpa.alloc([]const u8, count) catch return .out_of_memory;
+            defer active.context.gpa.free(translated);
+            for (translated, source[0..count]) |*out_label, label| {
+                out_label.* = text(label) orelse return .invalid_argument;
+            }
+            const chosen = ui.tabs(active.context, effective, translated, destination.*) catch |err| return resultOf(err);
+            destination.* = @intCast(chosen);
+            return .ok;
+        }
+
+        pub fn uiSelectable(id: Id, value: Str, selected: Bool, clicked: ?*Bool) callconv(.c) Result {
+            const destination = clicked orelse return .invalid_argument;
+            const active = frame() orelse return frameFailure();
+            const bytes = text(value) orelse return .invalid_argument;
+            const effective = resultId(active.context, active.host, id) orelse return .invalid_argument;
+            const did_click = ui.selectable(active.context, effective, bytes, types.boolIn(selected)) catch |err| return resultOf(err);
+            destination.* = types.boolOut(did_click);
+            return .ok;
+        }
+
+        pub fn uiReorderList(id: Id, bounds: ?*const Rect, count: u32, out: ?*ReorderMove) callconv(.c) Result {
+            const source_bounds = bounds orelse return .invalid_argument;
+            const destination = out orelse return .invalid_argument;
+            const active = frame() orelse return frameFailure();
+            if (!validRect(source_bounds.*)) return .invalid_argument;
+            const effective = resultId(active.context, active.host, id) orelse return .invalid_argument;
+            const moved = ui.reorderList(active.context, effective, toRect(source_bounds.*), count) catch |err| return resultOf(err);
+            destination.* = if (moved) |value| .{
+                .from = value.from,
+                .to = value.to,
+                .moved = 1,
+            } else .{};
+            return .ok;
+        }
+
+        pub fn uiReorderButton(
+            id: Id,
+            value: Str,
+            index: u32,
+            count: u32,
+            direction: i32,
+            out: ?*ReorderMove,
+        ) callconv(.c) Result {
+            const destination = out orelse return .invalid_argument;
+            const active = frame() orelse return frameFailure();
+            const requested = ui_types.ReorderDirection.fromCode(direction) orelse return .invalid_argument;
+            if (count == 0 or index >= count) return .invalid_argument;
+            const bytes = text(value) orelse return .invalid_argument;
+            const effective = resultId(active.context, active.host, id) orelse return .invalid_argument;
+            const kernel_direction: ui.ReorderDirection = switch (requested) {
+                .up => .up,
+                .down => .down,
+                .top => .top,
+                .bottom => .bottom,
+            };
+            const moved = ui.reorderButton(active.context, effective, bytes, index, count, kernel_direction) catch |err| return resultOf(err);
+            destination.* = if (moved) |move| .{
+                .from = move.from,
+                .to = move.to,
+                .moved = 1,
+            } else .{};
+            return .ok;
+        }
+
+        pub fn uiIcon(name: Str, size: ui_types.Vec2, tint: ui_types.Color, found: ?*Bool) callconv(.c) Result {
+            const destination = found orelse return .invalid_argument;
+            const active = frame() orelse return frameFailure();
+            const bytes = text(name) orelse return .invalid_argument;
+            if (bytes.len > app.ui_theme.max_icon_name or !finite(size.x) or !finite(size.y) or
+                size.x < 0 or size.y < 0 or !validColor(tint)) return .invalid_argument;
+            if (frameTheme(active.host) == null) return .refused;
+            const did_find = ui.icon(active.context, bytes, toVec(size), toColor(tint)) catch |err| return resultOf(err);
+            destination.* = types.boolOut(did_find);
+            return .ok;
+        }
+
+        pub fn uiImage(source: ?*const ImageSource, size: ui_types.Vec2, tint: ui_types.Color) callconv(.c) Result {
+            const image_source = source orelse return .invalid_argument;
+            const active = frame() orelse return frameFailure();
+            if (image_source.w == 0 or image_source.h == 0 or !finite(size.x) or !finite(size.y) or
+                size.x < 0 or size.y < 0 or !validColor(tint)) return .invalid_argument;
+            const theme = frameTheme(active.host) orelse return .refused;
+            const renderer = active.host.renderer orelse return .unavailable;
+            const atlas_size = renderer.textureSize(theme.images[0]) orelse return .invalid_handle;
+            const right = @as(u64, image_source.x) + image_source.w;
+            const bottom = @as(u64, image_source.y) + image_source.h;
+            if (right > atlas_size.width or bottom > atlas_size.height) return .invalid_argument;
+            ui.image(active.context, .{
+                .image = app.UiTheme.atlas,
+                .x = image_source.x,
+                .y = image_source.y,
+                .w = image_source.w,
+                .h = image_source.h,
+            }, toVec(size), toColor(tint)) catch |err| return resultOf(err);
+            return .ok;
+        }
+
         // -- style and capture ---------------------------------------------------------
 
         pub fn uiStyleGet(out: ?*Style) callconv(.c) Result {
@@ -691,5 +927,70 @@ test "UI ABI accepts the full i32 slider range without float conversion traps" {
         &changed,
     ));
     try testing.expectEqual(@as(Bool, 0), changed);
+    try testing.expectEqual(Result.ok, Calls.uiEnd());
+}
+
+test "v3 UI widgets translate values and disabled scopes stay balanced" {
+    const testing = std.testing;
+    const host_mod = @import("host.zig");
+    const test_engine = @import("test_engine.zig");
+    const audio = @import("audio");
+    const Host = host_mod.HostWithMixer(test_engine.TestEngine, audio.Mixer);
+    const Calls = Of(Host);
+
+    var ctx = ui.Context.init(testing.allocator, .{
+        .font = .{ .cell = .init(8, 8) },
+        .line_height = 20,
+        .padding = .init(4, 4),
+        .spacing = 2,
+        .text = .white,
+        .text_dim = .white,
+        .surface = .black,
+        .control = .white,
+        .control_hot = .white,
+        .control_active = .white,
+        .accent = .white,
+    });
+    defer ctx.deinit();
+    var host: Host = .{ .ui_context = &ctx, .ui_input = .{} };
+    host.bind();
+    defer host.unbind();
+
+    const viewport: Rect = .{ .w = 300, .h = 200 };
+    const labels = [_]Str{ .from("Mods"), .from("Conflicts") };
+    var selected: u32 = 0;
+    var clicked: Bool = 9;
+    var move: ReorderMove = .{ .from = 9, .to = 9, .moved = 9 };
+    var found: Bool = 9;
+
+    var left: Rect = .{};
+    try testing.expectEqual(Result.refused, Calls.uiRegionRemaining(&left));
+    try testing.expectEqual(Result.ok, Calls.uiBegin(&viewport));
+    try testing.expectEqual(Result.invalid_argument, Calls.uiRegionRemaining(null));
+    try testing.expectEqual(Result.ok, Calls.uiRegionRemaining(&left));
+    try testing.expectEqual(Rect{ .w = 300, .h = 200 }, left);
+    try testing.expectEqual(Result.ok, Calls.uiTabs(.{ .bits = 1 }, &labels, labels.len, &selected));
+    try testing.expectEqual(Result.ok, Calls.uiRegionRemaining(&left));
+    const row_top = left.y;
+    try testing.expectEqual(Result.ok, Calls.uiSelectable(.{ .bits = 2 }, .from("One"), 1, &clicked));
+    try testing.expectEqual(@as(Bool, 0), clicked);
+    // One standard row and the spacing after it: where a reorder list's second row starts.
+    try testing.expectEqual(Result.ok, Calls.uiRegionRemaining(&left));
+    try testing.expectEqual(row_top + 20 + 2, left.y);
+    try testing.expectEqual(Result.ok, Calls.uiBeginDisabled());
+    try testing.expectEqual(Result.ok, Calls.uiReorderButton(.{ .bits = 3 }, .from("Up"), 0, 1, 0, &move));
+    try testing.expectEqual(@as(Bool, 0), move.moved);
+    try testing.expectEqual(Result.ok, Calls.uiEndDisabled());
+    try testing.expectEqual(Result.ok, Calls.uiReorderList(.{ .bits = 4 }, &Rect{ .w = 100, .h = 40 }, 2, &move));
+    try testing.expectEqual(@as(Bool, 0), move.moved);
+    try testing.expectEqual(Result.refused, Calls.uiIcon(.from("lock"), .{ .x = 8, .y = 8 }, .{}, &found));
+    try testing.expectEqual(Result.refused, Calls.uiImage(&.{ .w = 8, .h = 8 }, .{ .x = 8, .y = 8 }, .{}));
+    try testing.expectEqual(Result.ok, Calls.uiEnd());
+
+    try testing.expectEqual(Result.ok, Calls.uiBegin(&viewport));
+    try testing.expectEqual(Result.ok, Calls.uiBeginDisabled());
+    try testing.expectEqual(Result.refused, Calls.uiEnd());
+    // The refused end unwinds its disabled scope, so the next frame is clean.
+    try testing.expectEqual(Result.ok, Calls.uiBegin(&viewport));
     try testing.expectEqual(Result.ok, Calls.uiEnd());
 }

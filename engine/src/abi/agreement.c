@@ -61,7 +61,8 @@ FOUNDRY_AGREE(FOUNDRY_ERR_INTERNAL == -10);
 
 FOUNDRY_AGREE(FOUNDRY_API_VERSION_1 == 1);
 FOUNDRY_AGREE(FOUNDRY_API_VERSION_2 == 2);
-FOUNDRY_AGREE(FOUNDRY_API_VERSION == FOUNDRY_API_VERSION_2);
+FOUNDRY_AGREE(FOUNDRY_API_VERSION_3 == 3);
+FOUNDRY_AGREE(FOUNDRY_API_VERSION == FOUNDRY_API_VERSION_3);
 
 /* -- Strings ------------------------------------------------------------------------- */
 
@@ -105,6 +106,7 @@ FOUNDRY_AGREE(sizeof(FoundryView) == 8);
 FOUNDRY_AGREE(sizeof(FoundryVoice) == 8);
 FOUNDRY_AGREE(sizeof(FoundryBody) == 8);
 FOUNDRY_AGREE(sizeof(FoundryGrid) == 8);
+FOUNDRY_AGREE(sizeof(FoundryTheme) == 8);
 
 FOUNDRY_AGREE(offsetof(FoundryMod, bits) == 0);
 FOUNDRY_AGREE(offsetof(FoundryEntity, bits) == 0);
@@ -190,6 +192,36 @@ FOUNDRY_AGREE(FOUNDRY_FIELD_STRING == 7);
 FOUNDRY_AGREE(FOUNDRY_FIELD_ID == 8);
 FOUNDRY_AGREE(FOUNDRY_FIELD_LIST == 9);
 FOUNDRY_AGREE(FOUNDRY_FIELD_NESTED == 10);
+FOUNDRY_AGREE(sizeof(FoundryModOrigin) == 4);
+FOUNDRY_AGREE(FOUNDRY_MOD_ORIGIN_INSTALLED == 0);
+FOUNDRY_AGREE(FOUNDRY_MOD_ORIGIN_USER == 1);
+FOUNDRY_AGREE(sizeof(FoundryModSkipReason) == 4);
+FOUNDRY_AGREE(FOUNDRY_MOD_SKIP_NONE == 0);
+FOUNDRY_AGREE(FOUNDRY_MOD_SKIP_NOT_INSTALLED == 1);
+FOUNDRY_AGREE(FOUNDRY_MOD_SKIP_MISSING_DEPENDENCY == 2);
+FOUNDRY_AGREE(FOUNDRY_MOD_SKIP_DEPENDENCY_VERSION == 3);
+FOUNDRY_AGREE(FOUNDRY_MOD_SKIP_DEPENDENCY_SKIPPED == 4);
+FOUNDRY_AGREE(FOUNDRY_MOD_SKIP_CYCLE == 5);
+FOUNDRY_AGREE(FOUNDRY_MOD_SKIP_DUPLICATE == 6);
+FOUNDRY_AGREE(FOUNDRY_MOD_SKIP_SHADOWS_INSTALLED == 7);
+FOUNDRY_AGREE(sizeof(FoundryModProfileProblem) == 4);
+FOUNDRY_AGREE(FOUNDRY_MOD_PROFILE_OK == 0);
+FOUNDRY_AGREE(FOUNDRY_MOD_PROFILE_DAMAGED == 1);
+FOUNDRY_AGREE(FOUNDRY_MOD_PROFILE_OTHER_BUILD == 2);
+FOUNDRY_AGREE(FOUNDRY_MOD_PROFILE_REFUSED == 3);
+FOUNDRY_AGREE(FOUNDRY_MOD_PROFILE_UNAVAILABLE == 4);
+FOUNDRY_AGREE(FOUNDRY_MOD_REQUIRED == 1u);
+FOUNDRY_AGREE(FOUNDRY_MOD_NATIVE == 2u);
+FOUNDRY_AGREE(FOUNDRY_MOD_SCRIPT == 4u);
+FOUNDRY_AGREE(FOUNDRY_MOD_DUPLICATE == 8u);
+FOUNDRY_AGREE(FOUNDRY_MOD_ENVIRONMENT == 16u);
+FOUNDRY_AGREE(FOUNDRY_MOD_UNREADABLE == 32u);
+FOUNDRY_AGREE(FOUNDRY_MOD_NO_POSITION == 0xffffffffu);
+FOUNDRY_AGREE(sizeof(FoundryUiReorderDirection) == 4);
+FOUNDRY_AGREE(FOUNDRY_UI_REORDER_UP == 0);
+FOUNDRY_AGREE(FOUNDRY_UI_REORDER_DOWN == 1);
+FOUNDRY_AGREE(FOUNDRY_UI_REORDER_TOP == 2);
+FOUNDRY_AGREE(FOUNDRY_UI_REORDER_BOTTOM == 3);
 
 /* -- Structs that cross -------------------------------------------------------------- */
 
@@ -475,6 +507,76 @@ FOUNDRY_AGREE(sizeof(((FoundryUiPlotOptions *)0)->max) == 4);
 FOUNDRY_AGREE(sizeof(((FoundryUiPlotOptions *)0)->has_min) == 1);
 FOUNDRY_AGREE(sizeof(((FoundryUiPlotOptions *)0)->has_max) == 1);
 FOUNDRY_AGREE(sizeof(((FoundryUiPlotOptions *)0)->_padding1) == 2);
+
+FOUNDRY_AGREE(sizeof(FoundryModInfo) == 120);
+FOUNDRY_AGREE(offsetof(FoundryModInfo, id) == 0);
+FOUNDRY_AGREE(offsetof(FoundryModInfo, id_name) == 8);
+FOUNDRY_AGREE(offsetof(FoundryModInfo, name) == 24);
+FOUNDRY_AGREE(offsetof(FoundryModInfo, license) == 40);
+FOUNDRY_AGREE(offsetof(FoundryModInfo, version) == 56);
+FOUNDRY_AGREE(offsetof(FoundryModInfo, origin) == 60);
+FOUNDRY_AGREE(offsetof(FoundryModInfo, flags) == 64);
+FOUNDRY_AGREE(offsetof(FoundryModInfo, pending_index) == 68);
+FOUNDRY_AGREE(offsetof(FoundryModInfo, pending_position) == 72);
+FOUNDRY_AGREE(offsetof(FoundryModInfo, skip_reason) == 76);
+FOUNDRY_AGREE(offsetof(FoundryModInfo, skip_other) == 80);
+FOUNDRY_AGREE(offsetof(FoundryModInfo, skip_other_name) == 88);
+FOUNDRY_AGREE(offsetof(FoundryModInfo, provides) == 104);
+FOUNDRY_AGREE(offsetof(FoundryModInfo, wins) == 108);
+FOUNDRY_AGREE(offsetof(FoundryModInfo, loses) == 112);
+FOUNDRY_AGREE(offsetof(FoundryModInfo, loaded) == 116);
+FOUNDRY_AGREE(offsetof(FoundryModInfo, pending_enabled) == 117);
+FOUNDRY_AGREE(offsetof(FoundryModInfo, _padding) == 118);
+
+FOUNDRY_AGREE(sizeof(FoundryModPending) == 32);
+FOUNDRY_AGREE(offsetof(FoundryModPending, id) == 0);
+FOUNDRY_AGREE(offsetof(FoundryModPending, name) == 8);
+FOUNDRY_AGREE(offsetof(FoundryModPending, installed) == 24);
+FOUNDRY_AGREE(offsetof(FoundryModPending, _padding) == 25);
+
+FOUNDRY_AGREE(sizeof(FoundryModRequirement) == 40);
+FOUNDRY_AGREE(offsetof(FoundryModRequirement, id) == 0);
+FOUNDRY_AGREE(offsetof(FoundryModRequirement, name) == 8);
+FOUNDRY_AGREE(offsetof(FoundryModRequirement, min_version) == 24);
+FOUNDRY_AGREE(offsetof(FoundryModRequirement, max_version) == 28);
+FOUNDRY_AGREE(offsetof(FoundryModRequirement, satisfied) == 32);
+FOUNDRY_AGREE(offsetof(FoundryModRequirement, _padding) == 33);
+
+FOUNDRY_AGREE(sizeof(FoundryModConflict) == 40);
+FOUNDRY_AGREE(offsetof(FoundryModConflict, record) == 0);
+FOUNDRY_AGREE(offsetof(FoundryModConflict, name) == 8);
+FOUNDRY_AGREE(offsetof(FoundryModConflict, winner) == 24);
+FOUNDRY_AGREE(offsetof(FoundryModConflict, provider_count) == 32);
+
+FOUNDRY_AGREE(sizeof(FoundryModProvider) == 16);
+FOUNDRY_AGREE(offsetof(FoundryModProvider, package) == 0);
+FOUNDRY_AGREE(offsetof(FoundryModProvider, position) == 8);
+FOUNDRY_AGREE(offsetof(FoundryModProvider, winner) == 12);
+
+FOUNDRY_AGREE(sizeof(FoundryModProfile) == 32);
+FOUNDRY_AGREE(offsetof(FoundryModProfile, key) == 0);
+FOUNDRY_AGREE(offsetof(FoundryModProfile, problem) == 4);
+FOUNDRY_AGREE(offsetof(FoundryModProfile, name) == 8);
+FOUNDRY_AGREE(offsetof(FoundryModProfile, saved) == 24);
+FOUNDRY_AGREE(offsetof(FoundryModProfile, pending) == 25);
+
+FOUNDRY_AGREE(sizeof(FoundryModProfileState) == 12);
+FOUNDRY_AGREE(offsetof(FoundryModProfileState, saved) == 0);
+FOUNDRY_AGREE(offsetof(FoundryModProfileState, pending) == 4);
+FOUNDRY_AGREE(offsetof(FoundryModProfileState, has_saved) == 8);
+FOUNDRY_AGREE(offsetof(FoundryModProfileState, has_pending) == 9);
+FOUNDRY_AGREE(offsetof(FoundryModProfileState, changed) == 10);
+
+FOUNDRY_AGREE(sizeof(FoundryUiImageSource) == 16);
+FOUNDRY_AGREE(offsetof(FoundryUiImageSource, x) == 0);
+FOUNDRY_AGREE(offsetof(FoundryUiImageSource, y) == 4);
+FOUNDRY_AGREE(offsetof(FoundryUiImageSource, w) == 8);
+FOUNDRY_AGREE(offsetof(FoundryUiImageSource, h) == 12);
+
+FOUNDRY_AGREE(sizeof(FoundryUiReorderMove) == 12);
+FOUNDRY_AGREE(offsetof(FoundryUiReorderMove, from) == 0);
+FOUNDRY_AGREE(offsetof(FoundryUiReorderMove, to) == 4);
+FOUNDRY_AGREE(offsetof(FoundryUiReorderMove, moved) == 8);
 
 /* -- Physics2d values ---------------------------------------------------------------- */
 
@@ -1529,4 +1631,589 @@ const char *foundry_agreement_api_v2_name(uint64_t index)
 {
     if (index >= foundry_agreement_api_v2_count()) return NULL;
     return api_v2_names[index];
+}
+
+
+/* -- ABI v3 -------------------------------------------------------------------------- */
+
+/* Assigning every addition to its independent C spelling makes a changed parameter a
+ * compile error under `-Werror`, not merely a same-sized pointer in the layout checks. */
+void foundry_agreement_api_v3_signatures(const FoundryApi_v3 *api);
+void foundry_agreement_api_v3_signatures(const FoundryApi_v3 *api)
+{
+    FoundryResult (*installed_next)(FoundryCursor *, FoundryModInfo *) = api->mods_installed_next;
+    FoundryResult (*pending_next)(FoundryCursor *, FoundryModPending *) = api->mods_pending_next;
+    FoundryResult (*requirement_next)(FoundryContentId, FoundryCursor *, FoundryModRequirement *) =
+        api->mods_requirement_next;
+    FoundryResult (*conflict_next)(FoundryContentId, FoundryCursor *, FoundryModConflict *) = api->mods_conflict_next;
+    FoundryResult (*provider_next)(FoundryContentId, FoundryCursor *, FoundryModProvider *) = api->mods_provider_next;
+    FoundryResult (*profile_next)(FoundryCursor *, FoundryModProfile *) = api->mods_profile_next;
+    FoundryResult (*profile_active)(FoundryModProfileState *) = api->mods_profile_active;
+    FoundryResult (*set_enabled)(FoundryContentId, FoundryBool) = api->mods_set_enabled;
+    FoundryResult (*move)(FoundryContentId, uint32_t) = api->mods_move;
+    FoundryResult (*revert)(void) = api->mods_revert;
+    FoundryResult (*apply)(void) = api->mods_apply;
+    FoundryResult (*profile_create)(FoundryStr, uint32_t *) = api->mods_profile_create;
+    FoundryResult (*profile_copy)(uint32_t, FoundryStr, uint32_t *) = api->mods_profile_copy;
+    FoundryResult (*profile_rename)(uint32_t, FoundryStr) = api->mods_profile_rename;
+    FoundryResult (*profile_delete)(uint32_t) = api->mods_profile_delete;
+    FoundryResult (*profile_select)(uint32_t) = api->mods_profile_select;
+    FoundryResult (*theme_resolve)(FoundryContentId, FoundryTheme *) = api->ui_theme_resolve;
+    FoundryResult (*theme_push)(FoundryTheme) = api->ui_theme_push;
+    FoundryResult (*theme_pop)(void) = api->ui_theme_pop;
+    FoundryResult (*begin_disabled)(void) = api->ui_begin_disabled;
+    FoundryResult (*end_disabled)(void) = api->ui_end_disabled;
+    FoundryResult (*region_remaining)(FoundryUiRect *) = api->ui_region_remaining;
+    FoundryResult (*tabs)(FoundryUiId, const FoundryStr *, uint32_t, uint32_t *) = api->ui_tabs;
+    FoundryResult (*selectable)(FoundryUiId, FoundryStr, FoundryBool, FoundryBool *) = api->ui_selectable;
+    FoundryResult (*reorder_list)(FoundryUiId, const FoundryUiRect *, uint32_t, FoundryUiReorderMove *) = api->ui_reorder_list;
+    FoundryResult (*reorder_button)(FoundryUiId, FoundryStr, uint32_t, uint32_t,
+                                    FoundryUiReorderDirection, FoundryUiReorderMove *) =
+        api->ui_reorder_button;
+    FoundryResult (*icon)(FoundryStr, FoundryUiVec2, FoundryUiColor, FoundryBool *) = api->ui_icon;
+    FoundryResult (*image)(const FoundryUiImageSource *, FoundryUiVec2, FoundryUiColor) = api->ui_image;
+
+    (void)installed_next;
+    (void)pending_next;
+    (void)requirement_next;
+    (void)conflict_next;
+    (void)provider_next;
+    (void)profile_next;
+    (void)profile_active;
+    (void)set_enabled;
+    (void)move;
+    (void)revert;
+    (void)apply;
+    (void)profile_create;
+    (void)profile_copy;
+    (void)profile_rename;
+    (void)profile_delete;
+    (void)profile_select;
+    (void)theme_resolve;
+    (void)theme_push;
+    (void)theme_pop;
+    (void)begin_disabled;
+    (void)end_disabled;
+    (void)region_remaining;
+    (void)tabs;
+    (void)selectable;
+    (void)reorder_list;
+    (void)reorder_button;
+    (void)icon;
+    (void)image;
+}
+
+void foundry_agreement_api_v3_common_signatures(const FoundryApi_v3 *api);
+void foundry_agreement_api_v3_common_signatures(const FoundryApi_v3 *api)
+{
+    FoundryApi_v2 common = {
+        api->version,
+        api->size,
+        api->result_name,
+        api->log_write,
+        api->log_next,
+        api->id_from_string,
+        api->id_to_string,
+        api->id_copy_string,
+        api->frame_index,
+        api->frame_delta_ns,
+        api->elapsed_ns,
+        api->tick_delta_ns,
+        api->scope_begin,
+        api->scope_end,
+        api->memory_counter_open,
+        api->memory_counter_set,
+        api->content_generation,
+        api->content_find,
+        api->content_next,
+        api->content_next_of_schema,
+        api->record_id,
+        api->record_name,
+        api->record_schema,
+        api->record_package,
+        api->record_field_count,
+        api->record_field_index,
+        api->record_field_name,
+        api->record_field_type,
+        api->record_field_present,
+        api->record_get_bool,
+        api->record_get_i64,
+        api->record_get_u64,
+        api->record_get_f32,
+        api->record_get_string,
+        api->record_copy_string,
+        api->record_get_id,
+        api->record_nested,
+        api->record_list_len,
+        api->record_list_get_i64,
+        api->record_list_get_f32,
+        api->record_list_get_string,
+        api->record_list_get_id,
+        api->record_list_nested,
+        api->package_count,
+        api->package_next,
+        api->package_find,
+        api->package_id,
+        api->package_name,
+        api->package_version,
+        api->package_order,
+        api->schema_count,
+        api->schema_next,
+        api->schema_find,
+        api->schema_id,
+        api->schema_version,
+        api->schema_field_count,
+        api->schema_field_name,
+        api->schema_field_type,
+        api->asset_acquire,
+        api->asset_release,
+        api->asset_find,
+        api->asset_next,
+        api->asset_content_id,
+        api->asset_schema,
+        api->asset_refcount,
+        api->world_register_component,
+        api->world_find_component_type,
+        api->world_component_type_next,
+        api->world_component_type_schema,
+        api->world_component_type_name,
+        api->world_component_type_size,
+        api->world_component_type_alignment,
+        api->world_component_type_count,
+        api->world_component_type_savable,
+        api->world_create_entity,
+        api->world_destroy_entity,
+        api->world_contains,
+        api->world_entity_count,
+        api->world_next_entity,
+        api->world_add_component,
+        api->world_remove_component,
+        api->world_has_component,
+        api->world_register_system,
+        api->world_query_begin,
+        api->world_query_next,
+        api->world_spawn,
+        api->world_spawn_scene,
+        api->world_read_component,
+        api->world_component_bytes,
+        api->render_texture_of_asset,
+        api->render_destroy_texture,
+        api->render_draw_sprite,
+        api->render_draw_text,
+        api->render_add_view,
+        api->render_select_view,
+        api->render_camera_get,
+        api->render_camera_set,
+        api->render_world_to_screen,
+        api->render_screen_to_world,
+        api->render_stats,
+        api->ui_begin,
+        api->ui_end,
+        api->ui_push_id,
+        api->ui_pop_id,
+        api->ui_begin_panel,
+        api->ui_end_panel,
+        api->ui_begin_row,
+        api->ui_end_row,
+        api->ui_begin_scroll,
+        api->ui_end_scroll,
+        api->ui_label,
+        api->ui_button,
+        api->ui_checkbox,
+        api->ui_slider,
+        api->ui_slider_int,
+        api->ui_separator,
+        api->ui_spacer,
+        api->ui_collapsing_header,
+        api->ui_text_field,
+        api->ui_plot,
+        api->ui_style_get,
+        api->ui_style_set,
+        api->ui_wants_keyboard,
+        api->ui_wants_pointer,
+        api->audio_play,
+        api->audio_stop,
+        api->audio_set_gain,
+        api->audio_set_pan,
+        api->audio_set_pitch,
+        api->audio_set_master_gain,
+        api->physics_create_body,
+        api->physics_destroy_body,
+        api->physics_move_body,
+        api->physics_query_point,
+        api->physics_query_aabb,
+        api->physics_query_ray,
+        api->physics_body_contacts,
+        api->script_source_copy
+    };
+    (void)common;
+}
+
+static const char *const api_v3_names[] = {
+    "version",
+    "size",
+    "result_name",
+    "log_write",
+    "log_next",
+    "id_from_string",
+    "id_to_string",
+    "id_copy_string",
+    "frame_index",
+    "frame_delta_ns",
+    "elapsed_ns",
+    "tick_delta_ns",
+    "scope_begin",
+    "scope_end",
+    "memory_counter_open",
+    "memory_counter_set",
+    "content_generation",
+    "content_find",
+    "content_next",
+    "content_next_of_schema",
+    "record_id",
+    "record_name",
+    "record_schema",
+    "record_package",
+    "record_field_count",
+    "record_field_index",
+    "record_field_name",
+    "record_field_type",
+    "record_field_present",
+    "record_get_bool",
+    "record_get_i64",
+    "record_get_u64",
+    "record_get_f32",
+    "record_get_string",
+    "record_copy_string",
+    "record_get_id",
+    "record_nested",
+    "record_list_len",
+    "record_list_get_i64",
+    "record_list_get_f32",
+    "record_list_get_string",
+    "record_list_get_id",
+    "record_list_nested",
+    "package_count",
+    "package_next",
+    "package_find",
+    "package_id",
+    "package_name",
+    "package_version",
+    "package_order",
+    "schema_count",
+    "schema_next",
+    "schema_find",
+    "schema_id",
+    "schema_version",
+    "schema_field_count",
+    "schema_field_name",
+    "schema_field_type",
+    "asset_acquire",
+    "asset_release",
+    "asset_find",
+    "asset_next",
+    "asset_content_id",
+    "asset_schema",
+    "asset_refcount",
+    "world_register_component",
+    "world_find_component_type",
+    "world_component_type_next",
+    "world_component_type_schema",
+    "world_component_type_name",
+    "world_component_type_size",
+    "world_component_type_alignment",
+    "world_component_type_count",
+    "world_component_type_savable",
+    "world_create_entity",
+    "world_destroy_entity",
+    "world_contains",
+    "world_entity_count",
+    "world_next_entity",
+    "world_add_component",
+    "world_remove_component",
+    "world_has_component",
+    "world_register_system",
+    "world_query_begin",
+    "world_query_next",
+    "world_spawn",
+    "world_spawn_scene",
+    "world_read_component",
+    "world_component_bytes",
+    "render_texture_of_asset",
+    "render_destroy_texture",
+    "render_draw_sprite",
+    "render_draw_text",
+    "render_add_view",
+    "render_select_view",
+    "render_camera_get",
+    "render_camera_set",
+    "render_world_to_screen",
+    "render_screen_to_world",
+    "render_stats",
+    "ui_begin",
+    "ui_end",
+    "ui_push_id",
+    "ui_pop_id",
+    "ui_begin_panel",
+    "ui_end_panel",
+    "ui_begin_row",
+    "ui_end_row",
+    "ui_begin_scroll",
+    "ui_end_scroll",
+    "ui_label",
+    "ui_button",
+    "ui_checkbox",
+    "ui_slider",
+    "ui_slider_int",
+    "ui_separator",
+    "ui_spacer",
+    "ui_collapsing_header",
+    "ui_text_field",
+    "ui_plot",
+    "ui_style_get",
+    "ui_style_set",
+    "ui_wants_keyboard",
+    "ui_wants_pointer",
+    "audio_play",
+    "audio_stop",
+    "audio_set_gain",
+    "audio_set_pan",
+    "audio_set_pitch",
+    "audio_set_master_gain",
+    "physics_create_body",
+    "physics_destroy_body",
+    "physics_move_body",
+    "physics_query_point",
+    "physics_query_aabb",
+    "physics_query_ray",
+    "physics_body_contacts",
+    "script_source_copy",
+    "mods_installed_next",
+    "mods_pending_next",
+    "mods_requirement_next",
+    "mods_conflict_next",
+    "mods_provider_next",
+    "mods_profile_next",
+    "mods_profile_active",
+    "mods_set_enabled",
+    "mods_move",
+    "mods_revert",
+    "mods_apply",
+    "mods_profile_create",
+    "mods_profile_copy",
+    "mods_profile_rename",
+    "mods_profile_delete",
+    "mods_profile_select",
+    "ui_theme_resolve",
+    "ui_theme_push",
+    "ui_theme_pop",
+    "ui_begin_disabled",
+    "ui_end_disabled",
+    "ui_region_remaining",
+    "ui_tabs",
+    "ui_selectable",
+    "ui_reorder_list",
+    "ui_reorder_button",
+    "ui_icon",
+    "ui_image"
+};
+
+static const uint64_t api_v3_offsets[] = {
+    (uint64_t)offsetof(FoundryApi_v3, version),
+    (uint64_t)offsetof(FoundryApi_v3, size),
+    (uint64_t)offsetof(FoundryApi_v3, result_name),
+    (uint64_t)offsetof(FoundryApi_v3, log_write),
+    (uint64_t)offsetof(FoundryApi_v3, log_next),
+    (uint64_t)offsetof(FoundryApi_v3, id_from_string),
+    (uint64_t)offsetof(FoundryApi_v3, id_to_string),
+    (uint64_t)offsetof(FoundryApi_v3, id_copy_string),
+    (uint64_t)offsetof(FoundryApi_v3, frame_index),
+    (uint64_t)offsetof(FoundryApi_v3, frame_delta_ns),
+    (uint64_t)offsetof(FoundryApi_v3, elapsed_ns),
+    (uint64_t)offsetof(FoundryApi_v3, tick_delta_ns),
+    (uint64_t)offsetof(FoundryApi_v3, scope_begin),
+    (uint64_t)offsetof(FoundryApi_v3, scope_end),
+    (uint64_t)offsetof(FoundryApi_v3, memory_counter_open),
+    (uint64_t)offsetof(FoundryApi_v3, memory_counter_set),
+    (uint64_t)offsetof(FoundryApi_v3, content_generation),
+    (uint64_t)offsetof(FoundryApi_v3, content_find),
+    (uint64_t)offsetof(FoundryApi_v3, content_next),
+    (uint64_t)offsetof(FoundryApi_v3, content_next_of_schema),
+    (uint64_t)offsetof(FoundryApi_v3, record_id),
+    (uint64_t)offsetof(FoundryApi_v3, record_name),
+    (uint64_t)offsetof(FoundryApi_v3, record_schema),
+    (uint64_t)offsetof(FoundryApi_v3, record_package),
+    (uint64_t)offsetof(FoundryApi_v3, record_field_count),
+    (uint64_t)offsetof(FoundryApi_v3, record_field_index),
+    (uint64_t)offsetof(FoundryApi_v3, record_field_name),
+    (uint64_t)offsetof(FoundryApi_v3, record_field_type),
+    (uint64_t)offsetof(FoundryApi_v3, record_field_present),
+    (uint64_t)offsetof(FoundryApi_v3, record_get_bool),
+    (uint64_t)offsetof(FoundryApi_v3, record_get_i64),
+    (uint64_t)offsetof(FoundryApi_v3, record_get_u64),
+    (uint64_t)offsetof(FoundryApi_v3, record_get_f32),
+    (uint64_t)offsetof(FoundryApi_v3, record_get_string),
+    (uint64_t)offsetof(FoundryApi_v3, record_copy_string),
+    (uint64_t)offsetof(FoundryApi_v3, record_get_id),
+    (uint64_t)offsetof(FoundryApi_v3, record_nested),
+    (uint64_t)offsetof(FoundryApi_v3, record_list_len),
+    (uint64_t)offsetof(FoundryApi_v3, record_list_get_i64),
+    (uint64_t)offsetof(FoundryApi_v3, record_list_get_f32),
+    (uint64_t)offsetof(FoundryApi_v3, record_list_get_string),
+    (uint64_t)offsetof(FoundryApi_v3, record_list_get_id),
+    (uint64_t)offsetof(FoundryApi_v3, record_list_nested),
+    (uint64_t)offsetof(FoundryApi_v3, package_count),
+    (uint64_t)offsetof(FoundryApi_v3, package_next),
+    (uint64_t)offsetof(FoundryApi_v3, package_find),
+    (uint64_t)offsetof(FoundryApi_v3, package_id),
+    (uint64_t)offsetof(FoundryApi_v3, package_name),
+    (uint64_t)offsetof(FoundryApi_v3, package_version),
+    (uint64_t)offsetof(FoundryApi_v3, package_order),
+    (uint64_t)offsetof(FoundryApi_v3, schema_count),
+    (uint64_t)offsetof(FoundryApi_v3, schema_next),
+    (uint64_t)offsetof(FoundryApi_v3, schema_find),
+    (uint64_t)offsetof(FoundryApi_v3, schema_id),
+    (uint64_t)offsetof(FoundryApi_v3, schema_version),
+    (uint64_t)offsetof(FoundryApi_v3, schema_field_count),
+    (uint64_t)offsetof(FoundryApi_v3, schema_field_name),
+    (uint64_t)offsetof(FoundryApi_v3, schema_field_type),
+    (uint64_t)offsetof(FoundryApi_v3, asset_acquire),
+    (uint64_t)offsetof(FoundryApi_v3, asset_release),
+    (uint64_t)offsetof(FoundryApi_v3, asset_find),
+    (uint64_t)offsetof(FoundryApi_v3, asset_next),
+    (uint64_t)offsetof(FoundryApi_v3, asset_content_id),
+    (uint64_t)offsetof(FoundryApi_v3, asset_schema),
+    (uint64_t)offsetof(FoundryApi_v3, asset_refcount),
+    (uint64_t)offsetof(FoundryApi_v3, world_register_component),
+    (uint64_t)offsetof(FoundryApi_v3, world_find_component_type),
+    (uint64_t)offsetof(FoundryApi_v3, world_component_type_next),
+    (uint64_t)offsetof(FoundryApi_v3, world_component_type_schema),
+    (uint64_t)offsetof(FoundryApi_v3, world_component_type_name),
+    (uint64_t)offsetof(FoundryApi_v3, world_component_type_size),
+    (uint64_t)offsetof(FoundryApi_v3, world_component_type_alignment),
+    (uint64_t)offsetof(FoundryApi_v3, world_component_type_count),
+    (uint64_t)offsetof(FoundryApi_v3, world_component_type_savable),
+    (uint64_t)offsetof(FoundryApi_v3, world_create_entity),
+    (uint64_t)offsetof(FoundryApi_v3, world_destroy_entity),
+    (uint64_t)offsetof(FoundryApi_v3, world_contains),
+    (uint64_t)offsetof(FoundryApi_v3, world_entity_count),
+    (uint64_t)offsetof(FoundryApi_v3, world_next_entity),
+    (uint64_t)offsetof(FoundryApi_v3, world_add_component),
+    (uint64_t)offsetof(FoundryApi_v3, world_remove_component),
+    (uint64_t)offsetof(FoundryApi_v3, world_has_component),
+    (uint64_t)offsetof(FoundryApi_v3, world_register_system),
+    (uint64_t)offsetof(FoundryApi_v3, world_query_begin),
+    (uint64_t)offsetof(FoundryApi_v3, world_query_next),
+    (uint64_t)offsetof(FoundryApi_v3, world_spawn),
+    (uint64_t)offsetof(FoundryApi_v3, world_spawn_scene),
+    (uint64_t)offsetof(FoundryApi_v3, world_read_component),
+    (uint64_t)offsetof(FoundryApi_v3, world_component_bytes),
+    (uint64_t)offsetof(FoundryApi_v3, render_texture_of_asset),
+    (uint64_t)offsetof(FoundryApi_v3, render_destroy_texture),
+    (uint64_t)offsetof(FoundryApi_v3, render_draw_sprite),
+    (uint64_t)offsetof(FoundryApi_v3, render_draw_text),
+    (uint64_t)offsetof(FoundryApi_v3, render_add_view),
+    (uint64_t)offsetof(FoundryApi_v3, render_select_view),
+    (uint64_t)offsetof(FoundryApi_v3, render_camera_get),
+    (uint64_t)offsetof(FoundryApi_v3, render_camera_set),
+    (uint64_t)offsetof(FoundryApi_v3, render_world_to_screen),
+    (uint64_t)offsetof(FoundryApi_v3, render_screen_to_world),
+    (uint64_t)offsetof(FoundryApi_v3, render_stats),
+    (uint64_t)offsetof(FoundryApi_v3, ui_begin),
+    (uint64_t)offsetof(FoundryApi_v3, ui_end),
+    (uint64_t)offsetof(FoundryApi_v3, ui_push_id),
+    (uint64_t)offsetof(FoundryApi_v3, ui_pop_id),
+    (uint64_t)offsetof(FoundryApi_v3, ui_begin_panel),
+    (uint64_t)offsetof(FoundryApi_v3, ui_end_panel),
+    (uint64_t)offsetof(FoundryApi_v3, ui_begin_row),
+    (uint64_t)offsetof(FoundryApi_v3, ui_end_row),
+    (uint64_t)offsetof(FoundryApi_v3, ui_begin_scroll),
+    (uint64_t)offsetof(FoundryApi_v3, ui_end_scroll),
+    (uint64_t)offsetof(FoundryApi_v3, ui_label),
+    (uint64_t)offsetof(FoundryApi_v3, ui_button),
+    (uint64_t)offsetof(FoundryApi_v3, ui_checkbox),
+    (uint64_t)offsetof(FoundryApi_v3, ui_slider),
+    (uint64_t)offsetof(FoundryApi_v3, ui_slider_int),
+    (uint64_t)offsetof(FoundryApi_v3, ui_separator),
+    (uint64_t)offsetof(FoundryApi_v3, ui_spacer),
+    (uint64_t)offsetof(FoundryApi_v3, ui_collapsing_header),
+    (uint64_t)offsetof(FoundryApi_v3, ui_text_field),
+    (uint64_t)offsetof(FoundryApi_v3, ui_plot),
+    (uint64_t)offsetof(FoundryApi_v3, ui_style_get),
+    (uint64_t)offsetof(FoundryApi_v3, ui_style_set),
+    (uint64_t)offsetof(FoundryApi_v3, ui_wants_keyboard),
+    (uint64_t)offsetof(FoundryApi_v3, ui_wants_pointer),
+    (uint64_t)offsetof(FoundryApi_v3, audio_play),
+    (uint64_t)offsetof(FoundryApi_v3, audio_stop),
+    (uint64_t)offsetof(FoundryApi_v3, audio_set_gain),
+    (uint64_t)offsetof(FoundryApi_v3, audio_set_pan),
+    (uint64_t)offsetof(FoundryApi_v3, audio_set_pitch),
+    (uint64_t)offsetof(FoundryApi_v3, audio_set_master_gain),
+    (uint64_t)offsetof(FoundryApi_v3, physics_create_body),
+    (uint64_t)offsetof(FoundryApi_v3, physics_destroy_body),
+    (uint64_t)offsetof(FoundryApi_v3, physics_move_body),
+    (uint64_t)offsetof(FoundryApi_v3, physics_query_point),
+    (uint64_t)offsetof(FoundryApi_v3, physics_query_aabb),
+    (uint64_t)offsetof(FoundryApi_v3, physics_query_ray),
+    (uint64_t)offsetof(FoundryApi_v3, physics_body_contacts),
+    (uint64_t)offsetof(FoundryApi_v3, script_source_copy),
+    (uint64_t)offsetof(FoundryApi_v3, mods_installed_next),
+    (uint64_t)offsetof(FoundryApi_v3, mods_pending_next),
+    (uint64_t)offsetof(FoundryApi_v3, mods_requirement_next),
+    (uint64_t)offsetof(FoundryApi_v3, mods_conflict_next),
+    (uint64_t)offsetof(FoundryApi_v3, mods_provider_next),
+    (uint64_t)offsetof(FoundryApi_v3, mods_profile_next),
+    (uint64_t)offsetof(FoundryApi_v3, mods_profile_active),
+    (uint64_t)offsetof(FoundryApi_v3, mods_set_enabled),
+    (uint64_t)offsetof(FoundryApi_v3, mods_move),
+    (uint64_t)offsetof(FoundryApi_v3, mods_revert),
+    (uint64_t)offsetof(FoundryApi_v3, mods_apply),
+    (uint64_t)offsetof(FoundryApi_v3, mods_profile_create),
+    (uint64_t)offsetof(FoundryApi_v3, mods_profile_copy),
+    (uint64_t)offsetof(FoundryApi_v3, mods_profile_rename),
+    (uint64_t)offsetof(FoundryApi_v3, mods_profile_delete),
+    (uint64_t)offsetof(FoundryApi_v3, mods_profile_select),
+    (uint64_t)offsetof(FoundryApi_v3, ui_theme_resolve),
+    (uint64_t)offsetof(FoundryApi_v3, ui_theme_push),
+    (uint64_t)offsetof(FoundryApi_v3, ui_theme_pop),
+    (uint64_t)offsetof(FoundryApi_v3, ui_begin_disabled),
+    (uint64_t)offsetof(FoundryApi_v3, ui_end_disabled),
+    (uint64_t)offsetof(FoundryApi_v3, ui_region_remaining),
+    (uint64_t)offsetof(FoundryApi_v3, ui_tabs),
+    (uint64_t)offsetof(FoundryApi_v3, ui_selectable),
+    (uint64_t)offsetof(FoundryApi_v3, ui_reorder_list),
+    (uint64_t)offsetof(FoundryApi_v3, ui_reorder_button),
+    (uint64_t)offsetof(FoundryApi_v3, ui_icon),
+    (uint64_t)offsetof(FoundryApi_v3, ui_image)
+};
+
+FOUNDRY_AGREE(sizeof(api_v3_names) / sizeof(api_v3_names[0]) ==
+              sizeof(api_v3_offsets) / sizeof(api_v3_offsets[0]));
+FOUNDRY_AGREE(sizeof(FoundryApi_v3) ==
+              8 + 8 * (sizeof(api_v3_offsets) / sizeof(api_v3_offsets[0]) - 2));
+
+uint64_t foundry_agreement_api_v3_size(void);
+uint64_t foundry_agreement_api_v3_size(void)
+{
+    return (uint64_t)sizeof(FoundryApi_v3);
+}
+
+uint64_t foundry_agreement_api_v3_count(void);
+uint64_t foundry_agreement_api_v3_count(void)
+{
+    return (uint64_t)(sizeof(api_v3_offsets) / sizeof(api_v3_offsets[0]));
+}
+
+uint64_t foundry_agreement_api_v3_offset(uint64_t index);
+uint64_t foundry_agreement_api_v3_offset(uint64_t index)
+{
+    if (index >= foundry_agreement_api_v3_count()) return UINT64_MAX;
+    return api_v3_offsets[index];
+}
+
+const char *foundry_agreement_api_v3_name(uint64_t index);
+const char *foundry_agreement_api_v3_name(uint64_t index)
+{
+    if (index >= foundry_agreement_api_v3_count()) return NULL;
+    return api_v3_names[index];
 }

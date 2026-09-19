@@ -22,6 +22,7 @@
 //! Design: `docs/design/public-abi.md` §4, §9 and §13.
 
 const std = @import("std");
+const app = @import("app");
 const asset = @import("asset");
 const core = @import("core");
 const data = @import("data");
@@ -78,6 +79,16 @@ pub const max_nested_views: u32 = 64;
 /// to close a span the *engine or the game* opened, which the recorder cannot tell apart.
 pub const max_scope_depth: u32 = 32;
 pub const max_render_textures = render_calls.max_render_textures;
+pub const max_ui_themes: u32 = 16;
+pub const max_ui_theme_depth: u32 = 8;
+
+/// The host's explicit authority for the v3 calls that write profiles. Its presence grants
+/// writes; the callback persists the selected profile key in the application's settings
+/// after `ModSet.apply` has written that profile. Consent is intentionally not represented.
+pub const ModsWriteGrant = struct {
+    ctx: ?*anyopaque = null,
+    save_active_profile: *const fn (ctx: ?*anyopaque, key: u32) bool,
+};
 
 /// A `Host` bound to a particular engine type.
 pub fn HostOf(comptime E: type) type {
@@ -114,6 +125,25 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
         /// until ui_end, just as it is when a game calls Context.begin directly.
         ui_input: ?ui.Input = null,
         ui_state: ui_types.State = .{},
+        /// The single application-owned model behind the v3 mod-management calls. Reads
+        /// require only this pointer; every mutation also requires `mods_write`. A host
+        /// that changes the set itself, outside the table, calls `changedMods` afterwards.
+        mod_set: ?*app.ModSet = null,
+        mods_write: ?ModsWriteGrant = null,
+        /// Moved by every successful change, and carried in every mod-management cursor.
+        mods_generation: u32 = 1,
+
+        /// Content-derived themes are owned here so their public handles stay stable. They
+        /// are all released together when the content generation changes.
+        ui_themes: [max_ui_themes]ThemeSlot = @splat(.{}),
+        ui_theme_next: u32 = 0,
+        ui_theme_content_generation: ?u64 = null,
+        ui_theme_stack: [max_ui_theme_depth]types.Theme = @splat(.none),
+        ui_theme_depth: u32 = 0,
+        ui_theme_base_style: ?ui.Style = null,
+        ui_theme_base_skin: ?ui.Skin = null,
+        ui_frame_theme: types.Theme = .none,
+        ui_completed_theme: types.Theme = .none,
         mixer: ?*M = null,
         collision: ?*physics2d.World = null,
         /// Must be the allocator the host uses for this collision world's storage.
@@ -152,6 +182,7 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
         /// Shared by every host instance of this type so a handle issued by a replaced host
         /// cannot alias the same slot in its successor.
         var next_mod_generation: u32 = 0;
+        var next_theme_generation: u32 = 0;
 
         /// One borrowed view of a nested block.
         pub const NestedView = struct {
@@ -282,6 +313,14 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
             name_len: usize = 0,
         };
 
+        pub const ThemeSlot = struct {
+            active: bool = false,
+            generation: u32 = 0,
+            id: core.ContentId = .none,
+            content_generation: u64 = 0,
+            theme: ?app.UiTheme = null,
+        };
+
         /// Publishes this host to the table. **The host must outlive the binding and must
         /// not be moved**, because the engine holds pointers into its counters.
         pub fn bind(self: *Self) void {
@@ -374,6 +413,7 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
                 if (ctx.in_frame) ctx.end();
                 ctx.clearInteraction();
             }
+            self.releaseUiThemes();
             self.releaseRenderTextures();
             self.releaseCounters();
             self.nested = @splat(.{});
@@ -383,6 +423,7 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
             self.queries = @splat(.{});
             self.query_next = 0;
             self.ui_state.reset();
+            self.mods_generation = 1;
             self.releaseMods();
             self.mod_next = 0;
             if (bound == self) bound = null;
@@ -441,6 +482,111 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
         /// case that can actually happen.
         pub fn current() ?*Self {
             return bound;
+        }
+
+        /// Bumps every mod-management cursor after a successful edit, so a caller cannot
+        /// continue a walk through a different pending selection or profile list.
+        pub fn changedMods(self: *Self) void {
+            self.mods_generation +%= 1;
+            if (self.mods_generation == 0) self.mods_generation = 1;
+        }
+
+        /// Releases every resolved v3 theme and restores the context the host supplied.
+        pub fn releaseUiThemes(self: *Self) void {
+            if (self.ui_context) |ctx| {
+                if (self.ui_theme_base_style) |style| ctx.style = style;
+                ctx.skin = self.ui_theme_base_skin;
+            }
+            if (self.engine) |engine| {
+                for (&self.ui_themes) |*slot| {
+                    if (slot.theme) |*theme| theme.deinit(&engine.assets);
+                    const generation = slot.generation;
+                    slot.* = .{ .generation = generation };
+                }
+            } else {
+                for (&self.ui_themes) |*slot| {
+                    const generation = slot.generation;
+                    slot.* = .{ .generation = generation };
+                }
+            }
+            self.ui_theme_next = 0;
+            self.ui_theme_content_generation = null;
+            self.ui_theme_stack = @splat(.none);
+            self.ui_theme_depth = 0;
+            self.ui_theme_base_style = null;
+            self.ui_theme_base_skin = null;
+            self.ui_frame_theme = .none;
+            self.ui_completed_theme = .none;
+        }
+
+        /// Invalidates themes at a content boundary. This is called before every theme
+        /// operation and frame begin, so a stale public handle cannot reach released assets.
+        pub fn syncUiThemes(self: *Self) error{Refused}!void {
+            const engine = self.engine orelse return;
+            const generation = engine.contentGeneration();
+            if (self.ui_theme_content_generation == null) {
+                self.ui_theme_content_generation = generation;
+                return;
+            }
+            if (self.ui_theme_content_generation.? == generation) return;
+            if (self.ui_context) |ctx| if (ctx.in_frame) return error.Refused;
+            self.releaseUiThemes();
+            self.ui_theme_content_generation = generation;
+        }
+
+        pub fn findUiTheme(self: *Self, id: core.ContentId) ?types.Theme {
+            const generation = self.ui_theme_content_generation orelse return null;
+            for (&self.ui_themes, 0..) |*slot, index| {
+                if (slot.active and slot.content_generation == generation and slot.id.eql(id)) {
+                    return .wrap(core.Handle(ThemeSlot){ .index = @intCast(index), .generation = slot.generation });
+                }
+            }
+            return null;
+        }
+
+        pub fn putUiTheme(self: *Self, id: core.ContentId, value: app.UiTheme) error{Limit}!types.Theme {
+            const content_generation = self.ui_theme_content_generation orelse return error.Limit;
+            var tried: u32 = 0;
+            while (tried < max_ui_themes) : (tried += 1) {
+                const index = self.ui_theme_next;
+                self.ui_theme_next = (self.ui_theme_next + 1) % max_ui_themes;
+                const slot = &self.ui_themes[index];
+                if (slot.active) continue;
+                next_theme_generation +%= 1;
+                if (next_theme_generation == 0) next_theme_generation = 1;
+                slot.* = .{
+                    .active = true,
+                    .generation = next_theme_generation,
+                    .id = id,
+                    .content_generation = content_generation,
+                    .theme = value,
+                };
+                return .wrap(core.Handle(ThemeSlot){ .index = index, .generation = slot.generation });
+            }
+            return error.Limit;
+        }
+
+        pub fn uiTheme(self: *const Self, handle: types.Theme) ?*const app.UiTheme {
+            const unpacked = handle.unwrap(core.Handle(ThemeSlot));
+            if (unpacked.index >= max_ui_themes) return null;
+            const slot = &self.ui_themes[unpacked.index];
+            const content_generation = self.ui_theme_content_generation orelse return null;
+            if (!slot.active or slot.generation == 0 or slot.generation != unpacked.generation or
+                slot.content_generation != content_generation) return null;
+            return if (slot.theme) |*theme| theme else null;
+        }
+
+        pub fn activeUiTheme(self: *const Self) ?*const app.UiTheme {
+            if (self.ui_theme_depth == 0) return null;
+            return self.uiTheme(self.ui_theme_stack[self.ui_theme_depth - 1]);
+        }
+
+        /// The theme the last balanced ABI frame was described in: the font and image
+        /// table a host walks that frame's draw list with. Walk it before content can
+        /// change, since a reload replaces the textures a theme names.
+        pub fn completedUiTheme(self: *const Self) ?*const app.UiTheme {
+            if (self.ui_completed_theme.isNone()) return null;
+            return self.uiTheme(self.ui_completed_theme);
         }
 
         /// Opens a counter for `owner`, copying the name.

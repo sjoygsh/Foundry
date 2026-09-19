@@ -21,7 +21,7 @@ const Allocator = std.mem.Allocator;
 
 /// A PNG of one colour, `width` by `height`, in stored DEFLATE blocks: no compressor, and
 /// bytes a test can predict.
-fn solidPng(gpa: Allocator, width: u32, height: u32) ![]u8 {
+pub fn solidPng(gpa: Allocator, width: u32, height: u32) ![]u8 {
     var raw: std.ArrayList(u8) = .empty;
     defer raw.deinit(gpa);
     for (0..height) |_| {

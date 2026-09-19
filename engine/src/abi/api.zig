@@ -16,12 +16,14 @@ const std = @import("std");
 
 const asset_calls = @import("calls_asset.zig");
 const content_calls = @import("calls_content.zig");
+const mod_calls = @import("calls_mods.zig");
 const engine_calls = @import("calls_engine.zig");
 const audio_calls = @import("calls_audio.zig");
 const physics_calls = @import("calls_physics.zig");
 const render_calls = @import("calls_render.zig");
 const scene_calls = @import("calls_scene.zig");
 const ui_calls = @import("calls_ui.zig");
+const mod_types = @import("mod_types.zig");
 const types = @import("types.zig");
 const physics_types = @import("physics_types.zig");
 const render_types = @import("render_types.zig");
@@ -65,6 +67,8 @@ const UiId = ui_types.Id;
 const UiRect = ui_types.Rect;
 const UiStyle = ui_types.Style;
 const UiPlotOptions = ui_types.PlotOptions;
+const UiImageSource = ui_types.ImageSource;
+const UiReorderMove = ui_types.ReorderMove;
 
 /// Everything a mod may call.
 ///
@@ -312,10 +316,78 @@ fn extendV1(v1: Api_v1, script_source_copy: ScriptSourceCopy) Api_v2 {
     return v2;
 }
 
+/// ABI v3 is the whole v2 surface followed by mod management, content themes and the game
+/// widget set. The final public table is still flat; this tail exists only to build its type
+/// and value without duplicating the frozen v2 declarations in Zig.
+const Api_v3_tail = extern struct {
+    mods_installed_next: *const fn (?*Cursor, ?*mod_types.Info) callconv(.c) Result,
+    mods_pending_next: *const fn (?*Cursor, ?*mod_types.Pending) callconv(.c) Result,
+    mods_requirement_next: *const fn (ContentId, ?*Cursor, ?*mod_types.Requirement) callconv(.c) Result,
+    mods_conflict_next: *const fn (ContentId, ?*Cursor, ?*mod_types.Conflict) callconv(.c) Result,
+    mods_provider_next: *const fn (ContentId, ?*Cursor, ?*mod_types.Provider) callconv(.c) Result,
+    mods_profile_next: *const fn (?*Cursor, ?*mod_types.Profile) callconv(.c) Result,
+    mods_profile_active: *const fn (?*mod_types.ProfileState) callconv(.c) Result,
+    mods_set_enabled: *const fn (ContentId, Bool) callconv(.c) Result,
+    mods_move: *const fn (ContentId, u32) callconv(.c) Result,
+    mods_revert: *const fn () callconv(.c) Result,
+    mods_apply: *const fn () callconv(.c) Result,
+    mods_profile_create: *const fn (Str, ?*u32) callconv(.c) Result,
+    mods_profile_copy: *const fn (u32, Str, ?*u32) callconv(.c) Result,
+    mods_profile_rename: *const fn (u32, Str) callconv(.c) Result,
+    mods_profile_delete: *const fn (u32) callconv(.c) Result,
+    mods_profile_select: *const fn (u32) callconv(.c) Result,
+
+    ui_theme_resolve: *const fn (ContentId, ?*types.Theme) callconv(.c) Result,
+    ui_theme_push: *const fn (types.Theme) callconv(.c) Result,
+    ui_theme_pop: *const fn () callconv(.c) Result,
+    ui_begin_disabled: *const fn () callconv(.c) Result,
+    ui_end_disabled: *const fn () callconv(.c) Result,
+    ui_region_remaining: *const fn (?*UiRect) callconv(.c) Result,
+    ui_tabs: *const fn (ui_types.Id, ?[*]const Str, u32, ?*u32) callconv(.c) Result,
+    ui_selectable: *const fn (ui_types.Id, Str, Bool, ?*Bool) callconv(.c) Result,
+    ui_reorder_list: *const fn (ui_types.Id, ?*const UiRect, u32, ?*UiReorderMove) callconv(.c) Result,
+    ui_reorder_button: *const fn (ui_types.Id, Str, u32, u32, i32, ?*UiReorderMove) callconv(.c) Result,
+    ui_icon: *const fn (Str, ui_types.Vec2, ui_types.Color, ?*Bool) callconv(.c) Result,
+    ui_image: *const fn (?*const UiImageSource, ui_types.Vec2, ui_types.Color) callconv(.c) Result,
+};
+
+const api_v2_fields = @typeInfo(Api_v2).@"struct".fields;
+const api_v3_tail_fields = @typeInfo(Api_v3_tail).@"struct".fields;
+const api_v3_names = blk: {
+    var names: [api_v2_fields.len + api_v3_tail_fields.len][:0]const u8 = undefined;
+    for (api_v2_fields, 0..) |field, i| names[i] = field.name;
+    for (api_v3_tail_fields, api_v2_fields.len..) |field, i| names[i] = field.name;
+    break :blk names;
+};
+const api_v3_types = blk: {
+    var field_types: [api_v2_fields.len + api_v3_tail_fields.len]type = undefined;
+    for (api_v2_fields, 0..) |field, i| field_types[i] = field.type;
+    for (api_v3_tail_fields, api_v2_fields.len..) |field, i| field_types[i] = field.type;
+    break :blk field_types;
+};
+
+pub const Api_v3 = @Struct(
+    .@"extern",
+    null,
+    &api_v3_names,
+    &api_v3_types,
+    &@splat(.{}),
+);
+
+fn extendV2(v2: Api_v2, tail: Api_v3_tail) Api_v3 {
+    var v3: Api_v3 = undefined;
+    inline for (api_v2_fields) |field| @field(v3, field.name) = @field(v2, field.name);
+    inline for (api_v3_tail_fields) |field| @field(v3, field.name) = @field(tail, field.name);
+    v3.version = types.api_version_3;
+    v3.size = @sizeOf(Api_v3);
+    return v3;
+}
+
 /// The table for one host type, and the `get_api` that hands it out.
 pub fn TableOf(comptime H: type) type {
     const engine = engine_calls.Of(H);
     const content = content_calls.Of(H);
+    const mods = mod_calls.Of(H);
     const assets = asset_calls.Of(H);
     const world = scene_calls.Of(H);
     const render = render_calls.Of(H);
@@ -487,6 +559,36 @@ pub fn TableOf(comptime H: type) type {
         };
 
         pub const v2: Api_v2 = extendV1(v1, assets.scriptSourceCopy);
+        pub const v3: Api_v3 = extendV2(v2, .{
+            .mods_installed_next = mods.modsInstalledNext,
+            .mods_pending_next = mods.modsPendingNext,
+            .mods_requirement_next = mods.modsRequirementNext,
+            .mods_conflict_next = mods.modsConflictNext,
+            .mods_provider_next = mods.modsProviderNext,
+            .mods_profile_next = mods.modsProfileNext,
+            .mods_profile_active = mods.modsProfileActive,
+            .mods_set_enabled = mods.modsSetEnabled,
+            .mods_move = mods.modsMove,
+            .mods_revert = mods.modsRevert,
+            .mods_apply = mods.modsApply,
+            .mods_profile_create = mods.modsProfileCreate,
+            .mods_profile_copy = mods.modsProfileCopy,
+            .mods_profile_rename = mods.modsProfileRename,
+            .mods_profile_delete = mods.modsProfileDelete,
+            .mods_profile_select = mods.modsProfileSelect,
+            .ui_theme_resolve = ui.uiThemeResolve,
+            .ui_theme_push = ui.uiThemePush,
+            .ui_theme_pop = ui.uiThemePop,
+            .ui_begin_disabled = ui.uiBeginDisabled,
+            .ui_end_disabled = ui.uiEndDisabled,
+            .ui_region_remaining = ui.uiRegionRemaining,
+            .ui_tabs = ui.uiTabs,
+            .ui_selectable = ui.uiSelectable,
+            .ui_reorder_list = ui.uiReorderList,
+            .ui_reorder_button = ui.uiReorderButton,
+            .ui_icon = ui.uiIcon,
+            .ui_image = ui.uiImage,
+        });
 
         /// What a native mod is handed (§3). **Never a crash and never a Zig error** — a
         /// version this host does not offer is null, which is a legible refusal on the
@@ -494,6 +596,7 @@ pub fn TableOf(comptime H: type) type {
         pub fn getApi(version: u32) callconv(.c) ?*const anyopaque {
             if (version == types.api_version_1) return @ptrCast(&v1);
             if (version == types.api_version_2) return @ptrCast(&v2);
+            if (version == types.api_version_3) return @ptrCast(&v3);
             return null;
         }
     };
@@ -502,6 +605,7 @@ pub fn TableOf(comptime H: type) type {
 test {
     _ = asset_calls;
     _ = content_calls;
+    _ = mod_calls;
     _ = engine_calls;
     _ = audio_calls;
     _ = physics_calls;

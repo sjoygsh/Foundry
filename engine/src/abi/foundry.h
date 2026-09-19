@@ -71,9 +71,10 @@ extern "C" {
  */
 #define FOUNDRY_API_VERSION_1 1u
 #define FOUNDRY_API_VERSION_2 2u
+#define FOUNDRY_API_VERSION_3 3u
 
 /* The newest version this header describes. */
-#define FOUNDRY_API_VERSION FOUNDRY_API_VERSION_2
+#define FOUNDRY_API_VERSION FOUNDRY_API_VERSION_3
 
 /* == Booleans ========================================================================== */
 
@@ -263,6 +264,9 @@ typedef struct FoundryGrid { uint64_t bits; } FoundryGrid;
  * value to hold between two calls that a C ABI could hand it any other way. */
 typedef struct FoundryMemoryCounter { uint64_t bits; } FoundryMemoryCounter;
 
+/* A content-derived UI theme, valid only for the content generation that issued it. */
+typedef struct FoundryTheme { uint64_t bits; } FoundryTheme;
+
 /* == Cursors =========================================================================== */
 
 /*
@@ -328,6 +332,71 @@ typedef int32_t FoundryFieldType;
 #define FOUNDRY_FIELD_ID ((FoundryFieldType)8)
 #define FOUNDRY_FIELD_LIST ((FoundryFieldType)9)
 #define FOUNDRY_FIELD_NESTED ((FoundryFieldType)10)
+
+/* Where a package was discovered: the game's own installation, or the player's `mods/`
+ * folder. The host assigns this to each folder it searches; nothing inside a package can
+ * claim it. (v3) */
+typedef int32_t FoundryModOrigin;
+#define FOUNDRY_MOD_ORIGIN_INSTALLED ((FoundryModOrigin)0)
+#define FOUNDRY_MOD_ORIGIN_USER ((FoundryModOrigin)1)
+
+/* Why a copy of a package would not load at the next start. `NONE` for one that loads, and
+ * for one nobody enabled. (v3) */
+typedef int32_t FoundryModSkipReason;
+#define FOUNDRY_MOD_SKIP_NONE ((FoundryModSkipReason)0)
+/* Enabled, and no installed package has this id. */
+#define FOUNDRY_MOD_SKIP_NOT_INSTALLED ((FoundryModSkipReason)1)
+/* A package it requires is not installed or not enabled. `skip_other` names it. */
+#define FOUNDRY_MOD_SKIP_MISSING_DEPENDENCY ((FoundryModSkipReason)2)
+/* A package it requires is installed at a version outside its range. */
+#define FOUNDRY_MOD_SKIP_DEPENDENCY_VERSION ((FoundryModSkipReason)3)
+/* A package it requires was itself skipped. */
+#define FOUNDRY_MOD_SKIP_DEPENDENCY_SKIPPED ((FoundryModSkipReason)4)
+/* It requires itself, through others. */
+#define FOUNDRY_MOD_SKIP_CYCLE ((FoundryModSkipReason)5)
+/* Two or more copies in the player's folder share its id, and none of them loads. */
+#define FOUNDRY_MOD_SKIP_DUPLICATE ((FoundryModSkipReason)6)
+/* A copy in the player's folder claims an installed package's id; the installed one loads. */
+#define FOUNDRY_MOD_SKIP_SHADOWS_INSTALLED ((FoundryModSkipReason)7)
+
+/* Why a profile cannot be used. Its file is kept as it is, whatever the reason. (v3) */
+typedef int32_t FoundryModProfileProblem;
+#define FOUNDRY_MOD_PROFILE_OK ((FoundryModProfileProblem)0)
+#define FOUNDRY_MOD_PROFILE_DAMAGED ((FoundryModProfileProblem)1)
+/* Written by a build this one does not understand, usually a newer one. */
+#define FOUNDRY_MOD_PROFILE_OTHER_BUILD ((FoundryModProfileProblem)2)
+/* Readable, but past a bound or disagreeing with itself. */
+#define FOUNDRY_MOD_PROFILE_REFUSED ((FoundryModProfileProblem)3)
+/* The file could not be read at all. */
+#define FOUNDRY_MOD_PROFILE_UNAVAILABLE ((FoundryModProfileProblem)4)
+
+/* `FoundryModInfo.flags`. (v3) */
+/* A package the game cannot run without. Always loads, is never in a profile, and is shown
+ * locked: `mods_set_enabled` refuses it. */
+#define FOUNDRY_MOD_REQUIRED UINT32_C(1)
+/* Its manifest names a native library. Whether that code runs is the host's decision and the
+ * player's consent, neither of which this API exposes. */
+#define FOUNDRY_MOD_NATIVE UINT32_C(2)
+/* Its manifest names a script entry. */
+#define FOUNDRY_MOD_SCRIPT UINT32_C(4)
+/* This copy is skipped as a duplicate: FOUNDRY_MOD_SKIP_DUPLICATE or _SHADOWS_INSTALLED. */
+#define FOUNDRY_MOD_DUPLICATE UINT32_C(8)
+/* Enabled for this session by the host's developer override rather than by the player.
+ * Never saved into a profile. */
+#define FOUNDRY_MOD_ENVIRONMENT UINT32_C(16)
+/* Its record table could not be read, so it counts as providing nothing. The host's log
+ * says why. */
+#define FOUNDRY_MOD_UNREADABLE UINT32_C(32)
+
+/* A position in a list something is not in. */
+#define FOUNDRY_MOD_NO_POSITION UINT32_MAX
+
+/* Which way `ui_reorder_button` moves a row. (v3) */
+typedef int32_t FoundryUiReorderDirection;
+#define FOUNDRY_UI_REORDER_UP ((FoundryUiReorderDirection)0)
+#define FOUNDRY_UI_REORDER_DOWN ((FoundryUiReorderDirection)1)
+#define FOUNDRY_UI_REORDER_TOP ((FoundryUiReorderDirection)2)
+#define FOUNDRY_UI_REORDER_BOTTOM ((FoundryUiReorderDirection)3)
 
 /* == Structs that cross ================================================================ */
 
@@ -557,6 +626,136 @@ typedef struct FoundryUiPlotOptions {
     FoundryBool has_max;
     uint8_t _padding1[2];
 } FoundryUiPlotOptions;
+
+/*
+ * One discovered copy of a package, and what the pending selection makes of it (v3).
+ *
+ * **No path, ever.** Where a package lives is the host's business; a mod may learn what is
+ * installed, not where. Two copies of one id are told apart by `origin` and `skip_reason`.
+ *
+ * Every string is borrowed from the host's mod set and stays valid until the next successful
+ * `mods_*` change. `pending_*`, `skip_*`, `provides`, `wins` and `loses` describe the order
+ * the **next** start would load; `loaded` describes the one this session did.
+ */
+typedef struct FoundryModInfo {
+    FoundryContentId id;
+    /* The id's spelling. `id_to_string` cannot spell a package that is not loaded. */
+    FoundryStr id_name;
+    FoundryStr name;
+    FoundryStr license;
+    uint32_t version;
+    FoundryModOrigin origin;
+    /* FOUNDRY_MOD_REQUIRED and the rest. */
+    uint32_t flags;
+    /* Its index in the player's list, which is what `mods_move` takes, or
+     * FOUNDRY_MOD_NO_POSITION when the player has not enabled it. */
+    uint32_t pending_index;
+    /* Its index in the order the next start would load, required packages included, or
+     * FOUNDRY_MOD_NO_POSITION when this copy would not load. */
+    uint32_t pending_position;
+    FoundryModSkipReason skip_reason;
+    /* The package a dependency skip is about, and its spelling when anything installed has
+     * one. Zero and empty otherwise. */
+    FoundryContentId skip_other;
+    FoundryStr skip_other_name;
+    /* Records it provides, how many of them override an earlier package's, and how many a
+     * later package overrides. Zero when this copy would not load. */
+    uint32_t provides;
+    uint32_t wins;
+    uint32_t loses;
+    FoundryBool loaded;
+    /* The player enabled it, or it is required. */
+    FoundryBool pending_enabled;
+    uint8_t _padding[2];
+} FoundryModInfo;
+
+/* One entry of the player's list, in the player's order (v3). An entry can name a package
+ * that is no longer installed: a profile outlives the files it mentions. */
+typedef struct FoundryModPending {
+    FoundryContentId id;
+    /* Borrowed, like FoundryModInfo's strings. Empty when nothing ever spelled the id. */
+    FoundryStr name;
+    FoundryBool installed;
+    uint8_t _padding[7];
+} FoundryModPending;
+
+/* One dependency of a package, as its manifest states it (v3). */
+typedef struct FoundryModRequirement {
+    FoundryContentId id;
+    /* Borrowed. Empty when no installed package has this id: a hash cannot be spelled. */
+    FoundryStr name;
+    uint32_t min_version;
+    /* UINT32_MAX when the range has no upper bound. */
+    uint32_t max_version;
+    /* The next start would load a version inside the range. */
+    FoundryBool satisfied;
+    uint8_t _padding[7];
+} FoundryModRequirement;
+
+/* One record two or more packages in the pending order provide (v3). The last provider in
+ * load order is the one the game sees. */
+typedef struct FoundryModConflict {
+    FoundryContentId record;
+    /* The record's spelling, borrowed. */
+    FoundryStr name;
+    FoundryContentId winner;
+    uint32_t provider_count;
+    uint32_t _padding;
+} FoundryModConflict;
+
+/* One package providing a record (v3). */
+typedef struct FoundryModProvider {
+    FoundryContentId package;
+    /* Its index in the order the next start would load. */
+    uint32_t position;
+    /* The last provider, whose record the game sees. */
+    FoundryBool winner;
+    uint8_t _padding[3];
+} FoundryModProvider;
+
+/* One profile: an ordered selection the player named (v3). */
+typedef struct FoundryModProfile {
+    /* Stable for the profile's life, and never reused while it exists. */
+    uint32_t key;
+    FoundryModProfileProblem problem;
+    /* The player's name for it, borrowed. */
+    FoundryStr name;
+    /* The profile the next start uses. */
+    FoundryBool saved;
+    /* The profile being edited, which `mods_apply` saves. */
+    FoundryBool pending;
+    uint8_t _padding[6];
+} FoundryModProfile;
+
+/* Which profiles are saved and pending, and whether anything waits for `mods_apply` (v3).
+ * A host that keeps no profiles answers with both `has_` members false. */
+typedef struct FoundryModProfileState {
+    uint32_t saved;
+    uint32_t pending;
+    FoundryBool has_saved;
+    FoundryBool has_pending;
+    FoundryBool changed;
+    uint8_t _padding;
+} FoundryModProfileState;
+
+/* A rectangle of the atlas of the theme pushed around the current UI frame, in the atlas's
+ * pixels, top-left origin. It must lie inside the atlas (v3). */
+typedef struct FoundryUiImageSource {
+    uint32_t x;
+    uint32_t y;
+    uint32_t w;
+    uint32_t h;
+} FoundryUiImageSource;
+
+/* What a reorder widget returns (v3). `moved` is false on every frame but the one that
+ * completes a move. `to` is the row's final index once it has left `from`, which is the
+ * index `mods_move` takes; both are below the row count the widget was given. */
+typedef struct FoundryUiReorderMove {
+    uint32_t from;
+    uint32_t to;
+    FoundryBool moved;
+    uint8_t _padding[3];
+} FoundryUiReorderMove;
 
 /* == Physics2d values ================================================================= */
 
@@ -1386,6 +1585,518 @@ typedef struct FoundryApi_v2 {
                                         uint64_t capacity, uint64_t *needed,
                                         uint64_t *revision);
 } FoundryApi_v2;
+
+/* ABI v3 repeats v2 byte-for-byte and appends M14 mod management and game UI. */
+typedef struct FoundryApi_v3 {
+    /* Always 3, and `sizeof(FoundryApi_v3)` as the host built it. Both are redundant with
+     * `get_api`, and both are here for the case the query cannot reach: a crash dump on a
+     * player's machine, where the one thing worth knowing is whether the mod was built
+     * against this header. Eight bytes, and every other answer involves asking the player to
+     * reproduce something. */
+    uint32_t version;
+    uint32_t size;
+
+    /* -- Results and logging ----------------------------------------------------------- */
+
+    /* The name of a result code — "FOUNDRY_ERR_NOT_FOUND" — so a mod can log legibly without
+     * shipping its own copy of the table and letting it go stale. Empty for a code this host
+     * has never issued, which is the honest answer rather than an invented one. Always
+     * available: it needs no subsystem. */
+    FoundryStr (*result_name)(FoundryResult result);
+
+    /* Writes one line to the engine's log, tagged with the mod's own scope. Available on a
+     * host with no subsystems at all, deliberately: a mod refusing itself has to be able to
+     * say why. */
+    FoundryResult (*log_write)(FoundryMod self, FoundryLogLevel level, FoundryStr message);
+
+    /* Walks the in-memory log ring, oldest first, from a cursor starting at
+     * FOUNDRY_CURSOR_BEGIN. Returns FOUNDRY_END when there is nothing more. */
+    FoundryResult (*log_next)(FoundryCursor *cursor, FoundryLogRecord *out);
+
+    /* -- Content identity -------------------------------------------------------------- */
+
+    /* Hashes a `namespace:name` string, validating its shape first — the same validation the
+     * content compiler applies, so a string this refuses would never have compiled either.
+     * `foundry_content_id` in this header hashes without validating; this is the checked
+     * form, and needs no subsystem. */
+    FoundryResult (*id_from_string)(FoundryStr text, FoundryContentId *out);
+
+    /* The spelling of an id, borrowed from the package that supplied it. FOUNDRY_ERR_NOT_FOUND
+     * when nothing loaded carries that id: a hash cannot be reversed, so an id nobody spells
+     * has no name to give. */
+    FoundryResult (*id_to_string)(FoundryContentId id, FoundryStr *out);
+
+    /* The same spelling, copied into the caller's buffer, for a mod that needs the bytes past
+     * the call. Writes `*needed` with the length whether or not it fitted and returns
+     * FOUNDRY_ERR_LIMIT rather than truncating — silent truncation of a name is how a mod
+     * ships with a bug nobody can see. `buffer` may be NULL when `capacity` is 0, which is
+     * how a caller asks for the length alone. */
+    FoundryResult (*id_copy_string)(FoundryContentId id, uint8_t *buffer, uint64_t capacity,
+                                    uint64_t *needed);
+
+    /* -- The frame --------------------------------------------------------------------- */
+
+    /* The engine's frame counter, which is what a log line's `frame` stamp lines up with. */
+    FoundryResult (*frame_index)(uint64_t *out);
+
+    /* Wall-clock length of the previous frame. **Presentation only.** Simulation time is the
+     * tick, never this: a mod that integrates motion against a wall clock has made its own
+     * behaviour depend on how fast the machine is. */
+    FoundryResult (*frame_delta_ns)(uint64_t *out);
+
+    /* Total simulated time, which is an exact multiple of the tick and is therefore the same
+     * number on every machine that ran the same ticks. */
+    FoundryResult (*elapsed_ns)(uint64_t *out);
+
+    /* The exact length of one simulation step. Nanoseconds rather than a rate in hertz,
+     * because the engine's timestep is an exact rational and a rounded rate would not
+     * reproduce it. */
+    FoundryResult (*tick_delta_ns)(uint64_t *out);
+
+    /* -- The profiler ------------------------------------------------------------------ */
+
+    /* Opens a named timing span, so a mod's own work appears in the profiler beside the
+     * engine's. Strictly nested, and every span a mod opens it must close. */
+    FoundryResult (*scope_begin)(FoundryStr name);
+
+    /* Closes the innermost span this mod opened. FOUNDRY_ERR_REFUSED when none is open,
+     * rather than closing one the engine or the game opened. */
+    FoundryResult (*scope_end)(void);
+
+    /* -- Memory ------------------------------------------------------------------------ */
+
+    /* Opens a named counter in the engine's memory report. The name is copied. */
+    FoundryResult (*memory_counter_open)(FoundryMod self, FoundryStr name,
+                                         FoundryMemoryCounter *out);
+
+    /* Publishes a mod's own numbers into a counter it opened. */
+    FoundryResult (*memory_counter_set)(FoundryMemoryCounter counter,
+                                        const FoundryMemoryStats *stats);
+
+    /* -- Content ----------------------------------------------------------------------- */
+
+    /* Bumped whenever content changes under the program — a hot reload, a package added.
+     * **The one signal a mod needs**: anything derived from content, including every record
+     * handle and every borrowed string, is derived again when this moves. */
+    FoundryResult (*content_generation)(uint64_t *out);
+
+    /* The record a content id names, after every package has been merged and every override
+     * applied. What a mod gets is the definition that *won*, which is the same one the game
+     * sees — there is no privileged view. */
+    FoundryResult (*content_find)(FoundryContentId id, FoundryRecord *out);
+
+    /* Every record, in merge order. */
+    FoundryResult (*content_next)(FoundryCursor *cursor, FoundryRecord *out);
+
+    /* Every record of one schema, in merge order. How a mod finds "all the items" without
+     * knowing what any package called them. */
+    FoundryResult (*content_next_of_schema)(FoundrySchemaId schema, FoundryCursor *cursor,
+                                            FoundryRecord *out);
+
+    /* -- Reading a record -------------------------------------------------------------- */
+
+    /*
+     * A record is read by asking its schema what each field is and then calling the matching
+     * reader. That is how a mod reads a record type it has never heard of — including one
+     * another mod declared — and it is what the debug overlay's inspector already does.
+     *
+     * A field a record does not carry answers FOUNDRY_ERR_NOT_FOUND, which is different from
+     * a field that is not in the schema at all (FOUNDRY_ERR_INVALID_ARGUMENT) and different
+     * again from asking for it with the wrong reader (also INVALID_ARGUMENT). A record
+     * written against an older version of its schema answers newer fields with their
+     * declared defaults, which is what makes a schema able to grow.
+     */
+
+    /* A nested block has no identity of its own — that is what nested means — so `record_id`,
+     * `record_name` and `record_package` answer FOUNDRY_ERR_NOT_FOUND for one. */
+    FoundryResult (*record_id)(FoundryRecord record, FoundryContentId *out);
+    FoundryResult (*record_name)(FoundryRecord record, FoundryStr *out);
+    FoundryResult (*record_schema)(FoundryRecord record, FoundrySchemaId *out);
+    FoundryResult (*record_package)(FoundryRecord record, FoundryPackage *out);
+
+    FoundryResult (*record_field_count)(FoundryRecord record, uint32_t *out);
+    FoundryResult (*record_field_index)(FoundryRecord record, FoundryStr name, uint32_t *out);
+    FoundryResult (*record_field_name)(FoundryRecord record, uint32_t field, FoundryStr *out);
+    FoundryResult (*record_field_type)(FoundryRecord record, uint32_t field,
+                                       FoundryFieldType *out);
+    /* Whether the record actually carries a value for the field, as opposed to the field
+     * being absent. A missing optional field and a field set to its default are different
+     * things, and collapsing them would make "this item drops nothing" and "this item's drop
+     * was never specified" indistinguishable. */
+    FoundryResult (*record_field_present)(FoundryRecord record, uint32_t field,
+                                          FoundryBool *out);
+
+    FoundryResult (*record_get_bool)(FoundryRecord record, uint32_t field, FoundryBool *out);
+    /* Every signed integer field, widened. What the file stores is what the schema declared;
+     * this is what covers all of them. */
+    FoundryResult (*record_get_i64)(FoundryRecord record, uint32_t field, int64_t *out);
+    FoundryResult (*record_get_u64)(FoundryRecord record, uint32_t field, uint64_t *out);
+    FoundryResult (*record_get_f32)(FoundryRecord record, uint32_t field, float *out);
+    /* Borrowed from the package's own bytes, and not NUL-terminated. */
+    FoundryResult (*record_get_string)(FoundryRecord record, uint32_t field, FoundryStr *out);
+    /* The second of the two calls in `_v1` that copy rather than borrow. Same rules as
+     * `id_copy_string`: `needed` is always written, and too small is a refusal. */
+    FoundryResult (*record_copy_string)(FoundryRecord record, uint32_t field, uint8_t *buffer,
+                                        uint64_t capacity, uint64_t *needed);
+    FoundryResult (*record_get_id)(FoundryRecord record, uint32_t field, FoundryContentId *out);
+
+    /* An inline struct, as something that answers the same field calls one level down. This
+     * composes to any depth and needs no path language invented for the boundary.
+     *
+     * The view it hands back is borrowed like everything else here, and it is borrowed from a
+     * ring: it stays valid until enough further views have been opened to recycle its slot,
+     * and a recycled one answers FOUNDRY_ERR_INVALID_HANDLE rather than reading whatever now
+     * sits there. Reading a record never needs more than a few at once. */
+    FoundryResult (*record_nested)(FoundryRecord record, uint32_t field, FoundryRecord *out);
+
+    FoundryResult (*record_list_len)(FoundryRecord record, uint32_t field, uint32_t *out);
+    FoundryResult (*record_list_get_i64)(FoundryRecord record, uint32_t field, uint32_t index,
+                                         int64_t *out);
+    FoundryResult (*record_list_get_f32)(FoundryRecord record, uint32_t field, uint32_t index,
+                                         float *out);
+    FoundryResult (*record_list_get_string)(FoundryRecord record, uint32_t field,
+                                            uint32_t index, FoundryStr *out);
+    FoundryResult (*record_list_get_id)(FoundryRecord record, uint32_t field, uint32_t index,
+                                        FoundryContentId *out);
+    FoundryResult (*record_list_nested)(FoundryRecord record, uint32_t field, uint32_t index,
+                                        FoundryRecord *out);
+
+    /* -- Packages ---------------------------------------------------------------------- */
+
+    FoundryResult (*package_count)(uint32_t *out);
+    /* Every loaded package, **in load order**, which is the order overrides were applied in
+     * and therefore the only order worth walking them in. */
+    FoundryResult (*package_next)(FoundryCursor *cursor, FoundryPackage *out);
+    FoundryResult (*package_find)(FoundryContentId id, FoundryPackage *out);
+    FoundryResult (*package_id)(FoundryPackage package, FoundryContentId *out);
+    FoundryResult (*package_name)(FoundryPackage package, FoundryStr *out);
+    FoundryResult (*package_version)(FoundryPackage package, uint32_t *out);
+    /* Position in the load order. Zero is package zero — the engine's own content, loaded
+     * through the same path a mod's is. */
+    FoundryResult (*package_order)(FoundryPackage package, uint32_t *out);
+
+    /* -- Schemas ----------------------------------------------------------------------- */
+
+    FoundryResult (*schema_count)(uint32_t *out);
+    FoundryResult (*schema_next)(FoundryCursor *cursor, FoundrySchema *out);
+    FoundryResult (*schema_find)(FoundrySchemaId id, FoundrySchema *out);
+    FoundryResult (*schema_id)(FoundrySchema schema, FoundrySchemaId *out);
+    FoundryResult (*schema_version)(FoundrySchema schema, uint32_t *out);
+    FoundryResult (*schema_field_count)(FoundrySchema schema, uint32_t *out);
+    FoundryResult (*schema_field_name)(FoundrySchema schema, uint32_t field, FoundryStr *out);
+    FoundryResult (*schema_field_type)(FoundrySchema schema, uint32_t field,
+                                       FoundryFieldType *out);
+
+    /* -- Assets ------------------------------------------------------------------------ */
+
+    /* Loads an asset if it is not loaded, and adds a reference either way. **This is the one
+     * reference count a mod owns**, and the one thing in `_v1` a mod must balance: an asset
+     * acquired and never released stays in memory for the life of the process. */
+    FoundryResult (*asset_acquire)(FoundryContentId id, FoundryAsset *out);
+    FoundryResult (*asset_release)(FoundryAsset asset);
+    /* Finds one already loaded, without acquiring it. */
+    FoundryResult (*asset_find)(FoundryContentId id, FoundryAsset *out);
+    FoundryResult (*asset_next)(FoundryCursor *cursor, FoundryAsset *out);
+    FoundryResult (*asset_content_id)(FoundryAsset asset, FoundryContentId *out);
+    FoundryResult (*asset_schema)(FoundryAsset asset, FoundrySchemaId *out);
+    /* Zero means evictable, not freed — a real answer to "why is this still in memory". */
+    FoundryResult (*asset_refcount)(FoundryAsset asset, uint32_t *out);
+
+    /* -- Scene ------------------------------------------------------------------------- */
+
+    /* Registers the in-memory half of a component whose schema the mod's content package
+     * already declared. Registration is startup-only, like the engine's own component types. */
+    FoundryResult (*world_register_component)(FoundryMod self,
+                                              const FoundryComponentDesc *desc,
+                                              FoundryComponentType *out);
+    FoundryResult (*world_find_component_type)(FoundrySchemaId schema,
+                                               FoundryComponentType *out);
+    /* Registered types, in registration order. A changed registry invalidates the cursor. */
+    FoundryResult (*world_component_type_next)(FoundryCursor *cursor,
+                                                FoundryComponentType *out);
+    FoundryResult (*world_component_type_schema)(FoundryComponentType type,
+                                                  FoundrySchemaId *out);
+    FoundryResult (*world_component_type_name)(FoundryComponentType type, FoundryStr *out);
+    FoundryResult (*world_component_type_size)(FoundryComponentType type, uint32_t *out);
+    FoundryResult (*world_component_type_alignment)(FoundryComponentType type, uint32_t *out);
+    /* How many entities have one — the number a query over this type would visit, not a
+     * count of registered types. */
+    FoundryResult (*world_component_type_count)(FoundryComponentType type, uint32_t *out);
+    /* Whether a save carries it, which is also whether `world_read_component` can show it.
+     * False for a type registered through `world_register_component`: raw C storage has no
+     * serialized form the engine could invent for it. */
+    FoundryResult (*world_component_type_savable)(FoundryComponentType type,
+                                                   FoundryBool *out);
+
+    FoundryResult (*world_create_entity)(FoundryEntity *out);
+    FoundryResult (*world_destroy_entity)(FoundryEntity entity);
+    FoundryResult (*world_contains)(FoundryEntity entity, FoundryBool *out);
+    FoundryResult (*world_entity_count)(uint32_t *out);
+    /* Live entities, in slot-index order. A structural change invalidates the cursor. */
+    FoundryResult (*world_next_entity)(FoundryCursor *cursor, FoundryEntity *out);
+
+    /* `initial` is either NULL with zero size (construct or zero initialize), or exactly
+     * the registered component size. Its bytes are copied before this call returns. */
+    FoundryResult (*world_add_component)(FoundryEntity entity, FoundryComponentType type,
+                                         const void *initial, uint32_t initial_size);
+    FoundryResult (*world_remove_component)(FoundryEntity entity, FoundryComponentType type);
+    FoundryResult (*world_has_component)(FoundryEntity entity, FoundryComponentType type,
+                                         FoundryBool *out);
+
+    FoundryResult (*world_register_system)(FoundryMod self, const FoundrySystemDesc *desc);
+    /* Opens a query over one or more component types. The returned cursor names the query
+     * until it ends, is recycled, or the world changes shape. A type the world does not
+     * know is FOUNDRY_ERR_INVALID_HANDLE rather than a walk that quietly matches nothing.
+     *
+     * Iteration is driven by the FIRST named type, so name the most selective one first. */
+    FoundryResult (*world_query_begin)(const FoundryComponentType *types, uint32_t count,
+                                       FoundryCursor *out);
+    FoundryResult (*world_query_next)(FoundryCursor *cursor, FoundryEntity *out);
+
+    /* `entity_template` rather than `template`, which is a C++ keyword: this header has to
+     * compile as C++ too, and a parameter name is documentation rather than ABI. */
+    FoundryResult (*world_spawn)(FoundryContentId entity_template, FoundryEntity *out);
+    FoundryResult (*world_spawn_scene)(FoundryContentId scene, uint32_t *out);
+    /* Schema-described data for any savable component, read through the type's own
+     * serializer rather than by casting its bytes — so it works for a type this build was
+     * never compiled against. FOUNDRY_ERR_UNSUPPORTED for a type with no serializer, which
+     * today means every type registered through `world_register_component`.
+     *
+     * The record is borrowed FOR THE CURRENT FRAME ONLY, and is the one borrow at this
+     * boundary with that lifetime: it is serialized into the frame arena rather than read
+     * out of a loaded package. Using it on a later frame is FOUNDRY_ERR_INVALID_HANDLE. */
+    FoundryResult (*world_read_component)(FoundryEntity entity, FoundryComponentType type,
+                                          FoundryRecord *out);
+    /* The one raw-storage fast path: only the mod that registered `type` receives it, and
+     * the pointer is invalid after the next structural world mutation. A marker type — one
+     * registered with size zero — yields NULL and a size of zero, which is FOUNDRY_OK. */
+    FoundryResult (*world_component_bytes)(FoundryMod self, FoundryEntity entity,
+                                           FoundryComponentType type, void **out,
+                                           uint32_t *size);
+
+    /* -- Render2d --------------------------------------------------------------------- */
+
+    FoundryResult (*render_texture_of_asset)(FoundryAsset asset, FoundryTexture *out);
+    FoundryResult (*render_destroy_texture)(FoundryTexture texture);
+    FoundryResult (*render_draw_sprite)(const FoundryRenderSprite *sprite);
+    FoundryResult (*render_draw_text)(const FoundryRenderFont *font, FoundryStr text,
+                                      const FoundryRenderTextOptions *options);
+    FoundryResult (*render_add_view)(const FoundryRenderViewDesc *desc, FoundryView *out);
+    FoundryResult (*render_select_view)(FoundryView view);
+    FoundryResult (*render_camera_get)(FoundryRenderCamera *out);
+    FoundryResult (*render_camera_set)(const FoundryRenderCamera *camera);
+    FoundryResult (*render_world_to_screen)(FoundryRenderVec2 world, FoundryRenderVec2 *out);
+    FoundryResult (*render_screen_to_world)(FoundryRenderVec2 screen, FoundryRenderVec2 *out);
+    FoundryResult (*render_stats)(FoundryRenderStats *out);
+
+    /* -- UI --------------------------------------------------------------------------- */
+
+    FoundryResult (*ui_begin)(const FoundryUiRect *viewport);
+    FoundryResult (*ui_end)(void);
+    FoundryResult (*ui_push_id)(FoundryUiId id);
+    FoundryResult (*ui_pop_id)(void);
+    FoundryResult (*ui_begin_panel)(FoundryUiId id, const FoundryUiRect *bounds);
+    FoundryResult (*ui_end_panel)(void);
+    FoundryResult (*ui_begin_row)(FoundryUiId id, float height);
+    FoundryResult (*ui_end_row)(void);
+    FoundryResult (*ui_begin_scroll)(FoundryUiId id, const FoundryUiRect *bounds, float content);
+    FoundryResult (*ui_end_scroll)(void);
+    FoundryResult (*ui_label)(FoundryStr text);
+    FoundryResult (*ui_button)(FoundryUiId id, FoundryStr text, FoundryBool *out);
+    FoundryResult (*ui_checkbox)(FoundryUiId id, FoundryStr text, FoundryBool *checked,
+                                 FoundryBool *changed);
+    FoundryResult (*ui_slider)(FoundryUiId id, FoundryStr text, float *value, float min, float max,
+                               FoundryBool *changed);
+    FoundryResult (*ui_slider_int)(FoundryUiId id, FoundryStr text, int32_t *value, int32_t min,
+                                   int32_t max, FoundryBool *changed);
+    FoundryResult (*ui_separator)(void);
+    FoundryResult (*ui_spacer)(float size);
+    FoundryResult (*ui_collapsing_header)(FoundryUiId id, FoundryStr text, FoundryBool *open);
+    FoundryResult (*ui_text_field)(FoundryUiId id, uint8_t *buffer, uint64_t capacity,
+                                   uint64_t *length, FoundryBool *changed);
+    FoundryResult (*ui_plot)(const float *samples, uint64_t count,
+                             const FoundryUiPlotOptions *options);
+    FoundryResult (*ui_style_get)(FoundryUiStyle *out);
+    FoundryResult (*ui_style_set)(const FoundryUiStyle *style);
+    FoundryResult (*ui_wants_keyboard)(FoundryBool *out);
+    FoundryResult (*ui_wants_pointer)(FoundryBool *out);
+
+    /* -- Audio ------------------------------------------------------------------------ */
+
+    FoundryResult (*audio_play)(FoundryContentId id, float gain, float pan, float pitch,
+                                FoundryBool looping, FoundryVoice *out);
+    FoundryResult (*audio_stop)(FoundryVoice voice);
+    FoundryResult (*audio_set_gain)(FoundryVoice voice, float gain);
+    FoundryResult (*audio_set_pan)(FoundryVoice voice, float pan);
+    FoundryResult (*audio_set_pitch)(FoundryVoice voice, float pitch);
+    FoundryResult (*audio_set_master_gain)(float gain);
+
+    /* -- Physics2d -------------------------------------------------------------------- */
+
+    FoundryResult (*physics_create_body)(const FoundryPhysicsBodyDesc *desc, FoundryBody *out);
+    FoundryResult (*physics_destroy_body)(FoundryBody body);
+    FoundryResult (*physics_move_body)(FoundryBody body, FoundryPhysicsVec2 motion,
+                                       FoundryPhysicsHit *hits, uint32_t capacity,
+                                       FoundryPhysicsMoveResult *out);
+    FoundryResult (*physics_query_point)(FoundryPhysicsVec2 point, uint32_t mask,
+                                         FoundryPhysicsQueryHit *hits, uint32_t capacity,
+                                         uint32_t *count, uint32_t *total);
+    FoundryResult (*physics_query_aabb)(FoundryPhysicsVec2 min, FoundryPhysicsVec2 max,
+                                        uint32_t mask, FoundryPhysicsQueryHit *hits,
+                                        uint32_t capacity, uint32_t *count, uint32_t *total);
+    FoundryResult (*physics_query_ray)(FoundryPhysicsVec2 from, FoundryPhysicsVec2 to,
+                                       uint32_t mask, FoundryPhysicsHit *hits, uint32_t capacity,
+                                       uint32_t *count, uint32_t *total);
+    FoundryResult (*physics_body_contacts)(FoundryBody body, FoundryPhysicsQueryHit *hits,
+                                           uint32_t capacity, uint32_t *count, uint32_t *total);
+    /* Copies one `foundry:script` payload made by the host's exact built-in source
+     * loader. `needed` and `revision` are required and are written for a valid asset
+     * even when capacity is too small; that case returns FOUNDRY_ERR_LIMIT and copies
+     * nothing. `(NULL, 0)` is the sizing probe. A successful copy has exactly `needed`
+     * bytes and no terminator. Balance the asset reference with `asset_release`.
+     *
+     * A stale handle is FOUNDRY_ERR_INVALID_HANDLE. Another asset kind or loader is
+     * FOUNDRY_ERR_UNSUPPORTED. An absent engine or source loader is
+     * FOUNDRY_ERR_UNAVAILABLE. */
+    FoundryResult (*script_source_copy)(FoundryAsset asset, uint8_t *buffer,
+                                        uint64_t capacity, uint64_t *needed,
+                                        uint64_t *revision);
+
+    /* -- Mod management (v3) ---------------------------------------------------------- */
+
+    /*
+     * What a player has installed and chosen, answered when the host supplied its mod set.
+     * A host that did not answers FOUNDRY_ERR_UNAVAILABLE to every call here.
+     *
+     * **Nothing here changes the running game.** A selection applies at the next start
+     * (ADR-0040): this session keeps the packages it started with, which is what `loaded`
+     * reports, while everything named `pending` describes the next start.
+     *
+     * Every walk's cursor is refused with FOUNDRY_ERR_INVALID_ARGUMENT after a successful
+     * change, and every borrowed string lasts until one. Start the walk again.
+     */
+
+    /* Every copy of every package found, duplicates included: each folder the host searches,
+     * in the host's order, and each folder's packages sorted by file name. */
+    FoundryResult (*mods_installed_next)(FoundryCursor *cursor, FoundryModInfo *out);
+    /* The player's list, in the player's order, which is the order `mods_move` edits. The
+     * next start loads it in this order wherever dependencies allow. */
+    FoundryResult (*mods_pending_next)(FoundryCursor *cursor, FoundryModPending *out);
+    /* The dependencies of `package`, in its manifest's order. Asked of the copy the next start
+     * would load, or of the first copy found when none would. FOUNDRY_ERR_NOT_FOUND when no
+     * copy is installed. */
+    FoundryResult (*mods_requirement_next)(FoundryContentId package, FoundryCursor *cursor,
+                                           FoundryModRequirement *out);
+    /* Every record `package` provides that another package in the pending order provides
+     * too, sorted by the record's spelling. `package` won when it is `winner`. Nothing, not
+     * an error, for a package that would not load. */
+    FoundryResult (*mods_conflict_next)(FoundryContentId package, FoundryCursor *cursor,
+                                        FoundryModConflict *out);
+    /* Every package in the pending order that provides `record`, in load order; the last is
+     * the winner. Nothing for a record no package provides. */
+    FoundryResult (*mods_provider_next)(FoundryContentId record, FoundryCursor *cursor,
+                                        FoundryModProvider *out);
+    /* Every profile, by key, including ones whose files cannot be used. */
+    FoundryResult (*mods_profile_next)(FoundryCursor *cursor, FoundryModProfile *out);
+    FoundryResult (*mods_profile_active)(FoundryModProfileState *out);
+
+    /*
+     * Changes. **Each one answers FOUNDRY_ERR_REFUSED unless the host granted writes** when
+     * it supplied the set. A host that shows its own mod screen grants them; one without a
+     * screen has no reason to. The grant is the host's, made once, and not per mod.
+     *
+     * Consent to run a package's native code is not here and never will be: it is the
+     * player's, given on the host's own screen, and no code can grant it to itself.
+     */
+
+    /* Enables a package at the end of the player's list, or removes it from the list. Either
+     * is a no-op when already so. A required package is FOUNDRY_ERR_REFUSED, and enabling an
+     * id that no installed package or profile has ever named is FOUNDRY_ERR_NOT_FOUND. */
+    FoundryResult (*mods_set_enabled)(FoundryContentId id, FoundryBool enabled);
+    /* Moves an enabled package to index `to` of the player's list, clamped to its end. Any
+     * index is accepted: `pending_position` shows where dependencies let it land.
+     * FOUNDRY_ERR_NOT_FOUND when the player has not enabled it. */
+    FoundryResult (*mods_move)(FoundryContentId id, uint32_t to);
+    /* Discards every pending change, the pending profile included. */
+    FoundryResult (*mods_revert)(void);
+    /* Writes the pending selection into the pending profile and makes it the one the next
+     * start uses. FOUNDRY_ERR_UNAVAILABLE when the host keeps no profiles.
+     * FOUNDRY_ERR_INTERNAL when the profile was written but the host could not record that
+     * the next start should use it. */
+    FoundryResult (*mods_apply)(void);
+    /* Profiles. A name is 1 to 64 bytes of UTF-8 without control characters, or
+     * FOUNDRY_ERR_INVALID_ARGUMENT. Create and copy write at once, under the smallest
+     * unused key, select nothing, and answer FOUNDRY_ERR_LIMIT past 64 profiles. A copy of
+     * the pending profile includes its unapplied changes. */
+    FoundryResult (*mods_profile_create)(FoundryStr name, uint32_t *out);
+    FoundryResult (*mods_profile_copy)(uint32_t source, FoundryStr name, uint32_t *out);
+    /* Written at once. */
+    FoundryResult (*mods_profile_rename)(uint32_t key, FoundryStr name);
+    /* FOUNDRY_ERR_REFUSED for the saved or the pending profile, so the last one never goes. */
+    FoundryResult (*mods_profile_delete)(uint32_t key);
+    /* Makes `key` the pending profile and its list the pending list, dropping unapplied
+     * changes. FOUNDRY_ERR_REFUSED for a profile whose file cannot be used. */
+    FoundryResult (*mods_profile_select)(uint32_t key);
+
+    /* -- Content themes and the game widget set (v3) ------------------------------------ */
+
+    /*
+     * A theme is content: a `foundry:ui_theme` record naming an atlas, a font, sizes,
+     * colours, nine-slice patches and named icons. Any package may override it.
+     *
+     * Resolving one returns a handle the host owns, with the theme's textures held. There is
+     * no release: the host keeps up to 16 at once and lets them all go when
+     * `content_generation` moves, after which each handle is FOUNDRY_ERR_INVALID_HANDLE and
+     * the theme stack is emptied. Resolve again then; the same id returns the same handle
+     * until it does.
+     *
+     * FOUNDRY_ERR_NOT_FOUND for an id no package provides, and FOUNDRY_ERR_REFUSED for a
+     * record of another schema or a theme whose fields fail validation, which the host's log
+     * names. FOUNDRY_ERR_REFUSED inside a frame.
+     */
+    FoundryResult (*ui_theme_resolve)(FoundryContentId id, FoundryTheme *out);
+    /* Makes a theme's style and skin the context's for the frames that follow, up to 8
+     * deep; `ui_theme_pop` restores what was there. **Only between frames**: one frame is
+     * drawn with one font and one atlas, so both answer FOUNDRY_ERR_REFUSED inside one. */
+    FoundryResult (*ui_theme_push)(FoundryTheme theme);
+    FoundryResult (*ui_theme_pop)(void);
+    /* Everything described inside is drawn faded and takes no hover, press or focus, while
+     * still keeping the pointer from reaching the game. Nests. `ui_end` closes any left
+     * open and answers FOUNDRY_ERR_REFUSED. */
+    FoundryResult (*ui_begin_disabled)(void);
+    FoundryResult (*ui_end_disabled)(void);
+    /* The part of the current region not yet used: `x` and `y` are where the next widget
+     * goes. How a caller finds where the rows of a reorder list begin. */
+    FoundryResult (*ui_region_remaining)(FoundryUiRect *out);
+    /* A row of tabs. `*selected` is the tab drawn selected on the way in, below `count`, and
+     * the one to draw next frame on the way out. At most 256. A tab's identity is `id` and
+     * its index, never its label. */
+    FoundryResult (*ui_tabs)(FoundryUiId id, const FoundryStr *labels, uint32_t count,
+                             uint32_t *selected);
+    /* A full-width row that knows whether it is selected. `*clicked` on a completed click. */
+    FoundryResult (*ui_selectable)(FoundryUiId id, FoundryStr text, FoundryBool selected,
+                                   FoundryBool *clicked);
+    /* Reorder grips over `count` rows the caller has already described in a vertical
+     * region, each one line high and separated by the style's spacing. `bounds` covers them
+     * all, from where the first began. Dragging a grip draws an insertion line, may leave the
+     * list, and completes a move on release. */
+    FoundryResult (*ui_reorder_list)(FoundryUiId id, const FoundryUiRect *bounds,
+                                     uint32_t count, FoundryUiReorderMove *out);
+    /* A button that moves row `index` of `count` one way. It draws disabled, and never
+     * completes a move, when that move is impossible. */
+    FoundryResult (*ui_reorder_button)(FoundryUiId id, FoundryStr text, uint32_t index,
+                                       uint32_t count, FoundryUiReorderDirection direction,
+                                       FoundryUiReorderMove *out);
+    /* The pushed theme's icon called `name`, drawn at `size`. `*found` is false for a name
+     * the theme lacks, and the space is kept anyway, so an absent optional icon moves no
+     * column after it. Both icon and image answer FOUNDRY_ERR_REFUSED in a frame with no
+     * theme pushed around it: an atlas is only ever the pushed theme's. */
+    FoundryResult (*ui_icon)(FoundryStr name, FoundryUiVec2 size, FoundryUiColor tint,
+                             FoundryBool *found);
+    /* A region of the pushed theme's atlas, drawn at `size`. */
+    FoundryResult (*ui_image)(const FoundryUiImageSource *source, FoundryUiVec2 size,
+                              FoundryUiColor tint);
+} FoundryApi_v3;
 
 
 /* == The entry point =================================================================== */

@@ -13,7 +13,7 @@
 //!   crash, and not `not_found` — which would tell a mod author the content is missing when
 //!   the truth is that this host never had a content system (ADR-0026).
 //!
-//! Both walk `Api_v1`'s fields with `inline for`, so **a capability added to the table
+//! Both walk the newest table's fields with `inline for`, so **a capability added to the table
 //! without a refusal path fails these tests rather than shipping**. That is the whole reason
 //! they are written this way: a hand-written list of forty calls is a list that is wrong
 //! within a milestone.
@@ -26,7 +26,9 @@
 //! handle is meaningful is the subsystem's question and there is no subsystem to ask.
 
 const std = @import("std");
+const app = @import("app");
 const core = @import("core");
+const data = @import("data");
 
 const api = @import("api.zig");
 const host_mod = @import("host.zig");
@@ -35,6 +37,7 @@ const types = @import("types.zig");
 
 const Api_v1 = api.Api_v1;
 const Api_v2 = api.Api_v2;
+const Api_v3 = api.Api_v3;
 const Result = types.Result;
 const Str = types.Str;
 const TestEngine = test_engine.TestEngine;
@@ -42,6 +45,7 @@ const TestEngine = test_engine.TestEngine;
 const Host = host_mod.HostOf(TestEngine);
 const table = api.TableOf(Host).v1;
 const table_v2 = api.TableOf(Host).v2;
+const table_v3 = api.TableOf(Host).v3;
 
 const testing = std.testing;
 
@@ -120,25 +124,25 @@ fn wellFormed(comptime T: type) T {
     };
 }
 
-fn callWith(comptime field: std.builtin.Type.StructField, comptime argument: anytype) Result {
+fn callWith(comptime selected: anytype, comptime field: std.builtin.Type.StructField, comptime argument: anytype) Result {
     const Fn = Signature(field.type);
     var args: std.meta.ArgsTuple(Fn) = undefined;
     inline for (@typeInfo(@TypeOf(args)).@"struct".fields) |a| {
         @field(args, a.name) = argument(a.type);
     }
-    return @call(.auto, @field(table, field.name), args);
+    return @call(.auto, @field(selected, field.name), args);
 }
 
 test "every entry point refuses a zeroed call when nothing is bound" {
     // The table's own length, walked at comptime four times over. Raised rather than
     // reduced: the point of these sweeps is that they grow with the table.
-    @setEvalBranchQuota(64 * @typeInfo(Api_v1).@"struct".fields.len);
+    @setEvalBranchQuota(64 * @typeInfo(Api_v3).@"struct".fields.len);
 
     Host.unbindAny();
 
-    inline for (@typeInfo(Api_v1).@"struct".fields) |field| {
+    inline for (@typeInfo(Api_v3).@"struct".fields) |field| {
         if (comptime isCall(field.type) and !isExempt(field.name)) {
-            const result = callWith(field, zeroed);
+            const result = callWith(table_v3, field, zeroed);
             testing.expect(result.isError()) catch |err| {
                 std.debug.print("{s} answered {s} to a zeroed call\n", .{ field.name, result.name() });
                 return err;
@@ -150,19 +154,26 @@ test "every entry point refuses a zeroed call when nothing is bound" {
 test "every entry point refuses a zeroed call when everything is bound" {
     // The table's own length, walked at comptime four times over. Raised rather than
     // reduced: the point of these sweeps is that they grow with the table.
-    @setEvalBranchQuota(64 * @typeInfo(Api_v1).@"struct".fields.len);
+    @setEvalBranchQuota(64 * @typeInfo(Api_v3).@"struct".fields.len);
 
     var engine: TestEngine = try .init(testing.allocator);
     defer engine.deinit();
     engine.settle();
 
-    var host: Host = .{ .engine = &engine };
+    // A real mod set, empty, and no grant: a zeroed change has to be refused as garbage or
+    // as ungranted, never carried out.
+    var diags: data.Diagnostics = .init(testing.allocator, .default);
+    defer diags.deinit(testing.allocator);
+    var mods: app.ModSet = try .init(testing.allocator, engine.os, &.{}, .{ .required = &.{} }, &diags);
+    defer mods.deinit();
+
+    var host: Host = .{ .engine = &engine, .mod_set = &mods };
     host.bind();
     defer host.unbind();
 
-    inline for (@typeInfo(Api_v1).@"struct".fields) |field| {
+    inline for (@typeInfo(Api_v3).@"struct".fields) |field| {
         if (comptime isCall(field.type) and !isExempt(field.name)) {
-            const result = callWith(field, zeroed);
+            const result = callWith(table_v3, field, zeroed);
             testing.expect(result.isError()) catch |err| {
                 std.debug.print("{s} answered {s} to a zeroed call\n", .{ field.name, result.name() });
                 return err;
@@ -174,7 +185,7 @@ test "every entry point refuses a zeroed call when everything is bound" {
 test "an absent subsystem answers unavailable, not not_found and not a crash" {
     // The table's own length, walked at comptime four times over. Raised rather than
     // reduced: the point of these sweeps is that they grow with the table.
-    @setEvalBranchQuota(64 * @typeInfo(Api_v1).@"struct".fields.len);
+    @setEvalBranchQuota(64 * @typeInfo(Api_v3).@"struct".fields.len);
 
     // A host with nothing in it at all: bound, so the table finds it, and empty, so every
     // capability has to say what it says when its subsystem was never supplied.
@@ -182,10 +193,10 @@ test "an absent subsystem answers unavailable, not not_found and not a crash" {
     host.bind();
     defer host.unbind();
 
-    inline for (@typeInfo(Api_v1).@"struct".fields) |field| {
+    inline for (@typeInfo(Api_v3).@"struct".fields) |field| {
         if (comptime isCall(field.type) and !isExempt(field.name)) {
             if (comptime !nameIn(&no_subsystem, field.name)) {
-                const result = callWith(field, wellFormed);
+                const result = callWith(table_v3, field, wellFormed);
                 testing.expectEqual(Result.unavailable, result) catch |err| {
                     std.debug.print("{s} answered {s} on an empty host\n", .{ field.name, result.name() });
                     return err;
@@ -230,7 +241,7 @@ test "the table is one shape: every entry present, none null, and it says its ow
     }
 }
 
-test "get_api hands out v1 and v2 side by side and refuses unknown versions" {
+test "get_api hands out v1, v2 and v3 side by side and refuses unknown versions" {
     const Table = api.TableOf(Host);
 
     const v1 = Table.getApi(1) orelse return error.TestUnexpectedResult;
@@ -242,6 +253,11 @@ test "get_api hands out v1 and v2 side by side and refuses unknown versions" {
     try testing.expectEqual(@as(u32, 2), typed_v2.version);
     try testing.expectEqual(@as(u32, @sizeOf(Api_v2)), typed_v2.size);
 
+    const v3 = Table.getApi(3) orelse return error.TestUnexpectedResult;
+    const typed_v3: *const Api_v3 = @ptrCast(@alignCast(v3));
+    try testing.expectEqual(@as(u32, 3), typed_v3.version);
+    try testing.expectEqual(@as(u32, @sizeOf(Api_v3)), typed_v3.size);
+
     // V2 is separate storage rather than a cast, while every common capability reuses the
     // exact implementation and stays in v1's relative order.
     try testing.expect(v1 != v2);
@@ -251,14 +267,21 @@ test "get_api hands out v1 and v2 side by side and refuses unknown versions" {
             try testing.expectEqual(@offsetOf(Api_v1, field.name), @offsetOf(Api_v2, field.name));
         }
     }
+    inline for (@typeInfo(Api_v2).@"struct".fields) |field| {
+        if (comptime isCall(field.type)) {
+            try testing.expect(@field(table_v2, field.name) == @field(table_v3, field.name));
+            try testing.expectEqual(@offsetOf(Api_v2, field.name), @offsetOf(Api_v3, field.name));
+        }
+    }
 
     // Refused legibly rather than by crashing, which is the whole reason the entry point
     // takes a query function instead of the table.
     try testing.expectEqual(@as(?*const anyopaque, null), Table.getApi(0));
-    try testing.expectEqual(@as(?*const anyopaque, null), Table.getApi(3));
+    try testing.expectEqual(@as(?*const anyopaque, null), Table.getApi(4));
     try testing.expectEqual(@as(?*const anyopaque, null), Table.getApi(std.math.maxInt(u32)));
 
     // The same pointer every time: the table is static, so a mod may keep it.
     try testing.expectEqual(Table.getApi(1), Table.getApi(1));
     try testing.expectEqual(Table.getApi(2), Table.getApi(2));
+    try testing.expectEqual(Table.getApi(3), Table.getApi(3));
 }

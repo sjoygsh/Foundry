@@ -323,10 +323,55 @@ equivalent is [`engine/tests/mod_pipeline.zig`](../../engine/tests/mod_pipeline.
 executes the same package-to-loader lifecycle against null platform/RHI backends and also covers
 reverse shutdown and native refusal paths.
 
+## 7. Mod management and game screens: `FoundryApi_v3`
+
+Version 3 is version 2 unchanged, followed by 28 calls. Ask for the newest table you
+understand and fall back, as §2 does for v1:
+
+```c
+const FoundryApi_v3 *v3 = (const FoundryApi_v3 *)get_api(FOUNDRY_API_VERSION_3);
+if (v3 == NULL) { /* an older host: keep to v1 or v2 */ }
+```
+
+Your manifest's `abi` range must then include 3. A host that offers only v1 and v2 refuses a
+package whose range starts at 3, before its library is opened.
+
+**What is installed and chosen: `mods_*`.** A host that shows players a mod list supplies its
+mod set to the ABI, and any mod can read it: every discovered copy with its version, origin,
+license, flags and conflict counts (`mods_installed_next`); the player's own list in order
+(`mods_pending_next`); a package's dependencies (`mods_requirement_next`); the records two
+packages both provide and who wins (`mods_conflict_next`, `mods_provider_next`); and the
+profiles. A host that supplies no set answers `FOUNDRY_ERR_UNAVAILABLE`.
+
+Four rules shape these calls:
+
+* **Changes wait for the next start.** `mods_set_enabled`, `mods_move` and `mods_apply` edit
+  what the *next* start loads; `FoundryModInfo.loaded` still describes this session.
+* **Writing needs the host's grant.** Every change answers `FOUNDRY_ERR_REFUSED` unless the
+  host granted writes when it supplied the set. A host with its own mod screen grants them.
+  The grant is the host's, once, and not per mod.
+* **Some things are never published.** No call gives a path, and none reads or gives consent
+  to run native code: that is the player's, on the host's own screen.
+* **A change ends every walk.** After any successful change, a cursor you were holding
+  answers `FOUNDRY_ERR_INVALID_ARGUMENT` and borrowed strings are gone; start again.
+
+**Game screens: themes and the game widget set.** A theme is content, a `foundry:ui_theme`
+record ([`content-mods.md`](content-mods.md) §4). Its use takes four steps:
+
+1. `ui_theme_resolve` turns its id into a handle the host owns.
+2. `ui_theme_push` and `ui_theme_pop` put it around whole frames, never inside one.
+3. Inside the frame, `ui_icon` and `ui_image` draw from its atlas.
+4. When `content_generation` moves, the handle goes stale: resolve it again.
+
+The widgets are `ui_tabs`, `ui_selectable`, the reorder list and its buttons, and
+`ui_begin_disabled`/`ui_end_disabled`. A reorder list overlays rows you have already described,
+so ask `ui_region_remaining` where the first row begins, before you describe them.
+
 ## Rules worth keeping visible
 
-* `FoundryApi_v1` is frozen. A future table is `FoundryApi_v2`, added alongside it; do not
-  depend on struct layout beyond the installed header or call an unrequested version.
+* `FoundryApi_v1` is frozen, and so are `FoundryApi_v2` and `FoundryApi_v3`, each added
+  alongside the one before. Do not depend on struct layout beyond the installed header, or call
+  a version you did not request.
 * All API input is untrusted. Check pointers, capacities, result codes, handle validity and
   enum values in the same way the example checks its own calls. The host validates at the
   boundary but cannot make a native crash recoverable.

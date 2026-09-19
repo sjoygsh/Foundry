@@ -11,8 +11,25 @@ drawing through Vulkan on Windows x64:**
 **Both samples run on it from a relocated install, each wearing an icon it supplies. Windows is a
 runtime claim for the tested machine, with its limits recorded, and the RHI's rules survived with
 none relaxed. Linux left M13 by ADR-0039: it is M18, after the first game and before 3D. M14 is in
-progress (`docs/design/mod-management.md`, ADR-0040/0041): Steps 1 to 6 are done, and Step 7,
-the public `FoundryApi_v3`, is next. M15 through M17 remain unstarted.**
+progress (`docs/design/mod-management.md`, ADR-0040/0041): Steps 1 to 7 are done, and Step 8,
+the room's mod screen, is next. M15 through M17 remain unstarted.**
+
+**Completed M14 Step 7, 2026-09-19: the public API.**
+- `FoundryApi_v3` is v2 unchanged plus 28 calls (164 in all), offered by `get_api(3)` and the
+  native loader beside v1 and v2.
+- `mods_*` reads a host-lent `app.ModSet`: every installed copy, the player's list, dependencies,
+  conflicts, provider chains and profiles. Changes need `abi.Host.mods_write`, whose callback
+  records the saved profile key. Without it, every change answers `FOUNDRY_ERR_REFUSED`.
+- Themes resolve to host-owned handles that retire when content changes. They are pushed around
+  whole frames, and the game widgets, the disabled scope and `ui_region_remaining` are
+  published.
+- Four gaps between §9's list and the §11 screen were closed before v3 froze: the player's
+  order, what the Details and Problems panes show, conflict counts, and where a reorder list's
+  rows begin.
+
+The bar passed **1,455 of 1,456**, with the existing skip. v1 and v2 are byte-identical in the
+header. A C mod using every new call compiles as C99 on three targets and as C++17. Three
+deliberate breakages were caught and restored. Resolution: `mod-management.md`, Step 7.
 
 **Completed M14 Step 6, 2026-09-19: the game widget set.**
 - `ui.Context` accepts an optional borrowed `ui.Skin`. Existing panels, buttons, checks, rows,
@@ -1930,15 +1947,16 @@ signing, notarization and a clean recipient Mac (ADR-0032) — not engine work. 
 "Hardening and reach" (M10-M17), is under way**: it gathers the deferred work rather than
 adding to it, only M10 was new, **M10 and M11 are complete (2026-09-13)** and **M12 is
 complete (2026-09-14)**. **M13 is complete (2026-09-19)**, proving
-Windows x64 through Vulkan. **M14 is in progress**, Steps 1 to 6 of nine done; M15 through
+Windows x64 through Vulkan. **M14 is in progress**, Steps 1 to 7 of nine done; M15 through
 M17 are unstarted.
 
 ## Current milestone
 
 **M14 — Managed is in progress.** Read `docs/design/mod-management.md` and ADR-0040/0041.
-Steps 1 to 6 are done (2026-09-19): the mod set, profiles on disk, migrations with merged
+Steps 1 to 7 are done (2026-09-19): the mod set, profiles on disk, migrations with merged
 writes (both samples on profiles), the UI kernel's image commands and disabled scope, themes
-as content, and the skinned game widget set. Step 7, `FoundryApi_v3`, is next.
+as content, the skinned game widget set, and `FoundryApi_v3`. Step 8, the room's mod screen,
+is next.
 
 **M13 — Portable: "the RHI was real." Complete, 2026-09-19.** Read `docs/design/vulkan.md`
 and ADR-0033/0037/0038/0039. All ten steps are implemented:
@@ -2846,7 +2864,7 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M0–M13 are complete. M14 is in progress:** Steps 1 to 6 are done, and nothing is
+**M0–M13 are complete. M14 is in progress:** Steps 1 to 7 are done, and nothing is
 half-built. M13's
 specification and its Resolutions are in `docs/design/vulkan.md`. M12's specification and all
 six Resolutions are in
@@ -3496,15 +3514,15 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M14 Step 7, the public API** (`docs/design/mod-management.md` §§9 and 13,
-ADR-0041 decision 6).
-- Add `FoundryApi_v3` with the mod-set, theme, disabled-scope and game-widget calls and the
-  host's write grant.
-- Keep v1 and v2 byte-identical, extend the C header and agreement/sweep/empty-host proofs, and
-  update the mod author documentation.
+**Next: M14 Step 8, the room's mod screen** (`docs/design/mod-management.md` §§11 and 13).
+- Build §11's screen in the room from Steps 1 to 7 alone. The room lends its `ModSet` and write
+  grant to an `abi.Host` with its UI context, and draws through `FoundryApi_v3` (I4).
+- Keep its strings and its theme as content, and walk each frame with
+  `abi.Host.completedUiTheme()`.
+- Have the autopilot visit it, change a pending selection and revert it without saving.
 
-Its exit is v1/v2 identity, v3 agreement, and writes refused without the grant. Steps 1 to 6
-are done.
+Its exit is captures of the screen on Metal, and a scripted visit with no capture failure.
+Steps 1 to 7 are done.
 M14's design is `docs/design/mod-management.md`: nine steps, each stopping with its Resolution.
 M13 is complete and tagged `m13`. Its record is
 `docs/design/vulkan.md` and its Resolutions. Linux is M18's (ADR-0039), after the first game and
@@ -4769,10 +4787,11 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 - **M12's record** is `docs/design/jobs-and-threading.md` and ADR-0036:
   `FOUNDRY_SANDBOX_WORKERS` / `FOUNDRY_ROOM_WORKERS` set a sample's pool, `0` for none, for
   comparisons.
-- **M14 is in progress** (`docs/design/mod-management.md`, ADR-0040/0041). Steps 1 to 6
+- **M14 is in progress** (`docs/design/mod-management.md`, ADR-0040/0041). Steps 1 to 7
   (`app.ModSet`, `app.profiles`, settings migrations and merged writes, the UI kernel's image
-  commands and disabled scope, `foundry:ui_theme`, `app.resolveUiTheme`, and the skinned game
-  widget set) are done; Step 7, `FoundryApi_v3`, is next. M15–M17 remain unstarted.
+  commands and disabled scope, `foundry:ui_theme`, `app.resolveUiTheme`, the skinned game
+  widget set, and `FoundryApi_v3`) are done; Step 8, the room's mod screen, is next. M15–M17
+  remain unstarted.
 `zig build check -Drhi=metal` is now part of the bar. The environment notes below still apply.
 
 * Read `CLAUDE.md` first, then this file, then `docs/ROADMAP.md`.

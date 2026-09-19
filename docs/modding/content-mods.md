@@ -172,6 +172,18 @@ where files are read from, which packages load, or whether native code runs. Tha
 is [ADR-0031](../adr/0031-application-configuration-and-user-data.md), and it is the reason
 a mod can change how a game looks without being able to change what it trusts.
 
+### A game's look is a record too
+
+A game that draws its screens with Foundry's game widget set names its look in one
+`foundry:ui_theme` record: an atlas texture, a font grid, sizes, eleven colours, nine-slice
+patches for fixed widget parts, and icons by the game's own names. The room's is
+`room:ui.theme`, in `samples/room/content/room.fdt`. Override that record, usually with an atlas
+of your own, and the game is re-skinned the next time its content loads.
+
+The field, colour and part names are fixed. A part name this engine does not know is ignored,
+so a theme written for a later engine still loads. A theme that fails a check is refused as a
+whole: the game logs one warning naming the field and keeps its built-in look.
+
 ## 5. Assets
 
 An asset is a record like any other, and its identity is its content ID. The file is named

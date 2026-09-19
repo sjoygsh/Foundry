@@ -35,10 +35,12 @@ const calls_asset = @import("calls_asset.zig");
 const calls_audio = @import("calls_audio.zig");
 const calls_content = @import("calls_content.zig");
 const calls_engine = @import("calls_engine.zig");
+const calls_mods = @import("calls_mods.zig");
 const calls_physics = @import("calls_physics.zig");
 const calls_render = @import("calls_render.zig");
 const calls_scene = @import("calls_scene.zig");
 const calls_ui = @import("calls_ui.zig");
+const mod_types = @import("mod_types.zig");
 const native_loader = @import("native_loader.zig");
 const physics_types = @import("physics_types.zig");
 const render_types = @import("render_types.zig");
@@ -68,6 +70,7 @@ pub const Schema = types.Schema;
 pub const Texture = types.Texture;
 pub const View = types.View;
 pub const Voice = types.Voice;
+pub const Theme = types.Theme;
 
 /// What the host hands over, and what it gets back.
 ///
@@ -76,10 +79,12 @@ pub const Voice = types.Voice;
 pub const Host = host.HostOf(@import("app").Engine);
 pub const HostOf = host.HostOf;
 pub const HostWithMixer = host.HostWithMixer;
+pub const ModsWriteGrant = host.ModsWriteGrant;
 
 /// The table itself, and the enumerations and structs that cross with it.
 pub const Api_v1 = api.Api_v1;
 pub const Api_v2 = api.Api_v2;
+pub const Api_v3 = api.Api_v3;
 pub const TableOf = api.TableOf;
 pub const FieldType = types.FieldType;
 pub const LogLevel = types.LogLevel;
@@ -110,6 +115,27 @@ pub const UiColor = ui_types.Color;
 pub const UiFontMetrics = ui_types.FontMetrics;
 pub const UiStyle = ui_types.Style;
 pub const UiPlotOptions = ui_types.PlotOptions;
+pub const UiImageSource = ui_types.ImageSource;
+pub const UiReorderMove = ui_types.ReorderMove;
+pub const UiReorderDirection = ui_types.ReorderDirection;
+
+pub const ModOrigin = mod_types.Origin;
+pub const ModSkipReason = mod_types.SkipReason;
+pub const ModProfileProblem = mod_types.ProfileProblem;
+pub const ModInfo = mod_types.Info;
+pub const ModPending = mod_types.Pending;
+pub const ModRequirement = mod_types.Requirement;
+pub const ModConflict = mod_types.Conflict;
+pub const ModProvider = mod_types.Provider;
+pub const ModProfile = mod_types.Profile;
+pub const ModProfileState = mod_types.ProfileState;
+pub const mod_flag_required = mod_types.flag_required;
+pub const mod_flag_native = mod_types.flag_native;
+pub const mod_flag_script = mod_types.flag_script;
+pub const mod_flag_duplicate = mod_types.flag_duplicate;
+pub const mod_flag_environment = mod_types.flag_environment;
+pub const mod_flag_unreadable = mod_types.flag_unreadable;
+pub const mod_no_position = mod_types.no_position;
 
 pub const PhysicsVec2 = physics_types.Vec2;
 pub const PhysicsShape = physics_types.Shape;
@@ -124,6 +150,7 @@ pub const ModInit = types.ModInit;
 pub const ModShutdown = types.ModShutdown;
 pub const api_version_1 = types.api_version_1;
 pub const api_version_2 = types.api_version_2;
+pub const api_version_3 = types.api_version_3;
 pub const init_symbol = types.init_symbol;
 pub const shutdown_symbol = types.shutdown_symbol;
 
@@ -134,11 +161,13 @@ test {
     _ = calls_audio;
     _ = calls_content;
     _ = calls_engine;
+    _ = calls_mods;
     _ = calls_physics;
     _ = calls_render;
     _ = calls_scene;
     _ = calls_ui;
     _ = native_loader;
+    _ = mod_types;
     _ = host;
     _ = types;
     _ = physics_types;

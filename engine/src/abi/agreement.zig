@@ -19,7 +19,9 @@ const core = @import("core");
 const data = @import("data");
 
 const api = @import("api.zig");
+const mod_types = @import("mod_types.zig");
 const types = @import("types.zig");
+const ui_types = @import("ui_types.zig");
 
 const testing = std.testing;
 
@@ -37,6 +39,7 @@ const header = @embedFile("foundry.h");
 test "the header declares the version and the entry points this build publishes" {
     try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_1 1u") != null);
     try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_2 2u") != null);
+    try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_3 3u") != null);
     try testing.expect(std.mem.indexOf(u8, header, types.init_symbol) != null);
     try testing.expect(std.mem.indexOf(u8, header, types.shutdown_symbol) != null);
 }
@@ -117,6 +120,22 @@ test "the header names every table entry, in the table's own order" {
             at = found;
         }
     }
+
+    @setEvalBranchQuota(64 * @typeInfo(api.Api_v3).@"struct".fields.len);
+    at = std.mem.indexOf(u8, header, "typedef struct FoundryApi_v3 {").?;
+    inline for (@typeInfo(api.Api_v3).@"struct".fields) |field| {
+        if (comptime @typeInfo(field.type) == .pointer) {
+            const spelled = "*" ++ field.name ++ ")";
+            const found = std.mem.indexOfPos(u8, header, at, spelled) orelse {
+                std.debug.print(
+                    "the v3 header does not declare '{s}' after the entry before it\n",
+                    .{field.name},
+                );
+                return error.TestUnexpectedResult;
+            };
+            at = found;
+        }
+    }
 }
 
 // `agreement.c`, which the build attaches to this module. Referenced only from tests, so a
@@ -136,6 +155,10 @@ extern fn foundry_agreement_api_v2_size() u64;
 extern fn foundry_agreement_api_v2_count() u64;
 extern fn foundry_agreement_api_v2_offset(index: u64) u64;
 extern fn foundry_agreement_api_v2_name(index: u64) ?[*:0]const u8;
+extern fn foundry_agreement_api_v3_size() u64;
+extern fn foundry_agreement_api_v3_count() u64;
+extern fn foundry_agreement_api_v3_offset(index: u64) u64;
+extern fn foundry_agreement_api_v3_name(index: u64) ?[*:0]const u8;
 
 test "the scalars are the widths the header states" {
     try testing.expectEqual(@as(usize, 4), @sizeOf(types.Result));
@@ -161,6 +184,7 @@ test "every handle kind is eight opaque bytes" {
         types.Mod,   types.Package, types.Schema,        types.Record,
         types.Asset, types.Entity,  types.ComponentType, types.Texture,
         types.View,  types.Voice,   types.Body,          types.Grid,
+        types.Theme,
     }) |Handle| {
         try testing.expectEqual(@as(usize, 8), @sizeOf(Handle));
         try testing.expectEqual(@as(usize, 8), @alignOf(Handle));
@@ -270,6 +294,29 @@ test "FoundryLogRecord and FoundryMemoryStats are the shapes the header states" 
     try testing.expectEqual(@as(usize, 8), @sizeOf(types.MemoryCounter));
 }
 
+test "the v3 mod and UI values are the shapes the header states" {
+    try testing.expectEqual(@as(usize, 120), @sizeOf(mod_types.Info));
+    try testing.expectEqual(@as(usize, 8), @offsetOf(mod_types.Info, "id_name"));
+    try testing.expectEqual(@as(usize, 40), @offsetOf(mod_types.Info, "license"));
+    try testing.expectEqual(@as(usize, 60), @offsetOf(mod_types.Info, "origin"));
+    try testing.expectEqual(@as(usize, 68), @offsetOf(mod_types.Info, "pending_index"));
+    try testing.expectEqual(@as(usize, 80), @offsetOf(mod_types.Info, "skip_other"));
+    try testing.expectEqual(@as(usize, 104), @offsetOf(mod_types.Info, "provides"));
+    try testing.expectEqual(@as(usize, 116), @offsetOf(mod_types.Info, "loaded"));
+    try testing.expectEqual(@as(usize, 32), @sizeOf(mod_types.Pending));
+    try testing.expectEqual(@as(usize, 24), @offsetOf(mod_types.Pending, "installed"));
+    try testing.expectEqual(@as(usize, 40), @sizeOf(mod_types.Requirement));
+    try testing.expectEqual(@as(usize, 28), @offsetOf(mod_types.Requirement, "max_version"));
+    try testing.expectEqual(@as(usize, 32), @offsetOf(mod_types.Requirement, "satisfied"));
+    try testing.expectEqual(@as(usize, 40), @sizeOf(mod_types.Conflict));
+    try testing.expectEqual(@as(usize, 24), @offsetOf(mod_types.Conflict, "winner"));
+    try testing.expectEqual(@as(usize, 16), @sizeOf(mod_types.Provider));
+    try testing.expectEqual(@as(usize, 32), @sizeOf(mod_types.Profile));
+    try testing.expectEqual(@as(usize, 12), @sizeOf(mod_types.ProfileState));
+    try testing.expectEqual(@as(usize, 16), @sizeOf(ui_types.ImageSource));
+    try testing.expectEqual(@as(usize, 12), @sizeOf(ui_types.ReorderMove));
+}
+
 test "the scene descriptors are the shapes the header states" {
     // Widths beside offsets, for step 2's reason: `alignment` narrowing to `u16` moves no
     // offset around it, because `ctx` is eight-aligned and the padding absorbs the change.
@@ -358,4 +405,28 @@ test "the additive v2 table has the same members, in the same places, in both la
 
     try testing.expectEqual(@as(u64, std.math.maxInt(u64)), foundry_agreement_api_v2_offset(fields.len));
     try testing.expectEqual(@as(?[*:0]const u8, null), foundry_agreement_api_v2_name(fields.len));
+}
+
+test "the additive v3 table has the same members, in the same places, in both languages" {
+    const fields = @typeInfo(api.Api_v3).@"struct".fields;
+
+    try testing.expectEqual(@as(u64, fields.len), foundry_agreement_api_v3_count());
+    try testing.expectEqual(@as(u64, @sizeOf(api.Api_v3)), foundry_agreement_api_v3_size());
+
+    inline for (fields, 0..) |field, i| {
+        const from_header = foundry_agreement_api_v3_offset(i);
+        testing.expectEqual(@as(u64, @offsetOf(api.Api_v3, field.name)), from_header) catch |err| {
+            std.debug.print(
+                "the v3 table disagrees about '{s}': Zig puts it at {d}, the header at {d}\n",
+                .{ field.name, @offsetOf(api.Api_v3, field.name), from_header },
+            );
+            return err;
+        };
+
+        const spelled = foundry_agreement_api_v3_name(i) orelse return error.TestUnexpectedResult;
+        try testing.expectEqualStrings(field.name, std.mem.span(spelled));
+    }
+
+    try testing.expectEqual(@as(u64, std.math.maxInt(u64)), foundry_agreement_api_v3_offset(fields.len));
+    try testing.expectEqual(@as(?[*:0]const u8, null), foundry_agreement_api_v3_name(fields.len));
 }

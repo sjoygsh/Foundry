@@ -6,8 +6,8 @@
   1, 2, 3 and 5).
 - Step 3 implemented decision 7's migrations and merged writes, and moved both samples onto
   profiles.
+- Step 7 implemented decision 6, the public API, as `FoundryApi_v3`'s `mods_*` calls.
 
-Decision 6, the public API, is Step 7
 **Date:** 2026-09-19
 **Builds on:** [ADR-0026](0026-abi-module-and-host.md), [ADR-0027](0027-mods-are-content-packages.md)
 and [ADR-0031](0031-application-configuration-and-user-data.md)
