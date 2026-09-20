@@ -154,7 +154,11 @@ Windows/Vulkan run followed on 2026-09-21: the same twenty workflow tests, the s
 twenty-five-action null smoke frame for frame, and the same 489-action authoring plan on an
 Intel Arc A750 through Vulkan 1.4, with the two saved `.fdt` files and the exported `.fpk`
 byte-identical to the macOS/Metal run's. Step 9 closed the milestone. M16–M17 remain
-unstarted.
+unstarted in implementation. **M16's design is proposed, not accepted:** read
+`docs/design/networking.md` and ADR-0044/0045. Its nine steps have not begun. The proposed
+authoritative-server, direct-connect trusted-LAN scope needs the owner's acceptance of §1's
+entry choices before Step 1; requesting design did not silently decide a game's network model
+or authorize public-internet exposure. Do not reverify M15 to begin this planning handoff.
 The bar below is the current one. M13's Step 9 added the checks Vulkan and release work need,
 and M14 added an optimized Windows check to them.
 

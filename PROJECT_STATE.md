@@ -1,8 +1,18 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-21
-**Current handoff: M15 is complete and tagged `m15`. M16 is next, and it is trigger-started —
-do not begin it without being asked.** M0 through M15 are complete and tagged.
+**Current handoff: M15 is complete and tagged `m15`. M16's proposed design is written;
+Step 1 has not started.** M0 through M15 are complete and tagged. Read
+`docs/design/networking.md` and proposed ADR-0044/0045 before any M16 work.
+
+**M16 planning, 2026-09-21:** nine steps cover the wire contract, platform streams, sessions,
+tick-admitted commands/state, additive public ABI v5, a connected sandbox, adversarial/replay
+proofs, desktop/external-consumer proof and closure. The recommendation is an authoritative
+server and direct-connect TCP on a trusted LAN, not lockstep or secure public-internet play.
+The owner requested design only: the networked-game trigger, model, LAN-versus-internet scope
+and initial scale still need acceptance under `networking.md` §1. Both ADRs are **proposed**;
+no module, public call, transport or sample implementation was added. M15's completed evidence
+remains accepted; no M15 tests were repeated for this documentation-only handoff.
 
 **M15 closed on 2026-09-21: Foundry authors its own content, through its own public API.**
 All nine steps of `docs/design/editor.md` are done and each has a Resolution. The durable
@@ -38,8 +48,9 @@ macOS and on Windows:**
 - **the room's MO2-style mod screen, built from that table alone.**
 
 **M13 before it proved Windows x64 through Vulkan. Linux is M18, after the first game and before
-3D (ADR-0039). M16 and M17 remain unstarted, and both are trigger-started: M16 needs a decision
-that a game is networked, M17 needs operator credentials and a clean machine.**
+3D (ADR-0039). M16 and M17 implementation remain unstarted, and both are trigger-started:
+M16's proposed plan needs its entry choices accepted; M17 needs operator credentials and a
+clean machine.**
 
 **Completed M15 Step 9, 2026-09-21: the close.** The final gate repeated only what Step 9's own
 changes could touch — the full bar (72/72 steps, 1,586/1,587 headless tests from 1,651

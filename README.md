@@ -109,6 +109,11 @@ build, export — and the relocated room sample loaded it from its ordinary user
 directory and changed visibly. A C99 program does the same job through the same calls. It
 ran on macOS/Metal and on Windows/Vulkan, and both wrote the same bytes.
 
+**M16 is planned, not implemented.** Its proposed [networking design](docs/design/networking.md)
+has nine steps, with authoritative sessions and a direct-connect LAN proof recommended.
+The game trigger, networking model and deployment scope await acceptance before Step 1;
+secure public-internet multiplayer is not claimed.
+
 All three modding tiers work — see [docs/modding](docs/modding/). Tier 2 is restricted
 Lua 5.5.1, one VM per package, bounded in memory, instructions and engine calls, reaching the
 engine only through the same public ABI table a native mod is handed. Replacing a package's

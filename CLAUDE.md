@@ -568,6 +568,16 @@ Decisions live in `docs/adr/NNNN-short-title.md`, using the template in `docs/ad
 Write an ADR when a choice constrains future work, is expensive to reverse, or will look
 arbitrary to a future session. Do not write one for routine implementation choices.
 
+**M16 planning (proposed 2026-09-21):**
+[networking.md](docs/design/networking.md),
+[ADR-0044](docs/adr/0044-authoritative-network-sessions.md) and
+[ADR-0045](docs/adr/0045-bounded-direct-connect-transport.md) propose authoritative sessions,
+an optional `net` module, an additive public ABI and a bounded direct-connect LAN proof.
+They are **not accepted decisions** and do not change §4.3's implemented graph. The owner must
+accept the networked-game trigger, model and deployment scope before Step 1. In particular,
+neither bit-exact simulation nor secure public-internet multiplayer is silently decided here.
+On acceptance, add the decisions to §4.1; update the graph when the module is implemented.
+
 **M15 (complete 2026-09-21):** ADR-0042 and ADR-0043 are in the §4.1 table, and
 [editor.md](docs/design/editor.md) is the nine-step plan, all nine now walked. Its `author`
 module is in §4.3's layer graph, since Step 2 added it to the build; Step 3 added its
@@ -599,7 +609,7 @@ milestone named below is where `docs/ROADMAP.md` now places it.
 | Shader cross-compiler vs. hand-written variants | **Decided in M13** (ADR-0038, 2026-09-14) | Hand-written GLSL variants for the two existing shader pairs, compiled to SPIR-V with pinned SDK tools. ADR-0015's future material/mod shader constraint remains. |
 | Job system / threading model | **Done in M12** (was dated post-M5) | **Decided by ADR-0036 and implemented, 2026-09-14** — explicit `core.Jobs`, fork-join over data-determined chunks, systems kept in order, nothing in the ABI. What it deliberately left out — parallel system scheduling, task graphs, a render thread — has no date: each waits on a measured trigger in `docs/design/jobs-and-threading.md` §9. |
 | Bit-exact determinism for a subset | **M16**, and only if lockstep | ADR-0013 keeps this open without paying for it now; an authoritative server does not need it. |
-| Networking | **M16**, trigger-started | I1, I2, I8 and I9 keep it possible. Nothing else is owed to it now. |
+| Networking | **M16**, trigger-started; design proposed | I1, I2, I8 and I9 keep it possible. [networking.md](docs/design/networking.md) and proposed ADR-0044/0045 await entry acceptance; no implementation has begun. |
 | Public macOS release certification | **M17**, credential-gated — last in its phase | Use the implemented Developer ID/notary path, then verify the exact quarantined download on a genuinely clean recipient Mac. The current ad-hoc artifact is not equivalent (ADR-0032). |
 | Linux runtime support | **M18**, trigger-started — after the first game is complete, before any 3D | **Removed from M13 by ADR-0039, 2026-09-18.** The first game targets macOS and Windows. The Linux Vulkan paths are written and build-checked; no X11, Wayland or Linux driver has run them. |
 

@@ -776,7 +776,7 @@ through the sample's normal mod path. A scene editor, schema designer and execut
 game/plugin host are outside this scope, and remain so.
 The editor's UI and UX follow Unreal Engine 5's editor, within M15's fixed regions (§10).
 
-### M16 — Connected: "it plays with others" — **not started; trigger-started**
+### M16 — Connected: "it plays with others" — **design proposed; implementation not started; trigger-started**
 
 Networking is recorded as indefinite, and I1, I2, I8 and I9 have kept it possible without
 paying for it. It becomes a milestone when a game needs it.
@@ -788,6 +788,17 @@ literal.
 
 **Exit criteria:** two processes share a world convincingly, and the model was decided in
 writing first.
+
+**Design proposed 2026-09-21:** [networking.md](design/networking.md), with proposed
+[ADR-0044](adr/0044-authoritative-network-sessions.md) and
+[ADR-0045](adr/0045-bounded-direct-connect-transport.md). Nine steps: bounded wire/channel
+contract; platform streams; compatible sessions; tick-admitted commands and complete state;
+public ABI v5; connected sandbox; adversarial/replay proofs; both desktops and an external
+consumer; closure. **None is started.** The recommendation is an authoritative server and
+direct-connect TCP for a small trusted-LAN proof. The game trigger, model, deployment scope
+and scale require owner acceptance before Step 1. If public-internet play is required, the
+transport/security proposal must be revised first; a LAN demonstration cannot satisfy that
+requirement. ADR-0013's bit-exact subset question remains conditional on selecting lockstep.
 
 ### M17 — Released: "a stranger can download it" — **not started; credential-gated**
 
