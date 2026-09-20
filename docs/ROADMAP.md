@@ -736,7 +736,7 @@ is not Foundry's business.
 **Exit criteria:** a packaged sample where a player — not an environment variable — turns a mod
 on, and preferences survive a schema change without losing what the player chose.
 
-### M15 — Editor: "content is authored in Foundry" — **in progress: Steps 1–7 of 9 done**
+### M15 — Editor: "content is authored in Foundry" — **in progress: Steps 1–8 of 9 done**
 
 `CLAUDE.md` §9's oldest deferred item, dated M6+. Its shape is already decided: tools are
 Foundry applications (ADR-0011), and the editor is a **re-host of the debug overlay's
@@ -762,7 +762,10 @@ build candidates byte-identical to `fpack`; the additive `FoundryApi_v4`; and th
 host with ordinary editor content, a separately built public-header-only inspection client, and
 real-window/null-smoke proofs; and the complete editing workflow — manifest and typed record
 forms, list controls, overrides, history, saves, builds and preview — over those same v4 calls,
-adding none. Step 8 is the proof outside the tree. The first editor authors records using
+adding none; and the proof outside the tree — a content mod authored by clicking in a directory
+outside the repository, compiled, exported, and loaded by a relocated room through its ordinary
+user `mods/` path, with a real C99 authoring client beside it. **Step 8's Windows/Vulkan run is
+outstanding** and Step 9 does not close M15 without it. The first editor authors records using
 existing schemas, preserves source text, and proves its output through the sample's normal mod
 path. A scene editor, schema designer and executing game/plugin host are
 outside this scope.

@@ -27,7 +27,17 @@ const log = core.log.scoped(.abi);
 /// Every public table this build can hand to a native consumer. Kept as a set rather than a
 /// hardcoded latest number: additive versions coexist, and a v1-only native mod must remain
 /// loadable after v2 arrives in Step 3.
-const offered_api_versions = [_]u32{ types.api_version_1, types.api_version_2, types.api_version_3 };
+///
+/// **A version published in the table belongs here in the same breath.** M15 handed out v4
+/// and left this at v3, so a native mod that declared the authoring table it was written
+/// against was refused before it was opened — found by the external C client in
+/// `engine/tests/abi_authoring.zig`, which is what that client is for (`editor.md` §11).
+const offered_api_versions = [_]u32{
+    types.api_version_1,
+    types.api_version_2,
+    types.api_version_3,
+    types.api_version_4,
+};
 
 fn acceptsOffered(range: mod.Range) bool {
     for (offered_api_versions) |version| if (range.accepts(version)) return true;
@@ -220,5 +230,8 @@ test "native compatibility considers every offered table version" {
     try testing.expect(acceptsOffered(.{ .min = 1, .max = 1 }));
     try testing.expect(acceptsOffered(.{ .min = 2, .max = 2 }));
     try testing.expect(acceptsOffered(.{ .min = 3, .max = 3 }));
-    try testing.expect(!acceptsOffered(.{ .min = 4 }));
+    // v4 is published, so a mod written against the authoring table loads. A version
+    // above everything this build hands out still does not.
+    try testing.expect(acceptsOffered(.{ .min = 4, .max = 4 }));
+    try testing.expect(!acceptsOffered(.{ .min = 5 }));
 }

@@ -31,17 +31,21 @@ pub const std_options = app.std_options;
 const log = core.log.scoped(.editor);
 
 const usage =
-    \\foundry-editor — inspect a Foundry content workspace
+    \\foundry-editor — author a Foundry content package
     \\
     \\usage: foundry-editor --source <package-dir> --output <work-dir>
-    \\                      [--dependency <file.fpk>] [--preview] [--script]
-    \\                      [--frames <count>]
+    \\                      [--dependency <file.fpk>] [--preview]
+    \\                      [--export <file.fpk> [--export-assets <dir>]]
+    \\                      [--script | --plan <file>] [--frames <count>]
     \\
     \\  --source <dir>          host-granted package source root
     \\  --output <dir>          separate host-granted private candidate root
     \\  --dependency <file>     package granted to the workspace (repeatable, ordered)
+    \\  --export <file.fpk>     where Export writes the built package
+    \\  --export-assets <dir>   where Export writes the assets the compiler produced
     \\  --preview               build and activate once through FoundryApi_v4
     \\  --script                replay the deterministic walkthrough, then exit
+    \\  --plan <file>           replay an author's own written plan, then exit
     \\  --frames <count>        exit after a bounded number of frames; never saves
     \\  --help                  this text
     \\
@@ -52,6 +56,9 @@ const Args = struct {
     output: []const u8 = "",
     preview: bool = false,
     script: bool = false,
+    plan: []const u8 = "",
+    export_package: []const u8 = "",
+    export_assets: []const u8 = "",
     frames: ?u64 = null,
     dependencies: std.ArrayListUnmanaged(author.DependencySource) = .empty,
 };
@@ -161,12 +168,26 @@ fn run(
     var diagnostics: data.Diagnostics = .init(gpa, .default);
     defer diagnostics.deinit(gpa);
 
+    // Export's destination is the host's to name, never the client's: the table hands a
+    // client an index into what was granted, and a path never crosses that seam.  The
+    // output set is `fpack --out`/`--assets-out`, so the editor and the command line
+    // write the same files.
+    const export_dir = std.fs.path.dirname(args.export_package) orelse ".";
+    const destinations = [_]author.ExportTarget{.{
+        .name = "--export",
+        .kind = .compiled,
+        .package_root = export_dir,
+        .package_name = std.fs.path.basename(args.export_package),
+        .assets_root = if (args.export_assets.len == 0) null else args.export_assets,
+    }};
+
     _ = service.open(args.source, .{
         .workspace = .{
             .dependencies = args.dependencies.items,
             .output_root = args.output,
             .grants = .{ .edit = true, .save = true, .build = true },
         },
+        .exports = if (args.export_package.len == 0) &.{} else &destinations,
         .preview = .{ .ctx = &preview, .activate = preview_mod.State.activate },
     }, &diagnostics) catch |err| {
         for (diagnostics.items.items) |entry| log.err("workspace: {s}", .{entry.message});
@@ -195,8 +216,31 @@ fn run(
         if (result != 0) log.warn("preview activation returned {d}", .{result});
     }
 
-    var replay: ?script.Runner = if (args.script) .init(&script.walkthrough) else null;
-    const scripted_frames: ?u64 = if (args.script) script.frames(&script.walkthrough) else null;
+    // A plan that names *this* package's schemas, records and fields is the author's own
+    // file, kept beside the package it describes, so those names never enter the editor
+    // (`editor.md` §11).  The built-in walkthrough names nothing and works anywhere.
+    const plan_text: ?[]u8 = if (args.plan.len != 0) try os.readFile(gpa, args.plan, 64 << 10) else null;
+    defer if (plan_text) |text| gpa.free(text);
+    var plan_error: script.ParseError = .{};
+    const written: ?[]script.Action = if (plan_text) |text| script.parse(gpa, text, &plan_error) catch |err| {
+        log.err("plan '{s}' line {d}: '{s}' is not an action", .{ args.plan, plan_error.line, plan_error.word });
+        return err;
+    } else null;
+    defer if (written) |actions| gpa.free(actions);
+
+    const plan: ?[]const script.Action = if (written) |actions|
+        actions
+    else if (args.script)
+        &script.walkthrough
+    else
+        null;
+    if (plan) |actions| log.info("replaying {d} action(s) from {s}", .{
+        actions.len,
+        if (args.plan.len != 0) args.plan else "the built-in walkthrough",
+    });
+
+    var replay: ?script.Runner = if (plan) |actions| .init(actions) else null;
+    const scripted_frames: ?u64 = if (plan) |actions| script.frames(actions) else null;
     const frame_limit: ?u64 = args.frames orelse
         scripted_frames orelse
         (if (platform.backend == .null) @as(?u64, 3) else null);
@@ -275,7 +319,7 @@ fn run(
         "replayed {d} of {d} scripted actions in {d} frames; workspace {s}",
         .{
             runner.step,
-            script.walkthrough.len,
+            plan.?.len,
             engine.frame_index,
             if (client.isDirty()) "has unsaved changes" else "is unchanged",
         },
@@ -356,6 +400,12 @@ fn parseArgs(gpa: std.mem.Allocator, argv: []const []const u8, writer: *std.Io.W
             args.preview = true;
         } else if (std.mem.eql(u8, arg, "--script")) {
             args.script = true;
+        } else if (std.mem.eql(u8, arg, "--plan")) {
+            args.plan = try take(argv, &index, arg, writer);
+        } else if (std.mem.eql(u8, arg, "--export")) {
+            args.export_package = try take(argv, &index, arg, writer);
+        } else if (std.mem.eql(u8, arg, "--export-assets")) {
+            args.export_assets = try take(argv, &index, arg, writer);
         } else if (std.mem.eql(u8, arg, "--source")) {
             args.source = try take(argv, &index, arg, writer);
         } else if (std.mem.eql(u8, arg, "--output")) {
@@ -377,6 +427,14 @@ fn parseArgs(gpa: std.mem.Allocator, argv: []const []const u8, writer: *std.Io.W
     }
     if (args.source.len == 0 or args.output.len == 0) {
         try writer.writeAll("foundry-editor: --source and --output are required\n");
+        return error.BadUsage;
+    }
+    if (args.export_assets.len != 0 and args.export_package.len == 0) {
+        try writer.writeAll("foundry-editor: --export-assets needs --export\n");
+        return error.BadUsage;
+    }
+    if (args.script and args.plan.len != 0) {
+        try writer.writeAll("foundry-editor: --script and --plan are two different replays; give one\n");
         return error.BadUsage;
     }
     return args;
@@ -403,6 +461,31 @@ test "arguments name explicit roots and ordered dependencies" {
     try std.testing.expectEqualStrings("core.fpk", args.dependencies.items[0].path);
     try std.testing.expect(args.preview);
     try std.testing.expectEqual(@as(?u64, 7), args.frames);
+}
+
+test "a plan and an export destination are grants like the rest" {
+    var buffer: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    var args = try parseArgs(std.testing.allocator, &.{
+        "--source", "src",          "--output",        "work",       "--plan", "plan.txt",
+        "--export", "out/demo.fpk", "--export-assets", "out/assets",
+    }, &writer);
+    defer args.dependencies.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("plan.txt", args.plan);
+    try std.testing.expectEqualStrings("out/demo.fpk", args.export_package);
+    try std.testing.expectEqualStrings("out/assets", args.export_assets);
+    try std.testing.expect(!args.script);
+}
+
+test "two replays, or an assets destination with nowhere to put the package, are refused" {
+    var buffer: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    try std.testing.expectError(error.BadUsage, parseArgs(std.testing.allocator, &.{
+        "--source", "src", "--output", "work", "--script", "--plan", "plan.txt",
+    }, &writer));
+    try std.testing.expectError(error.BadUsage, parseArgs(std.testing.allocator, &.{
+        "--source", "src", "--output", "work", "--export-assets", "out/assets",
+    }, &writer));
 }
 
 test "source and output grants are required" {

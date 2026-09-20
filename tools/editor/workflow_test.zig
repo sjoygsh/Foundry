@@ -35,6 +35,7 @@ const fixture_schema = "demo:thing";
 
 /// Backspaces an `enter` sends before typing. Longer than any value these tests set.
 const max_clear = 24;
+const max_test_dependencies = 4;
 
 const fixture_source =
     \\# A fixture, not content: the editor is pointed at a throwaway directory.
@@ -61,7 +62,7 @@ const Fixture = struct {
     base_buf: [std.Io.Dir.max_path_bytes]u8 = undefined,
     owned: std.ArrayList([]const u8) = .empty,
 
-    fn init() !*Fixture {
+    fn init(with_source: bool) !*Fixture {
         const gpa = testing.allocator;
         const self = try gpa.create(Fixture);
         errdefer gpa.destroy(self);
@@ -73,7 +74,8 @@ const Fixture = struct {
         self.base = self.base_buf[0..n];
         try self.os.createDirPath(try self.at("src"));
         try self.os.createDirPath(try self.at("out"));
-        try self.write("demo.fdt", fixture_source);
+        try self.os.createDirPath(try self.at("ship"));
+        if (with_source) try self.write("demo.fdt", fixture_source);
         return self;
     }
 
@@ -158,6 +160,11 @@ const Harness = struct {
     viewport: Rect = .{ .w = 1600, .h = 1000 },
     frame_index: u64 = 1,
     typed: [1]platform.event.TextInput = .{.{}},
+    /// Borrowed by the service for the workspace's life, so it lives here and not in the
+    /// frame that opened it.
+    exports: [1]author.ExportTarget = undefined,
+    /// Widget ids the kernel saw more than once in one frame, over every frame so far.
+    duplicates: u32 = 0,
     pointer: Vec2 = .init(-1, -1),
     /// The last non-OK code any frame produced, since a click's settling frame clears the
     /// client's own per-frame observation.
@@ -165,17 +172,22 @@ const Harness = struct {
     bound: bool = false,
 
     fn init() !*Harness {
-        return initWith(null);
+        return initWith(&.{}, true);
     }
 
-    /// `dependency_text` is one `mod.fdt` compiled into a granted `.fpk` before the
-    /// workspace opens, which is the only way a workspace ever gets one.
-    fn initWith(dependency_text: ?[]const u8) !*Harness {
+    fn initEmpty() !*Harness {
+        return initWith(&.{}, false);
+    }
+
+    /// Each `dependency_text` is one `mod.fdt`, compiled into a granted `.fpk` before the
+    /// workspace opens, which is the only way a workspace ever gets one.  They are granted
+    /// in the order given, which is the order the client lists them in.
+    fn initWith(dependency_texts: []const []const u8, with_source: bool) !*Harness {
         const gpa = testing.allocator;
         const self = try gpa.create(Harness);
         errdefer gpa.destroy(self);
 
-        const fixture = try Fixture.init();
+        const fixture = try Fixture.init(with_source);
         errdefer fixture.deinit();
 
         const context = try gpa.create(ui.Context);
@@ -208,20 +220,33 @@ const Harness = struct {
             .diags = .init(gpa, .default),
         };
 
-        var granted: [1]author.DependencySource = undefined;
-        var dependencies: []const author.DependencySource = &.{};
-        if (dependency_text) |source| {
-            granted[0] = .{ .path = try fixture.pack("base", source) };
-            dependencies = granted[0..1];
+        var granted: [max_test_dependencies]author.DependencySource = undefined;
+        if (dependency_texts.len > granted.len) return error.TooManyDependencies;
+        for (dependency_texts, 0..) |source, at| {
+            var name: [8]u8 = undefined;
+            granted[at] = .{ .path = try fixture.pack(
+                try std.fmt.bufPrint(&name, "dep{d}", .{at}),
+                source,
+            ) };
         }
+        const dependencies = granted[0..dependency_texts.len];
 
         errdefer self.deinit();
+        // One destination, the way a host grants one: a directory outside every source
+        // and output root, and a file name inside it.  The client never sees either.
+        self.exports[0] = .{
+            .name = "--export",
+            .kind = .compiled,
+            .package_root = try fixture.at("ship"),
+            .package_name = "demo.fpk",
+        };
         _ = try service.open(try fixture.at("src"), .{
             .workspace = .{
                 .dependencies = dependencies,
                 .output_root = try fixture.at("out"),
                 .grants = .{ .edit = true, .save = true, .build = true },
             },
+            .exports = &self.exports,
             .preview = .{ .ctx = preview, .activate = preview_mod.State.activate },
         }, &self.diags);
 
@@ -258,6 +283,10 @@ const Harness = struct {
         self.host.ui_input = frame;
         self.client.frame(self.viewport, .none);
         if (self.client.observation.last_result != 0) self.last = self.client.observation.last_result;
+        // Two widgets sharing an id share a click, and the kernel is the only thing that
+        // can see it happen.  Every test carries this: it is the cheapest way to notice a
+        // frame that described the same thing twice.
+        self.duplicates += self.context.duplicates;
     }
 
     fn idle(self: *Harness) void {
@@ -277,7 +306,13 @@ const Harness = struct {
     }
 
     fn click(self: *Harness, target: script.Target) !void {
-        try self.clickRect(target.rect(&self.client.targets));
+        try self.clickRect(target.rect(&self.client.targets, 0));
+    }
+
+    /// The same, for a control that is one of several: a details row, or one of the
+    /// granted packages.
+    fn clickAt(self: *Harness, target: script.Target, index: u32) !void {
+        try self.clickRect(target.rect(&self.client.targets, index));
     }
 
     fn row(self: *Harness, index: u32) editor_client.Targets.Row {
@@ -459,17 +494,17 @@ fn testStyle() ui.Style {
 // -- the workflow --------------------------------------------------------------------
 
 test "an empty package is created, filled and saved entirely by clicking" {
-    const h = try Harness.init();
+    const h = try Harness.initEmpty();
     defer h.deinit();
 
     h.idle();
     try testing.expectEqual(@as(u32, 1), h.client.observation.workspaces);
-    try testing.expectEqual(@as(u32, 1), try h.documentCount());
+    try testing.expectEqual(@as(u32, 0), try h.documentCount());
     // No manifest yet is a state, not a failure: it is where a new package starts.
     try testing.expect((try h.info()).has_manifest == 0);
 
     try h.makePackage();
-    try testing.expectEqual(@as(u32, 2), try h.documentCount());
+    try testing.expectEqual(@as(u32, 1), try h.documentCount());
     const manifest = try h.documentNamed("mod.fdt");
     try testing.expectEqual(@as(u32, 1), try h.recordCount(manifest));
 
@@ -720,6 +755,89 @@ test "save, build and reload are three commands with three answers" {
     // And the preview holds its build: releasing what the loaded content is reading from
     // would delete the files underneath it.
     try testing.expectEqual(abi.Result.refused, h.api.author_build_release(.{ .bits = h.client.build.bits }));
+
+    // Export hands the build to the one destination the host granted.  The client asked
+    // for an index, not a path: the file lands where the *host* said, outside every root
+    // the workspace can read or write.
+    try h.click(.tab_source);
+    try h.click(.export_package);
+    try testing.expectEqual(@as(i32, 0), h.client.observation.last_result);
+    const shipped = try h.fixture.at("ship/demo.fpk");
+    const bytes = try h.fixture.os.readFile(testing.allocator, shipped, 1 << 20);
+    defer testing.allocator.free(bytes);
+    try testing.expectEqual(built.package_bytes, @as(u64, bytes.len));
+}
+
+test "a build the compiler refuses says why, and succeeds once the draft is complete" {
+    const h = try Harness.init();
+    defer h.deinit();
+
+    h.idle();
+    try h.makePackage();
+    try h.makeRecord("demo:one");
+
+    // An incomplete draft is a state the editor keeps and saves: a record is written over
+    // several sittings, and refusing to write it down until it is valid would be the
+    // editor deciding when someone has finished thinking (`editor.md` §3).
+    try h.click(.save_all);
+    try testing.expect((try h.info()).dirty == 0);
+
+    // The compiler is what refuses it, and the diagnostic is the answer.
+    try h.click(.build);
+    try testing.expect(!h.client.has_build);
+    try testing.expect(try h.diagnosticCount() > 0);
+
+    // Filling what the schema requires and saving again is the whole fix.
+    try h.enter(h.row(0).control, "1");
+    try h.clickRect(h.row(0).apply);
+    try h.enter(h.row(1).control, "2");
+    try h.clickRect(h.row(1).apply);
+    try h.enter(h.row(2).control, "3");
+    try h.clickRect(h.row(2).apply);
+    try h.enter(h.row(3).control, "4");
+    try h.clickRect(h.row(3).apply);
+    try h.enter(h.row(4).control, "5.5");
+    try h.clickRect(h.row(4).apply);
+    try h.clickRect(h.row(8).control);
+    try h.click(.save_all);
+
+    try h.click(.build);
+    try testing.expect(h.client.has_build);
+    try testing.expectEqual(@as(u32, 0), try h.diagnosticCount());
+    try testing.expectEqual(@as(u32, 0), h.duplicates);
+}
+
+test "nothing is exported before there is a build to export" {
+    const h = try Harness.init();
+    defer h.deinit();
+
+    h.idle();
+    // The grant is the host's, so the client counts the destinations rather than
+    // assuming one.
+    try testing.expectEqual(@as(u32, 1), h.client.destinations);
+    try testing.expect(!h.client.has_build);
+    try h.click(.export_package);
+    // Disabled, so the click is not a refused command either: nothing was attempted, and
+    // the status bar has nothing to say about it.
+    try testing.expectEqual(@as(i32, 0), h.last);
+    const shipped = try h.fixture.at("ship/demo.fpk");
+    try testing.expectError(error.FileNotFound, h.fixture.os.readFile(testing.allocator, shipped, 1 << 20));
+}
+
+test "New Package leaves the manifest it just wrote selected" {
+    const h = try Harness.initEmpty();
+    defer h.deinit();
+
+    h.idle();
+    try h.makePackage();
+    // Not a convenience: with nothing selected the details pane is empty, and the author
+    // has to go and find the record the editor just made for them.
+    try testing.expect(h.client.has_record);
+    try testing.expect(h.client.targets.row_count > 3);
+    try h.enter(h.row(0).control, "Warmer");
+    try h.clickRect(h.row(0).apply);
+    var buffer: [64]u8 = undefined;
+    try testing.expectEqualStrings("Warmer", try h.text("mod.fdt", "demo:pack", "name", &buffer));
 }
 
 test "closing or discarding with unsaved work can be cancelled without losing it" {
@@ -759,7 +877,7 @@ test "closing or discarding with unsaved work can be cancelled without losing it
 }
 
 test "a dependency definition is copied into a writable document, exactly" {
-    const h = try Harness.initWith(
+    const h = try Harness.initWith(&.{
         \\foundry:mod demo:base { name "Base" version 1 license "Apache-2.0" }
         \\@schema thing {
         \\    count u64
@@ -785,7 +903,7 @@ test "a dependency definition is copied into a writable document, exactly" {
         \\    tags [ "a" "b" ]
         \\}
         \\
-    );
+    }, true);
     defer h.deinit();
 
     h.idle();
@@ -798,6 +916,9 @@ test "a dependency definition is copied into a writable document, exactly" {
     // manifest is a record too.
     try h.enter(h.client.targets.filter, "upstream");
     try h.click(.first_dependency_record);
+    const override = h.client.targets.dependency_override orelse return error.ControlNotDrawn;
+    try testing.expect(override.w > 0);
+    try testing.expect(override.x + override.w <= h.viewport.w);
     try h.click(.dependency_override);
 
     // Every stored field, at full precision, including the `u64` no float could carry.
@@ -808,6 +929,37 @@ test "a dependency definition is copied into a writable document, exactly" {
     // And an absent optional stays absent: an override copies what is stored, not what a
     // default would have produced.
     try testing.expect((try h.fieldInfo("demo.fdt", "demo:upstream", "weight")).authored == 0);
+    try testing.expectEqual(@as(u32, 0), h.duplicates);
+}
+
+test "choosing a dependency package lists that one, and only from the next frame" {
+    const h = try Harness.initWith(&.{
+        \\foundry:mod demo:first { name "First" version 1 license "Apache-2.0" }
+        \\@schema one { a u32 }
+        \\one demo:alpha { a 1 }
+        \\
+        ,
+        \\foundry:mod demo:second { name "Second" version 1 license "Apache-2.0" }
+        \\@schema two { b u32 }
+        \\two demo:beta { b 2 }
+        \\two demo:gamma { b 3 }
+        \\
+    }, true);
+    defer h.deinit();
+
+    h.idle();
+    try h.click(.tab_dependencies);
+    try testing.expectEqual(@as(u32, 2), h.client.observation.dependencies);
+    // The first grant is listed until something says otherwise: a manifest and one record.
+    try testing.expectEqual(@as(u32, 2), h.client.observation.dependency_records);
+
+    // The frame that answers the click still lists the package it was showing.  Listing
+    // both at once would describe two sets of rows under one set of widget ids, and the
+    // second set would take the first's clicks.
+    try h.clickAt(.dependency_package, 1);
+    h.idle();
+    try testing.expectEqual(@as(u32, 3), h.client.observation.dependency_records);
+    try testing.expectEqual(@as(u32, 0), h.duplicates);
 }
 
 test "a short viewport still describes the whole panel, clipped" {

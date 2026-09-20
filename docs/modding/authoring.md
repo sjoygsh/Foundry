@@ -3,8 +3,12 @@
 **Status:** the authoring surface is published as `FoundryApi_v4` as of M15 step 5,
 2026-09-20. The calls work, the header compiles as C99 and C++17, and `fpack` runs on them.
 Foundry's own editor was built on them in step 7 and uses these calls and no others — it has
-forms, commands, undo, saves, builds and preview, and it reaches the engine exactly the way
-this page describes. This page is for a program that wants to do the same thing itself.
+forms, commands, undo, saves, builds, export and preview, and it reaches the engine exactly
+the way this page describes. Step 8 added a second client to keep that honest: a C99 library
+that authors a package start to finish
+([`engine/tests/fixtures/author_mod.c`](../../engine/tests/fixtures/author_mod.c)). This page
+is for a program that wants to do the same thing itself; if you want to *use* the editor, read
+[`editor.md`](editor.md).
 
 Everything here goes through the one public table (Invariant I4,
 [ADR-0042](../adr/0042-authoring-through-the-public-api.md)). The editor Foundry ships will
@@ -293,5 +297,7 @@ exceeding any of them refuses without a partial change.
   what a complete form over it looks like.
 * [`../design/public-abi.md`](../design/public-abi.md) — the boundary's rules: handles,
   cursors, borrows, result codes.
-* [`native-mods.md`](native-mods.md) — building against the installed `foundry.h`.
+* [`editor.md`](editor.md) — Foundry's own editor, for someone using it rather than writing one.
+* [`native-mods.md`](native-mods.md) — building against the installed `foundry.h`. A manifest
+  that asks for this table declares `abi { min 4 }`; this build offers 1 through 4.
 * [`content-mods.md`](content-mods.md) — the `.fdt` format these calls read and write.

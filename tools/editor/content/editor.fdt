@@ -38,6 +38,7 @@
     validate string (default "")
     build string (default "")
     reload string (default "")
+    export_package string (default "")
     undo string (default "")
     redo string (default "")
     refresh string (default "")
@@ -109,6 +110,7 @@ screen foundry:editor.screen {
     validate           "Validate"
     build              "Build"
     reload             "Reload"
+    export_package     "Export"
     undo               "Undo"
     redo               "Redo"
     refresh            "Refresh"

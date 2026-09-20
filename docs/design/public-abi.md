@@ -719,6 +719,19 @@ must not settle them opportunistically. Question 1 was resolved by the M7 exit p
 > can bind a shortcut for itself; the editor's *host* reads its own keyboard and hands the
 > client an intent. Publishing key state is an open question, not an oversight to route around.
 
+> **M15 step 8, 2026-09-20:** a real C99 client outside the tree authored a package through
+> v4 and found what publishing a version quietly leaves behind. `native_loader.zig` offered
+> v1 through v3 and nothing had noticed, so a native mod whose manifest declared
+> `abi { min 4 max 4 }` — the honest declaration for a mod written against the authoring
+> table — was refused before its library was opened. **A version published in the table
+> belongs in the loader's offered set in the same breath**, and this build now offers 1
+> through 4. Nothing else changed: no declaration, no signature, no layout. The client is
+> `engine/tests/fixtures/author_mod.c` and the host that loads it is
+> `engine/tests/abi_authoring.zig`, which also proves that a host with no authoring service
+> answers `FOUNDRY_ERR_UNAVAILABLE` from these calls rather than varying the table's shape.
+> `author_build_export` had been published and never called; the editor now uses it, with the
+> destination still the host's to name.
+
 ## 19. Implementation order
 
 Each step ends with something that runs and something that is tested.

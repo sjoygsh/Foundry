@@ -577,7 +577,9 @@ additive calls beside v1–v3, and moved `fpack` onto that table. Step 6 added t
 host, ordinary `foundry:editor` content and a separately built header-only inspection client;
 its source, dependency, preview, schema, asset and diagnostic browsers use only v4. Step 7
 completed the editing workflow — forms, list controls, overrides, history, saves, builds and
-preview — over those same calls, adding none. Step 8 is the external authorship proof.
+preview — over those same calls, adding none. Step 8 authored a content mod outside the
+repository through the window, consumed it in a relocated sample and ran an external C99
+authoring client; its Windows/Vulkan run is outstanding. Step 9 closes the milestone.
 
 ---
 

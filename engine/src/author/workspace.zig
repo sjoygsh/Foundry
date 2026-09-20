@@ -907,7 +907,9 @@ test "an empty directory is a workspace with nothing in it, not a failure" {
     var diags = Diagnostics.init(gpa, .default);
     defer diags.deinit(gpa);
 
-    var workspace = try Workspace.open(gpa, f.os, try f.at("pkg"), .{}, &diags);
+    var workspace = try Workspace.open(gpa, f.os, try f.at("pkg"), .{
+        .grants = .{ .edit = true },
+    }, &diags);
     defer workspace.deinit();
 
     // §4: this is where a new package starts, and a session that refused to open it could
@@ -916,6 +918,13 @@ test "an empty directory is a workspace with nothing in it, not a failure" {
     try testing.expect(workspace.identity == null);
     try testing.expectEqual(@as(usize, 0), workspace.requires.len);
     try testing.expect(!diags.failed);
+
+    // This is not merely a state an editor can inspect: it is the state New Package must
+    // be able to leave. Keep the zero-document case distinct from the manifest test below,
+    // whose pre-existing schema document used to hide failures here.
+    const document = try workspace.createDocument(workspace.revision(), "mod.fdt");
+    _ = try workspace.createRecord(workspace.revision(), document, "foundry:mod", "demo:root", &diags);
+    try testing.expectEqualStrings("demo:root", workspace.packageName().?);
 }
 
 test "a manifest written in the workspace names the package before anything is saved" {

@@ -58,6 +58,7 @@ const max_depth: u8 = 3;
 const max_field_buffers: u32 = 24;
 const max_row_targets: u32 = 24;
 const max_form_targets: u32 = 6;
+const max_dependency_targets: u32 = 8;
 const field_capacity: u32 = 192;
 const name_capacity: u32 = 128;
 
@@ -117,6 +118,7 @@ const TextKey = enum {
     validate,
     build,
     reload,
+    export_package,
     undo,
     redo,
     refresh,
@@ -204,6 +206,7 @@ pub const Targets = struct {
     validate: ?Rect = null,
     build: ?Rect = null,
     reload: ?Rect = null,
+    export_package: ?Rect = null,
     undo: ?Rect = null,
     redo: ?Rect = null,
     form_create: ?Rect = null,
@@ -213,6 +216,9 @@ pub const Targets = struct {
     first_schema: ?Rect = null,
     filter: ?Rect = null,
     tabs: [5]?Rect = @splat(null),
+    /// The granted packages, by their place in the grant.  Only the selected one's
+    /// records are listed, so choosing the package is a step of its own.
+    dependency_packages: [max_dependency_targets]?Rect = @splat(null),
     first_document: ?Rect = null,
     first_record: ?Rect = null,
     record_delete: ?Rect = null,
@@ -251,6 +257,7 @@ const Command = union(enum) {
     validate,
     build,
     reload,
+    export_build,
     refresh: Document,
     discard: Document,
 };
@@ -341,6 +348,9 @@ pub const Client = struct {
     last_rows: u32 = 0,
     build: Build = .{ .bits = 0 },
     has_build: bool = false,
+    /// How many export destinations the host granted this workspace.  None is the
+    /// ordinary case for a host that only wants a preview, and Export is then disabled.
+    destinations: u32 = 0,
     previewed: Build = .{ .bits = 0 },
     has_previewed: bool = false,
 
@@ -482,6 +492,7 @@ pub const Client = struct {
         self.shortcut = shortcut;
         self.refreshContent();
         self.revision = if (self.workspaceInfo()) |info| info.revision else 0;
+        self.destinations = self.exportCount();
 
         const pushed = if (self.theme) |theme|
             self.api.ui_theme_push.?(theme) == c.FOUNDRY_OK
@@ -590,6 +601,12 @@ pub const Client = struct {
         const can_reload = self.has_build and !busy and
             info != null and info.?.can_preview != c.FOUNDRY_FALSE;
         if (try self.command(18, .reload, can_reload)) self.pending = .reload;
+        // A build nobody can take away is a build nobody can install.  Export writes it
+        // to a destination the *host* granted — the client never names a path.
+        self.targets.export_package = try self.remaining();
+        if (try self.command(24, .export_package, self.has_build and self.destinations != 0 and !busy)) {
+            self.pending = .export_build;
+        }
 
         try self.spacer(12);
         self.targets.undo = try self.remaining();
@@ -1077,6 +1094,11 @@ pub const Client = struct {
         try self.label(self.text.get(.override_warning));
         try self.separator();
 
+        // The package whose records this frame lists, read once before anything is
+        // described.  Choosing a different one takes effect on the next frame: read,
+        // describe, then act (`editor.md` §5).  Answering the click inside the loop made
+        // the frame list two packages at once, and their rows then shared widget ids.
+        const listing = self.selected_dependency;
         var packages: Cursor = beginCursor();
         var package: c.FoundryAuthorPackageInfo = std.mem.zeroes(c.FoundryAuthorPackageInfo);
         while (self.observation.dependencies < max_documents) {
@@ -1084,6 +1106,9 @@ pub const Client = struct {
             if (result == c.FOUNDRY_END) break;
             try ok(result);
             self.observation.dependencies += 1;
+            if (package.index < max_dependency_targets) {
+                self.targets.dependency_packages[package.index] = try self.remaining();
+            }
             var clicked: Bool = c.FOUNDRY_FALSE;
             try ok(self.api.ui_selectable.?(
                 uid(0x800 + package.index),
@@ -1092,7 +1117,7 @@ pub const Client = struct {
                 &clicked,
             ));
             if (clicked != c.FOUNDRY_FALSE) self.selected_dependency = package.index;
-            if (package.index != self.selected_dependency) continue;
+            if (package.index != listing) continue;
 
             var records: Cursor = beginCursor();
             var record: Node = .{ .bits = 0 };
@@ -1119,14 +1144,21 @@ pub const Client = struct {
                     self.selected_dependency_record = info.id.hash;
                     self.has_dependency_record = true;
                 }
-                if (chosen) {
+                try self.endRow();
+
+                // A selectable consumes the whole row by contract.  Put the action on a
+                // row of its own: placing it after the selectable made a working but
+                // clipped button beyond the panel, which synthetic input could reach and
+                // a real author could not.
+                if (chosen or clicked_record != c.FOUNDRY_FALSE) {
+                    try self.row(0xB00 + index, 22);
                     self.targets.dependency_override = try self.remaining();
                     const into = self.currentDocument();
-                    if (try self.command(0xB00 + index, .override, into != null)) {
+                    if (try self.command(0xC00 + index, .override, into != null)) {
                         self.pending = .{ .override = record };
                     }
+                    try self.endRow();
                 }
-                try self.endRow();
             }
         }
     }
@@ -1345,7 +1377,7 @@ pub const Client = struct {
         const result: Result = switch (requested) {
             .none => c.FOUNDRY_OK,
             .create_package => blk: {
-                const code = self.createPackage(workspace, revision);
+                const code = self.createPackage(workspace, revision, &edit);
                 if (code == c.FOUNDRY_OK) self.selectDocumentNamed(workspace, manifest_document);
                 break :blk code;
             },
@@ -1402,6 +1434,13 @@ pub const Client = struct {
             .validate => self.api.author_validate.?(workspace, revision),
             .build => self.runBuild(workspace, revision),
             .reload => self.runReload(),
+            .export_build => blk: {
+                if (!self.has_build) break :blk c.FOUNDRY_ERR_NOT_FOUND;
+                var written: u32 = 0;
+                const code = self.api.author_build_export.?(self.build, 0, &written);
+                if (code == c.FOUNDRY_OK) self.report("exported", written);
+                break :blk code;
+            },
             .refresh => |document| blk: {
                 var moved: u64 = 0;
                 break :blk self.api.author_document_refresh.?(document, revision, &moved);
@@ -1429,7 +1468,7 @@ pub const Client = struct {
     /// New Package writes an ordinary manifest: a document, a `foundry:mod` record and the
     /// three fields the schema requires.  Every step is a command the table already has,
     /// and a failure at any of them leaves the earlier ones in the history to undo.
-    fn createPackage(self: *Client, workspace: Workspace, revision: u64) Result {
+    fn createPackage(self: *Client, workspace: Workspace, revision: u64, edit: *c.FoundryAuthorEdit) Result {
         var document: Document = .{ .bits = 0 };
         var at = revision;
         var code = self.api.author_document_create.?(workspace, at, string(manifest_document), &document);
@@ -1440,13 +1479,12 @@ pub const Client = struct {
         }
         at = self.currentRevision(workspace);
 
-        var edit: c.FoundryAuthorEdit = std.mem.zeroes(c.FoundryAuthorEdit);
         code = self.api.author_record_create.?(
             document,
             at,
             string(manifest_schema),
             string(self.package_id.text()),
-            &edit,
+            edit,
         );
         if (code != c.FOUNDRY_OK) return code;
 
@@ -1478,6 +1516,18 @@ pub const Client = struct {
         var edit: c.FoundryAuthorEdit = std.mem.zeroes(c.FoundryAuthorEdit);
         const workspace = self.firstWorkspace() catch return c.FOUNDRY_ERR_UNAVAILABLE;
         return self.api.author_value_set.?(node, self.currentRevision(workspace), &value, &edit);
+    }
+
+    /// The destinations the host configured, counted afresh each frame: a grant belongs
+    /// to the workspace, and the workspace is the thing that can be closed and reopened.
+    fn exportCount(self: *Client) u32 {
+        const workspace = self.firstWorkspace() catch return 0;
+        var cursor: Cursor = beginCursor();
+        var info: c.FoundryAuthorExportInfo = std.mem.zeroes(c.FoundryAuthorExportInfo);
+        var count: u32 = 0;
+        while (count < max_documents and
+            self.api.author_export_next.?(workspace, &cursor, &info) == c.FOUNDRY_OK) count += 1;
+        return count;
     }
 
     fn runBuild(self: *Client, workspace: Workspace, revision: u64) Result {

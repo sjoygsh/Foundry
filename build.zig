@@ -1082,7 +1082,9 @@ pub fn build(b: *std.Build) void {
     const unknown_mod = testNativeLibrary(b, target, optimize, "unknown_mod", "engine/tests/fixtures/result_mod.c", c_mod_flags ++ [_][]const u8{"-DRESULT_CODE=2147483647"});
     const no_shutdown_mod = testNativeLibrary(b, target, optimize, "no_shutdown_mod", "engine/tests/fixtures/result_mod.c", c_mod_flags ++ [_][]const u8{"-DOMIT_SHUTDOWN"});
     const callback_refused_mod = testNativeLibrary(b, target, optimize, "callback_refused_mod", "engine/tests/fixtures/callback_refused_mod.c", c_mod_flags);
-    for ([_]*std.Build.Step.Compile{ pipeline_mod, shutdown_mod, no_init_mod, refused_mod, unknown_mod, no_shutdown_mod, callback_refused_mod }) |library| {
+    // An external authoring client that runs, not merely one that compiles (`editor.md` §11).
+    const author_mod = testNativeLibrary(b, target, optimize, "author_mod", "engine/tests/fixtures/author_mod.c", c_mod_flags);
+    for ([_]*std.Build.Step.Compile{ pipeline_mod, shutdown_mod, no_init_mod, refused_mod, unknown_mod, no_shutdown_mod, callback_refused_mod, author_mod }) |library| {
         check_step.dependOn(&library.step);
     }
 
@@ -1094,13 +1096,14 @@ pub fn build(b: *std.Build) void {
     pipeline_options.addOptionPath("unknown_mod_path", unknown_mod.getEmittedBin());
     pipeline_options.addOptionPath("no_shutdown_mod_path", no_shutdown_mod.getEmittedBin());
     pipeline_options.addOptionPath("callback_refused_mod_path", callback_refused_mod.getEmittedBin());
+    pipeline_options.addOptionPath("author_mod_path", author_mod.getEmittedBin());
 
     const integration_mod = b.createModule(.{
         .root_source_file = b.path("engine/tests/root.zig"),
         .target = target,
         .optimize = optimize,
     });
-    for ([_][]const u8{ "core", "data", "platform", "physics2d", "ui", "rhi", "asset", "mod", "render2d", "scene", "audio", "app", "debug", "abi" }) |name| {
+    for ([_][]const u8{ "core", "data", "platform", "physics2d", "ui", "rhi", "asset", "mod", "render2d", "scene", "audio", "app", "author", "debug", "abi" }) |name| {
         integration_mod.addImport(name, modules.get(name).?);
     }
     integration_mod.addImport("mod_pipeline_options", pipeline_options.createModule());

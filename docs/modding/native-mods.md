@@ -367,10 +367,24 @@ The widgets are `ui_tabs`, `ui_selectable`, the reorder list and its buttons, an
 `ui_begin_disabled`/`ui_end_disabled`. A reorder list overlays rows you have already described,
 so ask `ui_region_remaining` where the first row begins, before you describe them.
 
+## 8. Authoring content: `FoundryApi_v4`
+
+Version 4 is version 3 unchanged, followed by 47 authoring calls, asked for the same way. A
+manifest whose `abi` range includes 4 loads on a host that offers it; this build offers 1
+through 4. What the calls do, and the rules a client has to keep, are in
+[`authoring.md`](authoring.md); Foundry's own editor is one such client and is documented for
+its users in [`editor.md`](editor.md).
+
+Authoring needs the host to have an authoring service and to have granted the roots. A host
+with none answers `FOUNDRY_ERR_UNAVAILABLE` from every one of the 47, and the table's shape
+does not change — that is the contract, and
+[`engine/tests/abi_authoring.zig`](../../engine/tests/abi_authoring.zig) loads a real C99
+client against a host with a service and against one without, to keep both halves of it true.
+
 ## Rules worth keeping visible
 
-* `FoundryApi_v1` is frozen, and so are `FoundryApi_v2` and `FoundryApi_v3`, each added
-  alongside the one before. Do not depend on struct layout beyond the installed header, or call
+* `FoundryApi_v1` is frozen, and so are `FoundryApi_v2`, `FoundryApi_v3` and `FoundryApi_v4`,
+  each added alongside the one before. Do not depend on struct layout beyond the installed header, or call
   a version you did not request.
 * All API input is untrusted. Check pointers, capacities, result codes, handle validity and
   enum values in the same way the example checks its own calls. The host validates at the

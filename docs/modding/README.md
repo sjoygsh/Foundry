@@ -92,6 +92,8 @@ Being honest about this is more useful than a feature list.
   edit it while the game is running.
 * [`native-mods.md`](native-mods.md) — build a C99 library against `foundry.h`, register a
   component and system, and load it through a native-capable host.
+* [`editor.md`](editor.md) — Foundry's own content editor: the roots it is granted, the
+  workflow from an empty directory to an installable `.fpk`, and what it cannot do.
 * [`authoring.md`](authoring.md) — read, edit, save and compile a content package through
   `FoundryApi_v4`, which is what Foundry's own editor is built on and nothing else.
 * [`../design/content-schemas.md`](../design/content-schemas.md) — the `.fdt` format and the

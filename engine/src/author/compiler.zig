@@ -417,9 +417,16 @@ pub fn readSelf(
     };
     defer gpa.free(read.bytes);
 
+    // The same resolver the ordinary pass uses.  A manifest may `@import` like any other
+    // file, and a package whose identity could not be read the way it will be compiled
+    // would be one `fpack` accepts and an editor cannot open.
+    var loader: Loader = .{ .gpa = gpa, .arena = arena, .os = os, .root = dir, .options = options };
+    defer loader.deinit();
+
     var doc = data.parser.parse(gpa, manifest_file, read.bytes, .{
         .namespace = "package",
         .limits = options.limits,
+        .resolver = loader.resolver(),
     }, diags) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.ContentInvalid,
@@ -1899,6 +1906,37 @@ test "what readSelf hands back outlives the parse it was read from" {
     try testing.expectEqualStrings(manifest_file, required.origin.file);
     try testing.expectEqualStrings("  requires [ { id demo:core min 2 } ]", required.origin.line_text);
     try testing.expect(!diags.failed);
+}
+
+test "a manifest that imports is read for its identity the way it will be compiled" {
+    var f = try Fixture.init();
+    defer f.deinit();
+
+    // A manifest is an ordinary `.fdt` file, so it may `@import` one. Reading the identity
+    // without the resolver the compile uses made a package `fpack` accepts one an editor
+    // could not open (`editor.md` §11's imported fixture).
+    try f.write("parts/shared.fdt",
+        \\@schema shape { width u32 }
+        \\
+    );
+    try f.write(manifest_file,
+        \\@import "parts/shared.fdt"
+        \\foundry:mod demo:root { name "Root" version 3 license "MIT" }
+        \\shape demo:corner { width 5 }
+        \\
+    );
+
+    var arena: core.Arena = .init(testing.allocator);
+    defer arena.deinit();
+    var diags = Diagnostics.init(testing.allocator, .default);
+    defer diags.deinit(testing.allocator);
+
+    const self = try readSelf(testing.allocator, arena.allocator(), f.os, f.root, .{}, &diags);
+    defer testing.allocator.free(self.identity.name);
+    try testing.expectEqualStrings("demo:root", self.identity.name);
+    try testing.expectEqual(@as(u32, 3), self.identity.version);
+    try testing.expect(!diags.failed);
+    try testing.expectEqual(@as(usize, 0), diags.items.items.len);
 }
 
 test "fpack's walk is bounded only when a host asks for bounds" {
