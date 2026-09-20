@@ -5,12 +5,16 @@
 Step 1 has not started.** M0 through M15 are complete and tagged. Read
 `docs/design/networking.md` and proposed ADR-0044/0045 before any M16 work.
 
-**M16 planning, 2026-09-21:** nine steps cover the wire contract, platform streams, sessions,
-tick-admitted commands/state, additive public ABI v5, a connected sandbox, adversarial/replay
-proofs, desktop/external-consumer proof and closure. The recommendation is an authoritative
-server and direct-connect TCP on a trusted LAN, not lockstep or secure public-internet play.
-The owner requested design only: the networked-game trigger, model, LAN-versus-internet scope
-and initial scale still need acceptance under `networking.md` §1. Both ADRs are **proposed**;
+**M16 planning, revised 2026-09-21:** the owner requires **public-internet multiplayer**;
+the original LAN-only proposal is withdrawn. Nine steps cover security qualification and
+the wire contract, authenticated platform streams, sessions, tick-admitted commands/state,
+additive public ABI v5, a connected sandbox, adversarial/replay
+proofs, real-internet/desktop/external-consumer proof and closure. The recommendation is an
+operator-hosted authoritative server with TLS 1.3 mutual certificate authentication, bounded
+pre-authentication work and explicit credential provisioning/revocation. The game trigger and
+internet scope are established; authority, topology, certificate-admission UX and initial
+performance envelope still need acceptance under `networking.md` §1. Both ADRs remain
+**proposed** architecture; the TLS candidate must be qualified and pinned in Step 1;
 no module, public call, transport or sample implementation was added. M15's completed evidence
 remains accepted; no M15 tests were repeated for this documentation-only handoff.
 
@@ -48,9 +52,9 @@ macOS and on Windows:**
 - **the room's MO2-style mod screen, built from that table alone.**
 
 **M13 before it proved Windows x64 through Vulkan. Linux is M18, after the first game and before
-3D (ADR-0039). M16 and M17 implementation remain unstarted, and both are trigger-started:
-M16's proposed plan needs its entry choices accepted; M17 needs operator credentials and a
-clean machine.**
+3D (ADR-0039). M16 and M17 implementation remain unstarted. M16's internet trigger is confirmed,
+but its proposed architecture needs its remaining entry choices accepted; M17 needs operator
+credentials and a clean machine.**
 
 **Completed M15 Step 9, 2026-09-21: the close.** The final gate repeated only what Step 9's own
 changes could touch — the full bar (72/72 steps, 1,586/1,587 headless tests from 1,651

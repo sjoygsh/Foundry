@@ -513,8 +513,9 @@ never had.
 
 **The order is a proposal, not a commitment.** Milestones are units of work, and three of
 these are started by a *trigger* rather than by the roadmap reaching them: M13 needs a reason
-to want a second API, M16 needs a decision that a game is networked, and M17 needs operator
-credentials and a machine. The rest can be reordered freely. What is not negotiable is that
+to want a second API, M16 needs a decision that a game is networked (confirmed for public
+internet on 2026-09-21), and M17 needs operator credentials and a machine. The rest can be
+reordered freely. What is not negotiable is that
 each still owes a design document before implementation, an ADR for anything that constrains
 the future, and a runnable result.
 
@@ -776,29 +777,32 @@ through the sample's normal mod path. A scene editor, schema designer and execut
 game/plugin host are outside this scope, and remain so.
 The editor's UI and UX follow Unreal Engine 5's editor, within M15's fixed regions (§10).
 
-### M16 — Connected: "it plays with others" — **design proposed; implementation not started; trigger-started**
+### M16 — Connected: "it plays with others" — **internet trigger confirmed; design proposed; implementation not started**
 
-Networking is recorded as indefinite, and I1, I2, I8 and I9 have kept it possible without
-paying for it. It becomes a milestone when a game needs it.
+Networking was recorded as indefinite, and I1, I2, I8 and I9 kept it possible without paying
+for it. **The owner confirmed the trigger on 2026-09-21: the first networked game requires
+public-internet multiplayer.** This does not authorize implementation during the design handoff.
 
 It brings ADR-0013's deferred question with it, but only conditionally: bit-exact determinism
 for a subset is owed to *lockstep*, and an authoritative-server model does not need it. Which
 model is chosen is an ADR before any code, because it decides how much of I9 has to become
 literal.
 
-**Exit criteria:** two processes share a world convincingly, and the model was decided in
-writing first.
+**Exit criteria:** two processes share a world convincingly over the public internet, with
+authenticated encrypted transport, validated authority and bounded hostile-input handling,
+and the model was decided in writing first. LAN/loopback evidence alone cannot close M16.
 
 **Design proposed 2026-09-21:** [networking.md](design/networking.md), with proposed
 [ADR-0044](adr/0044-authoritative-network-sessions.md) and
-[ADR-0045](adr/0045-bounded-direct-connect-transport.md). Nine steps: bounded wire/channel
-contract; platform streams; compatible sessions; tick-admitted commands and complete state;
-public ABI v5; connected sandbox; adversarial/replay proofs; both desktops and an external
-consumer; closure. **None is started.** The recommendation is an authoritative server and
-direct-connect TCP for a small trusted-LAN proof. The game trigger, model, deployment scope
-and scale require owner acceptance before Step 1. If public-internet play is required, the
-transport/security proposal must be revised first; a LAN demonstration cannot satisfy that
-requirement. ADR-0013's bit-exact subset question remains conditional on selecting lockstep.
+[ADR-0045](adr/0045-bounded-direct-connect-transport.md), revised the same day following the
+owner's internet requirement. Nine steps: security qualification and wire/channel contract;
+authenticated streams; compatible admitted sessions; tick-admitted commands and complete state;
+public ABI v5; connected sandbox; security/adversarial/replay/WAN-budget proofs; real internet,
+both desktops and an external consumer; closure. **None is started.** The recommendation is an
+operator-hosted authoritative server with TLS 1.3 mutual certificate authentication. The model,
+topology, credential-admission UX and scale/performance target still need acceptance before
+Step 1. The TLS provider must then pass qualification before dependent code; no dependency is
+installed by the design. ADR-0013's bit-exact subset question stays conditional on lockstep.
 
 ### M17 — Released: "a stranger can download it" — **not started; credential-gated**
 

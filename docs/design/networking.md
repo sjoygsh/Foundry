@@ -2,6 +2,9 @@
 
 **Milestone:** M16 — Connected: “it plays with others”
 **Status:** Proposed design, 2026-09-21. **Zero of nine steps implemented.** Stop before Step 1.
+**Revision, 2026-09-21:** the owner selected **public-internet multiplayer**. The earlier
+LAN-only scope is withdrawn. Internet security and a real WAN proof are required in M16;
+authority, topology, admission UX and performance targets below remain proposals.
 **Decisions:** proposed [ADR-0044](../adr/0044-authoritative-network-sessions.md) and
 [ADR-0045](../adr/0045-bounded-direct-connect-transport.md).
 **Built on:** ADR-0004/0005/0007/0010/0013/0017/0026/0029/0036/0039;
@@ -10,17 +13,20 @@
 ## 1. Entry gate and runnable result
 
 M15 is complete at `94bc204`, tagged `m15`; its accepted tests are not repeated for this
-planning change. The owner requested M16 planning, not implementation. Networking remains
-trigger-started. The roadmap requires a game need and a written choice of simulation model.
+planning change. The owner requested M16 planning, not implementation, and then explicitly
+required public-internet multiplayer for the first networked game. That establishes the
+networking trigger and deployment scope, not acceptance of every architectural recommendation.
 
-**Recommendation:** one authoritative server, direct-connect clients, a small trusted-LAN
-proof, explicit commands and full state snapshots. This is a proposal, not a newly accepted
-game requirement. Before Step 1, the owner must accept or revise:
+**Recommendation:** one operator-hosted authoritative server at a reachable internet endpoint,
+TLS 1.3 mutually authenticated clients, explicit commands and full state snapshots. Before
+Step 1, the owner must accept or revise these remaining choices:
 
-1. The networked-game trigger and authoritative rather than lockstep simulation.
-2. Whether trusted-LAN scope is sufficient, or public-internet security belongs in M16.
+1. Authoritative rather than lockstep simulation.
+2. Operator-hosted direct connection and provisioned player certificates, rather than
+   anonymous/account-based joins or player-hosted sessions requiring NAT traversal/relays.
 3. The initial scale: one server and up to four remote peers in the reference proof, with no
-   client prediction and no promise of competitive-action latency.
+   client prediction, under §10's proposed measurable WAN envelope. This is not a promise
+   that all competitive-action games fit that envelope.
 
 Record acceptance in the two ADRs and this status; do not infer it from M15's completion.
 If different requirements are supplied, revise this unimplemented proposal first. No engine
@@ -29,12 +35,15 @@ code, socket experiment, dependency installation or API declaration belongs to t
 **Exit:** two independently launched processes visibly share an authoritative world. A client
 can affect only what the server permits; late join receives current state, disconnect removes
 the departed participant, and reconnect creates a fresh participant without stale authority.
-Run same-host proofs and a macOS/Windows cross-host proof with each host acting as server.
+Run same-host proofs, a macOS/Windows cross-host proof with each host acting as server, and
+an actual public-internet server with clients on independent networks. Authentication,
+confidentiality/integrity, replay refusal, credential lifecycle and abuse limits are exit gates.
 The engine capability must be usable through the public table, including from outside this
 repository. A local simulation with two viewports or a fake transport alone does not pass.
 
-The proposed LAN limit must appear beside every result. M16 would not establish secure public
-internet deployment, matchmaking, lockstep, prediction or general automatic ECS replication.
+LAN-only success cannot close M16. Report the tested internet deployment and its limits;
+do not equate authenticated transport with anti-cheat or volumetric-DDoS protection.
+Matchmaking, lockstep, prediction and general automatic ECS replication remain outside scope.
 M17's Apple release certification and M18's Linux runtime gate are unchanged.
 
 ## 2. Current implementation and reuse
@@ -58,8 +67,8 @@ Existing save/authoring formats remain unchanged.
 Proposed additions, not a description of today's build graph:
 
 ```
-platform (L1)  core; bounded byte streams, listeners, numeric endpoints, OS error mapping
-net (L2)       core, platform; wire codec, peers, sessions, queues, grants and diagnostics
+platform (L1)  core + qualified TLS provider; authenticated streams and credential contexts
+net (L2)       core, platform; wire codec, admission, peers, queues, grants and diagnostics
 abi (L5)       existing imports + net; public argument validation and translation only
 host           owns net.Service, endpoint grants, content identity, timing and subsystem life
 sample client  public header only; command/state codecs and shared-world demonstration
@@ -70,7 +79,10 @@ copied bytes described by runtime channel registrations, not engine object point
 does not gain `net`; `scene` does not gain `platform`. The host connects independently owned
 services. Games that never create the service perform no networking and need no listener.
 
-The service owns generational session and peer handles. Stream handles never leave `platform`
+The service owns generational session and peer handles. TLS-provider types and secrets remain
+inside `platform`, with host-owned credential contexts and copied public identity results.
+The external C dependency is an implementation detail like SDL, not a sideways engine import.
+Stream handles never leave `platform`
 except as opaque generational identities. Destroying a session closes its listener and peers,
 invalidates their handles, clears queued work and releases its budgets. Allocation failures
 unwind without leaving a listener alive. A closed slot cannot confer a departed peer's rights
@@ -82,21 +94,29 @@ update, and no networking callback changes a world while a query is live.
 
 ## 4. Transport and bounded work
 
-Initial backend: TCP streams, numeric IPv4 endpoints including loopback, explicit ports. IPv6,
-DNS and discovery are not hidden requirements. Accept and connect are incremental; read and
-write report progress, would-block, closed or a mapped failure. All operations have bounded
-work and never wait for remote progress. Headless operation needs no SDL window or GPU.
+Initial proposal: TLS 1.3 over TCP, numeric IPv4 endpoints including loopback, explicit ports
+and separately granted authenticated server identity. IPv6, DNS and discovery are not hidden
+requirements. No plaintext application path, even for local sample runs. Accept, connect and
+TLS handshake are incremental; read/write report progress, would-block, closed or a mapped
+failure. Work is bounded; nothing waits for remote progress. Headless operation needs no GPU.
 
 `platform` contains the implementation over the pinned toolchain's facilities, or native OS
-calls if required by the same contract. Step 2 records the concrete choice after inspecting
-Zig 0.16; no guessed asynchronous API or new socket library is part of this design. Any need
-for workers, extra dependency or a different ownership model stops that step for a Resolution.
+calls if required by the same contract. Step 1 qualifies and pins a maintained TLS provider
+(Mbed TLS under Apache-2.0 is the candidate); Step 2 records the concrete Zig 0.16 transport
+mechanism. Record archive/hash, configuration, transitive licenses and security advisory review
+before depending on the provider. Add dependency and license entry together; compile with Zig,
+not a new CMake/Make/Python build path. No vendor implementation or dependency is added now.
+Need for workers or a different ownership model stops that step for a Resolution.
 
 Session configuration has explicit checked limits. Proposed reference defaults:
 
 | Limit | Initial value |
 | --- | --- |
 | Sessions / remote peers per session | 1 / 4 |
+| Concurrent unauthenticated TLS handshakes | 8, separate from the admitted-peer pool |
+| Aggregate TLS allocation cap | 16 MiB, qualification must demonstrate enforcement |
+| Certificate chain / encoded chain bytes | 4 certificates / 32 KiB |
+| Starts of TLS handshakes | global 8/s, burst 8; per source IP 2/s, burst 2 |
 | Registered application channels | 32 |
 | Full-state channels per session | 1; the application defines its extensible complete-state payload |
 | One complete frame, header included | 64 KiB |
@@ -109,19 +129,92 @@ These are configurable host bounds, not allocations triggered by received length
 aggregate limits and arithmetic before creation. Fair round-robin pumping and accept budgets
 prevent a noisy peer from monopolizing a frame. Queues, partial headers, pending handshakes
 and closed-peer diagnostics all count toward limits. A small peer limit alone is insufficient.
+The per-source limiter has a bounded table; exhaustion falls back to stricter global refusal,
+not unbounded allocation or forgotten rate limits. IP addresses are abuse signals, not player
+identity; shared-NAT clients can legitimately hit those limits. Bound cryptographic work per
+pump as well as bytes: Step 1 qualifies allowed algorithms/key sizes and worst-case handshake
+cost. If the provider cannot meet that budget, revise the design instead of blocking frames.
 Timeouts depend on progress, not a byte dripped periodically; incomplete-frame lifetime is
 bounded too. At expiry disconnect with a reason. A host polling no network cannot be held open
 forever by a close handshake; shutdown is local and bounded.
 
 An accepted send copies bytes. Refused enqueue changes no queue or sequence. Reliable commands
 are never silently dropped. A slow peer that exhausts its budget disconnects, without blocking
-others. Full state may replace a wholly unsent state frame for the same channel; once any byte
-has entered the stream that frame finishes intact or the connection closes. Ordered transport
+others. Full state may replace a wholly unsent state frame for the same channel; once submitted
+to TLS, including an operation awaiting retry, that frame is immutable until its pending write
+finishes or the connection closes. Ordered transport
 does not make a successful enqueue proof that the application applied the command.
+
+### 4.1 Threat model, authentication and credential lifecycle
+
+Protect against an unauthenticated remote connector, an on-path observer/modifier/replayer,
+and a malicious admitted player. Trust the operator's server, approved TLS implementation,
+host OS and out-of-band provisioning. A compromised endpoint, stolen currently authorized
+key or malicious native mod inside a host is outside transport containment. Application
+ownership checks remain mandatory even after successful TLS authentication.
+
+- Require TLS 1.3, certificate verification on both sides, approved trust roots, expected
+  server identity and allowed client certificate identities. Use a dedicated public
+  certificate/key fingerprint mapped to a host-local participant principal; never trust an
+  arbitrary certificate display name. Validate chain signatures, validity, key use and role.
+  Also compare the provisioned server fingerprint; connecting to an IP is not permission to
+  skip verification. Trust roots and pins arrive out of band, never from that connection.
+- Use OS cryptographic entropy, never `core`'s deterministic simulation RNG. Certificate time
+  checks use OS civil time in `platform`; connection deadlines use monotonic time outside
+  simulation. Unavailable entropy, invalid time or verification failure refuses startup/join.
+- Disable TLS early data and resumption initially. Every connection authenticates freshly.
+  TLS record protection handles wire tampering/replay; application sequences additionally
+  reject duplicate commands by an admitted peer. Neither replaces the other. Configure an
+  application protocol identifier for FNET and refuse other protocols; no TLS downgrade or
+  certificate-error override is offered to the sample or public API.
+- Provision separate server and player keys using established operator tooling, never a
+  Foundry-designed certificate issuer or shared embedded secret. The guide must walk trust
+  distribution, key generation, issuance, secure file permissions, expiry, renewal and removal
+  without secret command-line values or checked-in credentials. Platform secure-store support
+  is optional; host-confined read-only credential files are sufficient for the initial proof.
+  No production private keys, trust configuration or personal identity files enter packages,
+  source, environment variables, crash logs, TLS key logs or captures. Tests generate disposable
+  identities in scratch storage, with an explicitly supplied test clock when needed.
+- Client admission is a bounded local allowlist after certificate validation. Removing an
+  identity closes its live peers and denies future joins; the host can reload this allowlist
+  independently of gameplay content. A trust/key rotation can deliberately close all sessions
+  and require reconnect. Fail closed on an invalid replacement, retaining the last valid
+  policy without pretending the requested rotation succeeded. A removed/expired identity
+  cannot reuse a live session indefinitely: revalidate policy/expiry during pumping.
+- Credentials and the verified remote principal stay in the transport/service, not mod
+  payloads. The API exposes a non-secret session-local peer identity and diagnostic category.
+  One principal has at most one active connection in the reference host; a second is refused,
+  not allowed to evict the first or inherit its participant. Reconnect means a new participant.
+
+M16 must prove rejection of missing/unknown/expired/not-yet-valid/wrong-use certificates,
+incorrect server identity, denied/revoked clients, tampered records and replay. Mutual TLS
+is not a moderation/account product; it is the proposed initial admission mechanism.
+
+### 4.2 Public deployment and operational bounds
+
+The operator supplies a reachable server, egress for clients and explicit permission to use
+that endpoint. No automatic router/firewall changes, cloud provisioning, purchases, background
+service installation or public exposure follow from this plan. Clients behind ordinary NAT
+connect outbound; a player behind carrier NAT is not thereby able to host. If player-hosting
+is required, design relay/traversal before promising it. Linux servers remain outside the
+runtime claim until M18; qualify this milestone's server on macOS or Windows.
+
+Cap accepts, handshake attempts/computation/allocations, authenticated bytes and command rate,
+and log frequency. Do not let bad certificates fill the active-peer pool. Refusal messages
+before authentication are generic and bounded. Do not persist peer IPs or certificate details
+by default. Healthy established peers must continue under the finite adversarial load in §10.
+These application bounds cannot prevent an upstream bandwidth flood; hosting/firewall/DDoS
+protection is operator responsibility, explicitly outside the tested resilience claim.
+
+Before an internet proof or shipped network release, check advisories against the exact TLS
+pin and configuration. Relevant unfixed security issues block exposure. Record required fixes
+and repeat the affected security/interoperability checks after updating; do not treat version
+pinning as a reason to ship a known vulnerable configuration. No toolchain upgrade is implied.
 
 ## 5. Wire protocol and compatibility
 
-Use explicit little-endian integer encoding, checked lengths and a wire version independent of
+FNET messages exist only inside the authenticated TLS stream. Use explicit little-endian
+integer encoding, checked lengths and a wire version independent of
 the C ABI version and the application payload revision. Never cast received bytes to a struct.
 The fixed frame header is proposed as:
 
@@ -172,8 +265,9 @@ offline, but the network proof must not run with an unannounced changed script r
 
 ## 6. Admission, authority and tick order
 
-Connection states: connecting, negotiating, synchronizing, active, closed. Bound every
-non-active state. No client commands reach the application before activation.
+Connection states: connecting, authenticating, authorizing, negotiating, synchronizing,
+active, closed. Bound every non-active state. No FNET input reaches negotiation until TLS
+verification and local identity admission pass; no commands reach gameplay before activation.
 
 After compatibility passes, the server reports an admitted peer to its application. The
 application creates the permitted participant and publishes a complete initial snapshot. This
@@ -246,8 +340,10 @@ Required operation groups are concrete even though layouts are not yet frozen:
 - acknowledge an applied initial snapshot and disconnect a peer with a bounded reason;
 - admit the current server-tick input batch and read the admitted ordering.
 
-Host bootstrap creates the service and supplies endpoint grants, compatibility inputs, limits
-and elapsed-time pumping. It may not substitute private send/receive, replicated-state or
+Host bootstrap creates the service and supplies endpoint/credential grants, identity policy,
+compatibility inputs, limits and elapsed-time pumping. Secrets are not arguments to ABI calls;
+grants refer to already constructed credential contexts. Authentication status/refusal is part
+of public peer diagnostics. It may not substitute private send/receive, replicated-state or
 world-mutation callbacks for these operations. Public calls cannot nominate arbitrary addresses,
 open a filesystem path, edit firewall settings or widen a grant. No service means `Unavailable`;
 a present service with insufficient rights refuses distinctly. Native code is still
@@ -274,7 +370,8 @@ service grants and package loading. Controls, labels, speeds and visual assets c
 sandbox's ordinary content package, not `engine/`. The demonstration consists only of moving
 shared markers and their lifecycle, not a new game, lobby service or editor feature.
 
-Offer explicit offline, server and client launch modes with numeric endpoints; default offline.
+Offer explicit offline, server and client launch modes with numeric endpoints and host-only
+credential-file references; default offline. Never offer an insecure or verify-disabled mode.
 The server mode can present a window or run headlessly with a bounded test duration. It uses
 the same fixed-tick simulation in either case. Headless pacing is explicit host policy, not a
 busy loop made to look like network performance. Logs report local endpoint, role, peer counts,
@@ -291,7 +388,16 @@ Write `docs/modding/networking.md` from an external C99 consumer using only the 
 header and exported build helpers. It registers a channel with a non-sample namespace, sends
 and receives a real application message against the reference host, and exercises a refused
 operation. It uses no engine-private imports or repository-relative generated files. Include
-how a host constructs grants/catalogues and the LAN/security limitations in that guide.
+how a host constructs grants/catalogues, provisions and rotates credentials, revokes a player,
+and deploys the authenticated server. Include actual security and performance limits.
+
+The public-internet proof uses an authorized reachable server and macOS/Windows clients on
+separate internet access networks, not two machines on the same LAN, a local tunnel or an SSH
+forward. Authenticate all peers and capture only controlled test traffic to demonstrate no
+plaintext FNET/game payload. That observation alone does not prove cryptographic security:
+provider verification and negative certificate/tamper tests are separate required evidence.
+No real private keys or addresses need be committed; record topology generically and hashes
+of tested builds/configuration with secrets excluded. Missing infrastructure blocks this proof.
 
 ## 10. Verification, faults and acceptance evidence
 
@@ -307,6 +413,15 @@ each implementation commit. Do not repeat M15 proofs to approve this documentati
   Fake streams deterministically force fragmentation, stalled progress and queue saturation.
   Do not pretend TCP delivers reordered application bytes: inject corruption separately as
   malicious input; use delayed/stalled streams to model its loss consequences.
+- **Security:** qualified provider/configuration, positive mutual authentication, every §4.1
+  refusal, downgrade/early-data refusal, identity withdrawal on live peers, rotation/expiry,
+  wrong trust roots, tampered/replayed TLS records and application messages, secure failure
+  on entropy/clock/credential errors, and no secret-bearing diagnostics. Mutation-test a
+  disabled certificate check and a bypassed allowlist; both must fail their focused guards.
+- **Pre-authentication abuse:** exceed accept/handshake rates with invalid and stalled TLS
+  clients; exhaust limiter slots/certificate bounds/TLS budget; verify bounded work, no leaked
+  descriptors, rate-limited logs and continued established-peer service. TLS CPU/memory is
+  measured separately from FNET queues; encrypted transport is not itself a DoS defense.
 - **Session:** matching/mismatched catalogues, handshake timeout, command-before-active,
   stale/wrong baseline acknowledgement, partial baseline failure, reconnect generations,
   bounded pending accepts, noisy-peer fairness and one stalled peer alongside a healthy peer.
@@ -318,22 +433,34 @@ each implementation commit. Do not repeat M15 proofs to approve this documentati
   installed header as C99 on all three targets and C++17; v1–v4 prefix checks unchanged.
   Mutation-test the new version/length/authority guards and header-only import prohibition.
 - **Integration:** multi-process null proof plus real desktop runs, cross-host in both roles,
+  actual authenticated public-internet deployment across independent client networks,
   optimized Windows build, external C consumer, and both release stages if content/release
   descriptions changed. Preserve successful evidence unless subsequent changes invalidate it.
 
 Measure maximum queue occupancy, per-pump work and shutdown completion under the stated test
 load; record actual bounds and test conditions, not unsupported claims of internet robustness.
-Public listeners, credentials, packet captures of unrelated traffic and firewall changes are
-not authorized by running the milestone. If an environment blocks cross-host access, report
-the precise missing evidence; loopback is not a replacement for it.
+The proposed acceptance workload is four peers, state payloads at most 1 KiB at 20 Hz and
+60 Hz server simulation. For ten minutes under a controlled stream harness imposing 150 ms
+round-trip delay, up to 30 ms additional jitter, 1 Mbit/s each direction per peer and one
+250 ms head-of-line stall every five seconds, require p95 command-to-visible-acknowledgement
+at most 500 ms, no unintended disconnect, and no state older than two seconds outside an
+explicitly injected disconnect. This models stream stalls, **not a measured packet-loss
+percentage**. Also record actual RTT and input acknowledgement latency on the real WAN path.
+If this budget or the real experience is unacceptable, revise transport/prediction scope
+before closure; a secure but unusable connection does not meet “plays with others.”
+
+Real public listeners, production credentials, captures and firewall changes need explicit
+operator authorization for the selected infrastructure. If an environment blocks internet
+access, report the precise missing evidence; loopback or a fake WAN is not a replacement.
 
 ## 11. Open decisions and explicit limits
 
-The owner-entry choices in §1 are still open. TCP/IPv4/trusted-LAN is the proposed first scope;
-it is not an accepted answer for an unspecified public multiplayer game. Public networking
-requires its security design before exposure. No new backlog system is introduced here.
+Public-internet scope is settled by the owner. The remaining §1 choices are proposed:
+authority, operator-hosted topology, provisioned-certificate admission and initial performance
+envelope. The exact TLS pin/configuration is a Step 1 qualification gate. No new backlog
+system is introduced here, and security is not deferred to M17.
 
-Outside this proposal: matchmaking, relays, NAT traversal, accounts, encryption/authentication,
+Outside this proposal: matchmaking, relays, automatic NAT traversal, account services,
 anti-cheat claims, host migration, resuming a departed participant, prediction/rollback,
 lockstep and bit-exact physics, automatic content download, automatic component replication,
 large-world interest management, remote editor/debug transport and new Lua networking bindings.
@@ -341,8 +468,8 @@ Existing open questions about per-mod tables, native unloading, system schedulin
 lists and editor features remain open. M17/M18 retain their own gates.
 
 Three bounded implementation details require a dated Resolution before dependent code: Step
-1's exact control payloads and counters; Step 2's pinned-toolchain transport mechanism; Step
-5's v5 layouts/call count. Those may refine this contract, not silently change its scope,
+1's TLS provider/pin/configuration and exact control payloads/counters; Step 2's transport
+mechanism; Step 5's v5 layouts/call count. Those may refine this contract, not change its scope,
 module placement or authority model. No port numbers, machine names or personal paths belong
 in committed configuration.
 
@@ -352,24 +479,32 @@ Every step below is **not started**. Each ends with its own tests, required bar,
 project-state update and focused commit, followed by a handoff. Do not chain steps without
 the owner's instruction. Entry acceptance (§1) precedes Step 1, not an extra coding step.
 
-### Step 1 — Define bounded channels and wire messages
+### Step 1 — Qualify security and define bounded wire messages
 
-Add `net` and its minimal downward imports; define checked limits, runtime channel descriptors,
-wire headers/control payloads, incremental framing and the pure codec. Freeze exact wire v1
+Qualify the proposed TLS provider against §4: license and exact supported release/hash,
+security advisories, Zig-only native/cross-build, mutual-authentication test endpoints in
+memory, bounded resource use, certificate verification, OS entropy and timing interfaces.
+Record the provider/configuration before dependent code. A failed qualification stops for
+a design revision, not an insecure fallback. Add `net` and its minimal downward imports;
+define checked limits, runtime channel descriptors, wire headers/control payloads,
+incremental framing and the pure codec. Freeze exact wire v1
 with golden byte fixtures and a dated Resolution. Test invalid bytes, partial frames and all
 counter/length bounds. **No sockets, session lifecycle, ABI or sample changes.**
 
-### Step 2 — Supply bounded platform streams
+### Step 2 — Supply bounded authenticated platform streams
 
 Implement opaque listeners/connections, numeric endpoints, nonblocking connect/accept/read/write,
-error mapping and bounded cleanup in `platform`, with a deterministic fake transport for net
-tests. Record the Zig 0.16 mechanism. Prove real loopback on macOS and Windows plus Linux
-compile coverage; null operation must need no window. **No shared-world or ABI implementation.**
+TLS handshake/read/write, credential contexts, verified peer identities, error mapping and
+bounded cleanup in `platform`, with a deterministic fake transport for net tests. Prove real
+mutually authenticated loopback on macOS and Windows plus Linux compile coverage, certificate
+failure paths and no plaintext fallback. Record the Zig 0.16 mechanism. Null operation needs
+no window. **No public listener, shared-world or ABI implementation.**
 
 ### Step 3 — Establish compatible sessions and peer lifetimes
 
 Implement service/grants, generational session/peer storage, frozen channel/catalogue negotiation,
-role checks, connection states, deadlines, queue budgets, fairness and structured diagnostics.
+authenticated identity allowlists/revocation, role checks, connection states, pre-auth limits,
+deadlines, queue budgets, fairness and structured diagnostics.
 Host-supplied compatibility inputs are copied and bounded. Test mismatches, resource exhaustion,
 partial I/O, teardown and fresh reconnect. **No ECS ownership or automatic package fetching.**
 
@@ -383,8 +518,9 @@ private application path that will bypass Step 5.**
 
 ### Step 5 — Publish networking in the single public API
 
-Freeze v5 types/call inventory, implement all §8 groups over the supplied service, add C/Zig
-agreement and adversarial ABI tests, installed-header C99/C++ coverage, and teach native table
+Freeze v5 types/call inventory, including grant/authentication diagnostics but no secret access;
+implement all §8 groups over the supplied service, add C/Zig agreement and adversarial ABI
+tests, installed-header C99/C++ coverage, and teach native table
 negotiation to offer v5. Keep v1–v4 and Lua binding 1 unchanged. Test absence/denial explicitly.
 **No sample consumer before the public capability exists.**
 
@@ -392,30 +528,34 @@ negotiation to offer v5. Keep v1–v4 and Lua binding 1 unchanged. Test absence/
 
 Add opt-in host modes and the separate header-only consumer, runtime-registered command/state
 channels, content-defined marker behaviour, authoritative ticking, local presentation maps,
-initial synchronization and visible connection state. Headless multi-process input proves the
-same path. Show the real two-window result on the primary desktop, retain offline behaviour,
+initial synchronization, operator credential references and visible authentication/connection
+state. Headless multi-process input proves the same path. Show the real two-window result on
+the primary desktop, retain offline behaviour,
 and stage required releases. **No general lobby or gameplay feature expansion.**
 
 ### Step 7 — Prove refusal, authority and deterministic replay
 
 Complete §10's adversarial/failure matrix through the public consumer: forged input, corrupted
-frames, compatibility refusal, constrained allocations, stalled clients, bounded fairness,
-late join and reconnect. Replay recorded admitted batches and compare server state for the
-same binary/seed. Measure work/storage bounds. Reuse prior successful codec/ABI evidence;
+frames, credential refusal/revocation/rotation, TLS replay/tamper, pre-authentication floods,
+compatibility refusal, constrained allocations, stalled clients, bounded fairness, late join
+and reconnect. Replay admitted batches and compare server state for the same binary/seed.
+Measure work/storage bounds and the controlled WAN envelope. Reuse prior successful evidence;
 run new combinations, not duplicate reviews. **No cross-platform bit-exact simulation claim.**
 
-### Step 8 — Prove both desktops and an external consumer
+### Step 8 — Prove public-internet play, both desktops and an external consumer
 
 Run the relocated macOS/Metal and Windows/Vulkan applications, with each machine serving the
-other, real input and no runtime toolchain requirement. Exercise join/disconnect/rejoin and
-content mismatch, and record latency/stall limits honestly. Build and run the external C99
-consumer; write the networking guide from that experience. **No Linux runtime certification
-or public-internet security claim.** Missing target access is reported, not waived.
+other, real input and no runtime toolchain requirement. Then prove an authorized internet
+server with clients on independent networks, authenticated join/disconnect/rejoin, rejected
+identities and content mismatch. Record observed WAN conditions and limits. Build/run the
+external C99 consumer; write the networking and credential-operations guide from that
+experience. **No Linux runtime certification or blanket anti-cheat/DDoS claim.** Missing
+target/infrastructure access is reported, not waived; LAN success cannot close this step.
 
 ### Step 9 — Close M16 against its accepted scope
 
 Review the exit evidence once, fix concrete gaps, run the required final integration gate,
 and update design Resolutions, API/platform documents, README, roadmap, AGENTS and project
 state consistently. List the actual deployment limit and remaining decisions. Tag `m16` only
-when the accepted entry scope and two-process/public-consumer exit are met. **Do not start
+when the accepted entry scope, security and real-internet/public-consumer exit are met. **Do not start
 M17 review/polish/release work or M18 qualification as part of closure.**

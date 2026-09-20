@@ -110,9 +110,10 @@ directory and changed visibly. A C99 program does the same job through the same 
 ran on macOS/Metal and on Windows/Vulkan, and both wrote the same bytes.
 
 **M16 is planned, not implemented.** Its proposed [networking design](docs/design/networking.md)
-has nine steps, with authoritative sessions and a direct-connect LAN proof recommended.
-The game trigger, networking model and deployment scope await acceptance before Step 1;
-secure public-internet multiplayer is not claimed.
+has nine steps. Public-internet multiplayer is required; the revised proposal covers
+authoritative sessions, authenticated encryption, credential lifecycle and a real WAN proof.
+Topology, admission UX and the initial performance envelope still await acceptance before
+Step 1. Networking is not implemented, and no security/runtime result is claimed yet.
 
 All three modding tiers work — see [docs/modding](docs/modding/). Tier 2 is restricted
 Lua 5.5.1, one VM per package, bounded in memory, instructions and engine calls, reaching the

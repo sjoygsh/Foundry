@@ -1,70 +1,105 @@
-# ADR-0045: Bounded direct-connect transport, with an explicit deployment limit
+# ADR-0045: Authenticated public-internet transport behind Foundry's boundary
 
-**Status:** Proposed — the LAN scope needs owner acceptance before M16 Step 1.
+**Status:** Proposed architecture; public-internet scope is required by the owner.
 **Date:** 2026-09-21
+**Revision, 2026-09-21:** replaces the unimplemented LAN-only proposal in place, under
+`CLAUDE.md` §8. No code depends on the earlier text. Step 1 has not begun.
 
 ## Context
 
-M16 needs two processes sharing a world. It does not yet have requirements for matchmaking,
-internet identities, hostile-network confidentiality or latency under loss. Choosing a network
-library or implementing a reliable datagram protocol before those requirements would create
-an infrastructure project around an unselected game. Conversely, a local demonstration must
-not silently become a claim that an unauthenticated service is ready for public deployment.
+The owner explicitly requires public-internet multiplayer for the first networked game.
+A trusted LAN demonstration no longer meets M16. Network attackers can observe, alter and
+replay traffic, connect without invitation and consume resources; an admitted player can
+still submit malicious commands. Transport authentication and game authority solve different
+problems. Neither requires Foundry to become an account or matchmaking platform.
 
 ## Decision
 
-**Propose direct numeric-address TCP connections for the first milestone**, behind Foundry's
-own `platform` stream interface. Connect, accept, read and write make bounded nonblocking
-progress; a partial operation is ordinary state, not a reason to block the frame loop. OS
-socket types and Zig I/O details stay in `platform`. No networking dependency or new build
-tool is selected. Step 2 must demonstrate this contract on the pinned toolchain, on macOS and
-Windows, before session implementation depends on it.
+**Propose an operator-hosted authoritative server at a reachable internet endpoint, with TLS
+1.3 over TCP and mandatory mutual certificate authentication.** Clients connect outbound;
+automatic NAT traversal, relays and matchmaking are not part of this topology. Numeric IPv4
+is sufficient for the first proof: a separately provisioned server identity is verified even
+when the destination is numeric. If player-hosted sessions or different latency requirements
+are needed, revisit this topology before implementation, not after building it.
 
-`net` length-frames versioned messages, bounds every queue and parser allocation, applies
-per-peer work budgets, and disconnects a stalled peer. A partially written frame is immutable;
-only a wholly unsent replaceable state frame may be superseded. TCP does not remove the need
-for message boundaries, admission checks, timeouts, application validation or flow control.
+The host supplies endpoint and credential grants, an explicit trust bundle, expected server
+identity and admitted client identities. `platform` owns TLS and OS streams behind Foundry
+types; no vendor type, secret or raw socket enters the public API. `net` consumes authenticated
+streams, enforces admission and does compatibility negotiation only after authentication.
+Certificate verification is mandatory, including validity and intended use. No plaintext
+fallback, trust-on-first-use, ignored verification error, early data or session resumption in
+M16. Every reconnect performs fresh authentication and authorization; no replay of queued input.
 
-**The proposed qualification scope is loopback and an explicitly trusted LAN.** Listening is
-off by default; a non-loopback bind is an explicit host/operator choice. No discovery, DNS,
-NAT traversal, port forwarding, relay, matchmaking, account service or automatic downloads.
-There is no encryption or authenticated identity claim. Content hashes and compatibility IDs
-detect mismatches; they do not authenticate a peer. Input remains untrusted even on this LAN.
+**Use a maintained permissively licensed TLS implementation, not custom cryptography.**
+Mbed TLS is the candidate, under its explicit Apache-2.0 license option. Before dependent
+code, Step 1 records the exact supported release, archive hash, transitive licenses, security
+advisory disposition and configuration. It must qualify TLS 1.3 mutual authentication,
+bounded nonblocking progress, OS entropy, certificate validation and a Zig-only build on the
+pinned toolchain. If it cannot, stop for a revised provider decision. No dependency is added
+by this planning revision; dependency and license entries must land together later.
 
-**If public-internet multiplayer is required for M16, do not implement this proposal as if it
-met that need.** First revise the ADR/design with an authenticated encrypted transport,
-credential provisioning, replay protection, abuse/resource policy and a relevant deployment
-proof. Evaluate a replaceable, permissively licensed implementation rather than inventing
-cryptography. There is no permission here to install a dependency, open a firewall or expose
-a public listener. This is an entry decision, not a waiver to be discovered at closure.
+`net` length-frames versioned messages inside TLS. Bound unauthenticated accepts, concurrent
+handshakes, certificate chains, TLS allocations and computation as well as authenticated
+queues. A partially submitted plaintext frame is immutable even if TLS has not yet emitted
+its encrypted records. Transport success does not establish application authority or delivery.
+
+**Credentials are operator-managed, not content.** Each player has a distinct private key and
+an admitted public identity; no shared client key in the executable. Provision trust and keys
+out of band, bound expiry, document rotation, and prove withdrawal of an identity prevents
+new joins and terminates its existing connection. No secrets in source, packages, command-line
+values, environment variables, logs or captures. Only host-granted credential file references
+or secure-store references are configuration; packages cannot choose them. Revocation policy
+uses the host's local allowlist, not an implied online account or certificate-status service.
+
+**The exit includes real public-internet connectivity and a threat-focused proof.** LAN and
+loopback remain development evidence only. Use macOS and Windows clients on independent
+networks against an explicitly authorized server endpoint. Budget/rate-limit handshakes and
+admitted traffic, test credential failures and replay, and retain evidence of correct behavior
+under stated WAN conditions. No claim of protection from an upstream volumetric DDoS, a
+compromised machine, cheating by the server or stolen authorized credentials.
 
 ## Consequences
 
-- The first implementation can prove sessions, public API access, authority and desktop
-  interoperability without also building a service platform.
-- Ordered reliable delivery simplifies the initial explicit full-state/command model.
-- Cost: head-of-line blocking can delay fresh state. A bounded disconnect and visible pending
-  state are acceptable only for the proposed small LAN proof, not a claim of good WAN play.
-- Cost: an on-path party can observe or modify traffic, and a connected peer's identity is not
-  cryptographically established. Do not send credentials or private user information.
-- A fake fragmented stream and explicit time inputs let protocol tests run without real ports,
-  sleeps, firewall changes or a GPU. Native socket tests are distinct evidence.
+- Internet transport security is an M16 obligation, not M17 polish. A fake stream or local
+  tunnel cannot stand in for the deployment proof.
+- Cost: certificate provisioning is explicit operator work; this is admitted multiplayer,
+  not frictionless anonymous matchmaking. Accept that UX before implementation.
+- Cost: a TLS dependency needs patch monitoring, attribution and release updates. Missing
+  security fixes block public deployment even when an older functional proof passed.
+- Cost: TCP head-of-line blocking and no prediction may limit the game's responsiveness.
+  Measure the proposed WAN envelope in the design; do not claim generic action-game fitness.
+- Infrastructure costs, public exposure, firewall/router changes and real credential use need
+  explicit operator authorization. This design does not provision any of them.
 
 ## Alternatives considered
 
-- **Reliable UDP/QUIC or a game-networking library now:** may be right for the selected game,
-  especially under loss or for secure internet play. Requirements and dependency review must
-  precede that choice; they are not silently settled by this LAN proposal.
-- **Invent reliability or cryptography over UDP:** unnecessary complexity and security risk.
-- **Blocking sockets or one thread per peer:** makes a slow peer consume a frame or an
-  unbounded worker resource. Bounded polling makes ownership and shutdown explicit.
-- **Only an in-memory transport:** necessary for tests but insufficient for the roadmap's
-  two-process result or Windows/macOS interoperability.
+- **Plain TCP/LAN-only:** no longer meets the owner's requirement; withdrawn.
+- **QUIC or a secure game-datagram library:** may suit the eventual game's latency better.
+  The small full-state proof does not yet need independent unreliable channels; TLS/TCP is
+  the simpler proposal, conditional on meeting the stated WAN budget. Revisit if it fails.
+- **Server TLS plus password/bearer-token service:** possible, but introduces token issuance,
+  storage and account policy. Distinct provisioned client certificates supply the first
+  admitted-player proof without inventing that service.
+- **Custom encryption or authentication:** unacceptable; use a maintained protocol provider.
+- **Platform-specific TLS providers:** possible fallback, but multiple configurations and
+  verification implementations cost more interoperability evidence than one pinned provider.
 
 ## Revisit if
 
-The owner requires public-internet play; measured loss-induced latency misses the game's
-budget; IPv6/DNS/discovery becomes a requirement; or the pinned toolchain cannot provide
-bounded transport progress without additional machinery. Such a change gets a Resolution or
-replacement ADR before implementation dependent on it. It does not authorize an incidental
-toolchain upgrade or a background task framework.
+The game needs anonymous joins, player-hosted NAT traversal, accounts, different latency,
+IPv6/DNS, resumption, or a scale beyond the measured envelope; certificate provisioning is
+unacceptable UX; or the provider fails qualification or becomes unsupported. Resolve before
+dependent code. No incidental toolchain upgrade or background task framework is authorized.
+
+## Technical references
+
+- [TLS 1.3, RFC 8446](https://www.rfc-editor.org/rfc/rfc8446.html), including certificate
+  authentication and the early-data replay caveat. Foundry proposes disabling early data.
+- [Mbed TLS license](https://raw.githubusercontent.com/Mbed-TLS/mbedtls/development/LICENSE):
+  Apache-2.0 is an available option; verify the chosen archive and its transitive files too.
+- [Supported branches](https://github.com/Mbed-TLS/mbedtls/blob/development/BRANCHES.md),
+  [official releases](https://github.com/Mbed-TLS/mbedtls/releases) and
+  [security advisories](https://mbed-tls.readthedocs.io/en/latest/security-advisories/):
+  recheck at qualification, pin deliberately, never build against a moving branch.
+- [Mbed TLS integration tutorial](https://mbed-tls.readthedocs.io/en/latest/kb/how-to/mbedtls-tutorial/).
+  These inform the proposal; none is evidence of a Foundry implementation or completed audit.

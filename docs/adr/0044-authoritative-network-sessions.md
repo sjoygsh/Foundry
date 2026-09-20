@@ -2,14 +2,17 @@
 
 **Status:** Proposed — design only; owner acceptance required before M16 Step 1.
 **Date:** 2026-09-21
+**Revision, 2026-09-21:** the owner requires public-internet multiplayer. The LAN-only
+alternative is withdrawn; the authority model and implementation remain proposed.
 
 ## Context
 
 M15 is complete. The owner requested M16's design, explicitly stopping before implementation.
 The roadmap makes networking trigger-started by a game's need, and requires the simulation
-model to be decided in writing first. No player count, latency target, public-internet threat
-model or lockstep requirement has been supplied. This proposal is not evidence that those
-product decisions have been made.
+model to be decided in writing first. The owner has selected public-internet multiplayer;
+the networked-game trigger and deployment scope are therefore established. Player count,
+latency target, admission UX and any lockstep requirement have not been supplied. This
+proposal is not evidence that those remaining product decisions have been made.
 
 ADR-0013 guarantees reproducibility for the same binary and inputs, not bit-exact simulation
 across macOS and Windows. `scene.World` runs registered systems on a fixed tick and cannot
@@ -72,5 +75,5 @@ of the deployment claim. Both ADRs remain proposed until the owner accepts the s
 
 The owner selects lockstep, prediction-sensitive competitive play, host migration, substantially
 larger worlds or a different authority model. Revisit before implementation if the selected
-game cannot accept the proposal's latency or explicit-codec cost. Public-internet deployment
-also requires ADR-0045's security decision; it is not implied by accepting authority here.
+game cannot accept the proposal's latency or explicit-codec cost. ADR-0045's authenticated
+transport and actual internet proof are now required in M16, not deferred release polish.
