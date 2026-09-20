@@ -1,9 +1,35 @@
 # Foundry Project State
 
-**Last updated:** 2026-09-20
-**Current handoff: M15 Step 8 is done on macOS; its Windows/Vulkan run is outstanding, and
-Step 9 waits for that.** M0 through M14 are complete and
-tagged. **M14 closed on 2026-09-19 with a player choosing their mods in a packaged sample, on
+**Last updated:** 2026-09-21
+**Current handoff: M15 is complete and tagged `m15`. M16 is next, and it is trigger-started —
+do not begin it without being asked.** M0 through M15 are complete and tagged.
+
+**M15 closed on 2026-09-21: Foundry authors its own content, through its own public API.**
+All nine steps of `docs/design/editor.md` are done and each has a Resolution. The durable
+result is not the editor; it is that **the editor has no private path**. `tools/editor/client/`
+imports one module, built from `engine/src/abi/foundry.h`, and the build graph grants it no
+engine module at all — so I4 is held by the graph rather than by anyone's discipline (I7).
+Every authoring call it uses was published as `FoundryApi_v4` in Step 5, one step before Step 6
+consumed the first of them, and Steps 6 through 9 added **none**. The table is frozen at 211
+calls.
+- The exit proof authored `demo:warmroom` in an empty directory **outside this repository**,
+  entirely by clicking: New Package, `requires [{ id room:content }]` built from the list
+  controls, a second document, Override Here on the room's theme, a refused value corrected in
+  place, Undo, Redo, Save All, Validate, Build, Reload, Export. No `.fdt` was written by hand.
+  A relocated room release found the exported `.fpk` in its ordinary user `mods/` directory and
+  changed visibly.
+- **It ran on both desktop targets and wrote the same bytes.** macOS/Metal and Windows/Vulkan
+  (Intel Arc A750, Vulkan 1.4) replay the same 489-action plan in 560 frames with identical
+  pointer, keyboard and draw-command counts, and produce identical `mod.fdt` (`d23cfd87…`),
+  `theme.fdt` (`ad75bb91…`) and `warm-room.fpk` (`aad2779f…`). The one compiler also writes
+  identical `core.fpk` and `room.fpk` on both.
+- **A C99 program has the same reach.** `engine/tests/fixtures/author_mod.c` creates, edits,
+  saves, compiles and exports a package through the table.
+- **What it is not:** nobody has driven the editor by hand through a whole package — every
+  proof replayed a recorded plan into the real widgets. That is the honest limit, recorded in
+  `editor.md` §13 and `docs/modding/editor.md`.
+
+**M14 closed on 2026-09-19 with a player choosing their mods in a packaged sample, on
 macOS and on Windows:**
 - **the mod set, with record-level conflicts, and ordered profiles on disk, applied at the next
   start (ADR-0040);**
@@ -12,11 +38,21 @@ macOS and on Windows:**
 - **the room's MO2-style mod screen, built from that table alone.**
 
 **M13 before it proved Windows x64 through Vulkan. Linux is M18, after the first game and before
-3D (ADR-0039). M15 is under way: Steps 1–8 of nine are done, with one piece of Step 8 — the
-Windows/Vulkan run — outstanding. M16 and M17 remain unstarted.**
+3D (ADR-0039). M16 and M17 remain unstarted, and both are trigger-started: M16 needs a decision
+that a game is networked, M17 needs operator credentials and a clean machine.**
 
-**Completed M15 Step 8, 2026-09-20: a content mod authored outside the repository, by clicking,
-and consumed by a relocated sample.**
+**Completed M15 Step 9, 2026-09-21: the close.** The final gate repeated only what Step 9's own
+changes could touch — the full bar (72/72 steps, 1,586/1,587 headless tests from 1,651
+declared), `editor-workflow` at 20/20, the null editor smoke at 25/25 actions in 48 frames, and
+the installed header as C99 `-pedantic -Werror` for macOS/Linux-gnu/Windows-gnu and as C++17
+for **both** C fixtures — plus the Windows/Vulkan run Step 8 was missing. The consistency pass
+found one statement that had gone stale and false: `docs/modding/README.md` still said a mod
+*manager* did not exist, which M14 disproved four days earlier; it now records the limit that
+is real, which is that a selection applies at the **next start** (ADR-0040). Neither M16 nor
+M17 work was begun. Resolution: `editor.md`, Step 9.
+
+**Completed M15 Step 8, 2026-09-20 (macOS) and 2026-09-21 (Windows/Vulkan): a content mod
+authored outside the repository, by clicking, and consumed by a relocated sample.**
 - The package is `demo:warmroom`, an override of the room's `foundry:ui_theme room:ui.theme`.
   It was made in an empty directory outside the tree with the relocated room release's own
   `core.fpk` and `room.fpk` granted: New Package, `requires [{ id room:content }]` built from
@@ -55,8 +91,17 @@ and consumed by a relocated sample.**
 
 The bar is green at **1,586 of 1,587** headless tests, with the existing skip, from **1,651
 declared**. `zig build editor-workflow` is twenty tests. Four mutations were made and
-restored, each failing exactly one check. **Not done: the Windows/Vulkan run** — the owner's
-PC was in use, so nothing was built or run there. Resolution: `editor.md`, Step 8.
+restored, each failing exactly one check.
+- **The Windows/Vulkan run happened on 2026-09-21.** The two unpushed commits were overlaid on
+  a worktree at `origin/main` and all twenty-six files hash-checked on both sides. Then
+  `editor-workflow` 20/20; `editor-smoke` twenty-five of twenty-five actions in forty-eight
+  frames, pointer 37, keyboard 14, up to 650 draw commands — macOS's numbers exactly; and the
+  489-action authoring plan twice, on the null backend and on `-Drhi=vulkan` against
+  `Intel(R) Arc(TM) A750 Graphics (discrete, Vulkan 1.4)` under SDL3 3.4.14, 560 frames,
+  pointer 525, keyboard 468, 221 peak draw commands — again macOS's numbers exactly. All three
+  produced files match the Metal run byte for byte, and so do the two dependency packages each
+  machine compiled for itself. No new platform limit; no validation error, device loss or
+  swapchain recreation. Resolution: `editor.md`, Step 8.
 
 **Completed M15 Step 7, 2026-09-20: the complete authoring workflow, over the same 47 calls.**
 - The editor's client gained the manifest and typed record forms, list controls, the read-only
@@ -2300,22 +2345,35 @@ signing, notarization and a clean recipient Mac (ADR-0032) — not engine work. 
 adding to it, only M10 was new, **M10 and M11 are complete (2026-09-13)** and **M12 is
 complete (2026-09-14)**. **M13 is complete (2026-09-19)**, proving
 Windows x64 through Vulkan. **M14 is complete (2026-09-19)**: a player chooses their mods in a
-packaged sample, on macOS and on Windows. M15 is under way with Steps 1–8 complete but for
-Step 8's Windows/Vulkan run; M16 and M17 are unstarted.
+packaged sample, on macOS and on Windows. **M15 is complete (2026-09-21)**: Foundry authors
+its own content through its own public API, on macOS and on Windows. M16 and M17 are
+unstarted, and both are trigger-started.
 
 ## Current milestone
 
-**M15 — Editor is under way: Steps 1–8 of nine are done (2026-09-20), bar one run.** Read
-`docs/design/editor.md`, especially §14's nine steps and the eight Resolutions, and
-ADR-0042/0043, accepted 2026-09-20. The editor's UI and UX follow Unreal Engine 5's (§10). The
-tree stands at **1,651 declared / 1,586 headless tests**, with the one skip it has had since
-Step 1. Typed commands, conflict-safe per-file saves, retained isolated builds and the whole
-authoring surface as `FoundryApi_v4` are complete, `fpack` runs on that table, and
-`tools/editor` is a working editor over those calls and no others. Step 8 authored a content
-mod outside the repository through the window, exported it, and watched a relocated room load
-it through its ordinary user `mods/` path, with a real C99 authoring client beside it. **What
-is left before Step 9 closes M15 is one run: the same workflow on Windows/Vulkan**, which did
-not happen because the owner's PC was in use.
+**M15 — Editor: "content is authored in Foundry." Complete, 2026-09-21, tagged `m15`.** Read
+`docs/design/editor.md` — §14's nine steps and the nine Resolutions — and ADR-0042/0043,
+accepted 2026-09-20. The editor's UI and UX follow Unreal Engine 5's (§10). The tree stands at
+**1,651 declared / 1,586 headless tests**, with the one skip it has had since Step 1. All nine
+steps are implemented:
+- opt-in parser source spans, with `data/emit.zig` and `data/splice.zig` to put a value back
+  without disturbing the bytes around it;
+- `engine/src/author/` at L4 — the one compiler `fpack` and the editor share, the dependency
+  packages a host grants, and bounded workspaces;
+- revisioned typed record commands, exact dependency overrides, incomplete drafts, Undo/Redo;
+- confined conflict-safe per-file saves, stable snapshots, retained private build candidates;
+- the additive 47-call `FoundryApi_v4`, with `fpack` moved onto it;
+- `tools/editor`: an explicit-root host, ordinary `foundry:editor` content, and a separately
+  built header-only client;
+- the complete editing workflow over those same calls, **adding none**;
+- the proof from outside — a mod authored by clicking in a directory outside the repository,
+  exported, loaded by a relocated room, with a running C99 authoring client beside it, on
+  macOS/Metal and Windows/Vulkan with byte-identical results;
+- the close: the final gate, the documentation consistency pass, and the tag.
+
+**M16 is next and must not be started without being asked.** It is trigger-started: it begins
+when a game needs networking, and it owes an ADR on lockstep versus authoritative server
+*before any code*, because that choice decides how much of I9 has to become literal.
 
 **M14 — Managed: "players choose their mods." Complete, 2026-09-19.** Read
 `docs/design/mod-management.md` and ADR-0040/0041. All nine steps are implemented:
@@ -3236,8 +3294,8 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M0–M14 are complete, and M15's Steps 1–8 are done; nothing is half-built.** M15's design and
-its eight Resolutions are in `docs/design/editor.md`. Step 1 added source spans to
+**M0–M15 are complete; nothing is half-built and nothing is in progress.** M15's design and
+its nine Resolutions are in `docs/design/editor.md`. Step 1 added source spans to
 the parser and `data/emit.zig` and `data/splice.zig`; Step 2 added `engine/src/author/` — the
 one compiler `fpack` and the editor share, the granted dependency set, and bounded workspaces —
 and moved `fpack` onto it. Step 3 added revisioned typed record commands, exact dependency
@@ -3247,8 +3305,9 @@ published all of it as the additive `FoundryApi_v4` and moved `fpack` onto that 
 added `tools/editor` — an explicit-root host and a header-only client that browsed the
 workspace through public calls alone. Step 7 made that client an editor, adding no call.
 Step 8 authored a mod outside the repository through the window, had a relocated room load it,
-and ran an external C99 authoring client; **its Windows/Vulkan run is the one thing left**, and
-Step 9 closes the milestone after it.
+and ran an external C99 authoring client, on macOS/Metal and on Windows/Vulkan with identical
+bytes. Step 9 closed the milestone: the final gate, one documentation consistency pass, and
+tag `m15`.
 M14's specification and its Resolutions
 are in `docs/design/mod-management.md`. M13's
 specification and its Resolutions are in `docs/design/vulkan.md`. M12's specification and all
@@ -3899,26 +3958,20 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: finish M15 Step 8's Windows/Vulkan run, then Step 9 — close M15**, when the owner asks
-for it. Steps 1 through 8 are done on macOS (2026-09-20), with one piece of Step 8 outstanding:
-the editor has not been *run* on Windows/Vulkan, because the owner's Windows machine is their
-gaming PC and it was in use (a game and its streaming host were running), so nothing was built
-or run there. It still compiles in the Windows graph on every bar. The outstanding work is one
-sitting — overlay the tree on the PC's worktree, then `zig build editor-workflow -j2`,
-`zig build editor-smoke -Dplatform=null -Drhi=null -j2`, and the authoring plan with
-`-Drhi=vulkan` over a throwaway package, comparing the two saved files' SHA-256 against the
-Metal run's (`mod.fdt` `d23cfd87…`, `theme.fdt` `ad75bb91…`, `warm-room.fpk` `aad2779f…`).
-**Step 9 must not close M15 before that has happened.**
+**Nothing is owed. M15 is closed and pushed, and the next milestone needs the owner's word
+before it starts.** M16 (networking) and M17 (public macOS release certification) are both
+trigger-started and neither trigger has fired: M16 begins when a game needs it and owes an ADR
+on lockstep versus authoritative server before any code; M17 needs Developer ID credentials,
+Apple's notary service and a genuinely clean recipient Mac (ADR-0032), and it is deliberately
+last. M18 is Linux runtime support, after the first game and before any 3D (ADR-0039).
 
-Step 9 is then the final integration gate and one documentation consistency pass: accept prior
-successful evidence, repeat only what later fixes invalidated, update the docs, commit and tag
-`m15`. Two things are already known to be waiting for it: `docs/modding/README.md` still says a
-mod *manager* does not exist, which M14 made false; and the owner has still not been asked
-about pushing any of the ten unpushed M15 commits.
+Two small recorded items can be taken on the owner's word whenever they want them: the flaky
+Windows sleep test (Known bugs), and a human sitting down with the editor for an hour — no
+proof so far has a hand on the mouse, and no further replay will produce one.
 
-One small recorded item can be taken on the owner's word before or beside it: the flaky
-Windows sleep test (Known bugs). `mod-management.md` §14's questions stay open until a
-milestone's work forces one.
+The open questions stay open on purpose and must not be resolved opportunistically: publishing
+keyboard state and a mod's scratch file (`public-abi.md`), `editor.md` §13's list, `rhi.md`'s
+device recovery, and `mod-management.md` §14's.
 
 M14's design is `docs/design/mod-management.md`, nine steps with their Resolutions. M13's is
 `docs/design/vulkan.md`. Linux is M18's (ADR-0039), after the first game and before 3D.
@@ -3932,11 +3985,11 @@ Later Windows work follows M13's practice:
 - Since M14, the PC builds from a worktree of the pushed tree, `src\Foundry-m14`, beside its old
   clone. Changes not yet pushed are copied over and checked by hash.
 
-**M0 through M14 are complete, tagged and pushed.** Phase 3 is closed;
+**M0 through M15 are complete, tagged and pushed.** Phase 3 is closed;
 Phase 4 is under way. The completed M8/M7 checklists and subsequent M5/M6 material below are
 historical.
 
-**What remains is `docs/ROADMAP.md` Phase 4, "Hardening and reach", M15 through M17.** The
+**What remains is `docs/ROADMAP.md` Phase 4, "Hardening and reach", M16 and M17.** The
 phase gathers work that was already recorded rather than inventing any, and `CLAUDE.md` §9's
 postponed table names the milestone each decision belongs to. **The intent as of 2026-09-13 is
 to work through them over the following two weeks**, in roadmap order unless a trigger moves
@@ -3965,10 +4018,14 @@ review of `main` rather than beginning on a schedule.
   `docs/design/mod-management.md`, with ADR-0040/0041: the mod set and profiles, migrations and
   merged writes, content themes and the game widget set, `FoundryApi_v3`, and the room's mod
   screen. The exit proof passed on macOS and on Windows.
-* **M15 — Editor.** §9's oldest item, dated M6+; ADR-0011 and ADR-0025 already decided its
-  shape as a re-host of the overlay's introspection. Designed 2026-09-19 in
-  `docs/design/editor.md`, with ADR-0042/0043, accepted 2026-09-20. Steps 1–8 are done, bar
-  Step 8's Windows/Vulkan run; Step 9 remains and does not close M15 without that run.
+* ~~**M15 — Editor.**~~ **Done 2026-09-21**, tagged `m15`. §9's oldest item, dated M6+;
+  ADR-0011 and ADR-0025 already decided its shape as a re-host of the overlay's introspection.
+  Designed 2026-09-19 in `docs/design/editor.md`, with ADR-0042/0043, accepted 2026-09-20. All
+  nine steps done: source spans and splicing, the shared `author` compiler and workspaces,
+  typed history, safe saves and isolated builds, `FoundryApi_v4`, the standalone host and
+  header-only client, the editing workflow, the outside-the-tree proof on both desktop
+  targets, and the close. The editor's client imports no engine module, so I4 is enforced by
+  the build graph.
 * **M16 — Connected.** Networking, trigger-started, carrying ADR-0013's bit-exact determinism
   question only if lockstep is chosen.
 * **M17 — Released.** ADR-0032's deferred gate, and last in the phase on purpose: Developer ID
@@ -4442,6 +4499,12 @@ resize remains closed since 2026-09-04, and ADR-0019 remains the settled shader-
     pacing is unmeasured.
 
   These are explicit platform limits, not portability claims.
+* **No person has driven the editor by hand through a whole package** (M15, 2026-09-21). Every
+  workflow proof, on macOS/Metal and on Windows/Vulkan, replayed a recorded action plan into
+  the real widgets through the real `ui.Context`. That exercises the input path, the widgets
+  and the commands behind them; it says nothing about whether a newcomer finds the controls,
+  and no further replay will. Its trigger is somebody sitting down with it for an hour.
+  `editor.md` §13 and `docs/modding/editor.md` say the same thing where an author will see it.
 * **Platform input and change notification are deliberately incomplete.** There is no gamepad
   support, OS file-notification API or IME preedit/control, and text input remains enabled for
   a window's lifetime. Hot reload is implemented by polling package files; no documentation or
@@ -5191,18 +5254,19 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 
 ## Notes for the next session
 
-**Resume point, 2026-09-20:** M0–M14 complete and tagged; M15 Steps 1–8 done but for one run.
-- **M15's design is accepted:** `docs/design/editor.md`, ADR-0042/0043, with a UI and UX modelled
-  on Unreal Engine 5's (§10). Steps 1–4 built the source model, the shared compiler, bounded
-  workspaces, typed revisioned commands with Undo/Redo, conflict-safe per-file saves and
-  retained isolated builds. Step 5 published all of it as `FoundryApi_v4`, 47 additive calls.
-  Steps 6 and 7 built `tools/editor` over those calls and no others. Step 8 proved it from
-  outside: a mod authored by clicking in a directory outside the repository, exported, and
-  loaded by a relocated room through its ordinary user `mods/` path, plus a running C99
-  authoring client. **Do the Windows/Vulkan run before Step 9**, and read Step 8's Resolution
-  for the exact commands and the SHA-256s to compare against.
-- **Nothing M15 is pushed.** Ten local commits sit on top of `m14`, and the owner has not been
-  asked about pushing them.
+**Resume point, 2026-09-21:** M0–M15 complete, tagged and pushed. Nothing is in progress.
+- **M15's record** is `docs/design/editor.md` with ADR-0042/0043 — nine steps, nine
+  Resolutions — and a UI and UX modelled on Unreal Engine 5's (§10). Steps 1–4 built the source
+  model, the shared compiler, bounded workspaces, typed revisioned commands with Undo/Redo,
+  conflict-safe per-file saves and retained isolated builds. Step 5 published all of it as
+  `FoundryApi_v4`, 47 additive calls. Steps 6 and 7 built `tools/editor` over those calls and
+  no others. Step 8 proved it from outside, on both desktop targets. Step 9 closed it.
+- **The editor's useful commands** are `zig build editor-workflow`, `zig build editor-smoke
+  -Dplatform=null -Drhi=null`, and `zig build editor -Drhi=metal -- --source <throwaway pkg>
+  --output <work> [--dependency <x.fpk>]... [--export <file.fpk>] [--plan <file> | --script]`.
+  A `--plan` is one action a line and **belongs beside the package it edits, never in this
+  repository**: it names that package's schemas and fields, and the editor knows none of them.
+- **Do not start M16.** It is trigger-started and owes an ADR before any code.
 - **M13's record** is `docs/design/vulkan.md` with ADR-0037/0038/0039. Vulkan runs on Windows x64,
   and `-Drhi=vulkan` builds, tests and installs there (AGENTS.md, *Vulkan work*).
 - **M12's record** is `docs/design/jobs-and-threading.md` and ADR-0036:

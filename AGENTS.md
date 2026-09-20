@@ -131,7 +131,7 @@ Step 7 published it all as `FoundryApi_v3`: 28 calls after v2's, with changes re
 the host grants writes, and v1 and v2 unchanged. Step 8 built the room's mod screen (M) from
 that table alone, in `samples/room/mods_screen.zig`. Step 9's exit proof passed in ReleaseSafe
 builds driven by real input, on macOS and on Windows through Vulkan, and **M14 is complete**,
-tagged `m14`. **M15 is under way, Steps 1–8 of nine done:** read `docs/design/editor.md` and
+tagged `m14`. **M15 is complete**, tagged `m15`: read `docs/design/editor.md` and
 ADR-0042/0043. Its nine steps cover public authoring and a standalone content-record editor
 whose UI follows Unreal Engine 5's. Step 1 gave the parser opt-in source spans, with
 `data/emit.zig` and `data/splice.zig` to write values back in place. Step 2 added
@@ -149,9 +149,12 @@ list controls, the override action, commands with undo and redo, save reporting,
 confirmation and a revision indicator — over Step 5's calls, **adding none**. Step 8 authored a
 content mod outside the repository through the window, consumed it in a relocated room, ran a
 real C99 authoring client, and added Export to the editor over the call v4 already had; it
-found four defects doing so, including a native loader that still offered only v1–v3.
-**Its Windows/Vulkan run is outstanding** — the PC was busy — and Step 9 must not close M15
-until it has happened. M16–M17 remain unstarted.
+found four defects doing so, including a native loader that still offered only v1–v3. Its
+Windows/Vulkan run followed on 2026-09-21: the same twenty workflow tests, the same
+twenty-five-action null smoke frame for frame, and the same 489-action authoring plan on an
+Intel Arc A750 through Vulkan 1.4, with the two saved `.fdt` files and the exported `.fpk`
+byte-identical to the macOS/Metal run's. Step 9 closed the milestone. M16–M17 remain
+unstarted.
 The bar below is the current one. M13's Step 9 added the checks Vulkan and release work need,
 and M14 added an optimized Windows check to them.
 

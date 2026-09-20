@@ -1,6 +1,6 @@
 # The Foundry editor
 
-**Status:** works as of M15 step 8, 2026-09-20, on macOS/Metal. It is a separate
+**Status:** works as of M15, 2026-09-21, on macOS/Metal and Windows/Vulkan. It is a separate
 application, not part of a game, and it authors content packages: the manifest, the records,
 their fields, and the compiled `.fpk` a player installs. Everything it does it does through
 `FoundryApi_v4` — the same forty-seven calls [`authoring.md`](authoring.md) documents, and no
@@ -200,10 +200,16 @@ your file, kept beside the package it describes.
 * **Depth and size are bounded.** The details panel lays out three levels of nesting and a
   bounded number of rows; a workspace has limits on documents, history and builds, and
   `author_workspace_limits` publishes every one of them.
-* **Windows and Linux** build the editor in every graph. macOS/Metal is the target it has
-  been run on; the Windows/Vulkan run is recorded in
-  [`../design/editor.md`](../design/editor.md)'s Step 8 Resolution, and Linux runtime support
-  is M18 ([ADR-0039](../adr/0039-linux-after-the-first-game.md)).
+* **macOS and Windows are run; Linux is only built.** The editor has been driven end to end
+  on macOS/Metal and on Windows/Vulkan, and the files it saves and the package it exports are
+  byte-identical between them — the evidence is in
+  [`../design/editor.md`](../design/editor.md)'s Step 8 Resolution. Linux builds in every
+  graph and has never been run; runtime support for it is M18
+  ([ADR-0039](../adr/0039-linux-after-the-first-game.md)).
+* **Nobody has used it with their hands for a whole package.** Every workflow proof so far
+  replayed a recorded action plan into the real widgets rather than a person moving a mouse.
+  The controls are real and so is the input path; what is untested is whether a newcomer
+  finds them.
 
 ## Where to go next
 

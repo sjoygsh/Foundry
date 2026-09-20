@@ -471,7 +471,17 @@ work: Step 1's smallest parser-span representation preserving imports, and Step 
 layouts/call count. They may refine this design, not bypass its
 boundaries. Any contradiction requiring a different architecture gets an ADR/Resolution first.
 
-## 14. Implementation order — nine steps, Steps 1–8 done
+**At M15's close, 2026-09-21, every item above is still open, and one is new.** Both named
+implementation details were resolved in their own steps and recorded (Step 1's span tree in
+its Resolution; v4's exact layouts and its count of 47 in Step 5's). Nothing else in this
+section was decided along the way, which was the point of writing it down before starting.
+The new one is the honest limit the exit proof leaves behind: **no person has driven the
+editor through a whole package with their hands.** Every workflow proof, on both platforms,
+replayed a recorded plan into the real widgets through the real `ui.Context`. That tests the
+input path and the controls; it does not test whether a newcomer finds them, and no amount of
+further replay will. Its trigger is somebody sitting down with it.
+
+## 14. Implementation order — nine steps, all done
 
 Each step is one handoff: its tests, bar, Resolution, project-state update and commit, then stop.
 ADR-0042/0043 were accepted on 2026-09-20, before any Step 1 code.
@@ -544,7 +554,7 @@ alone; mutations occur after UI description. No new game-specific schema recogni
 exercise every field shape and recover from refusal; a Metal window confirms real text entry,
 clipping and capture. Unsaved close/refresh can be cancelled without losing work.
 
-### Step 8 — External authorship and consumer proof — done 2026-09-20, macOS/Metal
+### Step 8 — External authorship and consumer proof — done 2026-09-20; Windows/Vulkan 2026-09-21
 
 Perform §11 outside the tree via the real UI, then consume its artifact in the relocated room.
 Exercise comments/imports and failure recovery. Run the editor workflow on Windows/Vulkan as
@@ -555,7 +565,7 @@ well as macOS/Metal, recording runtime evidence and platform limits. Write
 the one compiler, reloaded through public calls, and changed a real sample through its normal
 mod path. Both desktop targets have evidence; an external C client has equivalent capability.
 
-### Step 9 — Close M15
+### Step 9 — Close M15 — done 2026-09-21
 
 Perform the final distinct integration gate and documentation consistency pass. Accept prior
 successful evidence; repeat only what subsequent fixes invalidate. Update PROJECT_STATE,
@@ -1305,11 +1315,88 @@ on Apple M5 the interface held the pointer on 525 of them and the keyboard on 46
 to 221 commands in one frame. The relocated room ran 90 frames on Metal with the mod absent and
 again with it loaded. Both sample releases still stage.
 
-**What is not here: the Windows/Vulkan run.** The owner's Windows machine is their gaming PC,
-and the standing rule is to check it is free first. It was not — a game and its streaming host
-were running — so nothing was built or run there. The editor still compiles in the Windows
-graph on every bar, and `docs/modding/editor.md` records macOS/Metal as the target it has been
-*run* on. The outstanding work is one sitting: overlay the tree on the PC's worktree, then
-`zig build editor-workflow -j2`, `zig build editor-smoke -Dplatform=null -Drhi=null -j2` and
-the same `--plan` over a throwaway package with `-Drhi=vulkan`, comparing the two saved files'
-SHA-256 against the Metal run's. Step 9 must not close M15 before that has happened.
+**The Windows/Vulkan run — deferred on 2026-09-20, done on 2026-09-21.** The owner's Windows
+machine is their gaming PC and it was in use, so the day Step 8 was written nothing was built
+or run there. It has since been. The two commits were overlaid onto a worktree at `origin/main`
+and all twenty-six files hash-checked on both sides, and then:
+
+- `zig build editor-workflow -j2` — **20 of 20**, the same twenty tests as macOS;
+- `zig build editor-smoke -Dplatform=null -Drhi=null -j2` — twenty-five of twenty-five actions
+  in forty-eight frames, pointer 37, keyboard 14, up to 650 draw commands, workspace unchanged:
+  **frame for frame and count for count what macOS reports**;
+- the same 489-action `--plan` over a throwaway package, twice — once on `-Dplatform=null
+  -Drhi=null` and once on `-Drhi=vulkan` against the real adapter.
+
+The Vulkan run came up on SDL3 3.4.14 with the `windows` video driver, `vulkan on 'Intel(R)
+Arc(TM) A750 Graphics' (discrete, Vulkan 1.4), queue family 0, presenting`, 60 Hz windowed,
+two frames in flight, `render2d` on discrete memory. It replayed **489 of 489 actions in 560
+frames**, held the pointer on 525 and the keyboard on 468 and drew up to 221 commands in one
+frame — every number equal to the macOS/Metal window's.
+
+**Four files, three machines-worth of runs, one set of hashes.** `mod.fdt` `d23cfd87…` (125
+bytes), `theme.fdt` `ad75bb91…` (2,186) and the exported `warm-room.fpk` `aad2779f…` (2,986)
+are byte-identical across macOS/null, macOS/Metal, Windows/null and Windows/Vulkan. So are the
+two granted dependencies the two machines compiled for themselves out of the same sources:
+`core.fpk` `e425e32d…` (965) and `room.fpk` `1875948c…` (11,077). The one compiler writes the
+same package on both desktop targets, and the renderer under the editor changes nothing about
+what the editor authors — which is the whole point of the `ui` draw seam (§4.3) and of there
+being one compiler (ADR-0042).
+
+**Platform limits found: none new.** The Vulkan editor window opened in the SSH session rather
+than on the desktop, which is M13's known behaviour for a non-interactive logon and not a
+limit of the editor. `VK_LOADER_LAYERS_DISABLE=~implicit~` and `DISABLE_RTSS_LAYER=1` were set,
+as M13 established they must be for an elevated SSH session. No validation error, no device
+loss, no swapchain recreation, and nothing in the run needed a Windows-specific path. The
+vulkan build took 121 s against the null build's 25 s, all of it compilation.
+
+## Resolution — 2026-09-21, Step 9: M15 is closed
+
+**The gate.** Nothing in Steps 1–8 was re-derived; Step 9's own instruction is to accept prior
+successful evidence and repeat only what later fixes invalidate, and no fix landed after Step
+8's bar. What was repeated is what this step's own changes could touch, plus the one piece of
+evidence Step 8 was missing.
+
+- The bar is green: `zig fmt --check`, `zig build test`, `zig build check` on the native,
+  Metal, Linux-gnu and Windows-gnu graphs, and both samples for thirty headless frames.
+  **72 of 72 build steps, 1,586 of 1,587 headless tests** with the skip it has carried since
+  Step 1, from **1,651 declared**.
+- `zig build editor-workflow`: **20 of 20**. `zig build editor-smoke -Dplatform=null
+  -Drhi=null`: twenty-five of twenty-five actions in forty-eight frames, workspace unchanged.
+- The installed header still compiles as C99 with `-pedantic -Werror` for macOS, Linux-gnu and
+  Windows-gnu and as C++17, for **both** C fixtures — the v4 call sweep
+  (`author_client.c`) and the running authoring mod (`author_mod.c`).
+- Step 8's Windows/Vulkan run, which its Resolution above now records in full.
+- Both sample releases stage; nothing in Steps 8 or 9 touched sample content, an asset kind or
+  a release description, so that is Step 8's evidence accepted rather than repeated.
+
+**The consistency pass, and the one thing it found that was actually wrong.**
+`docs/modding/README.md` still said, under *What is not built yet*, that "a mod *manager* does
+not" work and that "nothing yet lists your mods on screen or lets you drag them around." M14
+made that false four days earlier and nothing had gone back to it. It is rewritten to the
+limit that is genuinely still there — a selection is applied at the **next start**, by
+ADR-0040, and the sandbox has no such screen. This is the predictable failure mode of a
+"what is not built" section: it is written honestly and then quietly becomes a lie, because
+finishing something is not the moment anyone thinks about the page that said it was missing.
+The rest of the pass was status: `README.md`, `AGENTS.md`, `docs/ROADMAP.md`,
+`docs/design/README.md`, `CLAUDE.md` §8 and §9, `docs/design/public-abi.md` and this file.
+
+**What M15's exit asked, and whether it is met.** The roadmap's criterion is "a content
+package authored, saved and reloaded without hand-editing `.fdt`, using only calls published
+in the public ABI before the editor consumes them — an editor with a back door has failed I4
+regardless of what it can do." Both halves hold, and the second is the one worth being
+precise about. `tools/editor/client/` is its own build module whose only import is
+`foundry_api`, a module built from `engine/src/abi/foundry.h`; the build graph grants it no
+engine module, so a back door is not a thing anyone has to remember not to add — it would not
+link. Every authoring call it uses was published in Step 5, one step before Step 6 first
+consumed one, and Steps 6 through 9 added none. The table is frozen at 211 calls.
+
+**Neither deferred item was started.** No networking code exists (M16), and no Developer ID,
+notarization or clean-recipient work was attempted (M17, ADR-0032). ADR-0032's gate is
+untouched: the local artifact is still ad-hoc signed and still claims only relocation.
+
+**What M15 leaves behind, stated as debt rather than as achievement.** The editor has never
+been driven by a human hand through a whole package — every proof on both platforms replayed
+a recorded plan into the real widgets (§13). Two ABI questions stay open on purpose:
+publishing keyboard state, and a mod's scratch file. And the editor is deliberately not a
+scene editor, a schema designer or a host that runs the game; each of those is a milestone,
+not a feature to grow into this one.

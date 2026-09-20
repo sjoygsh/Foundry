@@ -736,7 +736,7 @@ is not Foundry's business.
 **Exit criteria:** a packaged sample where a player — not an environment variable — turns a mod
 on, and preferences survive a schema change without losing what the player chose.
 
-### M15 — Editor: "content is authored in Foundry" — **in progress: Steps 1–8 of 9 done**
+### M15 — Editor: "content is authored in Foundry" — **COMPLETE 2026-09-21 (all nine steps)**
 
 `CLAUDE.md` §9's oldest deferred item, dated M6+. Its shape is already decided: tools are
 Foundry applications (ADR-0011), and the editor is a **re-host of the debug overlay's
@@ -753,7 +753,7 @@ editing or saving; an additive authoring capability must precede the editor cons
 [ADR-0043](adr/0043-source-preserving-authoring-and-explicit-builds.md). Nine steps: source
 ranges/emission; reusable compiler and workspaces; typed edits and history; saves and isolated
 builds; public ABI v4; standalone host and inspection client; authoring workflow; external
-author/consumer proof; closure. Steps 1–7 are done (2026-09-20): the parser's opt-in source spans
+author/consumer proof; closure. Steps 1–7 were done on 2026-09-20: the parser's opt-in source spans
 with `data/emit.zig` and `data/splice.zig`; `engine/src/author/` — the one compiler `fpack`
 and the editor share, the granted dependency set, and bounded workspaces; and revisioned typed
 record commands with exact dependency overrides and bounded Undo/Redo; plus confined per-file
@@ -764,11 +764,16 @@ real-window/null-smoke proofs; and the complete editing workflow — manifest an
 forms, list controls, overrides, history, saves, builds and preview — over those same v4 calls,
 adding none; and the proof outside the tree — a content mod authored by clicking in a directory
 outside the repository, compiled, exported, and loaded by a relocated room through its ordinary
-user `mods/` path, with a real C99 authoring client beside it. **Step 8's Windows/Vulkan run is
-outstanding** and Step 9 does not close M15 without it. The first editor authors records using
-existing schemas, preserves source text, and proves its output through the sample's normal mod
-path. A scene editor, schema designer and executing game/plugin host are
-outside this scope.
+user `mods/` path, with a real C99 authoring client beside it. Step 8's Windows/Vulkan run
+followed on 2026-09-21 — twenty workflow tests, the null smoke frame for frame, and the same
+489-action authoring plan on an Intel Arc A750 through Vulkan 1.4 — and every file it wrote
+matched the macOS/Metal run's bytes. **Step 9 closed the milestone on 2026-09-21.** The exit
+criterion is met in the strong form it was written in: nothing in the editor is a private
+path, because its client compiles against `foundry.h` and imports no engine module, and every
+authoring call it uses was published in v4 one step before the editor consumed it. The first
+editor authors records using existing schemas, preserves source text, and proves its output
+through the sample's normal mod path. A scene editor, schema designer and executing
+game/plugin host are outside this scope, and remain so.
 The editor's UI and UX follow Unreal Engine 5's editor, within M15's fixed regions (§10).
 
 ### M16 — Connected: "it plays with others" — **not started; trigger-started**

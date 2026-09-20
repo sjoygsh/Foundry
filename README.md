@@ -10,8 +10,9 @@ leave behind something that runs.
 
 ## Status
 
-**M0 through M14 complete.** Foundry is a playable, inspectable, fully moddable,
-packageable and hardened 2D engine, and it now has a face of its own.
+**M0 through M15 complete.** Foundry is a playable, inspectable, fully moddable,
+packageable and hardened 2D engine; it has a face of its own, and now an editor that
+authors the content it runs.
 Content packages are discovered and dependency-ordered; native C mods load through the
 versioned public ABI and can add component types, systems and behaviour without engine source
 changes; and **script mods run on the world's tick and can be edited while the game is
@@ -90,14 +91,23 @@ drawn from a theme that is ordinary content
 exit proof passed on macOS and on Windows through Vulkan, in release builds driven by real
 input. Both wrote the same files byte for byte, apart from the volume a slider click chose.
 
-**Under way: M15, the standalone content editor.** Its [nine-step design](docs/design/editor.md)
-is accepted, and Steps 1–6 are done: the parser can say where everything was written; `data`
-can put a value back without disturbing the bytes around it; `author` owns bounded, revisioned
-typed commands, conflict-safe per-file saves and retained isolated builds whose bytes match
-`fpack`; and all of it is published as `FoundryApi_v4`. The standalone host now opens a real
-UE5-modelled inspection window whose separately built, header-only client browses source,
-dependencies, a loaded preview, schemas, assets and diagnostics only through that table. Step 7
-adds the complete editing workflow.
+**M15 is complete: Foundry authors its own content, through its own public API.** All
+[nine steps](docs/design/editor.md) are done. The parser can say where everything was
+written and `data` can put a value back without disturbing the bytes around it, so an edit
+splices one construct and leaves your comments, alignment and imports alone
+([ADR-0043](docs/adr/0043-source-preserving-authoring-and-explicit-builds.md)). `author` at
+L4 owns the one package compiler — `fpack` and the editor are both its clients, so they
+cannot disagree — along with bounded revisioned typed commands, undo and redo, conflict-safe
+per-file saves and retained isolated builds. All of it is published as the additive 47-call
+`FoundryApi_v4`, and the editor is a **separate application built on that table and nothing
+else**: its client is compiled against `foundry.h` alone, so it has no private path into the
+engine ([I4](CLAUDE.md#3-invariants),
+[ADR-0042](docs/adr/0042-authoring-through-the-public-api.md)). The exit proof authored a
+content mod in an empty directory outside this repository entirely by clicking — manifest,
+dependency, an override of the room's theme, a refused value corrected, undo, redo, save,
+build, export — and the relocated room sample loaded it from its ordinary user `mods/`
+directory and changed visibly. A C99 program does the same job through the same calls. It
+ran on macOS/Metal and on Windows/Vulkan, and both wrote the same bytes.
 
 All three modding tiers work — see [docs/modding](docs/modding/). Tier 2 is restricted
 Lua 5.5.1, one VM per package, bounded in memory, instructions and engine calls, reaching the

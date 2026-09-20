@@ -732,6 +732,14 @@ must not settle them opportunistically. Question 1 was resolved by the M7 exit p
 > `author_build_export` had been published and never called; the editor now uses it, with the
 > destination still the host's to name.
 
+> **M15 step 9, 2026-09-21:** M15 is closed at tag `m15` and the table is frozen at
+> `FoundryApi_v4`, 211 calls. Nothing was added, removed or re-signed in Steps 6 through 9,
+> which is the claim the milestone actually rests on: **the editor is a consumer, not a
+> co-author, of its own API**. Two open questions leave M15 still open, recorded here so a
+> later milestone finds them rather than rediscovering them — publishing keyboard state
+> (step 7's note above), and a mod's scratch file (§18, open question 1). Neither is blocking
+> anything today, and neither should be resolved opportunistically by whatever next needs it.
+
 ## 19. Implementation order
 
 Each step ends with something that runs and something that is tested.

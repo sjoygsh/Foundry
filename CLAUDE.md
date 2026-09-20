@@ -568,18 +568,21 @@ Decisions live in `docs/adr/NNNN-short-title.md`, using the template in `docs/ad
 Write an ADR when a choice constrains future work, is expensive to reverse, or will look
 arbitrary to a future session. Do not write one for routine implementation choices.
 
-**M15 (accepted 2026-09-20):** ADR-0042 and ADR-0043 are in the §4.1 table, and
-[editor.md](docs/design/editor.md) is the nine-step plan. Its `author` module is in §4.3's
-layer graph, since Step 2 added it to the build; Step 3 added its revisioned typed commands and
-bounded exact-byte history; Step 4 added conflict-safe per-file saves, stable validation/build
-snapshots and retained private candidates. Step 5 published all of it as `FoundryApi_v4`, 47
-additive calls beside v1–v3, and moved `fpack` onto that table. Step 6 added the standalone
-host, ordinary `foundry:editor` content and a separately built header-only inspection client;
-its source, dependency, preview, schema, asset and diagnostic browsers use only v4. Step 7
-completed the editing workflow — forms, list controls, overrides, history, saves, builds and
-preview — over those same calls, adding none. Step 8 authored a content mod outside the
-repository through the window, consumed it in a relocated sample and ran an external C99
-authoring client; its Windows/Vulkan run is outstanding. Step 9 closes the milestone.
+**M15 (complete 2026-09-21):** ADR-0042 and ADR-0043 are in the §4.1 table, and
+[editor.md](docs/design/editor.md) is the nine-step plan, all nine now walked. Its `author`
+module is in §4.3's layer graph, since Step 2 added it to the build; Step 3 added its
+revisioned typed commands and bounded exact-byte history; Step 4 added conflict-safe per-file
+saves, stable validation/build snapshots and retained private candidates. Step 5 published all
+of it as `FoundryApi_v4`, 47 additive calls beside v1–v3, and moved `fpack` onto that table.
+Step 6 added the standalone host, ordinary `foundry:editor` content and a separately built
+header-only inspection client; its source, dependency, preview, schema, asset and diagnostic
+browsers use only v4. Step 7 completed the editing workflow — forms, list controls, overrides,
+history, saves, builds and preview — over those same calls, adding none. Step 8 authored a
+content mod outside the repository through the window, consumed it in a relocated sample and
+ran an external C99 authoring client, on macOS/Metal and Windows/Vulkan with identical bytes.
+Step 9 closed the milestone at tag `m15`. **The durable result is that Foundry's own editor
+has no private path**: its client is compiled against `foundry.h` and imports no engine
+module, which is I4 held to in the one place it is most tempting to bend.
 
 ---
 
@@ -591,7 +594,7 @@ milestone named below is where `docs/ROADMAP.md` now places it.
 
 | Decision | Due | Notes |
 | --- | --- | --- |
-| Separate editor application | **M15, design accepted 2026-09-20** | In-process debug overlay first; the editor re-hosts its introspection (ADR-0025). [editor.md](docs/design/editor.md) specifies nine steps under ADR-0042/0043; its UI and UX follow Unreal Engine 5's editor. |
+| Separate editor application | **Done in M15** (2026-09-21) | In-process debug overlay first; the editor re-hosts its introspection (ADR-0025). [editor.md](docs/design/editor.md)'s nine steps under ADR-0042/0043 are all done; its UI and UX follow Unreal Engine 5's editor. What it deliberately is *not* — a scene editor, a schema designer, a host that runs the game — has no date and needs its own milestone. |
 | Second graphics backend | **Done in M13** (2026-09-19) | **Vulkan (ADR-0033)**, built to ADR-0037/0038 in [vulkan.md](docs/design/vulkan.md)'s ten steps. Windows x64 is a runtime claim on the tested machine, with its limits recorded there. Linux left M13 by ADR-0039 and is M18's. Device recovery stays an open `rhi.md` question. |
 | Shader cross-compiler vs. hand-written variants | **Decided in M13** (ADR-0038, 2026-09-14) | Hand-written GLSL variants for the two existing shader pairs, compiled to SPIR-V with pinned SDK tools. ADR-0015's future material/mod shader constraint remains. |
 | Job system / threading model | **Done in M12** (was dated post-M5) | **Decided by ADR-0036 and implemented, 2026-09-14** — explicit `core.Jobs`, fork-join over data-determined chunks, systems kept in order, nothing in the ABI. What it deliberately left out — parallel system scheduling, task graphs, a render thread — has no date: each waits on a measured trigger in `docs/design/jobs-and-threading.md` §9. |

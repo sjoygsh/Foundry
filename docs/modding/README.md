@@ -56,13 +56,17 @@ written against the older one.
 
 Being honest about this is more useful than a feature list.
 
-* **Discovery, manifests and load order work; a mod *manager* does not.** Every package
-  carries a `foundry:mod` record naming itself ([ADR-0027](../adr/0027-mods-are-content-packages.md)),
-  a host reads every package in its content directory, and the order is computed from what the
-  manifests say — a stable topological sort that keeps your ordering wherever the dependencies
-  permit. What is missing is the *interface*: nothing yet lists your mods on screen or lets you
-  drag them around. The sandbox reads an environment variable of content IDs, which is enough to
-  try one.
+* **A mod takes effect at the next start, not while the game runs.** Discovery, manifests,
+  load order and the manager itself all work as of M14: every package carries a `foundry:mod`
+  record naming itself ([ADR-0027](../adr/0027-mods-are-content-packages.md)), a host reads
+  every package in its content directory, the order is a stable topological sort that keeps
+  your ordering wherever the dependencies permit, and the room sample has a screen (**M**)
+  that lists your mods, reorders them, shows record-level conflicts and saves an ordered
+  profile. What that screen does *not* do is apply the change immediately: a selection is
+  written to a profile and read at the next launch, deliberately
+  ([ADR-0040](../adr/0040-ordered-profiles-applied-at-next-start.md)), because loading and
+  unloading content underneath a running world is a different problem from choosing it. The
+  sandbox has no such screen and reads an environment variable of content IDs instead.
 * **`@patch` and `@remove` parse and are then refused.** Their syntax is frozen, deliberately
   and early, so that content written later does not have to change. Their semantics are not
   implemented, and a mod using one is told so rather than having it quietly ignored —
