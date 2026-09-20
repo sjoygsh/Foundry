@@ -727,7 +727,7 @@ pub fn build(b: *std.Build) void {
     // A named bounded null run, separate from `test`: it is an application exit proof, not
     // a unit test, and its selected backend is part of what it proves. The ordinary check
     // graph still compiles this same executable for every configured target below.
-    const editor_smoke_step = b.step("editor-smoke", "Inspect and preview editor content in a bounded null run");
+    const editor_smoke_step = b.step("editor-smoke", "Replay the editor walkthrough over editor content in a bounded null run");
     if (platform_backend != .null or rhi_backend != .null) {
         editor_smoke_step.dependOn(&b.addFail("`editor-smoke` requires -Dplatform=null -Drhi=null").step);
     } else if (core_compiled) |compiled| {
@@ -739,7 +739,10 @@ pub fn build(b: *std.Build) void {
         smoke.addArg(".zig-cache/editor-smoke");
         smoke.addArg("--dependency");
         smoke.addFileArg(compiled.fpk);
-        smoke.addArgs(&.{ "--preview", "--frames", "3" });
+        // `--script` replays the deterministic walkthrough instead of reading a device, so
+        // the null proof exercises clicks, tab changes and text entry rather than three
+        // static frames. The walk selects and filters; it issues no command that writes.
+        smoke.addArgs(&.{ "--preview", "--script" });
         smoke.expectExitCode(0);
         editor_smoke_step.dependOn(&smoke.step);
     } else {
@@ -934,6 +937,25 @@ pub fn build(b: *std.Build) void {
     const editor_client_tests = b.addTest(.{ .root_module = editor_client_mod });
     check_step.dependOn(&editor_client_tests.step);
     test_step.dependOn(&b.addRunArtifact(editor_client_tests).step);
+
+    // The authoring workflow, driven by deterministic input through the real table.  A
+    // module of its own so the fixture's schema names — which production editor code may
+    // not know (`editor.md` §11) — never reach the shipped application.
+    const editor_workflow_mod = b.createModule(.{
+        .root_source_file = b.path("tools/editor/workflow_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    for ([_][]const u8{ "abi", "author", "core", "data", "mod", "platform", "ui" }) |name| {
+        editor_workflow_mod.addImport(name, modules.get(name).?);
+    }
+    editor_workflow_mod.addImport("editor_client", editor_client_mod);
+    const editor_workflow_tests = b.addTest(.{ .root_module = editor_workflow_mod });
+    check_step.dependOn(&editor_workflow_tests.step);
+    const run_editor_workflow = b.addRunArtifact(editor_workflow_tests);
+    test_step.dependOn(&run_editor_workflow.step);
+    b.step("editor-workflow", "Drive the editor's authoring workflow with deterministic input")
+        .dependOn(&run_editor_workflow.step);
 
     const editor_boundary_mod = b.createModule(.{
         .root_source_file = b.path("tools/editor/client/boundary_test.zig"),

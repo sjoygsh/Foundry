@@ -456,6 +456,8 @@ Do not add CI or a general editor release/update system to close this milestone.
 Unchanged open questions: native unloading/hot reload, mod-private storage and per-mod tables;
 network/remote tooling; GPU/per-system profiling; pause/single-step and its audio/timestep policy;
 keyboard/gamepad navigation, docking, popups, multiline widgets and content-authored layout;
+**publishing keyboard state** — the table reports `ui_wants_keyboard` and nothing else, so a
+client cannot bind a shortcut for itself and the editor's host supplies the intent (Step 7);
 `.fdt` multiline syntax, external-editor grammar and whole-file formatter; patch/remove
 semantics and per-save package lists. M15 does not need these to meet its exit.
 
@@ -469,7 +471,7 @@ work: Step 1's smallest parser-span representation preserving imports, and Step 
 layouts/call count. They may refine this design, not bypass its
 boundaries. Any contradiction requiring a different architecture gets an ADR/Resolution first.
 
-## 14. Implementation order — nine steps, Steps 1–5 done
+## 14. Implementation order — nine steps, Steps 1–7 done
 
 Each step is one handoff: its tests, bar, Resolution, project-state update and commit, then stop.
 ADR-0042/0043 were accepted on 2026-09-20, before any Step 1 code.
@@ -532,7 +534,7 @@ existing public introspection. Wire explicit roots and preview state without pri
 **Exit:** a window and bounded null run browse a workspace and loaded preview; the negative
 implementation-import probe fails as intended; all target graphs compile the new application.
 
-### Step 7 — Complete the authoring workflow
+### Step 7 — Complete the authoring workflow — done 2026-09-20
 
 Build the manifest and typed record forms, list controls, read-only override action, commands,
 history, per-file/Save All reporting, confirmations and revision indicators. Use Step 5's table
@@ -1110,3 +1112,95 @@ sample runs.
 field editor, list controls, override action, save/build buttons, confirmation state or
 deterministic input script. Step 7 builds those solely over the already-frozen v4 table and
 performs mutations after UI description; Step 6 adds no new ABI call.
+
+## Resolution — 2026-09-20, Step 7: the complete authoring workflow
+
+**The client became an editor, and nothing below it became a shortcut.** Step 6's inspector
+gained the manifest and typed record forms, list controls, the read-only override action,
+commands with undo and redo, per-file and Save All reporting, in-window confirmation and a
+revision indicator. Every one of them is a call `FoundryApi_v4` already published in Step 5:
+**no ABI call was added, and no v1–v4 declaration changed.**
+
+**Read, describe, then act — one command per frame.** A click is recorded while the frame is
+being described and carried out once `ui_end` has returned. It has to be: a command re-parses
+the document, which ends every walk and invalidates every borrowed string and node handle the
+description is still holding (§5). One accepted UI action is one command, never one per
+character, so Undo steps by edits rather than by keystrokes (§6).
+
+**Selection is identity, never a handle.** The client stores a document index, a record's
+content id and a field path; it re-resolves them each frame. A node handle dies at the next
+accepted command and is not kept across one. Widget identity is a hash of the *path* rather
+than a row number, which is what lets a text field keep focus and its caret while a sibling is
+added above it.
+
+**Typed text stays in the form until it can form a valid command.** Each scalar owns a buffer
+seeded from the canonical spelling at the current revision. Apply sends it; a refusal leaves
+the file and the buffer exactly as they were, so the author corrects what they typed instead of
+retyping it. The buffer is reseeded whenever the revision moves, so an accepted value comes
+back as the bytes a Save would write.
+
+**Shortcuts are host input, and that is a recorded limit rather than a private path.** The
+public table publishes no keyboard state — `ui_wants_keyboard` says only that something is
+eating typing — so a client cannot bind Ctrl+S for itself, and neither could a native mod. The
+application reads its own keyboard and hands the client an intent, in the same breath as the
+pointer snapshot it already supplies; every action that intent starts is an ordinary v4 call.
+Publishing key state is now an open question in §13 rather than an assumption.
+
+**Three gaps in `author` that only a form could expose, all fixed.**
+
+- *A workspace's identity came only from the manifest on disk.* An editor that created a
+  package never learned its name, because `open` reads `mod.fdt` from the filesystem and the
+  manifest had just been typed. The draft now supplies it: `edit.State` records the package's
+  name and version from the parse `prepare` and `commit` already make, and the workspace
+  prefers that over what was on disk when it opened.
+- *Creating a manifest changes the package's namespace.* Every document had been parsed, and
+  every schema registered, under the old one, so the very next command could not find a schema
+  plainly declared in the file it was editing. `edit.State.reprepare` rebuilds the registry and
+  the classification under the new namespace, keeping the history and the revision, and runs
+  *before* a command rather than after the one that caused it — so an allocation failure leaves
+  the workspace exactly as it was.
+- *`abi` published no Zig names for the v4 authoring structs.* A Zig host had to reach into
+  `abi/author_types.zig` by path, which is the sort of private route the module boundary
+  exists to prevent. They are now exported from `abi` beside the handles.
+
+**The editor's whole vocabulary is content.** `foundry:editor.screen` grew from seventeen
+fields to sixty-eight, one per string the client draws, and the client's test states the shape
+it expects of them. A translation is still a package override.
+
+**Deterministic input is one runner, used twice.** `tools/editor/script.zig` replays a list of
+actions frame by frame, aiming at rectangles the client recorded while describing itself, so a
+control that moves takes its script with it and a control that vanished makes its step a no-op.
+The application's own `--script` walk is content-agnostic — it selects, filters, switches tabs
+and types, and knows no schema, record or field by name (§11). The workflow that creates and
+edits named records is test code, where knowing a fixture's names is allowed. `editor-smoke`
+now replays the walk instead of describing three static frames.
+
+**Left for Step 8.** The external authorship proof: §11's two linked proofs, performed outside
+the tree through the real UI, consumed by a relocated sample through its normal mod path, and
+run on Windows/Vulkan as well as macOS/Metal. Step 7 adds no new ABI call and no `docs/modding`
+workflow guide; that guide is written from Step 8's session.
+
+**Evidence.** Thirteen headless workflow tests drive the real service, the real `abi.Host`, the
+real table and the real client with synthetic pointer and keyboard input: a package created and
+filled entirely by clicking; every field shape edited through its own control, including a
+`u64` of 9007199254740993 that survives a round trip; reset-to-default on an optional; a list
+started, appended to twice, reordered and shortened; a nested block added and filled; a refused
+value leaving both file and buffer untouched and then corrected in place; a duplicate id
+refused; undo, redo and a new edit clearing the redo stack; Build disabled while dirty and
+accepted after Save; Reload activating a preview whose build then refuses to be released;
+close and discard confirmations cancelled without losing a draft; a dependency definition
+overridden at full precision with its absent optional still absent; a short viewport still
+describing all eleven rows; and the application's own walkthrough leaving the package
+byte-identical; `zig build editor-workflow` runs them on their own. Two more, in
+`author/workspace.zig`, guard the service fixes where they live: a manifest written in a
+workspace names its package before anything is saved, and creating one re-reads every schema
+under the package's new namespace. The bar passes **1,571 of 1,572** headless tests, with the
+existing skip, from **1,639 declared**. The null smoke replayed all twenty-five actions in
+forty-eight frames, held the pointer on 37 of them and the keyboard on 14, drew up to 639
+commands in one frame, and left the workspace unchanged. A real SDL3/Metal window on Apple
+silicon replayed the same walk over a package outside the repository for 240 frames — 34
+pointer frames, 14 keyboard, up to 177 draw commands — and left that package unchanged too. The installed header still compiles as C99
+on the three targets and as C++17, and both sample releases still stage. Four mutations —
+dropping the namespace resynchronisation, sending a scalar under the wrong declared type,
+letting Build run while the workspace is dirty, and closing without asking about unsaved work
+— each failed a check and were restored.

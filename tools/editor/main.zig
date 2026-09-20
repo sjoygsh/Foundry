@@ -1,9 +1,14 @@
 //! Foundry's standalone content-record editor host (`docs/design/editor.md` §10).
 //!
-//! The host owns paths, grants, windows, rendering and preview publication.  Its client is a
-//! separate module that receives only a pointer to `FoundryApi_v4`; no host value or private
-//! handle crosses that seam.  M15 Step 6 is deliberately inspection-only.  The command/form
-//! workflow is Step 7.
+//! The host owns paths, grants, windows, rendering, keyboard shortcuts and preview
+//! publication.  Its client is a separate module that receives only a pointer to
+//! `FoundryApi_v4`; no host value or private handle crosses that seam.
+//!
+//! **Shortcuts are host input, not a Foundry capability.**  The public table publishes no
+//! keyboard state — a native mod cannot read a key today — so a client cannot bind Ctrl+S
+//! for itself.  The application reads its own keyboard and hands the client an intent, in
+//! the same breath as the pointer snapshot it already supplies; every action that intent
+//! starts is still an ordinary v4 call.  Publishing key state stays open (`editor.md` §13).
 
 const std = @import("std");
 const abi = @import("abi");
@@ -15,26 +20,28 @@ const data = @import("data");
 const editor_client = @import("editor_client");
 const mod = @import("mod");
 const platform = @import("platform");
+const preview_mod = @import("preview.zig");
 const render2d = @import("render2d");
 const rhi = @import("rhi");
+const script = @import("script.zig");
 const ui = @import("ui");
 
 pub const std_options = app.std_options;
 
 const log = core.log.scoped(.editor);
-const max_preview_package_bytes = 16 * 1024 * 1024;
-const max_preview_total_bytes = 64 * 1024 * 1024;
 
 const usage =
     \\foundry-editor — inspect a Foundry content workspace
     \\
     \\usage: foundry-editor --source <package-dir> --output <work-dir>
-    \\                      [--dependency <file.fpk>] [--preview] [--frames <count>]
+    \\                      [--dependency <file.fpk>] [--preview] [--script]
+    \\                      [--frames <count>]
     \\
     \\  --source <dir>          host-granted package source root
     \\  --output <dir>          separate host-granted private candidate root
     \\  --dependency <file>     package granted to the workspace (repeatable, ordered)
     \\  --preview               build and activate once through FoundryApi_v4
+    \\  --script                replay the deterministic walkthrough, then exit
     \\  --frames <count>        exit after a bounded number of frames; never saves
     \\  --help                  this text
     \\
@@ -44,6 +51,7 @@ const Args = struct {
     source: []const u8 = "",
     output: []const u8 = "",
     preview: bool = false,
+    script: bool = false,
     frames: ?u64 = null,
     dependencies: std.ArrayListUnmanaged(author.DependencySource) = .empty,
 };
@@ -146,7 +154,7 @@ fn run(
     var context: ui.Context = .init(gpa, fallbackStyle(fallback));
     defer context.deinit();
 
-    var preview: PreviewState = .init(gpa, os);
+    var preview: preview_mod.State = .init(gpa, os);
     defer preview.deinit();
     var service: author.Service = .init(gpa, os, .{});
     defer service.deinit();
@@ -159,7 +167,7 @@ fn run(
             .output_root = args.output,
             .grants = .{ .edit = true, .save = true, .build = true },
         },
-        .preview = .{ .ctx = &preview, .activate = PreviewState.activate },
+        .preview = .{ .ctx = &preview, .activate = preview_mod.State.activate },
     }, &diagnostics) catch |err| {
         for (diagnostics.items.items) |entry| log.err("workspace: {s}", .{entry.message});
         return err;
@@ -176,15 +184,41 @@ fn run(
     defer host.unbind();
 
     const public = abi.TableOf(abi.Host).getApi(abi.api_version_4) orelse return error.ApiUnavailable;
-    var client = try editor_client.Client.init(@ptrCast(@alignCast(public)));
+    // The client is large enough — sixty-eight screen strings, twenty-four field buffers —
+    // that it belongs on the heap rather than in this frame.  The host owns its memory, as
+    // it owns everything else the client is handed.
+    const client = try gpa.create(editor_client.Client);
+    defer gpa.destroy(client);
+    client.* = try editor_client.Client.init(@ptrCast(@alignCast(public)));
     if (args.preview) {
         const result = client.requestPreview();
         if (result != 0) log.warn("preview activation returned {d}", .{result});
     }
 
-    const frame_limit: ?u64 = if (args.frames) |limit| limit else if (platform.backend == .null) 3 else null;
+    var replay: ?script.Runner = if (args.script) .init(&script.walkthrough) else null;
+    const scripted_frames: ?u64 = if (args.script) script.frames(&script.walkthrough) else null;
+    const frame_limit: ?u64 = args.frames orelse
+        scripted_frames orelse
+        (if (platform.backend == .null) @as(?u64, 3) else null);
+
+    // What the UI actually captured while it ran, which is the part a frame count cannot
+    // show: a windowed proof has to demonstrate that typing reached a field and that the
+    // pointer was taken by a control rather than falling through (`editor.md` §12).
+    var pointer_frames: u64 = 0;
+    var keyboard_frames: u64 = 0;
+    var peak_commands: usize = 0;
+
     var typed: [32]platform.event.TextInput = undefined;
-    while (!engine.shouldQuit()) {
+    while (true) {
+        // The window manager's close is the editor's Close command, not a shortcut past
+        // it: unsaved work raises the in-window confirmation and the loop keeps running
+        // until the author answers it (`editor.md` §6).
+        if (engine.shouldQuit()) {
+            client.requestClose();
+            if (client.quit_requested) break;
+            engine.quit = false;
+        }
+        if (client.quit_requested) break;
         engine.beginFrame();
         var typed_len: usize = 0;
         while (engine.nextEvent()) |event| switch (event) {
@@ -198,14 +232,24 @@ fn run(
         const info = engine.windowInfo();
         const width: f32 = if (info) |window| @floatFromInt(window.logical_size.width) else 1440;
         const height: f32 = if (info) |window| @floatFromInt(window.logical_size.height) else 900;
-        host.ui_input = .{
-            .keys = engine.input,
-            .pointer = engine.input.mouse.position,
-            .wheel = engine.input.mouse.wheel,
-            .text = typed[0..typed_len],
-            .frame = engine.frame_index,
-        };
-        client.frame(.{ .x = 0, .y = 0, .w = width, .h = height });
+        // A replay substitutes for the device entirely, so a scripted run is the same on
+        // every machine and cannot be perturbed by a stray mouse.
+        host.ui_input = if (replay) |*runner|
+            runner.next(&client.targets, engine.frame_index)
+        else
+            .{
+                .keys = engine.input,
+                .pointer = engine.input.mouse.position,
+                .wheel = engine.input.mouse.wheel,
+                .text = typed[0..typed_len],
+                .frame = engine.frame_index,
+            };
+        const shortcut: editor_client.Shortcut = if (replay != null) .none else shortcutOf(engine.input);
+        client.frame(.{ .x = 0, .y = 0, .w = width, .h = height }, shortcut);
+
+        if (context.wantsPointer()) pointer_frames += 1;
+        if (context.wantsKeyboard()) keyboard_frames += 1;
+        peak_commands = @max(peak_commands, context.list.commands.items.len);
 
         const scale: f32 = if (info) |window| window.scale else 1;
         try renderer.begin(.{
@@ -226,6 +270,20 @@ fn run(
         if (frame_limit) |limit| if (engine.frame_index >= limit) break;
         if (platform.backend == .null) engine.os.sleep(.fromMillis(1));
     }
+
+    if (replay) |runner| log.info(
+        "replayed {d} of {d} scripted actions in {d} frames; workspace {s}",
+        .{
+            runner.step,
+            script.walkthrough.len,
+            engine.frame_index,
+            if (client.isDirty()) "has unsaved changes" else "is unchanged",
+        },
+    );
+    log.info(
+        "the interface held the pointer on {d} frame(s) and the keyboard on {d}, and drew up to {d} commands in one",
+        .{ pointer_frames, keyboard_frames, peak_commands },
+    );
 
     const seen = client.inspect();
     log.info(
@@ -252,6 +310,24 @@ fn fallbackStyle(font: app.UiFont) ui.Style {
     };
 }
 
+/// The editor's keyboard shortcuts, which are UE5's.
+///
+/// `super` on macOS is Command and Control elsewhere, and `platform` already reports that
+/// distinction, so one table serves both without a target conditional.
+fn shortcutOf(input: platform.InputSnapshot) editor_client.Shortcut {
+    const modifier = if (comptime is_apple) input.modifiers.super else input.modifiers.ctrl;
+    if (!modifier) return .none;
+    if (input.wasPressed(.s)) return if (input.modifiers.shift) .save_all else .save;
+    if (input.wasPressed(.z)) return if (input.modifiers.shift) .redo else .undo;
+    if (input.wasPressed(.y)) return .redo;
+    if (input.wasPressed(.b)) return .build;
+    if (input.wasPressed(.r)) return .validate;
+    if (input.wasPressed(.w)) return .close;
+    return .none;
+}
+
+const is_apple = @import("builtin").target.os.tag.isDarwin();
+
 fn applyWindowIcon(gpa: std.mem.Allocator, engine: *app.Engine) void {
     const bytes = @embedFile("content/icon.png");
     var image = asset.png.decode(gpa, bytes, .{ .max_dimension = platform.WindowIcon.max_dimension }) catch |err| {
@@ -267,158 +343,6 @@ fn applyWindowIcon(gpa: std.mem.Allocator, engine: *app.Engine) void {
     }) catch |err| log.warn("window icon was refused ({t})", .{err});
 }
 
-/// One host-owned preview publication.  Candidate bytes are confined beneath the output
-/// grant and loaded into fresh registry/store objects before the old publication is touched.
-const PreviewState = struct {
-    gpa: std.mem.Allocator,
-    os: *platform.os.Os,
-    active: ?*Loaded = null,
-    generation: u64 = 0,
-
-    fn init(gpa: std.mem.Allocator, os: *platform.os.Os) PreviewState {
-        return .{ .gpa = gpa, .os = os };
-    }
-
-    fn deinit(self: *PreviewState) void {
-        if (self.active) |loaded| loaded.destroy(self.gpa);
-        self.* = undefined;
-    }
-
-    fn activate(ctx: ?*anyopaque, request: author.PreviewRequest) ?author.Publication {
-        const self: *PreviewState = @ptrCast(@alignCast(ctx orelse return null));
-        const next = Loaded.create(self.gpa, self.os, request) catch |err| {
-            log.warn("preview candidate was refused ({t})", .{err});
-            return null;
-        };
-        const previous = self.active;
-        self.active = next;
-        self.generation +%= 1;
-        if (self.generation == 0) self.generation = 1;
-        if (previous) |old| old.destroy(self.gpa);
-        return .{
-            .content_generation = self.generation,
-            .store = &next.store,
-            .registry = &next.registry,
-        };
-    }
-};
-
-const Loaded = struct {
-    bytes: [][]u8,
-    ids: []core.ContentId,
-    registry: data.Registry,
-    store: data.Store,
-
-    fn create(
-        gpa: std.mem.Allocator,
-        os: *platform.os.Os,
-        request: author.PreviewRequest,
-    ) !*Loaded {
-        const count: usize = @as(usize, request.dependency_count) + 1;
-        const self = try gpa.create(Loaded);
-        errdefer gpa.destroy(self);
-        self.* = .{
-            .bytes = try gpa.alloc([]u8, count),
-            .ids = try gpa.alloc(core.ContentId, count),
-            .registry = .init(gpa, .default),
-            .store = .init(gpa, .default),
-        };
-        var read_count: usize = 0;
-        errdefer {
-            self.store.deinit(gpa);
-            self.registry.deinit(gpa);
-            for (self.bytes[0..read_count]) |bytes| gpa.free(bytes);
-            gpa.free(self.ids);
-            gpa.free(self.bytes);
-        }
-
-        var arena: core.Arena = .init(gpa);
-        defer arena.deinit();
-        const a = arena.allocator();
-        const candidates = try a.alloc(mod.Candidate, count);
-        const enabled = try a.alloc(core.ContentId, count);
-        const labels = try a.alloc([]const u8, count);
-        var total: usize = 0;
-
-        for (0..request.dependency_count) |index| {
-            const path = try std.fmt.allocPrint(a, "{s}/dependencies/{d}/package.fpk", .{ request.candidate, index });
-            try readCandidate(gpa, os, request.output_root, path, &self.bytes[index], &total);
-            read_count += 1;
-            var reader = try data.fpk.Reader.open(gpa, self.bytes[index], .default);
-            defer reader.deinit();
-            const manifest = try mod.manifest.read(a, &reader);
-            self.ids[index] = manifest.id;
-            enabled[index] = manifest.id;
-            labels[index] = path;
-            candidates[index] = .{
-                .manifest = manifest,
-                .base_dir = request.output_root,
-                .file = path,
-                .root = "",
-                .origin = .installed,
-            };
-        }
-
-        const own = count - 1;
-        try readCandidate(gpa, os, request.output_root, request.package, &self.bytes[own], &total);
-        read_count += 1;
-        var own_reader = try data.fpk.Reader.open(gpa, self.bytes[own], .default);
-        defer own_reader.deinit();
-        const own_manifest = try mod.manifest.read(a, &own_reader);
-        self.ids[own] = own_manifest.id;
-        enabled[own] = own_manifest.id;
-        labels[own] = request.package;
-        candidates[own] = .{
-            .manifest = own_manifest,
-            .base_dir = request.output_root,
-            .file = request.package,
-            .root = request.assets,
-            .origin = .installed,
-        };
-
-        var diagnostics: data.Diagnostics = .init(gpa, .default);
-        defer diagnostics.deinit(gpa);
-        var resolution = try mod.resolve(gpa, candidates, .{
-            .enabled = enabled,
-            .required = &.{own_manifest.id},
-        }, &diagnostics);
-        defer resolution.deinit();
-        for (diagnostics.items.items) |entry| log.warn("preview: {s}", .{entry.message});
-
-        for (resolution.order) |entry| {
-            const at = for (self.ids, 0..) |candidate_id, index| {
-                if (candidate_id.eql(entry.id)) break index;
-            } else return error.ContentInvalid;
-            _ = try self.store.add(gpa, labels[at], self.bytes[at], &self.registry, &diagnostics);
-        }
-        return self;
-    }
-
-    fn destroy(self: *Loaded, gpa: std.mem.Allocator) void {
-        self.store.deinit(gpa);
-        self.registry.deinit(gpa);
-        for (self.bytes) |bytes| gpa.free(bytes);
-        gpa.free(self.ids);
-        gpa.free(self.bytes);
-        gpa.destroy(self);
-    }
-};
-
-fn readCandidate(
-    gpa: std.mem.Allocator,
-    os: *platform.os.Os,
-    root: []const u8,
-    relative: []const u8,
-    out: *[]u8,
-    total: *usize,
-) !void {
-    const read = try os.readFileConfined(gpa, root, relative, max_preview_package_bytes);
-    errdefer gpa.free(read.bytes);
-    total.* = std.math.add(usize, total.*, read.bytes.len) catch return error.OverBudget;
-    if (total.* > max_preview_total_bytes) return error.OverBudget;
-    out.* = read.bytes;
-}
-
 const ArgError = error{ HelpRequested, BadUsage } || std.Io.Writer.Error || std.mem.Allocator.Error;
 
 fn parseArgs(gpa: std.mem.Allocator, argv: []const []const u8, writer: *std.Io.Writer) ArgError!Args {
@@ -430,6 +354,8 @@ fn parseArgs(gpa: std.mem.Allocator, argv: []const []const u8, writer: *std.Io.W
         if (std.mem.eql(u8, arg, "--help")) return error.HelpRequested;
         if (std.mem.eql(u8, arg, "--preview")) {
             args.preview = true;
+        } else if (std.mem.eql(u8, arg, "--script")) {
+            args.script = true;
         } else if (std.mem.eql(u8, arg, "--source")) {
             args.source = try take(argv, &index, arg, writer);
         } else if (std.mem.eql(u8, arg, "--output")) {
@@ -483,4 +409,9 @@ test "source and output grants are required" {
     var buffer: [256]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buffer);
     try std.testing.expectError(error.BadUsage, parseArgs(std.testing.allocator, &.{ "--source", "only" }, &writer));
+}
+
+test {
+    _ = preview_mod;
+    _ = script;
 }

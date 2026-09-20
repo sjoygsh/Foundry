@@ -131,7 +131,7 @@ Step 7 published it all as `FoundryApi_v3`: 28 calls after v2's, with changes re
 the host grants writes, and v1 and v2 unchanged. Step 8 built the room's mod screen (M) from
 that table alone, in `samples/room/mods_screen.zig`. Step 9's exit proof passed in ReleaseSafe
 builds driven by real input, on macOS and on Windows through Vulkan, and **M14 is complete**,
-tagged `m14`. **M15 is under way, Steps 1–6 of nine done:** read `docs/design/editor.md` and
+tagged `m14`. **M15 is under way, Steps 1–7 of nine done:** read `docs/design/editor.md` and
 ADR-0042/0043. Its nine steps cover public authoring and a standalone content-record editor
 whose UI follows Unreal Engine 5's. Step 1 gave the parser opt-in source spans, with
 `data/emit.zig` and `data/splice.zig` to write values back in place. Step 2 added
@@ -144,7 +144,10 @@ Step 5 published the additive 47-call `FoundryApi_v4` authoring tail and moved `
 same service. Step 6 added `tools/editor`: an explicit-root host, ordinary editor content and
 icon, a separately built header-only client that browses workspace/dependency/preview/schema/
 asset/diagnostic state only through the public table, plus real-window, null-smoke and negative
-import proofs. Step 7 is next. M16–M17 remain unstarted.
+import proofs. Step 7 turned that inspector into the editor: manifest and typed record forms,
+list controls, the override action, commands with undo and redo, save reporting, in-window
+confirmation and a revision indicator — over Step 5's calls, **adding none**. Step 8 is next:
+the external authorship proof, on both desktop targets. M16–M17 remain unstarted.
 The bar below is the current one. M13's Step 9 added the checks Vulkan and release work need,
 and M14 added an optimized Windows check to them.
 
@@ -201,6 +204,19 @@ zig c++ -x c++ -std=c++17 -Wall -Wextra -Werror -Izig-out/include -c $C -o /dev/
 This is not ceremony. M7's step 4 found three defects this way and none of them by any other
 route: a type a C mod had no way to construct, a header that did not compile as C++ at all,
 and an agreement that stopped firing.
+
+When the editor's client, host or content changed, also drive it. The workflow tests are in
+`zig build test`; the other two are application proofs and are not, and the windowed one is
+the only thing that shows text entry, DPI and clipping actually working (`editor.md` §12):
+
+```sh
+zig build editor-workflow                              # deterministic input, no window
+zig build editor-smoke -Dplatform=null -Drhi=null      # the scripted walk, headless
+zig build editor -Drhi=metal -- --source <pkg> --output <work> --script --frames 240
+```
+
+**Point `--source` at a throwaway package outside the repository.** The walk writes nothing,
+but the editor is granted edit, save and build authority over whatever it is given.
 
 When a sample's content, a package's asset kinds or a release description changed, also stage
 both releases (*Staging a release*, below). M13 Step 8 gave the samples an asset kind of their

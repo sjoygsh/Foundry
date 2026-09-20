@@ -1,7 +1,7 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-20
-**Current handoff: M15 Step 6 is done; stop before Step 7.** M0 through M14 are complete and
+**Current handoff: M15 Step 7 is done; stop before Step 8.** M0 through M14 are complete and
 tagged. **M14 closed on 2026-09-19 with a player choosing their mods in a packaged sample, on
 macOS and on Windows:**
 - **the mod set, with record-level conflicts, and ordered profiles on disk, applied at the next
@@ -11,8 +11,54 @@ macOS and on Windows:**
 - **the room's MO2-style mod screen, built from that table alone.**
 
 **M13 before it proved Windows x64 through Vulkan. Linux is M18, after the first game and before
-3D (ADR-0039). M15 is under way: Steps 1–6 of nine are done, and the handoff stops before
-Step 7. M16 and M17 remain unstarted.**
+3D (ADR-0039). M15 is under way: Steps 1–7 of nine are done, and the handoff stops before
+Step 8. M16 and M17 remain unstarted.**
+
+**Completed M15 Step 7, 2026-09-20: the complete authoring workflow, over the same 47 calls.**
+- The editor's client gained the manifest and typed record forms, list controls, the read-only
+  override action, create/duplicate/delete, set/unset, insert/remove/move, undo and redo,
+  per-file and Save All reporting, in-window confirmation and a revision indicator. **No ABI
+  call was added and no v1–v4 declaration changed.**
+- **Read, describe, then act.** One accepted UI action is one command, recorded while the frame
+  is described and carried out after `ui_end`, because a command re-parses and ends every walk
+  and borrow the description is holding. Selection is stored as identity — a document index, a
+  record's content id, a field path — never as a node handle, and widget identity is a hash of
+  the path, so a text field keeps focus and its caret while a sibling is added above it.
+- Typed text stays in its buffer until it can form a valid command; a refusal leaves the file
+  and the buffer alone, and an accepted value reads back as the bytes a Save would write.
+- **The table publishes no keyboard state**, so a client cannot bind Ctrl+S for itself and
+  neither could a native mod. The host reads its own keyboard and hands the client an intent;
+  publishing key state is now an open question in `editor.md` §13 and `public-abi.md`.
+- Three gaps in `author` that only a form could expose, all fixed: a workspace's identity came
+  only from the manifest *on disk*, so a package created in the editor never had a name;
+  creating a manifest changed the package's namespace while every document had been parsed
+  under the old one, so the next command could not find a schema plainly declared in the file;
+  and `abi` published no Zig names for the v4 authoring structs.
+- `foundry:editor.screen` grew from seventeen strings to sixty-eight, one per word the client
+  draws. `tools/editor/script.zig` replays deterministic input at rectangles the client records
+  while describing itself; the application's `--script` walk knows no schema, record or field
+  by name, and `editor-smoke` now replays it instead of describing three static frames.
+
+Thirteen headless workflow tests drive the real service, host, table and client with synthetic
+input: a package created and filled entirely by clicking; every field shape edited, including a
+`u64` of 9007199254740993 that survives a round trip; reset-to-default; a list started,
+appended to, reordered and shortened; a nested block added and filled; a refused value leaving
+both file and buffer untouched and then corrected in place; a duplicate id refused with a
+diagnostic; undo, redo and a new edit clearing redo; Build refused while dirty and accepted
+after Save; Reload activating a preview whose build then refuses release; close and discard
+confirmations cancelled without losing a draft; a dependency definition overridden at full
+precision; a short viewport still describing all eleven rows; and the walkthrough leaving the
+package byte-identical. The full bar passed **1,571 of 1,572** headless tests, with the existing
+skip, from **1,639 declared**. The null smoke replayed 25 of 25 actions in 48 frames, held the
+pointer on 37 of them and the keyboard on 14, drew up to 639 commands in one frame, and left
+the workspace unchanged; a real SDL3/Metal window replayed the same walk over a package outside
+the repository for 240 frames — 34 pointer frames, 14 keyboard, up to 177 draw commands — and
+left that package unchanged too. The installed header still compiles as C99 on the three targets and
+as C++17, and both sample releases still stage. Four mutations — dropping the namespace
+resynchronisation, sending a scalar under the wrong declared type, letting Build run while
+dirty, and closing without asking about unsaved work — each failed `editor-workflow` and were
+restored. Resolution: `editor.md`, Step 7. Step 8 is the external authorship proof, on both
+desktop targets; none of it is here.
 
 **Completed M15 Step 6, 2026-09-20: the standalone editor host and its ABI-only inspection
 client.**
@@ -2210,18 +2256,20 @@ signing, notarization and a clean recipient Mac (ADR-0032) — not engine work. 
 adding to it, only M10 was new, **M10 and M11 are complete (2026-09-13)** and **M12 is
 complete (2026-09-14)**. **M13 is complete (2026-09-19)**, proving
 Windows x64 through Vulkan. **M14 is complete (2026-09-19)**: a player chooses their mods in a
-packaged sample, on macOS and on Windows. M15 is under way with Steps 1–4 complete; M16 and M17
+packaged sample, on macOS and on Windows. M15 is under way with Steps 1–7 complete; M16 and M17
 are unstarted.
 
 ## Current milestone
 
-**M15 — Editor is under way: Steps 1–5 of nine are done (2026-09-20).** Read
-`docs/design/editor.md`, especially §14's nine steps and the first five Resolutions, and
+**M15 — Editor is under way: Steps 1–7 of nine are done (2026-09-20).** Read
+`docs/design/editor.md`, especially §14's nine steps and the seven Resolutions, and
 ADR-0042/0043, accepted 2026-09-20. The editor's UI and UX follow Unreal Engine 5's (§10). The
-tree stands at **1,616 declared / 1,545 headless tests**, with the one skip it has had since
+tree stands at **1,639 declared / 1,571 headless tests**, with the one skip it has had since
 Step 1. Typed commands, conflict-safe per-file saves, retained isolated builds and the whole
-authoring surface as `FoundryApi_v4` are complete, and `fpack` runs on that table; the editor
-application itself is next.
+authoring surface as `FoundryApi_v4` are complete, `fpack` runs on that table, and
+`tools/editor` is a working editor over those calls and no others. What is left is the proof
+outside the tree: authoring a package through the real UI, consuming it in a relocated sample,
+and doing both on Windows as well as macOS.
 
 **M14 — Managed: "players choose their mods." Complete, 2026-09-19.** Read
 `docs/design/mod-management.md` and ADR-0040/0041. All nine steps are implemented:
@@ -3800,12 +3848,14 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M15 Step 6 — the standalone host and an ABI-only inspection client**, when the owner
-asks for it. Steps 1 through 5 are done (2026-09-20). M15's design is
-`docs/design/editor.md`, with nine steps and ADR-0042/0043, accepted 2026-09-20 with a UI
-modelled on Unreal Engine 5's. The editor re-hosts public introspection (ADR-0025), and
-authoring is now published in `FoundryApi_v4` — so Step 6's client has a table to consume and
-must have no other reach: its negative implementation-import probe is part of its exit (I4).
+**Next: M15 Step 8 — external authorship and the consumer proof**, when the owner asks for it.
+Steps 1 through 7 are done (2026-09-20). M15's design is `docs/design/editor.md`, with nine
+steps and ADR-0042/0043, accepted 2026-09-20 with a UI modelled on Unreal Engine 5's. The
+editor exists and works over `FoundryApi_v4` alone, so Step 8 is evidence rather than
+construction: §11's two linked proofs — a package authored outside the repository through the
+real UI with no hand-written `.fdt`, then consumed by a relocated sample through M14's normal
+mod path — plus the same workflow on Windows/Vulkan, and `docs/modding/editor.md` written from
+that session. An installed-header C consumer must reach the same capability.
 
 One small recorded item can be taken on the owner's word before or beside it: the flaky
 Windows sleep test (Known bugs). `mod-management.md` §14's questions stay open until a
@@ -3858,8 +3908,8 @@ review of `main` rather than beginning on a schedule.
   screen. The exit proof passed on macOS and on Windows.
 * **M15 — Editor.** §9's oldest item, dated M6+; ADR-0011 and ADR-0025 already decided its
   shape as a re-host of the overlay's introspection. Designed 2026-09-19 in
-  `docs/design/editor.md`, with ADR-0042/0043, accepted 2026-09-20. Steps 1–4 are done; Steps 5–9
-  remain.
+  `docs/design/editor.md`, with ADR-0042/0043, accepted 2026-09-20. Steps 1–7 are done; Steps 8
+  and 9 remain.
 * **M16 — Connected.** Networking, trigger-started, carrying ADR-0013's bit-exact determinism
   question only if lockstep is chosen.
 * **M17 — Released.** ADR-0032's deferred gate, and last in the phase on purpose: Developer ID

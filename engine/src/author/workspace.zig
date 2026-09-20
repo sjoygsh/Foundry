@@ -30,6 +30,7 @@
 const std = @import("std");
 const core = @import("core");
 const data = @import("data");
+const mod = @import("mod");
 const platform = @import("platform");
 
 const compiler = @import("compiler.zig");
@@ -266,57 +267,57 @@ pub const Workspace = struct {
 
     pub fn createRecord(self: *Workspace, expected_revision: u64, document: u32, schema: []const u8, id: []const u8, diags: *Diagnostics) edit.Error!edit.Result {
         if (!self.grants.edit) return error.WriteNotGranted;
-        return edit.createRecord(self.editContext(), expected_revision, document, schema, id, diags);
+        return edit.createRecord(try self.beginEdit(diags), expected_revision, document, schema, id, diags);
     }
 
     pub fn duplicateRecord(self: *Workspace, expected_revision: u64, source: edit.RecordRef, destination: u32, id: []const u8, diags: *Diagnostics) edit.Error!edit.Result {
         if (!self.grants.edit) return error.WriteNotGranted;
-        return edit.duplicateRecord(self.editContext(), expected_revision, source, destination, id, diags);
+        return edit.duplicateRecord(try self.beginEdit(diags), expected_revision, source, destination, id, diags);
     }
 
     pub fn createOverride(self: *Workspace, expected_revision: u64, destination: u32, source: edit.DependencyRecordRef, diags: *Diagnostics) edit.Error!edit.Result {
         if (!self.grants.edit) return error.WriteNotGranted;
-        return edit.createOverride(self.editContext(), expected_revision, destination, source, diags);
+        return edit.createOverride(try self.beginEdit(diags), expected_revision, destination, source, diags);
     }
 
     pub fn deleteRecord(self: *Workspace, expected_revision: u64, ref: edit.RecordRef, diags: *Diagnostics) edit.Error!edit.Result {
         if (!self.grants.edit) return error.WriteNotGranted;
-        return edit.deleteRecord(self.editContext(), expected_revision, ref, diags);
+        return edit.deleteRecord(try self.beginEdit(diags), expected_revision, ref, diags);
     }
 
     pub fn setValue(self: *Workspace, expected_revision: u64, ref: edit.RecordRef, path: []const edit.Selector, value: edit.TypedValue, diags: *Diagnostics) edit.Error!edit.Result {
         if (!self.grants.edit) return error.WriteNotGranted;
-        return edit.setValue(self.editContext(), expected_revision, ref, path, value, diags);
+        return edit.setValue(try self.beginEdit(diags), expected_revision, ref, path, value, diags);
     }
 
     pub fn unsetField(self: *Workspace, expected_revision: u64, ref: edit.RecordRef, path: []const edit.Selector, diags: *Diagnostics) edit.Error!edit.Result {
         if (!self.grants.edit) return error.WriteNotGranted;
-        return edit.unsetField(self.editContext(), expected_revision, ref, path, diags);
+        return edit.unsetField(try self.beginEdit(diags), expected_revision, ref, path, diags);
     }
 
     pub fn insertListItem(self: *Workspace, expected_revision: u64, ref: edit.RecordRef, path: []const edit.Selector, index: u32, value: edit.TypedValue, diags: *Diagnostics) edit.Error!edit.Result {
         if (!self.grants.edit) return error.WriteNotGranted;
-        return edit.insertListItem(self.editContext(), expected_revision, ref, path, index, value, diags);
+        return edit.insertListItem(try self.beginEdit(diags), expected_revision, ref, path, index, value, diags);
     }
 
     pub fn removeListItem(self: *Workspace, expected_revision: u64, ref: edit.RecordRef, path: []const edit.Selector, index: u32, diags: *Diagnostics) edit.Error!edit.Result {
         if (!self.grants.edit) return error.WriteNotGranted;
-        return edit.removeListItem(self.editContext(), expected_revision, ref, path, index, diags);
+        return edit.removeListItem(try self.beginEdit(diags), expected_revision, ref, path, index, diags);
     }
 
     pub fn moveListItem(self: *Workspace, expected_revision: u64, ref: edit.RecordRef, path: []const edit.Selector, from: u32, to: u32, diags: *Diagnostics) edit.Error!edit.Result {
         if (!self.grants.edit) return error.WriteNotGranted;
-        return edit.moveListItem(self.editContext(), expected_revision, ref, path, from, to, diags);
+        return edit.moveListItem(try self.beginEdit(diags), expected_revision, ref, path, from, to, diags);
     }
 
     pub fn undo(self: *Workspace, expected_revision: u64, diags: *Diagnostics) edit.Error!edit.Result {
         if (!self.grants.edit) return error.WriteNotGranted;
-        return edit.undo(self.editContext(), expected_revision, diags);
+        return edit.undo(try self.beginEdit(diags), expected_revision, diags);
     }
 
     pub fn redo(self: *Workspace, expected_revision: u64, diags: *Diagnostics) edit.Error!edit.Result {
         if (!self.grants.edit) return error.WriteNotGranted;
-        return edit.redo(self.editContext(), expected_revision, diags);
+        return edit.redo(try self.beginEdit(diags), expected_revision, diags);
     }
 
     pub fn createDocument(self: *Workspace, expected_revision: u64, path: []const u8) edit.Error!u32 {
@@ -483,6 +484,18 @@ pub const Workspace = struct {
         return self.editing.revision;
     }
 
+    /// What this package calls itself *now*: the draft manifest if there is one, and the
+    /// file that was on disk when the workspace opened otherwise.
+    pub fn packageName(self: *const Workspace) ?[]const u8 {
+        if (self.editing.package_name) |name| return name;
+        return if (self.identity) |identity| identity.name else null;
+    }
+
+    pub fn packageVersion(self: *const Workspace) u32 {
+        if (self.editing.package_name != null) return self.editing.package_version;
+        return if (self.identity) |identity| identity.version else 0;
+    }
+
     fn editLimits(self: *const Workspace) edit.Limits {
         return .{
             .max_source_bytes = self.limits.max_source_bytes,
@@ -494,13 +507,26 @@ pub const Workspace = struct {
         };
     }
 
+    /// The context a command runs in, after making sure the parse it is about to edit was
+    /// made under the package's *current* namespace.
+    ///
+    /// Done before the command rather than after the one that changed it, so an
+    /// allocation failure here leaves the workspace exactly as it was.
+    fn beginEdit(self: *Workspace, diags: *Diagnostics) Allocator.Error!edit.Context {
+        const wanted = edit.namespaceOf(self.packageName());
+        if (!std.mem.eql(u8, wanted, self.editing.namespace)) {
+            try self.editing.reprepare(self.gpa, self.documents, &self.dependencies, self.packageName(), self.editLimits(), diags);
+        }
+        return self.editContext();
+    }
+
     fn editContext(self: *Workspace) edit.Context {
         return .{
             .gpa = self.gpa,
             .documents = self.documents,
             .dependencies = &self.dependencies,
             .state = &self.editing,
-            .package_name = if (self.identity) |identity| identity.name else null,
+            .package_name = self.packageName(),
             .limits = self.editLimits(),
         };
     }
@@ -890,6 +916,68 @@ test "an empty directory is a workspace with nothing in it, not a failure" {
     try testing.expect(workspace.identity == null);
     try testing.expectEqual(@as(usize, 0), workspace.requires.len);
     try testing.expect(!diags.failed);
+}
+
+test "a manifest written in the workspace names the package before anything is saved" {
+    // An editor creates `mod.fdt` and then fills it in. `open` read the manifest from disk
+    // and there was none, so without reading the draft the package would have no name for
+    // the whole session — and a bare id in it would resolve under the wrong namespace.
+    const f = try Fixture.init();
+    defer f.deinit();
+    try f.write("pkg/records.fdt", "@schema item { name string }\n");
+
+    const gpa = testing.allocator;
+    var diags = Diagnostics.init(gpa, .default);
+    defer diags.deinit(gpa);
+    var workspace = try Workspace.open(gpa, f.os, try f.at("pkg"), .{ .grants = .{ .edit = true } }, &diags);
+    defer workspace.deinit();
+    try testing.expect(workspace.packageName() == null);
+
+    const document = try workspace.createDocument(workspace.revision(), "mod.fdt");
+    var result = try workspace.createRecord(workspace.revision(), document, "foundry:mod", "demo:root", &diags);
+    try testing.expect(workspace.packageName() != null);
+    try testing.expectEqualStrings("demo:root", workspace.packageName().?);
+    try testing.expectEqual(@as(u32, 0), workspace.packageVersion());
+
+    const ref: edit.RecordRef = .{ .document = document, .record = 0 };
+    const version_field = mod.schemas.manifest.fieldIndex(mod.schemas.version_field).?;
+    result = try workspace.setValue(result.revision, ref, &.{.{ .field = version_field }}, .{ .value = .{ .int = 3 } }, &diags);
+    try testing.expectEqual(@as(u32, 3), workspace.packageVersion());
+
+    // And undoing it takes the name back, because the record it came from is gone again.
+    _ = try workspace.undo(result.revision, &diags);
+    try testing.expectEqual(@as(u32, 0), workspace.packageVersion());
+}
+
+test "creating a manifest re-reads every schema under the package's new namespace" {
+    // A bare `@schema item` means `package:item` in a workspace with no manifest and
+    // `demo:item` in one called `demo:root`. Every document was parsed under the first, so
+    // without rebuilding, the next command cannot find a schema plainly declared in it.
+    const f = try Fixture.init();
+    defer f.deinit();
+    try f.write("pkg/records.fdt", "@schema item { name string }\n");
+
+    const gpa = testing.allocator;
+    var diags = Diagnostics.init(gpa, .default);
+    defer diags.deinit(gpa);
+    var workspace = try Workspace.open(gpa, f.os, try f.at("pkg"), .{ .grants = .{ .edit = true } }, &diags);
+    defer workspace.deinit();
+
+    const document = try workspace.createDocument(workspace.revision(), "mod.fdt");
+    var result = try workspace.createRecord(workspace.revision(), document, "foundry:mod", "demo:root", &diags);
+    const ref: edit.RecordRef = .{ .document = document, .record = 0 };
+    const version_field = mod.schemas.manifest.fieldIndex(mod.schemas.version_field).?;
+    result = try workspace.setValue(result.revision, ref, &.{.{ .field = version_field }}, .{ .value = .{ .int = 1 } }, &diags);
+
+    // The schema is now published, and usable, under the package's namespace.
+    const names = workspace.editing.schema_names;
+    var found = false;
+    for (names) |name| {
+        if (std.mem.eql(u8, name, "demo:item")) found = true;
+        try testing.expect(!std.mem.eql(u8, name, "package:item"));
+    }
+    try testing.expect(found);
+    _ = try workspace.createRecord(workspace.revision(), 1, "demo:item", "demo:one", &diags);
 }
 
 test "a manifest gives the workspace its identity and its requirements" {

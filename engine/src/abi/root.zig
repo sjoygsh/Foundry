@@ -81,6 +81,33 @@ pub const SourceNode = types.SourceNode;
 pub const SchemaNode = types.SchemaNode;
 pub const Build = types.Build;
 
+/// The values those handles are described by.  A Zig host writing an editor needs these
+/// exactly as a C one needs the structs in `foundry.h`; without them it would have to
+/// reach into `abi/author_types.zig` by path, which is the sort of private route the
+/// module boundary exists to prevent.
+pub const AuthorPresence = author_types.Presence;
+pub const AuthorSeverity = author_types.Severity;
+pub const AuthorNodeRoot = author_types.NodeRoot;
+pub const AuthorPreviewOutcome = author_types.PreviewOutcome;
+pub const AuthorSaveOutcome = author_types.SaveOutcome;
+pub const AuthorSaveFailure = author_types.SaveFailure;
+pub const AuthorExportKind = author_types.ExportKind;
+pub const AuthorWorkspaceInfo = author_types.WorkspaceInfo;
+pub const AuthorLimits = author_types.Limits;
+pub const AuthorDocumentInfo = author_types.DocumentInfo;
+pub const AuthorNodeInfo = author_types.NodeInfo;
+pub const AuthorSchemaNodeInfo = author_types.SchemaNodeInfo;
+pub const AuthorValue = author_types.Value;
+pub const AuthorPackageInfo = author_types.PackageInfo;
+pub const AuthorEdit = author_types.Edit;
+pub const AuthorSaveResult = author_types.SaveResult;
+pub const AuthorSaveAll = author_types.SaveAll;
+pub const AuthorSaveEntry = author_types.SaveEntry;
+pub const AuthorDiagnostic = author_types.Diagnostic;
+pub const AuthorBuildInfo = author_types.BuildInfo;
+pub const AuthorPreviewInfo = author_types.PreviewInfo;
+pub const AuthorExportInfo = author_types.ExportInfo;
+
 /// What the host hands over, and what it gets back.
 ///
 /// `Host` is the concrete one a game wants; `HostOf` is what makes a test able to bind a

@@ -712,6 +712,13 @@ must not settle them opportunistically. Question 1 was resolved by the M7 exit p
 > Resolution; the author-facing guide is [`../modding/authoring.md`](../modding/authoring.md).
 > `fpack` now runs on this table. Questions 2–6 remain open.
 
+> **M15 step 7, 2026-09-20:** the editor's complete authoring workflow was built on those
+> forty-seven calls and **added none**. One thing it found is worth recording here rather than
+> only in `editor.md`: the table publishes no keyboard state. `ui_wants_keyboard` says that
+> something is eating typing and nothing else, so neither the editor's client nor a native mod
+> can bind a shortcut for itself; the editor's *host* reads its own keyboard and hands the
+> client an intent. Publishing key state is an open question, not an oversight to route around.
+
 ## 19. Implementation order
 
 Each step ends with something that runs and something that is tested.

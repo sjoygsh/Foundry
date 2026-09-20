@@ -1,10 +1,15 @@
 # Everything the editor presents is content.  A translation or a new visual treatment is a
 # package override, not a rebuild of the host (`docs/design/editor.md` §10).
+#
+# One field per `TextKey` in `tools/editor/client/root.zig`.  A key with no field here reads
+# as empty, which is a blank control rather than a crash, so the two lists are kept level by
+# hand and the client's test states the shape it expects.
 
 @schema screen {
     title string (default "")
     workspace string (default "")
     documents string (default "")
+    records string (default "")
     source string (default "")
     dependencies string (default "")
     preview string (default "")
@@ -12,33 +17,134 @@
     assets string (default "")
     diagnostics string (default "")
     output_log string (default "")
+    details string (default "")
     no_workspace string (default "")
     no_selection string (default "")
+    no_records string (default "")
+    no_diagnostics string (default "")
     status_ready string (default "")
     status_read_only string (default "")
     dirty string (default "")
     clean string (default "")
     unavailable string (default "")
+    new_package string (default "")
+    new_record string (default "")
+    new_document string (default "")
+    create string (default "")
+    cancel string (default "")
+    close string (default "")
+    save string (default "")
+    save_all string (default "")
+    validate string (default "")
+    build string (default "")
+    reload string (default "")
+    undo string (default "")
+    redo string (default "")
+    refresh string (default "")
+    discard string (default "")
+    apply string (default "")
+    add string (default "")
+    remove string (default "")
+    reset string (default "")
+    move_up string (default "")
+    move_down string (default "")
+    delete string (default "")
+    duplicate string (default "")
+    override string (default "")
+    filter string (default "")
+    package_id string (default "")
+    package_name string (default "")
+    package_version string (default "")
+    package_license string (default "")
+    document_path string (default "")
+    schema_name string (default "")
+    record_id string (default "")
+    revision string (default "")
+    build_revision string (default "")
+    loaded string (default "")
+    history_truncated string (default "")
+    externally_changed string (default "")
+    required string (default "")
+    optional string (default "")
+    defaulted string (default "")
+    element string (default "")
+    not_set string (default "")
+    confirm_close string (default "")
+    confirm_refresh string (default "")
+    confirm_discard string (default "")
+    override_warning string (default "")
+    read_only string (default "")
 }
 
 screen foundry:editor.screen {
-    title            "FOUNDRY CONTENT EDITOR"
-    workspace        "Workspace"
-    documents        "Documents"
-    source           "Source"
-    dependencies     "Dependencies"
-    preview          "Preview"
-    schemas          "Schemas"
-    assets           "Assets"
-    diagnostics      "Diagnostics"
-    output_log       "Output Log"
-    no_workspace     "No workspace is open."
-    no_selection     "Select a document."
-    status_ready     "Ready"
-    status_read_only "Inspection mode"
-    dirty            "Unsaved changes"
-    clean            "Saved"
-    unavailable      "Unavailable"
+    title              "FOUNDRY CONTENT EDITOR"
+    workspace          "Workspace"
+    documents          "Documents"
+    records            "Records"
+    source             "Source"
+    dependencies       "Dependencies"
+    preview            "Preview"
+    schemas            "Schemas"
+    assets             "Assets"
+    diagnostics        "Message Log"
+    output_log         "Output Log"
+    details            "Details"
+    no_workspace       "No workspace is open."
+    no_selection       "Select a document."
+    no_records         "No records here yet."
+    no_diagnostics     "No messages."
+    status_ready       "Ready"
+    status_read_only   "Read only"
+    dirty              "Unsaved changes"
+    clean              "Saved"
+    unavailable        "Unavailable"
+    new_package        "New Package"
+    new_record         "New Record"
+    new_document       "New File"
+    create             "Create"
+    cancel             "Cancel"
+    close              "Close"
+    save               "Save"
+    save_all           "Save All"
+    validate           "Validate"
+    build              "Build"
+    reload             "Reload"
+    undo               "Undo"
+    redo               "Redo"
+    refresh            "Refresh"
+    discard            "Discard"
+    apply              "Set"
+    add                "Add"
+    remove             "Del"
+    reset              "Reset"
+    move_up            "Up"
+    move_down          "Down"
+    delete             "Delete"
+    duplicate          "Duplicate"
+    override           "Override Here"
+    filter             "Filter"
+    package_id         "Package id"
+    package_name       "Name"
+    package_version    "Version"
+    package_license    "License"
+    document_path      "File name"
+    schema_name        "Schema"
+    record_id          "Record id"
+    revision           "rev"
+    build_revision     "built"
+    loaded             "loaded"
+    history_truncated  "History truncated"
+    externally_changed "Changed on disk"
+    required           "(required)"
+    optional           "(optional)"
+    defaulted          "(default)"
+    element            ""
+    not_set            "not set"
+    confirm_close      "This workspace has unsaved changes."
+    confirm_refresh    "Adopt the file on disk and lose this draft?"
+    confirm_discard    "Restore this file to its last saved bytes?"
+    override_warning   "An override copies stored fields now; later upstream fields are not merged."
+    read_only          "(read only)"
 }
 
 # The icon is both the application's window mark and the flat theme's atlas.  The host embeds

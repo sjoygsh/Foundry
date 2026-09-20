@@ -736,7 +736,7 @@ is not Foundry's business.
 **Exit criteria:** a packaged sample where a player — not an environment variable — turns a mod
 on, and preferences survive a schema change without losing what the player chose.
 
-### M15 — Editor: "content is authored in Foundry" — **in progress: Steps 1–6 of 9 done**
+### M15 — Editor: "content is authored in Foundry" — **in progress: Steps 1–7 of 9 done**
 
 `CLAUDE.md` §9's oldest deferred item, dated M6+. Its shape is already decided: tools are
 Foundry applications (ADR-0011), and the editor is a **re-host of the debug overlay's
@@ -753,16 +753,18 @@ editing or saving; an additive authoring capability must precede the editor cons
 [ADR-0043](adr/0043-source-preserving-authoring-and-explicit-builds.md). Nine steps: source
 ranges/emission; reusable compiler and workspaces; typed edits and history; saves and isolated
 builds; public ABI v4; standalone host and inspection client; authoring workflow; external
-author/consumer proof; closure. Steps 1–6 are done (2026-09-20): the parser's opt-in source spans
+author/consumer proof; closure. Steps 1–7 are done (2026-09-20): the parser's opt-in source spans
 with `data/emit.zig` and `data/splice.zig`; `engine/src/author/` — the one compiler `fpack`
 and the editor share, the granted dependency set, and bounded workspaces; and revisioned typed
 record commands with exact dependency overrides and bounded Undo/Redo; plus confined per-file
 saves, explicit conflict recovery, stable source/asset/dependency snapshots and retained private
 build candidates byte-identical to `fpack`; the additive `FoundryApi_v4`; and the standalone
 host with ordinary editor content, a separately built public-header-only inspection client, and
-real-window/null-smoke proofs. Step 7 is the first complete editing workflow. The first editor
-authors records using existing schemas, preserves source text, and proves its output through the
-sample's normal mod path. A scene editor, schema designer and executing game/plugin host are
+real-window/null-smoke proofs; and the complete editing workflow — manifest and typed record
+forms, list controls, overrides, history, saves, builds and preview — over those same v4 calls,
+adding none. Step 8 is the proof outside the tree. The first editor authors records using
+existing schemas, preserves source text, and proves its output through the sample's normal mod
+path. A scene editor, schema designer and executing game/plugin host are
 outside this scope.
 The editor's UI and UX follow Unreal Engine 5's editor, within M15's fixed regions (§10).
 

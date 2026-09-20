@@ -8,6 +8,7 @@
 const std = @import("std");
 const core = @import("core");
 const data = @import("data");
+const mod = @import("mod");
 const platform = @import("platform");
 
 const compiler = @import("compiler.zig");
@@ -135,6 +136,12 @@ pub const Error = error{
 /// The state which outlives one command. Parsed documents do not: they are operation
 /// snapshots bounded by source size, which prevents an import-heavy package from retaining
 /// a parse tree for every possible root file.
+/// What a package calls itself, as its draft manifest says so.
+pub const Manifest = struct {
+    name: []const u8,
+    version: u32,
+};
+
 pub const State = struct {
     registry: data.Registry,
     history: History = .{},
@@ -148,6 +155,19 @@ pub const State = struct {
     /// this package declares. Collected here because `prepare` already has the parses, and
     /// rebuilt whenever it runs.
     schema_names: []const []const u8 = &.{},
+    /// The package's own name and version, as the *draft* manifest states them, owned by
+    /// `names`.
+    ///
+    /// A workspace reads `mod.fdt` from disk when it opens, which is the right answer
+    /// until an author creates or edits one.  After that the file on disk is behind, and
+    /// an editor that showed the old name — or none — would be showing the wrong package.
+    /// `prepare` has already parsed every document, so this costs one dupe.
+    package_name: ?[]const u8 = null,
+    package_version: u32 = 0,
+    /// The namespace every document here was parsed under, owned by `names`.  A bare
+    /// schema name means something different when this changes, which is why it is
+    /// remembered rather than recomputed.
+    namespace: []const u8 = "package",
     names: core.Arena,
 
     pub fn init(gpa: Allocator, limits: data.Limits) State {
@@ -159,6 +179,72 @@ pub const State = struct {
         self.registry.deinit(gpa);
         self.names.deinit();
         self.* = undefined;
+    }
+
+    /// Everything `prepare` builds, again, keeping the history and the revision.
+    ///
+    /// One case needs this and it is worth naming: creating a manifest gives the package
+    /// a namespace, and a bare schema name written in a file means something different
+    /// afterwards.  Every document was parsed and every schema registered under the old
+    /// one, so without rebuilding, the very next command would fail to find a schema that
+    /// is plainly declared in the file it is editing.
+    pub fn reprepare(
+        self: *State,
+        gpa: Allocator,
+        documents: []Document,
+        dependencies: *const dependency.Set,
+        package_name: ?[]const u8,
+        limits: Limits,
+        diags: *Diagnostics,
+    ) Allocator.Error!void {
+        var fresh: State = .init(gpa, limits.content);
+        errdefer fresh.deinit(gpa);
+        try fresh.prepare(gpa, documents, dependencies, package_name, limits, diags);
+        fresh.history = self.history;
+        fresh.revision = self.revision;
+        self.history = .{};
+        self.deinit(gpa);
+        self.* = fresh;
+    }
+
+    /// The manifest record in one parsed document, with its spelling copied into `names`.
+    ///
+    /// Two manifest records are no identity at all, which is what the compiler says when
+    /// it reads one: choosing between them would be inventing an answer.
+    fn manifestIn(self: *State, doc: *const data.Document) Allocator.Error!?Manifest {
+        var found: ?data.parser.RecordDecl = null;
+        for (doc.records) |record| {
+            if (record.kind != .define) continue;
+            if (!record.schema.eql(mod.schemas.manifest.id)) continue;
+            if (found != null) return null;
+            found = record;
+        }
+        const record = found orelse return null;
+        var version: u32 = 0;
+        for (record.fields) |field| {
+            if (!std.mem.eql(u8, field.name, mod.schemas.version_field)) continue;
+            version = switch (field.value) {
+                .int => |n| if (n >= 1 and n <= std.math.maxInt(u32)) @intCast(n) else 0,
+                else => 0,
+            };
+        }
+        return .{ .name = try self.names.allocator().dupe(u8, record.text), .version = version };
+    }
+
+    /// Takes a staged identity, once the bytes it came from are the ones in the document.
+    fn adoptManifest(self: *State, manifest: ?Manifest) void {
+        self.package_name = if (manifest) |value| value.name else null;
+        self.package_version = if (manifest) |value| value.version else 0;
+    }
+
+    fn readManifest(self: *State, parsed: []const ?data.Document, documents: []const Document) Allocator.Error!void {
+        self.adoptManifest(null);
+        for (parsed, documents) |*slot, *document| {
+            if (!std.mem.eql(u8, document.path, compiler.manifest_file)) continue;
+            const doc = if (slot.*) |*value| value else continue;
+            self.adoptManifest(try self.manifestIn(doc));
+            return;
+        }
     }
 
     /// Records one spelling, once. A linear scan: the set is a few dozen names, and a map
@@ -198,6 +284,7 @@ pub const State = struct {
         };
 
         const namespace = namespaceOf(package_name);
+        self.namespace = try self.names.allocator().dupe(u8, namespace);
         const parsed = try gpa.alloc(?data.Document, documents.len);
         defer gpa.free(parsed);
         @memset(parsed, null);
@@ -265,6 +352,7 @@ pub const State = struct {
         }
         std.mem.sort([]const u8, names.items, {}, lessName);
         self.schema_names = try self.names.allocator().dupe([]const u8, names.items);
+        try self.readManifest(parsed, documents);
 
         self.available = true;
     }
@@ -772,10 +860,14 @@ fn replay(ctx: Context, entry: Entry, forward: bool, diags: *Diagnostics) Error!
     } else {
         try ctx.state.history.redo.ensureUnusedCapacity(ctx.gpa, 1);
     }
+    // Undoing the command that created a manifest takes the package's name back with it.
+    const is_manifest = std.mem.eql(u8, document.path, compiler.manifest_file);
+    const manifest = if (is_manifest) try ctx.state.manifestIn(&parsed) else null;
 
     const old = document.bytes;
     document.bytes = candidate;
     ctx.gpa.free(old);
+    if (is_manifest) ctx.state.adoptManifest(manifest);
     const moved = if (forward)
         ctx.state.history.redo.pop() orelse unreachable
     else
@@ -820,10 +912,16 @@ fn commit(
     const projected_history = try ctx.state.history.projectedAfterPush(ctx.limits, entry.cost());
     try checkCandidateSize(ctx, document_index, candidate.len, projected_history, document.bytes.len + edit.text.len);
     try ctx.state.history.undo.ensureUnusedCapacity(ctx.gpa, 1);
+    // Editing the manifest changes who this package is, and the parse that proves the
+    // edit is right is already here. Staged before the mutation so an allocation failure
+    // still leaves the command atomic.
+    const is_manifest = std.mem.eql(u8, document.path, compiler.manifest_file);
+    const manifest = if (is_manifest) try ctx.state.manifestIn(&parsed) else null;
 
     const old = document.bytes;
     document.bytes = candidate;
     ctx.gpa.free(old);
+    if (is_manifest) ctx.state.adoptManifest(manifest);
     ctx.state.history.pushPrepared(ctx.gpa, ctx.limits, entry);
     ctx.state.revision += 1;
     const selection = ctx.state.history.undo.items[ctx.state.history.undo.items.len - 1].after_selection.view();
@@ -1106,7 +1204,7 @@ fn appendDiagnostics(gpa: Allocator, destination: *Diagnostics, source: *const D
     destination.failed = destination.failed or source.failed;
 }
 
-fn namespaceOf(package_name: ?[]const u8) []const u8 {
+pub fn namespaceOf(package_name: ?[]const u8) []const u8 {
     const name = package_name orelse return "package";
     const colon = std.mem.indexOfScalar(u8, name, ':') orelse return "package";
     return name[0..colon];

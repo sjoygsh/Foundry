@@ -575,8 +575,9 @@ bounded exact-byte history; Step 4 added conflict-safe per-file saves, stable va
 snapshots and retained private candidates. Step 5 published all of it as `FoundryApi_v4`, 47
 additive calls beside v1–v3, and moved `fpack` onto that table. Step 6 added the standalone
 host, ordinary `foundry:editor` content and a separately built header-only inspection client;
-its source, dependency, preview, schema, asset and diagnostic browsers use only v4. Step 7 is
-the first complete editing workflow.
+its source, dependency, preview, schema, asset and diagnostic browsers use only v4. Step 7
+completed the editing workflow — forms, list controls, overrides, history, saves, builds and
+preview — over those same calls, adding none. Step 8 is the external authorship proof.
 
 ---
 

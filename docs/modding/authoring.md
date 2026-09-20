@@ -1,9 +1,10 @@
 # Authoring content through the public API
 
 **Status:** the authoring surface is published as `FoundryApi_v4` as of M15 step 5,
-2026-09-20. The calls work, the header compiles as C99 and C++17, and `fpack` already runs
-on them. **There is no editor application yet** — M15 step 6 adds one. This page is for a
-program that wants to read, edit, save and compile a content package itself.
+2026-09-20. The calls work, the header compiles as C99 and C++17, and `fpack` runs on them.
+Foundry's own editor was built on them in step 7 and uses these calls and no others — it has
+forms, commands, undo, saves, builds and preview, and it reaches the engine exactly the way
+this page describes. This page is for a program that wants to do the same thing itself.
 
 Everything here goes through the one public table (Invariant I4,
 [ADR-0042](../adr/0042-authoring-through-the-public-api.md)). The editor Foundry ships will
@@ -281,11 +282,15 @@ exceeding any of them refuses without a partial change.
 * **Not schema authoring, asset conversion, global rename, background compilation or
   autosave.** Those are recorded limits, not promised milestones
   ([editor.md](../design/editor.md) §13).
+* **Not a keyboard.** The table reports `ui_wants_keyboard` and no key state, so a client
+  cannot bind its own shortcuts; an application that wants them reads its own keyboard and
+  decides what to call. Publishing key state is open.
 
 ## Where to go next
 
 * [`../design/editor.md`](../design/editor.md) — the authoring design, the workspace's
-  authority, and §9's binding contract for this surface.
+  authority, §9's binding contract for this surface, and the Step 7 Resolution's account of
+  what a complete form over it looks like.
 * [`../design/public-abi.md`](../design/public-abi.md) — the boundary's rules: handles,
   cursors, borrows, result codes.
 * [`native-mods.md`](native-mods.md) — building against the installed `foundry.h`.

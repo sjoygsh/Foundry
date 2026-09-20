@@ -235,8 +235,8 @@ pub fn Of(comptime H: type) type {
 
             slot.* = .{
                 .revision = ws.revision(),
-                .package_name = if (ws.identity) |identity| .from(identity.name) else .empty,
-                .package_version = if (ws.identity) |identity| identity.version else 0,
+                .package_name = if (ws.packageName()) |name| .from(name) else .empty,
+                .package_version = ws.packageVersion(),
                 .document_count = @intCast(ws.documents.len),
                 .dependency_count = ws.dependencies.count(),
                 .build_count = ws.buildCount(),
@@ -252,7 +252,7 @@ pub fn Of(comptime H: type) type {
                 .can_undo = types.boolOut(ws.canUndo()),
                 .can_redo = types.boolOut(ws.canRedo()),
                 .history_truncated = types.boolOut(ws.historyTruncated()),
-                .has_manifest = types.boolOut(ws.identity != null),
+                .has_manifest = types.boolOut(ws.packageName() != null),
             };
             return .ok;
         }
