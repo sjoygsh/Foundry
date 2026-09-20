@@ -21,8 +21,10 @@
 //! `editor.md` §3 is the layering; §4 the workspace and its limits; §5 the documents.
 
 pub const compiler = @import("compiler.zig");
+pub const build_mod = @import("build.zig");
 pub const dependency = @import("dependency.zig");
 pub const edit = @import("edit.zig");
+pub const save_mod = @import("save.zig");
 pub const workspace = @import("workspace.zig");
 
 // The names reached for most often. A mod author never sees these — a host does, and a host
@@ -32,6 +34,8 @@ pub const SourceRequirement = compiler.SourceRequirement;
 pub const compile = compiler.compile;
 pub const DependencySet = dependency.Set;
 pub const DependencySource = dependency.Source;
+pub const BuildHandle = build_mod.Handle;
+pub const BuildInfo = build_mod.Info;
 pub const Document = workspace.Document;
 pub const DependencyRecordRef = edit.DependencyRecordRef;
 pub const EditError = edit.Error;
@@ -43,10 +47,13 @@ pub const TypedValue = edit.TypedValue;
 pub const Workspace = workspace.Workspace;
 pub const WorkspaceLimits = workspace.Limits;
 pub const WorkspaceOptions = workspace.Options;
+pub const WorkspaceGrants = workspace.Grants;
 
 test {
     _ = compiler;
+    _ = build_mod;
     _ = dependency;
     _ = edit;
+    _ = save_mod;
     _ = workspace;
 }

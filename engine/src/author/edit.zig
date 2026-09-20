@@ -1,9 +1,9 @@
 //! Revisioned, typed edits over a bounded authoring workspace.
 //!
-//! This is M15 Step 3: commands turn schema-aware intent into one source splice, parse and
+//! Commands turn schema-aware intent into one source splice, parse and
 //! validate the candidate, and install it only after every check and history allocation has
-//! succeeded. Source bytes remain authoritative (ADR-0043). Saving, building and ABI
-//! publication deliberately do not live here.
+//! succeeded. Source bytes remain authoritative (ADR-0043). Persistence and isolated builds
+//! live beside this module; ABI publication deliberately does not live here.
 
 const std = @import("std");
 const core = @import("core");
@@ -25,12 +25,20 @@ const Value = data.Value;
 /// One source file held by a workspace.
 pub const Document = struct {
     path: []const u8,
+    /// Paths discovered at open live in the workspace arena; a document created later owns
+    /// its path directly because an arena allocation cannot be rolled back on a failed add.
+    owns_path: bool = false,
     /// Current draft bytes. Owned independently of `baseline` after open as well as after
     /// edits, so dirty state is a byte comparison and never an undo-stack position.
     bytes: []u8,
-    /// The last bytes read from or successfully written to disk. Step 3 never changes it.
+    /// The last bytes read from or successfully written to disk.
     baseline: []u8,
     disk: platform.os.FileInfo,
+    /// False for a new in-memory document until its create-if-absent Save succeeds.
+    on_disk: bool = true,
+    /// Set when a save/build comparison sees bytes or inventory that no longer match the
+    /// baseline. The draft and the disk copy are both retained until an explicit refresh.
+    externally_changed: bool = false,
     /// Syntax could be parsed under the workspace's namespace and import set.
     parseable: bool = false,
     /// The source is syntactically and structurally safe for typed commands. An incomplete
@@ -43,6 +51,7 @@ pub const Document = struct {
     }
 
     pub fn deinit(self: *Document, gpa: Allocator) void {
+        if (self.owns_path) gpa.free(self.path);
         gpa.free(self.bytes);
         gpa.free(self.baseline);
         self.* = undefined;
@@ -103,6 +112,8 @@ pub const Error = error{
     StaleRevision,
     RevisionExhausted,
     InvalidDocument,
+    InvalidDocumentName,
+    DuplicateDocument,
     ReadOnlyDocument,
     InvalidRecord,
     InvalidDependencyRecord,
@@ -117,6 +128,7 @@ pub const Error = error{
     DocumentBudget,
     NoChange,
     DependencyInvalid,
+    WriteNotGranted,
 } || data.splice.Error;
 
 /// The state which outlives one command. Parsed documents do not: they are operation
@@ -751,6 +763,15 @@ pub const History = struct {
         self.undo.deinit(gpa);
         self.redo.deinit(gpa);
         self.* = undefined;
+    }
+
+    pub fn clear(self: *History, gpa: Allocator) void {
+        for (self.undo.items) |*entry| entry.deinit(gpa);
+        for (self.redo.items) |*entry| entry.deinit(gpa);
+        self.undo.clearRetainingCapacity();
+        self.redo.clearRetainingCapacity();
+        self.retained_bytes = 0;
+        self.truncated = false;
     }
 
     fn projectedAfterPush(self: *const History, limits: Limits, cost: usize) Error!usize {

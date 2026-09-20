@@ -567,7 +567,8 @@ arbitrary to a future session. Do not write one for routine implementation choic
 **M15 (accepted 2026-09-20):** ADR-0042 and ADR-0043 are in the §4.1 table, and
 [editor.md](docs/design/editor.md) is the nine-step plan. Its `author` module is in §4.3's
 layer graph, since Step 2 added it to the build; Step 3 added its revisioned typed commands and
-bounded exact-byte history. Saving and building begin in Step 4.
+bounded exact-byte history; Step 4 added conflict-safe per-file saves, stable validation/build
+snapshots and retained private candidates. ABI v4 and preview activation begin in Step 5.
 
 ---
 

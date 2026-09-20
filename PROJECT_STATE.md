@@ -1,7 +1,7 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-20
-**Current handoff: M15 Step 3 is done; stop before Step 4.** M0 through M14 are complete and
+**Current handoff: M15 Step 4 is done; stop before Step 5.** M0 through M14 are complete and
 tagged. **M14 closed on 2026-09-19 with a player choosing their mods in a packaged sample, on
 macOS and on Windows:**
 - **the mod set, with record-level conflicts, and ordered profiles on disk, applied at the next
@@ -11,8 +11,41 @@ macOS and on Windows:**
 - **the room's MO2-style mod screen, built from that table alone.**
 
 **M13 before it proved Windows x64 through Vulkan. Linux is M18, after the first game and before
-3D (ADR-0039). M15 is under way: Steps 1–3 of nine are done, and the handoff stops before
-Step 4. M16 and M17 remain unstarted.**
+3D (ADR-0039). M15 is under way: Steps 1–4 of nine are done, and the handoff stops before
+Step 5. M16 and M17 remain unstarted.**
+
+**Completed M15 Step 4, 2026-09-20: conflict-safe saves and isolated builds.**
+- `platform.Os` now has confined atomic create-if-absent, no-follow directory creation/listing/
+  removal and canonical capability-root comparison. Existing-file saves still use confined
+  replacement; both report whether the directory entry was flushed after publication.
+- `author/save.zig` owns the cooperating `.foundry-author.lock`, exact baseline comparison,
+  create-versus-replace publication and stable-name Save All. A changed disk file preserves
+  both copies. Save All reports its committed prefix and first failure; it never claims atomic
+  package persistence. Explicit Discard then Refresh is the only overwrite-free recovery path.
+- Workspace authority is split into edit, save and build grants, all absent by default. Build
+  additionally requires an existing private output root disjoint from source and dependency
+  roots. New `.fdt` files are confined to existing visible directories the compiler also sees.
+- `author/build.zig` captures bounded source, ordinary-asset, authored-grid, dependency-package
+  and dependency-asset snapshots, then rechecks input inventories and bytes. Validation may
+  compile drafts; Build accepts only saved clean baselines. Both use the shared compiler and
+  never execute package code.
+- Each compile uses a fresh exclusive candidate with separate source, generated, dependency and
+  runtime trees. Generated assets merge without overwriting, the package passes ordinary mod
+  resolution and `data.Store` loading, and only then does a generational handle become visible.
+  Two successful builds may live by default; failure removes only its incomplete candidate,
+  while release removes exactly the named successful one.
+- The matrix covers partial saves, external writers, crash-left locks, create collisions,
+  explicit recovery, dirty validation, generated-grid failure, source/output aliasing, a swapped
+  source directory, failed-candidate cleanup, stale handles and last-good retention. Direct
+  compiler and workspace build `.fpk`/`.fgrid` bytes match exactly.
+- The tests found and fixed a sentinel-allocation free-size mismatch in canonical paths and a
+  cleanup defer which used a freed candidate name. Mutations disabling alias refusal and
+  artifact retention failed their tests and were restored.
+
+The full bar passed **1,523 of 1,524** headless tests, with the existing skip, from **1,595
+declared**. Formatting, the native and Metal graphs, both null-backend cross-target checks and
+both 30-frame headless samples pass. Resolution: `editor.md`, Step 4. No ABI or preview was
+added; `FoundryApi_v4` remains Step 5.
 
 **Completed M15 Step 3, 2026-09-20: typed record commands and bounded undo/redo.**
 - `author/edit.zig` turns typed, schema-indexed intent into the smallest source splice, parses
@@ -2101,17 +2134,17 @@ signing, notarization and a clean recipient Mac (ADR-0032) — not engine work. 
 adding to it, only M10 was new, **M10 and M11 are complete (2026-09-13)** and **M12 is
 complete (2026-09-14)**. **M13 is complete (2026-09-19)**, proving
 Windows x64 through Vulkan. **M14 is complete (2026-09-19)**: a player chooses their mods in a
-packaged sample, on macOS and on Windows. M15 is under way with Steps 1–3 complete; M16 and M17
+packaged sample, on macOS and on Windows. M15 is under way with Steps 1–4 complete; M16 and M17
 are unstarted.
 
 ## Current milestone
 
-**M15 — Editor is under way: Steps 1–3 of nine are done (2026-09-20).** Read
-`docs/design/editor.md`, especially §14's nine steps and the first three Resolutions, and
+**M15 — Editor is under way: Steps 1–4 of nine are done (2026-09-20).** Read
+`docs/design/editor.md`, especially §14's nine steps and the first four Resolutions, and
 ADR-0042/0043, accepted 2026-09-20. The editor's UI and UX follow Unreal Engine 5's (§10). The
-tree stands at **1,589 declared / 1,518 headless tests**, with the one skip it has had since
-Step 1. Typed in-memory commands and bounded Undo/Redo are complete; safe saves and isolated
-builds are next.
+tree stands at **1,595 declared / 1,524 headless tests**, with the one skip it has had since
+Step 1. Typed commands, conflict-safe per-file saves and retained isolated builds are complete;
+the public ABI v4 is next.
 
 **M14 — Managed: "players choose their mods." Complete, 2026-09-19.** Read
 `docs/design/mod-management.md` and ADR-0040/0041. All nine steps are implemented:
@@ -3032,12 +3065,14 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M0–M14 are complete, and M15's Steps 1–3 are done; nothing is half-built.** M15's design and
-its first three Resolutions are in `docs/design/editor.md`. Step 1 added source spans to
+**M0–M14 are complete, and M15's Steps 1–4 are done; nothing is half-built.** M15's design and
+its first four Resolutions are in `docs/design/editor.md`. Step 1 added source spans to
 the parser and `data/emit.zig` and `data/splice.zig`; Step 2 added `engine/src/author/` — the
 one compiler `fpack` and the editor share, the granted dependency set, and bounded workspaces —
 and moved `fpack` onto it. Step 3 added revisioned typed record commands, exact dependency
-overrides, incomplete drafts and bounded Undo/Redo without writing to disk. Step 4 is next.
+overrides, incomplete drafts and bounded Undo/Redo. Step 4 added confined conflict-safe saves,
+explicit discard/refresh, stable snapshots and retained private build candidates. Step 5 is
+next.
 M14's specification and its Resolutions
 are in `docs/design/mod-management.md`. M13's
 specification and its Resolutions are in `docs/design/vulkan.md`. M12's specification and all
@@ -3745,7 +3780,7 @@ review of `main` rather than beginning on a schedule.
   screen. The exit proof passed on macOS and on Windows.
 * **M15 — Editor.** §9's oldest item, dated M6+; ADR-0011 and ADR-0025 already decided its
   shape as a re-host of the overlay's introspection. Designed 2026-09-19 in
-  `docs/design/editor.md`, with ADR-0042/0043, accepted 2026-09-20. Steps 1–3 are done; Steps 4–9
+  `docs/design/editor.md`, with ADR-0042/0043, accepted 2026-09-20. Steps 1–4 are done; Steps 5–9
   remain.
 * **M16 — Connected.** Networking, trigger-started, carrying ADR-0013's bit-exact determinism
   question only if lockstep is chosen.
@@ -4969,12 +5004,13 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 
 ## Notes for the next session
 
-**Resume point, 2026-09-20:** M0–M14 complete and tagged; M15 Steps 1–3 done.
+**Resume point, 2026-09-20:** M0–M14 complete and tagged; M15 Steps 1–4 done.
 - **M15's design is accepted:** `docs/design/editor.md`, ADR-0042/0043, with a UI and UX modelled
   on Unreal Engine 5's (§10). Step 1 added source spans and `data` emission/splicing; Step 2
   moved the unchanged compiler into `author` and added bounded workspaces; Step 3 added typed,
-  revisioned in-memory commands and bounded Undo/Redo. Stop before Step 4: confined saves and
-  isolated builds do not exist yet.
+  revisioned in-memory commands and bounded Undo/Redo; Step 4 added confined per-file saves,
+  explicit conflict recovery and retained isolated builds. Stop before Step 5: no authoring ABI
+  or preview activation exists yet.
 - **M13's record** is `docs/design/vulkan.md` with ADR-0037/0038/0039. Vulkan runs on Windows x64,
   and `-Drhi=vulkan` builds, tests and installs there (AGENTS.md, *Vulkan work*).
 - **M12's record** is `docs/design/jobs-and-threading.md` and ADR-0036:

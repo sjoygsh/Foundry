@@ -614,17 +614,12 @@ pub const Walk = struct {
             return error.OverBudget;
         }
 
-        const absolute = if (prefix.len == 0)
-            try arena.dupe(u8, root)
-        else
-            platform.os.joinPath(arena, &.{ root, prefix }) catch return error.IoFailed;
-
-        var listing = os.listDir(gpa, absolute) catch |err| switch (err) {
+        var listing = os.listDirConfined(gpa, root, prefix) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             // Reported here rather than left for the caller, because here is the only place
             // that knows *which* directory and *why*. One message per problem.
             else => {
-                try diags.addFmt(gpa, .err, .whole(absolute), 1, "", "cannot be read as a package directory: {s}", .{@errorName(err)});
+                try diags.addFmt(gpa, .err, .whole(if (prefix.len == 0) "." else prefix), 1, "", "cannot be read as a package directory: {s}", .{@errorName(err)});
                 return error.IoFailed;
             },
         };

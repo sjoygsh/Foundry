@@ -98,5 +98,12 @@ scope, rather than weakening source preservation or silently extending M15.
 - **Step 3, 2026-09-20:** decision 2's revisioned drafts and bounded exact-byte history are in
   `author/edit.zig` and `author/workspace.zig`. Typed commands validate candidates before an
   atomic in-memory install; incomplete required fields remain diagnosed drafts; exact
-  dependency values come from `.fpk` readers rather than narrowed runtime getters. Decisions
-  3–5 wait on Steps 4–7. Details and evidence are in `editor.md`'s Step 3 Resolution.
+  dependency values come from `.fpk` readers rather than narrowed runtime getters.
+- **Step 4, 2026-09-20:** decisions 3 and 4 are in `author/save.zig`, `author/build.zig` and the
+  workspace. Saves use a confined create-or-replace primitive under an exclusive cooperating-
+  writer token, compare bytes rather than timestamps and report per-file publication and
+  durability. Validation/build capture bounded source, asset and dependency snapshots into
+  fresh private candidates; only a fully compiled and load-validated candidate receives a
+  generational handle, and prior candidates live until release. Decision 5 remains Steps 5–7:
+  Step 4 publishes no ABI and activates no preview. Details and evidence are in `editor.md`'s
+  Step 4 Resolution.

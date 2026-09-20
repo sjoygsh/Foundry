@@ -2,7 +2,7 @@
 
 **Milestone:** M15 — Editor: “content is authored in Foundry”
 **Status:** Designed 2026-09-19. The owner accepted it on 2026-09-20, adding that the editor's
-UI and UX follow Unreal Engine 5's (§10). Steps 1–3 are implemented (2026-09-20); Steps 4–9
+UI and UX follow Unreal Engine 5's (§10). Steps 1–4 are implemented (2026-09-20); Steps 5–9
 are not started.
 **Decisions:** accepted [ADR-0042](../adr/0042-authoring-through-the-public-api.md) and
 [ADR-0043](../adr/0043-source-preserving-authoring-and-explicit-builds.md).
@@ -28,9 +28,9 @@ saves, build, reload and a real external-package proof. Design for later: more c
 the public authoring service. Postpone: scene gizmos, tile painting, raw text/code editing,
 asset painting/import conversion, docking, project generators and plugin execution.
 
-M0–M14's completed results remain the baseline. Steps 1–3 have implemented the source model,
-bounded workspaces and typed in-memory commands; the save/build, ABI and application surfaces
-specified below remain future implementation.
+M0–M14's completed results remain the baseline. Steps 1–4 have implemented the source model,
+bounded workspaces, typed in-memory commands, conflict-safe saves and isolated candidate builds;
+the ABI and application surfaces specified below remain future implementation.
 
 ## 2. What the current code supplies
 
@@ -468,7 +468,7 @@ work: Step 1's smallest parser-span representation preserving imports, and Step 
 layouts/call count. They may refine this design, not bypass its
 boundaries. Any contradiction requiring a different architecture gets an ADR/Resolution first.
 
-## 14. Implementation order — nine steps, Steps 1–3 done
+## 14. Implementation order — nine steps, Steps 1–4 done
 
 Each step is one handoff: its tests, bar, Resolution, project-state update and commit, then stop.
 ADR-0042/0043 were accepted on 2026-09-20, before any Step 1 code.
@@ -501,7 +501,7 @@ data readers for dependency copies. Do not implement schema-definition editing.
 **Exit:** all field kinds and exact-value/absence cases survive command/undo/redo cycles;
 incomplete drafts have diagnostics; stale/failed commands leave old bytes and history intact.
 
-### Step 4 — Safe saves and isolated builds
+### Step 4 — Safe saves and isolated builds — done 2026-09-20
 
 Implement confined create-if-absent if absent, cooperating-writer lock, baseline comparison,
 per-file save results, structured validation, stable input snapshots and candidate builds.
@@ -866,3 +866,67 @@ Metal, Linux/Windows cross checks and both 30-frame null sample runs.
 **Left for Step 4.** Step 3 changes memory only. It does not create files, acquire a workspace
 lock, compare disk baselines, save, snapshot assets or build packages. Undo therefore never
 writes to disk, and the baseline does not move. No ABI changed; publication remains Step 5.
+
+## Resolution — 2026-09-20, Step 4: safe saves and isolated builds
+
+**Authority is three explicit capabilities.** A workspace defaults to read-only and receives
+edit, save and build grants independently. Build additionally requires an existing host-granted
+output root which neither contains nor is contained by the source root or a dependency root;
+the comparison uses canonical paths (case-insensitively on Windows), while every actual access
+remains handle-relative and no-follow. New documents are package-relative `.fdt` names in
+existing non-hidden directories, matching exactly what the shared compiler will discover.
+
+**A save publishes one file and tells the truth about it.** `platform.Os.createFileConfined`
+writes and syncs an exclusive temporary sibling, then uses non-replacing rename or an atomic
+hard-link fallback; an existing name wins and is never overwritten. Existing documents use
+`replaceFileConfined`. `author/save.zig` holds `.foundry-author.lock` through baseline re-read,
+byte comparison and publication. The token is removed only if its bytes still match; a busy or
+crash-left token is diagnosed for manual recovery rather than guessed stale. A publication
+reports `durable` or `entry_unflushed`, and only then replaces the independently owned baseline
+and advances the revision.
+
+**Conflict recovery is explicit and Save All is a prefix, not a transaction.** A changed disk
+file sets `externally_changed` and keeps both versions. Refresh refuses a dirty draft; Discard
+first restores the baseline and clears history as one revisioned action, then Refresh can adopt
+the disk bytes as another. Save All sorts relative names, records unchanged or published files
+and stops at the first per-file failure. Files already published stay published, later ones stay
+dirty, and the returned revision says exactly how far the operation reached.
+
+**Validation and Build share one bounded candidate path.** Both acquire the cooperating lock,
+create a fresh exclusive `.foundry-build-*` directory and capture sources, recognized ordinary
+assets, authored grids, dependency packages and dependency asset trees. The input byte budget
+is cumulative. Inventories and bytes are read again after capture, so a changed source, asset or
+dependency refuses rather than mixing generations. Validate compiles current drafts and always
+removes its candidate. Build refuses unsaved/external documents and compiles saved baselines.
+Both invoke the same `author.compiler` and explicit dependency set as `fpack`.
+
+**A successful product is ordinary runtime content kept behind a generational handle.** The
+candidate separates `source/`, compiler-only `generated/`, captured `dependencies/` and
+`runtime/`; ordinary assets are copied into `runtime/assets`, generated grids are merged there
+without overwriting another product, and `runtime/package.fpk` is the compiler's exact output.
+The package then passes ordinary dependency resolution and `data.Store` loading before the
+handle is published. At most two successful candidates live by default. A failed candidate
+cleans only itself; earlier handles, package bytes and asset trees remain until their owner
+releases them. Step 4 does not activate any product.
+
+**The failure matrix found two implementation defects.** Canonical-path allocation returned a
+sentinel-owned slice as an ordinary slice, so freeing it omitted the sentinel byte; preserving
+the sentinel type fixed the allocator mismatch. Candidate cleanup defers initially freed the
+relative name before using it to remove a failed tree, so invalid validation left a directory
+behind; one ordered cleanup block now removes before freeing. Neither defect was hidden behind
+an extra audit: its failing executable test was fixed and rerun.
+
+**Evidence.** Six new declarations cover the atomic create primitive and confined directory
+operations; stable-prefix partial Save All, external changes, explicit discard/refresh, a
+crash-left lock and new-name collision; structured dirty-draft validation and failed-candidate
+cleanup; source/output alias and swapped-directory refusal; exact `.fpk` and generated-grid
+parity with a direct compiler invocation; generated-asset failure, stale-handle refusal and two
+simultaneously live builds. Disabling source/output alias rejection made the confinement test
+accept an unsafe workspace. Disabling successful-candidate retention made the parity test lose
+its artifact. Both guards were restored. The full bar passes **1,523 of 1,524** headless tests
+(one existing skip), from **1,595 declared**, including native, Metal, Linux/Windows cross
+checks and both 30-frame null sample runs.
+
+**Left for Step 5.** No public table, C declaration, ABI agreement, host service, export call,
+preview request or preview lifetime exists yet. `FoundryApi_v1`–`v3` are unchanged. Step 5 must
+freeze and publish v4 before any editor client can consume this capability.

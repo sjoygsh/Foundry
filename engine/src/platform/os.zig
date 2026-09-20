@@ -573,11 +573,86 @@ pub const Os = struct {
         // that survive a power loss, and it is reported rather than retried: the
         // replacement has happened, so a failure here is a weaker guarantee and not a
         // failed write. Systems that do not allow flushing a directory land here too.
-        var dir_file = parent.dir.openFile(the_io, ".", .{ .allow_directory = true }) catch
-            return .entry_unflushed;
-        defer dir_file.close(the_io);
-        dir_file.sync(the_io) catch return .entry_unflushed;
-        return .durable;
+        return flushDir(parent.dir, the_io);
+    }
+
+    /// Publishes one new confined file atomically, and refuses when anything already has
+    /// the destination name.
+    ///
+    /// This is deliberately separate from `replaceFileConfined`: a new authoring document
+    /// must not turn a stale view of an absent file into an overwrite of a file another
+    /// editor just created. The bytes are written and synced under an exclusive temporary
+    /// sibling first, then a non-replacing rename (or an atomic hard link on filesystems
+    /// without that rename operation) makes the complete file visible in one step.
+    pub fn createFileConfined(
+        self: *Os,
+        root: []const u8,
+        relative: []const u8,
+        bytes: []const u8,
+        max_bytes: usize,
+    ) FileError!Durability {
+        if (bytes.len > max_bytes) return error.FileTooLarge;
+
+        const the_io = self.io();
+        var parent = try self.openParentConfined(root, relative);
+        defer parent.dir.close(the_io);
+
+        var name_buf: [temp_name_max]u8 = undefined;
+        var temp_name: []const u8 = undefined;
+        var file: std.Io.File = undefined;
+        var created = false;
+        var attempt: u32 = 0;
+        while (attempt < temp_name_attempts) : (attempt += 1) {
+            temp_name = try self.tempName(&name_buf, parent.leaf);
+            file = parent.dir.createFile(the_io, temp_name, .{
+                .truncate = false,
+                .exclusive = true,
+                .resolve_beneath = true,
+            }) catch |err| switch (err) {
+                error.PathAlreadyExists => continue,
+                else => return mapConfinedError(err, "create a temporary file beside", relative),
+            };
+            created = true;
+            break;
+        }
+        if (!created) {
+            log.warn("could not find an unused temporary name beside '{s}'", .{relative});
+            return error.IoFailed;
+        }
+
+        self.writeSynced(file, bytes, relative) catch |err| {
+            parent.dir.deleteFile(the_io, temp_name) catch {};
+            return err;
+        };
+
+        parent.dir.renamePreserve(temp_name, parent.dir, parent.leaf, the_io) catch |rename_err| switch (rename_err) {
+            error.PathAlreadyExists => {
+                parent.dir.deleteFile(the_io, temp_name) catch {};
+                return error.AlreadyExists;
+            },
+            error.OperationUnsupported => {
+                // A hard link has the same create-if-absent property and is atomic. Both
+                // names are in one directory, so it cannot cross a filesystem boundary.
+                parent.dir.hardLink(temp_name, parent.dir, parent.leaf, the_io, .{}) catch |link_err| {
+                    parent.dir.deleteFile(the_io, temp_name) catch {};
+                    return switch (link_err) {
+                        error.PathAlreadyExists => error.AlreadyExists,
+                        else => mapConfinedError(link_err, "publish", relative),
+                    };
+                };
+                // Publication has happened and cannot honestly be reported as a failed
+                // save. A failed unlink leaves one hidden hard-link sibling to recover,
+                // but the destination already names the complete synced bytes.
+                parent.dir.deleteFile(the_io, temp_name) catch |delete_err|
+                    log.warn("published '{s}', but could not remove its temporary sibling: {t}", .{ relative, delete_err });
+            },
+            else => {
+                parent.dir.deleteFile(the_io, temp_name) catch {};
+                return mapConfinedError(rename_err, "publish", relative);
+            },
+        };
+
+        return flushDir(parent.dir, the_io);
     }
 
     /// Writes a whole open file and puts it on the device. Closes it either way.
@@ -648,6 +723,62 @@ pub const Os = struct {
         };
     }
 
+    /// Creates exactly one directory below a confined root and refuses an existing name.
+    pub fn createDirConfined(self: *Os, root: []const u8, relative: []const u8) FileError!void {
+        const the_io = self.io();
+        var parent = try self.openParentConfined(root, relative);
+        defer parent.dir.close(the_io);
+        parent.dir.createDir(the_io, parent.leaf, .default_dir) catch |err| switch (err) {
+            error.PathAlreadyExists => return error.AlreadyExists,
+            else => return mapConfinedError(err, "create directory", relative),
+        };
+    }
+
+    /// Creates missing directories below `root`, opening every existing component without
+    /// following links. Unlike `createDirPath`, package-controlled path components can use
+    /// this without turning an intermediate symlink into write authority outside the root.
+    pub fn createDirPathConfined(self: *Os, root: []const u8, relative: []const u8) FileError!void {
+        if (!isSafeRelativePath(relative)) return error.InvalidPath;
+        const the_io = self.io();
+        var current = (if (isAbsolute(root))
+            std.Io.Dir.openDirAbsolute(the_io, root, .{})
+        else
+            std.Io.Dir.cwd().openDir(the_io, root, .{})) catch |err|
+            return mapConfinedError(err, "open root for", relative);
+        defer current.close(the_io);
+
+        var it = std.mem.splitScalar(u8, relative, '/');
+        while (it.next()) |component| {
+            if (component.len == 0 or std.mem.eql(u8, component, ".")) continue;
+            const next = current.openDir(the_io, component, .{ .follow_symlinks = false }) catch |open_err| switch (open_err) {
+                error.FileNotFound => blk: {
+                    current.createDir(the_io, component, .default_dir) catch |create_err| switch (create_err) {
+                        // Another cooperating creator won the race; opening it below still
+                        // verifies that what won is a directory and not a link.
+                        error.PathAlreadyExists => {},
+                        else => return mapConfinedError(create_err, "create directory path", relative),
+                    };
+                    break :blk current.openDir(the_io, component, .{ .follow_symlinks = false }) catch |err|
+                        return mapConfinedError(err, "open created directory path", relative);
+                },
+                else => return mapConfinedError(open_err, "open directory path", relative),
+            };
+            current.close(the_io);
+            current = next;
+        }
+    }
+
+    /// Removes exactly one confined tree. `deleteTree` does not follow a symlink at its
+    /// initial entry, and every parent component was already opened without following one.
+    /// Missing is success, as for `deleteFileConfined`.
+    pub fn deleteTreeConfined(self: *Os, root: []const u8, relative: []const u8) FileError!void {
+        const the_io = self.io();
+        var parent = try self.openParentConfined(root, relative);
+        defer parent.dir.close(the_io);
+        parent.dir.deleteTree(the_io, parent.leaf) catch |err|
+            return mapConfinedError(err, "delete tree", relative);
+    }
+
     pub fn exists(self: *Os, path: []const u8) bool {
         _ = self.statFile(path) catch return false;
         return true;
@@ -716,6 +847,54 @@ pub const Os = struct {
         }
 
         return .{ .entries = try entries.toOwnedSlice(arena_gpa), .arena = arena };
+    }
+
+    /// Lists a directory under a granted root without following any component below that
+    /// root. The root itself is the host capability and may be a symlink; `relative` may be
+    /// empty to list that root.
+    pub fn listDirConfined(self: *Os, gpa: Allocator, root: []const u8, relative: []const u8) FileError!DirListing {
+        const the_io = self.io();
+        var dir = if (relative.len == 0 or std.mem.eql(u8, relative, "."))
+            (if (isAbsolute(root))
+                std.Io.Dir.openDirAbsolute(the_io, root, .{ .iterate = true })
+            else
+                std.Io.Dir.cwd().openDir(the_io, root, .{ .iterate = true })) catch |err|
+                return mapConfinedError(err, "open root for", relative)
+        else blk: {
+            var parent = try self.openParentConfined(root, relative);
+            defer parent.dir.close(the_io);
+            break :blk parent.dir.openDir(the_io, parent.leaf, .{
+                .follow_symlinks = false,
+                .iterate = true,
+            }) catch |err| return mapConfinedError(err, "open directory", relative);
+        };
+        defer dir.close(the_io);
+
+        var arena: std.heap.ArenaAllocator = .init(gpa);
+        errdefer arena.deinit();
+        const arena_gpa = arena.allocator();
+        var entries: std.ArrayList(DirEntry) = .empty;
+        var it = dir.iterate();
+        while (it.next(the_io) catch |err| return mapConfinedError(err, "iterate", relative)) |entry| {
+            try entries.append(arena_gpa, .{
+                .name = try arena_gpa.dupe(u8, entry.name),
+                .kind = mapKind(entry.kind),
+            });
+        }
+        return .{ .entries = try entries.toOwnedSlice(arena_gpa), .arena = arena };
+    }
+
+    /// Canonicalizes an existing host-granted path. This is for comparing capability roots,
+    /// never for authorizing a later open; the actual reads and writes remain handle-relative
+    /// and no-follow.
+    pub fn canonicalPathAlloc(self: *Os, gpa: Allocator, path: []const u8) FileError![:0]u8 {
+        const the_io = self.io();
+        const resolved = (if (isAbsolute(path))
+            std.Io.Dir.realPathFileAbsoluteAlloc(the_io, path, gpa)
+        else
+            std.Io.Dir.cwd().realPathFileAlloc(the_io, path, gpa)) catch |err|
+            return mapFileError(err, "canonicalize", path);
+        return resolved;
     }
 
     // -- base directories ----------------------------------------------------------
@@ -904,6 +1083,7 @@ fn mapFileError(err: anyerror, comptime verb: []const u8, path: []const u8) File
     return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         error.FileNotFound => error.FileNotFound,
+        error.PathAlreadyExists => error.AlreadyExists,
         error.AccessDenied, error.PermissionDenied => error.AccessDenied,
         error.IsDir, error.NotDir => error.WrongFileKind,
         error.NameTooLong, error.BadPathName, error.InvalidUtf8, error.InvalidWtf8 => error.InvalidPath,
@@ -913,6 +1093,14 @@ fn mapFileError(err: anyerror, comptime verb: []const u8, path: []const u8) File
             return error.IoFailed;
         },
     };
+}
+
+fn flushDir(dir: std.Io.Dir, the_io: std.Io) Durability {
+    var dir_file = dir.openFile(the_io, ".", .{ .allow_directory = true }) catch
+        return .entry_unflushed;
+    defer dir_file.close(the_io);
+    dir_file.sync(the_io) catch return .entry_unflushed;
+    return .durable;
 }
 
 /// Confined traversal treats a symlink loop and an intermediate non-directory as a rejected
@@ -1338,6 +1526,53 @@ test "a confined replacement writes through a subdirectory it is given" {
     defer testing.allocator.free(read.bytes);
     try testing.expectEqualStrings("line", read.bytes);
     try testing.expectEqual(@as(usize, 1), try countEntries(os, logs));
+}
+
+test "confined create publishes once and never replaces the winner" {
+    var os = try testOs(&.{});
+    defer os.deinit();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir = try tmpPath(&tmp, &buf);
+
+    const durability = try os.createFileConfined(dir, "new.fdt", "complete", 1024);
+    try testing.expect(durability == .durable or durability == .entry_unflushed);
+    try testing.expectError(error.AlreadyExists, os.createFileConfined(dir, "new.fdt", "replacement", 1024));
+
+    const read = try os.readFileConfined(testing.allocator, dir, "new.fdt", 1024);
+    defer testing.allocator.free(read.bytes);
+    try testing.expectEqualStrings("complete", read.bytes);
+    try testing.expectEqual(@as(usize, 1), try countEntries(os, dir));
+}
+
+test "confined directory operations do not cross an intermediate link" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var os = try testOs(&.{});
+    defer os.deinit();
+    var root_tmp = testing.tmpDir(.{});
+    defer root_tmp.cleanup();
+    var outside_tmp = testing.tmpDir(.{});
+    defer outside_tmp.cleanup();
+    var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    var outside_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root = try tmpPath(&root_tmp, &root_buf);
+    const outside = try tmpPath(&outside_tmp, &outside_buf);
+
+    try os.createDirPathConfined(root, "candidates/one/assets");
+    _ = try os.createFileConfined(root, "candidates/one/assets/a.bin", "a", 16);
+    var listing = try os.listDirConfined(testing.allocator, root, "candidates/one/assets");
+    defer listing.deinit();
+    try testing.expectEqual(@as(usize, 1), listing.entries.len);
+
+    try root_tmp.dir.symLink(testing.io, outside, "linked", .{ .is_directory = true });
+    try testing.expectError(error.InvalidPath, os.createDirPathConfined(root, "linked/escape"));
+    try testing.expectError(error.InvalidPath, os.listDirConfined(testing.allocator, root, "linked"));
+
+    try os.deleteTreeConfined(root, "candidates/one");
+    try testing.expectError(error.FileNotFound, os.listDirConfined(testing.allocator, root, "candidates/one"));
 }
 
 test "a replacement that cannot finish leaves the previous file and no temporary" {

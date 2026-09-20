@@ -3,8 +3,8 @@
 //! **What a session holds while an author works on a package**: the source documents it
 //! found, the dependency packages its host granted, what its manifest says it is and needs,
 //! and the bounds all of that was read under. Typed commands edit its in-memory documents,
-//! with revision checks and bounded undo/redo; persistence and compilation remain later-step
-//! concerns (`docs/design/editor.md` §4–§6).
+//! with revision checks and bounded undo/redo. Explicit persistence and isolated candidate
+//! builds share those documents without turning either into an implicit side effect.
 //!
 //! **A workspace is a capability, and its root is borrowed.** The host owns the directory
 //! and grants it; nothing in a package can name another one, and no call here reaches a
@@ -33,8 +33,10 @@ const data = @import("data");
 const platform = @import("platform");
 
 const compiler = @import("compiler.zig");
+const build_mod = @import("build.zig");
 const dependency = @import("dependency.zig");
 const edit = @import("edit.zig");
+const save = @import("save.zig");
 
 const Allocator = std.mem.Allocator;
 const Diagnostics = data.Diagnostics;
@@ -71,8 +73,21 @@ pub const Limits = struct {
     content: data.Limits = .default,
     /// What the granted dependency packages are read under.
     dependencies: dependency.Limits = .default,
+    /// Source, asset and dependency bytes captured for one validation/build operation.
+    max_snapshot_bytes: usize = 512 * 1024 * 1024,
+    /// Successful candidates retained until a caller releases them.
+    max_live_builds: u32 = 2,
 
     pub const default: Limits = .{};
+};
+
+pub const Grants = struct {
+    /// Typed in-memory commands and explicit discard/refresh.
+    edit: bool = false,
+    /// Atomic publication below the source root.
+    save: bool = false,
+    /// Private candidates below `Options.output_root`.
+    build: bool = false,
 };
 
 /// What a host grants a workspace, besides the directory itself.
@@ -84,6 +99,9 @@ pub const Options = struct {
     /// same set on two machines with the same grant and no ambient mod library can change
     /// what an author is checked against.
     dependencies: []const dependency.Source = &.{},
+    /// A separate, existing host-granted directory for private build candidates.
+    output_root: ?[]const u8 = null,
+    grants: Grants = .{},
     limits: Limits = .default,
 };
 
@@ -96,6 +114,19 @@ pub const Error = error{
     /// much of it to look at — and the difference decides whether an author edits a file or
     /// moves a tree.
     OverBudget,
+    /// The source/output/dependency roots overlap, or build authority has no output root.
+    InvalidGrant,
+} || Allocator.Error;
+
+pub const RefreshError = error{
+    StaleRevision,
+    RevisionExhausted,
+    InvalidDocument,
+    WriteNotGranted,
+    DirtyDocument,
+    NoChange,
+    DocumentBudget,
+    IoFailed,
 } || Allocator.Error;
 
 /// One source file, open in a workspace.
@@ -111,6 +142,8 @@ pub const Workspace = struct {
     /// The granted directory, **borrowed**: the host owns it and this does not copy it, as
     /// a compile borrows the directory it is handed.
     root: []const u8,
+    output_root: ?[]const u8,
+    grants: Grants,
     limits: Limits,
     /// Every source file, in discovery order — sorted by path, so the same tree gives the
     /// same list on every machine (I9).
@@ -129,6 +162,8 @@ pub const Workspace = struct {
     /// Schemas, revision and bounded command history. It owns no source paths or files;
     /// those remain visibly workspace state above.
     editing: edit.State,
+    builds: build_mod.State = .{},
+    build_sequence: u64 = 0,
 
     /// Opens `root`: reads the manifest, loads the granted dependencies, discovers the
     /// sources and reads every one, and reports what the manifest requires that was not
@@ -145,12 +180,15 @@ pub const Workspace = struct {
             .arena = .init(gpa),
             .os = os,
             .root = root,
+            .output_root = options.output_root,
+            .grants = options.grants,
             .limits = options.limits,
             .dependencies = .init(gpa),
             .editing = .init(gpa, options.limits.content),
         };
         errdefer self.deinit();
 
+        try self.validateGrants(options.dependencies, diags);
         try self.readManifest(diags);
         self.dependencies = try dependency.Set.load(gpa, os, options.dependencies, options.limits.dependencies, diags);
         try self.readDocuments(diags);
@@ -161,6 +199,7 @@ pub const Workspace = struct {
     }
 
     pub fn deinit(self: *Workspace) void {
+        self.builds.deinit(self.gpa, self.os, self.output_root);
         for (self.documents) |*document| document.deinit(self.gpa);
         self.gpa.free(self.documents);
         if (self.identity) |identity| self.gpa.free(identity.name);
@@ -200,47 +239,222 @@ pub const Workspace = struct {
     }
 
     pub fn createRecord(self: *Workspace, expected_revision: u64, document: u32, schema: []const u8, id: []const u8, diags: *Diagnostics) edit.Error!edit.Result {
+        if (!self.grants.edit) return error.WriteNotGranted;
         return edit.createRecord(self.editContext(), expected_revision, document, schema, id, diags);
     }
 
     pub fn duplicateRecord(self: *Workspace, expected_revision: u64, source: edit.RecordRef, destination: u32, id: []const u8, diags: *Diagnostics) edit.Error!edit.Result {
+        if (!self.grants.edit) return error.WriteNotGranted;
         return edit.duplicateRecord(self.editContext(), expected_revision, source, destination, id, diags);
     }
 
     pub fn createOverride(self: *Workspace, expected_revision: u64, destination: u32, source: edit.DependencyRecordRef, diags: *Diagnostics) edit.Error!edit.Result {
+        if (!self.grants.edit) return error.WriteNotGranted;
         return edit.createOverride(self.editContext(), expected_revision, destination, source, diags);
     }
 
     pub fn deleteRecord(self: *Workspace, expected_revision: u64, ref: edit.RecordRef, diags: *Diagnostics) edit.Error!edit.Result {
+        if (!self.grants.edit) return error.WriteNotGranted;
         return edit.deleteRecord(self.editContext(), expected_revision, ref, diags);
     }
 
     pub fn setValue(self: *Workspace, expected_revision: u64, ref: edit.RecordRef, path: []const edit.Selector, value: edit.TypedValue, diags: *Diagnostics) edit.Error!edit.Result {
+        if (!self.grants.edit) return error.WriteNotGranted;
         return edit.setValue(self.editContext(), expected_revision, ref, path, value, diags);
     }
 
     pub fn unsetField(self: *Workspace, expected_revision: u64, ref: edit.RecordRef, path: []const edit.Selector, diags: *Diagnostics) edit.Error!edit.Result {
+        if (!self.grants.edit) return error.WriteNotGranted;
         return edit.unsetField(self.editContext(), expected_revision, ref, path, diags);
     }
 
     pub fn insertListItem(self: *Workspace, expected_revision: u64, ref: edit.RecordRef, path: []const edit.Selector, index: u32, value: edit.TypedValue, diags: *Diagnostics) edit.Error!edit.Result {
+        if (!self.grants.edit) return error.WriteNotGranted;
         return edit.insertListItem(self.editContext(), expected_revision, ref, path, index, value, diags);
     }
 
     pub fn removeListItem(self: *Workspace, expected_revision: u64, ref: edit.RecordRef, path: []const edit.Selector, index: u32, diags: *Diagnostics) edit.Error!edit.Result {
+        if (!self.grants.edit) return error.WriteNotGranted;
         return edit.removeListItem(self.editContext(), expected_revision, ref, path, index, diags);
     }
 
     pub fn moveListItem(self: *Workspace, expected_revision: u64, ref: edit.RecordRef, path: []const edit.Selector, from: u32, to: u32, diags: *Diagnostics) edit.Error!edit.Result {
+        if (!self.grants.edit) return error.WriteNotGranted;
         return edit.moveListItem(self.editContext(), expected_revision, ref, path, from, to, diags);
     }
 
     pub fn undo(self: *Workspace, expected_revision: u64, diags: *Diagnostics) edit.Error!edit.Result {
+        if (!self.grants.edit) return error.WriteNotGranted;
         return edit.undo(self.editContext(), expected_revision, diags);
     }
 
     pub fn redo(self: *Workspace, expected_revision: u64, diags: *Diagnostics) edit.Error!edit.Result {
+        if (!self.grants.edit) return error.WriteNotGranted;
         return edit.redo(self.editContext(), expected_revision, diags);
+    }
+
+    pub fn createDocument(self: *Workspace, expected_revision: u64, path: []const u8) edit.Error!u32 {
+        if (!self.grants.edit) return error.WriteNotGranted;
+        if (expected_revision != self.editing.revision) return error.StaleRevision;
+        if (self.editing.revision == std.math.maxInt(u64)) return error.RevisionExhausted;
+        if (self.documents.len >= self.limits.walk.max_sources) return error.SourceTooLarge;
+        if (!validDocumentPath(path)) return error.InvalidDocumentName;
+        for (self.documents) |document| if (std.mem.eql(u8, document.path, path)) return error.DuplicateDocument;
+        var parent = self.os.listDirConfined(self.gpa, self.root, std.fs.path.dirnamePosix(path) orelse ".") catch
+            return error.InvalidDocumentName;
+        parent.deinit();
+        if (self.os.statFileConfined(self.root, path)) |_| return error.DuplicateDocument else |err| switch (err) {
+            error.FileNotFound => {},
+            else => return error.InvalidDocumentName,
+        }
+
+        const owned_path = try self.gpa.dupe(u8, path);
+        errdefer self.gpa.free(owned_path);
+        const bytes = try self.gpa.alloc(u8, 0);
+        errdefer self.gpa.free(bytes);
+        const baseline = try self.gpa.alloc(u8, 0);
+        errdefer self.gpa.free(baseline);
+        const next = try self.gpa.alloc(Document, self.documents.len + 1);
+        errdefer self.gpa.free(next);
+        @memcpy(next[0..self.documents.len], self.documents);
+        next[self.documents.len] = .{
+            .path = owned_path,
+            .owns_path = true,
+            .bytes = bytes,
+            .baseline = baseline,
+            .disk = .{ .size = 0, .kind = .file, .modified_ns = 0 },
+            .on_disk = false,
+            .parseable = true,
+            .editable = true,
+        };
+        self.gpa.free(self.documents);
+        self.documents = next;
+        self.editing.revision += 1;
+        return @intCast(self.documents.len - 1);
+    }
+
+    /// Replaces a draft with its last-read/saved bytes. This is the explicit destructive
+    /// half of conflict recovery: refreshing a dirty draft is refused until its caller has
+    /// deliberately discarded it.
+    pub fn discardDocument(self: *Workspace, expected_revision: u64, document: u32, diags: *Diagnostics) RefreshError!u64 {
+        try self.beginRefresh(expected_revision, document);
+        const current = &self.documents[document];
+        if (!current.dirty()) return error.NoChange;
+        return self.installDocumentVersion(document, current.baseline, current.baseline, current.disk, current.on_disk, diags);
+    }
+
+    /// Accepts the current disk file as both draft and baseline. It never overwrites a dirty
+    /// draft: the caller must make the destructive discard a separate, revisioned action.
+    pub fn refreshDocument(self: *Workspace, expected_revision: u64, document: u32, diags: *Diagnostics) RefreshError!u64 {
+        try self.beginRefresh(expected_revision, document);
+        const current = &self.documents[document];
+        if (current.dirty()) return error.DirtyDocument;
+
+        const read = self.os.readFileConfined(self.gpa, self.root, current.path, self.limits.max_source_bytes) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.FileTooLarge => return error.DocumentBudget,
+            else => {
+                try diags.addFmt(self.gpa, .err, .whole(current.path), 1, "", "could not be refreshed from disk: {s}", .{@errorName(err)});
+                return error.IoFailed;
+            },
+        };
+        defer self.gpa.free(read.bytes);
+        if (std.mem.eql(u8, read.bytes, current.baseline) and current.on_disk and !current.externally_changed)
+            return error.NoChange;
+        return self.installDocumentVersion(document, read.bytes, read.bytes, read.info, true, diags);
+    }
+
+    pub fn saveDocument(self: *Workspace, expected_revision: u64, document: u32, diags: *Diagnostics) save.Error!save.Result {
+        return save.saveOne(self.saveContext(), expected_revision, document, diags);
+    }
+
+    pub fn saveAll(self: *Workspace, expected_revision: u64, diags: *Diagnostics) save.Error!save.AllResult {
+        return save.saveAll(self.saveContext(), expected_revision, diags);
+    }
+
+    pub fn validate(self: *Workspace, expected_revision: u64, diags: *Diagnostics) build_mod.Error!void {
+        return build_mod.validate(self.buildContext(), expected_revision, diags);
+    }
+
+    pub fn build(self: *Workspace, expected_revision: u64, diags: *Diagnostics) build_mod.Error!build_mod.Handle {
+        return build_mod.build(self.buildContext(), expected_revision, diags);
+    }
+
+    pub fn buildInfo(self: *Workspace, handle: build_mod.Handle) build_mod.Error!build_mod.Info {
+        return build_mod.info(self.buildContext(), handle);
+    }
+
+    pub fn releaseBuild(self: *Workspace, handle: build_mod.Handle, diags: *Diagnostics) build_mod.Error!void {
+        return build_mod.release(self.buildContext(), handle, diags);
+    }
+
+    pub fn buildCount(self: *const Workspace) u32 {
+        return self.builds.count();
+    }
+
+    fn beginRefresh(self: *Workspace, expected_revision: u64, document: u32) RefreshError!void {
+        if (!self.grants.edit) return error.WriteNotGranted;
+        if (expected_revision != self.editing.revision) return error.StaleRevision;
+        if (self.editing.revision == std.math.maxInt(u64)) return error.RevisionExhausted;
+        if (document >= self.documents.len) return error.InvalidDocument;
+    }
+
+    fn installDocumentVersion(
+        self: *Workspace,
+        document_index: u32,
+        bytes: []const u8,
+        baseline: []const u8,
+        disk: platform.os.FileInfo,
+        on_disk: bool,
+        diags: *Diagnostics,
+    ) RefreshError!u64 {
+        if (bytes.len > self.limits.max_source_bytes or baseline.len > self.limits.max_source_bytes)
+            return error.DocumentBudget;
+
+        var total_source: usize = 0;
+        var persistent: usize = 0;
+        for (self.documents, 0..) |document, i| {
+            const draft_len = if (i == document_index) bytes.len else document.bytes.len;
+            const baseline_len = if (i == document_index) baseline.len else document.baseline.len;
+            total_source = std.math.add(usize, total_source, draft_len) catch return error.DocumentBudget;
+            persistent = std.math.add(usize, persistent, draft_len) catch return error.DocumentBudget;
+            persistent = std.math.add(usize, persistent, baseline_len) catch return error.DocumentBudget;
+        }
+        if (total_source > self.limits.max_total_source_bytes or persistent > self.limits.max_document_bytes)
+            return error.DocumentBudget;
+
+        const next_bytes = try self.gpa.dupe(u8, bytes);
+        errdefer self.gpa.free(next_bytes);
+        const next_baseline = try self.gpa.dupe(u8, baseline);
+        errdefer self.gpa.free(next_baseline);
+        const staged = try self.gpa.dupe(Document, self.documents);
+        defer self.gpa.free(staged);
+        staged[document_index].bytes = next_bytes;
+        staged[document_index].baseline = next_baseline;
+        staged[document_index].disk = disk;
+        staged[document_index].on_disk = on_disk;
+        staged[document_index].externally_changed = false;
+
+        var next_editing = edit.State.init(self.gpa, self.limits.content);
+        errdefer next_editing.deinit(self.gpa);
+        next_editing.revision = self.editing.revision + 1;
+        try next_editing.prepare(self.gpa, staged, &self.dependencies, if (self.identity) |identity| identity.name else null, self.editLimits(), diags);
+
+        const target = &self.documents[document_index];
+        self.gpa.free(target.bytes);
+        self.gpa.free(target.baseline);
+        target.bytes = next_bytes;
+        target.baseline = next_baseline;
+        target.disk = disk;
+        target.on_disk = on_disk;
+        target.externally_changed = false;
+        for (self.documents, staged) |*document, classified| {
+            document.parseable = classified.parseable;
+            document.editable = classified.editable;
+        }
+        self.editing.deinit(self.gpa);
+        self.editing = next_editing;
+        return self.editing.revision;
     }
 
     fn editLimits(self: *const Workspace) edit.Limits {
@@ -263,6 +477,65 @@ pub const Workspace = struct {
             .package_name = if (self.identity) |identity| identity.name else null,
             .limits = self.editLimits(),
         };
+    }
+
+    fn saveContext(self: *Workspace) save.Context {
+        return .{
+            .gpa = self.gpa,
+            .os = self.os,
+            .root = self.root,
+            .documents = self.documents,
+            .state = &self.editing,
+            .max_source_bytes = self.limits.max_source_bytes,
+            .max_document_bytes = self.limits.max_document_bytes,
+            .write_granted = self.grants.save,
+        };
+    }
+
+    fn buildContext(self: *Workspace) build_mod.Context {
+        return .{
+            .gpa = self.gpa,
+            .os = self.os,
+            .source_root = self.root,
+            .output_root = self.output_root,
+            .documents = self.documents,
+            .dependencies = &self.dependencies,
+            .revision = self.editing.revision,
+            .build_granted = self.grants.build,
+            .limits = .{
+                .max_source_bytes = self.limits.max_source_bytes,
+                .max_snapshot_bytes = self.limits.max_snapshot_bytes,
+                .max_live_builds = self.limits.max_live_builds,
+                .walk = self.limits.walk,
+                .content = self.limits.content,
+                .dependencies = self.limits.dependencies,
+            },
+            .state = &self.builds,
+            .sequence = &self.build_sequence,
+        };
+    }
+
+    fn validateGrants(self: *Workspace, dependency_sources: []const dependency.Source, diags: *Diagnostics) Error!void {
+        if (self.grants.build and self.output_root == null) {
+            try diags.addFmt(self.gpa, .err, .whole("<workspace>"), 1, "", "build authority requires a separate output root", .{});
+            return error.InvalidGrant;
+        }
+        const output = self.output_root orelse return;
+        if (try rootsOverlap(self.gpa, self.os, self.root, output)) {
+            try diags.addFmt(self.gpa, .err, .whole(output), 1, "", "the build output root overlaps the source root", .{});
+            return error.InvalidGrant;
+        }
+        for (dependency_sources) |source| {
+            const package_root = std.fs.path.dirname(source.path) orelse ".";
+            if (try rootsOverlap(self.gpa, self.os, package_root, output)) {
+                try diags.addFmt(self.gpa, .err, .whole(output), 1, "", "the build output root overlaps a dependency package root", .{});
+                return error.InvalidGrant;
+            }
+            if (source.assets_root) |assets_root| if (try rootsOverlap(self.gpa, self.os, assets_root, output)) {
+                try diags.addFmt(self.gpa, .err, .whole(output), 1, "", "the build output root overlaps a dependency asset root", .{});
+                return error.InvalidGrant;
+            };
+        }
     }
 
     /// Reads `mod.fdt` if it is there, and takes the package's identity and requirements.
@@ -383,6 +656,45 @@ pub const Workspace = struct {
     }
 };
 
+fn validDocumentPath(path: []const u8) bool {
+    if (!platform.os.isSafeRelativePath(path)) return false;
+    if (!std.mem.endsWith(u8, path, "." ++ compiler.source_extension)) return false;
+    const leaf = std.fs.path.basename(path);
+    if (leaf.len > platform.os.max_replaceable_name) return false;
+    var it = std.mem.splitScalar(u8, path, '/');
+    while (it.next()) |component| {
+        // The shared compiler deliberately ignores dot-prefixed entries. Letting a
+        // workspace create one would make Save succeed and Build report an inventory
+        // mismatch for a file its own compiler cannot see.
+        if (component.len == 0 or component[0] == '.') return false;
+    }
+    return true;
+}
+
+fn rootsOverlap(gpa: Allocator, os: *Os, a: []const u8, b: []const u8) Error!bool {
+    const left = os.canonicalPathAlloc(gpa, a) catch return error.InvalidGrant;
+    defer gpa.free(left);
+    const right = os.canonicalPathAlloc(gpa, b) catch return error.InvalidGrant;
+    defer gpa.free(right);
+    return pathContains(left, right) or pathContains(right, left);
+}
+
+fn pathContains(parent: []const u8, child: []const u8) bool {
+    const equal = if (builtin.os.tag == .windows)
+        std.ascii.eqlIgnoreCase(parent, child)
+    else
+        std.mem.eql(u8, parent, child);
+    if (equal) return true;
+    const prefix = if (builtin.os.tag == .windows)
+        std.ascii.startsWithIgnoreCase(child, parent)
+    else
+        std.mem.startsWith(u8, child, parent);
+    if (!prefix) return false;
+    if (parent.len == 0 or child.len <= parent.len) return false;
+    const last = parent[parent.len - 1];
+    return std.fs.path.isSep(last) or std.fs.path.isSep(child[parent.len]);
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -478,6 +790,13 @@ const Fixture = struct {
         return path;
     }
 };
+
+fn documentNamed(workspace: *const Workspace, path: []const u8) u32 {
+    for (workspace.documents, 0..) |document, i| {
+        if (std.mem.eql(u8, document.path, path)) return @intCast(i);
+    }
+    unreachable;
+}
 
 test "sources are discovered in path order, and the manifest is one of them" {
     const f = try Fixture.init();
@@ -859,7 +1178,9 @@ test "typed commands preserve every value kind through undo and redo" {
     const gpa = testing.allocator;
     var open_diags = Diagnostics.init(gpa, .default);
     defer open_diags.deinit(gpa);
-    var workspace = try Workspace.open(gpa, f.os, try f.at("pkg"), .{}, &open_diags);
+    var workspace = try Workspace.open(gpa, f.os, try f.at("pkg"), .{
+        .grants = .{ .edit = true },
+    }, &open_diags);
     defer workspace.deinit();
     try testing.expect(!open_diags.failed);
     try testing.expectEqualStrings("records.fdt", workspace.documents[1].path);
@@ -936,7 +1257,9 @@ test "incomplete drafts commit, while stale and ill-typed commands are atomic" {
     const gpa = testing.allocator;
     var diags = Diagnostics.init(gpa, .default);
     defer diags.deinit(gpa);
-    var workspace = try Workspace.open(gpa, f.os, try f.at("pkg"), .{}, &diags);
+    var workspace = try Workspace.open(gpa, f.os, try f.at("pkg"), .{
+        .grants = .{ .edit = true },
+    }, &diags);
     defer workspace.deinit();
     const record: edit.RecordRef = .{ .document = 1, .record = 0 };
 
@@ -999,6 +1322,7 @@ test "create duplicate delete and bounded history preserve exact source" {
     var diags = Diagnostics.init(gpa, .default);
     defer diags.deinit(gpa);
     var workspace = try Workspace.open(gpa, f.os, try f.at("pkg"), .{
+        .grants = .{ .edit = true },
         .limits = .{ .max_history_commands = 2 },
     }, &diags);
     defer workspace.deinit();
@@ -1060,6 +1384,7 @@ test "a dependency override uses exact readers and refuses an unspellable id" {
     defer diags.deinit(gpa);
     var workspace = try Workspace.open(gpa, f.os, try f.at("pkg"), .{
         .dependencies = &.{.{ .path = granted }},
+        .grants = .{ .edit = true },
     }, &diags);
     defer workspace.deinit();
     try testing.expect(!diags.failed);
@@ -1093,6 +1418,7 @@ test "a command larger than the history budget changes neither bytes nor revisio
     var diags = Diagnostics.init(gpa, .default);
     defer diags.deinit(gpa);
     var workspace = try Workspace.open(gpa, f.os, try f.at("pkg"), .{
+        .grants = .{ .edit = true },
         .limits = .{ .max_history_bytes = 1 },
     }, &diags);
     defer workspace.deinit();
@@ -1116,7 +1442,9 @@ test "allocation failure during a command preserves bytes revision and history" 
         fn run(gpa: Allocator, os: *Os, package_root: []const u8) !void {
             var diags = Diagnostics.init(gpa, .default);
             defer diags.deinit(gpa);
-            var workspace = try Workspace.open(gpa, os, package_root, .{}, &diags);
+            var workspace = try Workspace.open(gpa, os, package_root, .{
+                .grants = .{ .edit = true },
+            }, &diags);
             defer workspace.deinit();
 
             const document = &workspace.documents[1];
@@ -1136,4 +1464,235 @@ test "allocation failure during a command preserves bytes revision and history" 
             try testing.expect(std.mem.indexOf(u8, document.bytes, "\"after\"") != null);
         }
     }.run, .{ f.os, root });
+}
+
+test "save all commits its stable prefix and preserves an external conflict" {
+    const f = try Fixture.init();
+    defer f.deinit();
+    try f.manifest(
+        "foundry:mod demo:root { name \"Root\" version 1 license \"MIT\" }\n" ++
+            "@schema demo:item { name string }\n",
+    );
+    try f.write("pkg/a.fdt", "demo:item demo:a { name \"a\" }\n");
+    try f.write("pkg/b.fdt", "demo:item demo:b { name \"b\" }\n");
+
+    const gpa = testing.allocator;
+    var open_diags = Diagnostics.init(gpa, .default);
+    defer open_diags.deinit(gpa);
+    var workspace = try Workspace.open(gpa, f.os, try f.at("pkg"), .{
+        .grants = .{ .edit = true, .save = true },
+    }, &open_diags);
+    defer workspace.deinit();
+    try testing.expect(!open_diags.failed);
+
+    const a = documentNamed(&workspace, "a.fdt");
+    const b = documentNamed(&workspace, "b.fdt");
+    var diags = Diagnostics.init(gpa, .default);
+    defer diags.deinit(gpa);
+    var revision = workspace.revision();
+    revision = (try workspace.setValue(revision, .{ .document = a, .record = 0 }, &.{.{ .field = 0 }}, .{ .value = .{ .string = "saved-a" } }, &diags)).revision;
+    revision = (try workspace.setValue(revision, .{ .document = b, .record = 0 }, &.{.{ .field = 0 }}, .{ .value = .{ .string = "draft-b" } }, &diags)).revision;
+    try f.write("pkg/b.fdt", "demo:item demo:b { name \"outside-b\" }\n");
+
+    var save_diags = Diagnostics.init(gpa, .default);
+    defer save_diags.deinit(gpa);
+    var result = try workspace.saveAll(revision, &save_diags);
+    defer result.deinit(gpa);
+    try testing.expectEqual(@as(usize, 2), result.items().len);
+    try testing.expectEqual(a, result.items()[0].document);
+    try testing.expect(result.items()[0].outcome == .saved);
+    try testing.expectEqual(b, result.items()[1].document);
+    try testing.expect(result.items()[1].outcome == .failed);
+    try testing.expectEqual(save.Failure.external_change, result.items()[1].outcome.failed);
+    try testing.expect(!workspace.documents[a].dirty());
+    try testing.expect(workspace.documents[b].dirty());
+    try testing.expect(workspace.documents[b].externally_changed);
+    const disk_a = try f.os.readFileConfined(gpa, try f.at("pkg"), "a.fdt", 1024);
+    defer gpa.free(disk_a.bytes);
+    try testing.expect(std.mem.indexOf(u8, disk_a.bytes, "saved-a") != null);
+
+    // Refresh cannot silently destroy the draft. Discard and refresh are two explicit,
+    // separately revisioned operations, after which the external bytes are the baseline.
+    var refresh_diags = Diagnostics.init(gpa, .default);
+    defer refresh_diags.deinit(gpa);
+    try testing.expectError(error.DirtyDocument, workspace.refreshDocument(result.revision, b, &refresh_diags));
+    revision = try workspace.discardDocument(result.revision, b, &refresh_diags);
+    revision = try workspace.refreshDocument(revision, b, &refresh_diags);
+    try testing.expectEqualStrings("demo:item demo:b { name \"outside-b\" }\n", workspace.documents[b].bytes);
+    try testing.expect(!workspace.documents[b].dirty());
+
+    // A crash-left token refuses another cooperating writer and is never guessed stale.
+    revision = (try workspace.setValue(revision, .{ .document = a, .record = 0 }, &.{.{ .field = 0 }}, .{ .value = .{ .string = "later" } }, &diags)).revision;
+    try f.write("pkg/.foundry-author.lock", "some other session\n");
+    try testing.expectError(error.Busy, workspace.saveDocument(revision, a, &save_diags));
+    try f.os.deleteFileConfined(try f.at("pkg"), save.lock_file);
+
+    // New names are create-if-absent. An unrelated writer which wins is preserved.
+    try testing.expectError(error.InvalidDocumentName, workspace.createDocument(revision, ".hidden.fdt"));
+    const fresh = try workspace.createDocument(revision, "new.fdt");
+    revision = workspace.revision();
+    const created = try workspace.saveDocument(revision, fresh, &save_diags);
+    try testing.expect(created.published);
+    revision = created.revision;
+    const taken = try workspace.createDocument(revision, "taken.fdt");
+    revision = workspace.revision();
+    try f.write("pkg/taken.fdt", "winner\n");
+    try testing.expectError(error.ExternalChange, workspace.saveDocument(revision, taken, &save_diags));
+    const winner = try f.os.readFileConfined(gpa, try f.at("pkg"), "taken.fdt", 1024);
+    defer gpa.free(winner.bytes);
+    try testing.expectEqualStrings("winner\n", winner.bytes);
+}
+
+test "candidate builds match the compiler and a failed generation keeps the last good build" {
+    const f = try Fixture.init();
+    defer f.deinit();
+    try f.manifest(
+        "foundry:mod demo:root { name \"Root\" version 1 license \"MIT\" }\n" ++
+            "@schema demo:item { name string }\n",
+    );
+    try f.write("pkg/records.fdt", "demo:item demo:one { name \"one\" }\n");
+    try f.write("pkg/grids/town.grid", "1 1 1\n1 0 1\n1 1 1\n");
+    const output = try f.at("output");
+    try f.os.createDirPath(output);
+
+    const gpa = testing.allocator;
+    var open_diags = Diagnostics.init(gpa, .default);
+    defer open_diags.deinit(gpa);
+    var workspace = try Workspace.open(gpa, f.os, try f.at("pkg"), .{
+        .output_root = output,
+        .grants = .{ .build = true },
+    }, &open_diags);
+    defer workspace.deinit();
+    try testing.expect(!open_diags.failed);
+
+    var build_diags = Diagnostics.init(gpa, .default);
+    defer build_diags.deinit(gpa);
+    const first = try workspace.build(workspace.revision(), &build_diags);
+    const first_info = try workspace.buildInfo(first);
+    try testing.expectEqual(@as(u32, 1), workspace.buildCount());
+
+    // The ordinary compiler over the same bytes and options is the byte oracle; authoring
+    // has no second compiler or editor-only package format.
+    const direct_generated = try f.at("direct-generated");
+    var registry = data.Registry.init(gpa, .default);
+    defer registry.deinit(gpa);
+    var direct_diags = Diagnostics.init(gpa, .default);
+    defer direct_diags.deinit(gpa);
+    var direct: std.ArrayList(u8) = .empty;
+    defer direct.deinit(gpa);
+    const identity = try compiler.compile(gpa, f.os, try f.at("pkg"), .{
+        .assets_out = direct_generated,
+    }, &registry, &direct_diags, &direct);
+    defer gpa.free(identity.name);
+    try testing.expectEqualSlices(u8, direct.items, first_info.package_bytes);
+
+    const first_grid_rel = try std.fmt.allocPrint(gpa, "{s}/runtime/assets/grids/town.fgrid", .{first_info.relative_dir});
+    defer gpa.free(first_grid_rel);
+    const first_grid = try f.os.readFileConfined(gpa, output, first_grid_rel, 1024 * 1024);
+    defer gpa.free(first_grid.bytes);
+    const direct_grid = try f.os.readFileConfined(gpa, direct_generated, "grids/town.fgrid", 1024 * 1024);
+    defer gpa.free(direct_grid.bytes);
+    try testing.expectEqualSlices(u8, direct_grid.bytes, first_grid.bytes);
+
+    // Failure happens after a fresh candidate and generated-output directory exist. Only
+    // that incomplete tree is cleaned; the prior handle and its bytes remain live.
+    try f.write("pkg/grids/town.grid", "1 1 1\n1 0\n");
+    var failure_diags = Diagnostics.init(gpa, .default);
+    defer failure_diags.deinit(gpa);
+    try testing.expectError(error.ContentInvalid, workspace.build(workspace.revision(), &failure_diags));
+    try testing.expectEqual(@as(u32, 1), workspace.buildCount());
+    const retained = try workspace.buildInfo(first);
+    try testing.expectEqualSlices(u8, direct.items, retained.package_bytes);
+    _ = try f.os.statFileConfined(output, first_grid_rel);
+
+    try f.write("pkg/grids/town.grid", "1 1 1\n1 0 1\n1 1 1\n");
+    var second_diags = Diagnostics.init(gpa, .default);
+    defer second_diags.deinit(gpa);
+    const second = try workspace.build(workspace.revision(), &second_diags);
+    const second_info = try workspace.buildInfo(second);
+    try testing.expect(!std.mem.eql(u8, first_info.relative_dir, second_info.relative_dir));
+    try testing.expectEqual(@as(u32, 2), workspace.buildCount());
+
+    var release_diags = Diagnostics.init(gpa, .default);
+    defer release_diags.deinit(gpa);
+    try workspace.releaseBuild(first, &release_diags);
+    try testing.expectError(error.InvalidHandle, workspace.buildInfo(first));
+    _ = try workspace.buildInfo(second);
+    try testing.expectEqual(@as(u32, 1), workspace.buildCount());
+}
+
+test "validation accepts drafts but reports an incomplete candidate without publishing it" {
+    const f = try Fixture.init();
+    defer f.deinit();
+    try f.manifest(
+        "foundry:mod demo:root { name \"Root\" version 1 license \"MIT\" }\n" ++
+            "@schema demo:item { name string }\n",
+    );
+    try f.write("pkg/records.fdt", "demo:item demo:one { name \"one\" }\n");
+    const output = try f.at("output");
+    try f.os.createDirPath(output);
+
+    const gpa = testing.allocator;
+    var open_diags = Diagnostics.init(gpa, .default);
+    defer open_diags.deinit(gpa);
+    var workspace = try Workspace.open(gpa, f.os, try f.at("pkg"), .{
+        .output_root = output,
+        .grants = .{ .edit = true, .build = true },
+    }, &open_diags);
+    defer workspace.deinit();
+    const records = documentNamed(&workspace, "records.fdt");
+
+    var edit_diags = Diagnostics.init(gpa, .default);
+    defer edit_diags.deinit(gpa);
+    const edit_result = try workspace.unsetField(workspace.revision(), .{ .document = records, .record = 0 }, &.{.{ .field = 0 }}, &edit_diags);
+    try testing.expect(edit_diags.failed);
+    var validation_diags = Diagnostics.init(gpa, .default);
+    defer validation_diags.deinit(gpa);
+    try testing.expectError(error.ContentInvalid, workspace.validate(edit_result.revision, &validation_diags));
+    try testing.expect(validation_diags.failed);
+    try testing.expectEqualStrings("records.fdt", validation_diags.items.items[0].location.file);
+    try testing.expectEqual(@as(u32, 0), workspace.buildCount());
+    try testing.expectEqual(@as(usize, 0), try countFixtureEntries(f.os, output));
+}
+
+test "build roots cannot alias sources and a swapped source directory is never followed" {
+    const f = try Fixture.init();
+    defer f.deinit();
+    try f.manifest("foundry:mod demo:root { name \"Root\" version 1 license \"MIT\" }\n");
+    try f.write("pkg/nested/records.fdt", "@schema demo:item { }\ndemo:item demo:inside { }\n");
+
+    const gpa = testing.allocator;
+    var alias_diags = Diagnostics.init(gpa, .default);
+    defer alias_diags.deinit(gpa);
+    const source_root = try f.at("pkg");
+    try testing.expectError(error.InvalidGrant, Workspace.open(gpa, f.os, source_root, .{
+        .output_root = source_root,
+        .grants = .{ .build = true },
+    }, &alias_diags));
+
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    try f.write("outside/records.fdt", "@schema demo:item { }\ndemo:item demo:outside { }\n");
+    const output = try f.at("output");
+    try f.os.createDirPath(output);
+    var open_diags = Diagnostics.init(gpa, .default);
+    defer open_diags.deinit(gpa);
+    var workspace = try Workspace.open(gpa, f.os, source_root, .{
+        .output_root = output,
+        .grants = .{ .build = true },
+    }, &open_diags);
+    defer workspace.deinit();
+
+    try std.Io.Dir.rename(f.tmp.dir, "pkg/nested", f.tmp.dir, "pkg/held", testing.io);
+    try f.tmp.dir.symLink(testing.io, try f.at("outside"), "pkg/nested", .{ .is_directory = true });
+    var build_diags = Diagnostics.init(gpa, .default);
+    defer build_diags.deinit(gpa);
+    try testing.expectError(error.ExternalChange, workspace.build(workspace.revision(), &build_diags));
+    try testing.expectEqual(@as(u32, 0), workspace.buildCount());
+    try testing.expectEqual(@as(usize, 0), try countFixtureEntries(f.os, output));
+}
+
+fn countFixtureEntries(os: *Os, path: []const u8) !usize {
+    var listing = try os.listDir(testing.allocator, path);
+    defer listing.deinit();
+    return listing.entries.len;
 }
