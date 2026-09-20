@@ -268,9 +268,13 @@ L5  debug       -> core, data, ui, asset, render2d, scene, audio, app.
                 opts in by importing it. No `platform`, no `rhi`, no `physics2d` — it
                 reads the engine's answers, not the devices under them.
 L5  abi         -> core, data, physics2d, platform, ui, asset, render2d, scene,
-                audio, app, mod.  The public C ABI, and the native mod loader.
+                audio, app, author, mod.  The public C ABI, and the native mod loader.
                 A peer of `debug`, not a layer over `app` (ADR-0026). No `rhi`,
                 ever; `platform` for `Library` alone. Holds no engine state.
+                `author` joined at M15 for ADR-0042's reason: authoring is published
+                through the one table like everything else, and the editor gets no
+                private path (I4). This module still creates no service — a host
+                hands it one, or authoring answers `Unavailable`.
 ```
 
 Games, samples and tools depend on `app`. A host that loads mods also imports `abi`; a
@@ -568,7 +572,9 @@ arbitrary to a future session. Do not write one for routine implementation choic
 [editor.md](docs/design/editor.md) is the nine-step plan. Its `author` module is in §4.3's
 layer graph, since Step 2 added it to the build; Step 3 added its revisioned typed commands and
 bounded exact-byte history; Step 4 added conflict-safe per-file saves, stable validation/build
-snapshots and retained private candidates. ABI v4 and preview activation begin in Step 5.
+snapshots and retained private candidates. Step 5 published all of it as `FoundryApi_v4`, 47
+additive calls beside v1–v3, and moved `fpack` onto that table. The editor application itself
+begins in Step 6.
 
 ---
 

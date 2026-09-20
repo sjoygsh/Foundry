@@ -157,10 +157,14 @@ const layering = [_]Module{
     // registry takes an `Os`. Being able to bind a fake engine is the whole reason `Host` is
     // generic, so the alternative was an asset surface with no unit tests at all.
     // `scene`, `render2d`, `ui`, `audio` and `physics2d` follow at steps 4 and 5.
+    // `author` joins at M15 step 5, for ADR-0042's reason: authoring is published through
+    // the one public table like everything else, and the editor gets no private path (I4).
+    // It is a downward dependency on L4, the same shape `app` already is here, and this
+    // module still creates no service — a host hands it one, or authoring is unavailable.
     // The one module it will **never** have is
     // `rhi` — §4.2's two boundaries, where the renderer API is game-facing and the RHI is
     // not, so this module does not merely decline to publish the RHI, it cannot see it.
-    .{ .name = "abi", .deps = &.{ "core", "data", "platform", "asset", "app", "scene", "mod", "render2d", "ui", "audio", "physics2d" } },
+    .{ .name = "abi", .deps = &.{ "core", "data", "platform", "asset", "app", "author", "scene", "mod", "render2d", "ui", "audio", "physics2d" } },
 };
 
 /// Which platform backend to build against.
@@ -595,10 +599,25 @@ pub fn build(b: *std.Build) void {
     // **There is no `id` here any more.** A package's identity is in its own `mod.fdt`
     // (ADR-0027), and the build used to state it a second time — two places to keep in
     // agreement, for a fact only one of them owns.
+    // **The samples are compiled against `core.fpk`, because they say they need it.** Both
+    // manifests `requires foundry:core`, and since M15 step 5 a build's last act is to load
+    // its candidate the way a game will — which refuses a package whose declared
+    // requirement was never granted (ADR-0042). Compiling the base package first and naming
+    // it is what makes that load succeed, and it is the honest arrangement anyway: a
+    // dependency is named, never searched for.
+    const core_package: release.Package = .{ .dir = "content/core", .stem = "core" };
+    const core_compiled: ?release.Compiled =
+        if (target.query.isNative()) release.compilePackage(b, fpack, core_package) else null;
+    const on_core: []const std.Build.LazyPath = if (core_compiled) |compiled| blk: {
+        const one = b.allocator.alloc(std.Build.LazyPath, 1) catch @panic("OOM");
+        one[0] = compiled.fpk;
+        break :blk one;
+    } else &.{};
+
     const content_packages = [_]release.Package{
-        .{ .dir = "content/core", .stem = "core" },
-        .{ .dir = "samples/sandbox/content", .stem = "sandbox" },
-        .{ .dir = "samples/room/content", .stem = "room" },
+        core_package,
+        .{ .dir = "samples/sandbox/content", .stem = "sandbox", .dependencies = on_core },
+        .{ .dir = "samples/room/content", .stem = "room", .dependencies = on_core },
     };
 
     // **Only when the build target can run here.** `fpack` is built for the target like
@@ -607,10 +626,13 @@ pub fn build(b: *std.Build) void {
     // so does not reach this; cross-*installing* is not a workflow Foundry has yet. When it
     // is one, the answer is a host-targeted `fpack`, not a weaker check here.
     if (target.query.isNative()) {
-        for (content_packages) |pkg| {
+        for (content_packages, 0..) |pkg, index| {
             // The same call `release.stage` makes, so the development install and a staged
-            // release cannot compile content differently (`distribution.md` §8).
-            const compiled = release.compilePackage(b, fpack, pkg);
+            // release cannot compile content differently (`distribution.md` §8). The base
+            // package is the one already compiled above, because the samples are compiled
+            // against its output and compiling it twice would be two answers to one
+            // question.
+            const compiled = if (index == 0) core_compiled.? else release.compilePackage(b, fpack, pkg);
 
             b.getInstallStep().dependOn(&b.addInstallFileWithDir(
                 compiled.fpk,

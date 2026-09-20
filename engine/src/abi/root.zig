@@ -32,6 +32,7 @@ pub const types = @import("types.zig");
 
 const agreement = @import("agreement.zig");
 const calls_asset = @import("calls_asset.zig");
+const calls_author = @import("calls_author.zig");
 const calls_audio = @import("calls_audio.zig");
 const calls_content = @import("calls_content.zig");
 const calls_engine = @import("calls_engine.zig");
@@ -40,6 +41,7 @@ const calls_physics = @import("calls_physics.zig");
 const calls_render = @import("calls_render.zig");
 const calls_scene = @import("calls_scene.zig");
 const calls_ui = @import("calls_ui.zig");
+const author_types = @import("author_types.zig");
 const mod_types = @import("mod_types.zig");
 const native_loader = @import("native_loader.zig");
 const physics_types = @import("physics_types.zig");
@@ -72,6 +74,13 @@ pub const View = types.View;
 pub const Voice = types.Voice;
 pub const Theme = types.Theme;
 
+/// `author` — the v4 authoring handles (ADR-0042).
+pub const Workspace = types.Workspace;
+pub const Document = types.Document;
+pub const SourceNode = types.SourceNode;
+pub const SchemaNode = types.SchemaNode;
+pub const Build = types.Build;
+
 /// What the host hands over, and what it gets back.
 ///
 /// `Host` is the concrete one a game wants; `HostOf` is what makes a test able to bind a
@@ -85,6 +94,7 @@ pub const ModsWriteGrant = host.ModsWriteGrant;
 pub const Api_v1 = api.Api_v1;
 pub const Api_v2 = api.Api_v2;
 pub const Api_v3 = api.Api_v3;
+pub const Api_v4 = api.Api_v4;
 pub const TableOf = api.TableOf;
 pub const FieldType = types.FieldType;
 pub const LogLevel = types.LogLevel;
@@ -151,6 +161,7 @@ pub const ModShutdown = types.ModShutdown;
 pub const api_version_1 = types.api_version_1;
 pub const api_version_2 = types.api_version_2;
 pub const api_version_3 = types.api_version_3;
+pub const api_version_4 = types.api_version_4;
 pub const init_symbol = types.init_symbol;
 pub const shutdown_symbol = types.shutdown_symbol;
 
@@ -158,6 +169,8 @@ test {
     _ = agreement;
     _ = api;
     _ = calls_asset;
+    _ = calls_author;
+    _ = author_types;
     _ = calls_audio;
     _ = calls_content;
     _ = calls_engine;

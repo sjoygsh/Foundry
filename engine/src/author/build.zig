@@ -58,6 +58,9 @@ pub const Context = struct {
     dependencies: *const dependency.Set,
     revision: u64,
     build_granted: bool,
+    /// Whether this workspace may also write source. Decides whether the cooperating
+    /// writer's lock is taken at all: see `save.Lock.unheld`.
+    write_granted: bool,
     limits: Limits,
     state: *State,
     sequence: *u64,
@@ -138,7 +141,10 @@ pub fn release(ctx: Context, handle: Handle, diags: *Diagnostics) Error!void {
 pub fn validate(ctx: Context, expected_revision: u64, diags: *Diagnostics) Error!void {
     try begin(ctx, expected_revision);
     const output_root = ctx.output_root.?;
-    var lock = save.Lock.acquire(ctx.gpa, ctx.os, ctx.source_root, expected_revision, diags) catch |err| return mapLockError(err);
+    var lock = if (ctx.write_granted)
+        save.Lock.acquire(ctx.gpa, ctx.os, ctx.source_root, expected_revision, diags) catch |err| return mapLockError(err)
+    else
+        save.Lock.unheld;
     defer releaseLock(ctx.gpa, &lock, diags);
 
     const candidate = try createCandidate(ctx, output_root);
@@ -164,7 +170,10 @@ pub fn build(ctx: Context, expected_revision: u64, diags: *Diagnostics) Error!Ha
     try ctx.state.pool.ensureUnusedCapacity(ctx.gpa, 1);
 
     const output_root = ctx.output_root.?;
-    var lock = save.Lock.acquire(ctx.gpa, ctx.os, ctx.source_root, expected_revision, diags) catch |err| return mapLockError(err);
+    var lock = if (ctx.write_granted)
+        save.Lock.acquire(ctx.gpa, ctx.os, ctx.source_root, expected_revision, diags) catch |err| return mapLockError(err)
+    else
+        save.Lock.unheld;
     defer releaseLock(ctx.gpa, &lock, diags);
 
     const candidate = try createCandidate(ctx, output_root);

@@ -32,6 +32,7 @@ comptime {
 pub const api_version_1: u32 = 1;
 pub const api_version_2: u32 = 2;
 pub const api_version_3: u32 = 3;
+pub const api_version_4: u32 = 4;
 
 // == Booleans ==========================================================================
 
@@ -298,6 +299,25 @@ pub const MemoryCounter = Opaque("memory counter");
 /// A content-derived UI theme resolved and owned by the host. It is valid only for the
 /// content generation in which it was issued.
 pub const Theme = Opaque("UI theme");
+
+/// `author` — the v4 authoring surface (ADR-0042). Five kinds, and they are five types for
+/// the reason every other handle here is its own type: a document passed where a build
+/// belongs is a compile error on both sides rather than a number that resolves to something.
+///
+/// **None of them is ever a runtime `Record` or `Schema`.** A draft is source text that has
+/// not been compiled, so a handle naming one cannot be a handle into a loaded store, and
+/// making them the same type would be an invitation to hand a half-written record to the
+/// simulation.
+pub const Workspace = Opaque("workspace");
+pub const Document = Opaque("document");
+/// A node of a record's value tree — a field, a nested field or a list element — in a
+/// draft, in a dependency definition, in the loaded preview or in a schema's default.
+/// **Stale after any mutation** (`editor.md` §5), even when the bytes it named did not move.
+pub const SourceNode = Opaque("source node");
+/// A node of a *declaration*: a schema, one of its fields, or a list's element type.
+pub const SchemaNode = Opaque("schema node");
+/// A successful build, and the private candidate tree behind it.
+pub const Build = Opaque("build");
 
 // == Enumerations ======================================================================
 

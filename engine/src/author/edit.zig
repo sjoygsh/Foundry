@@ -12,6 +12,7 @@ const platform = @import("platform");
 
 const compiler = @import("compiler.zig");
 const dependency = @import("dependency.zig");
+const nodes = @import("snapshot.zig");
 
 const Allocator = std.mem.Allocator;
 const ContentId = core.ContentId;
@@ -72,10 +73,10 @@ pub const DependencyRecordRef = struct {
 };
 
 /// One structural step from a record to a field or list element.
-pub const Selector = union(enum) {
-    field: u32,
-    item: u32,
-};
+///
+/// The read-only roots' step, deliberately: a path that meant one thing in a draft and
+/// another in a dependency would be two vocabularies for one idea (`snapshot.zig`).
+pub const Selector = nodes.Selector;
 
 /// A typed value plus the spellings of any content IDs it contains. Values store hashes;
 /// source stores names, so a caller entering a new ID must provide its spelling rather than
@@ -139,15 +140,38 @@ pub const State = struct {
     history: History = .{},
     revision: u64 = 1,
     available: bool = false,
+    /// Every available schema's spelling, sorted and unique, owned by `names`.
+    ///
+    /// The registry holds hashes, because nothing that *reads* content needs a word. A
+    /// form offering "create a record from a schema" does, and this is the only place the
+    /// words exist: the engine's own list, each dependency's own table, and every schema
+    /// this package declares. Collected here because `prepare` already has the parses, and
+    /// rebuilt whenever it runs.
+    schema_names: []const []const u8 = &.{},
+    names: core.Arena,
 
     pub fn init(gpa: Allocator, limits: data.Limits) State {
-        return .{ .registry = data.Registry.init(gpa, limits) };
+        return .{ .registry = data.Registry.init(gpa, limits), .names = .init(gpa) };
     }
 
     pub fn deinit(self: *State, gpa: Allocator) void {
         self.history.deinit(gpa);
         self.registry.deinit(gpa);
+        self.names.deinit();
         self.* = undefined;
+    }
+
+    /// Records one spelling, once. A linear scan: the set is a few dozen names, and a map
+    /// would need its own allocator lifetime for no gain.
+    fn addName(self: *State, list: *std.ArrayList([]const u8), gpa: Allocator, text: []const u8) Allocator.Error!void {
+        for (list.items) |known| {
+            if (std.mem.eql(u8, known, text)) return;
+        }
+        try list.append(gpa, try self.names.allocator().dupe(u8, text));
+    }
+
+    fn lessName(_: void, a: []const u8, b: []const u8) bool {
+        return std.mem.lessThan(u8, a, b);
     }
 
     /// Builds the schema registry and classifies every discovered source. Content mistakes
@@ -229,6 +253,19 @@ pub const State = struct {
             }
         }
 
+        var names: std.ArrayList([]const u8) = .empty;
+        defer names.deinit(gpa);
+        for (compiler.engine_schema_names) |name| try self.addName(&names, gpa, name);
+        for (dependencies.items()) |*granted| {
+            for (granted.reader.schema_names) |name| try self.addName(&names, gpa, name);
+        }
+        for (parsed) |*slot| {
+            const doc = if (slot.*) |*value| value else continue;
+            for (doc.schemas) |declaration| try self.addName(&names, gpa, declaration.text);
+        }
+        std.mem.sort([]const u8, names.items, {}, lessName);
+        self.schema_names = try self.names.allocator().dupe([]const u8, names.items);
+
         self.available = true;
     }
 };
@@ -260,30 +297,106 @@ pub const Inspection = struct {
     document: data.Document,
     declaration_index: u32,
     schema: *const Schema,
+    /// The workspace registry the schemas were looked up in. Borrowed, and what lets one
+    /// parse answer for every record in the file rather than one.
+    registry: *data.Registry,
 
     pub fn deinit(self: *Inspection) void {
         self.document.deinit(self.gpa);
         self.* = undefined;
     }
 
-    pub fn node(self: *const Inspection, path: []const Selector) Error!NodeInfo {
-        const resolved = try resolveNode(self.document.records[self.declaration_index], self.schema.*, path);
+    /// How many declarations the file holds, imported ones included. A reader filters
+    /// with `isLocalAt`; an index is a position in this array either way, exactly as
+    /// `RecordRef.record` is.
+    pub fn count(self: *const Inspection) u32 {
+        return @intCast(self.document.records.len);
+    }
+
+    /// One declaration, or null past the end.
+    pub fn declarationAt(self: *const Inspection, index: u32) ?*const data.parser.RecordDecl {
+        if (index >= self.document.records.len) return null;
+        return &self.document.records[index];
+    }
+
+    /// Whether the declaration at `index` was written in *this* file rather than reached
+    /// through an `@import`. An imported record belongs to the file it is written in, and
+    /// editing it there is what keeps one record one record (`editor.md` §5).
+    pub fn isLocalAt(self: *const Inspection, index: u32) bool {
+        const record = self.declarationAt(index) orelse return false;
+        return isLocal(record.*);
+    }
+
+    /// The schema one declaration is laid out against.
+    pub fn schemaAt(self: *const Inspection, index: u32) ?*const Schema {
+        const record = self.declarationAt(index) orelse return null;
+        if (record.kind != .define) return null;
+        return self.registry.lookup(record.schema);
+    }
+
+    /// A node of any record in this file, not only the one the inspection was opened for.
+    ///
+    /// One parse per file rather than one per record: a form that shows a package's
+    /// records would otherwise reparse the file once for every row it draws.
+    pub fn nodeIn(self: *const Inspection, index: u32, path: []const Selector) Error!NodeInfo {
+        const record = self.declarationAt(index) orelse return error.InvalidRecord;
+        if (record.kind != .define) return error.InvalidRecord;
+        const schema = self.registry.lookup(record.schema) orelse return error.SchemaUnavailable;
+        if (path.len == 0) return .{
+            .name = record.text,
+            .field_type = .{ .nested = schema.fields },
+            .presence = null,
+            .authored = true,
+            .child_count = @intCast(schema.fields.len),
+            .value = null,
+        };
+        const resolved = resolveNode(record.*, schema.*, path) catch |err| switch (err) {
+            // A path *through* something the source does not write. For a command that is
+            // a refusal; for a read it is the ordinary case of an unset optional block
+            // whose fields a form still wants to lay out, so the declaration answers.
+            error.NotPresent => return nodes.declared(schema.fields, path) orelse error.InvalidPath,
+            else => return err,
+        };
         return .{
+            .name = if (resolved.declared_field) |field| field.name else "",
             .field_type = resolved.field_type,
             .presence = if (resolved.declared_field) |field| field.presence else null,
             .authored = resolved.value != null,
+            .child_count = nodes.childCount(resolved.field_type, resolved.value),
+            .value = resolved.value,
+        };
+    }
+
+    /// The record itself, described in the same vocabulary as one of its fields.
+    pub fn root(self: *const Inspection) NodeInfo {
+        return .{
+            .name = self.document.records[self.declaration_index].text,
+            .field_type = .{ .nested = self.schema.fields },
+            .presence = null,
+            .authored = true,
+            .child_count = @intCast(self.schema.fields.len),
+            .value = null,
+        };
+    }
+
+    pub fn node(self: *const Inspection, path: []const Selector) Error!NodeInfo {
+        if (path.len == 0) return self.root();
+        const resolved = try resolveNode(self.document.records[self.declaration_index], self.schema.*, path);
+        return .{
+            .name = if (resolved.declared_field) |field| field.name else "",
+            .field_type = resolved.field_type,
+            .presence = if (resolved.declared_field) |field| field.presence else null,
+            .authored = resolved.value != null,
+            .child_count = nodes.childCount(resolved.field_type, resolved.value),
             .value = resolved.value,
         };
     }
 };
 
-pub const NodeInfo = struct {
-    field_type: FieldType,
-    /// Null for a list element. Required/optional/default remain distinct for fields.
-    presence: ?data.Presence,
-    authored: bool,
-    value: ?Value,
-};
+/// The one node description, shared with the read-only roots (`snapshot.zig`). A draft, a
+/// dependency definition and the loaded preview answer the same questions, so a client that
+/// can read one can read all three.
+pub const NodeInfo = nodes.NodeInfo;
 
 pub fn inspect(ctx: Context, ref: RecordRef, diags: *Diagnostics) Error!Inspection {
     const document = documentFor(ctx, ref.document) catch |err| return err;
@@ -301,8 +414,55 @@ pub fn inspect(ctx: Context, ref: RecordRef, diags: *Diagnostics) Error!Inspecti
         .document = parsed,
         .declaration_index = ref.record,
         .schema = schema,
+        .registry = &ctx.state.registry,
     };
 }
+
+/// A parse of one whole document, with no record selected.
+///
+/// The same owned parse `inspect` returns, opened for a reader that is going to walk the
+/// file's declarations rather than one record's fields. `declaration_index` is zero and
+/// `schema` names whatever the first definition uses, so a caller that wants a record asks
+/// for it by index through `nodeIn`.
+pub fn openDocument(ctx: Context, document_index: u32, diags: *Diagnostics) Error!Inspection {
+    const document = try documentFor(ctx, document_index);
+    if (!document.parseable) return error.ReadOnlyDocument;
+    var parsed = parseDocument(ctx.gpa, ctx.documents, ctx.namespace(), ctx.limits.content, document_index, null, diags) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.ContentInvalid => return error.SourceInvalid,
+    };
+    errdefer parsed.deinit(ctx.gpa);
+
+    // A file with no definitions is legal — a package may keep its schemas in one file —
+    // so the placeholder schema is the registry's first answer or the manifest's, and is
+    // never read without a record index beside it.
+    var selected: ?*const Schema = null;
+    for (parsed.records, 0..) |record, i| {
+        if (!isLocal(record) or record.kind != .define) continue;
+        if (ctx.state.registry.lookup(record.schema)) |schema| {
+            selected = schema;
+            return .{
+                .gpa = ctx.gpa,
+                .document = parsed,
+                .declaration_index = @intCast(i),
+                .schema = schema,
+                .registry = &ctx.state.registry,
+            };
+        }
+    }
+    return .{
+        .gpa = ctx.gpa,
+        .document = parsed,
+        .declaration_index = 0,
+        .schema = &empty_schema,
+        .registry = &ctx.state.registry,
+    };
+}
+
+/// Stands in for "this file declares nothing" so `Inspection.schema` is never a dangling
+/// pointer. Nothing reads it: every field read goes through `nodeIn`, which looks the
+/// record's own schema up.
+const empty_schema: Schema = .{ .id = .{ .hash = 0 }, .version = 1, .fields = &.{} };
 
 // ---------------------------------------------------------------------------
 // Commands
@@ -327,7 +487,7 @@ pub fn createRecord(
     const schema_id = data.SchemaId.parse(schema_text) catch return error.InvalidId;
     const schema = ctx.state.registry.lookup(schema_id) orelse return error.SchemaUnavailable;
     const id = data.contentId(id_text) catch return error.InvalidId;
-    try ensureUnique(&snapshot, null, id, id_text);
+    try ensureUnique(&snapshot, null, id, id_text, diags);
 
     const values = try ctx.gpa.alloc(?Value, schema.fields.len);
     defer ctx.gpa.free(values);
@@ -364,7 +524,7 @@ pub fn duplicateRecord(
     const declaration = try recordIn(&snapshot, source);
     const source_info = declaration.source orelse return error.InvalidRecord;
     const new_id = data.contentId(new_id_text) catch return error.InvalidId;
-    try ensureUnique(&snapshot, null, new_id, new_id_text);
+    try ensureUnique(&snapshot, null, new_id, new_id_text, diags);
 
     const source_text = try rootText(&snapshot, ctx, source.document);
     const copy = try data.splice.duplicateRecord(ctx.gpa, .{
@@ -396,7 +556,7 @@ pub fn createOverride(
     const view = package.reader.record(dependency_record.record) orelse return error.InvalidDependencyRecord;
     const schema = package.reader.schemaFor(view.schema_id) orelse return error.DependencyInvalid;
     const schema_text = schemaName(&package.reader, view.schema_id) orelse return error.DependencyInvalid;
-    try ensureUnique(&snapshot, null, view.id, view.name);
+    try ensureUnique(&snapshot, null, view.id, view.name, diags);
 
     var scratch: core.Arena = .init(ctx.gpa);
     defer scratch.deinit();
@@ -992,14 +1152,28 @@ const SeenRecord = struct {
     text: []const u8,
 };
 
-fn ensureUnique(snapshot: *const Snapshot, excluded: ?RecordRef, id: ContentId, text: []const u8) Error!void {
+/// Refuses an id this package already defines, and says where.
+///
+/// The diagnostic is the point: a create refused with a code and nothing else leaves a
+/// client with "already exists" and no way to show the author *what* already exists. The
+/// spelling and the file that holds it are both here, so the message is the one the editor
+/// puts beside the field.
+fn ensureUnique(snapshot: *const Snapshot, excluded: ?RecordRef, id: ContentId, text: []const u8, diags: *Diagnostics) Error!void {
     for (snapshot.parsed, 0..) |*slot, document_index| {
         const document = if (slot.*) |*doc| doc else continue;
         for (document.records, 0..) |record, record_index| {
             if (!isLocal(record)) continue;
             if (excluded) |skip| if (skip.document == document_index and skip.record == record_index) continue;
             if (!record.id.eql(id)) continue;
-            _ = text;
+            try diags.addFmt(
+                snapshot.ctx.gpa,
+                .err,
+                record.origin.location(),
+                record.origin.length,
+                record.origin.line_text,
+                "'{s}' is already defined in '{s}'",
+                .{ text, snapshot.ctx.documents[document_index].path },
+            );
             return error.DuplicateRecord;
         }
     }

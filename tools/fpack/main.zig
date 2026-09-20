@@ -2,10 +2,7 @@
 //!
 //! A plain command-line program, per ADR-0011: tools are Foundry applications built on
 //! Foundry, and this one links the engine's own modules and reads files through `platform`
-//! rather than reaching for `std.fs` beside it. When the public ABI exists (M7) that is the
-//! surface it should move to; until then linking directly is the only surface there is, and
-//! the point of the decision — no privileged path the mod API lacks — is kept by using the
-//! same `data` every consumer will.
+//! rather than reaching for `std.fs` beside it.
 //!
 //! ```
 //! fpack --out zig-out/content/core.fpk --assets-out zig-out/content/core content/core
@@ -22,10 +19,17 @@
 //! that thing is written down, so there is nowhere for a second answer to disagree from —
 //! which is what `--name` and `--version` used to be.
 //!
-//! **The compiler is `author`'s, not this program's** (ADR-0042). `--dependency` names the
-//! `.fpk` files this package is written against and `author` reads them exactly as a
-//! workspace does, so what an author is checked against in an editor and what they are
-//! checked against on the command line are the same packages read by the same code.
+//! **This program is a host of the public authoring service, not a second compiler**
+//! (ADR-0042, `editor.md` §9). It opens the package directory as an `author` workspace with
+//! build authority and nothing else, asks for a build, and maps that build to `--out` and
+//! `--assets-out` through a destination it configured itself. So the editor and the command
+//! line do not merely *share* a compiler: they walk the same snapshot, the same dependency
+//! reading and the same candidate, and there is no path through this program that an editor
+//! could not take. The output bytes and the exit codes are exactly what they were.
+//!
+//! The one thing that is new on the command line is `--work`: a build needs a directory to
+//! assemble its private candidate in, and that directory is a grant like every other. It
+//! defaults to `--out`'s own parent, which is already a place this command writes.
 //!
 //! Everything it compiles is untrusted input — a package directory may be a mod's — so a bad
 //! file is a diagnostic and a non-zero exit, never a crash.
@@ -43,6 +47,8 @@ const usage =
     \\  --out <file.fpk>          where to write the compiled package (required)
     \\  --assets-out <dir>        where to write compiled assets (required if any)
     \\  --dependency <file.fpk>   a package this one is compiled against (repeatable)
+    \\  --work <dir>              where build candidates are assembled
+    \\                            (default: the directory --out is written to)
     \\  --quiet                   report nothing on success
     \\  --help                    this text
     \\
@@ -54,11 +60,16 @@ const usage =
     \\before this package's own declarations. A file named twice, or a copy of one, is
     \\read once; two different files that are the same package are refused.
     \\
+    \\The work directory must not contain, or sit inside, the package directory or any
+    \\dependency's. A candidate is created there and removed again whether the build
+    \\succeeds or fails.
+    \\
 ;
 
 const Args = struct {
     out: []const u8 = "",
     assets_out: []const u8 = "",
+    work: []const u8 = "",
     quiet: bool = false,
     dir: []const u8 = "",
     /// The dependency files, in the order they were given: that order is the order their
@@ -103,65 +114,119 @@ pub fn main(init: std.process.Init) !u8 {
     const os = try platform.os.Os.init(gpa, .{});
     defer os.deinit();
 
-    var registry: data.Registry = .init(gpa, .default);
-    defer registry.deinit(gpa);
     var diags: data.Diagnostics = .init(gpa, .default);
     defer diags.deinit(gpa);
 
-    var bytes: std.ArrayList(u8) = .empty;
-    defer bytes.deinit(gpa);
+    // The two directories this command writes to, made before anything is granted: a grant
+    // names a directory that exists, and creating `--out`'s parent is what this program has
+    // always done anyway.
+    const out_dir = std.fs.path.dirname(args.out) orelse ".";
+    os.createDirPath(out_dir) catch |err| switch (err) {
+        error.AlreadyExists => {},
+        else => {
+            try stderr.interface.print("fpack: cannot create '{s}': {s}\n", .{ out_dir, @errorName(err) });
+            return 1;
+        },
+    };
+    const work = if (args.work.len == 0) out_dir else args.work;
+    os.createDirPath(work) catch |err| switch (err) {
+        error.AlreadyExists => {},
+        else => {
+            try stderr.interface.print("fpack: cannot create '{s}': {s}\n", .{ work, @errorName(err) });
+            return 1;
+        },
+    };
 
-    // **The granted dependencies are read before anything is compiled.** A package checked
-    // against half of what it was written against is worse than one that was not checked at
-    // all, and a `.fpk` the host named and that cannot be read is a mistake to report on its
-    // own rather than a reason to compile something else.
-    var dependencies: author.DependencySet = .init(gpa);
-    defer dependencies.deinit();
-    if (args.dependencies.items.len > 0) {
-        dependencies = author.DependencySet.load(gpa, os, args.dependencies.items, .{}, &diags) catch |err| switch (err) {
-            error.OutOfMemory => return err,
-            error.ContentInvalid, error.IoFailed, error.OverBudget => {
-                try diags.render(&stderr.interface);
-                return 1;
+    // One destination, which is the legacy pair. `compiled` and not `runtime`: what this
+    // command has always written is the package plus the assets the **compiler** produced,
+    // and copying a package's ordinary assets beside its `.fpk` would be a new output set
+    // for a command line that has never had one.
+    const destinations = [_]author.ExportTarget{.{
+        .name = "--out",
+        .kind = .compiled,
+        .package_root = out_dir,
+        .package_name = std.fs.path.basename(args.out),
+        .assets_root = if (args.assets_out.len == 0) null else args.assets_out,
+    }};
+
+    var service: author.Service = .init(gpa, os, .{});
+    defer service.deinit();
+
+    const workspace = service.open(args.dir, .{
+        .workspace = .{
+            .dependencies = args.dependencies.items,
+            .output_root = work,
+            // Build authority and nothing else. This command does not edit a source file
+            // and does not save one, and a grant it does not need is a grant it does not
+            // get (`editor.md` §4).
+            .grants = .{ .build = true },
+            .limits = .{
+                // **Unbounded, as it has always been.** A workspace caps what an editor
+                // will hold in memory; someone compiling their own directory from the
+                // command line has already chosen how big it is (`editor.md` §8's
+                // compatibility rule).
+                .walk = .unbounded,
             },
-        };
-    }
+        },
+        .exports = &destinations,
+    }, &diags) catch |err| {
+        try diags.render(&stderr.interface);
+        return openFailure(&stderr.interface, err);
+    };
 
-    const result = author.compile(gpa, os, args.dir, .{
-        .assets_out = if (args.assets_out.len == 0) null else args.assets_out,
-        .dependencies = if (args.dependencies.items.len == 0) null else &dependencies,
-    }, &registry, &diags, &bytes);
+    const entry = service.entry(workspace).?;
+    const build = entry.workspace.build(entry.workspace.revision(), &diags) catch |err| {
+        try diags.render(&stderr.interface);
+        return buildFailure(&stderr.interface, err);
+    };
 
     // Diagnostics are rendered whatever happened: a package can compile and still have
     // something worth saying about it.
     try diags.render(&stderr.interface);
 
-    // Both failures already said what went wrong, as a diagnostic, in the same shape a
-    // content mistake gets. A second message here would be the tool talking over itself.
-    const identity = result catch |err| switch (err) {
-        error.ContentInvalid, error.IoFailed, error.OverBudget => return 1,
-        error.OutOfMemory => return err,
-    };
-    defer gpa.free(identity.name);
+    const info = try entry.workspace.buildInfo(build);
+    const name = try gpa.dupe(u8, info.package_name);
+    defer gpa.free(name);
+    const version = info.package_version;
+    const size = info.package_bytes.len;
 
-    if (std.fs.path.dirname(args.out)) |parent| {
-        os.createDirPath(parent) catch |err| {
-            try stderr.interface.print("fpack: cannot create '{s}': {s}\n", .{ parent, @errorName(err) });
-            return 1;
-        };
-    }
-    os.writeFile(args.out, bytes.items) catch |err| {
-        try stderr.interface.print("fpack: cannot write '{s}': {s}\n", .{ args.out, @errorName(err) });
+    _ = service.exportBuild(workspace, build, 0) catch |err| {
+        try entry.diags.render(&stderr.interface);
+        try stderr.interface.print("fpack: cannot publish the build: {s}\n", .{@errorName(err)});
         return 1;
     };
 
     if (!args.quiet) {
         try stderr.interface.print(
             "fpack: {s} version {d} -> {s} ({d} bytes)\n",
-            .{ identity.name, identity.version, args.out, bytes.items.len },
+            .{ name, version, args.out, size },
         );
     }
     return 0;
+}
+
+/// A workspace that could not be opened at all. Every one of these already has its
+/// diagnostic; this only decides the exit code, and every content or file fault is 1.
+fn openFailure(err_writer: *std.Io.Writer, err: anyerror) !u8 {
+    switch (err) {
+        error.OutOfMemory => return err,
+        error.InvalidGrant => {
+            try err_writer.writeAll("fpack: the work directory overlaps the package or a dependency; name another with --work\n");
+            return 2;
+        },
+        else => return 1,
+    }
+}
+
+fn buildFailure(err_writer: *std.Io.Writer, err: anyerror) !u8 {
+    switch (err) {
+        error.OutOfMemory => return err,
+        error.OutputUnavailable, error.BuildNotGranted => {
+            try err_writer.writeAll("fpack: the work directory is not usable; name another with --work\n");
+            return 2;
+        },
+        else => return 1,
+    }
 }
 
 const ArgError = error{ HelpRequested, BadUsage } || std.Io.Writer.Error || std.mem.Allocator.Error;
@@ -180,6 +245,8 @@ fn parseArgs(gpa: std.mem.Allocator, argv: []const []const u8, err_writer: *std.
             args.out = try value(argv, &i, err_writer);
         } else if (std.mem.eql(u8, arg, "--assets-out")) {
             args.assets_out = try value(argv, &i, err_writer);
+        } else if (std.mem.eql(u8, arg, "--work")) {
+            args.work = try value(argv, &i, err_writer);
         } else if (std.mem.eql(u8, arg, "--dependency")) {
             // Repeatable, and each one is a file rather than a directory: a dependency is a
             // compiled package, so there is nothing to search for inside it.
@@ -234,10 +301,15 @@ test "arguments are read, and a missing one is a usage error rather than a defau
     try testing.expectEqualStrings("", args.assets_out);
     try testing.expectEqual(0, args.dependencies.items.len);
 
-    var full = try parseArgs(gpa, &.{ "content/core", "--out", "o", "--quiet", "--assets-out", "gen" }, &writer);
+    // The work directory is absent here too, and absent means `--out`'s own parent —
+    // decided where the paths are known rather than baked into the parse.
+    try testing.expectEqualStrings("", args.work);
+
+    var full = try parseArgs(gpa, &.{ "content/core", "--out", "o", "--quiet", "--assets-out", "gen", "--work", "tmp" }, &writer);
     defer full.dependencies.deinit(gpa);
     try testing.expect(full.quiet);
     try testing.expectEqualStrings("gen", full.assets_out);
+    try testing.expectEqualStrings("tmp", full.work);
 
     // Dependencies keep the order they were given, because that order decides the order
     // their schemas register in and a content compile may not depend on how a directory
@@ -256,6 +328,7 @@ test "arguments are read, and a missing one is a usage error rather than a defau
 
     try testing.expectError(error.BadUsage, parseArgs(gpa, &.{ "--out", "o", "--assets-out" }, &writer));
     try testing.expectError(error.BadUsage, parseArgs(gpa, &.{ "--out", "o", "--dependency" }, &writer));
+    try testing.expectError(error.BadUsage, parseArgs(gpa, &.{ "--out", "o", "--work" }, &writer));
     try testing.expectError(error.BadUsage, parseArgs(gpa, &.{"content/core"}, &writer));
     try testing.expectError(error.BadUsage, parseArgs(gpa, &.{"--out"}, &writer));
     try testing.expectError(error.BadUsage, parseArgs(gpa, &.{ "--nope", "x" }, &writer));

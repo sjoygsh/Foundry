@@ -238,6 +238,32 @@ pub const Workspace = struct {
         return edit.inspect(self.editContext(), ref, diags);
     }
 
+    /// A parse of one whole document, for a reader walking more than one of its records.
+    pub fn openDocument(self: *Workspace, document: u32, diags: *Diagnostics) edit.Error!edit.Inspection {
+        return edit.openDocument(self.editContext(), document, diags);
+    }
+
+    /// Every schema an author may write in this package, by the spelling that goes in the
+    /// file, sorted and without duplicates.
+    ///
+    /// A registry holds hashes, because nothing that *reads* content needs a name. A form
+    /// offering "create a record" does, and this is where the spellings come from: the
+    /// engine's own list, every dependency's own table, and every schema this package
+    /// declares. Built once at open and kept in the workspace arena, because the set
+    /// cannot change while the workspace is open — M15 inspects schema declarations and
+    /// does not edit them (`editor.md` §5).
+    pub fn schemaNames(self: *const Workspace) []const []const u8 {
+        return self.editing.schema_names;
+    }
+
+    /// The spelling of one schema, or null for a hash this workspace has no word for.
+    pub fn schemaNameOf(self: *const Workspace, schema_id: data.SchemaId) ?[]const u8 {
+        for (self.editing.schema_names) |name| {
+            if (data.SchemaId.fromStringUnchecked(name).eql(schema_id)) return name;
+        }
+        return null;
+    }
+
     pub fn createRecord(self: *Workspace, expected_revision: u64, document: u32, schema: []const u8, id: []const u8, diags: *Diagnostics) edit.Error!edit.Result {
         if (!self.grants.edit) return error.WriteNotGranted;
         return edit.createRecord(self.editContext(), expected_revision, document, schema, id, diags);
@@ -502,6 +528,7 @@ pub const Workspace = struct {
             .dependencies = &self.dependencies,
             .revision = self.editing.revision,
             .build_granted = self.grants.build,
+            .write_granted = self.grants.save,
             .limits = .{
                 .max_source_bytes = self.limits.max_source_bytes,
                 .max_snapshot_bytes = self.limits.max_snapshot_bytes,
@@ -636,7 +663,15 @@ pub const Workspace = struct {
     /// `diags.failed` sees a package that cannot build yet. Naming the version the author
     /// wrote and the version they were granted is the one case where this can say what to
     /// change; naming the package they must ask their host for is the other.
+    /// What the manifest says must load before this package, against what was granted.
+    ///
+    /// An error, and an error for a build-only host as much as for an editor: a build's
+    /// last step loads the candidate through `mod`'s ordinary resolution, which refuses a
+    /// package whose declared requirement is not there. Reporting it here, at the
+    /// manifest line that declares it, is the difference between a diagnostic an author
+    /// can act on and one about a file they never wrote.
     fn reportUnsatisfied(self: *const Workspace, diags: *Diagnostics) Error!void {
+        const severity: data.diagnostic.Severity = .err;
         for (self.requires) |required| {
             if (self.dependencies.satisfies(required.requirement) != null) continue;
 
@@ -644,14 +679,14 @@ pub const Workspace = struct {
             const origin = required.origin;
             if (self.dependencies.find(required.requirement.id)) |granted| {
                 if (range.max) |max| {
-                    try diags.addFmt(self.gpa, .err, origin.location(), origin.length, origin.line_text, "'requires' names '{s}' at version {d} to {d}, and the granted package is version {d}", .{ required.name, range.min, max, granted.version() });
+                    try diags.addFmt(self.gpa, severity, origin.location(), origin.length, origin.line_text, "'requires' names '{s}' at version {d} to {d}, and the granted package is version {d}", .{ required.name, range.min, max, granted.version() });
                 } else {
-                    try diags.addFmt(self.gpa, .err, origin.location(), origin.length, origin.line_text, "'requires' names '{s}' at version {d} or later, and the granted package is version {d}", .{ required.name, range.min, granted.version() });
+                    try diags.addFmt(self.gpa, severity, origin.location(), origin.length, origin.line_text, "'requires' names '{s}' at version {d} or later, and the granted package is version {d}", .{ required.name, range.min, granted.version() });
                 }
                 continue;
             }
 
-            try diags.addFmt(self.gpa, .err, origin.location(), origin.length, origin.line_text, "'requires' names '{s}', which no granted dependency provides: a dependency is named by the host, never found by the engine", .{required.name});
+            try diags.addFmt(self.gpa, severity, origin.location(), origin.length, origin.line_text, "'requires' names '{s}', which no granted dependency provides: a dependency is named by the host, never found by the engine", .{required.name});
         }
     }
 };

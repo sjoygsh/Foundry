@@ -21,7 +21,7 @@ they grant.
 | --- | --- | --- |
 | **1 — Content mods** | Data only: items, entities, rules, text, assets. No code, no compiler, no sandbox. | **Works.** See [`content-mods.md`](content-mods.md). |
 | **2 — Script mods** | Sandboxed, hot-reloadable code against the public API; script faults are contained. | **Works.** One restricted Lua 5.5.1 VM per package, bounded memory, instructions and engine calls, a 40-call binding over `FoundryApi_v2`, and code you can replace while the game runs — the state and the entities carry across. See [`script-mods.md`](script-mods.md). |
-| **3 — Native mods** | Dynamic libraries through the C ABI. Full speed, full power, no sandbox. | **ABI and loader work.** `foundry.h` is installed to `<prefix>/include/` and compiles as C99 and C++. `FoundryApi_v1` has 135 calls: content, records, packages, schemas, assets, world, rendering, UI, audio and collision. `FoundryApi_v3` (M14) adds reading and, with the host's grant, changing the player's mod selection and profiles, plus content themes and the game widget set, for 164 calls. A native-capable host loads the library after content. See [`native-mods.md`](native-mods.md) and [`design/public-abi.md`](../design/public-abi.md). |
+| **3 — Native mods** | Dynamic libraries through the C ABI. Full speed, full power, no sandbox. | **ABI and loader work.** `foundry.h` is installed to `<prefix>/include/` and compiles as C99 and C++. `FoundryApi_v1` has 135 calls: content, records, packages, schemas, assets, world, rendering, UI, audio and collision. `FoundryApi_v3` (M14) adds reading and, with the host's grant, changing the player's mod selection and profiles, plus content themes and the game widget set, for 164 calls. `FoundryApi_v4` (M15) adds authoring — reading, editing, saving, compiling and previewing a content package — for 211. A native-capable host loads the library after content. See [`native-mods.md`](native-mods.md), [`authoring.md`](authoring.md) and [`design/public-abi.md`](../design/public-abi.md). |
 
 Tier 1 is first on purpose. It is where most mod value actually lives, and its requirements
 constrain the content model and the serialization format in ways that are impossible to add
@@ -92,6 +92,8 @@ Being honest about this is more useful than a feature list.
   edit it while the game is running.
 * [`native-mods.md`](native-mods.md) — build a C99 library against `foundry.h`, register a
   component and system, and load it through a native-capable host.
+* [`authoring.md`](authoring.md) — read, edit, save and compile a content package through
+  `FoundryApi_v4`, which is what Foundry's own editor will be built on.
 * [`../design/content-schemas.md`](../design/content-schemas.md) — the `.fdt` format and the
   content model, in full.
 * [`../design/assets.md`](../design/assets.md) — how assets are identified and loaded.

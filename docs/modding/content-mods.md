@@ -109,6 +109,15 @@ it, is the same as naming it once; two different files that are the same package
 because which one your records were checked against would be a guess. Without it, a record whose schema only the other package declares is an
 unknown schema rather than a lucky find.
 
+**A package whose `mod.fdt` `requires` another must be given it.** The compiler's last act is
+to load what it just built the way a game will, and that load refuses a declared requirement
+nobody supplied. The diagnostic names the `requires` line, and the fix is the `--dependency`
+above.
+
+`fpack` assembles each build in a private directory it makes and removes again, below
+`--out`'s own parent by default. `--work <dir>` names a different one; you need it only when
+that parent is somewhere a build must not write, or when it sits inside your package.
+
 Then load it. The sandbox is handed a list of **content IDs**, not filenames — where your
 file sits stopped mattering the moment your package started naming itself. The sandbox has no
 mod screen, so it is told which packages to add; the room has one (press M), where a player

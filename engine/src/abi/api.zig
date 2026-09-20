@@ -15,6 +15,8 @@
 const std = @import("std");
 
 const asset_calls = @import("calls_asset.zig");
+const author_calls = @import("calls_author.zig");
+const author_types = @import("author_types.zig");
 const content_calls = @import("calls_content.zig");
 const mod_calls = @import("calls_mods.zig");
 const engine_calls = @import("calls_engine.zig");
@@ -351,6 +353,70 @@ const Api_v3_tail = extern struct {
     ui_image: *const fn (?*const UiImageSource, ui_types.Vec2, ui_types.Color) callconv(.c) Result,
 };
 
+/// ABI v4 is the whole v3 surface followed by authoring (ADR-0042, `editor.md` §9).
+///
+/// Forty-seven calls, frozen in that document's Step 5 Resolution before any of them was
+/// written, because the editor is the first consumer and a surface designed alongside its
+/// only client is a surface shaped by that client's convenience. The groups are the ones §9
+/// names: workspaces, documents, the schema tree, the source tree, commands, persistence,
+/// diagnostics and products.
+const Api_v4_tail = extern struct {
+    author_workspace_next: *const fn (?*Cursor, ?*types.Workspace) callconv(.c) Result,
+    author_workspace_info: *const fn (types.Workspace, ?*author_types.WorkspaceInfo) callconv(.c) Result,
+    author_workspace_revision: *const fn (types.Workspace, ?*u64) callconv(.c) Result,
+    author_workspace_limits: *const fn (types.Workspace, ?*author_types.Limits) callconv(.c) Result,
+
+    author_document_next: *const fn (types.Workspace, ?*Cursor, ?*types.Document) callconv(.c) Result,
+    author_document_info: *const fn (types.Document, ?*author_types.DocumentInfo) callconv(.c) Result,
+    author_document_create: *const fn (types.Workspace, u64, Str, ?*types.Document) callconv(.c) Result,
+    author_document_refresh: *const fn (types.Document, u64, ?*u64) callconv(.c) Result,
+    author_document_discard: *const fn (types.Document, u64, ?*u64) callconv(.c) Result,
+    author_document_copy_source: *const fn (types.Document, ?[*]u8, u64, ?*u64) callconv(.c) Result,
+
+    author_schema_next: *const fn (types.Workspace, ?*Cursor, ?*types.SchemaNode) callconv(.c) Result,
+    author_schema_find: *const fn (types.Workspace, Str, ?*types.SchemaNode) callconv(.c) Result,
+    author_schema_node_info: *const fn (types.SchemaNode, ?*author_types.SchemaNodeInfo) callconv(.c) Result,
+    author_schema_node_child: *const fn (types.SchemaNode, u32, ?*types.SchemaNode) callconv(.c) Result,
+    author_schema_node_default: *const fn (types.SchemaNode, ?*types.SourceNode) callconv(.c) Result,
+
+    author_record_next: *const fn (types.Document, ?*Cursor, ?*types.SourceNode) callconv(.c) Result,
+    author_dependency_next: *const fn (types.Workspace, ?*Cursor, ?*author_types.PackageInfo) callconv(.c) Result,
+    author_dependency_record_next: *const fn (types.Workspace, u32, ?*Cursor, ?*types.SourceNode) callconv(.c) Result,
+    author_preview_record_next: *const fn (types.Workspace, ?*Cursor, ?*types.SourceNode) callconv(.c) Result,
+    author_node_info: *const fn (types.SourceNode, ?*author_types.NodeInfo) callconv(.c) Result,
+    author_node_child: *const fn (types.SourceNode, u32, ?*types.SourceNode) callconv(.c) Result,
+    author_node_field: *const fn (types.SourceNode, Str, ?*types.SourceNode) callconv(.c) Result,
+    author_node_scalar: *const fn (types.SourceNode, ?*author_types.Value) callconv(.c) Result,
+    author_node_copy_text: *const fn (types.SourceNode, ?[*]u8, u64, ?*u64) callconv(.c) Result,
+
+    author_record_create: *const fn (types.Document, u64, Str, Str, ?*author_types.Edit) callconv(.c) Result,
+    author_record_duplicate: *const fn (types.SourceNode, types.Document, u64, Str, ?*author_types.Edit) callconv(.c) Result,
+    author_record_override: *const fn (types.SourceNode, types.Document, u64, ?*author_types.Edit) callconv(.c) Result,
+    author_record_delete: *const fn (types.SourceNode, u64, ?*author_types.Edit) callconv(.c) Result,
+    author_value_set: *const fn (types.SourceNode, u64, ?*const author_types.Value, ?*author_types.Edit) callconv(.c) Result,
+    author_value_unset: *const fn (types.SourceNode, u64, ?*author_types.Edit) callconv(.c) Result,
+    author_list_insert: *const fn (types.SourceNode, u64, u32, ?*const author_types.Value, ?*author_types.Edit) callconv(.c) Result,
+    author_list_remove: *const fn (types.SourceNode, u64, u32, ?*author_types.Edit) callconv(.c) Result,
+    author_list_move: *const fn (types.SourceNode, u64, u32, u32, ?*author_types.Edit) callconv(.c) Result,
+    author_undo: *const fn (types.Workspace, u64, ?*author_types.Edit) callconv(.c) Result,
+    author_redo: *const fn (types.Workspace, u64, ?*author_types.Edit) callconv(.c) Result,
+
+    author_save_document: *const fn (types.Document, u64, ?*author_types.SaveResult) callconv(.c) Result,
+    author_save_all: *const fn (types.Workspace, u64, ?*author_types.SaveAll) callconv(.c) Result,
+    author_save_entry_next: *const fn (types.Workspace, ?*Cursor, ?*author_types.SaveEntry) callconv(.c) Result,
+
+    author_validate: *const fn (types.Workspace, u64) callconv(.c) Result,
+    author_diagnostic_next: *const fn (types.Workspace, ?*Cursor, ?*author_types.Diagnostic) callconv(.c) Result,
+
+    author_build: *const fn (types.Workspace, u64, ?*types.Build) callconv(.c) Result,
+    author_build_info: *const fn (types.Build, ?*author_types.BuildInfo) callconv(.c) Result,
+    author_build_release: *const fn (types.Build) callconv(.c) Result,
+    author_export_next: *const fn (types.Workspace, ?*Cursor, ?*author_types.ExportInfo) callconv(.c) Result,
+    author_build_export: *const fn (types.Build, u32, ?*u32) callconv(.c) Result,
+    author_preview_activate: *const fn (types.Build) callconv(.c) Result,
+    author_preview_info: *const fn (types.Workspace, ?*author_types.PreviewInfo) callconv(.c) Result,
+};
+
 const api_v2_fields = @typeInfo(Api_v2).@"struct".fields;
 const api_v3_tail_fields = @typeInfo(Api_v3_tail).@"struct".fields;
 const api_v3_names = blk: {
@@ -383,6 +449,38 @@ fn extendV2(v2: Api_v2, tail: Api_v3_tail) Api_v3 {
     return v3;
 }
 
+const api_v3_fields = @typeInfo(Api_v3).@"struct".fields;
+const api_v4_tail_fields = @typeInfo(Api_v4_tail).@"struct".fields;
+const api_v4_names = blk: {
+    var names: [api_v3_fields.len + api_v4_tail_fields.len][:0]const u8 = undefined;
+    for (api_v3_fields, 0..) |field, i| names[i] = field.name;
+    for (api_v4_tail_fields, api_v3_fields.len..) |field, i| names[i] = field.name;
+    break :blk names;
+};
+const api_v4_types = blk: {
+    var field_types: [api_v3_fields.len + api_v4_tail_fields.len]type = undefined;
+    for (api_v3_fields, 0..) |field, i| field_types[i] = field.type;
+    for (api_v4_tail_fields, api_v3_fields.len..) |field, i| field_types[i] = field.type;
+    break :blk field_types;
+};
+
+pub const Api_v4 = @Struct(
+    .@"extern",
+    null,
+    &api_v4_names,
+    &api_v4_types,
+    &@splat(.{}),
+);
+
+fn extendV3(v3: Api_v3, tail: Api_v4_tail) Api_v4 {
+    var v4: Api_v4 = undefined;
+    inline for (api_v3_fields) |field| @field(v4, field.name) = @field(v3, field.name);
+    inline for (api_v4_tail_fields) |field| @field(v4, field.name) = @field(tail, field.name);
+    v4.version = types.api_version_4;
+    v4.size = @sizeOf(Api_v4);
+    return v4;
+}
+
 /// The table for one host type, and the `get_api` that hands it out.
 pub fn TableOf(comptime H: type) type {
     const engine = engine_calls.Of(H);
@@ -394,6 +492,7 @@ pub fn TableOf(comptime H: type) type {
     const ui = ui_calls.Of(H);
     const audio = audio_calls.Of(H);
     const physics = physics_calls.Of(H);
+    const authoring = author_calls.Of(H);
 
     return struct {
         pub const v1: Api_v1 = .{
@@ -590,6 +689,63 @@ pub fn TableOf(comptime H: type) type {
             .ui_image = ui.uiImage,
         });
 
+        pub const v4: Api_v4 = extendV3(v3, .{
+            .author_workspace_next = authoring.workspaceNext,
+            .author_workspace_info = authoring.workspaceInfo,
+            .author_workspace_revision = authoring.workspaceRevision,
+            .author_workspace_limits = authoring.workspaceLimits,
+
+            .author_document_next = authoring.documentNext,
+            .author_document_info = authoring.documentInfo,
+            .author_document_create = authoring.documentCreate,
+            .author_document_refresh = authoring.documentRefresh,
+            .author_document_discard = authoring.documentDiscard,
+            .author_document_copy_source = authoring.documentCopySource,
+
+            .author_schema_next = authoring.schemaNext,
+            .author_schema_find = authoring.schemaFind,
+            .author_schema_node_info = authoring.schemaNodeInfo,
+            .author_schema_node_child = authoring.schemaNodeChild,
+            .author_schema_node_default = authoring.schemaNodeDefault,
+
+            .author_record_next = authoring.recordNext,
+            .author_dependency_next = authoring.dependencyNext,
+            .author_dependency_record_next = authoring.dependencyRecordNext,
+            .author_preview_record_next = authoring.previewRecordNext,
+            .author_node_info = authoring.nodeInfo,
+            .author_node_child = authoring.nodeChild,
+            .author_node_field = authoring.nodeField,
+            .author_node_scalar = authoring.nodeScalar,
+            .author_node_copy_text = authoring.nodeCopyText,
+
+            .author_record_create = authoring.recordCreate,
+            .author_record_duplicate = authoring.recordDuplicate,
+            .author_record_override = authoring.recordOverride,
+            .author_record_delete = authoring.recordDelete,
+            .author_value_set = authoring.valueSet,
+            .author_value_unset = authoring.valueUnset,
+            .author_list_insert = authoring.listInsert,
+            .author_list_remove = authoring.listRemove,
+            .author_list_move = authoring.listMove,
+            .author_undo = authoring.undo,
+            .author_redo = authoring.redo,
+
+            .author_save_document = authoring.saveDocument,
+            .author_save_all = authoring.saveAll,
+            .author_save_entry_next = authoring.saveEntryNext,
+
+            .author_validate = authoring.validate,
+            .author_diagnostic_next = authoring.diagnosticNext,
+
+            .author_build = authoring.build,
+            .author_build_info = authoring.buildInfo,
+            .author_build_release = authoring.buildRelease,
+            .author_export_next = authoring.exportNext,
+            .author_build_export = authoring.buildExport,
+            .author_preview_activate = authoring.previewActivate,
+            .author_preview_info = authoring.previewInfo,
+        });
+
         /// What a native mod is handed (§3). **Never a crash and never a Zig error** — a
         /// version this host does not offer is null, which is a legible refusal on the
         /// mod's side rather than a fault on ours.
@@ -597,6 +753,7 @@ pub fn TableOf(comptime H: type) type {
             if (version == types.api_version_1) return @ptrCast(&v1);
             if (version == types.api_version_2) return @ptrCast(&v2);
             if (version == types.api_version_3) return @ptrCast(&v3);
+            if (version == types.api_version_4) return @ptrCast(&v4);
             return null;
         }
     };
@@ -604,6 +761,8 @@ pub fn TableOf(comptime H: type) type {
 
 test {
     _ = asset_calls;
+    _ = author_calls;
+    _ = author_types;
     _ = content_calls;
     _ = mod_calls;
     _ = engine_calls;

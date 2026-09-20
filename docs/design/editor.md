@@ -468,7 +468,7 @@ work: Step 1's smallest parser-span representation preserving imports, and Step 
 layouts/call count. They may refine this design, not bypass its
 boundaries. Any contradiction requiring a different architecture gets an ADR/Resolution first.
 
-## 14. Implementation order — nine steps, Steps 1–4 done
+## 14. Implementation order — nine steps, Steps 1–5 done
 
 Each step is one handoff: its tests, bar, Resolution, project-state update and commit, then stop.
 ADR-0042/0043 were accepted on 2026-09-20, before any Step 1 code.
@@ -511,7 +511,7 @@ Keep prior successful artifacts and their assets alive until released. No editor
 external changes and partial save; same inputs match fpack byte-for-byte. Mutation-test the
 source confinement and last-good-build retention guards.
 
-### Step 5 — Publish authoring through FoundryApi_v4
+### Step 5 — Publish authoring through FoundryApi_v4 — done 2026-09-20
 
 Freeze exact §9 declarations in a Resolution, then implement the tail,
 host service/grants, safe-phase preview request and candidate preview lifetime. Update header,
@@ -930,3 +930,126 @@ checks and both 30-frame null sample runs.
 **Left for Step 5.** No public table, C declaration, ABI agreement, host service, export call,
 preview request or preview lifetime exists yet. `FoundryApi_v1`–`v3` are unchanged. Step 5 must
 freeze and publish v4 before any editor client can consume this capability.
+
+## Resolution — 2026-09-20, Step 5: authoring published as `FoundryApi_v4`
+
+**Forty-seven calls, frozen before any of them was written.** §13 required Step 5's exact
+layouts and call count to be recorded before dependent work; this is that record. `Api_v4`
+is `Api_v3` byte-for-byte followed by the authoring tail, 213 members in all, offered by
+`get_api(4)` beside v1, v2 and v3, whose declarations are unchanged. The groups are §9's:
+
+| Group | Calls |
+| --- | --- |
+| Workspace (4) | `author_workspace_next` `_info` `_revision` `_limits` |
+| Documents (6) | `author_document_next` `_info` `_create` `_refresh` `_discard` `_copy_source` |
+| Schema tree (5) | `author_schema_next` `_find` `author_schema_node_info` `_child` `_default` |
+| Source tree (9) | `author_record_next`, `author_dependency_next`, `author_dependency_record_next`, `author_preview_record_next`, `author_node_info` `_child` `_field` `_scalar` `_copy_text` |
+| Commands (11) | `author_record_create` `_duplicate` `_override` `_delete`, `author_value_set` `_unset`, `author_list_insert` `_remove` `_move`, `author_undo` `author_redo` |
+| Persistence (3) | `author_save_document` `author_save_all` `author_save_entry_next` |
+| Diagnostics (2) | `author_validate` `author_diagnostic_next` |
+| Products (7) | `author_build` `_info` `_release`, `author_export_next`, `author_build_export`, `author_preview_activate`, `author_preview_info` |
+
+Fifteen structs cross with them, each `extern`, each with its reserved bytes written as
+zero and its size stated three times — in `author_types.zig`, in `agreement.c` and in
+`agreement.zig`: `FoundryAuthorWorkspaceInfo` 72, `Limits` 64, `DocumentInfo` 40, `NodeInfo`
+64, `SchemaNodeInfo` 56, `Value` 32, `PackageInfo` 56, `Edit` 40, `SaveResult` 32, `SaveAll`
+24, `SaveEntry` 40, `Diagnostic` 120, `BuildInfo` 40, `PreviewInfo` 32, `ExportInfo` 32.
+Six enumerations carry presence, severity, node root, preview outcome, save outcome and
+failure, and export kind. Five new opaque handles — workspace, document, source node, schema
+node, build — are eight bytes each and are never a runtime `FoundryRecord` or
+`FoundrySchema`.
+
+**Numbers cross as text, and only as text.** An authoring scalar is its canonical decimal
+spelling plus the field type the schema declares. `9007199254740993` in a `u64` field
+survives a read, a write and a round trip through a form; sent through a float it would not.
+The spelling is `data.emit`'s own, so what a client reads back is byte-for-byte what a Save
+would put in the file. v1–v3's `record_get_f32` is untouched: this is a second
+representation for a second job, not a change to the simulation's number convention.
+
+**Three lifetimes, each stated rather than implied.** A workspace handle lives until it is
+closed. A **document** handle is derived — the workspace's slot and generation packed with
+the document's index — so it lives exactly as long as its workspace and no ring can
+invalidate one a client just enumerated; a document index never moves, because creating one
+appends and nothing removes. A **node** handle is a position in a parse, so it dies at the
+next accepted command even if that command touched nothing near it (§5), and it also recycles
+after 256 more are opened. Borrowed text dies sooner still: a formatted number lives until
+the next scalar read, and a name or a string until four more records have been read.
+`author_node_copy_text` and `author_document_copy_source` are what a client uses instead.
+
+**Unset, default and present stay three answers.** `author_node_info` carries `authored` and
+`presence` separately, and descending into an optional nested block that was never written
+answers from the *declaration* — every field it would have, each unauthored — because a form
+has to lay them out before anything is in them. That behaviour is one shared walker:
+`author/snapshot.zig` owns the node vocabulary, `edit.Inspection` answers with it for drafts,
+and exact-value snapshots answer with it for dependency definitions and for the loaded
+preview. There is no second set of typed field calls for read-only content.
+
+**The service is `author`'s and the host's, never this boundary's.** `author.Service` owns
+generational workspaces, each workspace's most recent diagnostic snapshot and what a preview
+activation published; `abi` resolves handles, validates, calls one function and maps the
+answer. Preview is a host callback that takes a **build handle** and a confined candidate
+location, never a path from a client. Without that callback, `author_preview_activate`
+answers `Unavailable` and editing, saving and building all still work. An active preview
+holds its build: releasing it is `Refused`, because releasing deletes the files the loaded
+content is reading. Export is the same shape — a host configures destinations, a client names
+one by number, and the result reports how many files were written so a partial publication is
+reported rather than implied.
+
+**`fpack` is now a host of this service rather than a second program that compiles.** It
+opens the package directory as a workspace with build authority and nothing else, asks for a
+build, and maps it to the existing `--out`/`--assets-out` pair through a destination it
+configured itself. `content/core`, `samples/sandbox/content` and `samples/room/content`
+compile to **byte-identical** `.fpk` files and generated assets. Three things changed and are
+changes rather than accidents:
+
+- **`--work <dir>`**, new and optional: a build assembles a private candidate somewhere, and
+  that somewhere is a grant like every other. It defaults to `--out`'s own parent, which is
+  already a directory this command writes to, so no existing invocation needs it.
+- **The samples are compiled against `core.fpk`.** Both manifests `requires foundry:core`,
+  a build's last act is to load its candidate the way a game will, and that load refuses a
+  declared requirement nobody granted. `release.Package` gained a `dependencies` field and
+  the build names the base package explicitly. The old CLI never made this check; the bytes
+  it produced were nevertheless correct, which is why the outputs are identical.
+- **The cooperating-writer lock is taken only by a workspace that can save.** A command-line
+  compile is a reader; making it take a writer's lock would leave a token in somebody's
+  package directory on every run and fail outright on a read-only source tree. What protects
+  a build against a racing writer is the re-read of the inventory and the bytes after
+  capture (§8), which is unchanged and is exactly as strong either way.
+
+**Two gaps in `author` were found by publishing it.** A refused duplicate-id create returned
+a code and no diagnostic, so a client had "already exists" and no way to say *what* already
+exists; `ensureUnique` now names the spelling and the file that holds it, which is what the
+unused `text` parameter beside it had been for. And the engine's own schemas had no
+spellings anywhere — a registry holds hashes, and a form offering "create a record from a
+schema" needs the word that goes in the file — so `compiler.engine_schema_names` lists them,
+a test fails if a schema is registered without being added to it, and `edit.State.prepare`
+assembles the workspace's whole set from that list, each dependency's own table and every
+local declaration.
+
+**What is deliberately not here.** No editor client, no host application and no UI: Step 6
+adds those. `author_schema_node_*` inspects declarations and cannot change one. Lua is
+unchanged, no v1–v3 declaration moved, and nothing about per-mod tables or native consent
+appears in v4.
+
+**Evidence.** Twenty-one new declarations: the shared node walker and its absent-container
+behaviour; the service's generational handles, its preview lifetime and its export; the
+authoring structs' sizes and every enumerator's number; and eight boundary tests that drive
+the table itself — walking a workspace, its documents, a record's fields and a list's
+elements; the schema tree with defaults and a list's element type; a command that moves the
+revision and stales every outstanding node including its own; four rejected values that leave
+the draft untouched; a workspace with no grant that reads everything and changes nothing;
+save, validate, build, export and preview; diagnostics read without a log; document creation
+and refused names; and handles that mean nothing after the workspace closes. The v4 table's
+213 offsets and names agree between Zig and C, and an external C client that calls all
+forty-seven entry points compiles against the **installed** header as C99 on macOS, Linux and
+Windows and as C++17. Four mutations were made and each failed: two v4 calls swapped (the
+offset agreement), two fields of `FoundryAuthorValue` swapped (the layout assertions), one
+header parameter widened (`agreement.c`'s signature typedef), and the preview's hold on its
+build removed (the service test). All four were restored. The full bar passes **1,544 of
+1,545** headless tests (one existing skip), from **1,616 declared**, including native, Metal,
+Linux/Windows cross checks and both 30-frame null sample runs.
+
+**Left for Step 6.** There is no editor application, no host that grants a workspace outside
+a test, and no preview host: the activation callback has an implementation only in
+`service.zig`'s own test. Step 6 adds the standalone host, the header-only client module and
+the negative implementation-import probe.

@@ -25,6 +25,8 @@ pub const build_mod = @import("build.zig");
 pub const dependency = @import("dependency.zig");
 pub const edit = @import("edit.zig");
 pub const save_mod = @import("save.zig");
+pub const service = @import("service.zig");
+pub const snapshot = @import("snapshot.zig");
 pub const workspace = @import("workspace.zig");
 
 // The names reached for most often. A mod author never sees these — a host does, and a host
@@ -48,6 +50,18 @@ pub const Workspace = workspace.Workspace;
 pub const WorkspaceLimits = workspace.Limits;
 pub const WorkspaceOptions = workspace.Options;
 pub const WorkspaceGrants = workspace.Grants;
+pub const Service = service.Service;
+pub const ServiceHandle = service.Handle;
+pub const ServiceOptions = service.Options;
+pub const OpenOptions = service.OpenOptions;
+pub const ExportTarget = service.ExportTarget;
+pub const PreviewGrant = service.PreviewGrant;
+pub const PreviewRequest = service.PreviewRequest;
+pub const Publication = service.Publication;
+pub const NodeInfo = edit.NodeInfo;
+/// `data`'s own record handle, re-exported so a host publishing a preview and a boundary
+/// reading one name the same type without importing `data.store` for one line.
+pub const StoreRecordHandle = @import("data").store.RecordHandle;
 
 test {
     _ = compiler;
@@ -55,5 +69,7 @@ test {
     _ = dependency;
     _ = edit;
     _ = save_mod;
+    _ = service;
+    _ = snapshot;
     _ = workspace;
 }

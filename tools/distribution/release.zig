@@ -38,6 +38,14 @@ pub const Package = struct {
     dir: []const u8,
     /// A location, never identity (ADR-0021) — the compiled package states its own id.
     stem: []const u8,
+    /// The compiled packages this one is written against, in the order they register.
+    ///
+    /// **Named, never searched for** (ADR-0042). A package whose manifest `requires`
+    /// another is compiled against it or not at all: the build's last step loads the
+    /// candidate the way a game will, and that load refuses a missing requirement. Which
+    /// is the point — a sample that declared a dependency nobody supplied used to compile
+    /// anyway.
+    dependencies: []const std.Build.LazyPath = &.{},
     /// The notice this package's license requires, when it is not the application's own.
     /// A manifest's `license` is an identifier and discharges nothing by itself
     /// (`distribution.md` §9).
@@ -150,6 +158,10 @@ pub fn compilePackage(
     const fpk = run.addOutputFileArg(b.fmt("{s}.fpk", .{package.stem}));
     run.addArg("--assets-out");
     const generated = run.addOutputDirectoryArg(b.fmt("{s}-assets", .{package.stem}));
+    for (package.dependencies) |dependency| {
+        run.addArg("--dependency");
+        run.addFileArg(dependency);
+    }
     run.addDirectoryArg(b.path(package.dir));
     addDirectoryInputs(b, run, package.dir);
     return .{ .fpk = fpk, .generated = generated };

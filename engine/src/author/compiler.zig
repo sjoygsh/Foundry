@@ -310,6 +310,28 @@ pub fn registerAvailableSchemas(
     };
 }
 
+/// Every schema `registerAvailableSchemas` registers without a dependency, by the spelling
+/// an author writes.
+///
+/// A registry holds hashes, not names, because nothing that *reads* content needs a name.
+/// Something that *writes* it does: a form offering "create a record" has to offer the
+/// schema by the text that goes in the file. The list is therefore here rather than
+/// assembled from the registry, and the test below fails if a schema is registered without
+/// its spelling being added — which is the only way this stays true.
+pub const engine_schema_names = [_][]const u8{
+    mod.schemas.manifest_name,
+    asset.schemas.texture_name,
+    asset.schemas.tilegrid_name,
+    asset.schemas.sound_name,
+    asset.schemas.script_name,
+    asset.tilemap.tileset_name,
+    asset.tilemap.layer_name,
+    asset.tilemap.tilemap_name,
+    asset.ui_theme.name,
+    scene.schemas.entity_name,
+    scene.schemas.scene_name,
+};
+
 /// Reads `mod.fdt` and takes the package's id and version from the manifest record in it.
 ///
 /// **Parsed with a placeholder namespace**, which is safe for exactly the reason the format
@@ -1899,4 +1921,20 @@ test "fpack's walk is bounded only when a host asks for bounds" {
     var buf: [1024]u8 = undefined;
     const text = try f.rendered(&buf);
     try testing.expect(std.mem.containsAtLeast(u8, text, 1, "one source file more than the 2"));
+}
+
+test "every schema the engine registers has a spelling an author can write" {
+    // The registry holds hashes. `engine_schema_names` is the only place their spellings
+    // are written down, so a schema added to `registerAvailableSchemas` and not to that
+    // list would be one the editor's New Record form could never offer — invisibly.
+    var registry: Registry = .init(testing.allocator, .default);
+    defer registry.deinit(testing.allocator);
+    var diags: Diagnostics = .init(testing.allocator, .default);
+    defer diags.deinit(testing.allocator);
+
+    try registerAvailableSchemas(testing.allocator, null, &registry, &diags);
+    try testing.expectEqual(@as(u32, engine_schema_names.len), registry.count());
+    for (engine_schema_names) |name| {
+        try testing.expect(registry.find(data.SchemaId.fromStringUnchecked(name)) != null);
+    }
 }

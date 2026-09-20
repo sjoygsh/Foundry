@@ -1,7 +1,7 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-20
-**Current handoff: M15 Step 4 is done; stop before Step 5.** M0 through M14 are complete and
+**Current handoff: M15 Step 5 is done; stop before Step 6.** M0 through M14 are complete and
 tagged. **M14 closed on 2026-09-19 with a player choosing their mods in a packaged sample, on
 macOS and on Windows:**
 - **the mod set, with record-level conflicts, and ordered profiles on disk, applied at the next
@@ -11,8 +11,53 @@ macOS and on Windows:**
 - **the room's MO2-style mod screen, built from that table alone.**
 
 **M13 before it proved Windows x64 through Vulkan. Linux is M18, after the first game and before
-3D (ADR-0039). M15 is under way: Steps 1–4 of nine are done, and the handoff stops before
-Step 5. M16 and M17 remain unstarted.**
+3D (ADR-0039). M15 is under way: Steps 1–5 of nine are done, and the handoff stops before
+Step 6. M16 and M17 remain unstarted.**
+
+**Completed M15 Step 5, 2026-09-20: authoring published as `FoundryApi_v4`.**
+- `FoundryApi_v4` is v3 byte-for-byte plus **47 authoring calls**, 213 members, handed out by
+  `get_api(4)` beside v1, v2 and v3, whose declarations are unchanged. The groups are
+  `editor.md` §9's: workspaces, documents, the schema tree, the source/dependency/preview
+  trees, typed commands with undo and redo, per-file saves, diagnostics and products. The
+  exact list was frozen in the Step 5 Resolution before any of it was written, as §13 required.
+- Fifteen `extern` structs, six enumerations and five opaque handles — workspace, document,
+  source node, schema node, build — none of which is ever a runtime record or schema handle.
+  Every size is stated three times: in `abi/author_types.zig`, in `agreement.c` and in
+  `agreement.zig`.
+- **Authoring scalars cross as canonical decimal text plus the declared field type.** A `u64`
+  an author typed survives a read, a write and a round trip; the spelling is `data.emit`'s own,
+  so a client reads back exactly what a save would write. No v1–v3 call changed.
+- Three lifetimes, each stated: a workspace handle until it closes; a **document** handle
+  derived from its workspace, so enumerating a thousand sources invalidates none of them; a
+  **node** handle only until the next accepted command, because a node is a position in a parse.
+  Formatted text lives until the next scalar read, names and strings until four more records.
+- `author/snapshot.zig` is one node vocabulary over three read-only roots — a draft, a
+  dependency definition and the loaded preview — built from `fpk.Fields.valueAt`, so nothing is
+  narrowed. Descending into an unwritten optional block answers from the declaration, which is
+  what lets a form lay out fields before anything is in them.
+- `author/service.zig` owns generational workspaces, each one's most recent diagnostic snapshot,
+  host-configured export destinations and the preview a host activated. Preview is a host
+  callback taking a build handle and a confined candidate location, never a path from a client;
+  without it, editing, saving and building still work. An active preview holds its build, and
+  releasing that build is refused.
+- **`fpack` is now a host of this service**, not a second program that compiles. `content/core`,
+  `samples/sandbox/content` and `samples/room/content` produce byte-identical `.fpk` files and
+  generated assets. Three deliberate changes: an optional `--work <dir>` for the private
+  candidate, defaulting to `--out`'s own parent; the samples are now compiled against
+  `core.fpk`, because their manifests require it and a build loads its candidate the way a game
+  will; and the cooperating-writer lock is taken only by a workspace that can save, so a
+  command-line compile leaves no token in a package directory and works on a read-only tree.
+- Publishing the service exposed two gaps in `author` and both are fixed: a refused duplicate
+  id now emits a diagnostic naming the spelling and the file that holds it, and
+  `compiler.engine_schema_names` gives the engine's own schemas the spellings a New Record form
+  needs, with a test that fails if one is registered without being listed.
+
+The full bar passed **1,544 of 1,545** headless tests, with the existing skip, from **1,616
+declared**. An external C client calling all forty-seven entry points compiles against the
+**installed** header as C99 on macOS, Linux and Windows and as C++17. Four mutations — two
+swapped v4 calls, two swapped struct fields, one widened header parameter and a removed preview
+hold — each failed a check and were restored. Resolution: `editor.md`, Step 5. There is no
+editor application yet; Step 6 adds the host and the client.
 
 **Completed M15 Step 4, 2026-09-20: conflict-safe saves and isolated builds.**
 - `platform.Os` now has confined atomic create-if-absent, no-follow directory creation/listing/
@@ -2139,12 +2184,13 @@ are unstarted.
 
 ## Current milestone
 
-**M15 — Editor is under way: Steps 1–4 of nine are done (2026-09-20).** Read
-`docs/design/editor.md`, especially §14's nine steps and the first four Resolutions, and
+**M15 — Editor is under way: Steps 1–5 of nine are done (2026-09-20).** Read
+`docs/design/editor.md`, especially §14's nine steps and the first five Resolutions, and
 ADR-0042/0043, accepted 2026-09-20. The editor's UI and UX follow Unreal Engine 5's (§10). The
-tree stands at **1,595 declared / 1,524 headless tests**, with the one skip it has had since
-Step 1. Typed commands, conflict-safe per-file saves and retained isolated builds are complete;
-the public ABI v4 is next.
+tree stands at **1,616 declared / 1,545 headless tests**, with the one skip it has had since
+Step 1. Typed commands, conflict-safe per-file saves, retained isolated builds and the whole
+authoring surface as `FoundryApi_v4` are complete, and `fpack` runs on that table; the editor
+application itself is next.
 
 **M14 — Managed: "players choose their mods." Complete, 2026-09-19.** Read
 `docs/design/mod-management.md` and ADR-0040/0041. All nine steps are implemented:
@@ -3723,11 +3769,12 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Next: M15 Step 3 — Typed record commands and undo/redo**, when the owner asks for
-it. Steps 1 and 2 are done (2026-09-20). M15's design is `docs/design/editor.md`, with nine steps and ADR-0042/0043,
-accepted 2026-09-20 with a UI modelled on Unreal Engine 5's. The editor re-hosts public
-introspection (ADR-0025), and authoring is published in v4 before any editor client can use
-it (I4).
+**Next: M15 Step 6 — the standalone host and an ABI-only inspection client**, when the owner
+asks for it. Steps 1 through 5 are done (2026-09-20). M15's design is
+`docs/design/editor.md`, with nine steps and ADR-0042/0043, accepted 2026-09-20 with a UI
+modelled on Unreal Engine 5's. The editor re-hosts public introspection (ADR-0025), and
+authoring is now published in `FoundryApi_v4` — so Step 6's client has a table to consume and
+must have no other reach: its negative implementation-import probe is part of its exit (I4).
 
 One small recorded item can be taken on the owner's word before or beside it: the flaky
 Windows sleep test (Known bugs). `mod-management.md` §14's questions stay open until a

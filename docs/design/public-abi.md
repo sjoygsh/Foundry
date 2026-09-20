@@ -697,8 +697,20 @@ must not settle them opportunistically. Question 1 was resolved by the M7 exit p
 > [ADR-0042](../adr/0042-authoring-through-the-public-api.md) specify an additive v4 authoring
 > service. It publishes bounded host-granted source workspaces, exact-value inspection and
 > edits, history, saves, builds and loaded-preview inspection before the editor consumes them.
-> No v4 code or header exists yet; v1–v3 remain unchanged. This is not general mod-private
-> storage, per-mod tables, native unloading or an expansion of Lua's binding.
+> This is not general mod-private storage, per-mod tables, native unloading or an expansion of
+> Lua's binding.
+
+> **M15 step 5, 2026-09-20:** `FoundryApi_v4` is v3 unchanged plus 47 authoring calls, 211 in
+> all, offered by `get_api(4)` beside v1, v2 and v3, whose declarations are byte-identical. It
+> publishes host-granted workspaces, documents, the schema tree, the source, dependency and
+> loaded-preview trees, typed commands with undo and redo, per-file saves, structured
+> diagnostics, builds, host-configured export and preview activation. Five new opaque handles;
+> fifteen structs; **authoring scalars cross as canonical decimal text plus the declared field
+> type**, which is a second representation for a job v1's `f32` reader cannot do and not a
+> change to any existing call. Every mutation needs the host's grant, and a workspace without
+> one answers `FOUNDRY_ERR_REFUSED`. The specification is `editor.md` §9 and its Step 5
+> Resolution; the author-facing guide is [`../modding/authoring.md`](../modding/authoring.md).
+> `fpack` now runs on this table. Questions 2–6 remain open.
 
 ## 19. Implementation order
 

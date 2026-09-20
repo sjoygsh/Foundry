@@ -182,19 +182,21 @@ binary under that flag stayed uncompilable for several milestones while every ex
 result (`CLAUDE.md` §2) — a change that builds and leaves the sandbox broken is not done.
 
 When the ABI surface changed, also compile a C mod against the *installed* header, because the
-Zig tests cannot see what a C author cannot express:
+Zig tests cannot see what a C author cannot express. `engine/tests/fixtures/author_client.c`
+is one such consumer, kept for this: it calls every v4 authoring entry point and nothing else.
 
 ```sh
 zig build                                    # installs zig-out/include/foundry.h
-zig cc  -std=c99 -pedantic -Wall -Wextra -Werror -Izig-out/include -c mod.c -o /dev/null
-zig cc  --target=x86_64-linux-gnu   -std=c99 -pedantic -Werror -Izig-out/include -c mod.c -o /dev/null
-zig cc  --target=x86_64-windows-gnu -std=c99 -pedantic -Werror -Izig-out/include -c mod.c -o /dev/null
-zig c++ -x c++ -std=c++17 -Wall -Wextra -Werror -Izig-out/include -c mod.c -o /dev/null
+C=engine/tests/fixtures/author_client.c      # or your own mod.c
+zig cc  -std=c99 -pedantic -Wall -Wextra -Werror -Izig-out/include -c $C -o /dev/null
+zig cc  --target=x86_64-linux-gnu   -std=c99 -pedantic -Werror -Izig-out/include -c $C -o /dev/null
+zig cc  --target=x86_64-windows-gnu -std=c99 -pedantic -Werror -Izig-out/include -c $C -o /dev/null
+zig c++ -x c++ -std=c++17 -Wall -Wextra -Werror -Izig-out/include -c $C -o /dev/null
 ```
 
-This is not ceremony. Step 4 found three defects this way and none of them by any other route:
-a type a C mod had no way to construct, a header that did not compile as C++ at all, and an
-agreement that stopped firing.
+This is not ceremony. M7's step 4 found three defects this way and none of them by any other
+route: a type a C mod had no way to construct, a header that did not compile as C++ at all,
+and an agreement that stopped firing.
 
 When a sample's content, a package's asset kinds or a release description changed, also stage
 both releases (*Staging a release*, below). M13 Step 8 gave the samples an asset kind of their

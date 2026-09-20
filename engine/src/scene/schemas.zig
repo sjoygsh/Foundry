@@ -42,8 +42,10 @@ const Schema = data.Schema;
 /// The list order is the order the components are added, which is the order the stores hold
 /// them, which is one of the two orders a query can iterate in. It is what the author wrote,
 /// in a file, in order — not a hash map's iteration (I9).
+pub const entity_name = "foundry:entity";
+
 pub const entity: Schema = .{
-    .id = data.SchemaId.fromStringUnchecked("foundry:entity"),
+    .id = data.SchemaId.fromStringUnchecked(entity_name),
     .version = 1,
     .fields = &.{
         .{ .name = "components", .type = .{ .list = &.id }, .presence = .optional },
@@ -51,8 +53,10 @@ pub const entity: Schema = .{
 };
 
 /// A scene: which templates to spawn, in order. Naming one twice spawns it twice.
+pub const scene_name = "foundry:scene";
+
 pub const scene: Schema = .{
-    .id = data.SchemaId.fromStringUnchecked("foundry:scene"),
+    .id = data.SchemaId.fromStringUnchecked(scene_name),
     .version = 1,
     .fields = &.{
         .{ .name = "entities", .type = .{ .list = &.id }, .presence = .optional },

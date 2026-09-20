@@ -62,7 +62,8 @@ FOUNDRY_AGREE(FOUNDRY_ERR_INTERNAL == -10);
 FOUNDRY_AGREE(FOUNDRY_API_VERSION_1 == 1);
 FOUNDRY_AGREE(FOUNDRY_API_VERSION_2 == 2);
 FOUNDRY_AGREE(FOUNDRY_API_VERSION_3 == 3);
-FOUNDRY_AGREE(FOUNDRY_API_VERSION == FOUNDRY_API_VERSION_3);
+FOUNDRY_AGREE(FOUNDRY_API_VERSION_4 == 4);
+FOUNDRY_AGREE(FOUNDRY_API_VERSION == FOUNDRY_API_VERSION_4);
 
 /* -- Strings ------------------------------------------------------------------------- */
 
@@ -2217,3 +2218,760 @@ const char *foundry_agreement_api_v3_name(uint64_t index)
     if (index >= foundry_agreement_api_v3_count()) return NULL;
     return api_v3_names[index];
 }
+
+/* -- ABI v4 -------------------------------------------------------------------------- */
+/* Positional initialization type-checks every common v4 member against v3 without
+ * `typeof`, casts, or a non-C99 extension. A signature drift in either table is an
+ * incompatible-pointer diagnostic under the build's `-Werror`. */
+void foundry_agreement_api_v4_common_signatures(const FoundryApi_v4 *api);
+void foundry_agreement_api_v4_common_signatures(const FoundryApi_v4 *api)
+{
+    FoundryApi_v3 common = {
+        api->version,
+        api->size,
+        api->result_name,
+        api->log_write,
+        api->log_next,
+        api->id_from_string,
+        api->id_to_string,
+        api->id_copy_string,
+        api->frame_index,
+        api->frame_delta_ns,
+        api->elapsed_ns,
+        api->tick_delta_ns,
+        api->scope_begin,
+        api->scope_end,
+        api->memory_counter_open,
+        api->memory_counter_set,
+        api->content_generation,
+        api->content_find,
+        api->content_next,
+        api->content_next_of_schema,
+        api->record_id,
+        api->record_name,
+        api->record_schema,
+        api->record_package,
+        api->record_field_count,
+        api->record_field_index,
+        api->record_field_name,
+        api->record_field_type,
+        api->record_field_present,
+        api->record_get_bool,
+        api->record_get_i64,
+        api->record_get_u64,
+        api->record_get_f32,
+        api->record_get_string,
+        api->record_copy_string,
+        api->record_get_id,
+        api->record_nested,
+        api->record_list_len,
+        api->record_list_get_i64,
+        api->record_list_get_f32,
+        api->record_list_get_string,
+        api->record_list_get_id,
+        api->record_list_nested,
+        api->package_count,
+        api->package_next,
+        api->package_find,
+        api->package_id,
+        api->package_name,
+        api->package_version,
+        api->package_order,
+        api->schema_count,
+        api->schema_next,
+        api->schema_find,
+        api->schema_id,
+        api->schema_version,
+        api->schema_field_count,
+        api->schema_field_name,
+        api->schema_field_type,
+        api->asset_acquire,
+        api->asset_release,
+        api->asset_find,
+        api->asset_next,
+        api->asset_content_id,
+        api->asset_schema,
+        api->asset_refcount,
+        api->world_register_component,
+        api->world_find_component_type,
+        api->world_component_type_next,
+        api->world_component_type_schema,
+        api->world_component_type_name,
+        api->world_component_type_size,
+        api->world_component_type_alignment,
+        api->world_component_type_count,
+        api->world_component_type_savable,
+        api->world_create_entity,
+        api->world_destroy_entity,
+        api->world_contains,
+        api->world_entity_count,
+        api->world_next_entity,
+        api->world_add_component,
+        api->world_remove_component,
+        api->world_has_component,
+        api->world_register_system,
+        api->world_query_begin,
+        api->world_query_next,
+        api->world_spawn,
+        api->world_spawn_scene,
+        api->world_read_component,
+        api->world_component_bytes,
+        api->render_texture_of_asset,
+        api->render_destroy_texture,
+        api->render_draw_sprite,
+        api->render_draw_text,
+        api->render_add_view,
+        api->render_select_view,
+        api->render_camera_get,
+        api->render_camera_set,
+        api->render_world_to_screen,
+        api->render_screen_to_world,
+        api->render_stats,
+        api->ui_begin,
+        api->ui_end,
+        api->ui_push_id,
+        api->ui_pop_id,
+        api->ui_begin_panel,
+        api->ui_end_panel,
+        api->ui_begin_row,
+        api->ui_end_row,
+        api->ui_begin_scroll,
+        api->ui_end_scroll,
+        api->ui_label,
+        api->ui_button,
+        api->ui_checkbox,
+        api->ui_slider,
+        api->ui_slider_int,
+        api->ui_separator,
+        api->ui_spacer,
+        api->ui_collapsing_header,
+        api->ui_text_field,
+        api->ui_plot,
+        api->ui_style_get,
+        api->ui_style_set,
+        api->ui_wants_keyboard,
+        api->ui_wants_pointer,
+        api->audio_play,
+        api->audio_stop,
+        api->audio_set_gain,
+        api->audio_set_pan,
+        api->audio_set_pitch,
+        api->audio_set_master_gain,
+        api->physics_create_body,
+        api->physics_destroy_body,
+        api->physics_move_body,
+        api->physics_query_point,
+        api->physics_query_aabb,
+        api->physics_query_ray,
+        api->physics_body_contacts,
+        api->script_source_copy,
+        api->mods_installed_next,
+        api->mods_pending_next,
+        api->mods_requirement_next,
+        api->mods_conflict_next,
+        api->mods_provider_next,
+        api->mods_profile_next,
+        api->mods_profile_active,
+        api->mods_set_enabled,
+        api->mods_move,
+        api->mods_revert,
+        api->mods_apply,
+        api->mods_profile_create,
+        api->mods_profile_copy,
+        api->mods_profile_rename,
+        api->mods_profile_delete,
+        api->mods_profile_select,
+        api->ui_theme_resolve,
+        api->ui_theme_push,
+        api->ui_theme_pop,
+        api->ui_begin_disabled,
+        api->ui_end_disabled,
+        api->ui_region_remaining,
+        api->ui_tabs,
+        api->ui_selectable,
+        api->ui_reorder_list,
+        api->ui_reorder_button,
+        api->ui_icon,
+        api->ui_image
+    };
+    (void)common;
+}
+
+/* The authoring tail's shapes, stated once each, the way v2 states `script_source_copy`.
+ * Five of the forty-seven: the ones whose parameter lists are long enough that a drift
+ * between this header and the engine's Zig declarations would otherwise be found by a
+ * client. Assigning to a typedef makes it an incompatible-pointer diagnostic under the
+ * build's `-Werror`. */
+typedef FoundryResult (*foundry_agree_author_duplicate_fn)(
+    FoundrySourceNode, FoundryDocument, uint64_t, FoundryStr, FoundryAuthorEdit *);
+typedef FoundryResult (*foundry_agree_author_list_insert_fn)(
+    FoundrySourceNode, uint64_t, uint32_t, const FoundryAuthorValue *, FoundryAuthorEdit *);
+typedef FoundryResult (*foundry_agree_author_copy_text_fn)(
+    FoundrySourceNode, uint8_t *, uint64_t, uint64_t *);
+typedef FoundryResult (*foundry_agree_author_export_fn)(FoundryBuild, uint32_t, uint32_t *);
+typedef FoundryResult (*foundry_agree_author_dependency_record_fn)(
+    FoundryWorkspace, uint32_t, FoundryCursor *, FoundrySourceNode *);
+
+void foundry_agreement_api_v4_author_signatures(const FoundryApi_v4 *api);
+void foundry_agreement_api_v4_author_signatures(const FoundryApi_v4 *api)
+{
+    foundry_agree_author_duplicate_fn duplicate = api->author_record_duplicate;
+    foundry_agree_author_list_insert_fn insert = api->author_list_insert;
+    foundry_agree_author_copy_text_fn copy_text = api->author_node_copy_text;
+    foundry_agree_author_export_fn export_build = api->author_build_export;
+    foundry_agree_author_dependency_record_fn dependency = api->author_dependency_record_next;
+    (void)duplicate;
+    (void)insert;
+    (void)copy_text;
+    (void)export_build;
+    (void)dependency;
+}
+
+static const char *const api_v4_names[] = {
+    "version",
+    "size",
+    "result_name",
+    "log_write",
+    "log_next",
+    "id_from_string",
+    "id_to_string",
+    "id_copy_string",
+    "frame_index",
+    "frame_delta_ns",
+    "elapsed_ns",
+    "tick_delta_ns",
+    "scope_begin",
+    "scope_end",
+    "memory_counter_open",
+    "memory_counter_set",
+    "content_generation",
+    "content_find",
+    "content_next",
+    "content_next_of_schema",
+    "record_id",
+    "record_name",
+    "record_schema",
+    "record_package",
+    "record_field_count",
+    "record_field_index",
+    "record_field_name",
+    "record_field_type",
+    "record_field_present",
+    "record_get_bool",
+    "record_get_i64",
+    "record_get_u64",
+    "record_get_f32",
+    "record_get_string",
+    "record_copy_string",
+    "record_get_id",
+    "record_nested",
+    "record_list_len",
+    "record_list_get_i64",
+    "record_list_get_f32",
+    "record_list_get_string",
+    "record_list_get_id",
+    "record_list_nested",
+    "package_count",
+    "package_next",
+    "package_find",
+    "package_id",
+    "package_name",
+    "package_version",
+    "package_order",
+    "schema_count",
+    "schema_next",
+    "schema_find",
+    "schema_id",
+    "schema_version",
+    "schema_field_count",
+    "schema_field_name",
+    "schema_field_type",
+    "asset_acquire",
+    "asset_release",
+    "asset_find",
+    "asset_next",
+    "asset_content_id",
+    "asset_schema",
+    "asset_refcount",
+    "world_register_component",
+    "world_find_component_type",
+    "world_component_type_next",
+    "world_component_type_schema",
+    "world_component_type_name",
+    "world_component_type_size",
+    "world_component_type_alignment",
+    "world_component_type_count",
+    "world_component_type_savable",
+    "world_create_entity",
+    "world_destroy_entity",
+    "world_contains",
+    "world_entity_count",
+    "world_next_entity",
+    "world_add_component",
+    "world_remove_component",
+    "world_has_component",
+    "world_register_system",
+    "world_query_begin",
+    "world_query_next",
+    "world_spawn",
+    "world_spawn_scene",
+    "world_read_component",
+    "world_component_bytes",
+    "render_texture_of_asset",
+    "render_destroy_texture",
+    "render_draw_sprite",
+    "render_draw_text",
+    "render_add_view",
+    "render_select_view",
+    "render_camera_get",
+    "render_camera_set",
+    "render_world_to_screen",
+    "render_screen_to_world",
+    "render_stats",
+    "ui_begin",
+    "ui_end",
+    "ui_push_id",
+    "ui_pop_id",
+    "ui_begin_panel",
+    "ui_end_panel",
+    "ui_begin_row",
+    "ui_end_row",
+    "ui_begin_scroll",
+    "ui_end_scroll",
+    "ui_label",
+    "ui_button",
+    "ui_checkbox",
+    "ui_slider",
+    "ui_slider_int",
+    "ui_separator",
+    "ui_spacer",
+    "ui_collapsing_header",
+    "ui_text_field",
+    "ui_plot",
+    "ui_style_get",
+    "ui_style_set",
+    "ui_wants_keyboard",
+    "ui_wants_pointer",
+    "audio_play",
+    "audio_stop",
+    "audio_set_gain",
+    "audio_set_pan",
+    "audio_set_pitch",
+    "audio_set_master_gain",
+    "physics_create_body",
+    "physics_destroy_body",
+    "physics_move_body",
+    "physics_query_point",
+    "physics_query_aabb",
+    "physics_query_ray",
+    "physics_body_contacts",
+    "script_source_copy",
+    "mods_installed_next",
+    "mods_pending_next",
+    "mods_requirement_next",
+    "mods_conflict_next",
+    "mods_provider_next",
+    "mods_profile_next",
+    "mods_profile_active",
+    "mods_set_enabled",
+    "mods_move",
+    "mods_revert",
+    "mods_apply",
+    "mods_profile_create",
+    "mods_profile_copy",
+    "mods_profile_rename",
+    "mods_profile_delete",
+    "mods_profile_select",
+    "ui_theme_resolve",
+    "ui_theme_push",
+    "ui_theme_pop",
+    "ui_begin_disabled",
+    "ui_end_disabled",
+    "ui_region_remaining",
+    "ui_tabs",
+    "ui_selectable",
+    "ui_reorder_list",
+    "ui_reorder_button",
+    "ui_icon",
+    "ui_image",
+    "author_workspace_next",
+    "author_workspace_info",
+    "author_workspace_revision",
+    "author_workspace_limits",
+    "author_document_next",
+    "author_document_info",
+    "author_document_create",
+    "author_document_refresh",
+    "author_document_discard",
+    "author_document_copy_source",
+    "author_schema_next",
+    "author_schema_find",
+    "author_schema_node_info",
+    "author_schema_node_child",
+    "author_schema_node_default",
+    "author_record_next",
+    "author_dependency_next",
+    "author_dependency_record_next",
+    "author_preview_record_next",
+    "author_node_info",
+    "author_node_child",
+    "author_node_field",
+    "author_node_scalar",
+    "author_node_copy_text",
+    "author_record_create",
+    "author_record_duplicate",
+    "author_record_override",
+    "author_record_delete",
+    "author_value_set",
+    "author_value_unset",
+    "author_list_insert",
+    "author_list_remove",
+    "author_list_move",
+    "author_undo",
+    "author_redo",
+    "author_save_document",
+    "author_save_all",
+    "author_save_entry_next",
+    "author_validate",
+    "author_diagnostic_next",
+    "author_build",
+    "author_build_info",
+    "author_build_release",
+    "author_export_next",
+    "author_build_export",
+    "author_preview_activate",
+    "author_preview_info"
+};
+
+static const uint64_t api_v4_offsets[] = {
+    (uint64_t)offsetof(FoundryApi_v4, version),
+    (uint64_t)offsetof(FoundryApi_v4, size),
+    (uint64_t)offsetof(FoundryApi_v4, result_name),
+    (uint64_t)offsetof(FoundryApi_v4, log_write),
+    (uint64_t)offsetof(FoundryApi_v4, log_next),
+    (uint64_t)offsetof(FoundryApi_v4, id_from_string),
+    (uint64_t)offsetof(FoundryApi_v4, id_to_string),
+    (uint64_t)offsetof(FoundryApi_v4, id_copy_string),
+    (uint64_t)offsetof(FoundryApi_v4, frame_index),
+    (uint64_t)offsetof(FoundryApi_v4, frame_delta_ns),
+    (uint64_t)offsetof(FoundryApi_v4, elapsed_ns),
+    (uint64_t)offsetof(FoundryApi_v4, tick_delta_ns),
+    (uint64_t)offsetof(FoundryApi_v4, scope_begin),
+    (uint64_t)offsetof(FoundryApi_v4, scope_end),
+    (uint64_t)offsetof(FoundryApi_v4, memory_counter_open),
+    (uint64_t)offsetof(FoundryApi_v4, memory_counter_set),
+    (uint64_t)offsetof(FoundryApi_v4, content_generation),
+    (uint64_t)offsetof(FoundryApi_v4, content_find),
+    (uint64_t)offsetof(FoundryApi_v4, content_next),
+    (uint64_t)offsetof(FoundryApi_v4, content_next_of_schema),
+    (uint64_t)offsetof(FoundryApi_v4, record_id),
+    (uint64_t)offsetof(FoundryApi_v4, record_name),
+    (uint64_t)offsetof(FoundryApi_v4, record_schema),
+    (uint64_t)offsetof(FoundryApi_v4, record_package),
+    (uint64_t)offsetof(FoundryApi_v4, record_field_count),
+    (uint64_t)offsetof(FoundryApi_v4, record_field_index),
+    (uint64_t)offsetof(FoundryApi_v4, record_field_name),
+    (uint64_t)offsetof(FoundryApi_v4, record_field_type),
+    (uint64_t)offsetof(FoundryApi_v4, record_field_present),
+    (uint64_t)offsetof(FoundryApi_v4, record_get_bool),
+    (uint64_t)offsetof(FoundryApi_v4, record_get_i64),
+    (uint64_t)offsetof(FoundryApi_v4, record_get_u64),
+    (uint64_t)offsetof(FoundryApi_v4, record_get_f32),
+    (uint64_t)offsetof(FoundryApi_v4, record_get_string),
+    (uint64_t)offsetof(FoundryApi_v4, record_copy_string),
+    (uint64_t)offsetof(FoundryApi_v4, record_get_id),
+    (uint64_t)offsetof(FoundryApi_v4, record_nested),
+    (uint64_t)offsetof(FoundryApi_v4, record_list_len),
+    (uint64_t)offsetof(FoundryApi_v4, record_list_get_i64),
+    (uint64_t)offsetof(FoundryApi_v4, record_list_get_f32),
+    (uint64_t)offsetof(FoundryApi_v4, record_list_get_string),
+    (uint64_t)offsetof(FoundryApi_v4, record_list_get_id),
+    (uint64_t)offsetof(FoundryApi_v4, record_list_nested),
+    (uint64_t)offsetof(FoundryApi_v4, package_count),
+    (uint64_t)offsetof(FoundryApi_v4, package_next),
+    (uint64_t)offsetof(FoundryApi_v4, package_find),
+    (uint64_t)offsetof(FoundryApi_v4, package_id),
+    (uint64_t)offsetof(FoundryApi_v4, package_name),
+    (uint64_t)offsetof(FoundryApi_v4, package_version),
+    (uint64_t)offsetof(FoundryApi_v4, package_order),
+    (uint64_t)offsetof(FoundryApi_v4, schema_count),
+    (uint64_t)offsetof(FoundryApi_v4, schema_next),
+    (uint64_t)offsetof(FoundryApi_v4, schema_find),
+    (uint64_t)offsetof(FoundryApi_v4, schema_id),
+    (uint64_t)offsetof(FoundryApi_v4, schema_version),
+    (uint64_t)offsetof(FoundryApi_v4, schema_field_count),
+    (uint64_t)offsetof(FoundryApi_v4, schema_field_name),
+    (uint64_t)offsetof(FoundryApi_v4, schema_field_type),
+    (uint64_t)offsetof(FoundryApi_v4, asset_acquire),
+    (uint64_t)offsetof(FoundryApi_v4, asset_release),
+    (uint64_t)offsetof(FoundryApi_v4, asset_find),
+    (uint64_t)offsetof(FoundryApi_v4, asset_next),
+    (uint64_t)offsetof(FoundryApi_v4, asset_content_id),
+    (uint64_t)offsetof(FoundryApi_v4, asset_schema),
+    (uint64_t)offsetof(FoundryApi_v4, asset_refcount),
+    (uint64_t)offsetof(FoundryApi_v4, world_register_component),
+    (uint64_t)offsetof(FoundryApi_v4, world_find_component_type),
+    (uint64_t)offsetof(FoundryApi_v4, world_component_type_next),
+    (uint64_t)offsetof(FoundryApi_v4, world_component_type_schema),
+    (uint64_t)offsetof(FoundryApi_v4, world_component_type_name),
+    (uint64_t)offsetof(FoundryApi_v4, world_component_type_size),
+    (uint64_t)offsetof(FoundryApi_v4, world_component_type_alignment),
+    (uint64_t)offsetof(FoundryApi_v4, world_component_type_count),
+    (uint64_t)offsetof(FoundryApi_v4, world_component_type_savable),
+    (uint64_t)offsetof(FoundryApi_v4, world_create_entity),
+    (uint64_t)offsetof(FoundryApi_v4, world_destroy_entity),
+    (uint64_t)offsetof(FoundryApi_v4, world_contains),
+    (uint64_t)offsetof(FoundryApi_v4, world_entity_count),
+    (uint64_t)offsetof(FoundryApi_v4, world_next_entity),
+    (uint64_t)offsetof(FoundryApi_v4, world_add_component),
+    (uint64_t)offsetof(FoundryApi_v4, world_remove_component),
+    (uint64_t)offsetof(FoundryApi_v4, world_has_component),
+    (uint64_t)offsetof(FoundryApi_v4, world_register_system),
+    (uint64_t)offsetof(FoundryApi_v4, world_query_begin),
+    (uint64_t)offsetof(FoundryApi_v4, world_query_next),
+    (uint64_t)offsetof(FoundryApi_v4, world_spawn),
+    (uint64_t)offsetof(FoundryApi_v4, world_spawn_scene),
+    (uint64_t)offsetof(FoundryApi_v4, world_read_component),
+    (uint64_t)offsetof(FoundryApi_v4, world_component_bytes),
+    (uint64_t)offsetof(FoundryApi_v4, render_texture_of_asset),
+    (uint64_t)offsetof(FoundryApi_v4, render_destroy_texture),
+    (uint64_t)offsetof(FoundryApi_v4, render_draw_sprite),
+    (uint64_t)offsetof(FoundryApi_v4, render_draw_text),
+    (uint64_t)offsetof(FoundryApi_v4, render_add_view),
+    (uint64_t)offsetof(FoundryApi_v4, render_select_view),
+    (uint64_t)offsetof(FoundryApi_v4, render_camera_get),
+    (uint64_t)offsetof(FoundryApi_v4, render_camera_set),
+    (uint64_t)offsetof(FoundryApi_v4, render_world_to_screen),
+    (uint64_t)offsetof(FoundryApi_v4, render_screen_to_world),
+    (uint64_t)offsetof(FoundryApi_v4, render_stats),
+    (uint64_t)offsetof(FoundryApi_v4, ui_begin),
+    (uint64_t)offsetof(FoundryApi_v4, ui_end),
+    (uint64_t)offsetof(FoundryApi_v4, ui_push_id),
+    (uint64_t)offsetof(FoundryApi_v4, ui_pop_id),
+    (uint64_t)offsetof(FoundryApi_v4, ui_begin_panel),
+    (uint64_t)offsetof(FoundryApi_v4, ui_end_panel),
+    (uint64_t)offsetof(FoundryApi_v4, ui_begin_row),
+    (uint64_t)offsetof(FoundryApi_v4, ui_end_row),
+    (uint64_t)offsetof(FoundryApi_v4, ui_begin_scroll),
+    (uint64_t)offsetof(FoundryApi_v4, ui_end_scroll),
+    (uint64_t)offsetof(FoundryApi_v4, ui_label),
+    (uint64_t)offsetof(FoundryApi_v4, ui_button),
+    (uint64_t)offsetof(FoundryApi_v4, ui_checkbox),
+    (uint64_t)offsetof(FoundryApi_v4, ui_slider),
+    (uint64_t)offsetof(FoundryApi_v4, ui_slider_int),
+    (uint64_t)offsetof(FoundryApi_v4, ui_separator),
+    (uint64_t)offsetof(FoundryApi_v4, ui_spacer),
+    (uint64_t)offsetof(FoundryApi_v4, ui_collapsing_header),
+    (uint64_t)offsetof(FoundryApi_v4, ui_text_field),
+    (uint64_t)offsetof(FoundryApi_v4, ui_plot),
+    (uint64_t)offsetof(FoundryApi_v4, ui_style_get),
+    (uint64_t)offsetof(FoundryApi_v4, ui_style_set),
+    (uint64_t)offsetof(FoundryApi_v4, ui_wants_keyboard),
+    (uint64_t)offsetof(FoundryApi_v4, ui_wants_pointer),
+    (uint64_t)offsetof(FoundryApi_v4, audio_play),
+    (uint64_t)offsetof(FoundryApi_v4, audio_stop),
+    (uint64_t)offsetof(FoundryApi_v4, audio_set_gain),
+    (uint64_t)offsetof(FoundryApi_v4, audio_set_pan),
+    (uint64_t)offsetof(FoundryApi_v4, audio_set_pitch),
+    (uint64_t)offsetof(FoundryApi_v4, audio_set_master_gain),
+    (uint64_t)offsetof(FoundryApi_v4, physics_create_body),
+    (uint64_t)offsetof(FoundryApi_v4, physics_destroy_body),
+    (uint64_t)offsetof(FoundryApi_v4, physics_move_body),
+    (uint64_t)offsetof(FoundryApi_v4, physics_query_point),
+    (uint64_t)offsetof(FoundryApi_v4, physics_query_aabb),
+    (uint64_t)offsetof(FoundryApi_v4, physics_query_ray),
+    (uint64_t)offsetof(FoundryApi_v4, physics_body_contacts),
+    (uint64_t)offsetof(FoundryApi_v4, script_source_copy),
+    (uint64_t)offsetof(FoundryApi_v4, mods_installed_next),
+    (uint64_t)offsetof(FoundryApi_v4, mods_pending_next),
+    (uint64_t)offsetof(FoundryApi_v4, mods_requirement_next),
+    (uint64_t)offsetof(FoundryApi_v4, mods_conflict_next),
+    (uint64_t)offsetof(FoundryApi_v4, mods_provider_next),
+    (uint64_t)offsetof(FoundryApi_v4, mods_profile_next),
+    (uint64_t)offsetof(FoundryApi_v4, mods_profile_active),
+    (uint64_t)offsetof(FoundryApi_v4, mods_set_enabled),
+    (uint64_t)offsetof(FoundryApi_v4, mods_move),
+    (uint64_t)offsetof(FoundryApi_v4, mods_revert),
+    (uint64_t)offsetof(FoundryApi_v4, mods_apply),
+    (uint64_t)offsetof(FoundryApi_v4, mods_profile_create),
+    (uint64_t)offsetof(FoundryApi_v4, mods_profile_copy),
+    (uint64_t)offsetof(FoundryApi_v4, mods_profile_rename),
+    (uint64_t)offsetof(FoundryApi_v4, mods_profile_delete),
+    (uint64_t)offsetof(FoundryApi_v4, mods_profile_select),
+    (uint64_t)offsetof(FoundryApi_v4, ui_theme_resolve),
+    (uint64_t)offsetof(FoundryApi_v4, ui_theme_push),
+    (uint64_t)offsetof(FoundryApi_v4, ui_theme_pop),
+    (uint64_t)offsetof(FoundryApi_v4, ui_begin_disabled),
+    (uint64_t)offsetof(FoundryApi_v4, ui_end_disabled),
+    (uint64_t)offsetof(FoundryApi_v4, ui_region_remaining),
+    (uint64_t)offsetof(FoundryApi_v4, ui_tabs),
+    (uint64_t)offsetof(FoundryApi_v4, ui_selectable),
+    (uint64_t)offsetof(FoundryApi_v4, ui_reorder_list),
+    (uint64_t)offsetof(FoundryApi_v4, ui_reorder_button),
+    (uint64_t)offsetof(FoundryApi_v4, ui_icon),
+    (uint64_t)offsetof(FoundryApi_v4, ui_image),
+    (uint64_t)offsetof(FoundryApi_v4, author_workspace_next),
+    (uint64_t)offsetof(FoundryApi_v4, author_workspace_info),
+    (uint64_t)offsetof(FoundryApi_v4, author_workspace_revision),
+    (uint64_t)offsetof(FoundryApi_v4, author_workspace_limits),
+    (uint64_t)offsetof(FoundryApi_v4, author_document_next),
+    (uint64_t)offsetof(FoundryApi_v4, author_document_info),
+    (uint64_t)offsetof(FoundryApi_v4, author_document_create),
+    (uint64_t)offsetof(FoundryApi_v4, author_document_refresh),
+    (uint64_t)offsetof(FoundryApi_v4, author_document_discard),
+    (uint64_t)offsetof(FoundryApi_v4, author_document_copy_source),
+    (uint64_t)offsetof(FoundryApi_v4, author_schema_next),
+    (uint64_t)offsetof(FoundryApi_v4, author_schema_find),
+    (uint64_t)offsetof(FoundryApi_v4, author_schema_node_info),
+    (uint64_t)offsetof(FoundryApi_v4, author_schema_node_child),
+    (uint64_t)offsetof(FoundryApi_v4, author_schema_node_default),
+    (uint64_t)offsetof(FoundryApi_v4, author_record_next),
+    (uint64_t)offsetof(FoundryApi_v4, author_dependency_next),
+    (uint64_t)offsetof(FoundryApi_v4, author_dependency_record_next),
+    (uint64_t)offsetof(FoundryApi_v4, author_preview_record_next),
+    (uint64_t)offsetof(FoundryApi_v4, author_node_info),
+    (uint64_t)offsetof(FoundryApi_v4, author_node_child),
+    (uint64_t)offsetof(FoundryApi_v4, author_node_field),
+    (uint64_t)offsetof(FoundryApi_v4, author_node_scalar),
+    (uint64_t)offsetof(FoundryApi_v4, author_node_copy_text),
+    (uint64_t)offsetof(FoundryApi_v4, author_record_create),
+    (uint64_t)offsetof(FoundryApi_v4, author_record_duplicate),
+    (uint64_t)offsetof(FoundryApi_v4, author_record_override),
+    (uint64_t)offsetof(FoundryApi_v4, author_record_delete),
+    (uint64_t)offsetof(FoundryApi_v4, author_value_set),
+    (uint64_t)offsetof(FoundryApi_v4, author_value_unset),
+    (uint64_t)offsetof(FoundryApi_v4, author_list_insert),
+    (uint64_t)offsetof(FoundryApi_v4, author_list_remove),
+    (uint64_t)offsetof(FoundryApi_v4, author_list_move),
+    (uint64_t)offsetof(FoundryApi_v4, author_undo),
+    (uint64_t)offsetof(FoundryApi_v4, author_redo),
+    (uint64_t)offsetof(FoundryApi_v4, author_save_document),
+    (uint64_t)offsetof(FoundryApi_v4, author_save_all),
+    (uint64_t)offsetof(FoundryApi_v4, author_save_entry_next),
+    (uint64_t)offsetof(FoundryApi_v4, author_validate),
+    (uint64_t)offsetof(FoundryApi_v4, author_diagnostic_next),
+    (uint64_t)offsetof(FoundryApi_v4, author_build),
+    (uint64_t)offsetof(FoundryApi_v4, author_build_info),
+    (uint64_t)offsetof(FoundryApi_v4, author_build_release),
+    (uint64_t)offsetof(FoundryApi_v4, author_export_next),
+    (uint64_t)offsetof(FoundryApi_v4, author_build_export),
+    (uint64_t)offsetof(FoundryApi_v4, author_preview_activate),
+    (uint64_t)offsetof(FoundryApi_v4, author_preview_info)
+};
+
+FOUNDRY_AGREE(sizeof(api_v4_names) / sizeof(api_v4_names[0]) ==
+              sizeof(api_v4_offsets) / sizeof(api_v4_offsets[0]));
+FOUNDRY_AGREE(sizeof(FoundryApi_v4) ==
+              8 + 8 * (sizeof(api_v4_offsets) / sizeof(api_v4_offsets[0]) - 2));
+
+uint64_t foundry_agreement_api_v4_size(void);
+uint64_t foundry_agreement_api_v4_size(void)
+{
+    return (uint64_t)sizeof(FoundryApi_v4);
+}
+
+uint64_t foundry_agreement_api_v4_count(void);
+uint64_t foundry_agreement_api_v4_count(void)
+{
+    return (uint64_t)(sizeof(api_v4_offsets) / sizeof(api_v4_offsets[0]));
+}
+
+uint64_t foundry_agreement_api_v4_offset(uint64_t index);
+uint64_t foundry_agreement_api_v4_offset(uint64_t index)
+{
+    if (index >= foundry_agreement_api_v4_count()) return UINT64_MAX;
+    return api_v4_offsets[index];
+}
+
+const char *foundry_agreement_api_v4_name(uint64_t index);
+const char *foundry_agreement_api_v4_name(uint64_t index)
+{
+    if (index >= foundry_agreement_api_v4_count()) return NULL;
+    return api_v4_names[index];
+}
+
+/* -- The authoring values ------------------------------------------------------------ */
+
+FOUNDRY_AGREE(sizeof(FoundryAuthorWorkspaceInfo) == 72);
+FOUNDRY_AGREE(offsetof(FoundryAuthorWorkspaceInfo, package_name) == 8);
+FOUNDRY_AGREE(offsetof(FoundryAuthorWorkspaceInfo, package_version) == 24);
+FOUNDRY_AGREE(offsetof(FoundryAuthorWorkspaceInfo, export_count) == 48);
+FOUNDRY_AGREE(offsetof(FoundryAuthorWorkspaceInfo, can_edit) == 52);
+FOUNDRY_AGREE(offsetof(FoundryAuthorWorkspaceInfo, has_manifest) == 61);
+
+FOUNDRY_AGREE(sizeof(FoundryAuthorLimits) == 64);
+FOUNDRY_AGREE(offsetof(FoundryAuthorLimits, max_history_commands) == 40);
+FOUNDRY_AGREE(offsetof(FoundryAuthorLimits, max_list_elements) == 60);
+
+FOUNDRY_AGREE(sizeof(FoundryAuthorDocumentInfo) == 40);
+FOUNDRY_AGREE(offsetof(FoundryAuthorDocumentInfo, source_bytes) == 16);
+FOUNDRY_AGREE(offsetof(FoundryAuthorDocumentInfo, dirty) == 32);
+FOUNDRY_AGREE(offsetof(FoundryAuthorDocumentInfo, editable) == 36);
+
+FOUNDRY_AGREE(sizeof(FoundryAuthorNodeInfo) == 64);
+FOUNDRY_AGREE(offsetof(FoundryAuthorNodeInfo, id) == 16);
+FOUNDRY_AGREE(offsetof(FoundryAuthorNodeInfo, schema) == 24);
+FOUNDRY_AGREE(offsetof(FoundryAuthorNodeInfo, field_type) == 32);
+FOUNDRY_AGREE(offsetof(FoundryAuthorNodeInfo, container) == 52);
+FOUNDRY_AGREE(offsetof(FoundryAuthorNodeInfo, authored) == 56);
+FOUNDRY_AGREE(offsetof(FoundryAuthorNodeInfo, depth) == 60);
+
+FOUNDRY_AGREE(sizeof(FoundryAuthorSchemaNodeInfo) == 56);
+FOUNDRY_AGREE(offsetof(FoundryAuthorSchemaNodeInfo, schema) == 16);
+FOUNDRY_AGREE(offsetof(FoundryAuthorSchemaNodeInfo, field_type) == 24);
+FOUNDRY_AGREE(offsetof(FoundryAuthorSchemaNodeInfo, is_root) == 48);
+
+FOUNDRY_AGREE(sizeof(FoundryAuthorValue) == 32);
+FOUNDRY_AGREE(offsetof(FoundryAuthorValue, boolean) == 4);
+FOUNDRY_AGREE(offsetof(FoundryAuthorValue, id) == 8);
+FOUNDRY_AGREE(offsetof(FoundryAuthorValue, text) == 16);
+
+FOUNDRY_AGREE(sizeof(FoundryAuthorPackageInfo) == 56);
+FOUNDRY_AGREE(offsetof(FoundryAuthorPackageInfo, id) == 32);
+FOUNDRY_AGREE(offsetof(FoundryAuthorPackageInfo, version) == 40);
+
+FOUNDRY_AGREE(sizeof(FoundryAuthorEdit) == 40);
+FOUNDRY_AGREE(offsetof(FoundryAuthorEdit, document) == 8);
+FOUNDRY_AGREE(offsetof(FoundryAuthorEdit, selection) == 16);
+FOUNDRY_AGREE(offsetof(FoundryAuthorEdit, record) == 24);
+FOUNDRY_AGREE(offsetof(FoundryAuthorEdit, has_record) == 32);
+
+FOUNDRY_AGREE(sizeof(FoundryAuthorSaveResult) == 32);
+FOUNDRY_AGREE(offsetof(FoundryAuthorSaveResult, outcome) == 16);
+FOUNDRY_AGREE(offsetof(FoundryAuthorSaveResult, durable) == 24);
+
+FOUNDRY_AGREE(sizeof(FoundryAuthorSaveAll) == 24);
+FOUNDRY_AGREE(offsetof(FoundryAuthorSaveAll, entry_count) == 8);
+FOUNDRY_AGREE(offsetof(FoundryAuthorSaveAll, lock_released) == 16);
+
+FOUNDRY_AGREE(sizeof(FoundryAuthorSaveEntry) == 40);
+FOUNDRY_AGREE(offsetof(FoundryAuthorSaveEntry, document) == 16);
+FOUNDRY_AGREE(offsetof(FoundryAuthorSaveEntry, outcome) == 24);
+FOUNDRY_AGREE(offsetof(FoundryAuthorSaveEntry, durable) == 32);
+
+FOUNDRY_AGREE(sizeof(FoundryAuthorDiagnostic) == 120);
+FOUNDRY_AGREE(offsetof(FoundryAuthorDiagnostic, file) == 8);
+FOUNDRY_AGREE(offsetof(FoundryAuthorDiagnostic, note_file) == 72);
+FOUNDRY_AGREE(offsetof(FoundryAuthorDiagnostic, line) == 88);
+FOUNDRY_AGREE(offsetof(FoundryAuthorDiagnostic, suppressed) == 112);
+FOUNDRY_AGREE(offsetof(FoundryAuthorDiagnostic, has_note) == 116);
+
+FOUNDRY_AGREE(sizeof(FoundryAuthorBuildInfo) == 40);
+FOUNDRY_AGREE(offsetof(FoundryAuthorBuildInfo, package_bytes) == 24);
+FOUNDRY_AGREE(offsetof(FoundryAuthorBuildInfo, package_version) == 32);
+
+FOUNDRY_AGREE(sizeof(FoundryAuthorPreviewInfo) == 32);
+FOUNDRY_AGREE(offsetof(FoundryAuthorPreviewInfo, build) == 16);
+FOUNDRY_AGREE(offsetof(FoundryAuthorPreviewInfo, outcome) == 24);
+FOUNDRY_AGREE(offsetof(FoundryAuthorPreviewInfo, available) == 28);
+
+FOUNDRY_AGREE(sizeof(FoundryAuthorExportInfo) == 32);
+FOUNDRY_AGREE(offsetof(FoundryAuthorExportInfo, index) == 16);
+FOUNDRY_AGREE(offsetof(FoundryAuthorExportInfo, kind) == 20);
+FOUNDRY_AGREE(offsetof(FoundryAuthorExportInfo, has_assets) == 24);
+
+FOUNDRY_AGREE(sizeof(FoundryWorkspace) == 8);
+FOUNDRY_AGREE(sizeof(FoundryDocument) == 8);
+FOUNDRY_AGREE(sizeof(FoundrySourceNode) == 8);
+FOUNDRY_AGREE(sizeof(FoundrySchemaNode) == 8);
+FOUNDRY_AGREE(sizeof(FoundryBuild) == 8);

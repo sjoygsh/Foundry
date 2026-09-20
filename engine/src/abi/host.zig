@@ -24,6 +24,7 @@
 const std = @import("std");
 const app = @import("app");
 const asset = @import("asset");
+const author = @import("author");
 const core = @import("core");
 const data = @import("data");
 const scene = @import("scene");
@@ -32,6 +33,7 @@ const ui = @import("ui");
 const audio = @import("audio");
 const physics2d = @import("physics2d");
 
+const author_types = @import("author_types.zig");
 const render_calls = @import("calls_render.zig");
 const types = @import("types.zig");
 const ui_types = @import("ui_types.zig");
@@ -81,6 +83,56 @@ pub const max_scope_depth: u32 = 32;
 pub const max_render_textures = render_calls.max_render_textures;
 pub const max_ui_themes: u32 = 16;
 pub const max_ui_theme_depth: u32 = 8;
+
+/// The rings behind v4's authoring handles.
+///
+/// A workspace handle is `author.Service`'s own, because the service owns workspaces. The
+/// other four name things the service has no handle for — one document of one workspace,
+/// one node of one record's value tree, one node of one schema declaration, one build of
+/// one workspace — so this boundary issues them, and issues them out of fixed rings for the
+/// reason `max_nested_views` is a ring: a client holding one across a mutation must get
+/// `invalid_handle` rather than whatever now occupies the slot (I1).
+///
+/// **A document and a build outlive edits; a node does not.** A document index never moves
+/// while its workspace is open, so its handle is good for that workspace's life. A node is
+/// a position in a parse that the next accepted command replaces, and `editor.md` §5 says
+/// plainly that every old node goes stale even when its bytes did not move — so every node
+/// and schema-node handle carries the service generation, and any mutation invalidates the
+/// lot of them.
+pub const max_author_nodes: u32 = 256;
+pub const max_author_schema_nodes: u32 = 128;
+pub const max_author_builds: u32 = 16;
+
+/// How deep a node path this boundary carries. Above `data.Limits`' shipped nesting depth
+/// for a *record* in practice and far above what a form displays; a path deeper than this
+/// is refused rather than truncated.
+pub const max_author_path: u32 = 12;
+
+/// How many records may be open for reading at once.
+///
+/// Reading a node's name or its text hands back a borrow, and a borrow needs something to
+/// borrow from: a parse for a draft, an exact-value snapshot for a dependency or the loaded
+/// preview. Those are held here, and the rule that follows is the one nested views already
+/// have — **a borrow stays valid until this many more records have been read**, and until
+/// the next mutation.
+pub const max_author_readers: u32 = 4;
+
+/// Scratch for one formatted number or boolean, valid until the next scalar read. A
+/// client that wants to keep the text copies it, or asks for it with a buffer of its own.
+pub const max_author_text: usize = 64;
+
+/// How a document handle packs its workspace slot beside the document's own index. Twelve
+/// bits of slot and twenty of index, which is a thousand times `editor.md` §4's source
+/// limit and leaves no arithmetic to get wrong.
+pub const author_document_shift: u5 = 20;
+pub const author_document_mask: u32 = (1 << author_document_shift) - 1;
+
+/// Set on a selector to say it names a list position rather than a field.
+///
+/// A schema has at most `max_fields_per_schema` fields and a list at most
+/// `max_list_elements`, both far below this bit, so one `u32` carries the whole selector
+/// and a path is a small fixed array instead of an allocation.
+pub const item_selector: u32 = 0x8000_0000;
 
 /// The host's explicit authority for the v3 calls that write profiles. Its presence grants
 /// writes; the callback persists the selected profile key in the application's settings
@@ -132,6 +184,20 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
         mods_write: ?ModsWriteGrant = null,
         /// Moved by every successful change, and carried in every mod-management cursor.
         mods_generation: u32 = 1,
+
+        /// The one application-owned authoring service behind the v4 calls (ADR-0042).
+        /// Absent is the ordinary case: a game that ships does not author content, and
+        /// every authoring entry point answers `unavailable` without it.
+        author_service: ?*author.Service = null,
+        author_nodes: [max_author_nodes]AuthorNode = @splat(.{}),
+        author_node_next: u32 = 0,
+        author_schema_nodes: [max_author_schema_nodes]AuthorSchemaNode = @splat(.{}),
+        author_schema_node_next: u32 = 0,
+        author_builds: [max_author_builds]AuthorBuild = @splat(.{}),
+        author_build_next: u32 = 0,
+        author_readers: [max_author_readers]AuthorReader = @splat(.{}),
+        author_reader_next: u32 = 0,
+        author_text: [max_author_text]u8 = @splat(0),
 
         /// Content-derived themes are owned here so their public handles stay stable. They
         /// are all released together when the content generation changes.
@@ -321,6 +387,82 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
             theme: ?app.UiTheme = null,
         };
 
+        /// Which workspace a document handle names, and which of its documents. Not a
+        /// slot: the handle carries both, so there is nothing to keep (see
+        /// `authorDocumentHandle`).
+        pub const AuthorDocument = struct {
+            workspace: author.ServiceHandle = .none,
+            index: u32 = 0,
+        };
+
+        /// One successful build of one workspace.
+        pub const AuthorBuild = struct {
+            active: bool = false,
+            generation: u32 = 0,
+            workspace: author.ServiceHandle = .none,
+            build: author.BuildHandle = .none,
+        };
+
+        /// One node of one record's value tree.
+        ///
+        /// The path is stored rather than an offset, because an offset is exactly the thing
+        /// that survives an edit while meaning something else. `service_generation` is what
+        /// makes a node from before a command refuse instead of resolving somewhere new.
+        pub const AuthorNode = struct {
+            active: bool = false,
+            generation: u32 = 0,
+            service_generation: u32 = 0,
+            workspace: author.ServiceHandle = .none,
+            root: author_types.NodeRoot = .source,
+            /// The document for a source node, the package for a dependency node, the
+            /// schema's registry index for a default. Unused for a preview node.
+            container: u32 = 0,
+            /// The record's index in its document or package, or a store record handle's
+            /// bits for a preview node.
+            record: u64 = 0,
+            depth: u8 = 0,
+            /// One selector per step, a field index with `item_selector` set for a list
+            /// position.
+            path: [max_author_path]u32 = @splat(0),
+        };
+
+        /// One node of one schema declaration. Declarations do not change while a
+        /// workspace is open, and the generation is carried anyway: a client that has to
+        /// reacquire its value nodes after a command should not have to reason about which
+        /// of its handles survived.
+        pub const AuthorSchemaNode = struct {
+            active: bool = false,
+            generation: u32 = 0,
+            service_generation: u32 = 0,
+            workspace: author.ServiceHandle = .none,
+            schema: data.SchemaId = .{ .hash = 0 },
+            depth: u8 = 0,
+            path: [max_author_path]u32 = @splat(0),
+        };
+
+        /// One record open for reading, and whatever owns the values being read out of it.
+        pub const AuthorReader = struct {
+            kind: Kind = .none,
+            service_generation: u32 = 0,
+            workspace: author.ServiceHandle = .none,
+            root: author_types.NodeRoot = .source,
+            container: u32 = 0,
+            record: u64 = 0,
+            source: author.Inspection = undefined,
+            stored: author.snapshot.Record = undefined,
+
+            pub const Kind = enum { none, source, stored };
+
+            fn release(self: *AuthorReader) void {
+                switch (self.kind) {
+                    .none => {},
+                    .source => self.source.deinit(),
+                    .stored => self.stored.deinit(),
+                }
+                self.* = .{};
+            }
+        };
+
         /// Publishes this host to the table. **The host must outlive the binding and must
         /// not be moved**, because the engine holds pointers into its counters.
         pub fn bind(self: *Self) void {
@@ -415,6 +557,7 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
             }
             self.releaseUiThemes();
             self.releaseRenderTextures();
+            self.releaseAuthoring();
             self.releaseCounters();
             self.nested = @splat(.{});
             self.nested_next = 0;
@@ -482,6 +625,207 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
         /// case that can actually happen.
         pub fn current() ?*Self {
             return bound;
+        }
+
+        // -- Authoring handles (v4) ------------------------------------------------
+
+        /// The service's generation, or zero when there is no service. Every node handle
+        /// and every authoring cursor is stamped with it.
+        pub fn authorGeneration(self: *const Self) u32 {
+            const service = self.author_service orelse return 0;
+            return service.generation;
+        }
+
+        /// Invalidates every open reader after something that changes what a node would
+        /// resolve to.
+        ///
+        /// The service moves its own generation for the same event, which is what makes
+        /// outstanding node handles refuse. This additionally drops the parses their
+        /// borrows pointed into, because keeping them would hand out text from before the
+        /// edit.
+        pub fn changedAuthoring(self: *Self) void {
+            for (&self.author_readers) |*reader| reader.release();
+            self.author_reader_next = 0;
+        }
+
+        /// A document handle is **derived, not issued**: the workspace slot it belongs to,
+        /// the document's index inside it, and the workspace's own generation.
+        ///
+        /// A ring would have been wrong here. A workspace may hold a thousand sources and a
+        /// client legitimately enumerates and keeps all of them, so a fixed ring would
+        /// silently invalidate the handles it had just handed out. Deriving instead costs
+        /// nothing and gives the honest lifetime: a document handle is good for exactly as
+        /// long as its workspace is open, because a document index never moves — creating
+        /// one appends, and nothing removes.
+        pub fn authorDocumentHandle(workspace: author.ServiceHandle, index: u32) ?types.Document {
+            if (workspace.index >= author.service.max_workspaces) return null;
+            if (index > author_document_mask) return null;
+            return .wrap(core.Handle(AuthorDocument){
+                .index = (workspace.index << author_document_shift) | index,
+                .generation = workspace.generation,
+            });
+        }
+
+        /// Which workspace and which document, or null for bits no workspace slot owns.
+        /// Whether that workspace is still open is the service's question, asked next.
+        pub fn authorDocumentOf(handle: types.Document) ?AuthorDocument {
+            const unpacked = handle.unwrap(core.Handle(AuthorDocument));
+            if (unpacked.generation == 0) return null;
+            const slot = unpacked.index >> author_document_shift;
+            if (slot >= author.service.max_workspaces) return null;
+            return .{
+                .workspace = .{ .index = slot, .generation = unpacked.generation },
+                .index = unpacked.index & author_document_mask,
+            };
+        }
+
+        /// A build is issued out of a ring and **released explicitly**, which is why a full
+        /// ring is a refusal rather than a recycle: releasing a build deletes a candidate
+        /// tree, and a handle that quietly started naming a different one would delete the
+        /// wrong files.
+        pub fn issueAuthorBuild(self: *Self, workspace: author.ServiceHandle, build: author.BuildHandle) ?types.Build {
+            const index = freeSlot(AuthorBuild, &self.author_builds, &self.author_build_next, max_author_builds) orelse return null;
+            const slot = &self.author_builds[index];
+            slot.workspace = workspace;
+            slot.build = build;
+            return .wrap(core.Handle(AuthorBuild){ .index = index, .generation = slot.generation });
+        }
+
+        pub fn authorBuild(self: *const Self, handle: types.Build) ?AuthorBuild {
+            const unpacked = handle.unwrap(core.Handle(AuthorBuild));
+            if (unpacked.index >= max_author_builds) return null;
+            const slot = self.author_builds[unpacked.index];
+            if (!slot.active or slot.generation == 0 or slot.generation != unpacked.generation) return null;
+            return slot;
+        }
+
+        /// Forgets a build handle once its candidate is gone, so the bits name nothing
+        /// rather than a build the workspace no longer has.
+        pub fn forgetAuthorBuild(self: *Self, handle: types.Build) void {
+            const unpacked = handle.unwrap(core.Handle(AuthorBuild));
+            if (unpacked.index >= max_author_builds) return;
+            const slot = &self.author_builds[unpacked.index];
+            if (!slot.active or slot.generation != unpacked.generation) return;
+            const generation = slot.generation;
+            slot.* = .{ .generation = generation };
+        }
+
+        /// Nodes recycle, like nested views and for the same reason: nothing releases one,
+        /// so the ring is the lifetime. A recycled handle answers `invalid_handle`.
+        pub fn issueAuthorNode(self: *Self, node: AuthorNode) types.SourceNode {
+            const index = self.author_node_next;
+            self.author_node_next = (index + 1) % max_author_nodes;
+            const slot = &self.author_nodes[index];
+            const generation = nextGeneration(slot.generation);
+            slot.* = node;
+            slot.active = true;
+            slot.generation = generation;
+            slot.service_generation = self.authorGeneration();
+            return .wrap(core.Handle(AuthorNode){ .index = index, .generation = generation });
+        }
+
+        pub fn authorNode(self: *const Self, handle: types.SourceNode) ?AuthorNode {
+            const unpacked = handle.unwrap(core.Handle(AuthorNode));
+            if (unpacked.index >= max_author_nodes) return null;
+            const slot = self.author_nodes[unpacked.index];
+            if (!slot.active or slot.generation == 0 or slot.generation != unpacked.generation) return null;
+            if (slot.service_generation != self.authorGeneration()) return null;
+            return slot;
+        }
+
+        pub fn issueAuthorSchemaNode(self: *Self, node: AuthorSchemaNode) types.SchemaNode {
+            const index = self.author_schema_node_next;
+            self.author_schema_node_next = (index + 1) % max_author_schema_nodes;
+            const slot = &self.author_schema_nodes[index];
+            const generation = nextGeneration(slot.generation);
+            slot.* = node;
+            slot.active = true;
+            slot.generation = generation;
+            slot.service_generation = self.authorGeneration();
+            return .wrap(core.Handle(AuthorSchemaNode){ .index = index, .generation = generation });
+        }
+
+        pub fn authorSchemaNode(self: *const Self, handle: types.SchemaNode) ?AuthorSchemaNode {
+            const unpacked = handle.unwrap(core.Handle(AuthorSchemaNode));
+            if (unpacked.index >= max_author_schema_nodes) return null;
+            const slot = self.author_schema_nodes[unpacked.index];
+            if (!slot.active or slot.generation == 0 or slot.generation != unpacked.generation) return null;
+            if (slot.service_generation != self.authorGeneration()) return null;
+            return slot;
+        }
+
+        /// The reader already open on this record, or null. Never opens one: what it takes
+        /// to open depends on the root, and that is the caller's to know.
+        pub fn authorReader(self: *Self, node: AuthorNode) ?*AuthorReader {
+            for (&self.author_readers) |*reader| {
+                if (reader.kind == .none) continue;
+                if (reader.service_generation != self.authorGeneration()) continue;
+                if (!reader.workspace.eql(node.workspace)) continue;
+                if (reader.root != node.root or reader.container != node.container) continue;
+                if (reader.record != node.record) continue;
+                return reader;
+            }
+            return null;
+        }
+
+        /// The next reader slot, with whatever was in it released. Round-robin, which is
+        /// what makes the borrow rule a countable one.
+        pub fn openAuthorReader(self: *Self, node: AuthorNode) *AuthorReader {
+            const index = self.author_reader_next;
+            self.author_reader_next = (index + 1) % max_author_readers;
+            const reader = &self.author_readers[index];
+            reader.release();
+            reader.service_generation = self.authorGeneration();
+            reader.workspace = node.workspace;
+            reader.root = node.root;
+            reader.container = node.container;
+            reader.record = node.record;
+            return reader;
+        }
+
+        /// Drops everything this boundary issued for authoring. The service itself is the
+        /// host's and is not touched.
+        pub fn releaseAuthoring(self: *Self) void {
+            self.changedAuthoring();
+            for (&self.author_nodes) |*slot| {
+                const generation = slot.generation;
+                slot.* = .{};
+                slot.generation = generation;
+            }
+            for (&self.author_schema_nodes) |*slot| {
+                const generation = slot.generation;
+                slot.* = .{};
+                slot.generation = generation;
+            }
+            for (&self.author_builds) |*slot| {
+                const generation = slot.generation;
+                slot.* = .{};
+                slot.generation = generation;
+            }
+            self.author_node_next = 0;
+            self.author_schema_node_next = 0;
+            self.author_build_next = 0;
+        }
+
+        /// The next unused slot of a ring, with its generation already advanced, or null
+        /// when every slot is live.
+        fn freeSlot(comptime T: type, slots: []T, next: *u32, comptime capacity: u32) ?u32 {
+            var tried: u32 = 0;
+            while (tried < capacity) : (tried += 1) {
+                const index = next.*;
+                next.* = (index + 1) % capacity;
+                const slot = &slots[index];
+                if (slot.active) continue;
+                slot.generation = nextGeneration(slot.generation);
+                slot.active = true;
+                return index;
+            }
+            return null;
+        }
+
+        fn nextGeneration(previous: u32) u32 {
+            const next = previous +% 1;
+            return if (next == 0) 1 else next;
         }
 
         /// Bumps every mod-management cursor after a successful edit, so a caller cannot

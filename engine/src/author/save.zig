@@ -119,6 +119,16 @@ pub const Lock = struct {
         return .{ .gpa = gpa, .os = os, .root = root, .token = token };
     }
 
+    /// A lock nobody took.
+    ///
+    /// A workspace that cannot save is not a cooperating *writer*, and a reader taking a
+    /// writer's lock would make a command-line compile fail on a read-only source tree —
+    /// and leave a token in somebody's package directory on every run. What protects a
+    /// build against a racing writer is the re-read of the inventory and the bytes after
+    /// capture (`editor.md` §8), which is a check rather than an exclusion, and which is
+    /// exactly as strong here as it is with the lock held.
+    pub const unheld: Lock = .{ .gpa = undefined, .os = undefined, .root = "", .token = &.{}, .held = false };
+
     /// Releases only a token whose bytes still match. False leaves the name in place and
     /// lets the caller report recovery rather than guessing that it owns another session's
     /// file.

@@ -19,6 +19,7 @@ const core = @import("core");
 const data = @import("data");
 
 const api = @import("api.zig");
+const author_types = @import("author_types.zig");
 const mod_types = @import("mod_types.zig");
 const types = @import("types.zig");
 const ui_types = @import("ui_types.zig");
@@ -40,6 +41,7 @@ test "the header declares the version and the entry points this build publishes"
     try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_1 1u") != null);
     try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_2 2u") != null);
     try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_3 3u") != null);
+    try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_4 4u") != null);
     try testing.expect(std.mem.indexOf(u8, header, types.init_symbol) != null);
     try testing.expect(std.mem.indexOf(u8, header, types.shutdown_symbol) != null);
 }
@@ -136,6 +138,22 @@ test "the header names every table entry, in the table's own order" {
             at = found;
         }
     }
+
+    @setEvalBranchQuota(64 * @typeInfo(api.Api_v4).@"struct".fields.len);
+    at = std.mem.indexOf(u8, header, "typedef struct FoundryApi_v4 {").?;
+    inline for (@typeInfo(api.Api_v4).@"struct".fields) |field| {
+        if (comptime @typeInfo(field.type) == .pointer) {
+            const spelled = "*" ++ field.name ++ ")";
+            const found = std.mem.indexOfPos(u8, header, at, spelled) orelse {
+                std.debug.print(
+                    "the v4 header does not declare '{s}' after the entry before it\n",
+                    .{field.name},
+                );
+                return error.TestUnexpectedResult;
+            };
+            at = found;
+        }
+    }
 }
 
 // `agreement.c`, which the build attaches to this module. Referenced only from tests, so a
@@ -159,6 +177,10 @@ extern fn foundry_agreement_api_v3_size() u64;
 extern fn foundry_agreement_api_v3_count() u64;
 extern fn foundry_agreement_api_v3_offset(index: u64) u64;
 extern fn foundry_agreement_api_v3_name(index: u64) ?[*:0]const u8;
+extern fn foundry_agreement_api_v4_size() u64;
+extern fn foundry_agreement_api_v4_count() u64;
+extern fn foundry_agreement_api_v4_offset(index: u64) u64;
+extern fn foundry_agreement_api_v4_name(index: u64) ?[*:0]const u8;
 
 test "the scalars are the widths the header states" {
     try testing.expectEqual(@as(usize, 4), @sizeOf(types.Result));
@@ -181,10 +203,11 @@ test "FoundryContentId is eight bytes of hash" {
 
 test "every handle kind is eight opaque bytes" {
     inline for (.{
-        types.Mod,   types.Package, types.Schema,        types.Record,
-        types.Asset, types.Entity,  types.ComponentType, types.Texture,
-        types.View,  types.Voice,   types.Body,          types.Grid,
-        types.Theme,
+        types.Mod,        types.Package,   types.Schema,        types.Record,
+        types.Asset,      types.Entity,    types.ComponentType, types.Texture,
+        types.View,       types.Voice,     types.Body,          types.Grid,
+        types.Theme,      types.Workspace, types.Document,      types.SourceNode,
+        types.SchemaNode, types.Build,
     }) |Handle| {
         try testing.expectEqual(@as(usize, 8), @sizeOf(Handle));
         try testing.expectEqual(@as(usize, 8), @alignOf(Handle));
@@ -429,4 +452,93 @@ test "the additive v3 table has the same members, in the same places, in both la
 
     try testing.expectEqual(@as(u64, std.math.maxInt(u64)), foundry_agreement_api_v3_offset(fields.len));
     try testing.expectEqual(@as(?[*:0]const u8, null), foundry_agreement_api_v3_name(fields.len));
+}
+
+test "the additive v4 table has the same members, in the same places, in both languages" {
+    const fields = @typeInfo(api.Api_v4).@"struct".fields;
+
+    try testing.expectEqual(@as(u64, fields.len), foundry_agreement_api_v4_count());
+    try testing.expectEqual(@as(u64, @sizeOf(api.Api_v4)), foundry_agreement_api_v4_size());
+
+    inline for (fields, 0..) |field, i| {
+        const from_header = foundry_agreement_api_v4_offset(i);
+        testing.expectEqual(@as(u64, @offsetOf(api.Api_v4, field.name)), from_header) catch |err| {
+            std.debug.print(
+                "the v4 table disagrees about '{s}': Zig puts it at {d}, the header at {d}\n",
+                .{ field.name, @offsetOf(api.Api_v4, field.name), from_header },
+            );
+            return err;
+        };
+
+        const spelled = foundry_agreement_api_v4_name(i) orelse return error.TestUnexpectedResult;
+        try testing.expectEqualStrings(field.name, std.mem.span(spelled));
+    }
+
+    try testing.expectEqual(@as(u64, std.math.maxInt(u64)), foundry_agreement_api_v4_offset(fields.len));
+    try testing.expectEqual(@as(?[*:0]const u8, null), foundry_agreement_api_v4_name(fields.len));
+}
+
+test "the v4 authoring values are the shapes the header states" {
+    // `author_types.zig` states the sizes as well, and `agreement.c` states them a third
+    // time in C. Three statements of one contract is not redundancy here: it is what makes
+    // a change land on whoever made it rather than on an editor six months later.
+    try testing.expectEqual(@as(usize, 72), @sizeOf(author_types.WorkspaceInfo));
+    try testing.expectEqual(@as(usize, 8), @offsetOf(author_types.WorkspaceInfo, "package_name"));
+    try testing.expectEqual(@as(usize, 52), @offsetOf(author_types.WorkspaceInfo, "can_edit"));
+
+    try testing.expectEqual(@as(usize, 64), @sizeOf(author_types.Limits));
+    try testing.expectEqual(@as(usize, 40), @offsetOf(author_types.Limits, "max_history_commands"));
+
+    try testing.expectEqual(@as(usize, 40), @sizeOf(author_types.DocumentInfo));
+    try testing.expectEqual(@as(usize, 32), @offsetOf(author_types.DocumentInfo, "dirty"));
+
+    try testing.expectEqual(@as(usize, 64), @sizeOf(author_types.NodeInfo));
+    try testing.expectEqual(@as(usize, 16), @offsetOf(author_types.NodeInfo, "id"));
+    try testing.expectEqual(@as(usize, 60), @offsetOf(author_types.NodeInfo, "depth"));
+
+    try testing.expectEqual(@as(usize, 56), @sizeOf(author_types.SchemaNodeInfo));
+    try testing.expectEqual(@as(usize, 48), @offsetOf(author_types.SchemaNodeInfo, "is_root"));
+
+    try testing.expectEqual(@as(usize, 32), @sizeOf(author_types.Value));
+    try testing.expectEqual(@as(usize, 8), @offsetOf(author_types.Value, "id"));
+    try testing.expectEqual(@as(usize, 16), @offsetOf(author_types.Value, "text"));
+
+    try testing.expectEqual(@as(usize, 56), @sizeOf(author_types.PackageInfo));
+    try testing.expectEqual(@as(usize, 40), @sizeOf(author_types.Edit));
+    try testing.expectEqual(@as(usize, 32), @sizeOf(author_types.SaveResult));
+    try testing.expectEqual(@as(usize, 24), @sizeOf(author_types.SaveAll));
+    try testing.expectEqual(@as(usize, 40), @sizeOf(author_types.SaveEntry));
+    try testing.expectEqual(@as(usize, 120), @sizeOf(author_types.Diagnostic));
+    try testing.expectEqual(@as(usize, 112), @offsetOf(author_types.Diagnostic, "suppressed"));
+    try testing.expectEqual(@as(usize, 40), @sizeOf(author_types.BuildInfo));
+    try testing.expectEqual(@as(usize, 32), @sizeOf(author_types.PreviewInfo));
+    try testing.expectEqual(@as(usize, 32), @sizeOf(author_types.ExportInfo));
+}
+
+test "the header names every authoring enumerator the engine publishes" {
+    // The numbers are the contract, and the header is where a C author reads them. A
+    // value added on one side and not the other is the kind of drift that compiles.
+    const spellings = [_]struct { []const u8, i32 }{
+        .{ "FOUNDRY_AUTHOR_REQUIRED = 0", @intFromEnum(author_types.Presence.required) },
+        .{ "FOUNDRY_AUTHOR_ELEMENT = 3", @intFromEnum(author_types.Presence.element) },
+        .{ "FOUNDRY_AUTHOR_ERROR = 0", @intFromEnum(author_types.Severity.err) },
+        .{ "FOUNDRY_AUTHOR_NOTE = 2", @intFromEnum(author_types.Severity.note) },
+        .{ "FOUNDRY_AUTHOR_ROOT_SOURCE = 0", @intFromEnum(author_types.NodeRoot.source) },
+        .{ "FOUNDRY_AUTHOR_ROOT_DEFAULT = 3", @intFromEnum(author_types.NodeRoot.default) },
+        .{ "FOUNDRY_AUTHOR_PREVIEW_NONE = 0", @intFromEnum(author_types.PreviewOutcome.none) },
+        .{ "FOUNDRY_AUTHOR_PREVIEW_FAILED = 2", @intFromEnum(author_types.PreviewOutcome.failed) },
+        .{ "FOUNDRY_AUTHOR_SAVE_UNCHANGED = 0", @intFromEnum(author_types.SaveOutcome.unchanged) },
+        .{ "FOUNDRY_AUTHOR_SAVE_FAILED = 2", @intFromEnum(author_types.SaveOutcome.failed) },
+        .{ "FOUNDRY_AUTHOR_SAVE_OK = 0", @intFromEnum(author_types.SaveFailure.none) },
+        .{ "FOUNDRY_AUTHOR_SAVE_OUT_OF_MEMORY = 4", @intFromEnum(author_types.SaveFailure.out_of_memory) },
+        .{ "FOUNDRY_AUTHOR_EXPORT_COMPILED = 0", @intFromEnum(author_types.ExportKind.compiled) },
+        .{ "FOUNDRY_AUTHOR_EXPORT_RUNTIME = 1", @intFromEnum(author_types.ExportKind.runtime) },
+    };
+    for (spellings) |pair| {
+        _ = pair[1];
+        testing.expect(std.mem.indexOf(u8, header, pair[0]) != null) catch |err| {
+            std.debug.print("the header does not state '{s}'\n", .{pair[0]});
+            return err;
+        };
+    }
 }
