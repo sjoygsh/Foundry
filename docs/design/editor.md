@@ -2,7 +2,7 @@
 
 **Milestone:** M15 — Editor: “content is authored in Foundry”
 **Status:** Designed 2026-09-19. The owner accepted it on 2026-09-20, adding that the editor's
-UI and UX follow Unreal Engine 5's (§10). Steps 1–4 are implemented (2026-09-20); Steps 5–9
+UI and UX follow Unreal Engine 5's (§10). Steps 1–6 are implemented (2026-09-20); Steps 7–9
 are not started.
 **Decisions:** accepted [ADR-0042](../adr/0042-authoring-through-the-public-api.md) and
 [ADR-0043](../adr/0043-source-preserving-authoring-and-explicit-builds.md).
@@ -28,9 +28,10 @@ saves, build, reload and a real external-package proof. Design for later: more c
 the public authoring service. Postpone: scene gizmos, tile painting, raw text/code editing,
 asset painting/import conversion, docking, project generators and plugin execution.
 
-M0–M14's completed results remain the baseline. Steps 1–4 have implemented the source model,
-bounded workspaces, typed in-memory commands, conflict-safe saves and isolated candidate builds;
-the ABI and application surfaces specified below remain future implementation.
+M0–M14's completed results remain the baseline. Steps 1–6 have implemented the source model,
+bounded workspaces, typed in-memory commands, conflict-safe saves, isolated candidate builds,
+the additive public authoring ABI and the standalone inspection host/client. Typed forms and the
+complete UI workflow specified below remain future implementation.
 
 ## 2. What the current code supplies
 
@@ -522,7 +523,7 @@ client yet.
 **Exit:** a C consumer can inspect, edit, save, build and request/inspect preview; no grant
 refuses writes; v1–v3 are byte-identical; installed C/C++ and agreement mutation checks pass.
 
-### Step 6 — Standalone host and ABI-only inspection client
+### Step 6 — Standalone host and ABI-only inspection client — done 2026-09-20
 
 Add the editor host, build/run/null smoke targets, separate header-only client module, ordinary
 editor content package and icon. Re-host content/schema/asset browsing and diagnostics from
@@ -1053,3 +1054,59 @@ Linux/Windows cross checks and both 30-frame null sample runs.
 a test, and no preview host: the activation callback has an implementation only in
 `service.zig`'s own test. Step 6 adds the standalone host, the header-only client module and
 the negative implementation-import probe.
+
+## Resolution — 2026-09-20, Step 6: standalone host and public-only inspection client
+
+**The editor is an application and its client is a separate consumer.**
+`tools/editor/main.zig` receives one explicit source root, one separate private output root and
+an ordered list of dependency packages. It constructs the engine, renderer, UI context and
+`author.Service`, grants edit/save/build and preview authority, binds one `abi.Host`, and hands
+the client only the queried `FoundryApi_v4` pointer. `zig build editor -- ...` runs it. A frame
+budget exits without saving or mutating source; a null build defaults to three frames rather
+than becoming an unbounded headless process.
+
+`tools/editor/client/root.zig` is a different build module. Its sole Foundry import is
+`foundry_api`, another small module which translates `foundry.h`; it does not import the Zig
+`abi` implementation for convenient types. The client directly enumerates the granted
+workspace, documents and source nodes, dependency packages and records, the active preview,
+schema trees, loaded assets, structured author diagnostics and the log ring. Its fixed toolbar,
+document browser, tabbed central inspector, diagnostics/output region and status bar are the
+fixed UE5-derived regions §10 specifies, not a docking system. Step 6 deliberately invokes no
+edit, save or history call.
+
+**Preview loading is host policy, not another client capability.** `--preview` makes the client
+call `author_build` and `author_preview_activate`. The host callback receives only the service's
+confined candidate names, reads the own and snapshotted dependency packages below the granted
+output root, applies ordinary `mod.resolve`, and loads a fresh `data.Registry`/`data.Store`.
+Only after every package loads does it replace the prior publication. The client then walks the
+published records through `author_preview_record_next`; it never receives a store, registry,
+service handle or path.
+
+**The application's appearance is an ordinary package.** `tools/editor/content/` compiles as
+`foundry:editor` against `foundry:core` and installs beside the other development packages. Its
+screen record holds every fixed label, its `foundry:ui_theme` record supplies the dark editor
+look, and its bounded 64×64 PNG is both the window icon and the theme atlas. The client resolves
+the record and theme through public content/UI calls. Neither the engine nor `app` gained an
+editor style, string or mark.
+
+**The boundary is executable.** The client module is granted no implementation module. A
+source-level test additionally rejects direct filesystem, process and dynamic-library escape
+routes through `std`, and `editor-boundary` runs a file that deliberately uses
+`@import("abi")` while expecting compilation to fail. Temporarily changing that probe to an
+allowed import made the target fail because the command unexpectedly succeeded; restoring it
+restored the pass. The host, client and boundary tests are in the ordinary `test`/`check`
+graphs. Native, Metal, Linux-null and Windows-null checks compile the application, as do the
+Vulkan-selected Windows, Linux and optimized Windows graphs.
+
+**Evidence.** The three-frame null smoke built and activated `foundry:editor`, then traversed one
+workspace, two documents, four source records, two dependency records, six preview records,
+twelve schemas and two loaded assets. A 30-frame SDL3/Metal run opened the real window and took
+the same route. Both ReleaseSafe sample distributions staged successfully after the new package
+joined the development install, proving neither acquired it accidentally. The full bar passes
+**1,549 of 1,550** headless tests (one existing skip), from **1,621 declared**, including both
+sample runs.
+
+**Left for Step 7.** The screen is an inspector. It has no manifest form, record creation,
+field editor, list controls, override action, save/build buttons, confirmation state or
+deterministic input script. Step 7 builds those solely over the already-frozen v4 table and
+performs mutations after UI description; Step 6 adds no new ABI call.

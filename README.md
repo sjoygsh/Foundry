@@ -91,11 +91,13 @@ exit proof passed on macOS and on Windows through Vulkan, in release builds driv
 input. Both wrote the same files byte for byte, apart from the volume a slider click chose.
 
 **Under way: M15, the standalone content editor.** Its [nine-step design](docs/design/editor.md)
-is accepted, and Steps 1–4 are done: the parser can say where everything was written; `data`
-can put a value back without disturbing the bytes around it; and `author` owns bounded,
-revisioned typed commands, conflict-safe per-file saves and retained isolated builds whose bytes
-match `fpack`. The remaining steps publish that capability before the standalone client consumes
-it, in a UI modelled on Unreal Engine 5's editor.
+is accepted, and Steps 1–6 are done: the parser can say where everything was written; `data`
+can put a value back without disturbing the bytes around it; `author` owns bounded, revisioned
+typed commands, conflict-safe per-file saves and retained isolated builds whose bytes match
+`fpack`; and all of it is published as `FoundryApi_v4`. The standalone host now opens a real
+UE5-modelled inspection window whose separately built, header-only client browses source,
+dependencies, a loaded preview, schemas, assets and diagnostics only through that table. Step 7
+adds the complete editing workflow.
 
 All three modding tiers work — see [docs/modding](docs/modding/). Tier 2 is restricted
 Lua 5.5.1, one VM per package, bounded in memory, instructions and engine calls, reaching the

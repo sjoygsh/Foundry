@@ -524,6 +524,38 @@ pub fn build(b: *std.Build) void {
     const room = b.addExecutable(.{ .name = "room", .root_module = room_mod });
     b.installArtifact(room);
 
+    // `tools/editor` is two consumers with a hard seam between them (`editor.md` §3).
+    // The host gets the engine modules it must compose. The client gets only a translation
+    // of the installed public header, in a separate module, so an implementation import is
+    // a build error rather than a convention code review has to remember.
+    const editor_header_mod = b.createModule(.{
+        .root_source_file = b.path("tools/editor/client/header.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    editor_header_mod.addIncludePath(b.path("engine/src/abi"));
+    editor_header_mod.link_libc = true;
+
+    const editor_client_mod = b.createModule(.{
+        .root_source_file = b.path("tools/editor/client/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    editor_client_mod.addImport("foundry_api", editor_header_mod);
+
+    const editor_mod = b.createModule(.{
+        .root_source_file = b.path("tools/editor/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    for ([_][]const u8{
+        "abi", "app", "asset", "author", "core", "data", "mod", "platform", "render2d", "rhi", "ui",
+    }) |name| editor_mod.addImport(name, modules.get(name).?);
+    editor_mod.addImport("editor_client", editor_client_mod);
+
+    const editor = b.addExecutable(.{ .name = "foundry-editor", .root_module = editor_mod });
+    b.installArtifact(editor);
+
     // `tools/fpack` — the content compiler (ADR-0011). A consumer of the engine's modules
     // like a sample is, not a privileged member of the layering: it gets `author` because
     // that is the compiler, `platform` because the compiler needs a filesystem to read,
@@ -618,6 +650,7 @@ pub fn build(b: *std.Build) void {
         core_package,
         .{ .dir = "samples/sandbox/content", .stem = "sandbox", .dependencies = on_core },
         .{ .dir = "samples/room/content", .stem = "room", .dependencies = on_core },
+        .{ .dir = "tools/editor/content", .stem = "editor", .dependencies = on_core },
     };
 
     // **Only when the build target can run here.** `fpack` is built for the target like
@@ -684,6 +717,34 @@ pub fn build(b: *std.Build) void {
     run_fpack.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_fpack.addArgs(args);
     b.step("fpack", "Build and run tools/fpack (pass arguments after --)").dependOn(&run_fpack.step);
+
+    const run_editor = b.addRunArtifact(editor);
+    run_editor.step.dependOn(b.getInstallStep());
+    if (b.args) |args| run_editor.addArgs(args);
+    b.step("editor", "Build and run the content editor (pass explicit roots after --)")
+        .dependOn(&run_editor.step);
+
+    // A named bounded null run, separate from `test`: it is an application exit proof, not
+    // a unit test, and its selected backend is part of what it proves. The ordinary check
+    // graph still compiles this same executable for every configured target below.
+    const editor_smoke_step = b.step("editor-smoke", "Inspect and preview editor content in a bounded null run");
+    if (platform_backend != .null or rhi_backend != .null) {
+        editor_smoke_step.dependOn(&b.addFail("`editor-smoke` requires -Dplatform=null -Drhi=null").step);
+    } else if (core_compiled) |compiled| {
+        const smoke = b.addRunArtifact(editor);
+        smoke.step.dependOn(b.getInstallStep());
+        smoke.addArg("--source");
+        smoke.addDirectoryArg(b.path("tools/editor/content"));
+        smoke.addArg("--output");
+        smoke.addArg(".zig-cache/editor-smoke");
+        smoke.addArg("--dependency");
+        smoke.addFileArg(compiled.fpk);
+        smoke.addArgs(&.{ "--preview", "--frames", "3" });
+        smoke.expectExitCode(0);
+        editor_smoke_step.dependOn(&smoke.step);
+    } else {
+        editor_smoke_step.dependOn(&b.addFail("`editor-smoke` runs only for a native target").step);
+    }
 
     // **`dist` — a release, from explicit inputs** (`distribution.md` §8).
     //
@@ -857,6 +918,7 @@ pub fn build(b: *std.Build) void {
     // that out at release time is the expensive way.
     check_step.dependOn(&sandbox.step);
     check_step.dependOn(&room.step);
+    check_step.dependOn(&editor.step);
 
     // The samples' own tests, since M14: what each keeps on disk, read the way it reads it —
     // above all, a file an earlier build wrote (`mod-management.md` §6).
@@ -865,6 +927,34 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&b.addRunArtifact(sample_tests).step);
         check_step.dependOn(&sample_tests.step);
     }
+    const editor_tests = b.addTest(.{ .root_module = editor_mod });
+    check_step.dependOn(&editor_tests.step);
+    test_step.dependOn(&b.addRunArtifact(editor_tests).step);
+
+    const editor_client_tests = b.addTest(.{ .root_module = editor_client_mod });
+    check_step.dependOn(&editor_client_tests.step);
+    test_step.dependOn(&b.addRunArtifact(editor_client_tests).step);
+
+    const editor_boundary_mod = b.createModule(.{
+        .root_source_file = b.path("tools/editor/client/boundary_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const editor_boundary_tests = b.addTest(.{ .root_module = editor_boundary_mod });
+    check_step.dependOn(&editor_boundary_tests.step);
+    const run_editor_boundary = b.addRunArtifact(editor_boundary_tests);
+    test_step.dependOn(&run_editor_boundary.step);
+
+    // A live negative probe complements the source scan: if the client graph is ever
+    // accidentally granted `abi`, this command stops failing and the expectation fails.
+    const forbidden_editor_import = b.addSystemCommand(&.{ b.graph.zig_exe, "build-obj", "-fno-emit-bin" });
+    forbidden_editor_import.addFileArg(b.path("tools/editor/client/forbidden_import.zig"));
+    forbidden_editor_import.expectExitCode(1);
+    forbidden_editor_import.expectStdErrMatch("no module named 'abi' available");
+    test_step.dependOn(&forbidden_editor_import.step);
+    const editor_boundary_step = b.step("editor-boundary", "Prove the editor client cannot import implementation modules");
+    editor_boundary_step.dependOn(&run_editor_boundary.step);
+    editor_boundary_step.dependOn(&forbidden_editor_import.step);
     check_step.dependOn(&fpack.step);
     check_step.dependOn(&fstage.step);
     check_step.dependOn(&fmacos_verify.step);

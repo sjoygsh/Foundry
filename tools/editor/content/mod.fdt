@@ -1,0 +1,9 @@
+# Foundry's standalone editor is an ordinary application with an ordinary package.
+
+foundry:mod foundry:editor {
+    name     "Foundry Editor"
+    version  1
+    license  "Apache-2.0"
+    summary  "The standalone content-record editor's strings, theme and icon."
+    requires [ { id foundry:core } ]
+}

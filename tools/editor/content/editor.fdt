@@ -1,0 +1,74 @@
+# Everything the editor presents is content.  A translation or a new visual treatment is a
+# package override, not a rebuild of the host (`docs/design/editor.md` §10).
+
+@schema screen {
+    title string (default "")
+    workspace string (default "")
+    documents string (default "")
+    source string (default "")
+    dependencies string (default "")
+    preview string (default "")
+    schemas string (default "")
+    assets string (default "")
+    diagnostics string (default "")
+    output_log string (default "")
+    no_workspace string (default "")
+    no_selection string (default "")
+    status_ready string (default "")
+    status_read_only string (default "")
+    dirty string (default "")
+    clean string (default "")
+    unavailable string (default "")
+}
+
+screen foundry:editor.screen {
+    title            "FOUNDRY CONTENT EDITOR"
+    workspace        "Workspace"
+    documents        "Documents"
+    source           "Source"
+    dependencies     "Dependencies"
+    preview          "Preview"
+    schemas          "Schemas"
+    assets           "Assets"
+    diagnostics      "Diagnostics"
+    output_log       "Output Log"
+    no_workspace     "No workspace is open."
+    no_selection     "Select a document."
+    status_ready     "Ready"
+    status_read_only "Inspection mode"
+    dirty            "Unsaved changes"
+    clean            "Saved"
+    unavailable      "Unavailable"
+}
+
+# The icon is both the application's window mark and the flat theme's atlas.  The host embeds
+# the same bounded PNG for the platform icon; the theme reaches it only as a content asset.
+foundry:texture foundry:editor.atlas {
+    source "icon.png"
+    filter "nearest"
+}
+
+foundry:ui_theme foundry:editor.theme {
+    atlas       foundry:editor.atlas
+    font        { texture foundry:fonts.debug cell_w 8 cell_h 8 columns 16 count 95 }
+    text_scale  1.5
+    line_height 22
+    padding_x   9
+    padding_y   4
+    spacing     4
+    separator   1
+    patch_scale 1
+    colors {
+        text           0xd7dbe4ff
+        text_dim       0x89909fff
+        surface        0x17191eff
+        control        0x252932ff
+        control_hot    0x343a46ff
+        control_active 0x454d5cff
+        accent         0x3d8ed9ff
+        positive       0x61b878ff
+        negative       0xd06060ff
+        warning        0xd9a441ff
+        selection      0x3d8ed966
+    }
+}

@@ -1,7 +1,7 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-20
-**Current handoff: M15 Step 5 is done; stop before Step 6.** M0 through M14 are complete and
+**Current handoff: M15 Step 6 is done; stop before Step 7.** M0 through M14 are complete and
 tagged. **M14 closed on 2026-09-19 with a player choosing their mods in a packaged sample, on
 macOS and on Windows:**
 - **the mod set, with record-level conflicts, and ordered profiles on disk, applied at the next
@@ -11,8 +11,39 @@ macOS and on Windows:**
 - **the room's MO2-style mod screen, built from that table alone.**
 
 **M13 before it proved Windows x64 through Vulkan. Linux is M18, after the first game and before
-3D (ADR-0039). M15 is under way: Steps 1–5 of nine are done, and the handoff stops before
-Step 6. M16 and M17 remain unstarted.**
+3D (ADR-0039). M15 is under way: Steps 1–6 of nine are done, and the handoff stops before
+Step 7. M16 and M17 remain unstarted.**
+
+**Completed M15 Step 6, 2026-09-20: the standalone editor host and its ABI-only inspection
+client.**
+- `tools/editor/main.zig` is a Foundry application with explicit `--source`, `--output` and
+  ordered `--dependency` grants. It owns the engine, renderer, UI context, authoring service and
+  preview publication; `--preview` asks the client to build and activate through
+  `FoundryApi_v4`, then the host loads the confined candidate into fresh registry/store state
+  before replacing the prior preview.
+- `tools/editor/client/` is a separate build module whose only Foundry input is a translation of
+  the installed `foundry.h`. It has no engine implementation import and no filesystem, process
+  or dynamic-library escape. The fixed-region screen re-hosts workspace/document/source,
+  dependency, loaded-preview, schema, loaded-asset, diagnostic and log browsing through public
+  calls alone. It issues no authoring command; forms remain Step 7.
+- `tools/editor/content/` is the ordinary `foundry:editor` package: every static screen string,
+  the dark editor theme and the application icon/atlas are content. It is compiled and installed
+  by the same `fpack` path as every other package. `zig build editor -- ...` runs the application;
+  `zig build editor-smoke -Dplatform=null -Drhi=null` is its bounded null proof.
+- The module graph compiles the host, client and their tests on every normal target. A source
+  boundary test rejects private imports and `std` host escape routes; a live negative build
+  probe must fail on `@import("abi")`. Making that probe legal made the boundary target fail,
+  and restoring the forbidden import restored the pass.
+- A 30-frame SDL3/Metal window and the three-frame null smoke both opened the editor. The null
+  proof inspected one workspace, two documents, four source records, two dependency records,
+  six loaded-preview records, twelve schemas and two loaded assets. Both sample release stages
+  remained exact after the editor package joined the development install.
+
+The full bar passed **1,549 of 1,550** headless tests, with the existing skip, from **1,621
+declared**. Native, Metal, Linux-null and Windows-null target graphs compile the editor; the
+Vulkan-selected Windows, Linux and optimized Windows graphs do too; and both 30-frame headless
+samples pass. Resolution: `editor.md`, Step 6. Step 7 adds the typed forms and complete authoring
+workflow; none of it is implemented here.
 
 **Completed M15 Step 5, 2026-09-20: authoring published as `FoundryApi_v4`.**
 - `FoundryApi_v4` is v3 byte-for-byte plus **47 authoring calls**, 213 members, handed out by

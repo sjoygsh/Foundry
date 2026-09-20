@@ -573,8 +573,10 @@ arbitrary to a future session. Do not write one for routine implementation choic
 layer graph, since Step 2 added it to the build; Step 3 added its revisioned typed commands and
 bounded exact-byte history; Step 4 added conflict-safe per-file saves, stable validation/build
 snapshots and retained private candidates. Step 5 published all of it as `FoundryApi_v4`, 47
-additive calls beside v1–v3, and moved `fpack` onto that table. The editor application itself
-begins in Step 6.
+additive calls beside v1–v3, and moved `fpack` onto that table. Step 6 added the standalone
+host, ordinary `foundry:editor` content and a separately built header-only inspection client;
+its source, dependency, preview, schema, asset and diagnostic browsers use only v4. Step 7 is
+the first complete editing workflow.
 
 ---
 
