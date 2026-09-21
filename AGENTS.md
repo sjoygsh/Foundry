@@ -153,16 +153,17 @@ found four defects doing so, including a native loader that still offered only v
 Windows/Vulkan run followed on 2026-09-21: the same twenty workflow tests, the same
 twenty-five-action null smoke frame for frame, and the same 489-action authoring plan on an
 Intel Arc A750 through Vulkan 1.4, with the two saved `.fdt` files and the exported `.fpk`
-byte-identical to the macOS/Metal run's. Step 9 closed the milestone. M16–M17 remain
-unstarted in implementation. **M16's design is proposed, not accepted:** read
-`docs/design/networking.md` and ADR-0044/0045. Its nine steps have not begun. The proposed
-authoritative-server architecture needs acceptance of §1's remaining choices before Step 1.
-**The owner requires public-internet multiplayer; the LAN-only proposal is withdrawn.** The
-revised plan includes authenticated encryption, credential lifecycle, pre-authentication abuse
-limits and a real-internet proof. Operator-hosted TLS/mutual-certificate admission is proposed,
-not yet accepted. Design authorization does not authorize infrastructure purchases, firewall
-changes, real credential use or a public listener. Do not reverify M15 for this planning change.
-The bar below is the current one. M13's Step 9 added the checks Vulkan and release work need,
+byte-identical to the macOS/Metal run's. Step 9 closed the milestone. **M16 is in progress;
+Step 1 of nine is complete.** Read `docs/design/networking.md` and accepted ADR-0044/0045.
+The owner requires public-internet multiplayer; the LAN-only proposal is withdrawn. The
+accepted first architecture is one operator-hosted authority over TLS 1.3 mutual certificates,
+up to four reference peers and no prediction. Step 1 pins and qualifies Mbed TLS 3.6.7 LTS,
+adds L2 `net`, validates its limits and runtime channels, and freezes the pure bounded FNET
+wire-v1 codec. `zig build tls-qualification` is its focused native provider proof; the ordinary
+`test` and `check` graphs also carry it, including both cross targets. **No socket, session,
+ABI or sample networking exists. Step 2 is next and has not begun.** Design authorization does
+not authorize infrastructure purchases, firewall changes, real credential use or a public
+listener. The bar below is current. M13's Step 9 added the checks Vulkan and release work need,
 and M14 added an optimized Windows check to them.
 
 ## 3. Building and verifying

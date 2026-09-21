@@ -6,6 +6,16 @@
     .minimum_zig_version = "0.16.0",
 
     .dependencies = .{
+        // Mbed TLS is the pinned transport-security provider qualified in M16
+        // Step 1. The 3.6 LTS tag snapshot contains the generated C sources
+        // needed by a Zig-only build; the unused test-framework submodule is
+        // deliberately absent. It is compiled directly by build.zig, never by
+        // CMake or Make (ADR-0045).
+        // License entry: THIRD_PARTY_LICENSES/mbedtls.md (Apache-2.0 elected)
+        .mbedtls = .{
+            .url = "https://codeload.github.com/Mbed-TLS/mbedtls/tar.gz/refs/tags/v3.6.7",
+            .hash = "N-V-__8AALrvlQKVtYlvv9dpBnbrJfdwR_F0wAgwsvZhAF1Y",
+        },
         // PUC Lua, embedded by the optional M8 L6 scripting test module. The
         // interpreter is compiled directly from this exact upstream archive;
         // no Lua build script or system installation is used (ADR-0028).

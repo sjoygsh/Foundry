@@ -1,9 +1,9 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-21
-**Current handoff: M15 is complete and tagged `m15`. M16's proposed design is written;
-Step 1 has not started.** M0 through M15 are complete and tagged. Read
-`docs/design/networking.md` and proposed ADR-0044/0045 before any M16 work.
+**Current handoff: M16 is in progress; Step 1 of nine is complete. Stop before Step 2.**
+M0 through M15 are complete and tagged. Read the accepted `docs/design/networking.md` and
+accepted ADR-0044/0045 before any further M16 work.
 
 **M16 planning, revised 2026-09-21:** the owner requires **public-internet multiplayer**;
 the original LAN-only proposal is withdrawn. Nine steps cover security qualification and
@@ -11,12 +11,51 @@ the wire contract, authenticated platform streams, sessions, tick-admitted comma
 additive public ABI v5, a connected sandbox, adversarial/replay
 proofs, real-internet/desktop/external-consumer proof and closure. The recommendation is an
 operator-hosted authoritative server with TLS 1.3 mutual certificate authentication, bounded
-pre-authentication work and explicit credential provisioning/revocation. The game trigger and
-internet scope are established; authority, topology, certificate-admission UX and initial
-performance envelope still need acceptance under `networking.md` §1. Both ADRs remain
-**proposed** architecture; the TLS candidate must be qualified and pinned in Step 1;
-no module, public call, transport or sample implementation was added. M15's completed evidence
-remains accepted; no M15 tests were repeated for this documentation-only handoff.
+pre-authentication work and explicit credential provisioning/revocation. The owner's instruction
+to begin Step 1 accepted the remaining entry choices: one operator-hosted authority, provisioned
+player certificates and the four-peer/no-prediction reference envelope. Both ADRs are now
+**accepted**; Steps 2 through 9 still need their own instruction, and design authorization still
+does not authorize infrastructure purchases, firewall changes, real credentials or a public
+listener. M15's completed evidence remains accepted.
+
+**Completed M16 Step 1, 2026-09-21: a qualified TLS provider and a frozen bounded wire — and no
+way to connect anything.** Resolution: `networking.md`, Step 1; provider detail in ADR-0045 and
+`platform-interface.md` part five.
+- **The `net` module is L2 and cannot open a connection.** `engine/src/net/` holds `limits.zig`
+  (the accepted envelope plus its validators), `channel.zig` (kind/direction/delivery enums),
+  `wire.zig` (the FNET wire-v1 codec) and `root.zig`; `build.zig`'s layering table grants it
+  `core` and `platform` only. There is no service, listener, socket, session, credential context
+  or ABI entry point, and no sample reaches it.
+- **Wire v1 is frozen with golden bytes.** A 40-byte little-endian header (kind, protocol
+  version, byte order, payload length, sequence, participant, tick, two reserved fields) and
+  thirteen fixed per-kind payloads. Lengths are bounds-checked against `limits.zig` before they
+  can index anything, the `FNET` magic and protocol version are checked, a non-little-endian peer
+  is refused, and the accepted sequence advances as an exact increment. Its fifteen declarations
+  run in the ordinary headless graph.
+- **Mbed TLS 3.6.7 LTS is pinned and qualified, not merely pinned.** Apache-2.0 elected over
+  `GPL-2.0-or-later`; the archive's disabled Everest and p256-m implementations are neither
+  enabled nor compiled; `engine/src/platform/foundry_mbedtls_config.h` supplies the external
+  configuration; `build.zig` names an explicit C-source inventory that excludes the socket and
+  timing helpers; `THIRD_PARTY_LICENSES/mbedtls.md` records version, provenance, election and
+  distribution status.
+- **The harness proves mutual TLS 1.3 over in-memory BIOs.** `zig build tls-qualification` runs
+  it alone and the ordinary `test` and `check` graphs carry it, including both cross targets: two
+  peers exchange records over fixed 64-KiB in-memory BIOs, proving mutual authentication, the
+  exact ciphersuite/group/signature/ALPN allowlist, bidirectional peer-certificate verification,
+  application bytes, OS entropy, an injected certificate clock, wrong-server-name refusal and
+  missing-client-certificate refusal. Measured peaks: 98,845 allocator-accounted bytes, at most
+  1,039 queued wire bytes, four provider handshake calls — under caps of 16 MiB, 64 KiB and 64.
+- **A defect only the cross-target check could find.** The Windows cross-compile check failed
+  while the native macOS run passed: Mbed TLS's X.509 IP-SAN parser selects the platform
+  `inet_pton` under MinGW, so the qualification must link `ws2_32` on Windows beside `bcrypt`.
+  Neither opens a socket. ADR-0045 records it.
+- **The bar is green:** `zig fmt --check` clean; `zig build test` at **1,602 of 1,603** headless
+  tests (the one skip predates M16) from **1,667 declared**; `check` native, `-Drhi=metal` and
+  both null-backend cross targets; both samples run thirty frames headless. Step 1 adds no ABI
+  call, so no C consumer recompile was due.
+- **Not done, deliberately:** no socket, listener, connection, credential context or stream
+  handle exists, and no provider type escapes L1. Step 2 must record Zig 0.16's concrete
+  nonblocking socket mechanism and implement the opaque boundary ADR-0045 describes.
 
 **M15 closed on 2026-09-21: Foundry authors its own content, through its own public API.**
 All nine steps of `docs/design/editor.md` are done and each has a Resolution. The durable

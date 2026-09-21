@@ -1,18 +1,20 @@
 # ADR-0044: Authoritative sessions without cross-machine lockstep
 
-**Status:** Proposed — design only; owner acceptance required before M16 Step 1.
+**Status:** Accepted 2026-09-21; M16 Step 1 implemented against it.
 **Date:** 2026-09-21
 **Revision, 2026-09-21:** the owner requires public-internet multiplayer. The LAN-only
-alternative is withdrawn; the authority model and implementation remain proposed.
+alternative is withdrawn. The owner's subsequent instruction to begin Step 1 accepts the
+remaining entry choices: one operator-hosted authority, provisioned player certificates and
+the four-peer/no-prediction reference envelope.
 
 ## Context
 
 M15 is complete. The owner requested M16's design, explicitly stopping before implementation.
 The roadmap makes networking trigger-started by a game's need, and requires the simulation
 model to be decided in writing first. The owner has selected public-internet multiplayer;
-the networked-game trigger and deployment scope are therefore established. Player count,
-latency target, admission UX and any lockstep requirement have not been supplied. This
-proposal is not evidence that those remaining product decisions have been made.
+the networked-game trigger and deployment scope are therefore established. The accepted first
+proof is deliberately narrow: up to four remote peers, no prediction and the measurable WAN
+envelope in `networking.md` §10. That is not a general latency promise.
 
 ADR-0013 guarantees reproducibility for the same binary and inputs, not bit-exact simulation
 across macOS and Windows. `scene.World` runs registered systems on a fixed tick and cannot
@@ -21,7 +23,7 @@ local entity-pool handles, which are neither remote identity nor authority to mu
 
 ## Decision
 
-**Propose one authoritative server and clients that submit commands and display server state.**
+**Use one authoritative server and clients that submit commands and display server state.**
 The server alone advances the shared simulation. Clients do not run a second authoritative
 simulation, and M16 does not add prediction, rollback or cross-platform fixed-point physics.
 ADR-0013 and I9 remain unchanged. A replay records commands at their actual admitted server
@@ -46,8 +48,8 @@ Lua binding 1. A separately built header-only sample client and an external C co
 prove the networking surface; private host bootstrap may not carry gameplay around the table.
 
 The detailed contract, acceptance gate and nine implementation steps are in
-[networking.md](../design/networking.md). ADR-0045 proposes the initial transport and limits
-of the deployment claim. Both ADRs remain proposed until the owner accepts the scope.
+[networking.md](../design/networking.md). ADR-0045 fixes the initial transport and limits of
+the deployment claim.
 
 ## Consequences
 
@@ -63,7 +65,7 @@ of the deployment claim. Both ADRs remain proposed until the owner accepts the s
 ## Alternatives considered
 
 - **Lockstep:** useful when required by a particular game, but it would make ADR-0013's deferred
-  bit-exact subset decision due without such a requirement. Not selected for this proposal.
+  bit-exact subset decision due without such a requirement. Not selected.
 - **Peer authority or host migration:** requires conflict resolution and recovery rules absent
   from the current requirement. One authority gives the first proof an unambiguous answer.
 - **Automatic ECS/save replication:** copies local identity and potentially private state, and
@@ -75,5 +77,16 @@ of the deployment claim. Both ADRs remain proposed until the owner accepts the s
 
 The owner selects lockstep, prediction-sensitive competitive play, host migration, substantially
 larger worlds or a different authority model. Revisit before implementation if the selected
-game cannot accept the proposal's latency or explicit-codec cost. ADR-0045's authenticated
+game cannot accept the accepted envelope's latency or explicit-codec cost. ADR-0045's authenticated
 transport and actual internet proof are now required in M16, not deferred release polish.
+
+## Step 1 resolution — 2026-09-21
+
+The implemented `net` module is L2 and receives only `core` and `platform` from the build
+graph. Step 1 adds no stream, listener, session, ABI call or sample behavior. It freezes FNET
+wire version 1 as explicit little-endian bytes: a 40-byte header, thirteen numbered message
+kinds, nonzero nonwrapping per-direction sequence numbers, fixed control payloads and bounded
+application frames. Runtime channels are namespaced `ContentId` values with revisions,
+directions, delivery rules and explicit payload limits; the engine assigns no gameplay meaning
+to their copied bytes. Exact layouts and the qualification choice are recorded in
+`networking.md`'s Step 1 Resolution.

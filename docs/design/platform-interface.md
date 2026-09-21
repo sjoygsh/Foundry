@@ -607,3 +607,19 @@ that an ordinary symlink read succeeds where the confined read and stat reject i
 the kind guard failed the exact-error test on macOS; the restored implementation and the
 Linux/Windows compile checks pass. No interface declaration, file authority or write path
 changed.
+
+---
+
+## Resolution, part five — the TLS provider gate, 2026-09-21
+
+M16 Step 1 pins and qualifies Mbed TLS 3.6.7 LTS before this interface gains any network
+operation. `foundry_mbedtls_config.h` lives under `platform` because TLS provider types,
+entropy, civil time, credentials and native streams may never escape L1; the qualification
+harness compiles the exact provider sources but links them only into its test binary. It uses
+OS entropy and an explicitly injected certificate clock over bounded in-memory BIOs, proving
+mutual TLS 1.3, identity refusal and the configured algorithms without opening a socket.
+
+There is deliberately no `platform` listener, connection, credential context or stream handle
+yet. Step 2 must record Zig 0.16's concrete nonblocking socket mechanism and implement the
+opaque boundary described by ADR-0045. Passing an in-memory provider test is not a claim that
+the native transport, cleanup, partial-I/O or real loopback paths exist.

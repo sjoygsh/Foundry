@@ -13,10 +13,10 @@ painful; maintaining it as you go costs a few minutes per dependency.
 
 ## Current dependencies
 
-SDL3, Lua and Vulkan-Headers, plus glslang, SPIRV-Tools and the Vulkan validation layer as
-build-time tools from the pinned Vulkan SDK, and RenderDoc as a hand-run capture tool on the
-Vulkan target. Their exact versions, provenance, elected licenses and distribution status are
-recorded in the entries beside this file.
+SDL3, Lua, Mbed TLS and Vulkan-Headers, plus glslang, SPIRV-Tools and the Vulkan validation
+layer as build-time tools from the pinned Vulkan SDK, and RenderDoc as a hand-run capture tool
+on the Vulkan target. Their exact versions, provenance, elected licenses and distribution
+status are recorded in the entries beside this file.
 
 ## What to record
 

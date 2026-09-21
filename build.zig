@@ -75,6 +75,14 @@ const layering = [_]Module{
     // loading — this module says which library a manifest names and never opens one.
     .{ .name = "mod", .deps = &.{ "core", "data", "platform" } },
 
+    // L2 — authenticated network sessions (ADR-0044/0045,
+    // docs/design/networking.md). Step 1 is deliberately pure: `platform` is
+    // present because authenticated streams arrive there in Step 2, while the
+    // module currently owns only checked limits, runtime channel descriptors
+    // and the wire codec. It cannot see a world, content store, application or
+    // public ABI, so no codec can grow into a private gameplay path.
+    .{ .name = "net", .deps = &.{ "core", "platform" } },
+
     // L3 — the game-facing 2D renderer (docs/design/render2d.md). Note what it does
     // *not* get: `platform`. The renderer neither opens files nor reads input; `asset`
     // hands it decoded images and the game hands it draw calls.
@@ -396,6 +404,22 @@ pub fn build(b: *std.Build) void {
         }
         break :blk mod;
     } else null;
+
+    // M16 Step 1's provider qualification is separate from the implemented
+    // platform module: no socket or credential API exists until Step 2. This
+    // test compiles the exact pinned Mbed TLS sources directly with Zig, runs
+    // mutually authenticated TLS 1.3 over bounded in-memory BIOs on the native
+    // host, and remains in `check` for both cross targets. Keeping it separate
+    // prevents qualification scaffolding and upstream test identities from
+    // entering shipped binaries.
+    const mbedtls = b.dependency("mbedtls", .{});
+    const tls_qualification_mod = b.createModule(.{
+        .root_source_file = b.path("engine/tests/tls_qualification.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    configureMbedTlsQualification(b, tls_qualification_mod, mbedtls, target);
 
     // Samples are consumers of the engine, exactly as a game in its own repository
     // would be (ADR-0017): they depend on `app` and reach nothing that `app` does not
@@ -916,6 +940,16 @@ pub fn build(b: *std.Build) void {
     // exists. `zig build check -Dtarget=...` is that check.
     const check_step = b.step("check", "Compile everything without running it");
 
+    const tls_qualification_tests = b.addTest(.{
+        .name = "tls-qualification",
+        .root_module = tls_qualification_mod,
+    });
+    check_step.dependOn(&tls_qualification_tests.step);
+    const run_tls_qualification = b.addRunArtifact(tls_qualification_tests);
+    test_step.dependOn(&run_tls_qualification.step);
+    b.step("tls-qualification", "Run the qualified TLS provider's in-memory mTLS proof")
+        .dependOn(&run_tls_qualification.step);
+
     // Samples are part of the per-milestone portability obligation too: a sample that
     // stopped cross-compiling would be a milestone rule broken (ROADMAP), and finding
     // that out at release time is the expensive way.
@@ -1294,6 +1328,78 @@ fn distComplaint(
     ) catch @panic("OOM");
     return message.written();
 }
+
+/// Builds only the provider qualification harness. The production platform
+/// wrapper arrives in M16 Step 2; until then no engine artifact links TLS.
+fn configureMbedTlsQualification(
+    b: *std.Build,
+    module: *std.Build.Module,
+    dependency: *std.Build.Dependency,
+    target: std.Build.ResolvedTarget,
+) void {
+    module.addIncludePath(b.path("engine/src/platform"));
+    module.addIncludePath(dependency.path("include"));
+    module.addIncludePath(dependency.path("library"));
+    module.addIncludePath(dependency.path("tests/include"));
+    module.addCSourceFile(.{
+        .file = b.path("engine/tests/tls_qualification.c"),
+        .flags = mbedtls_c_flags,
+    });
+    module.addCSourceFile(.{
+        .file = dependency.path("tests/src/certs.c"),
+        .flags = mbedtls_c_flags,
+    });
+    inline for (mbedtls_sources) |name| {
+        module.addCSourceFile(.{
+            .file = dependency.path("library/" ++ name),
+            .flags = mbedtls_c_flags,
+        });
+    }
+    // Windows alone links OS facilities: `bcrypt` for entropy and `ws2_32` for the
+    // platform `inet_pton` Mbed TLS's X.509 IP-SAN parser selects under MinGW
+    // (`_WIN32_WINNT >= 0x0600`). Neither opens a socket; the qualification still
+    // exchanges records only through in-memory BIOs.
+    if (target.result.os.tag == .windows) {
+        module.linkSystemLibrary("bcrypt", .{});
+        module.linkSystemLibrary("ws2_32", .{});
+    }
+}
+
+const mbedtls_c_flags = &.{
+    "-std=c99",
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    "-Wno-unused-function",
+    "-fno-fast-math",
+    "-D_FILE_OFFSET_BITS=64",
+    "-DMBEDTLS_CONFIG_FILE=\"foundry_mbedtls_config.h\"",
+};
+
+// The release's generated sources are named explicitly so the build cannot
+// silently start compiling a new upstream file after a pin change. Socket and
+// timing helpers are intentionally absent: the qualification uses memory BIOs
+// and an explicit clock, and Step 2 owns Foundry's OS transport mechanism.
+const mbedtls_sources = .{
+    "aes.c",                "aesce.c",             "aesni.c",                                "aria.c",              "asn1parse.c",           "asn1write.c",
+    "base64.c",             "bignum.c",            "bignum_core.c",                          "bignum_mod.c",        "bignum_mod_raw.c",      "block_cipher.c",
+    "camellia.c",           "ccm.c",               "chacha20.c",                             "chachapoly.c",        "cipher.c",              "cipher_wrap.c",
+    "cmac.c",               "constant_time.c",     "ctr_drbg.c",                             "debug.c",             "des.c",                 "dhm.c",
+    "ecdh.c",               "ecdsa.c",             "ecjpake.c",                              "ecp.c",               "ecp_curves.c",          "ecp_curves_new.c",
+    "entropy.c",            "entropy_poll.c",      "error.c",                                "gcm.c",               "hkdf.c",                "hmac_drbg.c",
+    "lmots.c",              "lms.c",               "md.c",                                   "md5.c",               "memory_buffer_alloc.c", "mps_reader.c",
+    "mps_trace.c",          "nist_kw.c",           "oid.c",                                  "padlock.c",           "pem.c",                 "pk.c",
+    "pk_ecc.c",             "pk_wrap.c",           "pkcs12.c",                               "pkcs5.c",             "pkcs7.c",               "pkparse.c",
+    "pkwrite.c",            "platform.c",          "platform_util.c",                        "poly1305.c",          "psa_crypto.c",          "psa_crypto_aead.c",
+    "psa_crypto_cipher.c",  "psa_crypto_client.c", "psa_crypto_driver_wrappers_no_static.c", "psa_crypto_ecp.c",    "psa_crypto_ffdh.c",     "psa_crypto_hash.c",
+    "psa_crypto_mac.c",     "psa_crypto_pake.c",   "psa_crypto_random.c",                    "psa_crypto_rsa.c",    "psa_crypto_se.c",       "psa_crypto_slot_management.c",
+    "psa_crypto_storage.c", "psa_its_file.c",      "psa_util.c",                             "ripemd160.c",         "rsa.c",                 "rsa_alt_helpers.c",
+    "sha1.c",               "sha256.c",            "sha3.c",                                 "sha512.c",            "ssl_cache.c",           "ssl_ciphersuites.c",
+    "ssl_client.c",         "ssl_cookie.c",        "ssl_debug_helpers_generated.c",          "ssl_msg.c",           "ssl_ticket.c",          "ssl_tls.c",
+    "ssl_tls12_client.c",   "ssl_tls12_server.c",  "ssl_tls13_client.c",                     "ssl_tls13_generic.c", "ssl_tls13_keys.c",      "ssl_tls13_server.c",
+    "threading.c",          "version.c",           "version_features.c",                     "x509.c",              "x509_create.c",         "x509_crl.c",
+    "x509_crt.c",           "x509_csr.c",          "x509write.c",                            "x509write_crt.c",     "x509write_csr.c",
+};
 
 fn testNativeLibrary(
     b: *std.Build,

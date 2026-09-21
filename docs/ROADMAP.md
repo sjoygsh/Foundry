@@ -777,32 +777,33 @@ through the sample's normal mod path. A scene editor, schema designer and execut
 game/plugin host are outside this scope, and remain so.
 The editor's UI and UX follow Unreal Engine 5's editor, within M15's fixed regions (§10).
 
-### M16 — Connected: "it plays with others" — **internet trigger confirmed; design proposed; implementation not started**
+### M16 — Connected: "it plays with others" — **in progress; Step 1 of nine complete (2026-09-21)**
 
 Networking was recorded as indefinite, and I1, I2, I8 and I9 kept it possible without paying
 for it. **The owner confirmed the trigger on 2026-09-21: the first networked game requires
-public-internet multiplayer.** This does not authorize implementation during the design handoff.
+public-internet multiplayer.** The later instruction to begin Step 1 accepted the bounded
+architecture; later steps still require their own instruction.
 
-It brings ADR-0013's deferred question with it, but only conditionally: bit-exact determinism
-for a subset is owed to *lockstep*, and an authoritative-server model does not need it. Which
-model is chosen is an ADR before any code, because it decides how much of I9 has to become
-literal.
+It brought ADR-0013's deferred question with it, but only conditionally: bit-exact determinism
+for a subset is owed to *lockstep*, and the accepted authoritative-server model does not need
+it. ADR-0044 recorded that choice before Step 1 code.
 
 **Exit criteria:** two processes share a world convincingly over the public internet, with
 authenticated encrypted transport, validated authority and bounded hostile-input handling,
 and the model was decided in writing first. LAN/loopback evidence alone cannot close M16.
 
-**Design proposed 2026-09-21:** [networking.md](design/networking.md), with proposed
+**Design accepted 2026-09-21:** [networking.md](design/networking.md), with accepted
 [ADR-0044](adr/0044-authoritative-network-sessions.md) and
 [ADR-0045](adr/0045-bounded-direct-connect-transport.md), revised the same day following the
 owner's internet requirement. Nine steps: security qualification and wire/channel contract;
 authenticated streams; compatible admitted sessions; tick-admitted commands and complete state;
 public ABI v5; connected sandbox; security/adversarial/replay/WAN-budget proofs; real internet,
-both desktops and an external consumer; closure. **None is started.** The recommendation is an
-operator-hosted authoritative server with TLS 1.3 mutual certificate authentication. The model,
-topology, credential-admission UX and scale/performance target still need acceptance before
-Step 1. The TLS provider must then pass qualification before dependent code; no dependency is
-installed by the design. ADR-0013's bit-exact subset question stays conditional on lockstep.
+both desktops and an external consumer; closure. **Step 1 is complete.** It qualified pinned
+Mbed TLS 3.6.7 LTS, added L2 `net`, checked reference limits and runtime channel descriptors,
+and froze the bounded incremental FNET wire-v1 codec with golden fixtures. No socket, session,
+ABI or sample path exists yet; those begin in later steps. The accepted model is one
+operator-hosted authority with mutual certificates, up to four reference peers and no
+prediction. ADR-0013's bit-exact subset question stays conditional on lockstep.
 
 ### M17 — Released: "a stranger can download it" — **not started; credential-gated**
 

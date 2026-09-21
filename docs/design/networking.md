@@ -1,11 +1,12 @@
 # Network sessions and the shared-world proof
 
 **Milestone:** M16 — Connected: “it plays with others”
-**Status:** Proposed design, 2026-09-21. **Zero of nine steps implemented.** Stop before Step 1.
+**Status:** Accepted design, 2026-09-21. **Step 1 of nine is complete.** Stop before Step 2.
 **Revision, 2026-09-21:** the owner selected **public-internet multiplayer**. The earlier
-LAN-only scope is withdrawn. Internet security and a real WAN proof are required in M16;
-authority, topology, admission UX and performance targets below remain proposals.
-**Decisions:** proposed [ADR-0044](../adr/0044-authoritative-network-sessions.md) and
+LAN-only scope is withdrawn. Internet security and a real WAN proof are required in M16. The
+owner's instruction to begin Step 1 accepted the authority, topology, admission and bounded
+reference-envelope choices below.
+**Decisions:** accepted [ADR-0044](../adr/0044-authoritative-network-sessions.md) and
 [ADR-0045](../adr/0045-bounded-direct-connect-transport.md).
 **Built on:** ADR-0004/0005/0007/0010/0013/0017/0026/0029/0036/0039;
 `entity-storage.md`, `app-and-frame-loop.md`, `platform-interface.md`, `public-abi.md`.
@@ -13,24 +14,23 @@ authority, topology, admission UX and performance targets below remain proposals
 ## 1. Entry gate and runnable result
 
 M15 is complete at `94bc204`, tagged `m15`; its accepted tests are not repeated for this
-planning change. The owner requested M16 planning, not implementation, and then explicitly
-required public-internet multiplayer for the first networked game. That establishes the
-networking trigger and deployment scope, not acceptance of every architectural recommendation.
+planning change. The owner requested M16 planning, explicitly required public-internet
+multiplayer for the first networked game, and then instructed implementation to begin at Step
+1. That accepts the bounded entry scope below.
 
-**Recommendation:** one operator-hosted authoritative server at a reachable internet endpoint,
-TLS 1.3 mutually authenticated clients, explicit commands and full state snapshots. Before
-Step 1, the owner must accept or revise these remaining choices:
+**Accepted:** one operator-hosted authoritative server at a reachable internet endpoint,
+TLS 1.3 mutually authenticated clients, explicit commands and full state snapshots:
 
 1. Authoritative rather than lockstep simulation.
 2. Operator-hosted direct connection and provisioned player certificates, rather than
    anonymous/account-based joins or player-hosted sessions requiring NAT traversal/relays.
 3. The initial scale: one server and up to four remote peers in the reference proof, with no
-   client prediction, under §10's proposed measurable WAN envelope. This is not a promise
+   client prediction, under §10's accepted measurable WAN envelope. This is not a promise
    that all competitive-action games fit that envelope.
 
-Record acceptance in the two ADRs and this status; do not infer it from M15's completion.
-If different requirements are supplied, revise this unimplemented proposal first. No engine
-code, socket experiment, dependency installation or API declaration belongs to this handoff.
+Acceptance is recorded in the two ADRs and this status; it is not inferred from M15's
+completion. Step 1 implements qualification and the pure wire contract only. It adds no
+socket, session, ABI or sample behavior.
 
 **Exit:** two independently launched processes visibly share an authoritative world. A client
 can affect only what the server permits; late join receives current state, disconnect removes
@@ -56,7 +56,7 @@ M17's Apple release certification and M18's Linux runtime gate are unchanged.
 | `scene/save.zig`, `component.zig` | Versioned saves and field serialization. Saves preserve local pool identity and can skip unknown components; neither property is a network synchronization contract. |
 | `abi/host.zig`, `api.zig`, `foundry.h` | Host-supplied optional services and additive versions through v4. No remote RPC transport and no networking calls. |
 | `mod`, `app.ModSet`, `asset`, `script` | Existing ordered content and code lifecycle. A connection must not download, enable or execute a package. Lua binding 1 has no network authority. |
-| `build.zig` | Enforced module imports, null/Metal/Vulkan builds and header-only consumer precedent. No network module exists. |
+| `build.zig`, `net` | Enforced imports now place the Step 1 `net` module at L2 with only `core` and `platform`; it contains limits, channel descriptors and the pure wire codec, not a transport or session. |
 
 Do not serialize an `InputSnapshot`, C struct, ECS component or handle by copying its memory.
 OS key codes, padding, pointer values and local entity generations are not a wire format.
@@ -64,11 +64,11 @@ Existing save/authoring formats remain unchanged.
 
 ## 3. Ownership and layers
 
-Proposed additions, not a description of today's build graph:
+The first two lines describe today's build graph; later lines remain the accepted destination:
 
 ```
-platform (L1)  core + qualified TLS provider; authenticated streams and credential contexts
-net (L2)       core, platform; wire codec, admission, peers, queues, grants and diagnostics
+platform (L1)  core + qualified TLS provider configuration; streams arrive in Step 2
+net (L2)       core, platform; Step 1 limits/channels/codec; lifecycle arrives later
 abi (L5)       existing imports + net; public argument validation and translation only
 host           owns net.Service, endpoint grants, content identity, timing and subsystem life
 sample client  public header only; command/state codecs and shared-world demonstration
@@ -94,29 +94,31 @@ update, and no networking callback changes a world while a query is live.
 
 ## 4. Transport and bounded work
 
-Initial proposal: TLS 1.3 over TCP, numeric IPv4 endpoints including loopback, explicit ports
+Accepted transport: TLS 1.3 over TCP, numeric IPv4 endpoints including loopback, explicit ports
 and separately granted authenticated server identity. IPv6, DNS and discovery are not hidden
 requirements. No plaintext application path, even for local sample runs. Accept, connect and
 TLS handshake are incremental; read/write report progress, would-block, closed or a mapped
 failure. Work is bounded; nothing waits for remote progress. Headless operation needs no GPU.
 
-`platform` contains the implementation over the pinned toolchain's facilities, or native OS
-calls if required by the same contract. Step 1 qualifies and pins a maintained TLS provider
-(Mbed TLS under Apache-2.0 is the candidate); Step 2 records the concrete Zig 0.16 transport
-mechanism. Record archive/hash, configuration, transitive licenses and security advisory review
-before depending on the provider. Add dependency and license entry together; compile with Zig,
-not a new CMake/Make/Python build path. No vendor implementation or dependency is added now.
-Need for workers or a different ownership model stops that step for a Resolution.
+`platform` will contain the implementation over the pinned toolchain's facilities, or native OS
+calls if required by the same contract. Step 1 selected and qualified Mbed TLS 3.6.7 LTS under
+Apache-2.0; ADR-0045 and the Resolution below record the archive/hash, configuration,
+transitive-license and advisory review. Step 2 records the concrete Zig 0.16 transport
+mechanism. Zig compiles the provider directly; no CMake/Make/Python path was added. Need for
+workers or a different ownership model stops that step for a Resolution.
 
-Session configuration has explicit checked limits. Proposed reference defaults:
+Session configuration has explicit checked limits. Accepted reference defaults:
 
 | Limit | Initial value |
 | --- | --- |
 | Sessions / remote peers per session | 1 / 4 |
 | Concurrent unauthenticated TLS handshakes | 8, separate from the admitted-peer pool |
+| Starts limiter table | 256 source-IP entries; exhaustion falls back to the global limiter |
 | Aggregate TLS allocation cap | 16 MiB, qualification must demonstrate enforcement |
+| TLS progress per peer | 1 provider handshake call per pump; 64-call connection cap |
 | Certificate chain / encoded chain bytes | 4 certificates / 32 KiB |
 | Starts of TLS handshakes | global 8/s, burst 8; per source IP 2/s, burst 2 |
+| Compatibility description | 256 items / 16 KiB of fixed wire entries |
 | Registered application channels | 32 |
 | Full-state channels per session | 1; the application defines its extensible complete-state payload |
 | One complete frame, header included | 64 KiB |
@@ -188,7 +190,7 @@ ownership checks remain mandatory even after successful TLS authentication.
 
 M16 must prove rejection of missing/unknown/expired/not-yet-valid/wrong-use certificates,
 incorrect server identity, denied/revoked clients, tampered records and replay. Mutual TLS
-is not a moderation/account product; it is the proposed initial admission mechanism.
+is not a moderation/account product; it is the accepted initial admission mechanism.
 
 ### 4.2 Public deployment and operational bounds
 
@@ -216,7 +218,7 @@ pinning as a reason to ship a known vulnerable configuration. No toolchain upgra
 FNET messages exist only inside the authenticated TLS stream. Use explicit little-endian
 integer encoding, checked lengths and a wire version independent of
 the C ABI version and the application payload revision. Never cast received bytes to a struct.
-The fixed frame header is proposed as:
+The fixed frame header is:
 
 | Field | Encoding |
 | --- | --- |
@@ -226,10 +228,35 @@ The fixed frame header is proposed as:
 | Channel content ID / simulation tick | u64 / u64; zero for control frames where unused |
 
 The header is 40 bytes; frame length includes it. Refuse below-header/over-limit lengths before
-allocating. No wrapping counters: refuse exhaustion and require a new session. Step 1 freezes
-message-kind numbers, reserved-field rules and control payload layouts with golden fixtures
-before another step depends on them. Unknown versions, kinds, flags, channels, role violations,
-truncated EOF and malformed payload lengths fail closed; they never invoke gameplay.
+allocating. No wrapping counters: refuse exhaustion and require a new session. The pure codec
+rejects zero and exposes a checked increment; Step 3 owns per-peer strictly-increasing sequence
+enforcement. Unknown versions, kinds, flags, channels, role violations, truncated EOF and
+malformed payload lengths fail closed; they never invoke gameplay.
+
+Wire-v1 message kinds are frozen: client hello `1`, server hello `2`, compatibility item `3`,
+channel descriptor `4`, negotiation finished `5`, refusal `6`, baseline `7`, baseline
+acknowledgement `8`, active `9`, command `10`, state `11`, heartbeat `12`, disconnect `13`.
+All unlisted values and all reserved nonzero bytes are invalid. Fixed payloads are:
+
+| Kind | Exact little-endian payload |
+| --- | --- |
+| client hello (56 bytes) | application ID u64, application revision u32, tick rate in millihertz u32, compatibility ID 32 bytes, catalogue count u16, channel count u16, reserved-zero u32 |
+| server hello (72 bytes) | application ID u64, revision u32, tick rate u32, compatibility ID 32 bytes, session epoch u64, participant number u32, catalogue count u16, channel count u16, peer limit u16, six reserved-zero bytes |
+| compatibility item (64 bytes) | kind u8, three reserved-zero bytes, namespaced item ID u64, semantic version as three u32 values, byte count u64, SHA-256 32 bytes |
+| channel descriptor (24 bytes) | channel ID u64, revision u32, maximum payload u32, direction u8, delivery u8, six reserved-zero bytes |
+| negotiation finished (64 bytes) | catalogue SHA-256 then channel-description SHA-256 |
+| refusal (8 bytes) | reason u16, detail index u16, reserved-zero u32 |
+| baseline acknowledgement (24 bytes) | session epoch u64, baseline sequence u64, baseline tick u64 |
+| active (16 bytes) | session epoch u64, participant number u32, reserved-zero u32 |
+| heartbeat (16 bytes) | session epoch u64, last received sequence u64; zero is allowed before any frame |
+| disconnect (8 bytes) | reason u16, six reserved-zero bytes |
+
+Baseline, command and state payloads are application bytes constrained by their registered
+channel and the 64-KiB complete-frame cap. Compatibility item kinds are package `1`, gameplay
+asset `2`, native code `3` and script code `4`; a package uses its namespaced package ID, and
+an external input uses the namespaced `ContentId` derived from its normalized package-relative
+identity. Step 3 must reject duplicate IDs while building the frozen catalogue. Exact golden
+fixtures in `wire.zig` cover the header and every fixed payload.
 
 Control messages cover hello, acceptance/refusal, initial-state acknowledgement, activation,
 heartbeat and disconnect. Active idle clients answer bounded heartbeats; lack of gameplay
@@ -403,7 +430,8 @@ of tested builds/configuration with secrets excluded. Missing infrastructure blo
 
 Follow AGENTS.md's bounded verification per step: focused tests, fix/rerun only failures,
 one integration gate, one documentation pass. Run the required implementation bar before
-each implementation commit. Do not repeat M15 proofs to approve this documentation plan.
+each implementation commit. Step 1's focused codec/provider evidence is recorded below; later
+steps do not repeat it unless their changes can invalidate it.
 
 - **Codec:** golden bytes; all header truncations; split/coalesced frames; unknown enums,
   versions and flags; overflow, zero/maximum lengths, sequence exhaustion and malformed EOF.
@@ -439,7 +467,7 @@ each implementation commit. Do not repeat M15 proofs to approve this documentati
 
 Measure maximum queue occupancy, per-pump work and shutdown completion under the stated test
 load; record actual bounds and test conditions, not unsupported claims of internet robustness.
-The proposed acceptance workload is four peers, state payloads at most 1 KiB at 20 Hz and
+The accepted reference workload is four peers, state payloads at most 1 KiB at 20 Hz and
 60 Hz server simulation. For ten minutes under a controlled stream harness imposing 150 ms
 round-trip delay, up to 30 ms additional jitter, 1 Mbit/s each direction per peer and one
 250 ms head-of-line stall every five seconds, require p95 command-to-visible-acknowledgement
@@ -455,33 +483,33 @@ access, report the precise missing evidence; loopback or a fake WAN is not a rep
 
 ## 11. Open decisions and explicit limits
 
-Public-internet scope is settled by the owner. The remaining §1 choices are proposed:
-authority, operator-hosted topology, provisioned-certificate admission and initial performance
-envelope. The exact TLS pin/configuration is a Step 1 qualification gate. No new backlog
-system is introduced here, and security is not deferred to M17.
+Public-internet scope and §1's authority, operator-hosted topology, provisioned-certificate
+admission and initial performance envelope are settled. Mbed TLS 3.6.7 LTS and its exact
+configuration passed Step 1's qualification. No new backlog system is introduced here, and
+security is not deferred to M17.
 
-Outside this proposal: matchmaking, relays, automatic NAT traversal, account services,
+Outside this milestone: matchmaking, relays, automatic NAT traversal, account services,
 anti-cheat claims, host migration, resuming a departed participant, prediction/rollback,
 lockstep and bit-exact physics, automatic content download, automatic component replication,
 large-world interest management, remote editor/debug transport and new Lua networking bindings.
 Existing open questions about per-mod tables, native unloading, system scheduling, save package
 lists and editor features remain open. M17/M18 retain their own gates.
 
-Three bounded implementation details require a dated Resolution before dependent code: Step
-1's TLS provider/pin/configuration and exact control payloads/counters; Step 2's transport
-mechanism; Step 5's v5 layouts/call count. Those may refine this contract, not change its scope,
-module placement or authority model. No port numbers, machine names or personal paths belong
-in committed configuration.
+Step 1's provider/configuration and wire layouts are resolved below. Two bounded implementation
+details still require a dated Resolution before dependent code: Step 2's transport mechanism
+and Step 5's v5 layouts/call count. Those may refine this contract, not change its scope, module
+placement or authority model. No port numbers, machine names or personal paths belong in
+committed configuration.
 
 ## 12. Implementation order
 
-Every step below is **not started**. Each ends with its own tests, required bar, Resolution,
-project-state update and focused commit, followed by a handoff. Do not chain steps without
-the owner's instruction. Entry acceptance (§1) precedes Step 1, not an extra coding step.
+Step 1 is complete; Steps 2–9 are **not started**. Each ends with its own tests, required bar,
+Resolution, project-state update and focused commit, followed by a handoff. Do not chain steps
+without the owner's instruction.
 
-### Step 1 — Qualify security and define bounded wire messages
+### Step 1 — Qualify security and define bounded wire messages — **complete 2026-09-21**
 
-Qualify the proposed TLS provider against §4: license and exact supported release/hash,
+Qualify the selected TLS provider against §4: license and exact supported release/hash,
 security advisories, Zig-only native/cross-build, mutual-authentication test endpoints in
 memory, bounded resource use, certificate verification, OS entropy and timing interfaces.
 Record the provider/configuration before dependent code. A failed qualification stops for
@@ -559,3 +587,68 @@ and update design Resolutions, API/platform documents, README, roadmap, AGENTS a
 state consistently. List the actual deployment limit and remaining decisions. Tag `m16` only
 when the accepted entry scope, security and real-internet/public-consumer exit are met. **Do not start
 M17 review/polish/release work or M18 qualification as part of closure.**
+
+---
+
+## Resolution — 2026-09-21, Step 1: a qualified provider and a frozen bounded wire
+
+Step 1 built no transport. What it produced is the provider decision §4 demanded before
+dependent code, and the pure message layer Step 2 will carry.
+
+**The `net` module is L2 and cannot connect anything.** `engine/src/net/` holds `limits.zig`
+(the accepted envelope as `struct` constants plus the validators that reject a structural
+excess), `channel.zig` (message kind, direction and delivery as closed enums), `wire.zig` (the
+FNET wire-v1 header codec and one decoder per payload, over an explicit byte source) and
+`root.zig`. `build.zig`'s layering table grants the module `core` and `platform` only. There is
+no service, listener, socket, session, credential context or ABI entry point, and no sample
+reaches it: `net` is compiled and tested, never linked into a host that can talk. Its fifteen
+declarations (three limits, three channel, eight wire, one aggregator) run in the ordinary
+headless graph.
+
+**Wire v1 is frozen with golden bytes.** Every message is a 40-byte little-endian header
+(kind, protocol version, byte order, payload length, sequence, participant, tick, two reserved
+fields) and a fixed per-kind payload: thirteen kinds from the handshake through the disconnect.
+`wire.zig` encodes and decodes each with bounds checked against `limits.zig` before a length
+can index anything, checks the `FNET` magic and the protocol version, refuses a non-little-endian
+peer, and advances the accepted sequence as an exact increment. The golden fixtures in the file
+are the layout's test, so a later step cannot drift a field silently.
+
+**The provider is qualified, not merely pinned.** Mbed TLS 3.6.7 LTS is pinned in
+`build.zig.zon` (archive SHA-256 and Zig package hash both recorded), Apache-2.0 is elected over
+`GPL-2.0-or-later`, and the archive's disabled Project Everest and p256-m implementations are
+neither enabled nor compiled. `engine/src/platform/foundry_mbedtls_config.h` supplies the
+external configuration, `build.zig` names an explicit C-source inventory that excludes the
+socket and timing helpers, and `THIRD_PARTY_LICENSES/mbedtls.md` records the version, provenance,
+election and distribution status. The advisory index and 3.6.7 ChangeLog review is in ADR-0045.
+
+`engine/tests/tls_qualification.{c,zig}` is the harness; `zig build tls-qualification` runs it
+alone, and the ordinary `test` and `check` graphs carry it, including both required cross
+targets. Two peers exchange records over fixed 64-KiB in-memory BIOs and it proves TLS 1.3
+mutual authentication, the exact ciphersuite/group/signature/ALPN allowlist, bidirectional
+peer-certificate verification, application bytes in both directions, OS entropy seeding, an
+injected certificate clock, wrong-server-name refusal and missing-client-certificate refusal.
+Measured peaks: **98,845 allocator-accounted bytes, at most 1,039 queued wire bytes and four
+provider handshake calls**, under committed caps of 16 MiB, 64 KiB and 64 calls. The allocation
+and call peaks are deterministic; the wire high-water mark varies with how the two peers'
+handshake calls interleave, so ADR-0045 now states it as an observed maximum rather than a
+single value, and corrects an earlier 98,893 to the measured 98,845.
+
+**What the bar caught that nothing else would.** The Windows cross-compile check failed while
+the native macOS run passed: Mbed TLS's X.509 IP-SAN parser selects the platform `inet_pton`
+under MinGW (`_WIN32_WINNT >= 0x0600`), so the qualification must link `ws2_32` on Windows
+alongside `bcrypt`. Neither opens a socket — records still cross only in memory — and ADR-0045
+records the requirement. Only the cross-target check could see it.
+
+**The bar is green.** `zig fmt --check` is clean; `zig build test` passes **1,602 of 1,603
+headless tests** (the one skip predates M16) from **1,667 declared**; `check` passes natively,
+under `-Drhi=metal`, and for the Linux-null and Windows-null cross targets; and both samples run
+thirty frames headless. Step 1 adds no ABI call, so no C consumer recompile was due.
+
+**Deliberately not done.** No socket, listener, connection, credential context or stream handle
+exists, and none of the provider's types escapes L1. `networking.md` §6's connection states,
+§5's credential lifecycle and §7's ABI additions are untouched. Step 2 must record Zig 0.16's
+concrete nonblocking socket mechanism and implement the opaque boundary ADR-0045 describes;
+passing an in-memory provider test is not a claim that a native transport, partial-I/O, cleanup
+or real loopback path exists. §13's open questions stay open, and design authorization still
+does not authorize infrastructure purchases, firewall changes, real credentials or a public
+listener.

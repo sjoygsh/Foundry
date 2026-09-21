@@ -1,9 +1,10 @@
 # ADR-0045: Authenticated public-internet transport behind Foundry's boundary
 
-**Status:** Proposed architecture; public-internet scope is required by the owner.
+**Status:** Accepted 2026-09-21; provider qualified in M16 Step 1.
 **Date:** 2026-09-21
 **Revision, 2026-09-21:** replaces the unimplemented LAN-only proposal in place, under
-`CLAUDE.md` §8. No code depends on the earlier text. Step 1 has not begun.
+`CLAUDE.md` §8. No code depended on the earlier text. The owner's subsequent instruction to
+begin Step 1 accepted the operator-hosted, mutually authenticated direct-connect topology.
 
 ## Context
 
@@ -15,7 +16,7 @@ problems. Neither requires Foundry to become an account or matchmaking platform.
 
 ## Decision
 
-**Propose an operator-hosted authoritative server at a reachable internet endpoint, with TLS
+**Use an operator-hosted authoritative server at a reachable internet endpoint, with TLS
 1.3 over TCP and mandatory mutual certificate authentication.** Clients connect outbound;
 automatic NAT traversal, relays and matchmaking are not part of this topology. Numeric IPv4
 is sufficient for the first proof: a separately provisioned server identity is verified even
@@ -31,12 +32,9 @@ fallback, trust-on-first-use, ignored verification error, early data or session 
 M16. Every reconnect performs fresh authentication and authorization; no replay of queued input.
 
 **Use a maintained permissively licensed TLS implementation, not custom cryptography.**
-Mbed TLS is the candidate, under its explicit Apache-2.0 license option. Before dependent
-code, Step 1 records the exact supported release, archive hash, transitive licenses, security
-advisory disposition and configuration. It must qualify TLS 1.3 mutual authentication,
-bounded nonblocking progress, OS entropy, certificate validation and a Zig-only build on the
-pinned toolchain. If it cannot, stop for a revised provider decision. No dependency is added
-by this planning revision; dependency and license entries must land together later.
+Mbed TLS 3.6.7 LTS is selected under its Apache-2.0 option. Its exact pin, configuration,
+license review, advisory disposition and qualification evidence are below. A later provider
+failure still stops for a revised decision; it never permits an insecure fallback.
 
 `net` length-frames versioned messages inside TLS. Bound unauthenticated accepts, concurrent
 handshakes, certificate chains, TLS allocations and computation as well as authenticated
@@ -67,7 +65,7 @@ compromised machine, cheating by the server or stolen authorized credentials.
 - Cost: a TLS dependency needs patch monitoring, attribution and release updates. Missing
   security fixes block public deployment even when an older functional proof passed.
 - Cost: TCP head-of-line blocking and no prediction may limit the game's responsiveness.
-  Measure the proposed WAN envelope in the design; do not claim generic action-game fitness.
+  Measure the accepted WAN envelope in the design; do not claim generic action-game fitness.
 - Infrastructure costs, public exposure, firewall/router changes and real credential use need
   explicit operator authorization. This design does not provision any of them.
 
@@ -91,10 +89,56 @@ IPv6/DNS, resumption, or a scale beyond the measured envelope; certificate provi
 unacceptable UX; or the provider fails qualification or becomes unsupported. Resolve before
 dependent code. No incidental toolchain upgrade or background task framework is authorized.
 
+## Step 1 provider resolution — 2026-09-21
+
+Mbed TLS **3.6.7 LTS**, tag `v3.6.7` at commit
+`068ff080b369adfac81509f9b57b2afabaf82dc5`, is pinned from the tag archive. The downloaded
+archive's SHA-256 is
+`7312b70b067b6a271961c8d36c3b8f9ba3e86fe6b26f18af13cd70430ee52ed1`; Zig records package
+hash `N-V-__8AALrvlQKVtYlvv9dpBnbrJfdwR_F0wAgwsvZhAF1Y`. The supported-branches policy marks
+3.6 as LTS through March 2027, so public deployment after that date requires a supported-pin
+upgrade and affected qualification rerun. This short remaining lifetime is accepted for the
+initial implementation because 3.6.7 is the current patched 3.6 LTS archive and contains the
+generated sources needed by the Zig-only build. It is not permission to ship an unsupported
+library.
+
+Foundry elects Apache-2.0 from Mbed TLS's dual license. The bundled Project Everest and p256-m
+directories were reviewed; neither optional implementation is enabled or compiled. Their
+disposition and the full elected license are in `THIRD_PARTY_LICENSES/mbedtls.md`.
+
+`engine/src/platform/foundry_mbedtls_config.h` starts from the release configuration, disables
+TLS 1.2, DTLS, renegotiation and tickets, and enables externally supplied allocation and time,
+ALPN `fnet/1`, retained verified peer certificates and record-size-limit support. Runtime
+qualification further allowlists TLS 1.3, `TLS_AES_128_GCM_SHA256`, P-256,
+ECDSA-P256-SHA256, Suite B certificate profiles and ephemeral key exchange. Early data and
+resumption are absent. Zig compiles an explicit C-source inventory; Mbed socket and timing
+helpers are not in it. Windows alone links OS facilities: `bcrypt` for entropy, and `ws2_32`
+because Mbed TLS's X.509 IP-SAN parser selects the platform `inet_pton` under MinGW
+(`_WIN32_WINNT >= 0x0600`). Neither opens a socket; qualification still exchanges records only
+through in-memory BIOs.
+
+The upstream security-advisory index and 3.6.7 ChangeLog were reviewed on 2026-09-21. The
+release contains the current 3.6-line fixes, including the 2026 TLS 1.3 record-boundary,
+HelloRetryRequest, X.509 parsing, ECDH, ECC and error-handling corrections. TLS 1.2, DTLS,
+early data, tickets and RSA key exchange are outside the allowed configuration, but fixes in
+shared X.509/ECC/TLS 1.3 paths remain required; no listed advisory justified staying on an
+older pin. Advisories must be checked again before an internet proof or public release.
+
+The `tls-qualification` build step compiles natively and in both required cross-check graphs,
+then runs two peers over fixed 64-KiB in-memory BIOs. It proves TLS 1.3 mutual authentication,
+the exact suite/group/signature/ALPN allowlist, bidirectional peer-certificate verification,
+application bytes, OS entropy seeding, an injected certificate clock, wrong server-name
+refusal and missing-client-certificate refusal. On the 2026-09-21 macOS qualification, all
+three cases peaked at 98,845 allocator-accounted bytes, at most 1,039 queued wire bytes and
+four provider handshake calls, under committed caps of 16 MiB, 64 KiB and 64 calls. The
+allocation and handshake-call peaks are deterministic; the wire high-water mark varies with
+how the two peers' handshake calls interleave. Those are qualification measurements, not a
+Step 2 transport-performance claim.
+
 ## Technical references
 
 - [TLS 1.3, RFC 8446](https://www.rfc-editor.org/rfc/rfc8446.html), including certificate
-  authentication and the early-data replay caveat. Foundry proposes disabling early data.
+  authentication and the early-data replay caveat. Foundry disables early data.
 - [Mbed TLS license](https://raw.githubusercontent.com/Mbed-TLS/mbedtls/development/LICENSE):
   Apache-2.0 is an available option; verify the chosen archive and its transitive files too.
 - [Supported branches](https://github.com/Mbed-TLS/mbedtls/blob/development/BRANCHES.md),
@@ -102,4 +146,5 @@ dependent code. No incidental toolchain upgrade or background task framework is 
   [security advisories](https://mbed-tls.readthedocs.io/en/latest/security-advisories/):
   recheck at qualification, pin deliberately, never build against a moving branch.
 - [Mbed TLS integration tutorial](https://mbed-tls.readthedocs.io/en/latest/kb/how-to/mbedtls-tutorial/).
-  These inform the proposal; none is evidence of a Foundry implementation or completed audit.
+  These define the upstream inputs reviewed by Step 1; later internet exposure requires a
+  fresh advisory check.

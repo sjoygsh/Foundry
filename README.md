@@ -109,11 +109,12 @@ build, export — and the relocated room sample loaded it from its ordinary user
 directory and changed visibly. A C99 program does the same job through the same calls. It
 ran on macOS/Metal and on Windows/Vulkan, and both wrote the same bytes.
 
-**M16 is planned, not implemented.** Its proposed [networking design](docs/design/networking.md)
-has nine steps. Public-internet multiplayer is required; the revised proposal covers
-authoritative sessions, authenticated encryption, credential lifecycle and a real WAN proof.
-Topology, admission UX and the initial performance envelope still await acceptance before
-Step 1. Networking is not implemented, and no security/runtime result is claimed yet.
+**M16 is in progress; Step 1 of nine is complete.** Its accepted
+[networking design](docs/design/networking.md) requires public-internet multiplayer through an
+operator-hosted authority with mutually authenticated TLS. Pinned Mbed TLS 3.6.7 LTS passed
+the in-memory provider qualification, and L2 `net` now holds checked limits, runtime channels
+and frozen FNET wire v1. No socket, session, public API or sample path exists yet; Step 2 is
+the authenticated platform-stream boundary, and the real WAN proof remains an M16 exit gate.
 
 All three modding tiers work — see [docs/modding](docs/modding/). Tier 2 is restricted
 Lua 5.5.1, one VM per package, bounded in memory, instructions and engine calls, reaching the
