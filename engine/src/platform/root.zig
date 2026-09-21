@@ -24,6 +24,11 @@
 //! And one pool beside them: `Workers`, the threads behind `core.Jobs`, which `Os` starts so
 //! that its I/O instance never leaves this module. See `workers.zig`.
 //!
+//! And, since M16 Step 2, `Transport`: TCP listeners and connections carrying TLS 1.3 with
+//! mandatory mutual authentication. Like `Os`, it does not vary with the window backend, so
+//! a headless server has it too. Its sockets and the TLS provider stay in this module
+//! (ADR-0045). See `transport.zig`.
+//!
 //! `app` owns both, initialises `platform` first and tears it down last, and no
 //! platform resource requires another subsystem to still be alive in order to be
 //! destroyed.
@@ -40,6 +45,7 @@ pub const interface = @import("interface.zig");
 pub const key = @import("key.zig");
 pub const library = @import("library.zig");
 pub const os = @import("os.zig");
+pub const transport = @import("transport.zig");
 pub const window = @import("window.zig");
 pub const workers = @import("workers.zig");
 
@@ -98,6 +104,7 @@ pub const NativeSurfaceHandle = window.NativeSurfaceHandle;
 pub const Os = os.Os;
 pub const Size = window.Size;
 pub const SurfaceKind = window.SurfaceKind;
+pub const Transport = transport.Transport;
 pub const WaylandSurface = window.WaylandSurface;
 pub const Win32Window = window.Win32Window;
 pub const WindowConfig = window.WindowConfig;
@@ -128,6 +135,7 @@ test {
     _ = key;
     _ = library;
     _ = os;
+    _ = transport;
     _ = window;
     _ = workers;
     // Always tested, whichever backend is selected — it is the reference

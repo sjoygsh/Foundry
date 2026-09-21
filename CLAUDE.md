@@ -183,7 +183,7 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Authoring | An optional `author` service at L4, beside `app`, owns the one package compiler and source workspaces; authoring is published in additive `FoundryApi_v4` before the ABI-only editor client uses it; roots are host grants | [0042](docs/adr/0042-authoring-through-the-public-api.md) |
 | Source edits | Source bytes are authoritative, and an edit splices only its construct; save is per file against a baseline; build takes a saved snapshot into an isolated candidate; reload is explicit | [0043](docs/adr/0043-source-preserving-authoring-and-explicit-builds.md) |
 | Network authority | One operator-hosted authority; applications define bounded command/state channels and meaning; clients do not run a second authority or receive automatic ECS replication | [0044](docs/adr/0044-authoritative-network-sessions.md) |
-| Network transport | TLS 1.3 over TCP with mandatory mutual certificates, bounded direct connection and no plaintext fallback; Mbed TLS 3.6.7 LTS qualified in M16 Step 1 | [0045](docs/adr/0045-bounded-direct-connect-transport.md) |
+| Network transport | TLS 1.3 over TCP with mandatory mutual certificates, bounded direct connection and no plaintext fallback; Mbed TLS 3.6.7 LTS qualified in M16 Step 1, native nonblocking streams in Step 2 | [0045](docs/adr/0045-bounded-direct-connect-transport.md) |
 | Images | Foundry decodes its own PNG; no third-party image library | [0018](docs/adr/0018-image-decoding.md) |
 | Modularity | Layering enforced by the Zig build graph | [0007](docs/adr/0007-module-layering.md) |
 | Entities | Type-erased component storage with runtime-registered types | [0010](docs/adr/0010-entity-component-constraints.md) |
@@ -230,9 +230,11 @@ L0  core        std only. Math, memory/allocators, containers, handles, IDs,
                 interface — which holds no thread (ADR-0036).
 
 L1  platform    -> core.        Window, input, events, filesystem, dynamic library
-                                loading, high-resolution clock, audio device, and the
-                                worker pool behind `core.Jobs` (ADR-0036).
-                                *** SDL3 is referenced ONLY here. ***
+                                loading, high-resolution clock, audio device, the
+                                worker pool behind `core.Jobs` (ADR-0036), and
+                                mutually authenticated TLS streams (ADR-0045).
+                                *** SDL3, sockets and the TLS provider are referenced
+                                ONLY here. ***
 L1  data        -> core.        Schemas, records, content packages, load order,
                                 merge/override semantics, serialization.
 L1  physics2d   -> core.        Shapes, tile grids, broadphase, queries, collision
@@ -251,8 +253,8 @@ L2  mod         -> core, data, platform.  Mod discovery, manifests, dependency
                                 order `data` consumes; opens no library and loads no
                                 code, so a content-only host needs nothing above it.
 L2  net         -> core, platform.  M16's bounded runtime channels and explicit FNET
-                                wire codec. Step 1 has no socket, session or gameplay
-                                path; authenticated platform streams arrive in Step 2.
+                                wire codec, over `platform`'s authenticated streams.
+                                No session or gameplay path until Step 3.
 
 L3  render2d    -> core, rhi, asset.      Sprite/tilemap/text batching, cameras.
 L3  scene       -> core, data, asset.     Entities, components, world, systems.
@@ -573,7 +575,7 @@ Decisions live in `docs/adr/NNNN-short-title.md`, using the template in `docs/ad
 Write an ADR when a choice constrains future work, is expensive to reverse, or will look
 arbitrary to a future session. Do not write one for routine implementation choices.
 
-**M16 (accepted 2026-09-21; Step 1 of nine complete):**
+**M16 (accepted 2026-09-21; Steps 1–2 of nine complete):**
 [networking.md](docs/design/networking.md),
 [ADR-0044](docs/adr/0044-authoritative-network-sessions.md) and
 [ADR-0045](docs/adr/0045-bounded-direct-connect-transport.md) select authoritative sessions,
@@ -581,9 +583,12 @@ an optional `net` module and eventually an additive public ABI. **The owner requ
 public-internet multiplayer**; the LAN-only proposal is withdrawn. The owner's instruction to
 begin Step 1 accepted operator-hosted TLS 1.3 mutual-certificate admission and the bounded
 four-peer/no-prediction reference envelope. Step 1 qualified pinned Mbed TLS 3.6.7 LTS and
-added L2 `net` with checked limits, runtime channels and frozen FNET wire v1. It added no
-socket, session, ABI or sample path. Internet security and a real WAN proof remain M16 exit
-requirements, not deferred release polish. Stop before Step 2.
+added L2 `net` with checked limits, runtime channels and frozen FNET wire v1. Step 2 added
+`platform.Transport`: nonblocking OS sockets called from C, because Zig 0.16's `std.Io.net`
+blocks, carrying TLS 1.3 that requires role-marked certificates and a pinned server key, plus a
+deterministic memory carrier for `net`'s tests. There is still no session, ABI or sample path.
+Internet security and a real WAN proof remain M16 exit requirements, not deferred release
+polish. Stop before Step 3.
 
 **M15 (complete 2026-09-21):** ADR-0042 and ADR-0043 are in the §4.1 table, and
 [editor.md](docs/design/editor.md) is the nine-step plan, all nine now walked. Its `author`
@@ -616,7 +621,7 @@ milestone named below is where `docs/ROADMAP.md` now places it.
 | Shader cross-compiler vs. hand-written variants | **Decided in M13** (ADR-0038, 2026-09-14) | Hand-written GLSL variants for the two existing shader pairs, compiled to SPIR-V with pinned SDK tools. ADR-0015's future material/mod shader constraint remains. |
 | Job system / threading model | **Done in M12** (was dated post-M5) | **Decided by ADR-0036 and implemented, 2026-09-14** — explicit `core.Jobs`, fork-join over data-determined chunks, systems kept in order, nothing in the ABI. What it deliberately left out — parallel system scheduling, task graphs, a render thread — has no date: each waits on a measured trigger in `docs/design/jobs-and-threading.md` §9. |
 | Bit-exact determinism for a subset | **Not due in accepted M16 authority** | ADR-0013 keeps this open; the selected authoritative server does not need cross-machine lockstep. Revisit only if a later game selects lockstep. |
-| Networking | **M16 in progress; Step 1 of nine complete** | Owner requires internet multiplayer. [networking.md](docs/design/networking.md) and accepted ADR-0044/0045 fix the initial architecture. Mbed TLS and FNET wire v1 are qualified/frozen; streams begin at Step 2. |
+| Networking | **M16 in progress; Steps 1–2 of nine complete** | Owner requires internet multiplayer. [networking.md](docs/design/networking.md) and accepted ADR-0044/0045 fix the initial architecture. Mbed TLS and FNET wire v1 are qualified/frozen and authenticated streams exist; sessions begin at Step 3. |
 | Public macOS release certification | **M17**, credential-gated — last in its phase | Use the implemented Developer ID/notary path, then verify the exact quarantined download on a genuinely clean recipient Mac. The current ad-hoc artifact is not equivalent (ADR-0032). |
 | Linux runtime support | **M18**, trigger-started — after the first game is complete, before any 3D | **Removed from M13 by ADR-0039, 2026-09-18.** The first game targets macOS and Windows. The Linux Vulkan paths are written and build-checked; no X11, Wayland or Linux driver has run them. |
 

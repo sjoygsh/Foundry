@@ -154,15 +154,21 @@ Windows/Vulkan run followed on 2026-09-21: the same twenty workflow tests, the s
 twenty-five-action null smoke frame for frame, and the same 489-action authoring plan on an
 Intel Arc A750 through Vulkan 1.4, with the two saved `.fdt` files and the exported `.fpk`
 byte-identical to the macOS/Metal run's. Step 9 closed the milestone. **M16 is in progress;
-Step 1 of nine is complete.** Read `docs/design/networking.md` and accepted ADR-0044/0045.
+Steps 1 and 2 of nine are complete.** Read `docs/design/networking.md` and accepted ADR-0044/0045.
 The owner requires public-internet multiplayer; the LAN-only proposal is withdrawn. The
 accepted first architecture is one operator-hosted authority over TLS 1.3 mutual certificates,
 up to four reference peers and no prediction. Step 1 pins and qualifies Mbed TLS 3.6.7 LTS,
 adds L2 `net`, validates its limits and runtime channels, and freezes the pure bounded FNET
 wire-v1 codec. `zig build tls-qualification` is its focused native provider proof; the ordinary
-`test` and `check` graphs also carry it, including both cross targets. **No socket, session,
-ABI or sample networking exists. Step 2 is next and has not begun.** Design authorization does
-not authorize infrastructure purchases, firewall changes, real credential use or a public
+`test` and `check` graphs also carry it, including both cross targets. Step 2 adds
+`platform.Transport` (`engine/src/platform/transport.zig`): nonblocking listeners and
+connections carrying mutually authenticated TLS 1.3, over the OS's sockets — called from
+`transport/socket.c`, because Zig 0.16's `std.Io.net` blocks — or a deterministic `.memory`
+carrier that fragments, stalls, resets and corrupts on command. A peer certificate must name its
+role in extendedKeyUsage and a client pins the server's key. `zig build transport-test` is its
+focused proof, real loopback included, and is part of `zig build test`. **No session, ABI or
+sample networking exists. Step 3 is next and has not begun.** Design authorization does not
+authorize infrastructure purchases, firewall changes, real credential use or a public
 listener. The bar below is current. M13's Step 9 added the checks Vulkan and release work need,
 and M14 added an optimized Windows check to them.
 
@@ -438,6 +444,17 @@ Each of these cost real time to discover.
 * **Zig 0.16.0 labels a no-follow file handle on Windows as blocking when it is not**, and its
   first read reaches `unreachable`. `Os.openFileConfined` corrects the label; after a toolchain
   upgrade, delete that line if the confined-file tests pass on Windows without it.
+* **`zig build test` opens loopback sockets.** The transport proofs listen on `127.0.0.1`
+  with an OS-chosen port and connect to it; they never bind a public address. On Windows a
+  refused loopback connect takes a second or two to report, so that proof waits on a deadline
+  rather than a pump count.
+* **Mbed TLS's allocation and clock hooks are process-wide.** `Transport` installs them and
+  counts every provider allocation against its cap. Test code that calls the provider directly
+  (`engine/tests/fixtures/tls_identities.c`) must free everything before it returns, or the
+  accounting goes wrong for the next `Transport`.
+* **A TLS refusal may reach the refused side as `protocol`.** Under TLS 1.3 an early client
+  alert is unprotected and a server's late one uses keys the client has left, so only the side
+  that refused names the certificate problem (`networking.md`, Step 2 Resolution).
 * **A C file's object is cached against the C file, not its headers.** Editing a `.h` alone can
   leave the build green. `engine/src/abi/agreement.zig` `@embedFile`s `foundry.h` specifically
   to defeat this; if you add another C translation unit that a header must keep honest, it

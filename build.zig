@@ -76,10 +76,10 @@ const layering = [_]Module{
     .{ .name = "mod", .deps = &.{ "core", "data", "platform" } },
 
     // L2 — authenticated network sessions (ADR-0044/0045,
-    // docs/design/networking.md). Step 1 is deliberately pure: `platform` is
-    // present because authenticated streams arrive there in Step 2, while the
-    // module currently owns only checked limits, runtime channel descriptors
-    // and the wire codec. It cannot see a world, content store, application or
+    // docs/design/networking.md). `platform` is present for its authenticated
+    // streams (`platform.Transport`, Step 2); the module itself still owns only
+    // checked limits, runtime channel descriptors and the wire codec until
+    // Step 3's sessions. It cannot see a world, content store, application or
     // public ABI, so no codec can grow into a private gameplay path.
     .{ .name = "net", .deps = &.{ "core", "platform" } },
 
@@ -278,6 +278,23 @@ pub fn build(b: *std.Build) void {
     const platform_module = modules.get("platform").?;
     platform_module.addImport("build_options", build_options_module);
 
+    // **The only place the TLS provider and native sockets enter the build graph**
+    // (ADR-0045, networking.md Step 2). One static library holds the qualified Mbed TLS
+    // sources and `platform`'s two C translation units — `socket.c` over each OS's own
+    // socket API and `tls.c` over the provider — and is linked into `platform` and
+    // nothing else, so no module above L1 can name a provider type or a socket. An
+    // archive rather than loose objects: a program that never opens a transport pulls
+    // none of it in.
+    const mbedtls = b.dependency("mbedtls", .{});
+    const transport_library = transportLibrary(b, mbedtls, target, optimize);
+    platform_module.linkLibrary(transport_library);
+    platform_module.addIncludePath(b.path("engine/src/platform/transport"));
+    platform_module.link_libc = true;
+    if (target.result.os.tag == .windows) {
+        platform_module.linkSystemLibrary("ws2_32", .{});
+        platform_module.linkSystemLibrary("bcrypt", .{});
+    }
+
     const rhi_module = modules.get("rhi").?;
     rhi_module.addImport("build_options", build_options_module);
 
@@ -405,21 +422,18 @@ pub fn build(b: *std.Build) void {
         break :blk mod;
     } else null;
 
-    // M16 Step 1's provider qualification is separate from the implemented
-    // platform module: no socket or credential API exists until Step 2. This
-    // test compiles the exact pinned Mbed TLS sources directly with Zig, runs
-    // mutually authenticated TLS 1.3 over bounded in-memory BIOs on the native
-    // host, and remains in `check` for both cross targets. Keeping it separate
-    // prevents qualification scaffolding and upstream test identities from
-    // entering shipped binaries.
-    const mbedtls = b.dependency("mbedtls", .{});
+    // M16 Step 1's provider qualification, kept beside the transport rather than inside
+    // it: it runs mutually authenticated TLS 1.3 over bounded in-memory BIOs against the
+    // provider's own C API, on the native host, and remains in `check` for both cross
+    // targets. It links the same library `platform` does, so the qualified sources are the
+    // shipped ones; its scaffolding and upstream test identities stay in its test binary.
     const tls_qualification_mod = b.createModule(.{
         .root_source_file = b.path("engine/tests/tls_qualification.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
-    configureMbedTlsQualification(b, tls_qualification_mod, mbedtls, target);
+    configureMbedTlsQualification(b, tls_qualification_mod, mbedtls, transport_library);
 
     // Samples are consumers of the engine, exactly as a game in its own repository
     // would be (ADR-0017): they depend on `app` and reach nothing that `app` does not
@@ -950,6 +964,34 @@ pub fn build(b: *std.Build) void {
     b.step("tls-qualification", "Run the qualified TLS provider's in-memory mTLS proof")
         .dependOn(&run_tls_qualification.step);
 
+    // M16 Step 2's authenticated streams, end to end: real loopback sockets on this
+    // machine and the deterministic memory carrier. Its identities are generated for the
+    // run by a test-only C fixture that no other artifact links, so nothing that can issue
+    // a certificate reaches `platform` and no key is ever committed (networking.md §4.1).
+    const transport_streams_mod = b.createModule(.{
+        .root_source_file = b.path("engine/tests/transport_streams.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    transport_streams_mod.addImport("platform", platform_module);
+    transport_streams_mod.addImport("net", modules.get("net").?);
+    transport_streams_mod.addIncludePath(b.path("engine/src/platform"));
+    transport_streams_mod.addIncludePath(mbedtls.path("include"));
+    transport_streams_mod.addCSourceFile(.{
+        .file = b.path("engine/tests/fixtures/tls_identities.c"),
+        .flags = mbedtls_c_flags,
+    });
+    const transport_streams_tests = b.addTest(.{
+        .name = "transport-streams",
+        .root_module = transport_streams_mod,
+    });
+    check_step.dependOn(&transport_streams_tests.step);
+    const run_transport_streams = b.addRunArtifact(transport_streams_tests);
+    test_step.dependOn(&run_transport_streams.step);
+    b.step("transport-test", "Run M16's authenticated stream proofs: loopback, faults and refusals")
+        .dependOn(&run_transport_streams.step);
+
     // Samples are part of the per-milestone portability obligation too: a sample that
     // stopped cross-compiling would be a milestone rule broken (ROADMAP), and finding
     // that out at release time is the expensive way.
@@ -1329,13 +1371,43 @@ fn distComplaint(
     return message.written();
 }
 
-/// Builds only the provider qualification harness. The production platform
-/// wrapper arrives in M16 Step 2; until then no engine artifact links TLS.
+/// The qualified provider and `platform`'s C transport seam, as one static library
+/// (ADR-0045, `networking.md` Step 2). Its C flags and configuration header are the ones
+/// Step 1 qualified; `socket.c` and `tls.c` are compiled with the same flags so the
+/// provider's structure layouts agree across the seam.
+fn transportLibrary(
+    b: *std.Build,
+    dependency: *std.Build.Dependency,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Step.Compile {
+    const module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    module.addIncludePath(b.path("engine/src/platform"));
+    module.addIncludePath(b.path("engine/src/platform/transport"));
+    module.addIncludePath(dependency.path("include"));
+    module.addIncludePath(dependency.path("library"));
+    inline for (mbedtls_sources) |name| {
+        module.addCSourceFile(.{ .file = dependency.path("library/" ++ name), .flags = mbedtls_c_flags });
+    }
+    inline for (.{ "socket.c", "tls.c" }) |name| {
+        module.addCSourceFile(.{ .file = b.path("engine/src/platform/transport/" ++ name), .flags = mbedtls_c_flags });
+    }
+    // Windows alone links OS facilities: `ws2_32` for Winsock (and for the platform
+    // `inet_pton` Mbed TLS's X.509 IP-SAN parser selects under MinGW,
+    // `_WIN32_WINNT >= 0x0600`), and `bcrypt` for entropy.
+    if (target.result.os.tag == .windows) {
+        module.linkSystemLibrary("ws2_32", .{});
+        module.linkSystemLibrary("bcrypt", .{});
+    }
+    return b.addLibrary(.{ .name = "foundry-transport", .linkage = .static, .root_module = module });
+}
+
+/// Step 1's qualification harness over the same provider library `platform` links.
 fn configureMbedTlsQualification(
     b: *std.Build,
     module: *std.Build.Module,
     dependency: *std.Build.Dependency,
-    target: std.Build.ResolvedTarget,
+    transport_library: *std.Build.Step.Compile,
 ) void {
     module.addIncludePath(b.path("engine/src/platform"));
     module.addIncludePath(dependency.path("include"));
@@ -1349,20 +1421,7 @@ fn configureMbedTlsQualification(
         .file = dependency.path("tests/src/certs.c"),
         .flags = mbedtls_c_flags,
     });
-    inline for (mbedtls_sources) |name| {
-        module.addCSourceFile(.{
-            .file = dependency.path("library/" ++ name),
-            .flags = mbedtls_c_flags,
-        });
-    }
-    // Windows alone links OS facilities: `bcrypt` for entropy and `ws2_32` for the
-    // platform `inet_pton` Mbed TLS's X.509 IP-SAN parser selects under MinGW
-    // (`_WIN32_WINNT >= 0x0600`). Neither opens a socket; the qualification still
-    // exchanges records only through in-memory BIOs.
-    if (target.result.os.tag == .windows) {
-        module.linkSystemLibrary("bcrypt", .{});
-        module.linkSystemLibrary("ws2_32", .{});
-    }
+    module.linkLibrary(transport_library);
 }
 
 const mbedtls_c_flags = &.{
@@ -1377,9 +1436,9 @@ const mbedtls_c_flags = &.{
 };
 
 // The release's generated sources are named explicitly so the build cannot
-// silently start compiling a new upstream file after a pin change. Socket and
-// timing helpers are intentionally absent: the qualification uses memory BIOs
-// and an explicit clock, and Step 2 owns Foundry's OS transport mechanism.
+// silently start compiling a new upstream file after a pin change. Mbed TLS's own
+// socket and timing helpers are intentionally absent: `platform` supplies the
+// transport (`socket.c`) and the certificate clock (`tls.c`) itself.
 const mbedtls_sources = .{
     "aes.c",                "aesce.c",             "aesni.c",                                "aria.c",              "asn1parse.c",           "asn1write.c",
     "base64.c",             "bignum.c",            "bignum_core.c",                          "bignum_mod.c",        "bignum_mod_raw.c",      "block_cipher.c",

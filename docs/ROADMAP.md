@@ -777,7 +777,7 @@ through the sample's normal mod path. A scene editor, schema designer and execut
 game/plugin host are outside this scope, and remain so.
 The editor's UI and UX follow Unreal Engine 5's editor, within M15's fixed regions (§10).
 
-### M16 — Connected: "it plays with others" — **in progress; Step 1 of nine complete (2026-09-21)**
+### M16 — Connected: "it plays with others" — **in progress; Steps 1–2 of nine complete (2026-09-21)**
 
 Networking was recorded as indefinite, and I1, I2, I8 and I9 kept it possible without paying
 for it. **The owner confirmed the trigger on 2026-09-21: the first networked game requires
@@ -800,8 +800,12 @@ authenticated streams; compatible admitted sessions; tick-admitted commands and 
 public ABI v5; connected sandbox; security/adversarial/replay/WAN-budget proofs; real internet,
 both desktops and an external consumer; closure. **Step 1 is complete.** It qualified pinned
 Mbed TLS 3.6.7 LTS, added L2 `net`, checked reference limits and runtime channel descriptors,
-and froze the bounded incremental FNET wire-v1 codec with golden fixtures. No socket, session,
-ABI or sample path exists yet; those begin in later steps. The accepted model is one
+and froze the bounded incremental FNET wire-v1 codec with golden fixtures. **Step 2 is
+complete.** `platform.Transport` supplies nonblocking listeners and connections carrying TLS 1.3
+with mandatory mutual authentication, a required role in each certificate and a pinned server
+key, over the OS's sockets — called from C, because Zig 0.16's `std.Io.net` blocks — or a
+deterministic memory carrier for `net`'s tests. Real authenticated loopback passed on macOS and
+Windows. No session, ABI or sample path exists yet; those begin at Step 3. The accepted model is one
 operator-hosted authority with mutual certificates, up to four reference peers and no
 prediction. ADR-0013's bit-exact subset question stays conditional on lockstep.
 

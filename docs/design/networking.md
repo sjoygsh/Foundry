@@ -1,7 +1,7 @@
 # Network sessions and the shared-world proof
 
 **Milestone:** M16 — Connected: “it plays with others”
-**Status:** Accepted design, 2026-09-21. **Step 1 of nine is complete.** Stop before Step 2.
+**Status:** Accepted design, 2026-09-21. **Steps 1 and 2 of nine are complete.** Stop before Step 3.
 **Revision, 2026-09-21:** the owner selected **public-internet multiplayer**. The earlier
 LAN-only scope is withdrawn. Internet security and a real WAN proof are required in M16. The
 owner's instruction to begin Step 1 accepted the authority, topology, admission and bounded
@@ -67,8 +67,8 @@ Existing save/authoring formats remain unchanged.
 The first two lines describe today's build graph; later lines remain the accepted destination:
 
 ```
-platform (L1)  core + qualified TLS provider configuration; streams arrive in Step 2
-net (L2)       core, platform; Step 1 limits/channels/codec; lifecycle arrives later
+platform (L1)  core + the qualified provider; Step 2's authenticated streams (`Transport`)
+net (L2)       core, platform; Step 1 limits/channels/codec; lifecycle arrives in Step 3
 abi (L5)       existing imports + net; public argument validation and translation only
 host           owns net.Service, endpoint grants, content identity, timing and subsystem life
 sample client  public header only; command/state codecs and shared-world demonstration
@@ -103,9 +103,10 @@ failure. Work is bounded; nothing waits for remote progress. Headless operation 
 `platform` will contain the implementation over the pinned toolchain's facilities, or native OS
 calls if required by the same contract. Step 1 selected and qualified Mbed TLS 3.6.7 LTS under
 Apache-2.0; ADR-0045 and the Resolution below record the archive/hash, configuration,
-transitive-license and advisory review. Step 2 records the concrete Zig 0.16 transport
-mechanism. Zig compiles the provider directly; no CMake/Make/Python path was added. Need for
-workers or a different ownership model stops that step for a Resolution.
+transitive-license and advisory review. Step 2 recorded the concrete Zig 0.16 transport
+mechanism — the OS's own nonblocking sockets, called from C, because `std.Io.net` blocks — in its
+Resolution below. Zig compiles the provider directly; no CMake/Make/Python path was added. It
+needed no worker and no different ownership model.
 
 Session configuration has explicit checked limits. Accepted reference defaults:
 
@@ -495,15 +496,15 @@ large-world interest management, remote editor/debug transport and new Lua netwo
 Existing open questions about per-mod tables, native unloading, system scheduling, save package
 lists and editor features remain open. M17/M18 retain their own gates.
 
-Step 1's provider/configuration and wire layouts are resolved below. Two bounded implementation
-details still require a dated Resolution before dependent code: Step 2's transport mechanism
-and Step 5's v5 layouts/call count. Those may refine this contract, not change its scope, module
+Step 1's provider/configuration and wire layouts and Step 2's transport mechanism are resolved
+below. One bounded implementation detail still requires a dated Resolution before dependent
+code: Step 5's v5 layouts/call count. Those may refine this contract, not change its scope, module
 placement or authority model. No port numbers, machine names or personal paths belong in
 committed configuration.
 
 ## 12. Implementation order
 
-Step 1 is complete; Steps 2–9 are **not started**. Each ends with its own tests, required bar,
+Steps 1 and 2 are complete; Steps 3–9 are **not started**. Each ends with its own tests, required bar,
 Resolution, project-state update and focused commit, followed by a handoff. Do not chain steps
 without the owner's instruction.
 
@@ -519,7 +520,7 @@ incremental framing and the pure codec. Freeze exact wire v1
 with golden byte fixtures and a dated Resolution. Test invalid bytes, partial frames and all
 counter/length bounds. **No sockets, session lifecycle, ABI or sample changes.**
 
-### Step 2 — Supply bounded authenticated platform streams
+### Step 2 — Supply bounded authenticated platform streams — **complete 2026-09-21**
 
 Implement opaque listeners/connections, numeric endpoints, nonblocking connect/accept/read/write,
 TLS handshake/read/write, credential contexts, verified peer identities, error mapping and
@@ -649,6 +650,141 @@ exists, and none of the provider's types escapes L1. `networking.md` §6's conne
 §5's credential lifecycle and §7's ABI additions are untouched. Step 2 must record Zig 0.16's
 concrete nonblocking socket mechanism and implement the opaque boundary ADR-0045 describes;
 passing an in-memory provider test is not a claim that a native transport, partial-I/O, cleanup
-or real loopback path exists. §13's open questions stay open, and design authorization still
+or real loopback path exists. §11's open questions stay open, and design authorization still
 does not authorize infrastructure purchases, firewall changes, real credentials or a public
 listener.
+
+---
+
+## Resolution — 2026-09-21, Step 2: authenticated streams, and no way around them
+
+Step 2 built the transport §3 and §4 describe and nothing above it: `platform.Transport` —
+listeners, connections and credentials behind generational handles — carrying TLS 1.3 with
+mutual authentication over the OS's TCP or a deterministic in-process carrier. `net` gained no
+code; sessions, allowlists and deadlines are Step 3's.
+
+**The Zig 0.16 mechanism is the OS's own nonblocking sockets, called from C.** Verified against
+the pinned compiler rather than its documentation: `std.Io.net` performs every operation as a
+blocking call through an `Io` implementation — `std.Io.Threaded`'s connect with a timeout is
+`@panic("TODO …")`, its read treats `EAGAIN` as a programming bug, and on Windows it drives AFD
+directly — and `std.os.windows.ws2_32` declares Winsock's constants but not one function. A
+would-block contract on one owning thread cannot be built on that without the worker §3 forbids.
+`engine/src/platform/transport/socket.c` therefore calls BSD sockets on macOS and Linux and
+Winsock 2 on Windows, compiled against each target's own headers, so no layout, flag or error
+number is transcribed by hand. Readiness is a zero-timeout `poll`, or `select` on Windows, whose
+exception set is the documented report of a failed nonblocking connect. `MSG_NOSIGNAL` or
+`SO_NOSIGPIPE` keeps a peer's reset from raising a signal; `FD_CLOEXEC` and
+`WSA_FLAG_NO_HANDLE_INHERIT` keep sockets out of child processes; every connection sets
+`TCP_NODELAY`. Listeners use `SO_REUSEADDR` on POSIX and `SO_EXCLUSIVEADDRUSE` on Windows, whose
+`SO_REUSEADDR` would let another process take the port. No thread, `Io` instance or callback into
+a caller exists. `platform-interface.md` part six records what this did to that layer.
+
+**`tls.c` applies Step 1's qualified configuration at runtime and adds two rules of Foundry's
+own**, both within §4.1's mandate to verify "key use and role" and the provisioned server key:
+
+- **A peer's leaf certificate must carry an extendedKeyUsage naming its role** — serverAuth for
+  a server, clientAuth for a client. The provider checks the extension only when it happens to be
+  present, so it would accept an identity issued without one in either role.
+- **A client pins the server's key**: the SHA-256 of its SubjectPublicKeyInfo, provisioned out of
+  band. A key rather than a certificate, so a renewal that keeps its key keeps its pin; the value
+  is what `openssl x509 -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256`
+  prints. It is compared inside certificate verification, so a mismatch ends the handshake rather
+  than being discovered after it. The name check is separate and still required: a numeric
+  destination never replaces the granted server name.
+
+Credentials are refused at creation, with a reason and before any peer sees them, when the key is
+not the certificate's, not P-256, or the certificate does not name the role it is used in; a
+client must name the server and pin its key, and a server must do neither. PEM or a single DER
+certificate is accepted; an encrypted key is refused, because no password is ever an argument. A
+chain may hold four certificates. The certificate clock is the OS civil clock, read before every
+handshake call; one earlier than 2026-01-01 — a machine whose clock was never set — refuses rather
+than guesses. Completion further requires a verified peer key and both sides' agreement on
+`fnet/1`; a peer that names no protocol is refused rather than assumed.
+
+**`platform.Transport` owns everything with a lifetime** (`engine/src/platform/transport.zig`).
+A stream is `connecting`, `handshaking`, `established`, `closed` (the peer's close_notify) or
+`failed`, and `read`/`write` refuse until it is established, so there is no plaintext path to
+select and no option that skips verification. Each `advance` is one bounded step — finish a
+connect, make exactly one provider handshake call (§4's per-pump budget), or retry a held write.
+The per-connection budget counts only provider calls that moved ciphertext, so a long WAN round
+trip costs nothing while a peer trickling its handshake is failed at `handshake_call_limit`. A
+write takes at most one record; a record the carrier cannot take yet stays with the stream,
+unchanged, and is retried with the same bytes, which is both the provider's contract and §4's
+rule that a submitted frame is immutable. Accepting at capacity takes the pending connection and
+closes it unauthenticated (`shed`), so a flood cannot sit in the OS backlog. The provider's
+allocation is process-wide, counted, capped at `tls_allocation_limit` and zeroized on free. A
+failed stream reports one `Failure` category and never a certificate's contents; stats report
+counts only. `accept` also reports the remote address, as the abuse signal Step 3's per-source
+limiter needs and never as an identity.
+
+**The fake transport carries the same TLS.** `.memory` replaces the wire, not the
+authentication: bounded in-process pipes whose tests can fragment every transfer, stall a stream,
+reset a connection, flip a bit in flight and inspect the bytes on the wire. It is what Step 3's
+tests of `net` will run on, deterministically and without a socket, and because it cannot carry
+anything but TLS it cannot become a plaintext mode.
+
+**Proofs.** `engine/tests/transport_streams.zig` (`zig build transport-test`, and part of
+`zig build test`) runs 13 end-to-end proofs over identities that `fixtures/tls_identities.c`
+generates for each run — fresh P-256 keys with fixed validity dates, never written anywhere —
+linked into that test binary alone, so nothing able to issue a certificate reaches `platform` and
+no key is committed. Over real loopback: mutual authentication with each side holding exactly the
+other's key; 1 MiB in one direction and a greeting in the other, every byte in order; an orderly
+close arriving as `closed`; a second session returning provider memory to the exact byte; an
+occupied address, a refused connect and a server abandoning a handshake, each with its own
+reason; and a plaintext client speaking a valid FNET frame, which is refused as `protocol`
+without a byte or a session. Over the memory carrier: the certificate matrix — untrusted,
+expired and not-yet-valid servers, a wrong name, a wrong pinned key, a four-certificate chain
+accepted and a five-certificate one refused, and an untrusted and an expired client — the
+ciphertext-only wire, a tampered record, 64 KiB through a 512-byte pipe seven bytes at a time
+with records held back and delivered unchanged, a 500-pump stall that costs no budget, the
+budget itself (reached at 64 calls, never reached at 4,096), resets during and after the
+handshake, an untrustworthy clock, the allocation cap, shedding and stale handles, and one FNET
+heartbeat frame decoded intact on the other side. `transport.zig` adds six unit tests for
+endpoints, pipes, options, handles and credential shapes.
+
+**Each guard was broken to see it fail.** Verification off failed eight proofs; the pin removed,
+the chain limit removed, the handshake budget removed, the creation-time usage check removed and
+the allocation cap removed each failed its own proof. Removing the post-handshake verification
+check alone fails nothing, correctly: with verification required the handshake has already
+failed. Weakening verification to optional showed it is a real second layer — with it the client
+still refuses an untrusted server; without it the client establishes a session with one. The
+peer-side usage rule cannot be reached through Foundry credentials, which refuse such an identity
+at creation, so it was probed by removing that check: a client presenting a certificate with no
+extendedKeyUsage is then refused by the server as `certificate_wrong_usage`, and with the peer
+rule also removed the server accepts it. The provider itself refuses to present a server
+certificate that lacks serverAuth, so the rule's reach is the EKU-less certificate — exactly the
+case the provider would have let through.
+
+**What implementation found that the design did not say.**
+
+1. **A refusal is not always legible to the refused.** A client that rejects the server's
+   certificate has not installed its handshake keys, so its alert travels unprotected (RFC 8446
+   §6), and a server already reading encrypted records cannot authenticate it: the server reports
+   `protocol`. A server that rejects the client's certificate protects its alert with keys the
+   client has moved past, so the client, too, may see only `protocol`. The refusing side always
+   names the exact reason. Step 3's diagnostics must take the refusing side's word and must not
+   promise the refused side a reason.
+2. **A TLS 1.3 client is `established` before the server has judged it.** Its handshake ends
+   when it sends Finished; the server's verdict on its certificate arrives on its first read.
+   Nothing reaches the server's application first — the server's handshake fails — but Step 3
+   must treat a client's `established` as "the server was verified", not "this client was
+   admitted".
+3. **The provider's key store grows once and stays grown.** The first handshake leaves 904 more
+   bytes allocated than before it on the macOS run, a bounded one-time allocation inside PSA; every
+   later session returns exactly what it took. The proof allows 4 KiB for the first and requires
+   exactness after it.
+
+**Windows.** The same 28 changed files, hash-checked against the Mac's, ran natively on the Intel
+Arc A750 Windows 11 PC over SSH at two jobs and below-normal priority, while its owner was
+playing. `zig build transport-test`: 13 of 13, real Winsock loopback included, in 85 s from a
+cold cache. The whole `zig build test` graph, every Windows test binary now linking libc,
+`ws2_32`, `bcrypt` and the transport archive: 80 of 80 steps, 1,613 of 1,622 tests, the nine
+skips being the tree's existing Windows-conditional ones, in 231 s. Linux compiled in the bar's
+cross check and was not run.
+
+**Deliberately not done.** No session, identity allowlist, revocation of live peers, deadline,
+rate limiter, public listener, ABI or sample code: those are Steps 3 through 6. Credentials are
+bytes a host hands over; reading operator credential files through host grants is Step 6's, and
+provisioning and rotation are Step 8's guide. Linux compiles and is not run (ADR-0039). IPv6 and
+names remain outside the transport. §11's open questions stay open, and nothing here authorizes
+infrastructure, real credentials or a public listener.

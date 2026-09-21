@@ -1,6 +1,6 @@
 # ADR-0045: Authenticated public-internet transport behind Foundry's boundary
 
-**Status:** Accepted 2026-09-21; provider qualified in M16 Step 1.
+**Status:** Accepted 2026-09-21; provider qualified in M16 Step 1; native transport built in Step 2.
 **Date:** 2026-09-21
 **Revision, 2026-09-21:** replaces the unimplemented LAN-only proposal in place, under
 `CLAUDE.md` §8. No code depended on the earlier text. The owner's subsequent instruction to
@@ -148,3 +148,27 @@ Step 2 transport-performance claim.
 - [Mbed TLS integration tutorial](https://mbed-tls.readthedocs.io/en/latest/kb/how-to/mbedtls-tutorial/).
   These define the upstream inputs reviewed by Step 1; later internet exposure requires a
   fresh advisory check.
+
+## Step 2 transport resolution — 2026-09-21
+
+The native transport exists as `platform.Transport` and follows this decision without changing
+it. Four implementation facts are recorded here because later steps depend on them; the full
+account is `networking.md`'s Step 2 Resolution.
+
+- **Mechanism.** Zig 0.16's `std.Io.net` blocks and its Windows bindings declare no Winsock
+  function, so `platform` calls each OS's own nonblocking socket API from a small C translation
+  unit compiled against that target's headers, with zero-timeout readiness checks and no worker.
+  The provider and that unit are one static archive linked into `platform` alone.
+- **Role.** A peer's leaf certificate must carry an extendedKeyUsage naming its role; the
+  provider would otherwise accept an identity issued without one for either role. Foundry's own
+  credentials are held to the same rule at creation.
+- **Server identity.** A client requires both the granted server name and the server's pinned
+  key, the SHA-256 of its SubjectPublicKeyInfo, compared inside certificate verification. Pinning
+  the key rather than the certificate lets a renewal that keeps its key keep its pin.
+- **Time.** Certificate validity is judged by the OS civil clock, read before every handshake
+  call; a clock earlier than 2026-01-01 refuses instead of guessing.
+
+A refusal is not always legible to the refused side under TLS 1.3 — an early client alert is
+unprotected, a server's late one is protected with keys the client has left — so the refusing
+side's category is authoritative. This does not weaken the decision: the refused connection still
+fails closed, with no application byte delivered.

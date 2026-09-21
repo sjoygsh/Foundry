@@ -623,3 +623,33 @@ There is deliberately no `platform` listener, connection, credential context or 
 yet. Step 2 must record Zig 0.16's concrete nonblocking socket mechanism and implement the
 opaque boundary described by ADR-0045. Passing an in-memory provider test is not a claim that
 the native transport, cleanup, partial-I/O or real loopback paths exist.
+
+---
+
+## Resolution, part six — authenticated streams, 2026-09-21
+
+M16 Step 2 gives this interface its network operations, as `platform.Transport` beside `Os`: the
+same code under every window backend, so a headless server has it too, and nothing about it is in
+the conformance interface `interface.check` enforces. Its full account is `networking.md`'s Step 2
+Resolution; what belongs here is what it did to this layer.
+
+**The sockets are C, for the reason `library.zig`'s loader is hand-declared.** Zig 0.16's
+`std.Io.net` blocks — connect with a timeout is an unimplemented panic, `EAGAIN` on a read is
+treated as a bug, and Windows goes through AFD — and `std.os.windows.ws2_32` declares Winsock's
+constants but no function. Three `kernel32` externs were worth writing by hand; seventeen Winsock
+functions and three structures, where a wrong constant would compile on every target and fail only
+on Windows, were not. `transport/socket.c` is compiled against each target's own headers instead.
+`transport/tls.c` holds the provider, and both sit behind `transport/foundry_transport.h`, whose
+only types are fixed-width integers and opaque pointers, `@cImport`ed by `transport.zig` alone.
+
+**The provider and the sockets are one static archive linked into `platform` and nothing else**,
+`foundry-transport` in `build.zig`, the way SDL enters. `platform` now links libc on every target
+(Mbed TLS needs it) and `ws2_32` and `bcrypt` on Windows. An archive rather than loose objects: a
+tool or game that never opens a transport pulls none of it in.
+
+**Nothing here waits, and nothing here is shared.** Every call is one bounded step on the owning
+thread; there is no worker, no `Io` instance and no callback into a caller. Listeners, streams
+and credentials are generational handles (I1); a failed stream reports a `Failure` category and
+never a certificate's contents or a key. The provider's allocation is process-wide, counted,
+capped and zeroized on free.
+

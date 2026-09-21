@@ -1,7 +1,7 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-21
-**Current handoff: M16 is in progress; Step 1 of nine is complete. Stop before Step 2.**
+**Current handoff: M16 is in progress; Steps 1 and 2 of nine are complete. Stop before Step 3.**
 M0 through M15 are complete and tagged. Read the accepted `docs/design/networking.md` and
 accepted ADR-0044/0045 before any further M16 work.
 
@@ -14,9 +14,54 @@ operator-hosted authoritative server with TLS 1.3 mutual certificate authenticat
 pre-authentication work and explicit credential provisioning/revocation. The owner's instruction
 to begin Step 1 accepted the remaining entry choices: one operator-hosted authority, provisioned
 player certificates and the four-peer/no-prediction reference envelope. Both ADRs are now
-**accepted**; Steps 2 through 9 still need their own instruction, and design authorization still
+**accepted**; Steps 3 through 9 still need their own instruction, and design authorization still
 does not authorize infrastructure purchases, firewall changes, real credentials or a public
 listener. M15's completed evidence remains accepted.
+
+**Completed M16 Step 2, 2026-09-21: authenticated streams, and no way around them.** Resolution:
+`networking.md`, Step 2; also ADR-0045's Step 2 note and `platform-interface.md` part six.
+- **`platform.Transport`** (`engine/src/platform/transport.zig`) owns listeners, connections and
+  credentials behind generational handles. A stream is connecting, handshaking, established,
+  closed or failed; `read` and `write` refuse until the peer is verified, so there is no
+  plaintext path and no option that skips verification. Every call is one bounded step on the
+  owning thread; `advance` makes at most one provider handshake call, and the per-connection
+  budget counts only calls that moved ciphertext. A record the carrier cannot take yet stays with
+  the stream, unchanged. Accepting at capacity sheds the connection unauthenticated. A failure is
+  a `Failure` category, never a certificate's contents.
+- **The Zig 0.16 mechanism is the OS's own nonblocking sockets, called from C.** `std.Io.net`
+  blocks (connect with a timeout is an unimplemented panic, `EAGAIN` is treated as a bug) and
+  `std.os.windows.ws2_32` declares no Winsock function, so `transport/socket.c` calls BSD sockets
+  or Winsock 2 against each target's own headers, with zero-timeout `poll`/`select` and no worker.
+  `transport/tls.c` holds the provider. Both, with Mbed TLS, are one static archive
+  (`foundry-transport`) linked into `platform` only; `platform` now links libc everywhere and
+  `ws2_32`/`bcrypt` on Windows. Step 1's qualification links the same archive.
+- **Two rules stricter than the provider:** a peer's leaf certificate must name its role in
+  extendedKeyUsage, and a client pins the server's key (SHA-256 of its SubjectPublicKeyInfo)
+  inside verification, beside the required server name. Credentials are refused at creation for a
+  foreign key, a non-P-256 key or the wrong role. The certificate clock is the OS civil clock, and
+  one before 2026-01-01 refuses. `fnet/1` must be agreed.
+- **A `.memory` carrier** carries the same TLS over bounded in-process pipes that tests can
+  fragment, stall, reset, corrupt and inspect: the deterministic fake transport Step 3's `net`
+  tests will use, and unable to carry plaintext.
+- **Proofs:** `zig build transport-test` (13, in `zig build test`) over identities generated per
+  run by the test-only `engine/tests/fixtures/tls_identities.c` — real loopback mTLS with 1 MiB
+  and an orderly close, refused/occupied/abandoned connections, a plaintext FNET client refused as
+  `protocol`, the certificate matrix, ciphertext-only wire, tampering, fragmentation and stalls,
+  the call budget, resets, the clock, the allocation cap, shedding and stale handles, and an FNET
+  frame across a stream; plus six unit tests. **Every guard was broken once and its proof
+  failed**; the peer-side usage rule and the post-handshake check were probed by mutation because
+  Foundry credentials cannot present what they refuse.
+- **Found:** a TLS 1.3 refusal is not always legible to the refused side (only the refusing side
+  names the reason); a client is `established` before the server judges its certificate; the
+  provider's key store grows once (904 bytes) and every later session returns exactly.
+- **The bar is green:** `zig fmt --check`; `zig build test` **80/80 steps, 1,621 of 1,622**
+  headless tests (the one skip predates M16) from **1,686 declared**; `check` native, Metal and
+  both null cross targets; both samples 30 frames; the optimized Windows checks, null and Vulkan,
+  because an `@cImport` was added. **Windows, native on the Arc A750 PC:** `transport-test`
+  13/13 with real Winsock loopback (85 s cold), and the whole `zig build test` graph 80/80 steps,
+  1,613 of 1,622 with the tree's nine Windows-conditional skips (231 s), at `-j2`/below-normal.
+- **Not done, deliberately:** no session, allowlist, revocation, deadline, rate limiter, public
+  listener, ABI or sample. Credential files, provisioning and rotation are Steps 6 and 8.
 
 **Completed M16 Step 1, 2026-09-21: a qualified TLS provider and a frozen bounded wire — and no
 way to connect anything.** Resolution: `networking.md`, Step 1; provider detail in ADR-0045 and
@@ -2400,10 +2445,21 @@ adding to it, only M10 was new, **M10 and M11 are complete (2026-09-13)** and **
 complete (2026-09-14)**. **M13 is complete (2026-09-19)**, proving
 Windows x64 through Vulkan. **M14 is complete (2026-09-19)**: a player chooses their mods in a
 packaged sample, on macOS and on Windows. **M15 is complete (2026-09-21)**: Foundry authors
-its own content through its own public API, on macOS and on Windows. M16 and M17 are
-unstarted, and both are trigger-started.
+its own content through its own public API, on macOS and on Windows. **M16 is in progress**:
+the owner confirmed its trigger on 2026-09-21 — the first networked game needs public-internet
+multiplayer — and Steps 1 and 2 of nine are complete. M17 is unstarted and credential-gated.
 
 ## Current milestone
+
+**M16 — Connected: "it plays with others." In progress; Steps 1 and 2 of nine complete,
+2026-09-21.** Read `docs/design/networking.md` — §12's nine steps and their Resolutions — and
+ADR-0044/0045, accepted 2026-09-21. The owner requires public-internet multiplayer: one
+operator-hosted authority, TLS 1.3 with mutual certificates, up to four reference peers and no
+prediction. Step 1 qualified Mbed TLS 3.6.7 LTS and froze FNET wire v1 in L2 `net`; Step 2 added
+`platform.Transport`, authenticated streams proved over real loopback on macOS and Windows.
+**Step 3 — compatible sessions and peer lifetimes — needs the owner's instruction.** A real
+public listener, real credentials and any infrastructure need the operator's explicit
+authorization in any step.
 
 **M15 — Editor: "content is authored in Foundry." Complete, 2026-09-21, tagged `m15`.** Read
 `docs/design/editor.md` — §14's nine steps and the nine Resolutions — and ADR-0042/0043,
@@ -2425,9 +2481,9 @@ steps are implemented:
   macOS/Metal and Windows/Vulkan with byte-identical results;
 - the close: the final gate, the documentation consistency pass, and the tag.
 
-**M16 is next and must not be started without being asked.** It is trigger-started: it begins
-when a game needs networking, and it owes an ADR on lockstep versus authoritative server
-*before any code*, because that choice decides how much of I9 has to become literal.
+M16 followed on the owner's word, and ADR-0044 settled lockstep versus authoritative server
+before any code, as M15's close required: authoritative, so I9 stays deterministic-friendly
+rather than bit-exact.
 
 **M14 — Managed: "players choose their mods." Complete, 2026-09-19.** Read
 `docs/design/mod-management.md` and ADR-0040/0041. All nine steps are implemented:
@@ -3348,7 +3404,9 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M0–M15 are complete; nothing is half-built and nothing is in progress.** M15's design and
+**M16 is in progress: Steps 1 and 2 of nine are complete, and nothing is half-built.** Its
+current account is the M16 entries at the top of this file and `networking.md`'s Resolutions.
+**M0–M15 are complete.** M15's design and
 its nine Resolutions are in `docs/design/editor.md`. Step 1 added source spans to
 the parser and `data/emit.zig` and `data/splice.zig`; Step 2 added `engine/src/author/` — the
 one compiler `fpack` and the editor share, the granted dependency set, and bounded workspaces —
@@ -4012,10 +4070,14 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**Nothing is owed. M15 is closed and pushed, and the next milestone needs the owner's word
-before it starts.** M16 (networking) and M17 (public macOS release certification) are both
-trigger-started and neither trigger has fired: M16 begins when a game needs it and owes an ADR
-on lockstep versus authoritative server before any code; M17 needs Developer ID credentials,
+**M16 Step 3 — establish compatible sessions and peer lifetimes (`networking.md` §12) — is
+next and needs the owner's instruction.** It builds `net`'s service over `platform.Transport`:
+grants, generational session and peer storage, frozen channel and catalogue negotiation, the
+identity allowlist and revocation, role checks, connection states, pre-authentication limits,
+deadlines, queue budgets, fairness and diagnostics — tested on the `.memory` carrier. Two Step 2
+findings bind it: take the refusing side's word for a certificate refusal, and treat a client's
+`established` as "the server was verified", not "this client was admitted". Neither Step 1 nor
+Step 2 is pushed. M17 (public macOS release certification) needs Developer ID credentials,
 Apple's notary service and a genuinely clean recipient Mac (ADR-0032), and it is deliberately
 last. M18 is Linux runtime support, after the first game and before any 3D (ADR-0039).
 
@@ -5308,7 +5370,12 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 
 ## Notes for the next session
 
-**Resume point, 2026-09-21:** M0–M15 complete, tagged and pushed. Nothing is in progress.
+**Resume point, 2026-09-21:** M0–M15 complete, tagged and pushed. **M16 Steps 1 and 2 of nine
+are complete and committed, not pushed.** Step 3 needs the owner's instruction.
+- **M16's record** is `docs/design/networking.md` with ADR-0044/0045. `platform.Transport` is
+  the authenticated stream layer; `zig build transport-test` is its focused proof and
+  `zig build tls-qualification` the provider's. The Windows PC runs them from the
+  `%USERPROFILE%\src\Foundry-m15` worktree over SSH, `-j2` and below-normal priority.
 - **M15's record** is `docs/design/editor.md` with ADR-0042/0043 — nine steps, nine
   Resolutions — and a UI and UX modelled on Unreal Engine 5's (§10). Steps 1–4 built the source
   model, the shared compiler, bounded workspaces, typed revisioned commands with Undo/Redo,
@@ -5320,7 +5387,8 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
   --output <work> [--dependency <x.fpk>]... [--export <file.fpk>] [--plan <file> | --script]`.
   A `--plan` is one action a line and **belongs beside the package it edits, never in this
   repository**: it names that package's schemas and fields, and the editor knows none of them.
-- **Do not start M16.** It is trigger-started and owes an ADR before any code.
+- **Do not start M16 Step 3 without the owner's instruction**, and nothing in M16 authorizes a
+  public listener, real credentials or infrastructure.
 - **M13's record** is `docs/design/vulkan.md` with ADR-0037/0038/0039. Vulkan runs on Windows x64,
   and `-Drhi=vulkan` builds, tests and installs there (AGENTS.md, *Vulkan work*).
 - **M12's record** is `docs/design/jobs-and-threading.md` and ADR-0036:
@@ -5329,7 +5397,7 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 - **M14's record** is `docs/design/mod-management.md` with ADR-0040/0041: `app.ModSet`,
   `app.profiles`, settings migrations and merged writes, the UI kernel's image commands and
   disabled scope, `foundry:ui_theme` and `app.resolveUiTheme`, the skinned game widget set,
-  `FoundryApi_v3`, and the room's mod screen (M). M16–M17 remain unstarted.
+  `FoundryApi_v3`, and the room's mod screen (M). M17 remains unstarted.
 - **Driving a windowed room on Windows:** from a scheduled task in the desktop session,
   `keybd_event` and `mouse_event`, sent only while the room is the foreground window and, for a
   click, the window under the point. A development install lists both samples' packages, so a

@@ -3,8 +3,9 @@
 - **Version:** 3.6.7 LTS (tag `v3.6.7`, commit `068ff080b369adfac81509f9b57b2afabaf82dc5`)
 - **Upstream:** https://github.com/Mbed-TLS/mbedtls
 - **License:** `Apache-2.0`, elected from `Apache-2.0 OR GPL-2.0-or-later`.
-- **Distribution:** distributed — attribution is staged before selected C sources enter
-  network-capable hosts in Step 2; Step 1 links them only into its qualification test.
+- **Distribution:** distributed — statically linked into `platform` through the
+  `foundry-transport` archive since M16 Step 2; a program that opens no transport pulls none of it
+  in, but Foundry's release notices always carry this entry.
 - **Location in tree:** fetched via `build.zig.zon`; not vendored.
 - **Why we depend on it:** maintained TLS 1.3, X.509 and cryptographic primitives behind
   Foundry's platform boundary; Foundry does not design its own transport cryptography.
