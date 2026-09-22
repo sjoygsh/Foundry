@@ -1,7 +1,7 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-23
-**Current handoff: M16 is in progress; Steps 1–7 of nine are complete. Stop before Step 8.**
+**Current handoff: M16 is in progress; Steps 1–7 of nine are complete and Step 8 is under way.**
 M0 through M15 are complete and tagged. Read the accepted `docs/design/networking.md` and
 accepted ADR-0044/0045 before any further M16 work.
 
@@ -2716,8 +2716,9 @@ bounded work, deadlines and budgets; Step 4 added the acknowledged baseline, act
 tick-admitted command batches and replaceable complete state; Step 5 published them as
 `FoundryApi_v5`; Step 6 connected the sandbox through that API alone; Step 7 proved it against
 hostile peers, by replay and within the controlled envelope. **Step 8 — public-internet play,
-both desktops and an external consumer — needs the owner's instruction, and a reachable
-authorized server.** A real
+both desktops and an external consumer — is under way on the owner's instruction:** its desktop
+half passed on 2026-09-23, and its internet half waits for an authorized cloud server (see
+Immediate next steps). A real
 public listener, real credentials and any infrastructure need the operator's explicit
 authorization in any step.
 
@@ -4330,16 +4331,28 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**M16 Step 6 — connect the reference sandbox through that API (`networking.md` §12) — is next
-and needs the owner's instruction.** It adds:
-- opt-in offline, server and client host modes, and operator credential references;
-- a separately built, header-only consumer that uses `FoundryApi_v5` and nothing else;
-- runtime-registered command and state channels, and content-defined marker behaviour;
-- authoritative ticking, presentation maps and visible connection state;
-- a real two-window run on the primary desktop.
+**M16 Step 8 is under way (`networking.md` §12).** Done on 2026-09-23, on the home LAN:
+- the relocated macOS/Metal app (`zig build dist`) and a relocated Windows/Vulkan install, needing
+  no toolchain, with byte-identical packages, **each served the other** with the owner pressing
+  keys on both machines; the owner saw both markers move on both screens;
+- operator credentials made with stock OpenSSL (P-256; a root, role-marked server and player
+  leaves), none in the repository; across the two hosts a stranger's key was refused by policy,
+  an unrelated root as untrusted, a wrong-role certificate before connecting, and a one-value
+  content change by catalogue; join, leave and rejoin were clean.
 
-A host binds its service and the grants it publishes to `abi.Host`, and keeps pumping it.
-Steps 1–7 are committed and **none is pushed**. M17 (public macOS release certification) needs Developer ID credentials,
+**Found:** the owner's home line is behind carrier-grade NAT, so a home host cannot be reached
+from the internet at all; a forwarded router port timed out from a mobile network. Foundry's
+direct-connect design has no relay or NAT traversal, so the guide must say an operator's server
+needs a publicly reachable address. Once, the Windows server's window flickered for a few
+seconds; its sampled frame times held at 16.7 ms and Windows logged no display-driver event,
+so the cause is unknown.
+
+**Next:** the owner will provide a small hourly **cloud server** as the authority, with the PC on
+the home line and the Mac on a phone hotspot as clients on independent networks. After that:
+authenticated join/leave/rejoin, refusals and content mismatch over the WAN, observed WAN
+conditions, the external C99 consumer, and the networking and credential-operations guide.
+Every firewall change, public listener and credential needs the owner's explicit yes at the time.
+Steps 1–7 are committed and pushed. M17 (public macOS release certification) needs Developer ID credentials,
 Apple's notary service and a genuinely clean recipient Mac (ADR-0032), and it is deliberately
 last. M18 is Linux runtime support, after the first game and before any 3D (ADR-0039).
 
@@ -5633,7 +5646,8 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 ## Notes for the next session
 
 **Resume point, 2026-09-23:** M0–M15 complete, tagged and pushed. **M16 Steps 1–7 of nine are
-complete and committed, not pushed.** Step 8 needs the owner's instruction.
+complete and pushed; Step 8's desktop half is done** and its internet half waits for the owner's
+cloud server (Immediate next steps).
 - **Step 7's commands:** `zig build sandbox-net-matrix` (in `test`), and the ten-minute
   envelope `zig build sandbox-net-proof -Dplatform=null -Drhi=null -- --envelope 600`.
 - **Step 6's commands:** `zig build sandbox-net-proof -Dplatform=null -Drhi=null` (separate
@@ -5643,7 +5657,7 @@ complete and committed, not pushed.** Step 8 needs the owner's instruction.
   the authenticated stream layer and `net.Service` the sessions over it; `zig build
   net-session-test`, `zig build transport-test` and `zig build tls-qualification` are their
   focused proofs. The Windows PC runs them from the
-  `%USERPROFILE%\src\Foundry-m15` worktree over SSH, `-j2` and below-normal priority.
+  `%USERPROFILE%\src\Foundry-m16` worktree over SSH, `-j2` and below-normal priority.
 - **M15's record** is `docs/design/editor.md` with ADR-0042/0043 — nine steps, nine
   Resolutions — and a UI and UX modelled on Unreal Engine 5's (§10). Steps 1–4 built the source
   model, the shared compiler, bounded workspaces, typed revisioned commands with Undo/Redo,

@@ -604,7 +604,7 @@ Step 7 proved that consumer against forged commands, a lying server, revoked, ro
 unknown keys, replayed and tampered records, stalls and floods, and replayed a session's
 admitted inputs into a fresh authority byte for byte. Its ten-minute controlled envelope held
 p95 command acknowledgement near 230 ms against a 500 ms budget. Internet security and a real
-WAN proof remain M16 exit requirements, not deferred release polish. Stop before Step 8.
+WAN proof remain M16 exit requirements, not deferred release polish. Step 8 is under way on the owner's instruction; `PROJECT_STATE.md` says how far.
 
 **M15 (complete 2026-09-21):** ADR-0042 and ADR-0043 are in the §4.1 table, and
 [editor.md](docs/design/editor.md) is the nine-step plan, all nine now walked. Its `author`

@@ -1,7 +1,7 @@
 # Network sessions and the shared-world proof
 
 **Milestone:** M16 — Connected: “it plays with others”
-**Status:** Accepted design, 2026-09-21. **Steps 1–7 of nine are complete.** Stop before Step 8.
+**Status:** Accepted design, 2026-09-21. **Steps 1–7 of nine are complete; Step 8 is under way** (its desktop half passed 2026-09-23; see `PROJECT_STATE.md`).
 **Revision, 2026-09-21:** the owner selected **public-internet multiplayer**. The earlier
 LAN-only scope is withdrawn. Internet security and a real WAN proof are required in M16. The
 owner's instruction to begin Step 1 accepted the authority, topology, admission and bounded
