@@ -56,6 +56,13 @@ const record_capacity: usize = 16 * 1024;
 /// The most connections a memory listener can hold unaccepted.
 pub const max_memory_backlog = 32;
 
+/// Certificates a peer's chain may hold, root included. A deeper chain is refused.
+pub const max_chain_certificates: u16 = c.FOUNDRY_TLS_MAX_CHAIN_CERTIFICATES;
+
+/// The largest handshake message the provider accepts, so the most an encoded
+/// certificate chain can occupy: every message must fit one input record.
+pub const max_handshake_message_bytes: u32 = c.FOUNDRY_TLS_MAX_HANDSHAKE_MESSAGE;
+
 // -- identity types -----------------------------------------------------------
 
 pub const Listener = opaque {};
@@ -121,7 +128,7 @@ pub const Endpoint = struct {
     }
 
     /// Whether a connection may be addressed to it: a real port on a unicast address.
-    fn isConnectable(self: Endpoint) bool {
+    pub fn isConnectable(self: Endpoint) bool {
         if (self.port == 0 or self.isUnspecified()) return false;
         if (self.address[0] >= 224) return false; // multicast, reserved and broadcast
         return true;
@@ -242,7 +249,8 @@ pub const State = enum {
     /// Authenticated in both directions, as far as this side can know. A client learns
     /// that the server refused *its* certificate only on its first read, as
     /// `peer_refused`: TLS 1.3 finishes the client's handshake before the server has
-    /// judged it.
+    /// judged it. It stays established only while the peer's chain is valid: `advance`
+    /// fails it as `certificate_expired` once the civil clock passes `Peer.valid_until`.
     established,
     /// The peer sent close_notify. Reading answers `closed`; writing is refused.
     closed,
@@ -312,6 +320,9 @@ pub const Accepted = union(enum) {
 pub const Peer = struct {
     key: KeyFingerprint,
     remote: Endpoint,
+    /// The earliest notAfter in the verified chain, in seconds since the Unix epoch: the
+    /// last instant this identity is valid, however long the connection lasts.
+    valid_until: i64,
 };
 
 pub const ListenError = error{
@@ -391,6 +402,7 @@ const StreamSlot = struct {
     /// Plaintext already handed to the provider and awaiting its retry.
     pending: usize = 0,
     peer_key: ?KeyFingerprint = null,
+    valid_until: i64 = 0,
     /// What the carrier last reported, so a provider failure it caused is named for it.
     carrier_failure: ?Failure = null,
 };
@@ -601,6 +613,12 @@ pub const Transport = struct {
         return self.credentials.add(self.gpa, .{ .native = native.?, .role = config.role }) catch unreachable;
     }
 
+    /// The role credentials were created for, or null for a stale handle.
+    pub fn credentialsRole(self: *Transport, handle: CredentialsHandle) ?Role {
+        const slot = self.credentials.get(handle) orelse return null;
+        return slot.role;
+    }
+
     /// Refused while a listener or stream still uses them: close those first.
     pub fn destroyCredentials(self: *Transport, handle: CredentialsHandle) error{ InvalidHandle, CredentialsInUse }!void {
         const slot = self.credentials.get(handle) orelse return error.InvalidHandle;
@@ -634,6 +652,18 @@ pub const Transport = struct {
     pub fn listenerEndpoint(self: *Transport, listener: ListenerHandle) ?Endpoint {
         const slot = self.listeners.get(listener) orelse return null;
         return slot.endpoint;
+    }
+
+    /// Connections accepted from now on authenticate with `credentials`; streams already
+    /// accepted keep what they were accepted with. How a server rotates its identity
+    /// without giving up its port.
+    pub fn setListenerCredentials(self: *Transport, listener: ListenerHandle, credentials: CredentialsHandle) ListenError!void {
+        const slot = self.listeners.get(listener) orelse return error.InvalidHandle;
+        const creds = self.credentials.get(credentials) orelse return error.InvalidHandle;
+        if (creds.role != .server) return error.WrongRole;
+        creds.users += 1;
+        if (self.credentials.get(slot.credentials)) |old| old.users -= 1;
+        slot.credentials = credentials;
     }
 
     /// Stops listening. Accepted streams are unaffected; memory connections still
@@ -789,6 +819,7 @@ pub const Transport = struct {
             .handshaking => return self.handshakeStep(slot),
             .established => {
                 self.flushPending(stream, slot);
+                if (slot.state == .established) self.checkValidity(slot);
                 return slot.state;
             },
             .closed, .failed => return slot.state,
@@ -809,7 +840,7 @@ pub const Transport = struct {
     pub fn peer(self: *Transport, stream: StreamHandle) StreamError!Peer {
         const slot = self.streams.get(stream) orelse return error.InvalidHandle;
         if (slot.state != .established and slot.state != .closed) return error.NotEstablished;
-        return .{ .key = slot.peer_key.?, .remote = slot.remote };
+        return .{ .key = slot.peer_key.?, .remote = slot.remote, .valid_until = slot.valid_until };
     }
 
     /// The remote address as the network reported it: an abuse signal, never an
@@ -898,6 +929,19 @@ pub const Transport = struct {
         self.releaseStream(slot);
         _ = self.streams.remove(stream);
         self.carriers[stream.index].stream = .none;
+    }
+
+    /// Moves a proof's fixed certificate clock. Established streams are judged against
+    /// it on their next `advance`, and sessions created afterwards handshake at it; a
+    /// handshake already under way keeps the instant it began with. The system clock
+    /// cannot be moved, so a real session never reaches this.
+    pub fn setFixedClock(self: *Transport, seconds: i64) error{ NotFixed, InvalidClock }!void {
+        switch (self.options.civil_clock) {
+            .system => return error.NotFixed,
+            .fixed => {},
+        }
+        if (seconds <= 0) return error.InvalidClock;
+        self.options.civil_clock = .{ .fixed = seconds };
     }
 
     // -- memory carrier controls ----------------------------------------------------
@@ -998,17 +1042,37 @@ pub const Transport = struct {
         switch (result) {
             c.FOUNDRY_TLS_DONE => {
                 var key: KeyFingerprint = undefined;
-                if (c.foundry_tls_session_peer_key(slot.session.?, &key.sha256) != 0) {
+                var valid_until: i64 = 0;
+                if (c.foundry_tls_session_peer_key(slot.session.?, &key.sha256) != 0 or
+                    c.foundry_tls_session_valid_until(slot.session.?, &valid_until) != 0)
+                {
                     self.fail(slot, .internal);
                     return .failed;
                 }
                 slot.peer_key = key;
+                slot.valid_until = valid_until;
                 slot.state = .established;
             },
             c.FOUNDRY_TLS_WANT_READ, c.FOUNDRY_TLS_WANT_WRITE => {},
             else => self.fail(slot, self.tlsFailure(slot, result)),
         }
         return slot.state;
+    }
+
+    /// A verified identity does not stay verified: once the civil clock passes the
+    /// chain's earliest notAfter the stream fails, and a clock that can no longer be
+    /// trusted fails it too rather than letting it run unjudged (`networking.md` §4.1).
+    fn checkValidity(self: *Transport, slot: *StreamSlot) void {
+        const fixed: i64 = switch (self.options.civil_clock) {
+            .system => 0,
+            .fixed => |seconds| seconds,
+        };
+        var now: i64 = 0;
+        if (c.foundry_tls_civil_time(fixed, &now) == 0) {
+            self.fail(slot, .clock_unavailable);
+        } else if (now > slot.valid_until) {
+            self.fail(slot, .certificate_expired);
+        }
     }
 
     fn flushPending(self: *Transport, stream: StreamHandle, slot: *StreamSlot) void {

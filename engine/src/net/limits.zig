@@ -44,6 +44,11 @@ pub const Limits = struct {
     admission_timeout_ms: u32 = 5_000,
     initial_sync_timeout_ms: u32 = 5_000,
     no_progress_timeout_ms: u32 = 10_000,
+    /// Admitted client identities a server's allowlist can hold (Step 3).
+    identities: u16 = 256,
+    /// How long a connection this side ended keeps reading and flushing, so its last
+    /// refusal or disconnect is delivered rather than lost to a reset (Step 3).
+    close_linger_ms: u32 = 1_000,
 
     pub fn validate(self: Limits) Error!void {
         if (self.sessions == 0 or self.peers_per_session == 0 or
@@ -60,7 +65,7 @@ pub const Limits = struct {
             self.queued_events == 0 or self.queued_event_payload_bytes == 0 or
             self.pump_bytes_per_direction_per_peer == 0 or self.pump_frames_per_peer == 0 or
             self.admission_timeout_ms == 0 or self.initial_sync_timeout_ms == 0 or
-            self.no_progress_timeout_ms == 0)
+            self.no_progress_timeout_ms == 0 or self.identities == 0 or self.close_linger_ms == 0)
         {
             return error.ZeroLimit;
         }
@@ -71,7 +76,8 @@ pub const Limits = struct {
             self.tls_handshake_call_limit > 4096 or self.certificate_chain_count > 16 or
             self.certificate_chain_bytes > 1024 * 1024 or self.compatibility_items > 1024 or
             self.compatibility_bytes > 16 * 1024 * 1024 or self.channels > 256 or
-            self.queued_events > 4096 or self.pump_frames_per_peer > 1024)
+            self.queued_events > 4096 or self.pump_frames_per_peer > 1024 or
+            self.identities > 4096 or self.close_linger_ms > self.no_progress_timeout_ms)
         {
             return error.LimitTooLarge;
         }

@@ -154,7 +154,7 @@ Windows/Vulkan run followed on 2026-09-21: the same twenty workflow tests, the s
 twenty-five-action null smoke frame for frame, and the same 489-action authoring plan on an
 Intel Arc A750 through Vulkan 1.4, with the two saved `.fdt` files and the exported `.fpk`
 byte-identical to the macOS/Metal run's. Step 9 closed the milestone. **M16 is in progress;
-Steps 1 and 2 of nine are complete.** Read `docs/design/networking.md` and accepted ADR-0044/0045.
+Steps 1–3 of nine are complete.** Read `docs/design/networking.md` and accepted ADR-0044/0045.
 The owner requires public-internet multiplayer; the LAN-only proposal is withdrawn. The
 accepted first architecture is one operator-hosted authority over TLS 1.3 mutual certificates,
 up to four reference peers and no prediction. Step 1 pins and qualifies Mbed TLS 3.6.7 LTS,
@@ -166,8 +166,13 @@ connections carrying mutually authenticated TLS 1.3, over the OS's sockets — c
 `transport/socket.c`, because Zig 0.16's `std.Io.net` blocks — or a deterministic `.memory`
 carrier that fragments, stalls, resets and corrupts on command. A peer certificate must name its
 role in extendedKeyUsage and a client pins the server's key. `zig build transport-test` is its
-focused proof, real loopback included, and is part of `zig build test`. **No session, ABI or
-sample networking exists. Step 3 is next and has not begun.** Design authorization does not
+focused proof, real loopback included, and is part of `zig build test`. Step 3 adds
+`net.Service` (`engine/src/net/service.zig`): sessions only by host grant, an allowlist mapping
+client keys to principals, compatibility refused by category and first difference, bounded
+pre-authentication work, four deadlines, per-peer pump budgets and reserved events. A live
+stream now fails when its peer's certificate expires. `zig build net-session-test` is its
+focused proof and is part of `zig build test`. **No command, state, ABI or sample networking
+exists. Step 4 is next and has not begun.** Design authorization does not
 authorize infrastructure purchases, firewall changes, real credential use or a public
 listener. The bar below is current. M13's Step 9 added the checks Vulkan and release work need,
 and M14 added an optimized Windows check to them.
@@ -455,6 +460,11 @@ Each of these cost real time to discover.
 * **A TLS refusal may reach the refused side as `protocol`.** Under TLS 1.3 an early client
   alert is unprotected and a server's late one uses keys the client has left, so only the side
   that refused names the certificate problem (`networking.md`, Step 2 Resolution).
+* **A `net.Service` that nobody reads events from stops admitting.** Every authorized connection
+  reserves its admission and ending events up front, so the queue can never overflow; the price
+  is that a host or proof that never calls `nextEvent` reaches `queued_events` and new peers are
+  refused `capacity`. Its pump reads no clock either: it is handed monotonic nanoseconds, so a
+  proof reaches a deadline by advancing the time it passes, not by sleeping.
 * **A C file's object is cached against the C file, not its headers.** Editing a `.h` alone can
   leave the build green. `engine/src/abi/agreement.zig` `@embedFile`s `foundry.h` specifically
   to defeat this; if you add another C translation unit that a header must keep honest, it

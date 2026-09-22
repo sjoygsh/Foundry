@@ -77,10 +77,11 @@ const layering = [_]Module{
 
     // L2 — authenticated network sessions (ADR-0044/0045,
     // docs/design/networking.md). `platform` is present for its authenticated
-    // streams (`platform.Transport`, Step 2); the module itself still owns only
-    // checked limits, runtime channel descriptors and the wire codec until
-    // Step 3's sessions. It cannot see a world, content store, application or
-    // public ABI, so no codec can grow into a private gameplay path.
+    // streams (`platform.Transport`, Step 2); the module owns checked limits,
+    // runtime channel descriptors, the wire codec and, since Step 3, the
+    // `Service` that admits peers over those streams. It cannot see a world,
+    // content store, application or public ABI, so no codec can grow into a
+    // private gameplay path.
     .{ .name = "net", .deps = &.{ "core", "platform" } },
 
     // L3 — the game-facing 2D renderer (docs/design/render2d.md). Note what it does
@@ -991,6 +992,34 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_transport_streams.step);
     b.step("transport-test", "Run M16's authenticated stream proofs: loopback, faults and refusals")
         .dependOn(&run_transport_streams.step);
+
+    // M16 Step 3's sessions, over the same streams: admission, compatibility, the
+    // allowlist, pre-authentication limits, deadlines and budgets. The same test-only
+    // identity fixture supplies its certificates.
+    const net_sessions_mod = b.createModule(.{
+        .root_source_file = b.path("engine/tests/net_sessions.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    net_sessions_mod.addImport("core", modules.get("core").?);
+    net_sessions_mod.addImport("platform", platform_module);
+    net_sessions_mod.addImport("net", modules.get("net").?);
+    net_sessions_mod.addIncludePath(mbedtls.path("include"));
+    net_sessions_mod.addIncludePath(b.path("engine/src/platform"));
+    net_sessions_mod.addCSourceFile(.{
+        .file = b.path("engine/tests/fixtures/tls_identities.c"),
+        .flags = mbedtls_c_flags,
+    });
+    const net_sessions_tests = b.addTest(.{
+        .name = "net-sessions",
+        .root_module = net_sessions_mod,
+    });
+    check_step.dependOn(&net_sessions_tests.step);
+    const run_net_sessions = b.addRunArtifact(net_sessions_tests);
+    test_step.dependOn(&run_net_sessions.step);
+    b.step("net-session-test", "Run M16's session proofs: admission, refusal, limits, deadlines and teardown")
+        .dependOn(&run_net_sessions.step);
 
     // Samples are part of the per-milestone portability obligation too: a sample that
     // stopped cross-compiling would be a milestone rule broken (ROADMAP), and finding

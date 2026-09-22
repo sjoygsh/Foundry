@@ -91,6 +91,12 @@ typedef struct foundry_tls_session foundry_tls_session;
 
 #define FOUNDRY_TLS_KEY_BYTES 32
 
+/* A peer's chain may hold this many certificates, root included, and each handshake
+ * message — a Certificate message holds the whole chain — must fit one input record
+ * of this many bytes (the provider's MBEDTLS_SSL_IN_CONTENT_LEN, which tls.c checks). */
+#define FOUNDRY_TLS_MAX_CHAIN_CERTIFICATES 4
+#define FOUNDRY_TLS_MAX_HANDSHAKE_MESSAGE 16384
+
 /* The carrier a session reads and writes ciphertext through. Each returns a
  * positive byte count or one of these. */
 #define FOUNDRY_TLS_IO_WOULD_BLOCK (-1)
@@ -158,6 +164,11 @@ int foundry_tls_credentials_create(
     foundry_tls_credentials **out_credentials);
 void foundry_tls_credentials_destroy(foundry_tls_credentials *credentials);
 
+/* The civil time a certificate is judged at: `fixed_time` when nonzero, otherwise
+ * the OS clock. Returns 1 with the time, or 0 when it is earlier than 2026-01-01 —
+ * a clock that was never set — so that no judgement is made from it. */
+int foundry_tls_civil_time(int64_t fixed_time, int64_t *out_seconds);
+
 /* `fixed_time` is 0 for the OS civil clock, or seconds since the Unix epoch
  * for a deterministic proof. */
 int foundry_tls_session_create(
@@ -206,5 +217,9 @@ int foundry_tls_session_certificate_problem(const foundry_tls_session *session);
 
 /* SHA-256 of the verified peer's SubjectPublicKeyInfo; 0 on success. */
 int foundry_tls_session_peer_key(const foundry_tls_session *session, uint8_t out_key[FOUNDRY_TLS_KEY_BYTES]);
+
+/* The earliest notAfter in the verified peer's chain, in seconds since the Unix
+ * epoch: the last instant its identity is valid. 0 on success. */
+int foundry_tls_session_valid_until(const foundry_tls_session *session, int64_t *out_seconds);
 
 #endif /* FOUNDRY_TRANSPORT_H */

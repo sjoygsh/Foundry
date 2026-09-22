@@ -1,6 +1,7 @@
 # ADR-0045: Authenticated public-internet transport behind Foundry's boundary
 
-**Status:** Accepted 2026-09-21; provider qualified in M16 Step 1; native transport built in Step 2.
+**Status:** Accepted 2026-09-21; provider qualified in M16 Step 1; native transport built in Step 2;
+admission and negotiation built in Step 3.
 **Date:** 2026-09-21
 **Revision, 2026-09-21:** replaces the unimplemented LAN-only proposal in place, under
 `CLAUDE.md` §8. No code depended on the earlier text. The owner's subsequent instruction to
@@ -172,3 +173,26 @@ A refusal is not always legible to the refused side under TLS 1.3 — an early c
 unprotected, a server's late one is protected with keys the client has left — so the refusing
 side's category is authoritative. This does not weaken the decision: the refused connection still
 fails closed, with no application byte delivered.
+
+## Step 3 admission resolution — 2026-09-22
+
+`net.Service` enforces admission as decided above without changing it; `networking.md`'s Step 3
+Resolution has the full account. Four facts later steps depend on:
+
+- **Admission is by grant, allowlist and principal.** Sessions exist only by host grant. A verified
+  key maps to a host-local principal through the allowlist; a principal holds at most one live
+  connection; a key that is not listed is refused after TLS with a generic `policy` refusal and no
+  event. Replacing the allowlist is all or nothing, and removing or remapping a key ends its live
+  peer.
+- **Validity is judged throughout a session.** `platform` fails an established stream once the
+  civil clock passes the earliest notAfter in its peer's verified chain, and the service judges a
+  peer before reading more from it. Rotating a grant's credentials ends every connection they
+  authenticated.
+- **Pre-authentication work is bounded before any handshake call.** The pending pool, the
+  per-pump accept budget and the per-source and global start buckets all decide before the first
+  provider handshake call. A refused start still costs one provider session setup, because the
+  transport creates it at accept; that is recorded for Step 7 to measure.
+- **A refusal is delivered, not assumed.** A side that ends a connection lingers, for a bounded
+  time, to deliver its refusal or disconnect, because closing with unread input resets TCP and a
+  reset can discard it.
+

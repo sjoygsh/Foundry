@@ -653,3 +653,26 @@ and credentials are generational handles (I1); a failed stream reports a `Failur
 never a certificate's contents or a key. The provider's allocation is process-wide, counted,
 capped and zeroized on free.
 
+## Resolution, part seven — validity for as long as a stream lasts, 2026-09-22
+
+M16 Step 3 added four things to `platform.Transport`, each because `net`'s sessions needed a fact
+only this layer holds. The full account is `networking.md`'s Step 3 Resolution.
+
+- **An established stream is judged against its peer's validity on every `advance`.** The TLS seam
+  records the earliest notAfter in the verified chain (`Peer.valid_until`), and a stream fails as
+  `certificate_expired` once the civil clock passes it, or as `clock_unavailable` if the clock turns
+  untrustworthy. Civil time stays here: `net` is handed only monotonic time, and never reads a
+  clock. `foundry_tls_civil_time` is the one place the 2026-01-01 floor is applied, for handshakes
+  and live streams alike.
+- **`credentialsRole`** answers what a credentials handle is for, so a service can check a grant
+  without seeing a key.
+- **`setListenerCredentials`** changes what a listener accepts with and keeps its port, so a server
+  rotates its identity without rebinding. Streams already accepted keep what they were accepted
+  with.
+- **`setFixedClock`** moves a proof's fixed clock. The system clock cannot be moved, so a real
+  session never reaches it.
+
+`max_chain_certificates` and `max_handshake_message_bytes` state what the transport enforces, so
+`net` can refuse limits stricter than it. `tls.c` fails to compile if the provider's input record
+size stops matching the second.
+

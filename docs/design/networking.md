@@ -1,7 +1,7 @@
 # Network sessions and the shared-world proof
 
 **Milestone:** M16 — Connected: “it plays with others”
-**Status:** Accepted design, 2026-09-21. **Steps 1 and 2 of nine are complete.** Stop before Step 3.
+**Status:** Accepted design, 2026-09-21. **Steps 1–3 of nine are complete.** Stop before Step 4.
 **Revision, 2026-09-21:** the owner selected **public-internet multiplayer**. The earlier
 LAN-only scope is withdrawn. Internet security and a real WAN proof are required in M16. The
 owner's instruction to begin Step 1 accepted the authority, topology, admission and bounded
@@ -56,7 +56,7 @@ M17's Apple release certification and M18's Linux runtime gate are unchanged.
 | `scene/save.zig`, `component.zig` | Versioned saves and field serialization. Saves preserve local pool identity and can skip unknown components; neither property is a network synchronization contract. |
 | `abi/host.zig`, `api.zig`, `foundry.h` | Host-supplied optional services and additive versions through v4. No remote RPC transport and no networking calls. |
 | `mod`, `app.ModSet`, `asset`, `script` | Existing ordered content and code lifecycle. A connection must not download, enable or execute a package. Lua binding 1 has no network authority. |
-| `build.zig`, `net` | Enforced imports now place the Step 1 `net` module at L2 with only `core` and `platform`; it contains limits, channel descriptors and the pure wire codec, not a transport or session. |
+| `build.zig`, `net` | Enforced imports now place the Step 1 `net` module at L2 with only `core` and `platform`; it contains limits, channel descriptors, the pure wire codec and, since Step 3, the session `Service`; the transport is `platform`'s. |
 
 Do not serialize an `InputSnapshot`, C struct, ECS component or handle by copying its memory.
 OS key codes, padding, pointer values and local entity generations are not a wire format.
@@ -68,7 +68,7 @@ The first two lines describe today's build graph; later lines remain the accepte
 
 ```
 platform (L1)  core + the qualified provider; Step 2's authenticated streams (`Transport`)
-net (L2)       core, platform; Step 1 limits/channels/codec; lifecycle arrives in Step 3
+net (L2)       core, platform; Step 1 limits/channels/codec; Step 3's `Service`: grants, sessions, admission
 abi (L5)       existing imports + net; public argument validation and translation only
 host           owns net.Service, endpoint grants, content identity, timing and subsystem life
 sample client  public header only; command/state codecs and shared-world demonstration
@@ -127,6 +127,8 @@ Session configuration has explicit checked limits. Accepted reference defaults:
 | Service queued events, across all peers | 256, additionally bounded by 1 MiB of copied payloads |
 | Read/write work per peer per pump | 64 KiB in each direction, at most 32 decoded frames |
 | Admission/initial-sync deadline / no-progress deadline | 5 s / 10 s |
+| Allowlisted client identities (added in Step 3) | 256 |
+| Close linger, to deliver a last refusal or disconnect (added in Step 3) | 1 s |
 
 These are configurable host bounds, not allocations triggered by received lengths. Validate
 aggregate limits and arithmetic before creation. Fair round-robin pumping and accept budgets
@@ -496,15 +498,15 @@ large-world interest management, remote editor/debug transport and new Lua netwo
 Existing open questions about per-mod tables, native unloading, system scheduling, save package
 lists and editor features remain open. M17/M18 retain their own gates.
 
-Step 1's provider/configuration and wire layouts and Step 2's transport mechanism are resolved
-below. One bounded implementation detail still requires a dated Resolution before dependent
+Step 1's provider/configuration and wire layouts, Step 2's transport mechanism and Step 3's
+negotiation exchange are resolved below. One bounded implementation detail still requires a dated Resolution before dependent
 code: Step 5's v5 layouts/call count. Those may refine this contract, not change its scope, module
 placement or authority model. No port numbers, machine names or personal paths belong in
 committed configuration.
 
 ## 12. Implementation order
 
-Steps 1 and 2 are complete; Steps 3–9 are **not started**. Each ends with its own tests, required bar,
+Steps 1–3 are complete; Steps 4–9 are **not started**. Each ends with its own tests, required bar,
 Resolution, project-state update and focused commit, followed by a handoff. Do not chain steps
 without the owner's instruction.
 
@@ -529,7 +531,7 @@ mutually authenticated loopback on macOS and Windows plus Linux compile coverage
 failure paths and no plaintext fallback. Record the Zig 0.16 mechanism. Null operation needs
 no window. **No public listener, shared-world or ABI implementation.**
 
-### Step 3 — Establish compatible sessions and peer lifetimes
+### Step 3 — Establish compatible sessions and peer lifetimes — **complete 2026-09-22**
 
 Implement service/grants, generational session/peer storage, frozen channel/catalogue negotiation,
 authenticated identity allowlists/revocation, role checks, connection states, pre-auth limits,
@@ -787,4 +789,174 @@ rate limiter, public listener, ABI or sample code: those are Steps 3 through 6. 
 bytes a host hands over; reading operator credential files through host grants is Step 6's, and
 provisioning and rotation are Step 8's guide. Linux compiles and is not run (ADR-0039). IPv6 and
 names remain outside the transport. §11's open questions stay open, and nothing here authorizes
+infrastructure, real credentials or a public listener.
+
+---
+
+## Resolution — 2026-09-22, Step 3: sessions, and what a connection passes through to become one
+
+Step 3 built the admission path §4–§6 describe, up to the point where initial state would be
+delivered, and stopped there: `net.Service` (`engine/src/net/service.zig`), with the canonical
+compatibility description in `compatibility.zig` and the handshake-start limiter in `limiter.zig`.
+A service runs over a `platform.Transport` it borrows and never owns. Commands, state, baselines
+and activation are Step 4's; nothing here reaches a world, a package or the public ABI.
+
+**Grants make every choice the host's.** A service is built from grants — an ID, a role, an
+endpoint and credentials the host already created on the transport — plus an allowlist and a
+frozen compatibility description. A session is created *by grant*, at most one per grant, and
+`listen` or `connect` uses only that grant's endpoint and credentials, so nothing that reaches a
+service can name an address, a file or a key (§8). A client grant must name a connectable
+endpoint; a grant's credentials must exist on the transport in the grant's own role. `grantAt`
+shows a grant's ID, role and endpoint and never its credentials. Channels are registered while a
+session is configuring and frozen when it starts, in ID order, so registration order is not part
+of the contract.
+
+**A connection's path.** A server accepts at most `pending_handshakes` connections per pump. Each
+is closed before any handshake call if the pending pool is full or the limiter refuses its start;
+otherwise it authenticates in the pending pool, separate from admitted peers. When TLS completes,
+the allowlist decides at once — `authorizing` is that decision, not a state a connection waits in
+— and a verified key it does not hold, a principal that already has a live connection, or no room
+in the peer pool or the event queue is refused with an FNET refusal (`policy` or `capacity`). Only
+then does FNET input reach negotiation. The observable states are `connecting`, `authenticating`,
+`negotiating`, `synchronizing` and `closing`; `active` is Step 4's. A client counts as admitted
+only once the server's answer has arrived, which is how Step 2's finding — a client is
+`established` before the server has judged it — is honoured.
+
+**The negotiation exchange, which Step 1 froze the messages of and not the order.** The client
+sends its hello, every catalogue entry, every channel descriptor and a finish carrying the SHA-256
+over the concatenated encoded 64-byte entries and over the concatenated 24-byte descriptors. The
+server compares in order and refuses at the first difference: application ID or revision
+(`application`); tick rate or compatibility ID (`compatibility`); an entry count (`catalogue` or
+`channel`, detail `0xFFFF`); an entry (`catalogue` or `channel`, detail = its index); a digest
+that disagrees with matching entries (the same reason, detail `0xFFFF`). A first frame in another
+wire version is answered with a `version` refusal in wire version 1 before anything else is read.
+On success the server assigns the session's next participant number, never reused, and answers
+with its hello — epoch, participant, its counts and peer limit — and a finish with its own
+digests, without repeating its entries. The client checks every field of that answer and both
+digests against its own description before it believes it, and a server that answers otherwise
+ends as a protocol `mismatch`. The canonical catalogue is each package in load order followed by
+its inputs sorted by kind and then ID; an input's version is `0.0.0`, because its bytes are its
+identity; a duplicate ID anywhere is refused while freezing. Each direction's first frame is
+sequence 1 and every later one exactly one more. A frame is numbered as it enters the send queue,
+so Step 4's replaceable state must be numbered when it is queued, not when it is produced.
+
+**Identity policy fails closed.** An `Identity` maps a key to a host-local principal; several keys
+may share one. `replaceAllowlist` validates the whole replacement before touching the current
+one, so an invalid replacement is refused and the last valid policy stays. A removed key, or a key
+remapped to another principal, ends its live peer as `revoked`, and it is told `policy`.
+`replaceCredentials` points a grant at new credentials: every connection its old ones
+authenticated ends as `rotated`, pending handshakes included, and a listening session's later
+connections authenticate with the new ones. This needed `Transport.setListenerCredentials`, which
+keeps the port, and `Transport.credentialsRole`.
+
+**Validity is judged for as long as a session lasts, in `platform`, where civil time is.** Step 2
+verified a chain once. `transport.zig` now records the earliest notAfter in the verified chain
+(`Peer.valid_until`), and `advance` fails an established stream as `certificate_expired` once the
+civil clock passes it, or as `clock_unavailable` if the clock becomes untrustworthy. The service
+advances a peer before reading anything more from it, so no byte from an identity is decoded after
+the identity stops being valid. That is §4.1's "revalidate policy/expiry during pumping".
+`Transport.setFixedClock` moves a proof's fixed clock, and nothing can move the system clock.
+
+**Bounds, and where they come from.** Every allocation is made at `init`, from the limits and
+the grants. A connection buffer — send queue, frame storage and one staged TLS record — exists
+only for authorized connections, so the pending pool costs streams and nothing more. Each pump
+gives each connection at most its budget: `tls_handshake_calls_per_peer_per_pump` handshake calls,
+64 KiB in, 64 KiB out and 32 decoded frames. Bytes read beyond the frame budget stay staged for the
+next pump, and the starting position rotates every pump. The limiter keeps its credit as time,
+exactly, in integers: a start costs `1 s / rate` of credit and a bucket holds `burst` starts. A
+source is judged before the global bucket, so one noisy address cannot spend what every other
+address shares, and a refused start costs nothing. Its table is bounded: an entry whose bucket has
+refilled carries no information and is reused, and a new source that finds no entry shares one
+overflow bucket at the per-source rate, so a full table makes starts stricter and never forgets a
+source still being limited. `Service.init` checks the transport against the limits: enough
+streams and listeners, no looser handshake or allocation budget, and no limit stricter than the
+transport can enforce. The transport enforces four certificates and one 16 KiB handshake message,
+so a host asking for less than either is refused. `transportOptions` builds matching options.
+
+**Deadlines and heartbeats.** Admission runs from accept or connect to admission, and a negotiating
+server refuses with `timeout`. Initial synchronization runs from admission and, until Step 4
+activates anything, always ends a session that reaches it. No progress means no complete frame for
+the timeout, however slowly bytes drip. Write stall means queued output, including a record the
+transport holds, that has not moved for the timeout. An admitted side sends a heartbeat after a
+quarter of the no-progress timeout without sending anything, carrying its epoch and the last
+sequence it received. A heartbeat for another epoch, or acknowledging a frame never sent, is a
+protocol `mismatch`. Heartbeats keep an idle peer alive and extend neither the initial-sync nor
+the write-stall deadline.
+
+**Endings are structured, reserved and said.** `Ending` names why a connection ended: local,
+peer-disconnected, peer-closed, refused, refused-by-peer, revoked, rotated, timed out (which
+deadline), protocol (which fault), transport (the platform's `Failure`) or overloaded. It never
+carries a payload or a certificate's contents. The service logs nothing; every outcome is an event
+or a counter. An authorized connection reserves its two events, admission and ending, when it is
+authorized, so the queue cannot overflow. A host that stops reading events stops admitting, with
+`capacity`, and nothing is dropped. Pre-authentication failures, denied keys, duplicate principals
+and capacity refusals are counters rather than events, so no unauthenticated flood can fill the
+queue. A connection this side ends says why — a refusal while negotiating, otherwise a disconnect
+— and then lingers for `close_linger_ms`, delivering it and reading only to discard, until the peer
+closes or the linger runs out. `closeSession` is local and immediate: one disconnect attempt and
+one close_notify per peer, its queued events purged, its handles stale.
+
+**Proofs.** `engine/tests/net_sessions.zig` (`zig build net-session-test`, and part of `zig build
+test`) runs 14 proofs. Each uses a server service and separate client services over one transport,
+identities generated per run through `fixtures/identities.zig` (now shared with Step 2's proofs),
+and a monotonic clock the proof advances itself. A `Raw` client speaks FNET by hand to be the peer
+that stalls, floods or breaks the protocol. Over the memory carrier:
+- Grants, roles and state refuse what they do not allow.
+- A matching client is admitted and a reconnect is a fresh participant, both with whole transfers
+  and with seven bytes at a time through a 512-byte pipe.
+- Eleven compatibility differences are each refused with their category and index, on both sides,
+  and no refusal takes a participant number.
+- Allowlist behaviour: a stranger the root vouches for is refused with no event; a second
+  connection of one principal is refused while the first carries on; an invalid replacement
+  changes nothing; revocation and remapping each end exactly their peer; a withdrawn key cannot
+  come back.
+- Pre-authentication bounds: stalled handshakes fill the pending pool and then time out without
+  becoming peers or leaking a stream; the per-source rate admits its burst and then one start per
+  half-second.
+- All four deadlines fire; thirty idle seconds pass on heartbeats alone.
+- Twelve protocol breaches each end only the breaching peer.
+- An inconsistent server's answer is disbelieved five ways.
+- A thousand-frame flood is decoded at most 32 frames per pump, beside a quiet peer that
+  carries on.
+- The event reservation and the peer cap each refuse, and each recovers.
+- Closing a session ends all it held and the next session takes the next epoch; a certificate
+  that expires mid-session ends the session on both sides; rotation ends every connection and
+  only the new pin is trusted afterwards.
+
+One proof repeats the join over real loopback sockets. Ten unit tests cover canonical freezing,
+the limiter, the send ring, configuration refusals and an initialization that fails at every
+allocation. Step 2's proofs gained one: a stream is valid through its chain's last second and
+fails at the next, or when its clock becomes untrustworthy.
+
+**Each guard was broken to see it fail.** Eighteen mutations, each restored and checked
+byte-identical afterwards, and each failed its own proof:
+- the allowlist bypassed, and one principal allowed twice;
+- sequences unchecked;
+- catalogue entries uncompared, and the server's digest check removed;
+- the limiter bypassed, and the pending pool unbounded;
+- the frame budget removed, and events unreserved;
+- allowlist changes not applied to live peers;
+- each of the four deadlines removed;
+- heartbeat claims unchecked;
+- the client believing the server's hello, and believing its digests;
+- live validity unjudged, which failed both Step 2's new proof and the session proof.
+
+**What implementation found that the design did not say.**
+1. **Closing a TCP socket with unread input resets the connection, and a reset can discard a
+   refusal before the peer reads it.** Hence the linger, and its limit. A refusal to an identity
+   that never gets a queue — denied, duplicate or no room — is written straight to the stream.
+2. **A refused start still costs one provider session.** `Transport.accept` creates the TLS
+   session with the stream, before the service can judge the source, so a refused start costs one
+   session setup and never a handshake call. It is bounded by the accept budget. If Step 7's
+   measurements show it matters, splitting accept from session creation in `platform` is the fix.
+3. **Each side must judge its peer before reading.** Before that ordering, a client whose server
+   certificate expired first read the server's abrupt close and reported `truncated`; judging
+   first reports `certificate_expired` on both sides whatever order they run in.
+
+**Deliberately not done.** No commands, state, baseline, acknowledgement or activation (Step 4);
+no ABI (Step 5); no sample, credential files or host modes (Step 6); no provisioning guide (Step
+8). The global start rate is proved in `limiter.zig`'s unit tests only, because every memory
+connection comes from one address. Linux compiles and is not run (ADR-0039). This step was not run
+natively on Windows: its platform change is C and Zig built by the cross-target check, and the
+cross-host proofs are Step 8's. §11's open questions stay open, and nothing here authorizes
 infrastructure, real credentials or a public listener.

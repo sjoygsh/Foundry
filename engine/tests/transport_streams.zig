@@ -26,38 +26,18 @@ const testing = std.testing;
 
 // -- disposable identities ------------------------------------------------------------
 
-const pem_bytes = 4096;
+const identities = @import("fixtures/identities.zig");
+const Authority = identities.Authority;
+const Identity = identities.Identity;
+const foundry_test_authority_create = identities.foundry_test_authority_create;
+const foundry_test_issue = identities.foundry_test_issue;
+const ok = identities.ok;
+const pem = identities.pem;
+const join = identities.join;
+const pem_bytes = identities.pem_bytes;
 
-const Authority = extern struct {
-    name: [128]u8,
-    certificate: [pem_bytes]u8,
-    private_key: [pem_bytes]u8,
-};
-
-const Identity = extern struct {
-    certificate: [pem_bytes]u8,
-    private_key: [pem_bytes]u8,
-    key_sha256: [32]u8,
-
-    fn key(self: *const Identity) transport.KeyFingerprint {
-        return .{ .sha256 = self.key_sha256 };
-    }
-};
-
-extern fn foundry_test_authority_create(out: *Authority, parent: ?*const Authority, name: [*:0]const u8, serial: u8) c_int;
-extern fn foundry_test_issue(
-    out: *Identity,
-    authority: *const Authority,
-    subject: [*:0]const u8,
-    dns_name: ?[*:0]const u8,
-    usage: c_int,
-    serial: u8,
-    not_before: [*:0]const u8,
-    not_after: [*:0]const u8,
-) c_int;
-
-const server_auth = 1;
-const client_auth = 2;
+const server_auth = identities.server_auth;
+const client_auth = identities.client_auth;
 
 /// 2026-09-21T00:00:00Z: inside every ordinary identity's validity.
 const now: i64 = 1789948800;
@@ -114,26 +94,6 @@ const Pki = struct {
         return pem(&pki.root.certificate);
     }
 };
-
-fn ok(result: c_int) !void {
-    if (result != 0) {
-        std.debug.print("test identity generation failed: -0x{x}\n", .{-result});
-        return error.IdentityGenerationFailed;
-    }
-}
-
-fn pem(bytes: []const u8) []const u8 {
-    return std.mem.sliceTo(bytes, 0);
-}
-
-fn join(out: []u8, parts: []const []const u8) usize {
-    var length: usize = 0;
-    for (parts) |part| {
-        @memcpy(out[length..][0..part.len], part);
-        length += part.len;
-    }
-    return length;
-}
 
 fn serverCredentials(t: *Transport, trust: []const u8, chain: []const u8, identity: *const Identity) !CredentialsHandle {
     return t.createCredentials(.{
@@ -711,6 +671,46 @@ test "a clock that cannot be trusted refuses the handshake" {
     try link.pump();
     try testing.expectEqual(State.failed, link.clientState());
     try testing.expectEqual(Failure.clock_unavailable, t.failure(link.client).?);
+}
+
+test "an established stream ends when its peer's identity expires, or its clock stops being trustworthy" {
+    const t = try memoryTransport(.{ .civil_clock = .{ .fixed = now } });
+    defer t.deinit();
+    const pki = try Pki.create();
+    defer pki.destroy();
+    try testing.expectError(error.InvalidClock, t.setFixedClock(0));
+
+    var link = try establishedMemoryLink(t, pki);
+    // The chain's earliest notAfter is the leaf's, since every authority outlives it:
+    // 2027-06-01T00:00:00Z, and valid through that second.
+    const leaf_expiry: i64 = 1811808000;
+    try testing.expectEqual(leaf_expiry, (try t.peer(link.client)).valid_until);
+    try testing.expectEqual(leaf_expiry, (try t.peer(link.server.?)).valid_until);
+    try t.setFixedClock(leaf_expiry);
+    try link.pump();
+    try testing.expectEqual(State.established, link.clientState());
+    try testing.expectEqual(State.established, link.serverState().?);
+    try t.setFixedClock(leaf_expiry + 1);
+    try link.pump();
+    try testing.expectEqual(Failure.certificate_expired, t.failure(link.client).?);
+    try testing.expectEqual(Failure.certificate_expired, t.failure(link.server.?).?);
+    try testing.expectError(error.StreamFailed, t.write(link.client, "late"));
+    t.close(link.client);
+    t.close(link.server.?);
+    t.closeListener(link.listener);
+
+    // A clock that turns untrustworthy mid-session ends the session rather than letting
+    // it run unjudged.
+    try t.setFixedClock(now);
+    var second = try establishedMemoryLink(t, pki);
+    try t.setFixedClock(1_000_000_000);
+    try second.pump();
+    try testing.expectEqual(Failure.clock_unavailable, t.failure(second.client).?);
+    try testing.expectEqual(Failure.clock_unavailable, t.failure(second.server.?).?);
+
+    const system = try Transport.init(testing.allocator, .{ .carrier = .memory });
+    defer system.deinit();
+    try testing.expectError(error.NotFixed, system.setFixedClock(now));
 }
 
 test "the provider's memory is capped, counted and given back" {

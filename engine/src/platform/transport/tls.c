@@ -46,7 +46,13 @@
 #define FOUNDRY_TLS_TIME_FLOOR ((int64_t) 1767225600)
 
 /* Four certificates: the leaf, at most two intermediates and the root. */
-#define FOUNDRY_TLS_MAX_CHAIN_DEPTH 3
+#define FOUNDRY_TLS_MAX_CHAIN_DEPTH (FOUNDRY_TLS_MAX_CHAIN_CERTIFICATES - 1)
+
+/* The header states the handshake-message bound `net` checks its limits against;
+ * it is only true while the provider's input record keeps its default size. */
+#if MBEDTLS_SSL_IN_CONTENT_LEN != FOUNDRY_TLS_MAX_HANDSHAKE_MESSAGE
+#error "FOUNDRY_TLS_MAX_HANDSHAKE_MESSAGE must equal MBEDTLS_SSL_IN_CONTENT_LEN"
+#endif
 
 #define FOUNDRY_TLS_MAX_SERVER_NAME 253
 
@@ -503,6 +509,8 @@ struct foundry_tls_session {
     int chain_too_long;
     int have_peer_key;
     uint8_t peer_key[FOUNDRY_TLS_KEY_BYTES];
+    /* The earliest notAfter the verified chain carries; 0 until one is seen. */
+    int64_t valid_until;
 };
 
 static int session_send(void *context, const unsigned char *bytes, size_t length)
@@ -538,6 +546,21 @@ static int session_receive(void *context, unsigned char *bytes, size_t capacity)
     return result == FOUNDRY_TLS_IO_EOF ? 0 : MBEDTLS_ERR_SSL_INTERNAL_ERROR;
 }
 
+/* A certificate's UTC time as seconds since the Unix epoch (proleptic Gregorian,
+ * days-from-civil). The provider has already parsed and range-checked the fields. */
+static int64_t civil_seconds(const mbedtls_x509_time *time)
+{
+    const int64_t month = time->mon;
+    const int64_t year = (int64_t) time->year - (month <= 2 ? 1 : 0);
+    const int64_t era = (year >= 0 ? year : year - 399) / 400;
+    const int64_t year_of_era = year - era * 400;
+    const int64_t day_of_year = (153 * (month > 2 ? month - 3 : month + 9) + 2) / 5 + time->day - 1;
+    const int64_t day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    const int64_t days = era * 146097 + day_of_era - 719468;
+
+    return days * 86400 + (int64_t) time->hour * 3600 + (int64_t) time->min * 60 + time->sec;
+}
+
 /* Called once per certificate the provider verifies, root first, leaf last. It
  * adds Foundry's two rules; it never clears a flag the provider set. */
 static int verify_certificate(void *context, mbedtls_x509_crt *certificate, int depth, uint32_t *flags)
@@ -546,7 +569,13 @@ static int verify_certificate(void *context, mbedtls_x509_crt *certificate, int 
     const int peer_role = session->credentials->role == FOUNDRY_TLS_ROLE_CLIENT
                               ? FOUNDRY_TLS_ROLE_SERVER
                               : FOUNDRY_TLS_ROLE_CLIENT;
+    const int64_t valid_to = civil_seconds(&certificate->valid_to);
 
+    /* A chain is only as current as its first certificate to expire, so a live
+     * session is judged against the earliest, not the leaf's alone. */
+    if (session->valid_until == 0 || valid_to < session->valid_until) {
+        session->valid_until = valid_to;
+    }
     if (depth > FOUNDRY_TLS_MAX_CHAIN_DEPTH) {
         session->chain_too_long = 1;
         *flags |= MBEDTLS_X509_BADCERT_OTHER;
@@ -611,11 +640,22 @@ static int classify(const foundry_tls_session *session, int result)
     return FOUNDRY_TLS_FAILED_PROTOCOL;
 }
 
-static int set_certificate_time(const foundry_tls_session *session)
+int foundry_tls_civil_time(int64_t fixed_time, int64_t *out_seconds)
 {
-    const int64_t now = session->fixed_time != 0 ? session->fixed_time : (int64_t) time(NULL);
+    const int64_t now = fixed_time != 0 ? fixed_time : (int64_t) time(NULL);
 
     if (now < FOUNDRY_TLS_TIME_FLOOR) {
+        return 0;
+    }
+    *out_seconds = now;
+    return 1;
+}
+
+static int set_certificate_time(const foundry_tls_session *session)
+{
+    int64_t now;
+
+    if (!foundry_tls_civil_time(session->fixed_time, &now)) {
         return 0;
     }
     certificate_time = (mbedtls_time_t) now;
@@ -788,5 +828,14 @@ int foundry_tls_session_peer_key(const foundry_tls_session *session, uint8_t out
         return -1;
     }
     memcpy(out_key, session->peer_key, FOUNDRY_TLS_KEY_BYTES);
+    return 0;
+}
+
+int foundry_tls_session_valid_until(const foundry_tls_session *session, int64_t *out_seconds)
+{
+    if (!session->have_peer_key || session->valid_until == 0) {
+        return -1;
+    }
+    *out_seconds = session->valid_until;
     return 0;
 }
