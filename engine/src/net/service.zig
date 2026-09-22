@@ -999,6 +999,13 @@ pub const Service = struct {
         };
     }
 
+    /// The transport stream under a peer, for the host alone: its fault injection and
+    /// diagnostics. Never published — a stream is a platform object, not a consumer's.
+    pub fn streamOf(self: *Service, peer: PeerHandle) ?transport.StreamHandle {
+        const conn = self.connections.get(peer) orelse return null;
+        return conn.stream;
+    }
+
     /// Ends a peer with `reason`, which it is told if it can still be.
     pub fn disconnect(self: *Service, peer: PeerHandle, reason: wire.DisconnectReason) error{InvalidHandle}!void {
         const conn = self.connections.get(peer) orelse return error.InvalidHandle;

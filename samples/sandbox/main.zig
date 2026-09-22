@@ -662,7 +662,12 @@ fn run(
             hudStyle(field.uiFont()),
             launch,
             mods.loaded().?.order,
-            .{ .plan = envValue(env, "FOUNDRY_SANDBOX_NET_PLAN"), .until_departed = until },
+            .{
+                .plan = envValue(env, "FOUNDRY_SANDBOX_NET_PLAN"),
+                .until_departed = until,
+                .ballast = if (envValue(env, "FOUNDRY_SANDBOX_NET_BALLAST")) |text| std.fmt.parseInt(u32, text, 10) catch 0 else 0,
+                .measure = envValue(env, "FOUNDRY_SANDBOX_NET_MEASURE") != null,
+            },
             headless,
         );
     }
@@ -713,6 +718,8 @@ fn run(
     }
 
     var reported_tick: u64 = 0;
+    // The next frame's start in real time, for a paced headless connected run.
+    var pace_next: u64 = 0;
     var size_index: usize = 0;
     const auto_resize_every = everyFrames(engine, "FOUNDRY_SANDBOX_RESIZE_EVERY");
 
@@ -865,7 +872,18 @@ fn run(
         // A connected headless run is paced to real time, one fixed step a frame, because the
         // peers on its sockets are: without it the synthetic clock would run the server's
         // ticks as fast as the CPU allows and call it a network (`networking.md` §9).
-        if (headless and connected != null) engine.os.sleep(engine.step_delta);
+        if (headless and connected != null) {
+            // To an absolute schedule, so the sleep's overshoot does not accumulate into a
+            // slower tick rate; a long stall is not repaid by a burst of catching up.
+            const now = discovery_os.monotonicNanos();
+            const step_ns: u64 = @intCast(engine.step_delta.ns);
+            pace_next = if (pace_next == 0) now + step_ns else pace_next + step_ns;
+            if (pace_next > now) {
+                engine.os.sleep(.fromNanos(@intCast(pace_next - now)));
+            } else if (now - pace_next > 250 * std.time.ns_per_ms) {
+                pace_next = now;
+            }
+        }
 
         // A skipped frame presented nothing, so nothing waited for the display. A minimised
         // Vulkan window reports an unavailable surface at once, and without this the loop ran

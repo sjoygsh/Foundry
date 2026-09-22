@@ -1,7 +1,7 @@
 # Network sessions and the shared-world proof
 
 **Milestone:** M16 — Connected: “it plays with others”
-**Status:** Accepted design, 2026-09-21. **Steps 1–6 of nine are complete.** Stop before Step 7.
+**Status:** Accepted design, 2026-09-21. **Steps 1–7 of nine are complete.** Stop before Step 8.
 **Revision, 2026-09-21:** the owner selected **public-internet multiplayer**. The earlier
 LAN-only scope is withdrawn. Internet security and a real WAN proof are required in M16. The
 owner's instruction to begin Step 1 accepted the authority, topology, admission and bounded
@@ -501,13 +501,14 @@ lists and editor features remain open. M17/M18 retain their own gates.
 
 Step 1's provider/configuration and wire layouts, Step 2's transport mechanism, Step 3's
 negotiation exchange, Step 4's delivery order, Step 5's v5 layouts and call count and Step 6's
-sample protocol and credential file are resolved
+sample protocol and credential file, and Step 7's protocol revision 2, envelope harness and
+measured bounds are resolved
 below. No bounded implementation detail now awaits a Resolution before dependent code. No port numbers, machine names or personal paths belong in
 committed configuration.
 
 ## 12. Implementation order
 
-Steps 1–6 are complete; Steps 7–9 are **not started**. Each ends with its own tests, required bar,
+Steps 1–7 are complete; Steps 8–9 are **not started**. Each ends with its own tests, required bar,
 Resolution, project-state update and focused commit, followed by a handoff. Do not chain steps
 without the owner's instruction.
 
@@ -565,7 +566,7 @@ state. Headless multi-process input proves the same path. Show the real two-wind
 the primary desktop, retain offline behaviour,
 and stage required releases. **No general lobby or gameplay feature expansion.**
 
-### Step 7 — Prove refusal, authority and deterministic replay
+### Step 7 — Prove refusal, authority and deterministic replay — **complete 2026-09-23**
 
 Complete §10's adversarial/failure matrix through the public consumer: forged input, corrupted
 frames, credential refusal/revocation/rotation, TLS replay/tamper, pre-authentication floods,
@@ -1420,6 +1421,11 @@ Two first attempts failed only by compile error on an unused name and were redon
 - **Not run natively on Windows.** The PC still refuses SSH at its recorded address, and
   this session is not permitted to scan for it. The Windows cross-checks compile the sandbox
   and the new `@cImport`, and so does the optimized Vulkan check.
+  **Later the same day** the owner authorized finding the PC on its new address. Step 6's
+  commit was then run natively in a fresh worktree, at `-j2` and below-normal priority:
+  - `zig build test`: 89/89 steps, 1,661 of 1,670 tests; the 9 skips are all Windows-only,
+    as before;
+  - `sandbox-net-proof`: all six processes over real Winsock loopback, every check passed.
 - **No person pressed a key** in these runs. The windowed runs used the same plans as the
   headless ones. The `i`/`j`/`k`/`l` path is the same `step` call, and real input is Step 8's
   evidence.
@@ -1431,3 +1437,156 @@ Two first attempts failed only by compile error on an unused name and were redon
 - The server's own marker always exists.
 - **Not this step's:** Step 7's adversarial matrix and measured envelope; Step 8's
   cross-host, WAN, external consumer and guide.
+
+## Resolution — 2026-09-23, Step 7: refusal, authority, replay and the measured envelope
+
+Step 7 reuses what Steps 1–5 proved layer by layer. Those are the provider's qualification,
+certificate refusals, a tampered record, plaintext refusal, handshake budgets, expiry,
+rotation, allowlists, compatibility, deadlines, noisy-peer budgets, reserved events, baseline
+order and service-level batch replay, together with `Service.init`'s allocation-failure sweep.
+This step adds the combinations those tests could not reach: each case as the sandbox's own
+consumer meets it, and the measured envelope.
+
+**The matrix: `zig build sandbox-net-matrix`**, 11 tests in `zig build test`, file
+`samples/sandbox/net_matrix.zig`.
+- **The rig.** One service on the memory carrier holds a server grant and five client grants,
+  so a single deterministic process is every end of a session.
+  - Honest views are `markers` consumers.
+  - Hostile ones are raw table calls on the same channels, so they negotiate as an honest
+    peer would and then misbehave.
+  - The host drains the table's one event queue and offers each event to its consumer.
+- **Forged commands.** Three are sent: out of range, reserved bytes set, and short. Each is
+  counted and moves nothing. A valid command moves only its sender's marker, because a
+  command has no field that could name another.
+- **A lying server.** A state that places a marker outside the arena is refused whole. So is
+  a state that brings back a removed number. In both cases the view keeps its last complete
+  state and tick, and disconnects.
+- **Credentials.**
+  - A revoked key ends its peer and removes its marker, while the other peer keeps receiving
+    state.
+  - Rotating the server's credentials ends every peer, and the server keeps serving.
+  - A key the server does not allow is refused before it becomes a participant.
+- **Records.** A client's command record, captured whole on the wire and replayed into the
+  server's end after the original was applied, ends only that connection. So does one bit
+  flipped in a record. The other peer plays on in both cases.
+- **A stalled peer.** Both ends of one peer's link stalled for 60 ticks. The server kept its
+  tick rate and the other view followed. When the stall ended, the stalled view jumped to the
+  newest state rather than replaying the ones it missed, with states counted as replaced.
+- **A flood of commands.** Forty commands at once never gets more than the per-peer budget
+  into one tick. The quiet peer's command lands beside them in participant order.
+- **A pre-authentication flood.** Twenty-four connections that never finish a handshake hold
+  no more than the pending pool, and the admission deadline clears them. Meanwhile the active
+  peer keeps getting state, and its input is applied.
+- **Replay.** One recorded session contains:
+  - moves, a late join and a departure;
+  - a rejoin, and the server's own input.
+
+  Its inputs are the lifecycle events between ticks and each tick's admitted batch, read back
+  through the table. Fed to a fresh `markers.Authority`, they rebuild **every state it sent,
+  byte for byte**, tick by tick, with the same rejected-command count. That is the same
+  binary and the same inputs; nothing is claimed across machines.
+
+**What made replay possible.** The consumer's server logic is now `markers.Authority`: pure,
+with no table, clock or allocation. It spawns and removes markers, applies a command, advances
+a tick and encodes a state. `Markers` wraps it, adds `initWith(Options)` for a chosen grant,
+settings and tick, and `handle(event)` for hosts that run more than one consumer. The table
+has one event queue, which `frame` documents.
+
+**The protocol is revision 2.** A state's second header word is now a ballast length: that
+many zero bytes follow the markers. A view checks it and ignores it. The latest-state channel
+carries up to 1024 bytes, §10's ceiling. `FOUNDRY_SANDBOX_NET_BALLAST` pads a server's
+states, so the envelope is measured at size without inventing objects.
+
+**The envelope:** `zig build sandbox-net-proof -Dplatform=null -Drhi=null -- --envelope 600`.
+- **Setup.** Four headless clients reach a headless server through a shaper in the driver: a
+  TCP relay with blocking sockets and two threads per direction.
+- **What the shaper imposes**, per direction of each connection:
+  - 75 ms of delay plus 0–15 ms of jitter, without reordering: a 150 ms round trip plus up
+    to 30 ms;
+  - 1 Mbit/s;
+  - a 250 ms head-of-line stall every 5 s.
+- **The load.** States of 952 bytes (five markers plus 824 ballast bytes) at 20 Hz, from a
+  60 Hz server. Each client runs a looping plan, one change of direction every 20–45 ticks.
+- **The measurement.** Each client times every command in real time, from the step that sent
+  it to the frame whose state showed it applied, and records the longest gap between states.
+  The driver checks four things:
+  - p95 at most 500 ms;
+  - no state gap over 2 s;
+  - no unintended disconnect;
+  - p50 at least the imposed round trip, a floor that catches a broken shaper or measure.
+
+**Measured on macOS, 2026-09-23, over 600 seconds.**
+
+| client | commands acknowledged | p50 | p95 | max | longest gap between states |
+| --- | --- | --- | --- | --- | --- |
+| A | 1,199 | 198 ms | 201 ms | 202 ms | 302 ms |
+| B | 1,199 | 183 ms | 200 ms | 230 ms | 317 ms |
+| C | 1,798 | 200 ms | 234 ms | 302 ms | 286 ms |
+| D | 799 | 183 ms | 233 ms | 399 ms | 286 ms |
+
+- There was no unintended disconnect. The shaper forwarded 49.7 MB and applied 968 stalls.
+- **The server.** It admitted 4 peers and 4,995 commands, and sent 47,967 states with none
+  replaced.
+- **Its peaks, which are the work and storage bounds:**
+  - send queue 992 B;
+  - per pump: 6 frames and 536 B in, 992 B out;
+  - 1 event queued, 28 B in an inbox, and a batch of 2 commands (8 B).
+- **Bandwidth.** 47.6 MB sent over 600 s is about 158 kbit/s per client, a sixth of the
+  shaped link.
+- **The plans are periodic and so is the stall.** Which commands a stall catches therefore
+  depends on phase: the maxima show stalls were met, and the p95s show most commands missed
+  them. This models stream delay and stalls, not a measured packet-loss rate, as §10 says.
+
+**The bar is green:**
+- `zig build test`: 91/91 steps, 1,680 of 1,681 tests;
+- every `check` target;
+- both samples;
+- `sandbox-net-proof`;
+- the optimized Windows checks;
+- both release stages.
+
+Natively on Windows (`-j2`, below-normal priority), in a fresh worktree:
+- `zig build test`: 91/91 steps, 1,672 of 1,681 tests, with 9 Windows-only skips; the matrix
+  is included;
+- `sandbox-net-proof`: passed over real Winsock.
+
+The envelope was run on the Mac only.
+
+**Each guard was broken to see it fail.** Seven mutations, each restored byte-identical:
+- a command applied to participant 1's marker whoever sent it, caught by the forged-command
+  and record-replay tests;
+- ballast accepted when it is not zero, caught by the codec test;
+- the first command of a multi-command batch dropped, caught by the forged-command count;
+- the live server ignoring its own intent while the replay honours it, caught only by the
+  replay comparison;
+- `memoryInjectInbound` claiming bytes it did not write, caught by the record-replay test;
+- the envelope's percentile reading 0, and the shaper's delay removed, each caught by the
+  round-trip floor.
+
+**What implementation found that the design did not say.**
+1. **Clients behind one address share one handshake budget.** Four clients joined through the
+   relay at once, and the third and fourth were shed during the handshake. That is the
+   per-source limit, 2 starts a second, doing its job. The harness joins 1.2 s apart. A real
+   deployment with several players behind one NAT meets the same limit, which is Step 8's to
+   measure and, if needed, to tune per deployment.
+2. **Pacing had to aim at an absolute schedule.** Sleeping one step after each frame's work
+   made every frame a little longer than a step. Over ten minutes the drift broke the run's
+   bounds and inflated latency: an early 20-second trial read p95 440 ms, and the corrected
+   one about 220 ms. The headless host now sleeps to the next step's absolute time, and it
+   does not repay a long stall with a burst.
+3. **One table means one event queue.** A host running more than one consumer must dispatch
+   events itself, or a consumer drops another's. `Markers.handle` exists for that, and the
+   matrix uses it.
+4. **The flood waits in the backlog, not in the pool.** Beyond the pending pool, connections
+   wait in the listener's bounded backlog, and none is shed in the first seconds. The
+   admission deadline clears the pool at 5 s. Both bounds held, but what they cost a real
+   flood is Step 8's to measure.
+5. **Two host-only test aids.** `Service.streamOf` gives a host the stream under a peer, for
+   fault injection. The memory carrier gained `memoryInjectInbound`, to replay captured
+   bytes. Neither is published through the table.
+
+**Limits, deliberately.**
+- The envelope ran on one Mac over loopback through the shaper. It is a controlled harness,
+  not a network.
+- No cross-platform or bit-exact claim is made. Replay is the same binary and the same inputs.
+- Real WAN RTT, a real flood's cost, cross-host play and the external consumer are Step 8's.

@@ -777,7 +777,7 @@ through the sample's normal mod path. A scene editor, schema designer and execut
 game/plugin host are outside this scope, and remain so.
 The editor's UI and UX follow Unreal Engine 5's editor, within M15's fixed regions (§10).
 
-### M16 — Connected: "it plays with others" — **in progress; Steps 1–6 of nine complete (2026-09-23)**
+### M16 — Connected: "it plays with others" — **in progress; Steps 1–7 of nine complete (2026-09-23)**
 
 Networking was recorded as indefinite, and I1, I2, I8 and I9 kept it possible without paying
 for it. **The owner confirmed the trigger on 2026-09-21: the first networked game requires
@@ -817,7 +817,12 @@ grants a host publishes, and no key, principal or address crosses. **Step 6 is c
 sandbox has opt-in `--serve`/`--join` modes over an operator's credential file, and shared
 markers in a consumer that sees only the public header. It is proved by separate headless
 processes over loopback, including a late join, a refusal for mismatched content and a
-reconnect, and by windows on macOS/Metal. The accepted model is one
+reconnect, and by windows on macOS/Metal. **Step 7 is complete.**
+- The consumer withstands forged commands, a lying server, key revocation, rotation and
+  strangers, replayed and tampered records, stalls and floods.
+- A session's admitted inputs replay into a fresh authority byte for byte.
+- Ten minutes through a relay shaped to §10's envelope held p95 acknowledgement at 200–234 ms
+  against a 500 ms budget. The accepted model is one
 operator-hosted authority with mutual certificates, up to four reference peers and no
 prediction. ADR-0013's bit-exact subset question stays conditional on lockstep.
 

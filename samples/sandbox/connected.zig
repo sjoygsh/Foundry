@@ -48,8 +48,12 @@
 //! hold a direction for N fixed steps; `await:N` waits until the view holds N markers;
 //! `leave` disconnects and exits. `await` and `leave` first wait for every command sent to
 //! be acknowledged by a state, so a step's effect is the server's before the next begins.
-//! `FOUNDRY_SANDBOX_NET_UNTIL_DEPARTED=N` ends a server once N peers that were active have
-//! left and none remain. Both are test inputs and change nothing a player does.
+//! `loop`, last, starts the plan again. `FOUNDRY_SANDBOX_NET_UNTIL_DEPARTED=N` ends a server
+//! once N peers that were active have left and none remain. `FOUNDRY_SANDBOX_NET_BALLAST=N`
+//! pads a server's every state with N zero bytes, to measure at a payload size.
+//! `FOUNDRY_SANDBOX_NET_MEASURE` has a client time each command from sending to the state that
+//! shows it applied, and the gaps between states, and log both at exit. All are test inputs
+//! and change nothing a player does.
 
 const std = @import("std");
 const abi = @import("abi");
@@ -218,6 +222,7 @@ const PlanStep = union(enum) {
     hold: struct { intent: markers.Intent, steps: u32 },
     await_markers: u32,
     leave,
+    loop,
 };
 
 pub const PlanError = error{PlanMalformed};
@@ -231,6 +236,8 @@ fn parsePlan(text: []const u8, out: *[max_plan_steps]PlanStep) PlanError![]PlanS
         if (count == max_plan_steps) return error.PlanMalformed;
         if (std.mem.eql(u8, step, "leave")) {
             out[count] = .leave;
+        } else if (std.mem.eql(u8, step, "loop")) {
+            out[count] = .loop;
         } else {
             const colon = std.mem.indexOfScalar(u8, step, ':') orelse return error.PlanMalformed;
             const name = step[0..colon];
@@ -255,6 +262,10 @@ fn parsePlan(text: []const u8, out: *[max_plan_steps]PlanStep) PlanError![]PlanS
         }
         count += 1;
     }
+    // A loop repeats what came before it, so it is last and something must come before it.
+    for (out[0..count], 0..) |step, i| {
+        if (step == .loop and (i + 1 != count or i == 0)) return error.PlanMalformed;
+    }
     return out[0..count];
 }
 
@@ -262,6 +273,62 @@ fn parsePlan(text: []const u8, out: *[max_plan_steps]PlanStep) PlanError![]PlanS
 pub const Script = struct {
     plan: ?[]const u8 = null,
     until_departed: ?u32 = null,
+    ballast: u32 = 0,
+    measure: bool = false,
+};
+
+/// What `FOUNDRY_SANDBOX_NET_MEASURE` records, in real time from `Os.monotonicNanos`: each
+/// command from the step that sent it to the frame whose state shows it applied, and the
+/// longest time between two states that changed the view's tick.
+const Measure = struct {
+    const ring = 256;
+    const buckets = 5001;
+    sent_at: [ring]u64 = @splat(0),
+    last_sent: u64 = 0,
+    last_acknowledged: u64 = 0,
+    /// Milliseconds, one bucket each; the last holds everything longer.
+    histogram: [buckets]u32 = @splat(0),
+    count: u64 = 0,
+    max_ns: u64 = 0,
+    last_tick: u64 = 0,
+    last_tick_at: u64 = 0,
+    max_gap_ns: u64 = 0,
+    states: u64 = 0,
+
+    fn sent(self: *Measure, number: u64, now: u64) void {
+        if (number <= self.last_sent) return;
+        self.sent_at[number % ring] = now;
+        self.last_sent = number;
+    }
+
+    fn observe(self: *Measure, status: markers.Status, now: u64) void {
+        if (status.phase != .active) return;
+        const acknowledged = @min(status.acknowledged, self.last_sent);
+        while (self.last_acknowledged < acknowledged) {
+            self.last_acknowledged += 1;
+            const latency = now -| self.sent_at[self.last_acknowledged % ring];
+            self.histogram[@min(latency / std.time.ns_per_ms, buckets - 1)] += 1;
+            self.count += 1;
+            self.max_ns = @max(self.max_ns, latency);
+        }
+        if (status.tick != self.last_tick) {
+            if (self.last_tick_at != 0) self.max_gap_ns = @max(self.max_gap_ns, now - self.last_tick_at);
+            self.last_tick = status.tick;
+            self.last_tick_at = now;
+            self.states += 1;
+        }
+    }
+
+    fn percentile(self: *const Measure, fraction: f64) u64 {
+        if (self.count == 0) return 0;
+        const rank: u64 = @intFromFloat(@ceil(fraction * @as(f64, @floatFromInt(self.count))));
+        var seen: u64 = 0;
+        for (self.histogram, 0..) |n, ms| {
+            seen += n;
+            if (seen >= rank) return ms;
+        }
+        return buckets - 1;
+    }
 };
 
 pub const Connected = struct {
@@ -289,6 +356,7 @@ pub const Connected = struct {
     until_departed: ?u32 = null,
     quit: bool = false,
     headless: bool,
+    measure: ?Measure = null,
 
     const Saved = struct {
         net_service: ?*net.Service = null,
@@ -396,6 +464,7 @@ pub const Connected = struct {
             .client = undefined,
             .headless = headless,
             .until_departed = script.until_departed,
+            .measure = if (script.measure) .{} else null,
         };
         errdefer self.context.deinit();
 
@@ -430,7 +499,7 @@ pub const Connected = struct {
         }
 
         const public = abi.TableOf(abi.Host).getApi(abi.api_version_5) orelse unreachable;
-        self.client = markers.Markers.init(@ptrCast(@alignCast(public))) catch |err| {
+        self.client = markers.Markers.initWith(@ptrCast(@alignCast(public)), .{ .ballast = script.ballast }) catch |err| {
             log.err("the shared markers would not start: {t}", .{err});
             return err;
         };
@@ -450,6 +519,18 @@ pub const Connected = struct {
     }
 
     pub fn close(self: *Connected) void {
+        if (self.measure) |*m| {
+            const now = self.client.status();
+            log.info("measure: {d} command(s) acknowledged, p50 {d} ms, p95 {d} ms, max {d} ms; {d} state(s), longest gap {d} ms; ended unexpectedly: {s}", .{
+                m.count,
+                m.percentile(0.50),
+                m.percentile(0.95),
+                m.max_ns / std.time.ns_per_ms,
+                m.states,
+                m.max_gap_ns / std.time.ns_per_ms,
+                if (now.phase == .ended and !self.left) "yes" else "no",
+            });
+        }
         self.client.deinit();
         // One last pump, so a close is sent rather than merely decided.
         self.service.pump(self.os.monotonicNanos());
@@ -458,6 +539,11 @@ pub const Connected = struct {
             stats.admitted,        stats.refused,           stats.denied,
             stats.commands_sent,   stats.commands_admitted, stats.states_sent,
             stats.states_replaced, stats.peak_send_queue,
+        });
+        log.info("network peaks per pump: {d} frame(s) and {d} B in, {d} B out; events {d}, inbox {d} B, batch {d} command(s) / {d} B; {d} B sent, {d} B received", .{
+            stats.peak_frames_in_per_pump, stats.peak_bytes_in_per_pump, stats.peak_bytes_out_per_pump,
+            stats.peak_events,             stats.peak_inbox_bytes,       stats.peak_batch_commands,
+            stats.peak_batch_bytes,        stats.bytes_sent,             stats.bytes_received,
         });
         self.release();
         self.context.deinit();
@@ -482,6 +568,7 @@ pub const Connected = struct {
     pub fn frame(self: *Connected) void {
         self.service.pump(self.os.monotonicNanos());
         self.client.frame();
+        if (self.measure) |*m| m.observe(self.client.status(), self.os.monotonicNanos());
 
         const now = self.client.status();
         if (now.role == .client and now.phase == .ended and (self.headless or self.plan.len != 0)) {
@@ -500,6 +587,7 @@ pub const Connected = struct {
     pub fn step(self: *Connected, step_input: *const platform.InputSnapshot, keyboard_free: bool) void {
         const intent = if (self.plan.len != 0) self.planned() else if (keyboard_free) self.keyed(step_input) else markers.Intent{};
         self.client.step(intent);
+        if (self.measure) |*m| m.sent(self.client.sent, self.os.monotonicNanos());
     }
 
     /// After the frame's steps: what they queued goes to the network now, not next frame.
@@ -559,6 +647,11 @@ pub const Connected = struct {
                     log.info("plan: {d} marker(s) seen", .{n});
                     self.advance();
                 }
+            },
+            .loop => {
+                self.plan_index = 0;
+                self.plan_left = 0;
+                return self.planned();
             },
             .leave => if (self.settled(now) and !self.left) {
                 log.info("plan: every command acknowledged ({d}); leaving", .{now.sent});
@@ -693,4 +786,7 @@ test "a plan is directions, waits and a leave" {
     try testing.expect(plan[3] == .leave);
     try testing.expectError(error.PlanMalformed, parsePlan("sideways:3", &storage));
     try testing.expectError(error.PlanMalformed, parsePlan("right", &storage));
+    try testing.expect((try parsePlan("right:3,left:3,loop", &storage))[2] == .loop);
+    try testing.expectError(error.PlanMalformed, parsePlan("loop", &storage));
+    try testing.expectError(error.PlanMalformed, parsePlan("loop,right:3", &storage));
 }

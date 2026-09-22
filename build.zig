@@ -1083,25 +1083,46 @@ pub fn build(b: *std.Build) void {
     // network only as a windowed run does. Headless by requirement, because the proof reads
     // the installed null build's logs; identities are generated per run by the same
     // test-only fixture, linked into the driver and never into the sandbox.
+    // The test-only identity fixture as a module, for the two sandbox networking proofs.
+    const identities_mod = b.createModule(.{
+        .root_source_file = b.path("engine/tests/fixtures/identities.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    identities_mod.addImport("platform", platform_module);
+    identities_mod.addIncludePath(mbedtls.path("include"));
+    identities_mod.addIncludePath(b.path("engine/src/platform"));
+    identities_mod.addCSourceFile(.{
+        .file = b.path("engine/tests/fixtures/tls_identities.c"),
+        .flags = mbedtls_c_flags,
+    });
+
+    // M16 Step 7: refusal, authority and replay through the sandbox's own consumer, over the
+    // deterministic memory carrier, so it is an ordinary test in every configuration.
+    const net_matrix_mod = b.createModule(.{
+        .root_source_file = b.path("samples/sandbox/net_matrix.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    for ([_][]const u8{ "core", "net", "abi" }) |name| net_matrix_mod.addImport(name, modules.get(name).?);
+    net_matrix_mod.addImport("platform", platform_module);
+    net_matrix_mod.addImport("identities", identities_mod);
+    net_matrix_mod.addImport("markers", markers_mod);
+    net_matrix_mod.addImport("foundry_api", markers_header_mod);
+    const net_matrix_tests = b.addTest(.{ .name = "sandbox-net-matrix", .root_module = net_matrix_mod });
+    check_step.dependOn(&net_matrix_tests.step);
+    const run_net_matrix = b.addRunArtifact(net_matrix_tests);
+    test_step.dependOn(&run_net_matrix.step);
+    b.step("sandbox-net-matrix", "Run the shared markers against hostile, broken and slow peers, and replay a session")
+        .dependOn(&run_net_matrix.step);
+
     const net_proof_step = b.step("sandbox-net-proof", "Run the connected sandbox as separate headless processes over loopback");
     if (platform_backend != .null or rhi_backend != .null) {
         net_proof_step.dependOn(&b.addFail("`sandbox-net-proof` requires -Dplatform=null -Drhi=null").step);
     } else if (!target.query.isNative()) {
         net_proof_step.dependOn(&b.addFail("`sandbox-net-proof` runs only for a native target").step);
     } else {
-        const identities_mod = b.createModule(.{
-            .root_source_file = b.path("engine/tests/fixtures/identities.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        });
-        identities_mod.addImport("platform", platform_module);
-        identities_mod.addIncludePath(mbedtls.path("include"));
-        identities_mod.addIncludePath(b.path("engine/src/platform"));
-        identities_mod.addCSourceFile(.{
-            .file = b.path("engine/tests/fixtures/tls_identities.c"),
-            .flags = mbedtls_c_flags,
-        });
         const net_proof_mod = b.createModule(.{
             .root_source_file = b.path("samples/sandbox/net_proof.zig"),
             .target = target,

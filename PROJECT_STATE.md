@@ -1,7 +1,7 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-23
-**Current handoff: M16 is in progress; Steps 1–6 of nine are complete. Stop before Step 7.**
+**Current handoff: M16 is in progress; Steps 1–7 of nine are complete. Stop before Step 8.**
 M0 through M15 are complete and tagged. Read the accepted `docs/design/networking.md` and
 accepted ADR-0044/0045 before any further M16 work.
 
@@ -17,6 +17,57 @@ player certificates and the four-peer/no-prediction reference envelope. Both ADR
 **accepted**; Steps 6 through 9 still need their own instruction, and design authorization still
 does not authorize infrastructure purchases, firewall changes, real credentials or a public
 listener. M15's completed evidence remains accepted.
+
+**Completed M16 Step 7, 2026-09-23: refusal, authority, replay and the measured envelope.**
+Resolution: `networking.md`, Step 7; also ADR-0044's Step 7 note.
+- **`zig build sandbox-net-matrix`** runs 11 tests in `test`, in `samples/sandbox/net_matrix.zig`.
+  It pits the sandbox's own consumer against peers that are:
+  - **hostile:** forged commands; a lying server's out-of-arena and resurrecting states;
+  - **untrusted:** a revoked key, rotated server credentials, and a stranger's key;
+  - **broken:** a TLS record replayed or tampered on the wire;
+  - **slow or noisy:** a stalled link, a command flood, and a pre-authentication flood.
+
+  Each refusal hits only its target, and every other peer plays on.
+- **Replay.** A recorded session's inputs rebuild every state it sent, byte for byte, in a
+  fresh `markers.Authority`. The inputs are its lifecycle events and each tick's admitted
+  batch. This is the same binary; no cross-machine claim is made.
+- **The envelope.** `sandbox-net-proof -- --envelope 600` runs 4 clients for ten minutes,
+  through a relay shaped to a 150 ms round trip with up to 30 ms jitter, 1 Mbit/s each way, and
+  a 250 ms stall every 5 s. States were 952 B at 20 Hz.
+  - **Results:** p95 command-to-visible-acknowledgement 200–234 ms (max 399 ms) against a
+    500 ms budget; longest state gap 317 ms against 2 s; no unintended disconnect.
+  - **Server peaks:** send queue 992 B; per pump, 6 frames and 536 B in; 1 event queued.
+  - The driver also checks a p50 floor of the imposed round trip, so a broken shaper or
+    measure fails.
+- **Changes made for it.**
+  - The consumer's server is now the pure `markers.Authority`. `Markers` gained
+    `initWith(Options)` and `handle(event)`.
+  - **Protocol revision 2:** the state header's second word is a ballast length, and the
+    channel carries up to 1024 B.
+  - The host gained `FOUNDRY_SANDBOX_NET_BALLAST` and `_MEASURE`, and a `loop` plan step.
+  - Host-only test aids: `Service.streamOf`, and the memory carrier's `memoryInjectInbound`.
+  - Headless pacing now sleeps to an absolute schedule.
+- **Found:**
+  - clients behind one address share the per-source handshake budget (2 a second), so four
+    simultaneous joins through one relay shed two;
+  - drifting pacing had inflated latency;
+  - one table means one event queue;
+  - a pre-authentication flood waits in the bounded backlog until the admission deadline.
+- **Seven mutations were broken once each and every one failed its proof**, one of them caught
+  only by the replay comparison.
+- **The bar is green:**
+  - `zig build test` **91/91 steps, 1,680 of 1,681**;
+  - every `check` target;
+  - both samples;
+  - `sandbox-net-proof`;
+  - the Windows checks;
+  - both release stages;
+  - `zig build`.
+- **Windows, natively** (`-j2`, below-normal): `zig build test` 91/91 steps, 1,672 of 1,681 with
+  the same 9 Windows-only skips, including the matrix; `sandbox-net-proof` passed over real
+  Winsock. The envelope was not repeated there.
+- **Not done, deliberately:** Step 8's cross-host, public-internet and external-consumer proofs
+  and guide. The envelope is a controlled harness on one Mac, not a network.
 
 **Completed M16 Step 6, 2026-09-23: the connected sandbox, through the table alone.**
 Resolution: `networking.md`, Step 6; also ADR-0044's Step 6 note.
@@ -70,8 +121,9 @@ Resolution: `networking.md`, Step 6; also ADR-0044's Step 6 note.
   - the Windows checks: Vulkan Debug and ReleaseSafe, null ReleaseSafe;
   - both release stages;
   - `zig build`.
-- **Not run natively on Windows:** the PC still refuses SSH at its recorded address. **No
-  person pressed a key**: windowed runs were scripted.
+- **Windows, natively (later the same day, on the PC's new address):** `zig build test`
+  89/89 steps, 1,661 of 1,670 with 9 Windows-only skips, and `sandbox-net-proof` passed over
+  real Winsock. **No person pressed a key**: windowed runs were scripted.
 - **Not done, deliberately:** Step 7's adversarial matrix and envelope; Step 8's cross-host,
   WAN and external consumer and guide; a reconnect control in the window.
 
@@ -2649,11 +2701,11 @@ Windows x64 through Vulkan. **M14 is complete (2026-09-19)**: a player chooses t
 packaged sample, on macOS and on Windows. **M15 is complete (2026-09-21)**: Foundry authors
 its own content through its own public API, on macOS and on Windows. **M16 is in progress**:
 the owner confirmed its trigger on 2026-09-21 — the first networked game needs public-internet
-multiplayer — and Steps 1–6 of nine are complete. M17 is unstarted and credential-gated.
+multiplayer — and Steps 1–7 of nine are complete. M17 is unstarted and credential-gated.
 
 ## Current milestone
 
-**M16 — Connected: "it plays with others." In progress; Steps 1–6 of nine complete,
+**M16 — Connected: "it plays with others." In progress; Steps 1–7 of nine complete,
 2026-09-23.** Read `docs/design/networking.md` — §12's nine steps and their Resolutions — and
 ADR-0044/0045, accepted 2026-09-21. The owner requires public-internet multiplayer: one
 operator-hosted authority, TLS 1.3 with mutual certificates, up to four reference peers and no
@@ -2662,8 +2714,10 @@ prediction. Step 1 qualified Mbed TLS 3.6.7 LTS and froze FNET wire v1 in L2 `ne
 Step 3 added `net.Service`, which admits peers by grant, allowlist and compatibility within
 bounded work, deadlines and budgets; Step 4 added the acknowledged baseline, activation,
 tick-admitted command batches and replaceable complete state; Step 5 published them as
-`FoundryApi_v5`; Step 6 connected the sandbox through that API alone. **Step 7 — refusal,
-authority and deterministic replay — needs the owner's instruction.** A real
+`FoundryApi_v5`; Step 6 connected the sandbox through that API alone; Step 7 proved it against
+hostile peers, by replay and within the controlled envelope. **Step 8 — public-internet play,
+both desktops and an external consumer — needs the owner's instruction, and a reachable
+authorized server.** A real
 public listener, real credentials and any infrastructure need the operator's explicit
 authorization in any step.
 
@@ -3610,7 +3664,7 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M16 is in progress: Steps 1–6 of nine are complete, and nothing is half-built.** Its
+**M16 is in progress: Steps 1–7 of nine are complete, and nothing is half-built.** Its
 current account is the M16 entries at the top of this file and `networking.md`'s Resolutions.
 **M0–M15 are complete.** M15's design and
 its nine Resolutions are in `docs/design/editor.md`. Step 1 added source spans to
@@ -4285,7 +4339,7 @@ and needs the owner's instruction.** It adds:
 - a real two-window run on the primary desktop.
 
 A host binds its service and the grants it publishes to `abi.Host`, and keeps pumping it.
-Steps 1–6 are committed and **none is pushed**. M17 (public macOS release certification) needs Developer ID credentials,
+Steps 1–7 are committed and **none is pushed**. M17 (public macOS release certification) needs Developer ID credentials,
 Apple's notary service and a genuinely clean recipient Mac (ADR-0032), and it is deliberately
 last. M18 is Linux runtime support, after the first game and before any 3D (ADR-0039).
 
@@ -5578,8 +5632,10 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 
 ## Notes for the next session
 
-**Resume point, 2026-09-23:** M0–M15 complete, tagged and pushed. **M16 Steps 1–6 of nine are
-complete and committed, not pushed.** Step 7 needs the owner's instruction.
+**Resume point, 2026-09-23:** M0–M15 complete, tagged and pushed. **M16 Steps 1–7 of nine are
+complete and committed, not pushed.** Step 8 needs the owner's instruction.
+- **Step 7's commands:** `zig build sandbox-net-matrix` (in `test`), and the ten-minute
+  envelope `zig build sandbox-net-proof -Dplatform=null -Drhi=null -- --envelope 600`.
 - **Step 6's commands:** `zig build sandbox-net-proof -Dplatform=null -Drhi=null` (separate
   headless processes over loopback; `-- --provision <dir>` writes disposable test credentials),
   and `sandbox --serve|--join <a.b.c.d:port> --credentials <file>` for a windowed run.

@@ -27,8 +27,10 @@
 //!
 //! Two channels. `sandbox:net.move`, client to server, reliable: four bytes, `dx` and `dy`
 //! as signed bytes in -1..1 and two zero bytes. `sandbox:net.state`, server to client,
-//! latest-state: an 8-byte header (`count` u32, a zero u32) and then `count` markers of 24
-//! bytes each (`number` u32, `owner` u32, `x` f32, `y` f32, `applied` u64), little-endian.
+//! latest-state: an 8-byte header (`count` u32, `ballast` u32), then `count` markers of 24
+//! bytes each (`number` u32, `owner` u32, `x` f32, `y` f32, `applied` u64), little-endian,
+//! then `ballast` zero bytes. Ballast is how a server makes a state the size the envelope
+//! is measured at (§10's 1 KiB) without inventing objects; a view checks it and ignores it.
 //! Numbers are assigned monotonically by the server and never reused in its session.
 //! A state that is short, long, over-full, non-zero where zero is owed, non-finite, outside
 //! the arena, duplicated in number or owner, or that resurrects a number already removed,
@@ -59,14 +61,16 @@ const max_key_name: usize = 16;
 pub const command_bytes: u32 = 4;
 pub const state_header_bytes: u32 = 8;
 pub const marker_bytes: u32 = 24;
-pub const max_state_bytes: u32 = state_header_bytes + max_markers * marker_bytes;
+/// The accepted reference workload's ceiling (`networking.md` §10).
+pub const max_state_bytes: u32 = 1024;
+pub const max_ballast: u32 = max_state_bytes - state_header_bytes - max_markers * marker_bytes;
 
 pub const settings_name = "sandbox:net.markers";
 const move_channel_name = "sandbox:net.move";
 const state_channel_name = "sandbox:net.state";
 /// Bumped whenever either payload layout changes. Both are compared at negotiation, so two
 /// builds that disagree are refused by channel before a single marker crosses.
-pub const protocol_revision: u32 = 1;
+pub const protocol_revision: u32 = 2;
 
 // -- the codec ------------------------------------------------------------------------
 
@@ -124,10 +128,10 @@ pub const Arena = struct {
     }
 };
 
-pub fn encodeState(markers: []const Marker, out: *[max_state_bytes]u8) u32 {
-    std.debug.assert(markers.len <= max_markers);
+pub fn encodeState(markers: []const Marker, ballast: u32, out: *[max_state_bytes]u8) u32 {
+    std.debug.assert(markers.len <= max_markers and ballast <= max_ballast);
     std.mem.writeInt(u32, out[0..4], @intCast(markers.len), .little);
-    std.mem.writeInt(u32, out[4..8], 0, .little);
+    std.mem.writeInt(u32, out[4..8], ballast, .little);
     for (markers, 0..) |m, i| {
         const at = out[state_header_bytes + i * marker_bytes ..][0..marker_bytes];
         std.mem.writeInt(u32, at[0..4], m.number, .little);
@@ -136,7 +140,9 @@ pub fn encodeState(markers: []const Marker, out: *[max_state_bytes]u8) u32 {
         std.mem.writeInt(u32, at[12..16], @bitCast(m.y), .little);
         std.mem.writeInt(u64, at[16..24], m.applied, .little);
     }
-    return state_header_bytes + @as(u32, @intCast(markers.len)) * marker_bytes;
+    const body = state_header_bytes + @as(u32, @intCast(markers.len)) * marker_bytes;
+    @memset(out[body..][0..ballast], 0);
+    return body + ballast;
 }
 
 pub const StateError = error{
@@ -172,9 +178,12 @@ pub const Snapshot = struct {
 pub fn decodeState(bytes: []const u8, arena: Arena, previous: *const Snapshot, highest: u32, out: *Snapshot) StateError!void {
     if (bytes.len < state_header_bytes) return error.Truncated;
     const count = std.mem.readInt(u32, bytes[0..4], .little);
-    if (std.mem.readInt(u32, bytes[4..8], .little) != 0) return error.Reserved;
+    const ballast = std.mem.readInt(u32, bytes[4..8], .little);
     if (count > max_markers) return error.TooMany;
-    if (bytes.len != state_header_bytes + count * marker_bytes) return error.Truncated;
+    if (ballast > max_ballast) return error.Reserved;
+    const body = state_header_bytes + count * marker_bytes;
+    if (bytes.len != body + ballast) return error.Truncated;
+    for (bytes[body..]) |b| if (b != 0) return error.Reserved;
 
     var candidate: Snapshot = .{ .count = count };
     for (0..count) |i| {
@@ -198,6 +207,96 @@ pub fn decodeState(bytes: []const u8, arena: Arena, previous: *const Snapshot, h
     }
     out.* = candidate;
 }
+
+// -- the authority ----------------------------------------------------------------------------
+
+/// The server's world, and nothing but it: which markers exist, where, and what each owner
+/// last asked for. Pure — no table, no clock, no allocation — so the inputs a session admitted
+/// (who joined and left between which ticks, and each tick's batch in its fixed order) can be
+/// fed to a fresh one and must rebuild the same bytes (`networking.md` §10, Step 7).
+pub const Authority = struct {
+    arena: Arena,
+    speed: f32,
+    spacing: f32,
+    objects: Snapshot = .{},
+    intents: [max_markers]Intent = @splat(.{}),
+    next_number: u32 = 1,
+    /// Admitted commands that were not a valid intent, or whose sender had no marker.
+    rejected: u32 = 0,
+
+    /// Starts with the server's own marker: participant 0's, number 1.
+    pub fn init(settings: *const Settings) Authority {
+        var self: Authority = .{ .arena = settings.arena, .speed = settings.speed, .spacing = settings.spacing };
+        _ = self.spawn(0);
+        return self;
+    }
+
+    /// A marker for `participant`, or null when the world is full.
+    pub fn spawn(self: *Authority, participant: u32) ?Marker {
+        if (self.objects.count == max_markers) return null;
+        // 0, +1, -1, +2, -2 spacings from the centre, by participant, so a handful of
+        // markers start apart and a reconnect starts somewhere predictable.
+        const slot: i32 = @intCast(participant % 5);
+        const offset: f32 = @floatFromInt(if (@mod(slot, 2) == 1) @divTrunc(slot + 1, 2) else -@divTrunc(slot, 2));
+        const i = self.objects.count;
+        self.objects.markers[i] = .{
+            .number = self.next_number,
+            .owner = participant,
+            .x = self.arena.clampX(self.arena.x + self.arena.w / 2 + offset * self.spacing),
+            .y = self.arena.clampY(self.arena.y + self.arena.h / 2),
+        };
+        self.intents[i] = .{};
+        self.objects.count += 1;
+        self.next_number += 1;
+        return self.objects.markers[i];
+    }
+
+    /// Removes a peer's marker, keeping the others in order so every view lists them alike.
+    pub fn remove(self: *Authority, participant: u32) ?Marker {
+        if (participant == 0) return null;
+        const index = self.slotOf(participant) orelse return null;
+        const gone = self.objects.markers[index];
+        var i = index;
+        while (i + 1 < self.objects.count) : (i += 1) {
+            self.objects.markers[i] = self.objects.markers[i + 1];
+            self.intents[i] = self.intents[i + 1];
+        }
+        self.objects.count -= 1;
+        return gone;
+    }
+
+    /// One admitted command. Its owner is the participant the batch names — never anything
+    /// in the payload — so a client can move only its own marker, and only by asking.
+    pub fn command(self: *Authority, participant: u32, number: u64, payload: []const u8) bool {
+        const intent = decodeCommand(payload);
+        const slot = if (participant == 0) null else self.slotOf(participant);
+        if (intent == null or slot == null) {
+            self.rejected += 1;
+            return false;
+        }
+        self.intents[slot.?] = intent.?;
+        self.objects.markers[slot.?].applied = number;
+        return true;
+    }
+
+    /// One tick: the server's own intent, then every marker moves by its intent, clamped.
+    pub fn advance(self: *Authority, own: Intent, seconds: f32) void {
+        if (self.objects.count != 0 and self.objects.markers[0].owner == 0) self.intents[0] = own;
+        for (self.objects.markers[0..self.objects.count], self.intents[0..self.objects.count]) |*m, intent| {
+            m.x = self.arena.clampX(m.x + @as(f32, @floatFromInt(intent.dx)) * self.speed * seconds);
+            m.y = self.arena.clampY(m.y + @as(f32, @floatFromInt(intent.dy)) * self.speed * seconds);
+        }
+    }
+
+    pub fn encode(self: *const Authority, ballast: u32, out: *[max_state_bytes]u8) u32 {
+        return encodeState(self.objects.slice(), ballast, out);
+    }
+
+    fn slotOf(self: *const Authority, participant: u32) ?usize {
+        for (self.objects.slice(), 0..) |m, i| if (m.owner == participant) return i;
+        return null;
+    }
+};
 
 // -- settings ---------------------------------------------------------------------------
 
@@ -412,14 +511,16 @@ pub const Markers = struct {
     sheet_asset: c.FoundryAsset = .{ .bits = 0 },
     ending: ?c.FoundryNetEnding = null,
 
-    // Server state: the authoritative markers and each one's current intent.
-    objects: Snapshot = .{},
-    intents: [max_markers]Intent = @splat(.{}),
-    next_number: u32 = 1,
+    // Server state: the authority, and what this view does around it.
+    authority: Authority = undefined,
     tick: u64 = 0,
+    /// How many commands the last tick's batch held; the batch stays readable through the
+    /// table until the next tick replaces it.
+    batch_count: u32 = 0,
+    ballast: u32 = 0,
+    tick_ns: ?u64 = null,
     baselined: [max_pending]u64 = @splat(0),
     departed: u32 = 0,
-    rejected_commands: u32 = 0,
 
     // Client state: the last validated view and what it has sent.
     view: Snapshot = .{},
@@ -432,15 +533,37 @@ pub const Markers = struct {
     view_at_ns: u64 = 0,
     have_view: bool = false,
 
+    /// What a host may choose. The defaults are the sandbox's: the first published grant,
+    /// the content's settings, the table's tick and a drawn view.
+    pub const Options = struct {
+        /// Which published grant to start on; null takes the first.
+        grant: ?ContentId = null,
+        /// Settings to use instead of reading `sandbox:net.markers`, for a host with no content.
+        settings: ?Settings = null,
+        /// The length of a tick, instead of the table's.
+        tick_ns: ?u64 = null,
+        /// Zero bytes a server appends to every state, up to `max_ballast`.
+        ballast: u32 = 0,
+        /// Whether to acquire the sheet for drawing.
+        draw: bool = true,
+    };
+
     /// Finds the one grant this host published, starts a session on it and — as a server —
     /// listens, or — as a client — connects.
     pub fn init(api: *const Api) InitError!Markers {
+        return initWith(api, .{});
+    }
+
+    pub fn initWith(api: *const Api, options: Options) InitError!Markers {
         if (api.version != c.FOUNDRY_API_VERSION_5) return error.WrongVersion;
-        const settings = try readSettings(api);
+        const settings = options.settings orelse try readSettings(api);
 
         var cursor: Cursor = .{ .bits = 0 };
         var grant: c.FoundryNetGrantInfo = undefined;
-        if (api.net_grant_next.?(&cursor, &grant) != c.FOUNDRY_OK) return error.NoGrant;
+        while (true) {
+            if (api.net_grant_next.?(&cursor, &grant) != c.FOUNDRY_OK) return error.NoGrant;
+            if (options.grant == null or options.grant.?.hash == grant.id.hash) break;
+        }
         const role: Role = switch (grant.role) {
             c.FOUNDRY_NET_SERVER => .server,
             c.FOUNDRY_NET_CLIENT => .client,
@@ -450,23 +573,8 @@ pub const Markers = struct {
         var session: Session = undefined;
         if (api.net_session_create.?(grant.id, &session) != c.FOUNDRY_OK) return error.SessionRefused;
         errdefer _ = api.net_session_close.?(session);
-        const channels = [_]c.FoundryNetChannelDesc{
-            .{
-                .id = id(move_channel_name),
-                .revision = protocol_revision,
-                .max_payload_bytes = command_bytes,
-                .direction = c.FOUNDRY_NET_CLIENT_TO_SERVER,
-                .delivery = c.FOUNDRY_NET_RELIABLE,
-            },
-            .{
-                .id = id(state_channel_name),
-                .revision = protocol_revision,
-                .max_payload_bytes = max_state_bytes,
-                .direction = c.FOUNDRY_NET_SERVER_TO_CLIENT,
-                .delivery = c.FOUNDRY_NET_LATEST_STATE,
-            },
-        };
-        for (&channels) |*desc| {
+        const all = channels();
+        for (&all) |*desc| {
             if (api.net_channel_register.?(session, desc) != c.FOUNDRY_OK) return error.ChannelRefused;
         }
 
@@ -476,19 +584,20 @@ pub const Markers = struct {
             .role = role,
             .session = session,
             .phase = if (role == .server) .serving else .connecting,
+            .ballast = @min(options.ballast, max_ballast),
+            .tick_ns = options.tick_ns,
         };
         switch (role) {
             .server => {
                 if (api.net_session_listen.?(session) != c.FOUNDRY_OK) return error.StartRefused;
-                // The server's own marker is participant 0's, and number 1.
-                self.spawn(0);
+                self.authority = .init(&settings);
             },
             .client => if (api.net_session_connect.?(session, &self.peer) != c.FOUNDRY_OK) return error.StartRefused,
         }
 
         // A missing texture draws nothing and costs nothing else: the demonstration still
         // runs, and says so once.
-        if (api.asset_acquire.?(settings.sheet, &self.sheet_asset) == c.FOUNDRY_OK) {
+        if (!options.draw) {} else if (api.asset_acquire.?(settings.sheet, &self.sheet_asset) == c.FOUNDRY_OK) {
             if (api.render_texture_of_asset.?(self.sheet_asset, &self.texture) != c.FOUNDRY_OK) {
                 self.say(c.FOUNDRY_LOG_WARN, "markers: the sheet is not a texture; markers will not be drawn", .{});
             }
@@ -515,17 +624,27 @@ pub const Markers = struct {
 
     /// Once a frame, after the host pumped: what happened to peers, and — as a client — what
     /// arrived. Nothing here advances the world.
+    ///
+    /// **The table has one event queue.** A host running one consumer calls this; a host
+    /// running several drains the queue itself and offers each event to `handle`, because
+    /// an event this view does not own would otherwise be taken and lost.
     pub fn frame(self: *Markers) void {
         var drained: u32 = 0;
         var event: c.FoundryNetEvent = undefined;
         while (drained < max_drain and self.api.net_event_next.?(&event) == c.FOUNDRY_OK) : (drained += 1) {
-            if (event.session.bits != self.session.bits) continue;
-            switch (self.role) {
-                .server => self.serverEvent(event),
-                .client => self.clientEvent(event),
-            }
+            _ = self.handle(event);
         }
-        if (self.role == .client) self.receive();
+        self.receive();
+    }
+
+    /// Takes one event if it is this view's session's, and says whether it was.
+    pub fn handle(self: *Markers, event: c.FoundryNetEvent) bool {
+        if (event.session.bits != self.session.bits) return false;
+        switch (self.role) {
+            .server => self.serverEvent(event),
+            .client => self.clientEvent(event),
+        }
+        return true;
     }
 
     /// Once per fixed step, with this view's input for it.
@@ -548,7 +667,7 @@ pub const Markers = struct {
             .phase = self.phase,
             .participant = self.participant,
             .departed = self.departed,
-            .rejected_commands = self.rejected_commands,
+            .rejected_commands = if (self.role == .server) self.authority.rejected else 0,
             .refused_states = self.refused_states,
             .ending = self.ending,
             .sent = self.sent,
@@ -560,7 +679,7 @@ pub const Markers = struct {
         }
         switch (self.role) {
             .server => {
-                out.markers = self.objects.count;
+                out.markers = self.authority.objects.count;
                 out.tick = self.tick;
             },
             .client => {
@@ -577,7 +696,7 @@ pub const Markers = struct {
     /// The markers this view shows now: the server's own, or the client's last valid state.
     pub fn shown(self: *const Markers) []const Marker {
         return switch (self.role) {
-            .server => self.objects.slice(),
+            .server => self.authority.objects.slice(),
             .client => self.view.slice(),
         };
     }
@@ -597,26 +716,22 @@ pub const Markers = struct {
             c.FOUNDRY_NET_EVENT_ADMITTED => self.say(c.FOUNDRY_LOG_INFO, "markers: participant {d} admitted", .{event.participant}),
             c.FOUNDRY_NET_EVENT_ACTIVATED => {
                 self.forgetBaseline(event.peer);
-                if (self.objects.count == max_markers) {
+                const m = self.authority.spawn(event.participant) orelse {
                     _ = self.api.net_peer_disconnect.?(event.peer, c.FOUNDRY_NET_DISCONNECT_CAPACITY);
                     return;
-                }
-                self.spawn(event.participant);
-                const m = self.objects.markers[self.objects.count - 1];
+                };
                 self.say(c.FOUNDRY_LOG_INFO, "markers: participant {d} active as marker #{d} at ({d:.3}, {d:.3})", .{ event.participant, m.number, m.x, m.y });
             },
             c.FOUNDRY_NET_EVENT_ENDED => {
                 self.forgetBaseline(event.peer);
                 var reason: [96]u8 = undefined;
                 const why = endingName(event.ending, &reason);
-                for (self.objects.slice(), 0..) |m, i| {
-                    if (m.owner != event.participant or event.participant == 0) continue;
+                if (self.authority.remove(event.participant)) |m| {
                     self.say(c.FOUNDRY_LOG_INFO, "markers: participant {d} left ({s}); marker #{d} last at ({d:.3}, {d:.3})", .{ event.participant, why, m.number, m.x, m.y });
-                    self.remove(i);
                     self.departed += 1;
-                    return;
+                } else {
+                    self.say(c.FOUNDRY_LOG_INFO, "markers: a connection ended before it was active ({s})", .{why});
                 }
-                self.say(c.FOUNDRY_LOG_INFO, "markers: a connection ended before it was active ({s})", .{why});
             },
             else => {},
         }
@@ -624,23 +739,17 @@ pub const Markers = struct {
 
     fn serverStep(self: *Markers, own_intent: Intent) void {
         self.tick += 1;
-        var count: u32 = 0;
-        if (self.api.net_batch_admit.?(self.session, self.tick, &count) == c.FOUNDRY_OK) {
-            for (0..count) |i| self.apply(@intCast(i));
-        }
-        self.intents[0] = own_intent;
+        self.batch_count = 0;
+        if (self.api.net_batch_admit.?(self.session, self.tick, &self.batch_count) == c.FOUNDRY_OK) {
+            for (0..self.batch_count) |i| self.apply(@intCast(i));
+        } else self.batch_count = 0;
 
-        var tick_ns: u64 = 0;
-        _ = self.api.tick_delta_ns.?(&tick_ns);
-        const seconds: f32 = @as(f32, @floatFromInt(tick_ns)) / 1e9;
-        const arena = self.settings.arena;
-        for (self.objects.markers[0..self.objects.count], self.intents[0..self.objects.count]) |*m, intent| {
-            m.x = arena.clampX(m.x + @as(f32, @floatFromInt(intent.dx)) * self.settings.speed * seconds);
-            m.y = arena.clampY(m.y + @as(f32, @floatFromInt(intent.dy)) * self.settings.speed * seconds);
-        }
+        var tick_ns: u64 = self.tick_ns orelse 0;
+        if (self.tick_ns == null) _ = self.api.tick_delta_ns.?(&tick_ns);
+        self.authority.advance(own_intent, @as(f32, @floatFromInt(tick_ns)) / 1e9);
 
         var bytes: [max_state_bytes]u8 = undefined;
-        const size = encodeState(self.objects.slice(), &bytes);
+        const size = self.authority.encode(self.ballast, &bytes);
         const publish = self.tick % self.settings.state_every == 0;
         var walks: u32 = 0;
         walk: while (walks < 3) : (walks += 1) {
@@ -667,53 +776,16 @@ pub const Markers = struct {
         }
     }
 
-    /// One admitted command. Its owner is the participant the batch names — never anything
-    /// in the payload — so a client can move only its own marker, and only by asking.
+    /// One admitted command, copied out of the batch and handed to the authority.
     fn apply(self: *Markers, index: u32) void {
         var command: c.FoundryNetCommand = undefined;
         if (self.api.net_batch_command.?(self.session, index, &command) != c.FOUNDRY_OK) return;
         var payload: [command_bytes]u8 = undefined;
         var needed: u64 = 0;
         const copied = self.api.net_batch_copy.?(self.session, index, &payload, payload.len, &needed);
-        const intent = if (copied == c.FOUNDRY_OK) decodeCommand(payload[0..@intCast(needed)]) else null;
-        const slot = for (self.objects.slice(), 0..) |m, i| {
-            if (m.owner == command.participant and command.participant != 0) break i;
-        } else null;
-        if (intent == null or slot == null) {
-            self.rejected_commands += 1;
-            return;
-        }
-        self.intents[slot.?] = intent.?;
-        self.objects.markers[slot.?].applied = command.number;
-    }
-
-    fn spawn(self: *Markers, participant: u32) void {
-        const arena = self.settings.arena;
-        // 0, +1, -1, +2, -2 spacings from the centre, by participant, so a handful of
-        // markers start apart and a reconnect starts somewhere predictable.
-        const slot: i32 = @intCast(participant % 5);
-        const offset: f32 = @floatFromInt(if (@mod(slot, 2) == 1) @divTrunc(slot + 1, 2) else -@divTrunc(slot, 2));
-        const i = self.objects.count;
-        self.objects.markers[i] = .{
-            .number = self.next_number,
-            .owner = participant,
-            .x = arena.clampX(arena.x + arena.w / 2 + offset * self.settings.spacing),
-            .y = arena.clampY(arena.y + arena.h / 2),
-        };
-        self.intents[i] = .{};
-        self.objects.count += 1;
-        self.next_number += 1;
-    }
-
-    fn remove(self: *Markers, index: usize) void {
-        const last = self.objects.count - 1;
-        // Order-preserving, so every view lists markers the same way.
-        var i = index;
-        while (i < last) : (i += 1) {
-            self.objects.markers[i] = self.objects.markers[i + 1];
-            self.intents[i] = self.intents[i + 1];
-        }
-        self.objects.count = last;
+        // A payload of the wrong size is not an intent; the authority counts it.
+        const bytes: []const u8 = if (copied == c.FOUNDRY_OK) payload[0..@intCast(needed)] else &.{};
+        _ = self.authority.command(command.participant, command.number, bytes);
     }
 
     fn baselineSent(self: *const Markers, peer: Peer) bool {
@@ -758,8 +830,10 @@ pub const Markers = struct {
         }
     }
 
-    fn receive(self: *Markers) void {
-        if (self.phase == .ended or self.phase == .connecting) return;
+    /// A client takes what arrived: its baseline, then the newest state. A server has no
+    /// deliveries, and returns at once.
+    pub fn receive(self: *Markers) void {
+        if (self.role != .client or self.phase == .ended or self.phase == .connecting) return;
         var taken: u32 = 0;
         while (taken < max_drain) : (taken += 1) {
             var delivery: c.FoundryNetDelivery = undefined;
@@ -948,6 +1022,31 @@ pub const Markers = struct {
 
 // -- helpers ------------------------------------------------------------------------------
 
+/// The two channels this protocol runs on, in registration order. Public so a test host can
+/// stand up a hostile peer that negotiates exactly as an honest one does.
+pub fn channels() [2]c.FoundryNetChannelDesc {
+    return .{
+        .{
+            .id = id(move_channel_name),
+            .revision = protocol_revision,
+            .max_payload_bytes = command_bytes,
+            .direction = c.FOUNDRY_NET_CLIENT_TO_SERVER,
+            .delivery = c.FOUNDRY_NET_RELIABLE,
+        },
+        .{
+            .id = id(state_channel_name),
+            .revision = protocol_revision,
+            .max_payload_bytes = max_state_bytes,
+            .direction = c.FOUNDRY_NET_SERVER_TO_CLIENT,
+            .delivery = c.FOUNDRY_NET_LATEST_STATE,
+        },
+    };
+}
+
+pub fn moveChannel() ContentId {
+    return id(move_channel_name);
+}
+
 fn id(name: []const u8) ContentId {
     return c.foundry_content_id(name.ptr, name.len);
 }
@@ -1056,7 +1155,7 @@ test "a state round-trips, and every malformed one is refused whole" {
         .{ .number = 2, .owner = 1, .x = 40, .y = -10, .applied = 3 },
     };
     var bytes: [max_state_bytes]u8 = undefined;
-    const size = encodeState(&markers, &bytes);
+    const size = encodeState(&markers, 0, &bytes);
     try testing.expectEqual(state_header_bytes + 2 * marker_bytes, size);
 
     const empty: Snapshot = .{};
@@ -1070,9 +1169,17 @@ test "a state round-trips, and every malformed one is refused whole" {
     try testing.expectError(error.Truncated, decodeState(bytes[0 .. size - 1], arena, &empty, 0, &out));
     try testing.expectError(error.Truncated, decodeState(bytes[0..4], arena, &empty, 0, &out));
 
+    // A ballast length the bytes do not carry, and ballast that is not zero.
     var bad = bytes;
     bad[4] = 1;
-    try testing.expectError(error.Reserved, decodeState(bad[0..size], arena, &empty, 0, &out));
+    try testing.expectError(error.Truncated, decodeState(bad[0..size], arena, &empty, 0, &out));
+    const padded = encodeState(&markers, 16, &bad);
+    try decodeState(bad[0..padded], arena, &empty, 0, &out);
+    bad[padded - 1] = 1;
+    try testing.expectError(error.Reserved, decodeState(bad[0..padded], arena, &empty, 0, &out));
+    std.mem.writeInt(u32, bad[4..8], max_ballast + 1, .little);
+    try testing.expectError(error.Reserved, decodeState(bad[0..padded], arena, &empty, 0, &out));
+    bad = bytes;
 
     bad = bytes;
     std.mem.writeInt(u32, bad[0..4], max_markers + 1, .little);
@@ -1099,7 +1206,7 @@ test "a state round-trips, and every malformed one is refused whole" {
     try testing.expectError(error.ZeroNumber, decodeState(bad[0..size], arena, &empty, 0, &out));
 
     // Every refusal above left the candidate's destination as the last success wrote it.
-    try testing.expectEqualDeep(kept, out);
+    try testing.expectEqualDeep(kept.slice(), out.slice());
 }
 
 test "a removed marker cannot come back, and a new one can appear" {
@@ -1110,12 +1217,12 @@ test "a removed marker cannot come back, and a new one can appear" {
 
     // The view held #1 and #2; #2 was removed, so the view holds #1 and has seen up to 2.
     const first = [_]Marker{.{ .number = 1, .owner = 0, .x = 0, .y = 0 }};
-    try decodeState(bytes[0..encodeState(&first, &bytes)], arena, &view, 0, &view);
+    try decodeState(bytes[0..encodeState(&first, 0, &bytes)], arena, &view, 0, &view);
     const back = [_]Marker{ .{ .number = 1, .owner = 0, .x = 0, .y = 0 }, .{ .number = 2, .owner = 1, .x = 0, .y = 0 } };
-    try testing.expectError(error.Resurrected, decodeState(bytes[0..encodeState(&back, &bytes)], arena, &view, 2, &next));
+    try testing.expectError(error.Resurrected, decodeState(bytes[0..encodeState(&back, 0, &bytes)], arena, &view, 2, &next));
 
     const fresh = [_]Marker{ .{ .number = 1, .owner = 0, .x = 0, .y = 0 }, .{ .number = 3, .owner = 1, .x = 0, .y = 0 } };
-    try decodeState(bytes[0..encodeState(&fresh, &bytes)], arena, &view, 2, &next);
+    try decodeState(bytes[0..encodeState(&fresh, 0, &bytes)], arena, &view, 2, &next);
     try testing.expectEqual(@as(u32, 2), next.count);
 }
 

@@ -972,6 +972,13 @@ pub const Transport = struct {
         return self.links[slot.link].pipes[slot.side].peek(out);
     }
 
+    /// Appends `bytes` to what `stream` will read next, as an on-path attacker replaying a
+    /// record it captured with `memoryInFlight` would. Returns how many fit.
+    pub fn memoryInjectInbound(self: *Transport, stream: StreamHandle, bytes: []const u8) MemoryError!usize {
+        const slot = try self.memorySlot(stream);
+        return self.links[slot.link].pipes[1 - slot.side].write(bytes);
+    }
+
     // -- internal: streams ----------------------------------------------------------
 
     /// Adds a stream with its TLS session, or null when no stream slot or provider memory

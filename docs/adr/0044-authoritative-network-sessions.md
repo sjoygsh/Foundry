@@ -1,8 +1,9 @@
 # ADR-0044: Authoritative sessions without cross-machine lockstep
 
 **Status:** Accepted 2026-09-21; M16 Step 1 implemented against it; its tick admission and
-complete-state delivery built in Step 4, published as `FoundryApi_v5` in Step 5, and consumed
-by the sandbox's header-only shared markers in Step 6.
+complete-state delivery built in Step 4, published as `FoundryApi_v5` in Step 5, consumed
+by the sandbox's header-only shared markers in Step 6, and proved against hostile peers, by
+replay and within the controlled envelope in Step 7.
 **Date:** 2026-09-21
 **Revision, 2026-09-21:** the owner requires public-internet multiplayer. The LAN-only
 alternative is withdrawn. The owner's subsequent instruction to begin Step 1 accepts the
@@ -118,3 +119,11 @@ marker, and a client's command is an intent whose owner is the participant its a
 names, never its payload. Clients validate each complete state into a candidate before it
 replaces their view, and they neither predict nor extrapolate. The payload layouts are the
 application's, as this ADR says, and are recorded in `networking.md`'s Step 6 Resolution.
+
+## Step 7 replay note — 2026-09-23
+
+The decision's promise, that admitted batches in their fixed order are what a replay needs,
+was tested through the consumer. A session's lifecycle events between ticks and each tick's
+batch, fed to a fresh pure authority, rebuilt every state the server sent, byte for byte. This
+holds for the same binary and the same inputs. No cross-machine claim is made, as ADR-0013
+says.
