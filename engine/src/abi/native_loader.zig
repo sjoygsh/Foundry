@@ -37,6 +37,7 @@ const offered_api_versions = [_]u32{
     types.api_version_2,
     types.api_version_3,
     types.api_version_4,
+    types.api_version_5,
 };
 
 fn acceptsOffered(range: mod.Range) bool {
@@ -230,8 +231,9 @@ test "native compatibility considers every offered table version" {
     try testing.expect(acceptsOffered(.{ .min = 1, .max = 1 }));
     try testing.expect(acceptsOffered(.{ .min = 2, .max = 2 }));
     try testing.expect(acceptsOffered(.{ .min = 3, .max = 3 }));
-    // v4 is published, so a mod written against the authoring table loads. A version
-    // above everything this build hands out still does not.
+    // v4 and v5 are published, so a mod written against the authoring or networking
+    // table loads. A version above everything this build hands out still does not.
     try testing.expect(acceptsOffered(.{ .min = 4, .max = 4 }));
-    try testing.expect(!acceptsOffered(.{ .min = 5 }));
+    try testing.expect(acceptsOffered(.{ .min = 5, .max = 5 }));
+    try testing.expect(!acceptsOffered(.{ .min = 6 }));
 }

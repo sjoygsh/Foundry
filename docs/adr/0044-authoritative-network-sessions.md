@@ -1,7 +1,7 @@
 # ADR-0044: Authoritative sessions without cross-machine lockstep
 
 **Status:** Accepted 2026-09-21; M16 Step 1 implemented against it; its tick admission and
-complete-state delivery built in Step 4.
+complete-state delivery built in Step 4, and published as `FoundryApi_v5` in Step 5.
 **Date:** 2026-09-21
 **Revision, 2026-09-21:** the owner requires public-internet multiplayer. The LAN-only
 alternative is withdrawn. The owner's subsequent instruction to begin Step 1 accepts the
@@ -101,3 +101,11 @@ and then command number, never by arrival, so captured batches replay. Complete 
 unsent state instead of queueing behind it. Payload meaning and object maps stay the
 application's. The exchange order and its bounds are recorded in `networking.md`'s Step 4
 Resolution.
+
+## Step 5 publication note — 2026-09-22
+
+`FoundryApi_v5` publishes those operations additively. The host still supplies the service,
+its grants and credentials, and pumps it. A consumer admits a tick's batch and reads its fixed
+order through the table, so the authority's input specification is the same for a native mod
+or a tool as for the host (I4). No principal, key or remote address crosses. The inventory and
+rights model are in `networking.md`'s Step 5 Resolution.

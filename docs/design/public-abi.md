@@ -740,6 +740,21 @@ must not settle them opportunistically. Question 1 was resolved by the M7 exit p
 > (step 7's note above), and a mod's scratch file (§18, open question 1). Neither is blocking
 > anything today, and neither should be resolved opportunistically by whatever next needs it.
 
+> **M16 step 5, 2026-09-22:** `FoundryApi_v5` is v4 unchanged plus 22 networking calls, 233
+> in all, offered by `get_api(5)` and by the native loader beside v1–v4, whose declarations are
+> byte-identical. It publishes a host's `net.Service`:
+> - grants, sessions and channels, and starting a session;
+> - peers, events and statistics;
+> - the baseline and its acknowledgement, state and commands;
+> - deliveries, and tick-admitted batches.
+>
+> Two opaque handles and ten structs cross with it, and every enumeration is an `int32_t` with
+> its numbers written out. **Rights are the grants the host publishes**: a held grant the host
+> did not publish is `FOUNDRY_ERR_REFUSED`, and so is every handle into its sessions. The table
+> returns only published sessions' events and leaves the rest queued for the host. No key,
+> principal or remote address ever crosses, and pumping stays the host's. The specification is
+> `networking.md` §8 and its Step 5 Resolutions. Lua binding 1 is unchanged and v2-only.
+
 ## 19. Implementation order
 
 Each step ends with something that runs and something that is tested.

@@ -777,7 +777,7 @@ through the sample's normal mod path. A scene editor, schema designer and execut
 game/plugin host are outside this scope, and remain so.
 The editor's UI and UX follow Unreal Engine 5's editor, within M15's fixed regions (§10).
 
-### M16 — Connected: "it plays with others" — **in progress; Steps 1–4 of nine complete (2026-09-22)**
+### M16 — Connected: "it plays with others" — **in progress; Steps 1–5 of nine complete (2026-09-22)**
 
 Networking was recorded as indefinite, and I1, I2, I8 and I9 kept it possible without paying
 for it. **The owner confirmed the trigger on 2026-09-21: the first networked game requires
@@ -811,8 +811,10 @@ difference, bounded pre-authentication work, deadlines, per-peer budgets and res
 a live stream ended when its peer's certificate expires. **Step 4 is complete.** A peer is
 activated only by acknowledging the baseline it was sent; commands wait in bounded per-peer
 inboxes until the host admits a tick's batch, ordered by participant and command number and
-replayable; complete state replaces unsent state, so a slow peer gets the newest. No ABI or
-sample path exists yet; those begin at Step 5. The accepted model is one
+replayable; complete state replaces unsent state, so a slow peer gets the newest. **Step 5 is
+complete.** `FoundryApi_v5` publishes it as 22 additive calls, 233 in all. Rights are the
+grants a host publishes, and no key, principal or address crosses. No sample path exists yet;
+that begins at Step 6. The accepted model is one
 operator-hosted authority with mutual certificates, up to four reference peers and no
 prediction. ADR-0013's bit-exact subset question stays conditional on lockstep.
 

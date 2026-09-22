@@ -31,6 +31,7 @@ const scene = @import("scene");
 const render2d = @import("render2d");
 const ui = @import("ui");
 const audio = @import("audio");
+const net = @import("net");
 const physics2d = @import("physics2d");
 
 const author_types = @import("author_types.zig");
@@ -198,6 +199,15 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
         author_readers: [max_author_readers]AuthorReader = @splat(.{}),
         author_reader_next: u32 = 0,
         author_text: [max_author_text]u8 = @splat(0),
+
+        /// The one application-owned network service behind the v5 calls
+        /// (`networking.md` §8). Absent, every networking call answers `unavailable`.
+        /// The host keeps pumping it; the table never does.
+        net_service: ?*net.Service = null,
+        /// The grants the table may use: the rights a consumer has. A grant the service
+        /// holds and this list omits is `refused`, as is every handle into its sessions,
+        /// and its events stay queued for the host.
+        net_grants: []const core.ContentId = &.{},
 
         /// Content-derived themes are owned here so their public handles stay stable. They
         /// are all released together when the content generation changes.

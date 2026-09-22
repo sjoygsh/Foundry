@@ -154,7 +154,7 @@ Windows/Vulkan run followed on 2026-09-21: the same twenty workflow tests, the s
 twenty-five-action null smoke frame for frame, and the same 489-action authoring plan on an
 Intel Arc A750 through Vulkan 1.4, with the two saved `.fdt` files and the exported `.fpk`
 byte-identical to the macOS/Metal run's. Step 9 closed the milestone. **M16 is in progress;
-Steps 1–4 of nine are complete.** Read `docs/design/networking.md` and accepted ADR-0044/0045.
+Steps 1–5 of nine are complete.** Read `docs/design/networking.md` and accepted ADR-0044/0045.
 The owner requires public-internet multiplayer; the LAN-only proposal is withdrawn. The
 accepted first architecture is one operator-hosted authority over TLS 1.3 mutual certificates,
 up to four reference peers and no prediction. Step 1 pins and qualifies Mbed TLS 3.6.7 LTS,
@@ -174,8 +174,10 @@ stream now fails when its peer's certificate expires. `zig build net-session-tes
 focused proof and is part of `zig build test`. Step 4 adds delivery to the same service: one
 baseline per peer, activation only by acknowledging it, commands admitted by `admitBatch` in
 participant and command-number order, and complete state that replaces unsent state; its proofs
-are in the same file and step. **No ABI or sample networking exists. Step 5 is next and has not
-begun.** Design authorization does not
+are in the same file and step. Step 5 publishes all of it as `FoundryApi_v5`, 22 additive calls
+in `engine/src/abi/calls_net.zig` over a service and a list of published grants the host binds to
+its `abi.Host`. `zig build abi-net-test` drives a real service through the table alone.
+**No sample networking exists. Step 6 is next and has not begun.** Design authorization does not
 authorize infrastructure purchases, firewall changes, real credential use or a public
 listener. The bar below is current. M13's Step 9 added the checks Vulkan and release work need,
 and M14 added an optimized Windows check to them.
@@ -220,6 +222,7 @@ result (`CLAUDE.md` §2) — a change that builds and leaves the sandbox broken 
 When the ABI surface changed, also compile a C mod against the *installed* header, because the
 Zig tests cannot see what a C author cannot express. `engine/tests/fixtures/author_client.c`
 is one such consumer, kept for this: it calls every v4 authoring entry point and nothing else.
+`engine/tests/fixtures/net_client.c` does the same for the 22 v5 networking entry points.
 
 ```sh
 zig build                                    # installs zig-out/include/foundry.h

@@ -43,6 +43,7 @@ const calls_scene = @import("calls_scene.zig");
 const calls_ui = @import("calls_ui.zig");
 const author_types = @import("author_types.zig");
 const mod_types = @import("mod_types.zig");
+const net_types = @import("net_types.zig");
 const native_loader = @import("native_loader.zig");
 const physics_types = @import("physics_types.zig");
 const render_types = @import("render_types.zig");
@@ -108,6 +109,12 @@ pub const AuthorBuildInfo = author_types.BuildInfo;
 pub const AuthorPreviewInfo = author_types.PreviewInfo;
 pub const AuthorExportInfo = author_types.ExportInfo;
 
+/// `net` — the v5 networking handles and the values they are described by
+/// (`networking.md` §8), for a Zig host or client exactly as `foundry.h` has them for C.
+pub const NetSession = types.NetSession;
+pub const NetPeer = types.NetPeer;
+pub const net = net_types;
+
 /// What the host hands over, and what it gets back.
 ///
 /// `Host` is the concrete one a game wants; `HostOf` is what makes a test able to bind a
@@ -122,6 +129,7 @@ pub const Api_v1 = api.Api_v1;
 pub const Api_v2 = api.Api_v2;
 pub const Api_v3 = api.Api_v3;
 pub const Api_v4 = api.Api_v4;
+pub const Api_v5 = api.Api_v5;
 pub const TableOf = api.TableOf;
 pub const FieldType = types.FieldType;
 pub const LogLevel = types.LogLevel;
@@ -189,6 +197,7 @@ pub const api_version_1 = types.api_version_1;
 pub const api_version_2 = types.api_version_2;
 pub const api_version_3 = types.api_version_3;
 pub const api_version_4 = types.api_version_4;
+pub const api_version_5 = types.api_version_5;
 pub const init_symbol = types.init_symbol;
 pub const shutdown_symbol = types.shutdown_symbol;
 
@@ -208,6 +217,7 @@ test {
     _ = calls_ui;
     _ = native_loader;
     _ = mod_types;
+    _ = net_types;
     _ = host;
     _ = types;
     _ = physics_types;

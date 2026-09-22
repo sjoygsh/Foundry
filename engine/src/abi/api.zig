@@ -19,6 +19,8 @@ const author_calls = @import("calls_author.zig");
 const author_types = @import("author_types.zig");
 const content_calls = @import("calls_content.zig");
 const mod_calls = @import("calls_mods.zig");
+const net_calls = @import("calls_net.zig");
+const net_types = @import("net_types.zig");
 const engine_calls = @import("calls_engine.zig");
 const audio_calls = @import("calls_audio.zig");
 const physics_calls = @import("calls_physics.zig");
@@ -481,6 +483,76 @@ fn extendV3(v3: Api_v3, tail: Api_v4_tail) Api_v4 {
     return v4;
 }
 
+/// Networking, published: `networking.md` §8 and its Step 5 Resolution, which froze these
+/// 22 calls before any was written. The host owns, grants and pumps the service; these only
+/// translate. The groups are §8's: grants, sessions, channels, starting, peers, events and
+/// stats, initial state, sending, receiving and admission.
+const Api_v5_tail = extern struct {
+    net_grant_next: *const fn (?*Cursor, ?*net_types.GrantInfo) callconv(.c) Result,
+
+    net_session_create: *const fn (ContentId, ?*types.NetSession) callconv(.c) Result,
+    net_session_close: *const fn (types.NetSession) callconv(.c) Result,
+    net_session_info: *const fn (types.NetSession, ?*net_types.SessionInfo) callconv(.c) Result,
+
+    net_channel_register: *const fn (types.NetSession, ?*const net_types.ChannelDesc) callconv(.c) Result,
+    net_channel_next: *const fn (types.NetSession, ?*Cursor, ?*net_types.ChannelDesc) callconv(.c) Result,
+
+    net_session_listen: *const fn (types.NetSession) callconv(.c) Result,
+    net_session_connect: *const fn (types.NetSession, ?*types.NetPeer) callconv(.c) Result,
+
+    net_peer_next: *const fn (types.NetSession, ?*Cursor, ?*types.NetPeer) callconv(.c) Result,
+    net_peer_info: *const fn (types.NetPeer, ?*net_types.PeerInfo) callconv(.c) Result,
+    net_peer_disconnect: *const fn (types.NetPeer, i32) callconv(.c) Result,
+
+    net_event_next: *const fn (?*net_types.Event) callconv(.c) Result,
+    net_stats: *const fn (?*net_types.Stats) callconv(.c) Result,
+
+    net_baseline_send: *const fn (types.NetPeer, u64, ?[*]const u8, u32) callconv(.c) Result,
+    net_baseline_acknowledge: *const fn (types.NetPeer, u64, u64) callconv(.c) Result,
+
+    net_state_publish: *const fn (types.NetPeer, u64, ?[*]const u8, u32) callconv(.c) Result,
+    net_command_send: *const fn (types.NetPeer, ContentId, ?[*]const u8, u32, ?*u64) callconv(.c) Result,
+
+    net_delivery_next: *const fn (types.NetPeer, ?*net_types.Delivery) callconv(.c) Result,
+    net_delivery_take: *const fn (types.NetPeer, ?[*]u8, u64, ?*u64, ?*net_types.Delivery) callconv(.c) Result,
+
+    net_batch_admit: *const fn (types.NetSession, u64, ?*u32) callconv(.c) Result,
+    net_batch_command: *const fn (types.NetSession, u32, ?*net_types.Command) callconv(.c) Result,
+    net_batch_copy: *const fn (types.NetSession, u32, ?[*]u8, u64, ?*u64) callconv(.c) Result,
+};
+
+const api_v4_fields = @typeInfo(Api_v4).@"struct".fields;
+const api_v5_tail_fields = @typeInfo(Api_v5_tail).@"struct".fields;
+const api_v5_names = blk: {
+    var names: [api_v4_fields.len + api_v5_tail_fields.len][:0]const u8 = undefined;
+    for (api_v4_fields, 0..) |field, i| names[i] = field.name;
+    for (api_v5_tail_fields, api_v4_fields.len..) |field, i| names[i] = field.name;
+    break :blk names;
+};
+const api_v5_types = blk: {
+    var field_types: [api_v4_fields.len + api_v5_tail_fields.len]type = undefined;
+    for (api_v4_fields, 0..) |field, i| field_types[i] = field.type;
+    for (api_v5_tail_fields, api_v4_fields.len..) |field, i| field_types[i] = field.type;
+    break :blk field_types;
+};
+
+pub const Api_v5 = @Struct(
+    .@"extern",
+    null,
+    &api_v5_names,
+    &api_v5_types,
+    &@splat(.{}),
+);
+
+fn extendV4(v4: Api_v4, tail: Api_v5_tail) Api_v5 {
+    var v5: Api_v5 = undefined;
+    inline for (api_v4_fields) |field| @field(v5, field.name) = @field(v4, field.name);
+    inline for (api_v5_tail_fields) |field| @field(v5, field.name) = @field(tail, field.name);
+    v5.version = types.api_version_5;
+    v5.size = @sizeOf(Api_v5);
+    return v5;
+}
+
 /// The table for one host type, and the `get_api` that hands it out.
 pub fn TableOf(comptime H: type) type {
     const engine = engine_calls.Of(H);
@@ -493,6 +565,7 @@ pub fn TableOf(comptime H: type) type {
     const audio = audio_calls.Of(H);
     const physics = physics_calls.Of(H);
     const authoring = author_calls.Of(H);
+    const networking = net_calls.Of(H);
 
     return struct {
         pub const v1: Api_v1 = .{
@@ -746,6 +819,31 @@ pub fn TableOf(comptime H: type) type {
             .author_preview_info = authoring.previewInfo,
         });
 
+        pub const v5: Api_v5 = extendV4(v4, .{
+            .net_grant_next = networking.grantNext,
+            .net_session_create = networking.sessionCreate,
+            .net_session_close = networking.sessionClose,
+            .net_session_info = networking.sessionInfo,
+            .net_channel_register = networking.channelRegister,
+            .net_channel_next = networking.channelNext,
+            .net_session_listen = networking.sessionListen,
+            .net_session_connect = networking.sessionConnect,
+            .net_peer_next = networking.peerNext,
+            .net_peer_info = networking.peerInfo,
+            .net_peer_disconnect = networking.peerDisconnect,
+            .net_event_next = networking.eventNext,
+            .net_stats = networking.stats,
+            .net_baseline_send = networking.baselineSend,
+            .net_baseline_acknowledge = networking.baselineAcknowledge,
+            .net_state_publish = networking.statePublish,
+            .net_command_send = networking.commandSend,
+            .net_delivery_next = networking.deliveryNext,
+            .net_delivery_take = networking.deliveryTake,
+            .net_batch_admit = networking.batchAdmit,
+            .net_batch_command = networking.batchCommand,
+            .net_batch_copy = networking.batchCopy,
+        });
+
         /// What a native mod is handed (§3). **Never a crash and never a Zig error** — a
         /// version this host does not offer is null, which is a legible refusal on the
         /// mod's side rather than a fault on ours.
@@ -754,6 +852,7 @@ pub fn TableOf(comptime H: type) type {
             if (version == types.api_version_2) return @ptrCast(&v2);
             if (version == types.api_version_3) return @ptrCast(&v3);
             if (version == types.api_version_4) return @ptrCast(&v4);
+            if (version == types.api_version_5) return @ptrCast(&v5);
             return null;
         }
     };
@@ -765,6 +864,8 @@ test {
     _ = author_types;
     _ = content_calls;
     _ = mod_calls;
+    _ = net_calls;
+    _ = net_types;
     _ = engine_calls;
     _ = audio_calls;
     _ = physics_calls;

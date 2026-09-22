@@ -381,10 +381,32 @@ does not change — that is the contract, and
 [`engine/tests/abi_authoring.zig`](../../engine/tests/abi_authoring.zig) loads a real C99
 client against a host with a service and against one without, to keep both halves of it true.
 
+## 9. Networking: `FoundryApi_v5`
+
+Version 5 is version 4 unchanged, followed by 22 networking calls, asked for the same way. A
+manifest whose `abi` range includes 5 loads on a host that offers it. This build offers 1
+through 5.
+
+The host builds the network service, with its grants, credentials and allowlist, and pumps
+it. A mod sees only the grants the host published. Through them it can:
+- create a session and register runtime channels;
+- listen or connect;
+- follow peers through events;
+- send and acknowledge the baseline, publish state and send commands;
+- read deliveries, and admit a tick's commands in a fixed order.
+
+A mod never names an address, a file or a key, and never learns a player's key or address. A
+host with no service answers `FOUNDRY_ERR_UNAVAILABLE` from all 22 calls, and a grant the host
+kept to itself answers `FOUNDRY_ERR_REFUSED`. The contract is
+[`../design/networking.md`](../design/networking.md) §8.
+[`engine/tests/fixtures/net_client.c`](../../engine/tests/fixtures/net_client.c) calls every
+entry point against the installed header. The guide to running a networked host comes with
+M16's public-internet proof.
+
 ## Rules worth keeping visible
 
-* `FoundryApi_v1` is frozen, and so are `FoundryApi_v2`, `FoundryApi_v3` and `FoundryApi_v4`,
-  each added alongside the one before. Do not depend on struct layout beyond the installed header, or call
+* `FoundryApi_v1` is frozen, and so are `FoundryApi_v2`, `FoundryApi_v3`, `FoundryApi_v4` and
+  `FoundryApi_v5`, each added alongside the one before. Do not depend on struct layout beyond the installed header, or call
   a version you did not request.
 * All API input is untrusted. Check pointers, capacities, result codes, handle validity and
   enum values in the same way the example checks its own calls. The host validates at the

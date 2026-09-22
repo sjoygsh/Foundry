@@ -1,7 +1,7 @@
 # Network sessions and the shared-world proof
 
 **Milestone:** M16 — Connected: “it plays with others”
-**Status:** Accepted design, 2026-09-21. **Steps 1–4 of nine are complete.** Stop before Step 5.
+**Status:** Accepted design, 2026-09-21. **Steps 1–5 of nine are complete.** Stop before Step 6.
 **Revision, 2026-09-21:** the owner selected **public-internet multiplayer**. The earlier
 LAN-only scope is withdrawn. Internet security and a real WAN proof are required in M16. The
 owner's instruction to begin Step 1 accepted the authority, topology, admission and bounded
@@ -69,7 +69,7 @@ The first two lines describe today's build graph; later lines remain the accepte
 ```
 platform (L1)  core + the qualified provider; Step 2's authenticated streams (`Transport`)
 net (L2)       core, platform; Step 1 limits/channels/codec; Steps 3–4's `Service`: admission, baselines, batches, state
-abi (L5)       existing imports + net; public argument validation and translation only
+abi (L5)       existing imports + net (since Step 5); public argument validation and translation only
 host           owns net.Service, endpoint grants, content identity, timing and subsystem life
 sample client  public header only; command/state codecs and shared-world demonstration
 ```
@@ -500,14 +500,13 @@ Existing open questions about per-mod tables, native unloading, system schedulin
 lists and editor features remain open. M17/M18 retain their own gates.
 
 Step 1's provider/configuration and wire layouts, Step 2's transport mechanism, Step 3's
-negotiation exchange and Step 4's delivery order are resolved below. One bounded implementation detail still requires a dated Resolution before dependent
-code: Step 5's v5 layouts/call count. Those may refine this contract, not change its scope, module
-placement or authority model. No port numbers, machine names or personal paths belong in
+negotiation exchange, Step 4's delivery order and Step 5's v5 layouts and call count are resolved
+below. No bounded implementation detail now awaits a Resolution before dependent code. No port numbers, machine names or personal paths belong in
 committed configuration.
 
 ## 12. Implementation order
 
-Steps 1–4 are complete; Steps 5–9 are **not started**. Each ends with its own tests, required bar,
+Steps 1–5 are complete; Steps 6–9 are **not started**. Each ends with its own tests, required bar,
 Resolution, project-state update and focused commit, followed by a handoff. Do not chain steps
 without the owner's instruction.
 
@@ -548,7 +547,7 @@ sync failures, slow peers, stale sequences and replay using an in-memory referen
 The application owns payload validation and object maps. **No engine gameplay schema and no
 private application path that will bypass Step 5.**
 
-### Step 5 — Publish networking in the single public API
+### Step 5 — Publish networking in the single public API — **complete 2026-09-22**
 
 Freeze v5 types/call inventory, including grant/authentication diagnostics but no secret access;
 implement all §8 groups over the supplied service, add C/Zig agreement and adversarial ABI
@@ -1103,3 +1102,167 @@ byte-identical afterwards, and each failed its intended proof:
 
 §11's open questions stay open. Nothing here authorizes infrastructure, real credentials or a
 public listener.
+
+## Resolution — 2026-09-22, Step 5: the v5 inventory, frozen before any of it was written
+
+§8 and §11 require the v5 types and call count to be recorded before dependent code. This
+section is that record; what implementation then found is recorded after it, in its own
+section.
+
+**`FoundryApi_v5` is `FoundryApi_v4` byte for byte, followed by 22 networking calls.** It has
+235 members, which is 233 calls plus `version` and `size`, and `get_api(5)` offers it beside v1–v4. No earlier declaration moves.
+`FOUNDRY_API_VERSION` becomes 5. The native loader offers 5 alongside the others. Lua binding
+1 stays v2-only.
+
+| Group | Calls |
+| --- | --- |
+| Grants (1) | `net_grant_next` |
+| Sessions (3) | `net_session_create` `_close` `_info` |
+| Channels (2) | `net_channel_register` `net_channel_next` |
+| Starting (2) | `net_session_listen` `net_session_connect` |
+| Peers (3) | `net_peer_next` `net_peer_info` `net_peer_disconnect` |
+| Events and stats (2) | `net_event_next` `net_stats` |
+| Initial state (2) | `net_baseline_send` `net_baseline_acknowledge` |
+| Sending (2) | `net_state_publish` `net_command_send` |
+| Receiving (2) | `net_delivery_next` `net_delivery_take` |
+| Admission (3) | `net_batch_admit` `net_batch_command` `net_batch_copy` |
+
+**Two opaque handles**, eight bytes each: `FoundryNetSession` and `FoundryNetPeer`. They carry
+the service's own generational handles, so a stale handle is `FOUNDRY_ERR_INVALID_HANDLE`.
+
+**Enumerations cross as `int32_t` with `#define`d values**, never a C `enum`, because two of
+them arrive from the caller and are validated as numbers:
+- role: server 1, client 2;
+- direction: client-to-server 1, server-to-client 2, bidirectional 3;
+- delivery: reliable 1, latest complete state 2;
+- session state: configuring 1, running 2;
+- peer state: connecting 1, authenticating 2, negotiating 3, synchronizing 4, active 5,
+  closing 6;
+- event: admitted 1, activated 2, ended 3;
+- delivery kind: baseline 1, state 2, message 3;
+- ending: local 1, peer disconnected 2, peer closed 3, refused 4, refused by peer 5, revoked 6,
+  rotated 7, timed out 8, protocol 9, transport 10, overloaded 11.
+
+An ending's `code` is one of these, depending on its kind:
+- a disconnect reason, which is also the one `net_peer_disconnect` takes: closed 1, protocol 2,
+  policy 3, timeout 4, capacity 5, application 6;
+- a refusal reason: generic 1, version 2, application 3, compatibility 4, catalogue 5, channel
+  6, capacity 7, policy 8, timeout 9;
+- a deadline: admission 1, initial sync 2, no progress 3, write stall 4;
+- a protocol fault: malformed 1, unexpected 2, sequence 3, truncated 4, mismatch 5;
+- a transport failure: `platform.transport.Failure`'s 23 categories, numbered 1–23 in their
+  declared order and written out.
+
+**Ten structs, each with its reserved bytes written as zero and its size stated in the
+header, `net_types.zig` and both agreement files:**
+
+| Struct | Bytes | Fields |
+| --- | --- | --- |
+| `FoundryNetEndpoint` | 8 | IPv4 address `uint8_t[4]`, port `uint16_t`, reserved `uint16_t` |
+| `FoundryNetGrantInfo` | 24 | id, role, reserved, endpoint |
+| `FoundryNetChannelDesc` | 24 | id, revision, max payload bytes, direction, delivery |
+| `FoundryNetSessionInfo` | 40 | grant, role, state, epoch, channels, pending, peers, listening flag, reserved, listening endpoint |
+| `FoundryNetPeerInfo` | 24 | session, state, participant, epoch |
+| `FoundryNetEnding` | 16 | kind, code, refusal index (`0xFFFF` for none), reserved |
+| `FoundryNetEvent` | 48 | session, peer, kind, participant, epoch, ending |
+| `FoundryNetDelivery` | 32 | kind, bytes, channel, tick, sequence |
+| `FoundryNetCommand` | 32 | peer, participant, bytes, number, channel |
+| `FoundryNetStats` | 184 | five `uint32_t` gauges and one reserved; twenty `uint64_t` counters |
+
+**What never crosses.** No key, certificate or credential, since a grant names credentials
+the host built. No principal: it is host-local identity, and §4.1 says the principal stays in
+the service. No remote address. A peer is its participant number within its session's epoch.
+
+**Rights are the grants the host publishes.**
+- The host binds its `net.Service` and a list of the grant IDs the table may use. Without a
+  service, every call answers `FOUNDRY_ERR_UNAVAILABLE`.
+- A grant the service holds but the host did not publish answers `FOUNDRY_ERR_REFUSED`, and so
+  does every handle into a session on such a grant. A grant the service does not hold at all
+  answers `FOUNDRY_ERR_NOT_FOUND`.
+- `net_grant_next` walks only published grants.
+- `net_event_next` returns only published sessions' events, leaving every other event queued in
+  order for the host, so nothing is dropped or stolen. That needs one service addition: taking
+  the first queued event that matches a set of grants.
+- Pumping stays host-side and is not a call. `net_stats` is the whole service's counters, which
+  name no session.
+
+**Buffers.** A payload arrives as `const void *bytes, uint32_t size`. A null pointer with a
+nonzero size is `FOUNDRY_ERR_INVALID_ARGUMENT`. `net_delivery_take` and `net_batch_copy` copy
+into `uint8_t *buffer, uint64_t capacity`:
+- they always set `*needed`;
+- a short buffer is `FOUNDRY_ERR_LIMIT`, and a short delivery buffer takes nothing;
+- no delivery, or no event, is `FOUNDRY_END`.
+
+**Other refusals.**
+- `FOUNDRY_ERR_REFUSED`: the wrong role, the wrong state, a stale tick, a stale baseline, or a
+  channel that does not run that way.
+- `FOUNDRY_ERR_NOT_FOUND`: an unknown channel.
+- `FOUNDRY_ERR_LIMIT`: a full queue, a pool or event queue at capacity, or too many channels.
+- `FOUNDRY_ERR_INVALID_ARGUMENT`: an oversized payload, or an out-of-range enumeration.
+- `FOUNDRY_ERR_ALREADY_EXISTS`: a duplicate channel, or an address already in use.
+
+Walks carry a generation, so a peer set that changed under a walk is detected: the service
+gains a revision that moves whenever a connection is added or removed.
+
+## Resolution — 2026-09-22, Step 5: what publishing the service found
+
+The inventory above was implemented as frozen: 22 calls in `engine/src/abi/calls_net.zig`, and
+ten structs and the enumeration numbers in `net_types.zig`. Their sizes are stated in the
+header, `net_types.zig`, `agreement.c` and `agreement.zig`. `abi` gained `net` in the build
+graph, an ordinary downward edge to L2. `Host` gained `net_service` and `net_grants`. Nothing in
+v1–v4, Lua binding 1 or the script host changed.
+
+**Proofs.**
+- `zig build abi-net-test` (`engine/tests/abi_networking.zig`) runs one service holding a
+  server grant and a client grant over the memory carrier, so a single process is both ends,
+  and drives it through the table alone. One proof plays a whole session: grants, channels,
+  listen, connect, admission, a short-buffer refusal that takes nothing, the baseline and its
+  acknowledgement, activation, a command admitted and read back out of its batch, state,
+  peers, statistics, a disconnect with a reason and teardown.
+- The other proof makes every refusal the table owes:
+  - an unpublished grant; the host's private session and its events;
+  - duplicate sessions; bad enumerations; frozen channels;
+  - wrong roles and states;
+  - null and short buffers; oversized payloads; wrong and unknown channels;
+  - stale ticks and baselines;
+  - a walk invalidated by a departure;
+  - stale and invented handles;
+  - rights withdrawn; the service withdrawn.
+- `sweep.zig` walks v5 instead of v4, so all 233 calls are checked for crash-free garbage
+  handling with nothing bound and with everything bound, and for `unavailable` with no service.
+  `get_api(5)` and the native loader's offered set are checked.
+- `engine/tests/fixtures/net_client.c` calls every networking entry point and compiles against
+  the **installed** header as C99 on macOS, Linux and Windows and as C++17. So does the v4
+  authoring client, which is unchanged.
+
+**Each guard was broken to see it fail.** Ten mutations, each restored byte-identical, and each
+failed its intended proof:
+- `get_api(5)` not offered, and the loader not offering 5;
+- two v5 members swapped in the header;
+- two event fields swapped;
+- a command size widened in a header signature;
+- unpublished grants usable, and events not filtered by grant;
+- a null buffer with a capacity accepted;
+- a server's deliveries reachable;
+- any channel direction accepted.
+
+**What implementation found that the design did not say.**
+1. **A shared event queue needed a filter to make rights real.** Refusing an unpublished
+   session's handles is not enough if the table's event call still takes that session's
+   events. `Service.nextEventFor(grants)` takes the oldest event of a published session and
+   shifts the earlier ones one place, so the host's own events keep their order and nothing is
+   dropped.
+2. **Peer walks needed a revision the service did not have.** A cursor's generation must
+   change when the set it walks changes, so the service now moves a `revision` whenever a
+   connection is added or removed.
+3. **Payload pointers take the existing `const void *` convention.** They are `?[*]const u8` on
+   the Zig side, as `world_add_component`'s are. The table sweep cannot build a sample value
+   for an opaque pointer, and it caught the first spelling.
+
+**Deliberately not done.**
+- No sample, host modes, credential files or consumer (Step 6).
+- No networking guide, which comes with Step 8's external proof.
+- No Lua binding.
+- Not run natively on Windows. The PC refused SSH at its recorded address, and this session is
+  not permitted to scan the network to find it again. The header compiled for Windows as C99
+  and in the optimized Windows checks.

@@ -1,7 +1,7 @@
 # Foundry Project State
 
-**Last updated:** 2026-09-22
-**Current handoff: M16 is in progress; Steps 1–4 of nine are complete. Stop before Step 5.**
+**Last updated:** 2026-09-23
+**Current handoff: M16 is in progress; Steps 1–5 of nine are complete. Stop before Step 6.**
 M0 through M15 are complete and tagged. Read the accepted `docs/design/networking.md` and
 accepted ADR-0044/0045 before any further M16 work.
 
@@ -14,9 +14,52 @@ operator-hosted authoritative server with TLS 1.3 mutual certificate authenticat
 pre-authentication work and explicit credential provisioning/revocation. The owner's instruction
 to begin Step 1 accepted the remaining entry choices: one operator-hosted authority, provisioned
 player certificates and the four-peer/no-prediction reference envelope. Both ADRs are now
-**accepted**; Steps 5 through 9 still need their own instruction, and design authorization still
+**accepted**; Steps 6 through 9 still need their own instruction, and design authorization still
 does not authorize infrastructure purchases, firewall changes, real credentials or a public
 listener. M15's completed evidence remains accepted.
+
+**Completed M16 Step 5, 2026-09-22: networking in the one public table.** Resolutions:
+`networking.md`, both Step 5 sections (the inventory frozen before code, then what implementation
+found); also ADR-0044's Step 5 note and `public-abi.md`'s M16 note.
+- **`FoundryApi_v5`** is v4 unchanged plus 22 calls, 233 in all, offered by `get_api(5)` and by
+  the native loader. `FOUNDRY_API_VERSION` is 5. The groups are §8's: grants, sessions, channels,
+  starting, peers, events and stats, initial state, sending, receiving and admission.
+  - `engine/src/abi/calls_net.zig` translates.
+  - `net_types.zig` holds ten structs and the written-out enumeration numbers, the 23 transport
+    failure categories included.
+  - Two opaque handles cross: `FoundryNetSession` and `FoundryNetPeer`.
+- **Rights are the grants the host publishes.** `Host` gained `net_service` and `net_grants`.
+  - Without a service, every call answers `unavailable`.
+  - A grant the service holds and the host did not publish, or any handle into its sessions,
+    answers `refused`.
+  - An unknown grant answers `not_found`.
+  - The event call takes only published sessions' events, through the new
+    `Service.nextEventFor`, and leaves the host's own events queued in order.
+  - No key, principal or remote address crosses, and the host still pumps.
+- **Build:** `abi` imports `net` (an L2 downward edge; CLAUDE.md §4.3 updated). The service
+  gained a `revision` that moves on every connection added or removed, so a peer walk detects
+  change.
+- **Proofs:**
+  - `zig build abi-net-test` (2, in `zig build test`) plays a whole session through the table
+    alone, and makes every refusal it owes.
+  - `sweep.zig` now walks v5, so all 233 calls are checked for garbage handling and
+    `unavailable`.
+  - The agreement checks 235 offsets and names in both languages, plus every networking size
+    and number.
+  - `engine/tests/fixtures/net_client.c` calls all 22 entry points against the installed header
+    as C99 on three targets and as C++17.
+
+  **Ten guards were broken once each and every one failed its own proof.**
+- **Found:** rights needed the filtered event dequeue; peer walks needed a service revision;
+  payload pointers take v1's `?[*]const u8` convention, which the sweep enforced.
+- **The bar is green:** `zig fmt --check`; `zig build test` **84/84 steps, 1,659 of 1,660**
+  headless tests (the one skip predates M16) from **1,724 declared**; `check` native, Metal and
+  both null cross targets; both samples 30 frames; the optimized Windows checks, Vulkan and null;
+  the installed-header C builds for both C clients.
+  - **Not run natively on Windows:** the PC refused SSH at its recorded address, and scanning
+    the network for it was not permitted in this session.
+- **Not done, deliberately:** no sample, host modes, credential files or header-only consumer
+  (Step 6); no networking guide (Step 8); no Lua binding.
 
 **Completed M16 Step 4, 2026-09-22: a baseline, then commands by tick and the newest state.**
 Resolution: `networking.md`, Step 4; also ADR-0044's Step 4 note.
@@ -2549,11 +2592,11 @@ Windows x64 through Vulkan. **M14 is complete (2026-09-19)**: a player chooses t
 packaged sample, on macOS and on Windows. **M15 is complete (2026-09-21)**: Foundry authors
 its own content through its own public API, on macOS and on Windows. **M16 is in progress**:
 the owner confirmed its trigger on 2026-09-21 — the first networked game needs public-internet
-multiplayer — and Steps 1–4 of nine are complete. M17 is unstarted and credential-gated.
+multiplayer — and Steps 1–5 of nine are complete. M17 is unstarted and credential-gated.
 
 ## Current milestone
 
-**M16 — Connected: "it plays with others." In progress; Steps 1–4 of nine complete,
+**M16 — Connected: "it plays with others." In progress; Steps 1–5 of nine complete,
 2026-09-22.** Read `docs/design/networking.md` — §12's nine steps and their Resolutions — and
 ADR-0044/0045, accepted 2026-09-21. The owner requires public-internet multiplayer: one
 operator-hosted authority, TLS 1.3 with mutual certificates, up to four reference peers and no
@@ -2561,8 +2604,9 @@ prediction. Step 1 qualified Mbed TLS 3.6.7 LTS and froze FNET wire v1 in L2 `ne
 `platform.Transport`, authenticated streams proved over real loopback on macOS and Windows;
 Step 3 added `net.Service`, which admits peers by grant, allowlist and compatibility within
 bounded work, deadlines and budgets; Step 4 added the acknowledged baseline, activation,
-tick-admitted command batches and replaceable complete state. **Step 5 — the public API,
-`FoundryApi_v5` — needs the owner's instruction.** A real
+tick-admitted command batches and replaceable complete state; Step 5 published them as
+`FoundryApi_v5`. **Step 6 — the connected sandbox through that API — needs the owner's
+instruction.** A real
 public listener, real credentials and any infrastructure need the operator's explicit
 authorization in any step.
 
@@ -3509,7 +3553,7 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M16 is in progress: Steps 1–4 of nine are complete, and nothing is half-built.** Its
+**M16 is in progress: Steps 1–5 of nine are complete, and nothing is half-built.** Its
 current account is the M16 entries at the top of this file and `networking.md`'s Resolutions.
 **M0–M15 are complete.** M15's design and
 its nine Resolutions are in `docs/design/editor.md`. Step 1 added source spans to
@@ -4175,16 +4219,16 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**M16 Step 5 — publish networking in the single public API (`networking.md` §12) — is next and
-needs the owner's instruction.** Its first act is a dated Resolution freezing the v5 types and
-call inventory before any code (§8, §11). Step 4's surface is what it publishes:
-- grants, sessions and channels;
-- `sendBaseline`/`acknowledgeBaseline`, `sendCommand` and `publishState`;
-- `nextDelivery`/`takeDelivery` — whose short-buffer refusal already takes nothing, as §8 asks;
-- `admitBatch`/`batchCommand`/`copyBatchPayload`;
-- events and stats.
+**M16 Step 6 — connect the reference sandbox through that API (`networking.md` §12) — is next
+and needs the owner's instruction.** It adds:
+- opt-in offline, server and client host modes, and operator credential references;
+- a separately built, header-only consumer that uses `FoundryApi_v5` and nothing else;
+- runtime-registered command and state channels, and content-defined marker behaviour;
+- authoritative ticking, presentation maps and visible connection state;
+- a real two-window run on the primary desktop.
 
-Steps 1–4 are committed and **none is pushed**. M17 (public macOS release certification) needs Developer ID credentials,
+A host binds its service and the grants it publishes to `abi.Host`, and keeps pumping it.
+Steps 1–5 are committed and **none is pushed**. M17 (public macOS release certification) needs Developer ID credentials,
 Apple's notary service and a genuinely clean recipient Mac (ADR-0032), and it is deliberately
 last. M18 is Linux runtime support, after the first game and before any 3D (ADR-0039).
 
@@ -5477,8 +5521,8 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 
 ## Notes for the next session
 
-**Resume point, 2026-09-22:** M0–M15 complete, tagged and pushed. **M16 Steps 1–4 of nine are
-complete and committed, not pushed.** Step 5 needs the owner's instruction.
+**Resume point, 2026-09-22:** M0–M15 complete, tagged and pushed. **M16 Steps 1–5 of nine are
+complete and committed, not pushed.** Step 6 needs the owner's instruction.
 - **M16's record** is `docs/design/networking.md` with ADR-0044/0045. `platform.Transport` is
   the authenticated stream layer and `net.Service` the sessions over it; `zig build
   net-session-test`, `zig build transport-test` and `zig build tls-qualification` are their
@@ -5495,7 +5539,7 @@ complete and committed, not pushed.** Step 5 needs the owner's instruction.
   --output <work> [--dependency <x.fpk>]... [--export <file.fpk>] [--plan <file> | --script]`.
   A `--plan` is one action a line and **belongs beside the package it edits, never in this
   repository**: it names that package's schemas and fields, and the editor knows none of them.
-- **Do not start M16 Step 5 without the owner's instruction**, and nothing in M16 authorizes a
+- **Do not start M16 Step 6 without the owner's instruction**, and nothing in M16 authorizes a
   public listener, real credentials or infrastructure.
 - **M13's record** is `docs/design/vulkan.md` with ADR-0037/0038/0039. Vulkan runs on Windows x64,
   and `-Drhi=vulkan` builds, tests and installs there (AGENTS.md, *Vulkan work*).

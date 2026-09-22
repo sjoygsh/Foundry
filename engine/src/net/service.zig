@@ -632,6 +632,9 @@ pub const Service = struct {
     next_epoch: u64,
     now: u64 = 0,
     rotation: u32 = 0,
+    /// Moves whenever a connection is added or removed, so a walk over a session's peers
+    /// can tell that the set changed under it. Never zero.
+    revision: u32 = 1,
     counters: Stats = .{},
 
     /// Heap-allocated so its address is stable for the host that holds it.
@@ -923,6 +926,7 @@ pub const Service = struct {
             error.NetworkUnavailable => error.NetworkUnavailable,
         };
         if (session.state == .configuring) self.freeze(session_id, session);
+        self.bumpRevision();
         const id = self.connections.add(self.gpa, .{
             .session = session_id,
             .stream = stream,
@@ -1223,6 +1227,29 @@ pub const Service = struct {
         return event;
     }
 
+    /// Takes the oldest queued event of a session on one of `grants`, leaving every other
+    /// event queued in its order: a consumer that may use only some grants neither sees nor
+    /// consumes another's events.
+    pub fn nextEventFor(self: *Service, grants: []const core.ContentId) ?Event {
+        for (0..self.event_len) |offset| {
+            const event = self.events[(self.event_start + offset) % self.events.len];
+            const session = self.sessions.get(event.session) orelse continue;
+            const grant = self.grants[session.grant].id;
+            for (grants) |allowed| {
+                if (!allowed.eql(grant)) continue;
+                // The earlier events each move one place later, so the order is kept.
+                var at = offset;
+                while (at > 0) : (at -= 1) {
+                    self.events[(self.event_start + at) % self.events.len] = self.events[(self.event_start + at - 1) % self.events.len];
+                }
+                self.event_start = (self.event_start + 1) % self.events.len;
+                self.event_len -= 1;
+                return event;
+            }
+        }
+        return null;
+    }
+
     pub fn stats(self: *Service) Stats {
         var result = self.counters;
         result.sessions = self.sessions.count();
@@ -1292,6 +1319,7 @@ pub const Service = struct {
                     continue;
                 },
             }
+            self.bumpRevision();
             _ = self.connections.add(self.gpa, .{
                 .session = session_id,
                 .stream = stream,
@@ -1990,6 +2018,12 @@ pub const Service = struct {
             .admitted => session.admitted -= 1,
         }
         _ = self.connections.remove(id);
+        self.bumpRevision();
+    }
+
+    fn bumpRevision(self: *Service) void {
+        self.revision +%= 1;
+        if (self.revision == 0) self.revision = 1;
     }
 
     /// Ends every server-side peer the current allowlist no longer admits as the

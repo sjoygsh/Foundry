@@ -33,6 +33,7 @@ pub const api_version_1: u32 = 1;
 pub const api_version_2: u32 = 2;
 pub const api_version_3: u32 = 3;
 pub const api_version_4: u32 = 4;
+pub const api_version_5: u32 = 5;
 
 // == Booleans ==========================================================================
 
@@ -318,6 +319,12 @@ pub const SourceNode = Opaque("source node");
 pub const SchemaNode = Opaque("schema node");
 /// A successful build, and the private candidate tree behind it.
 pub const Build = Opaque("build");
+
+/// `net` — the v5 networking surface (`networking.md` §8). A session exists only by a
+/// grant the host published; a peer is one connection in one session, and neither handle
+/// ever names a key, a principal or an address.
+pub const NetSession = Opaque("network session");
+pub const NetPeer = Opaque("network peer");
 
 // == Enumerations ======================================================================
 

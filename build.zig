@@ -170,10 +170,13 @@ const layering = [_]Module{
     // the one public table like everything else, and the editor gets no private path (I4).
     // It is a downward dependency on L4, the same shape `app` already is here, and this
     // module still creates no service — a host hands it one, or authoring is unavailable.
+    // `net` joins at M16 step 5 for the same reason (`networking.md` §3): sessions are
+    // published through the one table, and a host hands it the service or networking is
+    // unavailable. `net` is L2, so this is an ordinary downward edge.
     // The one module it will **never** have is
     // `rhi` — §4.2's two boundaries, where the renderer API is game-facing and the RHI is
     // not, so this module does not merely decline to publish the RHI, it cannot see it.
-    .{ .name = "abi", .deps = &.{ "core", "data", "platform", "asset", "app", "author", "scene", "mod", "render2d", "ui", "audio", "physics2d" } },
+    .{ .name = "abi", .deps = &.{ "core", "data", "platform", "asset", "app", "author", "scene", "mod", "net", "render2d", "ui", "audio", "physics2d" } },
 };
 
 /// Which platform backend to build against.
@@ -1020,6 +1023,33 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_net_sessions.step);
     b.step("net-session-test", "Run M16's session proofs: admission, refusal, limits, deadlines and teardown")
         .dependOn(&run_net_sessions.step);
+
+    // M16 Step 5: the same sessions through `FoundryApi_v5` and nothing else — a real
+    // service over the memory carrier, driven only by table calls, plus every refusal the
+    // boundary owes a caller it cannot trust.
+    const abi_networking_mod = b.createModule(.{
+        .root_source_file = b.path("engine/tests/abi_networking.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    for ([_][]const u8{ "core", "net", "abi" }) |name| abi_networking_mod.addImport(name, modules.get(name).?);
+    abi_networking_mod.addImport("platform", platform_module);
+    abi_networking_mod.addIncludePath(mbedtls.path("include"));
+    abi_networking_mod.addIncludePath(b.path("engine/src/platform"));
+    abi_networking_mod.addCSourceFile(.{
+        .file = b.path("engine/tests/fixtures/tls_identities.c"),
+        .flags = mbedtls_c_flags,
+    });
+    const abi_networking_tests = b.addTest(.{
+        .name = "abi-networking",
+        .root_module = abi_networking_mod,
+    });
+    check_step.dependOn(&abi_networking_tests.step);
+    const run_abi_networking = b.addRunArtifact(abi_networking_tests);
+    test_step.dependOn(&run_abi_networking.step);
+    b.step("abi-net-test", "Run M16's public networking proofs: FoundryApi_v5 over a real service")
+        .dependOn(&run_abi_networking.step);
 
     // Samples are part of the per-milestone portability obligation too: a sample that
     // stopped cross-compiling would be a milestone rule broken (ROADMAP), and finding

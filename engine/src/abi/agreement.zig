@@ -21,6 +21,7 @@ const data = @import("data");
 const api = @import("api.zig");
 const author_types = @import("author_types.zig");
 const mod_types = @import("mod_types.zig");
+const net_types = @import("net_types.zig");
 const types = @import("types.zig");
 const ui_types = @import("ui_types.zig");
 
@@ -42,6 +43,8 @@ test "the header declares the version and the entry points this build publishes"
     try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_2 2u") != null);
     try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_3 3u") != null);
     try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_4 4u") != null);
+    try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_5 5u") != null);
+    try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION FOUNDRY_API_VERSION_5") != null);
     try testing.expect(std.mem.indexOf(u8, header, types.init_symbol) != null);
     try testing.expect(std.mem.indexOf(u8, header, types.shutdown_symbol) != null);
 }
@@ -154,6 +157,22 @@ test "the header names every table entry, in the table's own order" {
             at = found;
         }
     }
+
+    @setEvalBranchQuota(64 * @typeInfo(api.Api_v5).@"struct".fields.len);
+    at = std.mem.indexOf(u8, header, "typedef struct FoundryApi_v5 {").?;
+    inline for (@typeInfo(api.Api_v5).@"struct".fields) |field| {
+        if (comptime @typeInfo(field.type) == .pointer) {
+            const spelled = "*" ++ field.name ++ ")";
+            const found = std.mem.indexOfPos(u8, header, at, spelled) orelse {
+                std.debug.print(
+                    "the v5 header does not declare '{s}' after the entry before it\n",
+                    .{field.name},
+                );
+                return error.TestUnexpectedResult;
+            };
+            at = found;
+        }
+    }
 }
 
 // `agreement.c`, which the build attaches to this module. Referenced only from tests, so a
@@ -181,6 +200,10 @@ extern fn foundry_agreement_api_v4_size() u64;
 extern fn foundry_agreement_api_v4_count() u64;
 extern fn foundry_agreement_api_v4_offset(index: u64) u64;
 extern fn foundry_agreement_api_v4_name(index: u64) ?[*:0]const u8;
+extern fn foundry_agreement_api_v5_size() u64;
+extern fn foundry_agreement_api_v5_count() u64;
+extern fn foundry_agreement_api_v5_offset(index: u64) u64;
+extern fn foundry_agreement_api_v5_name(index: u64) ?[*:0]const u8;
 
 test "the scalars are the widths the header states" {
     try testing.expectEqual(@as(usize, 4), @sizeOf(types.Result));
@@ -541,4 +564,76 @@ test "the header names every authoring enumerator the engine publishes" {
             return err;
         };
     }
+}
+
+test "the additive v5 table has the same members, in the same places, in both languages" {
+    const fields = @typeInfo(api.Api_v5).@"struct".fields;
+
+    // The Step 5 Resolution froze 235 members before any was written.
+    try testing.expectEqual(@as(usize, 235), fields.len);
+    try testing.expectEqual(@as(u64, fields.len), foundry_agreement_api_v5_count());
+    try testing.expectEqual(@as(u64, @sizeOf(api.Api_v5)), foundry_agreement_api_v5_size());
+
+    inline for (fields, 0..) |field, i| {
+        const from_header = foundry_agreement_api_v5_offset(i);
+        testing.expectEqual(@as(u64, @offsetOf(api.Api_v5, field.name)), from_header) catch |err| {
+            std.debug.print(
+                "the v5 table disagrees about '{s}': Zig puts it at {d}, the header at {d}\n",
+                .{ field.name, @offsetOf(api.Api_v5, field.name), from_header },
+            );
+            return err;
+        };
+
+        const spelled = foundry_agreement_api_v5_name(i) orelse return error.TestUnexpectedResult;
+        try testing.expectEqualStrings(field.name, std.mem.span(spelled));
+    }
+
+    try testing.expectEqual(@as(u64, std.math.maxInt(u64)), foundry_agreement_api_v5_offset(fields.len));
+    try testing.expectEqual(@as(?[*:0]const u8, null), foundry_agreement_api_v5_name(fields.len));
+}
+
+test "the v5 networking values are the shapes and numbers the header states" {
+    // `net_types.zig` states the sizes as well, and `agreement.c` states them a third time.
+    try testing.expectEqual(@as(usize, 8), @sizeOf(types.NetSession));
+    try testing.expectEqual(@as(usize, 8), @sizeOf(types.NetPeer));
+    try testing.expectEqual(@as(usize, 4), @offsetOf(net_types.Endpoint, "port"));
+    try testing.expectEqual(@as(usize, 16), @offsetOf(net_types.GrantInfo, "endpoint"));
+    try testing.expectEqual(@as(usize, 20), @offsetOf(net_types.ChannelDesc, "delivery"));
+    try testing.expectEqual(@as(usize, 30), @offsetOf(net_types.SessionInfo, "listening"));
+    try testing.expectEqual(@as(usize, 32), @offsetOf(net_types.SessionInfo, "listen_endpoint"));
+    try testing.expectEqual(@as(usize, 16), @offsetOf(net_types.PeerInfo, "epoch"));
+    try testing.expectEqual(@as(usize, 8), @offsetOf(net_types.Ending, "index"));
+    try testing.expectEqual(@as(usize, 32), @offsetOf(net_types.Event, "ending"));
+    try testing.expectEqual(@as(usize, 24), @offsetOf(net_types.Delivery, "sequence"));
+    try testing.expectEqual(@as(usize, 16), @offsetOf(net_types.Command, "number"));
+    try testing.expectEqual(@as(usize, 176), @offsetOf(net_types.Stats, "bytes_sent"));
+
+    // Every number the header defines is the one the boundary produces or accepts.
+    const numbers = [_]struct { []const u8, i64 }{
+        .{ "FOUNDRY_NET_SERVER", net_types.role_server },
+        .{ "FOUNDRY_NET_CLIENT", net_types.role_client },
+        .{ "FOUNDRY_NET_BIDIRECTIONAL", net_types.direction_bidirectional },
+        .{ "FOUNDRY_NET_LATEST_STATE", net_types.delivery_latest_state },
+        .{ "FOUNDRY_NET_PEER_ACTIVE", 5 },
+        .{ "FOUNDRY_NET_EVENT_ENDED", net_types.event_ended },
+        .{ "FOUNDRY_NET_DELIVERY_MESSAGE", net_types.delivery_kind_message },
+        .{ "FOUNDRY_NET_ENDING_OVERLOADED", net_types.ending_overloaded },
+        .{ "FOUNDRY_NET_DISCONNECT_APPLICATION", 6 },
+        .{ "FOUNDRY_NET_REFUSAL_TIMEOUT", 9 },
+        .{ "FOUNDRY_NET_DEADLINE_WRITE_STALL", 4 },
+        .{ "FOUNDRY_NET_FAULT_MISMATCH", 5 },
+        .{ "FOUNDRY_NET_FAILURE_CERTIFICATE_EXPIRED", 11 },
+        .{ "FOUNDRY_NET_FAILURE_INTERNAL", 23 },
+    };
+    for (numbers) |entry| {
+        var buffer: [96]u8 = undefined;
+        const line = try std.fmt.bufPrint(&buffer, "#define {s} {d}\n", .{ entry[0], entry[1] });
+        if (std.mem.indexOf(u8, header, line) == null) {
+            std.debug.print("the header does not say '{s}'\n", .{line});
+            return error.TestUnexpectedResult;
+        }
+    }
+    try testing.expectEqual(@as(i32, 5), net_types.peerState(.active));
+    try testing.expectEqual(@as(i32, 11), net_types.failure(.certificate_expired));
+    try testing.expectEqual(@as(i32, 23), net_types.failure(.internal));
 }
