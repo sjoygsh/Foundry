@@ -1,5 +1,5 @@
-//! Sessions, the peers in them, and everything a connection passes through before it
-//! is one (`networking.md` §3–§6, M16 Step 3).
+//! Sessions, the peers in them, everything a connection passes through before it is
+//! one, and what an active peer exchanges (`networking.md` §3–§7, M16 Steps 3 and 4).
 //!
 //! A `Service` runs over a `platform.Transport` it does not own. The host builds it
 //! from **grants** — a role, an endpoint and credentials the host already constructed
@@ -18,8 +18,22 @@
 //! each against its own and either refuses — naming the category and the first entry
 //! that differs — or assigns a participant number and answers. The client checks that
 //! answer against its own description before it believes it. Both sides are then
-//! **synchronizing**: admitted, heartbeating, and waiting for the initial state Step 4
-//! delivers.
+//! **synchronizing**.
+//!
+//! ## Initial state, activation, commands and state
+//!
+//! The server's host sends a synchronizing peer one **baseline**: complete state,
+//! stamped with a server tick, queued reliably and never replaced. The client's host
+//! takes it, applies it, and acknowledges it by naming it; only that acknowledgement
+//! activates the peer, and the server says so. Then, and only then, the client sends
+//! **commands** — reliable, numbered from 1 per connection — and the server sends
+//! **state**. A server's commands wait in each peer's bounded inbox until its host
+//! admits a **batch** for a tick: at most `commands_per_peer_per_tick` from each peer,
+//! copied out and ordered by participant number and command number, never by arrival,
+//! so the batches are what a replay needs. A state is numbered only when it enters the
+//! send queue; until the previous one has gone to TLS a newer one replaces it, so a
+//! slow peer gets the newest state rather than every state. The service gives payloads
+//! no meaning: validating them, and every object map, is the application's.
 //!
 //! ## Bounds
 //!
@@ -35,8 +49,8 @@
 //!
 //! ## What this does not do
 //!
-//! No command, state, baseline or activation — Step 4. No ECS, no world, no package
-//! fetching, no public ABI, and no logging: every outcome is a counter or an event.
+//! No ECS, no world, no gameplay schema, no package fetching, no public ABI (Step 5),
+//! and no logging: every outcome is a counter or an event.
 
 const std = @import("std");
 const core = @import("core");
@@ -143,8 +157,11 @@ pub const PeerState = enum {
     authenticating,
     /// Authenticated and authorized; comparing compatibility.
     negotiating,
-    /// Admitted with a participant number, awaiting initial state.
+    /// Admitted with a participant number; its initial state is being delivered and
+    /// acknowledged.
     synchronizing,
+    /// The baseline was acknowledged: commands and live state flow.
+    active,
     /// Ended; delivering a last refusal or disconnect before the connection closes.
     closing,
 };
@@ -211,9 +228,55 @@ pub const Event = struct {
     peer: PeerHandle,
     kind: union(enum) {
         admitted: Admission,
+        /// The peer acknowledged its baseline; commands may now be sent and admitted.
+        activated: Admission,
         /// The handle is stale, or becomes so once a last notice has been delivered.
         ended: Departure,
     },
+};
+
+/// Names a baseline a client received, as its acknowledgement must: the sequence of the
+/// frame that carried it and the server tick it was stamped with.
+pub const BaselineRef = struct {
+    sequence: u64,
+    tick: u64,
+};
+
+/// What a client receives from its server, taken one at a time in this order: reliable
+/// messages as they arrived, then the newest complete state, if one is untaken. The
+/// baseline is the one delivery before activation.
+pub const Delivery = struct {
+    kind: Kind,
+    channel: core.ContentId,
+    /// The server tick a baseline or state was stamped with; 0 for a message.
+    tick: u64,
+    /// The connection sequence of the frame that carried it.
+    sequence: u64,
+    bytes: u32,
+
+    pub const Kind = enum { baseline, state, message };
+
+    pub fn baseline(self: Delivery) ?BaselineRef {
+        if (self.kind != .baseline) return null;
+        return .{ .sequence = self.sequence, .tick = self.tick };
+    }
+};
+
+/// One command in a server tick's admitted batch. Batches are ordered by participant
+/// number, then by command number, whatever order the bytes arrived in.
+pub const AdmittedCommand = struct {
+    peer: PeerHandle,
+    participant: u32,
+    principal: u32,
+    /// Counts the peer's commands from 1; the number `sendCommand` returned to it.
+    number: u64,
+    channel: core.ContentId,
+    bytes: u32,
+};
+
+pub const BatchInfo = struct {
+    tick: u64,
+    count: u32,
 };
 
 /// A grant as a consumer may see it: never its credentials.
@@ -274,6 +337,14 @@ pub const Stats = struct {
     /// Negotiations refused for a compatibility difference.
     refused: u64 = 0,
     admitted: u64 = 0,
+    baselines_sent: u64 = 0,
+    activations: u64 = 0,
+    commands_sent: u64 = 0,
+    commands_received: u64 = 0,
+    commands_admitted: u64 = 0,
+    /// States a newer one replaced before any of it was queued.
+    states_replaced: u64 = 0,
+    states_sent: u64 = 0,
     frames_received: u64 = 0,
     frames_sent: u64 = 0,
     bytes_received: u64 = 0,
@@ -283,6 +354,9 @@ pub const Stats = struct {
     peak_bytes_out_per_pump: u32 = 0,
     peak_send_queue: u32 = 0,
     peak_events: u32 = 0,
+    peak_inbox_bytes: u32 = 0,
+    peak_batch_commands: u32 = 0,
+    peak_batch_bytes: u32 = 0,
 };
 
 // -- errors ---------------------------------------------------------------------------
@@ -324,6 +398,22 @@ pub const PolicyError = error{ InvalidIdentity, DuplicateIdentity, TooManyIdenti
 
 pub const RotateError = error{ UnknownGrant, InvalidCredentials, WrongRole };
 
+/// A session activates peers only through a baseline on its full-state channel; one
+/// registered without such a channel has nothing to carry it (`NoStateChannel`).
+pub const BaselineError = error{ InvalidHandle, WrongRole, WrongState, NoStateChannel, BaselineAlreadySent, PayloadTooLarge, QueueFull };
+
+pub const StateError = error{ InvalidHandle, WrongRole, WrongState, NoStateChannel, PayloadTooLarge, StaleTick };
+
+pub const CommandError = error{ InvalidHandle, WrongState, UnknownChannel, WrongChannel, PayloadTooLarge, QueueFull, SequenceExhausted };
+
+pub const AcknowledgeError = error{ InvalidHandle, WrongRole, WrongState, StaleBaseline, QueueFull };
+
+pub const DeliveryError = error{ InvalidHandle, WrongRole, BufferTooSmall };
+
+pub const BatchError = error{ InvalidHandle, WrongRole, WrongState, StaleTick };
+
+pub const BatchReadError = error{ InvalidHandle, NoSuchCommand, BufferTooSmall };
+
 // -- internals ------------------------------------------------------------------------
 
 const Pool = enum { pending, admitted };
@@ -340,6 +430,8 @@ const Notice = union(enum) {
 const Ring = struct {
     start: usize = 0,
     len: usize = 0,
+    /// Every byte ever consumed, so a position in the stream outlives wrapping.
+    consumed: u64 = 0,
 
     fn write(self: *Ring, storage: []u8, bytes: []const u8) void {
         std.debug.assert(bytes.len <= storage.len - self.len);
@@ -357,12 +449,52 @@ const Ring = struct {
         return storage[self.start..][0..@min(self.len, storage.len - self.start)];
     }
 
+    /// Copies `out.len` bytes starting `skip` bytes past the head, across the wrap.
+    fn copyOut(self: *const Ring, storage: []const u8, skip: usize, out: []u8) void {
+        std.debug.assert(skip + out.len <= self.len);
+        var copied: usize = 0;
+        while (copied < out.len) {
+            const at = (self.start + skip + copied) % storage.len;
+            const run = @min(out.len - copied, storage.len - at);
+            @memcpy(out[copied..][0..run], storage[at..][0..run]);
+            copied += run;
+        }
+    }
+
     fn consume(self: *Ring, capacity: usize, count: usize) void {
         self.start = (self.start + count) % capacity;
         self.len -= count;
+        self.consumed += count;
         if (self.len == 0) self.start = 0;
     }
 };
+
+/// A received application message waiting in a connection's inbox: its channel, the
+/// sequence of the frame that carried it and its length, then its payload.
+const Record = struct {
+    const header_bytes = 24;
+    channel: u64,
+    sequence: u64,
+    bytes: u32,
+
+    fn encode(self: Record) [header_bytes]u8 {
+        var out: [header_bytes]u8 = @splat(0);
+        std.mem.writeInt(u64, out[0..8], self.channel, .little);
+        std.mem.writeInt(u64, out[8..16], self.sequence, .little);
+        std.mem.writeInt(u32, out[16..20], self.bytes, .little);
+        return out;
+    }
+
+    fn decode(bytes: *const [header_bytes]u8) Record {
+        return .{
+            .channel = std.mem.readInt(u64, bytes[0..8], .little),
+            .sequence = std.mem.readInt(u64, bytes[8..16], .little),
+            .bytes = std.mem.readInt(u32, bytes[16..20], .little),
+        };
+    }
+};
+
+const events_per_connection = 3;
 
 const SessionSlot = struct {
     grant: u32,
@@ -375,6 +507,35 @@ const SessionSlot = struct {
     next_participant: u32 = 1,
     pending: u16 = 0,
     admitted: u16 = 0,
+    /// The session's one full-state channel, found when its channels froze.
+    state_channel: ?channel.Descriptor = null,
+    /// A server session's batch storage.
+    batch: ?u32 = null,
+};
+
+/// One server session's admitted batch: commands copied out of their inboxes, so a
+/// peer that leaves after admission cannot take its commands with it.
+const Batch = struct {
+    in_use: bool = false,
+    tick: ?u64 = null,
+    count: u32 = 0,
+    used_bytes: u32 = 0,
+    entries: []Admitted,
+    bytes: []u8,
+};
+
+const Admitted = struct {
+    command: AdmittedCommand,
+    offset: u32,
+};
+
+const Participant = struct {
+    id: PeerHandle,
+    number: u32,
+
+    fn lessThan(_: void, a: Participant, b: Participant) bool {
+        return a.number < b.number;
+    }
 };
 
 const Connection = struct {
@@ -405,8 +566,34 @@ const Connection = struct {
     decoder: wire.Decoder = undefined,
     staged_start: usize = 0,
     staged_len: usize = 0,
-    /// Event slots held for this connection: its admission and its ending.
+    /// Event slots held for this connection: its admission, activation and ending.
     reserved: u2 = 0,
+
+    // What Step 4 delivers.
+    /// The baseline a server sent, or a client received.
+    baseline: ?BaselineRef = null,
+    /// A client sent its acknowledgement.
+    acknowledged: bool = false,
+    /// The last tick stamped on a baseline or state: sent, on a server; received, on a
+    /// client. Neither side lets it go backwards.
+    last_tick: u64 = 0,
+    /// A server's newest state, not yet queued, and the tick it carries.
+    out_state: ?u32 = null,
+    out_state_tick: u64 = 0,
+    /// Where in the send stream the last queued state frame ends. Until every byte
+    /// before it has gone to TLS, a newer state waits in `out_state`.
+    state_end: u64 = 0,
+    /// A client's untaken baseline or state.
+    in_state: ?u32 = null,
+    in_state_kind: Delivery.Kind = .state,
+    in_state_tick: u64 = 0,
+    in_state_sequence: u64 = 0,
+    commands_sent: u64 = 0,
+    commands_received: u64 = 0,
+    /// Received messages not yet taken: commands on a server, awaiting admission;
+    /// reliable messages on a client, awaiting delivery.
+    inbox: Ring = .{},
+    inbox_count: u32 = 0,
 };
 
 const SessionPool = core.HandlePool(Session, SessionSlot);
@@ -438,6 +625,9 @@ pub const Service = struct {
     event_len: usize = 0,
     event_reserved: usize = 0,
     drain: []u8,
+    batches: []Batch,
+    batch_entries: []Admitted,
+    batch_bytes: []u8,
     limiter: limiter_mod.Limiter,
     next_epoch: u64,
     now: u64 = 0,
@@ -451,7 +641,15 @@ pub const Service = struct {
         if (config.first_epoch == 0) return error.InvalidEpoch;
         if (config.grants.len > max_grants) return error.TooManyGrants;
         if (config.identities.len > limits.identities) return error.TooManyIdentities;
-        if (limits.receive_bytes_per_peer < @as(u64, limits.frame_bytes) + staging_bytes) return error.QueueTooSmall;
+        // Receive storage holds a frame being decoded, a staged record, a client's
+        // untaken state and an inbox for at least one message; send storage, a server's
+        // unqueued state and a queue for at least one frame. A batch holds any command.
+        if (limits.receive_bytes_per_peer < 3 * @as(u64, limits.frame_bytes) + staging_bytes or
+            limits.send_bytes_per_peer < 2 * @as(u64, limits.frame_bytes) or
+            limits.queued_event_payload_bytes < limits.frame_bytes)
+        {
+            return error.QueueTooSmall;
+        }
 
         var server_grants: u32 = 0;
         var client_grants: u32 = 0;
@@ -490,7 +688,7 @@ pub const Service = struct {
 
         var frozen = try compatibility.freeze(gpa, config.compatibility, limits);
         errdefer frozen.deinit(gpa);
-        if (frozen.negotiationBytes(limits.channels) > limits.send_bytes_per_peer) return error.QueueTooSmall;
+        if (frozen.negotiationBytes(limits.channels) > limits.send_bytes_per_peer - limits.frame_bytes) return error.QueueTooSmall;
 
         const self = try gpa.create(Service);
         errdefer gpa.destroy(self);
@@ -509,6 +707,9 @@ pub const Service = struct {
             .free_buffer_count = 0,
             .events = &.{},
             .drain = &.{},
+            .batches = &.{},
+            .batch_entries = &.{},
+            .batch_bytes = &.{},
             .limiter = undefined,
             .next_epoch = config.first_epoch,
         };
@@ -529,6 +730,14 @@ pub const Service = struct {
         self.free_buffer_count = buffer_count;
         self.events = try gpa.alloc(Event, limits.queued_events);
         self.drain = try gpa.alloc(u8, staging_bytes);
+        const per_batch = @as(usize, limits.peers_per_session) * limits.commands_per_peer_per_tick;
+        self.batch_entries = try gpa.alloc(Admitted, server_sessions * per_batch);
+        self.batch_bytes = try gpa.alloc(u8, @as(usize, server_sessions) * limits.queued_event_payload_bytes);
+        self.batches = try gpa.alloc(Batch, server_sessions);
+        for (self.batches, 0..) |*batch, index| batch.* = .{
+            .entries = self.batch_entries[index * per_batch ..][0..per_batch],
+            .bytes = self.batch_bytes[index * limits.queued_event_payload_bytes ..][0..limits.queued_event_payload_bytes],
+        };
 
         try self.replaceAllowlist(config.identities);
         return self;
@@ -560,6 +769,9 @@ pub const Service = struct {
         gpa.free(self.free_buffers);
         gpa.free(self.events);
         gpa.free(self.drain);
+        gpa.free(self.batches);
+        gpa.free(self.batch_entries);
+        gpa.free(self.batch_bytes);
     }
 
     // -- grants and policy ------------------------------------------------------------
@@ -633,7 +845,19 @@ pub const Service = struct {
         const index = self.grantIndex(grant_id) orelse return error.UnknownGrant;
         if (self.sessionOfGrant(index) != null) return error.GrantInUse;
         if (self.sessions.count() >= self.limits.sessions) return error.LimitReached;
-        return self.sessions.add(self.gpa, .{ .grant = @intCast(index), .role = self.grants[index].role }) catch unreachable;
+        var slot: SessionSlot = .{ .grant = @intCast(index), .role = self.grants[index].role };
+        if (slot.role == .server) {
+            // One server session per server grant, and `init` sized a batch for each
+            // that can exist at once.
+            for (self.batches, 0..) |*batch, at| {
+                if (batch.in_use) continue;
+                batch.* = .{ .in_use = true, .entries = batch.entries, .bytes = batch.bytes };
+                slot.batch = @intCast(at);
+                break;
+            }
+            std.debug.assert(slot.batch != null);
+        }
+        return self.sessions.add(self.gpa, slot) catch unreachable;
     }
 
     /// Registers a channel while the session is configuring. Validated alone and against
@@ -688,8 +912,8 @@ pub const Service = struct {
         if (session.admitted != 0) return error.AlreadyConnected;
         if (session.channel_count == 0) return error.NoChannels;
         if (self.free_buffer_count == 0) return error.LimitReached;
-        if (!self.reserveEvents(2)) return error.EventQueueFull;
-        errdefer self.releaseEvents(2);
+        if (!self.reserveEvents(events_per_connection)) return error.EventQueueFull;
+        errdefer self.releaseEvents(events_per_connection);
         const grant = self.grants[session.grant];
         const stream = self.transport.connect(grant.endpoint, grant.credentials) catch |err| return switch (err) {
             error.InvalidHandle, error.WrongRole, error.InvalidEndpoint => error.InvalidGrant,
@@ -705,7 +929,7 @@ pub const Service = struct {
             .state = .connecting,
             .pool = .admitted,
             .remote = grant.endpoint,
-            .reserved = 2,
+            .reserved = events_per_connection,
         }) catch unreachable;
         self.attachBuffer(self.connections.get(id).?);
         session.admitted += 1;
@@ -719,12 +943,13 @@ pub const Service = struct {
         for (self.collect()) |id| {
             const conn = self.connections.get(id) orelse continue;
             if (!conn.session.eql(session_id)) continue;
-            if (conn.state == .negotiating or conn.state == .synchronizing) {
+            if (conn.state == .negotiating or conn.state == .synchronizing or conn.state == .active) {
                 if (self.enqueueNotice(conn, .{ .disconnect = .closed })) _ = self.pushOut(conn);
             }
             self.finalize(id);
         }
         if (!session.listener.isNone()) self.transport.closeListener(session.listener);
+        if (session.batch) |batch| self.batches[batch].in_use = false;
         self.purgeEvents(session_id);
         _ = self.sessions.remove(session_id);
     }
@@ -776,6 +1001,216 @@ pub const Service = struct {
         if (conn.state == .closing) return;
         if (conn.pool == .pending) return self.finalize(peer);
         self.end(peer, .{ .local = reason });
+    }
+
+    // -- initial state, commands and state ---------------------------------------------
+
+    /// Sends a synchronizing peer its complete initial state, stamped with the server
+    /// tick it describes. It is queued as a reliable frame and never replaced; only an
+    /// acknowledgement naming it activates the peer. Refused, changing nothing, if the
+    /// queue cannot hold it now.
+    pub fn sendBaseline(self: *Service, peer: PeerHandle, tick: u64, payload: []const u8) BaselineError!void {
+        const conn = self.connections.get(peer) orelse return error.InvalidHandle;
+        const session = self.sessions.get(conn.session).?;
+        if (session.role != .server) return error.WrongRole;
+        if (conn.state != .synchronizing) return error.WrongState;
+        if (conn.baseline != null) return error.BaselineAlreadySent;
+        const state = session.state_channel orelse return error.NoStateChannel;
+        if (payload.len > state.max_payload_bytes) return error.PayloadTooLarge;
+        if (!self.enqueueFrame(conn, .baseline, state.id.hash, tick, payload)) return error.QueueFull;
+        conn.baseline = .{ .sequence = conn.sent, .tick = tick };
+        conn.last_tick = tick;
+        self.counters.baselines_sent += 1;
+    }
+
+    /// Publishes a peer's newest complete state, copied. It replaces a state not yet
+    /// queued, and waits behind the baseline until the peer is active, so a peer
+    /// receives the newest state it can rather than every state in turn. A tick
+    /// earlier than the last one stamped for this peer is refused.
+    pub fn publishState(self: *Service, peer: PeerHandle, tick: u64, payload: []const u8) StateError!void {
+        const conn = self.connections.get(peer) orelse return error.InvalidHandle;
+        const session = self.sessions.get(conn.session).?;
+        if (session.role != .server) return error.WrongRole;
+        const state = session.state_channel orelse return error.NoStateChannel;
+        if (conn.state != .active and (conn.state != .synchronizing or conn.baseline == null)) return error.WrongState;
+        if (payload.len > state.max_payload_bytes) return error.PayloadTooLarge;
+        if (tick < conn.last_tick) return error.StaleTick;
+        if (conn.out_state != null) self.counters.states_replaced += 1;
+        @memcpy(self.outStateStorage(conn.buffer.?)[0..payload.len], payload);
+        conn.out_state = @intCast(payload.len);
+        conn.out_state_tick = tick;
+        conn.last_tick = tick;
+    }
+
+    /// Queues a copied reliable message to an active peer on a reliable channel that
+    /// runs this way: from a client, a command. Returns its number, counted from 1 on
+    /// this connection. Refused, changing nothing, when the queue is full — never
+    /// dropped once accepted, and never proof the other side has applied it.
+    pub fn sendCommand(self: *Service, peer: PeerHandle, channel_id: core.ContentId, payload: []const u8) CommandError!u64 {
+        const conn = self.connections.get(peer) orelse return error.InvalidHandle;
+        if (conn.state != .active) return error.WrongState;
+        const session = self.sessions.get(conn.session).?;
+        const descriptor = self.findChannel(conn.session, channel_id.hash) orelse return error.UnknownChannel;
+        const toward: channel.Direction = switch (session.role) {
+            .client => .client_to_server,
+            .server => .server_to_client,
+        };
+        if (descriptor.delivery != .reliable_ordered or
+            (descriptor.direction != toward and descriptor.direction != .bidirectional))
+        {
+            return error.WrongChannel;
+        }
+        if (payload.len > descriptor.max_payload_bytes) return error.PayloadTooLarge;
+        const number = std.math.add(u64, conn.commands_sent, 1) catch return error.SequenceExhausted;
+        if (!self.enqueueFrame(conn, .command, descriptor.id.hash, 0, payload)) return error.QueueFull;
+        conn.commands_sent = number;
+        self.counters.commands_sent += 1;
+        return number;
+    }
+
+    /// A client acknowledges the baseline it took and applied, naming it as its
+    /// delivery did. Refused before one has been taken, after one has been
+    /// acknowledged, or for any other baseline.
+    pub fn acknowledgeBaseline(self: *Service, peer: PeerHandle, baseline: BaselineRef) AcknowledgeError!void {
+        const conn = self.connections.get(peer) orelse return error.InvalidHandle;
+        if (self.sessions.get(conn.session).?.role != .client) return error.WrongRole;
+        if (conn.state != .synchronizing or conn.acknowledged) return error.WrongState;
+        const received = conn.baseline orelse return error.WrongState;
+        if (conn.in_state != null) return error.WrongState;
+        if (!std.meta.eql(received, baseline)) return error.StaleBaseline;
+        var payload: [wire.BaselineAck.encoded_size]u8 = undefined;
+        (wire.BaselineAck{ .session_epoch = conn.epoch, .baseline_sequence = received.sequence, .baseline_tick = received.tick }).encode(&payload) catch unreachable;
+        if (!self.enqueue(conn, .baseline_ack, &payload)) return error.QueueFull;
+        conn.acknowledged = true;
+    }
+
+    /// What a client would take next, without taking it. A server has no deliveries:
+    /// its commands reach its host only through `admitBatch`.
+    pub fn nextDelivery(self: *Service, peer: PeerHandle) ?Delivery {
+        const conn = self.connections.get(peer) orelse return null;
+        if (self.sessions.get(conn.session).?.role != .client) return null;
+        if (conn.buffer == null or conn.state == .closing) return null;
+        if (conn.inbox_count > 0) {
+            var header: [Record.header_bytes]u8 = undefined;
+            conn.inbox.copyOut(self.inboxStorage(conn.buffer.?), 0, &header);
+            const record = Record.decode(&header);
+            return .{ .kind = .message, .channel = .{ .hash = record.channel }, .tick = 0, .sequence = record.sequence, .bytes = record.bytes };
+        }
+        const bytes = conn.in_state orelse return null;
+        const state = self.sessions.get(conn.session).?.state_channel.?;
+        return .{ .kind = conn.in_state_kind, .channel = state.id, .tick = conn.in_state_tick, .sequence = conn.in_state_sequence, .bytes = bytes };
+    }
+
+    /// Takes the next delivery, copying its payload into `out`. Null if there is none;
+    /// refused, taking nothing, if `out` is shorter than `nextDelivery` says it must be.
+    pub fn takeDelivery(self: *Service, peer: PeerHandle, out: []u8) DeliveryError!?Delivery {
+        const conn = self.connections.get(peer) orelse return error.InvalidHandle;
+        if (self.sessions.get(conn.session).?.role != .client) return error.WrongRole;
+        const delivery = self.nextDelivery(peer) orelse return null;
+        if (out.len < delivery.bytes) return error.BufferTooSmall;
+        const buffer = conn.buffer.?;
+        switch (delivery.kind) {
+            .message => {
+                const storage = self.inboxStorage(buffer);
+                conn.inbox.copyOut(storage, Record.header_bytes, out[0..delivery.bytes]);
+                conn.inbox.consume(storage.len, Record.header_bytes + delivery.bytes);
+                conn.inbox_count -= 1;
+            },
+            .baseline, .state => {
+                @memcpy(out[0..delivery.bytes], self.inStateStorage(buffer)[0..delivery.bytes]);
+                conn.in_state = null;
+            },
+        }
+        return delivery;
+    }
+
+    /// Freezes a server session's admitted commands for `tick`, replacing the previous
+    /// batch. From each active peer it takes, oldest first, what has arrived — at most
+    /// `commands_per_peer_per_tick`, while the batch has room — one command per peer
+    /// per round, so a large sender cannot crowd out the rest; what it does not take
+    /// waits in order for a later tick. The batch is then ordered by participant
+    /// number and command number, never by arrival. Ticks strictly increase.
+    pub fn admitBatch(self: *Service, session_id: SessionHandle, tick: u64) BatchError!BatchInfo {
+        const session = self.sessions.get(session_id) orelse return error.InvalidHandle;
+        if (session.role != .server) return error.WrongRole;
+        if (session.state != .running) return error.WrongState;
+        const batch = &self.batches[session.batch.?];
+        if (batch.tick) |last| if (tick <= last) return error.StaleTick;
+        batch.tick = tick;
+        batch.count = 0;
+        batch.used_bytes = 0;
+
+        var peers: [256]Participant = undefined;
+        var taken: [256]u16 = @splat(0);
+        var full: [256]bool = @splat(false);
+        var count: usize = 0;
+        var it = self.connections.iterator();
+        while (it.next()) |entry| {
+            if (!entry.value.session.eql(session_id) or entry.value.state != .active) continue;
+            peers[count] = .{ .id = entry.id, .number = entry.value.participant };
+            count += 1;
+        }
+        // Rounds visit peers by participant number, so which commands fit a full batch
+        // depends on nothing but what had arrived.
+        std.mem.sort(Participant, peers[0..count], {}, Participant.lessThan);
+        const budget = self.limits.commands_per_peer_per_tick;
+        var progressed = true;
+        while (progressed) {
+            progressed = false;
+            for (peers[0..count], 0..) |participant, index| {
+                if (full[index] or taken[index] >= budget) continue;
+                const id = participant.id;
+                const conn = self.connections.get(id).?;
+                if (conn.inbox_count == 0) continue;
+                const storage = self.inboxStorage(conn.buffer.?);
+                var header: [Record.header_bytes]u8 = undefined;
+                conn.inbox.copyOut(storage, 0, &header);
+                const record = Record.decode(&header);
+                if (batch.bytes.len - batch.used_bytes < record.bytes) {
+                    full[index] = true;
+                    continue;
+                }
+                conn.inbox.copyOut(storage, Record.header_bytes, batch.bytes[batch.used_bytes..][0..record.bytes]);
+                conn.inbox.consume(storage.len, Record.header_bytes + record.bytes);
+                conn.inbox_count -= 1;
+                batch.entries[batch.count] = .{ .offset = batch.used_bytes, .command = .{
+                    .peer = id,
+                    .participant = conn.participant,
+                    .principal = conn.principal,
+                    .number = conn.commands_received - conn.inbox_count,
+                    .channel = .{ .hash = record.channel },
+                    .bytes = record.bytes,
+                } };
+                batch.count += 1;
+                batch.used_bytes += record.bytes;
+                taken[index] += 1;
+                progressed = true;
+            }
+        }
+        std.mem.sort(Admitted, batch.entries[0..batch.count], {}, admittedLessThan);
+        self.counters.commands_admitted += batch.count;
+        self.counters.peak_batch_commands = @max(self.counters.peak_batch_commands, batch.count);
+        self.counters.peak_batch_bytes = @max(self.counters.peak_batch_bytes, batch.used_bytes);
+        return .{ .tick = tick, .count = batch.count };
+    }
+
+    /// The `index`th command of a server session's current batch.
+    pub fn batchCommand(self: *Service, session_id: SessionHandle, index: u32) ?AdmittedCommand {
+        const session = self.sessions.get(session_id) orelse return null;
+        const batch = &self.batches[session.batch orelse return null];
+        if (index >= batch.count) return null;
+        return batch.entries[index].command;
+    }
+
+    /// Copies the `index`th admitted command's payload into `out`.
+    pub fn copyBatchPayload(self: *Service, session_id: SessionHandle, index: u32, out: []u8) BatchReadError![]u8 {
+        const session = self.sessions.get(session_id) orelse return error.InvalidHandle;
+        const batch = &self.batches[session.batch orelse return error.InvalidHandle];
+        if (index >= batch.count) return error.NoSuchCommand;
+        const entry = batch.entries[index];
+        if (out.len < entry.command.bytes) return error.BufferTooSmall;
+        @memcpy(out[0..entry.command.bytes], batch.bytes[entry.offset..][0..entry.command.bytes]);
+        return out[0..entry.command.bytes];
     }
 
     // -- events and stats ---------------------------------------------------------------
@@ -874,7 +1309,7 @@ pub const Service = struct {
         if (conn.born == null) conn.born = self.now;
         switch (conn.state) {
             .connecting, .authenticating => self.stepHandshake(id),
-            .negotiating, .synchronizing => self.stepExchange(id),
+            .negotiating, .synchronizing, .active => self.stepExchange(id),
             .closing => self.stepClosing(id),
         }
     }
@@ -943,7 +1378,7 @@ pub const Service = struct {
                     return self.refuseUnauthorized(id, .policy);
                 }
                 if (session.admitted >= self.limits.peers_per_session or self.free_buffer_count == 0 or
-                    !self.reserveEvents(2))
+                    !self.reserveEvents(events_per_connection))
                 {
                     self.counters.capacity_refusals += 1;
                     return self.refuseUnauthorized(id, .capacity);
@@ -952,7 +1387,7 @@ pub const Service = struct {
                 session.admitted += 1;
                 conn.pool = .admitted;
                 conn.principal = principal;
-                conn.reserved = 2;
+                conn.reserved = events_per_connection;
                 self.attachBuffer(conn);
                 conn.state = .negotiating;
             },
@@ -1112,7 +1547,10 @@ pub const Service = struct {
                 .server => self.serverNegotiation(id, frame),
                 .client => self.clientNegotiation(id, frame),
             },
-            .synchronizing => self.synchronizing(id, frame),
+            .synchronizing, .active => switch (session.role) {
+                .server => self.serverFrame(id, frame),
+                .client => self.clientFrame(id, frame),
+            },
             else => false,
         };
     }
@@ -1263,18 +1701,138 @@ pub const Service = struct {
         } } });
     }
 
-    fn synchronizing(self: *Service, id: PeerHandle, frame: wire.Frame) bool {
+    fn heartbeat(self: *Service, id: PeerHandle, frame: wire.Frame) bool {
+        const conn = self.connections.get(id).?;
+        const beat = wire.Heartbeat.decode(frame.payload) catch return self.fault(id, .malformed);
+        if (beat.session_epoch != conn.epoch or beat.last_received_sequence > conn.sent) {
+            return self.fault(id, .mismatch);
+        }
+        return true;
+    }
+
+    /// What an admitted client may send a server: heartbeats; the acknowledgement of
+    /// its baseline while synchronizing; commands once active.
+    fn serverFrame(self: *Service, id: PeerHandle, frame: wire.Frame) bool {
         const conn = self.connections.get(id).?;
         switch (frame.header.kind) {
-            .heartbeat => {
-                const heartbeat = wire.Heartbeat.decode(frame.payload) catch return self.fault(id, .malformed);
-                if (heartbeat.session_epoch != conn.epoch or heartbeat.last_received_sequence > conn.sent) {
+            .heartbeat => return self.heartbeat(id, frame),
+            .baseline_ack => {
+                if (conn.state != .synchronizing) return self.fault(id, .unexpected);
+                const sent = conn.baseline orelse return self.fault(id, .unexpected);
+                const ack = wire.BaselineAck.decode(frame.payload) catch return self.fault(id, .malformed);
+                // Only the baseline this peer was sent activates it: a fabricated or
+                // stale acknowledgement is a claim the server knows to be false.
+                if (ack.session_epoch != conn.epoch or ack.baseline_sequence != sent.sequence or ack.baseline_tick != sent.tick) {
                     return self.fault(id, .mismatch);
                 }
+                var payload: [wire.Active.encoded_size]u8 = undefined;
+                (wire.Active{ .session_epoch = conn.epoch, .participant_number = conn.participant }).encode(&payload) catch unreachable;
+                if (!self.enqueue(conn, .active, &payload)) {
+                    self.end(id, .overloaded);
+                    return false;
+                }
+                self.activate(id, conn);
                 return true;
+            },
+            .command => {
+                if (conn.state != .active) return self.fault(id, .unexpected);
+                return self.message(id, frame, .client_to_server);
             },
             else => return self.fault(id, .unexpected),
         }
+    }
+
+    /// What an admitted server may send a client: heartbeats; one baseline and then
+    /// activation while synchronizing; state and messages once active.
+    fn clientFrame(self: *Service, id: PeerHandle, frame: wire.Frame) bool {
+        const conn = self.connections.get(id).?;
+        const header = frame.header;
+        switch (header.kind) {
+            .heartbeat => return self.heartbeat(id, frame),
+            .baseline => {
+                if (conn.state != .synchronizing or conn.baseline != null) return self.fault(id, .unexpected);
+                if (!self.receiveState(id, frame, .baseline)) return false;
+                conn.baseline = .{ .sequence = header.sequence, .tick = header.tick };
+                return true;
+            },
+            .active => {
+                if (conn.state != .synchronizing or !conn.acknowledged) return self.fault(id, .unexpected);
+                const active = wire.Active.decode(frame.payload) catch return self.fault(id, .malformed);
+                if (active.session_epoch != conn.epoch or active.participant_number != conn.participant) {
+                    return self.fault(id, .mismatch);
+                }
+                self.activate(id, conn);
+                return true;
+            },
+            .state => {
+                if (conn.state != .active) return self.fault(id, .unexpected);
+                // A view never goes back: a state older than the last one delivered
+                // could resurrect what the server has since removed.
+                if (header.tick < conn.last_tick) return self.fault(id, .mismatch);
+                return self.receiveState(id, frame, .state);
+            },
+            .command => {
+                if (conn.state != .active) return self.fault(id, .unexpected);
+                return self.message(id, frame, .server_to_client);
+            },
+            else => return self.fault(id, .unexpected),
+        }
+    }
+
+    /// A baseline or state for a client: on the session's state channel, within its
+    /// size, replacing whatever state the host has not taken.
+    fn receiveState(self: *Service, id: PeerHandle, frame: wire.Frame, kind: Delivery.Kind) bool {
+        const conn = self.connections.get(id).?;
+        const state = self.sessions.get(conn.session).?.state_channel orelse return self.fault(id, .unexpected);
+        if (frame.header.channel_id != state.id.hash) return self.fault(id, .unexpected);
+        if (frame.payload.len > state.max_payload_bytes) return self.fault(id, .malformed);
+        const slot = self.inStateStorage(conn.buffer.?);
+        @memcpy(slot[0..frame.payload.len], frame.payload);
+        conn.in_state = @intCast(frame.payload.len);
+        conn.in_state_kind = kind;
+        conn.in_state_tick = frame.header.tick;
+        conn.in_state_sequence = frame.header.sequence;
+        conn.last_tick = frame.header.tick;
+        return true;
+    }
+
+    /// A reliable message: on a reliable channel that runs in `from`'s direction,
+    /// within its size, appended to the inbox. A peer that fills its inbox is sending
+    /// faster than its host takes what it sends, and is ended rather than read slower.
+    fn message(self: *Service, id: PeerHandle, frame: wire.Frame, from: channel.Direction) bool {
+        const conn = self.connections.get(id).?;
+        const descriptor = self.findChannel(conn.session, frame.header.channel_id) orelse return self.fault(id, .unexpected);
+        if (descriptor.delivery != .reliable_ordered or
+            (descriptor.direction != from and descriptor.direction != .bidirectional))
+        {
+            return self.fault(id, .unexpected);
+        }
+        if (frame.payload.len > descriptor.max_payload_bytes) return self.fault(id, .malformed);
+        const storage = self.inboxStorage(conn.buffer.?);
+        const total = Record.header_bytes + frame.payload.len;
+        if (storage.len - conn.inbox.len < total) {
+            self.end(id, .overloaded);
+            return false;
+        }
+        const record = (Record{ .channel = frame.header.channel_id, .sequence = frame.header.sequence, .bytes = @intCast(frame.payload.len) }).encode();
+        conn.inbox.write(storage, &record);
+        conn.inbox.write(storage, frame.payload);
+        conn.inbox_count += 1;
+        conn.commands_received += 1;
+        self.counters.commands_received += 1;
+        self.counters.peak_inbox_bytes = @max(self.counters.peak_inbox_bytes, @as(u32, @intCast(conn.inbox.len)));
+        return true;
+    }
+
+    fn activate(self: *Service, id: PeerHandle, conn: *Connection) void {
+        conn.state = .active;
+        self.counters.activations += 1;
+        conn.reserved -= 1;
+        self.pushEvent(.{ .session = conn.session, .peer = id, .kind = .{ .activated = .{
+            .participant = conn.participant,
+            .epoch = conn.epoch,
+            .principal = conn.principal,
+        } } });
     }
 
     /// Returns whether the connection is still exchanging.
@@ -1286,8 +1844,8 @@ pub const Service = struct {
                 self.end(id, .{ .timed_out = .admission });
                 return false;
             },
-            .synchronizing => {
-                if (self.elapsed(conn.admitted_at) >= ms(limits.initial_sync_timeout_ms)) {
+            .synchronizing, .active => {
+                if (conn.state == .synchronizing and self.elapsed(conn.admitted_at) >= ms(limits.initial_sync_timeout_ms)) {
                     self.end(id, .{ .timed_out = .initial_sync });
                     return false;
                 }
@@ -1366,11 +1924,9 @@ pub const Service = struct {
         const conn = self.connections.get(id).?;
         if (conn.state == .closing) return;
         if (conn.reserved > 0) {
-            if (!conn.admitted) {
-                self.releaseEvents(1);
-                conn.reserved -= 1;
-            }
-            conn.reserved -= 1;
+            // What it will now never produce is released; its ending was held for it.
+            self.releaseEvents(conn.reserved - 1);
+            conn.reserved = 0;
             self.pushEvent(.{ .session = conn.session, .peer = id, .kind = .{ .ended = .{
                 .participant = if (conn.admitted) conn.participant else 0,
                 .principal = conn.principal,
@@ -1389,7 +1945,7 @@ pub const Service = struct {
     }
 
     fn noticeFor(conn: *const Connection, role: Role, ending: Ending) ?Notice {
-        if (conn.state != .negotiating and conn.state != .synchronizing) return null;
+        if (conn.state != .negotiating and conn.state != .synchronizing and conn.state != .active) return null;
         return switch (ending) {
             .local => |reason| .{ .disconnect = reason },
             .refused => |refusal| .{ .refusal = refusal },
@@ -1451,16 +2007,26 @@ pub const Service = struct {
 
     // -- queues ---------------------------------------------------------------------------
 
-    /// Appends one whole frame, numbered with the next sequence. False, changing
-    /// nothing, when the queue cannot hold it.
+    /// Appends one whole control frame, numbered with the next sequence. False,
+    /// changing nothing, when the queue cannot hold it.
     fn enqueue(self: *Service, conn: *Connection, kind: wire.Kind, payload: []const u8) bool {
+        return self.enqueueFrame(conn, kind, wire.no_channel, 0, payload);
+    }
+
+    fn enqueueFrame(self: *Service, conn: *Connection, kind: wire.Kind, channel_id: u64, tick: u64, payload: []const u8) bool {
         const buffer = conn.buffer orelse return false;
         const total = wire.header_size + payload.len;
         const storage = self.sendStorage(buffer);
         if (storage.len - conn.ring.len < total) return false;
         const sequence = wire.nextSequence(conn.sent) catch return false;
         var header: [wire.header_size]u8 = undefined;
-        wire.encodeHeader(&header, .{ .kind = kind, .total_bytes = @intCast(total), .sequence = sequence }, self.limits.frame_bytes) catch return false;
+        wire.encodeHeader(&header, .{
+            .kind = kind,
+            .total_bytes = @intCast(total),
+            .sequence = sequence,
+            .channel_id = channel_id,
+            .tick = tick,
+        }, self.limits.frame_bytes) catch return false;
         conn.ring.write(storage, &header);
         conn.ring.write(storage, payload);
         conn.sent = sequence;
@@ -1474,6 +2040,7 @@ pub const Service = struct {
     /// stream, which retries a held record and judges the peer's certificate validity.
     /// Tracks whether output is stalled for the write-stall deadline.
     fn pushOut(self: *Service, conn: *Connection) Out {
+        if (conn.state == .active) self.queueState(conn);
         const budget = self.limits.pump_bytes_per_direction_per_peer;
         const held_before = self.transport.pendingBytes(conn.stream) catch 0;
         var moved: usize = 0;
@@ -1507,6 +2074,20 @@ pub const Service = struct {
             conn.stalled_since = self.now;
         }
         return .{};
+    }
+
+    /// Queues a server's newest state once the last one queued has gone to TLS. That
+    /// is where it is numbered, and from then on it is immutable; until then a newer
+    /// state replaces it, so a slow peer holds at most two and gets the newest next.
+    fn queueState(self: *Service, conn: *Connection) void {
+        const bytes = conn.out_state orelse return;
+        if (conn.ring.consumed < conn.state_end) return;
+        const state = self.sessions.get(conn.session).?.state_channel.?;
+        const payload = self.outStateStorage(conn.buffer.?)[0..bytes];
+        if (!self.enqueueFrame(conn, .state, state.id.hash, conn.out_state_tick, payload)) return;
+        conn.state_end = conn.ring.consumed + conn.ring.len;
+        conn.out_state = null;
+        self.counters.states_sent += 1;
     }
 
     fn reserveEvents(self: *Service, count: usize) bool {
@@ -1553,7 +2134,11 @@ pub const Service = struct {
     }
 
     fn freeze(self: *Service, session_id: SessionHandle, session: *SessionSlot) void {
-        session.channel_digest = compatibility.freezeChannels(self.sessionChannels(session_id)[0..session.channel_count]);
+        const frozen = self.sessionChannels(session_id)[0..session.channel_count];
+        session.channel_digest = compatibility.freezeChannels(frozen);
+        for (frozen) |descriptor| {
+            if (descriptor.delivery == .latest_complete_state) session.state_channel = descriptor;
+        }
         session.state = .running;
     }
 
@@ -1594,8 +2179,16 @@ pub const Service = struct {
         return self.channels[@as(usize, session_id.index) * per ..][0..per];
     }
 
+    // A connection buffer: its send storage — the queue, then a server's unqueued
+    // state — and its receive storage — the frame being decoded, the staged record, a
+    // client's untaken state, then the inbox.
+
     fn bufferStride(self: *const Service) usize {
-        return @as(usize, self.limits.send_bytes_per_peer) + self.limits.frame_bytes + staging_bytes;
+        return @as(usize, self.limits.send_bytes_per_peer) + self.limits.receive_bytes_per_peer;
+    }
+
+    fn bufferBase(self: *Service, buffer: u32) []u8 {
+        return self.slab[@as(usize, buffer) * self.bufferStride() ..][0..self.bufferStride()];
     }
 
     fn attachBuffer(self: *Service, conn: *Connection) void {
@@ -1609,16 +2202,35 @@ pub const Service = struct {
     }
 
     fn sendStorage(self: *Service, buffer: u32) []u8 {
-        return self.slab[@as(usize, buffer) * self.bufferStride() ..][0..self.limits.send_bytes_per_peer];
+        return self.bufferBase(buffer)[0 .. self.limits.send_bytes_per_peer - self.limits.frame_bytes];
+    }
+
+    fn outStateStorage(self: *Service, buffer: u32) []u8 {
+        return self.bufferBase(buffer)[self.limits.send_bytes_per_peer - self.limits.frame_bytes ..][0..self.limits.frame_bytes];
     }
 
     fn frameStorage(self: *Service, buffer: u32) []u8 {
-        return self.slab[@as(usize, buffer) * self.bufferStride() + self.limits.send_bytes_per_peer ..][0..self.limits.frame_bytes];
+        return self.bufferBase(buffer)[self.limits.send_bytes_per_peer..][0..self.limits.frame_bytes];
     }
 
     fn stagingStorage(self: *Service, buffer: u32) []u8 {
-        const offset = @as(usize, buffer) * self.bufferStride() + self.limits.send_bytes_per_peer + self.limits.frame_bytes;
-        return self.slab[offset..][0..staging_bytes];
+        return self.bufferBase(buffer)[self.limits.send_bytes_per_peer + self.limits.frame_bytes ..][0..staging_bytes];
+    }
+
+    fn inStateStorage(self: *Service, buffer: u32) []u8 {
+        return self.bufferBase(buffer)[self.limits.send_bytes_per_peer + self.limits.frame_bytes + staging_bytes ..][0..self.limits.frame_bytes];
+    }
+
+    fn inboxStorage(self: *Service, buffer: u32) []u8 {
+        return self.bufferBase(buffer)[self.limits.send_bytes_per_peer + 2 * @as(usize, self.limits.frame_bytes) + staging_bytes ..];
+    }
+
+    fn findChannel(self: *Service, session_id: SessionHandle, id: u64) ?channel.Descriptor {
+        const session = self.sessions.get(session_id).?;
+        for (self.sessionChannels(session_id)[0..session.channel_count]) |descriptor| {
+            if (descriptor.id.hash == id) return descriptor;
+        }
+        return null;
     }
 
     fn elapsed(self: *const Service, since: u64) u64 {
@@ -1628,6 +2240,11 @@ pub const Service = struct {
 
 fn ms(value: u32) u64 {
     return @as(u64, value) * std.time.ns_per_ms;
+}
+
+fn admittedLessThan(_: void, a: Admitted, b: Admitted) bool {
+    if (a.command.participant != b.command.participant) return a.command.participant < b.command.participant;
+    return a.command.number < b.command.number;
 }
 
 fn identityLessThan(_: void, a: Identity, b: Identity) bool {
@@ -1700,6 +2317,13 @@ test "a service is checked against its transport and its policy before it exists
     strict.frame_bytes = 1024;
     strict.send_bytes_per_peer = 1024;
     strict.receive_bytes_per_peer = 1024 + staging_bytes;
+    try testing.expectError(error.QueueTooSmall, Service.init(testing.allocator, t, .{ .limits = strict, .compatibility = test_description }));
+    // Room for a server's unqueued state beside its queue, and for any command in a batch.
+    strict = .{};
+    strict.send_bytes_per_peer = 2 * strict.frame_bytes - 1;
+    try testing.expectError(error.QueueTooSmall, Service.init(testing.allocator, t, .{ .limits = strict, .compatibility = test_description }));
+    strict = .{};
+    strict.queued_event_payload_bytes = strict.frame_bytes - 1;
     try testing.expectError(error.QueueTooSmall, Service.init(testing.allocator, t, .{ .limits = strict, .compatibility = test_description }));
 }
 

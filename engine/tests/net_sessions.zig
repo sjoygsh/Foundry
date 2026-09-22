@@ -1,4 +1,6 @@
-//! M16 Step 3: sessions, and everything a connection passes through to become a peer.
+//! M16 Steps 3 and 4: sessions, everything a connection passes through to become a peer,
+//! and what an active peer exchanges — its baseline, commands admitted in tick batches,
+//! and complete state.
 //!
 //! Each proof runs a server `net.Service` and one or more client services over one
 //! `platform.Transport`, the way separate processes would, with identities generated for
@@ -148,6 +150,8 @@ fn proofLimits() Limits {
 const WorldOptions = struct {
     limits: Limits = proofLimits(),
     memory: transport.MemoryOptions = .{},
+    /// What the server registers, in this order.
+    channels: []const net.channel.Descriptor = &.{ state_channel, commands },
 };
 
 const ClientOptions = struct {
@@ -229,8 +233,7 @@ const World = struct {
         });
         errdefer world.server.deinit();
         world.session = try world.server.createSession(server_grant);
-        try world.server.registerChannel(world.session, state_channel);
-        try world.server.registerChannel(world.session, commands);
+        for (options.channels) |descriptor| try world.server.registerChannel(world.session, descriptor);
         try world.server.listen(world.session);
         return world;
     }
@@ -312,6 +315,35 @@ const World = struct {
         try self.until(client.service, client.peer, .synchronizing, 2_000);
         return .{ .server = try admitted(try self.event(self.server, 10)), .client = try admitted(try self.event(client.service, 1)) };
     }
+
+    /// Pumps until `client` has a delivery, and takes it into `out`.
+    fn take(self: *World, client: *Client, out: []u8) !svc.Delivery {
+        for (0..2_000) |_| {
+            if (try client.service.takeDelivery(client.peer, out)) |delivery| return delivery;
+            self.pump(1);
+        }
+        return error.NothingDelivered;
+    }
+
+    /// Sends a joined client `baseline`, has it take and acknowledge it, and pumps until
+    /// both sides report the activation.
+    fn activate(self: *World, client: *Client, server_peer: PeerHandle, tick: u64, baseline: []const u8) !void {
+        try self.server.sendBaseline(server_peer, tick, baseline);
+        var out: [1024]u8 = undefined;
+        const delivery = try self.take(client, &out);
+        try testing.expectEqual(svc.Delivery.Kind.baseline, delivery.kind);
+        try testing.expectEqualStrings(baseline, out[0..delivery.bytes]);
+        try client.service.acknowledgeBaseline(client.peer, delivery.baseline().?);
+        _ = try activated(try self.event(self.server, 2_000));
+        _ = try activated(try self.event(client.service, 2_000));
+    }
+
+    /// Joins and activates a client, returning the server's handle for it.
+    fn enter(self: *World, client: *Client) !PeerHandle {
+        const joined = try self.join(client);
+        try self.activate(client, joined.server.peer, 0, "baseline");
+        return joined.server.peer;
+    }
 };
 
 fn admitted(event: svc.Event) !svc.Event {
@@ -321,13 +353,25 @@ fn admitted(event: svc.Event) !svc.Event {
             std.debug.print("expected an admission, got an ending: {any}\n", .{ended.ending});
             return error.NotAdmitted;
         },
+        .activated => error.NotAdmitted,
+    };
+}
+
+fn activated(event: svc.Event) !svc.Event {
+    return switch (event.kind) {
+        .activated => event,
+        .ended => |ended| {
+            std.debug.print("expected an activation, got an ending: {any}\n", .{ended.ending});
+            return error.NotActivated;
+        },
+        .admitted => error.NotActivated,
     };
 }
 
 fn departure(event: svc.Event) !svc.Departure {
     return switch (event.kind) {
         .ended => |value| value,
-        .admitted => error.NotEnded,
+        .admitted, .activated => error.NotEnded,
     };
 }
 
@@ -403,12 +447,17 @@ const Raw = struct {
     }
 
     fn frame(self: *Raw, kind: wire.Kind, channel_id: u64, payload: []const u8) !void {
-        var bytes: [wire.header_size + 128]u8 = undefined;
+        return self.frameAt(kind, channel_id, 0, payload);
+    }
+
+    fn frameAt(self: *Raw, kind: wire.Kind, channel_id: u64, tick: u64, payload: []const u8) !void {
+        var bytes: [wire.header_size + 2048]u8 = undefined;
         const encoded = try wire.encodeFrame(&bytes, .{
             .kind = kind,
             .total_bytes = 0,
             .sequence = self.sent + 1,
             .channel_id = channel_id,
+            .tick = tick,
         }, payload, net.limits.wire_v1_max_frame_bytes);
         self.sent += 1;
         try self.write(encoded);
@@ -483,6 +532,38 @@ const Raw = struct {
             }
         }
         return error.NoFrame;
+    }
+
+    /// The next frame of `kind`, passing over any other that does not end the
+    /// connection.
+    fn nextOf(self: *Raw, kind: wire.Kind) !wire.Frame {
+        while (true) {
+            const ready = try self.next();
+            if (ready.header.kind == kind) return ready;
+            if (ready.header.kind == .refusal or ready.header.kind == .disconnect) {
+                std.debug.print("expected {s}, got {s}\n", .{ @tagName(kind), @tagName(ready.header.kind) });
+                return error.UnexpectedFrame;
+            }
+        }
+    }
+
+    fn acknowledge(self: *Raw, epoch: u64, sequence: u64, tick: u64) !void {
+        var payload: [wire.BaselineAck.encoded_size]u8 = undefined;
+        try (wire.BaselineAck{ .session_epoch = epoch, .baseline_sequence = sequence, .baseline_tick = tick }).encode(&payload);
+        try self.frame(.baseline_ack, 0, &payload);
+    }
+
+    /// Negotiates as a matching client, is sent a baseline, acknowledges it and waits to
+    /// be told it is active. Returns the server's handle for it.
+    fn enter(self: *Raw) !PeerHandle {
+        try self.negotiate();
+        const peer = (try admitted(try self.world.event(self.world.server, 50))).peer;
+        try self.world.server.sendBaseline(peer, 3, "raw baseline");
+        const baseline = try self.nextOf(.baseline);
+        try self.acknowledge(first_epoch, baseline.header.sequence, baseline.header.tick);
+        _ = try self.nextOf(.active);
+        _ = try activated(try self.world.event(self.world.server, 50));
+        return peer;
     }
 };
 
@@ -795,7 +876,7 @@ test "deadlines end what stops making progress, and heartbeats keep an idle peer
         try testing.expectEqual(Ending{ .peer_disconnected = .timeout }, try endingOf(world, client.service));
     }
     {
-        // Admitted but never given its initial state, which Step 4 delivers.
+        // Admitted but never given its initial state.
         var limits = proofLimits();
         limits.initial_sync_timeout_ms = 5_000;
         const world = try World.init(.{ .limits = limits });
@@ -1083,7 +1164,7 @@ test "a noisy peer gets its budget each pump and no more, beside a quiet one" {
 test "events are reserved, so a host that stops reading them stops admitting" {
     {
         var limits = proofLimits();
-        limits.queued_events = 4;
+        limits.queued_events = 7;
         const world = try World.init(.{ .limits = limits });
         defer world.deinit();
         const one = try world.addClient(world.players[0], .{ .limits = proofLimits() });
@@ -1093,10 +1174,11 @@ test "events are reserved, so a host that stops reading them stops admitting" {
             try client.connect();
             try world.until(client.service, client.peer, .synchronizing, 2_000);
         }
-        // Two admissions queued, two endings held for them: nothing is left to promise.
+        // Two admissions queued, and an activation and an ending held for each: one slot
+        // is left, and a connection needs three.
         const stats = world.server.stats();
         try testing.expectEqual(@as(u32, 2), stats.queued_events);
-        try testing.expectEqual(@as(u32, 2), stats.reserved_events);
+        try testing.expectEqual(@as(u32, 4), stats.reserved_events);
         try three.connect();
         try testing.expectEqual(Ending{ .refused_by_peer = refusal(.capacity, none_index) }, try endingOf(world, three.service));
         try testing.expectEqual(@as(u64, 1), world.server.stats().capacity_refusals);
@@ -1282,4 +1364,627 @@ test "a session admits over real loopback sockets" {
         if (round > 32) std.Io.sleep(testing.io, .fromNanoseconds(200 * std.time.ns_per_us), .awake) catch {};
     }
     try testing.expectEqual(Ending{ .peer_disconnected = .closed }, left.?.ending);
+}
+
+// -- Step 4: initial state, activation, commands and state ----------------------------------
+
+const chat: net.channel.Descriptor = .{
+    .id = ContentId.fromString("test:chat"),
+    .revision = 1,
+    .max_payload_bytes = 256,
+    .direction = .bidirectional,
+    .delivery = .reliable_ordered,
+};
+const chatty = [_]net.channel.Descriptor{ commands, state_channel, chat };
+
+test "a joining peer becomes active only by acknowledging the baseline it was sent" {
+    var limits = proofLimits();
+    limits.initial_sync_timeout_ms = 5_000;
+    const world = try World.init(.{ .limits = limits });
+    defer world.deinit();
+    world.step = 100 * ms;
+    const client = try world.addClient(world.players[0], .{});
+    const joined = try world.join(client);
+    const peer = joined.server.peer;
+
+    // Nothing but a baseline flows before activation.
+    try testing.expectError(error.WrongState, world.server.publishState(peer, 1, "early"));
+    try testing.expectError(error.WrongState, client.service.sendCommand(client.peer, commands.id, "early"));
+    try testing.expectError(error.WrongState, client.service.acknowledgeBaseline(client.peer, .{ .sequence = 3, .tick = 0 }));
+    try testing.expectError(error.WrongRole, client.service.sendBaseline(client.peer, 5, "mine"));
+    try testing.expectError(error.WrongRole, client.service.admitBatch(client.session, 1));
+    var oversized: [state_channel.max_payload_bytes + 1]u8 = @splat(0);
+    try testing.expectError(error.PayloadTooLarge, world.server.sendBaseline(peer, 5, &oversized));
+
+    try world.server.sendBaseline(peer, 5, "baseline at 5");
+    try testing.expectError(error.BaselineAlreadySent, world.server.sendBaseline(peer, 5, "again"));
+    // Live state published now waits behind the baseline, the newest replacing the rest.
+    try world.server.publishState(peer, 6, "state at 6");
+    try world.server.publishState(peer, 7, "state at 7");
+    try testing.expectError(error.StaleTick, world.server.publishState(peer, 6, "older"));
+    try testing.expectEqual(@as(u64, 1), world.server.stats().states_replaced);
+
+    // A buffer too small takes nothing.
+    for (0..200) |_| {
+        if (client.service.nextDelivery(client.peer) != null) break;
+        world.pump(1);
+    }
+    var small: [4]u8 = undefined;
+    try testing.expectError(error.BufferTooSmall, client.service.takeDelivery(client.peer, &small));
+    var out: [1024]u8 = undefined;
+    const baseline = (try client.service.takeDelivery(client.peer, &out)).?;
+    try testing.expectEqual(svc.Delivery.Kind.baseline, baseline.kind);
+    try testing.expect(baseline.channel.eql(state_channel.id));
+    try testing.expectEqual(@as(u64, 5), baseline.tick);
+    try testing.expectEqualStrings("baseline at 5", out[0..baseline.bytes]);
+    try testing.expectEqual(@as(?svc.Delivery, null), client.service.nextDelivery(client.peer));
+
+    // Unacknowledged, nothing else arrives and nobody is active.
+    world.pump(10);
+    try testing.expectEqual(PeerState.synchronizing, client.state().?);
+    try testing.expectEqual(PeerState.synchronizing, world.server.peerInfo(peer).?.state);
+    try testing.expectEqual(@as(?svc.Delivery, null), client.service.nextDelivery(client.peer));
+
+    // Only the baseline it took is acknowledged, and only once.
+    const named = baseline.baseline().?;
+    try testing.expectError(error.StaleBaseline, client.service.acknowledgeBaseline(client.peer, .{ .sequence = named.sequence + 1, .tick = named.tick }));
+    try testing.expectError(error.StaleBaseline, client.service.acknowledgeBaseline(client.peer, .{ .sequence = named.sequence, .tick = named.tick + 1 }));
+    try client.service.acknowledgeBaseline(client.peer, named);
+    try testing.expectError(error.WrongState, client.service.acknowledgeBaseline(client.peer, named));
+    const on_server = try activated(try world.event(world.server, 50));
+    try testing.expect(on_server.peer.eql(peer));
+    try testing.expectEqual(@as(u32, 1), on_server.kind.activated.participant);
+    const on_client = try activated(try world.event(client.service, 50));
+    try testing.expectEqual(@as(u32, 1), on_client.kind.activated.participant);
+    try testing.expectEqual(first_epoch, on_client.kind.activated.epoch);
+
+    // The state that waited is the newest one published.
+    const state = try world.take(client, &out);
+    try testing.expectEqual(svc.Delivery.Kind.state, state.kind);
+    try testing.expectEqual(@as(u64, 7), state.tick);
+    try testing.expectEqualStrings("state at 7", out[0..state.bytes]);
+
+    // Commands flow, on channels that run that way and within their size.
+    try testing.expectEqual(@as(u64, 1), try client.service.sendCommand(client.peer, commands.id, "first"));
+    try testing.expectEqual(@as(u64, 2), try client.service.sendCommand(client.peer, commands.id, "second"));
+    try testing.expectError(error.WrongChannel, client.service.sendCommand(client.peer, state_channel.id, "state"));
+    try testing.expectError(error.UnknownChannel, client.service.sendCommand(client.peer, ContentId.fromString("test:nowhere"), "lost"));
+    var long: [commands.max_payload_bytes + 1]u8 = @splat(1);
+    try testing.expectError(error.PayloadTooLarge, client.service.sendCommand(client.peer, commands.id, &long));
+    try testing.expectError(error.WrongChannel, world.server.sendCommand(peer, commands.id, "back"));
+
+    // Activation beat the initial-sync deadline; an idle active pair heartbeats on.
+    world.pump(150);
+    try testing.expectEqual(PeerState.active, client.state().?);
+    try testing.expectEqual(PeerState.active, world.server.peerInfo(peer).?.state);
+    // Arrived commands reach the server's host only as admitted batches.
+    try testing.expectEqual(@as(u64, 2), world.server.stats().commands_received);
+    var none: [256]u8 = undefined;
+    try testing.expectError(error.WrongRole, world.server.takeDelivery(peer, &none));
+    try testing.expectEqual(@as(?svc.Delivery, null), world.server.nextDelivery(peer));
+    const batch = try world.server.admitBatch(world.session, 1);
+    try testing.expectEqual(@as(u32, 2), batch.count);
+    var payload: [256]u8 = undefined;
+    try testing.expectEqualStrings("first", try world.server.copyBatchPayload(world.session, 0, &payload));
+    try testing.expectEqualStrings("second", try world.server.copyBatchPayload(world.session, 1, &payload));
+    try testing.expectError(error.BufferTooSmall, world.server.copyBatchPayload(world.session, 1, payload[0..3]));
+    try testing.expectError(error.NoSuchCommand, world.server.copyBatchPayload(world.session, 2, &payload));
+}
+
+test "initial synchronization fails closed, and a failed join leaves nothing behind" {
+    {
+        // Sent and taken, never acknowledged.
+        var limits = proofLimits();
+        limits.initial_sync_timeout_ms = 5_000;
+        const world = try World.init(.{ .limits = limits });
+        defer world.deinit();
+        world.step = 100 * ms;
+        const client = try world.addClient(world.players[0], .{});
+        const joined = try world.join(client);
+        try world.server.sendBaseline(joined.server.peer, 1, "never applied");
+        var out: [64]u8 = undefined;
+        _ = try world.take(client, &out);
+        try testing.expectEqual(Ending{ .timed_out = .initial_sync }, try endingOf(world, world.server));
+        const client_ending = try endingOf(world, client.service);
+        try testing.expect(std.meta.eql(client_ending, Ending{ .peer_disconnected = .timeout }) or
+            std.meta.eql(client_ending, Ending{ .timed_out = .initial_sync }));
+    }
+    {
+        // A client that cannot apply its baseline says so; the server releases the
+        // participant, and the next join is a new one that synchronizes afresh.
+        const world = try World.init(.{});
+        defer world.deinit();
+        const client = try world.addClient(world.players[0], .{});
+        const joined = try world.join(client);
+        try world.server.sendBaseline(joined.server.peer, 1, "unusable");
+        var out: [64]u8 = undefined;
+        _ = try world.take(client, &out);
+        try client.service.disconnect(client.peer, .application);
+        try testing.expectEqual(Ending{ .peer_disconnected = .application }, try endingOf(world, world.server));
+        try testing.expectEqual(Ending{ .local = .application }, try endingOf(world, client.service));
+        try world.until(client.service, client.peer, null, 2_000);
+        for (0..100) |_| {
+            if (world.server.stats().peers == 0) break;
+            world.pump(1);
+        }
+        try testing.expectEqual(@as(u32, 0), world.server.stats().peers);
+        const again = try world.join(client);
+        try testing.expectEqual(@as(u32, 2), again.server.kind.admitted.participant);
+        try world.activate(client, again.server.peer, 2, "usable");
+    }
+    {
+        // Acknowledgements the server knows to be false.
+        const world = try World.init(.{});
+        defer world.deinit();
+        const Claim = enum { before_baseline, wrong_sequence, wrong_tick, wrong_epoch, command_before_ack, twice };
+        for (std.enums.values(Claim)) |claim| {
+            const raw = try Raw.open(world, world.players[1]);
+            defer raw.close();
+            try raw.establish();
+            try raw.negotiate();
+            const peer = (try admitted(try world.event(world.server, 50))).peer;
+            if (claim != .before_baseline) try world.server.sendBaseline(peer, 9, "baseline");
+            const expected: Ending = switch (claim) {
+                .before_baseline => blk: {
+                    try raw.acknowledge(first_epoch, 3, 9);
+                    break :blk .{ .protocol = .unexpected };
+                },
+                .wrong_sequence, .wrong_tick, .wrong_epoch => blk: {
+                    const baseline = try raw.nextOf(.baseline);
+                    const sequence = baseline.header.sequence + @intFromBool(claim == .wrong_sequence);
+                    const tick = baseline.header.tick + @intFromBool(claim == .wrong_tick);
+                    try raw.acknowledge(first_epoch + @intFromBool(claim == .wrong_epoch), sequence, tick);
+                    break :blk .{ .protocol = .mismatch };
+                },
+                .command_before_ack => blk: {
+                    _ = try raw.nextOf(.baseline);
+                    try raw.frame(.command, commands.id.hash, "move");
+                    break :blk .{ .protocol = .unexpected };
+                },
+                .twice => blk: {
+                    const baseline = try raw.nextOf(.baseline);
+                    try raw.acknowledge(first_epoch, baseline.header.sequence, baseline.header.tick);
+                    _ = try raw.nextOf(.active);
+                    _ = try activated(try world.event(world.server, 50));
+                    try raw.acknowledge(first_epoch, baseline.header.sequence, baseline.header.tick);
+                    break :blk .{ .protocol = .unexpected };
+                },
+            };
+            const ending = try endingOf(world, world.server);
+            if (!std.meta.eql(expected, ending)) {
+                std.debug.print("{s}: expected {any}, got {any}\n", .{ @tagName(claim), expected, ending });
+                return error.WrongEnding;
+            }
+            world.pump(5);
+        }
+        try testing.expectEqual(@as(u64, 1), world.server.stats().activations);
+    }
+}
+
+test "a client believes only a baseline, activation and state that follow in order" {
+    const world = try World.init(.{});
+    defer world.deinit();
+    const elsewhere = transport.Endpoint.loopback(7001);
+    const listener = try world.t.listen(elsewhere, world.server_credentials);
+    defer world.t.closeListener(listener);
+    var frozen = try net.compatibility.freeze(testing.allocator, description, world.limits);
+    defer frozen.deinit(testing.allocator);
+    var sorted = channels;
+    const channel_digest = net.compatibility.freezeChannels(&sorted);
+
+    const Lie = enum {
+        active_before_ack,
+        state_before_active,
+        baseline_twice,
+        baseline_on_commands,
+        baseline_oversized,
+        active_for_another,
+        state_goes_back,
+        command_the_wrong_way,
+        state_on_commands,
+    };
+    for (std.enums.values(Lie)) |lie| {
+        const client = try world.addClient(world.players[0], .{ .endpoint = elsewhere });
+        try client.connect();
+        const stream = switch (try world.t.accept(listener)) {
+            .stream => |accepted| accepted,
+            else => return error.NotAccepted,
+        };
+        const raw = try Raw.adopt(world, stream);
+        defer raw.close();
+        try raw.establish();
+        for (0..8) |_| _ = try raw.next();
+        var hello_bytes: [wire.ServerHello.encoded_size]u8 = undefined;
+        try (wire.ServerHello{
+            .application_id = frozen.application,
+            .application_revision = frozen.application_revision,
+            .tick_rate_millihertz = frozen.tick_rate_millihertz,
+            .compatibility_id = frozen.compatibility_id,
+            .session_epoch = first_epoch,
+            .participant_number = 1,
+            .catalogue_count = @intCast(frozen.items.len),
+            .channel_count = sorted.len,
+            .peer_limit = 4,
+        }).encode(&hello_bytes);
+        try raw.frame(.server_hello, 0, &hello_bytes);
+        var finished_bytes: [wire.NegotiationFinished.encoded_size]u8 = undefined;
+        try (wire.NegotiationFinished{ .catalogue_digest = frozen.digest, .channel_digest = channel_digest }).encode(&finished_bytes);
+        try raw.frame(.negotiation_finished, 0, &finished_bytes);
+        _ = try admitted(try world.event(client.service, 100));
+
+        var active: [wire.Active.encoded_size]u8 = undefined;
+        try (wire.Active{ .session_epoch = first_epoch, .participant_number = if (lie == .active_for_another) 2 else 1 }).encode(&active);
+        const expected: Ending = switch (lie) {
+            .active_before_ack => blk: {
+                try raw.frame(.active, 0, &active);
+                break :blk .{ .protocol = .unexpected };
+            },
+            .state_before_active => blk: {
+                try raw.frameAt(.state, state_channel.id.hash, 1, "state");
+                break :blk .{ .protocol = .unexpected };
+            },
+            .baseline_twice => blk: {
+                try raw.frameAt(.baseline, state_channel.id.hash, 1, "one");
+                try raw.frameAt(.baseline, state_channel.id.hash, 1, "two");
+                break :blk .{ .protocol = .unexpected };
+            },
+            .baseline_on_commands => blk: {
+                try raw.frameAt(.baseline, commands.id.hash, 1, "baseline");
+                break :blk .{ .protocol = .unexpected };
+            },
+            .baseline_oversized => blk: {
+                const oversized: [state_channel.max_payload_bytes + 1]u8 = @splat(0);
+                try raw.frameAt(.baseline, state_channel.id.hash, 1, &oversized);
+                break :blk .{ .protocol = .malformed };
+            },
+            .active_for_another, .state_goes_back, .command_the_wrong_way, .state_on_commands => blk: {
+                try raw.frameAt(.baseline, state_channel.id.hash, 10, "baseline");
+                var out: [64]u8 = undefined;
+                const baseline = try world.take(client, &out);
+                try client.service.acknowledgeBaseline(client.peer, baseline.baseline().?);
+                _ = try raw.nextOf(.baseline_ack);
+                try raw.frame(.active, 0, &active);
+                if (lie == .active_for_another) break :blk .{ .protocol = .mismatch };
+                _ = try activated(try world.event(client.service, 100));
+                switch (lie) {
+                    .state_goes_back => {
+                        try raw.frameAt(.state, state_channel.id.hash, 10, "same tick");
+                        try raw.frameAt(.state, state_channel.id.hash, 9, "older");
+                        break :blk .{ .protocol = .mismatch };
+                    },
+                    .command_the_wrong_way => {
+                        try raw.frame(.command, commands.id.hash, "not for clients");
+                        break :blk .{ .protocol = .unexpected };
+                    },
+                    .state_on_commands => {
+                        try raw.frameAt(.state, commands.id.hash, 11, "state");
+                        break :blk .{ .protocol = .unexpected };
+                    },
+                    else => unreachable,
+                }
+            },
+        };
+        const ending = try endingOf(world, client.service);
+        if (!std.meta.eql(expected, ending)) {
+            std.debug.print("{s}: expected {any}, got {any}\n", .{ @tagName(lie), expected, ending });
+            return error.WrongEnding;
+        }
+        world.dropClient(client);
+    }
+}
+
+/// A reference model: what the server's application would do with admitted commands.
+/// Its result depends on the order commands are applied in, across participants and
+/// within one, so a batch ordered differently would build a different world.
+const Model = struct {
+    positions: [8]i64 = @splat(0),
+    last: [8]u64 = @splat(0),
+    digest: u64 = 0,
+
+    fn apply(self: *Model, participant: u32, number: u64, payload: []const u8) !void {
+        if (payload.len != 2 or participant >= self.positions.len) return error.InvalidCommand;
+        const step: i64 = std.mem.readInt(i16, payload[0..2], .little);
+        self.positions[participant] += step;
+        self.last[participant] = number;
+        self.digest = (self.digest *% 1_000_003) +% (@as(u64, participant) << 32) +% @as(u64, @bitCast(step));
+    }
+
+    fn encode(self: *const Model) [8 * 16 + 8]u8 {
+        var out: [8 * 16 + 8]u8 = undefined;
+        for (0..8) |index| {
+            std.mem.writeInt(i64, out[index * 16 ..][0..8], self.positions[index], .little);
+            std.mem.writeInt(u64, out[index * 16 + 8 ..][0..8], self.last[index], .little);
+        }
+        std.mem.writeInt(u64, out[128..136], self.digest, .little);
+        return out;
+    }
+};
+
+const Captured = struct {
+    tick: u64,
+    participant: u32,
+    number: u64,
+    payload: [2]u8,
+};
+
+fn stepFor(client: usize, number: u64) [2]u8 {
+    var out: [2]u8 = undefined;
+    const value: i16 = @intCast(@as(i64, @intCast(client * 7 + 1)) * (if (number % 2 == 0) @as(i64, -1) else 1) + @as(i64, @intCast(number % 5)));
+    std.mem.writeInt(i16, &out, value, .little);
+    return out;
+}
+
+test "commands are admitted a tick at a time in participant order, and replaying the batches rebuilds the world" {
+    var limits = proofLimits();
+    limits.commands_per_peer_per_tick = 3;
+    const world = try World.init(.{ .limits = limits, .memory = .{ .max_transfer = 700 } });
+    defer world.deinit();
+    var clients: [3]*Client = undefined;
+    var peers: [3]PeerHandle = undefined;
+    for (&clients, &peers, 0..) |*client, *peer, index| {
+        client.* = try world.addClient(world.players[index], .{});
+        peer.* = try world.enter(client.*);
+    }
+
+    var live: Model = .{};
+    var captured: std.ArrayList(Captured) = .empty;
+    defer captured.deinit(testing.allocator);
+    var sent: [3]u64 = @splat(0);
+    var admitted_up_to: [4]u64 = @splat(0);
+    var out: [256]u8 = undefined;
+    var tick: u64 = 0;
+    var total_sent: u64 = 0;
+    var total_admitted: u64 = 0;
+    while (tick < 400) {
+        tick += 1;
+        // Bursts larger than the per-tick budget, from every client, on different ticks.
+        if (tick <= 30) {
+            for (clients, 0..) |client, index| {
+                const burst: usize = if (tick % (index + 2) == 0) 5 + index else 1;
+                for (0..burst) |_| {
+                    const number = sent[index] + 1;
+                    const step = stepFor(index, number);
+                    try testing.expectEqual(number, try client.service.sendCommand(client.peer, commands.id, &step));
+                    sent[index] = number;
+                    total_sent += 1;
+                }
+            }
+        }
+        world.pump(1);
+
+        const batch = try world.server.admitBatch(world.session, tick);
+        try testing.expectEqual(tick, batch.tick);
+        var per: [4]u32 = @splat(0);
+        var previous: ?svc.AdmittedCommand = null;
+        for (0..batch.count) |index| {
+            const command = world.server.batchCommand(world.session, @intCast(index)).?;
+            // Ordered by participant, then number; contiguous, so nothing was lost or
+            // repeated; within the budget.
+            if (previous) |before| {
+                try testing.expect(before.participant < command.participant or
+                    (before.participant == command.participant and before.number < command.number));
+            }
+            previous = command;
+            try testing.expectEqual(admitted_up_to[command.participant] + 1, command.number);
+            admitted_up_to[command.participant] = command.number;
+            per[command.participant] += 1;
+            try testing.expect(per[command.participant] <= limits.commands_per_peer_per_tick);
+            try testing.expect(command.channel.eql(commands.id));
+            const payload = try world.server.copyBatchPayload(world.session, @intCast(index), &out);
+            try live.apply(command.participant, command.number, payload);
+            try captured.append(testing.allocator, .{ .tick = tick, .participant = command.participant, .number = command.number, .payload = payload[0..2].* });
+        }
+        total_admitted += batch.count;
+        const state = live.encode();
+        for (peers) |peer| try world.server.publishState(peer, tick, &state);
+        if (tick > 30 and total_admitted == total_sent) break;
+    }
+    try testing.expectEqual(total_sent, total_admitted);
+    try testing.expectError(error.StaleTick, world.server.admitBatch(world.session, tick));
+    try testing.expect(world.server.stats().peak_batch_commands <= 3 * limits.commands_per_peer_per_tick);
+
+    // Every client's newest view is the server's world, as of the last tick.
+    const final = live.encode();
+    for (clients) |client| {
+        var view: [final.len]u8 = undefined;
+        var latest: ?svc.Delivery = null;
+        for (0..200) |_| {
+            while (try client.service.takeDelivery(client.peer, &view)) |delivery| latest = delivery;
+            if (latest != null and latest.?.tick == tick) break;
+            world.pump(1);
+        }
+        try testing.expectEqual(tick, latest.?.tick);
+        try testing.expectEqualSlices(u8, &final, &view);
+    }
+
+    // Replaying the captured batches, in order, rebuilds the same world.
+    var replayed: Model = .{};
+    for (captured.items) |command| try replayed.apply(command.participant, command.number, &command.payload);
+    try testing.expectEqualSlices(u8, &live.encode(), &replayed.encode());
+}
+
+test "a departed peer keeps what was admitted, loses what was not, and rejoins with nothing pending" {
+    var limits = proofLimits();
+    limits.commands_per_peer_per_tick = 2;
+    const world = try World.init(.{ .limits = limits });
+    defer world.deinit();
+    const client = try world.addClient(world.players[0], .{});
+    _ = try world.enter(client);
+    for (0..5) |_| _ = try client.service.sendCommand(client.peer, commands.id, "go");
+    for (0..50) |_| {
+        if (world.server.stats().commands_received == 5) break;
+        world.pump(1);
+    }
+    try testing.expectEqual(@as(u32, 2), (try world.server.admitBatch(world.session, 1)).count);
+
+    try client.service.disconnect(client.peer, .closed);
+    try testing.expectEqual(Ending{ .local = .closed }, try endingOf(world, client.service));
+    try testing.expectEqual(Ending{ .peer_disconnected = .closed }, try endingOf(world, world.server));
+    // The admitted two are still readable; the three that waited are gone with it.
+    var out: [8]u8 = undefined;
+    try testing.expectEqualStrings("go", try world.server.copyBatchPayload(world.session, 1, &out));
+    try testing.expectEqual(@as(u32, 0), (try world.server.admitBatch(world.session, 2)).count);
+
+    try world.until(client.service, client.peer, null, 2_000);
+    const again = try world.join(client);
+    try testing.expectEqual(@as(u32, 2), again.server.kind.admitted.participant);
+    try testing.expectError(error.WrongState, client.service.sendCommand(client.peer, commands.id, "early"));
+    try world.activate(client, again.server.peer, 3, "fresh");
+    try testing.expectEqual(@as(u64, 1), try client.service.sendCommand(client.peer, commands.id, "again"));
+    for (0..50) |_| {
+        if (world.server.stats().commands_received == 6) break;
+        world.pump(1);
+    }
+    const batch = try world.server.admitBatch(world.session, 3);
+    try testing.expectEqual(@as(u32, 1), batch.count);
+    const command = world.server.batchCommand(world.session, 0).?;
+    try testing.expectEqual(@as(u32, 2), command.participant);
+    try testing.expectEqual(@as(u64, 1), command.number);
+}
+
+test "a slow peer gets the newest state and a bounded queue, and a full queue refuses rather than drops" {
+    const world = try World.init(.{ .channels = &chatty });
+    defer world.deinit();
+    world.step = 50 * ms;
+    const fast = try world.addClient(world.players[0], .{ .channels = &chatty });
+    const slow = try world.addClient(world.players[1], .{ .channels = &chatty });
+    const fast_peer = try world.enter(fast);
+    const slow_peer = try world.enter(slow);
+
+    // Reliable messages are delivered in order, before the newest state.
+    _ = try world.server.sendCommand(fast_peer, chat.id, "one");
+    _ = try world.server.sendCommand(fast_peer, chat.id, "two");
+    try world.server.publishState(fast_peer, 1, "state one");
+    var out: [1024]u8 = undefined;
+    const first = try world.take(fast, &out);
+    try testing.expectEqual(svc.Delivery.Kind.message, first.kind);
+    try testing.expectEqualStrings("one", out[0..first.bytes]);
+    const second = try world.take(fast, &out);
+    try testing.expectEqualStrings("two", out[0..second.bytes]);
+    const third = try world.take(fast, &out);
+    try testing.expectEqual(svc.Delivery.Kind.state, third.kind);
+    try testing.expectEqual(@as(u64, 2), world.server.stats().commands_sent);
+
+    // The slow client stops reading. A kilobyte of state every tick for both: the fast
+    // one keeps up, the slow one's queue holds at most a state or two.
+    slow.paused = true;
+    var state: [1000]u8 = @splat(0);
+    var replaced_before = world.server.stats().states_replaced;
+    var tick: u64 = 1;
+    while (tick < 120) {
+        tick += 1;
+        std.mem.writeInt(u64, state[0..8], tick, .little);
+        try world.server.publishState(fast_peer, tick, &state);
+        try world.server.publishState(slow_peer, tick, &state);
+        world.pump(1);
+        while (try fast.service.takeDelivery(fast.peer, &out)) |delivery| {
+            try testing.expectEqual(svc.Delivery.Kind.state, delivery.kind);
+            try testing.expect(tick - delivery.tick <= 2);
+        }
+    }
+    const stats = world.server.stats();
+    try testing.expect(stats.states_replaced - replaced_before > 50);
+    try testing.expect(stats.peak_send_queue < 4 * 1024);
+    replaced_before = stats.states_replaced;
+
+    // Reliable messages to it are never dropped: once its queue is full they are refused.
+    var accepted: u64 = 0;
+    const message: [200]u8 = @splat(7);
+    while (true) : (accepted += 1) {
+        _ = world.server.sendCommand(slow_peer, chat.id, &message) catch |err| {
+            try testing.expectEqual(error.QueueFull, err);
+            break;
+        };
+        if (accepted > 5_000) return error.QueueNeverFilled;
+    }
+    try testing.expect(accepted > 100);
+    try testing.expectEqual(accepted + 2, world.server.stats().commands_sent);
+
+    // A process that has stopped sends nothing either, so whichever deadline sees it
+    // first ends it; the fast peer carries on.
+    const ending = try endingOf(world, world.server);
+    try testing.expect(std.meta.eql(ending, Ending{ .timed_out = .no_progress }) or std.meta.eql(ending, Ending{ .timed_out = .write_stall }));
+    try testing.expectEqual(PeerState.active, fast.state().?);
+    try world.until(world.server, slow_peer, null, 2_000);
+    try testing.expectEqual(PeerState.active, fast.state().?);
+}
+
+test "a command is checked against its channel, its sequence and its sender's inbox" {
+    const world = try World.init(.{});
+    defer world.deinit();
+    const player = try world.addClient(world.players[0], .{});
+    _ = try world.enter(player);
+
+    const Breach = enum { state_channel, unknown_channel, oversized, repeated_sequence, with_tick, state_from_client, baseline_from_client, flood };
+    for (std.enums.values(Breach)) |breach| {
+        const raw = try Raw.open(world, world.players[1]);
+        try raw.establish();
+        _ = try raw.enter();
+        const expected: Ending = switch (breach) {
+            .state_channel => blk: {
+                try raw.frame(.command, state_channel.id.hash, "state?");
+                break :blk .{ .protocol = .unexpected };
+            },
+            .unknown_channel => blk: {
+                try raw.frame(.command, ContentId.fromString("test:nowhere").hash, "where");
+                break :blk .{ .protocol = .unexpected };
+            },
+            .oversized => blk: {
+                const long: [commands.max_payload_bytes + 1]u8 = @splat(1);
+                try raw.frame(.command, commands.id.hash, &long);
+                break :blk .{ .protocol = .malformed };
+            },
+            .repeated_sequence => blk: {
+                try raw.frame(.command, commands.id.hash, "once");
+                raw.sent -= 1;
+                try raw.frame(.command, commands.id.hash, "twice");
+                break :blk .{ .protocol = .sequence };
+            },
+            .with_tick => blk: {
+                // The codec will not build it, so it is patched in by hand.
+                var bytes: [wire.header_size + 4]u8 = undefined;
+                _ = try wire.encodeFrame(&bytes, .{ .kind = .command, .total_bytes = 0, .sequence = raw.sent + 1, .channel_id = commands.id.hash }, "when", net.limits.wire_v1_max_frame_bytes);
+                std.mem.writeInt(u64, bytes[32..40], 5, .little);
+                raw.sent += 1;
+                try raw.write(&bytes);
+                break :blk .{ .protocol = .malformed };
+            },
+            .state_from_client => blk: {
+                try raw.frameAt(.state, state_channel.id.hash, 5, "mine");
+                break :blk .{ .protocol = .unexpected };
+            },
+            .baseline_from_client => blk: {
+                try raw.frameAt(.baseline, state_channel.id.hash, 5, "mine");
+                break :blk .{ .protocol = .unexpected };
+            },
+            .flood => blk: {
+                // Valid commands the host never admits: the inbox fills and the sender
+                // is ended, not read more slowly.
+                const count = 800;
+                const size = wire.header_size + 250;
+                const flood = try testing.allocator.alloc(u8, count * size);
+                defer testing.allocator.free(flood);
+                const payload: [250]u8 = @splat(3);
+                for (0..count) |index| {
+                    raw.sent += 1;
+                    _ = try wire.encodeFrame(flood[index * size ..][0..size], .{ .kind = .command, .total_bytes = 0, .sequence = raw.sent, .channel_id = commands.id.hash }, &payload, net.limits.wire_v1_max_frame_bytes);
+                }
+                raw.write(flood) catch {};
+                break :blk .overloaded;
+            },
+        };
+        const ending = try endingOf(world, world.server);
+        if (!std.meta.eql(expected, ending)) {
+            std.debug.print("{s}: expected {any}, got {any}\n", .{ @tagName(breach), expected, ending });
+            return error.WrongEnding;
+        }
+        raw.close();
+        world.pump(5);
+        try testing.expectEqual(PeerState.active, player.state().?);
+    }
+    const stats = world.server.stats();
+    // The inbox is what receive storage leaves after a frame, a record and a state.
+    try testing.expect(stats.peak_inbox_bytes <= world.limits.receive_bytes_per_peer - 2 * world.limits.frame_bytes - 16 * 1024);
+    try testing.expect(stats.peak_inbox_bytes > 64 * 1024);
+    try testing.expectEqual(@as(u32, 1), stats.peers);
 }

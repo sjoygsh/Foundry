@@ -1,6 +1,7 @@
 # ADR-0044: Authoritative sessions without cross-machine lockstep
 
-**Status:** Accepted 2026-09-21; M16 Step 1 implemented against it.
+**Status:** Accepted 2026-09-21; M16 Step 1 implemented against it; its tick admission and
+complete-state delivery built in Step 4.
 **Date:** 2026-09-21
 **Revision, 2026-09-21:** the owner requires public-internet multiplayer. The LAN-only
 alternative is withdrawn. The owner's subsequent instruction to begin Step 1 accepts the
@@ -90,3 +91,13 @@ application frames. Runtime channels are namespaced `ContentId` values with revi
 directions, delivery rules and explicit payload limits; the engine assigns no gameplay meaning
 to their copied bytes. Exact layouts and the qualification choice are recorded in
 `networking.md`'s Step 1 Resolution.
+
+## Step 4 delivery resolution — 2026-09-22
+
+`net.Service` implements this decision's authority and delivery without changing them. A peer
+is active only after acknowledging the baseline it was sent. Client commands reach the
+server's host only as tick batches: copied, bounded per peer, and ordered by participant number
+and then command number, never by arrival, so captured batches replay. Complete state replaces
+unsent state instead of queueing behind it. Payload meaning and object maps stay the
+application's. The exchange order and its bounds are recorded in `networking.md`'s Step 4
+Resolution.

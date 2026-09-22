@@ -38,6 +38,8 @@ pub const Limits = struct {
     receive_bytes_per_peer: u32 = 256 * 1024,
     send_bytes_per_peer: u32 = 256 * 1024,
     queued_events: u16 = 256,
+    /// Copied payload bytes a service holds outside connection storage: one server
+    /// session's admitted command batch (Step 4).
     queued_event_payload_bytes: u32 = 1024 * 1024,
     pump_bytes_per_direction_per_peer: u32 = 64 * 1024,
     pump_frames_per_peer: u16 = 32,
@@ -49,6 +51,9 @@ pub const Limits = struct {
     /// How long a connection this side ended keeps reading and flushing, so its last
     /// refusal or disconnect is delivered rather than lost to a reset (Step 3).
     close_linger_ms: u32 = 1_000,
+    /// Commands one peer may have admitted into one server tick's batch. What exceeds it
+    /// waits, in order, in the peer's bounded inbox for a later tick (Step 4).
+    commands_per_peer_per_tick: u16 = 16,
 
     pub fn validate(self: Limits) Error!void {
         if (self.sessions == 0 or self.peers_per_session == 0 or
@@ -65,7 +70,8 @@ pub const Limits = struct {
             self.queued_events == 0 or self.queued_event_payload_bytes == 0 or
             self.pump_bytes_per_direction_per_peer == 0 or self.pump_frames_per_peer == 0 or
             self.admission_timeout_ms == 0 or self.initial_sync_timeout_ms == 0 or
-            self.no_progress_timeout_ms == 0 or self.identities == 0 or self.close_linger_ms == 0)
+            self.no_progress_timeout_ms == 0 or self.identities == 0 or self.close_linger_ms == 0 or
+            self.commands_per_peer_per_tick == 0)
         {
             return error.ZeroLimit;
         }
@@ -77,7 +83,8 @@ pub const Limits = struct {
             self.certificate_chain_bytes > 1024 * 1024 or self.compatibility_items > 1024 or
             self.compatibility_bytes > 16 * 1024 * 1024 or self.channels > 256 or
             self.queued_events > 4096 or self.pump_frames_per_peer > 1024 or
-            self.identities > 4096 or self.close_linger_ms > self.no_progress_timeout_ms)
+            self.identities > 4096 or self.close_linger_ms > self.no_progress_timeout_ms or
+            self.commands_per_peer_per_tick > 1024)
         {
             return error.LimitTooLarge;
         }

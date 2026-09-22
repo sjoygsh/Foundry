@@ -1,7 +1,7 @@
 # Network sessions and the shared-world proof
 
 **Milestone:** M16 — Connected: “it plays with others”
-**Status:** Accepted design, 2026-09-21. **Steps 1–3 of nine are complete.** Stop before Step 4.
+**Status:** Accepted design, 2026-09-21. **Steps 1–4 of nine are complete.** Stop before Step 5.
 **Revision, 2026-09-21:** the owner selected **public-internet multiplayer**. The earlier
 LAN-only scope is withdrawn. Internet security and a real WAN proof are required in M16. The
 owner's instruction to begin Step 1 accepted the authority, topology, admission and bounded
@@ -56,7 +56,7 @@ M17's Apple release certification and M18's Linux runtime gate are unchanged.
 | `scene/save.zig`, `component.zig` | Versioned saves and field serialization. Saves preserve local pool identity and can skip unknown components; neither property is a network synchronization contract. |
 | `abi/host.zig`, `api.zig`, `foundry.h` | Host-supplied optional services and additive versions through v4. No remote RPC transport and no networking calls. |
 | `mod`, `app.ModSet`, `asset`, `script` | Existing ordered content and code lifecycle. A connection must not download, enable or execute a package. Lua binding 1 has no network authority. |
-| `build.zig`, `net` | Enforced imports now place the Step 1 `net` module at L2 with only `core` and `platform`; it contains limits, channel descriptors, the pure wire codec and, since Step 3, the session `Service`; the transport is `platform`'s. |
+| `build.zig`, `net` | Enforced imports now place the Step 1 `net` module at L2 with only `core` and `platform`; it contains limits, channel descriptors, the pure wire codec and, since Steps 3–4, the session `Service` and what it delivers; the transport is `platform`'s. |
 
 Do not serialize an `InputSnapshot`, C struct, ECS component or handle by copying its memory.
 OS key codes, padding, pointer values and local entity generations are not a wire format.
@@ -68,7 +68,7 @@ The first two lines describe today's build graph; later lines remain the accepte
 
 ```
 platform (L1)  core + the qualified provider; Step 2's authenticated streams (`Transport`)
-net (L2)       core, platform; Step 1 limits/channels/codec; Step 3's `Service`: grants, sessions, admission
+net (L2)       core, platform; Step 1 limits/channels/codec; Steps 3–4's `Service`: admission, baselines, batches, state
 abi (L5)       existing imports + net; public argument validation and translation only
 host           owns net.Service, endpoint grants, content identity, timing and subsystem life
 sample client  public header only; command/state codecs and shared-world demonstration
@@ -129,6 +129,7 @@ Session configuration has explicit checked limits. Accepted reference defaults:
 | Admission/initial-sync deadline / no-progress deadline | 5 s / 10 s |
 | Allowlisted client identities (added in Step 3) | 256 |
 | Close linger, to deliver a last refusal or disconnect (added in Step 3) | 1 s |
+| Commands admitted per peer per server tick (added in Step 4) | 16; later ones wait in the peer's bounded inbox |
 
 These are configurable host bounds, not allocations triggered by received lengths. Validate
 aggregate limits and arithmetic before creation. Fair round-robin pumping and accept budgets
@@ -498,15 +499,15 @@ large-world interest management, remote editor/debug transport and new Lua netwo
 Existing open questions about per-mod tables, native unloading, system scheduling, save package
 lists and editor features remain open. M17/M18 retain their own gates.
 
-Step 1's provider/configuration and wire layouts, Step 2's transport mechanism and Step 3's
-negotiation exchange are resolved below. One bounded implementation detail still requires a dated Resolution before dependent
+Step 1's provider/configuration and wire layouts, Step 2's transport mechanism, Step 3's
+negotiation exchange and Step 4's delivery order are resolved below. One bounded implementation detail still requires a dated Resolution before dependent
 code: Step 5's v5 layouts/call count. Those may refine this contract, not change its scope, module
 placement or authority model. No port numbers, machine names or personal paths belong in
 committed configuration.
 
 ## 12. Implementation order
 
-Steps 1–3 are complete; Steps 4–9 are **not started**. Each ends with its own tests, required bar,
+Steps 1–4 are complete; Steps 5–9 are **not started**. Each ends with its own tests, required bar,
 Resolution, project-state update and focused commit, followed by a handoff. Do not chain steps
 without the owner's instruction.
 
@@ -539,7 +540,7 @@ deadlines, queue budgets, fairness and structured diagnostics.
 Host-supplied compatibility inputs are copied and bounded. Test mismatches, resource exhaustion,
 partial I/O, teardown and fresh reconnect. **No ECS ownership or automatic package fetching.**
 
-### Step 4 — Deliver tick-admitted commands and complete state
+### Step 4 — Deliver tick-admitted commands and complete state — **complete 2026-09-22**
 
 Implement admitted input batches, their stable ordering, copied command queues, replaceable
 full-state delivery, retained initial baseline/acknowledgement and activation. Test initial
@@ -960,3 +961,145 @@ connection comes from one address. Linux compiles and is not run (ADR-0039). Thi
 natively on Windows: its platform change is C and Zig built by the cross-target check, and the
 cross-host proofs are Step 8's. §11's open questions stay open, and nothing here authorizes
 infrastructure, real credentials or a public listener.
+
+## Resolution — 2026-09-22, Step 4: a baseline, then commands by tick and the newest state
+
+Step 4 finished the path §6 describes inside `net.Service`: a peer is synchronized by one
+baseline, activated by acknowledging it, and then exchanges commands and state. The service
+carries bytes and gives them no meaning. Validating payloads, and every object map, stays the
+application's. Nothing here reaches a world, the public ABI or a sample.
+
+**The exchange, which Step 1 froze the messages of and not the order.**
+1. After admission the server's host calls `sendBaseline(peer, tick, bytes)`. The baseline
+   travels on the session's full-state channel as a reliable frame. The client's host takes it
+   as a `baseline` delivery that names its frame sequence and tick.
+2. When the client's host has applied it, it calls `acknowledgeBaseline` with that name, which
+   sends a baseline acknowledgement carrying the epoch, sequence and tick.
+3. The server activates the peer only if all three match the baseline it sent. It then answers
+   `active` with the epoch and participant, and both sides report an `activated` event.
+4. The client believes `active` only after acknowledging, and only for its own epoch and
+   participant.
+
+Every other order is a protocol fault that ends only that peer:
+- an acknowledgement before the baseline, a second one, or a command before activation is
+  `unexpected`;
+- an acknowledgement naming another sequence, tick or epoch is `mismatch`;
+- on the client, a second baseline, a baseline on another channel, state before activation, or
+  a command on a channel that does not run toward clients is `unexpected`;
+- an oversized baseline is `malformed`;
+- activation for another participant, or state stamped earlier than the last, is `mismatch`.
+
+A session registered without a full-state channel has nothing to carry a baseline, so its
+peers cannot activate (`NoStateChannel`). Channels still need no state channel to start,
+because the limits allow none. Activation must beat the initial-sync deadline, and does in the
+proofs; the no-progress, heartbeat and write-stall deadlines carry on into `active`.
+
+**Commands reach the server's host only in tick batches.**
+- An active client's `sendCommand` queues a copied reliable message on a reliable channel that
+  runs toward the server, and returns its number, counted from 1 on that connection.
+- The server appends each arriving command to that peer's inbox. The inbox is the part of the
+  peer's 256 KiB receive storage left after the frame being decoded, one staged TLS record and
+  a client's untaken state: 112 KiB at the reference limits.
+- `admitBatch(session, tick)` needs strictly increasing ticks and replaces the previous batch.
+  It takes each active peer's oldest commands, one per peer per round, in participant order. It
+  takes at most the new `commands_per_peer_per_tick` (16) from each peer, and stops taking from
+  a peer whose next command does not fit. Everything it takes is copied into the session's
+  batch storage, whose size is the existing `queued_event_payload_bytes` (1 MiB).
+- The batch is then ordered by participant number and command number, never by arrival.
+- A command the budget leaves behind waits, in order, for a later tick. A peer that fills its
+  inbox is sending faster than its host admits, and is ended `overloaded` rather than read
+  more slowly, because being read more slowly would look to it like a stall on the server.
+- Copying is what lets a batch outlive its senders. A peer that leaves after admission keeps
+  its admitted commands in the batch, and loses the ones still waiting, so a reconnect starts
+  with nothing pending and numbers its commands from 1 again.
+- `nextDelivery` and `takeDelivery` refuse a server's peers, so a host cannot read commands
+  around admission.
+- §4's table put the 1 MiB against "queued events". Events still carry no payload: they are
+  admission, activation and ending, with three reserved per authorized connection, so the queue
+  still cannot overflow. That is why the event-reservation proof now counts three.
+
+**State replaces state, and is numbered only when it is queued.**
+- `publishState(peer, tick, bytes)` copies the state into a slot beside the peer's send queue,
+  one frame's worth. It needs a tick no earlier than the last one stamped for that peer.
+- A state still in the slot is replaced. The slot's state enters the queue, and only then gets
+  its sequence, as Step 3 required, once every byte of the last state queued has gone to TLS.
+- So a slow peer holds at most two states — one being written and one waiting — and receives
+  the newest it can rather than every state in turn. A reliable message to it is refused
+  `QueueFull` once its queue is full, never dropped.
+- Published during synchronization, after the baseline, the state waits until activation, so
+  live state never overtakes or replaces the baseline.
+- On the client, a state replaces any untaken state. Reliable messages from the server are
+  delivered first, in arrival order, and then the newest state.
+
+**Storage, all of it allocated at `init`.** A connection buffer is exactly `send_bytes_per_peer
++ receive_bytes_per_peer`:
+- the send queue, plus one frame of unqueued state;
+- one frame being decoded, one staged record, one frame of untaken state, and the inbox.
+
+`Service.init` therefore refuses, as `QueueTooSmall`:
+- receive storage under three frames plus a record;
+- send storage under two frames;
+- batch storage under one frame, since a command that could never fit would wait for ever.
+
+Negotiation must now fit the queue alone.
+
+**Proofs.** `net_sessions.zig` has seven new proofs, 21 in all:
+- **Activation only by the baseline it was sent.** Nothing but a baseline flows before
+  activation. A baseline is refused if oversized or sent twice. State published during
+  synchronization waits behind the baseline, and the newest replaces the rest. A short buffer
+  takes nothing. A wrong or repeated acknowledgement is refused. Activation beats the
+  initial-sync deadline, and an idle active pair lives on heartbeats.
+- **Initial synchronization fails closed.** Four ways:
+  - A baseline that is never acknowledged times out.
+  - A client that cannot apply its baseline disconnects with `application`. Its participant is
+    released, and it rejoins as a new one.
+  - Six false acknowledgements from a hand-driven client each end it.
+  - Nine misbehaviours from a hand-driven server are each disbelieved by the client.
+- **Three clients sending bursts larger than the budget, over a fragmenting carrier.** Every
+  batch is in order, contiguous per participant and within budget. Nothing is lost. Each
+  client's final view equals the server's. Replaying the captured batches into a fresh
+  reference model — whose result depends on order across and within participants — rebuilds
+  the same world.
+- **A departed peer** keeps its admitted commands and loses its waiting ones, and rejoins with
+  numbering from 1.
+- **A stopped client beside a healthy one.** It is published a kilobyte every tick and more than
+  fifty states are replaced, yet the queue never exceeds 4 KiB. Messages to it are refused once
+  its queue is full, with every accepted one counted sent. It is ended by a deadline while the
+  healthy peer stays active.
+- **Command checks.** Eight command and state breaches from a hand-driven client each end only
+  it, a flood of valid commands the host never admits included. The inbox peak stays within its
+  bound.
+
+**Each guard was broken to see it fail.** Thirteen mutations, each restored and checked
+byte-identical afterwards, and each failed its intended proof:
+- acknowledgement fields unchecked, and a wrong baseline acknowledged locally;
+- commands before activation;
+- the batch left unsorted, and the per-peer budget ignored;
+- state never replaced, state sent while synchronizing, and state published before the
+  baseline;
+- a client's state allowed to go back, and activation believed without an acknowledgement;
+- a channel's direction unchecked;
+- a server's inbox readable as deliveries;
+- the state delivered ahead of the messages before it.
+
+**What implementation found that the design did not say.**
+1. **A disconnect can outrun admission.** Commands are copied when admitted, not when read, so
+   a batch keeps its commands however its senders leave. Borrowing the inbox would have let a
+   reused connection buffer rewrite an admitted command.
+2. **The per-tick budget needed a limit, and filling the batch needed an order.** Visiting peers
+   by participant, one command per round, makes what fits a full batch depend only on what had
+   arrived, and lets no participant's burst crowd out a later one.
+3. **"Newer state waits behind the baseline" needed a place to wait.** Queued, state would be
+   immutable and numbered, and could never be replaced. Hence the slot beside the queue, which
+   also gives a slow peer the newest state.
+
+**Deliberately not done.**
+- No public ABI (Step 5), sample, host modes or presentation maps (Step 6).
+- No WAN envelope, which Step 7 measures.
+- No real-socket proof of delivery: it uses the same code as the memory carrier, and Step 3's
+  real-loopback join is unchanged.
+- Not run natively on Windows, since the change is Zig-only and inside `net`; Windows was
+  covered by the cross-target checks.
+
+§11's open questions stay open. Nothing here authorizes infrastructure, real credentials or a
+public listener.

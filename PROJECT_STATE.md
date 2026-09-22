@@ -1,7 +1,7 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-22
-**Current handoff: M16 is in progress; Steps 1–3 of nine are complete. Stop before Step 4.**
+**Current handoff: M16 is in progress; Steps 1–4 of nine are complete. Stop before Step 5.**
 M0 through M15 are complete and tagged. Read the accepted `docs/design/networking.md` and
 accepted ADR-0044/0045 before any further M16 work.
 
@@ -14,9 +14,59 @@ operator-hosted authoritative server with TLS 1.3 mutual certificate authenticat
 pre-authentication work and explicit credential provisioning/revocation. The owner's instruction
 to begin Step 1 accepted the remaining entry choices: one operator-hosted authority, provisioned
 player certificates and the four-peer/no-prediction reference envelope. Both ADRs are now
-**accepted**; Steps 4 through 9 still need their own instruction, and design authorization still
+**accepted**; Steps 5 through 9 still need their own instruction, and design authorization still
 does not authorize infrastructure purchases, firewall changes, real credentials or a public
 listener. M15's completed evidence remains accepted.
+
+**Completed M16 Step 4, 2026-09-22: a baseline, then commands by tick and the newest state.**
+Resolution: `networking.md`, Step 4; also ADR-0044's Step 4 note.
+- **Activation only by the baseline a peer was sent.** The server's host calls `sendBaseline` on
+  a synchronizing peer: reliable, on the session's full-state channel, never replaced. The
+  client's host takes it as a `baseline` delivery and acknowledges it by name (`BaselineRef`:
+  sequence and tick). The server activates only on an exact match and answers `active`, and
+  each side then reports an `activated` event. Wrong-order and false claims end only that peer.
+  A session with no full-state channel cannot activate anyone (`NoStateChannel`); its channels
+  still start. `PeerState` gained `active`.
+- **Commands only in tick batches.** `sendCommand` (active, a reliable channel running that way)
+  returns a number counted from 1 per connection. The server appends arrivals to a bounded
+  per-peer inbox (112 KiB at the reference limits); a full inbox ends that peer as `overloaded`.
+  `admitBatch(session, tick)` takes each active peer's oldest commands, one per peer per round in
+  participant order, up to the new `Limits.commands_per_peer_per_tick` (16), and copies them
+  into per-session batch storage sized by `queued_event_payload_bytes`. It then orders them by
+  participant and command number. Ticks strictly increase. `batchCommand` and
+  `copyBatchPayload` read the batch. A server has no deliveries, so there is no way around
+  admission. The rest wait for a later tick; a departed peer keeps what was admitted and loses
+  what was not.
+- **State replaces state.** `publishState` copies into a slot beside the send queue. It enters
+  the queue, and is numbered, only once the last state queued has gone to TLS, so a slow peer
+  holds at most two. Published after the baseline and before activation, it waits. A client
+  refuses state stamped earlier than the last, and delivers reliable messages in order before
+  the newest untaken state (`nextDelivery`/`takeDelivery`).
+- **Storage:** each connection buffer is exactly its send plus receive storage. `init` refuses,
+  as `QueueTooSmall`, receive storage under three frames plus a record, send storage under two
+  frames, or batch storage under one frame. Three events are now reserved per authorized
+  connection.
+- **Proofs:** `zig build net-session-test`, now 21, gained seven:
+  - activation and everything refused before it;
+  - initial-sync failures — no acknowledgement, a rejected baseline, six false acknowledgements
+    and nine lies from a hand-driven server;
+  - three bursting clients whose batches stay ordered, contiguous and in budget, with replayed
+    batches rebuilding the reference model exactly;
+  - a departed peer's commands;
+  - a stopped peer whose queue stays under 4 KiB while more than fifty states are replaced, and
+    whose reliable queue refuses rather than drops;
+  - eight command and state breaches, including an inbox flood.
+
+  **Thirteen guards were broken once each and every one failed its own proof.**
+- **Found:** admitted commands must be copied, because a departed peer's buffer is reused; the
+  per-tick budget needed a limit and batch filling needed an order; "state waits behind the
+  baseline" needed a slot outside the queue.
+- **The bar is green:** `zig fmt --check`; `zig build test` **82/82 steps, 1,653 of 1,654**
+  headless tests (the one skip predates M16) from **1,718 declared**; `check` native, Metal and
+  both null cross targets; both samples 30 frames; the optimized Windows checks, Vulkan and null.
+  Not run natively on Windows: the change is Zig inside `net`.
+- **Not done, deliberately:** no ABI (Step 5); no sample, host modes or presentation maps (Step
+  6); no WAN envelope (Step 7).
 
 **Completed M16 Step 3, 2026-09-22: sessions, and what a connection passes through to become
 one.** Resolution: `networking.md`, Step 3; also ADR-0045's Step 3 note and `platform-interface.md`
@@ -2499,19 +2549,20 @@ Windows x64 through Vulkan. **M14 is complete (2026-09-19)**: a player chooses t
 packaged sample, on macOS and on Windows. **M15 is complete (2026-09-21)**: Foundry authors
 its own content through its own public API, on macOS and on Windows. **M16 is in progress**:
 the owner confirmed its trigger on 2026-09-21 — the first networked game needs public-internet
-multiplayer — and Steps 1–3 of nine are complete. M17 is unstarted and credential-gated.
+multiplayer — and Steps 1–4 of nine are complete. M17 is unstarted and credential-gated.
 
 ## Current milestone
 
-**M16 — Connected: "it plays with others." In progress; Steps 1–3 of nine complete,
+**M16 — Connected: "it plays with others." In progress; Steps 1–4 of nine complete,
 2026-09-22.** Read `docs/design/networking.md` — §12's nine steps and their Resolutions — and
 ADR-0044/0045, accepted 2026-09-21. The owner requires public-internet multiplayer: one
 operator-hosted authority, TLS 1.3 with mutual certificates, up to four reference peers and no
 prediction. Step 1 qualified Mbed TLS 3.6.7 LTS and froze FNET wire v1 in L2 `net`; Step 2 added
 `platform.Transport`, authenticated streams proved over real loopback on macOS and Windows;
 Step 3 added `net.Service`, which admits peers by grant, allowlist and compatibility within
-bounded work, deadlines and budgets. **Step 4 — tick-admitted commands and complete state —
-needs the owner's instruction.** A real
+bounded work, deadlines and budgets; Step 4 added the acknowledged baseline, activation,
+tick-admitted command batches and replaceable complete state. **Step 5 — the public API,
+`FoundryApi_v5` — needs the owner's instruction.** A real
 public listener, real credentials and any infrastructure need the operator's explicit
 authorization in any step.
 
@@ -3458,7 +3509,7 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M16 is in progress: Steps 1–3 of nine are complete, and nothing is half-built.** Its
+**M16 is in progress: Steps 1–4 of nine are complete, and nothing is half-built.** Its
 current account is the M16 entries at the top of this file and `networking.md`'s Resolutions.
 **M0–M15 are complete.** M15's design and
 its nine Resolutions are in `docs/design/editor.md`. Step 1 added source spans to
@@ -4124,13 +4175,16 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**M16 Step 4 — deliver tick-admitted commands and complete state (`networking.md` §12) — is
-next and needs the owner's instruction.** It adds admitted input batches in stable order, copied
-command queues, replaceable full state, the retained initial baseline and its acknowledgement,
-and activation, over Step 3's `net.Service`. Two Step 3 facts bind it: a frame is numbered as it
-enters the send queue, so replaceable state must be numbered when queued, not when produced; and
-initial synchronization is the deadline activation must now beat. Steps 1–3 are committed and
-**none is pushed**. M17 (public macOS release certification) needs Developer ID credentials,
+**M16 Step 5 — publish networking in the single public API (`networking.md` §12) — is next and
+needs the owner's instruction.** Its first act is a dated Resolution freezing the v5 types and
+call inventory before any code (§8, §11). Step 4's surface is what it publishes:
+- grants, sessions and channels;
+- `sendBaseline`/`acknowledgeBaseline`, `sendCommand` and `publishState`;
+- `nextDelivery`/`takeDelivery` — whose short-buffer refusal already takes nothing, as §8 asks;
+- `admitBatch`/`batchCommand`/`copyBatchPayload`;
+- events and stats.
+
+Steps 1–4 are committed and **none is pushed**. M17 (public macOS release certification) needs Developer ID credentials,
 Apple's notary service and a genuinely clean recipient Mac (ADR-0032), and it is deliberately
 last. M18 is Linux runtime support, after the first game and before any 3D (ADR-0039).
 
@@ -5423,8 +5477,8 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 
 ## Notes for the next session
 
-**Resume point, 2026-09-22:** M0–M15 complete, tagged and pushed. **M16 Steps 1–3 of nine are
-complete and committed, not pushed.** Step 4 needs the owner's instruction.
+**Resume point, 2026-09-22:** M0–M15 complete, tagged and pushed. **M16 Steps 1–4 of nine are
+complete and committed, not pushed.** Step 5 needs the owner's instruction.
 - **M16's record** is `docs/design/networking.md` with ADR-0044/0045. `platform.Transport` is
   the authenticated stream layer and `net.Service` the sessions over it; `zig build
   net-session-test`, `zig build transport-test` and `zig build tls-qualification` are their
@@ -5441,7 +5495,7 @@ complete and committed, not pushed.** Step 4 needs the owner's instruction.
   --output <work> [--dependency <x.fpk>]... [--export <file.fpk>] [--plan <file> | --script]`.
   A `--plan` is one action a line and **belongs beside the package it edits, never in this
   repository**: it names that package's schemas and fields, and the editor knows none of them.
-- **Do not start M16 Step 4 without the owner's instruction**, and nothing in M16 authorizes a
+- **Do not start M16 Step 5 without the owner's instruction**, and nothing in M16 authorizes a
   public listener, real credentials or infrastructure.
 - **M13's record** is `docs/design/vulkan.md` with ADR-0037/0038/0039. Vulkan runs on Windows x64,
   and `-Drhi=vulkan` builds, tests and installs there (AGENTS.md, *Vulkan work*).
