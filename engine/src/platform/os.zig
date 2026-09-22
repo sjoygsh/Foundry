@@ -318,6 +318,18 @@ pub const Os = struct {
         return std.math.cast(i64, ts.nanoseconds) orelse std.math.maxInt(i64);
     }
 
+    /// Nanoseconds of real elapsed time since an arbitrary origin, never moving backwards.
+    ///
+    /// **For deadlines that are not simulation**, and only those. `Platform.now` is the
+    /// frame clock, and under the null backend it is synthetic by design; a headless host
+    /// still owes a network service real elapsed time, because a peer on the other end of
+    /// a socket is not synthetic (`networking.md`, Step 6). Like the wall clock, it is a
+    /// plain integer rather than an `Instant`, so it cannot reach simulation by accident.
+    pub fn monotonicNanos(self: *Os) u64 {
+        const ts = std.Io.Clock.awake.now(self.io());
+        return std.math.cast(u64, ts.nanoseconds) orelse std.math.maxInt(u64);
+    }
+
     /// Yields the thread for approximately `duration`.
     ///
     /// Real time, necessarily: sleeping against a synthetic clock would not sleep. It
@@ -1459,6 +1471,17 @@ test "the wall clock is plausible and is not an Instant" {
     // The type is the enforcement: simulation code takes `core.time.Instant`, and this
     // is not one, so wall-clock time cannot reach it by accident (I9).
     try testing.expect(@TypeOf(os.wallClockNanos()) != core.time.Instant);
+}
+
+test "the monotonic clock advances in real time and is not an Instant" {
+    var os = try testOs(&.{});
+    defer os.deinit();
+
+    const before = os.monotonicNanos();
+    os.sleep(.fromMillis(5));
+    const after = os.monotonicNanos();
+    try testing.expect(after - before >= 5 * std.time.ns_per_ms);
+    try testing.expect(@TypeOf(os.monotonicNanos()) != core.time.Instant);
 }
 
 test "creating a directory path is idempotent" {

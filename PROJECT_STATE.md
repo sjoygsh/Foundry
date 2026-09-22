@@ -1,7 +1,7 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-23
-**Current handoff: M16 is in progress; Steps 1–5 of nine are complete. Stop before Step 6.**
+**Current handoff: M16 is in progress; Steps 1–6 of nine are complete. Stop before Step 7.**
 M0 through M15 are complete and tagged. Read the accepted `docs/design/networking.md` and
 accepted ADR-0044/0045 before any further M16 work.
 
@@ -17,6 +17,63 @@ player certificates and the four-peer/no-prediction reference envelope. Both ADR
 **accepted**; Steps 6 through 9 still need their own instruction, and design authorization still
 does not authorize infrastructure purchases, firewall changes, real credentials or a public
 listener. M15's completed evidence remains accepted.
+
+**Completed M16 Step 6, 2026-09-23: the connected sandbox, through the table alone.**
+Resolution: `networking.md`, Step 6; also ADR-0044's Step 6 note.
+- **Launch.** `sandbox --serve|--join <a.b.c.d:port> --credentials <file>`. It is offline by
+  default and unchanged, has no insecure mode, and a bad command line prints the usage and
+  exits 2.
+  - The credential file is host-only and versioned (`foundry-credentials 1`). It names the
+    PEM files and the server name and key, or the allowed client keys and their principals.
+  - A refusal names the line. No path or key is logged.
+- **Two halves, like the editor.**
+  - `samples/sandbox/connected.zig` is the host. It builds the transport and service with one
+    grant and describes the loaded packages (id, version, size and SHA-256 of the loaded
+    bytes). It publishes the grant to the one table, joining the scripts' host if one is bound.
+    It pumps with the new `Os.monotonicNanos`, maps content-named keys to an intent, and paces
+    a headless run at one fixed step per frame in real time.
+  - `samples/sandbox/markers/` is the consumer. It is granted only `foundry.h`, and
+    `zig build markers-boundary` holds it there: a source scan plus a forbidden import compiled
+    in its own graph.
+- **What the consumer does.**
+  - The server is authoritative. Each activated peer gets a marker, and a command is an intent
+    whose owner is the batch's participant. The server clamps moves to the content's arena,
+    sends a baseline once to each synchronizing peer, and sends complete state every
+    `state_every` ticks.
+  - Clients validate each state into a candidate before replacing their view, refusing a
+    malformed or resurrecting one. They show pending input and staleness, and never predict.
+  - A status panel shows role, endpoint, peers, participant, position, and any ending by
+    category, authentication failures included.
+- **Content:** schema `sandbox:net_markers`, record `sandbox:net.markers` (look, speed, arena,
+  tints, keys `i`/`j`/`k`/`l`, words), and `textures/marker.png`.
+- **Proofs.**
+  - `zig build sandbox-net-proof -Dplatform=null -Drhi=null` runs six processes over real
+    loopback: a server, A, a late-joining B, a mismatched C, and A reconnecting. It checks
+    B's baseline against the server's record, B moving only its own marker, fresh participant
+    and marker numbers, C refused by catalogue, clean exits, and no credential path or key in
+    any log.
+  - It is not in `test`. `-- --provision <dir>` writes disposable test credentials.
+  - Windowed on macOS/Metal: a server and two clients, whose captures agree.
+  - **Ten guards were broken once each and every one failed its proof.**
+- **Found:**
+  - a headless host needed a real monotonic clock;
+  - headless pacing had to set the null clock's step as well as sleep;
+  - networking must share the scripts' table;
+  - an unused import escapes the graph but not the scan;
+  - tints need a white image.
+- **The bar is green:**
+  - `zig fmt --check`;
+  - `zig build test` **89/89 steps, 1,669 of 1,670** (the one skip predates M16);
+  - `check` native, Metal and both null cross targets;
+  - both samples for 30 frames;
+  - `sandbox-net-proof`;
+  - the Windows checks: Vulkan Debug and ReleaseSafe, null ReleaseSafe;
+  - both release stages;
+  - `zig build`.
+- **Not run natively on Windows:** the PC still refuses SSH at its recorded address. **No
+  person pressed a key**: windowed runs were scripted.
+- **Not done, deliberately:** Step 7's adversarial matrix and envelope; Step 8's cross-host,
+  WAN and external consumer and guide; a reconnect control in the window.
 
 **Completed M16 Step 5, 2026-09-22: networking in the one public table.** Resolutions:
 `networking.md`, both Step 5 sections (the inventory frozen before code, then what implementation
@@ -2592,12 +2649,12 @@ Windows x64 through Vulkan. **M14 is complete (2026-09-19)**: a player chooses t
 packaged sample, on macOS and on Windows. **M15 is complete (2026-09-21)**: Foundry authors
 its own content through its own public API, on macOS and on Windows. **M16 is in progress**:
 the owner confirmed its trigger on 2026-09-21 — the first networked game needs public-internet
-multiplayer — and Steps 1–5 of nine are complete. M17 is unstarted and credential-gated.
+multiplayer — and Steps 1–6 of nine are complete. M17 is unstarted and credential-gated.
 
 ## Current milestone
 
-**M16 — Connected: "it plays with others." In progress; Steps 1–5 of nine complete,
-2026-09-22.** Read `docs/design/networking.md` — §12's nine steps and their Resolutions — and
+**M16 — Connected: "it plays with others." In progress; Steps 1–6 of nine complete,
+2026-09-23.** Read `docs/design/networking.md` — §12's nine steps and their Resolutions — and
 ADR-0044/0045, accepted 2026-09-21. The owner requires public-internet multiplayer: one
 operator-hosted authority, TLS 1.3 with mutual certificates, up to four reference peers and no
 prediction. Step 1 qualified Mbed TLS 3.6.7 LTS and froze FNET wire v1 in L2 `net`; Step 2 added
@@ -2605,8 +2662,8 @@ prediction. Step 1 qualified Mbed TLS 3.6.7 LTS and froze FNET wire v1 in L2 `ne
 Step 3 added `net.Service`, which admits peers by grant, allowlist and compatibility within
 bounded work, deadlines and budgets; Step 4 added the acknowledged baseline, activation,
 tick-admitted command batches and replaceable complete state; Step 5 published them as
-`FoundryApi_v5`. **Step 6 — the connected sandbox through that API — needs the owner's
-instruction.** A real
+`FoundryApi_v5`; Step 6 connected the sandbox through that API alone. **Step 7 — refusal,
+authority and deterministic replay — needs the owner's instruction.** A real
 public listener, real credentials and any infrastructure need the operator's explicit
 authorization in any step.
 
@@ -3553,7 +3610,7 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M16 is in progress: Steps 1–5 of nine are complete, and nothing is half-built.** Its
+**M16 is in progress: Steps 1–6 of nine are complete, and nothing is half-built.** Its
 current account is the M16 entries at the top of this file and `networking.md`'s Resolutions.
 **M0–M15 are complete.** M15's design and
 its nine Resolutions are in `docs/design/editor.md`. Step 1 added source spans to
@@ -4228,7 +4285,7 @@ and needs the owner's instruction.** It adds:
 - a real two-window run on the primary desktop.
 
 A host binds its service and the grants it publishes to `abi.Host`, and keeps pumping it.
-Steps 1–5 are committed and **none is pushed**. M17 (public macOS release certification) needs Developer ID credentials,
+Steps 1–6 are committed and **none is pushed**. M17 (public macOS release certification) needs Developer ID credentials,
 Apple's notary service and a genuinely clean recipient Mac (ADR-0032), and it is deliberately
 last. M18 is Linux runtime support, after the first game and before any 3D (ADR-0039).
 
@@ -5521,8 +5578,11 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 
 ## Notes for the next session
 
-**Resume point, 2026-09-22:** M0–M15 complete, tagged and pushed. **M16 Steps 1–5 of nine are
-complete and committed, not pushed.** Step 6 needs the owner's instruction.
+**Resume point, 2026-09-23:** M0–M15 complete, tagged and pushed. **M16 Steps 1–6 of nine are
+complete and committed, not pushed.** Step 7 needs the owner's instruction.
+- **Step 6's commands:** `zig build sandbox-net-proof -Dplatform=null -Drhi=null` (separate
+  headless processes over loopback; `-- --provision <dir>` writes disposable test credentials),
+  and `sandbox --serve|--join <a.b.c.d:port> --credentials <file>` for a windowed run.
 - **M16's record** is `docs/design/networking.md` with ADR-0044/0045. `platform.Transport` is
   the authenticated stream layer and `net.Service` the sessions over it; `zig build
   net-session-test`, `zig build transport-test` and `zig build tls-qualification` are their

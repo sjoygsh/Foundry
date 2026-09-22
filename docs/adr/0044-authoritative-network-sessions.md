@@ -1,7 +1,8 @@
 # ADR-0044: Authoritative sessions without cross-machine lockstep
 
 **Status:** Accepted 2026-09-21; M16 Step 1 implemented against it; its tick admission and
-complete-state delivery built in Step 4, and published as `FoundryApi_v5` in Step 5.
+complete-state delivery built in Step 4, published as `FoundryApi_v5` in Step 5, and consumed
+by the sandbox's header-only shared markers in Step 6.
 **Date:** 2026-09-21
 **Revision, 2026-09-21:** the owner requires public-internet multiplayer. The LAN-only
 alternative is withdrawn. The owner's subsequent instruction to begin Step 1 accepts the
@@ -109,3 +110,11 @@ its grants and credentials, and pumps it. A consumer admits a tick's batch and r
 order through the table, so the authority's input specification is the same for a native mod
 or a tool as for the host (I4). No principal, key or remote address crosses. The inventory and
 rights model are in `networking.md`'s Step 5 Resolution.
+
+## Step 6 consumer note — 2026-09-23
+
+The first application of this decision is the sandbox's shared markers. The server owns every
+marker, and a client's command is an intent whose owner is the participant its admitted batch
+names, never its payload. Clients validate each complete state into a candidate before it
+replaces their view, and they neither predict nor extrapolate. The payload layouts are the
+application's, as this ADR says, and are recorded in `networking.md`'s Step 6 Resolution.

@@ -154,7 +154,7 @@ Windows/Vulkan run followed on 2026-09-21: the same twenty workflow tests, the s
 twenty-five-action null smoke frame for frame, and the same 489-action authoring plan on an
 Intel Arc A750 through Vulkan 1.4, with the two saved `.fdt` files and the exported `.fpk`
 byte-identical to the macOS/Metal run's. Step 9 closed the milestone. **M16 is in progress;
-Steps 1–5 of nine are complete.** Read `docs/design/networking.md` and accepted ADR-0044/0045.
+Steps 1–6 of nine are complete.** Read `docs/design/networking.md` and accepted ADR-0044/0045.
 The owner requires public-internet multiplayer; the LAN-only proposal is withdrawn. The
 accepted first architecture is one operator-hosted authority over TLS 1.3 mutual certificates,
 up to four reference peers and no prediction. Step 1 pins and qualifies Mbed TLS 3.6.7 LTS,
@@ -176,8 +176,14 @@ baseline per peer, activation only by acknowledging it, commands admitted by `ad
 participant and command-number order, and complete state that replaces unsent state; its proofs
 are in the same file and step. Step 5 publishes all of it as `FoundryApi_v5`, 22 additive calls
 in `engine/src/abi/calls_net.zig` over a service and a list of published grants the host binds to
-its `abi.Host`. `zig build abi-net-test` drives a real service through the table alone.
-**No sample networking exists. Step 6 is next and has not begun.** Design authorization does not
+its `abi.Host`. `zig build abi-net-test` drives a real service through the table alone. Step 6
+connects the sandbox: `samples/sandbox/connected.zig` is the host (launch modes, the operator's
+credential file, the service, pumping, pacing), and `samples/sandbox/markers/` is the consumer,
+granted only the header like the editor's client. `zig build markers-boundary` is in `test`.
+`zig build sandbox-net-proof -Dplatform=null -Drhi=null` runs separate headless processes over
+loopback. It is not in `test`: run it when networking, the sandbox or its content changes.
+`-- --provision <dir>` writes disposable test credentials for a windowed run by hand. **Step 7 is
+next and has not begun.** Design authorization does not
 authorize infrastructure purchases, firewall changes, real credential use or a public
 listener. The bar below is current. M13's Step 9 added the checks Vulkan and release work need,
 and M14 added an optimized Windows check to them.

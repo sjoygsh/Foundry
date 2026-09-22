@@ -109,7 +109,7 @@ build, export — and the relocated room sample loaded it from its ordinary user
 directory and changed visibly. A C99 program does the same job through the same calls. It
 ran on macOS/Metal and on Windows/Vulkan, and both wrote the same bytes.
 
-**M16 is in progress; Steps 1–5 of nine are complete.** Its accepted
+**M16 is in progress; Steps 1–6 of nine are complete.** Its accepted
 [networking design](docs/design/networking.md) requires public-internet multiplayer through an
 operator-hosted authority with mutually authenticated TLS. Pinned Mbed TLS 3.6.7 LTS passed
 the in-memory provider qualification, L2 `net` holds checked limits, runtime channels and

@@ -444,6 +444,25 @@ pub fn build(b: *std.Build) void {
     // hand them. `samples/` holds the smallest thing that exercises a capability — when
     // one starts wanting features rather than demonstrating them, it has outgrown this
     // repository.
+    // The sandbox's connected demonstration is two consumers with a hard seam between them,
+    // as the editor is (`networking.md` §9). `connected.zig` is host code inside the sample
+    // and composes engine modules; `markers` — sessions, channels, authority, state and
+    // presentation — gets only a translation of the installed public header, so an engine
+    // import there is a build error rather than a review finding.
+    const markers_header_mod = b.createModule(.{
+        .root_source_file = b.path("samples/sandbox/markers/header.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    markers_header_mod.addIncludePath(b.path("engine/src/abi"));
+    markers_header_mod.link_libc = true;
+    const markers_mod = b.createModule(.{
+        .root_source_file = b.path("samples/sandbox/markers/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    markers_mod.addImport("foundry_api", markers_header_mod);
+
     const sandbox_mod = b.createModule(.{
         .root_source_file = b.path("samples/sandbox/main.zig"),
         .target = target,
@@ -483,6 +502,11 @@ pub fn build(b: *std.Build) void {
     // decided by their inputs. A game's build identity is genuinely the game's, and a log
     // header that could not name the revision it came from is a log header worth less.
     sandbox_mod.addImport("build_options", build_options_module);
+    // Networking is opt-in at launch, not at build: the host half publishes one grant to
+    // the one table and pumps the service, and the markers half is handed that table.
+    sandbox_mod.addImport("abi", modules.get("abi").?);
+    sandbox_mod.addImport("net", modules.get("net").?);
+    sandbox_mod.addImport("markers", markers_mod);
 
     // **Tier 2, and the shape of opting into it.** A game that wants scripts registers the
     // source loader, binds an `abi.Host` over its own subsystems, issues an identity per
@@ -838,6 +862,9 @@ pub fn build(b: *std.Build) void {
         if (dist_app == .room) release_mod.addImport("abi", modules.get("abi").?);
         if (dist_app == .sandbox) {
             release_mod.addImport("scripting", scripting_mod);
+            release_mod.addImport("abi", modules.get("abi").?);
+            release_mod.addImport("net", modules.get("net").?);
+            release_mod.addImport("markers", markers_mod);
             release_mod.addAnonymousImport("quad_metallib", .{
                 .root_source_file = metalLibrary(b, "quad-release", &.{"samples/sandbox/shaders/quad.metal"}),
             });
@@ -1051,6 +1078,46 @@ pub fn build(b: *std.Build) void {
     b.step("abi-net-test", "Run M16's public networking proofs: FoundryApi_v5 over a real service")
         .dependOn(&run_abi_networking.step);
 
+    // M16 Step 6: the connected sandbox across real processes on real loopback — a server,
+    // two clients, a late join, a refused mismatch and a reconnect — each reaching the
+    // network only as a windowed run does. Headless by requirement, because the proof reads
+    // the installed null build's logs; identities are generated per run by the same
+    // test-only fixture, linked into the driver and never into the sandbox.
+    const net_proof_step = b.step("sandbox-net-proof", "Run the connected sandbox as separate headless processes over loopback");
+    if (platform_backend != .null or rhi_backend != .null) {
+        net_proof_step.dependOn(&b.addFail("`sandbox-net-proof` requires -Dplatform=null -Drhi=null").step);
+    } else if (!target.query.isNative()) {
+        net_proof_step.dependOn(&b.addFail("`sandbox-net-proof` runs only for a native target").step);
+    } else {
+        const identities_mod = b.createModule(.{
+            .root_source_file = b.path("engine/tests/fixtures/identities.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        identities_mod.addImport("platform", platform_module);
+        identities_mod.addIncludePath(mbedtls.path("include"));
+        identities_mod.addIncludePath(b.path("engine/src/platform"));
+        identities_mod.addCSourceFile(.{
+            .file = b.path("engine/tests/fixtures/tls_identities.c"),
+            .flags = mbedtls_c_flags,
+        });
+        const net_proof_mod = b.createModule(.{
+            .root_source_file = b.path("samples/sandbox/net_proof.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        net_proof_mod.addImport("platform", platform_module);
+        net_proof_mod.addImport("identities", identities_mod);
+        const net_proof = b.addExecutable(.{ .name = "sandbox-net-proof", .root_module = net_proof_mod });
+        const run_net_proof = b.addRunArtifact(net_proof);
+        run_net_proof.addArg(b.getInstallPath(.bin, sandbox.out_filename));
+        if (b.args) |args| run_net_proof.addArgs(args);
+        run_net_proof.step.dependOn(b.getInstallStep());
+        run_net_proof.has_side_effects = true;
+        net_proof_step.dependOn(&run_net_proof.step);
+    }
+
     // Samples are part of the per-milestone portability obligation too: a sample that
     // stopped cross-compiling would be a milestone rule broken (ROADMAP), and finding
     // that out at release time is the expensive way.
@@ -1065,6 +1132,34 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&b.addRunArtifact(sample_tests).step);
         check_step.dependOn(&sample_tests.step);
     }
+    // The shared markers' codec, and the two halves of their boundary: a source scan for
+    // routes that need no import, and a forbidden import compiled inside the markers' own
+    // module graph — `foundry_api` and nothing else — which must keep failing.
+    const markers_tests = b.addTest(.{ .root_module = markers_mod });
+    check_step.dependOn(&markers_tests.step);
+    const run_markers_tests = b.addRunArtifact(markers_tests);
+    test_step.dependOn(&run_markers_tests.step);
+    const markers_boundary_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("samples/sandbox/markers/boundary_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    }) });
+    check_step.dependOn(&markers_boundary_tests.step);
+    const run_markers_boundary = b.addRunArtifact(markers_boundary_tests);
+    test_step.dependOn(&run_markers_boundary.step);
+    const forbidden_markers_import = b.addSystemCommand(&.{ b.graph.zig_exe, "build-obj", "-fno-emit-bin", "-lc" });
+    forbidden_markers_import.addArgs(&.{ "--dep", "foundry_api" });
+    forbidden_markers_import.addPrefixedFileArg("-Mprobe=", b.path("samples/sandbox/markers/forbidden_import.zig"));
+    forbidden_markers_import.addPrefixedDirectoryArg("-I", b.path("engine/src/abi"));
+    forbidden_markers_import.addPrefixedFileArg("-Mfoundry_api=", b.path("samples/sandbox/markers/header.zig"));
+    forbidden_markers_import.expectExitCode(1);
+    forbidden_markers_import.expectStdErrMatch("no module named 'net' available");
+    test_step.dependOn(&forbidden_markers_import.step);
+    const markers_boundary_step = b.step("markers-boundary", "Prove the shared markers cannot import implementation modules");
+    markers_boundary_step.dependOn(&run_markers_tests.step);
+    markers_boundary_step.dependOn(&run_markers_boundary.step);
+    markers_boundary_step.dependOn(&forbidden_markers_import.step);
+
     const editor_tests = b.addTest(.{ .root_module = editor_mod });
     check_step.dependOn(&editor_tests.step);
     test_step.dependOn(&b.addRunArtifact(editor_tests).step);

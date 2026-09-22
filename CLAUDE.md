@@ -182,7 +182,7 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Mod selection | A player's selection is an ordered profile in its own file, applied at the next start; user duplicates are skipped; native consent is the host's alone; published in `FoundryApi_v3` | [0040](docs/adr/0040-ordered-profiles-applied-at-next-start.md) |
 | Authoring | An optional `author` service at L4, beside `app`, owns the one package compiler and source workspaces; authoring is published in additive `FoundryApi_v4` before the ABI-only editor client uses it; roots are host grants | [0042](docs/adr/0042-authoring-through-the-public-api.md) |
 | Source edits | Source bytes are authoritative, and an edit splices only its construct; save is per file against a baseline; build takes a saved snapshot into an isolated candidate; reload is explicit | [0043](docs/adr/0043-source-preserving-authoring-and-explicit-builds.md) |
-| Network authority | One operator-hosted authority; applications define bounded command/state channels and meaning; clients do not run a second authority or receive automatic ECS replication; commands admitted in participant-ordered tick batches, state replaceable (M16 Step 4); published in additive `FoundryApi_v5` over host-published grants (Step 5) | [0044](docs/adr/0044-authoritative-network-sessions.md) |
+| Network authority | One operator-hosted authority; applications define bounded command/state channels and meaning; clients do not run a second authority or receive automatic ECS replication; commands admitted in participant-ordered tick batches, state replaceable (M16 Step 4); published in additive `FoundryApi_v5` over host-published grants (Step 5); the sandbox's connected mode is a header-only v5 consumer (Step 6) | [0044](docs/adr/0044-authoritative-network-sessions.md) |
 | Network transport | TLS 1.3 over TCP with mandatory mutual certificates, bounded direct connection and no plaintext fallback; Mbed TLS 3.6.7 LTS qualified in M16 Step 1, native nonblocking streams in Step 2, grant and allowlist admission in Step 3 | [0045](docs/adr/0045-bounded-direct-connect-transport.md) |
 | Images | Foundry decodes its own PNG; no third-party image library | [0018](docs/adr/0018-image-decoding.md) |
 | Modularity | Layering enforced by the Zig build graph | [0007](docs/adr/0007-module-layering.md) |
@@ -578,7 +578,7 @@ Decisions live in `docs/adr/NNNN-short-title.md`, using the template in `docs/ad
 Write an ADR when a choice constrains future work, is expensive to reverse, or will look
 arbitrary to a future session. Do not write one for routine implementation choices.
 
-**M16 (accepted 2026-09-21; Steps 1–5 of nine complete):**
+**M16 (accepted 2026-09-21; Steps 1–6 of nine complete):**
 [networking.md](docs/design/networking.md),
 [ADR-0044](docs/adr/0044-authoritative-network-sessions.md) and
 [ADR-0045](docs/adr/0045-bounded-direct-connect-transport.md) select authoritative sessions,
@@ -595,9 +595,13 @@ difference, bounded pre-authentication work, deadlines, and events reserved so n
 Step 4 activated a peer only by an acknowledged baseline, admitted commands in tick batches
 ordered by participant and command number, never arrival, and let state replace unsent state.
 Step 5 published all of it as `FoundryApi_v5`: 22 additive calls, 233 in all, over the grants a
-host chooses to publish, with no key, principal or address crossing. There is still no sample
-path. Internet security and a real WAN proof remain M16 exit requirements, not deferred release
-polish. Stop before Step 6.
+host chooses to publish, with no key, principal or address crossing. Step 6 connected the
+sandbox: opt-in `--serve`/`--join` modes over an operator's credential file, and shared markers
+in a separately compiled consumer that sees only `foundry.h`, as the editor's client does. The
+server is authoritative, clients hold validated complete state, and the look, keys and words are
+content. It is proven by separate headless processes on loopback and by windows on macOS/Metal.
+Internet security and a real WAN proof remain M16 exit requirements, not deferred release
+polish. Stop before Step 7.
 
 **M15 (complete 2026-09-21):** ADR-0042 and ADR-0043 are in the §4.1 table, and
 [editor.md](docs/design/editor.md) is the nine-step plan, all nine now walked. Its `author`
@@ -630,7 +634,7 @@ milestone named below is where `docs/ROADMAP.md` now places it.
 | Shader cross-compiler vs. hand-written variants | **Decided in M13** (ADR-0038, 2026-09-14) | Hand-written GLSL variants for the two existing shader pairs, compiled to SPIR-V with pinned SDK tools. ADR-0015's future material/mod shader constraint remains. |
 | Job system / threading model | **Done in M12** (was dated post-M5) | **Decided by ADR-0036 and implemented, 2026-09-14** — explicit `core.Jobs`, fork-join over data-determined chunks, systems kept in order, nothing in the ABI. What it deliberately left out — parallel system scheduling, task graphs, a render thread — has no date: each waits on a measured trigger in `docs/design/jobs-and-threading.md` §9. |
 | Bit-exact determinism for a subset | **Not due in accepted M16 authority** | ADR-0013 keeps this open; the selected authoritative server does not need cross-machine lockstep. Revisit only if a later game selects lockstep. |
-| Networking | **M16 in progress; Steps 1–5 of nine complete** | Owner requires internet multiplayer. [networking.md](docs/design/networking.md) and accepted ADR-0044/0045 fix the initial architecture. Mbed TLS and FNET wire v1 are qualified/frozen, authenticated streams exist, sessions admit peers, and active peers exchange tick-admitted commands and complete state, published as `FoundryApi_v5`; the connected sandbox begins at Step 6. |
+| Networking | **M16 in progress; Steps 1–6 of nine complete** | Owner requires internet multiplayer. [networking.md](docs/design/networking.md) and accepted ADR-0044/0045 fix the initial architecture. Mbed TLS and FNET wire v1 are qualified/frozen, authenticated streams exist, sessions admit peers, and active peers exchange tick-admitted commands and complete state, published as `FoundryApi_v5`; the sandbox connects through it alone (Step 6); adversarial proofs begin at Step 7. |
 | Public macOS release certification | **M17**, credential-gated — last in its phase | Use the implemented Developer ID/notary path, then verify the exact quarantined download on a genuinely clean recipient Mac. The current ad-hoc artifact is not equivalent (ADR-0032). |
 | Linux runtime support | **M18**, trigger-started — after the first game is complete, before any 3D | **Removed from M13 by ADR-0039, 2026-09-18.** The first game targets macOS and Windows. The Linux Vulkan paths are written and build-checked; no X11, Wayland or Linux driver has run them. |
 

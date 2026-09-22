@@ -41,6 +41,9 @@ const ui = @import("ui");
 // The build supplies the real host when it has Lua and a do-nothing one when it does not,
 // so nothing below ever asks which build this is (ADR-0029).
 const scripting = @import("scripting");
+// M16's connected demonstration, opted into at launch and never at build: the host half is
+// this file's neighbour, and the shared markers it drives see only the public header.
+const network = @import("connected.zig");
 
 /// Routes Foundry's logging through the engine's sink. One line, in the root source file.
 pub const std_options = app.std_options;
@@ -466,6 +469,25 @@ fn buildIdentity() app.diagnostics.Build {
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
 
+    // **Offline unless told otherwise, and never insecurely.** The only arguments the
+    // sandbox takes choose a connected mode and name the operator's credentials for it.
+    var arguments = try init.minimal.args.iterateAllocator(gpa);
+    defer arguments.deinit();
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (argv.items) |arg| gpa.free(arg);
+        argv.deinit(gpa);
+    }
+    while (arguments.next()) |arg| try argv.append(gpa, try gpa.dupe(u8, arg));
+    const launch = network.parseArgs(argv.items) catch |err| {
+        var buffer: [1024]u8 = undefined;
+        var out = if (err == error.Help) std.Io.File.stdout().writer(init.io, &buffer) else std.Io.File.stderr().writer(init.io, &buffer);
+        out.interface.writeAll(network.usage) catch {};
+        out.interface.flush() catch {};
+        // A mistyped command line is the operator's to fix, not a crash to trace.
+        std.process.exit(if (err == error.Help) 0 else 2);
+    };
+
     // Zig 0.16 hands the environment to the entry point rather than exposing it
     // ambiently, and Foundry keeps it that way on purpose: configuration read from the
     // air is a hidden input (I9).
@@ -495,7 +517,7 @@ pub fn main(init: std.process.Init) !void {
         log.info("this session's log: {s}/{s}", .{ app.diagnostics.dir_name, leaf });
     }
 
-    run(gpa, env, os, session) catch |err| {
+    run(gpa, env, os, session, launch) catch |err| {
         // §10: a concise named cause, and where to find the rest, before a nonzero exit.
         log.err("{s}: {t}", .{ stoppedAt(session), err });
         if (session.logPath()) |leaf| {
@@ -514,6 +536,7 @@ fn run(
     env: []const platform.os.EnvVar,
     discovery_os: *platform.os.Os,
     session: *app.diagnostics.Session,
+    launch: network.Launch,
 ) !void {
     // The backend is a compile-time property of the build, so the sample can ask what it
     // was built against rather than discovering it by failing.
@@ -623,6 +646,36 @@ fn run(
     scripts.start(sample_memory.allocator(), engine, &field.world);
     field.scripts = &scripts;
 
+    // **Connected, if the command line asked.** After the scripts, so a table they bound is
+    // the one networking joins, and torn down before them for the same reason.
+    var connected: ?*network.Connected = null;
+    if (launch.mode != .offline) {
+        const until: ?u32 = if (envValue(env, "FOUNDRY_SANDBOX_NET_UNTIL_DEPARTED")) |text|
+            std.fmt.parseInt(u32, text, 10) catch null
+        else
+            null;
+        connected = try network.Connected.open(
+            sample_memory.allocator(),
+            discovery_os,
+            engine,
+            &field.renderer,
+            hudStyle(field.uiFont()),
+            launch,
+            mods.loaded().?.order,
+            .{ .plan = envValue(env, "FOUNDRY_SANDBOX_NET_PLAN"), .until_departed = until },
+            headless,
+        );
+    }
+    defer if (connected) |cn| cn.close();
+    field.connected = connected;
+    // **Headless pacing, as host policy.** The null clock moves a fixed amount per reading,
+    // and a frame reads it once; a connected run makes that amount one fixed step, and the
+    // loop below sleeps one step of real time a frame, so a headless server ticks at its
+    // rate in real time — still exactly reproducible, never a busy loop.
+    if (comptime platform.backend == .null) {
+        if (connected != null) engine.platform.setClockStep(engine.step_delta);
+    }
+
     field.pick_every = everyFrames(engine, "FOUNDRY_SANDBOX_PICK_EVERY");
     field.walk_every = everyFrames(engine, "FOUNDRY_SANDBOX_WALK");
 
@@ -696,6 +749,10 @@ fn run(
             defer s.end();
             try field.describeUi(engine);
         }
+        if (connected) |cn| {
+            cn.frame();
+            if (cn.wantsQuit()) engine.requestQuit();
+        }
 
         var simulate = engine.beginScope("simulate");
         while (engine.nextStep()) |step| {
@@ -707,6 +764,7 @@ fn run(
             // several of these and the sum is visibly the parent's.
             var stepped = engine.beginScope("step");
             field.step(step);
+            if (connected) |cn| cn.step(&step.input, !field.ui.wantsKeyboard());
             stepped.end();
 
             // Once per second of *simulation* time, not wall-clock time.
@@ -721,6 +779,7 @@ fn run(
             }
         }
         simulate.end();
+        if (connected) |cn| cn.flush();
 
         // Resizing, deliberately **outside** the step loop: which shape a window is is a
         // presentation concern, not simulation, and a simulation step that resized a window
@@ -803,6 +862,10 @@ fn run(
         // and would otherwise spin as fast as the CPU allows, so that path keeps the crude
         // yield. Still deliberately not inside `Engine` — pacing is renderer policy.
         if (!headless and rhi.backend == .null) engine.os.sleep(.fromMillis(2));
+        // A connected headless run is paced to real time, one fixed step a frame, because the
+        // peers on its sockets are: without it the synthetic clock would run the server's
+        // ticks as fast as the CPU allows and call it a network (`networking.md` §9).
+        if (headless and connected != null) engine.os.sleep(engine.step_delta);
 
         // A skipped frame presented nothing, so nothing waited for the display. A minimised
         // Vulkan window reports an unavailable surface at once, and without this the loop ran
@@ -1763,6 +1826,8 @@ const SpriteField = struct {
     /// The Tier 2 host, so a world rebuild can tell it the world it was activated in is
     /// gone. Borrowed and outlived by `main`.
     scripts: ?*scripting.Host = null,
+    /// The connected demonstration, when the command line asked for one.
+    connected: ?*network.Connected = null,
     orbit: scene.ComponentType = .none,
     transform: scene.ComponentType = .none,
     visual: scene.ComponentType = .none,
@@ -2944,6 +3009,7 @@ const SpriteField = struct {
         }
 
         try self.banner();
+        if (self.connected) |cn| try cn.draw(engine, &self.renderer, self.uiFont(), self.ui_solid);
         try self.hud();
     }
 
@@ -3368,6 +3434,11 @@ fn armFrameFault(engine: *app.Engine, fault: ?FrameFault) void {
 }
 
 // -- tests -------------------------------------------------------------------------------
+
+test {
+    // The connected host's command line, credential file and plan parsers.
+    _ = network;
+}
 
 test "an M9-era preferences file keeps its window, volume and mods through the move to profiles" {
     const gpa = std.testing.allocator;

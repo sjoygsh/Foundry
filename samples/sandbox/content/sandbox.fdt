@@ -260,3 +260,70 @@ foundry:entity sandbox:beacon.north { components [ sandbox:at.north  sandbox:loo
 foundry:entity sandbox:beacon.east  { components [ sandbox:at.east   sandbox:look.east  ] }
 foundry:entity sandbox:beacon.south { components [ sandbox:at.south  sandbox:look.south ] }
 foundry:entity sandbox:beacon.west  { components [ sandbox:at.west   sandbox:look.west  ] }
+
+# **The connected demonstration's markers** (M16 Step 6). A marker is one participant's shared
+# object: the server moves it, every view draws it. Everything a person sees or presses is
+# here, not in code — the look, the speed, the arena, the colours, the keys and the words —
+# so a package after this one can restyle or rebind the demonstration without a rebuild.
+# What is *not* here is the wire: the channels and their payload layout are the consumer's
+# protocol, and two hosts that disagree about a record here disagree about their catalogue
+# and are refused before they meet.
+@schema net_markers {
+    # Where the frames live, and which cell a marker wears.
+    sheet   id
+    columns u32 (default 4)
+    rows    u32 (default 4)
+    cell    u32 (default 0)
+    # World units: how big a marker is, and how fast the server moves it per second.
+    size  f32 (default 14)
+    speed f32 (default 60)
+    # The rectangle markers live in, in world units. The server clamps every move to it,
+    # and a view refuses any state that places a marker outside it.
+    arena { x f32  y f32  w f32  h f32 }
+    # Where participant n starts: the arena's centre, `spacing` apart along x.
+    spacing f32 (default 24)
+    # One colour per participant, by participant number, wrapping. The server's own is first.
+    tints [{ r f32  g f32  b f32 }]
+    # Fixed ticks between two states the server sends. 3 at 60 Hz is 20 states a second.
+    state_every u32 (default 3)
+    # A view with no state for this long says so rather than pretending.
+    stale_ms u32 (default 2000)
+    # The keys that move this view's own marker, by the names `platform` gives them. Not the
+    # sandbox walker's, so walking and marking are two different hands.
+    key_up    string (default "i")
+    key_down  string (default "k")
+    key_left  string (default "j")
+    key_right string (default "l")
+    # Words a person reads.
+    label_title    string (default "shared markers")
+    label_server   string (default "serving")
+    label_client   string (default "joined")
+    label_waiting  string (default "connecting")
+    label_you      string (default "you")
+    label_pending  string (default "input pending")
+    label_stale    string (default "no recent state")
+    label_ended    string (default "disconnected")
+}
+
+net_markers sandbox:net.markers {
+    # A white disc, so the tints below are the colours a person sees. `textures/marker.png`
+    # is `sandbox:textures.marker` by its path, like the sprite sheet.
+    sheet   sandbox:textures.marker
+    columns 1
+    rows    1
+    cell    0
+    size    22
+    speed   60
+    # Over the room, which sits centred on the world origin, so the camera already sees it.
+    arena   { x -80  y -64  w 160  h 128 }
+    spacing 24
+    tints   [
+        { r 1.0  g 1.0   b 1.0  }
+        { r 1.0  g 0.55  b 0.2  }
+        { r 0.3  g 0.8   b 1.0  }
+        { r 0.6  g 1.0   b 0.4  }
+        { r 1.0  g 0.4   b 0.8  }
+    ]
+    state_every 3
+    stale_ms    2000
+}

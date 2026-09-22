@@ -1,7 +1,7 @@
 # Network sessions and the shared-world proof
 
 **Milestone:** M16 — Connected: “it plays with others”
-**Status:** Accepted design, 2026-09-21. **Steps 1–5 of nine are complete.** Stop before Step 6.
+**Status:** Accepted design, 2026-09-21. **Steps 1–6 of nine are complete.** Stop before Step 7.
 **Revision, 2026-09-21:** the owner selected **public-internet multiplayer**. The earlier
 LAN-only scope is withdrawn. Internet security and a real WAN proof are required in M16. The
 owner's instruction to begin Step 1 accepted the authority, topology, admission and bounded
@@ -500,13 +500,14 @@ Existing open questions about per-mod tables, native unloading, system schedulin
 lists and editor features remain open. M17/M18 retain their own gates.
 
 Step 1's provider/configuration and wire layouts, Step 2's transport mechanism, Step 3's
-negotiation exchange, Step 4's delivery order and Step 5's v5 layouts and call count are resolved
+negotiation exchange, Step 4's delivery order, Step 5's v5 layouts and call count and Step 6's
+sample protocol and credential file are resolved
 below. No bounded implementation detail now awaits a Resolution before dependent code. No port numbers, machine names or personal paths belong in
 committed configuration.
 
 ## 12. Implementation order
 
-Steps 1–5 are complete; Steps 6–9 are **not started**. Each ends with its own tests, required bar,
+Steps 1–6 are complete; Steps 7–9 are **not started**. Each ends with its own tests, required bar,
 Resolution, project-state update and focused commit, followed by a handoff. Do not chain steps
 without the owner's instruction.
 
@@ -555,7 +556,7 @@ tests, installed-header C99/C++ coverage, and teach native table
 negotiation to offer v5. Keep v1–v4 and Lua binding 1 unchanged. Test absence/denial explicitly.
 **No sample consumer before the public capability exists.**
 
-### Step 6 — Connect the reference sandbox through that API
+### Step 6 — Connect the reference sandbox through that API — **complete 2026-09-23**
 
 Add opt-in host modes and the separate header-only consumer, runtime-registered command/state
 channels, content-defined marker behaviour, authoritative ticking, local presentation maps,
@@ -1266,3 +1267,167 @@ failed its intended proof:
 - Not run natively on Windows. The PC refused SSH at its recorded address, and this session is
   not permitted to scan the network to find it again. The header compiled for Windows as C99
   and in the optimized Windows checks.
+
+## Resolution — 2026-09-23, Step 6: the connected sandbox, through the table alone
+
+The sandbox has a connected mode, opted into at launch and never at build. Its offline path
+is unchanged: with no arguments nothing below runs, and the bar's 30-frame null run is the
+same run it was. It is two halves with a hard seam between them, as the editor is.
+
+**The host half, `samples/sandbox/connected.zig`.** Everything a consumer cannot be trusted
+with, and nothing else.
+- **Launch.** `sandbox --serve <a.b.c.d:port> --credentials <file>` or `--join` with the
+  same. Endpoints are numeric; a name is refused. There is no mode without credentials and
+  no switch that weakens verification. Any other argument prints the usage and exits 2.
+- **The credential file**, host-only and versioned: `foundry-credentials 1`, then `role`,
+  `trust`, `certificate`, `key` and, for a client, `server-name` and `server-key`, or, for
+  a server, repeatable `allow <key sha256> <principal>`. Relative paths are the file's own
+  directory's. The key is wiped once the provider has its copy. A refusal names the line,
+  never its value, and no path, key or fingerprint is logged.
+- **The service.** One session's limits, the system carrier, and exactly one grant,
+  `sandbox:net.serve` or `sandbox:net.join`. That grant is the one the table publishes.
+  - The compatibility description is the loaded packages in load order, each with its
+    version and the size and SHA-256 of the exact `.fpk` bytes loaded.
+  - With them go the application `sandbox:application` at protocol revision 1, the tick
+    rate, and an attestation hash for what the catalogue cannot see.
+  - The first epoch comes from the wall clock in milliseconds, so a restarted server has a
+    new one.
+- **The table.** One host is bound per process. Where the scripts already bound theirs,
+  networking joins it, setting the service, grant, renderer and UI context, and restores
+  them on close. Otherwise it binds its own.
+- **Pumping, input and pacing.** The service is pumped at the top of each frame and again
+  after the frame's steps, always with `Os.monotonicNanos`. The keys come from content, by
+  `platform` name. A headless run sets the null clock to one fixed step per reading and
+  sleeps one step of real time per frame.
+
+**The consumer half, `samples/sandbox/markers/`.** It sees `foundry.h` through `foundry_api`
+and nothing else.
+- **Its boundary** is held three ways. The build graph grants it no engine module. A source
+  scan refuses engine imports and `std`'s filesystem, process, OS and socket routes. And
+  `zig build markers-boundary` compiles a forbidden `@import("net")` inside the same graph
+  and expects it to fail.
+- **The protocol**, revision 1, is the consumer's. `sandbox:net.move` runs client to server,
+  reliably: 4 bytes, `dx` and `dy` in -1..1 and two zero bytes. `sandbox:net.state` runs
+  server to client as latest state: an 8-byte header and 24 bytes per marker (number, owner,
+  x, y, the owner's last applied command), at most 8 markers, 200 bytes.
+- **The server's authority.**
+  - One marker for its own view (number 1, participant 0), and one per peer when it
+    activates, numbered monotonically and never reused.
+  - A marker is removed when its peer's connection ends.
+  - Commands set an intent. The owner is the participant the admitted batch names, never
+    anything in the payload.
+  - Moves are clamped to the content's arena. A complete state goes to each active peer
+    every `state_every` ticks, and a baseline goes once to each synchronizing peer.
+- **The client's view.**
+  - Every baseline and state is validated into a candidate and only then replaces the view.
+    The view is keyed by wire number, and no ECS entity is created for it.
+  - A refused state keeps the last view and disconnects as `protocol`. Refused states
+    include:
+    - a wrong length, too many markers, or non-zero reserved bytes;
+    - a zero or duplicated number, or a duplicated owner;
+    - a non-finite position, or one outside the arena;
+    - a number already removed.
+  - Input shows as pending until a state reports it applied. A view with no state for
+    `stale_ms` says so. There is no prediction and no extrapolation.
+- **Presentation.**
+  - Markers are drawn through `render_draw_sprite`, and status through `ui_*` into a panel
+    whose draw list the host walks.
+  - The status panel shows:
+    - the role;
+    - the server's bound endpoint and peer count;
+    - the view's participant and its own marker;
+    - pending input and staleness;
+    - the ending. A refusal names its category and first differing entry; a transport
+      ending names its authentication category, such as "certificate untrusted" or "not the
+      server this client was given".
+- **Content.** The new schema `sandbox:net_markers` and record `sandbox:net.markers` hold
+  every value a person sees or presses: look, size, speed, arena, spawn spacing, tints, state
+  rate, stale time, keys (`i`, `j`, `k`, `l`) and words. The new `textures/marker.png` is a
+  32-pixel white disc, which the tints colour.
+
+**Proofs.**
+- **`zig build sandbox-net-proof -Dplatform=null -Drhi=null`** runs installed headless
+  sandboxes as separate processes over real loopback TCP, each through the path a window
+  uses. The run takes a few seconds. Its driver, `samples/sandbox/net_proof.zig`:
+  - generates disposable identities with the test-only fixture into a fresh temporary
+    directory, gives every child its own home there, and deletes the directory at the end;
+  - starts a server on a port the system chooses;
+  - starts client A, which moves right and waits with every command acknowledged;
+  - starts client B late, moves it down and has it leave;
+  - lets A see B's marker arrive and go, then leave;
+  - starts client C with one more package loaded;
+  - reconnects A.
+
+  It then checks that:
+  - B's baseline held A's marker exactly where the server last had it;
+  - B's commands moved only B's marker;
+  - A and B were participants 1 and 2 on markers 2 and 3, and A's return was participant 3
+    on marker 4;
+  - C was refused by catalogue before it was a peer, on both sides;
+  - the server counted 3 admitted and 1 refused, and stopped after three came and went;
+  - every process exited 0;
+  - no log holds the credential directory or a key.
+
+  `-- --provision <dir>` writes the same disposable credentials for a hand-driven run.
+- **Unit tests.**
+  - The markers codec: 4 tests.
+  - The host's command line, credential file and plan: 3 tests.
+  - `Os.monotonicNanos`.
+- **On the primary desktop**, macOS on Metal, three windowed sandboxes ran over loopback: a
+  server and two clients, driven by scripted plans. Captures of each window, kept outside
+  the repository, show the same markers at the same places in every view. Each view's own
+  marker is framed in white, and each panel reads "serving … 2 peer(s)" or "joined –
+  participant n", with the view's own position and the tick.
+
+**The bar is green:**
+- `zig build test`: 89/89 steps, 1,669 of 1,670 tests, with the one skip that predates M16;
+- every `check` target;
+- both samples for 30 frames;
+- `sandbox-net-proof`;
+- the optimized Windows checks;
+- both release stages, since the sandbox's content changed.
+
+**Each guard was broken to see it fail.** Ten mutations, each restored byte-identical, and
+each failed its proof:
+- the arena check, the resurrection check, the duplicate-owner check, and a command's
+  reserved bytes, each caught by the codec tests;
+- ownership taken from the first marker rather than the batch's participant;
+- a departed peer's marker kept;
+- a baseline truncated to one marker, each caught by the multi-process proof;
+- a `std.fs` reference, and an unused `@import("net")`, each caught by the source scan;
+- a used `@import("net")`, caught by the build graph.
+
+Two first attempts failed only by compile error on an unused name and were redone.
+
+**What implementation found that the design did not say.**
+1. **A headless host has no real clock.** The null platform's clock is synthetic by design,
+   yet a peer across a socket is not. `Os.monotonicNanos` is a real monotonic clock beside
+   the wall clock. It is an integer, not an `Instant`, so it cannot reach simulation by
+   accident.
+2. **Pacing had to move the synthetic clock too.** Sleeping alone left the server at 93 ticks
+   in 26 seconds, because a frame reads the null clock once and it moved 1 ms. Setting the
+   step to one fixed step makes one tick per frame at real rate, still exactly reproducible.
+3. **One table per process means networking shares the scripts' host.** Joining it and
+   restoring what it held is the least invasive answer. It does mean a native mod in that
+   process can also call networking; shared tables have no per-mod principals, as §8 says.
+4. **An unused import is not analyzed.** The build graph alone does not reject a dead
+   `@import("net")`. The source scan does, and a used one fails the graph. The editor
+   client's boundary has the same property, which is recorded here and not changed.
+5. **A tint cannot recolour a coloured sheet.** Participant colours needed a white image,
+   which is content, as the sheet is.
+
+**Limits, deliberately.**
+- **Not run natively on Windows.** The PC still refuses SSH at its recorded address, and
+  this session is not permitted to scan for it. The Windows cross-checks compile the sandbox
+  and the new `@cImport`, and so does the optimized Vulkan check.
+- **No person pressed a key** in these runs. The windowed runs used the same plans as the
+  headless ones. The `i`/`j`/`k`/`l` path is the same `step` call, and real input is Step 8's
+  evidence.
+- **There is no reconnect control in the window.** Reconnecting is relaunching, and it makes
+  a fresh participant.
+- **The description is frozen at start.** A hot reload changes this host's bytes but not the
+  description it negotiated with.
+- The consumer logs without a mod identity.
+- The server's own marker always exists.
+- **Not this step's:** Step 7's adversarial matrix and measured envelope; Step 8's
+  cross-host, WAN, external consumer and guide.
