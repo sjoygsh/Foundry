@@ -901,6 +901,23 @@ Linux is excluded, because its desktop has never run.
 **Exit criteria:** both platforms' downloads, taken from the published release on the clean
 machines, open by the documented steps and run.
 
+**Done so far, 2026-09-23.**
+- **0.17.0 was published, then replaced.** `v0.17.0-preview` went out and was marked
+  superseded by `v0.17.1-preview`, built from `c37c01d`.
+- **The checks caught two Windows defects,** both fixed in 0.17.1:
+  - **before publishing,** a release compiled with the macOS bundle flag, which refused to
+    start with "requires the macOS application layout";
+  - **after publishing,** a console window opening beside the game.
+- **Windows passes from the published download.** On the owner's PC, wiped of Foundry, Zig and
+  the Vulkan SDK, the 0.17.1 zip:
+  - matched its published checksum;
+  - carried the Mark of the Web onto `room.exe`;
+  - was held back by SmartScreen's "Windows protected your PC" when launched through Explorer;
+  - ran once allowed, on Vulkan on the Arc A750, with no console window.
+
+  The owner also approved the warning by hand on 0.17.0.
+- **macOS in a fresh virtual machine** is what remains.
+
 ### Postponed: certified releases — **due after a fully playable 3D game**
 
 This was M17's original content, and it was moved by ADR-0047:

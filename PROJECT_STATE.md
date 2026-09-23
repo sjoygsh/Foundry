@@ -2,7 +2,10 @@
 
 **Last updated:** 2026-09-23
 **Current handoff: M17 is in progress (2026-09-23): the unsigned preview `v0.17.0-preview` is
-published on GitHub, and the owner's two clean-machine download checks are what remain.** M0
+published on GitHub; `v0.17.1-preview` (from `c37c01d`) supersedes it.** Windows passed from the
+published download on the owner's wiped PC: SmartScreen held the game back, and once allowed it
+ran with no console window. The macOS check in a fresh VM remains. The roadmap's M17 entry has
+the details. M0
 through M16.5 are complete and tagged. ADR-0047 made M17 an unsigned GitHub pre-release and
 postponed certification until after a fully playable 3D game. Networking's record is `docs/design/networking.md`, ADR-0044/0045 and
 `docs/modding/networking.md`; Linux servers' is ADR-0046.
