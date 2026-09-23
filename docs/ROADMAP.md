@@ -879,44 +879,43 @@ Three steps, each on the owner's instruction:
    README, AGENTS, CLAUDE, the guide and ADR-0046 now say exactly that, and the milestone is
    tagged `m16.5`.
 
-### M17 — Released: "a stranger can download it" — **not started; credential-gated**
+### M17 — Published: "a stranger can download it and be told how to open it" — **in progress (2026-09-23)**
 
-M9 built and proved the release path; ADR-0032 deferred exactly the part that needs an
-identity, Apple's service and a machine that has never run the code. This milestone executes
-it, once.
+[ADR-0047](adr/0047-unsigned-github-preview-release.md) redefined this milestone on the owner's
+decision: **no paid signing membership until a fully playable 3D game exists.** M17 publishes
+the samples as an unsigned GitHub **pre-release** for macOS on Apple Silicon and Windows x64.
+Linux is excluded, because its desktop has never run.
 
-**It is last deliberately: strangers come last.** Certification is what you perform on
-something you are ready to hand over, and every milestone above it is what makes that true —
-the faults fixed, the identity real, the mods manageable. Nothing prevents it being pulled
-forward the day credentials exist; but a signed, notarized download of an engine that still
-carries known defects buys trust it has not earned.
+* **Windows gains `zig build dist`.** It stages natively on Windows with Vulkan, in the loose
+  `bin/` + `content/` layout, with the inventory and generated attribution, and is zipped by
+  Windows' own `tar.exe`. macOS keeps its ad-hoc-signed application zip.
+* **The release notes carry both "open anyway" procedures,** the GPU requirement and the
+  SHA-256 of every file. The release is marked as a pre-release, never as verified.
+* **Clean-machine checks.**
+  - **Windows:** the owner's PC after removing every Foundry remnant, Zig and the Vulkan SDK.
+  - **macOS:** a fresh macOS virtual machine. It is not ADR-0032's "genuinely clean recipient
+    Mac", and it is not called one.
+* **The repository's public page.** The README leads with the download and what Foundry does,
+  and milestone status moves below. The AI systems that helped build it are named.
 
-**Its entry gate is a full review and polish pass over `main`, and that pass is the last
-theoretical checkpoint this project gets.** Not a diff of one branch — the whole engine as it
-then stands, read for what a milestone-by-milestone eye stops seeing, ending with the bar and
-a staged artifact run. Everything it finds is fixed before M17 begins rather than recorded as
-debt; a review that produces a list instead of a repair has only moved the problem, and M11
-exists so that list is already empty.
+**Exit criteria:** both platforms' downloads, taken from the published release on the clean
+machines, open by the documented steps and run.
 
-**After it, every remaining checkpoint is real.** Gatekeeper, the recipient's Mac, and then
-people. A notarized archive cannot be quietly amended — it is the exact bytes, checksum
-published, in someone else's hands — so this is the boundary between problems found by
-reading and problems found by strangers.
+### Postponed: certified releases — **due after a fully playable 3D game**
 
-* Developer ID signing, notarization, stapling and Gatekeeper assessment of the exact public
-  archive, through the `dist-developer-id` path that already performs the sequence.
-* The quarantine-preserving launch on a genuinely clean recipient Mac, and the remaining steps
-  of `docs/shipping/macos.md` §4, recorded with identity, ticket, checksum and OS version.
-* The deferred release questions that come due with it: how far back macOS support reaches
-  — the release description asserts `LSMinimumSystemVersion` 26.0 and nothing tests an older
-  system, so the supported floor is the newest one, not a range — and crash collection beyond
-  what the OS already reports.
+This was M17's original content, and it was moved by ADR-0047:
+- Developer ID signing, notarization and stapling through the implemented
+  `dist-developer-id` path;
+- a quarantined launch on a genuinely clean recipient Mac;
+- Windows Authenticode or a signing service;
+- the full review-and-polish pass over `main` that was to precede them.
 
-**Not this milestone:** release automation, CI or a storefront. ADR-0032 keeps all three
-deferred, and storefront-specific signing stays open until a storefront is actually chosen.
+The release questions it carries stay open with it:
+- **How far back macOS support reaches:** the release asserts `LSMinimumSystemVersion` 26.0.
+- **Crash collection** beyond what the OS reports.
 
-**Exit criteria:** a download nobody has to be told how to open, and a record of why it can be
-trusted. Until then no artifact is a verified release, and the ad-hoc zip never becomes one.
+It stays deliberately last. A signature buys trust, and it is bought once there is a game
+worth trusting.
 
 ---
 
