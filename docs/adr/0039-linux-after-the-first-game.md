@@ -104,3 +104,11 @@ ADR-0033's backend choice and ADR-0037's execution model stand as written.
 * A Linux machine becomes available cheaply and Linux work stops competing with the game.
 * 3D work is about to begin, which is when M18 comes due.
 * The Linux build-check stops catching anything, in which case ADR-0008's revisit applies.
+
+## Note — 2026-09-23: superseded in one clause by ADR-0046
+
+This decision's second revisit condition came true: a Linux machine became cheap as a cloud VM.
+[ADR-0046](0046-linux-headless-servers-before-release.md) proves Linux x64 **headless** use,
+the first game's servers, in M16.5 before M17. Everything this record assigns to M18 still
+belongs to M18: X11, Wayland, a Vulkan driver, windowed samples, the icon, RenderDoc, input and
+pacing.

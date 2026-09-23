@@ -2,8 +2,8 @@
 
 **Last updated:** 2026-09-23
 **Current handoff: M16 is complete (2026-09-23, tag `m16`). M0 through M16 are complete and
-tagged.** Nothing is in progress. What comes next needs the owner's instruction (Immediate next
-steps). Networking's record is `docs/design/networking.md`, ADR-0044/0045 and
+tagged.** Nothing is in progress. Next is M16.5, Linux headless servers (ADR-0046), waiting on the
+owner's Linux VM (Immediate next steps). Networking's record is `docs/design/networking.md`, ADR-0044/0045 and
 `docs/modding/networking.md`.
 
 **M16 planning, revised 2026-09-21:** the owner requires **public-internet multiplayer**;
@@ -4382,7 +4382,12 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**M16 is complete; nothing is started. The next milestone needs the owner's instruction.**
+**M16 is complete. Next is M16.5, Linux headless servers, accepted 2026-09-23
+([ADR-0046](docs/adr/0046-linux-headless-servers-before-release.md)).** Its three steps are in
+the roadmap: qualify, serve, close. Step 1 starts when the owner's Linux VM (Ubuntu 24.04,
+x86_64) is up and reachable over SSH. Every public listener and firewall change needs the
+owner's explicit yes at the time.
+
 
 The roadmap's remaining work:
 - **M17**, public macOS release certification. It needs Developer ID credentials, Apple's

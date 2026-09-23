@@ -838,6 +838,32 @@ provisioned certificates. The accepted model is one
 operator-hosted authority with mutual certificates, up to four reference peers and no
 prediction. ADR-0013's bit-exact subset question stays conditional on lockstep.
 
+### M16.5 — Served: "its servers run on Linux" — **accepted 2026-09-23; not started**
+
+The first game's clients ship on macOS and Windows, but its servers will very likely run on
+Linux VMs. [ADR-0046](adr/0046-linux-headless-servers-before-release.md) splits Linux in two:
+the **headless** half is proven here, and the **desktop** half stays M18's. The number is 16.5
+so that M17 and M18 keep their meanings.
+
+**Exit criteria:** on an owner-provided x86_64 Linux cloud VM:
+- the native headless test graph and the null samples pass, built there with the pinned Zig;
+- the headless sandbox authority serves the relocated macOS and Windows clients over the
+  public internet, with joins, refusals and a measured run as in M16 Step 8.
+
+No window, GPU or Vulkan driver is involved, and none is claimed.
+
+Three steps, each on the owner's instruction:
+1. **Qualify.** Install the pinned Zig with `scripts/install-zig.sh`, clone the pushed tree,
+   and run the headless bar natively. That means `zig build test`, the null samples,
+   `sandbox-net-proof`, and the transport, session and TLS qualification proofs. Anything
+   that fails is fixed and rerun on the Mac bar.
+2. **Serve.** The Linux-built headless sandbox serves the Mac and the PC over the internet:
+   join, leave and rejoin; the stranger, outsider and mismatch refusals; and a ten-minute
+   measured run. The external relay host from `docs/modding/networking.md` is built and run
+   there too.
+3. **Close.** Record it, and make every platform statement say "headless and server runtime
+   proven" for Linux, never "supported". Then tag `m16.5`.
+
 ### M17 — Released: "a stranger can download it" — **not started; credential-gated**
 
 M9 built and proved the release path; ADR-0032 deferred exactly the part that needs an
