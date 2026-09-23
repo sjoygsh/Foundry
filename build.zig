@@ -843,7 +843,10 @@ pub fn build(b: *std.Build) void {
         bundle_options.addOption([]const u8, "platform_backend", @tagName(platform_backend));
         bundle_options.addOption([]const u8, "rhi_backend", @tagName(rhi_backend));
         bundle_options.addOption([]const u8, "revision", revision orelse "local");
-        bundle_options.addOption(bool, "bundle_layout", true);
+        // Only a macOS release is a bundle. Windows keeps the loose `bin/` + `content/` layout,
+        // and a Windows build told otherwise refuses to start: M17's clean-machine check
+        // caught exactly that before anything was published.
+        bundle_options.addOption(bool, "bundle_layout", target.result.os.tag == .macos);
 
         const release_mod = b.createModule(.{
             .root_source_file = b.path(switch (dist_app) {
