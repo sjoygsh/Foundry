@@ -49,6 +49,11 @@ const usage =
     \\  --frames <count>        exit after a bounded number of frames; never saves
     \\  --help                  this text
     \\
+    \\With no arguments at all, the host grants a workspace beside its own release:
+    \\<release>/workspace/my-package as the source, workspace/work as the output,
+    \\content/core.fpk as the dependency and workspace/export/my-package.fpk as the
+    \\export, creating the directories it needs.
+    \\
 ;
 
 const Args = struct {
@@ -70,8 +75,9 @@ pub fn main(init: std.process.Init) !u8 {
     defer iterator.deinit();
     _ = iterator.skip();
     var argv: std.ArrayList([]const u8) = .empty;
+    var argv_defaulted = false;
     defer {
-        for (argv.items) |arg| gpa.free(arg);
+        if (!argv_defaulted) for (argv.items) |arg| gpa.free(arg);
         argv.deinit(gpa);
     }
     while (iterator.next()) |arg| try argv.append(gpa, try gpa.dupe(u8, arg));
@@ -79,6 +85,25 @@ pub fn main(init: std.process.Init) !u8 {
     var stderr_buffer: [4096]u8 = undefined;
     var stderr = std.Io.File.stderr().writer(init.io, &stderr_buffer);
     defer stderr.interface.flush() catch {};
+
+    const env = try app.environment(gpa, init);
+    defer gpa.free(env);
+    var os = try platform.os.Os.init(gpa, .{ .env = env, .app_name = "foundry-editor" });
+    defer os.deinit();
+
+    // **No arguments is still an explicit grant, made by this host rather than the caller**
+    // (ADR-0042): one workspace beside the release, so a downloaded editor opens on a
+    // double-click. The roots are fixed and printed, and nothing else becomes reachable.
+    var defaults_arena = std.heap.ArenaAllocator.init(gpa);
+    defer defaults_arena.deinit();
+    if (argv.items.len == 0) {
+        argv_defaulted = true;
+        defaultArgv(gpa, defaults_arena.allocator(), os, &argv) catch |err| {
+            try stderr.interface.print("foundry-editor: cannot prepare the default workspace: {s}\n", .{@errorName(err)});
+            try stderr.interface.writeAll(usage);
+            return 1;
+        };
+    }
 
     var args = parseArgs(gpa, argv.items, &stderr.interface) catch |err| switch (err) {
         error.HelpRequested => {
@@ -92,11 +117,6 @@ pub fn main(init: std.process.Init) !u8 {
         else => return err,
     };
     defer args.dependencies.deinit(gpa);
-
-    const env = try app.environment(gpa, init);
-    defer gpa.free(env);
-    var os = try platform.os.Os.init(gpa, .{ .env = env, .app_name = "foundry-editor" });
-    defer os.deinit();
 
     os.createDirPath(args.output) catch |err| switch (err) {
         error.AlreadyExists => {},
@@ -385,6 +405,27 @@ fn applyWindowIcon(gpa: std.mem.Allocator, engine: *app.Engine) void {
         .stride = @intCast(image.strideBytes()),
         .pixels = image.pixels,
     }) catch |err| log.warn("window icon was refused ({t})", .{err});
+}
+
+/// The host's own grant when it is given none: `<release>/workspace`, beside `bin/` and
+/// `content/`, found the way `app.contentDirOf` finds content.
+fn defaultArgv(gpa: std.mem.Allocator, arena: std.mem.Allocator, os: *platform.os.Os, argv: *std.ArrayList([]const u8)) !void {
+    const exe_dir = try os.executableDirAlloc(arena);
+    const prefix = std.fs.path.dirname(exe_dir) orelse exe_dir;
+    const workspace = try platform.os.joinPath(arena, &.{ prefix, "workspace" });
+    const source = try platform.os.joinPath(arena, &.{ workspace, "my-package" });
+    const output = try platform.os.joinPath(arena, &.{ workspace, "work" });
+    const export_dir = try platform.os.joinPath(arena, &.{ workspace, "export" });
+    const exported = try platform.os.joinPath(arena, &.{ export_dir, "my-package.fpk" });
+    const core_fpk = try platform.os.joinPath(arena, &.{ prefix, "content", "core.fpk" });
+    for ([_][]const u8{ source, export_dir }) |dir| os.createDirPath(dir) catch |err| switch (err) {
+        error.AlreadyExists => {},
+        else => return err,
+    };
+    log.info("no arguments: editing '{s}' against '{s}', exporting to '{s}'", .{ source, core_fpk, exported });
+    try argv.appendSlice(gpa, &.{
+        "--source", source, "--output", output, "--dependency", core_fpk, "--export", exported,
+    });
 }
 
 const ArgError = error{ HelpRequested, BadUsage } || std.Io.Writer.Error || std.mem.Allocator.Error;

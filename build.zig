@@ -213,7 +213,7 @@ const RhiBackend = enum {
 ///
 /// A sample rather than a game: Foundry ships no game (ADR-0017), and the release helpers
 /// have to be exercised by something in this repository or nothing here checks them.
-const DistApp = enum { room, sandbox };
+const DistApp = enum { room, sandbox, editor };
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -228,7 +228,7 @@ pub fn build(b: *std.Build) void {
     // Which sample `zig build dist` stages, and what revision the release records. Both are
     // read here so that they appear in `zig build --help` beside everything else; neither
     // affects any other step.
-    const dist_app = b.option(DistApp, "app", "Which sample `zig build dist` stages (default: room)") orelse .room;
+    const dist_app = b.option(DistApp, "app", "Which application `zig build dist` stages: room (default), sandbox or editor") orelse .room;
     const revision = b.option([]const u8, "revision", "Source revision recorded in a staged release");
     const signing_identity = b.option([]const u8, "signing-identity", "Developer ID Application identity");
     const notary_profile = b.option([]const u8, "notary-profile", "notarytool Keychain profile name");
@@ -852,6 +852,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path(switch (dist_app) {
                 .room => "samples/room/main.zig",
                 .sandbox => "samples/sandbox/main.zig",
+                .editor => "tools/editor/main.zig",
             }),
             .target = target,
             .optimize = optimize,
@@ -863,7 +864,13 @@ pub fn build(b: *std.Build) void {
         release_mod.addImport("platform", platform_module);
         release_mod.addImport("build_options", bundle_options.createModule());
         // The room's mod screen is built through the public table, as the room's own module is.
-        if (dist_app == .room) release_mod.addImport("abi", modules.get("abi").?);
+        if (dist_app == .room or dist_app == .editor) release_mod.addImport("abi", modules.get("abi").?);
+        // The editor's client is the same header-only module the development build uses,
+        // and `author` is its host's service; its bootstrap needs no bundle option.
+        if (dist_app == .editor) {
+            release_mod.addImport("author", modules.get("author").?);
+            release_mod.addImport("editor_client", editor_client_mod);
+        }
         if (dist_app == .sandbox) {
             release_mod.addImport("scripting", scripting_mod);
             release_mod.addImport("abi", modules.get("abi").?);
@@ -874,7 +881,7 @@ pub fn build(b: *std.Build) void {
             });
         }
         const release_executable = b.addExecutable(.{
-            .name = @tagName(dist_app),
+            .name = if (dist_app == .editor) "foundry-editor" else @tagName(dist_app),
             .root_module = release_mod,
         });
 
@@ -919,13 +926,64 @@ pub fn build(b: *std.Build) void {
                 .extra_files = &.{.{ .staged = "content/sandbox/icon.png", .source = b.path("samples/sandbox/content/icon.png") }},
                 .revision = revision,
             },
+            // **A tool, not a player's program** (`docs/modding/editor.md`). Loose on every
+            // system — `bin/` beside `content/` — because it is run from a terminal or by
+            // double-clicking the executable, and its default workspace sits beside both.
+            .editor => .{
+                .product_name = "Foundry Editor",
+                .bundle_id = "dev.foundry.editor",
+                .product_version = "0.17.2",
+                .executable = release_executable,
+                .packages = &.{ content_packages[0], content_packages[3] },
+                .license_id = "Apache-2.0",
+                .license_file = b.path("LICENSE"),
+                .notice_file = b.path("NOTICE"),
+                .licenses_dir = "THIRD_PARTY_LICENSES",
+                // The header a native mod or an outside authoring client compiles against,
+                // from the same build as the editor beside it.
+                .extra_files = &.{
+                    .{ .staged = "include/foundry.h", .source = b.path("engine/src/abi/foundry.h") },
+                    .{ .staged = "README.txt", .source = b.path("tools/editor/RELEASE_README.txt") },
+                },
+                .revision = revision,
+            },
         };
         const tools: release.Tools = .{
             .fpack = fpack,
             .fstage = fstage.getEmittedBin(),
             .fmacos_verify = fmacos_verify.getEmittedBin(),
         };
-        if (target.result.os.tag == .windows) {
+        if (dist_app == .editor) {
+            // The editor keeps its console on Windows: it is started from one as often as not,
+            // and its usage and its log are where it says what it granted.
+            const system = if (target.result.os.tag == .windows) "windows-x64" else "macos-arm64";
+            var loose = description;
+            if (target.result.os.tag == .windows) loose.executable_name = "foundry-editor.exe";
+            const staged = release.stage(b, tools, loose);
+            const install_stage = b.addInstallDirectory(.{
+                .source_dir = staged,
+                .install_dir = .prefix,
+                .install_subdir = b.fmt("dist/editor/{s}", .{description.product_name}),
+            });
+            const zip = if (target.result.os.tag == .windows)
+                b.addSystemCommand(&.{ "tar", "-a", "-c", "-f" })
+            else
+                b.addSystemCommand(&.{ "/usr/bin/ditto", "-c", "-k", "--keepParent" });
+            const archive_name = b.fmt("Foundry-Editor-{s}.zip", .{system});
+            if (target.result.os.tag == .windows) {
+                const archive = zip.addOutputFileArg(archive_name);
+                zip.addArg("-C");
+                zip.addDirectoryArg(staged.dirname());
+                zip.addArg(description.product_name);
+                dist_step.dependOn(&b.addInstallFile(archive, b.fmt("dist/editor/{s}", .{archive_name})).step);
+            } else {
+                zip.addDirectoryArg(staged);
+                const archive = zip.addOutputFileArg(archive_name);
+                dist_step.dependOn(&b.addInstallFile(archive, b.fmt("dist/editor/{s}", .{archive_name})).step);
+            }
+            dist_step.dependOn(&install_stage.step);
+            distribution_step.dependOn(&b.addFail("`dist-developer-id` signs the samples; the editor ships unsigned (ADR-0047)").step);
+        } else if (target.result.os.tag == .windows) {
             // **Windows (M17, ADR-0047): the loose layout, zipped by the system's own tool.**
             // `bin/<name>.exe` beside `content/` is the layout `app.contentDirOf` already
             // resolves. It is unsigned: SmartScreen warns, and the release notes say how to

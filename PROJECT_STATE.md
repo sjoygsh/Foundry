@@ -9,6 +9,17 @@ platforms passed from the published download:
 - **macOS,** in a fresh macOS 26.6.2 VM under UTM: Gatekeeper refused it, Open Anyway allowed
   it, and the room played.
 
+**After M17, 2026-09-23: the editor became a download, and a game has a starting page.**
+`zig build dist -Dapp=editor` stages `Foundry-Editor-<system>.zip`: loose `bin/` +
+`content/` on both systems, with `include/foundry.h` and a README. Started with no arguments,
+the editor grants itself `<release>/workspace` (source, output, export) against
+`content/core.fpk`. Any argument restores the explicit grants (ADR-0042 unchanged). Its
+screen-text field `source` was renamed `source_tab`, because the stager reads any string
+`source` field as an asset path. The Windows zip was staged by the same `fstage` from a
+cross-compiled `.exe`, because the PC no longer has Zig. `docs/GETTING_STARTED.md` was proved
+by an outside consumer in the scratchpad that opened a Metal window. Published as
+`v0.17.2-preview`, with the unchanged 0.17.1 Room and Sandbox zips.
+
 The roadmap's M17 entry has the details. M0 through M17 are complete and tagged. **Next is the
 first game, in its own repository**; then M18 (the Linux desktop), before 3D. ADR-0047 made M17 an unsigned GitHub pre-release and
 postponed certification until after a fully playable 3D game. Networking's record is `docs/design/networking.md`, ADR-0044/0045 and

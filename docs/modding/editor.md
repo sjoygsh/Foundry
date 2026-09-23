@@ -33,6 +33,21 @@ zig build editor -- --source <package-dir> --output <work-dir> \
     [--preview]
 ```
 
+The downloaded editor (`Foundry-Editor-<system>.zip` on the releases page) is the same
+program with `bin/`, `content/core.fpk` and `include/foundry.h` beside it. **Started with no
+arguments at all**, for example by a double-click, it grants itself one workspace beside the
+release and creates it:
+
+| Default | Equivalent to |
+| --- | --- |
+| `workspace/my-package/` | `--source` |
+| `workspace/work/` | `--output` |
+| `content/core.fpk` | `--dependency` |
+| `workspace/export/my-package.fpk` | `--export` |
+
+It logs those paths at start-up. Any argument turns the defaults off, and then every root is
+yours to name.
+
 Every directory the editor can read or write is named on that command line. It opens nothing
 else, and the client that draws the window cannot name a path at all: it is handed
 destinations by number. The grants are:

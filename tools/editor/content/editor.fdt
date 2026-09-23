@@ -10,7 +10,7 @@
     workspace string (default "")
     documents string (default "")
     records string (default "")
-    source string (default "")
+    source_tab string (default "")
     dependencies string (default "")
     preview string (default "")
     schemas string (default "")
@@ -82,7 +82,7 @@ screen foundry:editor.screen {
     workspace          "Workspace"
     documents          "Documents"
     records            "Records"
-    source             "Source"
+    source_tab         "Source"
     dependencies       "Dependencies"
     preview            "Preview"
     schemas            "Schemas"

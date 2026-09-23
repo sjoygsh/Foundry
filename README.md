@@ -11,16 +11,22 @@ leave behind something that runs.
 ## Download
 
 The latest preview is on the [Releases page](https://github.com/sjoygsh/Foundry/releases).
-It contains two sample applications:
+It contains:
+- **Foundry Editor**, the content editor, for authoring content packages and mods;
 - **Foundry Room**, a small game with a mod manager;
 - **Foundry Sandbox**, the engine's capabilities on display.
+
+Foundry itself is an engine library, not an installer: a game is its own repository that
+depends on it. **[Getting started](docs/GETTING_STARTED.md)** goes from an empty folder to a
+window.
 
 They are built for **macOS on Apple Silicon** and **Windows x64**.
 
 **These builds are unsigned previews.** Your system will warn before opening them the first
 time:
 - **macOS:** open the app once, then go to **System Settings → Privacy & Security** and choose
-  **Open Anyway**.
+  **Open Anyway**. The editor is a folder rather than an app: double-click
+  `bin/foundry-editor` inside it.
 - **Windows:** when "Windows protected your PC" appears, choose **More info → Run anyway**.
   Windows needs a GPU driver with Vulkan 1.3.
 

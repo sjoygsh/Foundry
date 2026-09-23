@@ -90,7 +90,7 @@ const TextKey = enum {
     workspace,
     documents,
     records,
-    source,
+    source_tab,
     dependencies,
     preview,
     schemas,
@@ -835,7 +835,7 @@ pub const Client = struct {
 
     fn tabs(self: *Client) UiError!void {
         const labels = [_]Str{
-            string(self.text.get(.source)),
+            string(self.text.get(.source_tab)),
             string(self.text.get(.dependencies)),
             string(self.text.get(.preview)),
             string(self.text.get(.schemas)),
