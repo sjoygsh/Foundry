@@ -722,8 +722,13 @@ are test fixtures for loopback and trials. Never use them for anything you would
     the router's WAN address with what `https://checkip.amazonaws.com` reports: if they
     differ, you cannot host from home.
   - **Players:** CGNAT on the *player's* side is fine. Only the server must be reachable.
-* **A small cloud VM is enough.** The proof below used a 2-vCPU, 2 GB Windows Server 2025
-  instance. A four-player server is a few kilobytes of state at 20 Hz.
+* **A small cloud VM is enough, Linux or Windows.** The proofs below used 2-vCPU, 2 GB
+  instances: Windows Server 2025 in M16 Step 8, and Ubuntu 24.04 x86_64 in M16.5. On Linux the
+  sandbox authority held about 17 MB of memory and a tenth of a vCPU. On Linux, build natively
+  with `./scripts/install-zig.sh` and `-Dplatform=null -Drhi=null`, adding swap on a 2 GB VM.
+  Ubuntu's own firewall (`ufw`) is inactive by default, so the cloud firewall is the only one.
+  To stop a server by name, use `pkill -x sandbox`, not `pkill -f`: `-f` also matches the shell
+  that sent the command.
 * **Open exactly one port, twice:**
   - **The cloud firewall:** allow inbound TCP `<port>`. From anywhere is appropriate, because
     players' addresses change and every connection still needs an allowlisted certificate.
@@ -773,7 +778,8 @@ queued each way per peer; 256 allowlisted keys; 5 s to authenticate and 5 s to s
   - anti-cheat beyond server authority;
   - DDoS resistance: floods were bounded in a harness, never measured against a real
     attacker;
-  - Linux at runtime: it compiles, and runs from M18.
+  - Linux desktops: a Linux *server* is proven (below), but no Linux window or graphics
+    driver has run. That is M18.
 
 **Performance over the public internet**, 2026-09-23. One authority on a cloud VM in the
 players' nearest region; the macOS/Metal and Windows/Vulkan sandboxes as clients; ten-minute
@@ -783,6 +789,7 @@ measured runs of 20 Hz state and a command every half second:
 | --- | --- | --- | --- | --- | --- |
 | Home fixed broadband | 1,200 | 51 ms | 68 ms | 500 ms | 450 ms |
 | Phone hotspot (mobile, CGNAT) | 1,199 | 100 ms | 118 ms | 2,418 ms | 2,452 ms |
+| Phone hotspot, Linux authority (M16.5) | 1,200 | 66 ms | 133 ms | 683 ms | 716 ms |
 
 **How to read the table:**
 - "Ack" is the time from sending a command to seeing a state that applied it.

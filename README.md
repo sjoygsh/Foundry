@@ -219,12 +219,14 @@ constraints everything else follows from, and most of them exist to keep modding
 | --- | --- | --- |
 | macOS on Apple Silicon | Primary development target, first-class supported | Metal (native) |
 | Windows x64 | Second target, runtime-tested in M13 | Vulkan |
-| Linux x64 | Intended target; runtime support after the first game, before 3D | Vulkan, compile-checked only |
+| Linux x64 | Headless and server runtime proven in M16.5; the desktop comes after the first game, before 3D | None headless; Vulkan compile-checked only |
 
 Windows and Linux are cross-compiled as a portability check each milestone. Windows also runs,
-on one tested Intel Arc machine so far; Linux is not yet tested at runtime. See
-[ADR-0008](docs/adr/0008-target-platforms.md) and
-[ADR-0039](docs/adr/0039-linux-after-the-first-game.md).
+on one tested Intel Arc machine so far. Linux x64 runs the headless test graph and the network
+authority, proved on a cloud VM serving macOS and Windows clients in M16.5. No Linux window or
+graphics driver has run yet. See [ADR-0008](docs/adr/0008-target-platforms.md),
+[ADR-0039](docs/adr/0039-linux-after-the-first-game.md) and
+[ADR-0046](docs/adr/0046-linux-headless-servers-before-release.md).
 
 ## Toolchain
 

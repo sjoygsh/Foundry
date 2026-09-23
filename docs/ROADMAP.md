@@ -838,7 +838,7 @@ provisioned certificates. The accepted model is one
 operator-hosted authority with mutual certificates, up to four reference peers and no
 prediction. ADR-0013's bit-exact subset question stays conditional on lockstep.
 
-### M16.5 — Served: "its servers run on Linux" — **in progress; Step 1 of three complete (2026-09-23)**
+### M16.5 — Served: "its servers run on Linux" — **COMPLETE 2026-09-23 (all three steps)**
 
 The first game's clients ship on macOS and Windows, but its servers will very likely run on
 Linux VMs. [ADR-0046](adr/0046-linux-headless-servers-before-release.md) splits Linux in two:
@@ -864,9 +864,20 @@ Three steps, each on the owner's instruction:
 2. **Serve.** The Linux-built headless sandbox serves the Mac and the PC over the internet:
    join, leave and rejoin; the stranger, outsider and mismatch refusals; and a ten-minute
    measured run. The external relay host from `docs/modding/networking.md` is built and run
-   there too.
+   there too. **Complete 2026-09-23:**
+   - **Clients:** the Windows PC joined from home broadband and the Mac from a phone hotspot.
+   - **Real keys:** the owner pressed keys on the Mac and watched the PC, and saw no lag.
+   - **Joins and refusals:** join, leave and rejoin ×3 gave p95 84–102 ms. The stranger was
+     refused by policy, the outsider in the handshake, and the mismatch by catalogue.
+   - **Measured run:** ten minutes, 1,200 commands, p50 66 ms and p95 133 ms, worst 683 ms,
+     longest state gap 716 ms, and no disconnect.
+   - **Server cost:** 17 MB of memory and about 10% of one vCPU.
+   - **Linux artifacts:** the Linux-compiled packages were byte-identical to the Mac's, and the
+     C99 relay passed natively.
 3. **Close.** Record it, and make every platform statement say "headless and server runtime
-   proven" for Linux, never "supported". Then tag `m16.5`.
+   proven" for Linux, never "supported". Then tag `m16.5`. **Complete 2026-09-23.** The
+   README, AGENTS, CLAUDE, the guide and ADR-0046 now say exactly that, and the milestone is
+   tagged `m16.5`.
 
 ### M17 — Released: "a stranger can download it" — **not started; credential-gated**
 

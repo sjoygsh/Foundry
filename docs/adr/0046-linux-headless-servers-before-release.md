@@ -1,6 +1,6 @@
 # ADR-0046: Linux servers are proven before release; the Linux desktop still waits
 
-**Status:** Accepted
+**Status:** Accepted 2026-09-23; proven in M16.5, complete the same day
 **Date:** 2026-09-23
 **Supersedes:** [ADR-0039](0039-linux-after-the-first-game.md) in one clause only: "No document
 may describe Linux as supported at runtime until M18 proves it" now excludes Linux x64
@@ -106,3 +106,28 @@ committed.
 * A Linux headless fault appears that only a desktop install reproduces. That would mean the
   split drew its line in the wrong place.
 * An ARM or other Linux server target is wanted.
+
+## M16.5 result — 2026-09-23
+
+The claim is earned.
+
+**The headless graph.** On an owner-provided Ubuntu 24.04 x86_64 t3.small with 4 GB of swap,
+none of it used, the pinned Zig built the `m16` tree natively. The headless graph gave
+**87/87 steps and 1,668 of 1,669 tests**, the Mac's exact headless result and the same skip.
+The null samples and every network proof passed. The POSIX socket path ran for the first time
+and needed no change, and the compiled content packages were byte-identical to the Mac's.
+
+**The server.** The Linux headless authority served:
+- the Windows/Vulkan window, on home broadband;
+- the macOS/Metal window and scripted clients, on a phone hotspot.
+
+The results:
+- the owner pressed keys on the Mac and watched them on the PC, with no lag;
+- joins and rejoins ran at p95 84–102 ms;
+- all three refusals held;
+- ten minutes at p95 133 ms, with a longest gap of 716 ms;
+- about 17 MB of memory and a tenth of a vCPU for the server.
+
+**The external consumer.** The C99 relay from `docs/modding/networking.md` built and ran there.
+
+**Nothing about the desktop was tested or is claimed.**

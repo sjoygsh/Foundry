@@ -4,7 +4,7 @@
 window payloads and system libraries added in M13 Step 2, and `setWindowIcon` in Step 8; the
 `windows` driver's path ran on Windows x64 in M13, and X11 and Wayland are build-checked until
 M18. `platform.Transport`, M16's authenticated streams, ran over the public internet on macOS
-and Windows in M16 Step 8. See the Resolutions at the end.
+and Windows in M16 Step 8, and on Linux x64 in M16.5, headless (ADR-0046). See the Resolutions at the end.
 **Date:** 2026-09-02
 **Implements:** I7, I9 · **Informed by:** ADR-0002, ADR-0003, ADR-0007, ADR-0008
 
@@ -688,3 +688,12 @@ networks, one of them behind a mobile carrier's NAT. It needed no change to this
 - **A refusal can reach the client as a reset.** Over the internet, a client whose certificate
   the server refused saw `reset` rather than the category the server logged. The refusing
   side's reason is the authoritative one, as part six said.
+
+## Resolution, part nine — Linux x64 headless, 2026-09-23
+
+M16.5 ran the null backend and `platform.Transport` on Linux x64 for the first time: an Ubuntu
+24.04 cloud VM, built natively with the pinned Zig. The POSIX socket path in
+`transport/socket.c` had only been compiled until then. It passed `transport-test` and served
+macOS and Windows clients over the public internet with no change. `Os` on Linux was exercised
+by the whole headless graph, 1,668 tests. The SDL driver, X11, Wayland and the native window
+payloads remain unrun (ADR-0039, M18).

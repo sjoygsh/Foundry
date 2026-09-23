@@ -1,10 +1,10 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-23
-**Current handoff: M16 is complete (2026-09-23, tag `m16`). M0 through M16 are complete and
-tagged.** Nothing is in progress. Next is M16.5, Linux headless servers (ADR-0046), waiting on the
-owner's Linux VM (Immediate next steps). Networking's record is `docs/design/networking.md`, ADR-0044/0045 and
-`docs/modding/networking.md`.
+**Current handoff: M16.5 is complete (2026-09-23, tag `m16.5`), after M16 (tag `m16`). M0
+through M16.5 are complete and tagged.** Nothing is in progress. The owner asked to stop here,
+before M17. Networking's record is `docs/design/networking.md`, ADR-0044/0045 and
+`docs/modding/networking.md`; Linux servers' is ADR-0046.
 
 **M16 planning, revised 2026-09-21:** the owner requires **public-internet multiplayer**;
 the original LAN-only proposal is withdrawn. Nine steps cover security qualification and
@@ -4382,19 +4382,17 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**M16 is complete. Next is M16.5, Linux headless servers, accepted 2026-09-23
-([ADR-0046](docs/adr/0046-linux-headless-servers-before-release.md)).** Its three steps are in
-the roadmap: qualify, serve, close. Step 1 starts when the owner's Linux VM (Ubuntu 24.04,
-x86_64) is up and reachable over SSH. Every public listener and firewall change needs the
-owner's explicit yes at the time.
+**M16.5 is complete: Linux x64 headless and server runtime is proven (ADR-0046).** On the owner's
+Ubuntu 24.04 x86_64 VM, the headless graph passed natively with the Mac's exact result: 87/87
+steps and 1,668 of 1,669 tests. The Linux-built authority served the Windows window on home
+broadband and the Mac on a phone hotspot:
+- the owner's keys on the Mac showed on the PC with no lag;
+- rejoins ran at p95 84–102 ms, and the three refusals held;
+- ten minutes ran at p95 133 ms;
+- the server used 17 MB of memory.
 
-**M16.5 Step 1 is complete, 2026-09-23.** On the owner's Ubuntu 24.04 x86_64 VM (t3.small plus
-4 GB swap), the pinned Zig from `scripts/install-zig.sh` built the `m16` tree natively.
-`zig build test -Dplatform=null -Drhi=null` gave 87/87 steps and 1,668 of 1,669 tests, the Mac's
-exact headless result. The null samples, `sandbox-net-proof`, `transport-test`,
-`net-session-test`, `tls-qualification` and `abi-net-test` passed, so the POSIX socket path ran
-for the first time. No code changed. **Step 2, serving over the internet, is next.**
-
+The C99 relay passed there too. No code changed. The Linux desktop is still M18's. The VM's
+credentials are deleted and nothing listens; the owner deletes the VM.
 
 The roadmap's remaining work:
 - **M17**, public macOS release certification. It needs Developer ID credentials, Apple's
@@ -4403,8 +4401,8 @@ The roadmap's remaining work:
 - **The first game**, in its own repository (ADR-0017). It can begin whenever the owner says.
 - **M18**, Linux runtime support: after the first game and before any 3D (ADR-0039).
 
-Owner housekeeping left from M16:
-- delete the cloud VM;
+Owner housekeeping left from M16 and M16.5:
+- delete both cloud VMs (Windows and Linux);
 - delete the now-useless home router forward.
 
 After that, the temporary SSH key used for the VM can go.

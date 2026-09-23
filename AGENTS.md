@@ -104,8 +104,11 @@ never allocates or calls the RHI, and every call site that splits work is tested
 pool, `0` for none. M12 closed at **1,370 declared / 1,360 headless tests**.
 **M13 is complete (2026-09-19), tagged `m13`.** ADR-0037/0038 are accepted; read
 `docs/design/vulkan.md`. A Windows x64 Vulkan target is qualified and reached over SSH. Linux
-x64 left M13 by ADR-0039: its runtime proof is M18, after the first game and before 3D, and
-until then it is compile-checked only. The Vulkan tools are pinned in §3 below, and `platform`
+x64 left M13 by ADR-0039. Its desktop runtime proof is M18, after the first game and before 3D.
+Its headless and server use was proven in M16.5 (ADR-0046): on an x86_64 Ubuntu VM,
+`./scripts/install-zig.sh` then `zig build test -Dplatform=null -Drhi=null` gives the Mac's
+exact headless result. Rerun that there when `platform`'s transport, `net` or the headless loop
+changes, and at each milestone close before M18. A 2 GB VM needs about 4 GB of swap to build. The Vulkan tools are pinned in §3 below, and `platform`
 hands out native window payloads and opens system libraries safely. `rhi/backends/vulkan/`
 creates a validated device, tracks submissions and allocates, copies and retires resources. It
 creates checked SPIR-V shader modules, persistent descriptor sets, layouts and graphics
