@@ -197,6 +197,14 @@ still need the owner's explicit yes at the time. The Vulkan checks need the SDK'
 `PATH`. The bar below is current. M13's Step 9 added the checks Vulkan and release work need,
 and M14 added an optimized Windows check to them.
 
+**M17 (ADR-0047)** publishes unsigned GitHub pre-releases. `zig build dist` stages Windows
+natively there with `-Drhi=vulkan` (`docs/shipping/windows.md`). Before each release, the
+Windows zip is run on a machine with no Foundry, Zig or Vulkan SDK present; the owner's PC was
+wiped for exactly that on 2026-09-23. **Windows development there now needs the pinned Zig and
+SDK reinstalled** (§3's hashes; the Zig 0.16.0 Windows zip is SHA-256
+`68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e`). No signing membership
+is bought before a fully playable 3D game.
+
 ## 3. Building and verifying
 
 The pinned toolchain is **Zig 0.16.0**, and it is not on `PATH`:

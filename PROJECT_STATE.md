@@ -1,9 +1,10 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-23
-**Current handoff: M16.5 is complete (2026-09-23, tag `m16.5`), after M16 (tag `m16`). M0
-through M16.5 are complete and tagged.** Nothing is in progress. The owner asked to stop here,
-before M17. Networking's record is `docs/design/networking.md`, ADR-0044/0045 and
+**Current handoff: M17 is in progress (2026-09-23): the unsigned preview `v0.17.0-preview` is
+published on GitHub, and the owner's two clean-machine download checks are what remain.** M0
+through M16.5 are complete and tagged. ADR-0047 made M17 an unsigned GitHub pre-release and
+postponed certification until after a fully playable 3D game. Networking's record is `docs/design/networking.md`, ADR-0044/0045 and
 `docs/modding/networking.md`; Linux servers' is ADR-0046.
 
 **M16 planning, revised 2026-09-21:** the owner requires **public-internet multiplayer**;
