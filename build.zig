@@ -817,7 +817,8 @@ pub fn build(b: *std.Build) void {
 
     // **`dist` — a release, from explicit inputs** (`distribution.md` §8).
     //
-    // It builds exactly one configuration: ReleaseSafe, SDL3 and Metal, aarch64-macOS. It
+    // It builds exactly one configuration per system: ReleaseSafe and SDL3, with Metal on
+    // aarch64-macOS or Vulkan on x86_64-Windows (M17, ADR-0047). It
     // does not *impose* that configuration, it **requires** it, and the difference is worth
     // the sentence. A `build.zig` is not told which step was asked for, so a `dist` that
     // configured its own module graph would have to configure a macOS/SDL/Metal graph on
@@ -865,7 +866,7 @@ pub fn build(b: *std.Build) void {
             release_mod.addImport("abi", modules.get("abi").?);
             release_mod.addImport("net", modules.get("net").?);
             release_mod.addImport("markers", markers_mod);
-            release_mod.addAnonymousImport("quad_metallib", .{
+            if (rhi_backend == .metal) release_mod.addAnonymousImport("quad_metallib", .{
                 .root_source_file = metalLibrary(b, "quad-release", &.{"samples/sandbox/shaders/quad.metal"}),
             });
         }
@@ -880,7 +881,7 @@ pub fn build(b: *std.Build) void {
             .room => .{
                 .product_name = "Foundry Room",
                 .bundle_id = "dev.foundry.room",
-                .product_version = "0.9.0",
+                .product_version = "0.17.0",
                 .executable = release_executable,
                 .packages = &.{ content_packages[0], content_packages[2] },
                 .license_id = "Apache-2.0",
@@ -901,7 +902,7 @@ pub fn build(b: *std.Build) void {
             .sandbox => .{
                 .product_name = "Foundry Sandbox",
                 .bundle_id = "dev.foundry.sandbox",
-                .product_version = "0.9.0",
+                .product_version = "0.17.0",
                 .executable = release_executable,
                 .packages = &.{ content_packages[0], content_packages[1] },
                 // The samples are Foundry's, so Foundry's license is the application's and
@@ -921,57 +922,82 @@ pub fn build(b: *std.Build) void {
             .fstage = fstage.getEmittedBin(),
             .fmacos_verify = fmacos_verify.getEmittedBin(),
         };
-        const artifacts = release.macosApplication(b, tools, description, .local);
-        const install_app = b.addInstallDirectory(.{
-            .source_dir = artifacts.app,
-            .install_dir = .prefix,
-            .install_subdir = b.fmt("dist/{s}/{s}.app", .{ @tagName(dist_app), description.product_name }),
-        });
-        install_app.step.dependOn(artifacts.ready);
-        const install_symbols = b.addInstallDirectory(.{
-            .source_dir = artifacts.symbols,
-            .install_dir = .prefix,
-            .install_subdir = b.fmt("dist/{s}/{s}.app.dSYM", .{ @tagName(dist_app), description.product_name }),
-        });
-        install_symbols.step.dependOn(artifacts.ready);
-        const install_zip = b.addInstallFile(
-            artifacts.zip,
-            b.fmt("dist/{s}/{s}-local.zip", .{ @tagName(dist_app), description.product_name }),
-        );
-        install_zip.step.dependOn(artifacts.ready);
-        dist_step.dependOn(&install_app.step);
-        dist_step.dependOn(&install_symbols.step);
-        dist_step.dependOn(&install_zip.step);
-
-        // Public signing/notarization is a separate, explicitly credentialed action. Merely
-        // staging `dist` never touches a Developer ID identity, Keychain profile or network.
-        if (signing_identity == null or notary_profile == null or revision == null) {
-            distribution_step.dependOn(&b.addFail(
-                "`dist-developer-id` requires -Dsigning-identity, -Dnotary-profile and -Drevision; credentials stay in the named notarytool Keychain profile",
-            ).step);
+        if (target.result.os.tag == .windows) {
+            // **Windows (M17, ADR-0047): the loose layout, zipped by the system's own tool.**
+            // `bin/<name>.exe` beside `content/` is the layout `app.contentDirOf` already
+            // resolves. It is unsigned: SmartScreen warns, and the release notes say how to
+            // run it anyway. `tar.exe` ships with Windows 10 and later and writes zip with
+            // `-a`, the way `ditto` does on macOS; no archiver is added to the build.
+            var windows = description;
+            windows.executable_name = b.fmt("{s}.exe", .{release_executable.name});
+            const staged = release.stage(b, tools, windows);
+            const install_stage = b.addInstallDirectory(.{
+                .source_dir = staged,
+                .install_dir = .prefix,
+                .install_subdir = b.fmt("dist/{s}/{s}", .{ @tagName(dist_app), description.product_name }),
+            });
+            const zip = b.addSystemCommand(&.{ "tar", "-a", "-c", "-f" });
+            const archive = zip.addOutputFileArg(b.fmt("{s}-windows-x64.zip", .{description.product_name}));
+            zip.addArg("-C");
+            zip.addDirectoryArg(staged.dirname());
+            zip.addArg(description.product_name);
+            const install_zip = b.addInstallFile(archive, b.fmt("dist/{s}/{s}-windows-x64.zip", .{ @tagName(dist_app), description.product_name }));
+            dist_step.dependOn(&install_stage.step);
+            dist_step.dependOn(&install_zip.step);
+            distribution_step.dependOn(&b.addFail("`dist-developer-id` signs a macOS release; Windows releases are unsigned (ADR-0047)").step);
         } else {
-            const signed = release.macosApplication(b, tools, description, .{ .developer_id = signing_identity.? });
-            const notarized = release.notarizeMacos(b, description, signed, notary_profile.?);
-            const install_notarized_app = b.addInstallDirectory(.{
-                .source_dir = notarized.app,
+            const artifacts = release.macosApplication(b, tools, description, .local);
+            const install_app = b.addInstallDirectory(.{
+                .source_dir = artifacts.app,
                 .install_dir = .prefix,
-                .install_subdir = b.fmt("dist/{s}-developer-id/{s}.app", .{ @tagName(dist_app), description.product_name }),
+                .install_subdir = b.fmt("dist/{s}/{s}.app", .{ @tagName(dist_app), description.product_name }),
             });
-            install_notarized_app.step.dependOn(notarized.ready);
-            const install_notarized_symbols = b.addInstallDirectory(.{
-                .source_dir = notarized.symbols,
+            install_app.step.dependOn(artifacts.ready);
+            const install_symbols = b.addInstallDirectory(.{
+                .source_dir = artifacts.symbols,
                 .install_dir = .prefix,
-                .install_subdir = b.fmt("dist/{s}-developer-id/{s}.app.dSYM", .{ @tagName(dist_app), description.product_name }),
+                .install_subdir = b.fmt("dist/{s}/{s}.app.dSYM", .{ @tagName(dist_app), description.product_name }),
             });
-            install_notarized_symbols.step.dependOn(notarized.ready);
-            const install_notarized_zip = b.addInstallFile(
-                notarized.zip,
-                b.fmt("dist/{s}-developer-id/{s}.zip", .{ @tagName(dist_app), description.product_name }),
+            install_symbols.step.dependOn(artifacts.ready);
+            const install_zip = b.addInstallFile(
+                artifacts.zip,
+                b.fmt("dist/{s}/{s}-local.zip", .{ @tagName(dist_app), description.product_name }),
             );
-            install_notarized_zip.step.dependOn(notarized.ready);
-            distribution_step.dependOn(&install_notarized_app.step);
-            distribution_step.dependOn(&install_notarized_symbols.step);
-            distribution_step.dependOn(&install_notarized_zip.step);
+            install_zip.step.dependOn(artifacts.ready);
+            dist_step.dependOn(&install_app.step);
+            dist_step.dependOn(&install_symbols.step);
+            dist_step.dependOn(&install_zip.step);
+
+            // Public signing/notarization is a separate, explicitly credentialed action. Merely
+            // staging `dist` never touches a Developer ID identity, Keychain profile or network.
+            if (signing_identity == null or notary_profile == null or revision == null) {
+                distribution_step.dependOn(&b.addFail(
+                    "`dist-developer-id` requires -Dsigning-identity, -Dnotary-profile and -Drevision; credentials stay in the named notarytool Keychain profile",
+                ).step);
+            } else {
+                const signed = release.macosApplication(b, tools, description, .{ .developer_id = signing_identity.? });
+                const notarized = release.notarizeMacos(b, description, signed, notary_profile.?);
+                const install_notarized_app = b.addInstallDirectory(.{
+                    .source_dir = notarized.app,
+                    .install_dir = .prefix,
+                    .install_subdir = b.fmt("dist/{s}-developer-id/{s}.app", .{ @tagName(dist_app), description.product_name }),
+                });
+                install_notarized_app.step.dependOn(notarized.ready);
+                const install_notarized_symbols = b.addInstallDirectory(.{
+                    .source_dir = notarized.symbols,
+                    .install_dir = .prefix,
+                    .install_subdir = b.fmt("dist/{s}-developer-id/{s}.app.dSYM", .{ @tagName(dist_app), description.product_name }),
+                });
+                install_notarized_symbols.step.dependOn(notarized.ready);
+                const install_notarized_zip = b.addInstallFile(
+                    notarized.zip,
+                    b.fmt("dist/{s}-developer-id/{s}.zip", .{ @tagName(dist_app), description.product_name }),
+                );
+                install_notarized_zip.step.dependOn(notarized.ready);
+                distribution_step.dependOn(&install_notarized_app.step);
+                distribution_step.dependOn(&install_notarized_symbols.step);
+                distribution_step.dependOn(&install_notarized_zip.step);
+            }
         }
     }
 
@@ -1507,8 +1533,11 @@ fn distComplaint(
 ) ?[]const u8 {
     var wrong: std.ArrayList([]const u8) = .empty;
 
-    if (target.result.os.tag != .macos or target.result.cpu.arch != .aarch64) {
-        wrong.append(b.allocator, b.fmt("the target is {t}-{t}, and a release is aarch64-macos", .{
+    const windows = target.result.os.tag == .windows;
+    if (!(target.result.os.tag == .macos and target.result.cpu.arch == .aarch64) and
+        !(windows and target.result.cpu.arch == .x86_64))
+    {
+        wrong.append(b.allocator, b.fmt("the target is {t}-{t}, and a release is aarch64-macos or x86_64-windows", .{
             target.result.cpu.arch, target.result.os.tag,
         })) catch @panic("OOM");
     } else if (!target.query.isNative()) {
@@ -1528,8 +1557,9 @@ fn distComplaint(
     if (platform_backend != .sdl3) {
         wrong.append(b.allocator, "the platform backend is null, and a release opens a window") catch @panic("OOM");
     }
-    if (rhi_backend != .metal) {
-        wrong.append(b.allocator, b.fmt("the graphics backend is {t}, and a release draws with Metal", .{rhi_backend})) catch @panic("OOM");
+    const wanted: RhiBackend = if (windows) .vulkan else .metal;
+    if (rhi_backend != wanted) {
+        wrong.append(b.allocator, b.fmt("the graphics backend is {t}, and this release draws with {t}", .{ rhi_backend, wanted })) catch @panic("OOM");
     }
     if (wrong.items.len == 0) return null;
 
@@ -1540,7 +1570,8 @@ fn distComplaint(
     out.writeAll(
         \\
         \\Stage a release with:
-        \\  zig build dist -Dapp=room -Dplatform=sdl3 -Drhi=metal -Doptimize=ReleaseSafe
+        \\  zig build dist -Dapp=room -Dplatform=sdl3 -Drhi=metal -Doptimize=ReleaseSafe    (macOS)
+        \\  zig build dist -Dapp=room -Dplatform=sdl3 -Drhi=vulkan -Doptimize=ReleaseSafe   (Windows)
         \\
     ) catch @panic("OOM");
     return message.written();
