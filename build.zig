@@ -884,7 +884,7 @@ pub fn build(b: *std.Build) void {
             .room => .{
                 .product_name = "Foundry Room",
                 .bundle_id = "dev.foundry.room",
-                .product_version = "0.17.0",
+                .product_version = "0.17.1",
                 .executable = release_executable,
                 .packages = &.{ content_packages[0], content_packages[2] },
                 .license_id = "Apache-2.0",
@@ -905,7 +905,7 @@ pub fn build(b: *std.Build) void {
             .sandbox => .{
                 .product_name = "Foundry Sandbox",
                 .bundle_id = "dev.foundry.sandbox",
-                .product_version = "0.17.0",
+                .product_version = "0.17.1",
                 .executable = release_executable,
                 .packages = &.{ content_packages[0], content_packages[1] },
                 // The samples are Foundry's, so Foundry's license is the application's and
@@ -931,6 +931,9 @@ pub fn build(b: *std.Build) void {
             // resolves. It is unsigned: SmartScreen warns, and the release notes say how to
             // run it anyway. `tar.exe` ships with Windows 10 and later and writes zip with
             // `-a`, the way `ditto` does on macOS; no archiver is added to the build.
+            // A player's program, not a tool: no console window beside the game. Logs still
+            // reach the session log under the application's data directory.
+            release_executable.subsystem = .windows;
             var windows = description;
             windows.executable_name = b.fmt("{s}.exe", .{release_executable.name});
             const staged = release.stage(b, tools, windows);
