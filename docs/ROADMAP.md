@@ -838,7 +838,7 @@ provisioned certificates. The accepted model is one
 operator-hosted authority with mutual certificates, up to four reference peers and no
 prediction. ADR-0013's bit-exact subset question stays conditional on lockstep.
 
-### M16.5 — Served: "its servers run on Linux" — **accepted 2026-09-23; not started**
+### M16.5 — Served: "its servers run on Linux" — **in progress; Step 1 of three complete (2026-09-23)**
 
 The first game's clients ship on macOS and Windows, but its servers will very likely run on
 Linux VMs. [ADR-0046](adr/0046-linux-headless-servers-before-release.md) splits Linux in two:
@@ -856,7 +856,11 @@ Three steps, each on the owner's instruction:
 1. **Qualify.** Install the pinned Zig with `scripts/install-zig.sh`, clone the pushed tree,
    and run the headless bar natively. That means `zig build test`, the null samples,
    `sandbox-net-proof`, and the transport, session and TLS qualification proofs. Anything
-   that fails is fixed and rerun on the Mac bar.
+   that fails is fixed and rerun on the Mac bar. **Complete 2026-09-23:** on Ubuntu 24.04 x86_64
+   (2 vCPU, 2 GB plus 4 GB swap, none used), with the tree at `m16`. The result was 87/87
+   steps and 1,668 of 1,669 tests, identical to the Mac's headless graph and with the same
+   skip. The null samples, `sandbox-net-proof`, `transport-test`, `net-session-test`,
+   `tls-qualification` and `abi-net-test` all passed. Nothing needed a fix.
 2. **Serve.** The Linux-built headless sandbox serves the Mac and the PC over the internet:
    join, leave and rejoin; the stranger, outsider and mismatch refusals; and a ten-minute
    measured run. The external relay host from `docs/modding/networking.md` is built and run

@@ -4388,6 +4388,13 @@ the roadmap: qualify, serve, close. Step 1 starts when the owner's Linux VM (Ubu
 x86_64) is up and reachable over SSH. Every public listener and firewall change needs the
 owner's explicit yes at the time.
 
+**M16.5 Step 1 is complete, 2026-09-23.** On the owner's Ubuntu 24.04 x86_64 VM (t3.small plus
+4 GB swap), the pinned Zig from `scripts/install-zig.sh` built the `m16` tree natively.
+`zig build test -Dplatform=null -Drhi=null` gave 87/87 steps and 1,668 of 1,669 tests, the Mac's
+exact headless result. The null samples, `sandbox-net-proof`, `transport-test`,
+`net-session-test`, `tls-qualification` and `abi-net-test` passed, so the POSIX socket path ran
+for the first time. No code changed. **Step 2, serving over the internet, is next.**
+
 
 The roadmap's remaining work:
 - **M17**, public macOS release certification. It needs Developer ID credentials, Apple's
