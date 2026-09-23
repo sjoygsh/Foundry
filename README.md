@@ -153,7 +153,7 @@ Decisions are recorded before they are built:
 
 ## Project status
 
-**M0 through M16.5 are complete; M17 publishes the first preview release.** Foundry is a
+**M0 through M17 are complete, and the first preview release is published.** Foundry is a
 playable, moddable, networked 2D engine with an editor. It runs on macOS and Windows, and its
 servers also run on Linux. Next is the first game, in its own repository. Linux desktops then
 follow in M18, before 3D. Signed and notarized releases wait until after a fully playable 3D

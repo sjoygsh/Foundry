@@ -1,6 +1,6 @@
 # ADR-0047: M17 publishes an unsigned preview; paid certification waits for a 3D game
 
-**Status:** Accepted
+**Status:** Accepted 2026-09-23; carried out in M17, complete the same day
 **Date:** 2026-09-23
 **Supersedes:** [ADR-0032](0032-defer-macos-release-certification.md) in its timing only. The
 first public macOS release is no longer the certified one, and certification is re-dated. Its
@@ -101,3 +101,26 @@ and it is the path to exercise then. Nothing in the engine depends on the choice
 * A distribution channel requires signing (a storefront, an enterprise user or a package
   manager) before that.
 * A preview download causes a real support or trust problem that signing would have prevented.
+
+## M17 result — 2026-09-23
+
+Both published downloads open by the documented steps and run. The release is
+`v0.17.1-preview`, built from `c37c01d`; `v0.17.0-preview` is marked superseded.
+
+**Windows.** The owner's PC was wiped of Foundry, Zig and the Vulkan SDK. The zip, downloaded
+through a browser:
+- matched its published SHA-256, and carried the Mark of the Web;
+- was held back by SmartScreen when launched through Explorer;
+- ran once allowed, on Vulkan on the Arc A750, with no console window.
+
+The checks caught two defects before they reached a stranger, both fixed in 0.17.1: a Windows
+build compiled with the macOS bundle flag, and a console window beside the game.
+
+**macOS.** A fresh macOS 26.6.2 VM under UTM, installed from Apple's restore image with its
+checksum verified and no Apple ID. The Room zip, downloaded in Safari:
+- was refused by Gatekeeper as unnotarized;
+- opened through **Privacy & Security → Open Anyway**;
+- played on Metal.
+
+**Not claimed:** a genuinely clean recipient Mac, notarization, or any signature beyond
+macOS's ad-hoc one. Those wait for certification.

@@ -879,7 +879,7 @@ Three steps, each on the owner's instruction:
    README, AGENTS, CLAUDE, the guide and ADR-0046 now say exactly that, and the milestone is
    tagged `m16.5`.
 
-### M17 — Published: "a stranger can download it and be told how to open it" — **in progress (2026-09-23)**
+### M17 — Published: "a stranger can download it and be told how to open it" — **COMPLETE 2026-09-23**
 
 [ADR-0047](adr/0047-unsigned-github-preview-release.md) redefined this milestone on the owner's
 decision: **no paid signing membership until a fully playable 3D game exists.** M17 publishes
@@ -901,7 +901,7 @@ Linux is excluded, because its desktop has never run.
 **Exit criteria:** both platforms' downloads, taken from the published release on the clean
 machines, open by the documented steps and run.
 
-**Done so far, 2026-09-23.**
+**Result, 2026-09-23.**
 - **0.17.0 was published, then replaced.** `v0.17.0-preview` went out and was marked
   superseded by `v0.17.1-preview`, built from `c37c01d`.
 - **The checks caught two Windows defects,** both fixed in 0.17.1:
@@ -916,7 +916,15 @@ machines, open by the documented steps and run.
   - ran once allowed, on Vulkan on the Arc A750, with no console window.
 
   The owner also approved the warning by hand on 0.17.0.
-- **macOS in a fresh virtual machine** is what remains.
+- **macOS passes from the published download.** In a fresh macOS 26.6.2 virtual machine
+  under UTM, installed from Apple's restore image (checksum verified) with no Apple ID, Safari
+  downloaded the 0.17.1 Room zip:
+  - Gatekeeper refused to open it, as an unnotarized download;
+  - **Privacy & Security → Open Anyway** allowed it;
+  - the room opened and played on Metal.
+
+  The VM is not ADR-0032's clean recipient Mac, and is not claimed as one.
+- **Closed at tag `m17`.**
 
 ### Postponed: certified releases — **due after a fully playable 3D game**
 
