@@ -1,7 +1,7 @@
 # ADR-0045: Authenticated public-internet transport behind Foundry's boundary
 
 **Status:** Accepted 2026-09-21; provider qualified in M16 Step 1; native transport built in Step 2;
-admission and negotiation built in Step 3; proved over the public internet in Step 8.
+admission and negotiation built in Step 3; proved over the public internet in Step 8. M16 closed 2026-09-23.
 **Date:** 2026-09-21
 **Revision, 2026-09-21:** replaces the unimplemented LAN-only proposal in place, under
 `CLAUDE.md` §8. No code depended on the earlier text. The owner's subsequent instruction to

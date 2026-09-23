@@ -153,8 +153,8 @@ found four defects doing so, including a native loader that still offered only v
 Windows/Vulkan run followed on 2026-09-21: the same twenty workflow tests, the same
 twenty-five-action null smoke frame for frame, and the same 489-action authoring plan on an
 Intel Arc A750 through Vulkan 1.4, with the two saved `.fdt` files and the exported `.fpk`
-byte-identical to the macOS/Metal run's. Step 9 closed the milestone. **M16 is in progress;
-Steps 1–7 of nine are complete.** Read `docs/design/networking.md` and accepted ADR-0044/0045.
+byte-identical to the macOS/Metal run's. Step 9 closed the milestone. **M16 is complete
+(2026-09-23, tag `m16`).** Read `docs/design/networking.md` and accepted ADR-0044/0045.
 The owner requires public-internet multiplayer; the LAN-only proposal is withdrawn. The
 accepted first architecture is one operator-hosted authority over TLS 1.3 mutual certificates,
 up to four reference peers and no prediction. Step 1 pins and qualifies Mbed TLS 3.6.7 LTS,
@@ -187,9 +187,11 @@ loopback. It is not in `test`: run it when networking, the sandbox or its conten
 and a byte-exact replay of a session's admitted inputs. `zig build sandbox-net-proof
 -Dplatform=null -Drhi=null -- --envelope 600` runs §10's controlled envelope for ten minutes
 through a shaping relay. Run it when networking's timing could have changed, not every commit.
-**Step 8 is next and has not begun.** Design authorization does not
-authorize infrastructure purchases, firewall changes, real credential use or a public
-listener. The bar below is current. M13's Step 9 added the checks Vulkan and release work need,
+Step 8 ran it over the public internet from a cloud VM. `docs/modding/networking.md` is how an
+operator provisions credentials and deploys a server, and holds an external C99 consumer's
+whole source. A public listener, a firewall change, real credentials and any infrastructure
+still need the owner's explicit yes at the time. The Vulkan checks need the SDK's `bin` on
+`PATH`. The bar below is current. M13's Step 9 added the checks Vulkan and release work need,
 and M14 added an optimized Windows check to them.
 
 ## 3. Building and verifying

@@ -1,9 +1,10 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-23
-**Current handoff: M16 is in progress; Steps 1–8 of nine are complete. Step 9, the close, needs its own instruction.**
-M0 through M15 are complete and tagged. Read the accepted `docs/design/networking.md` and
-accepted ADR-0044/0045 before any further M16 work.
+**Current handoff: M16 is complete (2026-09-23, tag `m16`). M0 through M16 are complete and
+tagged.** Nothing is in progress. What comes next needs the owner's instruction (Immediate next
+steps). Networking's record is `docs/design/networking.md`, ADR-0044/0045 and
+`docs/modding/networking.md`.
 
 **M16 planning, revised 2026-09-21:** the owner requires **public-internet multiplayer**;
 the original LAN-only proposal is withdrawn. Nine steps cover security qualification and
@@ -17,6 +18,26 @@ player certificates and the four-peer/no-prediction reference envelope. Both ADR
 **accepted**; Steps 6 through 9 still need their own instruction, and design authorization still
 does not authorize infrastructure purchases, firewall changes, real credentials or a public
 listener. M15's completed evidence remains accepted.
+
+**Completed M16 Step 9, 2026-09-23: M16 is closed, at tag `m16`.** Resolution: `networking.md`,
+Step 9.
+- **The gate:** the full bar, with 91/91 steps and 1,680 of 1,681 headless tests (the skip is
+  M15's). Also:
+  - every `check` graph, the Windows Vulkan graphs included (the SDK's `bin` must be on
+    `PATH`);
+  - both samples, and `sandbox-net-proof`;
+  - the installed header as C99 on three targets and as C++17, with `net_client.c` and
+    `author_client.c`;
+  - both releases, staged.
+- **Accepted, not repeated:** Step 8's desktop and internet runs, since no code changed after
+  them.
+- **The consistency pass:** status in README, AGENTS, roadmap, the design index, `public-abi.md`,
+  `platform-interface.md`, `CLAUDE.md` and this file. It found two false statements: the README
+  said no sample used v5, and AGENTS said Step 8 had not begun.
+- **The exit criterion is met,** part by part, in the Resolution. v5 is frozen at 233 calls.
+- **The deployment limit:** one operator-hosted authority at a reachable IPv4 address; four
+  peers; provisioned, allowlisted certificates; no relay, NAT traversal or IPv6.
+- **Remaining decisions:** listed there, with none made.
 
 **Completed M16 Step 8, 2026-09-23: the public internet, both desktops and an outside consumer.**
 Resolution: `networking.md`, Step 8; ADR-0044's and ADR-0045's Step 8 notes; the guide is
@@ -2733,14 +2754,13 @@ adding to it, only M10 was new, **M10 and M11 are complete (2026-09-13)** and **
 complete (2026-09-14)**. **M13 is complete (2026-09-19)**, proving
 Windows x64 through Vulkan. **M14 is complete (2026-09-19)**: a player chooses their mods in a
 packaged sample, on macOS and on Windows. **M15 is complete (2026-09-21)**: Foundry authors
-its own content through its own public API, on macOS and on Windows. **M16 is in progress**:
-the owner confirmed its trigger on 2026-09-21 — the first networked game needs public-internet
-multiplayer — and Steps 1–7 of nine are complete. M17 is unstarted and credential-gated.
+its own content through its own public API, on macOS and on Windows. **M16 is complete
+(2026-09-23)**: Foundry plays over the public internet, between macOS and Windows on separate
+networks, through one authenticated authority. M17 is unstarted and credential-gated.
 
 ## Current milestone
 
-**M16 — Connected: "it plays with others." In progress; Steps 1–7 of nine complete,
-2026-09-23.** Read `docs/design/networking.md` — §12's nine steps and their Resolutions — and
+**M16 — Connected: "it plays with others." Complete, 2026-09-23, tagged `m16`.** Read `docs/design/networking.md` — §12's nine steps and their Resolutions — and
 ADR-0044/0045, accepted 2026-09-21. The owner requires public-internet multiplayer: one
 operator-hosted authority, TLS 1.3 with mutual certificates, up to four reference peers and no
 prediction. Step 1 qualified Mbed TLS 3.6.7 LTS and froze FNET wire v1 in L2 `net`; Step 2 added
@@ -2751,9 +2771,8 @@ tick-admitted command batches and replaceable complete state; Step 5 published t
 `FoundryApi_v5`; Step 6 connected the sandbox through that API alone; Step 7 proved it against
 hostile peers, by replay and within the controlled envelope; Step 8 played it over the public
 internet between macOS and Windows on separate networks, and wrote `docs/modding/networking.md`
-from an external C99 consumer. **Step 9, the close, is next and needs its own instruction.** A real
-public listener, real credentials and any infrastructure need the operator's explicit
-authorization in any step.
+from an external C99 consumer; Step 9 closed it. A real public listener, real credentials and
+any infrastructure still need the operator's explicit authorization, in any milestone.
 
 **M15 — Editor: "content is authored in Foundry." Complete, 2026-09-21, tagged `m15`.** Read
 `docs/design/editor.md` — §14's nine steps and the nine Resolutions — and ADR-0042/0043,
@@ -3698,9 +3717,8 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M16 is in progress: Steps 1–8 of nine are complete, and nothing is half-built.** Its
-current account is the M16 entries at the top of this file and `networking.md`'s Resolutions.
-**M0–M15 are complete.** M15's design and
+**Nothing is in progress. M0–M16 are complete, and nothing is half-built.** M16's account is
+the entries at the top of this file and `networking.md`'s nine Resolutions. M15's design and
 its nine Resolutions are in `docs/design/editor.md`. Step 1 added source spans to
 the parser and `data/emit.zig` and `data/splice.zig`; Step 2 added `engine/src/author/` — the
 one compiler `fpack` and the editor share, the granted dependency set, and bounded workspaces —
@@ -4364,21 +4382,20 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**M16 Step 9, the close, is next (`networking.md` §12), and it needs the owner's instruction.**
-Step 8's evidence is in its Resolution and the guide. What Step 9 must do:
-- review the exit evidence once;
-- fix concrete gaps;
-- run the final integration gate;
-- make the documents consistent: README, roadmap, AGENTS, `public-abi.md` and the platform
-  documents;
-- list the actual deployment limit and the remaining decisions;
-- tag `m16`.
+**M16 is complete; nothing is started. The next milestone needs the owner's instruction.**
 
-The owner's cloud VM is no longer needed. Its credentials, firewall rule and server are gone,
-and the owner deletes the instance.
-Steps 1–7 are committed and pushed; Step 8 is committed. M17 (public macOS release certification) needs Developer ID credentials,
-Apple's notary service and a genuinely clean recipient Mac (ADR-0032), and it is deliberately
-last. M18 is Linux runtime support, after the first game and before any 3D (ADR-0039).
+The roadmap's remaining work:
+- **M17**, public macOS release certification. It needs Developer ID credentials, Apple's
+  notary service and a genuinely clean recipient Mac (ADR-0032). Its entry gate is a full
+  review and polish pass over `main`. It is deliberately last.
+- **The first game**, in its own repository (ADR-0017). It can begin whenever the owner says.
+- **M18**, Linux runtime support: after the first game and before any 3D (ADR-0039).
+
+Owner housekeeping left from M16:
+- delete the cloud VM;
+- delete the now-useless home router forward.
+
+After that, the temporary SSH key used for the VM can go.
 
 Two small recorded items can be taken on the owner's word whenever they want them: the flaky
 Windows sleep test (Known bugs), and a human sitting down with the editor for an hour — no
@@ -5669,9 +5686,11 @@ repository (ADR-0017). Before that, sixteen ADRs establishing the architecture.
 
 ## Notes for the next session
 
-**Resume point, 2026-09-23:** M0–M15 complete, tagged and pushed. **M16 Steps 1–7 of nine are
-complete and pushed; Step 8's desktop half is done** and its internet half waits for the owner's
-cloud server (Immediate next steps).
+**Resume point, 2026-09-23:** M0–M16 complete, tagged and pushed. Nothing is in progress.
+- **Step 8's record** is `docs/modding/networking.md`. It holds the external C99 consumer, the
+  OpenSSL provisioning recipe and the deployment steps. The cloud VM run used a headless
+  `-Dplatform=null -Drhi=null -Dtarget=x86_64-windows-gnu` build, with the native install's
+  `content/` copied beside it: a cross-install compiles no content.
 - **Step 7's commands:** `zig build sandbox-net-matrix` (in `test`), and the ten-minute
   envelope `zig build sandbox-net-proof -Dplatform=null -Drhi=null -- --envelope 600`.
 - **Step 6's commands:** `zig build sandbox-net-proof -Dplatform=null -Drhi=null` (separate

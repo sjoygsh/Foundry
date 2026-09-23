@@ -109,7 +109,7 @@ build, export — and the relocated room sample loaded it from its ordinary user
 directory and changed visibly. A C99 program does the same job through the same calls. It
 ran on macOS/Metal and on Windows/Vulkan, and both wrote the same bytes.
 
-**M16 is in progress; Steps 1–7 of nine are complete.** Its accepted
+**M16 is complete (2026-09-23, tag `m16`): Foundry plays over the public internet.** Its accepted
 [networking design](docs/design/networking.md) requires public-internet multiplayer through an
 operator-hosted authority with mutually authenticated TLS. Pinned Mbed TLS 3.6.7 LTS passed
 the in-memory provider qualification, L2 `net` holds checked limits, runtime channels and
@@ -120,8 +120,13 @@ allowlist of client keys, compatibility compared before any application byte, an
 work, deadlines and budgets before and after authentication. An admitted peer is synchronized
 by one acknowledged baseline, then sends commands the server admits in tick batches ordered by
 participant, and receives the newest complete state. All of it is published as the additive
-`FoundryApi_v5`, 22 calls over grants the host chooses to publish. No sample uses it yet; Step 6
-connects the sandbox, and the real WAN proof remains an M16 exit gate.
+`FoundryApi_v5`, 22 calls over grants the host chooses to publish.
+
+The sandbox's shared markers use it through the public header alone, and they held against
+hostile peers. They were then played over the public internet, with a cloud-hosted authority
+and macOS and Windows clients on separate networks, at p95 68–118 ms. The
+[networking guide](docs/modding/networking.md) is written from an external C99 program, and
+covers provisioning, rotation, revocation, deployment and the measured limits.
 
 All three modding tiers work — see [docs/modding](docs/modding/). Tier 2 is restricted
 Lua 5.5.1, one VM per package, bounded in memory, instructions and engine calls, reaching the

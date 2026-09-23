@@ -3,7 +3,7 @@
 **Status:** Accepted 2026-09-21; M16 Step 1 implemented against it; its tick admission and
 complete-state delivery built in Step 4, published as `FoundryApi_v5` in Step 5, consumed
 by the sandbox's header-only shared markers in Step 6, and proved against hostile peers, by
-replay and within the controlled envelope in Step 7, and played over the public internet in Step 8.
+replay and within the controlled envelope in Step 7, and played over the public internet in Step 8. M16 closed 2026-09-23.
 **Date:** 2026-09-21
 **Revision, 2026-09-21:** the owner requires public-internet multiplayer. The LAN-only
 alternative is withdrawn. The owner's subsequent instruction to begin Step 1 accepts the

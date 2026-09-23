@@ -755,6 +755,13 @@ must not settle them opportunistically. Question 1 was resolved by the M7 exit p
 > principal or remote address ever crosses, and pumping stays the host's. The specification is
 > `networking.md` §8 and its Step 5 Resolutions. Lua binding 1 is unchanged and v2-only.
 
+> **M16 closed, 2026-09-23:** v5 is frozen at 233 calls. Steps 6–9 consumed it and added
+> none. Three consumers use it:
+> - the sandbox's header-only shared markers;
+> - `net_client.c`;
+> - an external C99 program built outside the repository against the installed header, whose
+>   whole source is `docs/modding/networking.md`.
+
 ## 19. Implementation order
 
 Each step ends with something that runs and something that is tested.

@@ -777,7 +777,7 @@ through the sample's normal mod path. A scene editor, schema designer and execut
 game/plugin host are outside this scope, and remain so.
 The editor's UI and UX follow Unreal Engine 5's editor, within M15's fixed regions (§10).
 
-### M16 — Connected: "it plays with others" — **in progress; Steps 1–7 of nine complete (2026-09-23)**
+### M16 — Connected: "it plays with others" — **COMPLETE 2026-09-23 (all nine steps)**
 
 Networking was recorded as indefinite, and I1, I2, I8 and I9 kept it possible without paying
 for it. **The owner confirmed the trigger on 2026-09-21: the first networked game requires
@@ -822,7 +822,19 @@ reconnect, and by windows on macOS/Metal. **Step 7 is complete.**
   strangers, replayed and tampered records, stalls and floods.
 - A session's admitted inputs replay into a fresh authority byte for byte.
 - Ten minutes through a relay shaped to §10's envelope held p95 acknowledgement at 200–234 ms
-  against a 500 ms budget. The accepted model is one
+  against a 500 ms budget.
+
+**Step 8 is complete.**
+- **Both desktops:** the relocated macOS and Windows applications each served the other, with
+  real keys.
+- **The public internet:** a cloud-hosted authority served a Windows client on broadband and
+  a macOS client on a mobile network, at p95 68 ms and 118 ms, with refusals holding.
+- **An external consumer:** a C99 program outside the repository ran on both desktops.
+  [`docs/modding/networking.md`](modding/networking.md) is written from it.
+
+**Step 9 closed the milestone at tag `m16`.** The exit criterion is met. The deployment limit
+is one operator-hosted authority at a reachable IPv4 address, four peers per session and
+provisioned certificates. The accepted model is one
 operator-hosted authority with mutual certificates, up to four reference peers and no
 prediction. ADR-0013's bit-exact subset question stays conditional on lockstep.
 

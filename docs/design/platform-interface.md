@@ -3,7 +3,8 @@
 **Status:** Implemented 2026-09-03, both backends. `setWindowSize` added 2026-09-04. Native
 window payloads and system libraries added in M13 Step 2, and `setWindowIcon` in Step 8; the
 `windows` driver's path ran on Windows x64 in M13, and X11 and Wayland are build-checked until
-M18. See the Resolution at the end.
+M18. `platform.Transport`, M16's authenticated streams, ran over the public internet on macOS
+and Windows in M16 Step 8. See the Resolutions at the end.
 **Date:** 2026-09-02
 **Implements:** I7, I9 · **Informed by:** ADR-0002, ADR-0003, ADR-0007, ADR-0008
 
@@ -676,3 +677,14 @@ only this layer holds. The full account is `networking.md`'s Step 3 Resolution.
 `net` can refuse limits stricter than it. `tls.c` fails to compile if the provider's input record
 size stops matching the second.
 
+## Resolution, part eight — the transport over the public internet, 2026-09-23
+
+M16 Step 8 ran `platform.Transport` off loopback for the first time. A headless Windows build
+listened on a cloud VM. macOS and Windows clients connected to it from two separate access
+networks, one of them behind a mobile carrier's NAT. It needed no change to this layer.
+- **Dependents get it through the exported module.** A game depending on Foundry as a package
+  gets the transport archive and its libc, `ws2_32` and `bcrypt` links through `platform` alone.
+  An external host outside the checkout built for macOS and Windows that way.
+- **A refusal can reach the client as a reset.** Over the internet, a client whose certificate
+  the server refused saw `reset` rather than the category the server logged. The refusing
+  side's reason is the authoritative one, as part six said.

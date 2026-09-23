@@ -1,7 +1,7 @@
 # Network sessions and the shared-world proof
 
 **Milestone:** M16 — Connected: “it plays with others”
-**Status:** Accepted design, 2026-09-21. **Steps 1–8 of nine are complete.**
+**Status:** Accepted design, 2026-09-21. **Complete 2026-09-23: all nine steps, tagged `m16`.**
 **Revision, 2026-09-21:** the owner selected **public-internet multiplayer**. The earlier
 LAN-only scope is withdrawn. Internet security and a real WAN proof are required in M16. The
 owner's instruction to begin Step 1 accepted the authority, topology, admission and bounded
@@ -502,13 +502,13 @@ lists and editor features remain open. M17/M18 retain their own gates.
 Step 1's provider/configuration and wire layouts, Step 2's transport mechanism, Step 3's
 negotiation exchange, Step 4's delivery order, Step 5's v5 layouts and call count and Step 6's
 sample protocol and credential file, and Step 7's protocol revision 2, envelope harness and
-measured bounds are resolved
+measured bounds, and Step 8's deployment findings, are resolved
 below. No bounded implementation detail now awaits a Resolution before dependent code. No port numbers, machine names or personal paths belong in
 committed configuration.
 
 ## 12. Implementation order
 
-Steps 1–7 are complete; Steps 8–9 are **not started**. Each ends with its own tests, required bar,
+All nine steps are complete (2026-09-23). Each ended with its own tests, required bar,
 Resolution, project-state update and focused commit, followed by a handoff. Do not chain steps
 without the owner's instruction.
 
@@ -585,7 +585,7 @@ external C99 consumer; write the networking and credential-operations guide from
 experience. **No Linux runtime certification or blanket anti-cheat/DDoS claim.** Missing
 target/infrastructure access is reported, not waived; LAN success cannot close this step.
 
-### Step 9 — Close M16 against its accepted scope
+### Step 9 — Close M16 against its accepted scope — **complete 2026-09-23**
 
 Review the exit evidence once, fix concrete gaps, run the required final integration gate,
 and update design Resolutions, API/platform documents, README, roadmap, AGENTS and project
@@ -1660,3 +1660,73 @@ against the installed `foundry.h` alone.
 - Linux compiles and is not run (ADR-0039).
 - Keys on the PC were proven on the local network; over the internet the PC watched and the
   Mac played.
+
+## Resolution — 2026-09-23, Step 9: M16 is closed
+
+**The gate.** Step 8 changed no code, so its desktop and internet runs are accepted, not
+repeated. What was run is the whole bar and the checks networking and the ABI require:
+- `zig fmt --check`;
+- `zig build test`: **91 of 91 build steps, 1,680 of 1,681 headless tests**, with the skip it
+  has carried since M15;
+- `zig build check` on the native, Metal, Linux-gnu and Windows-gnu graphs, the Windows
+  optimized graph, and the Windows Vulkan graph, debug and ReleaseSafe;
+- both samples for thirty headless frames;
+- `zig build sandbox-net-proof`, which passed;
+- the installed header, compiled as C99 `-pedantic -Werror` for macOS, Linux-gnu and
+  Windows-gnu and as C++17, with both the v5 fixture (`net_client.c`) and the v4 one;
+- both sample releases, staged.
+
+**The consistency pass.** It covered status in `README.md`, `AGENTS.md`, `docs/ROADMAP.md`,
+`docs/design/README.md`, `public-abi.md`, `platform-interface.md`, `CLAUDE.md` §4, §8 and §9,
+`PROJECT_STATE.md` and this file. Two statements had become false rather than just old:
+- `README.md` still said no sample used v5 and that "the real WAN proof remains an M16 exit
+  gate";
+- `AGENTS.md` said Step 8 "has not begun".
+
+Both are rewritten. Resolutions keep what they said on their dates.
+
+**The exit criterion, and whether it is met.** The roadmap asks that "two processes share a
+world convincingly over the public internet, with authenticated encrypted transport, validated
+authority and bounded hostile-input handling, and the model was decided in writing first.
+LAN/loopback evidence alone cannot close M16." Each part holds:
+- **Over the public internet.** A cloud-hosted authority served a Windows client on home
+  broadband and a macOS client on a mobile network. A player's keys on one were seen on the
+  other (Step 8).
+- **Authenticated and encrypted.** Every connection is TLS 1.3 with a certificate on both
+  sides, a pinned server key and allowlist admission, with no plaintext path. This held under
+  negative tests on the internet and in a packet capture (Steps 1–3 and 8).
+- **Validated authority.** The server owns every marker, commands are admitted by tick, and
+  clients validate every complete state before believing it (Steps 4, 6 and 7).
+- **Bounded hostile input.** Forged commands, a lying server, replayed and tampered records,
+  and stalls and floods were each contained (Step 7). Every pre-authentication cost is bounded
+  (Step 3).
+- **Decided first.** ADR-0044/0045 and this design were accepted before Step 1's code.
+
+**The table is frozen at 233 calls.** `FoundryApi_v5` was published in Step 5. Steps 6–9
+consumed it and added none: the sandbox's consumer, the external C99 consumer and the fixture
+all use the same 22 calls.
+
+**The actual deployment limit.** One operator-hosted authority at a reachable public IPv4
+address, including a small cloud VM. Beyond that:
+- **Size and reach:** four peers a session; no relay, NAT traversal, IPv6 or DNS resolution.
+- **Credentials:** every player holds a provisioned certificate whose key the server
+  allowlists. Revocation is by allowlist, and there is no revocation list.
+- **Joining:** players behind one address share a handshake budget of 2 starts a second.
+- **Timing:** the measured p95 command acknowledgement is 68 ms on broadband and 118 ms on a
+  mobile network, against a 500 ms budget. A mobile stall of 2.4 s was observed and survived.
+- **Not claimed:** anti-cheat beyond authority, DDoS resistance, and Linux at runtime.
+
+`docs/modding/networking.md` is the operator's and author's account of all of it.
+
+**Remaining decisions, recorded so they are not made by accident.**
+- **§11's out-of-scope list is unchanged,** and each item is a later decision, not a gap:
+  matchmaking, relays and NAT traversal, accounts, anti-cheat, host migration, resumption,
+  prediction and rollback, lockstep, content download, automatic replication, interest
+  management, remote editor transport, and Lua networking bindings.
+- **ADR-0045's revisit clause stands:** player-hosted sessions, anonymous joins, IPv6/DNS or
+  another scale reopen the topology.
+- **ADR-0013's bit-exact subset** stays owed only to lockstep.
+- **Other open questions stay open,** as `PROJECT_STATE.md` lists them.
+
+**Neither later milestone was started.** No M17 review, polish or release work was done, and
+no Linux runtime qualification (M18).
