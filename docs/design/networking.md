@@ -1,7 +1,7 @@
 # Network sessions and the shared-world proof
 
 **Milestone:** M16 — Connected: “it plays with others”
-**Status:** Accepted design, 2026-09-21. **Steps 1–7 of nine are complete; Step 8 is under way** (its desktop half passed 2026-09-23; see `PROJECT_STATE.md`).
+**Status:** Accepted design, 2026-09-21. **Steps 1–8 of nine are complete.**
 **Revision, 2026-09-21:** the owner selected **public-internet multiplayer**. The earlier
 LAN-only scope is withdrawn. Internet security and a real WAN proof are required in M16. The
 owner's instruction to begin Step 1 accepted the authority, topology, admission and bounded
@@ -575,7 +575,7 @@ and reconnect. Replay admitted batches and compare server state for the same bin
 Measure work/storage bounds and the controlled WAN envelope. Reuse prior successful evidence;
 run new combinations, not duplicate reviews. **No cross-platform bit-exact simulation claim.**
 
-### Step 8 — Prove public-internet play, both desktops and an external consumer
+### Step 8 — Prove public-internet play, both desktops and an external consumer — **complete 2026-09-23**
 
 Run the relocated macOS/Metal and Windows/Vulkan applications, with each machine serving the
 other, real input and no runtime toolchain requirement. Then prove an authorized internet
@@ -1590,3 +1590,73 @@ The envelope was run on the Mac only.
   not a network.
 - No cross-platform or bit-exact claim is made. Replay is the same binary and the same inputs.
 - Real WAN RTT, a real flood's cost, cross-host play and the external consumer are Step 8's.
+
+## Resolution — 2026-09-23, Step 8: the public internet, both desktops and an outside consumer
+
+Step 8 added no engine code. It ran what Steps 1–7 built where the design said it must run,
+and wrote the guide from an external program. The guide is
+[`docs/modding/networking.md`](../modding/networking.md), and its §8–§9 hold the evidence in full.
+
+**Both desktops, each serving the other.** The relocated macOS/Metal application (`zig build
+dist`) and a relocated Windows/Vulkan install ran with no toolchain on PATH and with identical
+package hashes, on the owner's local network.
+- Each machine served the other, and the owner pressed real keys on both. Both markers moved
+  on both screens.
+- Across the two hosts, a stranger's key was refused by policy and an unrelated root as
+  untrusted. A wrong-role certificate was refused before connecting, and a one-value content
+  change by catalogue.
+- Join, leave and rejoin were clean, with p95 acknowledgement 32–82 ms.
+
+**The public internet.** The authority was a headless Windows build on an owner-authorized
+cloud VM. The Windows client was on home broadband and the macOS client on a phone's mobile
+hotspot: separate access networks, neither a tunnel nor a forward.
+- **Joins:** join, leave and rejoin ×3 were clean on each network, p95 81–100 ms.
+- **Refusals:** an unrelated root was cut off in the handshake and never admitted, an
+  unlisted key refused by policy, and mismatched content by `catalogue, entry 1`.
+- **Ten-minute measured runs,** 20 Hz state and a command every half second:
+  - broadband: p50/p95 51/68 ms, longest state gap 450 ms;
+  - hotspot: p50/p95 100/118 ms, with one stall of about 2.4 s and no disconnect.
+- **Real keys** pressed on the Mac over the hotspot moved its marker on the PC's screen over
+  broadband, with no lag the owner could see.
+- **Packet capture:** a capture of a controlled session on the server found no `FNET` magic
+  and no content name among 292 TLS application-data records; the TLS server name, sent in
+  the clear by design, was present as a control.
+
+**The external consumer.** `relay.c`, in the guide, is C99 compiled `-pedantic -Werror`
+against the installed `foundry.h` alone.
+- **Its host:** a Zig program outside the checkout that depends on Foundry as a package and
+  imports only its exported `abi`, `core`, `net` and `platform` modules. It is the same shape
+  as M7's and M15's sibling hosts.
+- **What it proves:** it registers `relay:say` and `relay:heard`, round-trips a real message
+  through a tick batch and a complete state, and checks two documented refusals: a server's
+  `net_delivery_next`, and a session on an unpublished grant.
+- **Where it ran:** as separate processes on macOS, and on Windows.
+- **Credentials:** the guide's OpenSSL recipe produced working operator credentials, and
+  removing a player's `allow` line refused them.
+
+**What implementation found that the design did not say.**
+1. **A home line behind carrier-grade NAT cannot host at all.** Forwarding a router port
+   there does nothing, because the router's WAN address is not the public one. ADR-0045
+   already requires a reachable endpoint, so its topology stands. The guide tells an operator
+   how to recognize CGNAT, and that players behind it are unaffected.
+2. **A mobile network stalls.** One 2.4 s gap exceeds the 2 s state-gap budget the controlled
+   harness used. The session survived it, since the no-progress deadline is 10 s. It is a
+   recorded observation, not a bound the engine can promise.
+3. **Operating a Windows host has traps a design would not list:**
+   - a cloud VM sits on the *Public* firewall profile;
+   - a process started from an SSH session dies with it;
+   - stripping inheritance from a credential directory locks its files.
+
+   The guide's §6–§7 carry them.
+4. **The client's view of an untrusted root is a reset.** Over the internet, the client saw
+   the server's refusal as `transport failure: reset`, not the certificate category seen on a
+   local network. The server never admitted it either way. The refusing side's reason is
+   authoritative, as Step 2 recorded.
+
+**Limits, deliberately.**
+- Four peers per session and one authority; IPv4; no relay or NAT traversal.
+- No anti-cheat claim beyond server authority, and no DDoS claim: a real flood's cost was
+  not measured against a public server.
+- Linux compiles and is not run (ADR-0039).
+- Keys on the PC were proven on the local network; over the internet the PC watched and the
+  Mac played.

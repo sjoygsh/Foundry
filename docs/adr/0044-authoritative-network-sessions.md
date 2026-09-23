@@ -3,7 +3,7 @@
 **Status:** Accepted 2026-09-21; M16 Step 1 implemented against it; its tick admission and
 complete-state delivery built in Step 4, published as `FoundryApi_v5` in Step 5, consumed
 by the sandbox's header-only shared markers in Step 6, and proved against hostile peers, by
-replay and within the controlled envelope in Step 7.
+replay and within the controlled envelope in Step 7, and played over the public internet in Step 8.
 **Date:** 2026-09-21
 **Revision, 2026-09-21:** the owner requires public-internet multiplayer. The LAN-only
 alternative is withdrawn. The owner's subsequent instruction to begin Step 1 accepts the
@@ -127,3 +127,11 @@ was tested through the consumer. A session's lifecycle events between ticks and 
 batch, fed to a fresh pure authority, rebuilt every state the server sent, byte for byte. This
 holds for the same binary and the same inputs. No cross-machine claim is made, as ADR-0013
 says.
+
+## Step 8 internet note — 2026-09-23
+
+The decision held off the harness. One operator-hosted authority on a cloud VM served
+macOS and Windows clients on two separate access networks. Clients held only the complete
+state it sent and predicted nothing. Ten-minute runs acknowledged commands at p95 68 ms on
+broadband and 118 ms on a mobile hotspot, against §10's 500 ms. The evidence is in
+`networking.md`'s Step 8 Resolution.

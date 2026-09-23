@@ -1,7 +1,7 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-23
-**Current handoff: M16 is in progress; Steps 1–7 of nine are complete and Step 8 is under way.**
+**Current handoff: M16 is in progress; Steps 1–8 of nine are complete. Step 9, the close, needs its own instruction.**
 M0 through M15 are complete and tagged. Read the accepted `docs/design/networking.md` and
 accepted ADR-0044/0045 before any further M16 work.
 
@@ -17,6 +17,40 @@ player certificates and the four-peer/no-prediction reference envelope. Both ADR
 **accepted**; Steps 6 through 9 still need their own instruction, and design authorization still
 does not authorize infrastructure purchases, firewall changes, real credentials or a public
 listener. M15's completed evidence remains accepted.
+
+**Completed M16 Step 8, 2026-09-23: the public internet, both desktops and an outside consumer.**
+Resolution: `networking.md`, Step 8; ADR-0044's and ADR-0045's Step 8 notes; the guide is
+`docs/modding/networking.md`. No engine code changed.
+- **Both desktops, each serving the other,** on the owner's local network. The relocated
+  macOS/Metal app and a relocated Windows/Vulkan install were used, with identical packages.
+  - The owner pressed keys on both machines.
+  - A stranger, an unrelated root, a wrong role and a one-value content change were refused.
+  - Join, leave and rejoin were clean.
+- **Over the public internet,** a headless Windows authority ran on an owner-authorized cloud
+  VM. The PC was on home broadband and the Mac on a phone hotspot, which are separate access
+  networks.
+  - Join, leave and rejoin ×3, and the refusals, held on both networks.
+  - Ten-minute runs gave p95 acknowledgement of **68 ms** on broadband and **118 ms** on the
+    hotspot. The hotspot run had one 2.4 s stall, and there was no disconnect on either.
+  - Real keys pressed on the Mac moved its marker on the PC's screen.
+  - A packet capture found no plaintext `FNET` or content names.
+- **The external consumer:** C99 `relay.c`, built against the installed header alone, with a
+  Zig host outside the checkout that depends on Foundry as a package.
+  - It ran on macOS and Windows.
+  - It sent a message and got it back through a tick batch and a state, and checked two
+    documented refusals.
+  - The guide's OpenSSL recipe, and revoking a player by allowlist, were run too.
+- **Found:**
+  - The owner's home line is behind carrier-grade NAT and cannot host. ADR-0045 already
+    requires a reachable endpoint.
+  - Mobile networks stall.
+  - Three Windows-host traps: the Public firewall profile, SSH-started processes dying with
+    the session, and credential ACL inheritance. They are in the guide.
+- **Not done, deliberately:**
+  - PC keys over the internet: the PC watched, and its keys were proven on the local network.
+  - A real flood against a public server.
+  - Linux at runtime.
+  - Step 9.
 
 **Completed M16 Step 7, 2026-09-23: refusal, authority, replay and the measured envelope.**
 Resolution: `networking.md`, Step 7; also ADR-0044's Step 7 note.
@@ -2715,10 +2749,9 @@ Step 3 added `net.Service`, which admits peers by grant, allowlist and compatibi
 bounded work, deadlines and budgets; Step 4 added the acknowledged baseline, activation,
 tick-admitted command batches and replaceable complete state; Step 5 published them as
 `FoundryApi_v5`; Step 6 connected the sandbox through that API alone; Step 7 proved it against
-hostile peers, by replay and within the controlled envelope. **Step 8 — public-internet play,
-both desktops and an external consumer — is under way on the owner's instruction:** its desktop
-half passed on 2026-09-23, and its internet half waits for an authorized cloud server (see
-Immediate next steps). A real
+hostile peers, by replay and within the controlled envelope; Step 8 played it over the public
+internet between macOS and Windows on separate networks, and wrote `docs/modding/networking.md`
+from an external C99 consumer. **Step 9, the close, is next and needs its own instruction.** A real
 public listener, real credentials and any infrastructure need the operator's explicit
 authorization in any step.
 
@@ -3665,7 +3698,7 @@ the macOS backend, and `-Drhi=metal` on a non-macOS target fails immediately by 
 
 ## What is being worked on
 
-**M16 is in progress: Steps 1–7 of nine are complete, and nothing is half-built.** Its
+**M16 is in progress: Steps 1–8 of nine are complete, and nothing is half-built.** Its
 current account is the M16 entries at the top of this file and `networking.md`'s Resolutions.
 **M0–M15 are complete.** M15's design and
 its nine Resolutions are in `docs/design/editor.md`. Step 1 added source spans to
@@ -4331,28 +4364,19 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**M16 Step 8 is under way (`networking.md` §12).** Done on 2026-09-23, on the home LAN:
-- the relocated macOS/Metal app (`zig build dist`) and a relocated Windows/Vulkan install, needing
-  no toolchain, with byte-identical packages, **each served the other** with the owner pressing
-  keys on both machines; the owner saw both markers move on both screens;
-- operator credentials made with stock OpenSSL (P-256; a root, role-marked server and player
-  leaves), none in the repository; across the two hosts a stranger's key was refused by policy,
-  an unrelated root as untrusted, a wrong-role certificate before connecting, and a one-value
-  content change by catalogue; join, leave and rejoin were clean.
+**M16 Step 9, the close, is next (`networking.md` §12), and it needs the owner's instruction.**
+Step 8's evidence is in its Resolution and the guide. What Step 9 must do:
+- review the exit evidence once;
+- fix concrete gaps;
+- run the final integration gate;
+- make the documents consistent: README, roadmap, AGENTS, `public-abi.md` and the platform
+  documents;
+- list the actual deployment limit and the remaining decisions;
+- tag `m16`.
 
-**Found:** the owner's home line is behind carrier-grade NAT, so a home host cannot be reached
-from the internet at all; a forwarded router port timed out from a mobile network. Foundry's
-direct-connect design has no relay or NAT traversal, so the guide must say an operator's server
-needs a publicly reachable address. Once, the Windows server's window flickered for a few
-seconds; its sampled frame times held at 16.7 ms and Windows logged no display-driver event,
-so the cause is unknown.
-
-**Next:** the owner will provide a small hourly **cloud server** as the authority, with the PC on
-the home line and the Mac on a phone hotspot as clients on independent networks. After that:
-authenticated join/leave/rejoin, refusals and content mismatch over the WAN, observed WAN
-conditions, the external C99 consumer, and the networking and credential-operations guide.
-Every firewall change, public listener and credential needs the owner's explicit yes at the time.
-Steps 1–7 are committed and pushed. M17 (public macOS release certification) needs Developer ID credentials,
+The owner's cloud VM is no longer needed. Its credentials, firewall rule and server are gone,
+and the owner deletes the instance.
+Steps 1–7 are committed and pushed; Step 8 is committed. M17 (public macOS release certification) needs Developer ID credentials,
 Apple's notary service and a genuinely clean recipient Mac (ADR-0032), and it is deliberately
 last. M18 is Linux runtime support, after the first game and before any 3D (ADR-0039).
 

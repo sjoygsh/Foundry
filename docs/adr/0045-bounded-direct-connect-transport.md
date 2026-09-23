@@ -1,7 +1,7 @@
 # ADR-0045: Authenticated public-internet transport behind Foundry's boundary
 
 **Status:** Accepted 2026-09-21; provider qualified in M16 Step 1; native transport built in Step 2;
-admission and negotiation built in Step 3.
+admission and negotiation built in Step 3; proved over the public internet in Step 8.
 **Date:** 2026-09-21
 **Revision, 2026-09-21:** replaces the unimplemented LAN-only proposal in place, under
 `CLAUDE.md` §8. No code depended on the earlier text. The owner's subsequent instruction to
@@ -196,3 +196,12 @@ Resolution has the full account. Four facts later steps depend on:
   time, to deliver its refusal or disconnect, because closing with unread input resets TCP and a
   reset can discard it.
 
+## Step 8 internet resolution — 2026-09-23
+
+The topology was run as decided: a reachable, operator-hosted endpoint, with clients
+connecting outbound. The owner's own home line turned out to be behind carrier-grade NAT, so
+it could not have served at all. That is the case this decision's "reachable internet
+endpoint" clause excludes, and it confirms rather than triggers the revisit clause: the first
+game's servers are operator-hosted. Clients behind CGNAT, a phone hotspot among them, connected
+normally. Over the internet, an untrusted client certificate reached the client as a transport
+reset, not a named category. The server's refusal is the authoritative one, as Step 2 said.
