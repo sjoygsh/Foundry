@@ -36,7 +36,7 @@ Foundry tag you depend on and keep the two in step.
 Create `build.zig.zon` with `zig init`, or by hand, then add Foundry at a tag:
 
 ```sh
-zig fetch --save git+https://github.com/sjoygsh/Foundry#m17
+zig fetch --save git+https://github.com/sjoygsh/Foundry#m17.1
 ```
 
 That writes a `.foundry` entry with its URL and hash into `.dependencies`. While you work on

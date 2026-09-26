@@ -26,7 +26,7 @@ gaps, and all five are closed:
    tag lacked `tools/` (which `build.zig` imports), the samples, `content/`, `brand/` and
    `THIRD_PARTY_LICENSES/`. It now lists them all. A tarball of the tree fetched by
    `zig fetch` built and ran the getting-started game in Debug. Tag `m17` still has the old
-   list.
+   list, so the getting-started guide now fetches tag `m17.1`.
 2. **Debug content builds printed `failed command:`.** A Debug `fpack` wrote `debug(mod)` lines
    to stderr, and a Zig run step reports any stderr as a failure. `fpack` and `fstage` now log
    at `warn` in every mode.
