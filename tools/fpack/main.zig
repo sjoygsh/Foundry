@@ -77,6 +77,12 @@ const Args = struct {
     dependencies: std.ArrayListUnmanaged(author.DependencySource) = .empty,
 };
 
+/// Warnings and errors only, in every build mode. fpack reports through its own writer, and
+/// the engine's info and debug lines are not its output. They also break the build that runs
+/// it: a Zig run step reports any stderr from a Debug `fpack` as `failed command:`, which a
+/// game's build reads as a compiler failure.
+pub const std_options: std.Options = .{ .log_level = .warn };
+
 pub fn main(init: std.process.Init) !u8 {
     const gpa = init.gpa;
 

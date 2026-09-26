@@ -232,8 +232,8 @@ fn captureLevelRaw() u8 {
 /// **Observed, never read.** `logFn` reads no clock. The engine publishes a reading it had
 /// already taken for its frame delta, so every line between two publications carries the
 /// earlier one and a burst of lines shares a time exactly. That is coarser than a clock read
-/// per line, and it is the price of a sink that cannot change what the null platform's clock,
-/// which advances per reading, hands the simulation (I9).
+/// per line, and it is the price of a sink that can never change the time the simulation is
+/// handed (I9).
 pub const Stamp = struct {
     frame: u64 = 0,
     /// Monotonic time since the host's origin — the engine's creation — in nanoseconds. Null

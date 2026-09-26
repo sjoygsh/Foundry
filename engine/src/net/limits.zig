@@ -55,6 +55,29 @@ pub const Limits = struct {
     /// waits, in order, in the peer's bounded inbox for a later tick (Step 4).
     commands_per_peer_per_tick: u16 = 16,
 
+    /// The reference limits with one session resized for `peers` players, and the storage
+    /// that follows from that count grown to match. Never smaller than the defaults.
+    ///
+    /// Taken from the first game's server, which ran 256 players this way: each connection,
+    /// admitted or pending, reserves three events (`service.zig`), and holds about 96 KiB of
+    /// TLS provider memory. The reference 16 MiB is sized for four.
+    ///
+    /// **Not raised: the per-source handshake rate.** Many handshakes from one address look
+    /// like a flood because they usually are one. A host that expects players behind one
+    /// address, or runs a load test from one machine, raises
+    /// `handshake_starts_per_source_per_second` and its burst itself, knowing why. The
+    /// allowlist is the host's too: `identities` must hold every `allow` line, which may be
+    /// more than the players at once.
+    pub fn forPeers(peers: u16) Limits {
+        var limits: Limits = .{};
+        limits.peers_per_session = peers;
+        limits.identities = @max(limits.identities, peers);
+        const connections: u32 = @as(u32, peers) + limits.pending_handshakes;
+        limits.queued_events = @intCast(@max(limits.queued_events, 3 * connections + 64));
+        limits.tls_allocation_bytes = @max(limits.tls_allocation_bytes, @as(u64, connections) * 96 * 1024);
+        return limits;
+    }
+
     pub fn validate(self: Limits) Error!void {
         if (self.sessions == 0 or self.peers_per_session == 0 or
             self.pending_handshakes == 0 or self.handshake_starts_per_second == 0 or
@@ -154,4 +177,20 @@ test "limits reject structural excess and inconsistent storage" {
     try std.testing.expectError(error.LimitTooLarge, limits.validate());
 
     try std.testing.expect(checkedMul(std.math.maxInt(u64), 2) == null);
+}
+
+test "limits for many peers grow what follows from the count, and stay valid" {
+    try std.testing.expectEqual(Limits{}, Limits.forPeers(4));
+    for ([_]u16{ 1, 4, 16, 64, 255, 256 }) |peers| {
+        const limits = Limits.forPeers(peers);
+        try limits.validate();
+        try std.testing.expectEqual(peers, limits.peers_per_session);
+        // Every connection, admitted or pending, can reserve its three events.
+        try std.testing.expect(limits.queued_events >= 3 * (@as(u32, peers) + limits.pending_handshakes));
+        try std.testing.expect(limits.identities >= peers);
+    }
+    const large = Limits.forPeers(256);
+    try std.testing.expect(large.tls_allocation_bytes > (Limits{}).tls_allocation_bytes);
+    // A flood from one address is still a flood.
+    try std.testing.expectEqual((Limits{}).handshake_starts_per_source_per_second, large.handshake_starts_per_source_per_second);
 }

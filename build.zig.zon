@@ -53,10 +53,20 @@
         },
     },
 
+    // Everything `build.zig` reaches, because a game that depends on Foundry by URL runs this
+    // build script against exactly these files and nothing else. `tools` holds
+    // `foundry.release` and the compilers; the samples and the editor are declared steps even
+    // when nobody runs them; `content/core` is package zero; and the license entries are the
+    // attribution a game's release must carry for Foundry's own dependencies.
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "engine",
+        "tools",
+        "samples",
+        "content",
+        "brand",
+        "THIRD_PARTY_LICENSES",
         "LICENSE",
         "NOTICE",
         "README.md",

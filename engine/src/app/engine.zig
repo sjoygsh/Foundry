@@ -840,10 +840,9 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         pub fn beginFrame(self: *Self) void {
             // **Clock readings are shared, not repeated**, and this is the same argument
             // `frameDelta` already makes: a second read of the same moment gives a second,
-            // slightly different answer. It matters more than tidiness here, because the
-            // null backend's synthetic clock advances *per reading* — so a profiler that
-            // read it freely would change the number of simulation steps a headless frame
-            // produces, which is a measurement altering what it measures.
+            // slightly different answer. (The null backend's synthetic clock no longer
+            // advances per reading — a frame's time passes at `pumpEvents` — so a reading
+            // here cannot change a headless frame's steps; that is tested below.)
             // Stamped before anything can log, so every line this frame produces carries the
             // frame it belongs to — what lines a log line up against a profiler span — and the
             // latest time the engine has observed. **No reading is taken for it.** Until
@@ -1353,10 +1352,9 @@ const TestEngine = EngineOf(NullPlatform, NullDevice);
 fn testEngine(config: Config) !*TestEngine {
     var c = config;
     c.headless = true;
-    // **Off, for the same class of reason `headless` is on**: the null backend's clock
-    // advances per reading, so a profiler reading it changes how much simulated time a
-    // frame carries. A test measuring the loop should measure the loop. `profiledEngine`
-    // is what the tests that want it use, and they assert exactly what it costs.
+    // **Off, for the same class of reason `headless` is on**: a test measuring the loop
+    // should measure the loop. `profiledEngine` is what the tests that want it use, and
+    // one of them proves the profiler changes no frame's simulated time.
     c.profiler = false;
     return TestEngine.init(testing.allocator, c);
 }
@@ -1668,7 +1666,7 @@ test "a frame of real time produces the right number of simulation steps" {
     const engine = try testEngine(.{ .tick_rate_hz = 60, .max_steps_per_frame = 1000 });
     defer engine.deinit();
 
-    // One millisecond per clock reading; `beginFrame` reads it once. A thousand frames
+    // One millisecond per frame of the null clock. A thousand frames
     // is exactly one second, which at 60Hz is exactly 60 steps and nothing left over.
     engine.platform.setClockStep(.fromMillis(1));
 
@@ -1847,8 +1845,8 @@ test "a log line carries its frame and the reading the frame already took" {
 
 test "capturing and stamping log lines changes neither the clock readings nor the simulation" {
     // I9 with the sink in the loop: both captures on and every line stamped, against both off.
-    // The null clock advances per reading, so a capture that read it would change the ticks,
-    // and one that fed anything back would change the checksum.
+    // A capture that moved the clock would change the ticks, and one that fed anything back
+    // would change the checksum.
     const Outcome = struct { ticks: u64, elapsed: i64, clock: i64, checksum: u64 };
     const run = struct {
         fn go(capture: bool, buffer: []u8) !Outcome {
@@ -1928,20 +1926,33 @@ test "capturing and stamping log lines changes neither the clock readings nor th
     try testing.expectEqual(off, on);
 }
 
-test "with the profiler off, a frame reads the clock exactly once" {
-    // The property every loop test above depends on, pinned so that adding a clock read
-    // to the frame is a failing test rather than a slow drift in simulated time. The null
-    // backend's clock advances per reading, so "how many readings" *is* "how much time".
-    const engine = try testEngine(.{});
-    defer engine.deinit();
-    engine.platform.setClockStep(.fromMillis(1));
+test "the profiler does not change how much simulated time a headless frame carries" {
+    // A measurement must not change what it measures. The null clock once advanced per
+    // reading, and a profiler reading it about eight times a frame made a headless game
+    // simulate about eight steps a frame instead of one. Now a frame is one clock step,
+    // whoever reads it: the same frames, profiled or not, produce the same ticks.
+    const run = struct {
+        fn go(engine: *TestEngine) !struct { ticks: u64, clock: i64 } {
+            defer engine.deinit();
+            engine.platform.setClockStep(.fromNanos(@divTrunc(std.time.ns_per_s, 60)));
+            for (0..120) |_| {
+                engine.beginFrame();
+                while (engine.nextStep()) |_| {
+                    var scope = engine.beginScope("simulate");
+                    scope.end();
+                }
+                try engine.renderFrame(.{}, NothingRecorder{});
+                engine.endFrame();
+            }
+            return .{ .ticks = engine.stepper.tick, .clock = engine.platform.clock_ns };
+        }
+    }.go;
 
-    const before = engine.platform.clock_ns;
-    engine.beginFrame();
-    engine.endFrame();
-
-    try testing.expectEqual(before + std.time.ns_per_ms, engine.platform.clock_ns);
-    try testing.expect(engine.profiler() == null);
+    const off = try run(try testEngine(.{ .tick_rate_hz = 60, .hot_reload = false }));
+    const on = try run(try profiledEngine(.{ .tick_rate_hz = 60, .hot_reload = false }));
+    try testing.expectEqual(off, on);
+    // 120 frames of a sixtieth of a second, less the rounding of a step to whole nanoseconds.
+    try testing.expect(on.ticks >= 119 and on.ticks <= 120);
 }
 
 test "the profiler records the frame's own spans, nested and in order" {

@@ -9,6 +9,7 @@
 
 pub const channel = @import("channel.zig");
 pub const compatibility = @import("compatibility.zig");
+pub const credentials = @import("credentials.zig");
 pub const limiter = @import("limiter.zig");
 pub const limits = @import("limits.zig");
 pub const service = @import("service.zig");
@@ -19,6 +20,7 @@ pub const Service = service.Service;
 test {
     _ = channel;
     _ = compatibility;
+    _ = credentials;
     _ = limiter;
     _ = limits;
     _ = service;

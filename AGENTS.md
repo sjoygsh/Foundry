@@ -458,8 +458,10 @@ change, not as the quoted number. Since M14 the samples carry tests too:
 
 Each of these cost real time to discover.
 
-* **`failed command:` lines appear in a *passing* build.** They are noise from cached steps.
-  Read the exit code, not the output.
+* **`failed command:` lines appear in a *passing* build.** A Zig run step prints one for any
+  stderr, and the tests that exercise warning paths write some. Read the exit code, not the
+  output. `fpack` and `fstage` log at `warn` in every mode so a game's Debug build of its
+  content stays silent; keep them that way.
 * **`zig build test` prints nothing when everything is cached.** `--summary all` shows the
   steps. A silent run is a passing run.
 * **`zig build run` and `zig build room` block forever** without `-Dplatform=null -Drhi=null`

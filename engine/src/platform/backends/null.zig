@@ -11,10 +11,10 @@
 //!    interface. That is the same reasoning that earns the null RHI backend its place
 //!    (ADR-0003).
 //!
-//! Its clock advances by an exact amount per reading, so a loop test measures the
-//! logic rather than how fast the test machine happens to be. Its event queue is
-//! scriptable, which is the seed of replay testing later — a direct payoff of the
-//! snapshot design in `input.zig`.
+//! Its clock advances by an exact amount per frame (per `pumpEvents`), never per reading,
+//! so a loop test measures the logic rather than how fast the test machine happens to be.
+//! Its event queue is scriptable, which is the seed of replay testing later — a direct
+//! payoff of the snapshot design in `input.zig`.
 //!
 //! The functions below `-- test affordances --` are **not** part of the backend
 //! interface. They are how a test plays the part of the operating system, and no
@@ -174,6 +174,8 @@ pub const Platform = struct {
     }
 
     pub fn pumpEvents(self: *Platform) void {
+        // The frame's time passes here, once, however often the clock is read (`now`).
+        self.clock_ns += self.clock_step_ns;
         self.ready.clearRetainingCapacity();
         self.cursor = 0;
 
@@ -236,10 +238,15 @@ pub const Platform = struct {
         state.paused = paused;
     }
 
-    /// The synthetic monotonic clock. Advances by exactly `clock_step_ns` per reading,
+    /// The synthetic monotonic clock. Advances by exactly `clock_step_ns` per `pumpEvents`,
     /// so a loop driven by it runs the same number of steps on every machine.
+    ///
+    /// **Reading it does not move it.** It once advanced per reading, which made time a
+    /// function of how often something looked: a profiler reading it eight times a frame
+    /// made a headless game simulate eight steps a frame instead of one. A frame's time
+    /// now passes once, where a real OS delivers the frame's input, and every reading
+    /// within the frame sees the same instant.
     pub fn now(self: *Platform) core.time.Instant {
-        self.clock_ns += self.clock_step_ns;
         return .{ .ns = self.clock_ns };
     }
 
@@ -306,7 +313,7 @@ pub const Platform = struct {
         return state.buffer.items;
     }
 
-    /// Sets how far the synthetic clock moves per reading.
+    /// Sets how far the synthetic clock moves per `pumpEvents`, which is to say per frame.
     pub fn setClockStep(self: *Platform, step: core.time.Duration) void {
         self.clock_step_ns = step.ns;
     }
@@ -533,14 +540,15 @@ test "the synthetic clock is exactly reproducible" {
     p.setClockStep(.fromMillis(16));
 
     const t0 = p.now();
+    p.pumpEvents();
     const t1 = p.now();
     try testing.expectEqual(@as(i64, 16 * std.time.ns_per_ms), t1.since(t0).ns);
 
     const q = try open(testing.allocator);
     defer q.deinit();
     q.setClockStep(.fromMillis(16));
-    _ = q.now();
-    try testing.expectEqual(p.clock_ns - 16 * std.time.ns_per_ms, q.clock_ns);
+    q.pumpEvents();
+    try testing.expectEqual(p.clock_ns, q.clock_ns);
 }
 
 test "the clock never goes backwards" {
@@ -549,14 +557,28 @@ test "the clock never goes backwards" {
 
     var previous = p.now();
     for (0..64) |_| {
+        p.pumpEvents();
         const current = p.now();
         try testing.expect(current.ns > previous.ns);
         previous = current;
     }
 }
 
+test "reading the clock does not advance it" {
+    // A measurement must not change what it measures: a frame read once and a frame read
+    // eight times by a profiler are the same length.
+    const p = try open(testing.allocator);
+    defer p.deinit();
+    p.setClockStep(.fromMillis(16));
+
+    const start = p.now();
+    for (0..8) |_| try testing.expectEqual(start.ns, p.now().ns);
+    p.pumpEvents();
+    for (0..8) |_| try testing.expectEqual(@as(i64, 16 * std.time.ns_per_ms), p.now().since(start).ns);
+}
+
 /// Runs `frames` frames of a 60Hz simulation against a fresh null platform whose clock
-/// ticks `frame_ns` per reading, and reports how many simulation steps came out.
+/// ticks `frame_ns` per frame, and reports how many simulation steps came out.
 fn runLoop(frame_ns: i64, frames: usize) !struct { steps: u32, leftover: i64 } {
     const p = try open(testing.allocator);
     defer p.deinit();
@@ -568,6 +590,7 @@ fn runLoop(frame_ns: i64, frames: usize) !struct { steps: u32, leftover: i64 } {
     var steps: u32 = 0;
 
     for (0..frames) |_| {
+        p.pumpEvents();
         const current = p.now();
         stepper.advance(current.since(previous));
         previous = current;

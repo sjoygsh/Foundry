@@ -65,6 +65,10 @@ const usage =
     \\
 ;
 
+/// Warnings and errors only, in every build mode, as for `fpack`: the build runs this tool,
+/// and any stderr from a Debug build is reported as `failed command:`.
+pub const std_options: std.Options = .{ .log_level = .warn };
+
 pub fn main(init: std.process.Init) !u8 {
     const gpa = init.gpa;
 

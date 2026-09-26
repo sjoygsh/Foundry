@@ -119,100 +119,12 @@ pub fn parseArgs(argv: []const []const u8) ArgError!Launch {
 
 // -- credentials ----------------------------------------------------------------------------
 
-const max_credential_file: usize = 16 * 1024;
-const max_pem: usize = 64 * 1024;
-const max_allowed: usize = 64;
+/// The file itself is `net.credentials`'s format and reader, shared with every other host;
+/// only what the sandbox says about a refusal is its own. A demonstration of four peers
+/// asks for no more than it uses.
+const credential_limits: net.credentials.Limits = .{ .file_bytes = 16 * 1024, .allowed = 64 };
 
-const CredentialFile = struct {
-    role: ?transport.Role = null,
-    trust: []const u8 = "",
-    certificate: []const u8 = "",
-    key: []const u8 = "",
-    server_name: []const u8 = "",
-    server_key: ?transport.KeyFingerprint = null,
-    allowed: [max_allowed]net.service.Identity = undefined,
-    allowed_count: usize = 0,
-};
-
-pub const CredentialError = error{
-    CredentialFileUnreadable,
-    CredentialFileMalformed,
-    CredentialRoleMismatch,
-    CredentialPartUnreadable,
-};
-
-/// One line, one fact, and the first line says what the file is and which version (I8).
-/// Every refusal names the line, never its value: a value may be a path through somebody's
-/// home directory or a key.
-///
-/// A refusal sets `line` to the offending line, or 0 for a file that is whole but not
-/// shaped for either role; the caller says so.
-fn parseCredentials(text: []const u8, line_out: *usize) CredentialError!CredentialFile {
-    var file: CredentialFile = .{};
-    var lines = std.mem.splitScalar(u8, text, '\n');
-    var number: usize = 0;
-    var headed = false;
-    while (lines.next()) |raw| {
-        number += 1;
-        const line = std.mem.trim(u8, raw, " \t\r");
-        if (line.len == 0 or line[0] == '#') continue;
-        var words = std.mem.tokenizeAny(u8, line, " \t");
-        const word = words.next().?;
-        const first = words.next() orelse "";
-        const second = words.next() orelse "";
-        if (words.next() != null) return malformed(line_out, number);
-        if (!headed) {
-            if (!std.mem.eql(u8, word, "foundry-credentials") or !std.mem.eql(u8, first, "1") or second.len != 0) {
-                return malformed(line_out, number);
-            }
-            headed = true;
-            continue;
-        }
-        if (first.len == 0) return malformed(line_out, number);
-        if (std.mem.eql(u8, word, "allow")) {
-            if (file.allowed_count == max_allowed) return malformed(line_out, number);
-            const principal = std.fmt.parseInt(u32, second, 10) catch return malformed(line_out, number);
-            if (principal == 0) return malformed(line_out, number);
-            file.allowed[file.allowed_count] = .{ .key = fingerprint(first) orelse return malformed(line_out, number), .principal = principal };
-            file.allowed_count += 1;
-            continue;
-        }
-        if (second.len != 0) return malformed(line_out, number);
-        if (std.mem.eql(u8, word, "role")) {
-            file.role = std.meta.stringToEnum(transport.Role, first) orelse return malformed(line_out, number);
-        } else if (std.mem.eql(u8, word, "trust")) {
-            file.trust = first;
-        } else if (std.mem.eql(u8, word, "certificate")) {
-            file.certificate = first;
-        } else if (std.mem.eql(u8, word, "key")) {
-            file.key = first;
-        } else if (std.mem.eql(u8, word, "server-name")) {
-            file.server_name = first;
-        } else if (std.mem.eql(u8, word, "server-key")) {
-            file.server_key = fingerprint(first) orelse return malformed(line_out, number);
-        } else return malformed(line_out, number);
-    }
-    if (!headed or file.role == null or file.trust.len == 0 or file.certificate.len == 0 or file.key.len == 0) {
-        return malformed(line_out, 0);
-    }
-    const client = file.role.? == .client;
-    if (client != (file.server_name.len != 0) or client != (file.server_key != null) or (client and file.allowed_count != 0)) {
-        return malformed(line_out, 0);
-    }
-    return file;
-}
-
-fn malformed(line_out: *usize, line: usize) CredentialError {
-    line_out.* = line;
-    return error.CredentialFileMalformed;
-}
-
-fn fingerprint(hex: []const u8) ?transport.KeyFingerprint {
-    if (hex.len != 64) return null;
-    var out: transport.KeyFingerprint = .{ .sha256 = undefined };
-    _ = std.fmt.hexToBytes(&out.sha256, hex) catch return null;
-    return out;
-}
+pub const CredentialError = net.credentials.LoadError;
 
 // -- the host --------------------------------------------------------------------------------
 
@@ -387,51 +299,35 @@ pub const Connected = struct {
         std.debug.assert(launch.mode != .offline);
         const role: transport.Role = if (launch.mode == .serve) .server else .client;
 
-        const text = os.readFile(gpa, launch.credentials, max_credential_file) catch return error.CredentialFileUnreadable;
-        defer gpa.free(text);
-        var bad_line: usize = 0;
-        const file = parseCredentials(text, &bad_line) catch |err| {
-            if (bad_line != 0) {
-                log.err("the credential file is malformed at line {d}", .{bad_line});
-            } else {
-                log.err("the credential file needs a header, a role, trust, certificate and key; a client's names the server and its key and allows no one, and a server's the opposite", .{});
+        var diagnostic: net.credentials.Diagnostic = .{};
+        var file = net.credentials.load(gpa, os, launch.credentials, role, credential_limits, &diagnostic) catch |err| {
+            switch (err) {
+                error.FileUnreadable => log.err("the credential file could not be read", .{}),
+                error.RoleMismatch => log.err("the credential file is for the other role; this run is a {t}", .{role}),
+                error.PartUnreadable => log.err("the credential file's {t} could not be read", .{diagnostic.part.?}),
+                error.TooManyAllowed => log.err("the credential file allows more keys than the sandbox admits, at line {d}", .{diagnostic.line}),
+                error.Malformed => if (diagnostic.line != 0) {
+                    log.err("the credential file is malformed at line {d}", .{diagnostic.line});
+                } else {
+                    log.err("the credential file needs a header, a role, trust, certificate and key; a client's names the server and its key and allows no one, and a server's the opposite", .{});
+                },
+                error.OutOfMemory => {},
             }
             return err;
         };
-        if (file.role.? != role) {
-            log.err("the credential file is for a {t}, and this run is a {t}", .{ file.role.?, role });
-            return error.CredentialRoleMismatch;
-        }
-        const dir = std.fs.path.dirname(launch.credentials) orelse ".";
+        defer file.deinit(gpa);
 
         var limits: net.limits.Limits = .{};
         limits.sessions = 1;
         const t = try transport.Transport.init(gpa, net.service.transportOptions(limits, .system));
         errdefer t.deinit();
 
-        const credentials = blk: {
-            const trust = try readPart(gpa, os, dir, file.trust);
-            defer gpa.free(trust);
-            const certificate = try readPart(gpa, os, dir, file.certificate);
-            defer gpa.free(certificate);
-            const key = try readPart(gpa, os, dir, file.key);
-            // The key is copied into the provider's zeroized memory; this copy is wiped here.
-            defer {
-                std.crypto.secureZero(u8, key);
-                gpa.free(key);
-            }
-            break :blk t.createCredentials(.{
-                .role = role,
-                .trust_roots = trust,
-                .certificate_chain = certificate,
-                .private_key = key,
-                .server_name = file.server_name,
-                .server_key = file.server_key,
-            }) catch |err| {
-                log.err("the credentials were refused: {t}", .{err});
-                return err;
-            };
+        const credentials = t.createCredentials(file.config()) catch |err| {
+            log.err("the credentials were refused: {t}", .{err});
+            return err;
         };
+        // The provider holds its own zeroized copy now; this one is wiped at once.
+        file.wipeKey(gpa);
 
         var description = try describeContent(gpa, os, packages);
         defer description.deinit(gpa);
@@ -440,7 +336,7 @@ pub const Connected = struct {
             .limits = limits,
             .compatibility = description.value(engine),
             .grants = &.{.{ .id = grant_id, .role = role, .endpoint = launch.endpoint, .credentials = credentials }},
-            .identities = file.allowed[0..file.allowed_count],
+            .identities = file.allowed,
             // Unique across restarts, so a client reconnecting to a restarted server sees
             // a new epoch. A file-name-grade use of the clock, not a simulation input (I9).
             .first_epoch = @max(1, @as(u64, @bitCast(os.wallClockNanos())) / std.time.ns_per_ms),
@@ -512,7 +408,7 @@ pub const Connected = struct {
         }
 
         log.info("{t} for shared markers: {d} package(s) described, {d} key(s) allowed, protocol {d}", .{
-            role, packages.len, file.allowed_count, markers.protocol_revision,
+            role, packages.len, file.allowed.len, markers.protocol_revision,
         });
         if (headless) log.info("headless: paced at one fixed step of real time per frame", .{});
         return self;
@@ -675,16 +571,6 @@ pub const Connected = struct {
     }
 };
 
-fn readPart(gpa: std.mem.Allocator, os: *platform.os.Os, dir: []const u8, path: []const u8) CredentialError![]u8 {
-    const full = if (std.fs.path.isAbsolute(path)) gpa.dupe(u8, path) else std.fs.path.join(gpa, &.{ dir, path });
-    const resolved = full catch return error.CredentialPartUnreadable;
-    defer gpa.free(resolved);
-    return os.readFile(gpa, resolved, max_pem) catch {
-        log.err("a file the credential file names could not be read", .{});
-        return error.CredentialPartUnreadable;
-    };
-}
-
 /// The loaded packages as compatibility compares them: each in load order with its version
 /// and the size and SHA-256 of the exact bytes loaded. Two hosts that loaded anything
 /// different are refused by catalogue and first difference before they share a marker.
@@ -752,28 +638,6 @@ test "the command line has three modes and no insecure one" {
     try testing.expectError(error.Usage, parseArgs(&.{ "sandbox", "--insecure", "yes" }));
     try testing.expectError(error.Usage, parseArgs(&.{ "sandbox", "--serve" }));
     try testing.expectError(error.Help, parseArgs(&.{ "sandbox", "--help" }));
-}
-
-test "a credential file is versioned, role-shaped and names no value in its refusals" {
-    const hex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
-    var line: usize = 0;
-    const server = try parseCredentials("foundry-credentials 1\n# a comment\nrole server\ntrust r.pem\ncertificate s.pem\nkey s.key\nallow " ++ hex ++ " 1\nallow " ++ hex ++ " 2\n", &line);
-    try testing.expectEqual(transport.Role.server, server.role.?);
-    try testing.expectEqual(@as(usize, 2), server.allowed_count);
-    try testing.expectEqual(@as(u8, 0x11), server.allowed[0].key.sha256[1]);
-
-    const client = try parseCredentials("foundry-credentials 1\nrole client\ntrust r.pem\ncertificate p.pem\nkey p.key\nserver-name s.test\nserver-key " ++ hex ++ "\n", &line);
-    try testing.expectEqualStrings("s.test", client.server_name);
-
-    try testing.expectError(error.CredentialFileMalformed, parseCredentials("role server\n", &line));
-    try testing.expectError(error.CredentialFileMalformed, parseCredentials("foundry-credentials 2\nrole server\n", &line));
-    try testing.expectError(error.CredentialFileMalformed, parseCredentials("foundry-credentials 1\nrole server\ntrust r\ncertificate c\nkey k\nserver-key " ++ hex ++ "\n", &line));
-    try testing.expectError(error.CredentialFileMalformed, parseCredentials("foundry-credentials 1\nrole client\ntrust r\ncertificate c\nkey k\n", &line));
-    try testing.expectError(error.CredentialFileMalformed, parseCredentials("foundry-credentials 1\nrole server\ntrust r\ncertificate c\nkey k\nallow abc 1\n", &line));
-    try testing.expectError(error.CredentialFileMalformed, parseCredentials("foundry-credentials 1\nrole server\ntrust r\ncertificate c\nkey k\nallow " ++ hex ++ " 0\n", &line));
-    try testing.expectError(error.CredentialFileMalformed, parseCredentials("foundry-credentials 1\nrole server\ntrust r\ncertificate c\nkey k\nverify off\n", &line));
-    // The refusal names the line, and only the line.
-    try testing.expectEqual(@as(usize, 6), line);
 }
 
 test "a plan is directions, waits and a leave" {

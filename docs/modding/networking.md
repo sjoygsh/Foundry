@@ -378,8 +378,8 @@ pub fn build(b: *std.Build) void {
 }
 ```
 
-`host.zig`. The host reads the same credential file format the sandbox reads, so one
-provisioning procedure (§6) serves both:
+`host.zig`. The host reads the credential file with `net.credentials`, the same reader the
+sandbox uses, so one provisioning procedure (§6) serves every host:
 
 ```zig
 //! relay-host: a host outside the Foundry repository, built from Foundry's exported modules.
@@ -388,8 +388,8 @@ provisioning procedure (§6) serves both:
 //!
 //!     relay-host --serve|--join <a.b.c.d:port> --credentials <file> [--seconds N]
 //!
-//! The credential file is the sandbox's format (`foundry-credentials 1`), so the same
-//! provisioning serves both.
+//! The credential file is `foundry-credentials 1`, read by `net.credentials`, so the same
+//! provisioning serves this host, the sandbox and a game.
 const std = @import("std");
 const abi = @import("abi");
 const core = @import("core");
@@ -430,40 +430,25 @@ pub fn main(init: std.process.Init) !u8 {
     defer os.deinit();
 
     // -- the operator's credentials -----------------------------------------------------
-    const text = try os.readFile(gpa, cred_path.?, 16 * 1024);
-    defer gpa.free(text);
-    const dir = std.fs.path.dirname(cred_path.?) orelse ".";
-    var file: CredFile = .{};
-    try file.parse(text);
-    if (file.server != (role.? == .server)) {
-        std.log.err("the credential file is for the other role", .{});
+    // `net.credentials` reads the file and every file it names; a refusal names a line or
+    // a part, never a value. The default limits suit a server of hundreds of players.
+    var diagnostic: net.credentials.Diagnostic = .{};
+    var file = net.credentials.load(gpa, os, cred_path.?, role.?, .{}, &diagnostic) catch |err| {
+        std.log.err("the credential file was refused: {t} (line {d})", .{ err, diagnostic.line });
         return 2;
-    }
+    };
+    defer file.deinit(gpa);
 
     var limits: net.limits.Limits = .{};
     limits.sessions = 1;
     const t = try transport.Transport.init(gpa, net.service.transportOptions(limits, .system));
     defer t.deinit();
 
-    const trust = try readPart(gpa, os, dir, file.trust);
-    defer gpa.free(trust);
-    const chain = try readPart(gpa, os, dir, file.certificate);
-    defer gpa.free(chain);
-    const key = try readPart(gpa, os, dir, file.key);
-    const credentials = t.createCredentials(.{
-        .role = role.?,
-        .trust_roots = trust,
-        .certificate_chain = chain,
-        .private_key = key,
-        .server_name = file.server_name,
-        .server_key = file.server_key,
-    });
-    std.crypto.secureZero(u8, key);
-    gpa.free(key);
-    const handle = credentials catch |err| {
+    const handle = t.createCredentials(file.config()) catch |err| {
         std.log.err("the credentials were refused: {t}", .{err});
         return 1;
     };
+    file.wipeKey(gpa); // the provider holds its own zeroized copy
 
     // -- the service and the one grant --------------------------------------------------
     // What both sides must agree on: this application, its revision and tick rate. It
@@ -478,7 +463,7 @@ pub fn main(init: std.process.Init) !u8 {
             .compatibility_id = @splat(0x52),
         },
         .grants = &.{.{ .id = grant_id, .role = role.?, .endpoint = endpoint.?, .credentials = handle }},
-        .identities = file.allowed[0..file.allowed_count],
+        .identities = file.allowed,
         .first_epoch = @max(1, @as(u64, @bitCast(os.wallClockNanos())) / std.time.ns_per_ms),
     });
     defer service.deinit();
@@ -517,59 +502,6 @@ pub fn main(init: std.process.Init) !u8 {
 fn usage() u8 {
     std.log.err("usage: relay-host --serve|--join <a.b.c.d:port> --credentials <file> [--seconds N]", .{});
     return 2;
-}
-
-const CredFile = struct {
-    server: bool = false,
-    trust: []const u8 = "",
-    certificate: []const u8 = "",
-    key: []const u8 = "",
-    server_name: []const u8 = "",
-    server_key: ?transport.KeyFingerprint = null,
-    allowed: [16]net.service.Identity = undefined,
-    allowed_count: usize = 0,
-
-    fn parse(self: *CredFile, text: []const u8) !void {
-        var lines = std.mem.tokenizeAny(u8, text, "\r\n");
-        if (!std.mem.eql(u8, lines.next() orelse "", "foundry-credentials 1")) return error.NotACredentialFile;
-        while (lines.next()) |line| {
-            if (line.len == 0 or line[0] == '#') continue;
-            var words = std.mem.tokenizeAny(u8, line, " \t");
-            const word = words.next() orelse continue;
-            const value = words.next() orelse return error.Malformed;
-            if (std.mem.eql(u8, word, "role")) {
-                self.server = std.mem.eql(u8, value, "server");
-            } else if (std.mem.eql(u8, word, "trust")) {
-                self.trust = value;
-            } else if (std.mem.eql(u8, word, "certificate")) {
-                self.certificate = value;
-            } else if (std.mem.eql(u8, word, "key")) {
-                self.key = value;
-            } else if (std.mem.eql(u8, word, "server-name")) {
-                self.server_name = value;
-            } else if (std.mem.eql(u8, word, "server-key")) {
-                self.server_key = try fingerprint(value);
-            } else if (std.mem.eql(u8, word, "allow")) {
-                if (self.allowed_count == self.allowed.len) return error.TooManyKeys;
-                const principal = try std.fmt.parseInt(u32, words.next() orelse return error.Malformed, 10);
-                self.allowed[self.allowed_count] = .{ .key = try fingerprint(value), .principal = principal };
-                self.allowed_count += 1;
-            } else return error.Malformed;
-        }
-    }
-};
-
-fn fingerprint(hex: []const u8) !transport.KeyFingerprint {
-    if (hex.len != 64) return error.Malformed;
-    var out: transport.KeyFingerprint = .{ .sha256 = undefined };
-    _ = try std.fmt.hexToBytes(&out.sha256, hex);
-    return out;
-}
-
-fn readPart(gpa: std.mem.Allocator, os: *platform.os.Os, dir: []const u8, name: []const u8) ![]u8 {
-    const path = try std.fs.path.join(gpa, &.{ dir, name });
-    defer gpa.free(path);
-    return os.readFile(gpa, path, 64 * 1024);
 }
 ```
 
@@ -673,6 +605,9 @@ rm -f *.csr *.srl
 
 **The credential file** is host-only, never content, and never crosses the table. Relative
 paths are resolved from the file's own directory, and its keys and paths are never logged.
+A Zig host reads it with `net.credentials.load`, which returns the transport's credential
+config and the server's allowlist. Its limits default to a 64 KiB file and 1,024 `allow`
+lines, and a host may pass its own.
 
 ```text
 foundry-credentials 1
@@ -689,8 +624,8 @@ Several keys may name one principal, for example one player's two machines. A pr
 at most one live connection. Protect the files like passwords: on Windows, restrict the
 directory to Administrators and SYSTEM **with inheritance** (`icacls <dir> /grant:r
 "Administrators:(OI)(CI)F" "SYSTEM:(OI)(CI)F"`, then `icacls <dir>\* /reset`). Removing
-inheritance from a directory alone leaves its files with no access at all, which the host
-reports as `CredentialFileUnreadable`.
+inheritance from a directory alone leaves its files with no access at all, which
+`net.credentials` reports as `FileUnreadable`.
 
 **Revoking a player.**
 * **Offline:** delete their `allow` line and restart the server. At their next connection
@@ -758,6 +693,12 @@ are test fixtures for loopback and trials. Never use them for anything you would
 **Envelope.** One authority; 4 peers per session; 16 commands per peer per tick; 256 KiB
 queued each way per peer; 256 allowlisted keys; 5 s to authenticate and 5 s to synchronize;
 10 s without progress ends a peer. The per-source handshake limit is described in §7.
+
+These defaults are the four-peer reference envelope. A server for more players starts from
+`net.limits.Limits.forPeers(n)`, for up to 256. It grows the event queue, the allowlist and
+the TLS memory to match, as the first game's 256-player server did. It deliberately leaves the
+per-source handshake rate alone: raise that yourself only when players share an address or a
+load test runs from one machine.
 
 **Security, and what is not claimed.**
 - **What is claimed:** TLS 1.3 with mutual certificates, a pinned server key, allowlist

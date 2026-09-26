@@ -1,6 +1,6 @@
 # Foundry Project State
 
-**Last updated:** 2026-09-23
+**Last updated:** 2026-09-26
 **Current handoff: M17 is complete (2026-09-23, tag `m17`).** The unsigned pre-release
 `v0.17.1-preview` (from `c37c01d`) is on GitHub and supersedes `v0.17.0-preview`. Both
 platforms passed from the published download:
@@ -19,6 +19,29 @@ screen-text field `source` was renamed `source_tab`, because the stager reads an
 cross-compiled `.exe`, because the PC no longer has Zig. `docs/GETTING_STARTED.md` was proved
 by an outside consumer in the scratchpad that opened a Metal window. Published as
 `v0.17.2-preview`, with the unchanged 0.17.1 Room and Sandbox zips.
+
+**First-game repairs, 2026-09-26.** The first game (its own repository) reported five
+gaps, and all five are closed:
+1. **A URL dependency failed.** `build.zig.zon`'s `.paths` had only `engine`, so a fetched
+   tag lacked `tools/` (which `build.zig` imports), the samples, `content/`, `brand/` and
+   `THIRD_PARTY_LICENSES/`. It now lists them all. A tarball of the tree fetched by
+   `zig fetch` built and ran the getting-started game in Debug. Tag `m17` still has the old
+   list.
+2. **Debug content builds printed `failed command:`.** A Debug `fpack` wrote `debug(mod)` lines
+   to stderr, and a Zig run step reports any stderr as a failure. `fpack` and `fstage` now log
+   at `warn` in every mode.
+3. **The credential reader was sample code.** `net.credentials` now owns
+   `foundry-credentials 1`: `parse`, and `load`, which reads the file and the files it names,
+   role-checked, with a line/part diagnostic and host-set limits (default 64 KiB and 1,024
+   `allow` lines). The sandbox and the guide's relay host use it. The relay host was rebuilt
+   as an outside project and run as a server and client over loopback.
+4. **Limits sized for four peers.** The defaults stay the reference envelope.
+   `Limits.forPeers(n)` grows the events, identities and TLS memory the way the game's
+   256-player server did. The per-source handshake rate stays the host's own, explicit choice.
+5. **The null clock advanced per reading,** so a profiler made a headless frame about eight
+   steps long (953 ticks for 120 frames). It now advances once per `pumpEvents`. A test runs
+   the same frames with the profiler on and off and requires equal ticks; it fails against
+   the old clock.
 
 The roadmap's M17 entry has the details. M0 through M17 are complete and tagged. **Next is the
 first game, in its own repository**; then M18 (the Linux desktop), before 3D. ADR-0047 made M17 an unsigned GitHub pre-release and
