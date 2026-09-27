@@ -745,11 +745,14 @@ pub const Device = struct {
 
     pub fn createTexture(self: *Device, desc: resource.TextureDesc) interface.ResourceError!resource.TextureHandle {
         if (desc.size.isEmpty() or !desc.usage.any()) return error.InvalidDescriptor;
-        // M19 Step 2: the contract exists, and this backend draws multisampled only from
-        // Step 4. Until then a 4x texture is refused as a format this device cannot make,
-        // which is the answer a device without 4x would give (`render3d.md` §11).
         if (!resource.isValidSampleCount(desc.sample_count)) return error.InvalidDescriptor;
-        if (desc.sample_count != 1) return error.UnsupportedFormat;
+        // Rules 10 and 11 for a multisampled texture, refused here as on null and on Metal:
+        // Vulkan would make a sampled one, and a program would then work on two backends of three.
+        if (desc.sample_count > 1) {
+            const u = desc.usage;
+            if (desc.mip_levels != 1 or u.sampled or u.copy_src or u.copy_dst or !(u.render_target or u.depth_stencil))
+                return error.InvalidDescriptor;
+        }
         const levels = @max(desc.mip_levels, 1);
         if (levels > maxMipLevels(desc.size)) return error.InvalidDescriptor;
         if (desc.size.width > self.limits.maxImageDimension2D or desc.size.height > self.limits.maxImageDimension2D) {
@@ -763,6 +766,23 @@ pub const Device = struct {
             log.warn("vulkan: this device cannot use {t} for everything texture '{s}' declares", .{ desc.format, desc.label });
             return error.UnsupportedFormat;
         }
+        // The format's own sample counts, which the device limits alone do not promise (`render3d.md` §4.2).
+        if (desc.sample_count > 1) {
+            var image_properties: c.VkImageFormatProperties = undefined;
+            const queried = self.instance_fns.vkGetPhysicalDeviceImageFormatProperties(
+                self.physical,
+                vk_format,
+                c.VK_IMAGE_TYPE_2D,
+                c.VK_IMAGE_TILING_OPTIMAL,
+                imageUsage(desc.usage),
+                0,
+                &image_properties,
+            );
+            if (queried != c.VK_SUCCESS or image_properties.sampleCounts & sampleCountBit(desc.sample_count) == 0) {
+                log.warn("vulkan: this device cannot make {t} with {d} samples for texture '{s}'", .{ desc.format, desc.sample_count, desc.label });
+                return error.UnsupportedFormat;
+            }
+        }
         try self.reserveRetirement(1);
 
         const fns = &self.device_fns;
@@ -773,7 +793,7 @@ pub const Device = struct {
             .extent = .{ .width = desc.size.width, .height = desc.size.height, .depth = 1 },
             .mipLevels = levels,
             .arrayLayers = 1,
-            .samples = c.VK_SAMPLE_COUNT_1_BIT,
+            .samples = sampleCountBit(desc.sample_count),
             .tiling = c.VK_IMAGE_TILING_OPTIMAL,
             .usage = imageUsage(desc.usage),
             .sharingMode = c.VK_SHARING_MODE_EXCLUSIVE,
@@ -1264,9 +1284,12 @@ pub const Device = struct {
         const vertex_shader = self.shaders.getConst(desc.vertex_shader) orelse return error.InvalidDescriptor;
         const fragment_shader = self.shaders.getConst(desc.fragment_shader) orelse return error.InvalidDescriptor;
         const layout_backing = (self.pipeline_layouts.getConst(desc.layout) orelse return error.InvalidDescriptor).backing;
-        // M19 Step 2: see `createTexture`. A 4x pipeline waits for Step 4 with it.
         if (!resource.isValidSampleCount(desc.sample_count)) return error.InvalidDescriptor;
-        if (desc.sample_count != 1) return error.UnsupportedFormat;
+        // Conformance requires 4 in both, so a device without it is recorded, not accommodated.
+        const bit = sampleCountBit(desc.sample_count);
+        if (self.limits.framebufferColorSampleCounts & bit == 0 or self.limits.framebufferDepthSampleCounts & bit == 0) {
+            return error.UnsupportedFormat;
+        }
 
         if (!(spirv.hasEntry(vertex_shader.bytes, .vertex, desc.vertex_entry) catch false) or
             !(spirv.hasEntry(fragment_shader.bytes, .fragment, desc.fragment_entry) catch false))
@@ -1347,7 +1370,7 @@ pub const Device = struct {
         };
         const multisample: c.VkPipelineMultisampleStateCreateInfo = .{
             .sType = c.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-            .rasterizationSamples = c.VK_SAMPLE_COUNT_1_BIT,
+            .rasterizationSamples = sampleCountBit(desc.sample_count),
         };
         const depth_desc = desc.depth_stencil orelse pipeline.DepthStencilState{ .format = .depth32_float };
         const depth_stencil: c.VkPipelineDepthStencilStateCreateInfo = .{
@@ -2719,7 +2742,7 @@ pub const CommandBuffer = struct {
         pass.* = .{ .device = dev, .cmd = self, .live = self.open };
         if (!self.open) return pass;
 
-        var barriers: [max_attachments + 1]c.VkImageMemoryBarrier2 = undefined;
+        var barriers: [max_pass_textures]c.VkImageMemoryBarrier2 = undefined;
         var barrier_count: usize = 0;
         var area: ?resource.Extent2D = null;
 
@@ -2748,6 +2771,24 @@ pub const CommandBuffer = struct {
             s.last_write = 0;
             area = commonExtent(area, s.desc.size);
             pass.addFinal(attachment.texture, .render_target, attachment.final_state);
+
+            // A resolve target is written by the pass, in the attachment layout, and then leaves
+            // for its own final state like any attachment (`render3d.md` §4.2).
+            const resolve = attachment.resolve orelse continue;
+            const r = dev.textures.get(resolve.texture) orelse continue;
+            native.resolveMode = c.VK_RESOLVE_MODE_AVERAGE_BIT;
+            native.resolveImageView = r.view;
+            native.resolveImageLayout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            if (r.swapchain) {
+                self.uses_surface = true;
+                self.draws_surface = true;
+            }
+            if (resolve.initial_state != .render_target) {
+                barriers[barrier_count] = imageBarrier(r, resolve.initial_state, .render_target);
+                barrier_count += 1;
+            }
+            r.last_write = 0;
+            pass.addFinal(resolve.texture, .render_target, resolve.final_state);
         }
 
         var depth: c.VkRenderingAttachmentInfo = undefined;
@@ -2896,19 +2937,46 @@ pub const CommandBuffer = struct {
         const region = [_]c.VkBufferCopy{.{ .srcOffset = copy.src_offset, .dstOffset = copy.dst_offset, .size = copy.size }};
         dev.device_fns.vkCmdCopyBuffer(self.native, src.native, dst.native, region.len, &region);
         dev.buffers.get(copy.dst).?.last_write = self.recording;
+        self.hostReadBarrier(dst);
+    }
+
+    /// Readback (`rhi.md` §8). The contract's pitch is whole texels and its offset a multiple of
+    /// the texel size and of 4, so, unlike an upload, no layout needs repacking.
+    pub fn copyTextureToBuffer(self: *CommandBuffer, copy: command.TextureToBufferCopy) interface.CommandError!void {
+        if (!self.open or copy.size.isEmpty()) return;
+        const dev = self.device;
+        const src = dev.textures.getConst(copy.src) orelse return;
+        const dst = dev.buffers.getConst(copy.dst) orelse return;
+        if (src.last_write == self.recording or dst.last_write == self.recording) self.transferWriteBarrier();
+
+        const region = [_]c.VkBufferImageCopy{.{
+            .bufferOffset = copy.dst_offset,
+            // In texels, where zero means tightly packed: the RHI's zero means the same.
+            .bufferRowLength = copy.dst_bytes_per_row / src.desc.format.bytesPerTexel(),
+            .imageSubresource = .{ .aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = copy.src_mip_level, .layerCount = 1 },
+            .imageOffset = .{ .x = @intCast(copy.src_origin.x), .y = @intCast(copy.src_origin.y) },
+            .imageExtent = .{ .width = copy.size.width, .height = copy.size.height, .depth = 1 },
+        }};
+        dev.device_fns.vkCmdCopyImageToBuffer(self.native, src.image, c.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst.native, region.len, &region);
+        dev.buffers.get(copy.dst).?.last_write = self.recording;
+        self.hostReadBarrier(dst);
+    }
+
+    /// A fence makes device writes available, not visible to the host: a copy into a buffer the
+    /// host will map needs its writes made visible to host reads before `waitIdle` hands it over.
+    fn hostReadBarrier(self: *CommandBuffer, dst: *const BufferState) void {
+        if (dst.desc.memory != .readback) return;
+        self.memoryBarrier(
+            c.VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            c.VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            c.VK_PIPELINE_STAGE_2_HOST_BIT,
+            c.VK_ACCESS_2_HOST_READ_BIT,
+        );
     }
 
     /// A texture upload. A source layout Vulkan cannot express — a stride or offset that is not a
     /// whole number of texels — is first repacked on the GPU into a staging buffer this recording
     /// owns, and that buffer is retired with the recording (§5.3, `layout.zig`).
-    /// M19 Step 2 declares readback; this backend implements it in Step 4. Until then the
-    /// copy is refused whole and records nothing, so no caller can mistake it for a read.
-    pub fn copyTextureToBuffer(self: *CommandBuffer, copy: command.TextureToBufferCopy) interface.CommandError!void {
-        _ = self;
-        _ = copy;
-        return error.ValidationFailed;
-    }
-
     pub fn copyBufferToTexture(self: *CommandBuffer, copy: command.BufferToTextureCopy) interface.CommandError!void {
         if (!self.open or copy.size.isEmpty()) return;
         const dev = self.device;
@@ -3090,6 +3158,16 @@ fn shaderStages(stages: pipeline.ShaderStages) c.VkShaderStageFlags {
 
 /// Colour attachments a pass may name; the RHI's other backends allow the same eight.
 const max_attachments = 8;
+/// Every texture one pass can name: its colour attachments, a resolve target for each, and depth.
+const max_pass_textures = max_attachments * 2 + 1;
+
+/// The RHI's sample counts, 1 and 4 (`render3d.md` §4.2), as Vulkan's flag bits.
+fn sampleCountBit(count: u32) c.VkSampleCountFlagBits {
+    return switch (count) {
+        4 => c.VK_SAMPLE_COUNT_4_BIT,
+        else => c.VK_SAMPLE_COUNT_1_BIT,
+    };
+}
 
 /// The frame ring's slots, as the other backends allow (`interface.DeviceDesc.frames_in_flight`).
 const max_frames_in_flight = 4;
@@ -3136,7 +3214,7 @@ pub const RenderPass = struct {
     /// is recorded through it.
     live: bool,
     ended: bool = false,
-    finals: [max_attachments + 1]command.TextureBarrier = undefined,
+    finals: [max_pass_textures]command.TextureBarrier = undefined,
     final_count: usize = 0,
 
     /// The bound pipeline's layout. Vulkan scopes set bindings and push constants to it (§9).
@@ -3283,7 +3361,7 @@ pub const RenderPass = struct {
         if (self.live) {
             self.live = false;
             dev.device_fns.vkCmdEndRendering(self.cmd.native);
-            var barriers: [max_attachments + 1]c.VkImageMemoryBarrier2 = undefined;
+            var barriers: [max_pass_textures]c.VkImageMemoryBarrier2 = undefined;
             var count: usize = 0;
             for (self.finals[0..self.final_count]) |final| {
                 if (final.from == final.to) continue;
@@ -4747,6 +4825,7 @@ const Canvas = struct {
         blend: ?pipeline.BlendState = null,
         depth: ?pipeline.DepthStencilState = null,
         cull: pipeline.CullMode = .none,
+        samples: u32 = 1,
     };
 
     fn pipelineWith(self: Canvas, options: PipelineOptions) !pipeline.RenderPipelineHandle {
@@ -4765,6 +4844,7 @@ const Canvas = struct {
             .color_targets = &.{.{ .format = options.target, .blend = options.blend }},
             .depth_stencil = options.depth,
             .primitive = .{ .cull_mode = options.cull },
+            .sample_count = options.samples,
         });
     }
 
@@ -5244,4 +5324,193 @@ test "a frame that cannot reserve its marker does not open" {
     try testing.expectEqual(@as(u64, 0), dev.frame_index);
     _ = try clearFrame(dev, .{ 0, 0, 0, 1 });
     dev.waitIdle();
+}
+
+// -- M19 Step 4: depth, multisampling and readback, proved by pixels ------------------------
+//
+// Metal's Step 3 tests on this driver, through the RHI's own readback. Two full-viewport quads
+// whose depths cross along one vertical line under reversed-Z: red nearer left of it, blue right
+// of it. No whole-draw order produces both halves (`render3d.md` §9).
+
+const crossing_size = 64;
+
+/// Column 32 at 4x: one red sample in four, averaged and rounded, as Metal resolves it.
+const resolved_blend = [4]u8{ 64, 0, 191, 255 };
+
+/// Inside column 32, off its centre and off every standard 4x sample position (.125, .375, .625,
+/// .875), so no sample ties and draw order never decides. One of column 32's samples is red.
+const crossing_px: f32 = 32.3;
+
+/// The sprite stage's matrix, with a depth row: clip z = slope * x + 0.5 - slope * crossing.
+fn depthRamp(slope: f32) [64]u8 {
+    const crossing = crossing_px / (crossing_size / 2) - 1;
+    return @bitCast([16]f32{ 1, 0, slope, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0.5 - slope * crossing, 1 });
+}
+
+fn renderCrossing(dev: *Device, canvas: Canvas, samples: u32, red_first: bool) ![]u8 {
+    const extent: resource.Extent2D = .{ .width = crossing_size, .height = crossing_size };
+    const render_pipeline = try canvas.pipelineWith(.{
+        .depth = .{ .format = .depth32_float, .depth_write_enabled = true, .depth_compare = .greater_equal },
+        .samples = samples,
+    });
+    const group = try canvas.swatch(.rgba8_unorm, white);
+    const red_quad = try canvas.vertices(&quad(-1, -1, 1, 1, red));
+    const blue_quad = try canvas.vertices(&quad(-1, -1, 1, 1, blue));
+
+    const target = try dev.createTexture(.{ .label = "crossing", .size = extent, .format = .rgba8_unorm, .usage = .{ .render_target = true, .copy_src = true } });
+    const depth = try dev.createTexture(.{ .label = "crossing depth", .size = extent, .format = .depth32_float, .usage = .{ .depth_stencil = true }, .sample_count = samples });
+    const readback = try dev.createBuffer(.{ .size = crossing_size * crossing_size * 4, .usage = .{ .copy_dst = true }, .memory = .readback });
+
+    const clear: command.LoadAction = .{ .clear = .{ .color = .{ 0, 0, 0, 1 } } };
+    const color: command.ColorAttachment = if (samples > 1) .{
+        .texture = try dev.createTexture(.{ .label = "crossing 4x", .size = extent, .format = .rgba8_unorm, .usage = .{ .render_target = true }, .sample_count = samples }),
+        .load = clear,
+        .store = .discard,
+        .resolve = .{ .texture = target, .final_state = .copy_src },
+    } else .{ .texture = target, .load = clear, .final_state = .copy_src };
+
+    const cb = try dev.beginCommandBuffer();
+    const pass = try cb.beginRenderPass(.{
+        .color = &.{color},
+        .depth = .{ .texture = depth, .load = .{ .clear = .{ .depth_stencil = .{ .depth = 0 } } } },
+    });
+    pass.setPipeline(render_pipeline);
+    pass.setBindGroup(0, group);
+    const red_draw = .{ red_quad, depthRamp(-0.25) };
+    const blue_draw = .{ blue_quad, depthRamp(0.25) };
+    for (if (red_first) [2]@TypeOf(red_draw){ red_draw, blue_draw } else [2]@TypeOf(red_draw){ blue_draw, red_draw }) |d| {
+        pass.setVertexBuffer(0, d[0], 0);
+        pass.setInlineConstants(&d[1]);
+        pass.draw(.{ .vertex_count = 6 });
+    }
+    pass.end();
+    try cb.copyTextureToBuffer(.{ .src = target, .size = extent, .dst = readback });
+    try finish(dev, cb);
+    return testing.allocator.dupe(u8, try dev.mapBuffer(readback));
+}
+
+/// Red left of column 32 and blue right of it, exactly, on every row.
+fn expectHalves(pixels: []const u8) !void {
+    for (0..crossing_size) |y| {
+        for (0..32) |x| try testing.expectEqual(red, texelAt(pixels, crossing_size, @intCast(x), @intCast(y)));
+        for (33..crossing_size) |x| try testing.expectEqual(blue, texelAt(pixels, crossing_size, @intCast(x), @intCast(y)));
+    }
+}
+
+test "depth decides visibility, whichever quad is drawn first" {
+    const dev = try validated(.{});
+    defer dev.deinit();
+    const canvas = try Canvas.init(dev);
+
+    const red_first = try renderCrossing(dev, canvas, 1, true);
+    defer testing.allocator.free(red_first);
+    const blue_first = try renderCrossing(dev, canvas, 1, false);
+    defer testing.allocator.free(blue_first);
+    try expectHalves(red_first);
+    try testing.expectEqualSlices(u8, red_first, blue_first);
+    // Column 32's centre is right of the crossing, so single-sampled it is pure blue.
+    for (0..crossing_size) |y| try testing.expectEqual(blue, texelAt(red_first, crossing_size, 32, @intCast(y)));
+    try expectValidationHeard(dev);
+}
+
+test "a 4x draw resolves, and only the crossing column blends" {
+    const dev = try validated(.{});
+    defer dev.deinit();
+    const canvas = try Canvas.init(dev);
+
+    const red_first = try renderCrossing(dev, canvas, 4, true);
+    defer testing.allocator.free(red_first);
+    const blue_first = try renderCrossing(dev, canvas, 4, false);
+    defer testing.allocator.free(blue_first);
+    try expectHalves(red_first);
+    try testing.expectEqualSlices(u8, red_first, blue_first);
+    // One red sample and three blue, averaged and rounded: exactly what Metal's resolve gives.
+    for (0..crossing_size) |y| try testing.expectEqual(resolved_blend, texelAt(red_first, crossing_size, 32, @intCast(y)));
+    try expectValidationHeard(dev);
+}
+
+test "a readback at an offset and a pitch writes its region and nothing else" {
+    const dev = try validated(.{});
+    defer dev.deinit();
+
+    const width = 8;
+    const height = 4;
+    const texture = try dev.createTexture(.{
+        .label = "pattern",
+        .size = .{ .width = width, .height = height },
+        .format = .rgba8_unorm,
+        .usage = .{ .copy_dst = true, .copy_src = true },
+    });
+    var pattern: [width * height * 4]u8 = undefined;
+    for (0..height) |y| for (0..width) |x| {
+        pattern[(y * width + x) * 4 ..][0..4].* = .{ @intCast(x), @intCast(y), @intCast(y * width + x), 0xA5 };
+    };
+    const staging = try dev.createBuffer(.{ .size = pattern.len, .usage = .{ .copy_src = true }, .memory = .upload });
+    try fill(dev, staging, &pattern);
+
+    // Rows 16 bytes of texels and 8 of padding, starting 12 bytes in.
+    const offset = 12;
+    const pitch = 24;
+    const readback = try dev.createBuffer(.{ .size = 64, .usage = .{ .copy_dst = true }, .memory = .readback });
+    try fill(dev, readback, &(@as([64]u8, @splat(0xEE))));
+
+    const cb = try dev.beginCommandBuffer();
+    try cb.textureBarrier(&.{.{ .texture = texture, .from = .undefined, .to = .copy_dst }});
+    try cb.copyBufferToTexture(.{ .src = staging, .dst = texture, .size = .{ .width = width, .height = height } });
+    try cb.textureBarrier(&.{.{ .texture = texture, .from = .copy_dst, .to = .copy_src }});
+    try cb.copyTextureToBuffer(.{
+        .src = texture,
+        .src_origin = .{ .x = 2, .y = 1 },
+        .size = .{ .width = 4, .height = 2 },
+        .dst = readback,
+        .dst_offset = offset,
+        .dst_bytes_per_row = pitch,
+    });
+    try finish(dev, cb);
+
+    const got = try dev.mapBuffer(readback);
+    for (got, 0..) |byte, i| {
+        const in_region = i >= offset and i < offset + pitch * 2 and (i - offset) % pitch < 16;
+        if (!in_region) {
+            try testing.expectEqual(@as(u8, 0xEE), byte);
+            continue;
+        }
+        const x = 2 + ((i - offset) % pitch) / 4;
+        const y = 1 + (i - offset) / pitch;
+        const expected = [4]u8{ @intCast(x), @intCast(y), @intCast(y * width + x), 0xA5 };
+        try testing.expectEqual(expected[(i - offset) % 4], byte);
+    }
+    try expectValidationHeard(dev);
+}
+
+test "multisampling misuse is refused at creation, as on null" {
+    const dev = try validated(.{});
+    defer dev.deinit();
+
+    const base: resource.TextureDesc = .{
+        .label = "multisampled",
+        .size = .{ .width = 16, .height = 16 },
+        .format = .rgba8_unorm,
+        .usage = .{ .render_target = true },
+        .sample_count = 4,
+    };
+    dev.destroyTexture(try dev.createTexture(base));
+
+    var two = base;
+    two.sample_count = 2;
+    var mipped = base;
+    mipped.mip_levels = 2;
+    var sampled = base;
+    sampled.usage.sampled = true;
+    var copied = base;
+    copied.usage.copy_src = true;
+    var unattached = base;
+    unattached.usage = .{ .copy_dst = true };
+    for ([_]resource.TextureDesc{ two, mipped, sampled, copied, unattached }) |desc| {
+        try testing.expectError(error.InvalidDescriptor, dev.createTexture(desc));
+    }
+
+    const canvas = try Canvas.init(dev);
+    try testing.expectError(error.InvalidDescriptor, canvas.pipelineWith(.{ .samples = 3 }));
+    try expectValidationHeard(dev);
 }

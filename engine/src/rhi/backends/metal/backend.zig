@@ -1935,6 +1935,8 @@ const CrossingParams = extern struct {
 };
 
 const red_texel = [4]u8{ 255, 0, 0, 255 };
+/// Column 32 at 4x: one red sample in four, averaged and rounded (`render3d.md` §9).
+const resolved_blend = [4]u8{ 64, 0, 191, 255 };
 const blue_texel = [4]u8{ 0, 0, 255, 255 };
 
 fn renderCrossing(dev: *Device, samples: u32, red_first: bool) ![crossing_size * crossing_size * 4]u8 {
@@ -2052,13 +2054,9 @@ test "a 4x draw resolves, and only the crossing column blends" {
     const blue_first = try renderCrossing(dev, 4, false);
     try expectHalves(&red_first);
     try testing.expectEqualSlices(u8, &red_first, &blue_first);
-    // One red sample and three blue: a blend, which only a resolve can have produced.
-    for (0..crossing_size) |y| {
-        const t = crossingTexel(&red_first, 32, y);
-        try testing.expect(t[0] > 0 and t[0] < 255);
-        try testing.expect(t[2] > 0 and t[2] < 255);
-        try testing.expectEqual(@as(u8, 0), t[1]);
-    }
+    // One red sample and three blue: a blend only a resolve can produce, and exactly the mean,
+    // rounded. Vulkan's test pins the same value, so the backends' resolves cannot drift apart.
+    for (0..crossing_size) |y| try testing.expectEqual(resolved_blend, crossingTexel(&red_first, 32, y));
 }
 
 test "a readback at an offset and a pitch writes its region and nothing else" {

@@ -82,7 +82,20 @@ Four headless Metal tests prove it with pixels:
 Creation-time multisampling misuse is refused with null's error. The readback offset rule was
 corrected to "a multiple of 4 and of the texel size", in the contract first. Three mutations
 each fail their test. `zig build test -Drhi=metal`: 95/95 steps, 1,726 of 1,732. Next is
-Step 4, Vulkan, on the Windows PC. It needs the SSH alias repointed first.
+Step 4, Vulkan, on the Windows PC.
+
+**M19 Step 4 is done (2026-09-27).** Vulkan draws multisampled, resolves in dynamic rendering, and
+reads back. Metal's four pixel tests have Vulkan twins, and the 4× crossing column is pinned to
+the same exact bytes on both backends. A copy into a readback buffer now ends with a
+transfer-to-host barrier, which M13's buffer copy had also lacked.
+
+On the Windows PC (Arc A750), with the pinned SDK reinstalled by the owner's leave:
+- `vulkan-test`: 208/208, with validation and synchronization validation required, and no
+  validation message;
+- the whole Vulkan graph: 104/104 steps, 1,750 of 1,764.
+
+A resolve mutation fails its test. None of §10's Linux triggers fired. Next is Step 5, the
+runtime mesh in `asset`.
 
 **Before M18: M17 is complete (2026-09-23, tag `m17`).** The unsigned pre-release
 `v0.17.1-preview` (from `c37c01d`) is on GitHub and supersedes `v0.17.0-preview`. Both

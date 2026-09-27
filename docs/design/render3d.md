@@ -1,7 +1,8 @@
 # Design: M19 — Depth: 3D math, depth, multisampling and the `render3d` skeleton
 
-**Status:** Accepted 2026-09-27, when the owner asked for Step 1. **Steps 1–3 are done**
-(`core`, the RHI contract on the null backend, and Metal). Steps 4–8 have not begun. Each step stops with its Resolution, as every milestone's has since M13.
+**Status:** Accepted 2026-09-27, when the owner asked for Step 1. **Steps 1–4 are done**
+(`core`, the RHI contract on the null backend, Metal, and Vulkan on Windows). Steps 5–8 have not
+begun. Each step stops with its Resolution, as every milestone's has since M13.
 **Date:** 2026-09-27
 **Baseline:** `6fc69d7`, after tag `m18`. M0–M18 are complete, and 3D is decided.
 **Decisions:**
@@ -816,3 +817,82 @@ headless device:
 - `check -Drhi=vulkan` for Windows (Debug and ReleaseSafe) and Linux.
 
 Vulkan keeps its stubs until Step 4, which runs these same tests natively on the Windows PC.
+
+## Resolution — 2026-09-27, Step 4: Vulkan, proved on Windows
+
+**Done.** Vulkan's Step 2 stubs are gone. The backend now draws multisampled, resolves and reads
+back, with the same results as Metal.
+
+**The implementation:**
+- **Textures:**
+  - a count outside {1, 4} is `InvalidDescriptor`;
+  - a mipped, sampled, copied or unattached 4× texture is refused with null's error, as on Metal;
+  - a 4× texture is created only when `vkGetPhysicalDeviceImageFormatProperties` lists 4 among
+    the format's sample counts for that usage. Otherwise it is `UnsupportedFormat`;
+  - the instance table gained that one function.
+- **Pipelines:** `rasterizationSamples` follows the descriptor. A count missing from
+  `framebufferColorSampleCounts` or `framebufferDepthSampleCounts` is `UnsupportedFormat`.
+- **Resolve in dynamic rendering:** `resolveMode = AVERAGE`, `resolveImageView`, and
+  `resolveImageLayout = COLOR_ATTACHMENT_OPTIMAL`:
+  - the resolve target moves from its declared initial state into the attachment layout, and
+    leaves for its final state when the pass ends, like any attachment;
+  - a pass's barrier and final-state arrays grew to hold a resolve target per colour attachment;
+  - a resolve into a swapchain image marks the recording as drawing the surface.
+- **Readback** is one `vkCmdCopyImageToBuffer`:
+  - Step 3's contract correction makes the pitch whole texels and the offset texel-aligned, so,
+    unlike an upload, nothing is repacked;
+  - a zero-sized copy records nothing.
+- **A fence does not make device writes visible to host reads.** A copy into a `readback` buffer
+  is now followed by a transfer-to-host barrier. That covers the new readback, and the buffer
+  copy M13 already had, which lacked one. Intel's coherent memory had hidden it.
+- **A misplaced comment:** Step 2's stub had split `copyBufferToTexture`'s comment from its
+  function. The comment is back where it belongs.
+
+**Tests.** Metal's four tests have Vulkan twins. They draw through the existing sprite stages, so
+no shader was added:
+- the sprite stage's 4×4 matrix is given a depth row, which makes clip z linear in x with the
+  same crossing at x = 32.3 px;
+- they read back through the RHI's own `copyTextureToBuffer`, not a private helper.
+
+The twins are:
+- depth decides at 1× in both orders, byte-identical;
+- 4× resolves in both orders, byte-identical;
+- the offset-and-pitch readback;
+- creation-time misuse.
+
+**The 4× crossing column is pinned to exactly (64, 0, 191, 255) on both backends.** That is one
+red sample in four, averaged and rounded, which is what Metal resolved on the Mac. Vulkan on the
+Arc gives the same bytes.
+
+**Native run on the Windows PC** (Intel Arc A750), at `-j2` and below-normal priority, once the
+PC was idle:
+- **The PC was rebuilt first.** The M17 clean-machine test had wiped it. With the owner's yes, the
+  pinned Vulkan SDK 1.4.357.0 was reinstalled, from the archive whose SHA-256 `AGENTS.md`
+  records:
+  - it reports glslang 16.4.0 and SPIRV-Tools v2026.3;
+  - its validation layer is registered.
+- **The tree:** a fresh clone at `origin/main`, with this step's 19 changed files laid over it,
+  every one hash-checked.
+- **`zig build vulkan-test -Drhi=vulkan`: 23/23 steps, 208/208 tests,** with validation and
+  synchronization validation required. There was not one validation message.
+- **`zig build test -Drhi=vulkan`, the whole graph: 104/104 steps, 1,750 of 1,764,** with 14
+  skips that are Windows' own.
+- **Mutation:** a resolve mode of `NONE` fails the 4× test. The file was then restored and
+  hash-checked.
+
+**§10's triggers were checked, and none fired:**
+- swapchain creation, format choice and presentation are untouched;
+- the Windows run showed no driver-dependent behaviour: no format was refused, the resolve
+  matches Metal's byte for byte, and no validation message appeared;
+- no pixel test needed a per-backend tolerance, because the exact expectations are shared.
+
+Linux therefore stays compile only. `vulkan-check` and `check -Drhi=vulkan` for Linux passed on
+the Mac.
+
+**The Mac bar:**
+- fmt;
+- `zig build test`: 91/91 steps, 1,717 of 1,718;
+- `zig build test -Drhi=metal`: 95/95 steps, 1,726 of 1,732;
+- every `check`, native, Metal and cross;
+- both samples;
+- the Vulkan checks for Windows (Debug and ReleaseSafe) and Linux.

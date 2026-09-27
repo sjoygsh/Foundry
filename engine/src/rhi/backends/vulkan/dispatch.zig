@@ -52,6 +52,7 @@ pub const Instance = struct {
     vkDestroyDevice: Fn(c.PFN_vkDestroyDevice),
     vkGetPhysicalDeviceMemoryProperties: Fn(c.PFN_vkGetPhysicalDeviceMemoryProperties),
     vkGetPhysicalDeviceFormatProperties: Fn(c.PFN_vkGetPhysicalDeviceFormatProperties),
+    vkGetPhysicalDeviceImageFormatProperties: Fn(c.PFN_vkGetPhysicalDeviceImageFormatProperties),
 };
 
 /// `VK_EXT_debug_utils`, when validation is required.
