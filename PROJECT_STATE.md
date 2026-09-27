@@ -1,7 +1,29 @@
 # Foundry Project State
 
-**Last updated:** 2026-09-26
-**Current handoff: M17 is complete (2026-09-23, tag `m17`).** The unsigned pre-release
+**Last updated:** 2026-09-27
+**Current handoff: M18 is complete (2026-09-27, tag `m18`), and 3D is proposed.** Linux x64
+desktops are a runtime claim. On Ubuntu 26.04, on a second drive of the Windows target's PC
+(Intel Arc A750, Mesa ANV):
+- **the whole Vulkan graph** passed natively with validation required: 104/104 steps and 1,721
+  of 1,727 tests;
+- **the window tests** passed under X11 and under GNOME's Wayland;
+- **both samples ran** from a relocated install under Xorg, sway and GNOME, with every
+  validation log clean against the re-qualified pinned SDK: texture reload with frames in
+  flight, resize, minimise and restore, closing, a user package, real input and no layers;
+- **the icon** is visible on X11. Wayland's compositors refuse it, which is recorded;
+- **one RenderDoc capture** was inspected, and its values match Windows'. FIFO held 60 Hz on X11
+  and sway.
+
+Wayland found one real fault. A second `Platform`'s shutdown called `SDL_Quit`, which closed the
+first's Wayland connection. Platforms now release their own reference, and the last one quits
+SDL. The record is `docs/design/linux-desktop.md`; `scripts/m18/` has the kit.
+
+**3D is designed as a proposal, not accepted:** `docs/design/3d.md` proposes conventions, a
+shader/material strategy, the hierarchy's names, physics scope, forward rendering and milestones
+M19–M26. Its §11 lists six decisions for the owner. **M19 does not begin until they are
+answered.**
+
+**Before M18: M17 is complete (2026-09-23, tag `m17`).** The unsigned pre-release
 `v0.17.1-preview` (from `c37c01d`) is on GitHub and supersedes `v0.17.0-preview`. Both
 platforms passed from the published download:
 - **Windows,** on the owner's PC wiped of Foundry, Zig and the Vulkan SDK: SmartScreen held the
@@ -4424,6 +4446,19 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
+**2026-09-27: M18 is closed. Next is the owner's answers to `3d.md` §11,** then ADRs for what
+they accept, then M19's own design. Nothing else is owed before 3D. What remains open stays
+open on purpose:
+- `rhi.md`'s device recovery;
+- a human's hour with the editor;
+- a Linux release artifact, which nothing has asked for;
+- GNOME's unexplained 20 ms pacing (`linux-desktop.md` §5).
+
+The flaky Windows sleep test is repaired, and not yet rerun there. It now times the sleep on the
+clock the sleep waits on.
+
+*The rest of this section predates M18.*
+
 **M16.5 is complete: Linux x64 headless and server runtime is proven (ADR-0046).** On the owner's
 Ubuntu 24.04 x86_64 VM, the headless graph passed natively with the Mac's exact result: 87/87
 steps and 1,668 of 1,669 tests. The Linux-built authority served the Windows window on home
@@ -4972,10 +5007,10 @@ UI-batching, log-time and file-kind entries; `docs/design/hardening.md` records 
 evidence. A person had already listened to the mixer when M5 closed at `c8ecbb8`. Real-window
 resize remains closed since 2026-09-04, and ADR-0019 remains the settled shader-ownership rule.
 
-* **Vulkan is proven on Windows x64 alone, and on one machine** (M13, 2026-09-19). The claim
-  holds for one Intel Arc A750 driver, one 60 Hz display at scale 1.00 and Latin keys
-  (`vulkan.md`, Step 9). X11 and Wayland surfaces are implemented and build-checked only, until
-  M18.
+* **Vulkan is proven on one machine per OS** (M13, 2026-09-19; M18, 2026-09-27). On Windows
+  and Linux alike, the machine has one Intel Arc A750, one 60 Hz display at scale 1.00 and
+  Latin keys. Linux ran Mesa ANV under Xorg, sway and GNOME (`vulkan.md`, Step 9;
+  `linux-desktop.md` §5). There is no NVIDIA, AMD, HiDPI or multi-monitor evidence.
   - Device and surface loss are sticky on every backend; recovery is `rhi.md`'s open
     question 6.
   - Pacing a skipped frame is the game's (`app-and-frame-loop.md` §2). A minimised sample still
@@ -5023,13 +5058,14 @@ resize remains closed since 2026-09-04, and ADR-0019 remains the settled shader-
     cannot translate the fortified wrappers MinGW declares in optimized builds (`vulkan.md`, the
     M14 note). Remove the workaround when an upgraded Zig can, and keep the ReleaseSafe Windows
     check passing.
-* **One platform test is flaky on Windows** (found 2026-09-19, M14 Step 9). `os.zig`'s "sleeping
+* **One platform test was flaky on Windows; repaired 2026-09-27, not yet rerun there** (found
+  2026-09-19, M14 Step 9). It now times the sleep on the monotonic clock the sleep waits on,
+  as the monotonic-clock test beside it always did. The history: `os.zig`'s "sleeping
   advances real time and refuses nonsense" failed once on the Windows PC, between two runs that
   passed: a 5 ms sleep measured shorter than 5 ms. The test times a sleep on the monotonic clock
   by reading the wall clock, and Windows' timed wait follows neither clock. `os.sleep` promises
   only an approximation, and nothing depends on its duration, so this is a test defect, not an
-  engine one. Deciding what the test may assert on Windows is owed; it was not loosened during
-  M14's closure.
+  engine one. The repair did not loosen it: the same bound, asserted on the right clock.
 
 ---
 

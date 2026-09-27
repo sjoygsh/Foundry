@@ -951,7 +951,7 @@ lives in its own repository (ADR-0017) and targets macOS and Windows, the two pl
 1 to 4 prove. Linux comes next, and 3D after it
 ([ADR-0039](adr/0039-linux-after-the-first-game.md)).
 
-### M18 — Native: "it runs on Linux" — **not started; trigger-started, before any 3D**
+### M18 — Native: "it runs on Linux" — **COMPLETE 2026-09-27 (tag `m18`)**
 
 The Vulkan backend already serves Linux on paper. The following were written in M13 and have
 never run:
@@ -983,22 +983,43 @@ not one entangled with new capability.
 hardware driver and no validation error. ADR-0008's Linux build-check becomes a runtime claim,
 and the RHI's rules survived or changed by ADR.
 
-### 3D — **not planned in detail**
+**Result, 2026-09-27.** Met on the route M13 recorded: Ubuntu 26.04 on a second drive of the
+Windows target's PC, with an Intel Arc A750 on Mesa ANV. The record is
+[`linux-desktop.md`](design/linux-desktop.md).
+- **The whole graph** passed natively with validation required: 104/104 steps and 1,721 of
+  1,727 tests. The window tests passed under X11 and under GNOME's Wayland.
+- **Both samples ran** from a relocated install under Xorg, sway and GNOME. Every validation log
+  was clean, with the pinned SDK re-qualified.
+- **Input, reload and the icon:** real input on X11, and keys on sway. Texture reload with frames
+  in flight gave 29 reloads. The icon is visible on X11; Wayland's compositors refuse it, which
+  is recorded.
+- **RenderDoc and pacing:** one RenderDoc capture was inspected, with values matching Windows'.
+  FIFO held 60 Hz on X11 and sway.
+- **What changed:** Wayland found one real fault, fixed. A second `Platform`'s shutdown closed
+  the first's connection. No RHI rule changed.
 
-Deliberately unplanned in detail. Reuses `core`, `platform`, `rhi`, `data`, `asset` and `scene`
-unchanged; that reuse is the entire point of the earlier architecture.
+### 3D — **proposed, 2026-09-27; awaiting the owner's decisions**
 
-Expected shape, in rough order:
+[`3d.md`](design/3d.md) proposes the architecture and the order. It reuses `core`, `platform`,
+`rhi`, `data`, `asset` and `scene` unchanged, which is the entire point of the earlier
+architecture. It adds:
+- 3D math in `core`;
+- the RHI capabilities `rhi.md` §12 deferred;
+- `render3d` beside `render2d`;
+- `physics3d` beside `physics2d`;
+- a transform hierarchy in `scene`;
+- glTF import in `fpack`.
 
-* `rhi` 3D capability: depth buffers, MSAA, cubemaps, mipmapping, compute.
-* Transform hierarchy and scene graph on top of the existing entity model.
-* Mesh and material systems; the material system must not assume all shaders are known at build
-  time (ADR-0003, ADR-0015).
-* 3D camera, frustum culling, sorting.
-* Model import (glTF) through the asset pipeline.
-* Lighting and shadows.
-* 3D physics — likely the largest single item in this phase, and constrained by I9.
-* Skeletal animation.
+The proposed milestones:
+- **M19 Depth**
+- **M20 Meshes**
+- **M21 Hierarchy**
+- **M22 Light**
+- **M23 Collision**
+- **M24 Animation**
+- **M25 Public 3D** (`FoundryApi_v6`)
+- **M26 a playable 3D sample**, the game certification waits for (ADR-0047).
 
-**3D is not designed yet, and must not be designed until Phase 2 is complete.**
-Recording it here is a commitment to compatibility, not a plan.
+Six decisions in its §11 need the owner before M19 begins: conventions, the shader and material
+strategy, the hierarchy's names, physics scope, forward rendering, and the order. Each accepted
+one becomes an ADR, and each milestone writes its own design before code.

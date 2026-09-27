@@ -159,11 +159,11 @@ Decisions are recorded before they are built:
 
 ## Project status
 
-**M0 through M17 are complete, and the first preview release is published.** Foundry is a
-playable, moddable, networked 2D engine with an editor. It runs on macOS and Windows, and its
-servers also run on Linux. Next is the first game, in its own repository. Linux desktops then
-follow in M18, before 3D. Signed and notarized releases wait until after a fully playable 3D
-game ([ADR-0047](docs/adr/0047-unsigned-github-preview-release.md)).
+**M0 through M18 are complete, and the first preview release is published.** Foundry is a
+playable, moddable, networked 2D engine with an editor. It runs on macOS, Windows and Linux
+(X11 and Wayland), and the first game built on it is finished in its own repository. 3D is next,
+and [its design](docs/design/3d.md) is proposed and waiting on the owner's decisions. Signed and
+notarized releases wait until after a fully playable 3D game ([ADR-0047](docs/adr/0047-unsigned-github-preview-release.md)).
 
 - [docs/ROADMAP.md](docs/ROADMAP.md): every milestone, what it proved and what comes next.
 - [PROJECT_STATE.md](PROJECT_STATE.md): exactly where things stand, updated every session.
