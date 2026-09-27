@@ -33,29 +33,41 @@ xwayland disable
 output HEADLESS-1 resolution 1920x1080@60Hz position 0 0
 default_border normal
 focus_follows_mouse no
+# Floating, as on a stacking desktop: a tile would override the size a sample asks for.
+for_window [app_id=".*"] floating enable
 EOF
         env -u DISPLAY -u WAYLAND_DISPLAY XDG_RUNTIME_DIR="$runtime" \
             WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=gles2 \
             WLR_RENDER_DRM_DEVICE="$(render_node)" \
-            nohup sway --unsupported-gpu -c "$log/sway.conf" >"$log/sway.log" 2>&1 &
+            setsid nohup sway --unsupported-gpu -c "$log/sway.conf" >"$log/sway.log" 2>&1 </dev/null &
     else
         env -u DISPLAY XDG_RUNTIME_DIR="$runtime" \
-            nohup weston --backend=headless --renderer=gl --width=1920 --height=1080 \
-            --socket=wayland-m18 >"$log/weston.log" 2>&1 &
+            setsid nohup weston --backend=headless --renderer=gl --width=1920 --height=1080 \
+            --socket=wayland-m18 >"$log/weston.log" 2>&1 </dev/null &
     fi
-    for _ in $(seq 50); do ls "$runtime"/wayland-* >/dev/null 2>&1 && break; sleep 0.2; done
-    ls "$runtime"/wayland-* | grep -v lock
+    # A desktop's own compositor may already hold wayland-0, so wait for this one's.
+    for _ in $(seq 50); do "$0" env | grep -q WAYLAND_DISPLAY= && [ "$which" = weston -o -n "$(ls "$runtime"/sway-ipc.* 2>/dev/null)" ] && break; sleep 0.2; done
+    "$0" env
     tail -5 "$log/$which.log"
     ;;
 stop)
     pkill -x sway || true
+    rm -f "$runtime"/sway-ipc.*.sock
     pkill -x weston || true
     ;;
 env)
-    socket="$(ls "$runtime" | grep -E '^wayland-[^.]+$' | head -1)"
-    echo "unset DISPLAY; export XDG_RUNTIME_DIR=$runtime WAYLAND_DISPLAY=$socket"
+    # This script's compositor, not a desktop's: sway's socket is the one its IPC names, and
+    # weston's is wayland-m18.
     sway_ipc="$(ls "$runtime"/sway-ipc.*.sock 2>/dev/null | head -1 || true)"
-    [ -n "$sway_ipc" ] && echo "export SWAYSOCK=$sway_ipc"
+    if [ -n "$sway_ipc" ]; then
+        # The Wayland socket this same sway listens on; its IPC socket names its pid.
+        pid="$(basename "$sway_ipc" .sock)"; pid="${pid##*.}"
+        socket="$(ss -xlp 2>/dev/null | grep "pid=$pid," | grep -oE "$runtime/wayland-[0-9]+" | head -1)"
+        socket="${socket##*/}"
+        echo "unset DISPLAY; export XDG_RUNTIME_DIR=$runtime WAYLAND_DISPLAY=$socket SWAYSOCK=$sway_ipc"
+    elif [ -e "$runtime/wayland-m18" ]; then
+        echo "unset DISPLAY; export XDG_RUNTIME_DIR=$runtime WAYLAND_DISPLAY=wayland-m18"
+    fi
     ;;
 shot)
     eval "$("$0" env)"

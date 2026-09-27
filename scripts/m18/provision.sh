@@ -1,8 +1,9 @@
 #!/bin/bash
-# Prepares a fresh Ubuntu 24.04 x86_64 GPU machine for M18 (the Linux desktop proof).
+# Prepares a fresh Ubuntu x86_64 GPU machine for M18 (the Linux desktop proof).
 #
-# Run it over SSH as the default user, which has passwordless sudo. It is idempotent: run it,
-# reboot when it says so, and run it again; the second run finishes and checks everything.
+# Run it over SSH as a user who may sudo. It is idempotent. On an NVIDIA machine (a rented cloud
+# GPU) it installs the driver: reboot when it says so, and run it again. On Intel or AMD the
+# distribution's Mesa is the driver, and one run finishes and checks everything.
 #
 # Everything is fetched from its official source and verified against a hash recorded in
 # AGENTS.md or here, and installed at a versioned path, never through a package manager where
@@ -41,7 +42,7 @@ sudo apt-get install -yq --no-install-recommends \
     git curl ca-certificates xz-utils ubuntu-drivers-common \
     xserver-xorg-core xserver-xorg-input-libinput x11-xserver-utils x11-utils xdotool \
     openbox tint2 imagemagick \
-    sway grim wtype weston \
+    sway grim wtype weston ydotool xinit vulkan-tools mesa-vulkan-drivers \
     libx11-6 libxext6 libxcursor1 libxi6 libxfixes3 libxrandr2 libxss1 libxtst6 \
     libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libwayland-cursor0 libwayland-egl1 \
     libdecor-0-0 libegl1 libgl1 libvulkan1 \
@@ -50,15 +51,18 @@ sudo apt-get install -yq --no-install-recommends \
 # -- 2. The GPU driver: Ubuntu's signed prebuilt modules, and the desktop userspace ---------
 # `ubuntu-drivers install nvidia:<n>` picks the signed module package for this kernel. The
 # desktop (not `-server`, not `-headless`) userspace is the one with the Vulkan ICD and GBM.
-say "NVIDIA driver $NVIDIA"
-if ! dpkg -s "nvidia-driver-$NVIDIA" >/dev/null 2>&1; then
-    sudo ubuntu-drivers install "nvidia:$NVIDIA"
-fi
-# A Wayland compositor on NVIDIA needs kernel modesetting (GBM, DRM render nodes).
-echo "options nvidia-drm modeset=1 fbdev=1" | sudo tee /etc/modprobe.d/foundry-m18-nvidia.conf >/dev/null
-if ! nvidia-smi >/dev/null 2>&1; then
-    say "REBOOT NEEDED: run 'sudo reboot', then run this script again"
-    exit 0
+# Intel and AMD need nothing here: Mesa's ANV and RADV come with `mesa-vulkan-drivers`.
+if lspci | grep -iE 'vga|3d|display' | grep -qi nvidia; then
+    say "NVIDIA driver $NVIDIA"
+    if ! dpkg -s "nvidia-driver-$NVIDIA" >/dev/null 2>&1; then
+        sudo ubuntu-drivers install "nvidia:$NVIDIA"
+    fi
+    # A Wayland compositor on NVIDIA needs kernel modesetting (GBM, DRM render nodes).
+    echo "options nvidia-drm modeset=1 fbdev=1" | sudo tee /etc/modprobe.d/foundry-m18-nvidia.conf >/dev/null
+    if ! nvidia-smi >/dev/null 2>&1; then
+        say "REBOOT NEEDED: run 'sudo reboot', then run this script again"
+        exit 0
+    fi
 fi
 
 # -- 3. Zig, from the repository's own installer --------------------------------------------
@@ -103,7 +107,6 @@ say "Zig dependencies"
 (cd "$HOME/Foundry" && zig build --fetch=all)
 
 say "ready"
-nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
 # shellcheck disable=SC1091
 . "$HOME/m18/env.sh"
 vulkaninfo --summary 2>/dev/null | sed -n '/Devices:/,$p' | head -20

@@ -104,7 +104,7 @@ never allocates or calls the RHI, and every call site that splits work is tested
 pool, `0` for none. M12 closed at **1,370 declared / 1,360 headless tests**.
 **M13 is complete (2026-09-19), tagged `m13`.** ADR-0037/0038 are accepted; read
 `docs/design/vulkan.md`. A Windows x64 Vulkan target is qualified and reached over SSH. Linux
-x64 left M13 by ADR-0039. Its desktop runtime proof is M18, after the first game and before 3D.
+x64 left M13 by ADR-0039, and M18 proved its desktop under X11 and Wayland (`docs/design/linux-desktop.md`).
 Its headless and server use was proven in M16.5 (ADR-0046): on an x86_64 Ubuntu VM,
 `./scripts/install-zig.sh` then `zig build test -Dplatform=null -Drhi=null` gives the Mac's
 exact headless result. Rerun that there when `platform`'s transport, `net` or the headless loop
@@ -312,7 +312,7 @@ archive against its recorded SHA-256 before installing:
 | --- | --- | --- |
 | Windows x64 | `vulkansdk-windows-X64-1.4.357.0.exe` | `81f474711e9042f4cd22b31b2f7a8870db2e428b21586fb43dd80150be97310d` |
 | macOS, host tools only | `vulkansdk-macos-1.4.357.0.zip` | `539433589c83522e6f31b1c7b418a4167e21597a4a361ab119e1dc0760cf3865` |
-| Linux x64, unused until M18 | `vulkansdk-linux-x86_64-1.4.357.0.tar.xz` | `0f09bf6a0625e346bf004be70b92907e934a4c76606b323441b2baf3a5a0e66d` |
+| Linux x64 (qualified in M18) | `vulkansdk-linux-x86_64-1.4.357.0.tar.xz` | `0f09bf6a0625e346bf004be70b92907e934a4c76606b323441b2baf3a5a0e66d` |
 
 ```sh
 # macOS, from the unzipped archive; nothing is placed in /usr/local
@@ -399,6 +399,23 @@ The backend tests require validation and fail, never skip, without it. Set
 an SDL window; started over SSH on Windows, that window stays in the SSH session and never reaches
 the desktop. `vulkan-window-test` presents to real windows, minimises and restores them, so on a
 Windows target start it like `native-window-test`: a scheduled task with an interactive logon.
+
+**On a Linux target** (M18, `scripts/m18/RUNBOOK.md`): the same commands, natively. The SDK is
+the tarball above, unpacked to `~/VulkanSDK/1.4.357.0`, with `x86_64/bin` on `PATH` and its
+`share/vulkan/explicit_layer.d` named by `VK_ADD_LAYER_PATH`. Uninstall the distribution's
+`vulkan-validationlayers`, so that the loader cannot pick up a second copy. Four things there are
+not obvious:
+- **SDL tries Wayland first.** It connects to `wayland-0` unless `XDG_SESSION_TYPE` names another
+  kind of session. So an X11 run gives the variable a real X11 login has
+  (`XDG_SESSION_TYPE=x11`), or it lands on the desktop's compositor even with `DISPLAY` set.
+- **A Wayland compositor that is not on screen sends no frame callbacks.** Swapchains presenting to
+  it then wait. Run Wayland window tests on the desktop that holds the display, or on a headless
+  sway.
+- **The window tests there ask for Wayland's icon refusal.** GNOME and sway refuse
+  `setWindowIcon` (`WindowIconRefused`), and `native-window-test` accepts that only under Wayland.
+- **RenderDoc's shipped layer manifest names the directory it was built in.** Point a scratch copy
+  at the unpacked `lib/librenderdoc.so` and name that copy's directory with `VK_ADD_LAYER_PATH`
+  (`scripts/m18/capture.sh`).
 
 ### Staging a release
 

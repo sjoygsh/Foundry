@@ -396,7 +396,7 @@ of the snapshot design in §4.
 * Cross-compilation: `platform` builds for `x86_64-windows-gnu` and `x86_64-linux-gnu` every
   milestone (ADR-0008). Verified achievable during M0 setup — SDL itself cross-compiles.
 * Native windows (M13): `zig build native-window-test` opens real windows through SDL3 on
-  Windows (Linux's run is M18's) and checks the concrete kind, explicit-kind refusal, payload
+  Windows (and on Linux under X11 and Wayland since M18) and checks the concrete kind, explicit-kind refusal, payload
   stability through pool growth and resize, stale handles and out-of-memory cleanup. It needs a
   desktop session, so it is not part of `zig build test`; on macOS it checks only the refusal.
 

@@ -3,7 +3,7 @@
 **Status:** Design accepted 2026-09-14 (ADR-0037/0038), its windowed floor revised before
 acceptance; **implemented in full, M13 complete 2026-09-19** on Windows x64. **Linux left M13
 on 2026-09-18** ([ADR-0039](../adr/0039-linux-after-the-first-game.md), the scope Resolution):
-M13 proves Windows x64, and Linux's runtime proof is M18, after the first game and before 3D.
+M13 proves Windows x64, and M18 proved Linux under X11 and Wayland ([`linux-desktop.md`](linux-desktop.md)).
 **Date:** 2026-09-14
 **Baseline:** `f14caac` / `m12`; M0–M12 complete, 1,370 declared / 1,360 headless tests.
 **Decisions:** ADR-0033 selects Vulkan; accepted [ADR-0037](../adr/0037-vulkan-execution-and-presentation.md)
@@ -1320,3 +1320,12 @@ M13 is complete and tagged `m13`. M14 has not been started.
 > M14's exit proof on this backend. `zig build check -Drhi=vulkan -Dtarget=x86_64-windows-gnu
 > -Doptimize=ReleaseSafe` keeps it building (AGENTS.md). See `mod-management.md`, Step 9's
 > Windows Resolution.
+
+## Note — 2026-09-27, M18: Linux proven
+
+The Linux obligation ADR-0039 moved out of this document is met, and its record is
+[`linux-desktop.md`](linux-desktop.md). Its evidence covers the Xlib and Wayland payloads, the
+automatic window-system choice, the `dlopen`ed loader and both surface kinds, on an Intel Arc A750
+with Mesa ANV under Xorg, sway and GNOME. It needed no change to this backend. The one fault it
+found was in `platform`: a second `Platform`'s shutdown quit SDL under the first, which only
+Wayland made fatal.
