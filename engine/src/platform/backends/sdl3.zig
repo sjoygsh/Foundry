@@ -291,6 +291,16 @@ pub const Platform = struct {
         }
     }
 
+    pub fn setWindowTitle(self: *Platform, handle: win.WindowHandle, title: []const u8) interface.WindowTitleError!void {
+        const state = self.windows.getConst(handle) orelse return error.InvalidWindow;
+        if (!interface.validWindowTitle(title)) return error.InvalidWindowTitle;
+        // SDL wants a NUL-terminated copy, and keeps its own.
+        const z = self.gpa.dupeZ(u8, title) catch return error.OutOfMemory;
+        defer self.gpa.free(z);
+        // A window manager that ignores a title is not an error worth stopping for.
+        if (!c.SDL_SetWindowTitle(state.ptr, z.ptr)) log.warn("SDL_SetWindowTitle failed: {s}", .{sdlError()});
+    }
+
     pub fn setWindowIcon(self: *Platform, handle: win.WindowHandle, icon: win.WindowIcon) interface.WindowIconError!void {
         try icon.validate();
         const state = self.windows.getConst(handle) orelse return error.InvalidWindow;

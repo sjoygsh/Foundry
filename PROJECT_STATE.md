@@ -1,7 +1,7 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-27
-**Current handoff: M19 Step 6 is complete; Step 7 has not begun.** M18 is complete (2026-09-27,
+**Current handoff: M19 Step 7 is complete; Step 8 has not begun.** M18 is complete (2026-09-27,
 tag `m18`), and Linux x64 desktops are a runtime claim. On Ubuntu 26.04, on a second drive of
 the Windows target's PC (Intel Arc A750, Mesa ANV):
 - **the whole Vulkan graph** passed natively with validation required: 104/104 steps and 1,721
@@ -125,8 +125,26 @@ blend at 4x. The Mac headless graph is green at **93/93 steps, 1,751 of 1,752 te
 with no validation message. A depth-compare mutation fails exactly the readback on Metal and
 Vulkan, and a colour-stream mutation fails exactly its refusal. Review found and fixed a double
 free on `createMesh`'s failure path, now pinned by a test. No Linux
-runtime trigger fired. Next is Step 7, the engine-owned two-pass frame and `sandbox3d`; neither
-has begun.
+runtime trigger fired. That left Step 7.
+
+**M19 Step 7 is done (2026-09-27).** `app.Engine.renderScene` draws the world's pass (MSAA,
+depth, resolving into the surface), then an optional `render2d` overlay pass that loads it, in
+one command buffer. Scene frames time `render.world` and `render.overlay` in place of
+`render.record`. `samples/sandbox3d` is not given `rhi`. It draws a cube, a slab through it and a
+tilted floor from its package's `sandbox3d:config`, with one overlay line. `render3d.Renderer.init`
+now reads the surface format itself, as `render2d`'s does. `platform` gained `setWindowTitle`,
+because the title is content and content loads after the window.
+
+It ran from relocated ReleaseSafe installs on macOS/Metal and on Windows/Vulkan with validation,
+which reported no errors or warnings:
+- 1× and 4× captures;
+- a resize, a minimise and restore, and a clean close (exit 0);
+- 240-frame pacing held at 16.67 ms on both.
+
+The overlay pass costs about 0.03 ms of GPU time on the Mac's Metal HUD and moved neither
+platform's pacing, so the two-pass frame stays. The Mac bar is green: **95/95 steps, 1,757 of
+1,758**, and Metal **101/101, 1,766 of 1,772**. The Windows graph is **114/114, 1,790 of 1,804**.
+No Linux runtime trigger fired. Next is Step 8, closing M19; it has not begun.
 
 **Before M18: M17 is complete (2026-09-23, tag `m17`).** The unsigned pre-release
 `v0.17.1-preview` (from `c37c01d`) is on GitHub and supersedes `v0.17.0-preview`. Both

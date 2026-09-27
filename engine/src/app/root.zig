@@ -53,6 +53,8 @@ pub const environment = engine.environment;
 /// to. A game sets `WindowConfig.surface` to this rather than naming Metal or Vulkan, which it
 /// has no business knowing (`CLAUDE.md` §4.2).
 pub const window_surface = engine.window_surface;
+/// Which graphics backend this build draws with, by name, for logs and overlays.
+pub const graphics_backend = engine.graphics_backend;
 /// Where content lives, answerable before an `Engine` exists — which is when a host that
 /// discovers its packages needs it (`public-abi.md` §13).
 pub const contentDirOf = engine.contentDirOf;

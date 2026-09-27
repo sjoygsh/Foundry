@@ -400,6 +400,8 @@ Foundry/
       content/           keep working. Its own content package, as a game has one.
     room/                A small game, built out of them. Playability is a capability too,
       content/           and it needs a sample whose HUD is not full of frame times.
+    sandbox3d/           3D's capabilities, M19 to M25, as sandbox is 2D's. Not given `rhi`,
+      content/           so a game touching the RHI is a build error there.
 
   content/
     core/                Base content package. Package zero (I3). Engine content

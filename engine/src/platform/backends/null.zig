@@ -160,6 +160,12 @@ pub const Platform = struct {
     }
 
     /// Validates exactly as a real backend does, then remembers the size it accepted.
+    /// There is no window manager to show it to, so the title is only validated.
+    pub fn setWindowTitle(self: *Platform, handle: win.WindowHandle, title: []const u8) interface.WindowTitleError!void {
+        if (self.windows.getConst(handle) == null) return error.InvalidWindow;
+        if (!interface.validWindowTitle(title)) return error.InvalidWindowTitle;
+    }
+
     pub fn setWindowIcon(self: *Platform, handle: win.WindowHandle, icon: win.WindowIcon) interface.WindowIconError!void {
         try icon.validate();
         const state = self.windows.get(handle) orelse return error.InvalidWindow;

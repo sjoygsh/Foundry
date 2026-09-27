@@ -599,6 +599,24 @@ pub fn build(b: *std.Build) void {
     const room = b.addExecutable(.{ .name = "room", .root_module = room_mod });
     b.installArtifact(room);
 
+    // `samples/sandbox3d` — the sample that gains each 3D capability from M19 to M25
+    // (`docs/design/render3d.md` §8). **Not given `rhi`.** The room keeps it because it
+    // predates the rule; this sample is where CLAUDE.md §4.2's "games never touch the RHI"
+    // becomes a build error rather than a habit. It reaches the GPU only through `render3d`,
+    // `render2d` and `app.Engine.renderScene`.
+    const sandbox3d_mod = b.createModule(.{
+        .root_source_file = b.path("samples/sandbox3d/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    for ([_][]const u8{ "app", "asset", "core", "data", "render2d", "render3d" }) |name| {
+        sandbox3d_mod.addImport(name, modules.get(name).?);
+    }
+    sandbox3d_mod.addImport("platform", platform_module);
+
+    const sandbox3d = b.addExecutable(.{ .name = "sandbox3d", .root_module = sandbox3d_mod });
+    b.installArtifact(sandbox3d);
+
     // `tools/editor` is two consumers with a hard seam between them (`editor.md` §3).
     // The host gets the engine modules it must compose. The client gets only a translation
     // of the installed public header, in a separate module, so an implementation import is
@@ -725,6 +743,7 @@ pub fn build(b: *std.Build) void {
         core_package,
         .{ .dir = "samples/sandbox/content", .stem = "sandbox", .dependencies = on_core },
         .{ .dir = "samples/room/content", .stem = "room", .dependencies = on_core },
+        .{ .dir = "samples/sandbox3d/content", .stem = "sandbox3d", .dependencies = on_core },
         .{ .dir = "tools/editor/content", .stem = "editor", .dependencies = on_core },
     };
 
@@ -787,6 +806,11 @@ pub fn build(b: *std.Build) void {
     run_room.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_room.addArgs(args);
     b.step("room", "Build and run samples/room").dependOn(&run_room.step);
+
+    const run_sandbox3d = b.addRunArtifact(sandbox3d);
+    run_sandbox3d.step.dependOn(b.getInstallStep());
+    if (b.args) |args| run_sandbox3d.addArgs(args);
+    b.step("sandbox3d", "Build and run samples/sandbox3d (pass --msaa=1|4 after --)").dependOn(&run_sandbox3d.step);
 
     const run_fpack = b.addRunArtifact(fpack);
     run_fpack.step.dependOn(b.getInstallStep());
@@ -1243,11 +1267,12 @@ pub fn build(b: *std.Build) void {
     // that out at release time is the expensive way.
     check_step.dependOn(&sandbox.step);
     check_step.dependOn(&room.step);
+    check_step.dependOn(&sandbox3d.step);
     check_step.dependOn(&editor.step);
 
     // The samples' own tests, since M14: what each keeps on disk, read the way it reads it —
     // above all, a file an earlier build wrote (`mod-management.md` §6).
-    for ([_]*std.Build.Module{ sandbox_mod, room_mod }) |sample_mod| {
+    for ([_]*std.Build.Module{ sandbox_mod, room_mod, sandbox3d_mod }) |sample_mod| {
         const sample_tests = b.addTest(.{ .root_module = sample_mod });
         test_step.dependOn(&b.addRunArtifact(sample_tests).step);
         check_step.dependOn(&sample_tests.step);

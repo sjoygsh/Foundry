@@ -1,0 +1,34 @@
+# The 3D sandbox's content package (`docs/design/render3d.md` §8).
+#
+# The meshes are built by the sample, because M19 has no mesh importer yet; what the sample
+# is told -- its window, its clear colour, how fast things turn and which font it writes
+# in -- is here, and a package loaded after this one changes any of it without a rebuild.
+
+@schema config {
+    # The window, in logical points. The window exists before content loads, so the sample
+    # applies these once this record has been read.
+    title  string (default "")
+    width  u32 (default 1280)
+    height u32 (default 720)
+
+    # Linear RGBA, as every colour the renderer takes is (ADR-0048). The surface is sRGB and
+    # encodes it.
+    clear_linear [f32]
+
+    # Radians per second, about each mesh's own axis. The floor does not turn.
+    cube_radians_per_second f32 (default 0.6)
+    slab_radians_per_second f32 (default 0.35)
+
+    # From `foundry:core`: a cross-package reference is an ordinary id.
+    font id
+}
+
+config sandbox3d:config.main {
+    title  "Foundry Sandbox 3D"
+    width  1280
+    height 720
+    clear_linear [ 0.010 0.012 0.018 1.0 ]
+    cube_radians_per_second 0.6
+    slab_radians_per_second 0.35
+    font foundry:fonts.debug
+}

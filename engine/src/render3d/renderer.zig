@@ -146,17 +146,13 @@ pub const Renderer = struct {
 
     const Self = @This();
 
-    pub fn init(
-        gpa: Allocator,
-        device: *rhi.Device,
-        surface_format: rhi.TextureFormat,
-        config: Config,
-    ) Error!Self {
-        if (config.frames_in_flight == 0 or !rhi.isValidSampleCount(config.sample_count) or
-            !surface_format.isColor() or surface_format != device.capabilities().surface_format)
-        {
+    /// The colour target is the device's surface format, read here as `render2d` reads it,
+    /// so a game never names an RHI format.
+    pub fn init(gpa: Allocator, device: *rhi.Device, config: Config) Error!Self {
+        if (config.frames_in_flight == 0 or !rhi.isValidSampleCount(config.sample_count)) {
             return error.InvalidConfig;
         }
+        const surface_format = device.capabilities().surface_format;
 
         const vertex_shader = try device.createShaderModule(.{
             .label = "render3d unlit vertex",
@@ -622,7 +618,7 @@ const TestFixture = struct {
         errdefer device.deinit();
         return .{
             .device = device,
-            .renderer = try Renderer.init(testing.allocator, device, device.capabilities().surface_format, .{
+            .renderer = try Renderer.init(testing.allocator, device, .{
                 .frames_in_flight = 2,
                 .sample_count = samples,
             }),
@@ -681,21 +677,18 @@ fn finishTestFrame(fx: *TestFixture) !void {
     try fx.device.endFrame();
 }
 
-test "renderer configuration is bounded and names the actual surface format" {
+test "renderer configuration is bounded, and the colour target is the surface's format" {
     const device = try rhi.Device.init(testing.allocator, .{});
     defer device.deinit();
-    const surface = device.capabilities().surface_format;
-    try testing.expectError(error.InvalidConfig, Renderer.init(testing.allocator, device, surface, .{
+    try testing.expectError(error.InvalidConfig, Renderer.init(testing.allocator, device, .{
         .frames_in_flight = 0,
     }));
-    try testing.expectError(error.InvalidConfig, Renderer.init(testing.allocator, device, surface, .{
+    try testing.expectError(error.InvalidConfig, Renderer.init(testing.allocator, device, .{
         .sample_count = 2,
     }));
-    const wrong: rhi.TextureFormat = if (surface == .rgba8_unorm_srgb)
-        .bgra8_unorm_srgb
-    else
-        .rgba8_unorm_srgb;
-    try testing.expectError(error.InvalidConfig, Renderer.init(testing.allocator, device, wrong, .{}));
+    var renderer = try Renderer.init(testing.allocator, device, .{});
+    defer renderer.deinit();
+    try testing.expectEqual(device.capabilities().surface_format, renderer.surface_format);
 }
 
 test "resident mesh records a depth pass and reports the completed work" {

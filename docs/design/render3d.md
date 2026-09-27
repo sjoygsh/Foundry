@@ -314,7 +314,7 @@ does not until M25. CLAUDE.md §4.3's graph gains the line in the step that adds
 ```zig
 pub const Config = struct { frames_in_flight: u32 = 2, sample_count: u32 = 4 };
 pub const Renderer = struct {
-    pub fn init(gpa, device: *rhi.Device, surface_format, config) Error!Renderer;
+    pub fn init(gpa, device: *rhi.Device, config) Error!Renderer; // colour = the surface's format
     pub fn deinit(self) void;
 
     pub fn createMesh(self, mesh: asset.Mesh, label: []const u8) Error!MeshHandle; // validates, uploads
@@ -443,7 +443,7 @@ residency, as `render2d` owns its textures (ADR-0052).
 `renderFrame` is kept unchanged for 2D-only hosts:
 
 ```zig
-pub fn renderScene(self, options: FrameOptions, world: anytype, overlay: anytype) !void
+pub fn renderScene(self, options: SceneOptions, world: anytype, overlay: anytype) !void
 ```
 
 - **The world recorder** provides `plan` (optional), `prepare`, `passDesc` and `record`, like
@@ -1015,3 +1015,113 @@ No §10 Linux-runtime trigger fired: swapchain and presentation are unchanged, t
 result needs no backend tolerance and matches Metal's assertions, and validation names no
 driver-dependent problem. Linux remains compile-only. Step 7's engine-owned two-pass frame and
 `sandbox3d` have not begun.
+
+## Resolution — 2026-09-27, Step 7: the frame and `sandbox3d`
+
+**Done.** `app.Engine.renderScene` is §7's frame, and `samples/sandbox3d` is §8's sample. The
+sample runs from relocated installs on macOS/Metal and on Windows/Vulkan with validation.
+
+**The frame:**
+- `renderScene(options, world, overlay)` opens one command buffer.
+  - Both recorders plan and prepare before either pass opens.
+  - The world's pass comes from its own `passDesc(frame, overlay)`.
+  - The overlay's pass loads the surface, moves it from `render_target` to `present`, and is
+    single-sampled with no depth.
+  - `overlay` may be a recorder, an optional one, or a literal `null`; without one, the world's
+    pass presents.
+- `renderFrame` is unchanged.
+- Scene frames record `render.world` and `render.overlay` in place of `render.record`; every
+  other span is the same. `render.plan` and `render.write` cover both recorders.
+- Null tests pin:
+  - the span shapes with an overlay, with a `null` and with an empty optional;
+  - a world pass that leaves the surface `present` before an overlay: the null device reports
+    a resource-state violation and refuses the submit;
+  - a frame that fails in either recorder's prepare or record is closed and returns that
+    failure.
+
+**What implementation settled:**
+- **`SceneOptions`, not `FrameOptions`.** A world supplies its own clear. A `clear` field that
+  `renderScene` ignored would be a lie in the API, so the options name only the overlay pass's
+  label.
+- **`render3d.Renderer.init` takes no surface format.** It reads the device's, as `render2d`'s
+  does. §6.2 said otherwise; a sample without `rhi` could not have supplied one, and a
+  parameter that had to equal the device's own answer was only a way to be wrong.
+- **`platform` gains `setWindowTitle`,** beside `setWindowSize`, on both backends and through
+  `app`.
+  - Why: §8 puts the title in content, but the window exists before content loads.
+  - The title is untrusted: it must be UTF-8 with no NUL, or it is refused with
+    `InvalidWindowTitle`.
+  - It touches no surface, swapchain or presentation code.
+- **`app.graphics_backend`** names the backend as a string, so the overlay line can say
+  "vulkan" without the sample importing `rhi`.
+
+**The sample:**
+- **Imports:** `app`, `asset`, `core`, `data`, `platform`, `render2d` and `render3d`. It is not
+  given `rhi`, so importing it is a build error.
+- **Content:** its package holds the `sandbox3d:config` schema and one record: title, size,
+  linear clear colour, two spin rates in radians per second, and the font from
+  `foundry:core`. Every field is validated with a fallback.
+- **Meshes:** a cube, a slab through it and a tilted single-sided floor, built in the sample
+  with flat per-face colours. A test pins that every box face winds counter-clockwise.
+- **Behaviour:**
+  - the turns advance by whole simulation steps;
+  - the camera is `Quat.lookRotation`'s pose and does not move;
+  - `--msaa=1|4` is the only argument;
+  - `FOUNDRY_SANDBOX3D_OVERLAY=0` drops the overlay pass;
+  - at exit it logs the last 240 frames' pacing and every span's median.
+- **AGENTS.md:** its 30-frame headless run joins the bar.
+
+**macOS/Metal** (ReleaseSafe, relocated install, Apple M5, 60 Hz display, 2560×1440 surface):
+- **Captures:** at 4× and at 1×, the floor clips the cube along a straight line and the slab
+  crosses both. A run after restore also shows the slab passing under the floor and out again.
+- **Window handling:**
+  - System Events resized the window to 900×560, then to 1375×800 (1400 was asked; the window
+    server fitted it). Both were captured, and the targets rebuilt.
+  - The window was minimised (it left the on-screen list) and restored.
+  - All 1,500 frames exited 0.
+  - Metal keeps presenting while minimised: 1,500 frames in 1,328 ticks, 0 skipped.
+- **Pacing, last 240 frames, 4× with the overlay:** median 16.654 ms, p95 16.913 ms, max
+  17.085 ms. Without the overlay: 16.646 / 16.959 / 17.179 ms.
+- **The overlay pass's cost:** in the Metal performance HUD, GPU time was 0.43 ms with the
+  overlay pass and 0.40 ms without, one reading each. `render.overlay`'s CPU median was
+  0.040 ms, against `render.world`'s 0.075 ms.
+
+**Windows/Vulkan** (ReleaseSafe, relocated install, Arc A750):
+- **Setup:** Zig and the SDK off `PATH`, `APPDATA` in a scratch root, and a desktop session
+  through an interactive scheduled task.
+- **Validation:** runs with validation required logged core, synchronization, lifetime and
+  thread-safety checks, with **no errors and no warnings**. The one warning-flagged line is the
+  layer's own information message that its shader-validation cache file did not exist yet.
+- **Captures:** at 4× and at 1×; the 1× edges stair-step where the 4× ones do not.
+- **Window handling:**
+  - `SetWindowPos` resized the window to a 944×561 client, which was captured.
+  - `ShowWindow` minimised it: iconic, 102 frames skipped.
+  - It restored and was captured again.
+  - `WM_CLOSE` ended it; a separate run of that close exited **0**.
+- **Pacing, last 240 frames, 4× with validation:** median 16.666 ms, p95 16.670 ms.
+- **The overlay pass's cost, with every loader layer disabled:**
+  - This also shows the install needs nothing from the SDK.
+  - With the overlay: median 16.666 ms, p95 16.667 ms, `render.overlay` 0.008 ms of CPU.
+  - Without it: 16.666 / 16.667 ms.
+  - No GPU timer is available there without new tooling, so the GPU side is bounded only by
+    the unchanged pacing.
+- **The native graph:** 114/114 steps, 1,790 of 1,804 tests (14 skipped).
+
+**The two-pass frame stays.** The one measured GPU cost of loading the surface for the overlay
+is about 0.03 ms at 2560×1440, and neither platform's pacing moved. §7's revisit trigger did
+not fire.
+
+**The Mac bar:**
+- `zig fmt --check`;
+- `zig build test`: **95/95 steps, 1,757 of 1,758 headless tests**;
+- `-Drhi=metal`: **101/101, 1,766 of 1,772**;
+- every `check`, including Vulkan for Windows (Debug and ReleaseSafe) and Linux;
+- all three samples headless for 30 frames;
+- `sandbox` and `room` windowed on Metal for 120 frames.
+
+No §10 Linux-runtime trigger fired:
+- swapchain creation, format choice and presentation are unchanged;
+- the new title call is SDL's portable one, compile-checked for Linux;
+- no pixel or pacing result needed a per-backend allowance.
+
+Step 8 closes M19. It has not begun.

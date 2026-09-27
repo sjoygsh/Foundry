@@ -177,6 +177,13 @@ pub const span = struct {
     pub const render_write = "render.write";
     /// The render pass, and the draw calls recorded into it.
     pub const render_record = "render.record";
+    /// In place of `render.record` in a scene frame (M19): the 3D world's pass, its
+    /// multisampled colour resolving into the surface.
+    pub const render_world = "render.world";
+    /// After `render.world`: the 2D overlay's pass, loading the resolved surface. What it
+    /// costs over drawing into the world's pass is what decides whether the two-pass frame
+    /// stays (`render3d.md` §7).
+    pub const render_overlay = "render.overlay";
     /// Handing the command buffer to the queue.
     pub const render_submit = "render.submit";
     /// Scheduling the present and closing the frame.
@@ -1138,6 +1145,16 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             return self.platform.setWindowSize(self.window, logical);
         }
 
+        /// Names the window, from bytes borrowed for the call: what a host whose content
+        /// names its window calls once that content has loaded. Headless, only validated.
+        pub fn setWindowTitle(self: *Self, title: []const u8) platform.WindowTitleError!void {
+            if (self.window.isNone()) {
+                if (!platform.validWindowTitle(title)) return error.InvalidWindowTitle;
+                return;
+            }
+            return self.platform.setWindowTitle(self.window, title);
+        }
+
         /// Gives the window the application's icon, from bytes borrowed for the call
         /// (`vulkan.md` §9). The engine has no icon of its own to fall back on.
         ///
@@ -1273,6 +1290,134 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             try self.gpu.endFrame();
             self.closeScope();
         }
+
+        /// What a scene frame names that its recorders do not.
+        pub const SceneOptions = struct {
+            /// The overlay's pass, in a GPU capture. The world recorder labels its own.
+            overlay_label: []const u8 = "overlay",
+        };
+
+        /// Runs one frame of a 3D world with an optional 2D overlay over it
+        /// (`docs/design/render3d.md` §7): **one command buffer, two passes, in ADR-0052's
+        /// fixed order.** `renderFrame` stays as it was for a host that draws only in 2D.
+        ///
+        /// `world` provides what `renderFrame`'s recorder does — `prepare`, `record` and
+        /// optionally `plan` — and also `passDesc(rhi.FrameContext, overlay: bool)
+        /// rhi.RenderPassDesc`, because only it knows its attachments: a multisampled
+        /// colour target that resolves into the surface, and a depth target. Its pass must
+        /// take the surface from `undefined` and leave it in `render_target` when `overlay`
+        /// is true, or in `present` when it is false. `render3d.Renderer` is one; `app`
+        /// names no renderer type.
+        ///
+        /// `overlay` is a `renderFrame`-shaped recorder, or `null`. Its pass loads the
+        /// surface, single-sampled and depth-less, and leaves it in `present`. It is a pass
+        /// of its own because a pipeline's attachment formats and sample count must match
+        /// its pass (`rhi.md` rule 7), and a UI gains nothing from multisampling or depth.
+        ///
+        /// Both recorders plan and prepare before either pass opens, because copies cannot
+        /// be recorded inside one. `render.record` becomes `render.world` and
+        /// `render.overlay`; every other span is `renderFrame`'s. A frame that fails is
+        /// closed before this returns, as `renderFrame`'s is.
+        pub fn renderScene(self: *Self, options: SceneOptions, world: anytype, overlay: anytype) !void {
+            const Overlay = OverlayOf(@TypeOf(overlay));
+            const has_overlay = comptime Overlay != void;
+            const maybe_overlay = overlayOf(overlay);
+            const overlay_present = has_overlay and maybe_overlay != null;
+
+            self.openScope(span.render_acquire);
+            const frame = self.gpu.beginFrame() catch |err| {
+                self.closeScope();
+                return err;
+            };
+            self.closeScope();
+
+            // Every way out of an open frame closes it; see `renderFrame`.
+            var finished = false;
+            errdefer if (!finished) self.gpu.endFrame() catch |cleanup| {
+                log.warn("closing a failed frame also failed: {t}", .{cleanup});
+            };
+
+            self.openScope(span.render_prepare);
+            const cmd = try self.gpu.beginCommandBuffer();
+            var consumed = false;
+            errdefer if (!consumed) cmd.discard();
+            const plans = comptime recorderPlans(@TypeOf(world)) or
+                (has_overlay and recorderPlans(Overlay));
+            if (plans) {
+                self.openScope(span.render_plan);
+                if (comptime recorderPlans(@TypeOf(world))) try world.plan();
+                if (comptime has_overlay and recorderPlans(Overlay)) {
+                    if (maybe_overlay) |o| try o.plan();
+                }
+                self.closeScope();
+                self.openScope(span.render_write);
+            }
+            try world.prepare(cmd, frame);
+            if (comptime has_overlay) {
+                if (maybe_overlay) |o| try o.prepare(cmd, frame);
+            }
+            if (plans) self.closeScope();
+            self.closeScope();
+
+            self.openScope(span.render_world);
+            const world_pass = try cmd.beginRenderPass(world.passDesc(frame, overlay_present));
+            world.record(world_pass) catch |err| {
+                world_pass.end();
+                return err;
+            };
+            world_pass.end();
+            self.closeScope();
+
+            if (comptime has_overlay) {
+                if (maybe_overlay) |o| {
+                    self.openScope(span.render_overlay);
+                    const overlay_pass = try cmd.beginRenderPass(.{
+                        .label = options.overlay_label,
+                        .color = &.{.{
+                            .texture = frame.surface_texture,
+                            // The world's resolved image, which is the whole point.
+                            .load = .load,
+                            .store = .store,
+                            .initial_state = .render_target,
+                            .final_state = .present,
+                        }},
+                    });
+                    o.record(overlay_pass) catch |err| {
+                        overlay_pass.end();
+                        return err;
+                    };
+                    overlay_pass.end();
+                    self.closeScope();
+                }
+            }
+
+            self.openScope(span.render_submit);
+            consumed = true;
+            try cmd.submit();
+            self.closeScope();
+
+            self.openScope(span.render_present);
+            finished = true;
+            try self.gpu.endFrame();
+            self.closeScope();
+        }
+    };
+}
+
+/// The recorder type an overlay argument carries: `void` for a literal `null`, the child of
+/// an optional, or the type itself.
+fn OverlayOf(comptime T: type) type {
+    return switch (@typeInfo(T)) {
+        .null => void,
+        .optional => |o| o.child,
+        else => T,
+    };
+}
+
+fn overlayOf(overlay: anytype) ?OverlayOf(@TypeOf(overlay)) {
+    return switch (@typeInfo(@TypeOf(overlay))) {
+        .null => null,
+        else => overlay,
     };
 }
 
@@ -1282,7 +1427,10 @@ fn recorderPlans(comptime Recorder: type) bool {
         .pointer => |p| p.child,
         else => Recorder,
     };
-    return @hasDecl(T, "plan");
+    return switch (@typeInfo(T)) {
+        .@"struct", .@"union", .@"enum", .@"opaque" => @hasDecl(T, "plan"),
+        else => false,
+    };
 }
 
 /// The engine, with whichever backends the build selected.
@@ -1290,6 +1438,10 @@ pub const Engine = EngineOf(platform.Platform, rhi.Device);
 
 /// The surface a window must provide for the selected graphics backend to present to it.
 pub const window_surface: platform.SurfaceKind = rhi.window_surface;
+
+/// The selected graphics backend's name, for a line a person reads: a log, an overlay, a bug
+/// report. A name rather than `rhi`'s enum, so a game that prints it still names no RHI type.
+pub const graphics_backend: []const u8 = @tagName(rhi.backend);
 
 /// Marshals Zig's process environment into the form `platform.Os` takes.
 ///
@@ -1651,6 +1803,20 @@ test "a window takes the application's icon, and a headless engine only validate
     defer headless.deinit();
     try headless.setWindowIcon(icon);
     try testing.expectError(error.InvalidWindowIcon, headless.setWindowIcon(malformed));
+}
+
+test "a window takes a title from content, and refuses one no backend can show" {
+    const windowed = try TestEngine.init(testing.allocator, .{});
+    defer windowed.deinit();
+    const headless = try testEngine(.{});
+    defer headless.deinit();
+
+    for ([_]*TestEngine{ windowed, headless }) |engine| {
+        try engine.setWindowTitle("Sandbox 3D — Ünïcode");
+        try engine.setWindowTitle("");
+        try testing.expectError(error.InvalidWindowTitle, engine.setWindowTitle("a\x00b"));
+        try testing.expectError(error.InvalidWindowTitle, engine.setWindowTitle("\xff\xfe"));
+    }
 }
 
 test "a headless engine has no window, and says so rather than pretending" {
@@ -2248,6 +2414,123 @@ test "a recorder that plans is timed as render.plan and render.write, inside ren
         try testing.expectEqualStrings(e.name, recorder.nameOf(s.name));
         try testing.expectEqual(e.depth, s.depth);
     }
+}
+
+/// A world recorder on the null backend's types: the surface as its only attachment, left
+/// where `renderScene` says it must be unless the test tells it to lie.
+const SceneWorld = struct {
+    fail: enum { nowhere, prepare, record } = .nowhere,
+    /// Leaves the surface `present` even when an overlay follows.
+    lie: bool = false,
+    planned: bool = false,
+    color: [1]rhi.command.ColorAttachment = undefined,
+
+    pub fn plan(self: *SceneWorld) !void {
+        self.planned = true;
+    }
+    pub fn prepare(self: *SceneWorld, _: *rhi.null_backend.CommandBuffer, _: rhi.FrameContext) !void {
+        if (self.fail == .prepare) return error.InjectedPrepareFailure;
+    }
+    pub fn passDesc(self: *SceneWorld, frame: rhi.FrameContext, overlay: bool) rhi.RenderPassDesc {
+        self.color = .{.{
+            .texture = frame.surface_texture,
+            .load = .{ .clear = .{ .color = .{ 0, 0, 0, 1 } } },
+            .initial_state = .undefined,
+            .final_state = if (overlay and !self.lie) .render_target else .present,
+        }};
+        return .{ .label = "test world", .color = &self.color };
+    }
+    pub fn record(self: *SceneWorld, _: *rhi.null_backend.RenderPass) !void {
+        if (self.fail == .record) return error.InjectedRecordFailure;
+    }
+};
+
+const SpanAt = struct { []const u8, u16 };
+
+fn expectSpans(engine: *TestEngine, expected: []const SpanAt) !void {
+    const recorder = engine.profiler().?;
+    const frame = recorder.latest().?;
+    try testing.expectEqual(expected.len, frame.spans.len);
+    for (expected, frame.spans) |e, s| {
+        try testing.expectEqualStrings(e[0], recorder.nameOf(s.name));
+        try testing.expectEqual(e[1], s.depth);
+    }
+    try testing.expectEqual(@as(u16, 0), frame.unbalanced);
+}
+
+test "a scene frame is the world's pass, then the overlay's, and the surface ends presentable" {
+    const engine = try profiledEngine(.{ .hot_reload = false });
+    defer engine.deinit();
+
+    var world: SceneWorld = .{};
+    engine.beginFrame();
+    try engine.renderScene(.{}, &world, NothingRecorder{});
+    engine.endFrame();
+    try expectSpans(engine, &.{
+        .{ span.input, 0 },          .{ span.render_acquire, 0 }, .{ span.render_prepare, 0 },
+        .{ span.render_plan, 1 },    .{ span.render_write, 1 },   .{ span.render_world, 0 },
+        .{ span.render_overlay, 0 }, .{ span.render_submit, 0 },  .{ span.render_present, 0 },
+    });
+    try testing.expect(world.planned);
+
+    // No overlay, by literal and by an empty optional: one pass, which presents itself.
+    engine.beginFrame();
+    try engine.renderScene(.{}, &world, null);
+    engine.endFrame();
+    const without = [_]SpanAt{
+        .{ span.input, 0 },         .{ span.render_acquire, 0 }, .{ span.render_prepare, 0 },
+        .{ span.render_plan, 1 },   .{ span.render_write, 1 },   .{ span.render_world, 0 },
+        .{ span.render_submit, 0 }, .{ span.render_present, 0 },
+    };
+    try expectSpans(engine, &without);
+    engine.beginFrame();
+    try engine.renderScene(.{}, &world, @as(?NothingRecorder, null));
+    engine.endFrame();
+    try expectSpans(engine, &without);
+
+    try testing.expectEqual(@as(usize, 0), engine.gpu.violationCount());
+}
+
+test "a world pass that leaves the surface presentable before an overlay is caught" {
+    const engine = try testEngine(.{ .hot_reload = false });
+    defer engine.deinit();
+
+    engine.gpu.log_violations = false;
+    var world: SceneWorld = .{ .lie = true };
+    engine.beginFrame();
+    try testing.expectError(error.ValidationFailed, engine.renderScene(.{}, &world, NothingRecorder{}));
+    engine.endFrame();
+    try testing.expect(engine.gpu.hasViolation(.resource_state));
+}
+
+test "a scene frame that fails in either recorder is closed, and returns that failure" {
+    const engine = try testEngine(.{ .hot_reload = false });
+    defer engine.deinit();
+    const gpu = engine.gpu;
+
+    const Case = struct { world: SceneWorld, overlay: FailingRecorder, expected: anyerror };
+    const cases = [_]Case{
+        .{ .world = .{ .fail = .prepare }, .overlay = .{ .at = .nowhere }, .expected = error.InjectedPrepareFailure },
+        .{ .world = .{ .fail = .record }, .overlay = .{ .at = .nowhere }, .expected = error.InjectedRecordFailure },
+        .{ .world = .{}, .overlay = .{ .at = .prepare }, .expected = error.InjectedPrepareFailure },
+        .{ .world = .{}, .overlay = .{ .at = .record }, .expected = error.InjectedRecordFailure },
+    };
+    for (cases) |case| {
+        var world = case.world;
+        const before = gpu.frame_index;
+        engine.beginFrame();
+        try testing.expectError(case.expected, engine.renderScene(.{}, &world, case.overlay));
+        engine.endFrame();
+        try testing.expectEqual(before + 1, gpu.frame_index);
+        try testing.expect(!gpu.in_frame);
+        try testing.expectEqual(@as(usize, 0), gpu.timeline.open.items.len);
+    }
+
+    var world: SceneWorld = .{};
+    engine.beginFrame();
+    try engine.renderScene(.{}, &world, NothingRecorder{});
+    engine.endFrame();
+    try testing.expectEqual(@as(usize, 0), gpu.violationCount());
 }
 
 test "a disabled profiler is not a null pointer the caller has to guard twice" {

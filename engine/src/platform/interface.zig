@@ -56,6 +56,20 @@ pub const WindowError = error{
     WindowResizeRefused,
 };
 
+pub const WindowTitleError = error{
+    OutOfMemory,
+    /// The handle does not name a live window — closed, or from another pool (I1).
+    InvalidWindow,
+    /// Not UTF-8, or holding a NUL. A title usually comes from content, which is untrusted
+    /// and validated at the boundary (`CLAUDE.md` §7).
+    InvalidWindowTitle,
+};
+
+/// Whether `title` is one every backend can show: UTF-8, with no NUL for a C API to stop at.
+pub fn validWindowTitle(title: []const u8) bool {
+    return std.unicode.utf8ValidateSlice(title) and std.mem.indexOfScalar(u8, title, 0) == null;
+}
+
 pub const WindowIconError = error{
     /// The handle does not name a live window — closed, or from another pool (I1).
     InvalidWindow,
@@ -123,6 +137,10 @@ pub fn check(comptime Impl: type, comptime label: []const u8) void {
         // The window's icon, from bytes the application decoded and lends for the call alone.
         // Host window configuration, so nothing in the public C ABI reaches it (`vulkan.md` §9).
         expectFn(P, label, "setWindowIcon", &.{ *P, window.WindowHandle, window.WindowIcon }, WindowIconError!void);
+
+        // The window's title, borrowed for the call. Separate from `openWindow`'s because a
+        // host's content, which may name it, loads after its window exists (M19).
+        expectFn(P, label, "setWindowTitle", &.{ *P, window.WindowHandle, []const u8 }, WindowTitleError!void);
 
         // The frame's input boundary, in the order it is called:
         //   pumpEvents  — drain the OS queue, once, at one known point in the frame
@@ -238,6 +256,11 @@ test "the check accepts a conforming implementation" {
                 _ = self;
                 _ = handle;
                 _ = icon;
+            }
+            pub fn setWindowTitle(self: *@This(), handle: window.WindowHandle, title: []const u8) WindowTitleError!void {
+                _ = self;
+                _ = handle;
+                _ = title;
             }
             pub fn pumpEvents(self: *@This()) void {
                 _ = self;

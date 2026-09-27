@@ -1,0 +1,11 @@
+# The 3D sandbox's manifest.
+#
+# It needs `foundry:core` for the debug font its overlay line is drawn in, and says so.
+
+foundry:mod  sandbox3d:content {
+    name     "Sandbox 3D"
+    version  1
+    license  "Apache-2.0"
+    summary  "Three flat-coloured meshes that pass through each other, and one line of text over them."
+    requires [ { id foundry:core } ]
+}
