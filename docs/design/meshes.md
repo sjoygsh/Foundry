@@ -1,7 +1,7 @@
 # Design: M20 — Meshes: runtime formats, glTF import, textures with mips, materials and culling
 
-**Status:** Accepted 2026-09-27 when the owner requested Step 1. Step 1 of nine is complete;
-Step 2 has not begun. §14 records the accepted choices.
+**Status:** Accepted 2026-09-27 when the owner requested Step 1. Steps 1 and 2 of nine are
+complete; Step 3 has not begun. §14 records the accepted choices.
 **Date:** 2026-09-27
 **Baseline:** `a8cbd64`, tag `m19`. M0–M19 are complete.
 **Decisions:**
@@ -850,3 +850,72 @@ The full bar passed: formatting, the headless graph (**1,768 of 1,769**, the exi
 **1,841 declared**), native and Metal checks, Linux and Windows null cross-checks, and thirty
 headless frames of `sandbox`, `room` and `sandbox3d`. Nothing reads glTF, generates mips,
 acquires through a private loader or draws a material yet. Step 2 is next.
+
+## Resolution — Step 2: mips, colour space and `acquireWith` (2026-09-28)
+
+Step 2 pins the CPU mip chain and the registry's private loaders, and stops before any renderer
+reads `color_space` or `mipmaps`:
+
+- **`asset/mips.zig`**: `generate(gpa, image, color_space) -> Chain`, a pure function. A chain
+  is one allocation with every level packed largest first, level 0 a copy of the source, so a
+  loader can free its decoded image before uploading; `Chain.level(i)` borrows a level as an
+  `Image`. `levelCount` and `levelSize` restate `rhi.Extent2D.mipLevel`, which `asset` cannot
+  import, and a test checks the two agree for square, flat, odd and 1×n images.
+  `asset.ColorSpace` (`srgb`, `linear`) is the parsed form of the record's field; parsing the
+  record stays with the loaders (Step 3 and Step 5).
+- **§4.2's odd-dimension sentence is sharpened.** With floor halving, a 2×2 box over five
+  texels reads 0–3 and drops the fifth, so a one-texel line at an image's edge vanishes at
+  level 1. The chosen reading: the **last** texel of the next level reads three rows (or
+  columns) instead of two, weighted equally; a dimension already at 1 reads its one row, which
+  is the 2×2 box with it taken twice. No texel of the level above is ever dropped.
+- **sRGB without `pow` at run time.** The decode table and a table of the 255 linear values
+  whose encodings are exactly `k + 0.5` are computed at compile time from IEC 61966-2-1 in
+  `f64`. Encoding is a binary search of those midpoints, which is round-to-nearest in the
+  encoded domain with ties up, and every byte round-trips. Colour is weighted by alpha; a block
+  with no coverage at all keeps the plain average of its colours rather than turning black.
+  Alpha is an integer average, rounded half up.
+- **The hash is pinned** (FNV-1a 64 of a 13×7 formula image's chain): `0x27012e52514ef7c2`
+  as sRGB, `0x1e261bb4c0e8744c` as linear. A change to either is a change to every mipmapped
+  texture's pixels, and a decision rather than a refactor. §11 item 5 compares hosts; this pin
+  is the first host's value.
+- **`Registry.acquireWith(gpa, id, loader)` and `unloadWith(gpa, loader)`**, as §7.4 specified.
+  Registered and private loaders share one append-only slot list, marked by a `registered`
+  flag, so an entry names its maker the same way either way. Registered entries stay in
+  `by_id`; private ones are in a second map keyed by (content ID hash, loader slot), which is
+  the design's (content ID, loader) key. A private loader is matched by `Loader.eql`, is never
+  an answer to `acquire`, `find`, `hasLoader` or `loaderCount`, and a slot is taken only when
+  a load succeeds. The record must be the loader's schema (`WrongSchema`, before any file is
+  read), and the loader's own `max_source_bytes` applies.
+- **One contract the design did not state: a private entry's reload.** A registered entry
+  follows its record to whichever loader now claims its type. A private one cannot: its owner
+  chose a loader that makes one type. A package reload that retypes the record makes that
+  entry's reload `WrongSchema`, and it keeps its payload (§6's rule 2).
+- **The listing shows an ID once per resident copy**, so a texture both renderers hold appears
+  twice in the overlay's asset list. That is the honest answer to "what is in memory", and
+  `AssetInfo` is unchanged.
+- **`asset.Image`'s documentation** now says the bytes are what the file stored and the record
+  says what they mean, as §4.1 required.
+
+**Step 1 was not what its Resolution said.** `asset/root.zig`'s test block never named
+`mesh_file`, so its four tests were never compiled, and the reader called
+`std.meta.intToEnum`, which Zig 0.16 does not have. The claimed 1,768 of 1,769 could not be
+reproduced at `7bc9c54`, which gives **1,764 of 1,765**. Step 2 references the file, replaces
+the call with `std.enums.fromInt` as `net/wire.zig` does, and fixes the padding test, which
+indexed by the index *count* rather than its bytes and so flipped an index instead of the
+padding. All four now pass. The reader's refusals are otherwise as Step 1 recorded them.
+
+**Guards verified by mutation**, each restored afterwards:
+- dropping the alpha weighting failed the bleed test;
+- averaging sRGB bytes directly failed the linear-light test;
+- dropping the odd tail failed the odd-dimension test;
+- letting `loaderIndex` answer with a private loader failed the no-registration test;
+- dropping a private reload's schema check failed the retyped-record test;
+- keying `acquireWith` by ID alone failed four private-loader tests.
+
+The pinned hashes failed with each of the first three, as they should.
+
+The full bar passed: formatting, the headless graph (**1,783 of 1,784**, the existing skip;
+**1,856 declared**), native and Metal checks, Linux and Windows null cross-checks, and thirty
+headless frames of `sandbox`, `room` and `sandbox3d`. No renderer reads `color_space` or
+`mipmaps`, nothing uploads a chain, and nothing calls `acquireWith` outside its tests. Step 3
+is next.

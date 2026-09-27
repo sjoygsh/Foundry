@@ -6,15 +6,17 @@ const Allocator = std.mem.Allocator;
 
 /// An image in memory, decoded and ready to become a GPU texture.
 ///
-/// **Always 8-bit RGBA, straight (non-premultiplied) alpha, sRGB-encoded.** Every decoder
-/// expands to this one layout rather than preserving the source's, because the alternative
-/// is a format enum that every consumer must switch on — and there is exactly one consumer
-/// that matters, `render2d`, which wants one thing.
+/// **Always 8-bit RGBA, straight (non-premultiplied) alpha.** Every decoder expands to this
+/// one layout rather than preserving the source's, because the alternative is a format enum
+/// that every consumer must switch on.
 ///
-/// **sRGB-encoded** is the important half. PNG carries sRGB values, `render2d` creates
-/// `rgba8_unorm_srgb` textures, and the GPU converts to linear on sample
-/// (`docs/design/render2d.md` §6). Nothing here converts anything; this type just records
-/// what the bytes mean so that the decision is made once, in writing, rather than
+/// **The bytes are what the file stored; the record says what they mean** (`meshes.md`
+/// §4.1). A colour texture's are sRGB-encoded — PNG carries sRGB values, the texture is
+/// created `rgba8_unorm_srgb`, and the GPU converts to linear on sample
+/// (`docs/design/render2d.md` §6). A texture whose record says `color_space "linear"` — a
+/// normal map, a mask — holds plain numbers, and is created `rgba8_unorm`. Nothing here
+/// converts anything: the same decoded bytes serve both, and `mips.generate` filters them by
+/// the colour space it is handed, so the decision is made once, in the record, rather than
 /// rediscovered when the blending looks wrong.
 ///
 /// **Straight alpha, not premultiplied.** That is what PNG stores. The batcher

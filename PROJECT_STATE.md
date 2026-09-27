@@ -1,12 +1,31 @@
 # Foundry Project State
 
-**Last updated:** 2026-09-27
-**Current handoff: M19 is complete (2026-09-27, tag `m19`). M20, Meshes, is accepted and Step 1
-of nine is complete. Stop before Step 2.** Read [`docs/design/meshes.md`](docs/design/meshes.md),
-whose Step 1 Resolution records the implementation and the two contract corrections it forced.
-ADR-0055 is accepted. Next is Step 2 only: CPU mip generation and
-`asset.Registry.acquireWith`/`unloadWith`. No glTF reader, mip generator, private acquisition or
-M20 renderer functionality exists yet.
+**Last updated:** 2026-09-28
+**Current handoff: M19 is complete (2026-09-27, tag `m19`). M20, Meshes, is accepted and Steps 1
+and 2 of nine are complete. Stop before Step 3.** Read [`docs/design/meshes.md`](docs/design/meshes.md),
+whose Step 1 and Step 2 Resolutions record the implementation and its corrections. ADR-0055 is
+accepted. Next is Step 3 only: `render2d`'s loader honours `color_space` and `mipmaps`, and the
+mip-selection and colour-space readbacks are proved at the RHI level on Metal and on
+Windows/Vulkan with validation (it needs the Windows PC). No renderer reads the new texture
+fields, nothing uploads a mip chain, and nothing outside tests calls `acquireWith`; no glTF
+reader or M20 renderer functionality exists yet.
+
+**M20 Step 2 is done (2026-09-28).** `asset/mips.zig` builds a deterministic full chain on the
+CPU: a box filter that never drops an odd dimension's last row or column, sRGB filtered in
+linear light through compile-time tables with no run-time `pow`, colour weighted by alpha, and
+pinned FNV-1a hashes for both colour spaces. `asset.Registry.acquireWith`/`unloadWith` key
+entries by (content ID, loader): a private loader competes with no registered one, is
+invisible to `acquire`, `find` and the ABI, and its entries count, reload, evict and unload
+like any other; a retyped record's private reload is `WrongSchema` and keeps its payload. The
+registry's existing tests pass untouched.
+
+Step 2 found that **Step 1's `.fmesh` tests had never run**: `asset/root.zig` did not reference
+`mesh_file`, which hid a call to `std.meta.intToEnum` (absent in Zig 0.16) and a padding test
+that flipped an index byte. Both are fixed and the file is now in the graph; Step 1's recorded
+1,768 of 1,769 was 1,764 of 1,765 at `7bc9c54`. Six guards were verified by mutation. The
+full bar passed at **1,783 of 1,784 headless tests** (the existing skip), **1,856 declared**,
+including native/Metal checks, both null cross-targets and all three thirty-frame headless
+samples.
 
 **M20 Step 1 is done (2026-09-27).** `asset/mesh_file.zig` owns the bounded canonical `.fmesh`
 reader/writer and returns validated zero-copy views. `asset.Mesh` now accepts normal, UV0/UV1 and

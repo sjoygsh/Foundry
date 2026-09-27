@@ -137,8 +137,8 @@ pub fn read(bytes: []const u8, limits: Limits) ReadError!View {
     var previous_semantic: ?u8 = null;
     for (0..stream_count) |i| {
         const at = header_size + i * stream_entry_size;
-        const semantic = std.meta.intToEnum(Semantic, bytes[at]) catch return error.Malformed;
-        const format = std.meta.intToEnum(VertexFormat, bytes[at + 1]) catch return error.Malformed;
+        const semantic = std.enums.fromInt(Semantic, bytes[at]) orelse return error.Malformed;
+        const format = std.enums.fromInt(VertexFormat, bytes[at + 1]) orelse return error.Malformed;
         if (readInt(u16, bytes, at + 2) != 0) return error.Malformed;
         if (previous_semantic) |previous| {
             if (@intFromEnum(semantic) <= previous) return error.Malformed;
@@ -365,7 +365,8 @@ test "fmesh refuses offsets, padding, truncation, and trailing bytes" {
     var padding = try testing.allocator.dupe(u8, valid);
     defer testing.allocator.free(padding);
     const tables_end = header_size + 2 * stream_entry_size + submesh_entry_size;
-    padding[tables_end + fixture.indices.len] = 1;
+    // The padding follows the index *bytes*: three u16s end two bytes short of alignment.
+    padding[tables_end + std.mem.sliceAsBytes(&fixture.indices).len] = 1;
     try testing.expectError(error.Malformed, read(padding, .default));
 
     try testing.expectError(error.Malformed, read(valid[0 .. valid.len - 1], .default));

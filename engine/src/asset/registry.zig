@@ -26,6 +26,17 @@
 //! owner that has to go first calls `unregisterLoader`, which hands everything it made back
 //! to it while it is still there to receive it.
 //!
+//! ## Private loaders
+//!
+//! A registered loader is unique per schema, and `acquire` means "through that one". A
+//! consumer that needs the same record made into a different payload — `render3d`'s own
+//! texture with its own colour space and mips, beside `render2d`'s — passes its loader to
+//! `acquireWith` instead (`meshes.md` §7.4). **An entry is keyed by (content ID, loader)**: a
+//! private loader is never registered, competes with nothing, and is invisible to `acquire`,
+//! `find` and the public ABI. Everything else — counts, `release`, reloads, eviction, the
+//! listing — treats its entries exactly as a registered loader's. Its owner leaves with
+//! `unloadWith`, which is `unregisterLoader`'s promise for a loader nobody registered.
+//!
 //! Everything here reads files named by content, which means content from mods, which means
 //! **untrusted input**: validated and refused, never asserted.
 //!
@@ -168,12 +179,24 @@ pub const Registry = struct {
     /// load rather than once per frame. Append-only, and a withdrawn loader leaves a
     /// vacancy rather than closing the gap, so an index into it is stable forever — an
     /// entry remembers which loader made its payload, and the answer must not shift under
-    /// it.
-    loaders: std.ArrayList(?Loader) = .empty,
+    /// it. Registered and private loaders share the list, so an entry names its maker the
+    /// same way whichever it is.
+    loaders: std.ArrayList(?LoaderSlot) = .empty,
     roots: std.AutoHashMapUnmanaged(PackageHandle, []const u8) = .empty,
 
     entries: core.HandlePool(Assets, Entry) = .empty,
+    /// Entries a registered loader made, by content ID. What `find` and the ABI see.
     by_id: std.AutoHashMapUnmanaged(u64, AssetHandle) = .empty,
+    /// Entries a private loader made, by (content ID, loader slot).
+    by_private: std.AutoHashMapUnmanaged(PrivateKey, AssetHandle) = .empty,
+
+    const LoaderSlot = struct {
+        loader: Loader,
+        /// False for a loader only ever passed to `acquireWith`.
+        registered: bool,
+    };
+
+    const PrivateKey = struct { id: u64, slot: u32 };
 
     const Entry = struct {
         id: ContentId,
@@ -214,11 +237,12 @@ pub const Registry = struct {
     pub fn deinit(self: *Registry, gpa: Allocator) void {
         var it = self.entries.iterator();
         while (it.next()) |entry| {
-            const loader = self.loaders.items[entry.value.loader].?;
+            const loader = self.loaders.items[entry.value.loader].?.loader;
             loader.unload(loader.ctx, gpa, entry.value.payload);
         }
         self.entries.deinit(gpa);
         self.by_id.deinit(gpa);
+        self.by_private.deinit(gpa);
         self.loaders.deinit(gpa);
         self.roots.deinit(gpa);
         self.arena.deinit();
@@ -230,7 +254,7 @@ pub const Registry = struct {
     /// Registers a loader for one record type (I6).
     pub fn registerLoader(self: *Registry, gpa: Allocator, loader: Loader) RegisterError!void {
         if (self.loaderIndex(loader.schema) != null) return error.LoaderExists;
-        try self.loaders.append(gpa, loader);
+        try self.loaders.append(gpa, .{ .loader = loader, .registered = true });
     }
 
     /// Whether a record type has a loader right now.
@@ -249,7 +273,23 @@ pub const Registry = struct {
     /// Returns how many assets were unloaded. Nothing if no such loader is registered.
     pub fn unregisterLoader(self: *Registry, gpa: Allocator, schema_id: SchemaId) u32 {
         const index = self.loaderIndex(schema_id) orelse return 0;
-        const loader = self.loaders.items[index].?;
+        return self.withdraw(gpa, index);
+    }
+
+    /// Unloads everything a private loader made, whatever the reference counts, and forgets
+    /// the loader: `unregisterLoader` for a loader only ever passed to `acquireWith`.
+    ///
+    /// Matched by `Loader.eql`, so its owner passes the value it acquired with. Returns how
+    /// many assets were unloaded; nothing if that loader has nothing here. A registered
+    /// loader is not a private one, and this never touches what a registered loader made.
+    pub fn unloadWith(self: *Registry, gpa: Allocator, loader: Loader) u32 {
+        const index = self.privateIndex(loader) orelse return 0;
+        return self.withdraw(gpa, index);
+    }
+
+    /// Hands every entry a loader slot made back to it, then vacates the slot.
+    fn withdraw(self: *Registry, gpa: Allocator, index: u32) u32 {
+        const loader = self.loaders.items[index].?.loader;
 
         var unloaded: u32 = 0;
         var it = self.entries.iterator();
@@ -259,7 +299,7 @@ pub const Registry = struct {
                 log.warn("asset {f} is still held; unloading it with its loader", .{entry.value.id});
             }
             loader.unload(loader.ctx, gpa, entry.value.payload);
-            _ = self.by_id.remove(entry.value.id.hash);
+            self.forget(entry.value.*);
             _ = self.entries.remove(entry.id);
             unloaded += 1;
         }
@@ -272,7 +312,8 @@ pub const Registry = struct {
     pub fn loaderCount(self: *const Registry) u32 {
         var live: u32 = 0;
         for (self.loaders.items) |slot| {
-            if (slot != null) live += 1;
+            const s = slot orelse continue;
+            if (s.registered) live += 1;
         }
         return live;
     }
@@ -338,7 +379,7 @@ pub const Registry = struct {
             return existing;
         }
 
-        const loader = self.loaders.items[loader_index].?;
+        const loader = self.loaders.items[loader_index].?.loader;
         const location = try self.sourceLocation(record);
         const read = try self.readSource(gpa, record, location, loader.max_source_bytes);
         defer gpa.free(read.bytes);
@@ -357,6 +398,60 @@ pub const Registry = struct {
             .stamp = .{ .modified_ns = read.info.modified_ns, .size = read.info.size },
         });
         self.by_id.putAssumeCapacity(id.hash, handle);
+        return handle;
+    }
+
+    /// Resolves and loads through `loader`, which is **not registered**, and increments the
+    /// reference count (`meshes.md` §7.4).
+    ///
+    /// For a consumer that needs its own payload for a record another loader may be
+    /// registered for. The entry is keyed by (content ID, loader): the same ID through the
+    /// same loader twice loads once, and through a different loader loads again. `acquire`,
+    /// `find` and the public ABI never see these entries. `release`, `reload`,
+    /// `reloadChanged`, `reloadAll`, `evictUnused`, `getIfLoader` and the listing treat them
+    /// as they treat any other, and `unloadWith` hands them all back.
+    ///
+    /// The record must be `loader.schema`'s (`WrongSchema` otherwise), and `loader`'s own
+    /// source bound applies, as a registered loader's does.
+    pub fn acquireWith(self: *Registry, gpa: Allocator, id: ContentId, loader: Loader) AcquireError!AssetHandle {
+        const record = self.store.lookup(id) orelse {
+            log.warn("asset {f} is not in any loaded package", .{id});
+            return error.AssetNotFound;
+        };
+        if (!record.schema_id.eql(loader.schema)) {
+            log.warn("asset '{s}' is not the record type its loader makes", .{record.name});
+            return error.WrongSchema;
+        }
+
+        const existing_slot = self.privateIndex(loader);
+        if (existing_slot) |slot| {
+            if (self.by_private.get(.{ .id = id.hash, .slot = slot })) |existing| {
+                self.entries.get(existing).?.refs += 1;
+                return existing;
+            }
+        }
+
+        const location = try self.sourceLocation(record);
+        const read = try self.readSource(gpa, record, location, loader.max_source_bytes);
+        defer gpa.free(read.bytes);
+        const payload = try loader.load(loader.ctx, gpa, record, read.bytes);
+        errdefer loader.unload(loader.ctx, gpa, payload);
+
+        // Everything that can fail is reserved before anything is taken, so a failure here
+        // leaves neither a lost payload nor an empty loader slot behind.
+        const slot: u32 = existing_slot orelse @intCast(self.loaders.items.len);
+        if (existing_slot == null) try self.loaders.ensureUnusedCapacity(gpa, 1);
+        try self.by_private.ensureUnusedCapacity(gpa, 1);
+        const handle = try self.entries.add(gpa, .{
+            .id = id,
+            .schema_id = record.schema_id,
+            .loader = slot,
+            .payload = payload,
+            .refs = 1,
+            .stamp = .{ .modified_ns = read.info.modified_ns, .size = read.info.size },
+        });
+        if (existing_slot == null) self.loaders.appendAssumeCapacity(.{ .loader = loader, .registered = false });
+        self.by_private.putAssumeCapacity(.{ .id = id.hash, .slot = slot }, handle);
         return handle;
     }
 
@@ -386,7 +481,7 @@ pub const Registry = struct {
     pub fn getIfLoader(self: *Registry, handle: AssetHandle, expected: Loader) ?Asset {
         const entry = self.entries.get(handle) orelse return null;
         const actual = self.loaders.items[entry.loader] orelse return null;
-        if (!actual.eql(expected)) return null;
+        if (!actual.loader.eql(expected)) return null;
         return .{ .id = entry.id, .schema_id = entry.schema_id, .payload = entry.payload };
     }
 
@@ -426,12 +521,22 @@ pub const Registry = struct {
             log.warn("asset {f} is no longer in any loaded package", .{id});
             return error.AssetNotFound;
         };
-        const loader_index = self.loaderIndex(record.schema_id) orelse {
-            log.warn("no loader is registered for the record type of '{s}'", .{record.name});
-            return error.NoLoader;
+        // A registered entry follows its record to whichever loader now claims its type. A
+        // private one stays with the loader its owner chose, which makes one type only.
+        const previous_slot = self.loaders.items[previous].?;
+        const loader_index = if (previous_slot.registered)
+            self.loaderIndex(record.schema_id) orelse {
+                log.warn("no loader is registered for the record type of '{s}'", .{record.name});
+                return error.NoLoader;
+            }
+        else if (record.schema_id.eql(previous_slot.loader.schema))
+            previous
+        else {
+            log.warn("'{s}' is no longer the record type its loader makes", .{record.name});
+            return error.WrongSchema;
         };
 
-        const loader = self.loaders.items[loader_index].?;
+        const loader = self.loaders.items[loader_index].?.loader;
         const location = try self.sourceLocation(record);
         const read = try self.readSource(gpa, record, location, loader.max_source_bytes);
         defer gpa.free(read.bytes);
@@ -441,7 +546,7 @@ pub const Registry = struct {
         // Past every failure. From here nothing can go wrong, which is what makes the swap
         // atomic from the caller's side.
         const entry = self.entries.get(handle).?;
-        const old = self.loaders.items[previous].?;
+        const old = self.loaders.items[previous].?.loader;
         old.unload(old.ctx, gpa, entry.payload);
         entry.payload = payload;
         entry.loader = loader_index;
@@ -522,8 +627,9 @@ pub const Registry = struct {
         return entry.refs;
     }
 
-    /// The handle an ID is already loaded under, without loading it or counting a
-    /// reference.
+    /// The handle an ID is already loaded under **by its registered loader**, without loading
+    /// it or counting a reference. A private loader's entries are found by the handle
+    /// `acquireWith` returned to their owner.
     pub fn find(self: *const Registry, id: ContentId) ?AssetHandle {
         return self.by_id.get(id.hash);
     }
@@ -543,7 +649,8 @@ pub const Registry = struct {
         refs: u32,
     };
 
-    /// Every loaded asset, **in handle-slot order**.
+    /// Every loaded asset, **in handle-slot order**. An ID loaded through a registered loader
+    /// and a private one appears once for each, because it is resident once for each.
     ///
     /// Stable for as long as nothing is loaded or evicted, which is what a stable order can
     /// mean for a pool whose contents come and go. A reader that wants a fixed order sorts
@@ -588,9 +695,9 @@ pub const Registry = struct {
         var it = self.entries.iterator();
         while (it.next()) |entry| {
             if (entry.value.refs != 0) continue;
-            const loader = self.loaders.items[entry.value.loader].?;
+            const loader = self.loaders.items[entry.value.loader].?.loader;
             loader.unload(loader.ctx, gpa, entry.value.payload);
-            _ = self.by_id.remove(entry.value.id.hash);
+            self.forget(entry.value.*);
             _ = self.entries.remove(entry.id);
             freed += 1;
         }
@@ -599,12 +706,31 @@ pub const Registry = struct {
 
     // -- internals ---------------------------------------------------------------------
 
+    /// The registered loader for a schema. A private loader is never the answer.
     fn loaderIndex(self: *const Registry, schema_id: SchemaId) ?u32 {
         for (self.loaders.items, 0..) |slot, i| {
-            const loader = slot orelse continue;
-            if (loader.schema.eql(schema_id)) return @intCast(i);
+            const s = slot orelse continue;
+            if (s.registered and s.loader.schema.eql(schema_id)) return @intCast(i);
         }
         return null;
+    }
+
+    /// The private loader equal to `loader`. A registered loader is never the answer.
+    fn privateIndex(self: *const Registry, loader: Loader) ?u32 {
+        for (self.loaders.items, 0..) |slot, i| {
+            const s = slot orelse continue;
+            if (!s.registered and s.loader.eql(loader)) return @intCast(i);
+        }
+        return null;
+    }
+
+    /// Drops an entry from whichever lookup holds it. The caller removes it from `entries`.
+    fn forget(self: *Registry, entry: Entry) void {
+        if (self.loaders.items[entry.loader].?.registered) {
+            _ = self.by_id.remove(entry.id.hash);
+        } else {
+            _ = self.by_private.remove(.{ .id = entry.id.hash, .slot = entry.loader });
+        }
     }
 
     const SourceLocation = struct {
@@ -1344,4 +1470,291 @@ test "deinit unloads what is still held, so a leak at shutdown is not a leak" {
     // free it, and `testing.allocator` is what checks that it did.
     _ = try fx.registry.acquire(fx.gpa, sprites_id);
     try testing.expectEqual(@as(u32, 1), fx.registry.count());
+}
+
+// -- private loaders (`meshes.md` §7.4) --------------------------------------------------
+
+test "a private loader makes its own payload beside the registered one's, and acquire cannot see it" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+
+    try fx.writeFile("textures/sprites.png", &one_pixel_png);
+    _ = try fx.addPackage("foundry:core", one_texture);
+    try fx.registerTextureLoader();
+
+    var mine: FakeLoader = .{};
+    const private = mine.loader(schemas.texture.id);
+
+    const shared = try fx.registry.acquire(fx.gpa, sprites_id);
+    defer fx.registry.release(shared);
+    const own = try fx.registry.acquireWith(fx.gpa, sprites_id, private);
+    const again = try fx.registry.acquireWith(fx.gpa, sprites_id, private);
+
+    // Keyed by (ID, loader): one load each, and the private entry counted twice.
+    try testing.expect(!own.eql(shared));
+    try testing.expect(own.eql(again));
+    try testing.expectEqual(@as(u32, 1), fx.texture_loader.loads);
+    try testing.expectEqual(@as(u32, 1), mine.loads);
+    try testing.expectEqual(@as(u32, 2), fx.registry.refCount(own).?);
+    try testing.expectEqual(@as(u32, 2), fx.registry.count());
+
+    // What the registered loader means is untouched: `find` and `acquire` answer its entry,
+    // and a private loader is not a registration.
+    try testing.expect(fx.registry.find(sprites_id).?.eql(shared));
+    try testing.expectEqual(@as(u32, 1), fx.registry.loaderCount());
+    const third = try fx.registry.acquire(fx.gpa, sprites_id);
+    try testing.expect(third.eql(shared));
+    fx.registry.release(third);
+
+    // Provenance tells the two payloads apart.
+    try testing.expect(fx.registry.getIfLoader(own, private) != null);
+    try testing.expect(fx.registry.getIfLoader(own, fx.texture_loader.loader(schemas.texture.id)) == null);
+    try testing.expect(fx.registry.getIfLoader(shared, private) == null);
+
+    // The listing shows the ID twice, because it is resident twice.
+    var it = fx.registry.assets();
+    var seen: u32 = 0;
+    while (it.next()) |info| : (seen += 1) try testing.expect(info.id.eql(sprites_id));
+    try testing.expectEqual(@as(u32, 2), seen);
+
+    fx.registry.release(own);
+    fx.registry.release(again);
+}
+
+test "a private loader needs no registration, and two private loaders do not share" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+
+    try fx.writeFile("textures/sprites.png", &one_pixel_png);
+    _ = try fx.addPackage("foundry:core", one_texture);
+
+    var first: FakeLoader = .{};
+    var second: FakeLoader = .{};
+    const a = try fx.registry.acquireWith(fx.gpa, sprites_id, first.loader(schemas.texture.id));
+    defer fx.registry.release(a);
+    const b = try fx.registry.acquireWith(fx.gpa, sprites_id, second.loader(schemas.texture.id));
+    defer fx.registry.release(b);
+
+    try testing.expect(!a.eql(b));
+    try testing.expectEqual(@as(u32, 1), first.loads);
+    try testing.expectEqual(@as(u32, 1), second.loads);
+
+    // Nothing is registered, so the shared path still says so.
+    try testing.expectError(error.NoLoader, fx.registry.acquire(fx.gpa, sprites_id));
+    try testing.expect(fx.registry.find(sprites_id) == null);
+    try testing.expectEqual(@as(u32, 0), fx.registry.loaderCount());
+    try testing.expect(!fx.registry.hasLoader(schemas.texture.id));
+}
+
+test "every way acquireWith can fail is a value, and leaves nothing behind" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+
+    try fx.writeFile("textures/sprites.png", &one_pixel_png);
+    try fx.writeFile("textures/broken.png", "this is not a png");
+    _ = try fx.addPackage("foundry:core",
+        \\foundry:texture foundry:textures.sprites { source "textures/sprites.png" }
+        \\foundry:texture foundry:textures.broken  { source "textures/broken.png" }
+        \\foundry:texture foundry:textures.absent  { source "textures/absent.png" }
+        \\foundry:texture foundry:textures.escape  { source "../../secrets.png" }
+    );
+
+    var mine: FakeLoader = .{};
+    const private = mine.loader(schemas.texture.id);
+
+    try testing.expectError(
+        error.AssetNotFound,
+        fx.registry.acquireWith(fx.gpa, core.ContentId.fromString("foundry:textures.nope"), private),
+    );
+    // A loader for another record type is refused before any file is read.
+    var sounds: FakeLoader = .{};
+    try testing.expectError(
+        error.WrongSchema,
+        fx.registry.acquireWith(fx.gpa, sprites_id, sounds.loader(schemas.sound.id)),
+    );
+    try testing.expectError(
+        error.SourceMissing,
+        fx.registry.acquireWith(fx.gpa, core.ContentId.fromString("foundry:textures.absent"), private),
+    );
+    try testing.expectError(
+        error.SourceRejected,
+        fx.registry.acquireWith(fx.gpa, core.ContentId.fromString("foundry:textures.escape"), private),
+    );
+    try testing.expectError(
+        error.InvalidAsset,
+        fx.registry.acquireWith(fx.gpa, core.ContentId.fromString("foundry:textures.broken"), private),
+    );
+    for ([_]LoadError{ error.LoadFailed, error.UnsupportedVersion, error.OutOfMemory }) |err| {
+        mine.fail = err;
+        try testing.expectError(err, fx.registry.acquireWith(fx.gpa, sprites_id, private));
+    }
+    // A loader's own source bound applies, as a registered loader's does.
+    mine.fail = null;
+    var small = private;
+    small.max_source_bytes = 8;
+    try testing.expectError(error.LoadFailed, fx.registry.acquireWith(fx.gpa, sprites_id, small));
+
+    // Nothing resident, nothing loaded, and no failure took a loader slot.
+    try testing.expectEqual(@as(u32, 0), fx.registry.count());
+    try testing.expectEqual(@as(u32, 0), mine.loads);
+    try testing.expectEqual(@as(usize, 0), fx.registry.loaders.items.len);
+
+    // And the failures were not sticky.
+    const handle = try fx.registry.acquireWith(fx.gpa, sprites_id, private);
+    defer fx.registry.release(handle);
+    try testing.expectEqual(@as(u32, 1), mine.loads);
+}
+
+test "a private loader's entries reload behind their handle, and a failed reload keeps the last" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+
+    try fx.writeFile("textures/sprites.png", &one_pixel_png);
+    _ = try fx.addPackage("foundry:core", one_texture);
+    try fx.registerTextureLoader();
+
+    var mine: FakeLoader = .{};
+    const private = mine.loader(schemas.texture.id);
+    const shared = try fx.registry.acquire(fx.gpa, sprites_id);
+    defer fx.registry.release(shared);
+    const own = try fx.registry.acquireWith(fx.gpa, sprites_id, private);
+    defer fx.registry.release(own);
+
+    // One changed file reloads both residents, each through its own loader.
+    try fx.writeFile("textures/sprites.png", &four_pixel_png);
+    try testing.expectEqual(@as(u32, 2), fx.registry.reloadChanged(fx.gpa));
+    try testing.expectEqual(@as(u32, 2), fx.payload(own).width);
+    try testing.expectEqual(@as(u32, 2), fx.payload(shared).width);
+    try testing.expectEqual(@as(u32, 2), mine.loads);
+    try testing.expectEqual(@as(u32, 1), mine.unloads);
+    try testing.expectEqual(@as(u32, 2), fx.texture_loader.loads);
+    try testing.expect(fx.registry.getIfLoader(own, private) != null);
+    try testing.expectEqual(@as(u32, 1), fx.registry.refCount(own).?);
+
+    // A failed reload changes nothing.
+    mine.fail = error.LoadFailed;
+    try testing.expectError(error.LoadFailed, fx.registry.reload(fx.gpa, own));
+    try testing.expectEqual(@as(u32, 2), fx.payload(own).width);
+    try testing.expectEqual(@as(u32, 1), mine.unloads);
+
+    // `reloadAll` reaches it too, and counts only what it could do.
+    try testing.expectEqual(@as(u32, 1), fx.registry.reloadAll(fx.gpa));
+    mine.fail = null;
+    try testing.expectEqual(@as(u32, 2), fx.registry.reloadAll(fx.gpa));
+    try testing.expectEqual(@as(u32, 3), mine.loads);
+}
+
+test "a private entry whose record changed type is refused on reload, and kept" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+
+    try fx.writeFile("textures/sprites.png", &one_pixel_png);
+    _ = try fx.addPackage("foundry:core", one_texture);
+
+    var mine: FakeLoader = .{};
+    const own = try fx.registry.acquireWith(fx.gpa, sprites_id, mine.loader(schemas.texture.id));
+    defer fx.registry.release(own);
+
+    // A package reload replaces the store, and the same ID is now a sound. An override
+    // cannot retype a record, but a rebuilt package can.
+    fx.store.deinit(fx.gpa);
+    fx.store = .init(fx.gpa, .default);
+    fx.registry.clearMounts();
+    _ = try fx.addPackage("foundry:core",
+        \\foundry:sound foundry:textures.sprites { source "textures/sprites.png" }
+    );
+
+    try testing.expectError(error.WrongSchema, fx.registry.reload(fx.gpa, own));
+    try testing.expectEqual(@as(u32, 1), fx.payload(own).width);
+    try testing.expectEqual(@as(u32, 0), mine.unloads);
+    try testing.expect(fx.registry.get(own).?.schema_id.eql(schemas.texture.id));
+}
+
+test "a private loader's unused entries evict, and come back under a new handle" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+
+    try fx.writeFile("textures/sprites.png", &one_pixel_png);
+    _ = try fx.addPackage("foundry:core", one_texture);
+    try fx.registerTextureLoader();
+
+    var mine: FakeLoader = .{};
+    const private = mine.loader(schemas.texture.id);
+    const shared = try fx.registry.acquire(fx.gpa, sprites_id);
+    defer fx.registry.release(shared);
+    const own = try fx.registry.acquireWith(fx.gpa, sprites_id, private);
+
+    // Zero is evictable, not freed; coming back costs no load.
+    fx.registry.release(own);
+    try testing.expect((try fx.registry.acquireWith(fx.gpa, sprites_id, private)).eql(own));
+    try testing.expectEqual(@as(u32, 1), mine.loads);
+    fx.registry.release(own);
+
+    // Eviction frees only the unheld private entry, through its own loader.
+    try testing.expectEqual(@as(u32, 1), fx.registry.evictUnused(fx.gpa));
+    try testing.expectEqual(@as(u32, 1), mine.unloads);
+    try testing.expectEqual(@as(u32, 0), fx.texture_loader.unloads);
+    try testing.expect(fx.registry.get(own) == null);
+    try testing.expect(fx.registry.find(sprites_id).?.eql(shared));
+
+    const fresh = try fx.registry.acquireWith(fx.gpa, sprites_id, private);
+    defer fx.registry.release(fresh);
+    try testing.expect(!fresh.eql(own));
+    try testing.expectEqual(@as(u32, 2), mine.loads);
+}
+
+test "unloadWith hands back everything a private loader made, and nothing else" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+
+    try fx.writeFile("textures/sprites.png", &one_pixel_png);
+    try fx.writeFile("textures/other.png", &one_pixel_png);
+    _ = try fx.addPackage("foundry:core",
+        \\foundry:texture foundry:textures.sprites { source "textures/sprites.png" }
+        \\foundry:texture foundry:textures.other   { source "textures/other.png" }
+    );
+    try fx.registerTextureLoader();
+
+    var mine: FakeLoader = .{};
+    var theirs: FakeLoader = .{};
+    const private = mine.loader(schemas.texture.id);
+    const shared = try fx.registry.acquire(fx.gpa, sprites_id);
+    defer fx.registry.release(shared);
+    const kept = try fx.registry.acquireWith(fx.gpa, sprites_id, theirs.loader(schemas.texture.id));
+    defer fx.registry.release(kept);
+
+    // Deliberately still held, as a renderer's are when it shuts down.
+    _ = try fx.registry.acquireWith(fx.gpa, sprites_id, private);
+    _ = try fx.registry.acquireWith(fx.gpa, core.ContentId.fromString("foundry:textures.other"), private);
+
+    try testing.expectEqual(@as(u32, 2), fx.registry.unloadWith(fx.gpa, private));
+    try testing.expectEqual(@as(u32, 2), mine.unloads);
+    try testing.expectEqual(@as(u32, 0), theirs.unloads);
+    try testing.expectEqual(@as(u32, 0), fx.texture_loader.unloads);
+    try testing.expectEqual(@as(u32, 2), fx.registry.count());
+    try testing.expect(fx.registry.find(sprites_id).?.eql(shared));
+
+    // Nothing left to hand back is not an error, and a registered loader is not a private one.
+    try testing.expectEqual(@as(u32, 0), fx.registry.unloadWith(fx.gpa, private));
+    try testing.expectEqual(@as(u32, 0), fx.registry.unloadWith(fx.gpa, fx.texture_loader.loader(schemas.texture.id)));
+    try testing.expectEqual(@as(u32, 1), fx.registry.loaderCount());
+    try testing.expect(fx.registry.get(shared) != null);
+
+    // The loader can come back, and its entries load afresh.
+    const again = try fx.registry.acquireWith(fx.gpa, sprites_id, private);
+    defer fx.registry.release(again);
+    try testing.expectEqual(@as(u32, 3), mine.loads);
+}
+
+test "deinit unloads what private loaders still hold" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+
+    try fx.writeFile("textures/sprites.png", &one_pixel_png);
+    _ = try fx.addPackage("foundry:core", one_texture);
+
+    // Never released and never handed back: `testing.allocator` checks that the fixture's
+    // `deinit` freed it through its loader.
+    var mine: FakeLoader = .{};
+    _ = try fx.registry.acquireWith(fx.gpa, sprites_id, mine.loader(schemas.texture.id));
 }

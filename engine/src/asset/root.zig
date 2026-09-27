@@ -26,6 +26,7 @@ const data = @import("data");
 pub const image = @import("image.zig");
 pub const mesh = @import("mesh.zig");
 pub const mesh_file = @import("mesh_file.zig");
+pub const mips = @import("mips.zig");
 pub const png = @import("png.zig");
 pub const registry = @import("registry.zig");
 pub const schemas = @import("schemas.zig");
@@ -41,6 +42,9 @@ pub const wav = @import("wav.zig");
 pub const Image = image.Image;
 pub const DecodeError = png.DecodeError;
 pub const Limits = png.Limits;
+
+pub const ColorSpace = mips.ColorSpace;
+pub const MipChain = mips.Chain;
 
 pub const Mesh = mesh.Mesh;
 pub const MeshAabb = mesh.Aabb;
@@ -94,6 +98,8 @@ pub const Store = data.store.Store;
 test {
     _ = image;
     _ = mesh;
+    _ = mesh_file;
+    _ = mips;
     _ = png;
     _ = registry;
     _ = schemas;
