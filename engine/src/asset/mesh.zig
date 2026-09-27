@@ -27,26 +27,29 @@ pub const Semantic = enum(u8) {
     }
 };
 
-/// Formats the M19 runtime mesh can carry.
+/// Formats the runtime mesh can carry.
 ///
 /// These are deliberately asset names rather than aliases of `rhi.VertexFormat`: `asset`
-/// and `rhi` are sibling L2 modules. M20 widens this enum when UV and normal streams first
-/// have a consumer.
+/// and `rhi` are sibling L2 modules.
 pub const VertexFormat = enum(u8) {
-    float32x3,
-    unorm8x4,
+    float32x2 = 0,
+    float32x3 = 1,
+    float32x4 = 2,
+    unorm8x4 = 3,
 
     pub fn size(self: VertexFormat) u32 {
         return switch (self) {
+            .float32x2 => 8,
             .float32x3 => 12,
+            .float32x4 => 16,
             .unorm8x4 => 4,
         };
     }
 };
 
 pub const IndexFormat = enum(u8) {
-    uint16,
-    uint32,
+    uint16 = 0,
+    uint32 = 1,
 
     pub fn size(self: IndexFormat) u32 {
         return switch (self) {
@@ -64,7 +67,7 @@ pub const Stream = struct {
 };
 
 /// One triangle-list range in the mesh's index buffer.
-pub const Submesh = struct {
+pub const Submesh = extern struct {
     first_index: u32,
     index_count: u32,
 };
@@ -102,6 +105,9 @@ pub const Error = error{
     EmptySubmesh,
     InvalidSubmeshRange,
     NonFinitePosition,
+    InvalidNormal,
+    InvalidTexcoord,
+    InvalidColor,
     InvalidBounds,
 };
 
@@ -114,7 +120,7 @@ pub const Mesh = struct {
     streams: []const Stream,
     index_format: IndexFormat,
     indices: []const u8,
-    submeshes: []const Submesh,
+    submeshes: []align(1) const Submesh,
     bounds: Aabb,
 
     /// Refuses malformed or unsupported geometry without repairing it.
@@ -132,15 +138,47 @@ pub const Mesh = struct {
             seen |= bit;
 
             const supported = switch (stream.semantic) {
-                .position => stream.format == .float32x3,
-                .color => stream.format == .unorm8x4,
-                .normal, .tangent, .uv0, .uv1, .joints, .weights => false,
+                .position, .normal => stream.format == .float32x3,
+                .uv0, .uv1 => stream.format == .float32x2,
+                .color => stream.format == .unorm8x4 or stream.format == .float32x4,
+                .tangent, .joints, .weights => false,
             };
             if (!supported) return error.UnsupportedVertexFormat;
 
             const expected = @as(u64, self.vertex_count) * stream.format.size();
             if (stream.bytes.len != expected) return error.InvalidStreamLength;
             if (stream.semantic == .position) positions = stream.bytes;
+
+            switch (stream.semantic) {
+                .normal => {
+                    var offset: usize = 0;
+                    while (offset < stream.bytes.len) : (offset += @sizeOf(Vec3)) {
+                        const normal = readVec3(stream.bytes[offset..][0..@sizeOf(Vec3)]);
+                        const length = normal.length();
+                        if (!normal.isFinite() or !std.math.isFinite(length) or @abs(length - 1) > 1e-3) {
+                            return error.InvalidNormal;
+                        }
+                    }
+                },
+                .uv0, .uv1 => {
+                    var offset: usize = 0;
+                    while (offset < stream.bytes.len) : (offset += 8) {
+                        const x = std.mem.bytesToValue(f32, stream.bytes[offset..][0..4]);
+                        const y = std.mem.bytesToValue(f32, stream.bytes[offset + 4 ..][0..4]);
+                        if (!std.math.isFinite(x) or !std.math.isFinite(y)) return error.InvalidTexcoord;
+                    }
+                },
+                .color => if (stream.format == .float32x4) {
+                    var offset: usize = 0;
+                    while (offset < stream.bytes.len) : (offset += 16) {
+                        for (0..4) |component| {
+                            const value = std.mem.bytesToValue(f32, stream.bytes[offset + component * 4 ..][0..4]);
+                            if (!std.math.isFinite(value) or value < 0 or value > 1) return error.InvalidColor;
+                        }
+                    }
+                },
+                else => {},
+            }
         }
         const position_bytes = positions orelse return error.MissingPosition;
 
@@ -265,6 +303,8 @@ test "a valid mesh passes and bounds are computed from every position" {
     try testing.expectEqual(Vec3{ .x = -2, .y = -5, .z = -6 }, mesh.bounds.min);
     try testing.expectEqual(Vec3{ .x = 3, .y = 2, .z = 4 }, mesh.bounds.max);
     try testing.expectEqual(@as(u32, 12), VertexFormat.float32x3.size());
+    try testing.expectEqual(@as(u32, 8), VertexFormat.float32x2.size());
+    try testing.expectEqual(@as(u32, 16), VertexFormat.float32x4.size());
     try testing.expectEqual(@as(u32, 4), VertexFormat.unorm8x4.size());
     try testing.expectEqual(@as(u32, 2), IndexFormat.uint16.size());
     try testing.expectEqual(@as(u32, 4), IndexFormat.uint32.size());
@@ -297,7 +337,7 @@ test "a semantic given twice is refused" {
     try testing.expectError(error.DuplicateSemantic, mesh.validate());
 }
 
-test "only M19's position and color formats are accepted" {
+test "each semantic accepts only its M20 format set" {
     var geometry: TestGeometry = .{};
     var streams: [2]Stream = undefined;
     const mesh = validMesh(&geometry, &streams);
@@ -307,8 +347,48 @@ test "only M19's position and color formats are accepted" {
     streams[0].format = .float32x3;
     streams[1].format = .float32x3;
     try testing.expectError(error.UnsupportedVertexFormat, mesh.validate());
-    streams[1] = .{ .semantic = .normal, .format = .float32x3, .bytes = streams[0].bytes };
+    streams[1] = .{ .semantic = .normal, .format = .float32x2, .bytes = streams[0].bytes };
     try testing.expectError(error.UnsupportedVertexFormat, mesh.validate());
+
+    streams[1] = .{ .semantic = .tangent, .format = .float32x4, .bytes = streams[0].bytes };
+    try testing.expectError(error.UnsupportedVertexFormat, mesh.validate());
+}
+
+test "normal streams are finite and unit length" {
+    var geometry: TestGeometry = .{};
+    var streams: [2]Stream = undefined;
+    const mesh = validMesh(&geometry, &streams);
+    var normals = [_]Vec3{ Vec3.up, Vec3.up, Vec3.up };
+    streams[1] = .{ .semantic = .normal, .format = .float32x3, .bytes = std.mem.sliceAsBytes(&normals) };
+    try mesh.validate();
+    normals[1].y = 0.998;
+    try testing.expectError(error.InvalidNormal, mesh.validate());
+    normals[1].y = std.math.nan(f32);
+    try testing.expectError(error.InvalidNormal, mesh.validate());
+}
+
+test "texture coordinates are finite" {
+    var geometry: TestGeometry = .{};
+    var streams: [2]Stream = undefined;
+    const mesh = validMesh(&geometry, &streams);
+    var uvs = [_]core.math.Vec2{ .{}, .{ .x = 1 }, .{ .y = 1 } };
+    streams[1] = .{ .semantic = .uv0, .format = .float32x2, .bytes = std.mem.sliceAsBytes(&uvs) };
+    try mesh.validate();
+    uvs[2].x = std.math.inf(f32);
+    try testing.expectError(error.InvalidTexcoord, mesh.validate());
+}
+
+test "float colour streams are finite and normalized" {
+    var geometry: TestGeometry = .{};
+    var streams: [2]Stream = undefined;
+    const mesh = validMesh(&geometry, &streams);
+    var colors = [_][4]f32{ .{ 1, 0, 0, 1 }, .{ 0, 1, 0, 0.5 }, .{ 0, 0, 1, 1 } };
+    streams[1] = .{ .semantic = .color, .format = .float32x4, .bytes = std.mem.sliceAsBytes(&colors) };
+    try mesh.validate();
+    colors[1][3] = 1.01;
+    try testing.expectError(error.InvalidColor, mesh.validate());
+    colors[1][3] = std.math.nan(f32);
+    try testing.expectError(error.InvalidColor, mesh.validate());
 }
 
 test "a stream length must exactly match its vertex count and format" {

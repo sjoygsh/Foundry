@@ -1,6 +1,6 @@
 # ADR-0055: Imported models compile to Foundry records, with derived IDs
 
-**Status:** Proposed — with `docs/design/meshes.md` (M20), awaiting the owner's acceptance
+**Status:** Accepted 2026-09-27 when the owner requested M20 Step 1
 **Date:** 2026-09-27
 **Informed by:** ADR-0006, ADR-0021, ADR-0048, ADR-0053, `docs/design/meshes.md` §5 and §6,
 `assets.md` §3

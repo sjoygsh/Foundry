@@ -321,6 +321,10 @@ pub fn registerAvailableSchemas(
 pub const engine_schema_names = [_][]const u8{
     mod.schemas.manifest_name,
     asset.schemas.texture_name,
+    asset.schemas.mesh_name,
+    asset.schemas.material_name,
+    asset.schemas.model_name,
+    asset.schemas.model_import_name,
     asset.schemas.tilegrid_name,
     asset.schemas.sound_name,
     asset.schemas.script_name,

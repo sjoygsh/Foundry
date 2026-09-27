@@ -25,6 +25,7 @@ const data = @import("data");
 
 pub const image = @import("image.zig");
 pub const mesh = @import("mesh.zig");
+pub const mesh_file = @import("mesh_file.zig");
 pub const png = @import("png.zig");
 pub const registry = @import("registry.zig");
 pub const schemas = @import("schemas.zig");
@@ -49,6 +50,9 @@ pub const MeshSemantic = mesh.Semantic;
 pub const MeshStream = mesh.Stream;
 pub const Submesh = mesh.Submesh;
 pub const MeshVertexFormat = mesh.VertexFormat;
+pub const MeshFileLimits = mesh_file.Limits;
+pub const MeshFileReadError = mesh_file.ReadError;
+pub const MeshFileView = mesh_file.View;
 
 pub const Sound = sound.Sound;
 /// Prefixed, because `png` already owns the unqualified names at this level. The two are

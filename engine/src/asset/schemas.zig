@@ -19,6 +19,7 @@
 //! Design: `docs/design/assets.md` §2, §3 and §5.
 
 const std = @import("std");
+const core = @import("core");
 const data = @import("data");
 
 const Allocator = std.mem.Allocator;
@@ -69,24 +70,115 @@ pub const DerivedString = struct {
 /// missing sprite is less diagnosable than a wrong-looking one).
 pub const filter_field = "filter";
 pub const wrap_field = "wrap";
+pub const color_space_field = "color_space";
+pub const mipmaps_field = "mipmaps";
 
 pub const texture_name = "foundry:texture";
 
 /// An image loaded into a GPU texture.
 ///
-/// **Version 2, and version 1 content still loads.** `source` was the whole of version 1;
+/// **Version 3, and version 1 and 2 content still load.** `source` was version 1;
 /// `filter` and `wrap` arrived with the loader that reads them, appended with defaults —
-/// which is exactly the case additive versioning exists for and the cheap half of I8. A
+/// `color_space` and `mipmaps` are the same additive change in M20. A
 /// package compiled before they existed is read against the version it carries and fills
 /// the rest from these defaults (`store.Record.missingDefault`), so nothing has to be
 /// recompiled to keep working.
 pub const texture: Schema = .{
     .id = SchemaId.fromStringUnchecked(texture_name),
-    .version = 2,
+    .version = 3,
     .fields = &.{
         .{ .name = source_field, .type = .string },
         .{ .name = filter_field, .type = .string, .since = 2, .presence = .{ .default = .{ .string = "nearest" } } },
         .{ .name = wrap_field, .type = .string, .since = 2, .presence = .{ .default = .{ .string = "clamp" } } },
+        .{ .name = color_space_field, .type = .string, .since = 3, .presence = .{ .default = .{ .string = "srgb" } } },
+        .{ .name = mipmaps_field, .type = .bool, .since = 3, .presence = .{ .default = .{ .bool = false } } },
+    },
+};
+
+pub const mesh_name = "foundry:mesh";
+pub const mesh_extension = "fmesh";
+
+/// A canonical runtime mesh. The geometry and bounds are all in its `.fmesh` source.
+pub const mesh: Schema = .{
+    .id = SchemaId.fromStringUnchecked(mesh_name),
+    .fields = &.{.{ .name = source_field, .type = .string }},
+};
+
+pub const material_name = "foundry:material";
+
+const color_type: data.FieldType = .{ .nested = &.{
+    .{ .name = "r", .type = .f32 },
+    .{ .name = "g", .type = .f32 },
+    .{ .name = "b", .type = .f32 },
+    .{ .name = "a", .type = .f32 },
+} };
+
+/// The fixed M20 material record. Runtime range and shading-model validation belongs to the
+/// renderer; the schema pins the public field names and their types.
+pub const material: Schema = .{
+    .id = SchemaId.fromStringUnchecked(material_name),
+    .fields = &.{
+        .{ .name = "shading", .type = .id, .presence = .{ .default = .{ .id = core.ContentId.fromString("foundry:shading.unlit") } } },
+        .{ .name = "base_color", .type = color_type, .presence = .{ .default = .{ .nested = &.{
+            .{ .name = "r", .value = .{ .float = 1 } },
+            .{ .name = "g", .value = .{ .float = 1 } },
+            .{ .name = "b", .value = .{ .float = 1 } },
+            .{ .name = "a", .value = .{ .float = 1 } },
+        } } } },
+        .{ .name = "base_color_texture", .type = .id, .presence = .optional },
+        .{ .name = "alpha_mode", .type = .string, .presence = .{ .default = .{ .string = "opaque" } } },
+        .{ .name = "alpha_cutoff", .type = .f32, .presence = .{ .default = .{ .float = 0.5 } } },
+        .{ .name = "double_sided", .type = .bool, .presence = .{ .default = .{ .bool = false } } },
+    },
+};
+
+pub const model_name = "foundry:model";
+
+const vec3_type: data.FieldType = .{ .nested = &.{
+    .{ .name = "x", .type = .f32 }, .{ .name = "y", .type = .f32 }, .{ .name = "z", .type = .f32 },
+} };
+const quat_type: data.FieldType = .{ .nested = &.{
+    .{ .name = "x", .type = .f32 }, .{ .name = "y", .type = .f32 },
+    .{ .name = "z", .type = .f32 }, .{ .name = "w", .type = .f32 },
+} };
+const model_slot_type: data.FieldType = .{ .nested = &.{
+    .{ .name = "name", .type = .string },
+    .{ .name = "material", .type = .id },
+} };
+const model_part_type: data.FieldType = .{ .nested = &.{
+    .{ .name = "mesh", .type = .id },
+    .{ .name = "submesh", .type = .u32 },
+    .{ .name = "slot", .type = .u32 },
+    .{ .name = "translation", .type = vec3_type },
+    .{ .name = "rotation", .type = quat_type },
+    .{ .name = "scale", .type = vec3_type },
+} };
+const model_slots_type: data.FieldType = .{ .list = &model_slot_type };
+const model_parts_type: data.FieldType = .{ .list = &model_part_type };
+
+pub const model: Schema = .{
+    .id = SchemaId.fromStringUnchecked(model_name),
+    .fields = &.{
+        .{ .name = "slots", .type = model_slots_type },
+        .{ .name = "parts", .type = model_parts_type },
+    },
+};
+
+pub const model_import_name = "foundry:model_import";
+const material_mapping_type: data.FieldType = .{ .nested = &.{
+    .{ .name = "name", .type = .string },
+    .{ .name = "material", .type = .id },
+} };
+const material_mappings_type: data.FieldType = .{ .list = &material_mapping_type };
+
+/// An authoring record consumed and replaced by the compiler in Step 4. Registering it now
+/// pins the input contract without making any runtime path understand glTF.
+pub const model_import: Schema = .{
+    .id = SchemaId.fromStringUnchecked(model_import_name),
+    .fields = &.{
+        .{ .name = source_field, .type = .string },
+        .{ .name = "front", .type = .string, .presence = .{ .default = .{ .string = "-z" } } },
+        .{ .name = "materials", .type = material_mappings_type, .presence = .optional },
     },
 };
 
@@ -155,6 +247,8 @@ pub const script: Schema = .{
 /// depend on the package and nothing else.
 pub const kinds = [_]Kind{
     .{ .name = texture_name, .schema = texture, .extensions = &.{"png"} },
+    .{ .name = mesh_name, .schema = mesh, .extensions = &.{mesh_extension} },
+    .{ .name = model_import_name, .schema = model_import, .extensions = &.{ "gltf", "glb" } },
     .{ .name = tilegrid_name, .schema = tilegrid, .extensions = &.{tilegrid_extension} },
     .{ .name = sound_name, .schema = sound, .extensions = &.{"wav"} },
     .{
@@ -164,6 +258,9 @@ pub const kinds = [_]Kind{
         .derived_strings = &.{.{ .field = language_field, .value = script_language }},
     },
 };
+
+/// Engine-defined record schemas with no source bytes of their own.
+pub const records = [_]Schema{ material, model };
 
 /// The kind a file extension derives, or null if that extension is not an asset.
 ///
@@ -194,6 +291,7 @@ pub fn kindForSchema(schema_id: SchemaId) ?*const Kind {
 /// registry accepts a declaration that agrees with what it holds (`content-schemas.md` §3).
 pub fn registerAll(gpa: Allocator, registry: *Registry) (data.schema.RegisterError || Allocator.Error)!void {
     for (&kinds) |kind| _ = try registry.register(gpa, kind.schema);
+    for (&records) |schema| _ = try registry.register(gpa, schema);
 }
 
 /// A string field of `record`, read against `newest` and filled from its default when the
@@ -242,9 +340,12 @@ test "a field added after version 1 carries a default, or old content could not 
 
 test "extensions map to kinds, and nothing else does" {
     try testing.expect(kindForExtension("png") == &kinds[0]);
-    try testing.expect(kindForExtension("fgrid") == &kinds[1]);
-    try testing.expect(kindForExtension("wav") == &kinds[2]);
-    try testing.expect(kindForExtension("lua") == &kinds[3]);
+    try testing.expect(kindForExtension("fmesh") == &kinds[1]);
+    try testing.expect(kindForExtension("gltf") == &kinds[2]);
+    try testing.expect(kindForExtension("glb") == &kinds[2]);
+    try testing.expect(kindForExtension("fgrid") == &kinds[3]);
+    try testing.expect(kindForExtension("wav") == &kinds[4]);
+    try testing.expect(kindForExtension("lua") == &kinds[5]);
     try testing.expect(kindForExtension("PNG") == null);
     try testing.expect(kindForExtension("txt") == null);
     try testing.expect(kindForExtension("") == null);
@@ -287,13 +388,79 @@ test "the engine's asset schemas register, and register twice without complaint"
     defer registry.deinit(gpa);
 
     try registerAll(gpa, &registry);
-    try testing.expectEqual(@as(u32, kinds.len), registry.count());
+    try testing.expectEqual(@as(u32, kinds.len + records.len), registry.count());
 
     // The engine registers these at startup and `fpack` registers them at compile time; a
     // process that does both must not be a conflict.
     try registerAll(gpa, &registry);
-    try testing.expectEqual(@as(u32, kinds.len), registry.count());
+    try testing.expectEqual(@as(u32, kinds.len + records.len), registry.count());
 
     const found = registry.lookup(SchemaId.fromStringUnchecked("foundry:texture")).?;
     try testing.expectEqualStrings(source_field, found.fields[0].name);
+}
+
+fn compileRecords(source: []const u8, registry: *Registry, package: *data.Package, diags: *data.Diagnostics) !void {
+    var document = try data.parser.parse(testing.allocator, "m20.fdt", source, .{ .namespace = "test" }, diags);
+    defer document.deinit(testing.allocator);
+    try package.addDocument(testing.allocator, &document, registry, diags);
+}
+
+test "M20 asset and model schemas accept their representative records and reject wrong types" {
+    const gpa = testing.allocator;
+    var registry: Registry = .init(gpa, .default);
+    defer registry.deinit(gpa);
+    try registerAll(gpa, &registry);
+    var package = try data.Package.init(gpa, "test:package", 1, .default);
+    defer package.deinit(gpa);
+    var diags: data.Diagnostics = .init(gpa, .default);
+    defer diags.deinit(gpa);
+
+    try compileRecords(
+        \\foundry:texture test:texture { source "a.png" }
+        \\foundry:mesh test:mesh { source "a.fmesh" }
+        \\foundry:material test:material { base_color { r 1 g 0.5 b 0 a 1 } }
+        \\foundry:model test:model {
+        \\  slots [{ name "main" material test:material }]
+        \\  parts [{ mesh test:mesh submesh 0 slot 0
+        \\           translation { x 0 y 0 z 0 }
+        \\           rotation { x 0 y 0 z 0 w 1 }
+        \\           scale { x 1 y 1 z 1 } }]
+        \\}
+        \\foundry:model_import test:import { source "model.glb" }
+    , &registry, &package, &diags);
+    try testing.expectEqual(@as(u32, 5), package.count());
+
+    var bad_package = try data.Package.init(gpa, "test:bad", 1, .default);
+    defer bad_package.deinit(gpa);
+    var bad_diags: data.Diagnostics = .init(gpa, .default);
+    defer bad_diags.deinit(gpa);
+    try testing.expectError(error.ContentInvalid, compileRecords(
+        \\foundry:material test:bad.material { double_sided "false" }
+        \\foundry:model test:bad.model { slots [] parts [{ mesh "not-an-id" }] }
+    , &registry, &bad_package, &bad_diags));
+    try testing.expect(bad_diags.count() >= 2);
+}
+
+test "texture versions 1 and 2 extend to version 3 with the new defaults" {
+    const gpa = testing.allocator;
+    const older = [_]Schema{
+        .{ .id = texture.id, .version = 1, .fields = texture.fields[0..1] },
+        .{ .id = texture.id, .version = 2, .fields = texture.fields[0..3] },
+    };
+    for (older) |old| {
+        var registry: Registry = .init(gpa, .default);
+        defer registry.deinit(gpa);
+        _ = try registry.register(gpa, old);
+        var package = try data.Package.init(gpa, "test:package", 1, .default);
+        defer package.deinit(gpa);
+        var diags: data.Diagnostics = .init(gpa, .default);
+        defer diags.deinit(gpa);
+        try compileRecords("foundry:texture test:old { source \"old.png\" }", &registry, &package, &diags);
+        _ = try registry.register(gpa, texture);
+
+        const record = package.records()[0];
+        const newest = registry.lookup(texture.id).?.*;
+        try testing.expectEqualStrings("srgb", record.value(newest, 3).?.string);
+        try testing.expect(!record.value(newest, 4).?.bool);
+    }
 }

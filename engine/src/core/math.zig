@@ -360,9 +360,78 @@ pub const Transform = extern struct {
 
     pub const identity: Transform = .{};
 
+    /// The relative element tolerance for deciding whether a matrix is exactly representable
+    /// as TRS. Shared by model import (M20) and keep-world re-parenting (M21).
+    pub const representation_epsilon: f32 = 1e-5;
+
+    /// The relative determinant tolerance reserved for M21's parent-inversion check. It lives
+    /// beside the decomposition tolerance so the two implementations cannot invent different
+    /// constants for `docs/design/3d.md` §7.1.
+    pub const determinant_epsilon: f32 = 1e-6;
+
     /// `T · R · S`: scale first, then rotate, then translate.
     pub fn toMat4(t: Transform) Mat4 {
         return Mat4.trs(t.translation, t.rotation, t.scale);
+    }
+
+    pub const DecomposeError = error{NotRepresentable};
+
+    /// Decomposes an affine matrix into the canonical `T · R · S` representation, or refuses
+    /// it. Refusal is the important half of this function: shear and a collapsed axis are not
+    /// silently approximated. A reflection is represented by a negative X scale.
+    pub fn fromMat4Exact(matrix: Mat4) DecomposeError!Transform {
+        var norm: f32 = 0;
+        for (matrix.cols) |column| {
+            for (column) |value| {
+                if (!std.math.isFinite(value)) return error.NotRepresentable;
+                norm = @max(norm, @abs(value));
+            }
+        }
+        if (matrix.cols[0][3] != 0 or matrix.cols[1][3] != 0 or
+            matrix.cols[2][3] != 0 or matrix.cols[3][3] != 1)
+        {
+            return error.NotRepresentable;
+        }
+
+        const a0 = Vec3.init(matrix.cols[0][0], matrix.cols[0][1], matrix.cols[0][2]);
+        const a1 = Vec3.init(matrix.cols[1][0], matrix.cols[1][1], matrix.cols[1][2]);
+        const a2 = Vec3.init(matrix.cols[2][0], matrix.cols[2][1], matrix.cols[2][2]);
+        const sx_abs = a0.length();
+        const sy = a1.length();
+        const sz = a2.length();
+        if (sx_abs == 0 or sy == 0 or sz == 0 or
+            !std.math.isFinite(sx_abs) or !std.math.isFinite(sy) or !std.math.isFinite(sz))
+        {
+            return error.NotRepresentable;
+        }
+
+        const reflected = Vec3.dot(a0, Vec3.cross(a1, a2)) < 0;
+        const sx = if (reflected) -sx_abs else sx_abs;
+        const x = a0.scale(1.0 / sx);
+        const y = a1.scale(1.0 / sy);
+        const z = a2.scale(1.0 / sz);
+        const rotation = Quat.fromBasis(x, y, z);
+        if (!rotation.isUnit()) return error.NotRepresentable;
+
+        const result: Transform = .{
+            .translation = .{
+                .x = matrix.cols[3][0],
+                .y = matrix.cols[3][1],
+                .z = matrix.cols[3][2],
+            },
+            .rotation = rotation,
+            .scale = .{ .x = sx, .y = sy, .z = sz },
+        };
+        const recomposed = result.toMat4();
+        const tolerance_scaled = representation_epsilon * @max(@as(f32, 1), norm);
+        for (0..4) |column| {
+            for (0..4) |row| {
+                if (@abs(recomposed.cols[column][row] - matrix.cols[column][row]) > tolerance_scaled) {
+                    return error.NotRepresentable;
+                }
+            }
+        }
+        return result;
     }
 
     /// Every component finite and the rotation unit. **Any finite scale is valid**, zero and
@@ -896,6 +965,35 @@ test "convention: a transform is valid with any finite scale" {
     try testing.expect(!(Transform{ .translation = Vec3.init(std.math.nan(f32), 0, 0) }).isValid());
     try testing.expect(!(Transform{ .scale = Vec3.init(1, std.math.inf(f32), 1) }).isValid());
     try testing.expect(!(Transform{ .rotation = .{ .x = 0, .y = 0, .z = 0, .w = 2 } }).isValid());
+}
+
+test "exact matrix decomposition round trips TRS and canonicalizes reflections" {
+    const source: Transform = .{
+        .translation = Vec3.init(3, -2, 7),
+        .rotation = Quat.fromAxisAngle(Vec3.init(1, 2, 3), 1.1),
+        .scale = Vec3.init(2, -3, 0.5),
+    };
+    const decomposed = try Transform.fromMat4Exact(source.toMat4());
+    try testing.expect(decomposed.scale.x < 0);
+    try testing.expect(decomposed.rotation.isUnit());
+    try testing.expect(Mat4.approxEql(source.toMat4(), decomposed.toMat4(), Transform.representation_epsilon));
+}
+
+test "exact matrix decomposition refuses shear, a singular axis, perspective, and non-finite values" {
+    var shear = Mat4.identity;
+    shear.cols[1][0] = 0.25;
+    try testing.expectError(error.NotRepresentable, Transform.fromMat4Exact(shear));
+
+    const singular = Mat4.trs(Vec3.zero, Quat.identity, Vec3.init(1, 0, 1));
+    try testing.expectError(error.NotRepresentable, Transform.fromMat4Exact(singular));
+
+    var perspective = Mat4.identity;
+    perspective.cols[0][3] = 0.01;
+    try testing.expectError(error.NotRepresentable, Transform.fromMat4Exact(perspective));
+
+    var non_finite = Mat4.identity;
+    non_finite.cols[2][2] = std.math.nan(f32);
+    try testing.expectError(error.NotRepresentable, Transform.fromMat4Exact(non_finite));
 }
 
 test "inverse undoes any TRS, reflections included, and a singular matrix has none" {

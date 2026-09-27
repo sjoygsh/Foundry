@@ -1,15 +1,26 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-27
-**Current handoff: M19 is complete (2026-09-27, tag `m19`). M20, Meshes, has a proposed design,
-[`docs/design/meshes.md`](docs/design/meshes.md), with ADR-0055 proposed. It awaits the owner's
-acceptance, and Step 1 has not begun.** §14 lists the eleven choices acceptance fixes. The two that
-correct `3d.md` are:
-- the glTF importer lives in `author`'s compiler;
-- mip chains are generated on the CPU at load.
+**Current handoff: M19 is complete (2026-09-27, tag `m19`). M20, Meshes, is accepted and Step 1
+of nine is complete. Stop before Step 2.** Read [`docs/design/meshes.md`](docs/design/meshes.md),
+whose Step 1 Resolution records the implementation and the two contract corrections it forced.
+ADR-0055 is accepted. Next is Step 2 only: CPU mip generation and
+`asset.Registry.acquireWith`/`unloadWith`. No glTF reader, mip generator, private acquisition or
+M20 renderer functionality exists yet.
 
-The one that changes a completed module is `asset.Registry.acquireWith`, which lets `render3d`
-own its textures beside `render2d`'s.
+**M20 Step 1 is done (2026-09-27).** `asset/mesh_file.zig` owns the bounded canonical `.fmesh`
+reader/writer and returns validated zero-copy views. `asset.Mesh` now accepts normal, UV0/UV1 and
+both colour formats with named data refusals. The engine registers `foundry:mesh`,
+`foundry:material`, `foundry:model` and the build-only `foundry:model_import`; texture schema v3
+adds additive colour-space and mipmap defaults, with explicit version 1/2 compatibility tests.
+`core.Transform.fromMat4Exact` implements `3d.md` §7.1's canonical exact decomposition.
+
+The file contract needed one explicit correction: a single `u16` triangle ends two bytes short
+of a four-byte boundary, so canonical zero padding aligns the first stream and is checked by the
+reader. UV finiteness also gains the omitted `InvalidTexcoord` error. The recomposition guard's
+mutation failed the shear test. The full bar passed at **1,768 of 1,769 headless tests** (the
+existing skip), **1,841 declared**, including native/Metal checks, both null cross-targets and
+all three thirty-frame headless samples.
 
 **M19's close:** Depth, not draw order, now decides what is visible, on Metal and on
 Windows/Vulkan:

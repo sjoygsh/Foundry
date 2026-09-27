@@ -1,7 +1,7 @@
 # Design: M20 — Meshes: runtime formats, glTF import, textures with mips, materials and culling
 
-**Status:** Proposed 2026-09-27. It awaits the owner's acceptance, and no step has begun. §14
-lists the choices acceptance fixes.
+**Status:** Accepted 2026-09-27 when the owner requested Step 1. Step 1 of nine is complete;
+Step 2 has not begun. §14 records the accepted choices.
 **Date:** 2026-09-27
 **Baseline:** `a8cbd64`, tag `m19`. M0–M19 are complete.
 **Decisions:**
@@ -813,3 +813,40 @@ Nothing blocks Step 1 once these are accepted. Each is recommended as written:
 | 9 | The glTF subset: `.glb`, and `.gltf` with files inside the package; no `data:` URIs; PNG only; triangle lists; §6.5's refusals and warnings | §6.5 |
 | 10 | A draw with a negative determinant flips its front face | §7.5 |
 | 11 | Linux: compile only, with the stated triggers | §10 |
+
+## Resolution — Step 1: the mesh file and records (2026-09-27)
+
+The owner's request to begin Step 1 accepted §14's eleven choices and ADR-0055. Step 1 pins the
+following, and stops before mip generation or private loaders:
+
+- `asset/mesh_file.zig` reads a bounded, versioned `.fmesh` without copying its payload and
+  writes one canonical representation. A returned `View` owns only eight stream descriptors;
+  its mesh's indices, submeshes and stream bytes borrow the input. The reader checks every
+  count and product before slicing, requires semantic order and exact EOF, then runs
+  `Mesh.validate`. `write(read(bytes))` is byte-identical.
+- §3's first-stream alignment and no-gap rules disagreed for an odd number of `u16` triangles:
+  one triangle occupies six bytes. The canonical layout therefore has zero-filled structural
+  padding after the index payload, only as needed to align the first stream to four bytes. The
+  reader requires those bytes to be zero; all later payloads remain contiguous. This sentence
+  supersedes §3's unqualified “no gaps” wording.
+- The on-disk format values are explicit: `uint16 = 0`, `uint32 = 1`; `float32x2 = 0`,
+  `float32x3 = 1`, `float32x4 = 2`, `unorm8x4 = 3`. Borrowed submesh records may be unaligned,
+  so `Mesh` exposes them at alignment 1 and `render3d` copies them field by field into its owned
+  aligned storage.
+- `Mesh.validate` now accepts normals, both UV sets and both colour formats. Non-finite UVs need
+  a distinct refusal just as non-finite or non-unit normals and bad float colours do; the design
+  named only `InvalidNormal` and `InvalidColor`, so `InvalidTexcoord` is the third named error.
+- `asset.schemas` registers `foundry:mesh`, `foundry:material`, `foundry:model` and the
+  build-only `foundry:model_import`; `.fmesh`, `.gltf` and `.glb` derive the appropriate source
+  records. `foundry:texture` is version 3 with additive `color_space = "srgb"` and
+  `mipmaps = false`, and version 1 and 2 records receive those defaults. The authoring service's
+  schema-name list contains all four new spellings.
+- `core.Transform.fromMat4Exact` is the one canonical decomposition specified by `3d.md` §7.1.
+  It keeps reflections as negative X scale and refuses non-affine, non-finite, singular and
+  sheared matrices as `NotRepresentable`. The recomposition guard was removed once during
+  verification; the shear test failed, then passed after restoration.
+
+The full bar passed: formatting, the headless graph (**1,768 of 1,769**, the existing skip;
+**1,841 declared**), native and Metal checks, Linux and Windows null cross-checks, and thirty
+headless frames of `sandbox`, `room` and `sandbox3d`. Nothing reads glTF, generates mips,
+acquires through a private loader or draws a material yet. Step 2 is next.

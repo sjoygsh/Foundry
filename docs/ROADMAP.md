@@ -1049,9 +1049,10 @@ ADR-0054 accepted. Exit condition met: draw order no longer decides what is visi
 - Linux was compile-only by design, and no trigger fired. At the owner's request the Vulkan graph
   and a windowed run were also confirmed on the M18 Ubuntu machine.
 
-**M20, Meshes, has a proposed design** — [`meshes.md`](design/meshes.md), with ADR-0055
-proposed — and awaits the owner's acceptance. No step has begun. It plans nine steps:
-- the `.fmesh` format and the material and model records;
+**M20, Meshes, is accepted; Step 1 of nine is complete** —
+[`meshes.md`](design/meshes.md), with ADR-0055 accepted. Step 1 pins the canonical `.fmesh`,
+the widened mesh table, the material/model/import records, texture schema v3 compatibility and
+exact TRS decomposition. No glTF reader or draw path exists yet. The remaining steps are:
 - mips, colour space and a consumer's own loader;
 - mips proved on both backends;
 - glTF import in `author`;

@@ -305,7 +305,8 @@ pub const Renderer = struct {
     pub fn createMesh(self: *Self, mesh: asset.Mesh, label: []const u8) Error!MeshHandle {
         try mesh.validate();
         // Owned by `state` from here on; its errdefer frees it, so this one must not.
-        const submeshes = try self.gpa.dupe(asset.Submesh, mesh.submeshes);
+        const submeshes = try self.gpa.alloc(asset.Submesh, mesh.submeshes.len);
+        for (mesh.submeshes, submeshes) |source, *destination| destination.* = source;
 
         var state: MeshState = .{
             .stream_mask = 0,
