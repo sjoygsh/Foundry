@@ -12,6 +12,8 @@
 //! The split with `render2d` is that this module owns nothing on the GPU. It decodes an
 //! `Image` in ordinary memory and holds a loader's product as one opaque word; the renderer
 //! turns an image into a texture and owns it from there (`docs/design/render2d.md` §8).
+//! The same split holds for 3D: `Mesh` is a validated borrowed view of CPU bytes, and
+//! `render3d` will copy those bytes into residency (`docs/design/render3d.md` §5).
 //!
 //! Everything here parses input from files, which means input from mods, which means
 //! **untrusted input**: validated and refused, never asserted (CLAUDE.md §5).
@@ -22,6 +24,7 @@ const std = @import("std");
 const data = @import("data");
 
 pub const image = @import("image.zig");
+pub const mesh = @import("mesh.zig");
 pub const png = @import("png.zig");
 pub const registry = @import("registry.zig");
 pub const schemas = @import("schemas.zig");
@@ -37,6 +40,15 @@ pub const wav = @import("wav.zig");
 pub const Image = image.Image;
 pub const DecodeError = png.DecodeError;
 pub const Limits = png.Limits;
+
+pub const Mesh = mesh.Mesh;
+pub const MeshAabb = mesh.Aabb;
+pub const MeshError = mesh.Error;
+pub const MeshIndexFormat = mesh.IndexFormat;
+pub const MeshSemantic = mesh.Semantic;
+pub const MeshStream = mesh.Stream;
+pub const Submesh = mesh.Submesh;
+pub const MeshVertexFormat = mesh.VertexFormat;
 
 pub const Sound = sound.Sound;
 /// Prefixed, because `png` already owns the unqualified names at this level. The two are
@@ -77,6 +89,7 @@ pub const Store = data.store.Store;
 
 test {
     _ = image;
+    _ = mesh;
     _ = png;
     _ = registry;
     _ = schemas;

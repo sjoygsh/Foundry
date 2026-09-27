@@ -1,8 +1,9 @@
 # Design: M19 — Depth: 3D math, depth, multisampling and the `render3d` skeleton
 
-**Status:** Accepted 2026-09-27, when the owner asked for Step 1. **Steps 1–4 are done**
-(`core`, the RHI contract on the null backend, Metal, and Vulkan on Windows). Steps 5–8 have not
-begun. Each step stops with its Resolution, as every milestone's has since M13.
+**Status:** Accepted 2026-09-27, when the owner asked for Step 1. **Steps 1–5 are done**
+(`core`, the RHI contract on the null backend, Metal, Vulkan on Windows, and the runtime mesh).
+Steps 6–8 have not begun. Each step stops with its Resolution, as every milestone's has since
+M13.
 **Date:** 2026-09-27
 **Baseline:** `6fc69d7`, after tag `m18`. M0–M18 are complete, and 3D is decided.
 **Decisions:**
@@ -293,7 +294,8 @@ mod supplies it. Each refusal has a named error:
 - a stream whose length is not `vertex_count × size`, or a vertex count of zero;
 - `uint16` indices with more than 65,536 vertices, an index count that is not a multiple of 3,
   or an index at or beyond `vertex_count`;
-- a submesh outside the index range, an empty submesh, or no submesh at all;
+- a submesh outside the index range, one that starts or ends partway through a triangle, an
+  empty submesh, or no submesh at all;
 - a non-finite position, or bounds that fail to contain a position.
 
 `Mesh.computeBounds` exists for builders. A loaded mesh's stored bounds are checked, never
@@ -896,3 +898,43 @@ the Mac.
 - every `check`, native, Metal and cross;
 - both samples;
 - the Vulkan checks for Windows (Debug and ReleaseSafe) and Linux.
+
+## Resolution — 2026-09-27, Step 5: the runtime mesh in `asset`
+
+**Done.** `engine/src/asset/mesh.zig` is ADR-0053's in-memory runtime representation. It adds:
+- `Semantic`, whose explicit values pin ADR-0054's shader slots 0–7;
+- asset-owned `VertexFormat` and `IndexFormat` enums, with no `rhi` import;
+- separate borrowed `Stream` values, triangle-list `Submesh` ranges and an `extern` local-space
+  `Aabb`;
+- `Mesh`, a borrowed view with `validate` and the builder-only `computeBounds`.
+
+**Validation refuses rather than repairs:** zero vertices; a missing or duplicate position
+semantic; any format outside M19's `float32x3` position and linear `unorm8x4` colour table;
+wrong stream lengths; a 16-bit index format with more than 65,536 vertices; partial triangles;
+indices outside the vertex range; missing, empty or invalid submesh ranges; non-finite positions;
+and bounds that are non-finite, reversed or do not contain every position. The bytes may be
+unaligned. No check casts them to an aligned pointer.
+
+**What implementation settled:**
+- A submesh starts and ends on triangle boundaries. §5 now states the rule explicitly; without
+  it, a nominal triangle-list submesh could begin at the second index of a triangle.
+- `VertexFormat` contains only the two formats M19 can validate. M20 widens the enum and the
+  semantic-format table together when normals and UVs first have a consumer; unsupported
+  semantics are not accepted early.
+- `computeBounds` accepts typed positions from a builder. A loaded mesh's stored bounds still go
+  through `validate` and are never silently replaced.
+
+**Tests:** 15 focused mesh tests: the fixed slots and layouts, one valid mesh, exact computed
+bounds, both index widths, unaligned index bytes, and every named refusal. Removing the bounds
+containment check fails exactly its refusal test; restoring it returns the focused suite to
+15/15.
+
+**The Mac bar:**
+- `zig fmt --check`;
+- `zig build test`: **91/91 steps, 1,732 of 1,733 headless tests**;
+- `check` native, `-Drhi=metal`, and the Linux and Windows null cross targets;
+- both existing samples, for 30 frames each.
+
+Linux stays compile only: this is platform-independent `asset` code, the Linux cross-check
+passed, and none of §10's runtime triggers fired. Nothing uploads, no `render3d` module exists,
+and Step 6 has not begun.

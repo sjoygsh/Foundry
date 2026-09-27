@@ -1,9 +1,9 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-27
-**Current handoff: M18 is complete (2026-09-27, tag `m18`), and 3D is proposed.** Linux x64
-desktops are a runtime claim. On Ubuntu 26.04, on a second drive of the Windows target's PC
-(Intel Arc A750, Mesa ANV):
+**Current handoff: M19 Step 5 is complete; Step 6 has not begun.** M18 is complete (2026-09-27,
+tag `m18`), and Linux x64 desktops are a runtime claim. On Ubuntu 26.04, on a second drive of
+the Windows target's PC (Intel Arc A750, Mesa ANV):
 - **the whole Vulkan graph** passed natively with validation required: 104/104 steps and 1,721
   of 1,727 tests;
 - **the window tests** passed under X11 and under GNOME's Wayland;
@@ -18,8 +18,9 @@ Wayland found one real fault. A second `Platform`'s shutdown called `SDL_Quit`, 
 first's Wayland connection. Platforms now release their own reference, and the last one quits
 SDL. The record is `docs/design/linux-desktop.md`; `scripts/m18/` has the kit.
 
-**3D is decided, not begun (2026-09-27).** The owner accepted all six of `docs/design/3d.md`'s
-decisions as recommended, and added a seventh: assets are not the renderer. They are ADR-0048
+**3D was decided before M19 began (2026-09-27).** The owner accepted all six of
+`docs/design/3d.md`'s decisions as recommended, and added a seventh: assets are not the renderer.
+They are ADR-0048
 (conventions), ADR-0049 (shading models per backend), ADR-0050 (the engine-declared hierarchy),
 ADR-0051 (collision without dynamics), ADR-0052 (forward first) and ADR-0053 (six stages from
 source file to GPU). M19–M26 keep the proposed order. A dependency review corrected what three
@@ -38,7 +39,7 @@ The owner then settled the two remaining questions:
   matrices, a canonical decomposition, a stated tolerance, named refusals, and nothing written
   on refusal. M21's tests are listed.
 
-**M19's design is written, and awaits acceptance (2026-09-27).**
+**M19's design was written and accepted when the owner requested Step 1 (2026-09-27).**
 [`render3d.md`](docs/design/render3d.md) proposes [ADR-0054](docs/adr/0054-vertex-semantics-are-fixed-slots.md):
 vertex semantics are fixed shader slots. It plans eight bounded steps:
 1. `core`;
@@ -94,8 +95,19 @@ On the Windows PC (Arc A750), with the pinned SDK reinstalled by the owner's lea
   validation message;
 - the whole Vulkan graph: 104/104 steps, 1,750 of 1,764.
 
-A resolve mutation fails its test. None of §10's Linux triggers fired. Next is Step 5, the
-runtime mesh in `asset`.
+A resolve mutation fails its test. None of §10's Linux triggers fired. Step 5 follows below.
+
+**M19 Step 5 is done (2026-09-27).** `asset.Mesh` is now the borrowed in-memory runtime mesh:
+fixed semantic slots, separate streams, asset-owned vertex and index formats, triangle-list
+submeshes and local bounds. It imports no `rhi`, allocates nothing and uploads nothing.
+
+`Mesh.validate` has a named refusal for every malformed shape in `render3d.md` §5, including
+wrong stream lengths, unsupported semantic-format pairs, bad indices and submeshes, non-finite
+positions and bounds that do not contain them. `Mesh.computeBounds` serves code builders without
+repairing loaded bounds. Fifteen focused tests pass; mutating the containment guard fails exactly
+its test. The Mac bar is green at **91/91 steps, 1,732 of 1,733 headless tests**, both cross-checks
+and both 30-frame samples. No Linux runtime trigger fired. Next is Step 6, `render3d`; it has not
+begun.
 
 **Before M18: M17 is complete (2026-09-23, tag `m17`).** The unsigned pre-release
 `v0.17.1-preview` (from `c37c01d`) is on GitHub and supersedes `v0.17.0-preview`. Both
