@@ -1452,9 +1452,12 @@ test "sleeping advances real time and refuses nonsense" {
     os.sleep(.zero);
     os.sleep(.fromNanos(-1));
 
-    const before = os.wallClockNanos();
+    // Timed on the clock the sleep waits on. The wall clock is a different clock: on Windows
+    // it once measured a 5 ms sleep as shorter than 5 ms (M14 Step 9), which says nothing
+    // about the sleep.
+    const before = os.monotonicNanos();
     os.sleep(.fromMillis(5));
-    const slept = os.wallClockNanos() - before;
+    const slept = os.monotonicNanos() - before;
 
     // At least the requested time. No upper bound is asserted: schedulers overshoot,
     // and a test that demanded precision here would fail on a loaded machine.

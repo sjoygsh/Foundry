@@ -109,6 +109,10 @@ const AudioState = struct {
     scratch: []f32,
 };
 
+/// How many `Platform`s are alive. SDL is initialised and quit on the main thread only, so
+/// this needs no atomics.
+var live_platforms: u32 = 0;
+
 pub const Platform = struct {
     gpa: Allocator,
     windows: core.HandlePool(win.Window, WindowState) = .empty,
@@ -128,7 +132,8 @@ pub const Platform = struct {
             log.err("SDL_Init failed: {s}", .{sdlError()});
             return error.PlatformInitFailed;
         }
-        errdefer c.SDL_Quit();
+        live_platforms += 1;
+        errdefer releaseSdl();
 
         const self = try gpa.create(Platform);
         self.* = .{ .gpa = gpa };
@@ -158,8 +163,19 @@ pub const Platform = struct {
         self.windows.deinit(gpa);
 
         self.ready.deinit(gpa);
-        c.SDL_Quit();
+        releaseSdl();
         gpa.destroy(self);
+    }
+
+    /// SDL is one per process, and each `Platform` holds a reference to its video. SDL counts
+    /// `SDL_Init` but `SDL_Quit` ignores the count, so a platform releases only its own
+    /// reference and the last one closes SDL. Quitting outright while another platform lived
+    /// closed the Wayland connection under its windows, and its swapchain's destruction then
+    /// crashed in the compositor's client library (M18).
+    fn releaseSdl() void {
+        c.SDL_QuitSubSystem(c.SDL_INIT_VIDEO);
+        live_platforms -= 1;
+        if (live_platforms == 0) c.SDL_Quit();
     }
 
     fn destroyWindow(gpa: Allocator, state: *WindowState) void {

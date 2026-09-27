@@ -208,6 +208,11 @@ const icon_readback = struct {
     }
 };
 
+/// Whether SDL chose Wayland: it does whenever a compositor is named.
+fn onWayland() bool {
+    return builtin.os.tag == .linux and std.c.getenv("WAYLAND_DISPLAY") != null;
+}
+
 test "an application's icon reaches the window with its channels in order, borrowed only for the call" {
     const p = try Platform.init(testing.allocator, .{});
     defer p.deinit();
@@ -221,9 +226,15 @@ test "an application's icon reaches the window with its channels in order, borro
         const texel = pixels[(y * side + x) * 4 ..][0..4];
         texel.* = if (x < side / 2) .{ 255, 0, 0, 255 } else .{ 0, 0, 255, 255 };
     };
-    try p.setWindowIcon(w, .{ .width = side, .height = side, .stride = side * 4, .pixels = pixels });
+    const set = p.setWindowIcon(w, .{ .width = side, .height = side, .stride = side * 4, .pixels = pixels });
     // Gone before anything reads the icon back, so the window system cannot be reading it.
     testing.allocator.free(pixels);
+    set catch |err| {
+        // A Wayland compositor without `xdg_toplevel_icon_v1` (GNOME's, in M18) leaves the icon
+        // to itself, and SDL says so. That is recorded, not worked around; anywhere else a
+        // refusal is a failure.
+        if (err != error.WindowIconRefused or !onWayland()) return err;
+    };
 
     // Refused before the window system is asked: bad bytes, then a closed window.
     var few: [15]u8 = @splat(0);
