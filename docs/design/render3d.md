@@ -20,7 +20,8 @@
   are fixed shader slots. It is accepted and implemented.
 
 This is `render3d`'s design document, as `render2d.md` is `render2d`'s. M19 writes its first
-sections. Later milestones extend it, or write their own and link them here.
+sections. Later milestones extend it, or write their own and link them here. M20's is
+[`meshes.md`](meshes.md) (proposed): materials, shading models, culling and models by content ID.
 
 ## 1. Purpose and boundary
 

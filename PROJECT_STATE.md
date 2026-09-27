@@ -1,8 +1,17 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-27
-**Current handoff: M19 is complete (2026-09-27, tag `m19`). M20, Meshes, has no design yet and
-has not begun.** Depth, not draw order, now decides what is visible, on Metal and on
+**Current handoff: M19 is complete (2026-09-27, tag `m19`). M20, Meshes, has a proposed design,
+[`docs/design/meshes.md`](docs/design/meshes.md), with ADR-0055 proposed. It awaits the owner's
+acceptance, and Step 1 has not begun.** §14 lists the eleven choices acceptance fixes. The two that
+correct `3d.md` are:
+- the glTF importer lives in `author`'s compiler;
+- mip chains are generated on the CPU at load.
+
+The one that changes a completed module is `asset.Registry.acquireWith`, which lets `render3d`
+own its textures beside `render2d`'s.
+
+**M19's close:** Depth, not draw order, now decides what is visible, on Metal and on
 Windows/Vulkan:
 - through the RHI;
 - through `render3d`;

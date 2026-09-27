@@ -1049,4 +1049,14 @@ ADR-0054 accepted. Exit condition met: draw order no longer decides what is visi
 - Linux was compile-only by design, and no trigger fired. At the owner's request the Vulkan graph
   and a windowed run were also confirmed on the M18 Ubuntu machine.
 
-M20, Meshes, is next. It has no design yet.
+**M20, Meshes, has a proposed design** — [`meshes.md`](design/meshes.md), with ADR-0055
+proposed — and awaits the owner's acceptance. No step has begun. It plans nine steps:
+- the `.fmesh` format and the material and model records;
+- mips, colour space and a consumer's own loader;
+- mips proved on both backends;
+- glTF import in `author`;
+- shading models and materials in `render3d`;
+- culling and models by content ID;
+- Vulkan on Windows;
+- `sandbox3d`'s glTF scene;
+- the close.
