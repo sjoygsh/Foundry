@@ -152,6 +152,14 @@ validates when headless. The engine supplies no default mark, reads no icon file
 image in this layer: each sample decodes its own through an asset kind it declares, and the C
 mod API gains nothing, because the icon is host window configuration.
 
+**M19 Step 7, implemented 2026-09-27** ([render3d.md](render3d.md) §8): `setWindowTitle(window,
+title)`, beside `setWindowSize`, for a host whose content names its window — content loads after
+the window opens. The title is borrowed for the call and is untrusted: it must be UTF-8 with no
+NUL, or it is `InvalidWindowTitle` (`WindowTitleError`). The SDL3 backend passes a
+NUL-terminated copy to `SDL_SetWindowTitle` and logs a window manager's refusal rather than
+failing; the null backend validates. `app.Engine.setWindowTitle` forwards, or only validates
+when headless. Like the icon, it is host window configuration and the C mod API gains nothing.
+
 A window asks for the surface the selected graphics backend presents to through
 `app.window_surface` (`rhi.window_surface`): `metal_layer` for Metal, the request-only
 `native_window` for Vulkan, and `none` for the validation backend. No sample names a graphics

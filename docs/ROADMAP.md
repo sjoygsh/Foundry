@@ -998,7 +998,7 @@ Windows target's PC, with an Intel Arc A750 on Mesa ANV. The record is
 - **What changed:** Wayland found one real fault, fixed. A second `Platform`'s shutdown closed
   the first's connection. No RHI rule changed.
 
-### 3D — **decided 2026-09-27; M19 designed, not begun**
+### 3D — **decided 2026-09-27; M19 complete 2026-09-27 (tag `m19`)**
 
 [`3d.md`](design/3d.md) is the architecture and the order. The owner accepted all six of its
 decisions as recommended, and added that assets are not the renderer. They are ADR-0048 to
@@ -1038,5 +1038,15 @@ contain, each made for a dependency.
 - M26 rebuilds the environment from the kit and plays there, which is part of the proof.
 - Machines are disposable, and their evidence leaves before they do.
 
-**M19's design is written** ([`render3d.md`](design/render3d.md), with ADR-0054 proposed), and
-awaits acceptance. It has eight steps and a "compile only" Linux assessment. No code has begun.
+**M19 Depth is complete (2026-09-27, tag `m19`)** — [`render3d.md`](design/render3d.md), with
+ADR-0054 accepted. Exit condition met: draw order no longer decides what is visible.
+- A crossing-mesh readback is byte-identical in either draw order, pure at 1× and resolved at 4×,
+  through the RHI and again through `render3d`, on Metal and on Windows/Vulkan with validation.
+- `samples/sandbox3d`, which cannot import `rhi`, spins intersecting meshes under a `render2d`
+  overlay in `app.Engine.renderScene`'s two-pass frame. It ran from relocated installs on macOS
+  and Windows: 1× and 4×, a resize, a minimise and restore, a clean exit, and 240-frame pacing.
+- The overlay pass measured about 0.03 ms of GPU time, so the two-pass frame stays.
+- Linux was compile-only by design, and no trigger fired. At the owner's request the Vulkan graph
+  and a windowed run were also confirmed on the M18 Ubuntu machine.
+
+M20, Meshes, is next. It has no design yet.

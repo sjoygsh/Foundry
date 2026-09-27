@@ -1,6 +1,6 @@
 # ADR-0054: Vertex semantics are fixed shader slots
 
-**Status:** Proposed
+**Status:** Accepted — implemented in M19 (2026-09-27, tag `m19`)
 **Date:** 2026-09-27
 **Informed by:** ADR-0049, ADR-0053, `docs/design/render3d.md` §5 and §6.4, `rhi.md` §9
 
@@ -71,3 +71,11 @@ attribute location:**
 - A frame measured on a target machine is limited by vertex fetch, and interleaving is shown
   to fix it.
 - A mod-shader design (ADR-0015's warning) needs locations the table cannot express.
+
+## Revision note — 2026-09-27, at M19's close
+
+Implemented as written. Expressing it needed one RHI fact the interface lacked: a
+`VertexBufferLayout` named no slot, so its array index was the binding, and position at slot 0
+with colour at slot 5 could not be declared without inventing slots 1–4. Layouts now name their
+slot explicitly and may be sparse (`rhi.md` §9 and rules 6 and 10, `render3d.md` Step 6). The
+table itself did not change.

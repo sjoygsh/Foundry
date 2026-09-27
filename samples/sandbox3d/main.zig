@@ -106,8 +106,9 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, sample_count: u3
         // sample's evidence is made of (`render3d.md` §9).
         .profiler = true,
         .window = .{
-            // Until the package says otherwise, a moment later.
-            .title = "Foundry Sandbox 3D",
+            // Deliberately not the package's title: the one a player sees arrives from
+            // content through `setWindowTitle`, so a wrong title shows that path failed.
+            .title = "sandbox3d",
             .logical_width = 1280,
             .logical_height = 720,
             .surface = app.window_surface,

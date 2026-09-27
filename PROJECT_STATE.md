@@ -1,8 +1,19 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-27
-**Current handoff: M19 Step 7 is complete; Step 8 has not begun.** M18 is complete (2026-09-27,
-tag `m18`), and Linux x64 desktops are a runtime claim. On Ubuntu 26.04, on a second drive of
+**Current handoff: M19 is complete (2026-09-27, tag `m19`). M20, Meshes, has no design yet and
+has not begun.** Depth, not draw order, now decides what is visible, on Metal and on
+Windows/Vulkan:
+- through the RHI;
+- through `render3d`;
+- in `samples/sandbox3d`, which cannot import `rhi` and draws under a `render2d` overlay in
+  `app.Engine.renderScene`'s two-pass frame.
+
+The record is `docs/design/render3d.md`'s eight Resolutions, and ADR-0054 is accepted. The
+paragraphs below walk it step by step.
+
+**Before M19: M18 is complete (2026-09-27, tag `m18`),** and Linux x64 desktops are a runtime
+claim. On Ubuntu 26.04, on a second drive of
 the Windows target's PC (Intel Arc A750, Mesa ANV):
 - **the whole Vulkan graph** passed natively with validation required: 104/104 steps and 1,721
   of 1,727 tests;
@@ -144,7 +155,19 @@ which reported no errors or warnings:
 The overlay pass costs about 0.03 ms of GPU time on the Mac's Metal HUD and moved neither
 platform's pacing, so the two-pass frame stays. The Mac bar is green: **95/95 steps, 1,757 of
 1,758**, and Metal **101/101, 1,766 of 1,772**. The Windows graph is **114/114, 1,790 of 1,804**.
-No Linux runtime trigger fired. Next is Step 8, closing M19; it has not begun.
+No Linux runtime trigger fired. That left Step 8.
+
+**M19 Step 8 closed the milestone (2026-09-27).**
+- Every contract discrepancy was resolved in its source:
+  - `3d.md` §4's resolve is a field, not a store action;
+  - `render2d.md` §3's frame may hold a world pass before its own;
+  - `platform-interface.md` gains `setWindowTitle`;
+  - ADR-0054 is accepted, with a note on the explicit layout slot;
+  - the roadmap, the design index and CLAUDE.md's tables are updated.
+- §10's assessment held: compile only, and no trigger fired.
+- The owner booted the M18 Ubuntu machine anyway and asked for the one compile-only change to be
+  confirmed. The Vulkan graph and a windowed `sandbox3d` ran there (`render3d.md`, Step 8).
+- Tagged `m19` and pushed.
 
 **Before M18: M17 is complete (2026-09-23, tag `m17`).** The unsigned pre-release
 `v0.17.1-preview` (from `c37c01d`) is on GitHub and supersedes `v0.17.0-preview`. Both

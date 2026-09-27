@@ -89,6 +89,13 @@ app.Engine ──beginFrame─────────────────�
            ──endFrame─────────────────────► rhi.Device
 ```
 
+**Since M19 a frame may hold two passes** (`render3d.md` §7). `app.Engine.renderScene` opens a
+3D world's pass first, from the world recorder's own `passDesc` — multisampled, with depth,
+resolving into the surface — and then this renderer's pass, which loads the surface and leaves
+it presentable. `renderFrame` still opens the one pass described above for a 2D-only host. In
+both, `app` opens every pass and this renderer only records into one; its pipelines stay
+single-sampled and depth-less.
+
 The game sees none of this. It calls `renderer.drawSprite(...)` during its update, and the
 `rhi.RenderPass` never appears in any signature a game can reach. `Renderer.record` is
 public to `app`, not to games — a distinction Zig cannot enforce within a module, so it is

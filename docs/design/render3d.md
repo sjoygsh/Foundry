@@ -1,17 +1,23 @@
 # Design: M19 — Depth: 3D math, depth, multisampling and the `render3d` skeleton
 
-**Status:** Accepted 2026-09-27, when the owner asked for Step 1. **Steps 1–5 are done**
-(`core`, the RHI contract on the null backend, Metal, Vulkan on Windows, and the runtime mesh).
-Steps 6–8 have not begun. Each step stops with its Resolution, as every milestone's has since
-M13.
+**Status:** Accepted 2026-09-27, when the owner asked for Step 1. **Complete 2026-09-27, tag
+`m19`: all eight steps are done**, each with its Resolution below.
+- `core`;
+- the RHI contract on the null backend;
+- Metal;
+- Vulkan on Windows;
+- the runtime mesh;
+- `render3d`;
+- the two-pass frame and `sandbox3d`;
+- the close.
 **Date:** 2026-09-27
 **Baseline:** `6fc69d7`, after tag `m18`. M0–M18 are complete, and 3D is decided.
 **Decisions:**
 - ADR-0048 (conventions), ADR-0052 (forward first) and ADR-0053 (assets are not the renderer)
   constrain this design.
 - ADR-0049 (shading models) and ADR-0050 (hierarchy) are M20's and M21's.
-- It proposes [ADR-0054](../adr/0054-vertex-semantics-are-fixed-slots.md): vertex semantics
-  are fixed shader slots.
+- It proposed [ADR-0054](../adr/0054-vertex-semantics-are-fixed-slots.md): vertex semantics
+  are fixed shader slots. It is accepted and implemented.
 
 This is `render3d`'s design document, as `render2d.md` is `render2d`'s. M19 writes its first
 sections. Later milestones extend it, or write their own and link them here.
@@ -1124,4 +1130,57 @@ No §10 Linux-runtime trigger fired:
 - the new title call is SDL's portable one, compile-checked for Linux;
 - no pixel or pacing result needed a per-backend allowance.
 
-Step 8 closes M19. It has not begun.
+Step 8 closes M19.
+
+## Resolution — 2026-09-27, Step 8: M19 closed
+
+**Done; tag `m19`.** Every contract discrepancy is resolved in the document it came from:
+- **`3d.md` §4:** multisampling's `resolve` is a colour attachment's field, not the store action
+  `rhi.md` §8 once shaped the enum for. The header and §10.2 now say M19 is complete and that the
+  M18 machine outlived M18.
+- **`rhi.md` §8, §9 and §12:** already corrected at their source when Steps 2, 3 and 6 changed
+  them:
+  - the resolve field and the readback;
+  - the copy offset's texel-size rule;
+  - sparse, explicitly slotted vertex layouts;
+  - MSAA's deferrals.
+- **`render2d.md` §3:** a frame may now hold a world pass before the 2D one, opened by `app` in
+  `renderScene`.
+- **`platform-interface.md`:** records Step 7's `setWindowTitle`.
+- **ADR-0054:** accepted, with a dated note that expressing it took the explicit layout slot.
+- **Also updated:** the roadmap, the design index, CLAUDE.md's decision and postponement tables,
+  and `PROJECT_STATE.md`. `AGENTS.md`'s bar gained the new sample in Step 7.
+
+**§10's assessment held: compile only, and no trigger fired.**
+- Swapchain creation, format choice and presentation are unchanged.
+- The Windows driver behaved as Metal did, with no per-backend tolerance and no
+  driver-specific validation message.
+
+**Linux, confirmed anyway at the owner's request.** The owner booted the M18 Ubuntu 26.04
+machine (Arc A750, Mesa ANV) and asked for the one compile-only change to be run there: a new
+platform call on Linux's window path.
+- **The whole Vulkan graph:** 114/114 steps, 1,798 of 1,804 tests.
+  - It was run as `scripts/m18/RUNBOOK.md` runs it, with a display (headless sway), because one
+    backend test presents to a real window.
+  - Without a display that test fails, as it did on a first run over bare SSH. It was not a
+    fault.
+- **`sandbox3d`:** from a relocated ReleaseSafe install on headless sway, with only the
+  install on `PATH`, a scratch `HOME` and validation through the loader.
+  - At 4× and 1×: exit 0, 0 validation errors or warnings, and 240-frame pacing median
+    16.50 ms.
+  - The capture matches the macOS and Windows frames.
+
+**Step 8 found one thing worth fixing: the title check proved nothing.**
+- The sample's bootstrap window title was the same string its package supplies, so a window
+  showing it could not show that `setWindowTitle` had worked.
+- The bootstrap title is now `sandbox3d`.
+- sway's tree then reported `'Foundry Sandbox 3D'`, which only content through
+  `setWindowTitle` can supply under Wayland. The macOS window server reported the same.
+- The Windows runs predate this change, so on Windows the title is not separately proved.
+- The Mac bar was rerun after the change and is unchanged:
+  - `zig build test`: 95/95 steps, 1,757 of 1,758 tests;
+  - `-Drhi=metal`: 101/101 steps, 1,766 of 1,772 tests.
+
+M19's exit condition, `3d.md` §10's row, holds: every convention is pinned by a test, and draw
+order no longer decides what is visible. M20's design has not begun.
+
