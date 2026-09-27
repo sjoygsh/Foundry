@@ -1,7 +1,7 @@
 # Design: M19 — Depth: 3D math, depth, multisampling and the `render3d` skeleton
 
-**Status:** Proposed 2026-09-27; **nothing implemented.** Accepting this design begins Step 1
-(§11). Each step stops with its Resolution, as every milestone's has since M13.
+**Status:** Accepted 2026-09-27, when the owner asked for Step 1. **Step 1 is done** (`core`);
+Steps 2–8 have not begun. Each step stops with its Resolution, as every milestone's has since M13.
 **Date:** 2026-09-27
 **Baseline:** `6fc69d7`, after tag `m18`. M0–M18 are complete, and 3D is decided.
 **Decisions:**
@@ -76,7 +76,8 @@ reason: it depends on `rhi.clip_space`.
 spelled as negations, never as extra constants.
 
 **`Quat`** — `extern struct { x, y, z, w: f32 }`, Hamilton, stored with `w` last:
-- `identity`; `fromAxisAngle(axis, radians)`, where the axis must be unit;
+- `identity`; `fromAxisAngle(axis, radians)`, which normalises the axis, so that a zero axis
+  gives the identity;
 - `mul(a, b)`, which applies `b` first, then `a`, as `Mat4.mul` does;
 - `rotate(q, v)`, which is `q · v · q⁻¹`; `conjugate`, which is the inverse of a unit
   quaternion; `dot`; `normalize`;
@@ -636,3 +637,50 @@ at acceptance:
 | 8 | `app.renderScene`: world pass, then overlay pass | §7 |
 | 9 | Quaternions from outside are accepted within `1 ± 1e-3` of unit length, and normalised | §3 |
 | 10 | Linux: compile only, with the stated triggers | §10 |
+
+## Resolution — 2026-09-27, Step 1: `core`'s rotations, transforms and axes
+
+**Done, on macOS; the Windows run is owed** (below). `engine/src/core/math.zig` is the only
+source file changed. It gains:
+- the axes: `Vec3.right`, `Vec3.up` and `Vec3.forward` (−Z), plus `Vec3.isFinite`;
+- `Quat`, with the API §3 lists;
+- `Transform`;
+- the `Mat4` additions: `rotationX` and `rotationY`, `fromQuat`, `trs`, `mulPoint` and
+  `mulDirection`, `determinant`, `inverse`, `lookAt` and `approxEql`.
+
+Its header now says it knows which way is up, and still holds no projection.
+
+**What implementation settled:**
+- **`fromAxisAngle` normalises its axis,** where §3 said the axis "must be unit". A zero axis
+  gives the identity. The cost is one square root, and it removes a precondition that a
+  caller could get wrong silently. §3 is corrected.
+- **The `inverse` is the cofactor expansion,** written over the flat sixteen floats. It is
+  symmetric under transposition, so it needs no row/column translation. Its determinant uses
+  the same cofactors.
+- **The layouts are pinned by a test:**
+  - `Quat` is 16 bytes, with `w` at offset 12;
+  - `Transform` is 40 bytes, with its rotation at offset 12 and its scale at 28.
+  
+  Both will cross into GPU buffers and the ABI.
+
+**Tests:** 14 new tests in `math.zig`, covering every row of §3's table, plus `lookRotation`'s
+refusals, `rotate` against the matrix, `Transform.isValid`, and the layouts. **The tests were
+mutated to show they fail when the conventions break:**
+- reversing a term of the quaternion product fails the composition test;
+- making forward +Z fails three convention tests;
+- scaling the translation (`S·T` order) fails the `T·R·S` test.
+
+**The bar on macOS:**
+- `zig fmt --check`;
+- `zig build test`: **91/91 steps, 1,698 of 1,699 headless tests** (the one skip predates M16);
+- `check` native, `-Drhi=metal`, and the Linux and Windows null cross targets;
+- both samples, for 30 frames each.
+
+**Windows is not yet run.** The PC's DHCP address has moved again. Its host key matches the
+recorded one at the new address. Changing the Mac's SSH configuration to follow it was refused
+by the session's permission checks, and is left to the owner. The run owed is only
+`zig test math.zig` natively on x86_64 Windows, at low priority. The file imports nothing but
+`std`. Step 4 runs the whole Vulkan graph there in any case.
+
+**Linux:** compile only, as §10 states. The Linux cross-check passed, and nothing here touches
+Linux.
