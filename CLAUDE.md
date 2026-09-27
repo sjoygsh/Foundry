@@ -219,7 +219,7 @@ this wrong:
 
 | Boundary | Audience | Exposed to games and mods |
 | --- | --- | --- |
-| **Renderer API** (`render2d`, later `render3d`) — sprites, cameras, materials, text | Games, tools, eventually mods | **Yes** |
+| **Renderer API** (`render2d`, `render3d`) — sprites, meshes, cameras, materials, text | Games, tools, eventually mods | **Yes** |
 | **RHI** (`rhi`) — devices, command buffers, pipeline state, GPU resources | Engine internals only | **No** |
 
 Games never touch the RHI. Backends never appear above it.
@@ -265,6 +265,7 @@ L2  net         -> core, platform.  M16's runtime channels, FNET wire codec and
                                 authenticated streams. Bytes only; no gameplay schema.
 
 L3  render2d    -> core, rhi, asset.      Sprite/tilemap/text batching, cameras.
+L3  render3d    -> core, rhi, asset.      Mesh residency, 3D cameras and drawing.
 L3  scene       -> core, data, asset.     Entities, components, world, systems.
 L3  audio       -> core, platform, asset. Mixer, voices, playback by content ID.
 
@@ -383,7 +384,7 @@ Foundry/
 
   engine/
     src/
-      core/  platform/  data/  physics2d/  ui/  rhi/  asset/  mod/  net/  render2d/
+      core/  platform/  data/  physics2d/  ui/  rhi/  asset/  mod/  net/  render2d/  render3d/
       scene/  audio/  app/  author/  debug/  abi/  script/
       rhi/backends/      null/  metal/ (Zig backend + Objective-C shim)  vulkan/
     tests/               Integration tests. Unit tests are colocated with source.

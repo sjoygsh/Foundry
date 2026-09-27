@@ -1,7 +1,7 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-27
-**Current handoff: M19 Step 5 is complete; Step 6 has not begun.** M18 is complete (2026-09-27,
+**Current handoff: M19 Step 6 is complete; Step 7 has not begun.** M18 is complete (2026-09-27,
 tag `m18`), and Linux x64 desktops are a runtime claim. On Ubuntu 26.04, on a second drive of
 the Windows target's PC (Intel Arc A750, Mesa ANV):
 - **the whole Vulkan graph** passed natively with validation required: 104/104 steps and 1,721
@@ -106,8 +106,27 @@ wrong stream lengths, unsupported semantic-format pairs, bad indices and submesh
 positions and bounds that do not contain them. `Mesh.computeBounds` serves code builders without
 repairing loaded bounds. Fifteen focused tests pass; mutating the containment guard fails exactly
 its test. The Mac bar is green at **91/91 steps, 1,732 of 1,733 headless tests**, both cross-checks
-and both 30-frame samples. No Linux runtime trigger fired. Next is Step 6, `render3d`; it has not
-begun.
+and both 30-frame samples. No Linux runtime trigger fired. That left Step 6, `render3d`.
+
+**M19 Step 6 is done (2026-09-27).** `render3d` is now an L3 module beside `render2d`. It owns
+rigid cameras and reversed-Z projection, validated mesh residency, depth and optional 4x MSAA
+targets, deterministic opaque submission, and one unlit vertex-colour pipeline. Its handles
+die immediately while their GPU resources retire through the RHI.
+
+ADR-0054 exposed one missing RHI fact: a vertex-buffer layout was identified only by its array
+position, which cannot preserve colour at semantic slot 5 while slots 1–4 are absent. Layouts
+now name their stable slot explicitly; null, Metal and Vulkan reject duplicates and slots
+outside 0–7, and null requires exactly the declared sparse slots at draw time.
+
+The draw-order proof passes at 1x and 4x on Metal and Windows/Vulkan: two crossing meshes give
+byte-identical readback in either submission order, pure crossing pixels at 1x and a resolved
+blend at 4x. The Mac headless graph is green at **93/93 steps, 1,751 of 1,752 tests**, Metal at
+**99/99, 1,760 of 1,766**, and the native Windows/Vulkan graph at **112/112, 1,784 of 1,798**
+with no validation message. A depth-compare mutation fails exactly the readback on Metal and
+Vulkan, and a colour-stream mutation fails exactly its refusal. Review found and fixed a double
+free on `createMesh`'s failure path, now pinned by a test. No Linux
+runtime trigger fired. Next is Step 7, the engine-owned two-pass frame and `sandbox3d`; neither
+has begun.
 
 **Before M18: M17 is complete (2026-09-23, tag `m17`).** The unsigned pre-release
 `v0.17.1-preview` (from `c37c01d`) is on GitHub and supersedes `v0.17.0-preview`. Both

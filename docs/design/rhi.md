@@ -335,7 +335,7 @@ Frequency ordering is not decoration either: Vulkan invalidates all descriptor s
 first one whose layout changes, so putting the least-frequently-changed data in group 0 is
 what makes rebinding cheap. Getting this backwards is invisible in Metal.
 
-**Eight vertex buffers, guaranteed.** The third number in this interface, and the only one
+**Eight vertex-buffer slots, guaranteed.** The third number in this interface, and the only one
 taken from Metal rather than from Vulkan. Metal exposes **31 buffer argument slots per
 stage**, shared between vertex buffers, uniform buffers and inline constants; Vulkan
 guarantees 16 vertex input bindings and D3D12 offers 32 input slots, so here Metal's shared
@@ -343,6 +343,13 @@ table is the binding constraint rather than the most generous case. Reserving ei
 vertex buffers leaves twenty-two for bind group buffers once inline constants have taken
 one — more than any renderer Foundry has planned needs. A backend may report more in
 `Capabilities`; none may require fewer.
+
+Each `VertexBufferLayout` names its slot explicitly. Declarations may be sparse, and the
+slot is stable across backends: a layout for slot 5 remains slot 5 when slots 1 through 4
+are absent. This is required by the engine-wide mesh semantic map (`POSITION` at 0,
+`COLOR_0` at 5); treating the declaration's array index as the slot would silently move
+attributes when optional streams are omitted. Repeating a slot or naming one outside 0–7
+is an invalid descriptor.
 
 ### Inline constants
 
@@ -581,7 +588,9 @@ forgives:
    bound to it is an error, and so is a draw whose layout declares inline constants that
    have not been set — including the case where binding a pipeline with a different layout
    invalidated them (§9). Metal frequently renders all of these correctly by accident.
-6. **Vertex layout match.** Bound vertex buffers must match the pipeline's declared layout.
+6. **Vertex layout match.** Every slot the pipeline explicitly declares must have a bound
+   vertex buffer. Declarations may be sparse; an undeclared slot is not required and does not
+   renumber a later one.
 7. **Attachment format match.** A pass's attachment formats must match the pipeline's.
    **Extended in M19 to sample counts** (`render3d.md` §4.2), which are part of an attachment's
    format in every API:
@@ -614,6 +623,8 @@ forgives:
     when `size` is zero — is not empty, lies inside the buffer and is no larger than the
     reported maximum. A bind group that breaks this is refused with `InvalidDescriptor`; a
     copy is reported when it is recorded. **Extended in M19:**
+    - every vertex-buffer declaration names one unique slot in 0–7; a sparse list is legal,
+      but its declaration count does not make an out-of-range slot legal;
     - a sample count is 1 or 4, and anything else is refused with `InvalidDescriptor`;
     - a multisampled texture has one mip level;
     - a texture-to-buffer copy's region lies inside the source level it names, and its rows

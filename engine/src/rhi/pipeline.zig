@@ -161,10 +161,27 @@ pub const VertexAttribute = struct {
 };
 
 pub const VertexBufferLayout = struct {
+    /// Stable RHI vertex-buffer slot used by every backend. Layout declarations may be
+    /// sparse: omitting slot 1 does not renumber a declaration for slot 5.
+    slot: u32 = 0,
     stride: u32,
     step_mode: VertexStepMode = .vertex,
     attributes: []const VertexAttribute,
 };
+
+/// Returns the declared vertex-buffer slots, or null when a descriptor repeats a slot or
+/// names one outside the portable eight-slot contract.
+pub fn vertexBufferMask(layouts: []const VertexBufferLayout) ?u8 {
+    if (layouts.len > max_vertex_buffers) return null;
+    var mask: u8 = 0;
+    for (layouts) |layout| {
+        if (layout.slot >= max_vertex_buffers) return null;
+        const bit = @as(u8, 1) << @intCast(layout.slot);
+        if (mask & bit != 0) return null;
+        mask |= bit;
+    }
+    return mask;
+}
 
 pub const PrimitiveTopology = enum { triangle_list, triangle_strip, line_list, point_list };
 pub const CullMode = enum { none, front, back };
@@ -301,6 +318,25 @@ test "the vertex buffers and inline constants fit in one Metal argument table" {
     try testing.expect(reserved < metal_buffer_slots_per_stage);
     // Room left for bind group buffers, with all four groups able to carry several each.
     try testing.expect(metal_buffer_slots_per_stage - reserved >= 4 * max_bind_groups);
+}
+
+test "vertex buffer declarations preserve sparse semantic slots" {
+    const sparse = [_]VertexBufferLayout{
+        .{ .slot = 0, .stride = 12, .attributes = &.{} },
+        .{ .slot = 5, .stride = 4, .attributes = &.{} },
+    };
+    try testing.expectEqual(@as(?u8, (1 << 0) | (1 << 5)), vertexBufferMask(&sparse));
+
+    const duplicate = [_]VertexBufferLayout{
+        .{ .slot = 5, .stride = 12, .attributes = &.{} },
+        .{ .slot = 5, .stride = 4, .attributes = &.{} },
+    };
+    try testing.expectEqual(@as(?u8, null), vertexBufferMask(&duplicate));
+    try testing.expectEqual(@as(?u8, null), vertexBufferMask(&.{.{
+        .slot = max_vertex_buffers,
+        .stride = 4,
+        .attributes = &.{},
+    }}));
 }
 
 test "128 bytes holds what it is meant to hold" {

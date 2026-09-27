@@ -89,6 +89,11 @@ const layering = [_]Module{
     // hands it decoded images and the game hands it draw calls.
     .{ .name = "render2d", .deps = &.{ "core", "rhi", "asset" } },
 
+    // L3 — the game-facing 3D renderer (ADR-0054, docs/design/render3d.md). It owns GPU
+    // mesh residency, camera projection and the depth/MSAA targets, while `asset` owns the
+    // validated CPU mesh and `rhi` owns every backend object.
+    .{ .name = "render3d", .deps = &.{ "core", "rhi", "asset" } },
+
     // L3 — entities, components, systems and world state (docs/design/entity-storage.md).
     // ADR-0007 allows `asset` as well; it is not taken, because nothing here acquires one
     // — a `sprite` component holds a texture's content id and the rendering system above
@@ -133,7 +138,7 @@ const layering = [_]Module{
     // turns a host's roots, its required packages and a player's pending selection into a
     // load order, a preview and a conflict report. `mod` stays below and computes each
     // answer from files alone; `app` is where they meet the settings a selection is saved in.
-    .{ .name = "app", .deps = &.{ "core", "data", "platform", "ui", "rhi", "asset", "render2d", "mod" } },
+    .{ .name = "app", .deps = &.{ "core", "data", "platform", "ui", "rhi", "asset", "render2d", "render3d", "mod" } },
 
     // L5 — the in-process debug overlay (ADR-0025, docs/design/debug-overlay.md). Above
     // `app` rather than inside it, because it needs `scene` and the engine loop does not:
@@ -371,6 +376,7 @@ pub fn build(b: *std.Build) void {
             rhi_module,
             platform_module,
             modules.get("render2d").?,
+            modules.get("render3d").?,
         );
     }
 
@@ -384,6 +390,9 @@ pub fn build(b: *std.Build) void {
     if (rhi_backend == .metal) {
         modules.get("render2d").?.addAnonymousImport("sprite_metallib", .{
             .root_source_file = metalLibrary(b, "sprite", &.{"engine/src/render2d/shaders/sprite.metal"}),
+        });
+        modules.get("render3d").?.addAnonymousImport("unlit_color_metallib", .{
+            .root_source_file = metalLibrary(b, "unlit-color", &.{"engine/src/render3d/shaders/unlit_color.metal"}),
         });
     }
 
@@ -1498,6 +1507,7 @@ fn vulkanGraph(
     rhi_module: *std.Build.Module,
     platform_module: *std.Build.Module,
     render2d_module: *std.Build.Module,
+    render3d_module: *std.Build.Module,
 ) void {
     switch (target.result.os.tag) {
         .windows, .linux => {},
@@ -1543,6 +1553,8 @@ fn vulkanGraph(
     const sprite_fragment = vulkanShaderStage(b, checker, "sprite-fragment", "engine/src/render2d/shaders/sprite.frag.glsl", "frag", "sprite_fragment");
     const quad_vertex = vulkanShaderStage(b, checker, "quad-vertex", "samples/sandbox/shaders/quad.vert.glsl", "vert", "quad_vertex");
     const quad_fragment = vulkanShaderStage(b, checker, "quad-fragment", "samples/sandbox/shaders/quad.frag.glsl", "frag", "quad_fragment");
+    const unlit_color_vertex = vulkanShaderStage(b, checker, "unlit-color-vertex", "engine/src/render3d/shaders/unlit_color.vert.glsl", "vert", "unlit_color_vertex");
+    const unlit_color_fragment = vulkanShaderStage(b, checker, "unlit-color-fragment", "engine/src/render3d/shaders/unlit_color.frag.glsl", "frag", "unlit_color_fragment");
 
     for ([_]struct { name: []const u8, bytes: std.Build.LazyPath }{
         .{ .name = "sprite_vertex_spirv", .bytes = sprite_vertex },
@@ -1552,6 +1564,8 @@ fn vulkanGraph(
     }) |stage| rhi_module.addAnonymousImport(stage.name, .{ .root_source_file = stage.bytes });
     render2d_module.addAnonymousImport("sprite_vertex_spirv", .{ .root_source_file = sprite_vertex });
     render2d_module.addAnonymousImport("sprite_fragment_spirv", .{ .root_source_file = sprite_fragment });
+    render3d_module.addAnonymousImport("unlit_color_vertex_spirv", .{ .root_source_file = unlit_color_vertex });
+    render3d_module.addAnonymousImport("unlit_color_fragment_spirv", .{ .root_source_file = unlit_color_fragment });
 
     const tests = b.addTest(.{ .name = "rhi-vulkan", .root_module = rhi_module });
     b.step("vulkan-check", "Compile the Vulkan backend's tests without running them").dependOn(&tests.step);

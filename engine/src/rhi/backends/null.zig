@@ -180,7 +180,7 @@ const RenderPipelineState = struct {
     inline_constant_bytes: u32,
     color_formats: []format.TextureFormat,
     depth_format: ?format.TextureFormat,
-    vertex_buffer_count: u32,
+    vertex_buffer_mask: u8,
     sample_count: u32,
 };
 
@@ -751,6 +751,12 @@ pub const Device = struct {
             self.violate(.limits, "pipeline '{s}' has {d} samples; the RHI allows 1 or 4", .{ desc.label, desc.sample_count });
             return error.InvalidDescriptor;
         }
+        const vertex_buffer_mask = pipeline.vertexBufferMask(desc.vertex_buffers) orelse {
+            self.violate(.vertex_layout, "pipeline '{s}' repeats a vertex slot or names one outside 0..{d}", .{
+                desc.label, pipeline.max_vertex_buffers - 1,
+            });
+            return error.InvalidDescriptor;
+        };
 
         try self.reserveRetirement();
         const layouts = try self.gpa.dupe(pipeline.BindGroupLayoutHandle, layout.bind_group_layouts);
@@ -765,7 +771,7 @@ pub const Device = struct {
             .inline_constant_bytes = layout.inline_constant_bytes,
             .color_formats = formats,
             .depth_format = if (desc.depth_stencil) |d| d.format else null,
-            .vertex_buffer_count = @intCast(desc.vertex_buffers.len),
+            .vertex_buffer_mask = vertex_buffer_mask,
             .sample_count = desc.sample_count,
         });
     }
@@ -1498,7 +1504,8 @@ pub const RenderPass = struct {
 
         // Rule 6: every vertex buffer the pipeline declares must be bound.
         var slot: u32 = 0;
-        while (slot < pipe.vertex_buffer_count) : (slot += 1) {
+        while (slot < pipeline.max_vertex_buffers) : (slot += 1) {
+            if (pipe.vertex_buffer_mask & (@as(u8, 1) << @intCast(slot)) == 0) continue;
             if (self.bound_vertex_buffers[slot].isNone()) {
                 dev.violate(.vertex_layout, "draw in pass '{s}' with no buffer bound to vertex slot {d}, which the pipeline declares", .{ self.label, slot });
             } else if (dev.deadBuffer(self.bound_vertex_buffers[slot])) {
@@ -2226,6 +2233,47 @@ test "rule 6: a draw missing a declared vertex buffer is caught" {
 
     try testing.expectError(error.ValidationFailed, cmd.submit());
     try testing.expect(dev.hasViolation(.vertex_layout));
+}
+
+test "rule 6: sparse vertex declarations keep their explicit slots" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+
+    const pipe = try dev.createRenderPipeline(.{
+        .label = "sparse-vertices",
+        .layout = fx.layout,
+        .vertex_shader = fx.vs,
+        .fragment_shader = fx.fs,
+        .vertex_buffers = &.{
+            .{ .slot = 0, .stride = 12, .attributes = &.{.{ .location = 0, .offset = 0, .format = .float32x3 }} },
+            .{ .slot = 5, .stride = 4, .attributes = &.{.{ .location = 5, .offset = 0, .format = .unorm8x4 }} },
+        },
+        .color_targets = &.{.{ .format = .bgra8_unorm_srgb }},
+    });
+    const position = try dev.createBuffer(.{
+        .size = 36,
+        .usage = .{ .vertex = true },
+        .memory = .upload,
+    });
+    const color = try dev.createBuffer(.{
+        .size = 12,
+        .usage = .{ .vertex = true },
+        .memory = .upload,
+    });
+
+    const frame = try dev.beginFrame();
+    var cmd = try dev.beginCommandBuffer();
+    var pass = try cmd.beginRenderPass(.{
+        .color = &.{.{ .texture = frame.surface_texture, .initial_state = .undefined, .final_state = .present }},
+    });
+    pass.setPipeline(pipe);
+    pass.setVertexBuffer(0, position, 0);
+    pass.setVertexBuffer(5, color, 0);
+    pass.draw(.{ .vertex_count = 3 });
+    pass.end();
+    try cmd.submit();
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
 }
 
 test "rule 6: an indexed draw with no index buffer is caught" {

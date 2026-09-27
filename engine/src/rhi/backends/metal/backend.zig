@@ -973,18 +973,18 @@ pub const Device = struct {
         };
         defer c.fd_mtl_function_destroy(ffn);
 
-        if (desc.vertex_buffers.len > pipeline.max_vertex_buffers) return error.InvalidDescriptor;
+        _ = pipeline.vertexBufferMask(desc.vertex_buffers) orelse return error.InvalidDescriptor;
 
         var attributes: std.ArrayList(c.FdMtlVertexAttribute) = .empty;
         defer attributes.deinit(self.gpa);
         var layouts: std.ArrayList(c.FdMtlVertexBufferLayout) = .empty;
         defer layouts.deinit(self.gpa);
 
-        for (desc.vertex_buffers, 0..) |vb, slot| {
-            // Vertex buffer slot `i` is Metal buffer index `i` — the fixed low block from
-            // §9, so a shader's `[[buffer(0)]]` means slot 0 in every pipeline.
+        for (desc.vertex_buffers) |vb| {
+            // The declared RHI slot is the same Metal buffer index — the fixed low block
+            // from §9, so a shader's `[[buffer(5)]]` means slot 5 in every pipeline.
             try layouts.append(self.gpa, .{
-                .buffer_index = @intCast(slot),
+                .buffer_index = vb.slot,
                 .stride = vb.stride,
                 .step_function = stepFunction(vb.step_mode),
             });
@@ -993,7 +993,7 @@ pub const Device = struct {
                     .location = attr.location,
                     .format = vertexFormat(attr.format),
                     .offset = attr.offset,
-                    .buffer_index = @intCast(slot),
+                    .buffer_index = vb.slot,
                 });
             }
         }

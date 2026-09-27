@@ -938,3 +938,80 @@ containment check fails exactly its refusal test; restoring it returns the focus
 Linux stays compile only: this is platform-independent `asset` code, the Linux cross-check
 passed, and none of §10's runtime triggers fired. Nothing uploads, no `render3d` module exists,
 and Step 6 has not begun.
+
+## Resolution — 2026-09-27, Step 6: `render3d`
+
+**Done.** `engine/src/render3d/` is the L3 module specified by §6, with imports of only `core`,
+`rhi` and `asset`; `app` may import it, while `debug` and `abi` do not. `build.zig` and
+`CLAUDE.md` now state that boundary.
+
+**Camera and bindings:**
+- `Camera` is the rigid pose in §6.3. Its view is computed directly as
+  `R^-1 * T^-1`, and its right-handed finite-far reversed-Z projection maps near to 1 and far
+  to 0 in the RHI's `[0, 1]` clip space. Seven tests pin the mapping, monotonic depth, axes,
+  behind-camera sign, rigid inverse and every validation rule.
+- Group 0 contains one 64-byte view-projection matrix per frame slot. The 64-byte world matrix
+  is an inline constant. Position is attribute and buffer slot 0; linear colour is slot 5.
+- The unlit pipeline is written independently in Metal and GLSL. Both stages are built and
+  embedded by the existing shader build helpers; the SPIR-V checker pins locations 0 and 5,
+  the frame block at group 0/binding 0, and the world push-constant layout.
+
+**One RHI contract discrepancy was corrected at its source.** `VertexBufferLayout` previously
+had no slot field: its array index was the backend binding. That cannot express ADR-0054's
+sparse M19 input, position at slot 0 and colour at slot 5 with slots 1–4 absent. The layout
+now names its stable slot explicitly. `rhi.md` rules 6 and 10 describe sparse declarations;
+null, Metal and Vulkan reject duplicate or out-of-range slots, and null stores the declared
+mask so a draw must bind exactly the slots its pipeline needs. Existing single-stream layouts
+retain slot 0 through the field's default. A focused test accepts 0 plus 5 and refuses both
+invalid descriptors.
+
+**Residency, targets and work:**
+- `createMesh` validates the borrowed `asset.Mesh`, copies its submesh table, makes one
+  device-local buffer per supplied semantic plus the index buffer, and uploads all of them
+  through staging in a command buffer of its own. It retains no asset pointers. `MeshHandle`
+  is generational; destroy kills it immediately and the RHI retires its objects.
+- `begin` validates the camera, pixel extent and finite clear colour. `drawMesh` refuses stale
+  handles, absent submeshes, non-finite world matrices and a mesh without colour before adding
+  any work. `plan` sorts by transformed bounds-centre depth, then by submission index.
+- `prepare` writes the frame slot and lazily builds or resizes a `depth32_float` target plus a
+  4x colour target when configured. At 1x the pass draws into the surface; at 4x it discards
+  the private colour after resolving to the surface. Depth clears to 0, compares
+  `greater_equal`, writes, and is discarded. Statistics report only recorded draws, triangles
+  and the one pipeline bind.
+
+**Proofs:**
+- Null tests cover the complete recording, sparse vertex slots, targets at 1x and 4x, resize,
+  deterministic order and tie break, every submission refusal, stale destruction and reported
+  statistics, with no validation violation.
+- On Metal and Windows/Vulkan, the renderer itself draws the two intersecting red and blue
+  meshes from §9 in both submission orders. The images are byte-identical per sample count;
+  every tested far-left and far-right texel is the exact solid colour; the crossing texel is
+  pure at 1x and contains both colours after the 4x resolve.
+- Disabling the colour-stream guard makes exactly the missing-stream refusal test fail. It was
+  restored before the bar.
+- Making the depth compare `always` fails exactly the Metal readback test, so the pixels, not
+  the sort, carry the proof. It was restored before the bar.
+- Review found a double free: a mesh that failed after its submesh table moved into its state
+  was freed by both errdefers. The table is now freed only through the state. A focused test
+  fails the handle pool's growth after the upload is submitted, and restoring the old errdefer
+  makes that test report the double free.
+
+**The Mac bar:**
+- `zig fmt --check`;
+- `zig build test`: **93/93 steps, 1,751 of 1,752 headless tests**;
+- `zig build test -Drhi=metal`: **99/99 steps, 1,760 of 1,766 tests**, including the renderer
+  readback at both sample counts;
+- `check` native, Metal and the Linux and Windows null cross targets;
+- both existing samples for 30 frames;
+- the Vulkan shader and compile checks for Windows (Debug and ReleaseSafe) and Linux.
+
+**Native Windows/Vulkan:** the whole graph passes with validation and synchronization
+validation required, including the same renderer readback at 1x and 4x: `vulkan-test`
+**23/23 steps, 210 of 210 tests**, and `zig build test -Drhi=vulkan` **112/112 steps, 1,784 of
+1,798 tests** (14 skipped). There is no validation message. Making the depth compare `always`
+fails exactly the renderer readback there too; the restored file's hash matched.
+
+No §10 Linux-runtime trigger fired: swapchain and presentation are unchanged, the Arc's Vulkan
+result needs no backend tolerance and matches Metal's assertions, and validation names no
+driver-dependent problem. Linux remains compile-only. Step 7's engine-owned two-pass frame and
+`sandbox3d` have not begun.

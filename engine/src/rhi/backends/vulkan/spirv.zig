@@ -1,6 +1,6 @@
 //! Small, bounded SPIR-V inspection used by the Vulkan shader producer and runtime.
 //!
-//! This is deliberately not a reflection framework. M13 has four engine-owned stages and
+//! This is deliberately not a reflection framework. Foundry has a small fixed set of engine-owned stages and
 //! needs two things: refuse bytes that are not a SPIR-V module before a driver sees them,
 //! and keep the handful of shader-visible locations, descriptor bindings and block offsets
 //! in agreement with `docs/design/rhi.md` §9. Content shader reflection remains future
@@ -30,6 +30,8 @@ pub const Profile = enum {
     sprite_fragment,
     quad_vertex,
     quad_fragment,
+    unlit_color_vertex,
+    unlit_color_fragment,
 };
 
 const magic: u32 = 0x0723_0203;
@@ -291,13 +293,24 @@ fn requireConstants(bytes: []const u8, tint: bool) Error!void {
     if (tint) try require(try hasMemberDecoration(bytes, id, 1, Decoration.offset, 64));
 }
 
-/// The four profiles are the complete M13 shader ABI. Adding a profile belongs to the future
-/// material producer rather than growing this into general reflection.
+fn requireFrameMatrix(bytes: []const u8) Error!void {
+    const id = try namedId(bytes, "Frame") orelse return error.DecorationMismatch;
+    try require(try hasDecoration(bytes, id, Decoration.block));
+    try require(try hasMemberDecoration(bytes, id, 0, Decoration.offset, 0));
+    try require(try hasMemberDecoration(bytes, id, 0, Decoration.col_major, null));
+    try require(try hasMemberDecoration(bytes, id, 0, Decoration.matrix_stride, 16));
+    const variable = try bindingVariable(bytes, 0, 0, Storage.uniform) orelse
+        return error.DecorationMismatch;
+    try require(try variablePointsTo(bytes, variable, Storage.uniform, id));
+}
+
+/// The profiles are the complete engine-owned shader ABI. This stays a bounded agreement
+/// check rather than becoming a general reflection system.
 pub fn validateProfile(bytes: []const u8, profile: Profile) Error!void {
     try validate(bytes);
     const stage: Stage = switch (profile) {
-        .sprite_vertex, .quad_vertex => .vertex,
-        .sprite_fragment, .quad_fragment => .fragment,
+        .sprite_vertex, .quad_vertex, .unlit_color_vertex => .vertex,
+        .sprite_fragment, .quad_fragment, .unlit_color_fragment => .fragment,
     };
     try require(try hasEntry(bytes, stage, "main"));
 
@@ -329,6 +342,17 @@ pub fn validateProfile(bytes: []const u8, profile: Profile) Error!void {
             try require(try hasMemberDecoration(bytes, frame, 0, Decoration.offset, 0));
             const frame_variable = try bindingVariable(bytes, 0, 2, Storage.uniform) orelse return error.DecorationMismatch;
             try require(try variablePointsTo(bytes, frame_variable, Storage.uniform, frame));
+        },
+        .unlit_color_vertex => {
+            try require(try hasLocatedVariable(bytes, 0, Storage.input));
+            try require(try hasLocatedVariable(bytes, 5, Storage.input));
+            try require(try hasLocatedVariable(bytes, 0, Storage.output));
+            try requireFrameMatrix(bytes);
+            try requireConstants(bytes, false);
+        },
+        .unlit_color_fragment => {
+            try require(try hasLocatedVariable(bytes, 0, Storage.input));
+            try require(try hasLocatedVariable(bytes, 0, Storage.output));
         },
     }
 }

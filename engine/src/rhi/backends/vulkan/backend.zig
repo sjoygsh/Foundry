@@ -1328,14 +1328,14 @@ pub const Device = struct {
         var next_attribute: usize = 0;
         for (desc.vertex_buffers, 0..) |binding, binding_index| {
             bindings[binding_index] = .{
-                .binding = @intCast(binding_index),
+                .binding = binding.slot,
                 .stride = binding.stride,
                 .inputRate = vertexStep(binding.step_mode),
             };
             for (binding.attributes) |attribute| {
                 attributes[next_attribute] = .{
                     .location = attribute.location,
-                    .binding = @intCast(binding_index),
+                    .binding = binding.slot,
                     .format = vertexFormat(attribute.format),
                     .offset = attribute.offset,
                 };
@@ -3521,10 +3521,12 @@ fn pipelineDescriptorValid(limits: *const c.VkPhysicalDeviceLimits, desc: pipeli
     if (desc.vertex_buffers.len > pipeline.max_vertex_buffers or
         desc.vertex_buffers.len > limits.maxVertexInputBindings or
         desc.color_targets.len > limits.maxColorAttachments) return false;
+    _ = pipeline.vertexBufferMask(desc.vertex_buffers) orelse return false;
 
     var attribute_count: usize = 0;
     for (desc.vertex_buffers) |binding| {
-        if (binding.stride == 0 or binding.stride > limits.maxVertexInputBindingStride) return false;
+        if (binding.slot >= limits.maxVertexInputBindings or
+            binding.stride == 0 or binding.stride > limits.maxVertexInputBindingStride) return false;
         attribute_count += binding.attributes.len;
         for (binding.attributes, 0..) |attribute, i| {
             if (attribute.location >= limits.maxVertexInputAttributes or
