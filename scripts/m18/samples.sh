@@ -186,10 +186,10 @@ user)
     mods="$home/.local/share/foundry-sandbox/mods"
     mkdir -p "$mods"
     # A package's files sit beside its compiled file, as an installed package's do.
-    cp -r "$HOME/m18/usercfg" "$mods/usercfg"
+    cp -r "$here/usercfg" "$mods/usercfg"
     env -i HOME="$home" PATH=/usr/bin:/bin "$install/bin/fpack" --out "$mods/usercfg.fpk" \
         --dependency "$install/content/core.fpk" --dependency "$install/content/sandbox.fpk" \
-        "$HOME/m18/usercfg" || exit 1
+        "$here/usercfg" || exit 1
     launch user validate sandbox FOUNDRY_SANDBOX_FRAMES=300 FOUNDRY_SANDBOX_PACKAGES=usercfg:changes
     sleep 3
     if [ "$S" = x11 ]; then

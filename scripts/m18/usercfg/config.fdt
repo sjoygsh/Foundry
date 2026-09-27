@@ -1,0 +1,8 @@
+sandbox:icon usercfg:icons.green { source "green.png" }
+
+sandbox:config sandbox:config.main {
+    window_width  960
+    window_height 540
+    master_volume 0.5
+    window_icon   usercfg:icons.green
+}

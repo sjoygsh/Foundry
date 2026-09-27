@@ -138,3 +138,7 @@ now a runtime claim. The RHI's rules survived unchanged.
   is a distribution decision with its own questions (ADR-0030's shape, AppImage or tarball,
   what a player's system must supply), and nothing has asked for one.
 - **Device and surface loss** are still sticky (`rhi.md`, open question 6).
+- **The machine is gone.** It was wiped after M18, by design. The claim is reproduced, not
+  kept: `scripts/m18/` rebuilds the environment on a fresh machine, and 3D's Linux runs use it
+  (`3d.md` §10.2). The one piece of state the M18 machine held outside the kit, the user
+  package, has since moved into the kit (`scripts/m18/usercfg/`).

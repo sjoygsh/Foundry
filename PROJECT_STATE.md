@@ -28,7 +28,17 @@ milestones contain (`3d.md` §10.1):
 - M19's mesh is unlit;
 - material records move to M20.
 
-**M19 has not begun.**
+The owner then settled the two remaining questions:
+- **Linux** is a reproducible validation target, not a kept machine (`3d.md` §10.2). It runs
+  when a milestone materially changes something Linux/Vulkan-specific, and at M26 on a freshly
+  provisioned machine. The M18 kit now carries its user package (`scripts/m18/usercfg/`), which
+  had lived only on the wiped machine. `provision.sh` now ends by verifying the pins and a
+  hardware device.
+- **Keep-world re-parenting** is defined exactly (`3d.md` §7.1, ADR-0050 revised): fresh world
+  matrices, a canonical decomposition, a stated tolerance, named refusals, and nothing written
+  on refusal. M21's tests are listed.
+
+**M19 has not begun, and nothing is open before its design.**
 
 **Before M18: M17 is complete (2026-09-23, tag `m17`).** The unsigned pre-release
 `v0.17.1-preview` (from `c37c01d`) is on GitHub and supersedes `v0.17.0-preview`. Both
@@ -4453,9 +4463,9 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**2026-09-27: 3D's decisions are made and recorded (ADR-0048 to ADR-0053).** Next is the one
-open question in `3d.md` §12, where Linux/Vulkan runs during the phase, then M19's own design
-(`docs/design/`, before any code). M19 has not begun. Nothing else is owed before 3D. What remains open stays
+**2026-09-27: 3D's decisions are made and recorded (ADR-0048 to ADR-0053).** Nothing is open.
+Next is M19's own design (`docs/design/`, before any code), including its Linux assessment
+(`3d.md` §10.2). M19 has not begun. Nothing else is owed before 3D. What remains open stays
 open on purpose:
 - `rhi.md`'s device recovery;
 - a human's hour with the editor;

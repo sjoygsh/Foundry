@@ -1023,9 +1023,19 @@ and regression coverage in `3d.md` §10:
 - **M23 Collision:** `physics3d` and a first-person walk.
 - **M24 Animation:** skins and clips, sampled at the fixed step.
 - **M25 Public 3D:** `FoundryApi_v6`, with a content mod and a native one.
-- **M26 A playable 3D sample,** played by someone who did not build it. It is the game
+- **M26 A playable 3D sample,** played by someone who did not build it, on macOS, Windows and a
+  freshly provisioned Linux machine. It is the game
   certification waits for (ADR-0047).
 
 The order is the proposal's. `3d.md` §10.1 records three corrections to what M19, M20 and M22
-contain, each made for a dependency. One question is open before M19: where Linux/Vulkan runs
-during the phase (`3d.md` §12). Each milestone writes its own design before code.
+contain, each made for a dependency.
+
+**Linux is a reproducible target, not a kept machine** (`3d.md` §10.2).
+- `scripts/m18/` provisions and verifies a fresh Ubuntu GPU machine.
+- M19–M25 keep Linux's compile coverage.
+- A milestone that materially changes something Linux/Vulkan-specific also runs on a freshly
+  provisioned machine, and its design says whether it does.
+- M26 rebuilds the environment from the kit and plays there, which is part of the proof.
+- Machines are disposable, and their evidence leaves before they do.
+
+Nothing is open before M19's design, which, like every milestone's, comes before code.

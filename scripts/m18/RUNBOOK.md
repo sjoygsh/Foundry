@@ -1,9 +1,19 @@
-# M18 runbook: the Linux desktop proof over SSH
+# Linux desktop runbook: proving Foundry on a fresh Ubuntu GPU machine over SSH
 
 M18's exit criteria are in `docs/ROADMAP.md`, and what they produced is in
 `docs/design/linux-desktop.md`. This is how to run them again on one Ubuntu x86_64 machine
 with a hardware Vulkan driver, reached over SSH from the Mac. Nothing here names an address, a
 host or a user. Pass the address on the command line, and never write it into the repository.
+
+**The machine is disposable** (`3d.md` §10.2). M18's was wiped afterwards, and M26 provisions a
+new one from this directory alone. Nothing on the machine is needed beyond what these scripts
+create:
+- the repository, at the tag under test;
+- this directory, including `usercfg/`, the user package the user-package run compiles;
+- the hashes in `provision.sh` and `AGENTS.md`.
+
+A step that needs something else is a bug in this kit, and it is fixed here, not on the machine.
+Evidence and fixes leave the machine (§6) before it is destroyed.
 
 Two routes are prepared:
 - **A Linux installation on a PC with a monitor.** This is what M18 used: a second drive of the
@@ -18,7 +28,7 @@ Two routes are prepared:
 ```sh
 # on the Mac
 H=<user>@<address>                      # never recorded
-ssh $H 'mkdir -p m18' && scp scripts/m18/* $H:m18/
+ssh $H 'mkdir -p m18' && scp -r scripts/m18/* $H:m18/
 ```
 
 ## 1. Provision
@@ -29,7 +39,14 @@ FOUNDRY_TAG=main ~/m18/provision.sh     # NVIDIA only: reboot when told, and run
 ```
 
 It fetches Zig, the pinned Vulkan SDK and RenderDoc, checks each against its hash, and writes
-`~/m18/env.sh`. LunarG's server can be very slow. `curl -C -` resumes the SDK download, and the
+`~/m18/env.sh`. It ends by verifying the machine, and stops with `NOT READY` unless all of these
+hold:
+- Zig is the version `.zigversion` pins;
+- `glslangValidator` is the SDK's, and the pinned validation layer is on the layer path;
+- the distribution's validation layer is not installed;
+- Vulkan reports a hardware GPU.
+
+`record-machine.sh` then records what the evidence ran on. LunarG's server can be very slow. `curl -C -` resumes the SDK download, and the
 distribution's `glslang-tools`, `spirv-tools` and `vulkan-validationlayers` can stand in for
 early go/no-go runs. Repeat the evidence with the pinned SDK, after uninstalling the
 distribution's layer so that the loader finds nothing else.
@@ -72,8 +89,8 @@ for r in reload resize room user nolayers; do ~/m18/samples.sh sway $r; done
 ~/m18/samples.sh gnome reload; ~/m18/samples.sh gnome resize   # the desktop compositor, undriven
 ```
 
-The user-package run compiles `~/m18/usercfg`, a package kept outside the repository, with the
-moved copy's own `fpack`. It overrides `sandbox:config.main` with 960×540, volume 0.50 and a
+The user-package run compiles `usercfg/` (in this directory, copied with it) with the moved
+copy's own `fpack`. It overrides `sandbox:config.main` with 960×540, volume 0.50 and a
 16×16 `sandbox:icon`, and requires `sandbox:content`.
 
 **Real input** is driven by hand through `samples.sh <session> start room`, `key`, `type`,

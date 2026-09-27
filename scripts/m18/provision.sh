@@ -106,7 +106,20 @@ EOF
 say "Zig dependencies"
 (cd "$HOME/Foundry" && zig build --fetch=all)
 
-say "ready"
+# -- 8. Verify: every pin, and a hardware device, or stop here ------------------------------
+say "verify"
 # shellcheck disable=SC1091
 . "$HOME/m18/env.sh"
-vulkaninfo --summary 2>/dev/null | sed -n '/Devices:/,$p' | head -20
+fail() { echo "NOT READY: $*" >&2; exit 1; }
+[ "$(zig version)" = "$(cat "$HOME/Foundry/.zigversion")" ] || fail "zig $(zig version) is not the pinned $(cat "$HOME/Foundry/.zigversion")"
+[ "$(command -v glslangValidator)" = "$VULKAN_SDK/bin/glslangValidator" ] || fail "glslangValidator is not the SDK's"
+[ -f "$VK_ADD_LAYER_PATH/VkLayer_khronos_validation.json" ] || fail "no pinned validation layer"
+if dpkg -s vulkan-validationlayers >/dev/null 2>&1; then
+    fail "the distribution's validation layer is installed; remove it so the loader finds only the pin"
+fi
+glslangValidator --version | head -1
+spirv-val --version | head -1
+devices="$(vulkaninfo --summary 2>/dev/null | sed -n '/Devices:/,$p')"
+echo "$devices" | head -20
+echo "$devices" | grep -q 'PHYSICAL_DEVICE_TYPE_\(DISCRETE\|INTEGRATED\)_GPU' || fail "no hardware Vulkan device"
+say "ready"

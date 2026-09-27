@@ -1,0 +1,8 @@
+# The Linux runbook's user package (RUNBOOK §4): it overrides the sandbox's config from a
+# player's mods directory. Kept in the repository so a fresh machine needs nothing else.
+foundry:mod  usercfg:changes {
+    name     "M18 user config"
+    version  1
+    license  "Apache-2.0"
+    requires [ { id foundry:core } { id sandbox:content } ]
+}
