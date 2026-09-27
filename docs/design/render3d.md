@@ -1,7 +1,7 @@
 # Design: M19 — Depth: 3D math, depth, multisampling and the `render3d` skeleton
 
-**Status:** Accepted 2026-09-27, when the owner asked for Step 1. **Steps 1 and 2 are done**
-(`core`, and the RHI contract on the null backend). Steps 3–8 have not begun. Each step stops with its Resolution, as every milestone's has since M13.
+**Status:** Accepted 2026-09-27, when the owner asked for Step 1. **Steps 1–3 are done**
+(`core`, the RHI contract on the null backend, and Metal). Steps 4–8 have not begun. Each step stops with its Resolution, as every milestone's has since M13.
 **Date:** 2026-09-27
 **Baseline:** `6fc69d7`, after tag `m18`. M0–M18 are complete, and 3D is decided.
 **Decisions:**
@@ -224,7 +224,8 @@ refuse:
   - the destination has `copy_dst` usage;
   - the region fits both resources;
   - the row pitch covers a row and is a multiple of the texel size;
-  - the offset is a multiple of 4, which is Vulkan's rule.
+  - the offset is a multiple of 4 and of the texel size, which both APIs require *(Step 3
+    corrected "of 4", which was Vulkan's rule alone)*.
 
 **When the bytes are valid:** after `waitIdle`, and not before. M19 adds no finer completion
 query, because its only consumers are tests and a screenshot. A game that reads back every
@@ -749,3 +750,68 @@ Steps 3 and 4 replace them. Nothing in the tree reaches them.
   (Debug and ReleaseSafe) and Linux.
 
 No Vulkan code runs until Step 4, which is on the Windows PC. Linux stays compile only (§10).
+
+## Resolution — 2026-09-27, Step 3: Metal
+
+**Done.** Metal's Step 2 stubs are gone. The backend now draws multisampled, resolves and reads
+back:
+- **Textures** carry `MTLTextureType2DMultisample` and `sampleCount`. The texture type is chosen
+  in Zig, and the shim only passes it through, as it does every other Metal value.
+- **Pipelines** carry `rasterSampleCount`.
+- **Resolve:** a colour attachment with a resolve target gets `resolveTexture`. Its store action
+  is `MultisampleResolve`, or `StoreAndMultisampleResolve` when the RHI says `store`. A resolve
+  into the surface presents it, as drawing into it does.
+- **Readback** is one blit, `copyFromTexture:…toBuffer:`. A zero-sized copy records nothing,
+  because the RHI allows one and Metal's blit asserts on it.
+- **Sample counts:** a count outside {1, 4} is `InvalidDescriptor`. One the device refuses
+  (`supportsTextureSampleCount:`) is `UnsupportedFormat`. Every Apple GPU draws 4×, and the
+  device is asked rather than assumed.
+- **Shim constants:** the four new ones are `_Static_assert`ed against Metal's, as all the
+  others are.
+
+**What "refused as on null" means here.** This backend still does not validate commands
+(ADR-0003); commands remain the null backend's job. It does refuse, at creation and with
+null's error, a multisampled texture with mips, or one that is sampled, copied, or not an
+attachment. Metal itself would accept a sampled multisampled texture, so without this check a
+program could work on this backend alone.
+
+**The contract was corrected first.** A readback offset must be a multiple of 4 **and of the
+texel size**:
+- Vulkan requires both, and Metal on macOS requires the texel size;
+- "a multiple of 4" was enough for every 8-bit format, but not for `rgba16_float` or
+  `rgba32_float`.
+
+`rhi.md` rule 10, §4.3 here, the field's comment and the null check were changed together. The
+null readback-limits test now refuses an 8-byte-texel copy at offset 4 and accepts it at 8.
+Step 2's table above keeps its original wording, as the record of that step.
+
+**Tests.** There are four new Metal tests. They run under `zig build test -Drhi=metal` on a
+headless device:
+- **Depth decides, at 1×.** This is §9's crossing at the RHI level: two full-viewport quads
+  under reversed-Z, with depths that cross inside column 32 at x = 32.3 px. That point is off
+  the pixel's centre and off every standard 4× sample position, so no sample ties. Both draw
+  orders produce byte-identical images: exact red left of column 32, exact blue right of it,
+  and a pure column 32.
+- **A 4× draw resolves.** Both orders are byte-identical, with the same exact halves. Column
+  32 is a red–blue blend, one sample in four, which only a resolve can produce.
+- **A readback at an offset and a pitch.** A 4×2 region at (2, 1) of an uploaded 8×4 pattern,
+  read to offset 12 with 24-byte rows. Every byte outside the region keeps its fill.
+- **Creation-time misuse.** Two samples, a mipped, sampled, copied or unattached 4× texture,
+  and a 3-sample pipeline are each refused with `InvalidDescriptor`.
+
+**Mutations,** each run once and then restored. Each fails exactly the test aimed at it:
+- dropping the resolve texture fails the 4× test;
+- a depth compare of `always` fails both crossing tests;
+- ignoring the pitch fails the readback test.
+
+**The bar on macOS:**
+- `zig fmt --check`;
+- `zig build test`: 91/91 steps, 1,717 of 1,718 tests (one null test was extended, not added);
+- `zig build test -Drhi=metal`: **95/95 steps, 1,726 of 1,732**, where the pre-step baseline
+  was 1,722 of 1,728, with the same six skipped;
+- `check` native, `-Drhi=metal`, and the Linux and Windows null cross targets;
+- both samples, for 30 frames each;
+- `vulkan-check -Drhi=vulkan` for Windows and Linux;
+- `check -Drhi=vulkan` for Windows (Debug and ReleaseSafe) and Linux.
+
+Vulkan keeps its stubs until Step 4, which runs these same tests natively on the Windows PC.

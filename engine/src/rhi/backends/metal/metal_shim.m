@@ -59,6 +59,10 @@ _Static_assert(FD_MTL_LOAD_ACTION_LOAD == MTLLoadActionLoad, "FD_MTL_LOAD_ACTION
 _Static_assert(FD_MTL_LOAD_ACTION_CLEAR == MTLLoadActionClear, "FD_MTL_LOAD_ACTION_CLEAR");
 _Static_assert(FD_MTL_STORE_ACTION_DONT_CARE == MTLStoreActionDontCare, "FD_MTL_STORE_ACTION_DONT_CARE");
 _Static_assert(FD_MTL_STORE_ACTION_STORE == MTLStoreActionStore, "FD_MTL_STORE_ACTION_STORE");
+_Static_assert(FD_MTL_STORE_ACTION_MULTISAMPLE_RESOLVE == MTLStoreActionMultisampleResolve, "FD_MTL_STORE_ACTION_MULTISAMPLE_RESOLVE");
+_Static_assert(FD_MTL_STORE_ACTION_STORE_AND_MULTISAMPLE_RESOLVE == MTLStoreActionStoreAndMultisampleResolve, "FD_MTL_STORE_ACTION_STORE_AND_MULTISAMPLE_RESOLVE");
+_Static_assert(FD_MTL_TEXTURE_TYPE_2D == MTLTextureType2D, "FD_MTL_TEXTURE_TYPE_2D");
+_Static_assert(FD_MTL_TEXTURE_TYPE_2D_MULTISAMPLE == MTLTextureType2DMultisample, "FD_MTL_TEXTURE_TYPE_2D_MULTISAMPLE");
 _Static_assert(FD_MTL_STORAGE_MODE_SHARED == MTLStorageModeShared, "FD_MTL_STORAGE_MODE_SHARED");
 _Static_assert(FD_MTL_STORAGE_MODE_MANAGED == MTLStorageModeManaged, "FD_MTL_STORAGE_MODE_MANAGED");
 _Static_assert(FD_MTL_STORAGE_MODE_PRIVATE == MTLStorageModePrivate, "FD_MTL_STORAGE_MODE_PRIVATE");
@@ -198,6 +202,12 @@ uint64_t fd_mtl_device_max_buffer_length(FdMtlDevice *dev) {
     return (uint64_t)[device maxBufferLength];
 }
 
+bool fd_mtl_device_supports_texture_sample_count(FdMtlDevice *dev, uint32_t count) {
+    if (dev == NULL) return false;
+    id<MTLDevice> device = (__bridge id<MTLDevice>)dev;
+    return [device supportsTextureSampleCount:count];
+}
+
 /* -- queue --------------------------------------------------------------------------- */
 
 FdMtlQueue *fd_mtl_queue_create(FdMtlDevice *dev, const char *label) {
@@ -307,13 +317,13 @@ FdMtlTexture *fd_mtl_texture_create(FdMtlDevice *dev, const FdMtlTextureDesc *de
         id<MTLDevice> device = (__bridge id<MTLDevice>)dev;
 
         MTLTextureDescriptor *d = [[MTLTextureDescriptor alloc] init];
-        d.textureType = MTLTextureType2D;
+        d.textureType = (MTLTextureType)desc->texture_type;
         d.pixelFormat = (MTLPixelFormat)desc->pixel_format;
         d.width = desc->width;
         d.height = desc->height;
         d.depth = 1;
         d.mipmapLevelCount = desc->mip_levels == 0 ? 1 : desc->mip_levels;
-        d.sampleCount = 1;
+        d.sampleCount = desc->sample_count == 0 ? 1 : desc->sample_count;
         d.arrayLength = 1;
         d.usage = (MTLTextureUsage)desc->usage;
         d.storageMode = (MTLStorageMode)desc->storage_mode;
@@ -497,6 +507,7 @@ FdMtlRenderPipeline *fd_mtl_render_pipeline_create(FdMtlDevice *dev,
         if (desc->depth_pixel_format != MTLPixelFormatInvalid) {
             d.depthAttachmentPixelFormat = (MTLPixelFormat)desc->depth_pixel_format;
         }
+        d.rasterSampleCount = desc->raster_sample_count == 0 ? 1 : desc->raster_sample_count;
 
         NSError *error = nil;
         id<MTLRenderPipelineState> pso = [device newRenderPipelineStateWithDescriptor:d
@@ -587,6 +598,7 @@ FdMtlRenderEncoder *fd_mtl_render_encoder_begin(FdMtlCommandBuffer *cb,
         for (uint32_t i = 0; i < desc->color_count; i += 1) {
             const FdMtlColorAttachment *a = &desc->color[i];
             d.colorAttachments[i].texture = (__bridge id<MTLTexture>)a->texture;
+            d.colorAttachments[i].resolveTexture = (__bridge id<MTLTexture>)a->resolve_texture;
             d.colorAttachments[i].loadAction = (MTLLoadAction)a->load_action;
             d.colorAttachments[i].storeAction = (MTLStoreAction)a->store_action;
             d.colorAttachments[i].clearColor =
@@ -799,4 +811,22 @@ void fd_mtl_blit_copy_buffer_to_texture(FdMtlBlitEncoder *enc, FdMtlBuffer *src,
      destinationSlice:0
      destinationLevel:mip_level
     destinationOrigin:MTLOriginMake(origin_x, origin_y, 0)];
+}
+
+void fd_mtl_blit_copy_texture_to_buffer(FdMtlBlitEncoder *enc, FdMtlTexture *src,
+                                        uint32_t mip_level, uint32_t origin_x,
+                                        uint32_t origin_y, uint32_t width, uint32_t height,
+                                        FdMtlBuffer *dst, uint64_t dst_offset,
+                                        uint32_t bytes_per_row) {
+    if (enc == NULL || src == NULL || dst == NULL) return;
+    id<MTLBlitCommandEncoder> e = (__bridge id<MTLBlitCommandEncoder>)enc;
+    [e copyFromTexture:(__bridge id<MTLTexture>)src
+                 sourceSlice:0
+                 sourceLevel:mip_level
+                sourceOrigin:MTLOriginMake(origin_x, origin_y, 0)
+                  sourceSize:MTLSizeMake(width, height, 1)
+                    toBuffer:(__bridge id<MTLBuffer>)dst
+           destinationOffset:(NSUInteger)dst_offset
+      destinationBytesPerRow:bytes_per_row
+    destinationBytesPerImage:(NSUInteger)bytes_per_row * height];
 }

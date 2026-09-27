@@ -71,7 +71,18 @@ readback is written into `rhi.md` §8 and §11, and enforced by the null backend
 - `copyTextureToBuffer`, which makes the interface 41 functions.
 
 There are 19 new tests, and mutations of two rules fail exactly their tests. Metal and Vulkan
-refuse 4× and the copy until Steps 3 and 4. Step 3 has not begun.
+refuse 4× and the copy until Steps 3 and 4.
+
+**M19 Step 3 is done (2026-09-27).** Metal draws multisampled, resolves, and reads back.
+Four headless Metal tests prove it with pixels:
+- two quads whose depths cross give byte-identical images in both draw orders, at 1× and at 4×;
+- at 4×, the crossing column is a blend;
+- a readback at an offset and a pitch writes its region and nothing else.
+
+Creation-time multisampling misuse is refused with null's error. The readback offset rule was
+corrected to "a multiple of 4 and of the texel size", in the contract first. Three mutations
+each fail their test. `zig build test -Drhi=metal`: 95/95 steps, 1,726 of 1,732. Next is
+Step 4, Vulkan, on the Windows PC. It needs the SSH alias repointed first.
 
 **Before M18: M17 is complete (2026-09-23, tag `m17`).** The unsigned pre-release
 `v0.17.1-preview` (from `c37c01d`) is on GitHub and supersedes `v0.17.0-preview`. Both

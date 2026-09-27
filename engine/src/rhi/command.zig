@@ -190,7 +190,7 @@ pub const TextureToBufferCopy = struct {
     src_origin: resource.Origin2D = .{},
     size: resource.Extent2D,
     dst: resource.BufferHandle,
-    /// A multiple of 4, which is Vulkan's rule.
+    /// A multiple of 4 and of the texel size: Vulkan requires both, Metal the texel size.
     dst_offset: u64 = 0,
     /// Zero means tightly packed: `width * bytesPerTexel`. Otherwise at least that, and a
     /// multiple of the texel size.

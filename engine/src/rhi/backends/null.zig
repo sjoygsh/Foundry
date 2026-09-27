@@ -1188,8 +1188,9 @@ pub const CommandBuffer = struct {
                     });
                 }
             }
-            if (copy.dst_offset % 4 != 0) {
-                dev.violate(.limits, "copy writes at offset {d}, which is not a multiple of 4", .{copy.dst_offset});
+            const offset_align = @max(4, src.desc.format.bytesPerTexel());
+            if (copy.dst_offset % offset_align != 0) {
+                dev.violate(.limits, "copy writes at offset {d}, which is not a multiple of {d}", .{ copy.dst_offset, offset_align });
             }
             if (dev.buffers.getConst(copy.dst)) |dst| {
                 const texel = src.desc.format.bytesPerTexel();
@@ -4212,6 +4213,16 @@ test "rule 10: a readback region fits its level, and its rows fit the buffer" {
     var cmd = try dev.beginCommandBuffer();
     try cmd.copyTextureToBuffer(.{ .src = rb.texture, .size = .{ .width = 16, .height = 8 }, .dst = rb.buffer });
     try cmd.submit();
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
+
+    // A wider texel raises the offset's alignment to its own size: 4 is not enough for 8.
+    const wide = try Readback.init(dev, .rgba16_float, 1024);
+    var misaligned = try dev.beginCommandBuffer();
+    try misaligned.copyTextureToBuffer(.{ .src = wide.texture, .size = .{ .width = 1, .height = 1 }, .dst = wide.buffer, .dst_offset = 4 });
+    try expectRule(dev, misaligned, .limits);
+    var aligned = try dev.beginCommandBuffer();
+    try aligned.copyTextureToBuffer(.{ .src = wide.texture, .size = .{ .width = 1, .height = 1 }, .dst = wide.buffer, .dst_offset = 8 });
+    try aligned.submit();
     try testing.expectEqual(@as(usize, 0), dev.violationCount());
 }
 

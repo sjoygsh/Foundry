@@ -83,6 +83,11 @@ enum {
 
     FD_MTL_STORE_ACTION_DONT_CARE = 0,
     FD_MTL_STORE_ACTION_STORE = 1,
+    FD_MTL_STORE_ACTION_MULTISAMPLE_RESOLVE = 2,
+    FD_MTL_STORE_ACTION_STORE_AND_MULTISAMPLE_RESOLVE = 3,
+
+    FD_MTL_TEXTURE_TYPE_2D = 2,
+    FD_MTL_TEXTURE_TYPE_2D_MULTISAMPLE = 4,
 
     FD_MTL_STORAGE_MODE_SHARED = 0,
     FD_MTL_STORAGE_MODE_MANAGED = 1,
@@ -192,6 +197,9 @@ uint32_t fd_mtl_device_max_texture_dimension(FdMtlDevice *dev);
 /* The largest buffer the device can allocate, in bytes (`MTLDevice.maxBufferLength`). */
 uint64_t fd_mtl_device_max_buffer_length(FdMtlDevice *dev);
 
+/* `MTLDevice.supportsTextureSampleCount:`. */
+bool fd_mtl_device_supports_texture_sample_count(FdMtlDevice *dev, uint32_t count);
+
 /* -- queue -------------------------------------------------------------------------- */
 
 FdMtlQueue *fd_mtl_queue_create(FdMtlDevice *dev, const char *label);
@@ -236,10 +244,12 @@ void fd_mtl_buffer_did_modify_range(FdMtlBuffer *buffer, uint64_t offset, uint64
 /* -- textures ------------------------------------------------------------------------ */
 
 typedef struct FdMtlTextureDesc {
+    uint32_t texture_type; /* MTLTextureType */
     uint32_t pixel_format; /* MTLPixelFormat */
     uint32_t width;
     uint32_t height;
     uint32_t mip_levels;
+    uint32_t sample_count;
     uint32_t usage;        /* MTLTextureUsage bitmask */
     uint32_t storage_mode; /* MTLStorageMode */
 } FdMtlTextureDesc;
@@ -323,6 +333,8 @@ typedef struct FdMtlRenderPipelineDesc {
     /* MTLPixelFormatInvalid (0) when the pipeline has no depth attachment. */
     uint32_t depth_pixel_format;
 
+    uint32_t raster_sample_count;
+
     const char *label;
 } FdMtlRenderPipelineDesc;
 
@@ -355,6 +367,8 @@ void fd_mtl_command_buffer_wait_until_completed(FdMtlCommandBuffer *cb);
 
 typedef struct FdMtlColorAttachment {
     FdMtlTexture *texture;
+    /* NULL unless `store_action` is one of the multisample resolves. */
+    FdMtlTexture *resolve_texture;
     uint32_t load_action;  /* MTLLoadAction */
     uint32_t store_action; /* MTLStoreAction */
     double clear_r;
@@ -433,6 +447,11 @@ void fd_mtl_blit_copy_buffer_to_texture(FdMtlBlitEncoder *enc, FdMtlBuffer *src,
                                         FdMtlTexture *dst, uint32_t mip_level,
                                         uint32_t origin_x, uint32_t origin_y,
                                         uint32_t width, uint32_t height);
+void fd_mtl_blit_copy_texture_to_buffer(FdMtlBlitEncoder *enc, FdMtlTexture *src,
+                                        uint32_t mip_level, uint32_t origin_x,
+                                        uint32_t origin_y, uint32_t width, uint32_t height,
+                                        FdMtlBuffer *dst, uint64_t dst_offset,
+                                        uint32_t bytes_per_row);
 
 #ifdef __cplusplus
 }

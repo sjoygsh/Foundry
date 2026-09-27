@@ -619,7 +619,9 @@ forgives:
     - a texture-to-buffer copy's region lies inside the source level it names, and its rows
       lie inside the destination buffer;
     - a nonzero `dst_bytes_per_row` holds a row and is a multiple of the texel size;
-    - `dst_offset` is a multiple of 4, which is Vulkan's rule.
+    - `dst_offset` is a multiple of 4 and of the texel size. Vulkan requires both, and Metal on
+      macOS requires the texel size. *(Corrected in M19 Step 3: the first text said 4 alone,
+      which an `rgba16_float` or `rgba32_float` source breaks.)*
 11. **Usage.** A resource is used only as its declared usage allows, whatever state it is
     in: a correct state does not make up for a missing flag. Binding a buffer as vertex or
     index data needs `vertex` or `index`; a uniform or storage binding needs `uniform` or
