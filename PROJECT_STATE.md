@@ -61,8 +61,8 @@ may change.
 The work has 14 convention tests, each of which fails when its mutation breaks the convention.
 The Mac bar is green: 91/91 steps, 1,698 of 1,699 headless tests.
 
-**The Windows run of Step 1 is owed.** The PC's address moved, and the Mac's SSH config was not
-changed (render3d.md's Step 1 Resolution).
+**Step 1's Windows run passed later that day:** all 25 `math.zig` tests ran natively on the PC,
+once the owner had repointed the SSH alias to the PC's new address.
 
 **M19 Step 2 is done (2026-09-27).** The RHI contract for multisampling, resolve and
 readback is written into `rhi.md` §8 and §11, and enforced by the null backend:

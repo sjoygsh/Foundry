@@ -643,7 +643,7 @@ at acceptance:
 
 ## Resolution — 2026-09-27, Step 1: `core`'s rotations, transforms and axes
 
-**Done, on macOS; the Windows run is owed** (below). `engine/src/core/math.zig` is the only
+**Done, on macOS and Windows** (below). `engine/src/core/math.zig` is the only
 source file changed. It gains:
 - the axes: `Vec3.right`, `Vec3.up` and `Vec3.forward` (−Z), plus `Vec3.isFinite`;
 - `Quat`, with the API §3 lists;
@@ -679,11 +679,12 @@ mutated to show they fail when the conventions break:**
 - `check` native, `-Drhi=metal`, and the Linux and Windows null cross targets;
 - both samples, for 30 frames each.
 
-**Windows is not yet run.** The PC's DHCP address has moved again. Its host key matches the
-recorded one at the new address. Changing the Mac's SSH configuration to follow it was refused
-by the session's permission checks, and is left to the owner. The run owed is only
-`zig test math.zig` natively on x86_64 Windows, at low priority. The file imports nothing but
-`std`. Step 4 runs the whole Vulkan graph there in any case.
+**Windows ran later the same day, after Step 3.** The PC's DHCP address had moved, and the
+owner repointed the Mac's SSH configuration; the session's permission checks refused to. The
+committed `math.zig` was copied over, and its SHA256 matched the Mac's. Then
+`zig test math.zig -j2` ran natively on x86_64 Windows, at below-normal priority, once the PC
+was idle: **all 25 tests passed, the same 25 as on macOS.** The file imports nothing but `std`.
+Step 4 runs the whole Vulkan graph there in any case.
 
 **Linux:** compile only, as §10 states. The Linux cross-check passed, and nothing here touches
 Linux.
