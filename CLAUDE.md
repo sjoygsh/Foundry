@@ -20,6 +20,22 @@ their reasoning live in `docs/adr/`.
 5. Summarize your understanding of the current state back to the user.
 6. Continue from the existing architecture. Do not restart or redesign completed systems.
 
+**Use the workflow skills whenever they apply.** Foundry's recurring workflows exist as
+user-level Claude Code skills, and they are the standard way to do this work, not optional
+shortcuts (Codex has the same three; see `AGENTS.md` §6):
+
+* `foundry-resume-after-agent` — first, whenever another agent, model or session changed the
+  repository since the last trusted handoff: reconcile the history and verify it before new work.
+* `foundry-milestone-design` — when planning a new milestone: the design document, ADRs, scoped
+  steps and exit criteria, then a stop before Step 1.
+* `foundry-milestone-step` — when beginning, continuing, finishing or closing a numbered
+  milestone step: one bounded step, completed and persisted, then a stop.
+
+When more than one applies, resume first, then exactly the workflow the request needs. The skills
+supplement this file and the repository's documents; they never override them, relax
+verification or widen the user's authorization. If one is unavailable, say so and follow its
+workflow directly rather than silently skipping it.
+
 **Before making a significant change**, check it against the Invariants (§3). If a change
 would violate one, stop and discuss it with the user first.
 
@@ -195,6 +211,7 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | 3D rendering | `render3d` starts forward and fixed-pass; it changes architecture only on measurement | [0052](docs/adr/0052-forward-renderer-first.md) |
 | 3D assets | Import, runtime mesh, textures and materials, model, scene, submission and GPU resources stay separate; no importer's shape reaches `render3d` | [0053](docs/adr/0053-assets-are-not-the-renderer.md) |
 | Vertex semantics | Each semantic has one fixed slot, both vertex buffer and attribute location: position 0, normal 1, tangent 2, UV0 3, UV1 4, colour 5, joints 6, weights 7; one stream per buffer; layouts name their slot and may be sparse | [0054](docs/adr/0054-vertex-semantics-are-fixed-slots.md) |
+| Imported models | An import record is a model's authoring form, compiled into `foundry:model` and never shipped; generated meshes, materials and textures take the model's ID plus `mesh<i>`, `material<i>`, `texture<i>`; output depends on the source bytes alone | [0055](docs/adr/0055-imported-models-compile-to-foundry-records.md) |
 | Audio | Foundry's own mixer and WAV decoding; `platform` owns the device | [0023](docs/adr/0023-audio-own-mixer.md) |
 | UI | Foundry's own immediate-mode UI; one kernel, a debug widget set now, a content-driven game one later | [0024](docs/adr/0024-ui-own-immediate-mode.md) |
 | Game widget set | Themes are `foundry:ui_theme` content records; the kernel stays at L1 with opaque-image `image`/`nine_slice` commands; layout stays code | [0041](docs/adr/0041-game-widget-set-and-content-themes.md) |

@@ -554,6 +554,26 @@ decision, document it architecturally — an ADR, or a Resolution section — *b
 
 ## 6. Agent execution and bounded verification
 
+### Codex workflow skills
+
+When working in Codex and these user-level skills are available, use them whenever the task
+matches. They are the standard Foundry workflows, not optional prompt shortcuts:
+
+* Use `$resume-after-agent` first when another agent, model or development session changed the
+  repository since the last trusted handoff. Reconcile the intervening history and establish a
+  clean baseline before beginning new work.
+* Use `$milestone-design-writer` when planning or architecting a new milestone. It produces the
+  design document, ADRs, scoped steps and exit criteria, then stops before Step 1.
+* Use `$milestone-step-runner` when beginning, continuing, finishing or closing a numbered
+  milestone step. It completes and persists one bounded step, then stops before the next one.
+
+When more than one applies, run `$resume-after-agent` first, followed by exactly the workflow
+the requested work needs. A newly designed milestone still stops before Step 1; begin Step 1 in
+a later invocation of `$milestone-step-runner`. These skills supplement this file and the
+repository's authoritative documents; they do not override them, relax verification or expand
+the user's authorization. If a named skill is unavailable, say so and follow its equivalent
+workflow directly rather than silently omitting it.
+
 The primary agent performs implementation, reasoning, testing, debugging, documentation
 updates and review itself by default. Delegation is exceptional, not routine. Use a subagent
 only for a concrete technical reason that materially benefits the task, such as genuinely
