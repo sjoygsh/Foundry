@@ -38,7 +38,20 @@ The owner then settled the two remaining questions:
   matrices, a canonical decomposition, a stated tolerance, named refusals, and nothing written
   on refusal. M21's tests are listed.
 
-**M19 has not begun, and nothing is open before its design.**
+**M19's design is written, and awaits acceptance (2026-09-27).**
+[`render3d.md`](docs/design/render3d.md) proposes [ADR-0054](docs/adr/0054-vertex-semantics-are-fixed-slots.md):
+vertex semantics are fixed shader slots. It plans eight bounded steps:
+1. `core`;
+2. the null contract;
+3. Metal;
+4. Vulkan on Windows;
+5. the runtime mesh;
+6. `render3d`;
+7. the two-pass frame and `samples/sandbox3d`;
+8. the close.
+
+Its Linux assessment is "compile only", with stated triggers. §12 lists ten choices the owner
+may change at acceptance. **No code has changed; Step 1 has not begun.**
 
 **Before M18: M17 is complete (2026-09-23, tag `m17`).** The unsigned pre-release
 `v0.17.1-preview` (from `c37c01d`) is on GitHub and supersedes `v0.17.0-preview`. Both
@@ -4463,9 +4476,10 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**2026-09-27: 3D's decisions are made and recorded (ADR-0048 to ADR-0053).** Nothing is open.
-Next is M19's own design (`docs/design/`, before any code), including its Linux assessment
-(`3d.md` §10.2). M19 has not begun. Nothing else is owed before 3D. What remains open stays
+**2026-09-27: 3D's decisions are made and recorded (ADR-0048 to ADR-0053).** M19's design is
+written: `docs/design/render3d.md`, with ADR-0054 proposed. Its Linux assessment is "compile
+only". **Next is the owner's acceptance of that design, or their changes to §12's ten choices.
+Then Step 1 only (`core`), when asked.** M19's code has not begun. Nothing else is owed before 3D. What remains open stays
 open on purpose:
 - `rhi.md`'s device recovery;
 - a human's hour with the editor;

@@ -998,7 +998,7 @@ Windows target's PC, with an Intel Arc A750 on Mesa ANV. The record is
 - **What changed:** Wayland found one real fault, fixed. A second `Platform`'s shutdown closed
   the first's connection. No RHI rule changed.
 
-### 3D — **decided 2026-09-27; M19 not begun**
+### 3D — **decided 2026-09-27; M19 designed, not begun**
 
 [`3d.md`](design/3d.md) is the architecture and the order. The owner accepted all six of its
 decisions as recommended, and added that assets are not the renderer. They are ADR-0048 to
@@ -1038,4 +1038,5 @@ contain, each made for a dependency.
 - M26 rebuilds the environment from the kit and plays there, which is part of the proof.
 - Machines are disposable, and their evidence leaves before they do.
 
-Nothing is open before M19's design, which, like every milestone's, comes before code.
+**M19's design is written** ([`render3d.md`](design/render3d.md), with ADR-0054 proposed), and
+awaits acceptance. It has eight steps and a "compile only" Linux assessment. No code has begun.
