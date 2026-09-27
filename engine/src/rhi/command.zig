@@ -34,9 +34,22 @@ pub const ClearValue = union(enum) {
 /// writing it back to memory. It is free to express and expensive to retrofit, so it is in
 /// the interface from the first pass.
 ///
-/// `resolve`, for MSAA, does not exist yet. This enum is shaped to gain it without
-/// disturbing anything that already uses it.
+/// **Resolving is not a store action.** A multisampled colour attachment names a
+/// `ResolveTarget` instead, because Metal and Vulkan both treat storing and resolving as
+/// independent: `discard` with a resolve target is the common case, `store` with one the rare
+/// case in which a later pass loads the samples too (`rhi.md` §8).
 pub const StoreAction = enum { store, discard };
+
+/// Where a multisampled colour attachment's samples are averaged when its pass ends.
+///
+/// Single-sampled, with the source's format and size, and `render_target` usage; tracked like
+/// an attachment, so it declares the state it arrives in and the state it leaves in. The
+/// surface may be one, leaving in `present` (`rhi.md` §11, rules 1, 7 and 11).
+pub const ResolveTarget = struct {
+    texture: resource.TextureHandle,
+    initial_state: resource.ResourceState = .undefined,
+    final_state: resource.ResourceState = .render_target,
+};
 
 /// One colour attachment of a render pass.
 ///
@@ -50,6 +63,8 @@ pub const ColorAttachment = struct {
     store: StoreAction = .store,
     initial_state: resource.ResourceState = .undefined,
     final_state: resource.ResourceState = .render_target,
+    /// Only for a multisampled attachment. Depth has no counterpart: it is never resolved.
+    resolve: ?ResolveTarget = null,
 };
 
 pub const DepthAttachment = struct {
@@ -163,6 +178,23 @@ pub const BufferToTextureCopy = struct {
     /// not the only option (`docs/design/rhi.md` §8).
     dst_origin: resource.Origin2D = .{},
     size: resource.Extent2D,
+};
+
+/// Reading a texture back: a region of one level of a single-sampled colour texture, into a
+/// buffer. The source is tracked in `copy_src` and has `copy_src` usage; the destination has
+/// `copy_dst`, and is usually a `readback` buffer, whose bytes are valid after `waitIdle`
+/// (`rhi.md` §8). Rows are written top row first, as the texture stores them.
+pub const TextureToBufferCopy = struct {
+    src: resource.TextureHandle,
+    src_mip_level: u32 = 0,
+    src_origin: resource.Origin2D = .{},
+    size: resource.Extent2D,
+    dst: resource.BufferHandle,
+    /// A multiple of 4, which is Vulkan's rule.
+    dst_offset: u64 = 0,
+    /// Zero means tightly packed: `width * bytesPerTexel`. Otherwise at least that, and a
+    /// multiple of the texel size.
+    dst_bytes_per_row: u32 = 0,
 };
 
 /// What `beginFrame` hands back.

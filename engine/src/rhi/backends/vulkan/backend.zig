@@ -745,6 +745,11 @@ pub const Device = struct {
 
     pub fn createTexture(self: *Device, desc: resource.TextureDesc) interface.ResourceError!resource.TextureHandle {
         if (desc.size.isEmpty() or !desc.usage.any()) return error.InvalidDescriptor;
+        // M19 Step 2: the contract exists, and this backend draws multisampled only from
+        // Step 4. Until then a 4x texture is refused as a format this device cannot make,
+        // which is the answer a device without 4x would give (`render3d.md` §11).
+        if (!resource.isValidSampleCount(desc.sample_count)) return error.InvalidDescriptor;
+        if (desc.sample_count != 1) return error.UnsupportedFormat;
         const levels = @max(desc.mip_levels, 1);
         if (levels > maxMipLevels(desc.size)) return error.InvalidDescriptor;
         if (desc.size.width > self.limits.maxImageDimension2D or desc.size.height > self.limits.maxImageDimension2D) {
@@ -1259,6 +1264,10 @@ pub const Device = struct {
         const vertex_shader = self.shaders.getConst(desc.vertex_shader) orelse return error.InvalidDescriptor;
         const fragment_shader = self.shaders.getConst(desc.fragment_shader) orelse return error.InvalidDescriptor;
         const layout_backing = (self.pipeline_layouts.getConst(desc.layout) orelse return error.InvalidDescriptor).backing;
+        // M19 Step 2: see `createTexture`. A 4x pipeline waits for Step 4 with it.
+        if (!resource.isValidSampleCount(desc.sample_count)) return error.InvalidDescriptor;
+        if (desc.sample_count != 1) return error.UnsupportedFormat;
+
         if (!(spirv.hasEntry(vertex_shader.bytes, .vertex, desc.vertex_entry) catch false) or
             !(spirv.hasEntry(fragment_shader.bytes, .fragment, desc.fragment_entry) catch false))
         {
@@ -2892,6 +2901,14 @@ pub const CommandBuffer = struct {
     /// A texture upload. A source layout Vulkan cannot express — a stride or offset that is not a
     /// whole number of texels — is first repacked on the GPU into a staging buffer this recording
     /// owns, and that buffer is retired with the recording (§5.3, `layout.zig`).
+    /// M19 Step 2 declares readback; this backend implements it in Step 4. Until then the
+    /// copy is refused whole and records nothing, so no caller can mistake it for a read.
+    pub fn copyTextureToBuffer(self: *CommandBuffer, copy: command.TextureToBufferCopy) interface.CommandError!void {
+        _ = self;
+        _ = copy;
+        return error.ValidationFailed;
+    }
+
     pub fn copyBufferToTexture(self: *CommandBuffer, copy: command.BufferToTextureCopy) interface.CommandError!void {
         if (!self.open or copy.size.isEmpty()) return;
         const dev = self.device;

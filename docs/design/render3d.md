@@ -1,7 +1,7 @@
 # Design: M19 — Depth: 3D math, depth, multisampling and the `render3d` skeleton
 
-**Status:** Accepted 2026-09-27, when the owner asked for Step 1. **Step 1 is done** (`core`);
-Steps 2–8 have not begun. Each step stops with its Resolution, as every milestone's has since M13.
+**Status:** Accepted 2026-09-27, when the owner asked for Step 1. **Steps 1 and 2 are done**
+(`core`, and the RHI contract on the null backend). Steps 3–8 have not begun. Each step stops with its Resolution, as every milestone's has since M13.
 **Date:** 2026-09-27
 **Baseline:** `6fc69d7`, after tag `m18`. M0–M18 are complete, and 3D is decided.
 **Decisions:**
@@ -201,7 +201,9 @@ refuse:
    Its source is multisampled. Resolving a single-sampled attachment is refused.
 4. A resolve target's states are tracked and checked like an attachment's. It may be the
    surface, ending in `present` or `render_target`.
-5. Depth is never resolved in M19. A multisampled depth attachment ends in `discard`.
+5. Depth is never resolved in M19: `DepthAttachment` has no resolve target. *(Step 2 dropped
+   "a multisampled depth attachment ends in `discard`": storing samples is legal, because a later
+   pass may load them.)*
 
 **Backend mapping:**
 
@@ -684,3 +686,66 @@ by the session's permission checks, and is left to the owner. The run owed is on
 
 **Linux:** compile only, as §10 states. The Linux cross-check passed, and nothing here touches
 Linux.
+
+## Resolution — 2026-09-27, Step 2: the RHI contract, on the null backend
+
+**Done.** The contract was written into `rhi.md` first, as its §11 requires of any tightening:
+- §8 describes resolve targets and readback;
+- rules 1, 7, 10 and 11 gain M19 clauses;
+- §12's MSAA entry now points at §4.4 here.
+
+The rule count stays at eleven. The new checks are clauses of existing rules, and are reported
+under those rules' names.
+
+**The types:**
+- `TextureDesc.sample_count` and `RenderPipelineDesc.sample_count`, both defaulting to 1;
+- `rhi.isValidSampleCount`, which accepts exactly 1 and 4;
+- `ColorAttachment.resolve: ?ResolveTarget`. `ResolveTarget` holds a texture and its own initial
+  and final states;
+- `TextureToBufferCopy`, and `CommandBuffer.copyTextureToBuffer`. The interface now has 41
+  functions, and its count test moved with it. `StoreAction` stays `{store, discard}`, and its
+  comment now says why.
+
+**The null backend enforces:**
+
+| Rule | What is enforced |
+| --- | --- |
+| 10 | A sample count other than 1 or 4, on a texture or a pipeline, is refused. So is a multisampled texture with more than one mip level |
+| 11 | A multisampled texture that is sampled, copied, or not an attachment is refused. A resolve target needs `render_target` usage. Readback needs `copy_src` on the texture, a colour format, and `copy_dst` on the buffer |
+| 7 | Attachments of a pass have one sample count, and a drawing pipeline matches it. A resolve's source is multisampled. The resolve target is single-sampled, has its source's format and size, and is not an attachment of the same pass |
+| 1 | A resolve target's arrival state is checked, and its departure tracked. A texture is read back only from `copy_src` |
+| 10 | A readback region fits its level, and its rows fit the buffer. The pitch holds a row in whole texels, and the offset is a multiple of 4 |
+| 8, 9 | Readback inside a pass is refused, as are a destroyed source, destination or resolve target |
+
+**What implementation settled:**
+- **§4.2's rule 5 was too strict.** It said a multisampled depth attachment "ends in
+  `discard`", and the same logic would have forbidden storing a multisampled colour
+  attachment. Both are legal in every API. A later pass may load the samples, and one test now
+  proves that. What remains is that depth has no resolve target.
+- **Readback of a depth format is refused under rule 11,** as a usage the RHI does not yet
+  offer, rather than under a rule of its own.
+
+**Metal and Vulkan stubs:**
+- a sample count outside the set is `InvalidDescriptor`, as on null;
+- 4× is `UnsupportedFormat`, the answer a device without 4× would give;
+- `copyTextureToBuffer` records nothing and returns `ValidationFailed`.
+
+Steps 3 and 4 replace them. Nothing in the tree reaches them.
+
+**Tests:**
+- 19 new null-backend tests: sixteen for the refused cases, and three accepting ones:
+  - a 4× colour and depth pass resolved into the surface, which is what `render3d` will record;
+  - a multisampled attachment stored and loaded across two passes;
+  - a readback at an offset and pitch, mapped after `waitIdle`.
+- **Mutations:** disabling the draw-time sample-count check fails exactly its rule 7 test, and
+  disabling the readback state check fails exactly its rule 1 test.
+
+**The bar on macOS:**
+- `zig fmt --check`;
+- `zig build test`: **91/91 steps, 1,717 of 1,718 headless tests**;
+- `check` native, `-Drhi=metal`, and the Linux and Windows null cross targets;
+- both samples, for 30 frames each;
+- the Vulkan checks: `vulkan-check` for Windows and Linux, and `check -Drhi=vulkan` for Windows
+  (Debug and ReleaseSafe) and Linux.
+
+No Vulkan code runs until Step 4, which is on the Windows PC. Linux stays compile only (§10).

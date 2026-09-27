@@ -108,6 +108,9 @@ pub const ClipSpace = command.ClipSpace;
 pub const clip_space = command.clip_space;
 pub const FrameContext = command.FrameContext;
 pub const RenderPassDesc = command.RenderPassDesc;
+pub const ResolveTarget = command.ResolveTarget;
+pub const TextureToBufferCopy = command.TextureToBufferCopy;
+pub const isValidSampleCount = resource.isValidSampleCount;
 pub const Viewport = command.Viewport;
 
 pub const DeviceDesc = interface.DeviceDesc;

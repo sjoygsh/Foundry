@@ -158,6 +158,11 @@ pub const TextureDesc = struct {
     format: format.TextureFormat,
     usage: TextureUsage,
     mip_levels: u32 = 1,
+    /// Samples per pixel: 1, or 4 for a multisampled attachment (`isValidSampleCount`). A
+    /// multisampled texture is only ever drawn into and resolved from: its usage is
+    /// `render_target` or `depth_stencil`, never `sampled` or a copy, and it has one mip level
+    /// (`rhi.md` §11, rules 10 and 11).
+    sample_count: u32 = 1,
     /// Textures are device-local in every case Foundry has: uploads go through a staging
     /// buffer and a copy. Present as a field rather than hardcoded because a readback
     /// target is a legitimate future use.
@@ -166,6 +171,13 @@ pub const TextureDesc = struct {
     /// a freshly created texture has no contents worth preserving.
     initial_state: ResourceState = .undefined,
 };
+
+/// **Exactly 1 and 4** (`render3d.md` §4.2). Vulkan's required limits put 4 in every conformant
+/// device's framebuffer sample counts, and every Apple GPU supports it; 2 buys little beside 4,
+/// and 8 is optional everywhere. A count outside the set is refused with `InvalidDescriptor`.
+pub fn isValidSampleCount(count: u32) bool {
+    return count == 1 or count == 4;
+}
 
 // -- samplers ------------------------------------------------------------------------
 

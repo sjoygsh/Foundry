@@ -722,6 +722,11 @@ pub const Device = struct {
     pub fn createTexture(self: *Device, desc: resource.TextureDesc) interface.ResourceError!resource.TextureHandle {
         if (desc.size.isEmpty()) return error.InvalidDescriptor;
         if (!desc.usage.any()) return error.InvalidDescriptor;
+        // M19 Step 2: the contract exists, and this backend draws multisampled only from
+        // Step 3. Until then a 4x texture is refused as a format this device cannot make,
+        // which is the answer a device without 4x would give (`render3d.md` §11).
+        if (!resource.isValidSampleCount(desc.sample_count)) return error.InvalidDescriptor;
+        if (desc.sample_count != 1) return error.UnsupportedFormat;
         try self.reserveRetirement();
 
         const d: c.FdMtlTextureDesc = .{
@@ -930,6 +935,9 @@ pub const Device = struct {
         const vertex_lib = self.shaders.getConst(desc.vertex_shader) orelse return error.InvalidDescriptor;
         const fragment_lib = self.shaders.getConst(desc.fragment_shader) orelse return error.InvalidDescriptor;
         const layout = self.pipeline_layouts.getConst(desc.layout) orelse return error.InvalidDescriptor;
+        // M19 Step 2: see `createTexture`. A 4x pipeline waits for Step 3 with it.
+        if (!resource.isValidSampleCount(desc.sample_count)) return error.InvalidDescriptor;
+        if (desc.sample_count != 1) return error.UnsupportedFormat;
         try self.reserveRetirement();
 
         var vname: [label_max + 1]u8 = undefined;
@@ -1307,6 +1315,14 @@ pub const CommandBuffer = struct {
         defer c.fd_mtl_blit_encoder_destroy(enc);
         c.fd_mtl_blit_copy_buffer(enc, src.mtl, copy.src_offset, dst.mtl, copy.dst_offset, copy.size);
         c.fd_mtl_blit_encoder_end(enc);
+    }
+
+    /// M19 Step 2 declares readback; this backend implements it in Step 3. Until then the
+    /// copy is refused whole and records nothing, so no caller can mistake it for a read.
+    pub fn copyTextureToBuffer(self: *CommandBuffer, copy: command.TextureToBufferCopy) interface.CommandError!void {
+        _ = self;
+        _ = copy;
+        return error.ValidationFailed;
     }
 
     pub fn copyBufferToTexture(self: *CommandBuffer, copy: command.BufferToTextureCopy) interface.CommandError!void {

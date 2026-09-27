@@ -151,6 +151,9 @@ pub fn check(comptime Impl: type, comptime label: []const u8) void {
         expectFn(C, label, "bufferBarrier", &.{ *C, []const command.BufferBarrier }, CommandError!void);
         expectFn(C, label, "copyBufferToBuffer", &.{ *C, command.BufferCopy }, CommandError!void);
         expectFn(C, label, "copyBufferToTexture", &.{ *C, command.BufferToTextureCopy }, CommandError!void);
+        // Added in M19 (`render3d.md` §4.3): every renderer claim from then on is proved by
+        // pixels, and a read of one backend's internals would prove that backend, not the contract.
+        expectFn(C, label, "copyTextureToBuffer", &.{ *C, command.TextureToBufferCopy }, CommandError!void);
         // `submit` consumes the command buffer whatever it returns: queued, or refused and
         // discarded, it is never touched again. `discard` abandons one that will never be
         // submitted, once its passes have ended — the cleanup a failed frame owes — and cannot
@@ -222,8 +225,8 @@ test "the interface names one function per documented capability" {
     // A change to the RHI's surface should be a deliberate edit here rather than something
     // that drifts in one backend at a time. The count is asserted so that adding a method
     // without considering the second backend fails a test.
-    try testing.expectEqual(@as(usize, 40), interface_function_count);
+    try testing.expectEqual(@as(usize, 41), interface_function_count);
 }
 
 /// Kept next to `check` so the two move together.
-const interface_function_count: usize = 24 + 6 + 10;
+const interface_function_count: usize = 24 + 7 + 10;

@@ -273,6 +273,10 @@ pub const RenderPipelineDesc = struct {
     color_targets: []const ColorTargetState = &.{},
     depth_stencil: ?DepthStencilState = null,
     primitive: PrimitiveState = .{},
+    /// Samples per pixel, 1 or 4. Must equal the sample count of every attachment of the pass
+    /// it draws in (rule 7), as Metal's `rasterSampleCount` and Vulkan's
+    /// `rasterizationSamples` both require.
+    sample_count: u32 = 1,
 };
 
 // -- tests ---------------------------------------------------------------------------

@@ -181,6 +181,7 @@ const RenderPipelineState = struct {
     color_formats: []format.TextureFormat,
     depth_format: ?format.TextureFormat,
     vertex_buffer_count: u32,
+    sample_count: u32,
 };
 
 /// What a destroyed resource leaves behind until the recordings that could use it finish.
@@ -546,6 +547,24 @@ pub const Device = struct {
             self.violate(.usage, "texture '{s}' declares no usage", .{desc.label});
             return error.InvalidDescriptor;
         }
+        // Rule 10: 1 or 4 samples, and a multisampled texture has a single level.
+        if (!resource.isValidSampleCount(desc.sample_count)) {
+            self.violate(.limits, "texture '{s}' has {d} samples; the RHI allows 1 or 4", .{ desc.label, desc.sample_count });
+            return error.InvalidDescriptor;
+        }
+        if (desc.sample_count > 1) {
+            if (desc.mip_levels != 1) {
+                self.violate(.limits, "multisampled texture '{s}' has {d} mip levels; it may have one", .{ desc.label, desc.mip_levels });
+                return error.InvalidDescriptor;
+            }
+            // Rule 11: drawn into and resolved from, never sampled or copied. No API does
+            // either to a multisampled texture without a resolve.
+            const u = desc.usage;
+            if (u.sampled or u.copy_src or u.copy_dst or !(u.render_target or u.depth_stencil)) {
+                self.violate(.usage, "multisampled texture '{s}' may be a render target or depth attachment only", .{desc.label});
+                return error.InvalidDescriptor;
+            }
+        }
         // Rule 11, at creation: a texture cannot start in a state its usage forbids.
         const candidate: TextureState = .{ .desc = desc, .state = desc.initial_state };
         if (!textureAllows(&candidate, desc.initial_state)) {
@@ -728,6 +747,10 @@ pub const Device = struct {
                 return error.InvalidDescriptor;
             }
         }
+        if (!resource.isValidSampleCount(desc.sample_count)) {
+            self.violate(.limits, "pipeline '{s}' has {d} samples; the RHI allows 1 or 4", .{ desc.label, desc.sample_count });
+            return error.InvalidDescriptor;
+        }
 
         try self.reserveRetirement();
         const layouts = try self.gpa.dupe(pipeline.BindGroupLayoutHandle, layout.bind_group_layouts);
@@ -743,6 +766,7 @@ pub const Device = struct {
             .color_formats = formats,
             .depth_format = if (desc.depth_stencil) |d| d.format else null,
             .vertex_buffer_count = @intCast(desc.vertex_buffers.len),
+            .sample_count = desc.sample_count,
         });
     }
 
@@ -902,6 +926,8 @@ pub const CommandBuffer = struct {
             }
             checkTransition(dev, tex, att.initial_state, att.final_state, desc.label, "colour attachment");
             pass.color_formats[i] = tex.desc.format;
+            pass.noteSamples(tex, "colour attachment");
+            if (att.resolve) |r| checkResolve(dev, desc, tex, r, i);
         }
         pass.color_count = desc.color.len;
 
@@ -915,6 +941,7 @@ pub const CommandBuffer = struct {
                 }
                 checkTransition(dev, tex, att.initial_state, att.final_state, desc.label, "depth attachment");
                 pass.depth_format = tex.desc.format;
+                pass.noteSamples(tex, "depth attachment");
             } else if (!att.texture.isNone()) {
                 dev.violate(.lifetime, "render pass '{s}' depth attachment names a destroyed texture", .{desc.label});
             }
@@ -946,6 +973,45 @@ pub const CommandBuffer = struct {
             dev.violate(.usage, "'{s}' {s} '{s}' ends in {t}, which its usage does not allow", .{ label, what, tex.desc.label, final });
         }
         tex.state = final;
+    }
+
+    /// Rules 7, 11, 1 and 9 for colour attachment `index`'s resolve target (`rhi.md` §8).
+    fn checkResolve(
+        dev: *Device,
+        desc: command.RenderPassDesc,
+        source: *const TextureState,
+        target: command.ResolveTarget,
+        index: usize,
+    ) void {
+        const label = desc.label;
+        if (source.desc.sample_count == 1) {
+            dev.violate(.attachment_format, "render pass '{s}' resolves colour attachment {d}, which is single-sampled", .{ label, index });
+        }
+        const rt = dev.textures.get(target.texture) orelse {
+            dev.violate(.lifetime, "render pass '{s}' colour attachment {d} resolves into no live texture", .{ label, index });
+            return;
+        };
+        if (rt.desc.sample_count != 1) {
+            dev.violate(.attachment_format, "render pass '{s}' resolve target '{s}' is multisampled", .{ label, rt.desc.label });
+        }
+        if (rt.desc.format != source.desc.format) {
+            dev.violate(.attachment_format, "render pass '{s}' resolves {t} into '{s}', which is {t}", .{ label, source.desc.format, rt.desc.label, rt.desc.format });
+        }
+        if (!rt.desc.size.eql(source.desc.size)) {
+            dev.violate(.attachment_format, "render pass '{s}' resolves {d}x{d} into '{s}', which is {d}x{d}", .{
+                label, source.desc.size.width, source.desc.size.height, rt.desc.label, rt.desc.size.width, rt.desc.size.height,
+            });
+        }
+        // A pass may not both draw into a texture and resolve into it.
+        var attached = if (desc.depth) |d| d.texture.eql(target.texture) else false;
+        for (desc.color) |other| attached = attached or other.texture.eql(target.texture);
+        if (attached) {
+            dev.violate(.attachment_format, "render pass '{s}' resolves into '{s}', which is also one of its attachments", .{ label, rt.desc.label });
+        }
+        if (!rt.desc.usage.render_target) {
+            dev.violate(.usage, "render pass '{s}' resolve target '{s}' lacks render_target usage", .{ label, rt.desc.label });
+        }
+        checkTransition(dev, rt, target.initial_state, target.final_state, label, "resolve target");
     }
 
     pub fn textureBarrier(self: *CommandBuffer, barriers: []const command.TextureBarrier) interface.CommandError!void {
@@ -1087,6 +1153,71 @@ pub const CommandBuffer = struct {
         dev.touchBuffer(copy.src, self.recording);
     }
 
+    /// Reading a texture back (`rhi.md` §8): rules 8, 1, 11, 10 and 9, in the order a real
+    /// backend would trip over them.
+    pub fn copyTextureToBuffer(self: *CommandBuffer, copy: command.TextureToBufferCopy) interface.CommandError!void {
+        const dev = self.device;
+        if (self.open_pass) {
+            dev.violate(.encoder_discipline, "copy recorded inside an open render pass", .{});
+        }
+        if (dev.textures.get(copy.src)) |src| {
+            if (!src.desc.usage.copy_src) {
+                dev.violate(.usage, "copy reads texture '{s}', which lacks copy_src usage", .{src.desc.label});
+            }
+            if (!src.desc.format.isColor()) {
+                dev.violate(.usage, "copy reads depth texture '{s}'; only colour formats are read back", .{src.desc.label});
+            }
+            if (src.state != .copy_src) {
+                dev.violate(.resource_state, "texture '{s}' is tracked as {t}, not copy_src, at a texture-to-buffer copy", .{
+                    src.desc.label, src.state,
+                });
+            }
+            if (copy.src_mip_level >= src.desc.mip_levels) {
+                dev.violate(.limits, "copy reads mip level {d} of texture '{s}', which has {d}", .{
+                    copy.src_mip_level, src.desc.label, src.desc.mip_levels,
+                });
+            } else {
+                const level = src.desc.size.mipLevel(copy.src_mip_level);
+                const right = @as(u64, copy.src_origin.x) + copy.size.width;
+                const bottom = @as(u64, copy.src_origin.y) + copy.size.height;
+                if (right > level.width or bottom > level.height) {
+                    dev.violate(.limits, "copy of {d}x{d} at ({d}, {d}) does not fit texture '{s}' level {d}, which is {d}x{d}", .{
+                        copy.size.width,   copy.size.height, copy.src_origin.x,
+                        copy.src_origin.y, src.desc.label,   copy.src_mip_level,
+                        level.width,       level.height,
+                    });
+                }
+            }
+            if (copy.dst_offset % 4 != 0) {
+                dev.violate(.limits, "copy writes at offset {d}, which is not a multiple of 4", .{copy.dst_offset});
+            }
+            if (dev.buffers.getConst(copy.dst)) |dst| {
+                const texel = src.desc.format.bytesPerTexel();
+                const row = @as(u64, copy.size.width) * texel;
+                if (copy.dst_bytes_per_row != 0 and (copy.dst_bytes_per_row < row or copy.dst_bytes_per_row % texel != 0)) {
+                    dev.violate(.limits, "copy's rows are {d} bytes apart; a row of {d} texels is {d} bytes, in {d}-byte texels", .{
+                        copy.dst_bytes_per_row, copy.size.width, row, texel,
+                    });
+                } else if (copy.size.width != 0 and copy.size.height != 0) {
+                    const stride: u64 = if (copy.dst_bytes_per_row != 0) copy.dst_bytes_per_row else row;
+                    const needed = copyRowsSize(row, stride, copy.size.height);
+                    if (needed == null or !rangeInside(copy.dst_offset, needed.?, dst.desc.size)) {
+                        dev.violate(.limits, "copy writes {d} bytes at {d} into buffer '{s}', which holds {d}", .{
+                            needed orelse std.math.maxInt(u64), copy.dst_offset, dst.desc.label, dst.desc.size,
+                        });
+                    }
+                }
+            }
+        } else if (!copy.src.isNone()) {
+            dev.violate(.lifetime, "copy reads a destroyed texture", .{});
+        }
+        if (dev.deadBuffer(copy.dst)) dev.violate(.lifetime, "copy writes a destroyed buffer", .{});
+        if (dev.buffers.getConst(copy.dst)) |dst| {
+            if (!dst.desc.usage.copy_dst) dev.violate(.usage, "copy writes buffer '{s}', which lacks copy_dst usage", .{dst.desc.label});
+        }
+        dev.touchBuffer(copy.dst, self.recording);
+    }
+
     pub fn submit(self: *CommandBuffer) interface.CommandError!void {
         const dev = self.device;
         // Rule 8: every pass ended, and nothing submitted twice.
@@ -1140,6 +1271,8 @@ pub const RenderPass = struct {
     color_formats: [max_color_attachments]format.TextureFormat = @splat(.rgba8_unorm),
     color_count: usize = 0,
     depth_format: ?format.TextureFormat = null,
+    /// The attachments' common sample count, or 0 before the first attachment is seen.
+    sample_count: u32 = 0,
     ended: bool = false,
 
     pipeline_handle: pipeline.RenderPipelineHandle = .none,
@@ -1148,6 +1281,17 @@ pub const RenderPass = struct {
     index_buffer: resource.BufferHandle = .none,
     inline_constants_set: bool = false,
     inline_constant_bytes: u32 = 0,
+
+    /// Rule 7: every attachment of a pass has the same sample count.
+    fn noteSamples(self: *RenderPass, tex: *const TextureState, what: []const u8) void {
+        if (self.sample_count == 0) {
+            self.sample_count = tex.desc.sample_count;
+        } else if (self.sample_count != tex.desc.sample_count) {
+            self.device.violate(.attachment_format, "render pass '{s}' {s} '{s}' has {d} samples, and its other attachments {d}", .{
+                self.label, what, tex.desc.label, tex.desc.sample_count, self.sample_count,
+            });
+        }
+    }
 
     pub fn setPipeline(self: *RenderPass, handle: pipeline.RenderPipelineHandle) void {
         const dev = self.device;
@@ -1309,6 +1453,9 @@ pub const RenderPass = struct {
                     });
                 }
             }
+        }
+        if (self.sample_count != 0 and pipe.sample_count != self.sample_count) {
+            dev.violate(.attachment_format, "pipeline draws {d} samples, pass '{s}' has {d}", .{ pipe.sample_count, self.label, self.sample_count });
         }
         if (pipe.depth_format) |want| {
             if (self.depth_format) |got| {
@@ -3635,4 +3782,466 @@ test "runtime shader compilation is available and distinguishable" {
     try testing.expect(!fx.dev.shaders.getConst(fx.vs).?.from_source);
 
     try testing.expectError(error.ShaderCompilationFailed, fx.dev.createShaderModuleFromSource(.{ .source = "" }));
+}
+
+// -- M19: multisampling, resolve and readback (`rhi.md` §8, §11; `render3d.md` §4) ------
+
+/// Submits `cmd`, requires it to fail with `rule` among the violations, and clears them.
+fn expectRule(dev: *Device, cmd: *CommandBuffer, rule: Rule) !void {
+    try testing.expectError(error.ValidationFailed, cmd.submit());
+    try testing.expect(dev.hasViolation(rule));
+    dev.clearViolations();
+}
+
+fn msaaTexture(dev: *Device, label: []const u8, texture_format: format.TextureFormat) !resource.TextureHandle {
+    return dev.createTexture(.{
+        .label = label,
+        .size = .{ .width = 1280, .height = 720 },
+        .format = texture_format,
+        .usage = if (texture_format.isDepth()) .{ .depth_stencil = true } else .{ .render_target = true },
+        .sample_count = 4,
+    });
+}
+
+fn msaaPipeline(fx: *Fixture, samples: u32, depth: bool) !pipeline.RenderPipelineHandle {
+    return fx.dev.createRenderPipeline(.{
+        .label = "msaa",
+        .layout = fx.layout,
+        .vertex_shader = fx.vs,
+        .fragment_shader = fx.fs,
+        .color_targets = &.{.{ .format = .bgra8_unorm_srgb }},
+        .depth_stencil = if (depth) .{ .format = .depth32_float, .depth_write_enabled = true, .depth_compare = .greater_equal } else null,
+        .sample_count = samples,
+    });
+}
+
+test "a multisampled pass resolved into the surface is accepted" {
+    // What `render3d`'s world pass records: 4x colour and depth, both discarded, the colour
+    // resolved into the surface. If this fails, the backend holds an opinion the contract
+    // does not state.
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    const color = try msaaTexture(dev, "msaa colour", .bgra8_unorm_srgb);
+    const depth = try msaaTexture(dev, "msaa depth", .depth32_float);
+    const pipe = try msaaPipeline(&fx, 4, true);
+
+    const frame = try dev.beginFrame();
+    var cmd = try dev.beginCommandBuffer();
+    var pass = try cmd.beginRenderPass(.{
+        .label = "world",
+        .color = &.{.{
+            .texture = color,
+            .store = .discard,
+            .resolve = .{ .texture = frame.surface_texture, .final_state = .present },
+        }},
+        .depth = .{ .texture = depth, .load = .{ .clear = .{ .depth_stencil = .{ .depth = 0 } } } },
+    });
+    pass.setPipeline(pipe);
+    pass.draw(.{ .vertex_count = 3 });
+    pass.end();
+    try cmd.submit();
+    try dev.endFrame();
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
+}
+
+test "a multisampled attachment may be stored, with or without a resolve" {
+    // A later pass may load the samples, so storing is legal (`rhi.md` §8).
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    const color = try msaaTexture(dev, "msaa colour", .bgra8_unorm_srgb);
+    const pipe = try msaaPipeline(&fx, 4, false);
+
+    const frame = try dev.beginFrame();
+    var cmd = try dev.beginCommandBuffer();
+    var first = try cmd.beginRenderPass(.{ .color = &.{.{ .texture = color, .store = .store }} });
+    first.setPipeline(pipe);
+    first.draw(.{ .vertex_count = 3 });
+    first.end();
+    var second = try cmd.beginRenderPass(.{ .color = &.{.{
+        .texture = color,
+        .load = .load,
+        .store = .store,
+        .initial_state = .render_target,
+        .resolve = .{ .texture = frame.surface_texture, .final_state = .present },
+    }} });
+    second.setPipeline(pipe);
+    second.draw(.{ .vertex_count = 3 });
+    second.end();
+    try cmd.submit();
+    try dev.endFrame();
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
+}
+
+test "rule 10: a sample count other than 1 or 4 is refused" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    for ([_]u32{ 0, 2, 3, 8, 16 }) |samples| {
+        try testing.expectError(error.InvalidDescriptor, dev.createTexture(.{
+            .label = "odd",
+            .size = .{ .width = 8, .height = 8 },
+            .format = .bgra8_unorm_srgb,
+            .usage = .{ .render_target = true },
+            .sample_count = samples,
+        }));
+        try testing.expectError(error.InvalidDescriptor, msaaPipeline(&fx, samples, false));
+        try testing.expect(dev.hasViolation(.limits));
+        for (dev.violations()) |v| try testing.expectEqual(Rule.limits, v.rule);
+        dev.clearViolations();
+    }
+}
+
+test "rule 10: a multisampled texture has one mip level" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    try testing.expectError(error.InvalidDescriptor, fx.dev.createTexture(.{
+        .label = "mipped",
+        .size = .{ .width = 64, .height = 64 },
+        .format = .bgra8_unorm_srgb,
+        .usage = .{ .render_target = true },
+        .mip_levels = 2,
+        .sample_count = 4,
+    }));
+    try testing.expect(fx.dev.hasViolation(.limits));
+}
+
+test "rule 11: a multisampled texture is never sampled or copied, and is always an attachment" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    const refused = [_]resource.TextureUsage{
+        .{ .render_target = true, .sampled = true },
+        .{ .render_target = true, .copy_src = true },
+        .{ .depth_stencil = true, .copy_dst = true },
+        .{ .sampled = true },
+    };
+    for (refused) |usage| {
+        try testing.expectError(error.InvalidDescriptor, dev.createTexture(.{
+            .label = "msaa misuse",
+            .size = .{ .width = 8, .height = 8 },
+            .format = if (usage.depth_stencil) .depth32_float else .bgra8_unorm_srgb,
+            .usage = usage,
+            .sample_count = 4,
+        }));
+        try testing.expect(dev.hasViolation(.usage));
+        dev.clearViolations();
+    }
+}
+
+test "rule 7: attachments with different sample counts are caught" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    const color = try msaaTexture(dev, "msaa colour", .bgra8_unorm_srgb);
+    const depth = try dev.createTexture(.{
+        .label = "single depth",
+        .size = .{ .width = 1280, .height = 720 },
+        .format = .depth32_float,
+        .usage = .{ .depth_stencil = true },
+    });
+    var cmd = try dev.beginCommandBuffer();
+    var pass = try cmd.beginRenderPass(.{ .color = &.{.{ .texture = color }}, .depth = .{ .texture = depth } });
+    pass.end();
+    try expectRule(dev, cmd, .attachment_format);
+}
+
+test "rule 7: a pipeline whose sample count differs from its pass is caught, both ways" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    const color = try msaaTexture(dev, "msaa colour", .bgra8_unorm_srgb);
+    const single = try msaaPipeline(&fx, 1, false);
+    const multi = try msaaPipeline(&fx, 4, false);
+
+    var cmd = try dev.beginCommandBuffer();
+    var pass = try cmd.beginRenderPass(.{ .color = &.{.{ .texture = color }} });
+    pass.setPipeline(single);
+    pass.draw(.{ .vertex_count = 3 });
+    pass.end();
+    try expectRule(dev, cmd, .attachment_format);
+
+    const frame = try dev.beginFrame();
+    cmd = try dev.beginCommandBuffer();
+    pass = try cmd.beginRenderPass(.{ .color = &.{.{ .texture = frame.surface_texture, .final_state = .present }} });
+    pass.setPipeline(multi);
+    pass.draw(.{ .vertex_count = 3 });
+    pass.end();
+    try expectRule(dev, cmd, .attachment_format);
+    try dev.endFrame();
+}
+
+test "rule 7: resolving a single-sampled attachment is caught" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    const single = try dev.createTexture(.{
+        .label = "single",
+        .size = .{ .width = 1280, .height = 720 },
+        .format = .bgra8_unorm_srgb,
+        .usage = .{ .render_target = true },
+    });
+    const frame = try dev.beginFrame();
+    var cmd = try dev.beginCommandBuffer();
+    var pass = try cmd.beginRenderPass(.{ .color = &.{.{
+        .texture = single,
+        .resolve = .{ .texture = frame.surface_texture, .final_state = .present },
+    }} });
+    pass.end();
+    try expectRule(dev, cmd, .attachment_format);
+    try dev.endFrame();
+}
+
+test "rule 7: a resolve target of another format, size or sample count is caught" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    const color = try msaaTexture(dev, "msaa colour", .bgra8_unorm_srgb);
+    const targets = [_]resource.TextureDesc{
+        .{ .label = "other format", .size = .{ .width = 1280, .height = 720 }, .format = .rgba8_unorm, .usage = .{ .render_target = true } },
+        .{ .label = "other size", .size = .{ .width = 640, .height = 720 }, .format = .bgra8_unorm_srgb, .usage = .{ .render_target = true } },
+        .{ .label = "multisampled", .size = .{ .width = 1280, .height = 720 }, .format = .bgra8_unorm_srgb, .usage = .{ .render_target = true }, .sample_count = 4 },
+    };
+    for (targets) |desc| {
+        const target = try dev.createTexture(desc);
+        var cmd = try dev.beginCommandBuffer();
+        var pass = try cmd.beginRenderPass(.{ .color = &.{.{ .texture = color, .store = .discard, .resolve = .{ .texture = target } }} });
+        pass.end();
+        try expectRule(dev, cmd, .attachment_format);
+    }
+}
+
+test "rule 7: resolving into one of the pass's own attachments is caught" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    const color = try msaaTexture(dev, "msaa colour", .bgra8_unorm_srgb);
+    var cmd = try dev.beginCommandBuffer();
+    var pass = try cmd.beginRenderPass(.{ .color = &.{.{ .texture = color, .resolve = .{ .texture = color } }} });
+    pass.end();
+    try expectRule(dev, cmd, .attachment_format);
+}
+
+test "rule 11: a resolve target without render_target usage is caught" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    const color = try msaaTexture(dev, "msaa colour", .bgra8_unorm_srgb);
+    const target = try dev.createTexture(.{
+        .label = "sample only",
+        .size = .{ .width = 1280, .height = 720 },
+        .format = .bgra8_unorm_srgb,
+        .usage = .{ .sampled = true },
+    });
+    var cmd = try dev.beginCommandBuffer();
+    var pass = try cmd.beginRenderPass(.{ .color = &.{.{
+        .texture = color,
+        .resolve = .{ .texture = target, .final_state = .shader_read },
+    }} });
+    pass.end();
+    try expectRule(dev, cmd, .usage);
+}
+
+test "rule 1: a resolve target's arrival is checked and its departure tracked" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    const color = try msaaTexture(dev, "msaa colour", .bgra8_unorm_srgb);
+    const target = try dev.createTexture(.{
+        .label = "resolved",
+        .size = .{ .width = 1280, .height = 720 },
+        .format = .bgra8_unorm_srgb,
+        .usage = .{ .render_target = true, .sampled = true },
+    });
+
+    // Declared to arrive as a render target, but nothing has made it one.
+    var cmd = try dev.beginCommandBuffer();
+    var pass = try cmd.beginRenderPass(.{ .color = &.{.{
+        .texture = color,
+        .resolve = .{ .texture = target, .initial_state = .render_target },
+    }} });
+    pass.end();
+    try expectRule(dev, cmd, .resource_state);
+
+    // Left in `shader_read`, and a later barrier from there is correct.
+    cmd = try dev.beginCommandBuffer();
+    pass = try cmd.beginRenderPass(.{ .color = &.{.{
+        .texture = color,
+        .resolve = .{ .texture = target, .final_state = .shader_read },
+    }} });
+    pass.end();
+    try cmd.textureBarrier(&.{.{ .texture = target, .from = .shader_read, .to = .render_target }});
+    try cmd.submit();
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
+}
+
+test "rule 9: resolving into a destroyed texture is caught" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    const color = try msaaTexture(dev, "msaa colour", .bgra8_unorm_srgb);
+    const target = try dev.createTexture(.{
+        .label = "gone",
+        .size = .{ .width = 1280, .height = 720 },
+        .format = .bgra8_unorm_srgb,
+        .usage = .{ .render_target = true },
+    });
+    dev.destroyTexture(target);
+    var cmd = try dev.beginCommandBuffer();
+    var pass = try cmd.beginRenderPass(.{ .color = &.{.{ .texture = color, .resolve = .{ .texture = target } }} });
+    pass.end();
+    try expectRule(dev, cmd, .lifetime);
+}
+
+/// A 16x8 colour texture drawn into and left ready to copy from, and a readback buffer.
+const Readback = struct {
+    texture: resource.TextureHandle,
+    buffer: resource.BufferHandle,
+
+    fn init(dev: *Device, texture_format: format.TextureFormat, buffer_size: u64) !Readback {
+        const texture = try dev.createTexture(.{
+            .label = "rendered",
+            .size = .{ .width = 16, .height = 8 },
+            .format = texture_format,
+            .usage = if (texture_format.isDepth())
+                .{ .depth_stencil = true, .copy_src = true }
+            else
+                .{ .render_target = true, .copy_src = true },
+            .initial_state = .copy_src,
+        });
+        const buffer = try dev.createBuffer(.{
+            .label = "readback",
+            .size = buffer_size,
+            .usage = .{ .copy_dst = true },
+            .memory = .readback,
+        });
+        return .{ .texture = texture, .buffer = buffer };
+    }
+};
+
+test "a texture read back into a buffer is accepted, and mapped once idle" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    const rb = try Readback.init(dev, .rgba8_unorm, 1024);
+
+    var cmd = try dev.beginCommandBuffer();
+    var pass = try cmd.beginRenderPass(.{ .color = &.{.{ .texture = rb.texture, .initial_state = .copy_src, .final_state = .copy_src }} });
+    pass.end();
+    // Whole, packed; then a corner at an offset and a padded pitch.
+    try cmd.copyTextureToBuffer(.{ .src = rb.texture, .size = .{ .width = 16, .height = 8 }, .dst = rb.buffer });
+    try cmd.copyTextureToBuffer(.{
+        .src = rb.texture,
+        .src_origin = .{ .x = 8, .y = 4 },
+        .size = .{ .width = 8, .height = 4 },
+        .dst = rb.buffer,
+        .dst_offset = 512,
+        .dst_bytes_per_row = 64,
+    });
+    try cmd.submit();
+    dev.waitIdle();
+    _ = try dev.mapBuffer(rb.buffer);
+    dev.unmapBuffer(rb.buffer);
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
+}
+
+test "rule 1: a texture is read back only from copy_src" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    const rb = try Readback.init(dev, .rgba8_unorm, 1024);
+    var cmd = try dev.beginCommandBuffer();
+    try cmd.textureBarrier(&.{.{ .texture = rb.texture, .from = .copy_src, .to = .render_target }});
+    try cmd.copyTextureToBuffer(.{ .src = rb.texture, .size = .{ .width = 16, .height = 8 }, .dst = rb.buffer });
+    try expectRule(dev, cmd, .resource_state);
+}
+
+test "rule 11: readback needs copy_src and a colour format, and its buffer copy_dst" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    const rb = try Readback.init(dev, .rgba8_unorm, 1024);
+
+    const unreadable = try dev.createTexture(.{
+        .label = "no copy_src",
+        .size = .{ .width = 16, .height = 8 },
+        .format = .rgba8_unorm,
+        .usage = .{ .render_target = true },
+    });
+    var cmd = try dev.beginCommandBuffer();
+    try cmd.copyTextureToBuffer(.{ .src = unreadable, .size = .{ .width = 16, .height = 8 }, .dst = rb.buffer });
+    try expectRule(dev, cmd, .usage);
+
+    const depth = try Readback.init(dev, .depth32_float, 1024);
+    cmd = try dev.beginCommandBuffer();
+    try cmd.copyTextureToBuffer(.{ .src = depth.texture, .size = .{ .width = 16, .height = 8 }, .dst = depth.buffer });
+    try expectRule(dev, cmd, .usage);
+
+    const unwritable = try dev.createBuffer(.{ .label = "no copy_dst", .size = 1024, .usage = .{ .copy_src = true }, .memory = .readback });
+    cmd = try dev.beginCommandBuffer();
+    try cmd.copyTextureToBuffer(.{ .src = rb.texture, .size = .{ .width = 16, .height = 8 }, .dst = unwritable });
+    try expectRule(dev, cmd, .usage);
+}
+
+test "rule 10: a readback region fits its level, and its rows fit the buffer" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    // 16x8 RGBA8 is 512 bytes packed.
+    const rb = try Readback.init(dev, .rgba8_unorm, 512);
+    const cases = [_]command.TextureToBufferCopy{
+        // Past the right edge.
+        .{ .src = rb.texture, .src_origin = .{ .x = 4 }, .size = .{ .width = 16, .height = 1 }, .dst = rb.buffer },
+        // A mip level the texture does not have.
+        .{ .src = rb.texture, .src_mip_level = 1, .size = .{ .width = 1, .height = 1 }, .dst = rb.buffer },
+        // One byte too many for the buffer.
+        .{ .src = rb.texture, .size = .{ .width = 16, .height = 8 }, .dst = rb.buffer, .dst_offset = 4 },
+        // A pitch shorter than a row, and one that splits a texel.
+        .{ .src = rb.texture, .size = .{ .width = 16, .height = 1 }, .dst = rb.buffer, .dst_bytes_per_row = 60 },
+        .{ .src = rb.texture, .size = .{ .width = 4, .height = 2 }, .dst = rb.buffer, .dst_bytes_per_row = 18 },
+        // An offset that is not a multiple of 4.
+        .{ .src = rb.texture, .size = .{ .width = 1, .height = 1 }, .dst = rb.buffer, .dst_offset = 2 },
+    };
+    for (cases) |c| {
+        var cmd = try dev.beginCommandBuffer();
+        try cmd.copyTextureToBuffer(c);
+        try expectRule(dev, cmd, .limits);
+    }
+    // Exactly filling the buffer is legal.
+    var cmd = try dev.beginCommandBuffer();
+    try cmd.copyTextureToBuffer(.{ .src = rb.texture, .size = .{ .width = 16, .height = 8 }, .dst = rb.buffer });
+    try cmd.submit();
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
+}
+
+test "rule 8: a readback inside an open pass is caught" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    const rb = try Readback.init(dev, .rgba8_unorm, 1024);
+    const frame = try dev.beginFrame();
+    var cmd = try dev.beginCommandBuffer();
+    var pass = try cmd.beginRenderPass(.{ .color = &.{.{ .texture = frame.surface_texture, .final_state = .present }} });
+    try cmd.copyTextureToBuffer(.{ .src = rb.texture, .size = .{ .width = 16, .height = 8 }, .dst = rb.buffer });
+    pass.end();
+    try expectRule(dev, cmd, .encoder_discipline);
+    try dev.endFrame();
+}
+
+test "rule 9: reading back a destroyed texture, or into a destroyed buffer, is caught" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    const a = try Readback.init(dev, .rgba8_unorm, 1024);
+    dev.destroyTexture(a.texture);
+    var cmd = try dev.beginCommandBuffer();
+    try cmd.copyTextureToBuffer(.{ .src = a.texture, .size = .{ .width = 16, .height = 8 }, .dst = a.buffer });
+    try expectRule(dev, cmd, .lifetime);
+
+    const b = try Readback.init(dev, .rgba8_unorm, 1024);
+    dev.destroyBuffer(b.buffer);
+    cmd = try dev.beginCommandBuffer();
+    try cmd.copyTextureToBuffer(.{ .src = b.texture, .size = .{ .width = 16, .height = 8 }, .dst = b.buffer });
+    try expectRule(dev, cmd, .lifetime);
 }

@@ -286,8 +286,21 @@ GPU, discarding a depth buffer you do not need to keep saves the entire cost of 
 back to memory. It is free to express and expensive to retrofit, so it is in the interface
 from the first pass.
 
-`resolve` (for MSAA) is a store action that does not exist yet. The enum is shaped to gain
-it without changing anything that already uses it.
+**Multisampling (M19, `render3d.md` §4.2).** A texture and a pipeline each declare a
+`sample_count` of 1 or 4. A colour attachment may name a `resolve` target, with its own initial
+and final states, into which its samples are averaged when the pass ends.
+- **Resolve is a field, not a store action,** although the store-action enum was once shaped to
+  gain one. Metal (`StoreAndMultisampleResolve`) and Vulkan (`storeOp` beside `resolveMode`)
+  both treat storing and resolving as independent. With a field, `discard` plus a resolve
+  target is the common case, `store` plus a resolve target is the rare one, and neither needs a
+  combined value.
+- **A multisampled attachment may be stored** without a resolve: a later pass may load it.
+- **Depth is never resolved.** `DepthAttachment` has no resolve target.
+
+**A texture can be read back (M19).** `copyTextureToBuffer` is the mirror of
+`copyBufferToTexture`: a region of one mip level of a single-sampled colour texture, into a
+buffer at an offset and a row pitch. A `readback` buffer's bytes are valid after `waitIdle`.
+No finer completion query exists until a consumer reads back every frame.
 
 **A copy names where in the destination it lands.** `copyBufferToTexture` writes a
 rectangle, not a whole texture: `dst_origin` places it, and defaults to the corner so the
@@ -554,7 +567,11 @@ forgives:
 
 1. **Resource state.** Every texture's state is tracked. Sampling a texture that is in
    `render_target` state, or beginning a pass whose declared `initial_state` does not match
-   reality, is an error.
+   reality, is an error. **Extended in M19:**
+   - a resolve target's declared initial state is checked against its tracked state, and it
+     is left in its declared final state, exactly as an attachment is;
+   - a texture copied to a buffer must be tracked in `copy_src`, as a copy's destination
+     texture must be tracked in `copy_dst`.
 2. **`device_local` is never mapped.** Attempting it is an error, not a slow path.
 3. **Frame ring discipline.** Writing to a per-frame resource whose slot has not completed
    is an error.
@@ -566,6 +583,13 @@ forgives:
    invalidated them (§9). Metal frequently renders all of these correctly by accident.
 6. **Vertex layout match.** Bound vertex buffers must match the pipeline's declared layout.
 7. **Attachment format match.** A pass's attachment formats must match the pipeline's.
+   **Extended in M19 to sample counts** (`render3d.md` §4.2), which are part of an attachment's
+   format in every API:
+   - every attachment of a pass has the same sample count, and so does every pipeline drawn in
+     it;
+   - a resolve target is single-sampled, has its source's format and size, and is not also an
+     attachment of the same pass;
+   - its source is multisampled.
 8. **Encoder discipline.** One pass open at a time; every pass ended; every command buffer
    ended before submission.
 9. **Lifetime.** A destroyed resource's handle is dead at once: recording a command through
@@ -589,7 +613,13 @@ forgives:
     that kind's reported alignment (§4), and its range — `size`, or the rest of the buffer
     when `size` is zero — is not empty, lies inside the buffer and is no larger than the
     reported maximum. A bind group that breaks this is refused with `InvalidDescriptor`; a
-    copy is reported when it is recorded.
+    copy is reported when it is recorded. **Extended in M19:**
+    - a sample count is 1 or 4, and anything else is refused with `InvalidDescriptor`;
+    - a multisampled texture has one mip level;
+    - a texture-to-buffer copy's region lies inside the source level it names, and its rows
+      lie inside the destination buffer;
+    - a nonzero `dst_bytes_per_row` holds a row and is a multiple of the texel size;
+    - `dst_offset` is a multiple of 4, which is Vulkan's rule.
 11. **Usage.** A resource is used only as its declared usage allows, whatever state it is
     in: a correct state does not make up for a missing flag. Binding a buffer as vertex or
     index data needs `vertex` or `index`; a uniform or storage binding needs `uniform` or
@@ -608,7 +638,13 @@ forgives:
     (ADR-0035), written here before it appeared in code. **Clarified before M13 Step 4:** a
     buffer or texture declares at least one usage. Vulkan and D3D12 cannot create one that
     declares none, and here it would permit no operation; its descriptor is refused with
-    `InvalidDescriptor`.
+    `InvalidDescriptor`. **Extended in M19:**
+    - a multisampled texture's usage is `render_target` or `depth_stencil`, and never
+      `sampled`, `copy_src` or `copy_dst`. No API samples or copies one without a resolve, and
+      its descriptor is refused with `InvalidDescriptor`;
+    - a resolve target needs `render_target`;
+    - `copyTextureToBuffer` reads a colour format only. Depth readback waits for a pass that
+      needs it.
 
 Rules 1, 3, 5 and 9 are the ones that would otherwise be discovered by a second backend
 producing garbage, months later, with no obvious cause. Rules 2 and 6 are the ones that
@@ -633,7 +669,8 @@ headlessly — the same reason the null *platform* backend exists.
   `RenderPass` and nothing above forecloses it; designing it now would be guessing.
 * **Multiple queues.** One graphics queue. Async compute and transfer queues are a real
   Vulkan/D3D12 win and a genuine complication; they arrive with a reason, not before.
-* **MSAA.** Store actions are shaped to gain `resolve`.
+* **MSAA beyond M19's.** Counts other than 1 and 4, depth resolve, memoryless attachments and
+  alpha-to-coverage. Each waits on its trigger in `render3d.md` §4.4.
 * **Mipmap generation, texture arrays, cubemaps, 3D textures.** 3D-phase concerns.
 * **Bindless.** All three APIs support it now, and it is the likely future of the binding
   model. It is not the model to *start* with while the strict version is what teaches the

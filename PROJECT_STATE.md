@@ -62,7 +62,16 @@ The work has 14 convention tests, each of which fails when its mutation breaks t
 The Mac bar is green: 91/91 steps, 1,698 of 1,699 headless tests.
 
 **The Windows run of Step 1 is owed.** The PC's address moved, and the Mac's SSH config was not
-changed (render3d.md's Step 1 Resolution). Step 2 has not begun.
+changed (render3d.md's Step 1 Resolution).
+
+**M19 Step 2 is done (2026-09-27).** The RHI contract for multisampling, resolve and
+readback is written into `rhi.md` §8 and §11, and enforced by the null backend:
+- sample counts 1 and 4 on textures and pipelines;
+- a `resolve` target on colour attachments;
+- `copyTextureToBuffer`, which makes the interface 41 functions.
+
+There are 19 new tests, and mutations of two rules fail exactly their tests. Metal and Vulkan
+refuse 4× and the copy until Steps 3 and 4. Step 3 has not begun.
 
 **Before M18: M17 is complete (2026-09-23, tag `m17`).** The unsigned pre-release
 `v0.17.1-preview` (from `c37c01d`) is on GitHub and supersedes `v0.17.0-preview`. Both
@@ -4489,9 +4498,9 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 **2026-09-27: 3D's decisions are made and recorded (ADR-0048 to ADR-0053).** M19's design is
 written: `docs/design/render3d.md`, with ADR-0054 proposed. Its Linux assessment is "compile
-only". **Step 1 is done** on macOS. Its one-file Windows run is owed until the SSH alias
-follows the PC's new address. **Next is Step 2 only (the RHI contract on the null backend),
-when asked.** Nothing else is owed before 3D. What remains open stays
+only". **Steps 1 and 2 are done** on macOS. Step 1's one-file Windows run is owed until the SSH alias
+follows the PC's new address. **Next is Step 3 only (Metal: multisampling, resolve and
+readback), when asked.** Step 4 needs the PC reachable. Nothing else is owed before 3D. What remains open stays
 open on purpose:
 - `rhi.md`'s device recovery;
 - a human's hour with the editor;
