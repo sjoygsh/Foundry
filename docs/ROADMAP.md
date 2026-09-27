@@ -998,28 +998,34 @@ Windows target's PC, with an Intel Arc A750 on Mesa ANV. The record is
 - **What changed:** Wayland found one real fault, fixed. A second `Platform`'s shutdown closed
   the first's connection. No RHI rule changed.
 
-### 3D — **proposed, 2026-09-27; awaiting the owner's decisions**
+### 3D — **decided 2026-09-27; M19 not begun**
 
-[`3d.md`](design/3d.md) proposes the architecture and the order. It reuses `core`, `platform`,
-`rhi`, `data`, `asset` and `scene` unchanged, which is the entire point of the earlier
-architecture. It adds:
-- 3D math in `core`;
-- the RHI capabilities `rhi.md` §12 deferred;
-- `render3d` beside `render2d`;
-- `physics3d` beside `physics2d`;
-- a transform hierarchy in `scene`;
+[`3d.md`](design/3d.md) is the architecture and the order. The owner accepted all six of its
+decisions as recommended, and added that assets are not the renderer. They are ADR-0048 to
+ADR-0053. It reuses `core`, `platform`, `rhi`, `data`, `asset` and `scene` unchanged, which is
+the entire point of the earlier architecture. It adds:
+- 3D math and the world axes in `core`;
+- the RHI capabilities `rhi.md` §12 deferred, each when a pass first uses it;
+- the runtime mesh, model and material representations in `asset`;
+- `render3d` beside `render2d`, forward first;
+- `physics3d` beside `physics2d`, with collision and a character but no dynamics;
+- an engine-declared transform hierarchy in `scene`;
 - glTF import in `fpack`.
 
-The proposed milestones:
-- **M19 Depth**
-- **M20 Meshes**
-- **M21 Hierarchy**
-- **M22 Light**
-- **M23 Collision**
-- **M24 Animation**
-- **M25 Public 3D** (`FoundryApi_v6`)
-- **M26 a playable 3D sample**, the game certification waits for (ADR-0047).
+Each milestone ends runnable on macOS/Metal and Windows/Vulkan, with the concrete exit condition
+and regression coverage in `3d.md` §10:
+- **M19 Depth:** math and conventions, depth and MSAA, the in-memory mesh, and a `render3d`
+  skeleton with an unlit model.
+- **M20 Meshes:** runtime formats, glTF import, textures with mips, `foundry:material`, and
+  culling.
+- **M21 Hierarchy:** the transform components and propagation, with 3D in the overlay.
+- **M22 Light:** the lit model, lights, a shadow, HDR, and a content mod that changes the room.
+- **M23 Collision:** `physics3d` and a first-person walk.
+- **M24 Animation:** skins and clips, sampled at the fixed step.
+- **M25 Public 3D:** `FoundryApi_v6`, with a content mod and a native one.
+- **M26 A playable 3D sample,** played by someone who did not build it. It is the game
+  certification waits for (ADR-0047).
 
-Six decisions in its §11 need the owner before M19 begins: conventions, the shader and material
-strategy, the hierarchy's names, physics scope, forward rendering, and the order. Each accepted
-one becomes an ADR, and each milestone writes its own design before code.
+The order is the proposal's. `3d.md` §10.1 records three corrections to what M19, M20 and M22
+contain, each made for a dependency. One question is open before M19: where Linux/Vulkan runs
+during the phase (`3d.md` §12). Each milestone writes its own design before code.

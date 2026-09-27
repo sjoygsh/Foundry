@@ -18,10 +18,17 @@ Wayland found one real fault. A second `Platform`'s shutdown called `SDL_Quit`, 
 first's Wayland connection. Platforms now release their own reference, and the last one quits
 SDL. The record is `docs/design/linux-desktop.md`; `scripts/m18/` has the kit.
 
-**3D is designed as a proposal, not accepted:** `docs/design/3d.md` proposes conventions, a
-shader/material strategy, the hierarchy's names, physics scope, forward rendering and milestones
-M19–M26. Its §11 lists six decisions for the owner. **M19 does not begin until they are
-answered.**
+**3D is decided, not begun (2026-09-27).** The owner accepted all six of `docs/design/3d.md`'s
+decisions as recommended, and added a seventh: assets are not the renderer. They are ADR-0048
+(conventions), ADR-0049 (shading models per backend), ADR-0050 (the engine-declared hierarchy),
+ADR-0051 (collision without dynamics), ADR-0052 (forward first) and ADR-0053 (six stages from
+source file to GPU). M19–M26 keep the proposed order. A dependency review corrected what three
+milestones contain (`3d.md` §10.1):
+- M19 gains a `render3d` skeleton, so the sample never holds the RHI;
+- M19's mesh is unlit;
+- material records move to M20.
+
+**M19 has not begun.**
 
 **Before M18: M17 is complete (2026-09-23, tag `m17`).** The unsigned pre-release
 `v0.17.1-preview` (from `c37c01d`) is on GitHub and supersedes `v0.17.0-preview`. Both
@@ -4446,8 +4453,9 @@ Windows compile scoping were each re-confirmed by deliberately breaking them.
 
 ## Immediate next steps
 
-**2026-09-27: M18 is closed. Next is the owner's answers to `3d.md` §11,** then ADRs for what
-they accept, then M19's own design. Nothing else is owed before 3D. What remains open stays
+**2026-09-27: 3D's decisions are made and recorded (ADR-0048 to ADR-0053).** Next is the one
+open question in `3d.md` §12, where Linux/Vulkan runs during the phase, then M19's own design
+(`docs/design/`, before any code). M19 has not begun. Nothing else is owed before 3D. What remains open stays
 open on purpose:
 - `rhi.md`'s device recovery;
 - a human's hour with the editor;

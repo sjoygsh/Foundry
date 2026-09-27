@@ -162,7 +162,7 @@ Decisions are recorded before they are built:
 **M0 through M18 are complete, and the first preview release is published.** Foundry is a
 playable, moddable, networked 2D engine with an editor. It runs on macOS, Windows and Linux
 (X11 and Wayland), and the first game built on it is finished in its own repository. 3D is next,
-and [its design](docs/design/3d.md) is proposed and waiting on the owner's decisions. Signed and
+and [its design](docs/design/3d.md) is decided (ADR-0048 to ADR-0053); M19 has not begun. Signed and
 notarized releases wait until after a fully playable 3D game ([ADR-0047](docs/adr/0047-unsigned-github-preview-release.md)).
 
 - [docs/ROADMAP.md](docs/ROADMAP.md): every milestone, what it proved and what comes next.
