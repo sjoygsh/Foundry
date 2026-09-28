@@ -2,11 +2,28 @@
 
 **Last updated:** 2026-09-28
 **Current handoff: M19 is complete (2026-09-27, tag `m19`). M20, Meshes, is accepted and Steps 1
-to 3 of nine are complete. Stop before Step 4.** Read [`docs/design/meshes.md`](docs/design/meshes.md),
-whose Step 1–3 Resolutions record the implementation and its corrections. ADR-0055 is
-accepted. Next is Step 4 only: `author`'s glTF import (§6), with the fixtures built by the
-tests, one refusal test per §6.5 refusal and the mutation sweep. No glTF reader, 3D material,
-3D texture loader or M20 renderer functionality exists yet.
+to 4 of nine are complete. Stop before Step 5.** Read [`docs/design/meshes.md`](docs/design/meshes.md),
+whose Step 1–4 Resolutions record the implementation and its corrections. ADR-0055 is
+accepted. Next is Step 5 only: `render3d`'s shading-model registry, material/texture/mesh
+loaders, alpha modes, transparent order and mirrored front face (§7.1–§7.5). No glTF type
+reaches runtime and no 3D material, texture or mesh loader exists yet.
+
+**M20 Step 4 is done (2026-09-28).** `author/gltf/` is the sole, private glTF reader: strict
+JSON/GLB containers, a typed bounded document, range-checked accessors and translation to
+checked `.fdt`, canonical `.fmesh` and PNG bytes. Bare `.gltf`/`.glb` files derive models;
+`foundry:model_import` supplies front direction and material mappings and is compiled away.
+Generated records pass through the ordinary parser/checker, and confined URI reads accept
+only package-relative files. Workspace candidates snapshot model sources and bounded sidecars,
+so the editor and `fpack` still run the same compiler over the same bytes.
+
+The generated fixture suite covers the triangle GLB, external-PNG textured quad, multiple
+primitives, transform chains, reflections, +Z front, mappings and reused meshes. Every named
+subset refusal and configured limit has a diagnostic assertion; a bounded truncate/byte-flip
+GLB sweep leaks nothing. End-to-end `fpack` and workspace proofs produce valid meshes and
+repeat byte-identically. A primitive without a glTF material generates one deterministic
+default material after the file's material array. Removing URI-scheme rejection made its
+hostile-input test fail and was restored. The full bar passed at **1,800 of 1,801 headless
+tests** (the existing skip), **1,881 declared**. Step 5 is next.
 
 **M20 Step 3 is done (2026-09-28).** `render2d` honours texture schema v3: `TextureOptions`
 gains `color_space` (`srgb` → `rgba8_unorm_srgb`, `linear` → `rgba8_unorm`) and `mipmaps`, which

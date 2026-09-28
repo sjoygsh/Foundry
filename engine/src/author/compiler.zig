@@ -18,7 +18,7 @@
 //! enumeration order is not a specification and must never reach the output.
 //!
 //! Design: `docs/design/content-schemas.md` §6, `docs/design/assets.md` §3,
-//! `docs/design/editor.md` §3 and §4.
+//! `docs/design/editor.md` §3 and §4, and `docs/design/meshes.md` §6.
 
 const std = @import("std");
 const core = @import("core");
@@ -29,6 +29,7 @@ const scene = @import("scene");
 const platform = @import("platform");
 
 const dependency = @import("dependency.zig");
+const gltf = @import("gltf/root.zig");
 
 const Allocator = std.mem.Allocator;
 const Diagnostics = data.Diagnostics;
@@ -109,6 +110,8 @@ pub const Options = struct {
     /// their own directory from a command line has already chosen its size. A workspace
     /// passes `editor.md` §4's bounds instead, because an editor holds what it discovers.
     walk: Walk.Limits = .unbounded,
+    /// Bounds for glTF, an authoring input parsed only by this compiler.
+    gltf_limits: gltf.Limits = .default,
 };
 
 /// Compiles the package rooted at `dir` and appends the `.fpk` bytes to `out`.
@@ -190,10 +193,25 @@ pub fn compile(
         };
     }
 
-    // 3. Every authored record. Checking continues past a bad one so that a package with
-    //    six mistakes takes one build to find them all.
+    // 3. Every authored runtime record. `foundry:model_import` is checked into a private
+    //    authoring package instead: it is replaced by a model and never reaches the FPK.
+    var imports = data.Package.init(gpa, identity.name, identity.version, options.limits) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => unreachable, // the same identity constructed `pkg` above
+    };
+    defer imports.deinit(gpa);
     for (docs.items) |*doc| {
-        pkg.addRecords(gpa, doc, registry, diags) catch |err| switch (err) {
+        const runtime_records = try filterRecords(arena.allocator(), doc.records, false);
+        const import_records = try filterRecords(arena.allocator(), doc.records, true);
+        var runtime_doc = doc.*;
+        runtime_doc.records = runtime_records;
+        var import_doc = doc.*;
+        import_doc.records = import_records;
+        if (runtime_records.len != 0) pkg.addRecords(gpa, &runtime_doc, registry, diags) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.ContentInvalid => failed = true,
+        };
+        if (import_records.len != 0) imports.addRecords(gpa, &import_doc, registry, diags) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.ContentInvalid => failed = true,
         };
@@ -207,6 +225,31 @@ pub fn compile(
         error.IoFailed => return error.IoFailed,
         error.ContentInvalid => failed = true,
     };
+
+    // 3c. glTF authoring inputs become ordinary Foundry records and runtime assets. The
+    //     generated text takes the same parser/checker path as handwritten content.
+    const imported_source = compileModels(gpa, arena.allocator(), os, dir, options, &walk, &loader, &imports, docs.items, &pkg, registry, diags) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.IoFailed => return error.IoFailed,
+        error.ContentInvalid => blk: {
+            failed = true;
+            break :blk null;
+        },
+    };
+    if (imported_source) |source| {
+        var doc = data.parser.parse(gpa, gltf_file, source, .{
+            .namespace = pkg.namespace(),
+            .limits = options.limits,
+        }, diags) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.ContentInvalid,
+        };
+        defer doc.deinit(gpa);
+        pkg.addRecords(gpa, &doc, registry, diags) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.ContentInvalid => failed = true,
+        };
+    }
 
     // 4. Derived asset records, materialised as text and compiled by the same parser and
     //    the same checker the authored ones went through.
@@ -367,6 +410,7 @@ fn readIdentity(
 /// disk can be opened to find the line a diagnostic points at, and the whole point of
 /// derivation is that the file it describes was not written by anyone.
 pub const derived_file = "<derived>";
+pub const gltf_file = "<gltf>";
 
 /// What a source package says about itself: who it is, and what must load before it.
 pub const Self = struct {
@@ -571,6 +615,11 @@ pub const Walk = struct {
     /// downstream may reference one, and the file that ends up in the package is the one
     /// this compiles to.
     grids: std.ArrayList([]const u8) = .empty,
+    /// glTF authoring inputs. They compile away and never become runtime assets directly.
+    models: std.ArrayList([]const u8) = .empty,
+    /// Files unknown to the content registry, retained as possible glTF sidecars in an
+    /// editor build snapshot. The importer opens only paths the glTF actually names.
+    auxiliary: std.ArrayList([]const u8) = .empty,
 
     /// How much of a directory the walk is willing to look at.
     ///
@@ -606,6 +655,8 @@ pub const Walk = struct {
         self.sources.deinit(gpa);
         self.assets.deinit(gpa);
         self.grids.deinit(gpa);
+        self.models.deinit(gpa);
+        self.auxiliary.deinit(gpa);
         self.* = undefined;
     }
 
@@ -689,8 +740,12 @@ pub const Walk = struct {
                         try self.sources.append(gpa, rel);
                     } else if (std.mem.eql(u8, ext, asset.tilegrid.text_extension)) {
                         try self.grids.append(gpa, rel);
+                    } else if (std.mem.eql(u8, ext, "gltf") or std.mem.eql(u8, ext, "glb")) {
+                        try self.models.append(gpa, rel);
                     } else if (asset.schemas.kindForExtension(ext) != null) {
                         try self.assets.append(gpa, rel);
+                    } else {
+                        try self.auxiliary.append(gpa, rel);
                     }
                 },
                 .other => {},
@@ -797,6 +852,216 @@ pub fn normalizePackagePath(arena: Allocator, path: []const u8) Allocator.Error!
         try out.appendSlice(arena, part);
     }
     return out.items;
+}
+
+fn filterRecords(arena: Allocator, records: []const data.parser.RecordDecl, imports: bool) Allocator.Error![]const data.parser.RecordDecl {
+    var out: std.ArrayList(data.parser.RecordDecl) = .empty;
+    for (records) |record| {
+        if (record.schema.eql(asset.schemas.model_import.id) == imports) try out.append(arena, record);
+    }
+    return out.items;
+}
+
+const GltfReader = struct {
+    arena: Allocator,
+    os: *Os,
+    root: []const u8,
+
+    fn interface(self: *GltfReader) gltf.Reader {
+        return .{ .ctx = self, .readFn = read };
+    }
+
+    fn read(ctx: *anyopaque, parent: []const u8, uri: []const u8, max_bytes: usize) gltf.ReadError!gltf.Resolved {
+        const self: *GltfReader = @ptrCast(@alignCast(ctx));
+        const parent_dir = std.fs.path.dirnamePosix(parent) orelse "";
+        const joined = if (parent_dir.len == 0)
+            try self.arena.dupe(u8, uri)
+        else
+            try std.fmt.allocPrint(self.arena, "{s}/{s}", .{ parent_dir, uri });
+        const canonical = (try normalizePackagePath(self.arena, joined)) orelse return error.OutsidePackage;
+        const opened = self.os.readFileConfined(self.arena, self.root, canonical, max_bytes) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.FileTooLarge => return error.OverLimit,
+            error.InvalidPath => return error.OutsidePackage,
+            else => return error.NotFound,
+        };
+        return .{ .path = canonical, .bytes = opened.bytes };
+    }
+};
+
+/// Compiles every explicit import record and every otherwise-unclaimed `.gltf`/`.glb`.
+fn compileModels(
+    gpa: Allocator,
+    arena: Allocator,
+    os: *Os,
+    dir: []const u8,
+    options: Options,
+    walk: *const Walk,
+    _: *Loader,
+    imports: *const data.Package,
+    docs: []const Document,
+    pkg: *const data.Package,
+    _: *Registry,
+    diags: *Diagnostics,
+) (error{ ContentInvalid, IoFailed } || Allocator.Error)!?[]const u8 {
+    if (walk.models.items.len == 0 and imports.records().len == 0) return null;
+    const out_root = options.assets_out orelse {
+        try diags.addFmt(gpa, .err, .whole(dir), 1, "", "this package imports glTF but no generated-asset output directory was given; pass --assets-out", .{});
+        return error.ContentInvalid;
+    };
+
+    var reader: GltfReader = .{ .arena = arena, .os = os, .root = dir };
+    var source: std.ArrayList(u8) = .empty;
+    var claimed: std.StringHashMapUnmanaged(void) = .empty;
+    defer claimed.deinit(gpa);
+    var written: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer written.deinit(gpa);
+    var failed = false;
+
+    const schema = asset.schemas.model_import;
+    for (imports.records()) |record| {
+        const settings = importSettings(arena, record, schema, docs, diags, gpa) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.ContentInvalid => {
+                failed = true;
+                continue;
+            },
+        };
+        const normalized_maybe = normalizePackagePath(arena, settings.source) catch return error.OutOfMemory;
+        const normalized = normalized_maybe orelse {
+            failed = true;
+            try diags.addFmt(gpa, .err, record.origin.location(), record.origin.length, record.origin.line_text, "model import '{s}' has a source outside the package", .{record.text});
+            continue;
+        };
+        if (!containsPath(walk.models.items, normalized)) {
+            failed = true;
+            try diags.addFmt(gpa, .err, record.origin.location(), record.origin.length, record.origin.line_text, "model import '{s}' names '{s}', which is not a .gltf or .glb file in this package", .{ record.text, normalized });
+            continue;
+        }
+        try claimed.put(gpa, normalized, {});
+        var resolved_settings = settings;
+        resolved_settings.source = normalized;
+        importOne(gpa, arena, os, out_root, options, &reader, resolved_settings, &source, &written, diags) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.IoFailed => return error.IoFailed,
+            error.ContentInvalid => failed = true,
+        };
+    }
+
+    for (walk.models.items) |path| {
+        if (claimed.contains(path)) continue;
+        const id = deriveId(arena, pkg.namespace(), path) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {
+                failed = true;
+                try diags.addFmt(gpa, .err, .whole(path), 1, "", "cannot derive a model id from this path: {s}", .{describeDeriveError(err)});
+                continue;
+            },
+        };
+        // An authored record at the default model ID wins over file derivation.
+        if (pkg.find(core.ContentId.fromString(id)) != null) continue;
+        importOne(gpa, arena, os, out_root, options, &reader, .{
+            .model_id = id,
+            .source = path,
+        }, &source, &written, diags) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.IoFailed => return error.IoFailed,
+            error.ContentInvalid => failed = true,
+        };
+    }
+    if (failed) return error.ContentInvalid;
+    return if (source.items.len == 0) null else source.items;
+}
+
+fn importOne(
+    gpa: Allocator,
+    arena: Allocator,
+    os: *Os,
+    out_root: []const u8,
+    options: Options,
+    reader: *GltfReader,
+    settings: gltf.translate.Settings,
+    source: *std.ArrayList(u8),
+    written: *std.StringHashMapUnmanaged([]const u8),
+    diags: *Diagnostics,
+) (error{ ContentInvalid, IoFailed } || Allocator.Error)!void {
+    const opened = reader.interface().read(settings.source, std.fs.path.basename(settings.source), options.gltf_limits.container.max_file_bytes) catch |err| {
+        try diags.addFmt(gpa, .err, .whole(settings.source), 1, "", "could not be read as an import: {s}", .{@errorName(err)});
+        return error.ContentInvalid;
+    };
+    const result = gltf.import(gpa, arena, settings.source, opened.bytes, settings, reader.interface(), options.gltf_limits, diags) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.ContentInvalid => return error.ContentInvalid,
+    };
+    try source.appendSlice(arena, result.source);
+    for (result.assets) |generated| {
+        if (written.get(generated.path)) |previous| {
+            if (!std.mem.eql(u8, previous, generated.bytes)) {
+                try diags.addFmt(gpa, .err, .whole(generated.path), 1, "", "two imports generate different bytes at this output path", .{});
+                return error.ContentInvalid;
+            }
+            continue;
+        }
+        try written.put(gpa, generated.path, generated.bytes);
+        const absolute = platform.os.joinPath(arena, &.{ out_root, generated.path }) catch return error.IoFailed;
+        if (std.fs.path.dirname(absolute)) |parent| os.createDirPath(parent) catch return error.IoFailed;
+        os.writeFile(absolute, generated.bytes) catch |err| {
+            try diags.addFmt(gpa, .err, .whole(generated.path), 1, "", "could not be written: {s}", .{@errorName(err)});
+            return error.IoFailed;
+        };
+    }
+}
+
+fn importSettings(
+    arena: Allocator,
+    record: data.Record,
+    schema: data.Schema,
+    docs: []const Document,
+    diags: *Diagnostics,
+    gpa: Allocator,
+) error{ ContentInvalid, OutOfMemory }!gltf.translate.Settings {
+    const source_index = schema.fieldIndex(asset.schemas.source_field).?;
+    const front_index = schema.fieldIndex("front").?;
+    const mappings_index = schema.fieldIndex("materials").?;
+    const source = record.value(schema, source_index).?.string;
+    const front_text = record.value(schema, front_index).?.string;
+    const front: gltf.translate.Front = if (std.mem.eql(u8, front_text, "-z"))
+        .minus_z
+    else if (std.mem.eql(u8, front_text, "+z"))
+        .plus_z
+    else {
+        try diags.addFmt(gpa, .err, record.origin.location(), record.origin.length, record.origin.line_text, "model import '{s}' has front '{s}'; expected '-z' or '+z'", .{ record.text, front_text });
+        return error.ContentInvalid;
+    };
+    var mappings: []gltf.translate.MaterialMapping = &.{};
+    if (record.value(schema, mappings_index)) |value| {
+        mappings = try arena.alloc(gltf.translate.MaterialMapping, value.list.len);
+        for (value.list, mappings) |entry, *mapping| {
+            const name = namedValue(entry.nested, "name").?.string;
+            const id = namedValue(entry.nested, "material").?.id;
+            const spelling = findSpelling(docs, id.hash) orelse {
+                try diags.addFmt(gpa, .err, record.origin.location(), record.origin.length, record.origin.line_text, "model import '{s}' contains a material ID whose spelling was lost", .{record.text});
+                return error.ContentInvalid;
+            };
+            mapping.* = .{ .name = name, .material = spelling };
+        }
+    }
+    return .{ .model_id = record.text, .source = source, .front = front, .materials = mappings };
+}
+
+fn namedValue(values: []const data.NamedValue, name: []const u8) ?data.Value {
+    for (values) |value| if (std.mem.eql(u8, value.name, name)) return value.value;
+    return null;
+}
+
+fn findSpelling(docs: []const Document, hash: u64) ?[]const u8 {
+    for (docs) |*doc| if (doc.stringOf(hash)) |text| return text;
+    return null;
+}
+
+fn containsPath(paths: []const []const u8, wanted: []const u8) bool {
+    for (paths) |path| if (std.mem.eql(u8, path, wanted)) return true;
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -1979,4 +2244,61 @@ test "every schema the engine registers has a spelling an author can write" {
     for (engine_schema_names) |name| {
         try testing.expect(registry.find(data.SchemaId.fromStringUnchecked(name)) != null);
     }
+}
+
+test "fpack imports an explicit glTF model end to end and deterministically" {
+    var f = try Fixture.init();
+    defer f.deinit();
+
+    var mesh_bin: [42]u8 = @splat(0);
+    std.mem.writeInt(u32, mesh_bin[12..16], @bitCast(@as(f32, 1)), .little);
+    std.mem.writeInt(u32, mesh_bin[28..32], @bitCast(@as(f32, 1)), .little);
+    std.mem.writeInt(u16, mesh_bin[36..38], 0, .little);
+    std.mem.writeInt(u16, mesh_bin[38..40], 1, .little);
+    std.mem.writeInt(u16, mesh_bin[40..42], 2, .little);
+    try f.write("models/mesh.bin", &mesh_bin);
+    try f.write("models/triangle.gltf",
+        \\{"asset":{"version":"2.0"},
+        \\ "buffers":[{"uri":"mesh.bin","byteLength":42}],
+        \\ "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":6}],
+        \\ "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},{"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}],
+        \\ "materials":[{"name":"Mat"}],
+        \\ "meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1,"material":0}]}],
+        \\ "nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0}
+    );
+    try f.write("models.fdt",
+        \\foundry:material demo:shared {}
+        \\foundry:model_import demo:hero {
+        \\    source "models/triangle.gltf"
+        \\    front "+z"
+        \\    materials [ { name "Mat" material demo:shared } ]
+        \\}
+    );
+
+    try f.compileIt("demo:content");
+    const first_package = try testing.allocator.dupe(u8, f.bytes.items);
+    defer testing.allocator.free(first_package);
+    const first_mesh = try f.readGenerated("models/triangle/mesh0.fmesh");
+    defer testing.allocator.free(first_mesh);
+    var mesh_view = try asset.mesh_file.read(first_mesh, .default);
+    try testing.expectEqual(@as(u32, 3), mesh_view.mesh().vertex_count);
+
+    var package = try f.open();
+    defer package.deinit();
+    const model = recordNamed(&package, "demo:hero").?;
+    try testing.expect(model.schema_id.eql(asset.schemas.model.id));
+    try testing.expect(recordNamed(&package, "demo:hero.mesh0") != null);
+    try testing.expect(recordNamed(&package, "demo:hero.material0") == null);
+    try testing.expect(recordNamed(&package, "demo:models.triangle") == null);
+    for (0..package.record_count) |i| {
+        try testing.expect(!package.record(@intCast(i)).?.schema_id.eql(asset.schemas.model_import.id));
+    }
+
+    // The second compile reads the same authored tree, including an unchanged generated
+    // output beside it, and must reproduce both products byte for byte.
+    try f.compileIt("demo:content");
+    try testing.expectEqualSlices(u8, first_package, f.bytes.items);
+    const second_mesh = try f.readGenerated("models/triangle/mesh0.fmesh");
+    defer testing.allocator.free(second_mesh);
+    try testing.expectEqualSlices(u8, first_mesh, second_mesh);
 }

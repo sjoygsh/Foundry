@@ -1049,13 +1049,15 @@ ADR-0054 accepted. Exit condition met: draw order no longer decides what is visi
 - Linux was compile-only by design, and no trigger fired. At the owner's request the Vulkan graph
   and a windowed run were also confirmed on the M18 Ubuntu machine.
 
-**M20, Meshes, is accepted; Steps 1 and 2 of nine are complete** —
+**M20, Meshes, is accepted; Steps 1–4 of nine are complete** —
 [`meshes.md`](design/meshes.md), with ADR-0055 accepted. Step 1 pins the canonical `.fmesh`,
 the widened mesh table, the material/model/import records, texture schema v3 compatibility and
 exact TRS decomposition. Step 2 adds deterministic CPU mip chains and a consumer's own loader
-(`acquireWith`). No glTF reader or draw path exists yet. The remaining steps are:
-- mips proved on both backends;
-- glTF import in `author`;
+(`acquireWith`). Step 3 proves mip selection and colour-space interpretation on Metal and
+Vulkan, and makes `render2d` honour the texture record. Step 4 adds the private, bounded glTF
+2.0 importer to `author`'s one compiler; its import record is compiled away and its generated
+records return through the ordinary checker. No 3D draw path or runtime mesh/material loader
+exists yet. The remaining steps are:
 - shading models and materials in `render3d`;
 - culling and models by content ID;
 - Vulkan on Windows;

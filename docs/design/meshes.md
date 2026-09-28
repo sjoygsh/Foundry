@@ -978,3 +978,56 @@ at `a1cc7a7` with this step's seven files overlaid and hash-checked, `zig build 
 -Drhi=vulkan` with validation required passed **214 of 214**, and the whole `zig build test
 -Drhi=vulkan` graph passed 114 of 114 steps, **1,821 of 1,840** (nineteen skips). No glTF is read and no 3D
 material or loader exists yet. Step 4 is next.
+
+## Resolution — Step 4: glTF import in `author` (2026-09-28)
+
+Step 4 implements §6 at the compiler boundary and stops before any runtime 3D loader,
+shading-model registry or draw path:
+
+- **`author/gltf/` is the sole glTF reader.** `container.zig` accepts ordinary JSON or a
+  strict two-chunk GLB 2 container; `document.zig` owns the one bounded `std.json` parse;
+  `accessor.zig` checks buffer ranges, alignment, stride, count and normalized widening; and
+  `translate.zig` emits only checked `.fdt`, canonical `.fmesh` and PNG bytes. None of these
+  modules is exported from `author`, and none imports a renderer or the RHI.
+- **The compiler consumes both authoring forms.** A bare `.gltf` or `.glb` derives its model
+  ID. A checked `foundry:model_import` supplies `front` and material-name mappings, is kept in
+  a private authoring package during compilation, and never enters the `.fpk`. Generated text
+  returns through the ordinary parser and checker, so generated/authored ID collisions have
+  the existing content diagnostic rather than an importer exception.
+- **Generation follows §6.3 exactly.** Meshes become numbered `.fmesh` assets and records;
+  materials and images become numbered records; embedded PNGs become generated assets and an
+  external PNG remains an ordinary package file. The selected scene is walked iteratively in
+  array order, repeated nodes are refused, transforms are flattened through
+  `Transform.fromMat4Exact`, and `front "+z"` is a part-local half-turn. One mesh used by two
+  nodes is written once and placed twice.
+- **The editor and `fpack` still share the one compiler.** A private workspace candidate now
+  snapshots glTF files and otherwise-unclassified regular files as possible sidecars, under
+  the existing walk and total-snapshot bounds. The importer opens only URIs a glTF actually
+  names, through the confined package reader; inventory and bytes are compared again before a
+  candidate publishes.
+- **A glTF primitive with no material needs glTF's default material.** §6.3's table named only
+  material array entries, but glTF permits the field to be absent. Such a model therefore
+  generates one additional unlit default at `M.material<N>`, where `N` is the material-array
+  length, and uses that slot. Inventing no material would produce a model the next step could
+  not resolve; the generated index remains deterministic and cannot collide with a glTF
+  material index.
+
+The tests construct every fixture in §11 item 2: triangle GLB, textured external-PNG quad,
+two primitives, a three-node chain, reflection, `front "+z"`, a material mapping and one mesh
+placed twice. They also cover an unindexed primitive, normalized integer widening, the default
+material, optional-feature warnings, every named §6.5 refusal and each configured limit. A
+small GLB is truncated at every length and has every byte flipped in turn; each run either
+imports or leaves an error diagnostic, leaks nothing under the testing allocator and finishes
+inside the five-second bound. An end-to-end `fpack` test proves the import record is absent,
+the mapped material is used, the `.fmesh` is valid, and a second compile produces identical
+package and asset bytes. A workspace build is compared with the direct compiler, including its
+external `.bin` sidecar and generated mesh.
+
+**Guard verified by mutation:** accepting `:` in a URI made the hostile-input test accept a
+scheme far enough to report only `NotFound`; restoring the plain-relative-path guard restored
+the required diagnostic for data URIs and URLs.
+
+The full bar passed at **1,800 of 1,801 headless tests** (the existing skip; **1,881 declared**),
+including native and Metal checks, both null cross-targets and all three thirty-frame headless samples.
+No glTF type reaches runtime, no 3D asset loader or material resolver exists, and nothing in
+this step draws. Step 5 is next.

@@ -290,6 +290,22 @@ fn compileCandidate(ctx: Context, candidate_root: []const u8, use_drafts: bool, 
         defer ctx.gpa.free(source_path);
         try writeNew(ctx, candidate_root, source_path, read);
     }
+    // glTF and its otherwise-unclassified sidecars are authoring inputs only. External PNGs
+    // are already in `assets` above and therefore enter both source and runtime.
+    for (walk.models.items) |path| {
+        const read = try readSnapshotFile(ctx, ctx.source_root, path, &budget);
+        defer ctx.gpa.free(read);
+        const source_path = try prefixed(ctx.gpa, "source", path);
+        defer ctx.gpa.free(source_path);
+        try writeNew(ctx, candidate_root, source_path, read);
+    }
+    for (walk.auxiliary.items) |path| {
+        const read = try readSnapshotFile(ctx, ctx.source_root, path, &budget);
+        defer ctx.gpa.free(read);
+        const source_path = try prefixed(ctx.gpa, "source", path);
+        defer ctx.gpa.free(source_path);
+        try writeNew(ctx, candidate_root, source_path, read);
+    }
 
     const dep_sources = try snapshotDependencies(ctx, candidate_root, &budget, diags);
     defer {
@@ -380,7 +396,9 @@ fn verifyLocalSnapshot(ctx: Context, candidate_root: []const u8, first: *const c
     defer again.deinit(ctx.gpa);
     if (!samePaths(first.sources.items, again.sources.items) or
         !samePaths(first.assets.items, again.assets.items) or
-        !samePaths(first.grids.items, again.grids.items))
+        !samePaths(first.grids.items, again.grids.items) or
+        !samePaths(first.models.items, again.models.items) or
+        !samePaths(first.auxiliary.items, again.auxiliary.items))
     {
         try diags.addFmt(ctx.gpa, .err, .whole("."), 1, "", "the package inventory changed while its build snapshot was being captured", .{});
         return error.ExternalChange;
@@ -388,6 +406,8 @@ fn verifyLocalSnapshot(ctx: Context, candidate_root: []const u8, first: *const c
     for (ctx.documents) |*document| if (document.on_disk) try checkDocumentDisk(ctx, document, diags);
     for (first.assets.items) |path| try compareOriginalToSnapshot(ctx, candidate_root, ctx.source_root, path, diags);
     for (first.grids.items) |path| try compareOriginalToSnapshot(ctx, candidate_root, ctx.source_root, path, diags);
+    for (first.models.items) |path| try compareOriginalToSnapshot(ctx, candidate_root, ctx.source_root, path, diags);
+    for (first.auxiliary.items) |path| try compareOriginalToSnapshot(ctx, candidate_root, ctx.source_root, path, diags);
 }
 
 fn snapshotDependencies(ctx: Context, candidate_root: []const u8, budget: *usize, diags: *Diagnostics) Error![]dependency.Source {

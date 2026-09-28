@@ -1684,6 +1684,20 @@ test "candidate builds match the compiler and a failed generation keeps the last
     );
     try f.write("pkg/records.fdt", "demo:item demo:one { name \"one\" }\n");
     try f.write("pkg/grids/town.grid", "1 1 1\n1 0 1\n1 1 1\n");
+    var mesh_bin: [42]u8 = @splat(0);
+    std.mem.writeInt(u32, mesh_bin[12..16], @bitCast(@as(f32, 1)), .little);
+    std.mem.writeInt(u32, mesh_bin[28..32], @bitCast(@as(f32, 1)), .little);
+    std.mem.writeInt(u16, mesh_bin[36..38], 0, .little);
+    std.mem.writeInt(u16, mesh_bin[38..40], 1, .little);
+    std.mem.writeInt(u16, mesh_bin[40..42], 2, .little);
+    try f.write("pkg/models/mesh.bin", &mesh_bin);
+    try f.write("pkg/models/triangle.gltf",
+        \\{"asset":{"version":"2.0"},"buffers":[{"uri":"mesh.bin","byteLength":42}],
+        \\ "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":6}],
+        \\ "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},{"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}],
+        \\ "meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}],
+        \\ "nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0}
+    );
     const output = try f.at("output");
     try f.os.createDirPath(output);
 
@@ -1725,6 +1739,13 @@ test "candidate builds match the compiler and a failed generation keeps the last
     const direct_grid = try f.os.readFileConfined(gpa, direct_generated, "grids/town.fgrid", 1024 * 1024);
     defer gpa.free(direct_grid.bytes);
     try testing.expectEqualSlices(u8, direct_grid.bytes, first_grid.bytes);
+    const first_mesh_rel = try std.fmt.allocPrint(gpa, "{s}/runtime/assets/models/triangle/mesh0.fmesh", .{first_info.relative_dir});
+    defer gpa.free(first_mesh_rel);
+    const first_mesh = try f.os.readFileConfined(gpa, output, first_mesh_rel, 1024 * 1024);
+    defer gpa.free(first_mesh.bytes);
+    const direct_mesh = try f.os.readFileConfined(gpa, direct_generated, "models/triangle/mesh0.fmesh", 1024 * 1024);
+    defer gpa.free(direct_mesh.bytes);
+    try testing.expectEqualSlices(u8, direct_mesh.bytes, first_mesh.bytes);
 
     // Failure happens after a fresh candidate and generated-output directory exist. Only
     // that incomplete tree is cleaned; the prior handle and its bytes remain live.
