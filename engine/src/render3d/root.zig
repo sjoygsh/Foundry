@@ -6,19 +6,38 @@
 //! Design: `docs/design/render3d.md` §6 and ADR-0054.
 
 pub const camera = @import("camera.zig");
+pub const loader = @import("loader.zig");
 pub const renderer = @import("renderer.zig");
 
 pub const Camera = camera.Camera;
+pub const AlphaMode = renderer.AlphaMode;
 pub const Config = renderer.Config;
 pub const Error = renderer.Error;
 pub const Extent2D = renderer.Extent2D;
+pub const Filter = renderer.Filter;
 pub const FrameView = renderer.FrameView;
+pub const MaterialDesc = renderer.MaterialDesc;
+pub const MaterialHandle = renderer.MaterialHandle;
+pub const MaterialFields = renderer.MaterialFields;
 pub const MeshDraw = renderer.MeshDraw;
 pub const MeshHandle = renderer.MeshHandle;
+pub const meshLoader = loader.meshLoader;
+pub const meshOf = loader.meshOf;
 pub const Renderer = renderer.Renderer;
+pub const ShaderStage = renderer.ShaderStage;
+pub const ShadingModel = renderer.ShadingModel;
+pub const ShadingVariants = renderer.ShadingVariants;
 pub const Stats = renderer.Stats;
+pub const StreamSet = renderer.StreamSet;
+pub const TextureHandle = renderer.TextureHandle;
+pub const TextureOptions = renderer.TextureOptions;
+pub const textureLoader = loader.textureLoader;
+pub const textureOf = loader.textureOf;
+pub const Wrap = renderer.Wrap;
+pub const unlit_id = renderer.unlit_id;
 
 test {
     _ = camera;
+    _ = loader;
     _ = renderer;
 }

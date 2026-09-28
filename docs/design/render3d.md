@@ -392,11 +392,11 @@ compile error in exactly one place, which is the intended cost.
   computes `clip = view_projection · world · position`. M22 adds the normal transform, and the
   remaining 64 bytes or a per-draw group hold it.
 
-### 6.5 The unlit vertex-colour pipeline
+### 6.5 The original unlit vertex-colour pipeline
 
-- **Written by hand twice** (ADR-0049): `render3d/shaders/unlit_color.metal`, and
-  `unlit_color.vert.glsl` with `.frag.glsl`. They are compiled by the existing `metalLibrary`
-  and `vulkanShaderStage` build steps, and embedded (ADR-0019).
+- **Written by hand twice** (ADR-0049) for M19. M20 Step 5 replaced these first shaders with
+  the registered unlit model and its four vertex/two fragment variants; `meshes.md` §7.1–§7.2
+  is now authoritative for the files and pipeline permutations.
 - **The fragment writes the interpolated linear vertex colour.** The `_srgb` target encodes it,
   so linear-in and sRGB-out holds from the first pixel (ADR-0048).
 - **Its state:** back-face culling with counter-clockwise front faces; depth `greater_equal` with
@@ -1184,4 +1184,3 @@ platform call on Linux's window path.
 
 M19's exit condition, `3d.md` §10's row, holds: every convention is pinned by a test, and draw
 order no longer decides what is visible. M20's design has not begun.
-

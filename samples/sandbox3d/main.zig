@@ -334,6 +334,7 @@ const Sample = struct {
     cube: render3d.MeshHandle,
     slab: render3d.MeshHandle,
     floor: render3d.MeshHandle,
+    material: render3d.MaterialHandle,
 
     settings: Settings = Settings.fallback,
     content_generation: u64 = 0,
@@ -355,6 +356,9 @@ const Sample = struct {
         var overlay = try render2d.Renderer.init(gpa, engine.gpu, .{ .jobs = engine.jobs() });
         errdefer overlay.deinit();
 
+        const material = try world.createMaterial(.{}, "sandbox3d unlit");
+        errdefer world.destroyMaterial(material);
+
         const cube = try createBox(&world, .init(0.6, 0.6, 0.6), cube_faces, "sandbox3d cube");
         const slab = try createBox(&world, .init(1.3, 0.06, 0.9), slab_faces, "sandbox3d slab");
         const floor = try createFloor(&world);
@@ -367,6 +371,7 @@ const Sample = struct {
             .cube = cube,
             .slab = slab,
             .floor = floor,
+            .material = material,
         };
     }
 
@@ -437,14 +442,17 @@ const Sample = struct {
         });
         try self.world.drawMesh(.{
             .mesh = self.floor,
+            .material = self.material,
             .world = Mat4.trs(.init(0, -0.1, 0), Quat.fromAxisAngle(.init(0, 0, 1), 0.2), .one),
         });
         try self.world.drawMesh(.{
             .mesh = self.cube,
+            .material = self.material,
             .world = Mat4.fromQuat(Quat.fromAxisAngle(cube_axis.normalize(), self.cube_angle)),
         });
         try self.world.drawMesh(.{
             .mesh = self.slab,
+            .material = self.material,
             .world = Mat4.fromQuat(Quat.fromAxisAngle(slab_axis.normalize(), self.slab_angle)),
         });
 
@@ -492,6 +500,7 @@ const Sample = struct {
         self.world.destroyMesh(self.floor);
         self.world.destroyMesh(self.slab);
         self.world.destroyMesh(self.cube);
+        self.world.destroyMaterial(self.material);
         self.overlay.deinit();
         self.world.deinit();
     }

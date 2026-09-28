@@ -1,7 +1,7 @@
 # Design: M20 — Meshes: runtime formats, glTF import, textures with mips, materials and culling
 
-**Status:** Accepted 2026-09-27 when the owner requested Step 1. Steps 1 to 3 of nine are
-complete; Step 4 has not begun. §14 records the accepted choices.
+**Status:** Accepted 2026-09-27 when the owner requested Step 1. Steps 1 to 5 of nine are
+complete; Step 6 has not begun. §14 records the accepted choices.
 **Date:** 2026-09-27
 **Baseline:** `a8cbd64`, tag `m19`. M0–M19 are complete.
 **Decisions:**
@@ -1031,3 +1031,74 @@ The full bar passed at **1,800 of 1,801 headless tests** (the existing skip; **1
 including native and Metal checks, both null cross-targets and all three thirty-frame headless samples.
 No glTF type reaches runtime, no 3D asset loader or material resolver exists, and nothing in
 this step draws. Step 5 is next.
+
+## Resolution — Step 5: shading models, materials and loaders (2026-09-28)
+
+Step 5 implements §7.1–§7.5 in `render3d` and stops before culling and `Content`:
+
+- **The registry is data (I6).** `ShadingModel` carries its ID, the streams it requires and
+  those it reads when present, the material fields it reads, and this backend's bytes for four
+  vertex and two fragment variants. `registerShadingModel` refuses a duplicate ID
+  (`DuplicateShadingModel`), and a model that requires nothing, does not require `position`,
+  lists a stream as both required and optional, or names a stream outside `position`, `uv0` and
+  `color` (`InvalidShadingModel`), because M20's variant table has no slot for any other.
+  `Renderer.init` registers `foundry:shading.unlit`, and nothing in the renderer branches on it.
+- **M19's shaders are replaced.** `unlit.metal` holds all six entry points; Vulkan has one GLSL
+  file per variant (`unlit_color.vert.glsl` survives as the colour-only vertex variant), each
+  compiled by the existing steps. `spirv.zig`'s profile checks name every variant's locations,
+  frame matrix, constants and group-2 material block, texture and sampler. `render3d.md` §6.5
+  now points here.
+- **The colour stream has two formats, so the pipeline key has one more bit.** §7.2 counted
+  36 pipelines from four vertex variants, but `color` may be `unorm8x4` or `float32x4`, and the
+  vertex layout differs between them while the shader does not. The key is (model, vertex layout
+  including the colour format, alpha mode, cull): at most 54 pipelines per model, still from
+  four vertex and two fragment programs, created by `prepare` and never while recording.
+- **The fragment premultiplies.** It multiplies texture, vertex colour and `base_color`, then
+  multiplies RGB by alpha; blend uses premultiplied blending, as `render2d` does. Mask compares
+  the unpremultiplied alpha with `alpha_cutoff` and discards before that multiply.
+- **Materials are validated and immutable.** `createMaterial` refuses an unknown model, a
+  non-finite or out-of-range `base_color` or `alpha_cutoff` (`InvalidMaterialValue`), a stale
+  texture (`InvalidTexture`) and a linear one (`WrongColorSpace`). A material without a texture
+  binds `render3d`'s own 1×1 white sRGB texture, so there is one group-2 layout: a 32-byte uniform
+  (`base_color`, `alpha_cutoff`), the texture and its sampler. Samplers are cached by (filter,
+  wrap, mipmaps) and live until the renderer does. A material does not track its texture: a
+  caller destroys materials before the textures they bind, and Step 6's `Content` is the one
+  owner that has to get that order right on reload.
+- **The loaders are §7.4's, and only `acquireWith` reaches them.** `textureLoader` decodes within
+  the device's maximum dimension and reads `filter`, `wrap`, `color_space` and `mipmaps` with the
+  schema's defaults, so a record means the same to both renderers. `meshLoader` reads the
+  `.fmesh` under `MeshFileLimits.default` and keeps no vertex data. `textureOf`/`meshOf` answer
+  through `getIfLoader`, so a payload is never read as the other kind.
+- **Draws follow §7.5.** `material` is required, and `sandbox3d` builds one default material in
+  code for its three meshes. A draw is refused for a stale material and for a mesh missing a
+  required stream (`MissingStream`). A negative determinant selects clockwise front faces, a
+  zero one keeps the default, and a double-sided material culls nothing. `plan` puts opaque and
+  mask draws front to back, then blend draws back to front, by the view depth of the mesh
+  bounds' centre, with submission index breaking ties; a non-finite depth counts as infinitely
+  far. `Stats`
+  gains `culled`, which stays zero until Step 6, and `blended`.
+
+The null tests cover the registry and its refusals, every material refusal, the draw refusals,
+planning order with mask, blend, mirrored and double-sided draws and the pipelines they create,
+with no validation violation. `engine/tests/model_loaders.zig`, for which the integration binary
+now imports `render3d`, compiles a package with a PNG, an `.fmesh` and a corrupt mesh, and acquires
+through both loaders: neither is registered, the corrupt file is `InvalidAsset`, provenance keeps
+the kinds apart, a linear record reaches `WrongColorSpace`, the mesh draws with its texture's
+material, and `unloadWith` hands everything back. On Metal, at 1× and 4×, a two-texel mask quad
+over blue reads blue where alpha is zero and green where it is one, and at 1× every pixel is one
+of those two; a half-alpha red quad over blue reads 188 in both channels; and a single-sided quad
+under a negative X scale is visible.
+
+**Guards verified by mutation**, each restored:
+- ignoring the determinant failed the planning test and the mirrored readback;
+- using the opaque fragment for mask failed the readback;
+- sorting blend draws front to back failed the planning test;
+- dropping the colour-space check failed the material test;
+- making the texture loader ignore `color_space` failed the loader integration test.
+
+The bar passed at **1,806 of 1,807 headless tests** (the existing skip; **1,887 declared**) and
+**1,814 of 1,825 on `-Drhi=metal`** (11 null-only skips), with all four `check` variants, the
+three thirty-frame samples, and, because the shaders changed, both `vulkan-check` targets and
+the three Vulkan `check` lines. The Vulkan readbacks on Windows are Step 7's. Codex wrote the
+implementation; this session added the loader integration test, tightened the mask and
+mirrored readbacks, ran the mutations and the bar, and wrote this record. Step 6 is next.

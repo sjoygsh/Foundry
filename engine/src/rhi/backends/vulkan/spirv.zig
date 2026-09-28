@@ -30,8 +30,12 @@ pub const Profile = enum {
     sprite_fragment,
     quad_vertex,
     quad_fragment,
+    unlit_vertex,
     unlit_color_vertex,
-    unlit_color_fragment,
+    unlit_uv_vertex,
+    unlit_uv_color_vertex,
+    unlit_fragment,
+    unlit_mask_fragment,
 };
 
 const magic: u32 = 0x0723_0203;
@@ -304,13 +308,35 @@ fn requireFrameMatrix(bytes: []const u8) Error!void {
     try require(try variablePointsTo(bytes, variable, Storage.uniform, id));
 }
 
+fn requireUnlitVertex(bytes: []const u8, uv: bool, color: bool) Error!void {
+    try require(try hasLocatedVariable(bytes, 0, Storage.input));
+    if (uv) try require(try hasLocatedVariable(bytes, 3, Storage.input));
+    if (color) try require(try hasLocatedVariable(bytes, 5, Storage.input));
+    inline for (0..2) |location| try require(try hasLocatedVariable(bytes, location, Storage.output));
+    try requireFrameMatrix(bytes);
+    try requireConstants(bytes, false);
+}
+
+fn requireUnlitFragment(bytes: []const u8) Error!void {
+    inline for (0..2) |location| try require(try hasLocatedVariable(bytes, location, Storage.input));
+    try require(try hasLocatedVariable(bytes, 0, Storage.output));
+    const material = try namedId(bytes, "Material") orelse return error.DecorationMismatch;
+    try require(try hasDecoration(bytes, material, Decoration.block));
+    try require(try hasMemberDecoration(bytes, material, 0, Decoration.offset, 0));
+    try require(try hasMemberDecoration(bytes, material, 1, Decoration.offset, 16));
+    const variable = try bindingVariable(bytes, 2, 0, Storage.uniform) orelse return error.DecorationMismatch;
+    try require(try variablePointsTo(bytes, variable, Storage.uniform, material));
+    try require(try bindingHasType(bytes, 2, 1, Storage.uniform_constant, Op.type_image));
+    try require(try bindingHasType(bytes, 2, 2, Storage.uniform_constant, Op.type_sampler));
+}
+
 /// The profiles are the complete engine-owned shader ABI. This stays a bounded agreement
 /// check rather than becoming a general reflection system.
 pub fn validateProfile(bytes: []const u8, profile: Profile) Error!void {
     try validate(bytes);
     const stage: Stage = switch (profile) {
-        .sprite_vertex, .quad_vertex, .unlit_color_vertex => .vertex,
-        .sprite_fragment, .quad_fragment, .unlit_color_fragment => .fragment,
+        .sprite_vertex, .quad_vertex, .unlit_vertex, .unlit_color_vertex, .unlit_uv_vertex, .unlit_uv_color_vertex => .vertex,
+        .sprite_fragment, .quad_fragment, .unlit_fragment, .unlit_mask_fragment => .fragment,
     };
     try require(try hasEntry(bytes, stage, "main"));
 
@@ -343,17 +369,13 @@ pub fn validateProfile(bytes: []const u8, profile: Profile) Error!void {
             const frame_variable = try bindingVariable(bytes, 0, 2, Storage.uniform) orelse return error.DecorationMismatch;
             try require(try variablePointsTo(bytes, frame_variable, Storage.uniform, frame));
         },
+        .unlit_vertex => try requireUnlitVertex(bytes, false, false),
         .unlit_color_vertex => {
-            try require(try hasLocatedVariable(bytes, 0, Storage.input));
-            try require(try hasLocatedVariable(bytes, 5, Storage.input));
-            try require(try hasLocatedVariable(bytes, 0, Storage.output));
-            try requireFrameMatrix(bytes);
-            try requireConstants(bytes, false);
+            try requireUnlitVertex(bytes, false, true);
         },
-        .unlit_color_fragment => {
-            try require(try hasLocatedVariable(bytes, 0, Storage.input));
-            try require(try hasLocatedVariable(bytes, 0, Storage.output));
-        },
+        .unlit_uv_vertex => try requireUnlitVertex(bytes, true, false),
+        .unlit_uv_color_vertex => try requireUnlitVertex(bytes, true, true),
+        .unlit_fragment, .unlit_mask_fragment => try requireUnlitFragment(bytes),
     }
 }
 

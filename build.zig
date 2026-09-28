@@ -391,8 +391,8 @@ pub fn build(b: *std.Build) void {
         modules.get("render2d").?.addAnonymousImport("sprite_metallib", .{
             .root_source_file = metalLibrary(b, "sprite", &.{"engine/src/render2d/shaders/sprite.metal"}),
         });
-        modules.get("render3d").?.addAnonymousImport("unlit_color_metallib", .{
-            .root_source_file = metalLibrary(b, "unlit-color", &.{"engine/src/render3d/shaders/unlit_color.metal"}),
+        modules.get("render3d").?.addAnonymousImport("unlit_metallib", .{
+            .root_source_file = metalLibrary(b, "unlit", &.{"engine/src/render3d/shaders/unlit.metal"}),
         });
     }
 
@@ -1478,7 +1478,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    for ([_][]const u8{ "core", "data", "platform", "physics2d", "ui", "rhi", "asset", "mod", "render2d", "scene", "audio", "app", "author", "debug", "abi" }) |name| {
+    for ([_][]const u8{ "core", "data", "platform", "physics2d", "ui", "rhi", "asset", "mod", "render2d", "render3d", "scene", "audio", "app", "author", "debug", "abi" }) |name| {
         integration_mod.addImport(name, modules.get(name).?);
     }
     integration_mod.addImport("mod_pipeline_options", pipeline_options.createModule());
@@ -1578,8 +1578,12 @@ fn vulkanGraph(
     const sprite_fragment = vulkanShaderStage(b, checker, "sprite-fragment", "engine/src/render2d/shaders/sprite.frag.glsl", "frag", "sprite_fragment");
     const quad_vertex = vulkanShaderStage(b, checker, "quad-vertex", "samples/sandbox/shaders/quad.vert.glsl", "vert", "quad_vertex");
     const quad_fragment = vulkanShaderStage(b, checker, "quad-fragment", "samples/sandbox/shaders/quad.frag.glsl", "frag", "quad_fragment");
+    const unlit_vertex = vulkanShaderStage(b, checker, "unlit-vertex", "engine/src/render3d/shaders/unlit.vert.glsl", "vert", "unlit_vertex");
     const unlit_color_vertex = vulkanShaderStage(b, checker, "unlit-color-vertex", "engine/src/render3d/shaders/unlit_color.vert.glsl", "vert", "unlit_color_vertex");
-    const unlit_color_fragment = vulkanShaderStage(b, checker, "unlit-color-fragment", "engine/src/render3d/shaders/unlit_color.frag.glsl", "frag", "unlit_color_fragment");
+    const unlit_uv_vertex = vulkanShaderStage(b, checker, "unlit-uv-vertex", "engine/src/render3d/shaders/unlit_uv.vert.glsl", "vert", "unlit_uv_vertex");
+    const unlit_uv_color_vertex = vulkanShaderStage(b, checker, "unlit-uv-color-vertex", "engine/src/render3d/shaders/unlit_uv_color.vert.glsl", "vert", "unlit_uv_color_vertex");
+    const unlit_fragment = vulkanShaderStage(b, checker, "unlit-fragment", "engine/src/render3d/shaders/unlit.frag.glsl", "frag", "unlit_fragment");
+    const unlit_mask_fragment = vulkanShaderStage(b, checker, "unlit-mask-fragment", "engine/src/render3d/shaders/unlit_mask.frag.glsl", "frag", "unlit_mask_fragment");
 
     for ([_]struct { name: []const u8, bytes: std.Build.LazyPath }{
         .{ .name = "sprite_vertex_spirv", .bytes = sprite_vertex },
@@ -1589,8 +1593,12 @@ fn vulkanGraph(
     }) |stage| rhi_module.addAnonymousImport(stage.name, .{ .root_source_file = stage.bytes });
     render2d_module.addAnonymousImport("sprite_vertex_spirv", .{ .root_source_file = sprite_vertex });
     render2d_module.addAnonymousImport("sprite_fragment_spirv", .{ .root_source_file = sprite_fragment });
+    render3d_module.addAnonymousImport("unlit_vertex_spirv", .{ .root_source_file = unlit_vertex });
     render3d_module.addAnonymousImport("unlit_color_vertex_spirv", .{ .root_source_file = unlit_color_vertex });
-    render3d_module.addAnonymousImport("unlit_color_fragment_spirv", .{ .root_source_file = unlit_color_fragment });
+    render3d_module.addAnonymousImport("unlit_uv_vertex_spirv", .{ .root_source_file = unlit_uv_vertex });
+    render3d_module.addAnonymousImport("unlit_uv_color_vertex_spirv", .{ .root_source_file = unlit_uv_color_vertex });
+    render3d_module.addAnonymousImport("unlit_fragment_spirv", .{ .root_source_file = unlit_fragment });
+    render3d_module.addAnonymousImport("unlit_mask_fragment_spirv", .{ .root_source_file = unlit_mask_fragment });
 
     const tests = b.addTest(.{ .name = "rhi-vulkan", .root_module = rhi_module });
     b.step("vulkan-check", "Compile the Vulkan backend's tests without running them").dependOn(&tests.step);

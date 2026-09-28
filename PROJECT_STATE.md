@@ -2,11 +2,28 @@
 
 **Last updated:** 2026-09-28
 **Current handoff: M19 is complete (2026-09-27, tag `m19`). M20, Meshes, is accepted and Steps 1
-to 4 of nine are complete. Stop before Step 5.** Read [`docs/design/meshes.md`](docs/design/meshes.md),
-whose Step 1–4 Resolutions record the implementation and its corrections. ADR-0055 is
-accepted. Next is Step 5 only: `render3d`'s shading-model registry, material/texture/mesh
-loaders, alpha modes, transparent order and mirrored front face (§7.1–§7.5). No glTF type
-reaches runtime and no 3D material, texture or mesh loader exists yet.
+to 5 of nine are complete. Stop before Step 6.** Read [`docs/design/meshes.md`](docs/design/meshes.md),
+whose Step 1–5 Resolutions record the implementation and its corrections. ADR-0055 is
+accepted. Next is Step 6 only: frustum culling and `render3d.Content`, models drawn by content
+ID (§7.6, §8). No culling, no `Content` and no material loader from records exist yet.
+
+**M20 Step 5 is done (2026-09-28).** `render3d` has a runtime shading-model registry, and
+`Renderer.init` registers `foundry:shading.unlit` with four vertex and two fragment variants per
+backend, replacing M19's shaders. Materials are validated at creation (model, finite in-range
+values, a live sRGB texture, else a 1×1 white one) and bind as group 2. `render3d/loader.zig`'s
+texture and mesh loaders are reached only through `acquireWith`. Draws require a material and
+its model's streams; mask discards, blend is premultiplied without depth writes and is ordered
+back to front after opaque and mask, and a negative determinant selects clockwise front faces.
+The pipeline key also carries the colour stream's format, so it counts up to 54 pipelines
+rather than §7.2's 36.
+
+Null tests cover every refusal and the planning order. A new integration test loads a package's
+PNG and `.fmesh` through both loaders and draws them. Metal readbacks at 1× and 4× prove the
+cutout, the blend value and the mirrored quad. Five mutations each failed their test and were
+restored. The bar passed at **1,806 of 1,807 headless tests** (the existing skip; **1,887
+declared**) and **1,814 of 1,825 on Metal**, with the Vulkan compile checks because the shaders
+changed. Codex wrote the implementation; Claude finished its tests and records. Vulkan
+readbacks are Step 7's.
 
 **M20 Step 4 is done (2026-09-28).** `author/gltf/` is the sole, private glTF reader: strict
 JSON/GLB containers, a typed bounded document, range-checked accessors and translation to
