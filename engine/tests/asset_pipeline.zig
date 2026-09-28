@@ -370,3 +370,81 @@ test "every allocation a replacement makes can fail, and each failure leaves the
     stack.device.waitIdle();
     try testing.expectEqual(@as(usize, 0), stack.device.retiredCount());
 }
+
+// -- M20 Step 3: the record's colour space and mip chain reach the GPU ----------------------
+
+/// The GPU texture and sampler the loader made for `id`'s record, as the null backend holds them.
+fn describe(stack: *Stack, handle: asset.AssetHandle) struct { rhi.resource.TextureDesc, rhi.resource.SamplerDesc } {
+    const state = stack.renderer.textures.get(textureOf(stack, handle)).?;
+    return .{
+        stack.device.textures.getConst(state.gpu).?.desc,
+        stack.device.samplers.getConst(state.sampler).?.desc,
+    };
+}
+
+test "a record's colour space and mip chain become the texture's format, levels and sampler" {
+    if (rhi.backend != .null) return error.SkipZigTest;
+    const stack = try Stack.init();
+    defer stack.deinit();
+
+    const png = try @import("ui_theme.zig").solidPng(stack.gpa, 13, 7);
+    defer stack.gpa.free(png);
+    try stack.writeFile("textures/sprites.png", png);
+    try stack.loadPackage("foundry:core",
+        \\foundry:texture foundry:textures.sprites {
+        \\    source      "textures/sprites.png"
+        \\    filter      "linear"
+        \\    wrap        "mirror"
+        \\    color_space "linear"
+        \\    mipmaps     true
+        \\}
+    );
+
+    const handle = try stack.assets.acquire(stack.gpa, sprites_id);
+    defer stack.assets.release(handle);
+    const texture, const sampler = describe(stack, handle);
+    try testing.expectEqual(rhi.TextureFormat.rgba8_unorm, texture.format);
+    try testing.expectEqual(@as(u32, 4), texture.mip_levels);
+    try testing.expectEqual(rhi.resource.FilterMode.linear, sampler.mip_filter);
+    try testing.expectEqual(rhi.resource.AddressMode.mirror_repeat, sampler.address_u);
+
+    try stack.frame(spriteOf(textureOf(stack, handle)));
+    try testing.expectEqual(@as(usize, 0), stack.device.violationCount());
+}
+
+test "a record that names neither field loads exactly as 2D always has" {
+    if (rhi.backend != .null) return error.SkipZigTest;
+    const stack = try Stack.init();
+    defer stack.deinit();
+
+    const png = try @import("ui_theme.zig").solidPng(stack.gpa, 8, 8);
+    defer stack.gpa.free(png);
+    try stack.writeFile("textures/sprites.png", png);
+    try stack.loadPackage("foundry:core", package_source);
+
+    const handle = try stack.assets.acquire(stack.gpa, sprites_id);
+    defer stack.assets.release(handle);
+    const texture, const sampler = describe(stack, handle);
+    try testing.expectEqual(rhi.TextureFormat.rgba8_unorm_srgb, texture.format);
+    try testing.expectEqual(@as(u32, 1), texture.mip_levels);
+    try testing.expectEqual(rhi.resource.FilterMode.nearest, sampler.mip_filter);
+}
+
+test "a colour space nobody recognises is sRGB, and says so" {
+    if (rhi.backend != .null) return error.SkipZigTest;
+    const stack = try Stack.init();
+    defer stack.deinit();
+
+    try stack.writeFile("textures/sprites.png", &one_pixel_png);
+    try stack.loadPackage("foundry:core",
+        \\foundry:texture foundry:textures.sprites {
+        \\    source      "textures/sprites.png"
+        \\    color_space "linaer"
+        \\}
+    );
+
+    const handle = try stack.assets.acquire(stack.gpa, sprites_id);
+    defer stack.assets.release(handle);
+    const texture, _ = describe(stack, handle);
+    try testing.expectEqual(rhi.TextureFormat.rgba8_unorm_srgb, texture.format);
+}

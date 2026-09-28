@@ -424,13 +424,23 @@ pub const Renderer = struct {
             return error.TextureTooLarge;
         }
 
-        const handle = try self.createEmptyTexture(
-            .{ .width = image.width, .height = image.height },
-            options,
-        );
-        errdefer self.destroyTexture(handle);
+        const size: Extent2D = .{ .width = image.width, .height = image.height };
+        if (!options.mipmaps) {
+            const handle = try self.createEmptyTexture(size, options, 1);
+            errdefer self.destroyTexture(handle);
+            try self.uploadRegion(handle, image, .{});
+            return handle;
+        }
 
-        try self.uploadRegion(handle, image, .{});
+        // A chain of nothing has no level 0. The single-level path lets the device refuse an
+        // empty size; this one has to say so before `asset.mips` asserts it.
+        if (size.isEmpty()) return error.InvalidDescriptor;
+        var chain = try asset.mips.generate(self.gpa, image, options.color_space);
+        defer chain.deinit(self.gpa);
+
+        const handle = try self.createEmptyTexture(size, options, chain.levelCount());
+        errdefer self.destroyTexture(handle);
+        try self.uploadChain(handle, chain);
         return handle;
     }
 
@@ -498,11 +508,13 @@ pub const Renderer = struct {
             return error.TextureTooLarge;
         }
 
+        // One level: an atlas changes region by region, and a chain would be stale after
+        // every `add`.
         const handle = try self.createEmptyTexture(size, .{
             .filter = options.filter,
             .wrap = options.wrap,
             .label = options.label,
-        });
+        }, 1);
         errdefer self.destroyTexture(handle);
         try self.clearTexture(handle, size);
 
@@ -520,7 +532,7 @@ pub const Renderer = struct {
     /// ever accept.
     ///
     /// Callable whenever a game may call the renderer, with frames in flight or without. The
-    /// copy is submitted on its own and not waited for (`submitCopy`), and the images the
+    /// copy is submitted on its own and not waited for (`submitCopies`), and the images the
     /// atlas already holds are kept.
     ///
     /// **A failure takes nothing.** The space is claimed only once the upload has been
@@ -573,35 +585,40 @@ pub const Renderer = struct {
         self: *Self,
         size: Extent2D,
         options: texture_mod.TextureOptions,
+        mip_levels: u32,
     ) Error!TextureHandle {
         const gpu = try self.device.createTexture(.{
             .label = options.label,
             .size = .{ .width = size.width, .height = size.height },
-            // sRGB, matching the surface, so sampling returns linear light and the write
-            // encodes back. `asset.Image` documents its bytes as sRGB for this reason.
-            .format = .rgba8_unorm_srgb,
+            // An sRGB colour is sampled through an `_srgb` format, matching the surface, so
+            // sampling returns linear light and the write encodes back. Linear data is read
+            // as the numbers it stores (`meshes.md` §4.1).
+            .format = switch (options.color_space) {
+                .srgb => .rgba8_unorm_srgb,
+                .linear => .rgba8_unorm,
+            },
             .usage = .{ .sampled = true, .copy_dst = true },
+            .mip_levels = mip_levels,
         });
         errdefer self.device.destroyTexture(gpu);
 
+        const filter: rhi.resource.FilterMode = switch (options.filter) {
+            .nearest => .nearest,
+            .linear => .linear,
+        };
+        const address: rhi.resource.AddressMode = switch (options.wrap) {
+            .clamp => .clamp_to_edge,
+            .repeat => .repeat,
+            .mirror => .mirror_repeat,
+        };
         const sampler = try self.device.createSampler(.{
             .label = options.label,
-            .min_filter = switch (options.filter) {
-                .nearest => .nearest,
-                .linear => .linear,
-            },
-            .mag_filter = switch (options.filter) {
-                .nearest => .nearest,
-                .linear => .linear,
-            },
-            .address_u = switch (options.wrap) {
-                .clamp => .clamp_to_edge,
-                .repeat => .repeat,
-            },
-            .address_v = switch (options.wrap) {
-                .clamp => .clamp_to_edge,
-                .repeat => .repeat,
-            },
+            .min_filter = filter,
+            .mag_filter = filter,
+            // Between levels as within one. Irrelevant to a single level, so left alone there.
+            .mip_filter = if (mip_levels > 1) filter else .nearest,
+            .address_u = address,
+            .address_v = address,
         });
         errdefer self.device.destroySampler(sampler);
 
@@ -649,10 +666,41 @@ pub const Renderer = struct {
             @memcpy(bytes[0..image.byteSize()], image.pixels);
         }
 
-        try self.submitCopy(handle, staging, origin, image.width, image.height);
+        try self.submitCopies(handle, staging, &.{.{
+            .origin = origin,
+            .size = .{ .width = image.width, .height = image.height },
+        }});
     }
 
-    /// Records and submits one copy from `staging` into the texture, and does not wait.
+    /// Writes every level of `chain` into a texture created with that many levels: one
+    /// staging buffer holding the chain as `asset.mips` packed it, and one copy per level.
+    fn uploadChain(self: *Self, handle: TextureHandle, chain: asset.MipChain) Error!void {
+        const staging = try self.device.createBuffer(.{
+            .label = "render2d mip chain staging",
+            .size = chain.bytes.len,
+            .usage = .{ .copy_src = true },
+            .memory = .upload,
+        });
+        defer self.device.destroyBuffer(staging);
+
+        {
+            const bytes = try self.device.mapBuffer(staging);
+            defer self.device.unmapBuffer(staging);
+            @memcpy(bytes[0..chain.bytes.len], chain.bytes);
+        }
+
+        // A texture is at most 32 levels, so the copies fit on the stack.
+        var copies: [32]LevelCopy = undefined;
+        for (chain.levels, 0..) |level, i| copies[i] = .{
+            .offset = level.offset,
+            .level = @intCast(i),
+            .size = .{ .width = level.width, .height = level.height },
+        };
+        try self.submitCopies(handle, staging, copies[0..chain.levels.len]);
+    }
+
+    /// Records and submits copies from `staging` into the texture, one recording between
+    /// two barriers, and does not wait.
     ///
     /// **Asynchronous, and its callers destroy the staging buffer straight afterwards.** That
     /// is legal with or without frames in flight: the device keeps a destroyed buffer until
@@ -664,23 +712,31 @@ pub const Renderer = struct {
     /// `undefined` tells a backend the contents may be discarded, which is true of a new
     /// texture and false of an atlas with images already in it. The tracked state moves
     /// only once the copy has been submitted.
-    fn submitCopy(
+    /// One region of `staging`, at `offset`, into one level of a texture.
+    const LevelCopy = struct {
+        offset: u64 = 0,
+        level: u32 = 0,
+        origin: rhi.Origin2D = .{},
+        size: Extent2D,
+    };
+
+    fn submitCopies(
         self: *Self,
         handle: TextureHandle,
         staging: rhi.BufferHandle,
-        origin: rhi.Origin2D,
-        width: u32,
-        height: u32,
+        copies: []const LevelCopy,
     ) Error!void {
         const state = self.textures.get(handle) orelse return error.InvalidTexture;
 
         const cmd = try self.device.beginCommandBuffer();
         try cmd.textureBarrier(&.{.{ .texture = state.gpu, .from = state.state, .to = .copy_dst }});
-        try cmd.copyBufferToTexture(.{
+        for (copies) |copy| try cmd.copyBufferToTexture(.{
             .src = staging,
+            .src_offset = copy.offset,
             .dst = state.gpu,
-            .dst_origin = origin,
-            .size = .{ .width = width, .height = height },
+            .dst_mip_level = copy.level,
+            .dst_origin = copy.origin,
+            .size = .{ .width = copy.size.width, .height = copy.size.height },
         });
         try cmd.textureBarrier(&.{.{ .texture = state.gpu, .from = .copy_dst, .to = .shader_read }});
         try cmd.submit();
@@ -709,7 +765,7 @@ pub const Renderer = struct {
             @memset(bytes[0..@intCast(bytes_needed)], 0);
         }
 
-        try self.submitCopy(handle, staging, .{}, size.width, size.height);
+        try self.submitCopies(handle, staging, &.{.{ .size = size }});
     }
 
     // -- the frame -------------------------------------------------------------------
@@ -1225,7 +1281,7 @@ pub const Renderer = struct {
             .memory = .upload,
         });
         // Destroyed while the copy below may still be queued, which is legal: the device
-        // keeps it until that copy has finished (`submitCopy` says why nothing waits).
+        // keeps it until that copy has finished (`submitCopies` says why nothing waits).
         defer device.destroyBuffer(staging);
 
         const indices = try device.createBuffer(.{
@@ -2215,6 +2271,69 @@ test "a failed atlas upload publishes no region, and the next image lands where 
     try testing.expectEqual(renderer.atlasRegion(atlas).?.sub(expected.x, expected.y, 4, 4), second);
 }
 
+/// The GPU texture and sampler behind `handle`, as the validation backend recorded them.
+fn describedTexture(fx: *Fixture, handle: TextureHandle) struct { rhi.resource.TextureDesc, rhi.resource.SamplerDesc } {
+    const state = fx.renderer.textures.get(handle).?;
+    return .{ fx.device.textures.getConst(state.gpu).?.desc, fx.device.samplers.getConst(state.sampler).?.desc };
+}
+
+test "a texture that asks for nothing is the texture 2D always had" {
+    if (rhi.backend != .null) return error.SkipZigTest;
+    var fx = try Fixture.init(8);
+    defer fx.deinit();
+
+    const texture, const sampler = describedTexture(&fx, fx.texture);
+    try testing.expectEqual(rhi.TextureFormat.rgba8_unorm_srgb, texture.format);
+    try testing.expectEqual(@as(u32, 1), texture.mip_levels);
+    try testing.expectEqual(rhi.resource.FilterMode.nearest, sampler.mip_filter);
+    try testing.expectEqual(rhi.resource.AddressMode.clamp_to_edge, sampler.address_u);
+}
+
+test "a mipmapped texture has every level, each written, and samples between them as it filters" {
+    if (rhi.backend != .null) return error.SkipZigTest;
+    var fx = try Fixture.init(8);
+    defer fx.deinit();
+
+    var image = try asset.Image.alloc(testing.allocator, 13, 7);
+    defer image.deinit(testing.allocator);
+    @memset(image.pixels, 0x40);
+
+    for ([_]texture_mod.Filter{ .nearest, .linear }) |filter| {
+        const handle = try fx.renderer.createTexture(image, .{
+            .label = "chain",
+            .mipmaps = true,
+            .filter = filter,
+            .wrap = .mirror,
+            .color_space = .linear,
+        });
+        const texture, const sampler = describedTexture(&fx, handle);
+        try testing.expectEqual(rhi.TextureFormat.rgba8_unorm, texture.format);
+        // 13x7, 6x3, 3x1, 1x1: `rhi.Extent2D.mipLevel`'s chain, which `asset.mips` restates.
+        try testing.expectEqual(@as(u32, 4), texture.mip_levels);
+        try testing.expectEqual(@as(rhi.resource.FilterMode, switch (filter) {
+            .nearest => .nearest,
+            .linear => .linear,
+        }), sampler.mip_filter);
+        try testing.expectEqual(rhi.resource.AddressMode.mirror_repeat, sampler.address_u);
+        try testing.expectEqual(rhi.resource.AddressMode.mirror_repeat, sampler.address_v);
+
+        try fx.renderer.begin(fx.view());
+        try fx.renderer.drawSprite(fx.sprite(handle, 0, .alpha));
+        try fx.frame();
+    }
+    // Every copy named a level the texture has and a size that level is; any other would be
+    // a violation, and the frames sampled a texture the copies left readable.
+    try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
+}
+
+test "a chain of an empty image is refused, not asserted" {
+    var fx = try Fixture.init(8);
+    defer fx.deinit();
+    var none: [0]u8 = .{};
+    const empty: asset.Image = .{ .width = 0, .height = 0, .pixels = &none };
+    try testing.expectError(error.InvalidDescriptor, fx.renderer.createTexture(empty, .{ .mipmaps = true }));
+}
+
 /// Everything the renderer creates, draws with and destroys, in one pass that a failing
 /// allocator can cut short anywhere.
 fn createDrawAndDestroy(gpa: Allocator) !void {
@@ -2228,12 +2347,19 @@ fn createDrawAndDestroy(gpa: Allocator) !void {
     @memset(image.pixels, 0xFF);
 
     const texture = try renderer.createTexture(image, .{ .label = "sweep" });
+    // An odd size, so the chain's allocation, its staging buffer and all three copies are
+    // each a place to fail.
+    var odd = try asset.Image.alloc(gpa, 5, 3);
+    defer odd.deinit(gpa);
+    @memset(odd.pixels, 0x80);
+    const mipped = try renderer.createTexture(odd, .{ .label = "sweep chain", .mipmaps = true, .filter = .linear });
     const atlas = try renderer.createAtlas(.{ .width = 16, .height = 16 }, .{ .label = "sweep" });
     const region = try renderer.atlasAdd(atlas, image);
 
     const view: FrameView = .{ .camera = .{ .viewport = .init(0, 0, 64, 64) } };
     try renderer.begin(view);
     try renderer.drawSprite(.{ .texture = texture, .position = .init(0, 0), .size = .init(2, 2) });
+    try renderer.drawSprite(.{ .texture = mipped, .position = .init(0, 4), .size = .init(2, 1) });
     try renderer.drawSprite(.{
         .texture = region.texture,
         .uv = region.uv,
@@ -2245,6 +2371,7 @@ fn createDrawAndDestroy(gpa: Allocator) !void {
     // With that frame still in flight. Neither may allocate: a destroy has no error to
     // report a failure with, so one that tried would surface as a swallowed failure.
     renderer.destroyTexture(texture);
+    renderer.destroyTexture(mipped);
     renderer.destroyAtlas(atlas);
     try renderer.begin(view);
     try drawFrame(device, &renderer);

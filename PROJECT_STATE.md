@@ -2,13 +2,35 @@
 
 **Last updated:** 2026-09-28
 **Current handoff: M19 is complete (2026-09-27, tag `m19`). M20, Meshes, is accepted and Steps 1
-and 2 of nine are complete. Stop before Step 3.** Read [`docs/design/meshes.md`](docs/design/meshes.md),
-whose Step 1 and Step 2 Resolutions record the implementation and its corrections. ADR-0055 is
-accepted. Next is Step 3 only: `render2d`'s loader honours `color_space` and `mipmaps`, and the
-mip-selection and colour-space readbacks are proved at the RHI level on Metal and on
-Windows/Vulkan with validation (it needs the Windows PC). No renderer reads the new texture
-fields, nothing uploads a mip chain, and nothing outside tests calls `acquireWith`; no glTF
-reader or M20 renderer functionality exists yet.
+to 3 of nine are complete. Stop before Step 4.** Read [`docs/design/meshes.md`](docs/design/meshes.md),
+whose Step 1–3 Resolutions record the implementation and its corrections. ADR-0055 is
+accepted. Next is Step 4 only: `author`'s glTF import (§6), with the fixtures built by the
+tests, one refusal test per §6.5 refusal and the mutation sweep. No glTF reader, 3D material,
+3D texture loader or M20 renderer functionality exists yet.
+
+**M20 Step 3 is done (2026-09-28).** `render2d` honours texture schema v3: `TextureOptions`
+gains `color_space` (`srgb` → `rgba8_unorm_srgb`, `linear` → `rgba8_unorm`) and `mipmaps`, which
+builds the chain with `asset.mips`, uploads every level from one staging buffer in one
+recording, and lets the mip filter follow `filter`. `wrap "mirror"` maps to `mirror_repeat`.
+The loader reads both fields (an unknown colour space warns and is `srgb`) through the new
+`asset.schemas.boolField`. A texture that names neither is unchanged, an atlas stays one level,
+and an empty image with `mipmaps` is refused as `InvalidDescriptor`. The RHI did not widen.
+
+The RHI-level readbacks prove it on both backends, at 1× and 4×. A seven-colour chain drawn at
+1:1, 1:2 and 1:4 reads levels 0, 1 and 2 on every covered pixel. The byte 188 reads back as
+188 through `rgba8_unorm` and as 128 through `rgba8_unorm_srgb`. Mutations each failed their
+tests and were restored:
+- Metal `NotMipmapped` and Metal sRGB-as-UNORM;
+- `render2d` ignoring `color_space` with a fixed mip filter;
+- Vulkan `maxLod = 0` (the two mip tests);
+- Vulkan sRGB-as-UNORM (the two colour-space tests and M13's sRGB test).
+
+The macOS bar passed at **1,789 of 1,790 headless tests** (the existing skip), **1,870
+declared**; `zig build test -Drhi=metal` passed 1,797 of 1,808 (eleven null-only skips), plus
+native/Metal checks, both null cross-targets and all three thirty-frame headless samples. On
+the Windows PC, a fresh worktree at `a1cc7a7` with the step's files overlaid and hash-checked
+passed `vulkan-test` with validation required at **214 of 214**, and the whole
+`zig build test -Drhi=vulkan` graph at 114 of 114 steps, **1,821 of 1,840** (nineteen skips).
 
 **M20 Step 2 is done (2026-09-28).** `asset/mips.zig` builds a deterministic full chain on the
 CPU: a box filter that never drops an odd dimension's last row or column, sRGB filtered in

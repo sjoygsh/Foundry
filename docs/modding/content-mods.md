@@ -265,9 +265,21 @@ Three things to know about it:
 * **A derived ID lasts as long as its path.** Moving the file changes the ID. If you want
   one to be permanent, write it out in a record; that is the fix, and it is one line.
 
-`filter` is `nearest` or `linear`; `wrap` is `clamp` or `repeat`. Both are optional and
-default to `nearest` and `clamp`. A spelling neither of them recognises is a warning naming
-what is legal, and the default is used — a typo should not make your texture disappear.
+`filter` is `nearest` or `linear`; `wrap` is `clamp`, `repeat` or `mirror`. Both are
+optional and default to `nearest` and `clamp`. A spelling neither of them recognises is a
+warning naming what is legal, and the default is used — a typo should not make your texture
+disappear.
+
+Two more optional fields say what the image is and how it shrinks:
+
+* **`color_space`** is `srgb` (the default: a colour a person looks at, which is what a PNG
+  holds) or `linear` (data — a mask, a normal map, a roughness texture — read as the numbers
+  it stores). An unrecognised spelling warns and is `srgb`.
+* **`mipmaps true`** builds a chain of smaller copies at load and samples between them as
+  `filter` does, so a texture drawn much smaller than its size stops shimmering. It is off by
+  default: a sprite drawn at its own size gains nothing from it but a third more memory.
+
+A package written before these fields existed loads unchanged, with their defaults.
 
 ## 6. Maps
 

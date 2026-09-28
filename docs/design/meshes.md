@@ -1,7 +1,7 @@
 # Design: M20 — Meshes: runtime formats, glTF import, textures with mips, materials and culling
 
-**Status:** Accepted 2026-09-27 when the owner requested Step 1. Steps 1 and 2 of nine are
-complete; Step 3 has not begun. §14 records the accepted choices.
+**Status:** Accepted 2026-09-27 when the owner requested Step 1. Steps 1 to 3 of nine are
+complete; Step 4 has not begun. §14 records the accepted choices.
 **Date:** 2026-09-27
 **Baseline:** `a8cbd64`, tag `m19`. M0–M19 are complete.
 **Decisions:**
@@ -919,3 +919,62 @@ The full bar passed: formatting, the headless graph (**1,783 of 1,784**, the exi
 headless frames of `sandbox`, `room` and `sandbox3d`. No renderer reads `color_space` or
 `mipmaps`, nothing uploads a chain, and nothing calls `acquireWith` outside its tests. Step 3
 is next.
+
+## Resolution — Step 3: mips proved, and `render2d` honours the record (2026-09-28)
+
+Step 3 makes `render2d` read what texture schema v3 says, and proves at the RHI level that the
+level a sampler reads and the meaning of a format's bytes are what Foundry expects on both
+backends. **The RHI did not widen:** `mip_levels`, `mip_filter`, `mirror_repeat` and
+`dst_mip_level` were already in its contract and in all three backends.
+
+- **`render2d.TextureOptions` gains `color_space` (`asset.ColorSpace`, default `srgb`) and
+  `mipmaps` (default `false`).** `srgb` creates `rgba8_unorm_srgb`, as every texture did before;
+  `linear` creates `rgba8_unorm`. With `mipmaps`, `createTexture` builds the chain with
+  `asset.mips.generate` in that colour space, creates the texture with that many levels, and
+  uploads them all from one staging buffer in one recording, one copy per level between the
+  two barriers that one upload always had. `submitCopy` became `submitCopies` over a list of
+  level copies, so a whole texture, an atlas region, an atlas clear and a chain reach the GPU
+  one way.
+- **The mip filter follows `filter` only when there is a chain.** A single level's sampler
+  keeps `nearest`, which is every existing sampler's value, so a texture that asks for nothing
+  is byte-for-byte the texture 2D always had (a test asserts its format, level count and
+  sampler).
+- **§4.1's `wrap "mirror"` lands here,** because `render2d.Wrap`'s tags are the legal spellings
+  the loader accepts: `mirror` maps to `mirror_repeat`. `docs/modding/content-mods.md` now
+  lists it, `color_space` and `mipmaps`.
+- **The loader reads the record.** `color_space` goes through the same warn-and-fall-back path
+  as `filter` and `wrap`, since the domain is only knowable there; an unknown spelling is
+  `srgb` with a warning naming the field. `mipmaps` is read by `asset.schemas.boolField`,
+  `stringField`'s twin, which supplies version 1 and 2 records their default.
+- **Two cases the design did not state.** An empty image with `mipmaps` is refused as
+  `InvalidDescriptor` before `asset.mips` asserts it is non-empty; without `mipmaps` the device
+  still refuses it as before. An atlas stays one level: its regions change one `add` at a time,
+  and a chain would be stale after each.
+- **The readbacks** (§11 item 6's first two, at the RHI level, each at 1× and 4×). A 64×64
+  texture whose seven levels are seven solid colours is drawn as a quad covering 64, 32 and 16
+  pixels of a 64×64 target, which makes the level of detail exactly 0, 1 and 2. Every covered
+  pixel must be that level's colour and every other the clear colour. A nearest mip filter
+  rounds to the nearest level, so a derivative a hair off an integer still picks the intended
+  one. Then the byte 188 is sampled as `rgba8_unorm` and as `rgba8_unorm_srgb` into a UNORM
+  target: it reads back as 188 and as 128 exactly (0.5029 of 255 is 128.2), on both backends.
+  Metal draws with its own small MSL; Vulkan draws with the engine's sprite stages, whose
+  premultiply is the identity at alpha 255.
+
+**Guards verified by mutation**, each restored afterwards:
+- Metal's sampler forced to `NotMipmapped` failed exactly the two mip-selection tests;
+- Metal's `rgba8_unorm_srgb` mapped to the plain format failed exactly the two colour-space
+  tests;
+- `render2d` creating sRGB regardless of `color_space`, with its mip filter always `nearest`,
+  failed the renderer's chain test and the pipeline's record test;
+- on Windows/Vulkan, a sampler clamped to level 0 (`maxLod = 0`) and `rgba8_unorm_srgb` mapped
+  to `R8G8B8A8_UNORM` failed, respectively, the two mip tests, and the two colour-space tests
+  together with M13's existing sRGB test.
+
+The full bar passed on macOS: formatting, the headless graph (**1,789 of 1,790**, the existing
+skip; **1,870 declared**), `zig build test -Drhi=metal` (**1,797 of 1,808**, eleven null-only
+skips), native and Metal checks, Linux and Windows null cross-checks, and thirty headless frames
+of `sandbox`, `room` and `sandbox3d`. On the Windows PC (Intel Arc A750), from a clean worktree
+at `a1cc7a7` with this step's seven files overlaid and hash-checked, `zig build vulkan-test
+-Drhi=vulkan` with validation required passed **214 of 214**, and the whole `zig build test
+-Drhi=vulkan` graph passed 114 of 114 steps, **1,821 of 1,840** (nineteen skips). No glTF is read and no 3D
+material or loader exists yet. Step 4 is next.

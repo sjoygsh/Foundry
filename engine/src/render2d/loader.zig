@@ -64,6 +64,8 @@ fn load(
     const handle = renderer.createTexture(image, .{
         .filter = filterOf(record),
         .wrap = wrapOf(record),
+        .color_space = sampler(asset.ColorSpace, record, asset.schemas.color_space_field, .srgb),
+        .mipmaps = asset.schemas.boolField(record, asset.schemas.texture, asset.schemas.mipmaps_field) orelse false,
         .label = record.name,
     }) catch |err| return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
@@ -87,7 +89,8 @@ fn wrapOf(record: asset.Record) Wrap {
     return sampler(Wrap, record, asset.schemas.wrap_field, .clamp);
 }
 
-/// One sampler field, read as an enum whose tag names *are* its spelling in content.
+/// One enumerated field — a sampler mode or the colour space — read as an enum whose tag
+/// names *are* its spelling in content.
 ///
 /// One table rather than two: adding a filter mode means adding a tag, and the content
 /// spelling follows, so the schema and the renderer cannot come to disagree about what is
@@ -111,7 +114,7 @@ fn sampler(comptime E: type, record: asset.Record, field: []const u8, default: E
 
 const testing = std.testing;
 
-test "every sampler spelling a schema default names is one the renderer accepts" {
+test "every spelling a schema default names is one the renderer accepts" {
     // The defaults are declared in `asset` and consumed here, in two modules that cannot
     // see each other's constants. A default nothing here recognises would silently become
     // this function's fallback and look correct, so the agreement is checked rather than
@@ -119,6 +122,7 @@ test "every sampler spelling a schema default names is one the renderer accepts"
     inline for (.{
         .{ Filter, asset.schemas.filter_field },
         .{ Wrap, asset.schemas.wrap_field },
+        .{ asset.ColorSpace, asset.schemas.color_space_field },
     }) |pair| {
         const index = asset.schemas.texture.fieldIndex(pair[1]).?;
         const declared = asset.schemas.texture.fields[index].presence.default.string;

@@ -5485,6 +5485,158 @@ test "a readback at an offset and a pitch writes its region and nothing else" {
     try expectValidationHeard(dev);
 }
 
+// -- M20: which level a sampler reads, and what a format's bytes mean, proved by pixels -----
+//
+// Metal's two tests, drawn with the sprite stages. A 64×64 texture whose seven levels are each a
+// different solid colour is drawn as a quad covering 64, 32 and 16 pixels of a 64×64 target, so
+// the level of detail is exactly 0, 1 and 2 and the colour read back names the level; then one
+// byte is sampled as `rgba8_unorm` and as `rgba8_unorm_srgb`. The expected values are Metal's.
+
+const sampled_size = 64;
+
+/// Level `i`'s colour. Seven levels take a 64×64 texture down to 1×1.
+const level_colors = [7][4]u8{
+    .{ 255, 0, 0, 255 },   .{ 0, 255, 0, 255 },   .{ 0, 0, 255, 255 },     .{ 255, 255, 0, 255 },
+    .{ 0, 255, 255, 255 }, .{ 255, 0, 255, 255 }, .{ 255, 255, 255, 255 },
+};
+
+/// A texture of `size`, every level filled with `colors[level]`, left readable by a shader.
+fn solidLevels(dev: *Device, texture_format: format.TextureFormat, size: u32, colors: []const [4]u8) !resource.TextureHandle {
+    const base: resource.Extent2D = .{ .width = size, .height = size };
+    const texture = try dev.createTexture(.{
+        .label = "levels",
+        .size = base,
+        .format = texture_format,
+        .usage = .{ .sampled = true, .copy_dst = true },
+        .mip_levels = @intCast(colors.len),
+    });
+
+    var total: u64 = 0;
+    for (0..colors.len) |level| {
+        const e = base.mipLevel(@intCast(level));
+        total += @as(u64, e.width) * e.height * 4;
+    }
+    const staging = try dev.createBuffer(.{ .label = "levels staging", .size = total, .usage = .{ .copy_src = true }, .memory = .upload });
+    defer dev.destroyBuffer(staging);
+    const bytes = try dev.mapBuffer(staging);
+    var at: usize = 0;
+    for (colors, 0..) |color, level| {
+        const e = base.mipLevel(@intCast(level));
+        for (0..e.width * e.height) |_| {
+            bytes[at..][0..4].* = color;
+            at += 4;
+        }
+    }
+    dev.unmapBuffer(staging);
+
+    const cb = try dev.beginCommandBuffer();
+    try cb.textureBarrier(&.{.{ .texture = texture, .from = .undefined, .to = .copy_dst }});
+    var offset: u64 = 0;
+    for (0..colors.len) |level| {
+        const e = base.mipLevel(@intCast(level));
+        try cb.copyBufferToTexture(.{ .src = staging, .src_offset = offset, .dst = texture, .dst_mip_level = @intCast(level), .size = e });
+        offset += @as(u64, e.width) * e.height * 4;
+    }
+    try cb.textureBarrier(&.{.{ .texture = texture, .from = .copy_dst, .to = .shader_read }});
+    try finish(dev, cb);
+    return texture;
+}
+
+/// `texture` drawn through the canvas's nearest sampler as a centred quad `scale` of the
+/// target's width, at `samples` per pixel, over opaque black; the target read back. The caller frees.
+fn renderSampled(dev: *Device, canvas: Canvas, texture: resource.TextureHandle, scale: f32, samples: u32) ![]u8 {
+    const extent: resource.Extent2D = .{ .width = sampled_size, .height = sampled_size };
+    const render_pipeline = try canvas.pipelineWith(.{ .samples = samples });
+    const group = try canvas.group(texture);
+    const whole = try canvas.vertices(&quad(-1, -1, 1, 1, white));
+
+    const target = try dev.createTexture(.{ .label = "sampled", .size = extent, .format = .rgba8_unorm, .usage = .{ .render_target = true, .copy_src = true } });
+    const readback = try dev.createBuffer(.{ .size = sampled_size * sampled_size * 4, .usage = .{ .copy_dst = true }, .memory = .readback });
+
+    const clear: command.LoadAction = .{ .clear = .{ .color = .{ 0, 0, 0, 1 } } };
+    const color: command.ColorAttachment = if (samples > 1) .{
+        .texture = try dev.createTexture(.{ .label = "sampled 4x", .size = extent, .format = .rgba8_unorm, .usage = .{ .render_target = true }, .sample_count = samples }),
+        .load = clear,
+        .store = .discard,
+        .resolve = .{ .texture = target, .final_state = .copy_src },
+    } else .{ .texture = target, .load = clear, .final_state = .copy_src };
+
+    const cb = try dev.beginCommandBuffer();
+    const pass = try cb.beginRenderPass(.{ .color = &.{color} });
+    pass.setPipeline(render_pipeline);
+    pass.setBindGroup(0, group);
+    pass.setVertexBuffer(0, whole, 0);
+    const constants = scaleMatrix(scale, scale);
+    pass.setInlineConstants(&constants);
+    pass.draw(.{ .vertex_count = 6 });
+    pass.end();
+    try cb.copyTextureToBuffer(.{ .src = target, .size = extent, .dst = readback });
+    try finish(dev, cb);
+    return testing.allocator.dupe(u8, try dev.mapBuffer(readback));
+}
+
+/// Drawn at 1:1, 1:2 and 1:4, every covered pixel is level 0's, 1's and 2's colour, and every
+/// uncovered one is the clear colour.
+fn expectLevelsSelected(samples: u32) !void {
+    const dev = try validated(.{});
+    defer dev.deinit();
+    const canvas = try Canvas.init(dev);
+    const texture = try solidLevels(dev, .rgba8_unorm, sampled_size, &level_colors);
+
+    for ([_]f32{ 1, 0.5, 0.25 }, 0..) |scale, level| {
+        const pixels = try renderSampled(dev, canvas, texture, scale, samples);
+        defer testing.allocator.free(pixels);
+        const covered: u32 = @intFromFloat(sampled_size * scale);
+        const lo = (sampled_size - covered) / 2;
+        for (0..sampled_size) |y| for (0..sampled_size) |x| {
+            const inside = x >= lo and x < lo + covered and y >= lo and y < lo + covered;
+            const expected = if (inside) level_colors[level] else black;
+            try testing.expectEqual(expected, texelAt(pixels, sampled_size, @intCast(x), @intCast(y)));
+        };
+    }
+    try expectValidationHeard(dev);
+}
+
+test "a minified draw reads the mip level its size selects" {
+    try expectLevelsSelected(1);
+}
+
+test "a minified draw reads the same levels at 4x" {
+    try expectLevelsSelected(4);
+}
+
+/// As Metal's test: 188 in a linear format, and 188 decoded from sRGB, which is 128.2 of 255.
+const encoded_byte: u8 = 188;
+const decoded_byte: u8 = 128;
+
+fn expectColorSpaces(samples: u32) !void {
+    const dev = try validated(.{});
+    defer dev.deinit();
+    const canvas = try Canvas.init(dev);
+
+    const texel = [4]u8{ encoded_byte, encoded_byte, encoded_byte, 255 };
+    for ([_]format.TextureFormat{ .rgba8_unorm, .rgba8_unorm_srgb }) |texture_format| {
+        const texture = try solidLevels(dev, texture_format, 4, &.{texel});
+        const pixels = try renderSampled(dev, canvas, texture, 1, samples);
+        defer testing.allocator.free(pixels);
+        const expected: u8 = if (texture_format.isSrgb()) decoded_byte else encoded_byte;
+        for (0..sampled_size) |y| for (0..sampled_size) |x| {
+            const got = texelAt(pixels, sampled_size, @intCast(x), @intCast(y));
+            for (got[0..3]) |channel| try testing.expectEqual(expected, channel);
+            try testing.expectEqual(@as(u8, 255), got[3]);
+        };
+    }
+    try expectValidationHeard(dev);
+}
+
+test "the same bytes read back as themselves in a linear format and decoded in an sRGB one" {
+    try expectColorSpaces(1);
+}
+
+test "the same bytes read back as themselves and decoded at 4x too" {
+    try expectColorSpaces(4);
+}
+
 test "multisampling misuse is refused at creation, as on null" {
     const dev = try validated(.{});
     defer dev.deinit();

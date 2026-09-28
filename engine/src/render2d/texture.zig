@@ -3,6 +3,7 @@
 const std = @import("std");
 const core = @import("core");
 const rhi = @import("rhi");
+const asset = @import("asset");
 
 const Allocator = std.mem.Allocator;
 
@@ -36,7 +37,8 @@ pub const Extent2D = struct {
 };
 
 pub const Filter = enum { nearest, linear };
-pub const Wrap = enum { clamp, repeat };
+/// `mirror` is glTF's `MIRRORED_REPEAT`: each repeat reflects the one before it.
+pub const Wrap = enum { clamp, repeat, mirror };
 
 pub const TextureOptions = struct {
     /// **Nearest by default.** Linear silently blurs upscaled pixel art and nothing in
@@ -44,6 +46,14 @@ pub const TextureOptions = struct {
     /// sends you looking for the setting. Defaults should fail loudly.
     filter: Filter = .nearest,
     wrap: Wrap = .clamp,
+    /// What the image's bytes mean (ADR-0048). `srgb`, the default, is a colour a person
+    /// looks at, and is sampled through an `_srgb` format that returns linear light. `linear`
+    /// is data — a mask, a normal map — and is sampled as the numbers it stores.
+    color_space: asset.ColorSpace = .srgb,
+    /// **Off by default.** A sprite drawn at its own size gains nothing from a chain but a
+    /// third more memory. On, the chain is built on the CPU (`asset.mips`, filtered in the
+    /// colour space above), every level is uploaded, and the mip filter follows `filter`.
+    mipmaps: bool = false,
     label: []const u8 = "texture",
 };
 

@@ -317,6 +317,16 @@ pub fn stringField(record: Record, newest: Schema, name: []const u8) ?[]const u8
     };
 }
 
+/// `stringField`'s twin for a `bool`: the record's value, or the default its version lacked.
+pub fn boolField(record: Record, newest: Schema, name: []const u8) ?bool {
+    const index = newest.fieldIndex(name) orelse return null;
+    if (record.fields.boolAt(index) catch null) |present| return present;
+    return switch (record.missingDefault(newest, index) orelse return null) {
+        .bool => |value| value,
+        else => null,
+    };
+}
+
 const testing = std.testing;
 
 test "every asset kind has a source field, and it is field zero" {
