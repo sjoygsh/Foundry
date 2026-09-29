@@ -2,15 +2,30 @@
 
 **Last updated:** 2026-09-29
 **Current handoff: M20 is complete (2026-09-29, tag `m20`). M21, Hierarchy, is accepted
-([`docs/design/hierarchy.md`](docs/design/hierarchy.md); ADR-0050) and Step 1 of six is complete.
-Stop before Step 2.** Step 2 is propagation (§4 and §6):
-- `propagate` and the `foundry:systems.propagate_transforms` system;
-- the four read calls;
-- the repair table for unvalidated data;
-- the 1 ms budget measurement.
+([`docs/design/hierarchy.md`](docs/design/hierarchy.md); ADR-0050) and Steps 1 and 2 of six are
+complete. Stop before Step 3.** Step 3 is re-parenting and the despawn cascade (§5):
+- `setParent` (keep-local) and `setParentKeepWorld` (`3d.md` §7.1, exact);
+- the snapshot tests proving that a refusal writes nothing;
+- the cascade in `World.destroy`;
+- the save round trip.
 
-None of it exists yet. Neither does re-parenting or the cascade (Step 3), the overlay (Step 4)
-or the sample (Step 5).
+None of them exists yet, and neither does the overlay (Step 4) or the sample (Step 5).
+
+**M21 Step 2 is done (2026-09-29).**
+- **`hierarchy.propagate`:** propagates parents first, by depth then slot index. The result is
+  bit-identical whatever the spawn order, and a sheared chain is carried exactly.
+- **`foundry:systems.propagate_transforms`:** the system a host registers after its writers.
+- **Four read calls:** `worldTransform`, `worldOf` (fresh, allocation-free and writing nothing),
+  `parentOf` and `depthOf`.
+- **Repairs:** orphans and cycle members become roots, a chain past the limit is cut, and an
+  invalid raw pose is frozen. Each is logged once.
+- **A save with an invalid pose** is refused as `SaveCorrupt`, because Step 1 validates poses
+  where they enter.
+- **Depth cap:** 256, so `worldOf` and propagation always cut at the same depth.
+- **Speed:** 10,000 entities at depth 8 propagate in about 0.27 ms (median, ReleaseSafe, Apple
+  M5), inside the 1 ms budget.
+- **Mutations:** six, each of which failed its test and was restored.
+- **The bar:** **1,838 of 1,839 headless (1,919 declared)** and **1,846 of 1,857 on Metal**.
 
 **M21 Step 1 is done (2026-09-29).**
 - **`scene/hierarchy.zig`:** declares `foundry:transform` (`core.Transform`'s layout,

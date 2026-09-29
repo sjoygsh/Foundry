@@ -11,8 +11,10 @@
 //! remembers them, so that rules that must hold for every caller of the world (the despawn
 //! cascade, Step 3) can. A 2D world never calls it and never carries them (§3.1).
 //!
-//! What exists so far is Step 1's: the types, their layouts, and what content may author.
-//! Propagation, re-parenting and the cascade follow in Steps 2 and 3.
+//! **Propagation** (§4) turns local poses into world matrices, parents before children, and
+//! is a function of the world's contents alone. It and `worldOf` hold §6's rules against data
+//! no call validated: a save, a mod's raw component write, a hand-edited file. Re-parenting
+//! and the despawn cascade follow in Step 3.
 
 const std = @import("std");
 const core = @import("core");
@@ -21,6 +23,12 @@ const data = @import("data");
 const component = @import("component.zig");
 const derive = @import("derive.zig");
 const entity_mod = @import("entity.zig");
+const system_mod = @import("system.zig");
+const world_mod = @import("world.zig");
+
+const Allocator = std.mem.Allocator;
+const World = world_mod.World;
+const log = core.log.scoped(.scene);
 
 const ComponentType = component.ComponentType;
 const ComponentTypeInfo = component.ComponentTypeInfo;
@@ -136,6 +144,454 @@ fn constructWorldTransform(_: ?*anyopaque, out: [*]u8) void {
     value.* = .{};
 }
 
+// -- per-world state -------------------------------------------------------------------
+
+/// What a world with the hierarchy keeps: its three types, and which repairs it has already
+/// reported, so a broken save is logged once rather than every tick (§6).
+pub const State = struct {
+    types: Types,
+    reported: std.AutoHashMapUnmanaged(u64, Reported) = .empty,
+    /// Bumped by every propagation, to find reports that no longer apply.
+    run: u64 = 0,
+    /// How many repairs have been logged, ever. What a test reads to prove "once".
+    reports: u64 = 0,
+
+    pub fn deinit(self: *State, gpa: Allocator) void {
+        self.reported.deinit(gpa);
+    }
+};
+
+/// What §6 had to repair about one entity.
+pub const Repair = enum { orphan, cycle, too_deep, invalid };
+
+const Reported = struct {
+    repair: Repair,
+    /// The raw parent and a hash of the raw local pose when it was reported. A change to
+    /// either is a new situation, and is reported again.
+    parent: u64,
+    transform: u64,
+    run: u64,
+};
+
+// -- propagation (§4) ----------------------------------------------------------------
+
+pub const PropagationStats = struct {
+    /// Entities with `foundry:transform`.
+    entities: u32 = 0,
+    /// Of those, the ones propagated from the identity: no parent, or one §6 set aside.
+    roots: u32 = 0,
+    /// The deepest effective depth, in edges.
+    max_depth: u32 = 0,
+    orphans: u32 = 0,
+    cycles: u32 = 0,
+    too_deep: u32 = 0,
+    invalid: u32 = 0,
+};
+
+pub const propagation_system_name = "foundry:systems.propagate_transforms";
+
+/// The propagation as a system, for the host to register after the systems that write
+/// transforms and before anything that reads world transforms (§4.1). Registration order is
+/// the order systems run in, so where the host registers it is where it runs.
+pub fn system() system_mod.System {
+    return .{
+        .id = core.ContentId.fromString(propagation_system_name),
+        .name = propagation_system_name,
+        .update = &runSystem,
+    };
+}
+
+fn runSystem(_: ?*anyopaque, world: *World, _: system_mod.Tick) void {
+    _ = propagate(world) catch |err| {
+        // Last tick's world transforms stay, which §4.3 already promises between runs.
+        log.err("transform propagation failed ({t}); world transforms are last tick's", .{err});
+    };
+}
+
+const unset = std.math.maxInt(u32);
+
+/// Writes every `foundry:world_transform` from the local poses (§4.2). A world without the
+/// hierarchy has nothing to do.
+///
+/// Ordered by effective depth, then by slot index, so every parent is computed before its
+/// children and the result depends on the world's contents alone (I9). Each matrix is
+/// `W_parent · local`, and a root's is its local pose, so it is bit-identical however the
+/// entities came to be. It never decomposes: a sheared world is carried down exactly.
+pub fn propagate(world: *World) Allocator.Error!PropagationStats {
+    const state = if (world.hierarchy) |*s| s else return .{};
+    const gpa = world.gpa;
+    const types = state.types;
+    state.run +%= 1;
+
+    const slots = world.entities.capacity();
+    const depth = try gpa.alloc(u32, slots);
+    defer gpa.free(depth);
+    const effective = try gpa.alloc(u32, slots);
+    defer gpa.free(effective);
+    const on_path = try gpa.alloc(bool, slots);
+    defer gpa.free(on_path);
+    const handles = try gpa.alloc(Entity, slots);
+    defer gpa.free(handles);
+    const matrices = try gpa.alloc(Mat4, slots);
+    defer gpa.free(matrices);
+    @memset(depth, unset);
+    @memset(effective, unset);
+    @memset(on_path, false);
+
+    var order: std.ArrayList(Entity) = .empty;
+    defer order.deinit(gpa);
+    var path: std.ArrayList(Entity) = .empty;
+    defer path.deinit(gpa);
+    var repairs: std.ArrayList(Found) = .empty;
+    defer repairs.deinit(gpa);
+
+    var stats: PropagationStats = .{};
+    const transforms = &world.stores.items[types.transform.index];
+    try order.ensureTotalCapacity(gpa, transforms.count());
+    for (0..transforms.count()) |dense| {
+        const entity = transforms.ownerAt(@intCast(dense));
+        order.appendAssumeCapacity(entity);
+        handles[entity.index] = entity;
+    }
+    stats.entities = @intCast(order.items.len);
+
+    // 1. Effective parents and depths, each entity walked once.
+    for (order.items) |start| {
+        if (depth[start.index] != unset) continue;
+        path.clearRetainingCapacity();
+        var current = start;
+        // Where the walk stopped: at a root (`anchor` null), or at an entity whose depth is
+        // already known.
+        var anchor: ?Entity = null;
+        while (true) {
+            try path.append(gpa, current);
+            on_path[current.index] = true;
+            switch (linkOf(world, types, current)) {
+                .root => break,
+                .orphan => {
+                    try repairs.append(gpa, .{ .entity = current, .repair = .orphan });
+                    break;
+                },
+                .parent => |parent| {
+                    if (depth[parent.index] != unset) {
+                        anchor = parent;
+                        break;
+                    }
+                    if (on_path[parent.index]) {
+                        // A cycle: `parent` and everything after it on the path. Every entity
+                        // on it is a root; the entries before it hang off the cycle.
+                        var at: usize = 0;
+                        while (!path.items[at].eql(parent)) at += 1;
+                        for (path.items[at..]) |member| {
+                            depth[member.index] = 0;
+                            on_path[member.index] = false;
+                            try repairs.append(gpa, .{ .entity = member, .repair = .cycle });
+                        }
+                        path.shrinkRetainingCapacity(at);
+                        anchor = parent;
+                        break;
+                    }
+                    current = parent;
+                },
+            }
+        }
+        // Unwind from the top: each entry's parent is the one after it, or the anchor.
+        var i = path.items.len;
+        while (i > 0) {
+            i -= 1;
+            const entity = path.items[i];
+            on_path[entity.index] = false;
+            const parent: ?Entity = if (i + 1 < path.items.len) path.items[i + 1] else anchor;
+            if (parent) |p| {
+                const d = depth[p.index] + 1;
+                if (d > depthLimit(world)) {
+                    depth[entity.index] = 0;
+                    try repairs.append(gpa, .{ .entity = entity, .repair = .too_deep });
+                } else {
+                    depth[entity.index] = d;
+                    effective[entity.index] = p.index;
+                }
+            } else {
+                depth[entity.index] = 0;
+            }
+        }
+    }
+
+    // 2. Parents first, then by slot index: a total order on the world's contents.
+    std.sort.pdq(Entity, order.items, depth, struct {
+        fn less(d: []const u32, a: Entity, b: Entity) bool {
+            if (d[a.index] != d[b.index]) return d[a.index] < d[b.index];
+            return a.index < b.index;
+        }
+    }.less);
+
+    // 3. Every transform gets a world transform, added already the identity, so none is ever
+    // garbage. Added before any is written, because adding can move the others' bytes.
+    for (order.items) |entity| {
+        if (!world.hasComponent(entity, types.world_transform)) {
+            _ = world.addComponent(entity, types.world_transform, null) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => unreachable, // live, registered, and checked absent just now
+            };
+        }
+    }
+
+    // 4. Compute and write, top down.
+    for (order.items) |entity| {
+        const local = transformOf(world, types, entity).?;
+        const slot: *WorldTransform = @ptrCast(@alignCast(world.getComponent(entity, types.world_transform).?.ptr));
+        const parent_index = effective[entity.index];
+        if (!local.isValid()) {
+            // A NaN from a buggy mod freezes its object rather than teleporting it (§6).
+            try repairs.append(gpa, .{ .entity = entity, .repair = .invalid });
+        } else {
+            slot.matrix = compose(if (parent_index == unset) null else matrices[parent_index], local);
+        }
+        matrices[entity.index] = slot.matrix;
+        if (parent_index == unset) stats.roots += 1;
+        stats.max_depth = @max(stats.max_depth, depth[entity.index]);
+    }
+
+    // 5. A world transform without a transform means nothing, and is removed.
+    const worlds = &world.stores.items[types.world_transform.index];
+    var stale: std.ArrayList(Entity) = .empty;
+    defer stale.deinit(gpa);
+    for (0..worlds.count()) |dense| {
+        const owner = worlds.ownerAt(@intCast(dense));
+        if (!world.hasComponent(owner, types.transform)) try stale.append(gpa, owner);
+    }
+    for (stale.items) |owner| _ = world.removeComponent(owner, types.world_transform);
+
+    for (repairs.items) |found| switch (found.repair) {
+        .orphan => stats.orphans += 1,
+        .cycle => stats.cycles += 1,
+        .too_deep => stats.too_deep += 1,
+        .invalid => stats.invalid += 1,
+    };
+    try report(world, state, repairs.items);
+    return stats;
+}
+
+const Found = struct { entity: Entity, repair: Repair };
+
+/// Logs each repair the first time it is found, and again only once its parent or local pose
+/// has changed; forgets the ones that no longer apply.
+fn report(world: *World, state: *State, found: []const Found) Allocator.Error!void {
+    const gpa = world.gpa;
+    for (found) |f| {
+        const key = f.entity.bits();
+        const now: Reported = .{
+            .repair = f.repair,
+            .parent = rawParent(world, state.types, f.entity).bits(),
+            .transform = std.hash.Wyhash.hash(0, world.readComponent(f.entity, state.types.transform) orelse &.{}),
+            .run = state.run,
+        };
+        const entry = try state.reported.getOrPut(gpa, key);
+        const known = entry.found_existing and entry.value_ptr.repair == now.repair and
+            entry.value_ptr.parent == now.parent and entry.value_ptr.transform == now.transform;
+        entry.value_ptr.* = now;
+        if (known) continue;
+        state.reports += 1;
+        switch (f.repair) {
+            .orphan => log.warn("entity #{d}.{d}: its parent is not live; propagated as a root", .{ f.entity.index, f.entity.generation }),
+            .cycle => log.warn("entity #{d}.{d}: its parent chain is a cycle; propagated as a root", .{ f.entity.index, f.entity.generation }),
+            .too_deep => log.warn("entity #{d}.{d}: deeper than {d} edges; propagated as a root", .{ f.entity.index, f.entity.generation, depthLimit(world) }),
+            .invalid => log.warn("entity #{d}.{d}: its foundry:transform is not a pose; its world transform is left as it was", .{ f.entity.index, f.entity.generation }),
+        }
+    }
+    var it = state.reported.iterator();
+    var gone: std.ArrayList(u64) = .empty;
+    defer gone.deinit(gpa);
+    while (it.next()) |entry| {
+        if (entry.value_ptr.run != state.run) try gone.append(gpa, entry.key_ptr.*);
+    }
+    for (gone.items) |key| _ = state.reported.remove(key);
+}
+
+/// A child's world matrix from its parent's. A root's is its local pose, unmultiplied, so
+/// the propagation and `worldOf` agree to the bit.
+fn compose(parent: ?Mat4, local: Transform) Mat4 {
+    const m = local.toCore().toMat4();
+    return if (parent) |p| Mat4.mul(p, m) else m;
+}
+
+/// One step up a chain, under §6's rules.
+const Link = union(enum) {
+    /// No parent, or a parent without a transform, which contributes the identity.
+    root,
+    /// A parent that is not live.
+    orphan,
+    parent: Entity,
+};
+
+fn linkOf(world: *const World, types: Types, entity: Entity) Link {
+    const parent = rawParent(world, types, entity);
+    if (parent.isNone()) return .root;
+    if (!world.contains(parent)) return .orphan;
+    if (!world.hasComponent(parent, types.transform)) return .root;
+    return .{ .parent = parent };
+}
+
+/// The parent as stored, whatever it names.
+fn rawParent(world: *const World, types: Types, entity: Entity) Entity {
+    const bytes = world.readComponent(entity, types.parent) orelse return .none;
+    return std.mem.bytesToValue(Parent, bytes).entity;
+}
+
+fn transformOf(world: *const World, types: Types, entity: Entity) ?Transform {
+    const bytes = world.readComponent(entity, types.transform) orelse return null;
+    return std.mem.bytesToValue(Transform, bytes);
+}
+
+// -- reading a pose (§4.3) -------------------------------------------------------------
+
+/// The last propagation's world matrix. Between propagations it is last tick's (ADR-0050).
+/// Null for a stale entity, one without a transform, or one never propagated.
+pub fn worldTransform(world: *const World, entity: Entity) ?Mat4 {
+    const state = world.hierarchy orelse return null;
+    const bytes = world.readComponent(entity, state.types.world_transform) orelse return null;
+    return std.mem.bytesToValue(WorldTransform, bytes).matrix;
+}
+
+/// The parent as stored, if it is live. A stale parent is null here, and a root to the
+/// propagation.
+pub fn parentOf(world: *const World, entity: Entity) ?Entity {
+    const state = world.hierarchy orelse return null;
+    if (!world.contains(entity)) return null;
+    const parent = rawParent(world, state.types, entity);
+    if (parent.isNone() or !world.contains(parent)) return null;
+    return parent;
+}
+
+/// The effective depth, under §6's rules, as the next propagation will see it.
+pub fn depthOf(world: *const World, entity: Entity) ?u32 {
+    var buffer: [chain_capacity]Entity = undefined;
+    const chain = effectiveChain(world, entity, &buffer) orelse return null;
+    return @intCast(chain.len - 1);
+}
+
+/// The world matrix computed now, from the chain as it stands, under the same rules the
+/// propagation follows. Writes nothing. An entity with an invalid local pose contributes its
+/// stored world transform, as the propagation would; so this equals what the next
+/// propagation writes.
+pub fn worldOf(world: *const World, entity: Entity) ?Mat4 {
+    const state = world.hierarchy orelse return null;
+    var buffer: [chain_capacity]Entity = undefined;
+    const chain = effectiveChain(world, entity, &buffer) orelse return null;
+    var matrix: ?Mat4 = null;
+    var i = chain.len;
+    while (i > 0) {
+        i -= 1;
+        const link = chain[i];
+        const local = transformOf(world, state.types, link).?;
+        matrix = if (local.isValid())
+            compose(matrix, local)
+        else
+            worldTransform(world, link) orelse Mat4.identity;
+    }
+    return matrix;
+}
+
+/// A cut chain is at most the limit plus one long; the walk above the cut needs no storage,
+/// only its length.
+const chain_capacity = max_depth_limit + 1;
+
+/// The deepest limit honoured, whatever `Limits` says: `worldOf` reads without allocating, so
+/// its chain has a fixed bound, and the propagation must cut at the same depth to agree.
+pub const max_depth_limit = 256;
+
+fn depthLimit(world: *const World) u32 {
+    return @min(world.limits.max_hierarchy_depth, max_depth_limit);
+}
+
+/// `entity` and its effective ancestors, nearest first, ending at its effective root. Null
+/// for an entity without a transform. The walk up is bounded: a chain longer than the entity
+/// count must be a cycle, and `chain_capacity` holds any cut chain.
+fn effectiveChain(world: *const World, entity: Entity, buffer: *[chain_capacity]Entity) ?[]const Entity {
+    const state = world.hierarchy orelse return null;
+    const types = state.types;
+    if (!world.hasComponent(entity, types.transform)) return null;
+    const limit = depthLimit(world);
+
+    // First find how far above `entity` its chain goes before it stops or repeats, counting
+    // with Brent's cycle detection so no storage grows with the chain.
+    var length: u32 = 1; // entities on the chain from `entity` to its top, inclusive
+    var top = entity;
+    var cyclic = false;
+    {
+        var power: u32 = 1;
+        var lambda: u32 = 1;
+        var tortoise = entity;
+        var hare = entity;
+        while (true) {
+            const next = switch (linkOf(world, types, hare)) {
+                .root, .orphan => break,
+                .parent => |p| p,
+            };
+            hare = next;
+            length += 1;
+            top = hare;
+            if (hare.eql(tortoise)) {
+                cyclic = true;
+                break;
+            }
+            if (power == lambda) {
+                tortoise = hare;
+                power *= 2;
+                lambda = 0;
+            }
+            lambda += 1;
+        }
+    }
+
+    // On a cycle, the chain ends at the first entity of the cycle reached from `entity`.
+    if (cyclic) {
+        length = cycleEntry(world, types, entity);
+    }
+
+    // Depths are counted from the top down, and a chain deeper than the limit is cut: the
+    // entity past it becomes a root. So `entity`'s effective chain is the part below its
+    // last cut, which is `(length - 1) mod (limit + 1)` edges long.
+    const edges = (length - 1) % (limit + 1);
+    var current = entity;
+    buffer[0] = current;
+    for (1..edges + 1) |i| {
+        current = switch (linkOf(world, types, current)) {
+            .parent => |p| p,
+            else => unreachable, // the walk above found at least this many
+        };
+        buffer[i] = current;
+    }
+    return buffer[0 .. edges + 1];
+}
+
+/// How many entities are on the chain from `entity` up to and including the first one on its
+/// cycle. `entity` itself counts as one; a member of the cycle answers one.
+fn cycleEntry(world: *const World, types: Types, entity: Entity) u32 {
+    // Walk `entity` up until it lands on an entity from which the walk returns to itself.
+    var steps: u32 = 1;
+    var current = entity;
+    while (!onCycle(world, types, current)) {
+        current = linkOf(world, types, current).parent;
+        steps += 1;
+    }
+    return steps;
+}
+
+fn onCycle(world: *const World, types: Types, entity: Entity) bool {
+    var current = entity;
+    var hops: u32 = 0;
+    const bound = world.entityCount();
+    while (hops <= bound) : (hops += 1) {
+        current = switch (linkOf(world, types, current)) {
+            .parent => |p| p,
+            else => return false,
+        };
+        if (current.eql(entity)) return true;
+    }
+    return false;
+}
+
 // -- tests ---------------------------------------------------------------------------
 //
 // Registration through `World.enableHierarchy` and the content rules are tested in
@@ -166,4 +622,267 @@ test "a parent is one entity, and a world transform has nothing to save" {
     try testing.expectEqual(@as(usize, 0), world.schema.fields.len);
     try testing.expect(world.serialize == null and world.deserialize == null);
     try testing.expectEqual(@as(u32, 64), world.size);
+}
+
+// -- propagation (§4, §6) ------------------------------------------------------------
+
+const Fx = struct {
+    schemas: data.Registry,
+    world: World,
+    types: Types,
+
+    fn init(gpa: Allocator, limits: @import("limits.zig").Limits) !*Fx {
+        const f = try gpa.create(Fx);
+        f.schemas = .init(gpa, .default);
+        f.world = .init(gpa, &f.schemas, limits);
+        f.types = try f.world.enableHierarchy();
+        return f;
+    }
+
+    fn deinit(f: *Fx, gpa: Allocator) void {
+        f.world.deinit();
+        f.schemas.deinit(gpa);
+        gpa.destroy(f);
+    }
+
+    /// An entity with a local pose and, if given, a parent, written as raw bytes: the path a
+    /// native mod or a save takes, which no re-parenting call checks.
+    fn node(f: *Fx, local: core.math.Transform, parent: ?Entity) !Entity {
+        const e = try f.world.create();
+        const t = Transform.fromCore(local);
+        _ = try f.world.addComponent(e, f.types.transform, std.mem.asBytes(&t));
+        if (parent) |p| try f.setRawParent(e, p);
+        return e;
+    }
+
+    fn setRawParent(f: *Fx, e: Entity, p: Entity) !void {
+        const value: Parent = .{ .entity = p };
+        if (f.world.getComponent(e, f.types.parent)) |bytes| {
+            @memcpy(bytes, std.mem.asBytes(&value));
+        } else {
+            _ = try f.world.addComponent(e, f.types.parent, std.mem.asBytes(&value));
+        }
+    }
+};
+
+fn pose(t: [3]f32, axis: [3]f32, angle: f32, s: [3]f32) core.math.Transform {
+    return .{
+        .translation = .init(t[0], t[1], t[2]),
+        .rotation = Quat.fromAxisAngle(Vec3.init(axis[0], axis[1], axis[2]).normalize(), angle),
+        .scale = .init(s[0], s[1], s[2]),
+    };
+}
+
+/// A small tree with a sheared branch: 0 is a root; 1 and 2 are its children; 3 is 1's; 4 is
+/// 3's, under a non-uniformly scaled parent and rotated against it.
+const tree = [_]struct { local: core.math.Transform, parent: ?usize }{
+    .{ .local = pose(.{ 1, 2, 3 }, .{ 0, 1, 0 }, 0.7, .{ 1, 1, 1 }), .parent = null },
+    .{ .local = pose(.{ 0.5, 0, 0 }, .{ 1, 0, 0 }, 0.3, .{ 2, 1, 1 }), .parent = 0 },
+    .{ .local = pose(.{ 0, 1, 0 }, .{ 0, 0, 1 }, -1.1, .{ 1, 1, 1 }), .parent = 0 },
+    .{ .local = pose(.{ 0, 0, 1 }, .{ 0, 0, 1 }, std.math.pi / 4.0, .{ 1, 3, 1 }), .parent = 1 },
+    .{ .local = pose(.{ 0.2, 0.2, 0 }, .{ 1, 1, 0 }, 0.9, .{ 0.5, 0.5, 0.5 }), .parent = 3 },
+};
+
+/// Builds `tree` creating its nodes in `order`, with `padding` throwaway entities first so
+/// the slot indices differ too, and returns every node's world matrix in tree order.
+fn propagateTree(order: []const usize, padding: u32) ![tree.len]Mat4 {
+    const gpa = testing.allocator;
+    const f = try Fx.init(gpa, .default);
+    defer f.deinit(gpa);
+    for (0..padding) |_| _ = try f.world.create();
+
+    var made: [tree.len]?Entity = @splat(null);
+    for (order) |i| {
+        made[i] = try f.node(tree[i].local, null);
+    }
+    for (tree, 0..) |n, i| {
+        if (n.parent) |p| try f.setRawParent(made[i].?, made[p].?);
+    }
+    _ = try propagate(&f.world);
+    var out: [tree.len]Mat4 = undefined;
+    for (&out, 0..) |*m, i| m.* = worldTransform(&f.world, made[i].?).?;
+    return out;
+}
+
+test "propagation is bit-identical whatever order the entities were spawned in" {
+    const reference = try propagateTree(&.{ 0, 1, 2, 3, 4 }, 0);
+    // Children before parents, and slot indices shifted, and interleaved.
+    for ([_]struct { order: []const usize, padding: u32 }{
+        .{ .order = &.{ 4, 3, 2, 1, 0 }, .padding = 0 },
+        .{ .order = &.{ 2, 4, 0, 3, 1 }, .padding = 7 },
+    }) |run| {
+        const again = try propagateTree(run.order, run.padding);
+        try testing.expectEqualSlices(u8, std.mem.asBytes(&reference), std.mem.asBytes(&again));
+    }
+}
+
+test "a rotated, non-uniformly scaled chain propagates a sheared world exactly" {
+    const gpa = testing.allocator;
+    const f = try Fx.init(gpa, .default);
+    defer f.deinit(gpa);
+
+    // 3d.md §7.1's example: a parent scaled (2, 1, 1), a child turned 45° about Z.
+    const parent_pose = pose(.{ 0, 0, 0 }, .{ 0, 0, 1 }, 0, .{ 2, 1, 1 });
+    const child_pose = pose(.{ 1, 0, 0 }, .{ 0, 0, 1 }, std.math.pi / 4.0, .{ 1, 1, 1 });
+    const parent = try f.node(parent_pose, null);
+    const child = try f.node(child_pose, parent);
+    _ = try propagate(&f.world);
+
+    const expected = Mat4.mul(parent_pose.toMat4(), child_pose.toMat4());
+    const got = worldTransform(&f.world, child).?;
+    try testing.expectEqualSlices(u8, std.mem.asBytes(&expected), std.mem.asBytes(&got));
+    // It is sheared: the child's axes are no longer at right angles, so no TRS holds it,
+    // and the propagation carried it anyway.
+    const x = Vec3.init(got.cols[0][0], got.cols[0][1], got.cols[0][2]);
+    const y = Vec3.init(got.cols[1][0], got.cols[1][1], got.cols[1][2]);
+    try testing.expect(@abs(Vec3.dot(x, y)) > 0.5);
+    try testing.expectError(error.NotRepresentable, core.math.Transform.fromMat4Exact(got));
+}
+
+test "world transforms exist exactly where there is a transform" {
+    const gpa = testing.allocator;
+    const f = try Fx.init(gpa, .default);
+    defer f.deinit(gpa);
+
+    const a = try f.node(pose(.{ 1, 0, 0 }, .{ 0, 1, 0 }, 0, .{ 1, 1, 1 }), null);
+    const bare = try f.world.create();
+    // Before any propagation, there is none to read, never garbage.
+    try testing.expect(worldTransform(&f.world, a) == null);
+
+    const stats = try propagate(&f.world);
+    try testing.expectEqual(@as(u32, 1), stats.entities);
+    try testing.expectEqual(@as(u32, 1), stats.roots);
+    try testing.expect(worldTransform(&f.world, a) != null);
+    try testing.expect(worldTransform(&f.world, bare) == null);
+
+    // Losing the transform loses the world transform at the next propagation.
+    try testing.expect(f.world.removeComponent(a, f.types.transform));
+    _ = try propagate(&f.world);
+    try testing.expect(!f.world.hasComponent(a, f.types.world_transform));
+}
+
+test "worldOf is what the next propagation writes, and writes nothing itself" {
+    const gpa = testing.allocator;
+    const f = try Fx.init(gpa, .default);
+    defer f.deinit(gpa);
+
+    var made: [tree.len]Entity = undefined;
+    for (tree, 0..) |n, i| made[i] = try f.node(n.local, if (n.parent) |p| made[p] else null);
+    _ = try propagate(&f.world);
+
+    // Move the root; the stored world transforms are now a tick old.
+    const moved = Transform.fromCore(pose(.{ -4, 0, 2 }, .{ 0, 0, 1 }, 0.25, .{ 1, 2, 1 }));
+    @memcpy(f.world.getComponent(made[0], f.types.transform).?, std.mem.asBytes(&moved));
+    const stale = worldTransform(&f.world, made[4]).?;
+
+    const before = f.world.mutationGeneration();
+    var fresh: [tree.len]Mat4 = undefined;
+    for (&fresh, made) |*m, e| m.* = worldOf(&f.world, e).?;
+    try testing.expectEqual(before, f.world.mutationGeneration());
+    try testing.expectEqualSlices(u8, std.mem.asBytes(&stale), std.mem.asBytes(&worldTransform(&f.world, made[4]).?));
+
+    _ = try propagate(&f.world);
+    for (fresh, made) |m, e| {
+        try testing.expectEqualSlices(u8, std.mem.asBytes(&m), std.mem.asBytes(&worldTransform(&f.world, e).?));
+    }
+    try testing.expectEqual(@as(?u32, 0), depthOf(&f.world, made[0]));
+    try testing.expectEqual(@as(?u32, 3), depthOf(&f.world, made[4]));
+    try testing.expect(parentOf(&f.world, made[4]).?.eql(made[3]));
+    try testing.expect(parentOf(&f.world, made[0]) == null);
+}
+
+test "the propagation system runs where the host registered it" {
+    const gpa = testing.allocator;
+    const f = try Fx.init(gpa, .default);
+    defer f.deinit(gpa);
+    const a = try f.node(pose(.{ 3, 0, 0 }, .{ 0, 1, 0 }, 0, .{ 1, 1, 1 }), null);
+    _ = try f.world.registerSystem(system());
+    f.world.update(.{ .tick = 1, .delta = .fromMillis(16) });
+    try testing.expectEqual(@as(f32, 3), worldTransform(&f.world, a).?.cols[3][0]);
+}
+
+test "a hostile save loads, and propagates by the repair table, each repair logged once" {
+    const gpa = testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(gpa);
+    const shape = struct { gone_child: Entity, a: Entity, b: Entity, tail: Entity, deep: Entity };
+    var saved: shape = undefined;
+    {
+        const f = try Fx.init(gpa, .default);
+        defer f.deinit(gpa);
+        const unit = core.math.Transform.identity;
+        // A parent that is gone.
+        const gone = try f.node(unit, null);
+        saved.gone_child = try f.node(pose(.{ 1, 0, 0 }, .{ 0, 1, 0 }, 0, .{ 1, 1, 1 }), gone);
+        _ = f.world.destroy(gone);
+        // A two-entity cycle, with a tail hanging off it.
+        saved.a = try f.node(pose(.{ 0, 1, 0 }, .{ 0, 1, 0 }, 0, .{ 1, 1, 1 }), null);
+        saved.b = try f.node(pose(.{ 0, 2, 0 }, .{ 0, 1, 0 }, 0, .{ 1, 1, 1 }), saved.a);
+        try f.setRawParent(saved.a, saved.b);
+        saved.tail = try f.node(pose(.{ 0, 0, 5 }, .{ 0, 1, 0 }, 0, .{ 1, 1, 1 }), saved.a);
+        // A chain of 66: depths 0 to 64, and the 66th past the limit.
+        var link = try f.node(unit, null);
+        for (0..65) |_| link = try f.node(pose(.{ 0, 0.1, 0 }, .{ 0, 1, 0 }, 0, .{ 1, 1, 1 }), link);
+        saved.deep = link;
+        try f.world.save(&bytes);
+    }
+
+    const f = try Fx.init(gpa, .default);
+    defer f.deinit(gpa);
+    _ = try f.world.load(bytes.items, .default);
+
+    var stats: PropagationStats = undefined;
+    for (0..10) |_| stats = try propagate(&f.world);
+    try testing.expectEqual(@as(u32, 1), stats.orphans);
+    try testing.expectEqual(@as(u32, 2), stats.cycles);
+    try testing.expectEqual(@as(u32, 1), stats.too_deep);
+    try testing.expectEqual(@as(u32, 0), stats.invalid);
+    try testing.expectEqual(@as(u32, 64), stats.max_depth);
+    // Reported once each across ten runs, not ten times.
+    try testing.expectEqual(@as(u64, 4), f.world.hierarchy.?.reports);
+
+    // Each repair is the documented one.
+    try testing.expectEqual(@as(f32, 1), worldTransform(&f.world, saved.gone_child).?.cols[3][0]);
+    try testing.expectEqual(@as(f32, 1), worldTransform(&f.world, saved.a).?.cols[3][1]);
+    try testing.expectEqual(@as(f32, 2), worldTransform(&f.world, saved.b).?.cols[3][1]);
+    try testing.expectEqual(@as(?u32, 1), depthOf(&f.world, saved.tail));
+    try testing.expectEqual(@as(?u32, 0), depthOf(&f.world, saved.deep));
+    // And worldOf follows the same rules.
+    for ([_]Entity{ saved.gone_child, saved.a, saved.b, saved.tail, saved.deep }) |e| {
+        try testing.expectEqualSlices(u8, std.mem.asBytes(&worldTransform(&f.world, e).?), std.mem.asBytes(&worldOf(&f.world, e).?));
+    }
+
+    // A changed parent is a new situation, reported again; an unchanged one is not.
+    try f.setRawParent(saved.gone_child, .{ .index = 9999, .generation = 3 });
+    _ = try propagate(&f.world);
+    _ = try propagate(&f.world);
+    try testing.expectEqual(@as(u64, 5), f.world.hierarchy.?.reports);
+}
+
+test "an invalid local pose freezes its entity, and its subtree follows the frozen pose" {
+    const gpa = testing.allocator;
+    const f = try Fx.init(gpa, .default);
+    defer f.deinit(gpa);
+    const root = try f.node(pose(.{ 2, 0, 0 }, .{ 0, 1, 0 }, 0, .{ 1, 1, 1 }), null);
+    const child = try f.node(pose(.{ 0, 1, 0 }, .{ 0, 1, 0 }, 0, .{ 1, 1, 1 }), root);
+    _ = try propagate(&f.world);
+    const frozen = worldTransform(&f.world, root).?;
+
+    // A native write no deserializer saw: a NaN rotation.
+    const broken: *Transform = @ptrCast(@alignCast(f.world.getComponent(root, f.types.transform).?.ptr));
+    broken.rotation.x = std.math.nan(f32);
+    broken.translation.x = 50;
+    const stats = try propagate(&f.world);
+    try testing.expectEqual(@as(u32, 1), stats.invalid);
+    try testing.expectEqualSlices(u8, std.mem.asBytes(&frozen), std.mem.asBytes(&worldTransform(&f.world, root).?));
+    try testing.expectEqual(@as(f32, 2), worldTransform(&f.world, child).?.cols[3][0]);
+    try testing.expectEqualSlices(u8, std.mem.asBytes(&worldTransform(&f.world, child).?), std.mem.asBytes(&worldOf(&f.world, child).?));
+
+    // A save of it is refused whole, because the pose is validated where it enters.
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(gpa);
+    try f.world.save(&bytes);
+    const g = try Fx.init(gpa, .default);
+    defer g.deinit(gpa);
+    try testing.expectError(error.SaveCorrupt, g.world.load(bytes.items, .default));
 }

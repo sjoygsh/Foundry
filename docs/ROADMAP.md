@@ -1068,7 +1068,8 @@ met: a glTF file is imported into Foundry's representations, nothing downstream 
 knows it was glTF, and a malformed file is refused with a diagnostic. Linux stayed compile-only,
 and none of its triggers fired.
 
-**M21 Hierarchy is accepted; Step 1 of six is complete** — [`hierarchy.md`](design/hierarchy.md),
+**M21 Hierarchy is accepted; Steps 1–2 of six are complete** — [`hierarchy.md`](design/hierarchy.md),
 no new ADR (ADR-0050 decides it). Step 1 registers the engine's three transform components in
 a world that opts in, lets content author a transform and never a parent, and fixed a `derive`
-defect in nested defaults.
+defect in nested defaults. Step 2 propagates world transforms, parents first, bit-identically
+whatever the spawn order, and repairs saves and raw writes nobody validated.

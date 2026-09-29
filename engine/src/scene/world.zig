@@ -167,7 +167,7 @@ pub const World = struct {
     /// The engine's transform types, once `enableHierarchy` has registered them. Kept here
     /// rather than beside the world, because a rule such as the despawn cascade has to hold
     /// for every caller of the world, not only for callers that know a helper exists.
-    hierarchy: ?hierarchy_mod.Types = null,
+    hierarchy: ?hierarchy_mod.State = null,
 
     pub fn init(gpa: Allocator, schemas: *data.Registry, limits: Limits) World {
         return .{
@@ -179,6 +179,7 @@ pub const World = struct {
     }
 
     pub fn deinit(self: *World) void {
+        if (self.hierarchy) |*state| state.deinit(self.gpa);
         self.by_system_id.deinit(self.gpa);
         self.schedule.deinit(self.gpa);
         self.systems.deinit(self.gpa);
@@ -300,7 +301,7 @@ pub const World = struct {
     /// before the first is registered, so a world never ends up with a transform and no
     /// parent. As with any registration it must come before the first entity.
     pub fn enableHierarchy(self: *World) RegisterError!hierarchy_mod.Types {
-        if (self.hierarchy) |types| return types;
+        if (self.hierarchy) |state| return state.types;
         if (self.entities.capacity() != 0) return error.WorldNotEmpty;
         if (self.types.count() + 3 > self.limits.max_component_types) return error.ComponentTypeLimit;
         const infos = [_]ComponentTypeInfo{
@@ -316,7 +317,7 @@ pub const World = struct {
             .parent = try self.registerComponent(infos[1]),
             .world_transform = try self.registerComponent(infos[2]),
         };
-        self.hierarchy = types;
+        self.hierarchy = .{ .types = types };
         return types;
     }
 
@@ -386,6 +387,13 @@ pub const World = struct {
     /// stale entity and an unregistered type. Both are normal conditions.
     pub fn getComponent(self: *World, entity: Entity, t: ComponentType) ?[]u8 {
         const store = self.storeFor(t) orelse return null;
+        return store.get(entity);
+    }
+
+    /// The same bytes, for a reader holding a `*const World`: introspection, and the
+    /// hierarchy's read calls (`hierarchy.md` §4.3). A borrow, valid until the next mutation.
+    pub fn readComponent(self: *const World, entity: Entity, t: ComponentType) ?[]const u8 {
+        const store = self.storeOf(t) orelse return null;
         return store.get(entity);
     }
 

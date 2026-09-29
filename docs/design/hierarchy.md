@@ -1,7 +1,7 @@
 # Design: M21 — Hierarchy: the engine's transform components, propagation, re-parenting and 3D in the overlay
 
 **Status:** Accepted 2026-09-29, when the owner requested Step 1; §13 is accepted as written.
-Step 1 of six is complete; Step 2 has not begun.
+Steps 1 and 2 of six are complete; Step 3 has not begun.
 **Date:** 2026-09-29
 **Baseline:** `00f39d3`, tag `m20`. M0–M20 are complete.
 **Decisions:**
@@ -643,3 +643,90 @@ Step 1 implements §3 and stops before propagation.
 **1,839 of 1,850 on `-Drhi=metal`**, with fmt, all four `check` variants, and the three
 thirty-frame samples, which logged no warnings. No Vulkan, shader, platform or ABI source
 changed. Step 2, propagation, is next.
+
+## Resolution — Step 2: propagation (2026-09-29)
+
+Step 2 implements §4 and §6 in `scene/hierarchy.zig`, and stops before re-parenting.
+
+**The propagation**, `propagate(world)`, does §4.2's four things:
+1. **Effective parents and depths.** Each entity's chain is walked once, with a memo, and the
+   walk applies §6's rules as it goes.
+2. **The order:** depth, then slot index, by `std.sort.pdq` over that total order.
+3. **World transforms added:** every entity with a transform gets `foundry:world_transform`,
+   constructed as the identity, before any is written.
+4. **Computed and written top down:** each matrix is `W_parent · local`. A root's is its local
+   matrix, unmultiplied, so `worldOf`, which composes the same way, agrees with it to the bit.
+
+It then removes the world transform from any entity that lost its transform. Its working
+arrays are sized by the entity pool's capacity and freed at the end.
+
+**`system()`** is `foundry:systems.propagate_transforms`. The host registers it where it should
+run.
+
+**What implementation sharpened:**
+- **`propagate` returns `Allocator.Error!PropagationStats`,** not the bare stats §4.1 showed,
+  because its working arrays allocate. The system logs a failure at `err` and leaves last
+  tick's world transforms, which §4.3 already promises between runs.
+- **`scene.World` gains `readComponent`,** a `*const World` read of a component's bytes. The
+  read calls take a `*const World`, as ADR-0025 requires of anything the overlay calls, and the
+  existing `getComponent` needs a mutable one.
+- **`World.hierarchy` holds a `State`:** the three types, plus which repairs have been
+  reported. Each report keeps the raw parent and a hash of the raw local pose, and the entry is
+  forgotten when the repair no longer applies. `reports` counts the log lines, which is how a
+  test proves "once".
+- **`worldOf` allocates nothing.** It finds the chain's length and any cycle with Brent's
+  algorithm, derives the effective root arithmetically (a chain past the limit is cut every
+  `limit + 1` entities), and composes at most `limit + 1` matrices from a fixed buffer. So the
+  depth limit is capped at **`hierarchy.max_depth_limit = 256`** for both the propagation and
+  `worldOf`, whatever `Limits` says, and they always cut at the same depth.
+- **A save with an invalid pose does not load.** Step 1 made `foundry:transform` validate where
+  it enters, and `save.read` turns any refused deserialization into `SaveCorrupt`. §10's
+  item 8 therefore splits. A hostile save with a stale parent, a cycle and an over-deep chain
+  loads and is repaired. A NaN rotation is the one §6 row a save cannot carry, and it is reached
+  only by a raw byte write from native code, which the tests use. Refusing the whole save is
+  `save.read`'s existing rule for a component it cannot read.
+
+**§6 as built:**
+- **A parent that is not live:** the child is a root (`orphans`).
+- **A parent without a transform:** it contributes the identity, and the chain stops there
+  (`Link.root`, not counted).
+- **A cycle:** every member is a root (`cycles`), and entities hanging off it take their depth
+  from the member they reach.
+- **A chain past the limit:** the entity past it is a root (`too_deep`), and its descendants
+  continue from it.
+- **An invalid local pose:** that entity's world transform is left as it was (the identity if
+  it was just added), and its subtree propagates from that (`invalid`). `worldOf` reads the
+  stored value for it, so the two still agree.
+
+**Tests** (§10 items 3 and 8):
+- one five-node tree, with a sheared branch, built in three creation orders with the slot
+  indices shifted, gives bit-identical world matrices;
+- `3d.md` §7.1's parent scaled `(2, 1, 1)` over a child turned 45° gives exactly
+  `P · C`. Its axes are not orthogonal, and `fromMat4Exact` refuses it;
+- world transforms exist exactly where transforms do;
+- `worldOf` writes nothing (the mutation generation is unchanged, and the stored value stays
+  stale) and equals what the next propagation writes. `depthOf` and `parentOf` agree;
+- the registered system propagates on `World.update`;
+- a hand-built save with an orphan, a two-entity cycle with a tail, and a 66-entity chain loads.
+  Ten propagations count one orphan, two cycle members and one cut, each logged once (four
+  reports), and each repair is the documented one. A changed parent is reported again, once;
+- a NaN rotation written raw freezes its entity, its child follows the frozen pose, and a save
+  of it is refused as `SaveCorrupt`.
+
+**The budget (§4.4):** 10,000 entities in 1,250 chains of depth 8, created interleaved, in
+ReleaseSafe on the Apple M5, 200 propagations per run. Four runs gave medians of 0.381,
+0.281, 0.266 and 0.266 ms. The p95s were 1.008, 0.385, 0.281 and 0.283 ms, the first run cold.
+**Within the 1 ms budget,** so neither dirty tracking nor a parallel pass is due. The benchmark
+was a scratch program over the `scene` module, not committed, because `scene` may not read a
+clock.
+
+**Guards verified by mutation,** each restored byte for byte:
+- ordering by index alone failed the spawn-order test;
+- trusting a stale parent, cutting one level early, and logging every run each failed the
+  hostile-save test;
+- not freezing an invalid pose, and `worldOf` ignoring the frozen pose, each failed the
+  invalid-pose test.
+
+**The bar:** **1,838 of 1,839 headless tests** (the existing skip; **1,919 declared**) and
+**1,846 of 1,857 on `-Drhi=metal`**, with fmt, all four `check` variants and the three
+thirty-frame samples. Step 3, re-parenting and the cascade, is next.
