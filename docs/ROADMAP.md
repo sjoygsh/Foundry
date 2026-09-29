@@ -1068,7 +1068,7 @@ met: a glTF file is imported into Foundry's representations, nothing downstream 
 knows it was glTF, and a malformed file is refused with a diagnostic. Linux stayed compile-only,
 and none of its triggers fired.
 
-**M21 Hierarchy is accepted; Steps 1–4 of six are complete** — [`hierarchy.md`](design/hierarchy.md),
+**M21 Hierarchy is accepted; Steps 1–5 of six are complete** — [`hierarchy.md`](design/hierarchy.md),
 no new ADR (ADR-0050 decides it). Step 1 registers the engine's three transform components in
 a world that opts in, lets content author a transform and never a parent, and fixed a `derive`
 defect in nested defaults. Step 2 propagates world transforms, parents first, bit-identically
@@ -1078,3 +1078,6 @@ keeping the local pose or, exactly or not at all, the world pose; a refusal writ
 same world poses. Step 4 shows the hierarchy in the overlay: a tree, each
 selection's world pose (or that it is sheared), propagation's counts, and `render3d`'s frame
 counts.
+Step 5 makes it `sandbox3d`'s orrery, nested moving objects inspected live in the overlay on
+macOS/Metal and Windows/Vulkan: F5 and F9 give back the same poses, F6 re-parents without a
+jump, and F7's sheared crate is refused. Step 6 is the milestone close.

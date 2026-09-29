@@ -7,6 +7,11 @@
 # content path are seen drawing the same way. What the sample is told -- its window, its clear
 # colour, its models and how the camera moves -- is here, and a package loaded after this one
 # changes any of it without a rebuild.
+#
+# Since M21 the objects on the table are entities (`docs/design/hierarchy.md` §8): each is a
+# template below, with its `foundry:transform`, the model it draws and how it spins. The sample
+# spawns them and sets their parents in code, because a parent is an entity and content never
+# names one.
 
 # The room's import, written only because one default is wrong for it: its glass should be a
 # material someone can find by name and edit, rather than `sandbox3d:models.room.material6`.
@@ -39,9 +44,6 @@ foundry:material sandbox3d:materials.crate_painted {
     # encodes it.
     clear_linear [f32]
 
-    # Radians per second, about the cube's own axis.
-    cube_radians_per_second f32 (default 0.6)
-
     # The camera circles the room's centre at this rate, radius and height, looking at the
     # table. Radians per second and metres (ADR-0048).
     orbit_radians_per_second f32 (default 0.15)
@@ -69,14 +71,97 @@ config sandbox3d:config.main {
     width  1280
     height 720
     clear_linear [ 0.010 0.012 0.018 1.0 ]
-    cube_radians_per_second 0.6
     orbit_radians_per_second 0.15
-    orbit_radius 7.5
-    orbit_height 5.0
+    orbit_radius 4.0
+    orbit_height 2.4
     room sandbox3d:models.room
     crate sandbox3d:models.crate
     crate_override sandbox3d:materials.crate_painted
     crate_grid 9
     crate_spacing 2.4
     font foundry:fonts.debug
+}
+
+# -- M21: nested moving objects ---------------------------------------------------------
+#
+# The sample's two component types, declared here so a template can carry them. The names and
+# types match the Zig structs in `orrery.zig` field for field, which `World.spawn` checks.
+
+# The model an entity draws, by content ID.
+@schema model { model id }
+
+# A turn about the entity's own axis, in radians per second. A child turns with it.
+@schema spin {
+    axis { x f32  y f32  z f32 }
+    rate f32
+}
+
+# Poses are local, in metres (ADR-0048): a child's is in its parent's frame, scale included.
+# The table's top is at 0.78 m. The crate model is 0.8 m tall, standing on its origin.
+
+# The turntable: a pivot that turns, carrying a flat platter and a riding crate. Both are its
+# children rather than one the other's, because a child of the flattened platter would be
+# flattened too.
+foundry:transform sandbox3d:orrery.turntable.pose { translation { x -0.4  y 0.78  z 0.0 } }
+spin sandbox3d:orrery.turntable.spin { axis { x 0  y 1  z 0 }  rate 0.5 }
+foundry:entity sandbox3d:entity.turntable {
+    components [ sandbox3d:orrery.turntable.pose  sandbox3d:orrery.turntable.spin ]
+}
+
+foundry:transform sandbox3d:orrery.platter.pose { scale { x 0.7  y 0.05  z 0.7 } }
+model sandbox3d:orrery.platter.model { model sandbox3d:models.crate }
+foundry:entity sandbox3d:entity.platter {
+    components [ sandbox3d:orrery.platter.pose  sandbox3d:orrery.platter.model ]
+}
+
+# Rides the platter a little off centre, and turns about its own axis.
+foundry:transform sandbox3d:orrery.rider.pose {
+    translation { x 0.18  y 0.04  z 0.0 }
+    scale       { x 0.25  y 0.25  z 0.25 }
+}
+model sandbox3d:orrery.rider.model { model sandbox3d:models.crate }
+spin sandbox3d:orrery.rider.spin { axis { x 0  y 1  z 0 }  rate 1.2 }
+foundry:entity sandbox3d:entity.rider {
+    components [ sandbox3d:orrery.rider.pose  sandbox3d:orrery.rider.model  sandbox3d:orrery.rider.spin ]
+}
+
+# The rider's child, so it orbits the rider without a spin of its own. Its translation is in
+# the rider's scaled frame: 1.1 of the rider's units is 0.275 m.
+foundry:transform sandbox3d:orrery.moon.pose {
+    translation { x 1.1  y 0.9  z 0.0 }
+    scale       { x 0.35  y 0.35  z 0.35 }
+}
+model sandbox3d:orrery.moon.model { model sandbox3d:models.crate }
+foundry:entity sandbox3d:entity.moon {
+    components [ sandbox3d:orrery.moon.pose  sandbox3d:orrery.moon.model ]
+}
+
+# `3d.md` §7.1's example: a frame scaled (2, 1, 1) with a child turned 45° on top of it. The
+# child's world is sheared, a rhombus seen from above, and it is drawn that way.
+foundry:transform sandbox3d:orrery.frame.pose {
+    translation { x 0.45  y 0.78  z 0.0 }
+    scale       { x 0.4  y 0.2  z 0.2 }
+}
+model sandbox3d:orrery.frame.model { model sandbox3d:models.crate }
+foundry:entity sandbox3d:entity.frame {
+    components [ sandbox3d:orrery.frame.pose  sandbox3d:orrery.frame.model ]
+}
+
+foundry:transform sandbox3d:orrery.sheared.pose {
+    translation { x 0.0  y 0.8  z 0.0 }
+    rotation    { x 0.0  y 0.38268343  z 0.0  w 0.92387953 }
+}
+model sandbox3d:orrery.sheared.model { model sandbox3d:models.crate }
+foundry:entity sandbox3d:entity.sheared {
+    components [ sandbox3d:orrery.sheared.pose  sandbox3d:orrery.sheared.model ]
+}
+
+# M19's cube, a mesh the sample builds in code, so it has a pose and a spin and no model.
+foundry:transform sandbox3d:orrery.cube.pose {
+    translation { x 0.05  y 1.2  z -0.2 }
+    scale       { x 0.25  y 0.25  z 0.25 }
+}
+spin sandbox3d:orrery.cube.spin { axis { x 0.3  y 1  z 0.2 }  rate 0.6 }
+foundry:entity sandbox3d:entity.cube {
+    components [ sandbox3d:orrery.cube.pose  sandbox3d:orrery.cube.spin ]
 }

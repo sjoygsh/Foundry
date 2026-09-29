@@ -2,14 +2,34 @@
 
 **Last updated:** 2026-09-29
 **Current handoff: M20 is complete (2026-09-29, tag `m20`). M21, Hierarchy, is accepted
-([`docs/design/hierarchy.md`](docs/design/hierarchy.md); ADR-0050) and Steps 1 to 4 of six are
-complete. Stop before Step 5.** Step 5 is `sandbox3d`'s nested moving objects (§8):
-- `sandbox3d` gains `scene` and `debug`, and its own `sandbox3d:model` and `sandbox3d:spin`;
-- an orrery with a sheared child;
-- F5/F9 save and load, and F6/F7's keep-world demonstrations;
-- runs on macOS/Metal, and on Windows/Vulkan on the PC.
+([`docs/design/hierarchy.md`](docs/design/hierarchy.md); ADR-0050) and Steps 1 to 5 of six are
+complete. Stop before Step 6.** Step 6 closes M21 (§11):
+- confirm §9's Linux assessment;
+- correct `entity-storage.md`, `debug-overlay.md` §7, `3d.md` §7 and CLAUDE.md §4.3 (which
+  does not yet list `sandbox3d`'s new imports);
+- update CLAUDE.md §9's 3D row, the roadmap, the design index and this file;
+- tag `m21`, and stop before M22's design.
 
-None of it exists yet.
+**M21 Step 5 is done (2026-09-29).** Claude wrote it; Codex added the confined save path and a
+first set of Windows runs, and the evidence was then repeated on the finished tree.
+- **`sandbox3d` has a `scene.World` with the hierarchy** (`orrery.zig`): a turntable carrying a
+  platter and a spinning crate, which carries an orbiting one; a frame scaled 2 : 1 : 1 with a
+  sheared crate on it; and M19's cube. All are content templates, parented in code.
+- **The sample's components:** `sandbox3d:model` and `sandbox3d:spin`. The spin system runs
+  before propagation, and drawing reads world transforms.
+- **The overlay:** F1, with the tree and the log open on the sheared crate.
+- **The keys:**
+  - F5 and F9 save and load, confined, with matching pose hashes;
+  - F6 moves the orbiting crate keeping its world pose (largest change below 1e-7);
+  - F7 is refused as `NotRepresentable`, with nothing moved.
+- **Runs:** relocated ReleaseSafe installs on macOS/Metal and Windows/Vulkan, with captures at
+  1× and 4×, resize, minimise and restore, exit 0, and 16.66 ms pacing.
+  - Windows validation logged no errors or warnings.
+  - The PC's whole `-Drhi=vulkan` graph passed, **1,888 of 1,907** (19 skips).
+- **Mutations:** five, each of which failed its test and was restored. One of them first
+  survived, and gained a test.
+- **The bar:** **1,857 of 1,858 headless (1,938 declared)** and **1,865 of 1,876 on Metal**,
+  with `dist` staging and the five Vulkan checks.
 
 **M21 Step 4 is done (2026-09-29).**
 - **`debug` imports `render3d`** (build graph and CLAUDE.md §4.3).

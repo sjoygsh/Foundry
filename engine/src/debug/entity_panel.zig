@@ -49,8 +49,9 @@ pub const Label = struct {
     field: u32,
 };
 
-/// The deepest indentation drawn. Deeper rows still sit in tree order; only their offset
-/// stops growing, so a 64-deep chain does not push its names off the panel.
+/// The deepest indentation drawn, in levels of two glyphs. Deeper rows still sit in tree
+/// order; only their offset stops growing, so a 64-deep chain does not push its names off
+/// the panel.
 pub const max_indent = 12;
 
 /// One row of the list: an entity, and how far down its tree it is.
@@ -186,7 +187,9 @@ pub const State = struct {
         try ui.beginScroll(view.ui, list_id, area, window.contentHeight());
         ui.spacer(view.ui, window.before());
 
-        const indent = " " ** (2 * max_indent);
+        // A level is two glyphs of offset. The row is moved, not its label padded, because a
+        // button centres its label and leading spaces would only nudge it.
+        const level = view.ui.style.font.measure("  ", view.ui.style.text_scale).x;
         for (tree.rows, 0..) |r, index| {
             if (index < window.first) continue;
             if (index >= window.first + window.count) break;
@@ -195,13 +198,15 @@ pub const State = struct {
             // row keeps its identity while the list scrolls under it.
             const id = view.ui.childIndex(index);
             const selected = if (self.selected) |s| s.eql(entity) else false;
-            const text = view.text("{s}{s}#{d}.{d}{s}", .{
+            const text = view.text("{s}#{d}.{d}{s}", .{
                 if (selected) "> " else "  ",
-                indent[0 .. 2 * @min(r.depth, max_indent)],
                 entity.index,
                 entity.generation,
                 self.labelOf(view, world, entity),
             });
+            try ui.beginRow(view.ui, .none, view.ui.style.line_height);
+            defer ui.endRow(view.ui);
+            ui.spacer(view.ui, level * @as(f32, @floatFromInt(@min(r.depth, max_indent))));
             if (try ui.button(view.ui, id, text)) self.selected = entity;
         }
 
@@ -565,9 +570,9 @@ test "the inspector shows a sheared child as sheared, indented under its parent"
 
     try testing.expect(overlay.findText(&ctx, "hierarchy: 2 transforms  1 roots  depth 1"));
     try testing.expect(overlay.findText(&ctx, "repaired: 0 orphans  0 cycles  0 too deep  0 invalid"));
-    // The parent at the left, the child selected and indented under it.
-    try testing.expect(overlay.findText(&ctx, "  #0.1"));
-    try testing.expect(overlay.findText(&ctx, ">   #1.1"));
+    // The parent at the left, the child selected and indented under it by one level.
+    const level = ctx.style.font.measure("  ", ctx.style.text_scale).x;
+    try testing.expectEqual(textX(&ctx, "  #0.1").? + level, textX(&ctx, "> #1.1").?);
     try testing.expect(overlay.findText(&ctx, "parent #0.1  depth 1  0 children"));
     try testing.expect(overlay.findText(&ctx, "world translation 3.000 2.000 3.000"));
     try testing.expect(overlay.findText(&ctx, "sheared: not a transform"));
@@ -584,4 +589,17 @@ test "the inspector shows a sheared child as sheared, indented under its parent"
     try testing.expect(overlay.findText(&parent_ctx, "world rotation 0.000 0.000 0.000 1.000"));
     try testing.expect(overlay.findText(&parent_ctx, "world scale 2.000 1.000 1.000"));
     try testing.expect(!overlay.findText(&parent_ctx, "sheared"));
+}
+
+/// Where a text command containing `needle` starts, for a test that checks placement.
+fn textX(ctx: *const ui.Context, needle: []const u8) ?f32 {
+    for (ctx.list.commands.items) |command| {
+        const t = switch (command) {
+            .text => |t| t,
+            else => continue,
+        };
+        const text = ctx.list.text_bytes.items[t.text.offset..][0..t.text.len];
+        if (std.mem.indexOf(u8, text, needle) != null) return t.at.x;
+    }
+    return null;
 }

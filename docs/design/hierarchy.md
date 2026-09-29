@@ -1,7 +1,7 @@
 # Design: M21 — Hierarchy: the engine's transform components, propagation, re-parenting and 3D in the overlay
 
 **Status:** Accepted 2026-09-29, when the owner requested Step 1; §13 is accepted as written.
-Steps 1 to 4 of six are complete; Step 5 has not begun.
+Steps 1 to 5 of six are complete; Step 6 has not begun.
 **Date:** 2026-09-29
 **Baseline:** `00f39d3`, tag `m20`. M0–M20 are complete.
 **Decisions:**
@@ -901,3 +901,144 @@ Step 4 implements §7 in `debug` and stops before the sample.
 **1,858 of 1,869 on `-Drhi=metal`**, with fmt, all four `check` variants and the three
 thirty-frame samples, which logged no warnings. No Vulkan, shader, platform or ABI source
 changed. Step 5, `sandbox3d`'s nested moving objects, is next.
+
+## Resolution — Step 5: `sandbox3d`'s nested moving objects (2026-09-29)
+
+Step 5 implements §8 and records §10's runnable result. It stops before the close. It was
+written by Claude, with Codex's confined save path and a first set of Windows runs folded in;
+the evidence below is from runs repeated after that, on the finished tree.
+
+**The world** (`samples/sandbox3d/orrery.zig`) has its own registry and `scene.World`, with
+the hierarchy enabled and two sample components:
+- **`sandbox3d:model`** is `{ model: id }`;
+- **`sandbox3d:spin`** is `{ axis: Vec3, rate: f32 }`, in radians per second about the
+  entity's own axis.
+
+The package declares both with `@schema`, field for field, and authors seven templates:
+- **the turntable,** a spinning pivot with no model;
+- **the platter,** a crate scaled flat, a child of the turntable;
+- **the rider,** a spinning crate, also a child of the turntable. It is not the platter's
+  child, which would flatten it;
+- **the moon,** a child of the rider, with no spin of its own, so it orbits;
+- **the frame,** scaled `(0.4, 0.2, 0.2)`, which is 2 : 1 : 1;
+- **the sheared crate,** turned 45° about Y on top of the frame;
+- **M19's cube,** a pose and a spin with no model, because its mesh is built in code.
+
+`populate` spawns them and sets the parents in code with `setParent`. A missing template is
+logged, and its role is left empty.
+
+**Systems and extraction.** `sandbox3d:systems.spin` is registered before
+`foundry:systems.propagate_transforms`, so it runs first. After the steps, the sample queries
+`sandbox3d:model` and draws each entity at its `worldTransform`, through a small cache of
+model handles that is released on every content change. The cube is drawn at its entity's
+world pose. `cube_radians_per_second` has left `sandbox3d:config`, because the cube's spin is
+now its template's. The camera's orbit came in to 4 m radius and 2.4 m height, focused on the
+table top, so objects 0.1–0.5 m across can be read.
+
+**The overlay** is hosted as `samples/room` hosts it:
+- **Imports:** `sandbox3d` gains `ui` beside `scene` and `debug`, because the kernel's
+  `Context` is the game's (§8 named only the other two). It still imports no `rhi`.
+- **F1** toggles it. `FOUNDRY_SANDBOX3D_PANELS` starts it open.
+- **Panels:** the entity tree and the log are open, with the sheared crate selected. The
+  profiler is one click away in the bar, because three panels in one column left the
+  selection no room.
+- **Text:** scale 1 in a 480-point column. At scale 2, a tree row did not fit.
+- **Capture level:** `log_capture = .info`, so the log shows what each key did.
+- **The stats line** adds the propagation's transform count and moves to the bottom, right of
+  the column.
+
+**Keys:**
+- **F5** writes `world.fsav` with `replaceFileConfined` beneath the user data directory
+  (`FOUNDRY_SANDBOX3D_SAVE_DIR` redirects it for evidence runs). It first propagates, and logs
+  a hash of every world matrix in slot order.
+- **F9** reads the file with `readFileConfined`, rebuilds the world with the same
+  registrations, loads, propagates, and logs the hash, saying whether it is this run's save.
+  The roles survive, because a save keeps handles (`entity-storage.md` §9). A refused save
+  gives a freshly populated orrery, never an empty table.
+- **F6** moves the moon between the rider and the cube with `setParentKeepWorld`, and logs the
+  largest change in any world-matrix element.
+- **F7** tries to move the sheared crate onto the turntable the same way. The turntable is
+  rigid, and the crate's world is sheared, so it is refused as `NotRepresentable`, and the
+  pose hash before and after is logged as unchanged.
+- **Scripted presses:** `FOUNDRY_SANDBOX3D_KEYS=f5@300,...` presses keys on given frames,
+  which is host bootstrap for runs nobody watches (ADR-0031).
+
+**What implementation sharpened:**
+- **A button centres its label,** so the Step 4 tree's leading spaces did not indent it on
+  screen. `entity_panel` now indents each row with a spacer in a horizontal row, and its test
+  checks the child's text x against the parent's.
+- **`WorldTransform` has no component name,** so extraction queries `sandbox3d:model` and
+  reads each pose with `hierarchy.worldTransform`, which is the same data §8 described.
+
+**Tests:**
+- the spin turns local poses, and the moon orbits because its parent turns;
+- after every step, each drawn pose equals `worldOf` of the poses just written, so nothing is
+  drawn a tick behind;
+- a saved orrery loads back to the same pose hash, F6 moves the moon to the cube and back
+  with a change below `1e-5`, and F7 is `NotRepresentable` with the hash and the parent
+  unchanged;
+- an unreadable save leaves a world with the hierarchy;
+- a spin with no axis, or a NaN rate, leaves the entity still;
+- scripted keys parse, and a malformed list is refused whole.
+
+**Guards verified by mutation,** each restored byte for byte:
+- dropping the zero-axis and NaN guard failed the still-entity test;
+- skipping the propagation after a load failed the round-trip test;
+- F7 keeping the local pose failed it too;
+- registering the propagation before the spin failed the tick-behind test. That test was
+  added because this mutation first survived;
+- a zero indent failed the overlay's indentation test.
+
+**The runnable result, macOS/Metal** (ReleaseSafe, relocated install, Apple M5, HOME in
+scratch so nothing real is written):
+- **Captures:** at 4× and 1×, with the overlay open on the sheared crate: the tree, and
+  "sheared: not a transform" beside it. At 4× after F9, the overlay's own log shows F5 at
+  frame 600, F6 at 840, F7 at 960 and F9 at 1200.
+- **Keys:** F5 and F9 both logged poses `e6a48bdef78e78cd`, "the same as this run's save".
+  F6's largest change was `5.96e-8`. F7 was refused with its poses unchanged.
+- **Window handling:** resized to 900 × 560 and to 1400 × 800 (fitted to 1375 × 800), each
+  captured. Minimised, the window left the on-screen list, and it was restored and captured.
+  Every run exited 0.
+- **Pacing, last 240 frames, 4×:** median 16.658 ms, p95 16.943 ms. The display ran at 120 Hz
+  in earlier runs (median 8.6 ms); the sample paces to the display.
+- **A harness note:** System Events and `screencapture` reach the window only while it is on
+  the active Space. Two attempts made while the Mac was in use elsewhere lost their captures
+  and are not counted.
+
+**The runnable result, Windows/Vulkan** (Arc A750, ReleaseSafe, relocated install, Zig and
+the SDK off `PATH`, `APPDATA` in a scratch root, a desktop session through a scheduled task):
+- **The whole `-Drhi=vulkan` graph** passed on the PC: **1,888 of 1,907, with 19 skips**.
+- **Validation:** core, synchronization, stateless, object lifetime, thread safety and handle
+  wrapping enabled, and **no errors or warnings** at 4× or at 1×.
+- **Keys at 4×:** F5 and F9 both logged poses `52c30dcd3e4b7d2c`, the same save. F6's largest
+  change was `8.94e-8`. F7 was refused with its poses unchanged.
+- **Captures:** at 4× and 1×, 1280 × 720, with the overlay open on the sheared crate, matching
+  macOS.
+- **Window handling:** `SetWindowPos` gave a 944 × 561 client. `ShowWindow` minimised it:
+  iconic, 99 frames skipped. It restored and was captured. `WM_CLOSE` ended it with exit 0,
+  and every run exited 0.
+- **Pacing, last 240 frames:** with validation, 4× median 16.662 ms (p95 16.724 ms) and 1×
+  median 16.663 ms (p95 16.665 ms). With every layer disabled, 4× median 16.663 ms (p95
+  16.664 ms).
+- **What did not count:** in the final run, two mid-run captures came back black because
+  something covered the window while the PC was in use. The first run's versions of those
+  captures were good. Its exit codes were blank, because .NET keeps `ExitCode` only for a
+  process whose handle was opened. The harness now reads the handle at launch, and the rerun
+  gave 0.
+- **The PC's wall clock** reads true UTC as local time under an India Standard Time zone, and
+  has never synced, so it runs 5.5 hours slow. Pacing uses the monotonic clock and is
+  unaffected. M20's anomaly was in the monotonic clock, and nothing like it appeared here.
+
+**Cross-host determinism** (§9, evidence and not a claim): the pose hashes differ between
+the hosts, and between runs on one host. That is expected, because F5 lands on whichever tick
+the frame reached, and a frame's tick count depends on real time. What each run proves is
+that its load gives back its own save's poses to the bit.
+
+**The bar:** **1,857 of 1,858 headless tests** (the existing skip; **1,938 declared**) and
+**1,865 of 1,876 on `-Drhi=metal`**, with fmt, all four `check` variants and the three
+thirty-frame samples, which logged no warnings. Also:
+- **`dist` staging** for `sandbox` and `room` on Metal, because sample content changed;
+- **the five Vulkan compile checks;**
+- **the Windows whole graph** above.
+
+No shader, RHI, platform or ABI source changed. Step 6, the close, is next.

@@ -613,7 +613,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    for ([_][]const u8{ "app", "asset", "core", "data", "render2d", "render3d" }) |name| {
+    // `scene`, `debug` and `ui` since M21 (`hierarchy.md` §8): a world of nested objects, and
+    // the overlay that inspects it, hosted as the room hosts it.
+    for ([_][]const u8{ "app", "asset", "core", "data", "debug", "render2d", "render3d", "scene", "ui" }) |name| {
         sandbox3d_mod.addImport(name, modules.get(name).?);
     }
     sandbox3d_mod.addImport("platform", platform_module);
