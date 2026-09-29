@@ -266,9 +266,12 @@ itself.
 2. **Streaming and async loading.** Everything here is synchronous. Nothing in the design
    forecloses async, and the job system is an M12 decision (CLAUDE.md §9); this is a
    deliberate non-answer rather than an omission.
-3. **Asset dependencies.** A material referencing a shader referencing a texture is a graph,
-   and acquiring the root should acquire the rest. Whether that is a loader's business or the
-   registry's is open until the material system exists.
+3. ~~**Asset dependencies.**~~ **Answered by M20** (`meshes.md` §7.4 and §8). A loader does not
+   acquire what its record references. The consumer that composes assets, `render3d.Content`,
+   acquires each one and holds the handles, so the registry stays a map from ID to payload with
+   no graph in it. M20 also added `Registry.acquireWith` and `unloadWith`: an entry is keyed by
+   content ID and loader, so a consumer can load a schema through a private loader beside the
+   registered one.
 4. **The ID ledger.** ADR-0021 names it as the fix for §3's stability hole. Due when a rename
    silently breaks something in practice — or before `docs/modding/` tells anyone that derived
    IDs are safe.

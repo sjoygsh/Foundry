@@ -1,17 +1,27 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-29
-**Current handoff: M19 is complete (2026-09-27, tag `m19`). M20, Meshes, is accepted and Steps 1
-to 8 of nine are complete. Stop before Step 9.** Read [`docs/design/meshes.md`](docs/design/meshes.md),
-whose Step 1–8 Resolutions record the implementation and its corrections. ADR-0055 is
-accepted. Next is Step 9 only, the close:
-- confirm §10's Linux assessment;
-- resolve the contract discrepancies §12 lists in `3d.md`, `render3d.md`, `assets.md` and
-  `rhi.md`;
-- update CLAUDE.md §9's 3D row, the roadmap, the design index and this file;
-- tag `m20`.
+**Current handoff: M20 is complete (2026-09-29, tag `m20`). Stop before M21's design.** M21,
+Hierarchy (`3d.md` §10), is next. It covers `foundry:transform`, `foundry:parent` and
+`foundry:world_transform`, propagation, and 3D in the debug overlay, under ADR-0050. Nothing of
+it exists, and its design is written before any code, with the `foundry-milestone-design`
+skill. Read [`docs/design/meshes.md`](docs/design/meshes.md)'s Resolutions for what M20 built,
+and its §13 for what it left open.
 
-Push only when asked.
+**M20 is closed (2026-09-29, Step 9).** Its exit condition holds: a glTF file is imported into
+Foundry's representations, nothing downstream of the compiler knows it was glTF, and a
+malformed file is refused with a diagnostic. Linux stayed compile-only; none of §10's triggers
+fired. Step 9 resolved the contract discrepancies:
+- `3d.md`: the importer's home and where mips are built;
+- ADR-0053: a note on the compiler it means;
+- `render3d.md`: the widened stream table and the required material;
+- `assets.md`: asset dependencies and `acquireWith`;
+- `rhi.md`: mip generation.
+
+It also updated CLAUDE.md §9 and §4.3, the roadmap and the design index. The code bar is Step
+8's: **1,822 of 1,823 headless (1,903 declared)**, **1,830 of 1,841 on Metal**, and **1,854 of
+1,873 on Windows/Vulkan**. Step 7's intermittent timing failures on the PC were not M20's, and
+passed in Step 8's run. Check the PC's clock before a Windows timing figure is trusted.
 
 **M20 Step 8 is done (2026-09-29).** `sandbox3d` draws a glTF scene by content ID: a room with a
 table hierarchy, a mirrored crate, a masked plant and a blended pane, and a grid of 72 crates

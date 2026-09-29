@@ -308,6 +308,11 @@ mod supplies it. Each refusal has a named error:
 `Mesh.computeBounds` exists for builders. A loaded mesh's stored bounds are checked, never
 recomputed in place of the check.
 
+> **M20, 2026-09-29.** The mesh now has its file, `.fmesh`, and the table has widened as
+> ADR-0054 allows: normals (`float32x3`, unit length), UV0 and UV1 (`float32x2`) and a
+> `float32x4` colour, each with a named refusal. Tangents still wait for M22, and joints and
+> weights for M24. `meshes.md` §3 is authoritative for the table and the file.
+
 ## 6. `render3d`: the skeleton
 
 ### 6.1 The module
@@ -386,8 +391,8 @@ compile error in exactly one place, which is the intended cost.
   `location(0)`, normal is 1, tangent 2, UV0 3, UV1 4, colour 5, joints 6 and weights 7. A
   shading model declares only the locations it reads.
 - **Group 0, per frame:** one uniform block holding `view_projection` (`P · V`, 64 bytes), in a
-  per-slot ring, written in `prepare`. Groups 1–3 are unused in M19. Group 2 (per material)
-  becomes M20's, following `rhi.md` §9's ordering.
+  per-slot ring, written in `prepare`. Groups 1–3 are unused in M19. Since M20 group 2 is the
+  material's: a 32-byte uniform, its texture and its sampler (`meshes.md` §7.3).
 - **Inline constants, per draw:** the world matrix, 64 bytes of the 128. The vertex shader
   computes `clip = view_projection · world · position`. M22 adds the normal transform, and the
   remaining 64 bytes or a per-draw group hold it.
@@ -423,7 +428,9 @@ compile error in exactly one place, which is the intended cost.
   - the world matrix is finite;
   - the mesh has the streams the pipeline reads.
   
-  A refused draw records nothing.
+  A refused draw records nothing. **Since M20 a draw requires a material,** and the streams it
+  needs are its shading model's (`meshes.md` §7.5). Transparent draws follow the opaque and
+  masked ones, back to front, and a negative determinant flips the front face.
 - **`plan` sorts the opaque draws front to back** by the view-space depth of each draw's world
   bounds centre. Ties break by submission index, so the order is a function of the inputs alone
   (I9). M19 has no transparent draws.

@@ -283,7 +283,8 @@ L2  net         -> core, platform.  M16's runtime channels, FNET wire codec and
                                 authenticated streams. Bytes only; no gameplay schema.
 
 L3  render2d    -> core, rhi, asset.      Sprite/tilemap/text batching, cameras.
-L3  render3d    -> core, rhi, asset.      Mesh residency, 3D cameras and drawing.
+L3  render3d    -> core, rhi, asset.      Mesh residency, 3D cameras, materials, culling and
+                                          drawing; models by content ID.
 L3  scene       -> core, data, asset.     Entities, components, world, systems.
 L3  audio       -> core, platform, asset. Mixer, voices, playback by content ID.
 
@@ -671,7 +672,7 @@ milestone named below is where `docs/ROADMAP.md` now places it.
 | Networking | **Done in M16** (2026-09-23) | Owner requires internet multiplayer. [networking.md](docs/design/networking.md) and accepted ADR-0044/0045 fix the initial architecture. Mbed TLS and FNET wire v1 are qualified/frozen, authenticated streams exist, sessions admit peers, and active peers exchange tick-admitted commands and complete state, published as `FoundryApi_v5`; the sandbox connects through it alone (Step 6) and holds against hostile peers and the controlled envelope (Step 7); desktops, the public internet and the external consumer are proven (Step 8, [networking guide](docs/modding/networking.md)). What it deliberately left out — relays, NAT traversal, accounts, prediction, lockstep, IPv6 — is networking.md §11's, and each is its own decision. |
 | Certified releases (Developer ID, notarization, Windows code signing) | **After a fully playable 3D game** (ADR-0047) | M17 publishes unsigned, labelled GitHub pre-releases instead. When due, use the implemented Developer ID/notary path and verify the exact quarantined download on a genuinely clean recipient Mac; add Windows signing. No membership is bought before then. |
 | Linux runtime support | **Done in M18** (2026-09-27) | Removed from M13 by ADR-0039; headless servers proven in M16.5 (ADR-0046). The desktop is a runtime claim on one Intel Arc/Mesa machine, under Xorg, sway and GNOME, with its limits in [linux-desktop.md](docs/design/linux-desktop.md). No Linux release artifact exists; that is a distribution decision nothing has asked for yet. |
-| 3D | **Decided** (2026-09-27); **M19 done** (2026-09-27, tag `m19`) | [3d.md](docs/design/3d.md) and ADR-0048 to ADR-0054: conventions, fixed vertex slots, engine shading models per backend, the engine-declared hierarchy, collision without dynamics, forward rendering, and assets kept apart from the renderer. M19–M26 in the proposed order, ending in a playable 3D sample. Linux is a reproducible target, not a kept machine: it runs when a milestone changes something Linux-specific, and at M26 on a freshly provisioned machine (3d.md §10.2). What stays deferred is 3d.md §11's, each item waiting on a game or a measurement. |
+| 3D | **Decided** (2026-09-27); **M19 done** (2026-09-27, tag `m19`); **M20 done** (2026-09-29, tag `m20`) | [3d.md](docs/design/3d.md) and ADR-0048 to ADR-0055: conventions, fixed vertex slots, engine shading models per backend, the engine-declared hierarchy, collision without dynamics, forward rendering, and assets kept apart from the renderer. M19–M26 in the proposed order, ending in a playable 3D sample. Linux is a reproducible target, not a kept machine: it runs when a milestone changes something Linux-specific, and at M26 on a freshly provisioned machine (3d.md §10.2). What stays deferred is 3d.md §11's, each item waiting on a game or a measurement. |
 
 **Out of scope indefinitely, not constraining the initial architecture:** consoles, mobile, web,
 VR, x86-64 macOS.

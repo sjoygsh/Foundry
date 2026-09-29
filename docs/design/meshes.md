@@ -1,7 +1,7 @@
 # Design: M20 — Meshes: runtime formats, glTF import, textures with mips, materials and culling
 
-**Status:** Accepted 2026-09-27 when the owner requested Step 1. Steps 1 to 8 of nine are
-complete; Step 9 has not begun. §14 records the accepted choices.
+**Status:** Accepted 2026-09-27 when the owner requested Step 1. **Complete 2026-09-29, tag
+`m20`**: all nine steps are walked, and Step 9's Resolution closes it. §14 records the accepted choices.
 **Date:** 2026-09-27
 **Baseline:** `a8cbd64`, tag `m19`. M0–M19 are complete.
 **Decisions:**
@@ -1421,3 +1421,61 @@ content or asset kinds changed.
   timing tests passed in this run.
 
 Step 9, the close, is next.
+
+## Resolution — Step 9: M20 closed (2026-09-29)
+
+**The exit condition holds as `3d.md` §10's M20 row writes it:**
+- **Imported:** a glTF file becomes Foundry's own representations. Its runtime mesh, textures,
+  materials and model are records and `.fmesh` files.
+- **Nothing downstream knows it was glTF:** an imported quad and a code-built one match in
+  `.fmesh` bytes, in record values and in pixels, on Metal and on Vulkan.
+- **Refused, not crashed:** a malformed file is refused with a diagnostic naming the object.
+  This is proved by every named refusal, the truncation and byte-flip sweep, and a corrupt
+  glTF that failed a live build while the sample kept drawing.
+- **The runnable result:** a glTF-authored scene from a content package, drawn textured,
+  relocated on both platforms and hot-reloaded (Step 8).
+
+**§10, Linux: compile only, confirmed.** None of its three triggers fired:
+- **No per-backend tolerance:** Windows' mip readbacks selected Metal's levels exactly (Step 3).
+- **No driver named:** no validation message named the driver. Step 7's one refusal named a
+  core 1.3 feature the backend had not enabled.
+- **No presentation code touched:** nothing changed presentation, formats or the swapchain.
+  Step 7's device change enables a feature Vulkan 1.3 requires of every device, Mesa's included.
+
+The Linux Vulkan `check` and `vulkan-check` lines built at every step that changed Vulkan code.
+No machine was provisioned.
+
+**Contract discrepancies, resolved in their originating documents:**
+- **`3d.md` §1, §2, §3, §4 and §10:** the importer is `author`'s package compiler, hosted by
+  `fpack` and the editor. Mip chains are built on the CPU at load, with measured load time (and
+  compressed formats) as the trigger to move them. `asset` holds the representations and
+  `render3d` their loaders. The status line and the M20 row say M20 is done.
+- **ADR-0053:** a dated note says its "`fpack`" names that compiler; the decision is unchanged.
+  ADR-0053 and ADR-0055 record their implementation.
+- **`render3d.md` §5 and §6:** the widened stream table and `.fmesh` point to §3 here. Group 2
+  is the material's. A draw requires a material, blended draws sort last, and a negative
+  determinant flips the front face.
+- **`assets.md` §9:** its third open question, asset dependencies, is answered. The composing
+  consumer acquires what a record references, and `acquireWith`/`unloadWith` exist.
+- **`rhi.md` §12:** GPU mipmap generation stays out. M20's chains upload through the existing
+  path.
+
+**Also updated:**
+- `CLAUDE.md` §9's 3D row and §4.3's `render3d` line. ADR-0055 was already in §4.1.
+- The roadmap, the design index and `PROJECT_STATE.md`.
+- `AGENTS.md`'s bar is unchanged. Step 7 added one sentence: every Vulkan test binary requires
+  validation.
+
+**What M20 leaves open is §13's list,** unchanged:
+- per-submesh bounds;
+- a texture shared between the renderers;
+- anisotropic filtering;
+- a registered mesh loader and the ABI (M25);
+- stable names for generated meshes and textures.
+
+The intermittent Windows timing failures Step 7 recorded passed in Step 8's run and were never
+M20's. A later Windows timing measurement should still check the PC's clock first.
+
+This step changed documents only, and the bar passed on them unchanged: Step 8's numbers stand
+for the code (**1,822 of 1,823 headless**, **1,830 of 1,841 on Metal**, **1,854 of 1,873 on
+Windows/Vulkan**). M20 is tagged `m20`. M21's design is next, and it has not been started.

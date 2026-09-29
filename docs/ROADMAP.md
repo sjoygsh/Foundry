@@ -1010,7 +1010,7 @@ the entire point of the earlier architecture. It adds:
 - `render3d` beside `render2d`, forward first;
 - `physics3d` beside `physics2d`, with collision and a character but no dynamics;
 - an engine-declared transform hierarchy in `scene`;
-- glTF import in `fpack`.
+- glTF import in `author`'s package compiler, which `fpack` and the editor host.
 
 Each milestone ends runnable on macOS/Metal and Windows/Vulkan, with the concrete exit condition
 and regression coverage in `3d.md` §10:
@@ -1049,7 +1049,7 @@ ADR-0054 accepted. Exit condition met: draw order no longer decides what is visi
 - Linux was compile-only by design, and no trigger fired. At the owner's request the Vulkan graph
   and a windowed run were also confirmed on the M18 Ubuntu machine.
 
-**M20, Meshes, is accepted; Steps 1–8 of nine are complete** —
+**M20 Meshes is complete (2026-09-29, tag `m20`)** —
 [`meshes.md`](design/meshes.md), with ADR-0055 accepted. Step 1 pins the canonical `.fmesh`,
 the widened mesh table, the material/model/import records, texture schema v3 compatibility and
 exact TRS decomposition. Step 2 adds deterministic CPU mip chains and a consumer's own loader
@@ -1063,4 +1063,7 @@ package's models by content ID and follows their reloads; an imported quad draws
 to the same quad built in code. Step 7 reruns those readbacks on Windows/Vulkan with validation
 required for every test, which found and fixed an unenabled core feature. Step 8 gives `sandbox3d`
 its glTF scene, drawn by content ID and followed live through reloads. Its package compiles
-identically on macOS and Windows, and it runs relocated on both. The close remains.
+identically on macOS and Windows, and it runs relocated on both. Step 9 closed it. Exit condition
+met: a glTF file is imported into Foundry's representations, nothing downstream of the compiler
+knows it was glTF, and a malformed file is refused with a diagnostic. Linux stayed compile-only,
+and none of its triggers fired. **Next is M21 Hierarchy's design**, and nothing of it exists yet.

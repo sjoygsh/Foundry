@@ -1,6 +1,6 @@
 # ADR-0053: Assets are not the renderer — import, runtime assets, scene, submission and GPU stay separate
 
-**Status:** Accepted 2026-09-27 (constraint only; M19–M20 implement it)
+**Status:** Accepted 2026-09-27 (constraint only; implemented by M19 and M20, tag `m20`)
 **Date:** 2026-09-27
 **Informed by:** ADR-0006, ADR-0021, CLAUDE.md §4.2 and §6, `docs/design/3d.md` §3
 
@@ -52,3 +52,10 @@ Code can build the same runtime mesh a file loads. Whether spawning a model crea
 - A workload shows that a translation step is a measured load-time cost worth fusing.
 - Streaming or LOD needs a representation between the model and submission. That would be added
   as a new stage, not by merging two.
+
+## Note — 2026-09-29, M20's close
+
+The decision is unchanged, and M19 and M20 implement it. "`fpack`" above names the build-time
+package compiler. Since ADR-0042 that compiler is `author`'s, and `fpack` and the editor both
+host it, so `author/gltf/` is the only glTF reader. No glTF concept passes it. See
+`meshes.md` §6.1 and its Step 6 Resolution.
