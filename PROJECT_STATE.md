@@ -1,9 +1,25 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-29
-**Current handoff: M21 is complete (2026-09-29, tag `m21`, not yet pushed).** Stop before
-M22's design. M22 is Light (`3d.md` §10): the lit model, lights, a shadow, HDR, and a content mod
-that changes the room. Its design document comes first, and nothing of it exists yet.
+**Current handoff: M22's design is proposed (`docs/design/light.md`, ADR-0056); awaiting
+acceptance of §15. Stop before Step 1.** M21 is complete (2026-09-29, tag `m21`, not yet pushed).
+
+**M22's design (2026-09-29).** Documents only; no code. M22 is Light (`3d.md` §10): a lit room
+whose materials a content mod changes.
+- **ADR-0056 (proposed):** lights in photometric units with glTF's punctual semantics (lux,
+  candela, cd/m²), EV100 exposure applied in the lit shader, unlit output and the clear colour
+  not exposed, and one tone map, Khronos PBR Neutral, before the sRGB surface.
+- **Eight steps:**
+  1. the RHI's sampled depth, comparison samplers, depth bias, depth-only passes and fp16
+     targets;
+  2. `foundry:material` version 2, tangents and lit glTF import;
+  3. submitted lights, the HDR frame and `render3d.recordFrame`;
+  4. the lit model;
+  5. one directional shadow;
+  6. Vulkan proved on Windows;
+  7. `sandbox3d` lit, reading user mods, with the `dusk` content mod;
+  8. the close.
+- **Nothing enters the ABI.** Linux: compile only.
 
 **M21 is closed (Step 6, 2026-09-29).** Documents only; the code is Step 5's, and so is the bar
 (**1,857 of 1,858 headless, 1,938 declared; 1,865 of 1,876 on Metal; the PC's Vulkan graph

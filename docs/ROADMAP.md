@@ -1020,6 +1020,7 @@ and regression coverage in `3d.md` §10:
   culling.
 - **M21 Hierarchy:** the transform components and propagation, with 3D in the overlay.
 - **M22 Light:** the lit model, lights, a shadow, HDR, and a content mod that changes the room.
+  Design proposed 2026-09-29: [`light.md`](design/light.md), with ADR-0056.
 - **M23 Collision:** `physics3d` and a first-person walk.
 - **M24 Animation:** skins and clips, sampled at the fixed step.
 - **M25 Public 3D:** `FoundryApi_v6`, with a content mod and a native one.
@@ -1082,4 +1083,5 @@ Step 5 makes it `sandbox3d`'s orrery, nested moving objects inspected live in th
 macOS/Metal and Windows/Vulkan: F5 and F9 give back the same poses, F6 re-parents without a
 jump, and F7's sheared crate is refused. Step 6 closed it. Exit condition met: §7's rules hold,
 and a saved hierarchy loads back to the same world poses. Linux stayed compile-only, and none of
-its triggers fired. M22, Light, is next, and its design comes first.
+its triggers fired. M22, Light, is next. Its design, [`light.md`](design/light.md) with ADR-0056, is proposed and
+awaits acceptance.
