@@ -6,6 +6,6 @@ foundry:mod  sandbox3d:content {
     name     "Sandbox 3D"
     version  1
     license  "Apache-2.0"
-    summary  "Three flat-coloured meshes that pass through each other, and one line of text over them."
+    summary  "A room imported from glTF, a grid of crates around it, and one line of text over them."
     requires [ { id foundry:core } ]
 }

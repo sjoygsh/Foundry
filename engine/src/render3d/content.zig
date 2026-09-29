@@ -118,14 +118,22 @@ pub const Content = struct {
     }
 
     /// Releases everything, whatever its count. Materials go first, because a material does
-    /// not keep its texture alive (Step 5's Resolution); then every mesh and texture made
-    /// through `render3d`'s loaders is handed back with `unloadWith`.
+    /// not keep its texture alive (Step 5's Resolution). Each reference this holds is released,
+    /// so a clean teardown leaves nothing held; then every mesh and texture made through
+    /// `render3d`'s loaders is handed back with `unloadWith`, which also covers a caller's own
+    /// acquisitions through them.
     pub fn deinit(self: *Self) void {
         var materials = self.materials.iterator();
-        while (materials.next()) |entry| self.renderer.destroyMaterial(entry.value.handle);
+        while (materials.next()) |entry| {
+            self.renderer.destroyMaterial(entry.value.handle);
+            if (!entry.value.texture.isNone()) self.assets.release(entry.value.texture);
+        }
         self.materials.deinit(self.gpa);
         var models = self.models.iterator();
-        while (models.next()) |entry| self.freeModel(entry.value);
+        while (models.next()) |entry| {
+            for (entry.value.meshes) |handle| self.assets.release(handle);
+            self.freeModel(entry.value);
+        }
         self.models.deinit(self.gpa);
         _ = self.assets.unloadWith(self.gpa, loader.meshLoader(self.renderer));
         _ = self.assets.unloadWith(self.gpa, loader.textureLoader(self.renderer));

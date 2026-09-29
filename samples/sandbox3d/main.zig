@@ -1,11 +1,16 @@
 //! `samples/sandbox3d` — the sample that gains each 3D capability from M19 to M25, as
 //! `samples/sandbox` gained 2D's (`docs/design/render3d.md` §8).
 //!
-//! **M19's capability is depth.** Three meshes built here, never in the engine: a cube, a thin
-//! slab that passes through it, and a tilted floor that cuts through both. The cube and the
-//! slab turn about different axes, so where they intersect sweeps across their faces, which no
-//! ordering of whole draws can fake: only the depth test can draw it. One line of `render2d`
-//! text over the top is the first proof that 2D draws over a 3D frame.
+//! **M19's capability was depth**: meshes built here that pass through each other, and one line
+//! of `render2d` text over them, the first proof that 2D draws over a 3D frame.
+//!
+//! **M20's is meshes from content** (`docs/design/meshes.md` §9). The room is `models/room.gltf`
+//! and the crates are `models/crate.gltf`, compiled by the package compiler into records and
+//! drawn by content ID through `render3d.Content`. Nothing here knows they were glTF. The room
+//! has a node hierarchy, a mirrored crate, an alpha-masked plant and a glass pane that blends. A
+//! grid of crates stands outside the walls, most of it culled at any moment, and one crate draws
+//! with a slot override. M19's cube still spins on the table, built here with a material made in
+//! code, so the code path and the content path draw side by side.
 //!
 //! **This module is not given `rhi`** (`build.zig`), so reaching for a device, a pipeline or a
 //! texture format here is a build error, not a review finding (CLAUDE.md §4.2). It reaches the
@@ -13,7 +18,8 @@
 //!
 //! What it is told — window, clear colour, spin rates, font — is its package's
 //! `sandbox3d:config` record, loaded through the path every package takes (I3). `--msaa=1|4`
-//! is host bootstrap (ADR-0031), there so the same frame can be shown both ways.
+//! and `--cull=on|off` are host bootstrap (ADR-0031), there so the same frame can be shown both
+//! ways; culling changes no pixel, only the counts and the time.
 //!
 //! Environment, for scripted and evidence runs:
 //! - `FOUNDRY_SANDBOX3D_FRAMES=n` stops after `n` frames;
@@ -48,30 +54,44 @@ pub fn main(init: std.process.Init) !void {
     var arguments = try init.minimal.args.iterateAllocator(gpa);
     defer arguments.deinit();
     _ = arguments.next(); // the program's own name
-    var sample_count: u32 = 4;
+    var options: Options = .{};
     while (arguments.next()) |arg| {
-        sample_count = parseMsaa(arg) orelse {
+        if (!options.parse(arg)) {
             var buffer: [256]u8 = undefined;
             var err = std.Io.File.stderr().writer(init.io, &buffer);
-            err.interface.writeAll("usage: sandbox3d [--msaa=1|4]\n") catch {};
+            err.interface.writeAll("usage: sandbox3d [--msaa=1|4] [--cull=on|off]\n") catch {};
             err.interface.flush() catch {};
             // A mistyped command line is the operator's to fix, not a crash to trace.
             std.process.exit(2);
-        };
+        }
     }
 
     const env = try app.environment(gpa, init);
     defer gpa.free(env);
-    try run(gpa, env, sample_count);
+    try run(gpa, env, options);
 }
 
-fn parseMsaa(arg: []const u8) ?u32 {
-    if (std.mem.eql(u8, arg, "--msaa=1")) return 1;
-    if (std.mem.eql(u8, arg, "--msaa=4")) return 4;
-    return null;
-}
+/// The command line: bootstrap for the evidence, never a game setting.
+const Options = struct {
+    sample_count: u32 = 4,
+    cull: bool = true,
 
-fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, sample_count: u32) !void {
+    /// False for anything this sample does not take.
+    fn parse(self: *Options, arg: []const u8) bool {
+        if (std.mem.eql(u8, arg, "--msaa=1")) {
+            self.sample_count = 1;
+        } else if (std.mem.eql(u8, arg, "--msaa=4")) {
+            self.sample_count = 4;
+        } else if (std.mem.eql(u8, arg, "--cull=on")) {
+            self.cull = true;
+        } else if (std.mem.eql(u8, arg, "--cull=off")) {
+            self.cull = false;
+        } else return false;
+        return true;
+    }
+};
+
+fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options) !void {
     const headless = platform.backend == .null;
 
     // Discovery before the engine, as every host does it (`public-abi.md` §13): the
@@ -118,15 +138,16 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, sample_count: u3
     });
     defer engine.deinit();
 
-    var sample = try Sample.init(gpa, engine, sample_count);
+    var sample = try Sample.init(gpa, engine, options);
     defer sample.deinit(engine);
     try sample.load(engine);
 
     const overlay_on = if (engine.os.envVar("FOUNDRY_SANDBOX3D_OVERLAY")) |v| !std.mem.eql(u8, v, "0") else true;
     const frame_limit = frameLimit(engine, headless);
-    log.info("{s} backend, {d}x MSAA, overlay {s}{s}", .{
+    log.info("{s} backend, {d}x MSAA, culling {s}, overlay {s}{s}", .{
         app.graphics_backend,
-        sample_count,
+        options.sample_count,
+        if (options.cull) "on" else "off",
         if (overlay_on) "on" else "off",
         if (headless) ", headless" else "",
     });
@@ -174,8 +195,8 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, sample_count: u3
 /// each stage of a frame cost.
 fn report(gpa: std.mem.Allocator, engine: *app.Engine, sample: *const Sample, skipped_frames: u64) void {
     const stats = sample.world.frameStats();
-    log.info("stopped after {d} frames ({d} skipped), {d} ticks; last frame {d} draws, {d} triangles", .{
-        engine.frame_index, skipped_frames, engine.stepper.tick, stats.draws, stats.triangles,
+    log.info("stopped after {d} frames ({d} skipped), {d} ticks; last frame {d} draws, {d} culled, {d} blended, {d} triangles", .{
+        engine.frame_index, skipped_frames, engine.stepper.tick, stats.draws, stats.culled, stats.blended, stats.triangles,
     });
 
     const recorder = engine.profiler() orelse return;
@@ -239,8 +260,14 @@ const Settings = struct {
     height: u32,
     clear_linear: [4]f32,
     cube_radians_per_second: f32,
-    slab_radians_per_second: f32,
+    orbit_radians_per_second: f32,
+    orbit_radius: f32,
+    orbit_height: f32,
     font: core.ContentId,
+    room: core.ContentId,
+    crate: core.ContentId,
+    crate_override: core.ContentId,
+    grid: Grid,
 
     const fallback: Settings = .{
         .title = "",
@@ -248,8 +275,14 @@ const Settings = struct {
         .height = 720,
         .clear_linear = .{ 0, 0, 0, 1 },
         .cube_radians_per_second = 0,
-        .slab_radians_per_second = 0,
+        .orbit_radians_per_second = 0,
+        .orbit_radius = 7.5,
+        .orbit_height = 5,
         .font = .none,
+        .room = .none,
+        .crate = .none,
+        .crate_override = .none,
+        .grid = .{ .side = 0, .spacing = 0, .clearance = 0 },
     };
 
     /// Content is untrusted, including this package's own: every field is checked here and
@@ -265,9 +298,41 @@ const Settings = struct {
             .height = sizeField(record, "height") orelse fallback.height,
             .clear_linear = colourField(record, "clear_linear") orelse fallback.clear_linear,
             .cube_radians_per_second = rateField(record, "cube_radians_per_second") orelse 0,
-            .slab_radians_per_second = rateField(record, "slab_radians_per_second") orelse 0,
+            .orbit_radians_per_second = rateField(record, "orbit_radians_per_second") orelse 0,
+            .orbit_radius = distanceField(record, "orbit_radius", 1, 100) orelse fallback.orbit_radius,
+            .orbit_height = distanceField(record, "orbit_height", -100, 100) orelse fallback.orbit_height,
             .font = idField(record, "font") orelse .none,
+            .room = idField(record, "room") orelse .none,
+            .crate = idField(record, "crate") orelse .none,
+            .crate_override = idField(record, "crate_override") orelse .none,
+            .grid = .{
+                .side = gridField(record) orelse 0,
+                .spacing = distanceField(record, "crate_spacing", 0.5, 100) orelse 0,
+                .clearance = distanceField(record, "crate_clearance", 0, 100) orelse 0,
+            },
         };
+    }
+
+    /// Finite metres inside `[min, max]`.
+    fn distanceField(record: data.store.Record, name: []const u8, min: f64, max: f64) ?f32 {
+        const index = record.schema.fieldIndex(name) orelse return null;
+        const value = (record.fields.floatAt(index) catch null) orelse return null;
+        if (!std.math.isFinite(value) or value < min or value > max) {
+            log.warn("'{s}' is not a distance in [{d}, {d}] metres; using the fallback", .{ name, min, max });
+            return null;
+        }
+        return @floatCast(value);
+    }
+
+    /// Bounded, because every crate is a draw each frame.
+    fn gridField(record: data.store.Record) ?u32 {
+        const index = record.schema.fieldIndex("crate_grid") orelse return null;
+        const value = (record.fields.intAt(index) catch null) orelse return null;
+        if (value < 0 or value > Grid.max_side) {
+            log.warn("'crate_grid' = {d} is not a side from 0 to {d}; no crates", .{ value, Grid.max_side });
+            return null;
+        }
+        return @intCast(value);
     }
 
     fn stringField(record: data.store.Record, name: []const u8) ?[]const u8 {
@@ -322,6 +387,35 @@ const Settings = struct {
     }
 };
 
+/// Where the crates stand: a square of cells centred on the origin, less those within
+/// `clearance` of it on both axes, which is inside the room. Iterated in a fixed order, so
+/// which crate is first, and wears the override, is the same on every run (I9).
+const Grid = struct {
+    side: u32,
+    spacing: f32,
+    clearance: f32,
+
+    const max_side = 32;
+
+    const Cell = struct { position: Vec3, turn: f32 };
+
+    fn cell(self: Grid, i: u32) ?Cell {
+        const col = i % self.side;
+        const row = i / self.side;
+        const middle = @as(f32, @floatFromInt(self.side - 1)) / 2;
+        const x = (@as(f32, @floatFromInt(col)) - middle) * self.spacing;
+        const z = (@as(f32, @floatFromInt(row)) - middle) * self.spacing;
+        if (@abs(x) < self.clearance and @abs(z) < self.clearance) return null;
+        // An eighth of a turn at a time, varied by cell, so the grid does not read as a stamp.
+        const turn = @as(f32, @floatFromInt((col * 7 + row * 3) % 8)) * (std.math.pi / 8.0);
+        return .{ .position = .init(x, 0, z), .turn = turn };
+    }
+
+    fn cells(self: Grid) u32 {
+        return self.side * self.side;
+    }
+};
+
 // ---------------------------------------------------------------------------------------
 // The sample.
 
@@ -330,63 +424,69 @@ const Sample = struct {
     sample_count: u32,
     world: render3d.Renderer,
     overlay: render2d.Renderer,
+    /// Created in `load`, once `world` is at its final address, because it borrows it.
+    content: ?render3d.Content = null,
 
     cube: render3d.MeshHandle,
-    slab: render3d.MeshHandle,
-    floor: render3d.MeshHandle,
-    material: render3d.MaterialHandle,
+    cube_material: render3d.MaterialHandle,
+
+    room: render3d.ModelHandle = .none,
+    crate: render3d.ModelHandle = .none,
+    crate_override: render3d.MaterialHandle = .none,
 
     settings: Settings = Settings.fallback,
     content_generation: u64 = 0,
     font_asset: asset.AssetHandle = .none,
+    /// A model draw that failed is said once, not every frame.
+    reported: bool = false,
 
-    /// Each mesh's turn, advanced by whole simulation steps (I9).
+    /// The cube's turn and the camera's place on its circle, advanced by whole simulation
+    /// steps (I9).
     cube_angle: f32 = 0,
-    slab_angle: f32 = 0,
+    orbit_angle: f32 = 0,
 
-    /// The camera does not move in M19. Placed as `Mat4.lookAt` places it: at `eye`, looking
-    /// at the origin, with +Y as near up as it can be.
-    const eye: Vec3 = .init(0, 2.3, 5.0);
     const cube_axis: Vec3 = .init(0.3, 1, 0.2);
-    const slab_axis: Vec3 = .init(1, 0, 0.35);
+    /// On the table: its top is at 0.78 m, and the turning cube's corners reach 0.26 m out.
+    const cube_place: Vec3 = .init(0, 1.05, 0);
+    const cube_scale: f32 = 0.25;
+    /// What the camera looks at: the table, a little below its top.
+    const focus: Vec3 = .init(0, 0.6, 0);
 
-    fn init(gpa: std.mem.Allocator, engine: *app.Engine, sample_count: u32) !Sample {
-        var world = try render3d.Renderer.init(gpa, engine.gpu, .{ .sample_count = sample_count });
+    fn init(gpa: std.mem.Allocator, engine: *app.Engine, options: Options) !Sample {
+        var world = try render3d.Renderer.init(gpa, engine.gpu, .{ .sample_count = options.sample_count, .cull = options.cull });
         errdefer world.deinit();
         var overlay = try render2d.Renderer.init(gpa, engine.gpu, .{ .jobs = engine.jobs() });
         errdefer overlay.deinit();
 
-        const material = try world.createMaterial(.{}, "sandbox3d unlit");
-        errdefer world.destroyMaterial(material);
-
+        const cube_material = try world.createMaterial(.{}, "sandbox3d cube");
+        errdefer world.destroyMaterial(cube_material);
         const cube = try createBox(&world, .init(0.6, 0.6, 0.6), cube_faces, "sandbox3d cube");
-        const slab = try createBox(&world, .init(1.3, 0.06, 0.9), slab_faces, "sandbox3d slab");
-        const floor = try createFloor(&world);
 
         return .{
             .gpa = gpa,
-            .sample_count = sample_count,
+            .sample_count = options.sample_count,
             .world = world,
             .overlay = overlay,
             .cube = cube,
-            .slab = slab,
-            .floor = floor,
-            .material = material,
+            .cube_material = cube_material,
         };
     }
 
-    /// The texture loader borrows `&self.overlay`, so this waits until the sample has
-    /// reached its final address.
+    /// The texture loader and `Content` both borrow the renderers, so this waits until the
+    /// sample has reached its final address.
     fn load(self: *Sample, engine: *app.Engine) !void {
         try engine.assets.registerLoader(self.gpa, render2d.textureLoader(&self.overlay));
+        self.content = render3d.Content.init(self.gpa, &self.world, &engine.assets, .default);
         self.refresh(engine);
     }
 
     /// Everything derived from content, derived again whenever content changes.
     fn refresh(self: *Sample, engine: *app.Engine) void {
         const before = self.settings;
+        const first = self.content_generation == 0 and self.room.isNone() and self.crate.isNone();
         self.settings = Settings.read(engine);
         self.content_generation = engine.contentGeneration();
+        self.reported = false;
 
         if (self.settings.title.len != 0) {
             engine.setWindowTitle(self.settings.title) catch |err|
@@ -396,6 +496,16 @@ const Sample = struct {
             engine.setWindowSize(.{ .width = self.settings.width, .height = self.settings.height }) catch |err|
                 log.warn("the window size from '{s}' was refused ({t})", .{ config_id, err });
         }
+
+        // Records and assets that changed underneath the handles already held. What the
+        // config names is settled after, so a model named for the first time is read fresh.
+        if (!first) {
+            if (self.content) |*content| content.contentChanged() catch |err|
+                log.warn("the scene could not follow a content change ({t}); drawing what it had", .{err});
+        }
+        self.room = self.follow(self.room, before.room, self.settings.room, first);
+        self.crate = self.follow(self.crate, before.crate, self.settings.crate, first);
+        self.crate_override = self.followMaterial(before.crate_override, first);
 
         if (self.settings.font.eql(before.font) and !self.font_asset.isNone()) return;
         const fresh = if (self.settings.font.eql(.none))
@@ -409,14 +519,44 @@ const Sample = struct {
         self.font_asset = fresh;
     }
 
+    /// The model `id` names now: the one already held if the name did not change, else a fresh
+    /// one, with the old released. A model that will not resolve is logged and not drawn.
+    fn follow(self: *Sample, held: render3d.ModelHandle, was: core.ContentId, id: core.ContentId, first: bool) render3d.ModelHandle {
+        const content = &(self.content orelse return held);
+        if (!first and was.eql(id) and !held.isNone()) return held;
+        if (!held.isNone()) content.releaseModel(held);
+        if (id.eql(.none)) return .none;
+        return content.acquireModel(id) catch |err| {
+            log.warn("model {f} is not drawn ({t})", .{ id, err });
+            return .none;
+        };
+    }
+
+    fn followMaterial(self: *Sample, was: core.ContentId, first: bool) render3d.MaterialHandle {
+        const content = &(self.content orelse return self.crate_override);
+        const id = self.settings.crate_override;
+        if (!first and was.eql(id) and !self.crate_override.isNone()) return self.crate_override;
+        if (!self.crate_override.isNone()) content.releaseMaterial(self.crate_override);
+        if (id.eql(.none)) return .none;
+        return content.acquireMaterial(id) catch |err| {
+            log.warn("material {f} is not used ({t})", .{ id, err });
+            return .none;
+        };
+    }
+
     fn step(self: *Sample, s: app.Step) void {
         const dt = s.delta.toSecondsF32();
         self.cube_angle = wrap(self.cube_angle + self.settings.cube_radians_per_second * dt);
-        self.slab_angle = wrap(self.slab_angle + self.settings.slab_radians_per_second * dt);
+        self.orbit_angle = wrap(self.orbit_angle + self.settings.orbit_radians_per_second * dt);
     }
 
     fn wrap(angle: f32) f32 {
         return @mod(angle, 2 * std.math.pi);
+    }
+
+    fn eye(self: *const Sample) Vec3 {
+        const r = self.settings.orbit_radius;
+        return .init(r * @cos(self.orbit_angle), self.settings.orbit_height, r * @sin(self.orbit_angle));
     }
 
     /// Records and submits one frame. False when there was nothing to draw into, which is
@@ -429,31 +569,38 @@ const Sample = struct {
             .{ .width = self.settings.width, .height = self.settings.height };
         if (pixels.isEmpty()) return false;
 
+        const position = self.eye();
         try self.world.begin(.{
             .camera = .{
-                .position = eye,
-                .rotation = Quat.lookRotation(Vec3.zero.sub(eye), Vec3.up).?,
+                .position = position,
+                .rotation = Quat.lookRotation(focus.sub(position), Vec3.up) orelse Quat.identity,
                 .vertical_fov = std.math.pi / 3.2,
                 .near = 0.1,
-                .far = 50,
+                .far = 80,
             },
             .target_size = pixels,
             .clear_color = self.settings.clear_linear,
         });
-        try self.world.drawMesh(.{
-            .mesh = self.floor,
-            .material = self.material,
-            .world = Mat4.trs(.init(0, -0.1, 0), Quat.fromAxisAngle(.init(0, 0, 1), 0.2), .one),
-        });
+
+        self.drawModel(.{ .model = self.room, .world = Mat4.identity });
+        const override = [_]render3d.SlotOverride{.{ .slot = 0, .material = self.crate_override }};
+        var placed: u32 = 0;
+        const grid = self.settings.grid;
+        for (0..grid.cells()) |i| {
+            const cell = grid.cell(@intCast(i)) orelse continue;
+            self.drawModel(.{
+                .model = self.crate,
+                .world = Mat4.trs(cell.position, Quat.fromAxisAngle(Vec3.up, cell.turn), .one),
+                // The first crate of the grid, and only it, wears the override.
+                .overrides = if (placed == 0 and !self.crate_override.isNone()) &override else &.{},
+            });
+            placed += 1;
+        }
+
         try self.world.drawMesh(.{
             .mesh = self.cube,
-            .material = self.material,
-            .world = Mat4.fromQuat(Quat.fromAxisAngle(cube_axis.normalize(), self.cube_angle)),
-        });
-        try self.world.drawMesh(.{
-            .mesh = self.slab,
-            .material = self.material,
-            .world = Mat4.fromQuat(Quat.fromAxisAngle(slab_axis.normalize(), self.slab_angle)),
+            .material = self.cube_material,
+            .world = Mat4.trs(cube_place, Quat.fromAxisAngle(cube_axis.normalize(), self.cube_angle), .init(cube_scale, cube_scale, cube_scale)),
         });
 
         if (!overlay_on) {
@@ -463,6 +610,16 @@ const Sample = struct {
         try self.describeOverlay(engine, info);
         try engine.renderScene(.{}, &self.world, &self.overlay);
         return true;
+    }
+
+    /// A model that cannot be drawn this frame is skipped and said once; the frame goes on.
+    fn drawModel(self: *Sample, model_draw: render3d.ModelDraw) void {
+        if (model_draw.model.isNone()) return;
+        const content = &(self.content orelse return);
+        content.drawModel(model_draw) catch |err| {
+            if (!self.reported) log.warn("a model draw was refused ({t}); skipping it", .{err});
+            self.reported = true;
+        };
     }
 
     fn describeOverlay(self: *Sample, engine: *app.Engine, info: ?platform.WindowInfo) !void {
@@ -482,32 +639,34 @@ const Sample = struct {
             .glyph_count = 95,
         };
 
-        // The previous frame's time: this one is not over yet.
+        // The previous frame's time and counts: this one is not over yet.
         const last_ms = if (engine.profiler()) |recorder|
             if (recorder.latest()) |frame| ms(frame.total_ns) else 0
         else
             0;
-        var buffer: [96]u8 = undefined;
-        const line = std.fmt.bufPrint(&buffer, "{s}  {d}x MSAA  {d:.2} ms", .{
-            app.graphics_backend, self.sample_count, last_ms,
+        const stats = self.world.frameStats();
+        var buffer: [128]u8 = undefined;
+        const line = std.fmt.bufPrint(&buffer, "{s}  {d}x MSAA  {d} draws  {d} culled  {d} blended  {d:.2} ms", .{
+            app.graphics_backend, self.sample_count, stats.draws, stats.culled, stats.blended, last_ms,
         }) catch buffer[0..0];
         try self.overlay.drawText(font, line, .{ .position = .init(12, 12), .scale = 2 });
     }
 
     fn deinit(self: *Sample, engine: *app.Engine) void {
         if (!self.font_asset.isNone()) engine.assets.release(self.font_asset);
+        // Before the renderer it borrows: its materials go first, then the meshes and
+        // textures its loaders made.
+        if (self.content) |*content| content.deinit();
         _ = engine.assets.unregisterLoader(self.gpa, asset.schemas.texture.id);
-        self.world.destroyMesh(self.floor);
-        self.world.destroyMesh(self.slab);
         self.world.destroyMesh(self.cube);
-        self.world.destroyMaterial(self.material);
+        self.world.destroyMaterial(self.cube_material);
         self.overlay.deinit();
         self.world.deinit();
     }
 };
 
 // ---------------------------------------------------------------------------------------
-// The meshes, built here because nothing imports one yet (`render3d.md` §8).
+// The cube, built here so that one mesh on screen still comes from code (`meshes.md` §9).
 
 /// Linear RGBA8, one per face: +X, −X, +Y, −Y, +Z, −Z.
 const Faces = [6][4]u8;
@@ -519,15 +678,6 @@ const cube_faces: Faces = .{
     .{ 90, 60, 10, 255 },
     .{ 180, 90, 40, 255 },
     .{ 150, 45, 25, 255 },
-};
-
-const slab_faces: Faces = .{
-    .{ 20, 110, 190, 255 },
-    .{ 15, 70, 140, 255 },
-    .{ 40, 170, 230, 255 },
-    .{ 10, 40, 90, 255 },
-    .{ 25, 130, 210, 255 },
-    .{ 20, 90, 170, 255 },
 };
 
 /// Each face's outward normal and two edges whose cross product is that normal, so its
@@ -562,19 +712,6 @@ fn createBox(world: *render3d.Renderer, half: Vec3, faces: Faces, label: []const
 
 fn scaled(v: Vec3, by: Vec3) Vec3 {
     return .init(v.x * by.x, v.y * by.y, v.z * by.z);
-}
-
-/// A single-sided square facing +Y, in two tones so its tilt reads.
-fn createFloor(world: *render3d.Renderer) !render3d.MeshHandle {
-    const h: f32 = 1.9;
-    const positions = [_]Vec3{
-        .init(-h, 0, h), .init(h, 0, h), .init(h, 0, -h), .init(-h, 0, -h),
-    };
-    const near: [4]u8 = .{ 70, 90, 60, 255 };
-    const far: [4]u8 = .{ 30, 45, 35, 255 };
-    const colours = [_][4]u8{ near, near, far, far };
-    const indices = [_]u16{ 0, 1, 2, 0, 2, 3 };
-    return createMesh(world, &positions, &colours, &indices, "sandbox3d floor");
 }
 
 fn createMesh(
@@ -612,9 +749,38 @@ test "a box's faces all wind counter-clockwise seen from outside" {
     }
 }
 
-test "only --msaa=1 and --msaa=4 are accepted" {
-    try testing.expectEqual(@as(?u32, 1), parseMsaa("--msaa=1"));
-    try testing.expectEqual(@as(?u32, 4), parseMsaa("--msaa=4"));
-    try testing.expectEqual(@as(?u32, null), parseMsaa("--msaa=2"));
-    try testing.expectEqual(@as(?u32, null), parseMsaa("--msaa"));
+test "only --msaa=1|4 and --cull=on|off are accepted, and the last one given wins" {
+    var options: Options = .{};
+    try testing.expectEqual(@as(u32, 4), options.sample_count);
+    try testing.expect(options.cull);
+    try testing.expect(options.parse("--msaa=1"));
+    try testing.expect(options.parse("--cull=off"));
+    try testing.expectEqual(@as(u32, 1), options.sample_count);
+    try testing.expect(!options.cull);
+    try testing.expect(options.parse("--cull=on"));
+    try testing.expect(options.cull);
+    for ([_][]const u8{ "--msaa=2", "--msaa", "--cull", "--cull=yes", "--cull=OFF" }) |bad| {
+        try testing.expect(!options.parse(bad));
+    }
+}
+
+test "the crate grid leaves the room's cells empty, and places the rest in a fixed order" {
+    const grid: Grid = .{ .side = 9, .spacing = 2.4, .clearance = 3.5 };
+    var placed: u32 = 0;
+    var first: ?Grid.Cell = null;
+    for (0..grid.cells()) |i| {
+        const cell = grid.cell(@intCast(i)) orelse continue;
+        try testing.expect(@abs(cell.position.x) >= 3.5 or @abs(cell.position.z) >= 3.5);
+        if (first == null) first = cell;
+        placed += 1;
+    }
+    // Nine to a side, less the three by three that 0 and ±2.4 make inside ±3.5.
+    try testing.expectEqual(@as(u32, 81 - 9), placed);
+    try testing.expectEqual(@as(f32, -9.6), first.?.position.x);
+    try testing.expectEqual(@as(f32, -9.6), first.?.position.z);
+
+    const empty: Grid = .{ .side = 0, .spacing = 2.4, .clearance = 3.5 };
+    try testing.expectEqual(@as(u32, 0), empty.cells());
+    const one: Grid = .{ .side = 1, .spacing = 2.4, .clearance = 0 };
+    try testing.expectEqual(Vec3.zero, one.cell(0).?.position);
 }

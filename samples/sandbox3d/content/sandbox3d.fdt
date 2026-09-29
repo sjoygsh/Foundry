@@ -1,8 +1,32 @@
-# The 3D sandbox's content package (`docs/design/render3d.md` §8).
+# The 3D sandbox's content package (`docs/design/render3d.md` §8, `docs/design/meshes.md` §9).
 #
-# The meshes are built by the sample, because M19 has no mesh importer yet; what the sample
-# is told -- its window, its clear colour, how fast things turn and which font it writes
-# in -- is here, and a package loaded after this one changes any of it without a rebuild.
+# Since M20 the scene is content: `models/room.gltf` and `models/crate.gltf`, written by
+# `scripts/m20/make_scene.py` and imported by the package compiler into `foundry:model`,
+# `foundry:mesh`, `foundry:material` and `foundry:texture` records. The spinning cube on the
+# table is still built by the sample, with a material made in code, so the code path and the
+# content path are seen drawing the same way. What the sample is told -- its window, its clear
+# colour, its models and how the camera moves -- is here, and a package loaded after this one
+# changes any of it without a rebuild.
+
+# The room's import, written only because one default is wrong for it: its glass should be a
+# material someone can find by name and edit, rather than `sandbox3d:models.room.material6`.
+foundry:model_import sandbox3d:models.room {
+    source    "models/room.gltf"
+    materials [ { name "Glass"  material sandbox3d:materials.glass } ]
+}
+
+foundry:material sandbox3d:materials.glass {
+    base_color   { r 0.55  g 0.75  b 0.85  a 0.35 }
+    alpha_mode   "blend"
+    double_sided true
+}
+
+# One crate in the grid draws with this in place of its own material: a slot override, for one
+# draw, on a model every other crate shares.
+foundry:material sandbox3d:materials.crate_painted {
+    base_color         { r 0.35  g 0.55  b 1.0  a 1.0 }
+    base_color_texture sandbox3d:models.crate.texture0
+}
 
 @schema config {
     # The window, in logical points. The window exists before content loads, so the sample
@@ -15,9 +39,26 @@
     # encodes it.
     clear_linear [f32]
 
-    # Radians per second, about each mesh's own axis. The floor does not turn.
+    # Radians per second, about the cube's own axis.
     cube_radians_per_second f32 (default 0.6)
-    slab_radians_per_second f32 (default 0.35)
+
+    # The camera circles the room's centre at this rate, radius and height, looking at the
+    # table. Radians per second and metres (ADR-0048).
+    orbit_radians_per_second f32 (default 0.15)
+    orbit_radius f32 (default 7.5)
+    orbit_height f32 (default 5.0)
+
+    # What is drawn. `crate_override` replaces the crate's one slot for one crate of the grid.
+    room id
+    crate id
+    crate_override id
+
+    # A square grid of crates, `crate_grid` to a side and `crate_spacing` metres apart, centred
+    # on the room. A cell within `crate_clearance` metres of the centre on both axes would stand
+    # inside the walls, and is left empty.
+    crate_grid u32 (default 9)
+    crate_spacing f32 (default 2.4)
+    crate_clearance f32 (default 3.5)
 
     # From `foundry:core`: a cross-package reference is an ordinary id.
     font id
@@ -29,6 +70,13 @@ config sandbox3d:config.main {
     height 720
     clear_linear [ 0.010 0.012 0.018 1.0 ]
     cube_radians_per_second 0.6
-    slab_radians_per_second 0.35
+    orbit_radians_per_second 0.15
+    orbit_radius 7.5
+    orbit_height 5.0
+    room sandbox3d:models.room
+    crate sandbox3d:models.crate
+    crate_override sandbox3d:materials.crate_painted
+    crate_grid 9
+    crate_spacing 2.4
     font foundry:fonts.debug
 }

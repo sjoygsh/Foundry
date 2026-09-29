@@ -1,7 +1,7 @@
 # Design: M20 — Meshes: runtime formats, glTF import, textures with mips, materials and culling
 
-**Status:** Accepted 2026-09-27 when the owner requested Step 1. Steps 1 to 7 of nine are
-complete; Step 8 has not begun. §14 records the accepted choices.
+**Status:** Accepted 2026-09-27 when the owner requested Step 1. Steps 1 to 8 of nine are
+complete; Step 9 has not begun. §14 records the accepted choices.
 **Date:** 2026-09-27
 **Baseline:** `a8cbd64`, tag `m19`. M0–M19 are complete.
 **Decisions:**
@@ -1272,3 +1272,152 @@ declared**; the new selection test compiles only into Vulkan builds) and **1,829
 `-Drhi=metal`**, with fmt, all four `check` variants, the three thirty-frame samples, and,
 because Vulkan code changed, both `vulkan-check` targets and the three Vulkan `check` lines.
 Step 8 is next.
+
+## Resolution — Step 8: `sandbox3d`'s scene (2026-09-29)
+
+Step 8 implements §9 and records §11's runnable result. It stops before the close.
+
+**The scene.** `scripts/m20/make_scene.py` writes `samples/sandbox3d/content/models/`, and its
+output is committed:
+- **Files:** `room.gltf` with `room.bin`, `crate.gltf` with `crate.bin`, and four PNGs beside
+  them;
+- **The room:**
+  - a floor whose checker repeats six times;
+  - four single-sided brick walls, one mesh placed four times, facing inward;
+  - a table whose top carries its four legs as child nodes;
+  - a crate and a mirrored copy of it (scale `(-1, 1, 1)`);
+  - a potted plant whose crossed leaf quads are alpha-masked and double-sided;
+  - a glass pane that blends.
+
+Each box face bakes a tone into `COLOR_0`, because the unlit model would otherwise draw a box as
+one flat silhouette. The crate's texture carries an F on each face, so a mirrored crate reads
+mirrored. The script uses no clock and no `random`; rerunning it rewrites the same bytes.
+
+**The package:**
+- **An import record for the room.** It maps the glTF material `Glass` to an authored
+  `sandbox3d:materials.glass`. That is §6.2's mapping in use, and it gives the reload test a
+  material with a name.
+- **`sandbox3d:materials.crate_painted`** tints the crate's generated texture
+  (`sandbox3d:models.crate.texture0`). One crate of the grid wears it as a slot override.
+- **`sandbox3d:config`:** §9's model IDs, orbit rate and grid, plus four fields §9 did not
+  name. `orbit_radius` and `orbit_height` place the camera. `crate_override` names the
+  override material. `crate_clearance` says how close to the centre a crate may not stand,
+  which keeps the room's size out of the sample's code. `slab_radians_per_second` is gone with
+  the slab. Every field is validated with a fallback, as M19's were.
+- **The manifest's summary** now describes the scene.
+
+**The sample:**
+- **Drawing:** the room and a 9 × 9 grid of crates (72 placed, with the three by three inside
+  the walls left empty) are drawn by content ID through `render3d.Content`. M19's cube still
+  spins on the table from code with a code-made material; the slab and floor meshes are gone.
+- **Camera:** it orbits at the fixed step. From outside, the near walls' backs are culled, so
+  the room is seen into.
+- **Overlay:** the line shows the backend, sample count, draws, culled, blended and frame time.
+- **Reload:** `refresh` calls `Content.contentChanged` whenever the engine's content generation
+  moves, then follows any change to the configured IDs.
+- **Command line:** `--cull=on|off` sits beside `--msaa`.
+- **Imports:** the sample still imports no `rhi`.
+- **Tests:** they pin the options and the grid's placement.
+
+**A Step 6 defect, fixed.** `Content.deinit` destroyed its materials and freed its models
+without releasing the texture and mesh references they held, so `unloadWith` warned at every
+exit that fourteen assets were "still held". Teardown now releases each reference first. No
+test observes it, because `unloadWith` removes the entries and their counts together. The
+evidence is the sample's clean exit, headless and windowed.
+
+**§11.8, reload, in a macOS/Metal dev run.** Each edit was made to the source, followed by
+`zig build install` while the sample ran, and each was captured:
+- **The checker PNG** changed to green squares. The texture reloaded, and the material that
+  binds it was rebuilt in place.
+- **The glass's `base_color`** in the `.fdt` changed to a denser red. The package reloaded,
+  and the pane changed.
+- **The crate in `room.gltf`** moved across the room, and the part followed.
+- **A truncated `room.gltf`** failed `fpack` with `models/room.gltf: error: JSON document is
+  invalid or over its limits: InvalidJson`. The running sample kept drawing what it had, and
+  exited 0.
+
+§11 names `room.glb`; the scene is a `.gltf`, and the equivalent file was corrupted. The design
+said "a material's `base_color`" and the pane was used because it is always in view; the
+crate override material is off-screen for much of the orbit.
+
+**§11.5, determinism.** From the same sources, `sandbox3d.fpk` and all 19 installed files under
+`content/sandbox3d/` hash identically on macOS (ReleaseSafe, Metal) and on Windows (ReleaseSafe,
+Vulkan). The 19 files are the sources and every generated `.fmesh`.
+
+**§11.9, external evidence.**
+- **Khronos sample models:** 21 of `glTF-Sample-Assets`' `.glb` files were fetched at
+  verification time and never committed. Each was imported as its own package after a
+  lowercase rename, because derivation transforms nothing and `BoxTextured.glb` is refused as an
+  ID segment.
+  - **15 import:** Avocado, Box, BoxInterleaved, BoxTextured, BoxVertexColors, Duck, Lantern,
+    MetalRoughSpheres, MultiUVTest, NegativeScaleTest, OrientationTest, TextureCoordinateTest,
+    ToyCar, VertexColorTest and WaterBottle.
+  - **Refused by name:**
+    - AlphaBlendModeTest, CesiumMilkTruck and DamagedHelmet: a JPEG image ("re-export it as
+      PNG");
+    - BrainStem and Fox: `JOINTS_0`, until M24;
+    - TextureSettingsTest: disagreeing `wrapS` and `wrapT`.
+  - **Warnings,** every one a kind §6.5 names: lit material fields, `TANGENT`, cameras, skins,
+    animations, extensions used but not imported, and an ignored `KHR_texture_transform`.
+  - AnimatedCube and Suzanne have no `.glb`.
+- **Blender:** Blender 5.1.2 re-exported `room.gltf` as a `.glb` with embedded images. It
+  imported with no diagnostic, to 8 meshes and 4 generated PNGs.
+
+**The runnable result, macOS/Metal** (ReleaseSafe, relocated install, Apple M5, 60 Hz display):
+- **Captures:**
+  - at 4× and at 1×, and the 1× edges stair-step where the 4× ones do not;
+  - the mirrored crate's F is reversed;
+  - the plant's leaves are cut out, and the glass pane blends over the floor;
+  - the overlay read 59 draws, 29 culled, 1 blended.
+- **Window handling:** System Events resized the window to 900 × 560 and to 1400 × 800 (fitted
+  to 1375 × 800), each captured. Minimised, it left the on-screen list, and it was restored and
+  captured. All 1,500 frames exited 0.
+- **Pacing, last 240 frames, 4×:**
+
+  | Culling | Draws | Culled | Median | p95 | `render.world` median |
+  | --- | --- | --- | --- | --- | --- |
+  | On | 62 | 26 | 16.662 ms | 17.274 ms | 0.180 ms |
+  | Off | 88 | 0 | 16.693 ms | 17.546 ms | 0.184 ms |
+
+**The runnable result, Windows/Vulkan** (ReleaseSafe, relocated install, Arc A750):
+- **Setup:** Zig and the SDK off `PATH`, `APPDATA` in a scratch root, and a desktop session
+  through an interactive scheduled task.
+- **Validation:** the layer reported core, synchronization, stateless, object lifetime, thread
+  safety and handle wrapping enabled. It logged **no errors and no warnings**.
+- **Captures:** at 4× and at 1×, 1280 × 720. The scene matches macOS's, mirrored crate
+  included.
+- **Window handling:** `SetWindowPos` gave a 944 × 561 client, which was captured. `ShowWindow`
+  minimised it: iconic, 103 frames skipped. It restored and was captured again. `WM_CLOSE` ended
+  it with exit 0.
+- **Pacing, last 240 frames, 4×:** with validation, median 16.666 ms and p95 16.668 ms.
+- **Culling on and off, with every loader layer disabled** (which also shows the install needs
+  nothing from the SDK):
+
+  | Culling | Draws | Culled | Median | p95 | `render.world` median |
+  | --- | --- | --- | --- | --- | --- |
+  | On | 58 | 30 | 16.666 ms | 16.667 ms | 0.083 ms |
+  | Off | 88 | 0 | 16.666 ms | 16.667 ms | 0.090 ms |
+
+**Culling's measured value is small here, and that is recorded, not argued away.** With about
+90 draws, turning culling off costs a few microseconds of CPU, and the display rate hides the
+rest. The equivalence readbacks (Steps 6 and 7) prove it changes no pixel. The scene is too
+small to show what it saves.
+
+**Guards verified by mutation,** each restored byte for byte:
+- clearing a cell when either axis is inside the clearance failed the grid test;
+- ignoring `--cull=off` failed the options test.
+
+`dist` was not staged. It stages only `room`, `sandbox` and the editor, and none of their
+content or asset kinds changed.
+
+**The bar:**
+- **macOS:** **1,822 of 1,823 headless tests** (the existing skip; **1,903 declared**) and
+  **1,830 of 1,841 on `-Drhi=metal`**, with fmt, all four `check` variants and the three
+  thirty-frame samples. `sandbox` and `room` still pass theirs. The Linux and Windows Vulkan
+  `check` lines passed too.
+- **Windows:** from the `Foundry-m20` worktree with every file differing from `origin/main`
+  overlaid and hash-checked, `zig build test -Drhi=vulkan` passed **126 of 126 steps, 1,854 of
+  1,873 (19 skips)**, with validation required and no validation message. Step 7's intermittent
+  timing tests passed in this run.
+
+Step 9, the close, is next.

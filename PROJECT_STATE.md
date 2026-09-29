@@ -2,12 +2,34 @@
 
 **Last updated:** 2026-09-29
 **Current handoff: M19 is complete (2026-09-27, tag `m19`). M20, Meshes, is accepted and Steps 1
-to 7 of nine are complete. Stop before Step 8.** Read [`docs/design/meshes.md`](docs/design/meshes.md),
-whose Step 1–7 Resolutions record the implementation and its corrections. ADR-0055 is
-accepted. Next is Step 8 only: `sandbox3d`'s glTF scene (§9). That covers the generator and
-its committed output, `--cull`, relocated runs on macOS and Windows, §11's live reload,
-determinism across hosts, external glTF evidence and pacing. None of it exists yet: `sandbox3d`
-still draws code-built meshes.
+to 8 of nine are complete. Stop before Step 9.** Read [`docs/design/meshes.md`](docs/design/meshes.md),
+whose Step 1–8 Resolutions record the implementation and its corrections. ADR-0055 is
+accepted. Next is Step 9 only, the close:
+- confirm §10's Linux assessment;
+- resolve the contract discrepancies §12 lists in `3d.md`, `render3d.md`, `assets.md` and
+  `rhi.md`;
+- update CLAUDE.md §9's 3D row, the roadmap, the design index and this file;
+- tag `m20`.
+
+Push only when asked.
+
+**M20 Step 8 is done (2026-09-29).** `sandbox3d` draws a glTF scene by content ID: a room with a
+table hierarchy, a mirrored crate, a masked plant and a blended pane, and a grid of 72 crates
+outside it, one with a slot override. M19's code-built cube spins on the table. The scene is
+written by `scripts/m20/make_scene.py`, whose output is committed. `--cull=on|off` joins
+`--msaa`.
+- **Reload:** a macOS dev run followed a PNG edit, a material edit and a moved node. A
+  corrupted glTF failed the build while the sample kept drawing.
+- **Determinism:** the package and all of its installed files hash identically on macOS and
+  Windows.
+- **External glTF:** 15 of 21 Khronos sample models import, and the other 6 are refused by
+  name. Blender's re-export of the room imports cleanly.
+- **Relocated runs:** both platforms passed, with captures at 1× and 4×, resize, minimise and
+  restore, and a clean exit. Windows ran with validation required and logged nothing.
+- **Pacing:** culling on and off both hold the display rate.
+- **Teardown:** a Step 6 defect is fixed: `Content.deinit` now releases what it holds.
+- **The bar:** **1,822 of 1,823 headless (1,903 declared)** and **1,830 of 1,841 on Metal**;
+  Windows' Vulkan graph passed **1,854 of 1,873 (19 skips)**.
 
 **M20 Step 7 is done (2026-09-29).** Steps 5 and 6's readbacks pass on Windows/Vulkan (Intel Arc
 A750) at 1× and 4×, matching Metal with no tolerance per backend. Validation is now required in
