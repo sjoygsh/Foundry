@@ -395,7 +395,9 @@ sample's window by its title as well as its process, since the process can own o
 windows. A minimised window's frames are skipped, paced only by the samples' one-step sleep, so
 bound a run that minimises by closing the window, not by a frame count.
 
-The backend tests require validation and fail, never skip, without it. Set
+The backend tests require validation and fail, never skip, without it. Since M20 Step 7 so does
+every `-Drhi=vulkan` test binary: `Device.init` requires validation when `builtin.is_test`, so a
+renderer test that provokes a message fails like a backend test. Set
 `VK_LOADER_LAYERS_DISABLE=~implicit~` for them as for any qualifying run. Their surface test opens
 an SDL window; started over SSH on Windows, that window stays in the SSH session and never reaches
 the desktop. `vulkan-window-test` presents to real windows, minimises and restores them, so on a

@@ -1049,7 +1049,7 @@ ADR-0054 accepted. Exit condition met: draw order no longer decides what is visi
 - Linux was compile-only by design, and no trigger fired. At the owner's request the Vulkan graph
   and a windowed run were also confirmed on the M18 Ubuntu machine.
 
-**M20, Meshes, is accepted; Steps 1–6 of nine are complete** —
+**M20, Meshes, is accepted; Steps 1–7 of nine are complete** —
 [`meshes.md`](design/meshes.md), with ADR-0055 accepted. Step 1 pins the canonical `.fmesh`,
 the widened mesh table, the material/model/import records, texture schema v3 compatibility and
 exact TRS decomposition. Step 2 adds deterministic CPU mip chains and a consumer's own loader
@@ -1060,7 +1060,7 @@ records return through the ordinary checker. Step 5 gives `render3d` its shading
 registry, materials, private texture and mesh loaders, alpha modes and mirrored draws, proved by
 readbacks on Metal. Step 6 adds frustum culling and `render3d.Content`, which draws a compiled
 package's models by content ID and follows their reloads; an imported quad draws byte-identically
-to the same quad built in code. The remaining steps are:
-- Vulkan on Windows;
+to the same quad built in code. Step 7 reruns those readbacks on Windows/Vulkan with validation
+required for every test, which found and fixed an unenabled core feature. The remaining steps are:
 - `sandbox3d`'s glTF scene;
 - the close.

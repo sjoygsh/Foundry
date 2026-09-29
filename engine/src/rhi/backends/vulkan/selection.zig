@@ -59,6 +59,9 @@ pub const Candidate = struct {
     api_version: u32,
     dynamic_rendering: bool,
     synchronization2: bool,
+    /// Vulkan 1.3 requires it of every device. Checked anyway, because glslang turns a
+    /// fragment's `discard` into `OpDemoteToHelperInvocation` for SPIR-V 1.6 (M20 Step 7).
+    shader_demote_to_helper_invocation: bool,
     timeline_semaphore: bool,
     swapchain: bool,
     /// Whether any queue family supports graphics.
@@ -72,6 +75,7 @@ pub const Unmet = struct {
     vulkan_1_3: bool = false,
     dynamic_rendering: bool = false,
     synchronization2: bool = false,
+    shader_demote_to_helper_invocation: bool = false,
     timeline_semaphore: bool = false,
     graphics_queue: bool = false,
     present_queue: bool = false,
@@ -100,6 +104,7 @@ pub const Unmet = struct {
         .vulkan_1_3 = "Vulkan 1.3",
         .dynamic_rendering = "dynamicRendering",
         .synchronization2 = "synchronization2",
+        .shader_demote_to_helper_invocation = "shaderDemoteToHelperInvocation",
         .timeline_semaphore = "timelineSemaphore",
         .graphics_queue = "a graphics queue",
         .present_queue = "a graphics queue that presents to the surface",
@@ -112,6 +117,7 @@ pub fn unmet(candidate: Candidate, needs: Needs) Unmet {
         .vulkan_1_3 = !meetsFloor(candidate.api_version),
         .dynamic_rendering = !candidate.dynamic_rendering,
         .synchronization2 = !candidate.synchronization2,
+        .shader_demote_to_helper_invocation = !candidate.shader_demote_to_helper_invocation,
         .timeline_semaphore = !candidate.timeline_semaphore,
         .graphics_queue = !candidate.graphics,
         .present_queue = candidate.graphics and candidate.queue_family == null,
@@ -163,6 +169,7 @@ fn qualifying(index: u32, device_type: DeviceType) Candidate {
         .api_version = apiVersion(1, 4),
         .dynamic_rendering = true,
         .synchronization2 = true,
+        .shader_demote_to_helper_invocation = true,
         .timeline_semaphore = true,
         .swapchain = true,
         .graphics = true,
@@ -223,6 +230,10 @@ test "each missing requirement refuses a device and names what it lacks" {
     var no_sync2 = qualifying(0, .discrete);
     no_sync2.synchronization2 = false;
     try expectOnlyUnmet(no_sync2, .{}, "synchronization2");
+
+    var no_demote = qualifying(0, .discrete);
+    no_demote.shader_demote_to_helper_invocation = false;
+    try expectOnlyUnmet(no_demote, .{}, "shader_demote_to_helper_invocation");
 
     var no_timeline = qualifying(0, .discrete);
     no_timeline.timeline_semaphore = false;

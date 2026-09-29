@@ -45,7 +45,7 @@ const assert = core.assert;
 const log = core.log.scoped(.rhi);
 
 pub const Validation = enum {
-    /// No layer and no messenger. What `init` uses.
+    /// No layer and no messenger. What `init` uses outside a test build.
     off,
     /// `VK_LAYER_KHRONOS_validation` with synchronization validation, reported through
     /// `core.log`. Initialization fails if any of it is unavailable, rather than running
@@ -76,7 +76,7 @@ pub const Stage = enum {
     create_swapchain,
 };
 
-/// How a device is brought up. `init` takes the defaults.
+/// How a device is brought up. `init` takes the defaults, except in a test build.
 pub const Options = struct {
     validation: Validation = .off,
     /// The layer `.required` validation asks for. Test only: naming one that is not installed is
@@ -424,8 +424,11 @@ pub const Device = struct {
     /// The extent the host last asked for, which decides the swapchain's where the surface lets it.
     requested_extent: resource.Extent2D = .{ .width = 0, .height = 0 },
 
+    /// In a test build validation is required, so every `-Drhi=vulkan` test that reaches a
+    /// device through `rhi` runs validated, not only this file's own: a renderer's readback that
+    /// provokes an error fails like a backend test does (`docs/design/meshes.md`, Step 7).
     pub fn init(gpa: Allocator, desc: interface.DeviceDesc) interface.InitError!*Device {
-        return initWith(gpa, desc, .{});
+        return initWith(gpa, desc, .{ .validation = if (builtin.is_test) .required else .off });
     }
 
     pub fn initWith(gpa: Allocator, desc: interface.DeviceDesc, options: Options) interface.InitError!*Device {
@@ -2359,6 +2362,7 @@ pub const Device = struct {
             .api_version = props.apiVersion,
             .dynamic_rendering = false,
             .synchronization2 = false,
+            .shader_demote_to_helper_invocation = false,
             .timeline_semaphore = false,
             .swapchain = false,
             .graphics = false,
@@ -2373,6 +2377,7 @@ pub const Device = struct {
             self.instance_fns.vkGetPhysicalDeviceFeatures2(physical, &features);
             candidate.dynamic_rendering = v13.dynamicRendering != 0;
             candidate.synchronization2 = v13.synchronization2 != 0;
+            candidate.shader_demote_to_helper_invocation = v13.shaderDemoteToHelperInvocation != 0;
             candidate.timeline_semaphore = v12.timelineSemaphore != 0;
         }
 
@@ -2418,6 +2423,8 @@ pub const Device = struct {
             .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
             .synchronization2 = c.VK_TRUE,
             .dynamicRendering = c.VK_TRUE,
+            // `render3d`'s mask fragment discards, which SPIR-V 1.6 spells as a demote.
+            .shaderDemoteToHelperInvocation = c.VK_TRUE,
         };
         var v12: c.VkPhysicalDeviceVulkan12Features = .{
             .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,

@@ -1329,3 +1329,14 @@ automatic window-system choice, the `dlopen`ed loader and both surface kinds, on
 with Mesa ANV under Xorg, sway and GNOME. It needed no change to this backend. The one fault it
 found was in `platform`: a second `Platform`'s shutdown quit SDL under the first, which only
 Wayland made fatal.
+
+## Note — 2026-09-29, M20 Step 7: validation in every test, and one more floor feature
+
+Every `-Drhi=vulkan` test binary now runs with validation required: `Device.init` asks for it when
+`builtin.is_test`. Before this, only this backend's own tests used it, so the full graph's
+renderer tests ran with no validation layer at all, despite §10's wording. That uncovered a
+fault. The mask fragment M20 added discards, glslang spells that as `OpDemoteToHelperInvocation`
+for SPIR-V 1.6, and the device had not enabled `shaderDemoteToHelperInvocation`. §5.1's floor
+now includes that feature. Vulkan 1.3 requires it of every device, so no qualifying device is
+lost. Selection reads it and refuses a device without it by name, and `createDevice` enables it.
+See `meshes.md`, Step 7's Resolution.

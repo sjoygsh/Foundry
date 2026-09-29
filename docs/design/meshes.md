@@ -1,7 +1,7 @@
 # Design: M20 — Meshes: runtime formats, glTF import, textures with mips, materials and culling
 
-**Status:** Accepted 2026-09-27 when the owner requested Step 1. Steps 1 to 6 of nine are
-complete; Step 7 has not begun. §14 records the accepted choices.
+**Status:** Accepted 2026-09-27 when the owner requested Step 1. Steps 1 to 7 of nine are
+complete; Step 8 has not begun. §14 records the accepted choices.
 **Date:** 2026-09-27
 **Baseline:** `a8cbd64`, tag `m19`. M0–M19 are complete.
 **Decisions:**
@@ -1206,3 +1206,69 @@ The bar passed at **1,821 of 1,822 headless tests** (the existing skip; **1,902 
 **1,829 of 1,840 on `-Drhi=metal`** (11 null-only skips), with fmt, all four `check` variants and
 the three thirty-frame samples. No shader, Vulkan or ABI source changed, so the Vulkan checks'
 trigger did not fire. The Vulkan readbacks for Steps 5 and 6 are Step 7's. Step 7 is next.
+
+## Resolution — Step 7: Vulkan, proved on Windows (2026-09-29)
+
+Step 7 runs Steps 5 and 6's readbacks on the native Windows/Vulkan graph, and stops before the
+sample:
+
+- **Validation is now required for every Vulkan test, not only the backend's.** Until this step,
+  only `backends/vulkan/backend.zig`'s own tests asked for `.required` validation. Everything
+  that reached a device through `rhi.Device.init` ran with no layer at all: the render2d and
+  render3d readbacks and both model integration tests. That includes every Vulkan run of the
+  whole graph since M13. A loader-injected layer would not fix this. All the graph's test
+  processes share one log file, and each process truncates it. So `Device.init` now asks for
+  `.required` when `builtin.is_test`, with synchronization validation as before, and a
+  validation error fails the test that caused it through `core.log`. Outside a test build
+  nothing changes: the samples still get validation only from the loader, as AGENTS.md says.
+- **That found a real defect, Step 5's.** For SPIR-V 1.6, glslang compiles the mask fragment's
+  `discard` to `OpDemoteToHelperInvocation`. Validation refused every such shader module because
+  the device had not enabled `shaderDemoteToHelperInvocation`. The feature is part of core 1.3,
+  and 1.3 requires every device to support it. `createDevice` now enables it. Device selection
+  also reads it and refuses a device that lacks it, by name (`vulkan.md` §5.1's floor grows by
+  one feature that excludes no 1.3 device). The first validated run failed seven test binaries,
+  including the whole of `model_content.zig` and `model_loaders.zig`. With the feature enabled,
+  no validation message remains.
+- **Metal's results hold on Vulkan, with no tolerance per backend.** At 1× and 4×, on the Intel
+  Arc A750 through Vulkan 1.4, these match Metal:
+  - the mask edge is blue or green and never a blend;
+  - the half-alpha blend reads 188;
+  - the mirrored single-sided quad is visible;
+  - the cull-equivalence scene is byte-identical with culling on and off, with `culled = 3`;
+  - the model drawn by content ID reads back byte-identically to the code-built quad.
+
+  Step 3's mip and colour-space readbacks still pass in the same graph.
+
+**§10's triggers did not fire.** No mip readback needed a per-backend tolerance, and no
+validation message named the driver. The demote refusal named a core feature that the
+backend had not enabled. Nothing touched presentation, formats or the swapchain: the one device
+change is a feature every 1.3 driver has, so Linux stays compile-only. The Linux Vulkan
+`check` and `vulkan-check` lines build it.
+
+**Guards verified by mutation on the PC,** each restored byte for byte:
+- `lineWidth = 0`, a validation error that changes no pixel, failed 18 tests: every render3d
+  readback, all of `model_content.zig` and `model_loaders.zig`, and render2d's. Before this
+  step, all of them would have passed;
+- mapping `clockwise` to `VK_FRONT_FACE_COUNTER_CLOCKWISE` failed exactly the mirrored-winding
+  readback.
+
+A selection test refuses a device without the feature by its Vulkan name.
+
+**Evidence.** The PC ran from the `Foundry-m20` worktree at `3366e81`, with Step 6's twelve
+files and this step's two overlaid and hash-checked. It used `-j2` at below-normal priority,
+over SSH, with implicit layers disabled. `zig build test -Drhi=vulkan` passed **1,852 of
+1,872, with 19 skips** (Step 3's count). The backend's own `vulkan-test` suite ran inside it,
+and no validation message appeared. Its one failure is not this step's:
+
+- **Intermittent timing failures on this PC**, in tests M20 does not touch. They are `engine`'s
+  and `settings_startup`'s one-frame content-watcher tests, and `os`'s two clock tests. Each
+  failed in some runs and passed in others. In one run a 5 ms sleep measured under 5 ms on the
+  monotonic clock it waits on. Machine load lengthens a sleep, so load cannot cause that. All
+  of these tests passed here at Step 3. Step 8's Windows runs should check the PC's clock before
+  trusting any timing figure. The failures are recorded here, not fixed.
+
+On macOS the bar passed at **1,821 of 1,822 headless tests** (the existing skip; **1,902
+declared**; the new selection test compiles only into Vulkan builds) and **1,829 of 1,840 on
+`-Drhi=metal`**, with fmt, all four `check` variants, the three thirty-frame samples, and,
+because Vulkan code changed, both `vulkan-check` targets and the three Vulkan `check` lines.
+Step 8 is next.

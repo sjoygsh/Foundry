@@ -2,11 +2,27 @@
 
 **Last updated:** 2026-09-29
 **Current handoff: M19 is complete (2026-09-27, tag `m19`). M20, Meshes, is accepted and Steps 1
-to 6 of nine are complete. Stop before Step 7.** Read [`docs/design/meshes.md`](docs/design/meshes.md),
-whose Step 1–6 Resolutions record the implementation and its corrections. ADR-0055 is
-accepted. Next is Step 7 only: Steps 5 and 6's readbacks on the native Windows/Vulkan graph,
-with validation and synchronization validation required, and §10's trigger check. `sandbox3d`
-still draws code-built meshes; its glTF scene is Step 8's.
+to 7 of nine are complete. Stop before Step 8.** Read [`docs/design/meshes.md`](docs/design/meshes.md),
+whose Step 1–7 Resolutions record the implementation and its corrections. ADR-0055 is
+accepted. Next is Step 8 only: `sandbox3d`'s glTF scene (§9). That covers the generator and
+its committed output, `--cull`, relocated runs on macOS and Windows, §11's live reload,
+determinism across hosts, external glTF evidence and pacing. None of it exists yet: `sandbox3d`
+still draws code-built meshes.
+
+**M20 Step 7 is done (2026-09-29).** Steps 5 and 6's readbacks pass on Windows/Vulkan (Intel Arc
+A750) at 1× and 4×, matching Metal with no tolerance per backend. Validation is now required in
+every `-Drhi=vulkan` test binary: `Device.init` asks for it under `builtin.is_test`. Before
+this, only the backend's own tests had validation, so every renderer readback on Vulkan had run
+without it. The first validated run found a defect from Step 5. The mask shader's `discard`
+compiles to `OpDemoteToHelperInvocation`, and the device had not enabled
+`shaderDemoteToHelperInvocation`. That feature is part of core 1.3 and now in the selection
+floor, so no qualifying device is lost. §10's Linux triggers did not fire. Two mutations on the
+PC failed their tests and were restored. `zig build test -Drhi=vulkan` passed **1,852 of 1,872
+(19 skips)** with no validation message. Its one failure is an intermittent timing test outside
+M20. The PC has intermittent watcher and clock failures, including a 5 ms sleep that measured
+shorter; they are recorded in the Resolution, not fixed. macOS is unchanged: **1,821 of 1,822
+headless (1,902 declared)** and **1,829 of 1,840 on Metal**, and the full bar and the Vulkan
+checks passed.
 
 **M20 Step 6 is done (2026-09-29).** `render3d/frustum.zig` culls: normalised Gribb–Hartmann
 planes for reversed-Z `[0, 1]` depth, built in `begin`, and Arvo world bounds per draw. A draw is
