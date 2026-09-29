@@ -1,18 +1,29 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-29
-**Current handoff: M20 is complete (2026-09-29, tag `m20`). M21's design is proposed
-([`docs/design/hierarchy.md`](docs/design/hierarchy.md); no new ADR, ADR-0050 decides it); awaiting
-the owner's acceptance of its §13. Stop before Step 1.** The design has six steps:
-1. `scene`: the three components, and what content may author;
-2. propagation;
-3. re-parenting and the despawn cascade;
-4. the hierarchy in the debug overlay;
-5. `sandbox3d`'s orrery on macOS and Windows;
-6. the close.
+**Current handoff: M20 is complete (2026-09-29, tag `m20`). M21, Hierarchy, is accepted
+([`docs/design/hierarchy.md`](docs/design/hierarchy.md); ADR-0050) and Step 1 of six is complete.
+Stop before Step 2.** Step 2 is propagation (§4 and §6):
+- `propagate` and the `foundry:systems.propagate_transforms` system;
+- the four read calls;
+- the repair table for unvalidated data;
+- the 1 ms budget measurement.
 
-Nothing of it exists in code. Read [`docs/design/meshes.md`](docs/design/meshes.md)'s
-Resolutions for what M20 built.
+None of it exists yet. Neither does re-parenting or the cascade (Step 3), the overlay (Step 4)
+or the sample (Step 5).
+
+**M21 Step 1 is done (2026-09-29).**
+- **`scene/hierarchy.zig`:** declares `foundry:transform` (`core.Transform`'s layout,
+  validated where it enters), `foundry:parent` (`{ entity }`) and a field-less, never-saved
+  `foundry:world_transform`.
+- **`World.enableHierarchy()`:** registers all three or none, once.
+- **Content:** it may author a transform, and never a parent. The compiler does not know the
+  schema, and `spawn` refuses a hand-built one as `ParentNotAuthorable` before creating
+  anything.
+- **A `derive` defect from M5, fixed:** nested defaults were taken from the nested type rather
+  than the field, so an authored transform without `scale` collapsed.
+- **Tests:** four mutations each failed their test and were restored.
+- **The bar:** **1,831 of 1,832 headless (1,912 declared)** and **1,839 of 1,850 on Metal**.
 
 **M20 is closed (2026-09-29, Step 9).** Its exit condition holds: a glTF file is imported into
 Foundry's representations, nothing downstream of the compiler knows it was glTF, and a

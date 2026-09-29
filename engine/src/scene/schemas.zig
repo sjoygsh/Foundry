@@ -7,11 +7,11 @@
 //!
 //! ```fdt
 //! # Each component instance is a record, with its own content id.
-//! foundry:transform  sandbox:player.transform  { x 0  y 0 }
+//! sandbox:position   sandbox:player.position   { x 0  y 0 }
 //! foundry:sprite     sandbox:player.sprite     { texture sandbox:textures.hero }
 //!
 //! foundry:entity sandbox:entity.player {
-//!     components [ sandbox:player.transform  sandbox:player.sprite ]
+//!     components [ sandbox:player.position  sandbox:player.sprite ]
 //! }
 //!
 //! foundry:scene sandbox:scene.main {
@@ -63,9 +63,14 @@ pub const scene: Schema = .{
     },
 };
 
-pub const all = [_]Schema{ entity, scene };
+/// What content may author. `foundry:transform` is here, and `foundry:parent` and
+/// `foundry:world_transform` deliberately are not: a package naming either fails to compile
+/// with the ordinary unknown-schema diagnostic (`hierarchy.md` §3.3).
+pub const all = [_]Schema{ entity, scene, hierarchy.transform_schema };
 
-/// Registers both into a registry, so content can use them without declaring them.
+const hierarchy = @import("hierarchy.zig");
+
+/// Registers them into a registry, so content can use them without declaring them.
 ///
 /// Called by `fpack` before it compiles a package, exactly as it calls
 /// `asset.schemas.registerAll`. Re-registering an identical schema is how two packages that
@@ -84,11 +89,16 @@ test "the engine's entity schemas register, and are what content will be checked
     defer registry.deinit(gpa);
 
     try registerAll(gpa, &registry);
-    try testing.expectEqual(@as(u32, 2), registry.count());
+    try testing.expectEqual(@as(u32, 3), registry.count());
 
     // Idempotent, because two packages that both use one each carry a copy of it.
     try registerAll(gpa, &registry);
-    try testing.expectEqual(@as(u32, 2), registry.count());
+    try testing.expectEqual(@as(u32, 3), registry.count());
+
+    // The transform content can author, and nothing a parent could be read from.
+    try testing.expect(registry.lookup(data.SchemaId.fromStringUnchecked("foundry:transform")) != null);
+    try testing.expect(registry.lookup(data.SchemaId.fromStringUnchecked("foundry:parent")) == null);
+    try testing.expect(registry.lookup(data.SchemaId.fromStringUnchecked("foundry:world_transform")) == null);
 
     const held = registry.lookup(entity.id).?;
     try testing.expectEqualStrings("components", held.fields[0].name);

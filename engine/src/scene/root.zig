@@ -25,6 +25,7 @@
 pub const component = @import("component.zig");
 pub const derive = @import("derive.zig");
 pub const entity = @import("entity.zig");
+pub const hierarchy = @import("hierarchy.zig");
 pub const limits = @import("limits.zig");
 pub const query = @import("query.zig");
 pub const save = @import("save.zig");
@@ -66,6 +67,7 @@ test {
     _ = component;
     _ = derive;
     _ = entity;
+    _ = hierarchy;
     _ = limits;
     _ = query;
     _ = save;

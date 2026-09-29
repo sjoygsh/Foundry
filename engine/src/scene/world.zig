@@ -19,6 +19,7 @@ const data = @import("data");
 
 const component = @import("component.zig");
 const entity_mod = @import("entity.zig");
+const hierarchy_mod = @import("hierarchy.zig");
 const limits_mod = @import("limits.zig");
 const query_mod = @import("query.zig");
 const save_mod = @import("save.zig");
@@ -109,6 +110,11 @@ pub const SpawnError = error{
     /// they share. Deserializing anyway would read the right bytes into the wrong field —
     /// the failure that looks like a physics bug three days later.
     ComponentSchemaMismatch,
+    /// The template names a `foundry:parent` record. A parent is an `Entity`, which means
+    /// something only inside the world that made it, so content never authors one
+    /// (`hierarchy.md` §3.3). The compiler does not know the schema; this guards a store built
+    /// some other way.
+    ParentNotAuthorable,
 } || CreateError || ComponentError || component.DeserializeError;
 
 pub const World = struct {
@@ -157,6 +163,11 @@ pub const World = struct {
     /// What systems split their own queries with. Borrowed from the host, and `serial` until
     /// one is set; the world itself never splits anything (ADR-0036).
     executor: core.Jobs = core.jobs.serial,
+
+    /// The engine's transform types, once `enableHierarchy` has registered them. Kept here
+    /// rather than beside the world, because a rule such as the despawn cascade has to hold
+    /// for every caller of the world, not only for callers that know a helper exists.
+    hierarchy: ?hierarchy_mod.Types = null,
 
     pub fn init(gpa: Allocator, schemas: *data.Registry, limits: Limits) World {
         return .{
@@ -279,6 +290,34 @@ pub const World = struct {
             info.schema.version,
         });
         return handle;
+    }
+
+    /// Registers `foundry:transform`, `foundry:parent` and `foundry:world_transform`, and
+    /// makes this a world with a hierarchy (`hierarchy.md` §3.1). A second call returns the
+    /// same types, so a host and a library that both enable it do not conflict.
+    ///
+    /// **All three or none.** Every refusal registration could give is checked for all three
+    /// before the first is registered, so a world never ends up with a transform and no
+    /// parent. As with any registration it must come before the first entity.
+    pub fn enableHierarchy(self: *World) RegisterError!hierarchy_mod.Types {
+        if (self.hierarchy) |types| return types;
+        if (self.entities.capacity() != 0) return error.WorldNotEmpty;
+        if (self.types.count() + 3 > self.limits.max_component_types) return error.ComponentTypeLimit;
+        const infos = [_]ComponentTypeInfo{
+            hierarchy_mod.transformInfo(),
+            hierarchy_mod.parentInfo(),
+            hierarchy_mod.worldTransformInfo(),
+        };
+        for (infos) |info| {
+            if (self.by_schema.contains(info.schema.id.hash)) return error.ComponentTypeExists;
+        }
+        const types: hierarchy_mod.Types = .{
+            .transform = try self.registerComponent(infos[0]),
+            .parent = try self.registerComponent(infos[1]),
+            .world_transform = try self.registerComponent(infos[2]),
+        };
+        self.hierarchy = types;
+        return types;
     }
 
     /// The component type registered for a schema, or null. This is the lookup that turns
@@ -683,13 +722,26 @@ pub const World = struct {
         const record = store.lookup(template_id) orelse return error.NoSuchRecord;
         if (!record.schema_id.eql(schemas_mod.entity.id)) return error.NotAnEntityTemplate;
 
+        const index = record.schema.fieldIndex("components");
+        const list = if (index) |i| try record.fields.listAt(i) else null;
+
+        // Before anything is created, so a refused template leaves no entity behind even
+        // for an instant.
+        if (list) |components| {
+            const parent_id = data.SchemaId.fromStringUnchecked(hierarchy_mod.parent_name);
+            for (0..components.len) |i| {
+                const component_id = (try components.idAt(@intCast(i))) orelse return error.Malformed;
+                const named = store.lookup(component_id) orelse continue;
+                if (named.schema_id.eql(parent_id)) return error.ParentNotAuthorable;
+            }
+        }
+
         const entity = try self.create();
         errdefer _ = self.destroy(entity);
 
-        const index = record.schema.fieldIndex("components") orelse return entity;
-        const list = (try record.fields.listAt(index)) orelse return entity;
-        for (0..list.len) |i| {
-            const component_id = (try list.idAt(@intCast(i))) orelse return error.Malformed;
+        const components = list orelse return entity;
+        for (0..components.len) |i| {
+            const component_id = (try components.idAt(@intCast(i))) orelse return error.Malformed;
             try self.attach(store, entity, component_id);
         }
         return entity;
@@ -842,14 +894,14 @@ const Fixture = struct {
 fn transformInfo() ComponentTypeInfo {
     return .{
         .schema = .{
-            .id = data.SchemaId.fromStringUnchecked("foundry:transform"),
+            .id = data.SchemaId.fromStringUnchecked("test:position"),
             .version = 1,
             .fields = &.{
                 .{ .name = "x", .type = .f32, .presence = .{ .default = .{ .float = 0 } } },
                 .{ .name = "y", .type = .f32, .presence = .{ .default = .{ .float = 0 } } },
             },
         },
-        .name = "foundry:transform",
+        .name = "test:position",
         .size = 8,
         .alignment = 4,
     };
@@ -933,12 +985,12 @@ test "registering a component type registers its schema" {
     try testing.expectEqual(@as(u32, 1), f.world.componentTypeCount());
 
     const info = f.world.componentInfo(transform).?;
-    try testing.expectEqualStrings("foundry:transform", info.name);
+    try testing.expectEqualStrings("test:position", info.name);
     try testing.expectEqual(@as(u32, 8), info.size);
     try testing.expectEqual(@as(u32, 8), info.stride);
 
     // Findable by the schema id, which is the lookup content goes through.
-    const found = f.world.findComponent(data.SchemaId.fromStringUnchecked("foundry:transform"));
+    const found = f.world.findComponent(data.SchemaId.fromStringUnchecked("test:position"));
     try testing.expect(found != null);
     try testing.expect(found.?.eql(transform));
 
@@ -1051,7 +1103,7 @@ test "a schema extended after registration is followed, not shadowed" {
     // A package loaded later extends the schema, additively, as a mod adding a field
     // would. The registry updates it in place behind the handle...
     _ = try f.schemas.register(gpa, .{
-        .id = data.SchemaId.fromStringUnchecked("foundry:transform"),
+        .id = data.SchemaId.fromStringUnchecked("test:position"),
         .version = 2,
         .fields = &.{
             .{ .name = "x", .type = .f32, .presence = .{ .default = .{ .float = 0 } } },
@@ -1291,7 +1343,7 @@ test "component types iterate in registration order and carry their counts" {
 
     const first = it.next().?;
     try testing.expect(first.type.eql(transform));
-    try testing.expectEqualStrings("foundry:transform", first.name);
+    try testing.expectEqualStrings("test:position", first.name);
     try testing.expectEqual(@as(u32, 8), first.size);
     try testing.expectEqual(@as(u32, 1), first.count);
     // Hand-written registrations carry no serializer, so a save leaves this type out.
@@ -1650,4 +1702,144 @@ test "a template with no components spawns a bare entity" {
     const entity = try f.world.spawn(&f.store, f.id("test:entity.bare"));
     try testing.expect(f.world.contains(entity));
     try testing.expectEqual(@as(u32, 1), f.world.entityCount());
+}
+
+// -- the hierarchy's registration and content rules (`hierarchy.md` §3) -----------------
+
+test "enabling the hierarchy registers the engine's three types, once" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa, .default);
+    defer f.deinit(gpa);
+
+    const types = try f.world.enableHierarchy();
+    try testing.expectEqual(@as(u32, 3), f.world.componentTypeCount());
+    for ([_][]const u8{ "foundry:transform", "foundry:parent", "foundry:world_transform" }) |name| {
+        try testing.expect(f.world.findComponent(data.SchemaId.fromStringUnchecked(name)) != null);
+    }
+    try testing.expectEqualStrings("foundry:transform", f.world.componentInfo(types.transform).?.name);
+    // Saved: the local pose and the parent. Not saved: the derived world pose.
+    try testing.expect(f.world.componentInfo(types.transform).?.savable());
+    try testing.expect(f.world.componentInfo(types.parent).?.savable());
+    try testing.expect(!f.world.componentInfo(types.world_transform).?.savable());
+
+    // A second call is the same types, and registers nothing.
+    const again = try f.world.enableHierarchy();
+    try testing.expect(again.transform.eql(types.transform) and again.parent.eql(types.parent));
+    try testing.expectEqual(@as(u32, 3), f.world.componentTypeCount());
+
+    // Once entities exist it is still the same answer, not a refusal: it is already on.
+    _ = try f.world.create();
+    _ = try f.world.enableHierarchy();
+}
+
+test "the hierarchy cannot be enabled late, or half-way" {
+    const gpa = testing.allocator;
+    {
+        const f = try Fixture.init(gpa, .default);
+        defer f.deinit(gpa);
+        _ = try f.world.create();
+        try testing.expectError(error.WorldNotEmpty, f.world.enableHierarchy());
+        try testing.expectEqual(@as(u32, 0), f.world.componentTypeCount());
+    }
+    {
+        // A game that took one of the names first: nothing is registered, not two of three.
+        const f = try Fixture.init(gpa, .default);
+        defer f.deinit(gpa);
+        _ = try f.world.registerComponent(hierarchy_mod.parentInfo());
+        try testing.expectError(error.ComponentTypeExists, f.world.enableHierarchy());
+        try testing.expectEqual(@as(u32, 1), f.world.componentTypeCount());
+        try testing.expect(f.world.hierarchy == null);
+    }
+    {
+        const f = try Fixture.init(gpa, .{ .max_component_types = 2 });
+        defer f.deinit(gpa);
+        try testing.expectError(error.ComponentTypeLimit, f.world.enableHierarchy());
+        try testing.expectEqual(@as(u32, 0), f.world.componentTypeCount());
+    }
+}
+
+test "a template authors a transform, and the defaults fill what it leaves out" {
+    const gpa = testing.allocator;
+    const f = try ContentFixture.init(gpa);
+    defer f.deinit();
+
+    const types = try f.world.enableHierarchy();
+    try f.load(
+        \\foundry:transform test:moon.transform { translation { x 0.4  y 1.5  z -2.0 } }
+        \\foundry:entity test:entity.moon { components [ test:moon.transform ] }
+    );
+
+    const moon = try f.world.spawn(&f.store, f.id("test:entity.moon"));
+    const t: *const hierarchy_mod.Transform = @ptrCast(@alignCast(f.world.getComponent(moon, types.transform).?.ptr));
+    try testing.expectEqual(core.math.Vec3.init(0.4, 1.5, -2.0), t.translation);
+    try testing.expectEqual(core.math.Quat.identity, t.rotation);
+    try testing.expectEqual(core.math.Vec3.one, t.scale);
+}
+
+test "a transform that is not a pose is refused where it enters" {
+    const gpa = testing.allocator;
+    const f = try ContentFixture.init(gpa);
+    defer f.deinit();
+
+    _ = try f.world.enableHierarchy();
+    try f.load(
+        \\foundry:transform test:bad.transform { rotation { x 0  y 0  z 0  w 2 } }
+        \\foundry:entity test:entity.bad { components [ test:bad.transform ] }
+        \\foundry:transform test:flat.transform { scale { x 0  y -1  z 1 } }
+        \\foundry:entity test:entity.flat { components [ test:flat.transform ] }
+    );
+
+    // A rotation that is not a unit quaternion is not a pose, and nothing is left behind.
+    try testing.expectError(error.ValueOutOfRange, f.world.spawn(&f.store, f.id("test:entity.bad")));
+    try testing.expectEqual(@as(u32, 0), f.world.entityCount());
+    // A zero or negative scale is a pose: collapsing or mirroring is a thing to author.
+    _ = try f.world.spawn(&f.store, f.id("test:entity.flat"));
+}
+
+test "content cannot author a parent, at compile time or at spawn" {
+    const gpa = testing.allocator;
+    {
+        // The compiler does not know the schema, so the package does not build.
+        const f = try ContentFixture.init(gpa);
+        defer f.deinit();
+        if (f.load(
+            \\foundry:parent test:moon.parent { entity 4294967297 }
+        )) |_| return error.TestExpectedError else |_| {}
+        var named = false;
+        for (f.diags.items.items) |d| {
+            if (std.mem.indexOf(u8, d.message, "foundry:parent") != null) named = true;
+        }
+        try testing.expect(named);
+    }
+    {
+        // A store built some other way, with the schema registered by hand: `spawn` refuses
+        // the template before creating anything.
+        const f = try ContentFixture.init(gpa);
+        defer f.deinit();
+        _ = try f.world.enableHierarchy();
+        _ = try f.content_schemas.register(gpa, hierarchy_mod.parentInfo().schema);
+        try f.load(
+            \\foundry:transform test:moon.transform { }
+            \\foundry:parent test:moon.parent { entity 4294967297 }
+            \\foundry:entity test:entity.moon { components [ test:moon.transform  test:moon.parent ] }
+        );
+        const before = f.world.mutationGeneration();
+        try testing.expectError(error.ParentNotAuthorable, f.world.spawn(&f.store, f.id("test:entity.moon")));
+        try testing.expectEqual(@as(u32, 0), f.world.entityCount());
+        try testing.expectEqual(before, f.world.mutationGeneration());
+    }
+}
+
+test "a world transform cannot be built from data either" {
+    const gpa = testing.allocator;
+    const f = try ContentFixture.init(gpa);
+    defer f.deinit();
+    _ = try f.world.enableHierarchy();
+    _ = try f.content_schemas.register(gpa, hierarchy_mod.worldTransformInfo().schema);
+    try f.load(
+        \\foundry:world_transform test:w.world { }
+        \\foundry:entity test:entity.w { components [ test:w.world ] }
+    );
+    try testing.expectError(error.NotConstructibleFromData, f.world.spawn(&f.store, f.id("test:entity.w")));
+    try testing.expectEqual(@as(u32, 0), f.world.entityCount());
 }

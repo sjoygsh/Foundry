@@ -1,6 +1,7 @@
 # Design: M21 — Hierarchy: the engine's transform components, propagation, re-parenting and 3D in the overlay
 
-**Status:** Proposed 2026-09-29; awaiting the owner's acceptance of §13. No step has begun.
+**Status:** Accepted 2026-09-29, when the owner requested Step 1; §13 is accepted as written.
+Step 1 of six is complete; Step 2 has not begun.
 **Date:** 2026-09-29
 **Baseline:** `00f39d3`, tag `m20`. M0–M20 are complete.
 **Decisions:**
@@ -572,3 +573,73 @@ Nothing blocks Step 1 once these are accepted. Each is recommended as written:
 | 9 | `sandbox3d` gains `scene` and `debug`, its own `sandbox3d:model` and `sandbox3d:spin` components, and an orrery with a sheared child, F5/F9 save and load, and F6/F7 keep-world demonstrations | §8 |
 | 10 | Nothing enters the public ABI in M21; v6 (M25) publishes the names and the read calls | §3.5 |
 | 11 | Linux: compile only, with §9's trigger | §9 |
+
+## Resolution — Step 1: the components, and what content may author (2026-09-29)
+
+Step 1 implements §3 and stops before propagation.
+
+**What exists now:**
+- **`engine/src/scene/hierarchy.zig`** holds the three types:
+  - **`Transform`** (`foundry:transform`) is an `extern struct` with `core.Transform`'s
+    layout. A comptime check pins its size, alignment and field offsets, so `fromCore` and
+    `toCore` are bit casts. It needs its own type only because a component's name is a
+    declaration on the type, and `core` cannot carry `scene`'s names.
+  - **`Parent`** (`foundry:parent`) is `{ entity }`.
+  - **`WorldTransform`** (`foundry:world_transform`) is a column-major `Mat4`, registered by
+    hand with a field-less schema, no serializer and no deserializer, constructed as the
+    identity.
+  - **`Types`** holds the three handles one world registered.
+- **The transform's registration** is `componentType`'s with its deserializer wrapped, so a
+  pose `isValid` refuses is `ValueOutOfRange` wherever it enters, from a template or a save.
+  `transform_schema` is the same derived value, so content and the world cannot disagree
+  about a field or a default.
+- **`World.enableHierarchy()`** registers the three and records them in `World.hierarchy`. It
+  checks the entity count, the type limit and all three names before registering any, so a
+  refusal (`WorldNotEmpty`, `ComponentTypeLimit`, `ComponentTypeExists`) leaves nothing
+  registered. Once it is enabled, a second call returns the same types, even after entities
+  exist.
+- **`World.spawn`** scans the template's component records before creating anything, and
+  refuses one naming `foundry:parent` as the new `SpawnError.ParentNotAuthorable`. The check
+  is by schema ID, so it holds whether or not the world enabled the hierarchy.
+  `foundry:world_transform` in a template is `NotConstructibleFromData`, as §3.3 expected.
+- **`scene.schemas.all`** gains `foundry:transform`, and not the other two. A package naming
+  `foundry:parent` fails to compile with the ordinary unknown-schema diagnostic.
+- **`scene.Limits.max_hierarchy_depth = 64`**, unused until Steps 2 and 3.
+- **The renames:** `world.zig`'s test fixture is `test:position`. `derive.zig`'s and
+  `schemas.zig`'s examples use a game's namespace. `entity-storage.md`'s examples wait for the
+  close, as §11 says.
+
+**What implementation found:**
+- **A `derive` defect from M5.** For a nested field, the schema default was built from each
+  sub-field's *type* default rather than from the outer field's value. `scale: Vec3 =
+  Vec3.one` therefore compiled to a schema default of `(0, 0, 0)`, while a component
+  constructed in code got `(1, 1, 1)`. A template that left out `scale` produced a collapsed
+  object. `valueOf` now reads `@field(v, sub.name)`, and a test pins it. No earlier component
+  had a nested default that differed from its type's, so no content or save changes meaning.
+- **`author`'s `engine_schema_names`** is the one place the engine schemas' spellings are
+  written down, for the editor's New Record form. Its test caught the missing
+  `foundry:transform`, which it now lists.
+
+**Tests** (§10 items 1 and 2):
+- the three types register under their names, saved or not as §3.2 says, and a second call
+  is a no-op;
+- enabling late, over a name a game already took, and past the type limit each refuse with
+  nothing registered;
+- a template authors a transform, with the rotation and scale defaults filled;
+- a non-unit rotation is refused with no entity left, and a zero or negative scale is accepted;
+- `foundry:parent` fails to compile, and a store built by hand is refused at spawn with the
+  world's mutation generation unchanged;
+- a world transform cannot be built from data;
+- `derive`'s nested default follows the outer value.
+
+**Guards verified by mutation,** each restored byte for byte:
+- the nested default read from the type failed the `derive` test and the authored-transform
+  test;
+- skipping the parent pre-scan failed the content test;
+- dropping the transform validation failed the refusal test;
+- dropping the all-or-nothing name check failed the half-way test.
+
+**The bar:** **1,831 of 1,832 headless tests** (the existing skip; **1,912 declared**) and
+**1,839 of 1,850 on `-Drhi=metal`**, with fmt, all four `check` variants, and the three
+thirty-frame samples, which logged no warnings. No Vulkan, shader, platform or ABI source
+changed. Step 2, propagation, is next.

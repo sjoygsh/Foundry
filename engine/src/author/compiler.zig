@@ -377,6 +377,7 @@ pub const engine_schema_names = [_][]const u8{
     asset.ui_theme.name,
     scene.schemas.entity_name,
     scene.schemas.scene_name,
+    scene.hierarchy.transform_name,
 };
 
 /// Reads `mod.fdt` and takes the package's id and version from the manifest record in it.

@@ -25,5 +25,10 @@ pub const Limits = struct {
     /// Registered systems. Engine, game and mod systems in one world.
     max_systems: u32 = 256,
 
+    /// Edges from a root to its deepest descendant, in a world with the hierarchy
+    /// (`hierarchy.md` §3.4). The bound M20's glTF import puts on a node chain. A chain that
+    /// would exceed it is refused when a parent is set, and cut when found in a save.
+    max_hierarchy_depth: u32 = 64,
+
     pub const default: Limits = .{};
 };

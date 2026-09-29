@@ -41,13 +41,13 @@ pub const SerializeError = component.SerializeError;
 /// The struct declares its own name:
 ///
 /// ```zig
-/// pub const Transform = struct {
-///     pub const component = "foundry:transform";
+/// pub const Position = struct {
+///     pub const component = "mygame:position";
 ///     x: f32 = 0,
 ///     y: f32 = 0,
 /// };
 ///
-/// const transform = try world.registerComponent(scene.componentType(Transform));
+/// const position = try world.registerComponent(scene.componentType(Position));
 /// ```
 ///
 /// `pub const component_version: u32` raises the schema version; it defaults to 1. Raising
@@ -188,18 +188,17 @@ fn valueOf(comptime F: type, comptime v: F, comptime where: []const u8) data.Val
         .bool => .{ .bool = v },
         .int => .{ .int = v },
         .float => .{ .float = v },
+        // The outer default's own values, not each sub-field's type default: `scale: Vec3 =
+        // Vec3.one` means one, whatever `Vec3`'s fields default to on their own. Reading the
+        // type's defaults instead made content and code disagree about "unspecified" for any
+        // nested default that was not the type's (found by M21 Step 1).
         .@"struct" => comptime blk: {
             const info = @typeInfo(F).@"struct";
             var named: [info.fields.len]data.NamedValue = undefined;
             for (info.fields, 0..) |sub, i| {
-                const sub_default = sub.defaultValue() orelse @compileError(
-                    where ++ " has a default, but its field '" ++ sub.name ++ "' does not. " ++
-                        "An inline struct's default has to name every value in it, so either " ++
-                        "give that field a default too or drop the outer one",
-                );
                 named[i] = .{
                     .name = sub.name,
-                    .value = valueOf(sub.type, sub_default, where ++ "." ++ sub.name),
+                    .value = valueOf(sub.type, @field(v, sub.name), where ++ "." ++ sub.name),
                 };
             }
             const frozen = named;
@@ -718,4 +717,17 @@ test "a component written by an older build keeps its defaults for the new field
 
     try testing.expectEqual(@as(f32, 4), out.x);
     try testing.expectEqual(true, out.solid);
+}
+
+test "a nested default is the outer field's value, not the nested type's own defaults" {
+    const Scaled = struct {
+        pub const component = "test:scaled";
+        // `Vec2`'s fields default to zero on their own; this field says one.
+        size: Vec2 = .{ .x = 1, .y = 1 },
+    };
+    const schema = componentType(Scaled).schema;
+    const default = schema.fields[0].presence.default.nested;
+    try testing.expectEqualStrings("x", default[0].name);
+    try testing.expectEqual(@as(f64, 1), default[0].value.float);
+    try testing.expectEqual(@as(f64, 1), default[1].value.float);
 }
