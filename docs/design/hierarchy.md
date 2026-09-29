@@ -1,7 +1,7 @@
 # Design: M21 — Hierarchy: the engine's transform components, propagation, re-parenting and 3D in the overlay
 
 **Status:** Accepted 2026-09-29, when the owner requested Step 1; §13 is accepted as written.
-Steps 1 to 3 of six are complete; Step 4 has not begun.
+Steps 1 to 4 of six are complete; Step 5 has not begun.
 **Date:** 2026-09-29
 **Baseline:** `00f39d3`, tag `m20`. M0–M20 are complete.
 **Decisions:**
@@ -834,3 +834,70 @@ header is unchanged. No Vulkan, shader or platform source changed.
 
 Every item on `3d.md` §10's M21 regression list now has a passing test. Step 4, 3D in the
 overlay, is next.
+
+## Resolution — Step 4: 3D in the overlay (2026-09-29)
+
+Step 4 implements §7 in `debug` and stops before the sample.
+
+**What exists now:**
+- **`debug` imports `render3d`,** in `build.zig` and in CLAUDE.md §4.3's layer list, as
+  §13's item 8 accepted. ADR-0025's layer diagram is append-only and still shows the old
+  list; the close records the addition beside it.
+- **`debug.Sources.world3d: ?*const render3d.Renderer`.** The profiler panel shows
+  `render3d.Stats` in two lines below `render2d`'s: draws, culled and blended, then
+  triangles and pipeline binds. Without a 3D renderer it says
+  "no 3D renderer (Sources.world3d)", because a missing line would read as a 3D game that
+  drew nothing.
+- **The entity inspector is a tree** when the world has the hierarchy. `entity_panel.treeOrder`
+  lists the roots in ascending slot index, each followed by its children the same way, then
+  the entities without a transform in slot order. Rows are indented two spaces per level, up
+  to twelve levels.
+- **The panel is headed by the last propagation's counts:** transforms, roots and depth on
+  one line, and the four repairs on the next. Before any propagation it says
+  "hierarchy: not propagated yet".
+- **The selection** shows:
+  - its parent (or "no parent"), its depth and its child count;
+  - its world translation from `worldTransform`;
+  - its rotation and scale when `fromMat4Exact` accepts the matrix, and otherwise
+    "sheared: not a transform";
+  - "world: not propagated yet" before the first propagation.
+
+  Its components follow through their serializers as before, so `foundry:transform` shows
+  its local fields, and `foundry:world_transform` reads "not saved, so not shown". It is
+  still read-only.
+
+**What implementation sharpened:**
+- **Two read calls in `scene.hierarchy`:** `enabled(world)` and `lastPropagation(world)`.
+  The overlay holds a `*const World` and cannot run a propagation to count one, so
+  `propagate` now keeps its last `PropagationStats` in the world's hierarchy state. Both
+  calls are ABI-shaped (ADR-0025), and v6 can publish them as they are.
+- **"Root" and "child" are the propagation's.** An entity is drawn under its stored parent
+  exactly when `depthOf` is not zero. So an orphan, a cycle member or an entity cut for depth
+  is drawn as a root, which is how it is being propagated. The child count is the number of
+  children drawn under it.
+- **The counts line is tested through its formatter.** A `render3d.Renderer` needs an
+  `rhi.Device`, and `debug` has no `rhi` by design (CLAUDE.md §4.3). The test gives
+  `describeStats3d` a `Stats` value and checks "no 3D renderer" from empty `Sources`.
+  `sandbox3d`, in Step 5, is the first host to hand over a real renderer.
+
+**Tests** (§10's overlay list):
+- the tree order of a six-entity world, with slots deliberately out of tree order and one
+  entity without a transform, and its child counts;
+- on null, `3d.md` §7.1's shearing parent and turned child:
+  - before propagation, both "not propagated yet" lines;
+  - after, the counts;
+  - the child indented under its parent, its parent and depth, its world translation, and
+    "sheared: not a transform";
+  - the parent's own pose decomposed to rotation and scale `2 1 1`, with no "sheared";
+- "no 3D renderer", and the two `render3d` counts lines.
+
+**Guards verified by mutation,** each restored byte for byte:
+- slot order in place of the tree failed both tree tests;
+- decomposing a fixed matrix in place of the world pose failed the sheared-child test;
+- dropping the indentation failed it too;
+- pushing children in the wrong order failed the tree-order test.
+
+**The bar:** **1,850 of 1,851 headless tests** (the existing skip; **1,931 declared**) and
+**1,858 of 1,869 on `-Drhi=metal`**, with fmt, all four `check` variants and the three
+thirty-frame samples, which logged no warnings. No Vulkan, shader, platform or ABI source
+changed. Step 5, `sandbox3d`'s nested moving objects, is next.

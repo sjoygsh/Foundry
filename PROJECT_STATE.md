@@ -2,13 +2,27 @@
 
 **Last updated:** 2026-09-29
 **Current handoff: M20 is complete (2026-09-29, tag `m20`). M21, Hierarchy, is accepted
-([`docs/design/hierarchy.md`](docs/design/hierarchy.md); ADR-0050) and Steps 1 to 3 of six are
-complete. Stop before Step 4.** Step 4 is 3D in the overlay (§7):
-- `debug` gains `render3d` in its imports;
-- the hierarchy's tree and world poses, and propagation's counts;
-- `render3d`'s counts line.
+([`docs/design/hierarchy.md`](docs/design/hierarchy.md); ADR-0050) and Steps 1 to 4 of six are
+complete. Stop before Step 5.** Step 5 is `sandbox3d`'s nested moving objects (§8):
+- `sandbox3d` gains `scene` and `debug`, and its own `sandbox3d:model` and `sandbox3d:spin`;
+- an orrery with a sheared child;
+- F5/F9 save and load, and F6/F7's keep-world demonstrations;
+- runs on macOS/Metal, and on Windows/Vulkan on the PC.
 
-None of it exists yet, and neither does the sample (Step 5).
+None of it exists yet.
+
+**M21 Step 4 is done (2026-09-29).**
+- **`debug` imports `render3d`** (build graph and CLAUDE.md §4.3).
+- **The profiler:** `Sources.world3d` gives `render3d`'s draws, culled, blended, triangles
+  and pipeline binds, or says "no 3D renderer".
+- **The entity inspector is a tree** when the world has the hierarchy: roots by slot index,
+  each followed by its subtree and indented by depth, then the entities without a transform.
+  It is headed by the last propagation's counts.
+- **The selection** shows its parent, depth, children and world pose, or
+  "sheared: not a transform".
+- **Two new read calls in `scene.hierarchy`:** `enabled` and `lastPropagation`.
+- **Mutations:** four, each of which failed its test and was restored.
+- **The bar:** **1,850 of 1,851 headless (1,931 declared)** and **1,858 of 1,869 on Metal**.
 
 **M21 Step 3 is done (2026-09-29).**
 - **`hierarchy.setParent`:** keeps the local pose, and accepts a sheared chain.

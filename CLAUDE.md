@@ -297,11 +297,12 @@ L4  author      -> core, data, platform, asset, mod, scene.
                 `ui`, no `audio` — it reads text and writes packages, so a workspace
                 unit-tests with no device, no window and no frame.
 
-L5  debug       -> core, data, ui, asset, render2d, scene, audio, app.
+L5  debug       -> core, data, ui, asset, render2d, render3d, scene, audio, app.
                 The in-process debug overlay: profiler, memory, log console, entity
                 inspector, content browser. Nothing in the engine depends on it; a game
                 opts in by importing it. No `platform`, no `rhi`, no `physics2d` — it
-                reads the engine's answers, not the devices under them.
+                reads the engine's answers, not the devices under them. `render3d`
+                joined at M21 for its frame counts (hierarchy.md §7).
 L5  abi         -> core, data, physics2d, platform, ui, asset, render2d, scene,
                 audio, app, author, mod, net.  The public C ABI, and the native mod
                 loader. A peer of `debug`, not a layer over `app` (ADR-0026). No `rhi`,

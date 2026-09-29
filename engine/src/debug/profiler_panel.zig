@@ -4,6 +4,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const core = @import("core");
+const render3d = @import("render3d");
 const ui = @import("ui");
 
 const overlay = @import("overlay.zig");
@@ -35,6 +36,7 @@ pub const State = struct {
             try view.line("profiler off (Config.profiler)", .{});
             try self.plotDelta(view);
             try describeRenderer(view);
+            try describeRenderer3d(view);
             try describeAudio(view);
             return;
         };
@@ -90,6 +92,7 @@ pub const State = struct {
         }
 
         try describeRenderer(view);
+        try describeRenderer3d(view);
         try describeAudio(view);
     }
 
@@ -124,6 +127,22 @@ fn describeRenderer(view: *View) Allocator.Error!void {
     });
 }
 
+/// `render3d`'s counts for the last frame it drew, beside `render2d`'s (`hierarchy.md` §7).
+/// Said to be absent rather than left out, because a 3D game whose line is missing would
+/// look like a 3D game that drew nothing.
+fn describeRenderer3d(view: *View) Allocator.Error!void {
+    const renderer = view.sources.world3d orelse {
+        try view.line("no 3D renderer (Sources.world3d)", .{});
+        return;
+    };
+    try describeStats3d(view, renderer.frameStats());
+}
+
+fn describeStats3d(view: *View, stats: render3d.Stats) Allocator.Error!void {
+    try view.line("3D: {d} draws  {d} culled  {d} blended", .{ stats.draws, stats.culled, stats.blended });
+    try view.line("3D: {d} triangles  {d} pipeline binds", .{ stats.triangles, stats.pipeline_binds });
+}
+
 fn describeAudio(view: *View) Allocator.Error!void {
     const mixer = view.sources.mixer orelse return;
     try view.line("{d} voices  {d} sounds  {d} commands dropped", .{
@@ -154,6 +173,22 @@ test "the panel says the profiler is off rather than showing an empty plot" {
     ctx.end();
 
     try testing.expect(overlay.findText(&ctx, "profiler off"));
+    try testing.expect(overlay.findText(&ctx, "no 3D renderer"));
+}
+
+test "render3d's frame counts are a line beside render2d's" {
+    var test_arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer test_arena.deinit();
+    var ctx = ui.Context.init(testing.allocator, overlay.testStyle());
+    defer ctx.deinit();
+    ctx.begin(.{}, .init(0, 0, 400, 300));
+    var view: View = .{ .ui = &ctx, .arena = test_arena.allocator(), .frame = .{}, .sources = .{} };
+    // A renderer needs a device, which `debug` has no way to make; the line is its stats.
+    try describeStats3d(&view, .{ .draws = 12, .culled = 3, .blended = 2, .triangles = 4096, .pipeline_binds = 5 });
+    ctx.end();
+
+    try testing.expect(overlay.findText(&ctx, "3D: 12 draws  3 culled  2 blended"));
+    try testing.expect(overlay.findText(&ctx, "3D: 4096 triangles  5 pipeline binds"));
 }
 
 test "the spans of a recorded frame are listed, nested ones indented" {

@@ -11,6 +11,12 @@
 //! `scene.save` does. It costs a copy of one entity's components into the frame arena and it
 //! cannot disagree with what a reload would restore.
 //!
+//! **With the hierarchy** (`hierarchy.md` §7), the list is a tree: roots by slot index, each
+//! followed by its subtree the same way and indented by depth, and then the entities without
+//! a transform. The selection shows its parent, depth, children and world pose, and says
+//! when that pose is sheared and so no transform at all. Everything it reads is one of
+//! `scene.hierarchy`'s read calls, which the ABI could publish as they are.
+//!
 //! **Read-only, deliberately** (§7.4). The write path exists and is not used here: whether an
 //! edit is a change to state or to content, what undo means, and what happens when a value is
 //! refused are the editor's questions, and the mechanism will still be there when it asks
@@ -19,6 +25,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const core = @import("core");
 const data = @import("data");
 const scene = @import("scene");
 const ui = @import("ui");
@@ -42,6 +49,97 @@ pub const Label = struct {
     field: u32,
 };
 
+/// The deepest indentation drawn. Deeper rows still sit in tree order; only their offset
+/// stops growing, so a 64-deep chain does not push its names off the panel.
+pub const max_indent = 12;
+
+/// One row of the list: an entity, and how far down its tree it is.
+pub const Row = struct { entity: scene.Entity, depth: u32 };
+
+/// The list, in the order it is drawn, and each entity's child count by slot index.
+pub const Tree = struct {
+    rows: []Row,
+    children: []u32,
+
+    pub fn childCount(self: Tree, entity: scene.Entity) u32 {
+        return if (entity.index < self.children.len) self.children[entity.index] else 0;
+    }
+};
+
+/// §7's order. Without the hierarchy it is slot order, as it always was. With it, the roots
+/// in ascending slot index, each followed by its children the same way, then everything
+/// without a transform in slot order. "Root" and "child" are the propagation's: an entity
+/// §6 set aside (an orphan, a cycle member, one cut too deep) is a root here too, because
+/// that is how it is being drawn.
+pub fn treeOrder(arena: Allocator, world: *const scene.World) Allocator.Error!Tree {
+    var all: std.ArrayList(scene.Entity) = .empty;
+    var slots: usize = 0;
+    var it = world.liveEntities();
+    while (it.next()) |e| {
+        try all.append(arena, e);
+        slots = @max(slots, @as(usize, e.index) + 1);
+    }
+    const rows = try arena.alloc(Row, all.items.len);
+    const children = try arena.alloc(u32, slots);
+    @memset(children, 0);
+    if (!scene.hierarchy.enabled(world)) {
+        for (rows, all.items) |*r, e| r.* = .{ .entity = e, .depth = 0 };
+        return .{ .rows = rows, .children = children };
+    }
+
+    // Each entity's drawn parent: the stored one when the propagation followed it, which is
+    // exactly when its depth is not zero.
+    const parent = try arena.alloc(?u32, slots);
+    const depth = try arena.alloc(u32, slots);
+    const handle = try arena.alloc(scene.Entity, slots);
+    for (all.items) |e| {
+        handle[e.index] = e;
+        depth[e.index] = scene.hierarchy.depthOf(world, e) orelse 0;
+        parent[e.index] = null;
+        if (depth[e.index] == 0) continue;
+        const p = scene.hierarchy.parentOf(world, e) orelse continue;
+        parent[e.index] = p.index;
+        children[p.index] += 1;
+    }
+    // Children grouped by parent, in slot order within each group.
+    const start = try arena.alloc(u32, slots + 1);
+    start[0] = 0;
+    for (0..slots) |i| start[i + 1] = start[i] + children[i];
+    const fill = try arena.dupe(u32, start[0..slots]);
+    const grouped = try arena.alloc(u32, start[slots]);
+    for (all.items) |e| {
+        const p = parent[e.index] orelse continue;
+        grouped[fill[p]] = e.index;
+        fill[p] += 1;
+    }
+
+    var out: usize = 0;
+    var stack: std.ArrayList(u32) = .empty;
+    for (all.items) |root| {
+        if (parent[root.index] != null) continue;
+        if (scene.hierarchy.depthOf(world, root) == null) continue;
+        try stack.append(arena, root.index);
+        while (stack.pop()) |index| {
+            rows[out] = .{ .entity = handle[index], .depth = depth[index] };
+            out += 1;
+            // Pushed last-first, so they come off in ascending slot order.
+            const mine = grouped[start[index]..start[index + 1]];
+            var i = mine.len;
+            while (i > 0) {
+                i -= 1;
+                try stack.append(arena, mine[i]);
+            }
+        }
+    }
+    for (all.items) |e| {
+        if (scene.hierarchy.depthOf(world, e) != null) continue;
+        rows[out] = .{ .entity = e, .depth = 0 };
+        out += 1;
+    }
+    std.debug.assert(out == rows.len);
+    return .{ .rows = rows, .children = children };
+}
+
 pub const State = struct {
     selected: ?scene.Entity = null,
     label: ?Label = null,
@@ -64,6 +162,8 @@ pub const State = struct {
         while (counting_types.next()) |_| types += 1;
 
         try view.line("{d} entities  {d} component types", .{ live, types });
+        if (scene.hierarchy.enabled(world)) try describePropagation(view, world);
+        const tree = try treeOrder(view.arena, world);
 
         const row = view.row();
         // Half the room for the list and half for what is in the selection, which is the
@@ -86,17 +186,18 @@ pub const State = struct {
         try ui.beginScroll(view.ui, list_id, area, window.contentHeight());
         ui.spacer(view.ui, window.before());
 
-        var index: usize = 0;
-        var entities = world.liveEntities();
-        while (entities.next()) |entity| : (index += 1) {
+        const indent = " " ** (2 * max_indent);
+        for (tree.rows, 0..) |r, index| {
             if (index < window.first) continue;
             if (index >= window.first + window.count) break;
+            const entity = r.entity;
             // Seeded by the row's absolute index rather than its position on screen, so a
             // row keeps its identity while the list scrolls under it.
             const id = view.ui.childIndex(index);
             const selected = if (self.selected) |s| s.eql(entity) else false;
-            const text = view.text("{s}#{d}.{d}{s}", .{
+            const text = view.text("{s}{s}#{d}.{d}{s}", .{
                 if (selected) "> " else "  ",
+                indent[0 .. 2 * @min(r.depth, max_indent)],
                 entity.index,
                 entity.generation,
                 self.labelOf(view, world, entity),
@@ -107,7 +208,7 @@ pub const State = struct {
         ui.spacer(view.ui, window.after());
         try ui.endScroll(view.ui);
 
-        try self.describeSelection(view, world);
+        try self.describeSelection(view, world, tree);
     }
 
     /// The label the game asked for, or nothing. Errors are nothing too: a label that cannot
@@ -119,7 +220,7 @@ pub const State = struct {
         return view.text("  {s}", .{overlay.valueText(view.arena, view.frame.store, value)});
     }
 
-    fn describeSelection(self: *State, view: *View, world: *const scene.World) anyerror!void {
+    fn describeSelection(self: *State, view: *View, world: *const scene.World, tree: Tree) anyerror!void {
         try ui.separator(view.ui);
 
         const entity = self.selected orelse {
@@ -136,6 +237,7 @@ pub const State = struct {
         }
 
         try view.line("#{d}.{d}", .{ entity.index, entity.generation });
+        try describePlace(view, world, tree, entity);
 
         var types = world.componentTypes();
         while (types.next()) |info| {
@@ -179,6 +281,42 @@ pub const State = struct {
         }
     }
 };
+
+/// The last propagation's counts, which head the panel (§7).
+fn describePropagation(view: *View, world: *const scene.World) Allocator.Error!void {
+    const stats = scene.hierarchy.lastPropagation(world) orelse {
+        try view.line("hierarchy: not propagated yet", .{});
+        return;
+    };
+    try view.line("hierarchy: {d} transforms  {d} roots  depth {d}", .{ stats.entities, stats.roots, stats.max_depth });
+    try view.line("repaired: {d} orphans  {d} cycles  {d} too deep  {d} invalid", .{
+        stats.orphans, stats.cycles, stats.too_deep, stats.invalid,
+    });
+}
+
+/// Where the selection is: parent, depth, children, and the world pose as the last
+/// propagation left it. A sheared pose is not a transform, and says so (`3d.md` §7.1).
+fn describePlace(view: *View, world: *const scene.World, tree: Tree, entity: scene.Entity) Allocator.Error!void {
+    const depth = scene.hierarchy.depthOf(world, entity) orelse return;
+    if (scene.hierarchy.parentOf(world, entity)) |p| {
+        try view.line("parent #{d}.{d}  depth {d}  {d} children", .{ p.index, p.generation, depth, tree.childCount(entity) });
+    } else {
+        try view.line("no parent  depth {d}  {d} children", .{ depth, tree.childCount(entity) });
+    }
+    const matrix = scene.hierarchy.worldTransform(world, entity) orelse {
+        try view.line("world: not propagated yet", .{});
+        return;
+    };
+    const t = matrix.cols[3];
+    try view.line("world translation {d:.3} {d:.3} {d:.3}", .{ t[0], t[1], t[2] });
+    const pose = core.math.Transform.fromMat4Exact(matrix) catch {
+        try view.line("sheared: not a transform", .{});
+        return;
+    };
+    const r = pose.rotation;
+    try view.line("world rotation {d:.3} {d:.3} {d:.3} {d:.3}", .{ r.x, r.y, r.z, r.w });
+    try view.line("world scale {d:.3} {d:.3} {d:.3}", .{ pose.scale.x, pose.scale.y, pose.scale.z });
+}
 
 // -- tests -----------------------------------------------------------------------------
 
@@ -351,4 +489,99 @@ test "no world is an answer rather than an absent panel" {
     ctx.end();
 
     try testing.expect(overlay.findText(&ctx, "no world"));
+}
+
+// -- the hierarchy (`hierarchy.md` §7) -----------------------------------------------
+
+fn hierarchyNode(world: *scene.World, types: scene.hierarchy.Types, local: core.math.Transform) !scene.Entity {
+    const e = try world.create();
+    const t: scene.hierarchy.Transform = .fromCore(local);
+    _ = try world.addComponent(e, types.transform, std.mem.asBytes(&t));
+    return e;
+}
+
+test "with the hierarchy the list is a tree: roots by slot, each followed by its subtree" {
+    var f = Fixture.init();
+    f.world = .init(testing.allocator, &f.schemas, .default);
+    defer f.deinit();
+    const types = try f.world.enableHierarchy();
+    const unit = core.math.Transform.identity;
+    // Slots: B0 N1 R2 C3 A4 S5, where N has no transform.
+    const b = try hierarchyNode(&f.world, types, unit);
+    const n = try f.world.create();
+    const r = try hierarchyNode(&f.world, types, unit);
+    const c = try hierarchyNode(&f.world, types, unit);
+    const a = try hierarchyNode(&f.world, types, unit);
+    const s = try hierarchyNode(&f.world, types, unit);
+    try scene.hierarchy.setParent(&f.world, a, r);
+    try scene.hierarchy.setParent(&f.world, b, r);
+    try scene.hierarchy.setParent(&f.world, c, a);
+
+    const tree = try treeOrder(f.arena.allocator(), &f.world);
+    const expected = [_]Row{
+        .{ .entity = r, .depth = 0 }, .{ .entity = b, .depth = 1 }, .{ .entity = a, .depth = 1 },
+        .{ .entity = c, .depth = 2 }, .{ .entity = s, .depth = 0 }, .{ .entity = n, .depth = 0 },
+    };
+    try testing.expectEqualSlices(Row, &expected, tree.rows);
+    try testing.expectEqual(@as(u32, 2), tree.childCount(r));
+    try testing.expectEqual(@as(u32, 1), tree.childCount(a));
+    try testing.expectEqual(@as(u32, 0), tree.childCount(n));
+}
+
+test "the inspector shows a sheared child as sheared, indented under its parent" {
+    var f = Fixture.init();
+    f.world = .init(testing.allocator, &f.schemas, .default);
+    defer f.deinit();
+    const types = try f.world.enableHierarchy();
+    // `3d.md` §7.1's example: a parent scaled (2, 1, 1), a child turned 45° about Z.
+    const parent = try hierarchyNode(&f.world, types, .{ .translation = .init(1, 2, 3), .scale = .init(2, 1, 1) });
+    const child = try hierarchyNode(&f.world, types, .{
+        .translation = .init(1, 0, 0),
+        .rotation = core.math.Quat.fromAxisAngle(.init(0, 0, 1), std.math.pi / 4.0),
+    });
+    try scene.hierarchy.setParent(&f.world, child, parent);
+
+    // Before any propagation, it says so rather than showing identities.
+    {
+        var state: State = .{ .selected = child };
+        var ctx = ui.Context.init(testing.allocator, overlay.testStyle());
+        defer ctx.deinit();
+        ctx.begin(.{}, .init(0, 0, 600, 600));
+        var view: View = .{ .ui = &ctx, .arena = f.arena.allocator(), .frame = .{}, .sources = .{ .world = &f.world } };
+        try State.describe(&state, &view);
+        ctx.end();
+        try testing.expect(overlay.findText(&ctx, "hierarchy: not propagated yet"));
+        try testing.expect(overlay.findText(&ctx, "world: not propagated yet"));
+    }
+
+    _ = try scene.hierarchy.propagate(&f.world);
+    var state: State = .{ .selected = child };
+    var ctx = ui.Context.init(testing.allocator, overlay.testStyle());
+    defer ctx.deinit();
+    ctx.begin(.{}, .init(0, 0, 600, 600));
+    var view: View = .{ .ui = &ctx, .arena = f.arena.allocator(), .frame = .{}, .sources = .{ .world = &f.world } };
+    try State.describe(&state, &view);
+    ctx.end();
+
+    try testing.expect(overlay.findText(&ctx, "hierarchy: 2 transforms  1 roots  depth 1"));
+    try testing.expect(overlay.findText(&ctx, "repaired: 0 orphans  0 cycles  0 too deep  0 invalid"));
+    // The parent at the left, the child selected and indented under it.
+    try testing.expect(overlay.findText(&ctx, "  #0.1"));
+    try testing.expect(overlay.findText(&ctx, ">   #1.1"));
+    try testing.expect(overlay.findText(&ctx, "parent #0.1  depth 1  0 children"));
+    try testing.expect(overlay.findText(&ctx, "world translation 3.000 2.000 3.000"));
+    try testing.expect(overlay.findText(&ctx, "sheared: not a transform"));
+
+    // The parent's own pose is a transform, and decomposes.
+    var parent_state: State = .{ .selected = parent };
+    var parent_ctx = ui.Context.init(testing.allocator, overlay.testStyle());
+    defer parent_ctx.deinit();
+    parent_ctx.begin(.{}, .init(0, 0, 600, 600));
+    view = .{ .ui = &parent_ctx, .arena = f.arena.allocator(), .frame = .{}, .sources = .{ .world = &f.world } };
+    try State.describe(&parent_state, &view);
+    parent_ctx.end();
+    try testing.expect(overlay.findText(&parent_ctx, "no parent  depth 0  1 children"));
+    try testing.expect(overlay.findText(&parent_ctx, "world rotation 0.000 0.000 0.000 1.000"));
+    try testing.expect(overlay.findText(&parent_ctx, "world scale 2.000 1.000 1.000"));
+    try testing.expect(!overlay.findText(&parent_ctx, "sheared"));
 }

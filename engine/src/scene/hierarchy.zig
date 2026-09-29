@@ -158,6 +158,8 @@ pub const State = struct {
     run: u64 = 0,
     /// How many repairs have been logged, ever. What a test reads to prove "once".
     reports: u64 = 0,
+    /// What the last propagation found, for the overlay (§7). Null until one has run.
+    last: ?PropagationStats = null,
     /// Scratch for walking descendants, one entry per `foundry:parent`: a depth for each,
     /// by the parent store's dense index, and the entities found. Reserved as each parent is
     /// added, so the cascade in `World.destroy`, which cannot fail, never allocates.
@@ -385,6 +387,7 @@ pub fn propagate(world: *World) Allocator.Error!PropagationStats {
         .invalid => stats.invalid += 1,
     };
     try report(world, state, repairs.items);
+    state.last = stats;
     return stats;
 }
 
@@ -460,6 +463,17 @@ fn transformOf(world: *const World, types: Types, entity: Entity) ?Transform {
 }
 
 // -- reading a pose (§4.3) -------------------------------------------------------------
+
+/// Whether this world carries the hierarchy (`World.enableHierarchy`).
+pub fn enabled(world: *const World) bool {
+    return world.hierarchy != null;
+}
+
+/// What the last propagation counted, or null if none has run (§7).
+pub fn lastPropagation(world: *const World) ?PropagationStats {
+    const state = world.hierarchy orelse return null;
+    return state.last;
+}
 
 /// The last propagation's world matrix. Between propagations it is last tick's (ADR-0050).
 /// Null for a stale entity, one without a transform, or one never propagated.
@@ -1035,6 +1049,7 @@ test "a hostile save loads, and propagates by the repair table, each repair logg
 
     var stats: PropagationStats = undefined;
     for (0..10) |_| stats = try propagate(&f.world);
+    try testing.expectEqual(stats, lastPropagation(&f.world).?);
     try testing.expectEqual(@as(u32, 1), stats.orphans);
     try testing.expectEqual(@as(u32, 2), stats.cycles);
     try testing.expectEqual(@as(u32, 1), stats.too_deep);

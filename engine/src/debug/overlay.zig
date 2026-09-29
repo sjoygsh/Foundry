@@ -11,6 +11,7 @@ const audio = @import("audio");
 const core = @import("core");
 const data = @import("data");
 const render2d = @import("render2d");
+const render3d = @import("render3d");
 const scene = @import("scene");
 const ui = @import("ui");
 
@@ -159,6 +160,9 @@ pub const Frame = struct {
 pub const Sources = struct {
     world: ?*const scene.World = null,
     renderer: ?*const render2d.Renderer = null,
+    /// The 3D renderer, for its frame counts (`hierarchy.md` §7). A game with two passes
+    /// hands over both renderers; a 2D game leaves this null and the profiler says so.
+    world3d: ?*const render3d.Renderer = null,
     mixer: ?*const audio.Mixer = null,
 };
 
