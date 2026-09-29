@@ -57,6 +57,12 @@ L5  abi     -> app                                                       (M7)
 > that the ABI needed the same answer one milestone later is the strongest evidence this
 > decision was right.
 
+> **`debug` gained `render3d`** at M21, 2026-09-29 ([`hierarchy.md`](../design/hierarchy.md)
+> §7, accepted by the owner as its §13 item 8): the profiler shows `render3d.Stats` beside
+> `render2d`'s, through an optional `Sources.world3d`. It points downward, L5 to L3, and is the
+> same kind of dependency as `render2d`'s. Recorded beside the line rather than in it; CLAUDE.md
+> §4.3 carries the current list.
+
 `physics2d` is deliberately absent: nothing in M6 asks it a question, and `build.zig` already
 states the rule that a dependency a module does not use is a claim about the architecture the
 build cannot check. It joins the day a panel wants body and broadphase counts.

@@ -1,6 +1,6 @@
 # ADR-0050: The engine declares the 3D transform and hierarchy components
 
-**Status:** Accepted 2026-09-27 (constraint only; M21 implements it)
+**Status:** Accepted 2026-09-27; implemented in M21, complete 2026-09-29 ([`hierarchy.md`](../design/hierarchy.md), tag `m21`)
 **Date:** 2026-09-27
 **Revised:** 2026-09-27, before any code depended on it. The owner asked for keep-world
 re-parenting to be defined exactly. It now names its checks, its tolerance and its errors, and it

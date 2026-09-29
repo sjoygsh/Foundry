@@ -500,6 +500,24 @@ whether an edit is a change to *state* or to *content* (and therefore whether it
 reload), what undo means, and what happens when a value is refused. Those are the editor's
 questions, `CLAUDE.md` §9 puts the editor at M15, and the mechanism will still be there.
 
+### 7.5 The hierarchy, since M21
+
+A world with the hierarchy enabled (`hierarchy.md` §7) changes §7.1's list and adds to the
+selection; nothing else here changes.
+
+* **The list is a tree** when the world has the hierarchy: roots in ascending slot index, each
+  followed by its children the same way, indented by depth (to at most twelve levels on
+  screen). Entities without `foundry:transform` follow in slot order. It is still §7.1's
+  enumeration, reordered in the frame arena; a world without the hierarchy lists as before.
+* **The selection** shows its parent, depth and child count, and its world pose from
+  `scene.hierarchy.worldTransform`: the translation, then the rotation and scale when
+  `fromMat4Exact` accepts the matrix, and otherwise **"sheared: not a transform"**. The derived
+  `foundry:world_transform` has no serializer, so §7.2 would show it as "not saved, so not
+  shown"; this line is how its value is seen.
+* **The last propagation's counts** head the panel, and the profiler adds `render3d`'s frame
+  counts when the host passes `Sources.world3d`, which put `render3d` into `debug`'s imports.
+
+Every one of these reads takes a `*const World` and answers by handle, as §3 requires.
 
 ## 8. The content browser
 

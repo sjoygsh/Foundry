@@ -5,6 +5,8 @@ scene defined in content data, updated by systems, saved and reloaded across a r
 fixed scenario run twice producing identical state. `samples/sandbox` holds entities rather
 than an array of sprites, and saves and reloads its world. The Resolution sections at the end
 record what each step settled.
+*Revised 2026-09-29 at M21's close:* the examples no longer use `foundry:transform` for a 2D
+position, because that name is now the engine's 3D pose, and §14 records the hierarchy M21 built.
 **Date:** 2026-09-05
 **Implements:** I1, I2, I3, I5, I6, I8, I9 · **Informed by:** ADR-0005, ADR-0006, ADR-0010,
 ADR-0013, ADR-0020, ADR-0021
@@ -172,7 +174,8 @@ is a schema cannot disagree with itself.
 
 The cost is that every component type occupies a name in the schema space, so a component and
 a record type cannot share a name. That is a feature: `foundry:transform` should mean one
-thing.
+thing. Since M21 it does: it is the engine's 3D local pose (`hierarchy.md` §3), so a game's own
+2D position takes the game's namespace, as the examples here now do.
 
 ---
 
@@ -275,15 +278,15 @@ ordinary one: collect entities into a frame-arena list, then act on them after t
 Native Zig code registers through a `comptime` helper that derives everything from the struct:
 
 ```zig
-pub const Transform = struct {
-    pub const component = "foundry:transform";
+pub const Position = struct {
+    pub const component = "sandbox:position";
     x: f32 = 0,
     y: f32 = 0,
     rotation: f32 = 0,
     scale: f32 = 1,
 };
 
-try world.registerComponent(scene.componentType(Transform));
+try world.registerComponent(scene.componentType(Position));
 ```
 
 `componentType` builds the schema from the struct's fields — Zig type to `FieldType`, a Zig
@@ -379,12 +382,12 @@ arbitrary components. It does have `[id]`, and that turns out to be the better s
 
 ```fdt
 # Each component instance is a record, with its own content ID.
-foundry:transform  sandbox:player.transform  { x 0  y 0 }
-foundry:sprite     sandbox:player.sprite     { texture sandbox:textures.hero  layer 1 }
+sandbox:position   sandbox:player.position   { x 0  y 0 }
+sandbox:sprite     sandbox:player.sprite     { texture sandbox:textures.hero  layer 1 }
 
 # A template is a list of them.
 foundry:entity sandbox:entity.player {
-    components [ sandbox:player.transform  sandbox:player.sprite ]
+    components [ sandbox:player.position  sandbox:player.sprite ]
 }
 
 # A scene is a list of templates. Naming one twice spawns it twice.
@@ -442,7 +445,7 @@ What a save contains:
 
 * **A component type table** — content ID, version and the full schema of every type present,
   carried in the file. A save can therefore be read against the schema it was written with,
-  and a build whose `foundry:transform` has gained a field fills that field from its default
+  and a build whose `sandbox:position` has gained a field fills that field from its default
   rather than misreading bytes. This is the same guarantee a package gives, achieved the same
   way: carry the schema, do not assume the reader's.
 * **The entity pool's exact state** — slot count, and per slot its generation and whether it is
@@ -575,7 +578,13 @@ Recorded rather than resolved, each with what would force it.
 
 * **Hierarchy and parenting.** A transform hierarchy is a component and a system, and it can be
   added without touching storage. Building it now would fix a policy — dirty flags, traversal
-  order, what happens to a child when a parent dies — with no consumer to judge it.
+  order, what happens to a child when a parent dies — with no consumer to judge it. *M21 built
+  it (ADR-0050, [`hierarchy.md`](hierarchy.md)), and the prediction held for storage, which
+  gained only `Store.reserve`.* The engine now declares its first component types —
+  `foundry:transform`, `foundry:parent` and `foundry:world_transform` — registered only by a
+  world that calls `World.enableHierarchy()`, so a 2D world still owns every type it has. Such a
+  world's `destroy` takes the entity's descendants with it, deepest first; content may author
+  `foundry:transform` and never `foundry:parent`.
 * **Change detection.** ADR-0010 defers it, and nothing since has needed it.
 * **Parallelism between systems.** M12 added parallel iteration *inside* one system and
   nothing else (ADR-0036, `jobs-and-threading.md`). `World.update` still runs systems in

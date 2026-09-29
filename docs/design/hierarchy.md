@@ -1,7 +1,7 @@
 # Design: M21 — Hierarchy: the engine's transform components, propagation, re-parenting and 3D in the overlay
 
-**Status:** Accepted 2026-09-29, when the owner requested Step 1; §13 is accepted as written.
-Steps 1 to 5 of six are complete; Step 6 has not begun.
+**Status:** Complete 2026-09-29, tag `m21`. Accepted when the owner requested Step 1; §13 is
+accepted as written. All six steps are walked.
 **Date:** 2026-09-29
 **Baseline:** `00f39d3`, tag `m20`. M0–M20 are complete.
 **Decisions:**
@@ -1042,3 +1042,62 @@ thirty-frame samples, which logged no warnings. Also:
 - **the Windows whole graph** above.
 
 No shader, RHI, platform or ABI source changed. Step 6, the close, is next.
+
+## Resolution — Step 6: Close M21 (2026-09-29)
+
+Step 6 changes documents only. No source, build or content file changed after Step 5
+(`4fa290b`), so Step 5's bar is the bar M21 closes on: **1,857 of 1,858 headless tests (1,938
+declared)**, **1,865 of 1,876 on `-Drhi=metal`**, and the PC's `-Drhi=vulkan` graph at **1,888 of
+1,907** (19 skips).
+
+**§9's Linux assessment holds.** Across `m20..4fa290b`, nothing in `platform`, `rhi`, the
+shaders, presentation or the C header changed: the diff is `scene`, `debug`, `abi`'s cascade
+test, one line of `author`'s schema list, `sandbox3d` and `build.zig`'s import lists. None of
+`3d.md` §10.2's triggers fired, and the Linux null cross-compile in the bar stood for it.
+
+**`3d.md` §10's M21 row holds as written.** Each required test is in the graph:
+- propagation independent of spawn order, and the sheared chain propagated exactly;
+- keep-local under that chain; keep-world under uniform and aligned scale, and over a sweep;
+- keep-world refused as `NotRepresentable` for a shearing parent, and for detaching a sheared
+  child; `SingularParent` for a zero and a `1e-7` scale; the reflection decomposed
+  canonically;
+- a byte-identical snapshot after every refusal;
+- the despawn cascade, including through hostile links;
+- the save round trip, to bit-identical world poses.
+
+Its runnable result is Step 5's orrery, on macOS/Metal and Windows/Vulkan.
+
+**Contract discrepancies resolved in their originating documents:**
+- **`entity-storage.md`:** its examples used `foundry:transform` for a 2D `{ x y }` position.
+  They are now `sandbox:position` (and `sandbox:sprite`, which was never an engine type
+  either). §14's "hierarchy deliberately not here" now records what M21 built: the engine's
+  first component types, registered only by a world that opts in, and a storage change of
+  one call (`Store.reserve`), as §14 predicted.
+- **`debug-overlay.md`** gains §7.5: the tree order, the selection's world pose or "sheared:
+  not a transform", the propagation's counts, and `render3d`'s counts through
+  `Sources.world3d`.
+- **`3d.md` §7** now says where the point is fixed: where the host registers
+  `foundry:systems.propagate_transforms`, unchecked until `before`/`after` constraints exist.
+  It also gains the depth limit's value (64 edges) and the per-world opt-in.
+- **ADR-0025** gains a dated note beside its layer line recording `render3d`. The ADR is
+  append-only, so the note sits beside the line rather than replacing it. ADR-0050's status
+  records its implementation.
+- **CLAUDE.md:**
+  - §4.3 lists `sandbox3d`'s grants;
+  - §4.1's hierarchy row names the opt-in and the cascade;
+  - §9's 3D row adds M21.
+
+  `debug`'s `render3d` was already in §4.3 from Step 4.
+
+**Unchanged:** `AGENTS.md`'s bar, since no step changed it. §12's open items stay open with
+their triggers. Nothing entered the public ABI, as §13's item 10 said.
+
+**Packed up:**
+- **The PC:**
+  - the `Foundry-m20` worktree is clean again, detached at `00f39d3`;
+  - the M21 working folders, the helper scripts and Codex's proof folders are deleted.
+    Codex's folders went unread, including the token file one held;
+  - a scheduled task Codex left is unregistered.
+- **The Mac:** the scratch runs are cleared.
+
+M21 is tagged `m21`. M22, Light, is next, and its design comes first.

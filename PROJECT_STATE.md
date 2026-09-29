@@ -1,14 +1,25 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-29
-**Current handoff: M20 is complete (2026-09-29, tag `m20`). M21, Hierarchy, is accepted
-([`docs/design/hierarchy.md`](docs/design/hierarchy.md); ADR-0050) and Steps 1 to 5 of six are
-complete. Stop before Step 6.** Step 6 closes M21 (§11):
-- confirm §9's Linux assessment;
-- correct `entity-storage.md`, `debug-overlay.md` §7, `3d.md` §7 and CLAUDE.md §4.3 (which
-  does not yet list `sandbox3d`'s new imports);
-- update CLAUDE.md §9's 3D row, the roadmap, the design index and this file;
-- tag `m21`, and stop before M22's design.
+**Current handoff: M21 is complete (2026-09-29, tag `m21`, not yet pushed).** Stop before
+M22's design. M22 is Light (`3d.md` §10): the lit model, lights, a shadow, HDR, and a content mod
+that changes the room. Its design document comes first, and nothing of it exists yet.
+
+**M21 is closed (Step 6, 2026-09-29).** Documents only; the code is Step 5's, and so is the bar
+(**1,857 of 1,858 headless, 1,938 declared; 1,865 of 1,876 on Metal; the PC's Vulkan graph
+1,888 of 1,907**).
+- **Linux:** the assessment held. Nothing in `platform`, `rhi`, the shaders or presentation
+  changed, so it stayed compile-only.
+- **`3d.md` §10's M21 row** holds, and every test it requires is in the graph.
+- **Corrected:**
+  - `entity-storage.md`'s examples and §14;
+  - `debug-overlay.md` §7.5, which is new;
+  - `3d.md` §7's propagation point;
+  - a dated note on ADR-0025's layer line;
+  - ADR-0050's status;
+  - CLAUDE.md §4.1, §4.3 (`sandbox3d`'s grants) and §9.
+- **Packed up:** the PC's worktree is clean at `00f39d3`, and the M21 and Codex folders are
+  gone.
 
 **M21 Step 5 is done (2026-09-29).** Claude wrote it; Codex added the confined save path and a
 first set of Windows runs, and the evidence was then repeated on the finished tree.
