@@ -216,15 +216,29 @@ pub const World = struct {
     /// From step 2 this also removes the entity from every component store. The order
     /// matters and is fixed now: components are released **before** the slot is freed, so
     /// a `destruct` running during teardown still sees a live entity.
+    ///
+    /// **In a world with the hierarchy, it destroys the entity's descendants too**
+    /// (`hierarchy.md` §5.4): every entity whose stored `foundry:parent` links reach it,
+    /// deepest first and then by ascending slot index, and the entity itself last. The
+    /// answer is still whether `entity` existed. It cannot fail: the scratch the cascade
+    /// needs was reserved when each parent was added.
     pub fn destroy(self: *World, entity: Entity) bool {
         if (!self.entities.contains(entity)) return false;
+        if (self.hierarchy) |*state| {
+            for (hierarchy_mod.descendants(self, state, entity)) |doomed| self.release(doomed.entity);
+        }
+        self.release(entity);
+        return true;
+    }
+
+    /// One entity and its components, and nothing else.
+    fn release(self: *World, entity: Entity) void {
         // Components first, while the entity is still live: a `destruct` running here is
         // entitled to look the entity up. O(registered types), each a bounds check and an
         // array read — §4's stated cost, and §13's third open question.
         for (self.stores.items) |*store| _ = store.remove(entity);
         std.debug.assert(self.entities.remove(entity));
         self.mutation +%= 1;
-        return true;
     }
 
     // -- component types -----------------------------------------------------------
@@ -377,6 +391,11 @@ pub const World = struct {
         }
         if (!self.entities.contains(entity)) return error.NoSuchEntity;
         if (store.has(entity)) return error.ComponentExists;
+        // Every parent, however it arrives (a save, the ABI, `setParent`), grows the scratch
+        // the despawn cascade walks with, so that `destroy` never has to allocate.
+        if (self.hierarchy) |*state| {
+            if (t.eql(state.types.parent)) try state.reserve(self.gpa, store.count() + 1);
+        }
 
         const bytes = try store.add(self.gpa, entity, initial);
         self.mutation +%= 1;

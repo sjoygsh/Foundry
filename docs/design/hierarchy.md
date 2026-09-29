@@ -1,7 +1,7 @@
 # Design: M21 — Hierarchy: the engine's transform components, propagation, re-parenting and 3D in the overlay
 
 **Status:** Accepted 2026-09-29, when the owner requested Step 1; §13 is accepted as written.
-Steps 1 and 2 of six are complete; Step 3 has not begun.
+Steps 1 to 3 of six are complete; Step 4 has not begun.
 **Date:** 2026-09-29
 **Baseline:** `00f39d3`, tag `m20`. M0–M20 are complete.
 **Decisions:**
@@ -730,3 +730,107 @@ clock.
 **The bar:** **1,838 of 1,839 headless tests** (the existing skip; **1,919 declared**) and
 **1,846 of 1,857 on `-Drhi=metal`**, with fmt, all four `check` variants and the three
 thirty-frame samples. Step 3, re-parenting and the cascade, is next.
+
+## Resolution — Step 3: re-parenting and the cascade (2026-09-29)
+
+Step 3 implements §5 in `scene/hierarchy.zig` and `World.destroy`, and stops before the
+overlay.
+
+**What exists now:**
+- **`setParent(world, child, parent)`** keeps the local pose. It writes or removes
+  `foundry:parent` and nothing else, so it accepts a sheared chain.
+- **`setParentKeepWorld(world, child, parent)`** follows `3d.md` §7.1 step for step:
+  1. validate;
+  2. compute `W` and `P` fresh with `worldOf`;
+  3. check that `|det(P)|` is at least `ε_det · max(1, ‖P₃ₓ₃‖)³`, then invert;
+  4. decompose `L = P⁻¹ · W` with `fromMat4Exact`;
+  5. write the parent and the local pose together.
+
+  A null parent detaches, against the identity.
+- **The cascade:** `World.destroy` destroys the result of `hierarchy.descendants(root)`,
+  deepest first and then by ascending slot index, and then the entity itself. It still
+  returns whether that entity existed, and the ABI's `world_destroy_entity` cascades with no
+  change of its own.
+
+**What implementation sharpened:**
+- **`destroy` cannot fail, so the cascade never allocates.**
+  - Its scratch (a depth per parent component, and the list of what was found) lives in
+    `hierarchy.State`. `World.addComponent` grows it whenever a `foundry:parent` is added,
+    and every parent arrives that way: `setParent`, a save's second pass, or the ABI's
+    generic component write.
+  - The walk is `O(parents)`, not `O(entities)`. A memo means each chain is walked once.
+  - A walk longer than the live entity count has gone round a cycle that does not pass
+    through the root, and is marked outside it.
+- **Descendants follow the stored links, not the effective ones.** A parent without a
+  transform contributes the identity to propagation (§6), but it is still a parent:
+  destroying it takes its children.
+  - A stale link reaches nothing.
+  - On a cycle through the root, every other member is a descendant.
+  - A cycle elsewhere is left alone.
+- **`WouldCycle` and `TooDeep` use the same walk.** The parent is refused if it is among
+  the child's descendants. The deepest resulting depth is the parent's effective depth plus
+  one plus the subtree's height, or just the height under a parent without a transform. That
+  is stricter than the effective structure only when a transform-less entity sits inside the
+  subtree, and it never admits a cycle into the stored links.
+- **`ReparentError` gains `OutOfMemory`.** When the child has no parent component yet, both
+  the store slot and the cascade scratch are reserved before any check could pass to a
+  write. The new `ComponentStore.reserve` is `add`'s fallible half. The commit then cannot
+  fail, as §5.3 requires.
+- **Values that are not finite:** in `W` this is `NotRepresentable`, and in `P` it is
+  `SingularParent`. §7.1 required finiteness without naming the error, and these are the
+  steps that would refuse such a value anyway.
+- **`L`'s last row is set to `(0, 0, 0, 1)`,** not left to the rounding of the cofactor
+  inverse's `inv₁₅ / det`. Both factors are affine, as §7.1 says, and `fromMat4Exact`
+  requires that row exactly. Without the fix, the sweep test's uniformly scaled, rotated
+  parents are refused as `NotRepresentable`.
+- **The norm in the singular check** is the largest absolute element of `P`'s 3×3, the same
+  norm `fromMat4Exact` uses for `‖L‖∞`.
+- **The Step 2 hostile-save test built its orphan by destroying the parent,** which now takes
+  the child with it. It writes the stale link raw instead.
+
+**Tests** (§10 items 4 to 7 and 9):
+- keep-local is accepted under `3d.md` §7.1's shearing parent, and the world is exactly
+  `W_parent · local`. Detaching removes the component, and a parent without a transform
+  gives depth 0;
+- keep-world holds the world pose within `ε_rep`:
+  - under a uniformly scaled grandchild parent;
+  - under a non-uniform scale aligned with a child turned a quarter;
+  - when detaching after the parent moved without a propagation, which proves the matrices
+    are computed fresh;
+  - across a sweep of 64 rotated, uniformly scaled parents;
+- refusals, with nothing written:
+  - `NotRepresentable` under the shearing parent, and for detaching a sheared child;
+  - `SingularParent` for a zero scale, and for `1e-7` (below the tolerance);
+- a mirror decomposes to a scale of `(−1, 1, 1)` over a unit rotation, with the world kept;
+- each of `WouldCycle` (self, descendant), `TooDeep` (the child alone, and the subtree
+  below it) and `NoSuchEntity` (a stale parent, a stale or transform-less child, and for
+  keep-world a transform-less parent) leaves a snapshot byte-identical, through both calls.
+  The snapshot is the save's bytes, then every world transform with its owner, then the
+  mutation generation;
+- the cascade destroys `R ─ A ─ C ─ E, R ─ B ─ D` as E, D, C, B, A, R, recorded by a
+  component destructor, and a child detached first survives;
+- through hostile data, a cycle through the root is destroyed, while a cycle elsewhere, a
+  self-parent and an orphan are untouched and nothing hangs. A transform-less parent takes
+  its child;
+- `world_destroy_entity` through the table cascades, and the descendants' handles go stale;
+- a hierarchy saved and loaded into a fresh world propagates to world matrices bit-identical
+  to the original's, and destroying one loaded parent cascades.
+
+**Guards verified by mutation,** each restored byte for byte:
+- keep-world writing the parent before its checks failed the shear-refusal test;
+- the cascade skipping grandchildren failed the hostile-cascade and round-trip tests;
+- ordering the cascade by index alone failed the order test;
+- dropping the descendant check for `WouldCycle` failed the refusal test;
+- ignoring the subtree's height failed the `TooDeep` case;
+- dropping the determinant tolerance made the `1e-7` parent `NotRepresentable` rather than
+  `SingularParent`;
+- reading the stored world transform instead of `worldOf` failed the detach-after-move test;
+- leaving `L`'s last row to rounding failed the sweep.
+
+**The bar:** **1,847 of 1,848 headless tests** (the existing skip; **1,928 declared**) and
+**1,855 of 1,866 on `-Drhi=metal`**, with fmt, all four `check` variants and the three
+thirty-frame samples, which logged no warnings. The ABI gained a test and no call, so the
+header is unchanged. No Vulkan, shader or platform source changed.
+
+Every item on `3d.md` §10's M21 regression list now has a passing test. Step 4, 3D in the
+overlay, is next.

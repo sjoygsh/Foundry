@@ -13,8 +13,11 @@
 //!
 //! **Propagation** (§4) turns local poses into world matrices, parents before children, and
 //! is a function of the world's contents alone. It and `worldOf` hold §6's rules against data
-//! no call validated: a save, a mod's raw component write, a hand-edited file. Re-parenting
-//! and the despawn cascade follow in Step 3.
+//! no call validated: a save, a mod's raw component write, a hand-edited file.
+//!
+//! **Re-parenting** (§5) is `setParent`, which keeps the local pose, and `setParentKeepWorld`,
+//! which keeps the world pose exactly or refuses. Either checks everything before it writes
+//! anything. **The despawn cascade** is `World.destroy`'s, over `descendants` here.
 
 const std = @import("std");
 const core = @import("core");
@@ -155,9 +158,22 @@ pub const State = struct {
     run: u64 = 0,
     /// How many repairs have been logged, ever. What a test reads to prove "once".
     reports: u64 = 0,
+    /// Scratch for walking descendants, one entry per `foundry:parent`: a depth for each,
+    /// by the parent store's dense index, and the entities found. Reserved as each parent is
+    /// added, so the cascade in `World.destroy`, which cannot fail, never allocates.
+    walk: std.ArrayList(u32) = .empty,
+    found: std.ArrayList(Descendant) = .empty,
 
     pub fn deinit(self: *State, gpa: Allocator) void {
         self.reported.deinit(gpa);
+        self.walk.deinit(gpa);
+        self.found.deinit(gpa);
+    }
+
+    /// Room to walk `parents` parent components.
+    pub fn reserve(self: *State, gpa: Allocator, parents: usize) Allocator.Error!void {
+        try self.walk.ensureTotalCapacity(gpa, parents);
+        try self.found.ensureTotalCapacity(gpa, parents);
     }
 };
 
@@ -592,6 +608,191 @@ fn onCycle(world: *const World, types: Types, entity: Entity) bool {
     return false;
 }
 
+// -- descendants (§5.4) ----------------------------------------------------------------
+
+/// An entity below another, and how many stored `foundry:parent` links separate them.
+pub const Descendant = struct { entity: Entity, depth: u32 };
+
+const walk_unknown = std.math.maxInt(u32);
+const walk_outside = std.math.maxInt(u32) - 1;
+
+/// Every entity whose stored `foundry:parent` links reach `root`, deepest first and then by
+/// ascending slot index (I9): the order the cascade destroys them in. Borrowed from the
+/// world's scratch until the next call; allocates nothing.
+///
+/// **Stored links, not effective ones.** A parent without a transform contributes the
+/// identity to the propagation (§6), but it is still somebody's parent, and destroying it
+/// takes its children. A stale link reaches nothing. A cycle through `root` makes every other
+/// member a descendant; a cycle elsewhere is walked once and left alone.
+pub fn descendants(world: *const World, state: *State, root: Entity) []const Descendant {
+    const types = state.types;
+    const parents = &world.stores.items[types.parent.index];
+    const count = parents.count();
+    std.debug.assert(state.walk.capacity >= count and state.found.capacity >= count);
+    const depth = state.walk.allocatedSlice()[0..count];
+    @memset(depth, walk_unknown);
+    // A walk longer than every live entity has gone round a cycle that `root` is not on.
+    const bound = world.entityCount();
+
+    for (0..count) |start| {
+        if (depth[start] != walk_unknown) continue;
+        // Up, until the answer is known: `root` itself, something already answered, or a
+        // chain that ends or loops elsewhere.
+        var current = parents.ownerAt(@intCast(start));
+        var steps: u32 = 0;
+        const answer: u32 = while (true) : (steps += 1) {
+            if (current.eql(root)) break steps;
+            const dense = parents.denseIndex(current) orelse break walk_outside;
+            const known = depth[dense];
+            if (known != walk_unknown) break if (known == walk_outside) walk_outside else known + steps;
+            if (steps > bound) break walk_outside;
+            const up = rawParent(world, types, current);
+            if (!world.contains(up)) break walk_outside;
+            current = up;
+        };
+        // Stopped where it started: `root` itself (zero, and not its own descendant), or a
+        // stale link (outside). The walk below writes nothing for it.
+        if (steps == 0) depth[start] = answer;
+        // And again, writing the answer down for everything the first walk passed.
+        current = parents.ownerAt(@intCast(start));
+        for (0..steps) |i| {
+            depth[parents.denseIndex(current).?] = if (answer == walk_outside) walk_outside else answer - @as(u32, @intCast(i));
+            current = rawParent(world, types, current);
+        }
+    }
+
+    state.found.clearRetainingCapacity();
+    for (depth, 0..) |d, dense| {
+        if (d == walk_outside or d == 0) continue;
+        state.found.appendAssumeCapacity(.{ .entity = parents.ownerAt(@intCast(dense)), .depth = d });
+    }
+    std.sort.pdq(Descendant, state.found.items, {}, struct {
+        fn less(_: void, a: Descendant, b: Descendant) bool {
+            if (a.depth != b.depth) return a.depth > b.depth;
+            return a.entity.index < b.entity.index;
+        }
+    }.less);
+    return state.found.items;
+}
+
+// -- re-parenting (§5) -------------------------------------------------------------------
+
+/// Each is the step of `docs/design/3d.md` §7.1 that refused (ADR-0050).
+pub const ReparentError = error{
+    /// The child is not live or has no `foundry:transform`; or the parent is not live, or,
+    /// for keep-world, has no transform. A world without the hierarchy has no transforms.
+    NoSuchEntity,
+    /// The parent is the child, or one of its descendants.
+    WouldCycle,
+    /// The child's subtree would reach deeper than the limit.
+    TooDeep,
+    /// Keep-world: the new parent's world matrix cannot be inverted, within the tolerance.
+    SingularParent,
+    /// Keep-world: the child's world pose is not a `Transform` under the new parent, which is
+    /// shear, a collapsed axis, or a value that is not finite.
+    NotRepresentable,
+    /// Reserving the parent component, before anything was written.
+    OutOfMemory,
+};
+
+/// Re-parents `child`, or detaches it when `parent` is null, **keeping its local pose**: it
+/// moves with its new parent from the next propagation (§5.1). It never decomposes, so any
+/// valid parent is accepted, a sheared chain included. A parent without a transform is
+/// accepted, and contributes the identity.
+pub fn setParent(world: *World, child: Entity, parent: ?Entity) ReparentError!void {
+    const state = try checkReparent(world, child, parent, false);
+    commit(world, state, child, parent, null);
+}
+
+/// Re-parents `child`, or detaches it when `parent` is null, **keeping its world pose**
+/// (`3d.md` §7.1, step for step). Both world matrices are computed fresh, never read from a
+/// possibly stale `foundry:world_transform`; the new local pose is `P⁻¹ · W`, decomposed
+/// exactly or refused. On success the parent and transform are written together, and the
+/// world transform is left for the next propagation. On refusal nothing is written.
+pub fn setParentKeepWorld(world: *World, child: Entity, parent: ?Entity) ReparentError!void {
+    // 1. Validate.
+    const state = try checkReparent(world, child, parent, true);
+    // 2. Both world matrices, fresh, and finite.
+    const w = worldOf(world, child).?;
+    const p = if (parent) |e| worldOf(world, e).? else Mat4.identity;
+    if (!finite(w)) return error.NotRepresentable;
+    if (!finite(p)) return error.SingularParent;
+    // 3. Invert the parent, refusing one too close to singular for its size.
+    var norm: f32 = 0;
+    for (0..3) |c| for (0..3) |r| {
+        norm = @max(norm, @abs(p.cols[c][r]));
+    };
+    const scale = @max(@as(f32, 1), norm);
+    const det = Mat4.determinant(p);
+    if (!(@abs(det) >= core.math.Transform.determinant_epsilon * scale * scale * scale)) return error.SingularParent;
+    const inverse = Mat4.inverse(p) orelse return error.SingularParent;
+    // 4 and 5. Decompose `L = P⁻¹ · W`, exactly or not at all. Both factors are affine, so
+    // `L` is; its last row is set so, rather than left to the rounding of `1 / det · det`.
+    var l = Mat4.mul(inverse, w);
+    l.cols[0][3] = 0;
+    l.cols[1][3] = 0;
+    l.cols[2][3] = 0;
+    l.cols[3][3] = 1;
+    const local = core.math.Transform.fromMat4Exact(l) catch return error.NotRepresentable;
+    // 6. Commit.
+    commit(world, state, child, parent, Transform.fromCore(local));
+}
+
+fn finite(m: Mat4) bool {
+    for (m.cols) |column| for (column) |value| {
+        if (!std.math.isFinite(value)) return false;
+    };
+    return true;
+}
+
+/// §5.1's checks, shared by both calls, and the reservation that makes the commit
+/// infallible. Writes no component.
+fn checkReparent(world: *World, child: Entity, parent: ?Entity, keep_world: bool) ReparentError!*State {
+    const state = if (world.hierarchy) |*s| s else return error.NoSuchEntity;
+    const types = state.types;
+    if (!world.hasComponent(child, types.transform)) return error.NoSuchEntity;
+    const p = parent orelse return state;
+    if (!world.contains(p)) return error.NoSuchEntity;
+    const parent_has_transform = world.hasComponent(p, types.transform);
+    if (keep_world and !parent_has_transform) return error.NoSuchEntity;
+    if (p.eql(child)) return error.WouldCycle;
+
+    // The child's subtree, by the cascade's walk: the parent must not be in it, and it must
+    // fit below the parent. A parent without a transform starts a new chain (§6).
+    var deepest: u32 = 0;
+    for (descendants(world, state, child)) |d| {
+        if (d.entity.eql(p)) return error.WouldCycle;
+        deepest = @max(deepest, d.depth);
+    }
+    const at: u32 = if (parent_has_transform) depthOf(world, p).? + 1 else 0;
+    if (at + deepest > depthLimit(world)) return error.TooDeep;
+
+    if (!world.hasComponent(child, types.parent)) {
+        try state.reserve(world.gpa, world.stores.items[types.parent.index].count() + 1);
+        try world.stores.items[types.parent.index].reserve(world.gpa, child);
+    }
+    return state;
+}
+
+/// Writes the parent, and the local pose if there is one, after every check has passed.
+/// Cannot fail: the parent component exists, or was reserved by `checkReparent`.
+fn commit(world: *World, state: *State, child: Entity, parent: ?Entity, local: ?Transform) void {
+    const types = state.types;
+    if (parent) |p| {
+        const value: Parent = .{ .entity = p };
+        if (world.getComponent(child, types.parent)) |bytes| {
+            @memcpy(bytes, std.mem.asBytes(&value));
+        } else {
+            _ = world.addComponent(child, types.parent, std.mem.asBytes(&value)) catch unreachable; // reserved, live, absent
+        }
+    } else {
+        _ = world.removeComponent(child, types.parent);
+    }
+    if (local) |t| {
+        @memcpy(world.getComponent(child, types.transform).?, std.mem.asBytes(&t));
+    }
+}
+
 // -- tests ---------------------------------------------------------------------------
 //
 // Registration through `World.enableHierarchy` and the content rules are tested in
@@ -811,10 +1012,11 @@ test "a hostile save loads, and propagates by the repair table, each repair logg
         const f = try Fx.init(gpa, .default);
         defer f.deinit(gpa);
         const unit = core.math.Transform.identity;
-        // A parent that is gone.
+        // A parent that is gone. Written raw after it went, since destroying a parent now
+        // takes its children with it.
         const gone = try f.node(unit, null);
-        saved.gone_child = try f.node(pose(.{ 1, 0, 0 }, .{ 0, 1, 0 }, 0, .{ 1, 1, 1 }), gone);
         _ = f.world.destroy(gone);
+        saved.gone_child = try f.node(pose(.{ 1, 0, 0 }, .{ 0, 1, 0 }, 0, .{ 1, 1, 1 }), gone);
         // A two-entity cycle, with a tail hanging off it.
         saved.a = try f.node(pose(.{ 0, 1, 0 }, .{ 0, 1, 0 }, 0, .{ 1, 1, 1 }), null);
         saved.b = try f.node(pose(.{ 0, 2, 0 }, .{ 0, 1, 0 }, 0, .{ 1, 1, 1 }), saved.a);
@@ -885,4 +1087,344 @@ test "an invalid local pose freezes its entity, and its subtree follows the froz
     const g = try Fx.init(gpa, .default);
     defer g.deinit(gpa);
     try testing.expectError(error.SaveCorrupt, g.world.load(bytes.items, .default));
+}
+
+// -- re-parenting (§5) ---------------------------------------------------------------
+
+/// Every entity's components as bytes: the save, which leaves world transforms out, and then
+/// each world transform with its owner. A refusal must leave this byte-identical (§5.3).
+fn snapshot(f: *Fx) ![]u8 {
+    const gpa = testing.allocator;
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    try f.world.save(&out);
+    const worlds = &f.world.stores.items[f.types.world_transform.index];
+    for (0..worlds.count()) |dense| {
+        try out.appendSlice(gpa, std.mem.asBytes(&worlds.ownerAt(@intCast(dense)).bits()));
+        try out.appendSlice(gpa, worlds.at(@intCast(dense)));
+    }
+    try out.appendSlice(gpa, std.mem.asBytes(&f.world.mutationGeneration()));
+    return out.toOwnedSlice(gpa);
+}
+
+/// The refusal named, and nothing written by it.
+fn expectRefusedUnchanged(f: *Fx, expected: ReparentError, keep_world: bool, child: Entity, parent: ?Entity) !void {
+    const gpa = testing.allocator;
+    const before = try snapshot(f);
+    defer gpa.free(before);
+    const result = if (keep_world) setParentKeepWorld(&f.world, child, parent) else setParent(&f.world, child, parent);
+    try testing.expectError(expected, result);
+    const after = try snapshot(f);
+    defer gpa.free(after);
+    try testing.expectEqualSlices(u8, before, after);
+}
+
+/// Element for element, within `3d.md` §7.1's tolerance scaled to the matrix.
+fn expectSamePose(expected: Mat4, got: Mat4) !void {
+    var norm: f32 = 0;
+    for (expected.cols) |c| for (c) |v| {
+        norm = @max(norm, @abs(v));
+    };
+    const tolerance = core.math.Transform.representation_epsilon * @max(@as(f32, 1), norm);
+    for (0..4) |c| for (0..4) |r| {
+        try testing.expectApproxEqAbs(expected.cols[c][r], got.cols[c][r], tolerance);
+    };
+}
+
+fn localOf(f: *Fx, e: Entity) core.math.Transform {
+    return transformOf(&f.world, f.types, e).?.toCore();
+}
+
+test "keep-local re-parenting is accepted under a sheared chain, and moves with its parent" {
+    const gpa = testing.allocator;
+    const f = try Fx.init(gpa, .default);
+    defer f.deinit(gpa);
+    // 3d.md §7.1's shearing parent, with a rotated child under it: a sheared world.
+    const parent_pose = pose(.{ 0, 0, 0 }, .{ 0, 0, 1 }, 0, .{ 2, 1, 1 });
+    const child_pose = pose(.{ 1, 0, 0 }, .{ 0, 0, 1 }, std.math.pi / 4.0, .{ 1, 1, 1 });
+    const shearing = try f.node(parent_pose, null);
+    const sheared = try f.node(child_pose, shearing);
+    const mover_pose = pose(.{ 0, 3, 0 }, .{ 1, 0, 0 }, 0.4, .{ 1, 1, 1 });
+    const mover = try f.node(mover_pose, null);
+
+    try setParent(&f.world, mover, sheared);
+    try testing.expectEqualSlices(u8, std.mem.asBytes(&mover_pose), std.mem.asBytes(&localOf(f, mover)));
+    try testing.expect(parentOf(&f.world, mover).?.eql(sheared));
+    _ = try propagate(&f.world);
+    const expected = Mat4.mul(worldTransform(&f.world, sheared).?, mover_pose.toMat4());
+    try testing.expectEqualSlices(u8, std.mem.asBytes(&expected), std.mem.asBytes(&worldTransform(&f.world, mover).?));
+
+    // Moving the parent moves it; detaching leaves the local pose as the world pose.
+    try setParent(&f.world, mover, null);
+    try testing.expect(parentOf(&f.world, mover) == null);
+    try testing.expect(!f.world.hasComponent(mover, f.types.parent));
+    _ = try propagate(&f.world);
+    try testing.expectEqualSlices(u8, std.mem.asBytes(&mover_pose.toMat4()), std.mem.asBytes(&worldTransform(&f.world, mover).?));
+
+    // A parent without a transform is accepted, and contributes the identity.
+    const bare = try f.world.create();
+    try setParent(&f.world, mover, bare);
+    try testing.expectEqual(@as(?u32, 0), depthOf(&f.world, mover));
+}
+
+test "keep-world re-parenting keeps the world pose under uniform and aligned scale" {
+    const gpa = testing.allocator;
+    const f = try Fx.init(gpa, .default);
+    defer f.deinit(gpa);
+    const grand = try f.node(pose(.{ 4, -1, 2 }, .{ 0, 1, 0 }, 0.6, .{ 1, 1, 1 }), null);
+    const uniform = try f.node(pose(.{ 1, 2, 3 }, .{ 1, 1, 0 }, 1.2, .{ 2.5, 2.5, 2.5 }), grand);
+    const aligned = try f.node(pose(.{ -2, 0, 1 }, .{ 0, 0, 1 }, 0, .{ 2, 1, 0.5 }), null);
+    const child = try f.node(pose(.{ 0.5, 1, -3 }, .{ 0.3, 1, 0.2 }, 0.8, .{ 1, 2, 1 }), null);
+    // Turned a quarter about X, its axes lie along the aligned parent's scaled ones.
+    const square = try f.node(pose(.{ 1, 1, 1 }, .{ 1, 0, 0 }, std.math.pi / 2.0, .{ 1, 1, 3 }), null);
+    _ = try propagate(&f.world);
+
+    const before = worldTransform(&f.world, child).?;
+    try setParentKeepWorld(&f.world, child, uniform);
+    try testing.expect(parentOf(&f.world, child).?.eql(uniform));
+    try testing.expect(localOf(f, child).isValid());
+    _ = try propagate(&f.world);
+    try expectSamePose(before, worldTransform(&f.world, child).?);
+
+    const square_before = worldTransform(&f.world, square).?;
+    try setParentKeepWorld(&f.world, square, aligned);
+    _ = try propagate(&f.world);
+    try expectSamePose(square_before, worldTransform(&f.world, square).?);
+
+    // Detaching keeps it too, and computes both matrices fresh: moving the parent without
+    // a propagation still detaches from where the parent is now.
+    const moved: *Transform = @ptrCast(@alignCast(f.world.getComponent(grand, f.types.transform).?.ptr));
+    moved.translation.x += 10;
+    const fresh = worldOf(&f.world, child).?;
+    try setParentKeepWorld(&f.world, child, null);
+    try testing.expect(!f.world.hasComponent(child, f.types.parent));
+    _ = try propagate(&f.world);
+    try expectSamePose(fresh, worldTransform(&f.world, child).?);
+}
+
+test "keep-world re-parenting refuses shear, a singular parent, and decomposes a reflection" {
+    const gpa = testing.allocator;
+    const f = try Fx.init(gpa, .default);
+    defer f.deinit(gpa);
+    const shearing = try f.node(pose(.{ 0, 0, 0 }, .{ 0, 0, 1 }, 0, .{ 2, 1, 1 }), null);
+    const turned = try f.node(pose(.{ 1, 0, 0 }, .{ 0, 0, 1 }, std.math.pi / 4.0, .{ 1, 1, 1 }), null);
+    const flat = try f.node(pose(.{ 0, 5, 0 }, .{ 0, 1, 0 }, 0.3, .{ 1, 0, 1 }), null);
+    const thin = try f.node(pose(.{ 0, 5, 0 }, .{ 0, 1, 0 }, 0.3, .{ 1, 1e-7, 1 }), null);
+    const mirror = try f.node(pose(.{ 1, 0, 0 }, .{ 0, 1, 0 }, 0, .{ -1, 1, 1 }), null);
+    const sheared = try f.node(pose(.{ 1, 0, 0 }, .{ 0, 0, 1 }, std.math.pi / 4.0, .{ 1, 1, 1 }), shearing);
+    _ = try propagate(&f.world);
+
+    // Under a shearing parent the rotated child is no TRS; a sheared child detached is none.
+    try expectRefusedUnchanged(f, error.NotRepresentable, true, turned, shearing);
+    try expectRefusedUnchanged(f, error.NotRepresentable, true, sheared, null);
+    // Keep-local takes both, since it never decomposes.
+    // A collapsed axis, and one collapsed below the tolerance, cannot be inverted.
+    try expectRefusedUnchanged(f, error.SingularParent, true, turned, flat);
+    try expectRefusedUnchanged(f, error.SingularParent, true, turned, thin);
+
+    // A mirror: canonically a negative x scale over a proper rotation.
+    const target = try f.node(pose(.{ 3, 0, 0 }, .{ 0, 1, 0 }, 0, .{ 1, 1, 1 }), null);
+    _ = try propagate(&f.world);
+    const before = worldTransform(&f.world, target).?;
+    try setParentKeepWorld(&f.world, target, mirror);
+    const local = localOf(f, target);
+    try testing.expectApproxEqAbs(@as(f32, -1), local.scale.x, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 1), local.scale.y, 1e-6);
+    try testing.expect(local.rotation.isUnit());
+    try testing.expectApproxEqAbs(@as(f32, -2), local.translation.x, 1e-6);
+    _ = try propagate(&f.world);
+    try expectSamePose(before, worldTransform(&f.world, target).?);
+
+    try setParent(&f.world, turned, shearing);
+    try setParent(&f.world, sheared, null);
+}
+
+test "every refusal writes nothing: cycle, depth, a missing entity, and keep-world's own" {
+    const gpa = testing.allocator;
+    var limits: @import("limits.zig").Limits = .default;
+    limits.max_hierarchy_depth = 3;
+    const f = try Fx.init(gpa, limits);
+    defer f.deinit(gpa);
+    const unit = core.math.Transform.identity;
+    // a0 - a1 - a2 - a3, at the limit; b - b1 beside it.
+    const a0 = try f.node(unit, null);
+    const a1 = try f.node(unit, a0);
+    const a2 = try f.node(unit, a1);
+    const a3 = try f.node(unit, a2);
+    const b = try f.node(unit, null);
+    const b1 = try f.node(unit, b);
+    const bare = try f.world.create();
+    const gone = try f.node(unit, null);
+    _ = f.world.destroy(gone);
+    _ = try propagate(&f.world);
+
+    for ([_]bool{ false, true }) |keep_world| {
+        try expectRefusedUnchanged(f, error.WouldCycle, keep_world, a1, a1);
+        try expectRefusedUnchanged(f, error.WouldCycle, keep_world, a0, a3);
+        try expectRefusedUnchanged(f, error.TooDeep, keep_world, b1, a3);
+        // b fits below a2 on its own, and its child does not.
+        try expectRefusedUnchanged(f, error.TooDeep, keep_world, b, a2);
+        try expectRefusedUnchanged(f, error.NoSuchEntity, keep_world, b, gone);
+        try expectRefusedUnchanged(f, error.NoSuchEntity, keep_world, gone, b);
+        try expectRefusedUnchanged(f, error.NoSuchEntity, keep_world, bare, b);
+    }
+    // Keep-world alone needs the parent's world pose.
+    try expectRefusedUnchanged(f, error.NoSuchEntity, true, b, bare);
+    try setParent(&f.world, b, bare);
+
+    // And what fits is accepted: b under a1 puts b1 at the limit exactly.
+    try setParent(&f.world, b, a1);
+    try testing.expectEqual(@as(?u32, 3), depthOf(&f.world, b1));
+
+    // A world without the hierarchy has no transforms to re-parent.
+    var schemas: data.Registry = .init(gpa, .default);
+    defer schemas.deinit(gpa);
+    var plain: World = .init(gpa, &schemas, .default);
+    defer plain.deinit();
+    const lone = try plain.create();
+    try testing.expectError(error.NoSuchEntity, setParent(&plain, lone, null));
+}
+
+// -- the despawn cascade (§5.4) ------------------------------------------------------
+
+/// A component whose destructor records the order entities are destroyed in.
+const Tag = struct {
+    pub const component = "test:tag";
+    n: u32 = 0,
+};
+
+const Order = struct {
+    seen: [16]u32 = undefined,
+    len: usize = 0,
+
+    fn record(ctx: ?*anyopaque, bytes: [*]u8) void {
+        const self: *Order = @ptrCast(@alignCast(ctx.?));
+        self.seen[self.len] = std.mem.bytesToValue(u32, bytes[0..4]);
+        self.len += 1;
+    }
+};
+
+fn tagged(f: *Fx, tag: ComponentType, n: u32) !Entity {
+    const e = try f.node(core.math.Transform.identity, null);
+    const value: Tag = .{ .n = n };
+    _ = try f.world.addComponent(e, tag, std.mem.asBytes(&value));
+    return e;
+}
+
+test "destroying a parent destroys its subtree, deepest first and then by slot index" {
+    const gpa = testing.allocator;
+    const f = try Fx.init(gpa, .default);
+    defer f.deinit(gpa);
+    var order: Order = .{};
+    var info = derive.componentType(Tag);
+    info.ctx = &order;
+    info.destruct = &Order.record;
+    const tag = try f.world.registerComponent(info);
+
+    // Created so that slot order is not tree order: B0 D1 R2 C3 A4 E5, and a keeper K6.
+    //   R ─ A ─ C ─ E
+    //     └ B ─ D
+    const b = try tagged(f, tag, 'B');
+    const d = try tagged(f, tag, 'D');
+    const r = try tagged(f, tag, 'R');
+    const c = try tagged(f, tag, 'C');
+    const a = try tagged(f, tag, 'A');
+    const e = try tagged(f, tag, 'E');
+    const keeper = try tagged(f, tag, 'K');
+    for ([_][2]Entity{ .{ a, r }, .{ b, r }, .{ c, a }, .{ d, b }, .{ e, c }, .{ keeper, c } }) |pair| {
+        try setParent(&f.world, pair[0], pair[1]);
+    }
+    // A child meant to survive is detached first.
+    try setParent(&f.world, keeper, null);
+
+    try testing.expect(f.world.destroy(r));
+    try testing.expectEqualSlices(u32, &.{ 'E', 'D', 'C', 'B', 'A', 'R' }, order.seen[0..order.len]);
+    try testing.expectEqual(@as(u32, 1), f.world.entityCount());
+    try testing.expect(f.world.contains(keeper));
+    // Still whether the root existed.
+    try testing.expect(!f.world.destroy(r));
+}
+
+test "the cascade follows stored links through hostile data, and stops" {
+    const gpa = testing.allocator;
+    const f = try Fx.init(gpa, .default);
+    defer f.deinit(gpa);
+    const unit = core.math.Transform.identity;
+    // A cycle through the root: r → x → y → r. Destroying r takes x and y.
+    const r = try f.node(unit, null);
+    const x = try f.node(unit, r);
+    const y = try f.node(unit, x);
+    try f.setRawParent(r, y);
+    // A cycle elsewhere, a self-parent, and an orphan: none of them is r's, and none hangs.
+    const p = try f.node(unit, null);
+    const q = try f.node(unit, p);
+    try f.setRawParent(p, q);
+    const looped = try f.node(unit, null);
+    try f.setRawParent(looped, looped);
+    const orphan = try f.node(unit, null);
+    try f.setRawParent(orphan, .{ .index = 9999, .generation = 1 });
+    // An entity without a transform still takes its children with it.
+    const bare = try f.world.create();
+    const under = try f.node(unit, null);
+    try setParent(&f.world, under, bare);
+
+    try testing.expect(f.world.destroy(r));
+    for ([_]Entity{ r, x, y }) |dead| try testing.expect(!f.world.contains(dead));
+    for ([_]Entity{ p, q, looped, orphan }) |alive| try testing.expect(f.world.contains(alive));
+    try testing.expect(f.world.destroy(bare));
+    try testing.expect(!f.world.contains(under));
+    try testing.expect(f.world.destroy(p));
+    try testing.expect(!f.world.contains(q));
+    try testing.expectEqual(@as(u32, 2), f.world.entityCount());
+}
+
+// -- the save round trip -------------------------------------------------------------
+
+test "a saved hierarchy loads back to bit-identical world poses, and still cascades" {
+    const gpa = testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(gpa);
+    var made: [tree.len]Entity = undefined;
+    var poses: [tree.len]Mat4 = undefined;
+    {
+        const f = try Fx.init(gpa, .default);
+        defer f.deinit(gpa);
+        _ = try f.world.create(); // so no handle is slot zero by accident
+        for (tree, 0..) |n, i| made[i] = try f.node(n.local, null);
+        for (tree, 0..) |n, i| {
+            if (n.parent) |parent| try setParent(&f.world, made[i], made[parent]);
+        }
+        _ = try propagate(&f.world);
+        for (&poses, made) |*m, e| m.* = worldTransform(&f.world, e).?;
+        try f.world.save(&bytes);
+    }
+
+    const g = try Fx.init(gpa, .default);
+    defer g.deinit(gpa);
+    _ = try g.world.load(bytes.items, .default);
+    // Nothing derived was saved.
+    try testing.expectEqual(@as(u32, 0), g.world.componentCount(g.types.world_transform));
+    _ = try propagate(&g.world);
+    for (poses, made) |m, e| {
+        try testing.expectEqualSlices(u8, std.mem.asBytes(&m), std.mem.asBytes(&worldTransform(&g.world, e).?));
+    }
+    // The loaded parents reserved what the cascade needs.
+    try testing.expect(g.world.destroy(made[1]));
+    for ([_]usize{ 1, 3, 4 }) |i| try testing.expect(!g.world.contains(made[i]));
+    for ([_]usize{ 0, 2 }) |i| try testing.expect(g.world.contains(made[i]));
+}
+
+test "keep-world holds across a sweep of rotated, uniformly scaled parents" {
+    const gpa = testing.allocator;
+    const f = try Fx.init(gpa, .default);
+    defer f.deinit(gpa);
+    // Deterministic, not random: the same sixty-four parents on every run.
+    for (0..64) |i| {
+        const k: f32 = @floatFromInt(i);
+        const parent = try f.node(pose(.{ k * 0.37 - 5, 3 - k * 0.11, k * 0.05 }, .{ @sin(k), @cos(k * 1.3), 0.5 }, k * 0.41, @splat(0.3 + k * 0.07)), null);
+        const child = try f.node(pose(.{ 1 - k * 0.2, k * 0.13, -2 }, .{ 0.2, @sin(k * 0.7), 1 }, -k * 0.23, .{ 1 + k * 0.01, 0.5, 2 }), null);
+        const before = worldOf(&f.world, child).?;
+        try setParentKeepWorld(&f.world, child, parent);
+        try expectSamePose(before, worldOf(&f.world, child).?);
+    }
 }

@@ -180,14 +180,8 @@ pub const ComponentStore = struct {
 
         // Everything that can fail happens before anything is written, so a failed add
         // leaves the store exactly as it was.
-        if (entity.index >= self.sparse.items.len) {
-            const grown = @as(usize, entity.index) + 1;
-            try self.sparse.ensureTotalCapacity(gpa, grown);
-            while (self.sparse.items.len < grown) self.sparse.appendAssumeCapacity(absent);
-        }
-        try self.owners.ensureUnusedCapacity(gpa, 1);
+        try self.reserve(gpa, entity);
         const dense: u32 = @intCast(self.owners.items.len);
-        try self.bytes.ensure(gpa, self.alignment, (@as(usize, dense) + 1) * self.stride, @as(usize, dense) * self.stride);
 
         self.owners.appendAssumeCapacity(entity);
         self.sparse.items[entity.index] = dense;
@@ -201,6 +195,20 @@ pub const ComponentStore = struct {
             @memset(slot, 0);
         }
         return slot;
+    }
+
+    /// Everything `add` could fail on, done ahead of it, so that an `add` for `entity` after
+    /// this cannot fail. Changes no component: a caller that must write several things or
+    /// nothing reserves first (`hierarchy.md` §5.3).
+    pub fn reserve(self: *ComponentStore, gpa: Allocator, entity: Entity) Allocator.Error!void {
+        if (entity.index >= self.sparse.items.len) {
+            const grown = @as(usize, entity.index) + 1;
+            try self.sparse.ensureTotalCapacity(gpa, grown);
+            while (self.sparse.items.len < grown) self.sparse.appendAssumeCapacity(absent);
+        }
+        try self.owners.ensureUnusedCapacity(gpa, 1);
+        const dense = self.owners.items.len;
+        try self.bytes.ensure(gpa, self.alignment, (dense + 1) * self.stride, dense * self.stride);
     }
 
     /// Removes an entity's component. False if it did not have one, which is not an error.

@@ -2,14 +2,27 @@
 
 **Last updated:** 2026-09-29
 **Current handoff: M20 is complete (2026-09-29, tag `m20`). M21, Hierarchy, is accepted
-([`docs/design/hierarchy.md`](docs/design/hierarchy.md); ADR-0050) and Steps 1 and 2 of six are
-complete. Stop before Step 3.** Step 3 is re-parenting and the despawn cascade (§5):
-- `setParent` (keep-local) and `setParentKeepWorld` (`3d.md` §7.1, exact);
-- the snapshot tests proving that a refusal writes nothing;
-- the cascade in `World.destroy`;
-- the save round trip.
+([`docs/design/hierarchy.md`](docs/design/hierarchy.md); ADR-0050) and Steps 1 to 3 of six are
+complete. Stop before Step 4.** Step 4 is 3D in the overlay (§7):
+- `debug` gains `render3d` in its imports;
+- the hierarchy's tree and world poses, and propagation's counts;
+- `render3d`'s counts line.
 
-None of them exists yet, and neither does the overlay (Step 4) or the sample (Step 5).
+None of it exists yet, and neither does the sample (Step 5).
+
+**M21 Step 3 is done (2026-09-29).**
+- **`hierarchy.setParent`:** keeps the local pose, and accepts a sheared chain.
+- **`hierarchy.setParentKeepWorld`:** `3d.md` §7.1 step for step, detaching included. It is
+  refused as `SingularParent` or `NotRepresentable` rather than approximated.
+- **A refusal writes nothing,** proven by byte snapshots for every error.
+- **`World.destroy` cascades:** descendants go deepest first, then by slot index, and the ABI
+  gets the cascade for free. It never allocates: its scratch is reserved as each parent is
+  added.
+- **The save round trip:** a saved hierarchy loads to bit-identical world poses.
+- **`ReparentError` gains `OutOfMemory`,** for the reservation made before any write.
+- **Mutations:** eight, each of which failed its test and was restored.
+- **The bar:** **1,847 of 1,848 headless (1,928 declared)** and **1,855 of 1,866 on Metal**.
+  Every item on `3d.md` §10's M21 list has a passing test.
 
 **M21 Step 2 is done (2026-09-29).**
 - **`hierarchy.propagate`:** propagates parents first, by depth then slot index. The result is

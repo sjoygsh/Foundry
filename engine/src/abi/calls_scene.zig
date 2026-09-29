@@ -802,6 +802,29 @@ test "entities are created, asked about and destroyed through the table" {
     try testing.expectEqual(Result.invalid_handle, test_table.world_destroy_entity(entity));
 }
 
+test "destroying an entity through the table takes its descendants with it" {
+    const f = try Fixture.init();
+    defer f.deinit();
+    _ = try f.world.enableHierarchy();
+
+    var made: [3]Entity = undefined;
+    for (&made) |*e| {
+        try testing.expectEqual(Result.ok, test_table.world_create_entity(e));
+        const unit: scene.hierarchy.Transform = .fromCore(.identity);
+        _ = try f.world.addComponent(e.unwrap(scene.Entity), f.world.hierarchy.?.types.transform, std.mem.asBytes(&unit));
+    }
+    // made[0] ─ made[1] ─ made[2]
+    try scene.hierarchy.setParent(&f.world, made[1].unwrap(scene.Entity), made[0].unwrap(scene.Entity));
+    try scene.hierarchy.setParent(&f.world, made[2].unwrap(scene.Entity), made[1].unwrap(scene.Entity));
+
+    try testing.expectEqual(Result.ok, test_table.world_destroy_entity(made[0]));
+    var count: u32 = 99;
+    try testing.expectEqual(Result.ok, test_table.world_entity_count(&count));
+    try testing.expectEqual(@as(u32, 0), count);
+    // The descendants' handles are stale now, like the root's.
+    try testing.expectEqual(Result.invalid_handle, test_table.world_destroy_entity(made[2]));
+}
+
 test "registration refuses everything a mod can get wrong about a component type" {
     const f = try Fixture.init();
     defer f.deinit();
