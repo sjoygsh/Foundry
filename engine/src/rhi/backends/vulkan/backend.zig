@@ -212,7 +212,7 @@ const TextureState = struct {
     last_write: u64 = 0,
 };
 
-const SamplerState = struct { native: c.VkSampler };
+const SamplerState = struct { native: c.VkSampler, desc: resource.SamplerDesc };
 
 const ShaderState = struct {
     native: c.VkShaderModule,
@@ -756,6 +756,9 @@ pub const Device = struct {
             if (desc.mip_levels != 1 or u.sampled or u.copy_src or u.copy_dst or !(u.render_target or u.depth_stencil))
                 return error.InvalidDescriptor;
         }
+        if (desc.usage.sampled and desc.format.isDepth() and
+            (desc.format != .depth32_float or !desc.usage.depth_stencil or desc.sample_count != 1))
+            return error.InvalidDescriptor;
         const levels = @max(desc.mip_levels, 1);
         if (levels > maxMipLevels(desc.size)) return error.InvalidDescriptor;
         if (desc.size.width > self.limits.maxImageDimension2D or desc.size.height > self.limits.maxImageDimension2D) {
@@ -890,6 +893,8 @@ pub const Device = struct {
             .addressModeU = samplerAddress(desc.address_u),
             .addressModeV = samplerAddress(desc.address_v),
             .addressModeW = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            .compareEnable = if (desc.compare != null) c.VK_TRUE else c.VK_FALSE,
+            .compareOp = compareFunction(desc.compare orelse .always),
             // Every level, as Metal's default clamp allows.
             .maxLod = c.VK_LOD_CLAMP_NONE,
         };
@@ -898,7 +903,7 @@ pub const Device = struct {
             self.device_fns.vkCreateSampler(self.device, &info, null, &native);
         if (created != c.VK_SUCCESS) return resourceFailure(created, "vkCreateSampler");
         errdefer self.device_fns.vkDestroySampler(self.device, native, null);
-        return self.samplers.add(self.gpa, .{ .native = native });
+        return self.samplers.add(self.gpa, .{ .native = native, .desc = desc });
     }
 
     pub fn destroySampler(self: *Device, handle: resource.SamplerHandle) void {
@@ -1097,6 +1102,19 @@ pub const Device = struct {
         for (layout_backing.entries) |wanted| {
             const found = findBindGroupEntry(desc.entries, wanted.binding) orelse return error.InvalidDescriptor;
             if (@as(pipeline.BindingType, found.resource) != wanted.type) return error.InvalidDescriptor;
+            switch (found.resource) {
+                .sampled_texture => |handle| {
+                    const texture = self.textures.getConst(handle) orelse return error.InvalidDescriptor;
+                    const actual: pipeline.TextureBindingType = if (texture.desc.format.isDepth()) .depth else .color;
+                    if (actual != wanted.texture) return error.InvalidDescriptor;
+                },
+                .sampler => |handle| {
+                    const sampler = self.samplers.getConst(handle) orelse return error.InvalidDescriptor;
+                    const actual: pipeline.SamplerBindingType = if (sampler.desc.compare != null) .comparison else .filtering;
+                    if (actual != wanted.sampler) return error.InvalidDescriptor;
+                },
+                else => {},
+            }
         }
         for (desc.entries, 0..) |entry, i| {
             for (desc.entries[0..i]) |earlier| {
@@ -1139,9 +1157,13 @@ pub const Device = struct {
                     writes[i].pBufferInfo = &buffers[i];
                 },
                 .sampled_texture => |handle| {
+                    const texture = self.textures.getConst(handle).?;
                     images[i] = .{
-                        .imageView = self.textures.getConst(handle).?.view,
-                        .imageLayout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        .imageView = texture.view,
+                        .imageLayout = if (texture.desc.format.isDepth())
+                            c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                        else
+                            c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     };
                     writes[i].pImageInfo = &images[i];
                 },
@@ -1288,6 +1310,7 @@ pub const Device = struct {
         const fragment_shader = self.shaders.getConst(desc.fragment_shader) orelse return error.InvalidDescriptor;
         const layout_backing = (self.pipeline_layouts.getConst(desc.layout) orelse return error.InvalidDescriptor).backing;
         if (!resource.isValidSampleCount(desc.sample_count)) return error.InvalidDescriptor;
+        if (desc.color_targets.len == 0 and desc.depth_stencil == null) return error.InvalidDescriptor;
         // Conformance requires 4 in both, so a device without it is recorded, not accommodated.
         const bit = sampleCountBit(desc.sample_count);
         if (self.limits.framebufferColorSampleCounts & bit == 0 or self.limits.framebufferDepthSampleCounts & bit == 0) {
@@ -1369,6 +1392,13 @@ pub const Device = struct {
             // viewport (§6) already turns Foundry's y-up winding into the same winding there, so the
             // descriptor's front face maps directly (Step 6 Resolution).
             .frontFace = frontFace(desc.primitive.front_face),
+            .depthBiasEnable = if (desc.depth_stencil) |depth|
+                if (depth.bias.constant != 0 or depth.bias.slope != 0 or depth.bias.clamp != 0) c.VK_TRUE else c.VK_FALSE
+            else
+                c.VK_FALSE,
+            .depthBiasConstantFactor = if (desc.depth_stencil) |depth| depth.bias.constant else 0,
+            .depthBiasClamp = if (desc.depth_stencil) |depth| depth.bias.clamp else 0,
+            .depthBiasSlopeFactor = if (desc.depth_stencil) |depth| depth.bias.slope else 0,
             .lineWidth = 1,
         };
         const multisample: c.VkPipelineMultisampleStateCreateInfo = .{
@@ -2364,6 +2394,7 @@ pub const Device = struct {
             .synchronization2 = false,
             .shader_demote_to_helper_invocation = false,
             .timeline_semaphore = false,
+            .depth_bias_clamp = false,
             .swapchain = false,
             .graphics = false,
             .queue_family = null,
@@ -2379,6 +2410,7 @@ pub const Device = struct {
             candidate.synchronization2 = v13.synchronization2 != 0;
             candidate.shader_demote_to_helper_invocation = v13.shaderDemoteToHelperInvocation != 0;
             candidate.timeline_semaphore = v12.timelineSemaphore != 0;
+            candidate.depth_bias_clamp = features.features.depthBiasClamp != 0;
         }
 
         const families = try self.listQueueFamilies(physical);
@@ -2434,6 +2466,7 @@ pub const Device = struct {
         var features: c.VkPhysicalDeviceFeatures2 = .{
             .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
             .pNext = &v12,
+            .features = .{ .depthBiasClamp = c.VK_TRUE },
         };
         const extensions = [_][*:0]const u8{c.VK_KHR_SWAPCHAIN_EXTENSION_NAME};
         const info: c.VkDeviceCreateInfo = .{
@@ -3558,7 +3591,10 @@ fn pipelineDescriptorValid(limits: *const c.VkPhysicalDeviceLimits, desc: pipeli
     for (desc.color_targets) |target| {
         if (!target.format.isColor()) return false;
     }
-    if (desc.depth_stencil) |depth| if (!depth.format.isDepth()) return false;
+    if (desc.depth_stencil) |depth| {
+        if (!depth.format.isDepth()) return false;
+        if (!std.math.isFinite(depth.bias.constant) or !std.math.isFinite(depth.bias.slope) or !std.math.isFinite(depth.bias.clamp)) return false;
+    }
     return true;
 }
 
@@ -3763,6 +3799,13 @@ const StateAccess = struct { layout: c.VkImageLayout, access: u64, stages: u64 }
 /// presentation has no present layout, so its offscreen surface rests in the transfer-source layout
 /// there instead, where it can still be read.
 fn stateFor(state: *const TextureState, declared: resource.ResourceState) StateAccess {
+    if (declared == .shader_read and state.desc.format.isDepth()) {
+        return .{
+            .layout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+            .access = c.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            .stages = c.VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | c.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        };
+    }
     return textureState(if (declared == .present and !state.swapchain) .copy_src else declared);
 }
 

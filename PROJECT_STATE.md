@@ -1,12 +1,30 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-29
-**Current handoff: M22's design is proposed (`docs/design/light.md`, ADR-0056); awaiting
-acceptance of §15. Stop before Step 1.** M21 is complete (2026-09-29, tag `m21`, not yet pushed).
+**Current handoff: M22 Step 1 is complete; stop before Step 2.** M21 is complete (2026-09-29,
+tag `m21`, not yet pushed). M22's design and ADR-0056 were accepted when the owner requested
+Step 1.
 
-**M22's design (2026-09-29).** Documents only; no code. M22 is Light (`3d.md` §10): a lit room
-whose materials a content mod changes.
-- **ADR-0056 (proposed):** lights in photometric units with glTF's punctual semantics (lux,
+**M22 Step 1 is done (2026-09-29).**
+- **The RHI can express the light passes:** single-sampled `depth32_float` may be a sampled depth
+  attachment; bind-group layouts distinguish depth/colour textures and comparison/filtering
+  samplers; samplers carry an optional comparison function; depth pipelines carry finite constant,
+  slope and clamp bias; and depth-only pipelines and passes are legal.
+- **Null refuses the mismatches:** sampled multisampled or stencil depth, resource/layout-kind
+  disagreement, attachment-less pipelines and passes, and non-finite bias. A deliberate mutation
+  disabling the comparison-sampler refusal failed its test and was restored.
+- **Metal implements and proves the paths by pixels:** a depth-only pass is sampled through a
+  hardware comparison sampler, and a blended 4× `rgba16_float` target resolves and is sampled.
+- **Vulkan compiles the same contract:** sampled depth uses the depth read-only layout, comparison
+  samplers and fixed depth bias map natively, and `depthBiasClamp` is now an explicit device-floor
+  feature. Runtime validation remains M22 Step 6 as designed.
+- **The bar:** **1,861 of 1,862 headless tests (1,944 declared)** and **1,871 of 1,882 on Metal**;
+  the five Vulkan compile checks pass, including optimized Windows.
+- **Step 2 has not begun:** material version 2, tangents and lit glTF import remain next.
+
+**M22's design (2026-09-29).** M22 is Light (`3d.md` §10): a lit room whose materials a content
+mod changes.
+- **ADR-0056 (accepted):** lights in photometric units with glTF's punctual semantics (lux,
   candela, cd/m²), EV100 exposure applied in the lit shader, unlit output and the clear colour
   not exposed, and one tone map, Khronos PBR Neutral, before the sRGB surface.
 - **Eight steps:**

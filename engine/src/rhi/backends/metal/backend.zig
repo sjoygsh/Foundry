@@ -305,7 +305,7 @@ const TextureState = struct {
     is_surface: bool = false,
 };
 
-const SamplerState = struct { mtl: *c.FdMtlSampler };
+const SamplerState = struct { mtl: *c.FdMtlSampler, desc: resource.SamplerDesc };
 
 const ShaderState = struct { mtl: *c.FdMtlLibrary };
 
@@ -345,6 +345,7 @@ const RenderPipelineState = struct {
     /// binds by the flattening the pipeline was compiled against even once the layout is gone.
     slots: []BindingSlot,
     primitive: pipeline.PrimitiveState,
+    depth_bias: pipeline.DepthBias,
 };
 
 /// What a destroyed resource leaves behind until the recordings that could use it finish: the
@@ -738,6 +739,9 @@ pub const Device = struct {
             if (desc.mip_levels != 1 or u.sampled or u.copy_src or u.copy_dst or !(u.render_target or u.depth_stencil))
                 return error.InvalidDescriptor;
         }
+        if (desc.usage.sampled and desc.format.isDepth() and
+            (desc.format != .depth32_float or !desc.usage.depth_stencil or desc.sample_count != 1))
+            return error.InvalidDescriptor;
         try self.reserveRetirement();
 
         const d: c.FdMtlTextureDesc = .{
@@ -786,6 +790,8 @@ pub const Device = struct {
             .mip_filter = samplerMipFilter(desc.mip_filter),
             .address_u = samplerAddress(desc.address_u),
             .address_v = samplerAddress(desc.address_v),
+            .compare_enabled = desc.compare != null,
+            .compare = compareFunction(desc.compare orelse .always),
         };
 
         var buf: [label_max + 1]u8 = undefined;
@@ -793,7 +799,7 @@ pub const Device = struct {
             return error.InvalidDescriptor;
         errdefer c.fd_mtl_sampler_destroy(mtl);
 
-        return try self.samplers.add(self.gpa, .{ .mtl = mtl });
+        return try self.samplers.add(self.gpa, .{ .mtl = mtl, .desc = desc });
     }
 
     pub fn destroySampler(self: *Device, handle: resource.SamplerHandle) void {
@@ -880,6 +886,28 @@ pub const Device = struct {
     }
 
     pub fn createBindGroup(self: *Device, desc: pipeline.BindGroupDesc) interface.ResourceError!pipeline.BindGroupHandle {
+        const layout = self.bind_group_layouts.getConst(desc.layout) orelse return error.InvalidDescriptor;
+        if (desc.entries.len != layout.entries.len) return error.InvalidDescriptor;
+        for (layout.entries) |want| {
+            const found = for (desc.entries) |entry| {
+                if (entry.binding == want.binding) break entry;
+            } else return error.InvalidDescriptor;
+            if (@as(pipeline.BindingType, found.resource) != want.type) return error.InvalidDescriptor;
+            switch (found.resource) {
+                .sampled_texture => |handle| {
+                    const texture = self.textures.getConst(handle) orelse return error.InvalidDescriptor;
+                    if (!texture.desc.usage.sampled) return error.InvalidDescriptor;
+                    const actual: pipeline.TextureBindingType = if (texture.desc.format.isDepth()) .depth else .color;
+                    if (actual != want.texture) return error.InvalidDescriptor;
+                },
+                .sampler => |handle| {
+                    const sampler = self.samplers.getConst(handle) orelse return error.InvalidDescriptor;
+                    const actual: pipeline.SamplerBindingType = if (sampler.desc.compare != null) .comparison else .filtering;
+                    if (actual != want.sampler) return error.InvalidDescriptor;
+                },
+                else => {},
+            }
+        }
         try self.reserveRetirement();
         const entries = try self.gpa.dupe(pipeline.BindGroupEntry, desc.entries);
         errdefer self.gpa.free(entries);
@@ -956,6 +984,11 @@ pub const Device = struct {
         const vertex_lib = self.shaders.getConst(desc.vertex_shader) orelse return error.InvalidDescriptor;
         const fragment_lib = self.shaders.getConst(desc.fragment_shader) orelse return error.InvalidDescriptor;
         const layout = self.pipeline_layouts.getConst(desc.layout) orelse return error.InvalidDescriptor;
+        if (desc.color_targets.len == 0 and desc.depth_stencil == null) return error.InvalidDescriptor;
+        if (desc.depth_stencil) |depth| {
+            if (!std.math.isFinite(depth.bias.constant) or !std.math.isFinite(depth.bias.slope) or !std.math.isFinite(depth.bias.clamp))
+                return error.InvalidDescriptor;
+        }
         try self.checkSampleCount(desc.sample_count);
         try self.reserveRetirement();
 
@@ -1058,6 +1091,7 @@ pub const Device = struct {
             .depth_state = depth_state,
             .slots = slots,
             .primitive = desc.primitive,
+            .depth_bias = if (desc.depth_stencil) |depth| depth.bias else .{},
         });
     }
 
@@ -1455,6 +1489,7 @@ pub const RenderPass = struct {
         c.fd_mtl_render_encoder_set_cull_mode(enc, cullMode(state.primitive.cull_mode));
         c.fd_mtl_render_encoder_set_front_face(enc, winding(state.primitive.front_face));
         if (state.depth_state) |d| c.fd_mtl_render_encoder_set_depth_state(enc, d);
+        c.fd_mtl_render_encoder_set_depth_bias(enc, state.depth_bias.constant, state.depth_bias.slope, state.depth_bias.clamp);
     }
 
     /// Recorded rather than bound, because the argument-table index depends on the bound
@@ -2345,6 +2380,188 @@ test "the same bytes read back as themselves in a linear format and decoded in a
 
 test "the same bytes read back as themselves and decoded at 4x too" {
     try expectColorSpaces(4);
+}
+
+const m22_shadow_msl =
+    \\#include <metal_stdlib>
+    \\using namespace metal;
+    \\struct VOut { float4 pos [[position]]; float2 uv; };
+    \\vertex VOut depthVertex(uint vid [[vertex_id]]) {
+    \\    float2 p[3] = { float2(-1,-1), float2(3,-1), float2(-1,3) };
+    \\    VOut o; o.pos = float4(p[vid], 0.5, 1); o.uv = p[vid] * 0.5 + 0.5; return o;
+    \\}
+    \\fragment void depthFragment() {}
+    \\vertex VOut sampleVertex(uint vid [[vertex_id]]) {
+    \\    float2 p[3] = { float2(-1,-1), float2(3,-1), float2(-1,3) };
+    \\    VOut o; o.pos = float4(p[vid], 0, 1); o.uv = p[vid] * 0.5 + 0.5; return o;
+    \\}
+    \\fragment float4 sampleFragment(VOut in [[stage_in]], depth2d<float> shadow [[texture(0)]],
+    \\                               sampler comparison [[sampler(0)]]) {
+    \\    float lit = shadow.sample_compare(comparison, in.uv, 0.4); return float4(lit, 0, 0, 1);
+    \\}
+;
+
+test "M22: a depth-only pass is sampled through a comparison sampler" {
+    const dev = try headlessDevice();
+    defer dev.deinit();
+    const extent: resource.Extent2D = .{ .width = 8, .height = 8 };
+    const shader = try dev.createShaderModuleFromSource(.{ .label = "shadow proof", .source = m22_shadow_msl });
+    defer dev.destroyShaderModule(shader);
+    const empty_layout = try dev.createPipelineLayout(.{});
+    defer dev.destroyPipelineLayout(empty_layout);
+    const depth_pipeline = try dev.createRenderPipeline(.{
+        .label = "depth only",
+        .layout = empty_layout,
+        .vertex_shader = shader,
+        .vertex_entry = "depthVertex",
+        .fragment_shader = shader,
+        .fragment_entry = "depthFragment",
+        .depth_stencil = .{ .format = .depth32_float, .depth_write_enabled = true, .depth_compare = .always },
+    });
+    defer dev.destroyRenderPipeline(depth_pipeline);
+    const group_layout = try dev.createBindGroupLayout(.{ .entries = &.{
+        .{ .binding = 0, .type = .sampled_texture, .visibility = .{ .fragment = true }, .texture = .depth },
+        .{ .binding = 1, .type = .sampler, .visibility = .{ .fragment = true }, .sampler = .comparison },
+    } });
+    defer dev.destroyBindGroupLayout(group_layout);
+    const sample_layout = try dev.createPipelineLayout(.{ .bind_group_layouts = &.{group_layout} });
+    defer dev.destroyPipelineLayout(sample_layout);
+    const sample_pipeline = try dev.createRenderPipeline(.{
+        .label = "sample shadow",
+        .layout = sample_layout,
+        .vertex_shader = shader,
+        .vertex_entry = "sampleVertex",
+        .fragment_shader = shader,
+        .fragment_entry = "sampleFragment",
+        .color_targets = &.{.{ .format = .rgba8_unorm }},
+    });
+    defer dev.destroyRenderPipeline(sample_pipeline);
+    const depth = try dev.createTexture(.{ .label = "sampled depth", .size = extent, .format = .depth32_float, .usage = .{ .depth_stencil = true, .sampled = true } });
+    defer dev.destroyTexture(depth);
+    const comparison = try dev.createSampler(.{ .compare = .greater_equal });
+    defer dev.destroySampler(comparison);
+    const group = try dev.createBindGroup(.{ .layout = group_layout, .entries = &.{
+        .{ .binding = 0, .resource = .{ .sampled_texture = depth } },
+        .{ .binding = 1, .resource = .{ .sampler = comparison } },
+    } });
+    defer dev.destroyBindGroup(group);
+    const target = try dev.createTexture(.{ .size = extent, .format = .rgba8_unorm, .usage = .{ .render_target = true, .copy_src = true } });
+    defer dev.destroyTexture(target);
+    const readback = try dev.createBuffer(.{ .size = 8 * 8 * 4, .usage = .{ .copy_dst = true }, .memory = .readback });
+    defer dev.destroyBuffer(readback);
+
+    var cmd = try dev.beginCommandBuffer();
+    var depth_pass = try cmd.beginRenderPass(.{ .depth = .{
+        .texture = depth,
+        .load = .{ .clear = .{ .depth_stencil = .{ .depth = 1 } } },
+        .final_state = .shader_read,
+    } });
+    depth_pass.setPipeline(depth_pipeline);
+    depth_pass.draw(.{ .vertex_count = 3 });
+    depth_pass.end();
+    var sample_pass = try cmd.beginRenderPass(.{ .color = &.{.{ .texture = target, .final_state = .copy_src }} });
+    sample_pass.setPipeline(sample_pipeline);
+    sample_pass.setBindGroup(0, group);
+    sample_pass.draw(.{ .vertex_count = 3 });
+    sample_pass.end();
+    try cmd.copyTextureToBuffer(.{ .src = target, .size = extent, .dst = readback });
+    try cmd.submit();
+    dev.waitIdle();
+    const pixels = try dev.mapBuffer(readback);
+    defer dev.unmapBuffer(readback);
+    for (0..64) |i| try testing.expectEqual([4]u8{ 255, 0, 0, 255 }, pixels[i * 4 ..][0..4].*);
+}
+
+const m22_fp16_msl =
+    \\#include <metal_stdlib>
+    \\using namespace metal;
+    \\struct VOut { float4 pos [[position]]; float2 uv; };
+    \\vertex VOut vertexMain(uint vid [[vertex_id]]) {
+    \\    float2 p[3] = { float2(-1,-1), float2(3,-1), float2(-1,3) };
+    \\    VOut o; o.pos = float4(p[vid], 0, 1); o.uv = p[vid] * 0.5 + 0.5; return o;
+    \\}
+    \\fragment float4 lightFragment() { return float4(0.25, 0.25, 0.25, 0); }
+    \\fragment float4 sampleFragment(VOut in [[stage_in]], texture2d<float> image [[texture(0)]],
+    \\                               sampler image_sampler [[sampler(0)]]) {
+    \\    return image.sample(image_sampler, in.uv);
+    \\}
+;
+
+test "M22: fp16 blending resolves at 4x and the result is sampled" {
+    const dev = try headlessDevice();
+    defer dev.deinit();
+    const extent: resource.Extent2D = .{ .width = 8, .height = 8 };
+    const shader = try dev.createShaderModuleFromSource(.{ .label = "fp16 proof", .source = m22_fp16_msl });
+    defer dev.destroyShaderModule(shader);
+    const empty_layout = try dev.createPipelineLayout(.{});
+    defer dev.destroyPipelineLayout(empty_layout);
+    const light_pipeline = try dev.createRenderPipeline(.{
+        .layout = empty_layout,
+        .vertex_shader = shader,
+        .fragment_shader = shader,
+        .fragment_entry = "lightFragment",
+        .color_targets = &.{.{ .format = .rgba16_float, .blend = pipeline.BlendState.additive }},
+        .sample_count = 4,
+    });
+    defer dev.destroyRenderPipeline(light_pipeline);
+    const group_layout = try dev.createBindGroupLayout(.{ .entries = &.{
+        .{ .binding = 0, .type = .sampled_texture, .visibility = .{ .fragment = true } },
+        .{ .binding = 1, .type = .sampler, .visibility = .{ .fragment = true } },
+    } });
+    defer dev.destroyBindGroupLayout(group_layout);
+    const sample_layout = try dev.createPipelineLayout(.{ .bind_group_layouts = &.{group_layout} });
+    defer dev.destroyPipelineLayout(sample_layout);
+    const sample_pipeline = try dev.createRenderPipeline(.{
+        .layout = sample_layout,
+        .vertex_shader = shader,
+        .fragment_shader = shader,
+        .fragment_entry = "sampleFragment",
+        .color_targets = &.{.{ .format = .rgba8_unorm }},
+    });
+    defer dev.destroyRenderPipeline(sample_pipeline);
+    const multisampled = try dev.createTexture(.{ .size = extent, .format = .rgba16_float, .usage = .{ .render_target = true }, .sample_count = 4 });
+    defer dev.destroyTexture(multisampled);
+    const resolved = try dev.createTexture(.{ .size = extent, .format = .rgba16_float, .usage = .{ .render_target = true, .sampled = true } });
+    defer dev.destroyTexture(resolved);
+    const sampler = try dev.createSampler(.{ .min_filter = .linear, .mag_filter = .linear });
+    defer dev.destroySampler(sampler);
+    const group = try dev.createBindGroup(.{ .layout = group_layout, .entries = &.{
+        .{ .binding = 0, .resource = .{ .sampled_texture = resolved } },
+        .{ .binding = 1, .resource = .{ .sampler = sampler } },
+    } });
+    defer dev.destroyBindGroup(group);
+    const target = try dev.createTexture(.{ .size = extent, .format = .rgba8_unorm, .usage = .{ .render_target = true, .copy_src = true } });
+    defer dev.destroyTexture(target);
+    const readback = try dev.createBuffer(.{ .size = 8 * 8 * 4, .usage = .{ .copy_dst = true }, .memory = .readback });
+    defer dev.destroyBuffer(readback);
+
+    var cmd = try dev.beginCommandBuffer();
+    var light_pass = try cmd.beginRenderPass(.{ .color = &.{.{
+        .texture = multisampled,
+        .load = .{ .clear = .{ .color = .{ 0.25, 0.25, 0.25, 1 } } },
+        .store = .discard,
+        .resolve = .{ .texture = resolved, .final_state = .shader_read },
+    }} });
+    light_pass.setPipeline(light_pipeline);
+    light_pass.draw(.{ .vertex_count = 3 });
+    light_pass.end();
+    var sample_pass = try cmd.beginRenderPass(.{ .color = &.{.{ .texture = target, .final_state = .copy_src }} });
+    sample_pass.setPipeline(sample_pipeline);
+    sample_pass.setBindGroup(0, group);
+    sample_pass.draw(.{ .vertex_count = 3 });
+    sample_pass.end();
+    try cmd.copyTextureToBuffer(.{ .src = target, .size = extent, .dst = readback });
+    try cmd.submit();
+    dev.waitIdle();
+    const pixels = try dev.mapBuffer(readback);
+    defer dev.unmapBuffer(readback);
+    for (0..64) |i| {
+        const pixel = pixels[i * 4 ..][0..4].*;
+        try testing.expect(pixel[0] == 127 or pixel[0] == 128);
+        try testing.expectEqual(pixel[0], pixel[1]);
+        try testing.expectEqual(pixel[0], pixel[2]);
+        try testing.expectEqual(@as(u8, 255), pixel[3]);
+    }
 }
 
 test "multisampling misuse is refused at creation, as on null" {

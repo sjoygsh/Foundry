@@ -268,6 +268,8 @@ typedef struct FdMtlSamplerDesc {
     uint32_t mip_filter; /* MTLSamplerMipFilter */
     uint32_t address_u;  /* MTLSamplerAddressMode */
     uint32_t address_v;  /* MTLSamplerAddressMode */
+    bool compare_enabled;
+    uint32_t compare;    /* MTLCompareFunction */
 } FdMtlSamplerDesc;
 
 FdMtlSampler *fd_mtl_sampler_create(FdMtlDevice *dev, const FdMtlSamplerDesc *desc,
@@ -399,6 +401,8 @@ void fd_mtl_render_encoder_destroy(FdMtlRenderEncoder *enc);
 
 void fd_mtl_render_encoder_set_pipeline(FdMtlRenderEncoder *enc, FdMtlRenderPipeline *pso);
 void fd_mtl_render_encoder_set_depth_state(FdMtlRenderEncoder *enc, FdMtlDepthState *state);
+void fd_mtl_render_encoder_set_depth_bias(FdMtlRenderEncoder *enc, float constant,
+                                          float slope, float clamp);
 void fd_mtl_render_encoder_set_cull_mode(FdMtlRenderEncoder *enc, uint32_t mode);
 void fd_mtl_render_encoder_set_front_face(FdMtlRenderEncoder *enc, uint32_t winding);
 void fd_mtl_render_encoder_set_viewport(FdMtlRenderEncoder *enc, double x, double y,

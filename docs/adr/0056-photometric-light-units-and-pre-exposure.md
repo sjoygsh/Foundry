@@ -1,6 +1,6 @@
 # ADR-0056: Photometric light units, pre-exposure, and one hue-preserving tone map
 
-**Status:** Proposed
+**Status:** Accepted 2026-09-29 when the owner requested M22 Step 1
 **Date:** 2026-09-29
 **Informed by:** ADR-0048, ADR-0049, ADR-0052, ADR-0053, `docs/design/3d.md` §6,
 `docs/design/light.md` §3

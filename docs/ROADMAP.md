@@ -1083,5 +1083,5 @@ Step 5 makes it `sandbox3d`'s orrery, nested moving objects inspected live in th
 macOS/Metal and Windows/Vulkan: F5 and F9 give back the same poses, F6 re-parents without a
 jump, and F7's sheared crate is refused. Step 6 closed it. Exit condition met: §7's rules hold,
 and a saved hierarchy loads back to the same world poses. Linux stayed compile-only, and none of
-its triggers fired. M22, Light, is next. Its design, [`light.md`](design/light.md) with ADR-0056, is proposed and
-awaits acceptance.
+its triggers fired. M22, Light, is in progress. Its design, [`light.md`](design/light.md) with
+accepted ADR-0056, has eight bounded steps; Step 1 completed the RHI primitives and Step 2 is next.

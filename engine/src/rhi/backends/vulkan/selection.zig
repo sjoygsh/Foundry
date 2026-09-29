@@ -63,6 +63,7 @@ pub const Candidate = struct {
     /// fragment's `discard` into `OpDemoteToHelperInvocation` for SPIR-V 1.6 (M20 Step 7).
     shader_demote_to_helper_invocation: bool,
     timeline_semaphore: bool,
+    depth_bias_clamp: bool,
     swapchain: bool,
     /// Whether any queue family supports graphics.
     graphics: bool,
@@ -77,6 +78,7 @@ pub const Unmet = struct {
     synchronization2: bool = false,
     shader_demote_to_helper_invocation: bool = false,
     timeline_semaphore: bool = false,
+    depth_bias_clamp: bool = false,
     graphics_queue: bool = false,
     present_queue: bool = false,
     swapchain: bool = false,
@@ -106,6 +108,7 @@ pub const Unmet = struct {
         .synchronization2 = "synchronization2",
         .shader_demote_to_helper_invocation = "shaderDemoteToHelperInvocation",
         .timeline_semaphore = "timelineSemaphore",
+        .depth_bias_clamp = "depthBiasClamp",
         .graphics_queue = "a graphics queue",
         .present_queue = "a graphics queue that presents to the surface",
         .swapchain = "VK_KHR_swapchain",
@@ -119,6 +122,7 @@ pub fn unmet(candidate: Candidate, needs: Needs) Unmet {
         .synchronization2 = !candidate.synchronization2,
         .shader_demote_to_helper_invocation = !candidate.shader_demote_to_helper_invocation,
         .timeline_semaphore = !candidate.timeline_semaphore,
+        .depth_bias_clamp = !candidate.depth_bias_clamp,
         .graphics_queue = !candidate.graphics,
         .present_queue = candidate.graphics and candidate.queue_family == null,
         .swapchain = needs.present and !candidate.swapchain,
@@ -171,6 +175,7 @@ fn qualifying(index: u32, device_type: DeviceType) Candidate {
         .synchronization2 = true,
         .shader_demote_to_helper_invocation = true,
         .timeline_semaphore = true,
+        .depth_bias_clamp = true,
         .swapchain = true,
         .graphics = true,
         .queue_family = 0,
@@ -238,6 +243,10 @@ test "each missing requirement refuses a device and names what it lacks" {
     var no_timeline = qualifying(0, .discrete);
     no_timeline.timeline_semaphore = false;
     try expectOnlyUnmet(no_timeline, .{}, "timeline_semaphore");
+
+    var no_depth_bias_clamp = qualifying(0, .discrete);
+    no_depth_bias_clamp.depth_bias_clamp = false;
+    try expectOnlyUnmet(no_depth_bias_clamp, .{}, "depth_bias_clamp");
 
     var no_graphics = qualifying(0, .discrete);
     no_graphics.graphics = false;

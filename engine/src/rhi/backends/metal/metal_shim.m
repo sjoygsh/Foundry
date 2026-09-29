@@ -367,6 +367,9 @@ FdMtlSampler *fd_mtl_sampler_create(FdMtlDevice *dev, const FdMtlSamplerDesc *de
         d.mipFilter = (MTLSamplerMipFilter)desc->mip_filter;
         d.sAddressMode = (MTLSamplerAddressMode)desc->address_u;
         d.tAddressMode = (MTLSamplerAddressMode)desc->address_v;
+        if (desc->compare_enabled) {
+            d.compareFunction = (MTLCompareFunction)desc->compare;
+        }
         if (label != NULL && label[0] != '\0') {
             d.label = [NSString stringWithUTF8String:label];
         }
@@ -640,6 +643,13 @@ void fd_mtl_render_encoder_set_depth_state(FdMtlRenderEncoder *enc, FdMtlDepthSt
     if (enc == NULL || state == NULL) return;
     id<MTLRenderCommandEncoder> e = (__bridge id<MTLRenderCommandEncoder>)enc;
     [e setDepthStencilState:(__bridge id<MTLDepthStencilState>)state];
+}
+
+void fd_mtl_render_encoder_set_depth_bias(FdMtlRenderEncoder *enc, float constant,
+                                          float slope, float clamp) {
+    if (enc == NULL) return;
+    id<MTLRenderCommandEncoder> e = (__bridge id<MTLRenderCommandEncoder>)enc;
+    [e setDepthBias:constant slopeScale:slope clamp:clamp];
 }
 
 void fd_mtl_render_encoder_set_cull_mode(FdMtlRenderEncoder *enc, uint32_t mode) {

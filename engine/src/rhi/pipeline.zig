@@ -90,10 +90,15 @@ pub const BindingType = enum {
     sampler,
 };
 
+pub const SamplerBindingType = enum { filtering, comparison };
+pub const TextureBindingType = enum { color, depth };
+
 pub const BindGroupLayoutEntry = struct {
     binding: u32,
     type: BindingType,
     visibility: ShaderStages,
+    sampler: SamplerBindingType = .filtering,
+    texture: TextureBindingType = .color,
 };
 
 pub const BindGroupLayoutDesc = struct {
@@ -256,21 +261,19 @@ pub const ColorWriteMask = packed struct(u8) {
     _reserved: u4 = 0,
 };
 
-pub const CompareFunction = enum {
-    never,
-    less,
-    equal,
-    less_equal,
-    greater,
-    not_equal,
-    greater_equal,
-    always,
+pub const CompareFunction = resource.CompareFunction;
+
+pub const DepthBias = struct {
+    constant: f32 = 0,
+    slope: f32 = 0,
+    clamp: f32 = 0,
 };
 
 pub const DepthStencilState = struct {
     format: format.TextureFormat,
     depth_write_enabled: bool = false,
     depth_compare: CompareFunction = .always,
+    bias: DepthBias = .{},
 };
 
 /// Monolithic, because all three APIs are monolithic here. Created ahead of time and never

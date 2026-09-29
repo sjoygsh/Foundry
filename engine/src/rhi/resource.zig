@@ -185,6 +185,17 @@ pub const FilterMode = enum { nearest, linear };
 
 pub const AddressMode = enum { clamp_to_edge, repeat, mirror_repeat };
 
+pub const CompareFunction = enum {
+    never,
+    less,
+    equal,
+    less_equal,
+    greater,
+    not_equal,
+    greater_equal,
+    always,
+};
+
 pub const SamplerDesc = struct {
     label: []const u8 = "",
     /// `nearest` by default, because Foundry is 2D first and a pixel-art sprite filtered
@@ -194,6 +205,8 @@ pub const SamplerDesc = struct {
     mip_filter: FilterMode = .nearest,
     address_u: AddressMode = .clamp_to_edge,
     address_v: AddressMode = .clamp_to_edge,
+    /// Null is an ordinary filtering sampler. A value makes this a depth-comparison sampler.
+    compare: ?CompareFunction = null,
 };
 
 // -- shaders -------------------------------------------------------------------------

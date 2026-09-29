@@ -1,6 +1,7 @@
 # Design: M22 — Light: the lit model, lights, one shadow, HDR and the light-unit convention
 
-**Status:** Proposed 2026-09-29; awaiting the owner's acceptance of §15. No step has begun.
+**Status:** Accepted 2026-09-29 when the owner requested Step 1. Step 1 is complete; Step 2 has
+not begun.
 **Date:** 2026-09-29
 **Baseline:** `eaefd70`, tag `m21`. M0–M21 are complete.
 **Decisions:**
@@ -515,8 +516,10 @@ pass's cost recorded from `--shadows=off`.
   backend sets when a pipeline binds.
 - **Vulkan (Windows):** the risks are the depth layout transitions, comparison-sampler descriptors
   and fp16 MSAA resolve. Validation layers and the readbacks are the proof, in Step 6 on the PC.
-- **Linux: compile only.** Every capability used is core, required Vulkan 1.3 behaviour on the same
-  backend that Windows proves, and M22 changes no window, surface, swapchain or presentation code
+- **Linux: compile only.** Every capability used except depth-bias clamping is core Vulkan 1.3
+  behaviour on the same backend that Windows proves. `depthBiasClamp` is an explicit device-floor
+  feature because the RHI exposes a real clamp value; Step 6 qualifies it on the Windows target.
+  M22 changes no window, surface, swapchain or presentation code
   (`3d.md` §10.2's triggers). The one driver-dependent quantity is filtered shadow comparison, whose
   precision may differ on Mesa; the readbacks compare no penumbra pixel, so a difference there
   cannot change a result. The close confirms the assessment held.
@@ -533,6 +536,19 @@ back through a comparison sampler; an fp16 4× target resolved and sampled). Vul
 passes the null-equivalent checks here; it runs in Step 6.
 **Exit:** every §4 capability is refused when misused on the null backend and read back correctly on
 Metal.
+
+**Resolution (2026-09-29): complete.** `depth32_float` is now sampleable only when it is also a
+single-sampled depth attachment; the stencil format remains unsampleable. Layout entries distinguish
+colour/depth textures and filtering/comparison samplers, and all three backends reject a group whose
+resources disagree. `SamplerDesc.compare`, finite pipeline depth bias, depth-only pipelines/passes,
+and blended 4× `rgba16_float` resolve-and-sample paths are implemented across null, Metal and Vulkan.
+Metal readbacks prove both a depth-only pass sampled through hardware comparison and the fp16 path.
+Vulkan uses the depth read-only layout for sampled depth, creates comparison samplers and fixed
+pipeline bias, and now requires the optional `depthBiasClamp` feature rather than silently ignoring
+the RHI's clamp field; its runtime proof remains Step 6. `CompareFunction` lives with sampler
+resources and is re-exported by `pipeline`, preserving existing callers without introducing an
+import cycle. One deliberate mutation disabling the comparison-sampler guard failed its test and
+was restored. Step 2 has not begun.
 
 ### Step 2 — `asset` and `author`: material version 2, tangents, lit import
 §5 and §6: the schema, its version extension, tangent validation, and the importer's lit fields,
@@ -581,9 +597,9 @@ Resolve the discrepancies this design makes in its parents:
 - `rhi.md` §12 and §11's rules for sampled depth, comparison samplers and depth-only passes;
 - `debug-overlay.md` §7.5's `Sources.world3d` counts.
 
-Move ADR-0056 to Accepted and into CLAUDE.md §4.1, update §9's 3D row, `AGENTS.md`'s bar if a step
-changed it, the roadmap, the design index and `PROJECT_STATE.md`; confirm the Linux assessment; pack
-up the PC; tag `m22`, push when asked, and stop before M23's design.
+Add accepted ADR-0056 to CLAUDE.md §4.1, update §9's 3D row, `AGENTS.md`'s bar if a step changed it,
+the roadmap, the design index and `PROJECT_STATE.md`; confirm the Linux assessment; pack up the PC;
+tag `m22`, push when asked, and stop before M23's design.
 
 ## 14. What stays open, deliberately
 

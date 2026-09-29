@@ -565,6 +565,12 @@ pub const Device = struct {
                 return error.InvalidDescriptor;
             }
         }
+        if (desc.usage.sampled and desc.format.isDepth()) {
+            if (desc.format != .depth32_float or !desc.usage.depth_stencil or desc.sample_count != 1) {
+                self.violate(.usage, "sampled depth texture '{s}' must be single-sampled depth32_float with depth_stencil usage", .{desc.label});
+                return error.InvalidDescriptor;
+            }
+        }
         // Rule 11, at creation: a texture cannot start in a state its usage forbids.
         const candidate: TextureState = .{ .desc = desc, .state = desc.initial_state };
         if (!textureAllows(&candidate, desc.initial_state)) {
@@ -646,6 +652,23 @@ pub const Device = struct {
                     desc.label, want.binding, @as(pipeline.BindingType, found.resource), want.type,
                 });
                 return error.InvalidDescriptor;
+            }
+            switch (found.resource) {
+                .sampled_texture => |handle| if (self.textures.getConst(handle)) |tex| {
+                    const actual: pipeline.TextureBindingType = if (tex.desc.format.isDepth()) .depth else .color;
+                    if (actual != want.texture) {
+                        self.violate(.bind_group_compatibility, "bind group '{s}' binding {d} is a {t} texture, layout requires {t}", .{ desc.label, want.binding, actual, want.texture });
+                        return error.InvalidDescriptor;
+                    }
+                },
+                .sampler => |handle| if (self.samplers.getConst(handle)) |sampler| {
+                    const actual: pipeline.SamplerBindingType = if (sampler.desc.compare != null) .comparison else .filtering;
+                    if (actual != want.sampler) {
+                        self.violate(.bind_group_compatibility, "bind group '{s}' binding {d} is a {t} sampler, layout requires {t}", .{ desc.label, want.binding, actual, want.sampler });
+                        return error.InvalidDescriptor;
+                    }
+                },
+                else => {},
             }
         }
 
@@ -732,6 +755,10 @@ pub const Device = struct {
         const layout = self.pipeline_layouts.getConst(desc.layout) orelse return error.InvalidDescriptor;
         if (self.shaders.getConst(desc.vertex_shader) == null) return error.InvalidDescriptor;
         if (self.shaders.getConst(desc.fragment_shader) == null) return error.InvalidDescriptor;
+        if (desc.color_targets.len == 0 and desc.depth_stencil == null) {
+            self.violate(.attachment_format, "pipeline '{s}' declares neither a colour nor a depth attachment", .{desc.label});
+            return error.InvalidDescriptor;
+        }
 
         // A colour target with a depth format, or the reverse, is rejected by every real
         // backend; catching it at creation beats catching it as a pass mismatch.
@@ -744,6 +771,10 @@ pub const Device = struct {
         if (desc.depth_stencil) |d| {
             if (!d.format.isDepth()) {
                 self.violate(.attachment_format, "pipeline '{s}' uses colour format {t} as a depth target", .{ desc.label, d.format });
+                return error.InvalidDescriptor;
+            }
+            if (!std.math.isFinite(d.bias.constant) or !std.math.isFinite(d.bias.slope) or !std.math.isFinite(d.bias.clamp)) {
+                self.violate(.limits, "pipeline '{s}' has a non-finite depth bias", .{desc.label});
                 return error.InvalidDescriptor;
             }
         }
@@ -907,6 +938,9 @@ pub const CommandBuffer = struct {
         }
         if (self.submitted) {
             dev.violate(.encoder_discipline, "render pass '{s}' recorded into an already-submitted command buffer", .{desc.label});
+        }
+        if (desc.color.len == 0 and desc.depth == null) {
+            dev.violate(.attachment_format, "render pass '{s}' declares neither a colour nor a depth attachment", .{desc.label});
         }
         assert.debugOnly(
             desc.color.len <= max_color_attachments,
@@ -1682,7 +1716,7 @@ test "rule 1: sampling a texture that is still a render target is caught" {
         .entries = &.{.{ .binding = 0, .resource = .{ .sampled_texture = offscreen } }},
     });
 
-    _ = try dev.beginFrame();
+    const frame = try dev.beginFrame();
     var cmd = try dev.beginCommandBuffer();
 
     // Render into it, leaving it as a render target...
@@ -1693,12 +1727,13 @@ test "rule 1: sampling a texture that is still a render target is caught" {
     first.end();
 
     // ...then sample it without transitioning. The missing barrier is the bug.
-    var second = try cmd.beginRenderPass(.{ .label = "sample", .color = &.{} });
+    var second = try cmd.beginRenderPass(.{ .label = "sample", .color = &.{.{ .texture = frame.surface_texture, .final_state = .present }} });
     second.setBindGroup(0, group);
     second.end();
 
     try testing.expectError(error.ValidationFailed, cmd.submit());
     try testing.expect(dev.hasViolation(.resource_state));
+    try dev.endFrame();
 }
 
 test "rule 1: the correct render-then-sample sequence is accepted" {
@@ -1720,7 +1755,7 @@ test "rule 1: the correct render-then-sample sequence is accepted" {
         .entries = &.{.{ .binding = 0, .resource = .{ .sampled_texture = offscreen } }},
     });
 
-    _ = try dev.beginFrame();
+    const frame = try dev.beginFrame();
     var cmd = try dev.beginCommandBuffer();
 
     var first = try cmd.beginRenderPass(.{
@@ -1731,12 +1766,13 @@ test "rule 1: the correct render-then-sample sequence is accepted" {
     // The barrier that makes it legal, declared between passes and not per draw.
     try cmd.textureBarrier(&.{.{ .texture = offscreen, .from = .render_target, .to = .shader_read }});
 
-    var second = try cmd.beginRenderPass(.{ .color = &.{} });
+    var second = try cmd.beginRenderPass(.{ .color = &.{.{ .texture = frame.surface_texture, .final_state = .present }} });
     second.setBindGroup(0, group);
     second.end();
 
     try cmd.submit();
     try testing.expectEqual(@as(usize, 0), dev.violationCount());
+    try dev.endFrame();
 }
 
 test "rule 1: a barrier declaring the wrong source state is caught" {
@@ -2436,6 +2472,100 @@ test "rule 7: a matching depth pass is accepted" {
     try cmd.submit();
 
     try testing.expectEqual(@as(usize, 0), dev.violationCount());
+}
+
+test "M22: a depth-only pipeline and pass are accepted" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    const depth = try dev.createTexture(.{
+        .label = "shadow map",
+        .size = .{ .width = 64, .height = 64 },
+        .format = .depth32_float,
+        .usage = .{ .depth_stencil = true, .sampled = true },
+    });
+    const pipe = try dev.createRenderPipeline(.{
+        .label = "shadow",
+        .layout = fx.layout,
+        .vertex_shader = fx.vs,
+        .fragment_shader = fx.fs,
+        .depth_stencil = .{ .format = .depth32_float, .depth_write_enabled = true, .depth_compare = .less },
+    });
+    var cmd = try dev.beginCommandBuffer();
+    var pass = try cmd.beginRenderPass(.{
+        .label = "shadow",
+        .depth = .{ .texture = depth, .final_state = .shader_read },
+    });
+    pass.setPipeline(pipe);
+    pass.draw(.{ .vertex_count = 3 });
+    pass.end();
+    try cmd.submit();
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
+}
+
+test "M22: sampled depth and comparison sampler declarations must agree" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    const depth = try dev.createTexture(.{
+        .size = .{ .width = 16, .height = 16 },
+        .format = .depth32_float,
+        .usage = .{ .depth_stencil = true, .sampled = true },
+    });
+    const color = try dev.createTexture(.{
+        .size = .{ .width = 16, .height = 16 },
+        .format = .rgba8_unorm,
+        .usage = .{ .sampled = true },
+    });
+    const compare = try dev.createSampler(.{ .compare = .less_equal });
+    const filtering = try dev.createSampler(.{});
+    const layout = try dev.createBindGroupLayout(.{ .entries = &.{
+        .{ .binding = 0, .type = .sampled_texture, .visibility = .{ .fragment = true }, .texture = .depth },
+        .{ .binding = 1, .type = .sampler, .visibility = .{ .fragment = true }, .sampler = .comparison },
+    } });
+    _ = try dev.createBindGroup(.{ .layout = layout, .entries = &.{
+        .{ .binding = 0, .resource = .{ .sampled_texture = depth } },
+        .{ .binding = 1, .resource = .{ .sampler = compare } },
+    } });
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
+
+    try testing.expectError(error.InvalidDescriptor, dev.createBindGroup(.{ .layout = layout, .entries = &.{
+        .{ .binding = 0, .resource = .{ .sampled_texture = color } },
+        .{ .binding = 1, .resource = .{ .sampler = compare } },
+    } }));
+    try testing.expect(dev.hasViolation(.bind_group_compatibility));
+    dev.clearViolations();
+    try testing.expectError(error.InvalidDescriptor, dev.createBindGroup(.{ .layout = layout, .entries = &.{
+        .{ .binding = 0, .resource = .{ .sampled_texture = depth } },
+        .{ .binding = 1, .resource = .{ .sampler = filtering } },
+    } }));
+    try testing.expect(dev.hasViolation(.bind_group_compatibility));
+}
+
+test "M22: sampled depth and depth bias descriptors are bounded" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    try testing.expectError(error.InvalidDescriptor, dev.createTexture(.{
+        .size = .{ .width = 16, .height = 16 },
+        .format = .depth32_float_stencil8,
+        .usage = .{ .depth_stencil = true, .sampled = true },
+    }));
+    dev.clearViolations();
+    try testing.expectError(error.InvalidDescriptor, dev.createTexture(.{
+        .size = .{ .width = 16, .height = 16 },
+        .format = .depth32_float,
+        .usage = .{ .depth_stencil = true, .sampled = true },
+        .sample_count = 4,
+    }));
+    dev.clearViolations();
+    try testing.expectError(error.InvalidDescriptor, dev.createRenderPipeline(.{
+        .layout = fx.layout,
+        .vertex_shader = fx.vs,
+        .fragment_shader = fx.fs,
+        .depth_stencil = .{ .format = .depth32_float, .bias = .{ .constant = std.math.inf(f32) } },
+    }));
+    try testing.expect(dev.hasViolation(.limits));
 }
 
 // -- rule 8: encoder discipline ------------------------------------------------------
@@ -3920,6 +4050,41 @@ test "a multisampled attachment may be stored, with or without a resolve" {
     second.end();
     try cmd.submit();
     try dev.endFrame();
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
+}
+
+test "M22: a blended fp16 multisample target resolves into a sampled texture" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    const multi = try dev.createTexture(.{
+        .size = .{ .width = 32, .height = 32 },
+        .format = .rgba16_float,
+        .usage = .{ .render_target = true },
+        .sample_count = 4,
+    });
+    const resolved = try dev.createTexture(.{
+        .size = .{ .width = 32, .height = 32 },
+        .format = .rgba16_float,
+        .usage = .{ .render_target = true, .sampled = true },
+    });
+    const pipe = try dev.createRenderPipeline(.{
+        .layout = fx.layout,
+        .vertex_shader = fx.vs,
+        .fragment_shader = fx.fs,
+        .color_targets = &.{.{ .format = .rgba16_float, .blend = pipeline.BlendState.additive }},
+        .sample_count = 4,
+    });
+    var cmd = try dev.beginCommandBuffer();
+    var pass = try cmd.beginRenderPass(.{ .color = &.{.{
+        .texture = multi,
+        .store = .discard,
+        .resolve = .{ .texture = resolved, .final_state = .shader_read },
+    }} });
+    pass.setPipeline(pipe);
+    pass.draw(.{ .vertex_count = 3 });
+    pass.end();
+    try cmd.submit();
     try testing.expectEqual(@as(usize, 0), dev.violationCount());
 }
 
