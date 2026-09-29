@@ -91,6 +91,20 @@ pub const TextureInfo = struct {
     extensions: ?std.json.ArrayHashMap(std.json.Value) = null,
 };
 
+pub const NormalTextureInfo = struct {
+    index: u32,
+    texCoord: u32 = 0,
+    scale: f32 = 1,
+    extensions: ?std.json.ArrayHashMap(std.json.Value) = null,
+};
+
+pub const OcclusionTextureInfo = struct {
+    index: u32,
+    texCoord: u32 = 0,
+    strength: f32 = 1,
+    extensions: ?std.json.ArrayHashMap(std.json.Value) = null,
+};
+
 pub const PbrMetallicRoughness = struct {
     baseColorFactor: [4]f32 = .{ 1, 1, 1, 1 },
     baseColorTexture: ?TextureInfo = null,
@@ -102,8 +116,8 @@ pub const PbrMetallicRoughness = struct {
 pub const Material = struct {
     name: ?[]const u8 = null,
     pbrMetallicRoughness: PbrMetallicRoughness = .{},
-    normalTexture: ?TextureInfo = null,
-    occlusionTexture: ?TextureInfo = null,
+    normalTexture: ?NormalTextureInfo = null,
+    occlusionTexture: ?OcclusionTextureInfo = null,
     emissiveTexture: ?TextureInfo = null,
     emissiveFactor: ?[3]f32 = null,
     alphaMode: []const u8 = "OPAQUE",

@@ -327,6 +327,9 @@
         "baseColorTexture": {
           "index": 0
         }
+      },
+      "extensions": {
+        "KHR_materials_unlit": {}
       }
     },
     {
@@ -341,6 +344,9 @@
         "baseColorTexture": {
           "index": 1
         }
+      },
+      "extensions": {
+        "KHR_materials_unlit": {}
       }
     },
     {
@@ -352,6 +358,9 @@
           0.12,
           1.0
         ]
+      },
+      "extensions": {
+        "KHR_materials_unlit": {}
       }
     },
     {
@@ -366,6 +375,9 @@
         "baseColorTexture": {
           "index": 2
         }
+      },
+      "extensions": {
+        "KHR_materials_unlit": {}
       }
     },
     {
@@ -377,6 +389,9 @@
           0.1,
           1.0
         ]
+      },
+      "extensions": {
+        "KHR_materials_unlit": {}
       }
     },
     {
@@ -392,6 +407,9 @@
           "index": 3
         }
       },
+      "extensions": {
+        "KHR_materials_unlit": {}
+      },
       "alphaMode": "MASK",
       "alphaCutoff": 0.5,
       "doubleSided": true
@@ -405,6 +423,9 @@
           0.85,
           0.35
         ]
+      },
+      "extensions": {
+        "KHR_materials_unlit": {}
       },
       "alphaMode": "BLEND",
       "doubleSided": true
@@ -996,6 +1017,9 @@
       "byteLength": 12,
       "target": 34963
     }
+  ],
+  "extensionsUsed": [
+    "KHR_materials_unlit"
   ],
   "buffers": [
     {

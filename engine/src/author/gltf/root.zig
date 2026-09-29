@@ -191,7 +191,7 @@ const JsonParts = struct {
         "{\"name\":\"Triangle\",\"primitives\":[{\"attributes\":{\"POSITION\":0},\"indices\":1,\"material\":0}]}",
     nodes: []const u8 = "{\"mesh\":0}",
     scene_nodes: []const u8 = "0",
-    materials: []const u8 = "{\"name\":\"Mat\"}",
+    materials: []const u8 = "{\"name\":\"Mat\",\"extensions\":{\"KHR_materials_unlit\":{}}}",
     tail: []const u8 = "",
 };
 
@@ -238,6 +238,211 @@ fn makeTriangleNormalBin() [80]u8 {
     writeTestF32(&bytes, 64, 1);
     writeTestF32(&bytes, 76, 1);
     return bytes;
+}
+
+fn makeLitTriangleBin() [152]u8 {
+    var bytes: [152]u8 = @splat(0);
+    const triangle = makeTriangleBin();
+    @memcpy(bytes[0..42], &triangle);
+    for (0..3) |i| {
+        writeTestF32(&bytes, 44 + i * 12 + 8, 1); // +Z normal
+        writeTestF32(&bytes, 80 + i * 16, 1); // +X tangent
+        writeTestF32(&bytes, 80 + i * 16 + 12, 1); // handedness
+    }
+    return bytes;
+}
+
+const lit_views =
+    "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36}," ++
+    "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":6}," ++
+    "{\"buffer\":0,\"byteOffset\":44,\"byteLength\":36}," ++
+    "{\"buffer\":0,\"byteOffset\":80,\"byteLength\":48}," ++
+    "{\"buffer\":0,\"byteOffset\":128,\"byteLength\":24}";
+const lit_accessors =
+    "{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}," ++
+    "{\"bufferView\":1,\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"}," ++
+    "{\"bufferView\":2,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}," ++
+    "{\"bufferView\":3,\"componentType\":5126,\"count\":3,\"type\":\"VEC4\"}," ++
+    "{\"bufferView\":4,\"componentType\":5126,\"count\":3,\"type\":\"VEC2\"}";
+const lit_mesh = "{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":2,\"TANGENT\":3,\"TEXCOORD_0\":4},\"indices\":1,\"material\":0}]}";
+const lit_images = ",\"images\":[{\"uri\":\"color.png\"},{\"uri\":\"orm.png\"}],\"textures\":[{\"source\":0},{\"source\":1}]," ++
+    "\"extensionsUsed\":[\"KHR_materials_emissive_strength\"],\"extensionsRequired\":[\"KHR_materials_emissive_strength\"]";
+
+test "a full lit material imports version 2 fields, tangent bytes and per-slot colour spaces" {
+    const testing = std.testing;
+    const lit = makeLitTriangleBin();
+    const json = try makeJson(testing.allocator, .{
+        .buffers = "{\"uri\":\"mesh.bin\",\"byteLength\":152}",
+        .buffer_views = lit_views,
+        .accessors = lit_accessors,
+        .meshes = lit_mesh,
+        .materials = "{\"name\":\"Lit\",\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.8,0.7,0.6,1],\"baseColorTexture\":{\"index\":0},\"metallicFactor\":0.3,\"roughnessFactor\":0.4,\"metallicRoughnessTexture\":{\"index\":1}}," ++
+            "\"normalTexture\":{\"index\":1,\"scale\":0.5},\"occlusionTexture\":{\"index\":1,\"strength\":0.6}," ++
+            "\"emissiveFactor\":[0.1,0.2,0.3],\"emissiveTexture\":{\"index\":0},\"extensions\":{\"KHR_materials_emissive_strength\":{\"emissiveStrength\":5}}}",
+        .tail = lit_images,
+    });
+    defer testing.allocator.free(json);
+    const files = [_]TestFile{
+        .{ .path = "models/mesh.bin", .bytes = &lit },
+        .{ .path = "models/color.png", .bytes = &test_png },
+        .{ .path = "models/orm.png", .bytes = &test_png },
+    };
+    var reader: TestReader = .{ .files = &files };
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = Diagnostics.init(testing.allocator, .default);
+    defer diags.deinit(testing.allocator);
+    const result = try import(testing.allocator, arena.allocator(), "models/lit.gltf", json, .{
+        .model_id = "demo:models.lit",
+        .source = "models/lit.gltf",
+    }, reader.interface(), .default, &diags);
+    try testing.expect(!diags.failed);
+    for ([_][]const u8{
+        "shading foundry:shading.lit", "metallic 0.3",           "roughness 0.4",
+        "metallic_roughness_texture",  "normal_texture",         "normal_scale 0.5",
+        "occlusion_texture",           "occlusion_strength 0.6", "emissive { r 0.1 g 0.2 b 0.3 }",
+        "emissive_texture",            "emissive_strength 5",    "color_space \"linear\"",
+        "color_space \"srgb\"",
+    }) |needle| try testing.expect(std.mem.indexOf(u8, result.source, needle) != null);
+    var view = try asset.mesh_file.read(result.assets[0].bytes, .default);
+    const mesh = view.mesh();
+    try testing.expectEqual(@as(usize, 4), mesh.streams.len);
+    try testing.expectEqual(asset.MeshSemantic.tangent, mesh.streams[2].semantic);
+    try testing.expectEqual(asset.MeshVertexFormat.float32x4, mesh.streams[2].format);
+
+    var registry = data.Registry.init(testing.allocator, .default);
+    defer registry.deinit(testing.allocator);
+    try asset.schemas.registerAll(testing.allocator, &registry);
+    var package = try data.Package.init(testing.allocator, "demo:package", 1, .default);
+    defer package.deinit(testing.allocator);
+    var generated = try data.parser.parse(testing.allocator, "generated.fdt", result.source, .{ .namespace = "demo" }, &diags);
+    defer generated.deinit(testing.allocator);
+    try package.addDocument(testing.allocator, &generated, &registry, &diags);
+    try testing.expect(!diags.failed);
+}
+
+test "lit import refusals name the missing stream or texture repair" {
+    const testing = std.testing;
+    const lit = makeLitTriangleBin();
+    const triangle = makeTriangleBin();
+    const base_files = [_]TestFile{.{ .path = "models/mesh.bin", .bytes = &triangle }};
+    const files = [_]TestFile{
+        .{ .path = "models/mesh.bin", .bytes = &lit },
+        .{ .path = "models/image.png", .bytes = &test_png },
+    };
+    const image_tail = ",\"images\":[{\"uri\":\"image.png\"}],\"textures\":[{\"source\":0}]";
+    const no_normal = try makeJson(testing.allocator, .{ .materials = "{}" });
+    defer testing.allocator.free(no_normal);
+    try expectImportFailure(no_normal, &base_files, .default, "export normals, or mark the material KHR_materials_unlit");
+
+    const without_tangent = try makeJson(testing.allocator, .{
+        .buffers = "{\"uri\":\"mesh.bin\",\"byteLength\":152}",
+        .buffer_views = lit_views,
+        .accessors = lit_accessors,
+        .meshes = "{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":2},\"indices\":1,\"material\":0}]}",
+        .materials = "{\"normalTexture\":{\"index\":0}}",
+        .tail = image_tail,
+    });
+    defer testing.allocator.free(without_tangent);
+    try expectImportFailure(without_tangent, &files, .default, "export tangents");
+
+    const slot_cases = [_][]const u8{
+        "{\"pbrMetallicRoughness\":{\"metallicRoughnessTexture\":{\"index\":0,\"texCoord\":1}}}",
+        "{\"normalTexture\":{\"index\":0,\"texCoord\":1}}",
+        "{\"occlusionTexture\":{\"index\":0,\"texCoord\":1}}",
+        "{\"emissiveTexture\":{\"index\":0,\"texCoord\":1}}",
+    };
+    for (slot_cases) |material| {
+        const json = try makeJson(testing.allocator, .{
+            .buffers = "{\"uri\":\"mesh.bin\",\"byteLength\":152}",
+            .buffer_views = lit_views,
+            .accessors = lit_accessors,
+            .meshes = lit_mesh,
+            .materials = material,
+            .tail = image_tail,
+        });
+        defer testing.allocator.free(json);
+        try expectImportFailure(json, &files, .default, "export TEXCOORD_0");
+    }
+
+    const mixed_space = try makeJson(testing.allocator, .{
+        .buffers = "{\"uri\":\"mesh.bin\",\"byteLength\":152}",
+        .buffer_views = lit_views,
+        .accessors = lit_accessors,
+        .meshes = lit_mesh,
+        .materials = "{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}},\"normalTexture\":{\"index\":0}}",
+        .tail = image_tail,
+    });
+    defer testing.allocator.free(mixed_space);
+    try expectImportFailure(mixed_space, &files, .default, "use separate images for the two colour spaces");
+
+    var bad_tangent = lit;
+    writeTestF32(&bad_tangent, 92, 0);
+    const bad_files = [_]TestFile{.{ .path = "models/mesh.bin", .bytes = &bad_tangent }};
+    const bad_json = try makeJson(testing.allocator, .{
+        .buffers = "{\"uri\":\"mesh.bin\",\"byteLength\":152}",
+        .buffer_views = lit_views,
+        .accessors = lit_accessors,
+        .meshes = lit_mesh,
+        .materials = "{}",
+    });
+    defer testing.allocator.free(bad_json);
+    try expectImportFailure(bad_json, &bad_files, .default, "TANGENT accessor");
+
+    for ([_]struct { material: []const u8, needle: []const u8 }{
+        .{ .material = "{\"pbrMetallicRoughness\":{\"metallicFactor\":2}}", .needle = "metallicFactor and roughnessFactor" },
+        .{ .material = "{\"pbrMetallicRoughness\":{\"roughnessFactor\":-1}}", .needle = "metallicFactor and roughnessFactor" },
+        .{ .material = "{\"emissiveFactor\":[0,2,0]}", .needle = "emissiveFactor" },
+        .{ .material = "{\"extensions\":{\"KHR_materials_emissive_strength\":{\"emissiveStrength\":-1}}}", .needle = "emissiveStrength" },
+        .{ .material = "{\"extensions\":{\"KHR_materials_emissive_strength\":[]}}", .needle = "must be an object" },
+    }) |case| {
+        const json = try makeJson(testing.allocator, .{
+            .buffers = "{\"uri\":\"mesh.bin\",\"byteLength\":152}",
+            .buffer_views = lit_views,
+            .accessors = lit_accessors,
+            .meshes = lit_mesh,
+            .materials = case.material,
+        });
+        defer testing.allocator.free(json);
+        try expectImportFailure(json, &files, .default, case.needle);
+    }
+}
+
+test "glTF lit defaults are explicit and KHR_materials_unlit drops lit fields" {
+    const testing = std.testing;
+    const lit = makeLitTriangleBin();
+    const files = [_]TestFile{.{ .path = "models/mesh.bin", .bytes = &lit }};
+    for ([_]struct { material: []const u8, lit: bool }{
+        .{ .material = "{}", .lit = true },
+        .{ .material = "{\"extensions\":{\"KHR_materials_unlit\":{}},\"pbrMetallicRoughness\":{\"metallicFactor\":0.2},\"emissiveFactor\":[1,0,0]}", .lit = false },
+    }) |case| {
+        const json = try makeJson(testing.allocator, .{
+            .buffers = "{\"uri\":\"mesh.bin\",\"byteLength\":152}",
+            .buffer_views = lit_views,
+            .accessors = lit_accessors,
+            .meshes = lit_mesh,
+            .materials = case.material,
+        });
+        defer testing.allocator.free(json);
+        var reader: TestReader = .{ .files = &files };
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var diags = Diagnostics.init(testing.allocator, .default);
+        defer diags.deinit(testing.allocator);
+        const result = try import(testing.allocator, arena.allocator(), "models/default.gltf", json, .{
+            .model_id = "demo:models.default",
+            .source = "models/default.gltf",
+        }, reader.interface(), .default, &diags);
+        try testing.expect(!diags.failed);
+        if (case.lit) {
+            try testing.expect(std.mem.indexOf(u8, result.source, "shading foundry:shading.lit") != null);
+            try testing.expect(std.mem.indexOf(u8, result.source, "metallic 1 roughness 1") != null);
+        } else {
+            try testing.expect(std.mem.indexOf(u8, result.source, "shading foundry:shading.unlit") != null);
+            try testing.expect(std.mem.indexOf(u8, result.source, " metallic ") == null);
+            try testing.expect(std.mem.indexOf(u8, result.source, " emissive ") == null);
+        }
+    }
 }
 
 fn makeQuadBin() [92]u8 {
@@ -329,11 +534,6 @@ test "generated import fixtures cover containers, topology, transforms and mappi
             .source_contains = "demo:models.unindexed.mesh0",
         },
         .{
-            .parts = .{ .meshes = "{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"indices\":1}]}", .materials = "" },
-            .settings = .{ .model_id = "demo:models.default_material", .source = "models/fixture.gltf" },
-            .source_contains = "demo:models.default_material.material0",
-        },
-        .{
             .parts = .{ .meshes = "{\"name\":\"Split\",\"primitives\":[" ++
                 "{\"attributes\":{\"POSITION\":0},\"indices\":1,\"material\":0}," ++
                 "{\"attributes\":{\"POSITION\":0},\"indices\":1,\"material\":0}]}" },
@@ -399,7 +599,7 @@ test "a textured quad imports external PNG and widened UV stream" {
             "{\"bufferView\":1,\"componentType\":5126,\"count\":4,\"type\":\"VEC2\"}," ++
             "{\"bufferView\":2,\"componentType\":5123,\"count\":6,\"type\":\"SCALAR\"}",
         .meshes = "{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"TEXCOORD_0\":1},\"indices\":2,\"material\":0}]}",
-        .materials = "{\"name\":\"Paper\",\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}}}",
+        .materials = "{\"name\":\"Paper\",\"extensions\":{\"KHR_materials_unlit\":{}},\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}}}",
         .tail = ",\"images\":[{\"uri\":\"quad.png\",\"mimeType\":\"image/png\"}],\"textures\":[{\"source\":0}]",
     });
     defer testing.allocator.free(json);
@@ -427,7 +627,7 @@ test "unsupported optional glTF features are named warnings, not silent drops" {
     const testing = std.testing;
     const triangle = makeTriangleBin();
     const json = try makeJson(testing.allocator, .{
-        .meshes = "{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"TANGENT\":0},\"indices\":1,\"material\":0}]}",
+        .meshes = "{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"_EXTRA\":0},\"indices\":1,\"material\":0}]}",
         .nodes = "{\"mesh\":0,\"camera\":0,\"skin\":0}",
         .tail = ",\"extensionsUsed\":[\"EXT_optional\"],\"cameras\":[{}],\"animations\":[{}],\"skins\":[{}]",
     });
@@ -443,7 +643,7 @@ test "unsupported optional glTF features are named warnings, not silent drops" {
         .source = "models/warnings.gltf",
     }, reader.interface(), .default, &diags);
     try testing.expect(!diags.failed);
-    const needles = [_][]const u8{ "EXT_optional", "cameras", "animations", "skins", "TANGENT", "camera placement", "skin placement" };
+    const needles = [_][]const u8{ "EXT_optional", "cameras", "animations", "skins", "_EXTRA", "camera placement", "skin placement" };
     for (needles) |needle| {
         var found = false;
         for (diags.items.items) |diag| if (std.mem.indexOf(u8, diag.message, needle) != null) {
@@ -548,14 +748,14 @@ test "the glTF subset refuses every named hostile boundary with an object path" 
             "{\"buffer\":0,\"byteOffset\":44,\"byteLength\":36}", .accessors = "{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}," ++
             "{\"bufferView\":1,\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"}," ++
             "{\"bufferView\":2,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}", .meshes = "{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"indices\":1,\"material\":0},{\"attributes\":{\"POSITION\":0,\"NORMAL\":2},\"indices\":1,\"material\":0}]}" }, .files = &normal_files, .needle = "same imported attributes" },
-        .{ .parts = .{ .materials = "{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0,\"texCoord\":1}}}", .tail = ",\"images\":[{\"uri\":\"image.png\",\"mimeType\":\"image/png\"}],\"textures\":[{\"source\":0}]" }, .files = &png_files, .needle = "texCoord 1" },
-        .{ .parts = .{ .materials = "{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}}}", .tail = ",\"images\":[{\"uri\":\"image.png\",\"mimeType\":\"image/png\"}]," ++
+        .{ .parts = .{ .materials = "{\"extensions\":{\"KHR_materials_unlit\":{}},\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0,\"texCoord\":1}}}", .tail = ",\"images\":[{\"uri\":\"image.png\",\"mimeType\":\"image/png\"}],\"textures\":[{\"source\":0}]" }, .files = &png_files, .needle = "texCoord 1" },
+        .{ .parts = .{ .materials = "{\"extensions\":{\"KHR_materials_unlit\":{}},\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}}}", .tail = ",\"images\":[{\"uri\":\"image.png\",\"mimeType\":\"image/png\"}]," ++
             "\"textures\":[{\"source\":0,\"sampler\":0}]," ++
             "\"samplers\":[{\"wrapS\":10497,\"wrapT\":33071}]" }, .files = &png_files, .needle = "different wrapS" },
         .{ .parts = .{ .tail = ",\"images\":[{\"uri\":\"image.jpg\",\"mimeType\":\"image/jpeg\"}]" }, .files = &jpeg_files, .needle = "image/jpeg" },
         .{ .parts = .{ .tail = ",\"images\":[{\"uri\":\"image.png\",\"mimeType\":\"image/png\"}]" }, .files = &corrupt_png_files, .needle = "not PNG" },
-        .{ .parts = .{ .meshes = "{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"indices\":1,\"material\":0},{\"attributes\":{\"POSITION\":0},\"indices\":1,\"material\":1}]}", .materials = "{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}}}," ++
-            "{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":1}}}", .tail = ",\"images\":[{\"uri\":\"image.png\",\"mimeType\":\"image/png\"}]," ++
+        .{ .parts = .{ .meshes = "{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"indices\":1,\"material\":0},{\"attributes\":{\"POSITION\":0},\"indices\":1,\"material\":1}]}", .materials = "{\"extensions\":{\"KHR_materials_unlit\":{}},\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}}}," ++
+            "{\"extensions\":{\"KHR_materials_unlit\":{}},\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":1}}}", .tail = ",\"images\":[{\"uri\":\"image.png\",\"mimeType\":\"image/png\"}]," ++
             "\"textures\":[{\"source\":0,\"sampler\":0},{\"source\":0,\"sampler\":1}]," ++
             "\"samplers\":[{\"wrapS\":10497,\"wrapT\":10497},{\"wrapS\":33071,\"wrapT\":33071}]" }, .files = &png_files, .needle = "sampling different" },
         .{ .parts = .{ .nodes = "{\"children\":[0],\"mesh\":0}" }, .needle = "nodes[0]" },

@@ -464,7 +464,7 @@ const gltf_json =
     \\              {"bufferView":2,"componentType":5123,"count":6,"type":"SCALAR"}],
     \\ "images":[{"uri":"quad.png","mimeType":"image/png"}],
     \\ "textures":[{"source":0}],
-    \\ "materials":[{"name":"Paper","pbrMetallicRoughness":{"baseColorTexture":{"index":0}}}],
+    \\ "materials":[{"name":"Paper","extensions":{"KHR_materials_unlit":{}},"pbrMetallicRoughness":{"baseColorTexture":{"index":0}}}],
     \\ "meshes":[{"primitives":[{"attributes":{"POSITION":0,"TEXCOORD_0":1},"indices":2,"material":0}]}],
     \\ "nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0}
 ;

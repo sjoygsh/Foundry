@@ -124,12 +124,12 @@ const Context = struct {
             if (!isAtMost20(minimum)) return self.fail("asset.minVersion", null, "requires glTF {s}, newer than the supported 2.0", .{minimum});
         }
         for (self.doc.extensionsRequired) |name| {
-            if (!std.mem.eql(u8, name, "KHR_materials_unlit")) {
+            if (!std.mem.eql(u8, name, "KHR_materials_unlit") and !std.mem.eql(u8, name, "KHR_materials_emissive_strength")) {
                 return self.fail("extensionsRequired", null, "requires unsupported extension '{s}'", .{name});
             }
         }
         for (self.doc.extensionsUsed) |name| {
-            if (std.mem.eql(u8, name, "KHR_materials_unlit")) continue;
+            if (std.mem.eql(u8, name, "KHR_materials_unlit") or std.mem.eql(u8, name, "KHR_materials_emissive_strength")) continue;
             var required = false;
             for (self.doc.extensionsRequired) |required_name| {
                 if (std.mem.eql(u8, name, required_name)) required = true;
@@ -147,7 +147,7 @@ const Context = struct {
         const source_mesh = self.doc.meshes[mesh_index];
         if (source_mesh.primitives.len == 0) return self.failMesh(mesh_index, null, "has no primitives", .{});
 
-        var streams: [5]std.ArrayList(u8) = @splat(.empty);
+        var streams: [6]std.ArrayList(u8) = @splat(.empty);
         defer for (&streams) |*stream| stream.deinit(self.gpa);
         var indices: std.ArrayList(u32) = .empty;
         defer indices.deinit(self.gpa);
@@ -162,6 +162,13 @@ const Context = struct {
             if (primitive.mode != 4) return self.failMesh(mesh_index, at, "uses primitive mode {d}; only triangle lists (4) are supported", .{primitive.mode});
             if (primitive.targets) |targets| if (targets.len != 0) return self.failMesh(mesh_index, at, "has morph targets, which are not imported until M24", .{});
             const primitive_layout = try self.primitiveLayout(mesh_index, at, primitive);
+            const material_index = primitive.material orelse @as(u32, @intCast(self.doc.materials.len));
+            if (material_index > self.doc.materials.len) return self.failMesh(mesh_index, at, "references material {d}, outside the material array", .{material_index});
+            const material: document.Material = if (material_index == self.doc.materials.len) .{} else self.doc.materials[material_index];
+            if (!isUnlit(material) and !self.isMappedMaterial(material)) {
+                if (!primitive_layout.normal) return self.failMesh(mesh_index, at, "lit material needs NORMAL; export normals, or mark the material KHR_materials_unlit", .{});
+                if (material.normalTexture != null and !primitive_layout.tangent) return self.failMesh(mesh_index, at, "normalTexture needs TANGENT; export tangents", .{});
+            }
             if (layout) |expected| {
                 if (!expected.eql(primitive_layout)) return self.failMesh(mesh_index, at, "does not carry the same imported attributes and formats as primitive 0", .{});
             } else layout = primitive_layout;
@@ -196,6 +203,7 @@ const Context = struct {
             }
 
             try self.appendOptional(mesh_index, at, primitive, "NORMAL", .normal, positions.count, &streams[1]);
+            try self.appendOptional(mesh_index, at, primitive, "TANGENT", .tangent, positions.count, &streams[5]);
             try self.appendOptional(mesh_index, at, primitive, "TEXCOORD_0", .uv, positions.count, &streams[2]);
             try self.appendOptional(mesh_index, at, primitive, "TEXCOORD_1", .uv, positions.count, &streams[3]);
             try self.appendOptional(mesh_index, at, primitive, "COLOR_0", .color, positions.count, &streams[4]);
@@ -227,6 +235,7 @@ const Context = struct {
         defer descriptors.deinit(self.gpa);
         try descriptors.append(self.gpa, .{ .semantic = .position, .format = .float32x3, .bytes = streams[0].items });
         if (final_layout.normal) try descriptors.append(self.gpa, .{ .semantic = .normal, .format = .float32x3, .bytes = streams[1].items });
+        if (final_layout.tangent) try descriptors.append(self.gpa, .{ .semantic = .tangent, .format = .float32x4, .bytes = streams[5].items });
         if (final_layout.uv0) try descriptors.append(self.gpa, .{ .semantic = .uv0, .format = .float32x2, .bytes = streams[2].items });
         if (final_layout.uv1) try descriptors.append(self.gpa, .{ .semantic = .uv1, .format = .float32x2, .bytes = streams[3].items });
         if (final_layout.color) |format| try descriptors.append(self.gpa, .{ .semantic = .color, .format = format, .bytes = streams[4].items });
@@ -254,12 +263,13 @@ const Context = struct {
 
     const Layout = struct {
         normal: bool = false,
+        tangent: bool = false,
         uv0: bool = false,
         uv1: bool = false,
         color: ?asset.MeshVertexFormat = null,
 
         fn eql(a: Layout, b: Layout) bool {
-            return a.normal == b.normal and a.uv0 == b.uv0 and a.uv1 == b.uv1 and a.color == b.color;
+            return a.normal == b.normal and a.tangent == b.tangent and a.uv0 == b.uv0 and a.uv1 == b.uv1 and a.color == b.color;
         }
     };
 
@@ -282,7 +292,7 @@ const Context = struct {
                     return self.failAccessor(mesh_index, primitive_index, name, index, err);
                 result.color = try self.colorFormat(mesh_index, primitive_index, index, view);
             } else if (std.mem.eql(u8, name, "TANGENT")) {
-                try self.warnMesh(mesh_index, primitive_index, "TANGENT is omitted until M22", .{});
+                result.tangent = true;
             } else if (std.mem.startsWith(u8, name, "JOINTS_") or std.mem.startsWith(u8, name, "WEIGHTS_")) {
                 return self.failMesh(mesh_index, primitive_index, "attribute '{s}' is not imported until M24", .{name});
             } else {
@@ -292,7 +302,7 @@ const Context = struct {
         return result;
     }
 
-    const AttributeKind = enum { normal, uv, color };
+    const AttributeKind = enum { normal, tangent, uv, color };
 
     fn appendOptional(self: *Context, mesh_index: u32, primitive_index: u32, primitive: document.Primitive, name: []const u8, kind: AttributeKind, expected_count: u32, out: *std.ArrayList(u8)) Error!void {
         const index = primitive.attributes.map.get(name) orelse return;
@@ -310,6 +320,16 @@ const Context = struct {
                     );
                     if (!value.isFinite() or @abs(value.length() - 1) > 1e-3) return self.failMesh(mesh_index, primitive_index, "NORMAL accessor {d} contains a non-unit or non-finite value", .{index});
                     try appendVec3(out, self.gpa, value);
+                }
+            },
+            .tangent => {
+                if (view.component != .f32 or view.shape != .vec4 or view.normalized) return self.failMesh(mesh_index, primitive_index, "TANGENT accessor {d} must be non-normalized FLOAT VEC4", .{index});
+                for (0..view.count) |i| {
+                    var values: [4]f32 = undefined;
+                    for (0..4) |lane| values[lane] = try self.readFloat(mesh_index, primitive_index, name, view, @intCast(i), @intCast(lane));
+                    const xyz = Vec3.init(values[0], values[1], values[2]);
+                    if (!xyz.isFinite() or @abs(xyz.length() - 1) > 1e-3 or (values[3] != 1 and values[3] != -1)) return self.failMesh(mesh_index, primitive_index, "TANGENT accessor {d} needs finite unit xyz and w exactly +1 or -1", .{index});
+                    for (values) |value| try appendF32(out, self.gpa, value);
                 }
             },
             .uv => {
@@ -381,8 +401,15 @@ const Context = struct {
         return ids;
     }
 
+    fn isMappedMaterial(self: *Context, material: document.Material) bool {
+        const name = material.name orelse return false;
+        for (self.settings.materials) |mapping| if (std.mem.eql(u8, mapping.name, name)) return true;
+        return false;
+    }
+
     fn emitMaterial(self: *Context, out: *std.ArrayList(u8), index: u32, material: document.Material, id: []const u8) Error!void {
         const path = try std.fmt.allocPrint(self.arena, "materials[{d}]", .{index});
+        const unlit = isUnlit(material);
         for (material.pbrMetallicRoughness.baseColorFactor) |component| {
             if (!std.math.isFinite(component) or component < 0 or component > 1) return self.fail(path, material.name, "has a baseColorFactor outside [0, 1] or not finite", .{});
         }
@@ -396,16 +423,10 @@ const Context = struct {
         else
             return self.fail(path, material.name, "has unknown alphaMode '{s}'", .{material.alphaMode});
 
-        if (material.pbrMetallicRoughness.metallicFactor != null or material.pbrMetallicRoughness.roughnessFactor != null or
-            material.pbrMetallicRoughness.metallicRoughnessTexture != null or material.normalTexture != null or
-            material.occlusionTexture != null or material.emissiveTexture != null or material.emissiveFactor != null)
-        {
-            try self.warn(path, material.name, "lit material fields are ignored until M22", .{});
-        }
-
-        try out.print(self.arena, "{s} {s} {{ base_color {{ r {d} g {d} b {d} a {d} }}", .{
+        try out.print(self.arena, "{s} {s} {{ shading foundry:shading.{s} base_color {{ r {d} g {d} b {d} a {d} }}", .{
             asset.schemas.material_name,
             id,
+            if (unlit) @as([]const u8, "unlit") else "lit",
             material.pbrMetallicRoughness.baseColorFactor[0],
             material.pbrMetallicRoughness.baseColorFactor[1],
             material.pbrMetallicRoughness.baseColorFactor[2],
@@ -416,11 +437,58 @@ const Context = struct {
             const texture_id = try self.generatedId("texture", image_index);
             try out.print(self.arena, " base_color_texture {s}", .{texture_id});
         }
+        if (!unlit) {
+            const pbr = material.pbrMetallicRoughness;
+            const metallic = pbr.metallicFactor orelse 1;
+            const roughness = pbr.roughnessFactor orelse 1;
+            if (!unitInterval(metallic) or !unitInterval(roughness)) return self.fail(path, material.name, "metallicFactor and roughnessFactor must be finite in [0, 1]", .{});
+            try out.print(self.arena, " metallic {d} roughness {d}", .{ metallic, roughness });
+            if (pbr.metallicRoughnessTexture) |info| try self.emitTextureRef(out, path, "metallic_roughness_texture", info);
+            if (material.normalTexture) |info| {
+                if (!std.math.isFinite(info.scale)) return self.fail(path, material.name, "normalTexture.scale must be finite", .{});
+                try self.emitTextureRef(out, path, "normal_texture", info);
+                try out.print(self.arena, " normal_scale {d}", .{info.scale});
+            }
+            if (material.occlusionTexture) |info| {
+                if (!unitInterval(info.strength)) return self.fail(path, material.name, "occlusionTexture.strength must be finite in [0, 1]", .{});
+                try self.emitTextureRef(out, path, "occlusion_texture", info);
+                try out.print(self.arena, " occlusion_strength {d}", .{info.strength});
+            }
+            const emissive = material.emissiveFactor orelse .{ 0, 0, 0 };
+            for (emissive) |component| if (!unitInterval(component)) return self.fail(path, material.name, "emissiveFactor must be finite in [0, 1]", .{});
+            try out.print(self.arena, " emissive {{ r {d} g {d} b {d} }}", .{ emissive[0], emissive[1], emissive[2] });
+            if (material.emissiveTexture) |info| try self.emitTextureRef(out, path, "emissive_texture", info);
+            const strength = try self.emissiveStrength(path, material);
+            try out.print(self.arena, " emissive_strength {d}", .{strength});
+        }
         try out.print(self.arena, " alpha_mode \"{s}\" alpha_cutoff {d} double_sided {s} }}\n", .{
             alpha,
             material.alphaCutoff,
             if (material.doubleSided) "true" else "false",
         });
+    }
+
+    fn emitTextureRef(self: *Context, out: *std.ArrayList(u8), path: []const u8, name: []const u8, info: anytype) Error!void {
+        const image_index = try self.imageForTexture(path, info);
+        const texture_id = try self.generatedId("texture", image_index);
+        try out.print(self.arena, " {s} {s}", .{ name, texture_id });
+    }
+
+    fn emissiveStrength(self: *Context, path: []const u8, material: document.Material) Error!f32 {
+        const extensions = material.extensions orelse return 1;
+        const value = extensions.map.get("KHR_materials_emissive_strength") orelse return 1;
+        const object = switch (value) {
+            .object => |v| v,
+            else => return self.fail(path, material.name, "KHR_materials_emissive_strength must be an object", .{}),
+        };
+        const raw = object.get("emissiveStrength") orelse return 1;
+        const strength: f32 = switch (raw) {
+            .float => |v| @floatCast(v),
+            .integer => |v| @floatFromInt(v),
+            else => return self.fail(path, material.name, "emissiveStrength must be a non-negative finite number", .{}),
+        };
+        if (!std.math.isFinite(strength) or strength < 0) return self.fail(path, material.name, "emissiveStrength must be a non-negative finite number", .{});
+        return strength;
     }
 
     const Sampling = struct { filter: []const u8 = "linear", wrap: []const u8 = "repeat" };
@@ -429,17 +497,26 @@ const Context = struct {
         var choices = try self.gpa.alloc(?Sampling, self.images.len);
         defer self.gpa.free(choices);
         @memset(choices, null);
+        var spaces = try self.gpa.alloc(?bool, self.images.len); // true: sRGB; false: linear
+        defer self.gpa.free(spaces);
+        @memset(spaces, null);
         for (self.doc.materials, 0..) |material, i| {
-            const info = material.pbrMetallicRoughness.baseColorTexture orelse continue;
-            const path = try std.fmt.allocPrint(self.arena, "materials[{d}].pbrMetallicRoughness.baseColorTexture", .{i});
-            const image_index = try self.imageForTexture(path, info);
-            const texture = self.doc.textures[info.index];
-            const choice = try self.samplingFor(path, texture.sampler);
-            if (choices[image_index]) |previous| {
-                if (!std.mem.eql(u8, previous.filter, choice.filter) or !std.mem.eql(u8, previous.wrap, choice.wrap)) {
-                    return self.fail(path, null, "uses image {d} with sampling different from another texture; one Foundry texture has one sampler", .{image_index});
-                }
-            } else choices[image_index] = choice;
+            const uses = textureUses(material);
+            for (uses) |use| {
+                const info = use.info orelse continue;
+                const path = try std.fmt.allocPrint(self.arena, "materials[{d}].{s}", .{ i, use.name });
+                const image_index = try self.imageForTexture(path, info);
+                const texture = self.doc.textures[info.index];
+                const choice = try self.samplingFor(path, texture.sampler);
+                if (choices[image_index]) |previous| {
+                    if (!std.mem.eql(u8, previous.filter, choice.filter) or !std.mem.eql(u8, previous.wrap, choice.wrap)) {
+                        return self.fail(path, null, "uses image {d} with sampling different from another texture; one Foundry texture has one sampler", .{image_index});
+                    }
+                } else choices[image_index] = choice;
+                if (spaces[image_index]) |previous| {
+                    if (previous != use.srgb) return self.fail(path, null, "uses image {d} in both sRGB and linear slots; use separate images for the two colour spaces", .{image_index});
+                } else spaces[image_index] = use.srgb;
+            }
         }
 
         for (self.images, 0..) |image, i| {
@@ -448,12 +525,12 @@ const Context = struct {
             const sampling = choices[i] orelse Sampling{};
             try out.print(self.arena, "{s} {s} {{ source ", .{ asset.schemas.texture_name, id });
             try self.writeString(out, source);
-            try out.print(self.arena, " filter \"{s}\" wrap \"{s}\" color_space \"srgb\" mipmaps true }}\n", .{ sampling.filter, sampling.wrap });
+            try out.print(self.arena, " filter \"{s}\" wrap \"{s}\" color_space \"{s}\" mipmaps true }}\n", .{ sampling.filter, sampling.wrap, if (spaces[i] orelse true) @as([]const u8, "srgb") else "linear" });
         }
     }
 
-    fn imageForTexture(self: *Context, path: []const u8, info: document.TextureInfo) Error!u32 {
-        if (info.texCoord != 0) return self.fail(path, null, "uses texCoord {d}; the unlit model samples TEXCOORD_0", .{info.texCoord});
+    fn imageForTexture(self: *Context, path: []const u8, info: anytype) Error!u32 {
+        if (info.texCoord != 0) return self.fail(path, null, "uses texCoord {d}; export TEXCOORD_0 for every material texture", .{info.texCoord});
         if (info.extensions) |extensions| {
             if (extensions.map.contains("KHR_texture_transform")) try self.warn(path, null, "KHR_texture_transform is ignored", .{});
         }
@@ -667,6 +744,36 @@ const Context = struct {
         }
     }
 };
+
+fn isUnlit(material: document.Material) bool {
+    const extensions = material.extensions orelse return false;
+    return extensions.map.contains("KHR_materials_unlit");
+}
+
+fn unitInterval(value: f32) bool {
+    return std.math.isFinite(value) and value >= 0 and value <= 1;
+}
+
+const TextureUse = struct {
+    name: []const u8,
+    info: ?document.TextureInfo,
+    srgb: bool,
+};
+
+fn textureUses(material: document.Material) [5]TextureUse {
+    const lit = !isUnlit(material);
+    return .{
+        .{ .name = "pbrMetallicRoughness.baseColorTexture", .info = material.pbrMetallicRoughness.baseColorTexture, .srgb = true },
+        .{ .name = "pbrMetallicRoughness.metallicRoughnessTexture", .info = if (lit) material.pbrMetallicRoughness.metallicRoughnessTexture else null, .srgb = false },
+        .{ .name = "normalTexture", .info = if (lit and material.normalTexture != null) plainTextureInfo(material.normalTexture.?) else null, .srgb = false },
+        .{ .name = "occlusionTexture", .info = if (lit and material.occlusionTexture != null) plainTextureInfo(material.occlusionTexture.?) else null, .srgb = false },
+        .{ .name = "emissiveTexture", .info = if (lit) material.emissiveTexture else null, .srgb = true },
+    };
+}
+
+fn plainTextureInfo(info: anytype) document.TextureInfo {
+    return .{ .index = info.index, .texCoord = info.texCoord, .extensions = info.extensions };
+}
 
 fn isVersion2(text: []const u8) bool {
     return text.len >= 1 and text[0] == '2' and (text.len == 1 or text[1] == '.');

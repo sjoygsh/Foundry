@@ -236,6 +236,9 @@ class Gltf:
             "samplers": [{"magFilter": LINEAR, "minFilter": LINEAR_MIPMAP_LINEAR, "wrapS": REPEAT, "wrapT": REPEAT}],
             "accessors": [],
             "bufferViews": [],
+            # M22 Step 2 imports ordinary glTF materials as lit; this sample stays
+            # explicitly unlit until its lit content is authored in Step 7.
+            "extensionsUsed": ["KHR_materials_unlit"],
             "buffers": [],
         }
         self.images = {}
@@ -268,7 +271,7 @@ class Gltf:
         pbr = {"baseColorFactor": list(colour)}
         if texture:
             pbr["baseColorTexture"] = {"index": self.texture(texture)}
-        entry = {"name": name, "pbrMetallicRoughness": pbr}
+        entry = {"name": name, "pbrMetallicRoughness": pbr, "extensions": {"KHR_materials_unlit": {}}}
         if alpha != "OPAQUE":
             entry["alphaMode"] = alpha
         if cutoff is not None:

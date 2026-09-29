@@ -1,9 +1,21 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-29
-**Current handoff: M22 Step 1 is complete; stop before Step 2.** M21 is complete (2026-09-29,
-tag `m21`, not yet pushed). M22's design and ADR-0056 were accepted when the owner requested
-Step 1.
+**Current handoff: M22 Step 2 is complete; stop before Step 3.** M21 is complete (2026-09-29,
+tag `m21`). M22's design and ADR-0056 are accepted.
+
+**M22 Step 2 is done (2026-09-29).** `foundry:material` version 2 appends all §5.1 lit fields
+with defaults while preserving version 1's unlit interpretation. `asset.Mesh` validates tangent
+streams as finite unit `float32x4` with an exact ±1 sign. glTF import now emits lit materials,
+`KHR_materials_unlit`, emissive strength, and every supported material texture in its proper
+colour space; it refuses absent normals or tangents, unsupported texture coordinates, images
+used in both colour spaces, and malformed lit values with actionable diagnostics. A full lit
+fixture compiles into Foundry records and a tangent-bearing `.fmesh`. The existing `sandbox3d`
+scene is explicitly unlit in its reproducible generator until the lit renderer and sample steps.
+Mapped authored materials remain validated at draw time, because their shading is not described
+by the imported glTF material. Guard mutations failed and were restored. The required bar passed:
+**1,866 of 1,867 headless tests, one expected skip; 1,949 declared**. Both macOS release
+configurations staged. Step 3 is the HDR frame, lights, and `recordFrame`; it has not begun.
 
 **M22 Step 1 is done (2026-09-29).**
 - **The RHI can express the light passes:** single-sampled `depth32_float` may be a sampled depth
@@ -20,7 +32,7 @@ Step 1.
   feature. Runtime validation remains M22 Step 6 as designed.
 - **The bar:** **1,861 of 1,862 headless tests (1,944 declared)** and **1,871 of 1,882 on Metal**;
   the five Vulkan compile checks pass, including optimized Windows.
-- **Step 2 has not begun:** material version 2, tangents and lit glTF import remain next.
+- **Step 2 is complete:** its resolution and current handoff are above.
 
 **M22's design (2026-09-29).** M22 is Light (`3d.md` §10): a lit room whose materials a content
 mod changes.

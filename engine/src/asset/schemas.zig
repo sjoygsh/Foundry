@@ -112,11 +112,17 @@ const color_type: data.FieldType = .{ .nested = &.{
     .{ .name = "b", .type = .f32 },
     .{ .name = "a", .type = .f32 },
 } };
+const emissive_type: data.FieldType = .{ .nested = &.{
+    .{ .name = "r", .type = .f32 },
+    .{ .name = "g", .type = .f32 },
+    .{ .name = "b", .type = .f32 },
+} };
 
-/// The fixed M20 material record. Runtime range and shading-model validation belongs to the
-/// renderer; the schema pins the public field names and their types.
+/// M22's additive material record. Version 1 content keeps its unlit default; the lit
+/// fields are appended so old compiled packages can read through the current schema.
 pub const material: Schema = .{
     .id = SchemaId.fromStringUnchecked(material_name),
+    .version = 2,
     .fields = &.{
         .{ .name = "shading", .type = .id, .presence = .{ .default = .{ .id = core.ContentId.fromString("foundry:shading.unlit") } } },
         .{ .name = "base_color", .type = color_type, .presence = .{ .default = .{ .nested = &.{
@@ -129,6 +135,21 @@ pub const material: Schema = .{
         .{ .name = "alpha_mode", .type = .string, .presence = .{ .default = .{ .string = "opaque" } } },
         .{ .name = "alpha_cutoff", .type = .f32, .presence = .{ .default = .{ .float = 0.5 } } },
         .{ .name = "double_sided", .type = .bool, .presence = .{ .default = .{ .bool = false } } },
+        .{ .name = "metallic", .type = .f32, .since = 2, .presence = .{ .default = .{ .float = 0 } } },
+        .{ .name = "roughness", .type = .f32, .since = 2, .presence = .{ .default = .{ .float = 1 } } },
+        .{ .name = "metallic_roughness_texture", .type = .id, .since = 2, .presence = .optional },
+        .{ .name = "normal_texture", .type = .id, .since = 2, .presence = .optional },
+        .{ .name = "normal_scale", .type = .f32, .since = 2, .presence = .{ .default = .{ .float = 1 } } },
+        .{ .name = "occlusion_texture", .type = .id, .since = 2, .presence = .optional },
+        .{ .name = "occlusion_strength", .type = .f32, .since = 2, .presence = .{ .default = .{ .float = 1 } } },
+        .{ .name = "emissive", .type = emissive_type, .since = 2, .presence = .{ .default = .{ .nested = &.{
+            .{ .name = "r", .value = .{ .float = 0 } },
+            .{ .name = "g", .value = .{ .float = 0 } },
+            .{ .name = "b", .value = .{ .float = 0 } },
+        } } } },
+        .{ .name = "emissive_texture", .type = .id, .since = 2, .presence = .optional },
+        .{ .name = "emissive_strength", .type = .f32, .since = 2, .presence = .{ .default = .{ .float = 1 } } },
+        .{ .name = "casts_shadow", .type = .bool, .since = 2, .presence = .{ .default = .{ .bool = true } } },
     },
 };
 
@@ -473,4 +494,23 @@ test "texture versions 1 and 2 extend to version 3 with the new defaults" {
         try testing.expectEqualStrings("srgb", record.value(newest, 3).?.string);
         try testing.expect(!record.value(newest, 4).?.bool);
     }
+}
+
+test "material version 1 extends to version 2 without changing unlit content" {
+    const gpa = testing.allocator;
+    var registry: Registry = .init(gpa, .default);
+    defer registry.deinit(gpa);
+    _ = try registry.register(gpa, .{ .id = material.id, .version = 1, .fields = material.fields[0..6] });
+    var package = try data.Package.init(gpa, "test:package", 1, .default);
+    defer package.deinit(gpa);
+    var diags: data.Diagnostics = .init(gpa, .default);
+    defer diags.deinit(gpa);
+    try compileRecords("foundry:material test:old { base_color { r 1 g 0.5 b 0 a 1 } }", &registry, &package, &diags);
+    _ = try registry.register(gpa, material);
+    const record = package.records()[0];
+    try testing.expectEqual(core.ContentId.fromString("foundry:shading.unlit").hash, material.fields[0].presence.default.id.hash);
+    try testing.expectEqual(@as(f64, 0), record.value(material, 6).?.float);
+    try testing.expectEqual(@as(f64, 1), record.value(material, 7).?.float);
+    try testing.expectEqual(@as(f64, 1), record.value(material, 10).?.float);
+    try testing.expect(record.value(material, 16).?.bool);
 }

@@ -106,6 +106,7 @@ pub const Error = error{
     InvalidSubmeshRange,
     NonFinitePosition,
     InvalidNormal,
+    InvalidTangent,
     InvalidTexcoord,
     InvalidColor,
     InvalidBounds,
@@ -139,9 +140,10 @@ pub const Mesh = struct {
 
             const supported = switch (stream.semantic) {
                 .position, .normal => stream.format == .float32x3,
+                .tangent => stream.format == .float32x4,
                 .uv0, .uv1 => stream.format == .float32x2,
                 .color => stream.format == .unorm8x4 or stream.format == .float32x4,
-                .tangent, .joints, .weights => false,
+                .joints, .weights => false,
             };
             if (!supported) return error.UnsupportedVertexFormat;
 
@@ -158,6 +160,16 @@ pub const Mesh = struct {
                         if (!normal.isFinite() or !std.math.isFinite(length) or @abs(length - 1) > 1e-3) {
                             return error.InvalidNormal;
                         }
+                    }
+                },
+                .tangent => {
+                    var offset: usize = 0;
+                    while (offset < stream.bytes.len) : (offset += 16) {
+                        const xyz = readVec3(stream.bytes[offset..][0..12]);
+                        const sign = std.mem.bytesToValue(f32, stream.bytes[offset + 12 ..][0..4]);
+                        const length = xyz.length();
+                        if (!xyz.isFinite() or !std.math.isFinite(length) or @abs(length - 1) > 1e-3 or
+                            (sign != 1 and sign != -1)) return error.InvalidTangent;
                     }
                 },
                 .uv0, .uv1 => {
@@ -337,7 +349,7 @@ test "a semantic given twice is refused" {
     try testing.expectError(error.DuplicateSemantic, mesh.validate());
 }
 
-test "each semantic accepts only its M20 format set" {
+test "each semantic accepts only its supported format set" {
     var geometry: TestGeometry = .{};
     var streams: [2]Stream = undefined;
     const mesh = validMesh(&geometry, &streams);
@@ -350,8 +362,25 @@ test "each semantic accepts only its M20 format set" {
     streams[1] = .{ .semantic = .normal, .format = .float32x2, .bytes = streams[0].bytes };
     try testing.expectError(error.UnsupportedVertexFormat, mesh.validate());
 
-    streams[1] = .{ .semantic = .tangent, .format = .float32x4, .bytes = streams[0].bytes };
+    streams[1] = .{ .semantic = .tangent, .format = .float32x3, .bytes = streams[0].bytes };
     try testing.expectError(error.UnsupportedVertexFormat, mesh.validate());
+}
+
+test "tangent streams require finite unit xyz and an exact handedness sign" {
+    var geometry: TestGeometry = .{};
+    var streams: [2]Stream = undefined;
+    const mesh = validMesh(&geometry, &streams);
+    var tangents = [_][4]f32{.{ 1, 0, 0, 1 }} ** 3;
+    streams[1] = .{ .semantic = .tangent, .format = .float32x4, .bytes = std.mem.sliceAsBytes(&tangents) };
+    try mesh.validate();
+    tangents[0][3] = 0;
+    try testing.expectError(error.InvalidTangent, mesh.validate());
+    tangents[0][3] = -1;
+    try mesh.validate();
+    tangents[1][0] = 0.99;
+    try testing.expectError(error.InvalidTangent, mesh.validate());
+    tangents[1][0] = std.math.nan(f32);
+    try testing.expectError(error.InvalidTangent, mesh.validate());
 }
 
 test "normal streams are finite and unit length" {

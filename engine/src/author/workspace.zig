@@ -1695,7 +1695,8 @@ test "candidate builds match the compiler and a failed generation keeps the last
         \\{"asset":{"version":"2.0"},"buffers":[{"uri":"mesh.bin","byteLength":42}],
         \\ "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":6}],
         \\ "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},{"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}],
-        \\ "meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}],
+        \\ "meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1,"material":0}]}],
+        \\ "materials":[{"extensions":{"KHR_materials_unlit":{}}}],
         \\ "nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0}
     );
     const output = try f.at("output");
