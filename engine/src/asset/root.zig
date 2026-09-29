@@ -95,6 +95,13 @@ pub const Record = data.store.Record;
 /// module's own public constructor.
 pub const Store = data.store.Store;
 
+/// A record's packed fields, and a list field's elements, read in place.
+///
+/// Re-exported for `Record`'s reason: `render3d` reads `foundry:model` and
+/// `foundry:material` records (`meshes.md` §8) and is granted `asset`, not `data`.
+pub const RecordFields = data.fpk.Fields;
+pub const RecordList = data.fpk.List;
+
 test {
     _ = image;
     _ = mesh;

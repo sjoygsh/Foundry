@@ -1,7 +1,7 @@
 # Design: M20 — Meshes: runtime formats, glTF import, textures with mips, materials and culling
 
-**Status:** Accepted 2026-09-27 when the owner requested Step 1. Steps 1 to 5 of nine are
-complete; Step 6 has not begun. §14 records the accepted choices.
+**Status:** Accepted 2026-09-27 when the owner requested Step 1. Steps 1 to 6 of nine are
+complete; Step 7 has not begun. §14 records the accepted choices.
 **Date:** 2026-09-27
 **Baseline:** `a8cbd64`, tag `m19`. M0–M19 are complete.
 **Decisions:**
@@ -1102,3 +1102,107 @@ three thirty-frame samples, and, because the shaders changed, both `vulkan-check
 the three Vulkan `check` lines. The Vulkan readbacks on Windows are Step 7's. Codex wrote the
 implementation; this session added the loader integration test, tightened the mask and
 mirrored readbacks, ran the mutations and the bar, and wrote this record. Step 6 is next.
+
+## Resolution — Step 6: culling and `Content` (2026-09-29)
+
+Step 6 implements §7.6 and §8, and stops before Vulkan and the sample:
+
+- **Culling is `render3d/frustum.zig`.** `Frustum.fromViewProjection` takes Gribb and
+  Hartmann's row sums for `[0, 1]` depth (near `w − z`, far `z`) and normalises each plane; a
+  plane that cannot be normalised becomes `(0, 0, 0, 1)` and culls nothing. `Bounds.transformed`
+  is Arvo's method. `excludes` is true only when a box lies wholly outside one plane, and never
+  for non-finite bounds. **The planes are built in `begin`, not `prepare`,** because `plan`
+  culls and may run before `prepare`. `drawMesh` stores each draw's world bounds, and the blend
+  sort uses their centre, as before. `plan` counts `Stats.culled`; `Config.cull` (default
+  `true`) turns it off.
+- **`Content` lives in `render3d/content.zig`, with a smaller constructor.** It is
+  `init(gpa, renderer, assets, limits)` and reads records through `assets.store`. §8's separate
+  `store` parameter would have been a second pointer that could disagree with the registry's,
+  and `app` replaces the store in place anyway. `Limits` bounds a model at 256 slots and 4,096
+  parts. `asset` re-exports `RecordFields` and `RecordList`, as it re-exports `Record`, because
+  `render3d` is not granted `data`.
+- **The named refusals.** `acquireModel` refuses:
+  - a missing record (`ModelNotFound`);
+  - another schema (`NotAModel`);
+  - a record that does not read (`InvalidModelRecord`): unreadable lists, too many slots or
+    parts, a slot without a material, a part without a mesh, submesh, slot, translation,
+    rotation or scale, a slot index out of range, a non-unit rotation, or a non-finite transform.
+
+  The record is read in full before anything is acquired, so a refusal holds nothing.
+  `acquireMaterial` refuses `MaterialNotFound` and `NotAMaterial`, and **`releaseMaterial` is
+  added**, so a material acquired for an override can be given back. The same ID is always the
+  same handle, and references are counted.
+- **Material handles never change, so rebuilding needed a renderer call.**
+  `Renderer.updateMaterial` validates exactly as `createMaterial` does, builds the new uniform
+  and bind group before releasing the old ones, and keeps the handle. A refusal changes
+  nothing. `isMaterial` answers liveness for override validation.
+- **Rebuilds happen in `drawModel`, not in `prepare`.** §8 put the texture-payload check in
+  `prepare`, but the renderer never sees the registry. Instead, `drawModel` checks each slot's
+  material, and any override `Content` issued, before it submits the first part. A material
+  whose texture payload has moved, because a reload swapped it or the asset was unloaded, is
+  re-resolved behind the same handle. This matters because the registry destroys the old
+  texture on reload, and binding the stale group is a null-backend lifetime violation.
+- **`contentChanged` returns `Error!void`.** Content problems never fail it; allocation and
+  device failures do. It re-resolves materials first, in handle order, then models. A model
+  whose record has gone or no longer reads keeps its previous resolution and says so, as a
+  failed asset reload changes nothing. A new texture is acquired before the old one is released.
+- **Placeholders and dropped parts.** A material resolves to `content.placeholder` (magenta,
+  opaque, untextured, behind the same handle) if its record:
+  - is missing, or is not a `foundry:material`;
+  - has an unknown `alpha_mode`, a value outside `[0, 1]` or not finite, or an unregistered
+    shading model;
+  - names a linear texture, or one that fails to load.
+
+  A mesh that fails to load drops its parts. A part whose current mesh cannot draw it (an
+  out-of-range submesh, a missing stream, a transform that overflows) is skipped at draw time,
+  because a mesh can reload with fewer submeshes. Each is reported once per resolution, by ID
+  and reason, never per frame.
+- **`drawModel`** refuses a stale model (`InvalidModel`), a non-finite world, an override for a
+  slot out of range or a slot named twice (`InvalidOverride`), and a dead override material
+  (`InvalidMaterial`), all before any part is submitted. Parts are submitted in record order at
+  `world · part`.
+- **Teardown answers Step 5's gap.** `Content.deinit` destroys its materials before it hands
+  meshes and textures back with `unloadWith`. `unloadWith` returns everything `render3d`'s
+  loaders made for that renderer, so `Content` is the owner of that residency; code that acquires
+  through the same loaders must be finished first.
+
+§11 item 4 holds. A textured quad `.gltf`, compiled by the same `author.compile` that `fpack`
+runs, generates an `.fmesh` byte-identical to the one `asset.mesh_file.write` makes from the
+same arrays. Its generated records hold the values code-built drawing uses: linear, repeat,
+sRGB and mipmapped, a white opaque unlit material, one identity part. On Metal at 1× and 4×, the
+model drawn by content ID and the same quad built in code read back byte-identically. The
+check that no module but `author` sees glTF holds by construction rather than by a test.
+`gltf/` is a directory inside `author`, not a build-graph module, and Zig refuses an import from
+outside a module's own directory.
+
+Tests:
+- **Frustum unit tests:** each plane, straddling, reversed-Z's near and far and their metric
+  distances, behind the camera, a mirrored matrix, a shear that must widen the box, and
+  undecidable input.
+- **Renderer null tests:** culling counts with `cull` on and off, and `updateMaterial`'s
+  refusals.
+- **Metal equivalence readback:** inside, straddling and three outside draws read back
+  byte-identically with culling on and off at 1× and 4×, `culled = 3`, and the straddling draw
+  visible.
+- **`engine/tests/model_content.zig`,** a compiled package through the whole stack:
+  - resolution, record-order draws, shared meshes and materials, and reference counts;
+  - every refusal, each leaving nothing held;
+  - each placeholder cause;
+  - override refusals recording nothing;
+  - a PNG edited on disk and followed with zero violations;
+  - a colour and a part edited in the `.fdt` and followed through a package reload;
+  - a model and a material whose records disappear.
+
+**Guards verified by mutation,** each restored:
+- swapping near and far failed the reversed-Z test;
+- an untransformed extent failed the mirrored-and-sheared test;
+- a centre-only plane test failed three frustum tests;
+- culling regardless of `Config.cull` failed the renderer's culling test;
+- skipping `refresh` failed the reload test with a lifetime violation;
+- a white fallback in place of the placeholder failed the placeholder and reload tests;
+- accepting a duplicate override failed the override test.
+
+The bar passed at **1,821 of 1,822 headless tests** (the existing skip; **1,902 declared**) and
+**1,829 of 1,840 on `-Drhi=metal`** (11 null-only skips), with fmt, all four `check` variants and
+the three thirty-frame samples. No shader, Vulkan or ABI source changed, so the Vulkan checks'
+trigger did not fire. The Vulkan readbacks for Steps 5 and 6 are Step 7's. Step 7 is next.

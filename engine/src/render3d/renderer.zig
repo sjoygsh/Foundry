@@ -8,6 +8,7 @@ const rhi = @import("rhi");
 const asset = @import("asset");
 
 const camera_mod = @import("camera.zig");
+const frustum_mod = @import("frustum.zig");
 const Allocator = std.mem.Allocator;
 const Mat4 = core.math.Mat4;
 const Vec3 = core.math.Vec3;
@@ -129,6 +130,9 @@ pub const Extent2D = struct {
 pub const Config = struct {
     frames_in_flight: u32 = 2,
     sample_count: u32 = 4,
+    /// Frustum culling (§7.6). Off exists for the equivalence test and a sample's
+    /// `--cull=off`; it is not a game setting, because culling never changes a pixel.
+    cull: bool = true,
 };
 
 pub const FrameView = struct {
@@ -242,6 +246,7 @@ const DrawItem = struct {
     pipeline_key: PipelineKey,
     alpha: AlphaMode,
     depth: f32,
+    bounds: frustum_mod.Bounds,
     submission: u32,
 };
 
@@ -275,6 +280,7 @@ pub const Renderer = struct {
     view: FrameView,
     view_matrix: Mat4,
     view_projection: Mat4,
+    frustum: frustum_mod.Frustum,
     recording: bool,
     frame: ?rhi.FrameContext,
     stats: Stats,
@@ -370,6 +376,7 @@ pub const Renderer = struct {
             .view = .{ .camera = .{}, .target_size = .{ .width = 1, .height = 1 } },
             .view_matrix = .identity,
             .view_projection = .identity,
+            .frustum = .fromViewProjection(.identity),
             .recording = false,
             .frame = null,
             .stats = .{},
@@ -504,6 +511,31 @@ pub const Renderer = struct {
     }
 
     pub fn createMaterial(self: *Self, desc: MaterialDesc, label: []const u8) Error!MaterialHandle {
+        var state = try self.buildMaterial(desc, label);
+        errdefer self.destroyMaterialState(&state);
+        return self.materials.add(self.gpa, state);
+    }
+
+    /// Replaces a live material's description, keeping its handle.
+    ///
+    /// **Validated exactly as `createMaterial` is, and a refusal changes nothing**: the new
+    /// uniform and bind group are built before the old ones are released. This is how an
+    /// owner that follows content — `Content`, after a record or its texture reloads —
+    /// keeps the handle it gave out. A draw already submitted this frame keeps its pipeline
+    /// key and binds the new group when it is recorded.
+    pub fn updateMaterial(self: *Self, handle: MaterialHandle, desc: MaterialDesc, label: []const u8) Error!void {
+        if (self.materials.getConst(handle) == null) return error.InvalidMaterial;
+        const state = try self.buildMaterial(desc, label);
+        const slot = self.materials.get(handle).?;
+        self.destroyMaterialState(slot);
+        slot.* = state;
+    }
+
+    pub fn isMaterial(self: *const Self, handle: MaterialHandle) bool {
+        return self.materials.getConst(handle) != null;
+    }
+
+    fn buildMaterial(self: *Self, desc: MaterialDesc, label: []const u8) Error!MaterialState {
         const model = self.modelIndex(desc.shading) orelse return error.UnknownShadingModel;
         for (desc.base_color) |channel| if (!std.math.isFinite(channel) or channel < 0 or channel > 1) return error.InvalidMaterialValue;
         if (!std.math.isFinite(desc.alpha_cutoff) or desc.alpha_cutoff < 0 or desc.alpha_cutoff > 1) return error.InvalidMaterialValue;
@@ -533,15 +565,18 @@ pub const Renderer = struct {
                 .{ .binding = 2, .resource = .{ .sampler = texture.sampler } },
             },
         });
-        errdefer self.device.destroyBindGroup(group);
-        return self.materials.add(self.gpa, .{ .model = model, .desc = desc, .uniform = uniform, .group = group });
+        return .{ .model = model, .desc = desc, .uniform = uniform, .group = group };
     }
 
     pub fn destroyMaterial(self: *Self, handle: MaterialHandle) void {
         const state = self.materials.get(handle) orelse return;
+        self.destroyMaterialState(state);
+        _ = self.materials.remove(handle);
+    }
+
+    fn destroyMaterialState(self: *Self, state: *MaterialState) void {
         self.device.destroyBindGroup(state.group);
         self.device.destroyBuffer(state.uniform);
-        _ = self.materials.remove(handle);
     }
 
     fn modelIndex(self: *const Self, id: core.ContentId) ?u32 {
@@ -679,6 +714,7 @@ pub const Renderer = struct {
         self.view = view;
         self.view_matrix = view.camera.viewMatrix();
         self.view_projection = view.camera.viewProjection(view.target_size.width, view.target_size.height);
+        self.frustum = .fromViewProjection(self.view_projection);
         self.draws.clearRetainingCapacity();
         self.order.clearRetainingCapacity();
         self.planned_draws = null;
@@ -709,8 +745,8 @@ pub const Renderer = struct {
         else
             .back_ccw;
 
-        const center = mesh.bounds.min.add(mesh.bounds.max).scale(0.5);
-        const view_center = self.view_matrix.mulPoint(draw.world.mulPoint(center));
+        const bounds = frustum_mod.Bounds.transformed(mesh.bounds, draw.world);
+        const view_center = self.view_matrix.mulPoint(bounds.center);
         const sort_depth = if (std.math.isFinite(view_center.z)) -view_center.z else std.math.inf(f32);
         try self.draws.append(self.gpa, .{
             .mesh = draw.mesh,
@@ -720,6 +756,7 @@ pub const Renderer = struct {
             .pipeline_key = .{ .model = material.model, .vertex_layout = vertex_layout, .alpha = material.desc.alpha_mode, .cull = cull },
             .alpha = material.desc.alpha_mode,
             .depth = sort_depth,
+            .bounds = bounds,
             .submission = @intCast(self.draws.items.len),
         });
         self.planned_draws = null;
@@ -729,8 +766,16 @@ pub const Renderer = struct {
         if (!self.recording) return error.NotRecording;
         self.order.clearRetainingCapacity();
         try self.order.ensureTotalCapacity(self.gpa, self.draws.items.len);
-        for (self.draws.items, 0..) |_, i| self.order.appendAssumeCapacity(@intCast(i));
+        var culled: u32 = 0;
+        for (self.draws.items, 0..) |item, i| {
+            if (self.config.cull and self.frustum.excludes(item.bounds)) {
+                culled += 1;
+                continue;
+            }
+            self.order.appendAssumeCapacity(@intCast(i));
+        }
         std.mem.sort(u32, self.order.items, self.draws.items, drawLessThan);
+        self.stats.culled = culled;
         self.planned_draws = @intCast(self.draws.items.len);
     }
 
@@ -987,15 +1032,16 @@ const TestFixture = struct {
     material: MaterialHandle,
 
     fn init(samples: u32, size: u32) !TestFixture {
+        return initConfig(.{ .frames_in_flight = 2, .sample_count = samples }, size);
+    }
+
+    fn initConfig(config: Config, size: u32) !TestFixture {
         const device = try rhi.Device.init(testing.allocator, .{
             .surface_size = .{ .width = size, .height = size },
             .frames_in_flight = 2,
         });
         errdefer device.deinit();
-        var renderer = try Renderer.init(testing.allocator, device, .{
-            .frames_in_flight = 2,
-            .sample_count = samples,
-        });
+        var renderer = try Renderer.init(testing.allocator, device, config);
         errdefer renderer.deinit();
         return .{
             .device = device,
@@ -1547,5 +1593,116 @@ test "depth decides the crossing at 1x and 4x independently of submission order"
             try testing.expect(crossing[blue_channel] > 0 and crossing[blue_channel] < 255);
             try testing.expectEqual(@as(u8, 255), crossing[3]);
         }
+    }
+}
+
+test "culling drops only draws wholly outside the frustum, and counts them" {
+    for ([_]bool{ true, false }) |cull| {
+        var fx = try TestFixture.initConfig(.{ .sample_count = 1, .cull = cull }, 64);
+        defer fx.deinit();
+        const mesh = try testMesh(&fx.renderer, true);
+
+        try fx.renderer.begin(testView(64));
+        try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = .identity });
+        // Behind the camera, and far to the left: wholly outside one plane each.
+        try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = Mat4.translation(.init(0, 0, 10)) });
+        try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = Mat4.translation(.init(-50, 0, 0)) });
+        // Straddling the left plane at z = -2 (x = -2).
+        try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = Mat4.translation(.init(-2, 0, 0)) });
+        try finishTestFrame(&fx);
+
+        const stats = fx.renderer.frameStats();
+        if (cull) {
+            try testing.expectEqual(@as(u32, 2), stats.culled);
+            try testing.expectEqual(@as(u32, 2), stats.draws);
+            try testing.expectEqualSlices(u32, &.{ 0, 3 }, fx.renderer.order.items);
+        } else {
+            try testing.expectEqual(@as(u32, 0), stats.culled);
+            try testing.expectEqual(@as(u32, 4), stats.draws);
+        }
+        if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
+    }
+}
+
+test "updating a material keeps its handle, and a refused update changes nothing" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    const handle = try fx.renderer.createMaterial(.{ .base_color = .{ 1, 0, 0, 1 } }, "update");
+    try fx.renderer.updateMaterial(handle, .{ .base_color = .{ 0, 1, 0, 1 }, .alpha_mode = .blend }, "update");
+    try testing.expectEqual(AlphaMode.blend, fx.renderer.materials.getConst(handle).?.desc.alpha_mode);
+
+    var pixels = [_]u8{ 255, 255, 255, 255 };
+    const linear = try fx.renderer.createTexture(.{ .width = 1, .height = 1, .pixels = &pixels }, .{ .color_space = .linear });
+    const before = fx.renderer.materials.getConst(handle).?.*;
+    try testing.expectError(error.WrongColorSpace, fx.renderer.updateMaterial(handle, .{ .base_color_texture = linear }, "update"));
+    try testing.expectError(error.InvalidMaterialValue, fx.renderer.updateMaterial(handle, .{ .alpha_cutoff = 2 }, "update"));
+    const after = fx.renderer.materials.getConst(handle).?.*;
+    try testing.expect(before.group.eql(after.group) and before.uniform.eql(after.uniform));
+    try testing.expectEqual(AlphaMode.blend, after.desc.alpha_mode);
+
+    try testing.expectError(error.InvalidMaterial, fx.renderer.updateMaterial(.none, .{}, "update"));
+    fx.renderer.destroyMaterial(handle);
+    try testing.expect(!fx.renderer.isMaterial(handle));
+    try testing.expectError(error.InvalidMaterial, fx.renderer.updateMaterial(handle, .{}, "update"));
+    if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
+}
+
+const cull_size = 32;
+const cull_bytes = cull_size * cull_size * 4;
+
+fn renderCullScene(samples: u32, cull: bool) !struct { pixels: [cull_bytes]u8, culled: u32 } {
+    var fx = try TestFixture.initConfig(.{ .sample_count = samples, .cull = cull }, cull_size);
+    defer fx.deinit();
+    const device = fx.device;
+    const mesh = try testMesh(&fx.renderer, true);
+    const readback = try device.createBuffer(.{
+        .label = "cull equivalence readback",
+        .size = cull_bytes,
+        .usage = .{ .copy_dst = true },
+        .memory = .readback,
+    });
+    defer device.destroyBuffer(readback);
+
+    try fx.renderer.begin(testView(cull_size));
+    // Inside, straddling the right edge, and three wholly outside: behind, beyond far, above.
+    for ([_]Vec3{ .init(0, 0, 0), .init(2, 0, 0), .init(0, 0, 4), .init(0, 0, -200), .init(0, 40, 0) }) |at| {
+        try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = Mat4.translation(at) });
+    }
+    const frame = try device.beginFrame();
+    var cmd = try device.beginCommandBuffer();
+    try fx.renderer.prepare(cmd, frame);
+    var pass = try cmd.beginRenderPass(fx.renderer.passDesc(frame, false));
+    try fx.renderer.record(pass);
+    pass.end();
+    try cmd.textureBarrier(&.{.{ .texture = frame.surface_texture, .from = .present, .to = .copy_src }});
+    try cmd.copyTextureToBuffer(.{ .src = frame.surface_texture, .size = .{ .width = cull_size, .height = cull_size }, .dst = readback });
+    try cmd.textureBarrier(&.{.{ .texture = frame.surface_texture, .from = .copy_src, .to = .present }});
+    try cmd.submit();
+    try device.endFrame();
+    device.waitIdle();
+
+    var pixels: [cull_bytes]u8 = undefined;
+    const mapped = try device.mapBuffer(readback);
+    @memcpy(&pixels, mapped[0..cull_bytes]);
+    device.unmapBuffer(readback);
+    return .{ .pixels = pixels, .culled = fx.renderer.frameStats().culled };
+}
+
+test "culling changes no pixel: a scene reads back identically with it on and off" {
+    if (rhi.backend == .null) return;
+    for ([_]u32{ 1, 4 }) |samples| {
+        const on = try renderCullScene(samples, true);
+        const off = try renderCullScene(samples, false);
+        try testing.expectEqual(@as(u32, 3), on.culled);
+        try testing.expectEqual(@as(u32, 0), off.culled);
+        try testing.expectEqualSlices(u8, &off.pixels, &on.pixels);
+        // The straddling draw reached the image: its right half is clipped, not culled.
+        const background = on.pixels[0..4];
+        var lit: usize = 0;
+        for (0..cull_size) |y| {
+            const offset = (y * cull_size + cull_size - 2) * 4;
+            if (!std.mem.eql(u8, on.pixels[offset..][0..4], background)) lit += 1;
+        }
+        try testing.expect(lit > 0);
     }
 }

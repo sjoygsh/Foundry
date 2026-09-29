@@ -19,14 +19,23 @@ const app = @import("app");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 
-/// A PNG of one colour, `width` by `height`, in stored DEFLATE blocks: no compressor, and
-/// bytes a test can predict.
+/// A white PNG, `width` by `height`, in stored DEFLATE blocks: no compressor, and bytes a
+/// test can predict.
 pub fn solidPng(gpa: Allocator, width: u32, height: u32) ![]u8 {
+    const pixels = try gpa.alloc(u8, @as(usize, width) * height * 4);
+    defer gpa.free(pixels);
+    @memset(pixels, 0xff);
+    return rgbaPng(gpa, width, height, pixels);
+}
+
+/// `solidPng`'s encoder for any RGBA8 pixels, row-major and top row first.
+pub fn rgbaPng(gpa: Allocator, width: u32, height: u32, pixels: []const u8) ![]u8 {
+    std.debug.assert(pixels.len == @as(usize, width) * height * 4);
     var raw: std.ArrayList(u8) = .empty;
     defer raw.deinit(gpa);
-    for (0..height) |_| {
+    for (0..height) |row| {
         try raw.append(gpa, 0);
-        for (0..width) |_| try raw.appendSlice(gpa, &.{ 0xff, 0xff, 0xff, 0xff });
+        try raw.appendSlice(gpa, pixels[row * width * 4 ..][0 .. width * 4]);
     }
 
     var z: std.ArrayList(u8) = .empty;

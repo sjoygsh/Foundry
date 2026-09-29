@@ -1,11 +1,28 @@
 # Foundry Project State
 
-**Last updated:** 2026-09-28
+**Last updated:** 2026-09-29
 **Current handoff: M19 is complete (2026-09-27, tag `m19`). M20, Meshes, is accepted and Steps 1
-to 5 of nine are complete. Stop before Step 6.** Read [`docs/design/meshes.md`](docs/design/meshes.md),
-whose Step 1–5 Resolutions record the implementation and its corrections. ADR-0055 is
-accepted. Next is Step 6 only: frustum culling and `render3d.Content`, models drawn by content
-ID (§7.6, §8). No culling, no `Content` and no material loader from records exist yet.
+to 6 of nine are complete. Stop before Step 7.** Read [`docs/design/meshes.md`](docs/design/meshes.md),
+whose Step 1–6 Resolutions record the implementation and its corrections. ADR-0055 is
+accepted. Next is Step 7 only: Steps 5 and 6's readbacks on the native Windows/Vulkan graph,
+with validation and synchronization validation required, and §10's trigger check. `sandbox3d`
+still draws code-built meshes; its glTF scene is Step 8's.
+
+**M20 Step 6 is done (2026-09-29).** `render3d/frustum.zig` culls: normalised Gribb–Hartmann
+planes for reversed-Z `[0, 1]` depth, built in `begin`, and Arvo world bounds per draw. A draw is
+culled only when wholly outside one plane. `plan` counts `Stats.culled`, and `Config.cull` turns
+it off. `render3d.Content` resolves `foundry:model` and `foundry:material` records through the
+registry's own store, holding asset handles only. It refuses unreadable model records by name
+before acquiring anything. It draws failed materials as a magenta placeholder behind a stable
+handle, and drops parts whose meshes do not load. Slot overrides are validated before any part is
+submitted. Reloads are followed: `Renderer.updateMaterial` rebuilds in place, `drawModel`
+rebinds a material whose texture payload moved, and `contentChanged` re-reads records.
+
+A textured quad `.gltf` compiles to the `.fmesh` code writes, byte for byte, and on Metal at 1×
+and 4× the model drawn by content ID reads back identically to the code-built quad. Culling on
+and off read back identically too. Seven mutations each failed their test and were restored.
+The bar passed at **1,821 of 1,822 headless tests** (the existing skip; **1,902 declared**) and
+**1,829 of 1,840 on Metal**. No shader, Vulkan or ABI source changed.
 
 **M20 Step 5 is done (2026-09-28).** `render3d` has a runtime shading-model registry, and
 `Renderer.init` registers `foundry:shading.unlit` with four vertex and two fragment variants per
