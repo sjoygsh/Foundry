@@ -1,12 +1,18 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-29
-**Current handoff: M20 is complete (2026-09-29, tag `m20`). Stop before M21's design.** M21,
-Hierarchy (`3d.md` §10), is next. It covers `foundry:transform`, `foundry:parent` and
-`foundry:world_transform`, propagation, and 3D in the debug overlay, under ADR-0050. Nothing of
-it exists, and its design is written before any code, with the `foundry-milestone-design`
-skill. Read [`docs/design/meshes.md`](docs/design/meshes.md)'s Resolutions for what M20 built,
-and its §13 for what it left open.
+**Current handoff: M20 is complete (2026-09-29, tag `m20`). M21's design is proposed
+([`docs/design/hierarchy.md`](docs/design/hierarchy.md); no new ADR, ADR-0050 decides it); awaiting
+the owner's acceptance of its §13. Stop before Step 1.** The design has six steps:
+1. `scene`: the three components, and what content may author;
+2. propagation;
+3. re-parenting and the despawn cascade;
+4. the hierarchy in the debug overlay;
+5. `sandbox3d`'s orrery on macOS and Windows;
+6. the close.
+
+Nothing of it exists in code. Read [`docs/design/meshes.md`](docs/design/meshes.md)'s
+Resolutions for what M20 built.
 
 **M20 is closed (2026-09-29, Step 9).** Its exit condition holds: a glTF file is imported into
 Foundry's representations, nothing downstream of the compiler knows it was glTF, and a

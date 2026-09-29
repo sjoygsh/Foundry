@@ -1066,4 +1066,7 @@ its glTF scene, drawn by content ID and followed live through reloads. Its packa
 identically on macOS and Windows, and it runs relocated on both. Step 9 closed it. Exit condition
 met: a glTF file is imported into Foundry's representations, nothing downstream of the compiler
 knows it was glTF, and a malformed file is refused with a diagnostic. Linux stayed compile-only,
-and none of its triggers fired. **Next is M21 Hierarchy's design**, and nothing of it exists yet.
+and none of its triggers fired.
+
+**M21 Hierarchy's design is proposed** — [`hierarchy.md`](design/hierarchy.md), six steps, no new
+ADR (ADR-0050 decides it). It awaits the owner's acceptance of its §13; no step has begun.
