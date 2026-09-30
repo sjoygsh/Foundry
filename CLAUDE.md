@@ -207,7 +207,8 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | 3D conventions | Right-handed, +Y up, −Z forward, metres, radians; column vectors in column-major storage, `T·R·S`, `P·V·W`; unit quaternions `(x,y,z,w)` composing like matrices; local transforms authored, world derived; reversed-Z; linear lighting; import converts nothing silently | [0048](docs/adr/0048-3d-conventions.md) |
 | 3D shading | Engine-owned shading models hand-written per backend, behind a runtime registry that materials name; no shared shader language until mods need one | [0049](docs/adr/0049-engine-shading-models-per-backend.md) |
 | 3D hierarchy | Engine-declared `foundry:transform`, `foundry:parent` and derived `foundry:world_transform`, opted into per world; one propagation, parents first then by handle; destroying a parent takes its subtree; implemented in M21 | [0050](docs/adr/0050-engine-owned-transform-hierarchy.md) |
-| 3D collision | `physics3d` at L1: shapes, queries and a character controller; no dynamics until a game needs them | [0051](docs/adr/0051-3d-collision-without-dynamics.md) |
+| 3D collision | `physics3d` at L1: shapes, queries and a character controller; no dynamics until a game needs them; one rounded-core GJK/EPA narrowphase for every pair (M23) | [0051](docs/adr/0051-3d-collision-without-dynamics.md) |
+| Collision geometry | `foundry:collision_mesh`/`.fcol` in `asset`, derived opt-in by `foundry:model_import` v2's `collision` and name-checked `collision_exclude`; `physics3d` copies it and builds its own tree; rigid poses, scale baked at import; accepted 2026-09-30, implemented from M23 Step 3 | [0057](docs/adr/0057-collision-geometry-is-compiled-content.md) |
 | 3D rendering | `render3d` starts forward and fixed-pass; it changes architecture only on measurement | [0052](docs/adr/0052-forward-renderer-first.md) |
 | 3D lighting | Photometric lights (lux/candela), ambient/emission in cd/m²; EV100 pre-exposure of lit output only; one Neutral tone map before sRGB; implemented in M22 | [0056](docs/adr/0056-photometric-light-units-and-pre-exposure.md) |
 | 3D assets | Import, runtime mesh, textures and materials, model, scene, submission and GPU resources stay separate; no importer's shape reaches `render3d` | [0053](docs/adr/0053-assets-are-not-the-renderer.md) |
@@ -264,6 +265,10 @@ L1  data        -> core.        Schemas, records, content packages, load order,
                                 merge/override semantics, serialization.
 L1  physics2d   -> core.        Shapes, tile grids, broadphase, queries, collision
                                 response. No entities, no content, no I/O.
+L1  physics3d   -> core.        3D shapes, rigid poses, bodies, queries and (from M23
+                                Step 4) the character controller; no dynamics
+                                (ADR-0051). Geometry arrives as values it copies
+                                (ADR-0057). No entities, no content, no I/O.
 L1  ui          -> core, platform.  Immediate-mode UI kernel: widget identity, input
                                 routing, layout, clipping. Emits a draw list; draws
                                 nothing itself and never sees a renderer.
@@ -317,8 +322,8 @@ L5  abi         -> core, data, physics2d, platform, ui, asset, render2d, scene,
 
 Games, samples and tools depend on `app`. A host that loads mods also imports `abi`; a
 native mod itself depends on the C header and never on a Zig module. `samples/sandbox3d` is
-granted `app`, `asset`, `core`, `data`, `debug`, `platform`, `render2d`, `render3d`, `scene` and
-`ui` (the last three and `debug` since M21), and never `rhi`, so a 3D game touching the RHI is a
+granted `app`, `asset`, `core`, `data`, `debug`, `physics3d`, `platform`, `render2d`, `render3d`,
+`scene` and `ui` (the last three and `debug` since M21, `physics3d` since M23), and never `rhi`, so a 3D game touching the RHI is a
 build error there.
 
 **`script` sits at L6, as a consumer of the public API rather than a layer of the engine.**

@@ -1022,7 +1022,7 @@ and regression coverage in `3d.md` §10:
 - **M22 Light:** the lit model, lights, a shadow, HDR, and a content mod that changes the room.
   Design accepted 2026-09-29: [`light.md`](design/light.md), with ADR-0056.
 - **M23 Collision:** `physics3d` and a first-person walk.
-  Design proposed 2026-09-30: [`collision3d.md`](design/collision3d.md), with ADR-0057.
+  Design accepted 2026-09-30: [`collision3d.md`](design/collision3d.md), with ADR-0057; Step 1 done.
 - **M24 Animation:** skins and clips, sampled at the fixed step.
 - **M25 Public 3D:** `FoundryApi_v6`, with a content mod and a native one.
 - **M26 A playable 3D sample,** played by someone who did not build it, on macOS, Windows and a
@@ -1104,4 +1104,4 @@ mod changes the lit room, with no code, backed by material validation, lit-refer
 and a compiled-mod pixel proof. Linux stays compile-only; no Linux-specific runtime trigger
 arose. The close bar passes 1,896 of 1,897 headless tests (one expected skip). The M22 Windows
 proof folders are packed up without disturbing pre-existing work. M23, Collision, is next;
-its design, [`collision3d.md`](design/collision3d.md) with ADR-0057, is proposed and awaits acceptance.
+its design, [`collision3d.md`](design/collision3d.md) with ADR-0057, is accepted and Step 1 is done.

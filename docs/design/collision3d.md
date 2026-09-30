@@ -1,6 +1,7 @@
 # Design: M23 — Collision: `physics3d`, collision meshes, the character controller and a first-person walk
 
-**Status:** Proposed 2026-09-30; awaiting the owner's acceptance of §16. No step has begun.
+**Status:** Accepted 2026-09-30, when the owner requested Step 1, with every §16 choice as
+written. Step 1 is done; Step 2 is next.
 **Date:** 2026-09-30
 **Baseline:** `a0f8d73`, tag `m22`. M0–M22 are complete.
 **Decisions:**
@@ -8,7 +9,7 @@
   contract this design implements. ADR-0013 (deterministic-friendly, not bit-exact), ADR-0022
   (2D collision, our own), ADR-0048 (conventions: +Y up, metres, radians), ADR-0053 (assets are
   not the renderer) and ADR-0055 (imports compile to records) constrain it.
-- Proposed [ADR-0057](../adr/0057-collision-geometry-is-compiled-content.md): collision
+- Accepted [ADR-0057](../adr/0057-collision-geometry-is-compiled-content.md): collision
   geometry is a compiled `foundry:collision_mesh` asset, derived at import from the nodes a
   `foundry:model_import` does not exclude, and `physics3d` copies it and builds its own tree
   rather than reading an asset.
@@ -778,7 +779,7 @@ profiler's `character` zone and the sample's log are what is shown.
 Each step ends with a Resolution here, an updated `PROJECT_STATE.md`, the bar and a commit. There
 is no automatic chaining.
 
-### Step 1 — `physics3d`: shapes, poses, bodies and the convex narrowphase
+### Step 1 — `physics3d`: shapes, poses, bodies and the convex narrowphase — Done 2026-09-30
 
 This step implements §3, §4 and §5, and §6's queries against convex bodies:
 - the module in `build.zig`, granted to `sandbox3d`;
@@ -789,6 +790,75 @@ This step implements §3, §4 and §5, and §6's queries against convex bodies:
 It adds §11.1's tests except the mesh ones, with the hull-volume and tie-break mutations.
 **Exit:** every convex pair's distance, cast and contact matches its analytic answer in rotated
 poses, and every §11.1 refusal is a named error.
+
+**Resolution (2026-09-30): complete.** `engine/src/physics3d/` holds `shape.zig`, `gjk.zig`,
+`narrow.zig`, `body.zig`, `world.zig` and `tests.zig`. `build.zig` declares the module on `core`
+alone and grants it only to `sandbox3d`, and CLAUDE.md §4.3 lists it. The world has:
+- bodies and ref-counted hulls in `core.HandlePool`s;
+- the setters `setPose`, `setShape`, `setFilter`, `setUser` and `setKind`;
+- `raycast`, `shapeCast`, `overlap` and `contacts` over spheres, capsules, boxes and hulls.
+
+`Shape` has no `.mesh` variant yet, because Step 2 adds it with `MeshHandle`.
+
+Where implementation sharpened the design:
+- **Pose rotations enter through `core.math.Quat.validated`.** That means `Quat.unit_tolerance`,
+  which is 1e-3, and normalisation, rather than §3's 1e-4. It is the one entry point every
+  rotation from outside already takes, and two tolerances for the same question would disagree.
+- **`gjk_tolerance` is 1e-6 m, not §5.1's 1e-7.** An `f32` resolves 1.2e-7 m at 1 m, so 1e-7 was
+  reachable only through the no-progress rule. GJK also stops when a new support point repeats a
+  simplex vertex, or when the closest point stops getting closer.
+- **Normals near contact.** The distance normal is the plane normal of GJK's final triangle when
+  the simplex is one, which is exact however small the gap. A raycast's zero-radius contact
+  otherwise produced a normal that was mostly rounding: 0.01 off at 100 m. Edge and vertex
+  contacts still use the witness direction. That is also where the true normal is ambiguous.
+- **Raycasts target separation 0**, and report the exact surface. Shape casts stop `contact_skin`
+  short, along the normal.
+- **A conservative-advancement step that lands inside the surface.** One that lands within
+  `cast_tolerance` (1e-5 m) inside is accepted as the contact. The original "keep the last safe
+  answer" rule turned a ray's exact landing, 1e-7 inside, into a hit at fraction 0. A step deeper
+  than that still keeps the last safe fraction.
+- **EPA grows a degenerate start simplex** along ten fixed directions, in a fixed order, so the
+  result depends on the input alone:
+  - capacity is 64 vertices and 128 faces;
+  - depth is clamped at 0;
+  - it returns null for a Minkowski difference with no volume, which only sphere and capsule cores
+    produce. `narrow.separation` then pushes along the line between the centres, or along +Y when
+    they coincide, by the radii.
+- **Queries allocate nothing, so they take no allocator.** A mesh BVH walk in Step 2 uses a fixed
+  stack.
+- **The setters take one even though nothing uses it yet**, as §3 asked, so a broadphase does not
+  change their signatures.
+- **`InvalidQuery` is a fourth refusal**, for a non-unit ray direction, a negative or non-finite
+  reach, and a non-finite displacement. `InvalidPose` also covers a ray origin beyond the bound.
+- **Overlap means penetration:** touching is not overlapping.
+- **Test tolerances follow the coordinates.** The analytic tests run every case under four rigid
+  frames, out to (900, −300, 1200), where an `f32` step is 1.2e-4 m. Their tolerance scales with
+  the frame, from 1e-5 m to 5e-4 m, because no narrowphase answers more finely than its inputs.
+
+**Coverage:** 31 tests:
+- separation against analytic answers for fifteen pair cases, covering every pair of sphere,
+  capsule, box and hull, including edge, corner and crossed-segment cases, in four frames;
+- EPA depth for boxes, hulls and a sphere deep in a box, and rounded overlaps that do not need EPA;
+- raycasts, shape casts and surface normals, including an edge contact and the diagonal tie;
+- a capsule that does not tunnel through a 1 cm plate from either side;
+- handle-order overlaps, with a truncated buffer's total;
+- ties, including a reused slot;
+- mask, ignore and trigger-by-layer filtering;
+- every named refusal;
+- byte-identical results for the same calls.
+
+**Guards verified by mutation:**
+- skipping the hull-volume check failed the coplanar-hull refusal;
+- letting an equal fraction replace the best failed the tie test;
+- the face-normal and landing fixes were each found by a failing test before they existed.
+
+The two-sided and walkable-by-`surface_normal` mutations belong to Steps 2 and 4.
+
+**Bar:** all nine commands pass, and `zig build test` passes 1,927 of 1,928 tests with one expected
+skip: 31 more than M22's close. `zig fmt` reflowed `gjk.zig`'s direction table after the run, a
+whitespace-only change that was re-checked.
+
+Nothing is in the ABI. Step 2 (triangle meshes) has not begun.
 
 ### Step 2 — `physics3d`: static triangle meshes
 

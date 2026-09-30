@@ -49,6 +49,13 @@ const layering = [_]Module{
     // grown into a physics engine.
     .{ .name = "physics2d", .deps = &.{"core"} },
 
+    // L1 — 3D collision and the character controller, no dynamics (ADR-0051,
+    // docs/design/collision3d.md). `core` alone, for `physics2d`'s reasons: no `asset`, because
+    // geometry arrives as values the world copies (ADR-0057); no `scene`, because a body carries
+    // an opaque `u64`; no `platform`, so there is no clock to read (I9). It shares no code with
+    // `physics2d`: the two solve different geometry.
+    .{ .name = "physics3d", .deps = &.{"core"} },
+
     // L1 — the immediate-mode UI kernel (ADR-0024, docs/design/ui.md). `platform` for the
     // input snapshot it is handed; `core` for maths and logging. **No `render2d`**, which
     // is the decision rather than an omission: the kernel emits a draw list and something
@@ -623,8 +630,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     // `scene`, `debug` and `ui` since M21 (`hierarchy.md` §8): a world of nested objects, and
-    // the overlay that inspects it, hosted as the room hosts it.
-    for ([_][]const u8{ "app", "asset", "core", "data", "debug", "render2d", "render3d", "scene", "ui" }) |name| {
+    // the overlay that inspects it, hosted as the room hosts it. `physics3d` since M23
+    // (`collision3d.md` §3): the first-person walk. The overlay itself is not granted it (§12).
+    for ([_][]const u8{ "app", "asset", "core", "data", "debug", "physics3d", "render2d", "render3d", "scene", "ui" }) |name| {
         sandbox3d_mod.addImport(name, modules.get(name).?);
     }
     sandbox3d_mod.addImport("platform", platform_module);

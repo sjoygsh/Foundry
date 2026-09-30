@@ -1,8 +1,26 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-30
-**Current handoff: M23's design is proposed (`docs/design/collision3d.md`, ADR-0057); awaiting
-acceptance of §16. Stop before Step 1.** M0–M22 are complete.
+**Current handoff: M23 Step 1 of 7 is complete (`docs/design/collision3d.md`, ADR-0057 accepted);
+stop before Step 2**, static triangle meshes in `physics3d`. No mesh shape, collision asset,
+character controller or sample walk exists yet. M0–M22 are complete.
+
+**M23 Step 1 is done (2026-09-30).** The owner's request for Step 1 accepted the design and
+ADR-0057, which are recorded in the design's status, the ADR and CLAUDE.md §4.1/§4.3. The new L1
+`physics3d` module is on `core` alone and granted only to `sandbox3d`. It has:
+- spheres, capsules, boxes and ref-counted point-set hulls;
+- rigid poses validated through `Quat.validated`;
+- static and kinematic bodies with symmetric layer/mask filters, and triggers expressed as layers;
+- one rounded-core narrowphase: GJK distance with a face-plane normal, conservative-advancement
+  casts and EPA, each with a fixed budget;
+- allocation-free `raycast`, `shapeCast`, `overlap` and `contacts` in handle order, with ties to
+  the lower handle and buffers that report totals.
+
+Implementation corrections are in the design's Step 1 Resolution: GJK tolerance 1e-6 m, the core
+rotation tolerance, the landing rule, and `InvalidQuery`. Two guards were verified by mutation.
+Test tolerances scale with the frame's `f32` resolution. The nine-command bar passes, and
+`zig build test` passes **1,927 of 1,928 tests with one expected skip**, 31 more than M22's close.
+Nothing enters the ABI, and the overlay is not granted `physics3d`.
 
 **M23 design (2026-09-30).** Collision in seven steps: a new L1 `physics3d` on `core` alone,
 with rigid poses, static and kinematic bodies, layers and masks, and spheres, capsules, boxes,
