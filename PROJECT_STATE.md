@@ -1,8 +1,23 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-30
-**Current handoff: M22 is complete, all eight steps (tag `m22`); stop before M23's design.**
-M0–M22 are complete. M23 is Collision; its design and implementation have not begun.
+**Current handoff: M23's design is proposed (`docs/design/collision3d.md`, ADR-0057); awaiting
+acceptance of §16. Stop before Step 1.** M0–M22 are complete.
+
+**M23 design (2026-09-30).** Collision in seven steps: a new L1 `physics3d` on `core` alone,
+with rigid poses, static and kinematic bodies, layers and masks, and spheres, capsules, boxes,
+point-set hulls and copied two-sided triangle meshes behind one rounded-core GJK/conservative-
+advancement/EPA narrowphase, with raycasts, shape casts, overlaps and contacts (Steps 1–2);
+`foundry:collision_mesh` and `.fcol` v1 in `asset`, derived as `<model>.collision` by
+`foundry:model_import` v2's opt-in `collision` and name-checked `collision_exclude` (Step 3,
+ADR-0057); a character controller with depenetration, slide, walkable-only step-up, snap-down,
+ground and ceiling judged by surface normals, and no pushing (Step 4); `sandbox3d` walking in
+first person through the lit room plus a new steps-and-ramps course, its settings in a separate
+`sandbox3d:walk` record so the whole-record dusk override is untouched, and a scripted tour that
+proves the exit condition headless and windowed (Step 5); the PC natively and on Vulkan
+(Step 6); the close (Step 7). Pointer capture is deferred to M26, so Linux stays compile-only.
+Nothing enters the ABI. Verified before designing: Codex's M22 commits `001e208`..`a0f8d73` pass
+the full nine-command bar at `a0f8d73`, 1,896 of 1,897 tests with one skip, as recorded.
 
 **M22 Step 8 closes the milestone (2026-09-30).** Documentation and pack-up only; the code
 remains Step 7's `b898c09`. Reconciled the parent 3D, meshes, renderer, RHI and overlay designs
