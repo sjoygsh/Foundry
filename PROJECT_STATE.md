@@ -1,10 +1,29 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-30
-**Current handoff: M23 Steps 1–2 of 7 are complete (`docs/design/collision3d.md`, ADR-0057 accepted);
-stop before Step 3**, the collision-mesh asset and derived import. Static triangle meshes now
-exist in `physics3d`; no collision asset, character controller or sample walk exists yet.
+**Current handoff: M23 Steps 1–3 of 7 are complete (`docs/design/collision3d.md`, ADR-0057 accepted);
+stop before Step 4**, the character controller. Static triangle meshes exist in `physics3d`,
+and collision geometry is compiled content; no character controller or sample walk exists yet.
 M0–M22 are complete.
+
+**M23 Step 3 is done (2026-09-30).** `asset.collision_mesh` reads borrowed, unaligned `.fcol`
+v1 views, writes canonical geometry, and supplies a host-registered loader whose aligned CPU
+arrays outlive the registry's temporary source bytes. `foundry:collision_mesh` is an ordinary
+source asset; hand-placed `.fcol` files derive through the kinds table. `foundry:model_import`
+v2 appends default-off `collision` and optional `collision_exclude`. Enabled imports emit one
+`<model>.collision` asset from the default scene in node/primitive/index order, with the visual
+import's flattened scale and front transform. Every matching named subtree is excluded, typos
+and empty results are refused, and degenerate triangles produce one counted warning. v1 records,
+bare glTF and default-off imports derive no collision. Nothing enters the ABI or the sample.
+
+**Verification:** **124/124 asset** and **91/91 author** focused tests pass, including the
+`.fcol` fixture pin `c854ac2cc345318d`, copied ownership/allocation failures, malformed inputs,
+transform/exclusion proofs, v1 defaults and package-to-loader integration. Ten guard mutations
+failed and were restored; the finite-bounds mutation exposed a missing NaN-bounds case, now
+covered. The final nine-command bar passes **1,950 of 1,951 tests**, one expected skip; Metal,
+both cross-target checks and all three headless samples pass. Both ad-hoc macOS releases stage.
+The eight room meshes, crate mesh and complete `sandbox3d.fpk` match the Step 2 baseline byte
+for byte. Windows runtime qualification remains Step 6; Linux remains compile-only.
 
 **M23 Step 2 is done (2026-09-30).** `World.addMesh` validates and copies geometry behind a
 generational `MeshHandle`, builds a deterministic median-split BVH, and reserves query scratch.

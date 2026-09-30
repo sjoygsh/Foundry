@@ -1,7 +1,7 @@
 # Design: M23 — Collision: `physics3d`, collision meshes, the character controller and a first-person walk
 
 **Status:** Accepted 2026-09-30, when the owner requested Step 1, with every §16 choice as
-written. Steps 1–2 are done; Step 3 is next.
+written. Steps 1–3 are done; Step 4 is next.
 **Date:** 2026-09-30
 **Baseline:** `a0f8d73`, tag `m22`. M0–M22 are complete.
 **Decisions:**
@@ -497,8 +497,10 @@ tests and a future non-glTF producer write one.
 - **The writer is canonical:** the same triangles produce the same bytes.
 
 **The loader lives here** and is registered at runtime by whoever wants it (I6), as
-`tilegridLoader` is. `physics3d` never sees an asset. The game reads the `View` and hands its
-positions and indices to `addMesh`, which copies them (§6). That is ADR-0053's separation applied
+`tilegridLoader` is. `physics3d` never sees an asset. The loader copies the borrowed `View`
+into aligned, owned `CollisionMesh` arrays, since the registry releases the source bytes after
+loading. The game hands those arrays to `addMesh`, which copies them (§6); a direct format
+consumer can use `View.copy` for the same alignment and ownership. That is ADR-0053's separation applied
 to collision: import, runtime asset and simulation stay three things.
 
 ## 9. Import: deriving collision (`author`)
@@ -925,6 +927,40 @@ This step implements §8 and §9:
 It adds §11.4's asset and import tests, including the unchanged M20 hash. **Exit:** a fixture
 glTF with `collision true` compiles to a `.fcol` whose bytes match their pin, and every refusal is
 reported by the compiler with its diagnostic.
+
+**Resolution — Step 3 (2026-09-30).** §8 and §9 are implemented, with no change to ADR-0057:
+
+- `asset/collision_mesh.zig` supplies `versionOf`, the borrowed `View`, canonical `write`,
+  aligned `View.copy`, `CollisionMesh` and the explicitly registered `collisionMeshLoader`.
+  Counts, length, indices, finite containing bounds and the ±8192 m geometry envelope are
+  validated before any consumer sees arrays. The 256 MiB format/loader ceiling does not raise
+  the registry's separately configured source-read ceiling.
+- The runtime schema joins `kinds` without changing existing kind indices. Hand-placed `.fcol`
+  assets and generated assets follow the same package/store/registry path. The host owns loader
+  registration; neither `physics3d` nor the ABI gains an asset dependency.
+- Import v2 appends its two fields. Missing exclusions are an optional value interpreted as
+  the empty list, including when extending a v1 record. The importer reuses validated `.fmesh`
+  streams and the visual default-scene traversal's exact flattened matrices, then emits
+  collision in node-array order. Exclusion propagates to descendants, applies to every repeated
+  name and infers nothing. The ID is `<model>.collision`; its private generated source path is
+  `<source dir>/<stem>/collision0.fcol`. Degenerates are dropped with one `u64` count; a fully
+  degenerate result is refused with both its warning and the empty-result diagnostic.
+- Four format tests, one schema compatibility test and six author/import tests were added;
+  the existing end-to-end import test also proves collision opt-in, unchanged visual bytes,
+  generated package loading and compiler diagnostics. Focused results: **124/124 asset** and
+  **91/91 author**. Both the writer and triangle import pin **`c854ac2cc345318d`** (FNV-1a64).
+- Ten guard mutations fail: format version, file cap, counts, exact length, indices, coordinate
+  envelope, finite bounds, unknown exclusion, subtree inheritance and degenerate filtering.
+  The bounds mutation first passed because the old cases also failed containment; a NaN-bounds
+  case now isolates it and fails when the finite guard is removed. All guards are restored.
+- The nine-command bar passes **1,950 of 1,951 tests**, one expected skip. Native, Metal,
+  Linux/Windows cross checks and three headless sample runs pass. Both room and sandbox
+  ReleaseSafe ad-hoc macOS releases stage from this working tree (revision input `cb7510a`).
+  SHA-256 comparison against the pre-step outputs passes for all eight room meshes, the crate
+  mesh and the complete sandbox3d package (`9b26a63ac04e44204bbce15cd12f8706f7721ee732166248599b0ac785841702`).
+
+No character, walk input, sample collision content or ABI work was added. Step 4 is next;
+the Windows runtime proof remains Step 6 and Linux remains compile-only.
 
 ### Step 4 — `physics3d`: the character controller
 

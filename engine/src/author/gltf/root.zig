@@ -147,6 +147,154 @@ const TestFile = struct {
     bytes: []const u8,
 };
 
+test "collision import: opt-in fixture is pinned, and off emits the old products unchanged" {
+    const testing = std.testing;
+    const triangle = makeTriangleBin();
+    var reader: TestReader = .{ .files = &.{.{ .path = "models/mesh.bin", .bytes = &triangle }} };
+    const json = try makeJson(testing.allocator, .{});
+    defer testing.allocator.free(json);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = Diagnostics.init(testing.allocator, .default);
+    defer diags.deinit(testing.allocator);
+    const settings: translate.Settings = .{ .model_id = "demo:hero", .source = "models/fixture.gltf" };
+    const before = try import(testing.allocator, arena.allocator(), settings.source, json, settings, reader.interface(), .default, &diags);
+    var enabled = settings;
+    enabled.collision = true;
+    const after = try import(testing.allocator, arena.allocator(), settings.source, json, enabled, reader.interface(), .default, &diags);
+    try testing.expectEqual(before.assets.len + 1, after.assets.len);
+    for (before.assets, after.assets[0..before.assets.len]) |a, b| {
+        try testing.expectEqualStrings(a.path, b.path);
+        try testing.expectEqualSlices(u8, a.bytes, b.bytes);
+    }
+    try testing.expect(std.mem.startsWith(u8, after.source, before.source));
+    try testing.expect(std.mem.indexOf(u8, after.source, "foundry:collision_mesh demo:hero.collision") != null);
+    try testing.expectEqual(@as(u64, 0xc854ac2cc345318d), core.id.fnv1a64(after.assets[after.assets.len - 1].bytes));
+    const view = try asset.collision_mesh.read(after.assets[after.assets.len - 1].bytes, .default);
+    try testing.expectEqual(@as(usize, 3), view.indices.len);
+    try testing.expect(!diags.failed);
+}
+
+test "collision import: flattened scale, rotation and front match model space in node order" {
+    const testing = std.testing;
+    const triangle = makeTriangleBin();
+    var reader: TestReader = .{ .files = &.{.{ .path = "models/mesh.bin", .bytes = &triangle }} };
+    // Exact quarter-turn matrix plus a uniformly scaled/translated parent, with roots
+    // deliberately in reverse array order. Two uses of one mesh must remain two instances.
+    const json = try makeJson(testing.allocator, .{
+        .nodes = "{\"mesh\":0,\"translation\":[5,0,0]}," ++
+            "{\"translation\":[1,2,3],\"scale\":[2,2,2],\"children\":[2]}," ++
+            "{\"mesh\":0,\"matrix\":[0,1,0,0,-1,0,0,0,0,0,1,0,0,0,0,1]}," ++
+            "{\"mesh\":0,\"translation\":[9000,0,0]}", // Outside the default scene.
+        .scene_nodes = "1,0",
+    });
+    defer testing.allocator.free(json);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = Diagnostics.init(testing.allocator, .default);
+    defer diags.deinit(testing.allocator);
+    const result = try import(testing.allocator, arena.allocator(), "models/fixture.gltf", json, .{
+        .model_id = "demo:hero",
+        .source = "models/fixture.gltf",
+        .collision = true,
+        .front = .plus_z,
+    }, reader.interface(), .default, &diags);
+    const view = try asset.collision_mesh.read(result.assets[result.assets.len - 1].bytes, .default);
+    const expected = [_]core.math.Vec3{ .init(5, 0, 0), .init(4, 0, 0), .init(5, 1, 0), .init(1, 2, 3), .init(1, 0, 3), .init(-1, 2, 3) };
+    for (view.positions, expected) |actual, want| {
+        try testing.expectApproxEqAbs(want.x, actual.x, 1e-5);
+        try testing.expectApproxEqAbs(want.y, actual.y, 1e-5);
+        try testing.expectApproxEqAbs(want.z, actual.z, 1e-5);
+    }
+    for (view.indices, 0..) |index, i| try testing.expectEqual(@as(u32, @intCast(i)), index);
+}
+
+test "collision import: every matching named subtree is excluded, without inferred exclusions" {
+    const testing = std.testing;
+    const triangle = makeTriangleBin();
+    var reader: TestReader = .{ .files = &.{.{ .path = "models/mesh.bin", .bytes = &triangle }} };
+    const json = try makeJson(testing.allocator, .{
+        .nodes = "{\"name\":\"Plant\",\"children\":[1]},{\"mesh\":0},{\"name\":\"Plant\",\"mesh\":0},{\"name\":\"UCX_floor\",\"mesh\":0}",
+        .scene_nodes = "0,2,3",
+    });
+    defer testing.allocator.free(json);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = Diagnostics.init(testing.allocator, .default);
+    defer diags.deinit(testing.allocator);
+    const result = try import(testing.allocator, arena.allocator(), "models/fixture.gltf", json, .{
+        .model_id = "demo:hero",
+        .source = "models/fixture.gltf",
+        .collision = true,
+        .collision_exclude = &.{"Plant"},
+    }, reader.interface(), .default, &diags);
+    const view = try asset.collision_mesh.read(result.assets[result.assets.len - 1].bytes, .default);
+    try testing.expectEqual(@as(usize, 3), view.indices.len);
+    // Visual output still includes all three mesh placements.
+    var parts = std.mem.splitSequence(u8, result.source, "{ mesh demo:hero.mesh0");
+    var count: usize = 0;
+    while (parts.next() != null) count += 1;
+    try testing.expectEqual(@as(usize, 4), count);
+}
+
+test "collision import: misspelled exclusion, empty result and coordinate bounds are diagnostics" {
+    const testing = std.testing;
+    const triangle = makeTriangleBin();
+    var reader: TestReader = .{ .files = &.{.{ .path = "models/mesh.bin", .bytes = &triangle }} };
+    const cases = [_]struct { nodes: []const u8, exclude: []const []const u8, needle: []const u8 }{
+        .{ .nodes = "{\"mesh\":0}", .exclude = &.{"Plnt"}, .needle = "names no node" },
+        .{ .nodes = "{\"name\":\"Plant\",\"mesh\":0}", .exclude = &.{"Plant"}, .needle = "empty collision mesh" },
+        .{ .nodes = "{\"mesh\":0,\"translation\":[8193,0,0]}", .exclude = &.{}, .needle = "8192" },
+    };
+    for (cases) |case| {
+        const json = try makeJson(testing.allocator, .{ .nodes = case.nodes });
+        defer testing.allocator.free(json);
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var diags = Diagnostics.init(testing.allocator, .default);
+        defer diags.deinit(testing.allocator);
+        try testing.expectError(error.ContentInvalid, import(testing.allocator, arena.allocator(), "models/fixture.gltf", json, .{
+            .model_id = "demo:hero",
+            .source = "models/fixture.gltf",
+            .collision = true,
+            .collision_exclude = case.exclude,
+        }, reader.interface(), .default, &diags));
+        var matched = false;
+        for (diags.items.items) |diag| if (std.mem.indexOf(u8, diag.message, case.needle) != null) {
+            matched = true;
+        };
+        try testing.expect(diags.failed and matched);
+    }
+}
+
+test "collision import: degenerate triangles are dropped with one counted warning" {
+    const testing = std.testing;
+    var triangle: [48]u8 = @splat(0);
+    @memcpy(triangle[0..42], &makeTriangleBin());
+    // One ordinary primitive and one repeated-index primitive.
+    var reader: TestReader = .{ .files = &.{.{ .path = "models/mesh.bin", .bytes = &triangle }} };
+    const json = try makeJson(testing.allocator, .{
+        .buffers = "{\"uri\":\"mesh.bin\",\"byteLength\":48}",
+        .buffer_views = "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},{\"buffer\":0,\"byteOffset\":36,\"byteLength\":6},{\"buffer\":0,\"byteOffset\":42,\"byteLength\":6}",
+        .accessors = "{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},{\"bufferView\":1,\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"},{\"bufferView\":2,\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"}",
+        .meshes = "{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"indices\":1,\"material\":0},{\"attributes\":{\"POSITION\":0},\"indices\":2,\"material\":0}]}",
+    });
+    defer testing.allocator.free(json);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = Diagnostics.init(testing.allocator, .default);
+    defer diags.deinit(testing.allocator);
+    const result = try import(testing.allocator, arena.allocator(), "models/fixture.gltf", json, .{
+        .model_id = "demo:hero",
+        .source = "models/fixture.gltf",
+        .collision = true,
+    }, reader.interface(), .default, &diags);
+    const view = try asset.collision_mesh.read(result.assets[result.assets.len - 1].bytes, .default);
+    try testing.expectEqual(@as(usize, 3), view.indices.len);
+    try testing.expectEqual(@as(usize, 1), diags.items.items.len);
+    try testing.expect(std.mem.indexOf(u8, diags.items.items[0].message, "dropped 1 degenerate") != null);
+}
+
 const TestReader = struct {
     files: []const TestFile,
 

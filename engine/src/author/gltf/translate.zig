@@ -1,6 +1,6 @@
 //! Translation from glTF's document into Foundry's rows 3–5.
 //!
-//! This file is the seam ADR-0053 requires: its output is canonical `.fmesh`, PNG bytes and
+//! This file is the seam ADR-0053 requires: its output is canonical `.fmesh`/`.fcol`, PNG bytes and
 //! checked `.fdt` text. No glTF type leaves `author/gltf/`.
 
 const std = @import("std");
@@ -30,6 +30,8 @@ pub const Settings = struct {
     source: []const u8,
     front: Front = .minus_z,
     materials: []const MaterialMapping = &.{},
+    collision: bool = false,
+    collision_exclude: []const []const u8 = &.{},
 };
 
 pub const ImageInput = struct {
@@ -82,6 +84,7 @@ const Context = struct {
     settings: Settings,
     limits: document.Limits,
     diags: *Diagnostics,
+    collision_placements: []?Mat4 = &.{},
 
     fn translate(self: *Context) Error!Result {
         try self.validateDocument();
@@ -101,6 +104,7 @@ const Context = struct {
         const material_ids = try self.emitMaterials(&out);
         try self.emitTextures(&out);
         try self.emitModel(&out, material_ids);
+        if (self.settings.collision) try self.emitCollision(&out, &generated);
 
         // Embedded images are runtime products. External images remain ordinary authored
         // assets and are copied by the package host, not duplicated here.
@@ -119,6 +123,13 @@ const Context = struct {
     }
 
     fn validateDocument(self: *Context) Error!void {
+        for (self.settings.collision_exclude) |excluded| {
+            var matched = false;
+            for (self.doc.nodes) |node| if (node.name) |name| {
+                if (std.mem.eql(u8, excluded, name)) matched = true;
+            };
+            if (!matched) return self.fail("model_import.collision_exclude", excluded, "names no node in the file", .{});
+        }
         if (!isVersion2(self.doc.asset.version)) return self.fail("asset.version", null, "must be glTF 2.x", .{});
         if (self.doc.asset.minVersion) |minimum| {
             if (!isAtMost20(minimum)) return self.fail("asset.minVersion", null, "requires glTF {s}, newer than the supported 2.0", .{minimum});
@@ -574,7 +585,11 @@ const Context = struct {
         var visited = try self.gpa.alloc(bool, self.doc.nodes.len);
         defer self.gpa.free(visited);
         @memset(visited, false);
-        const Stack = struct { node: u32, parent: Mat4, depth: u32 };
+        if (self.settings.collision) {
+            self.collision_placements = try self.arena.alloc(?Mat4, self.doc.nodes.len);
+            @memset(self.collision_placements, null);
+        }
+        const Stack = struct { node: u32, parent: Mat4, depth: u32, excluded: bool = false };
         var stack: std.ArrayList(Stack) = .empty;
         defer stack.deinit(self.gpa);
         const roots = self.doc.scenes[scene_index].nodes;
@@ -589,6 +604,10 @@ const Context = struct {
             if (visited[entry.node]) return self.failNode(entry.node, "is reached twice (a cycle or a second parent)", .{});
             visited[entry.node] = true;
             const node = self.doc.nodes[entry.node];
+            var excluded = entry.excluded;
+            if (node.name) |name| for (self.settings.collision_exclude) |omit| {
+                if (std.mem.eql(u8, name, omit)) excluded = true;
+            };
             if (node.camera != null) try self.warnNode(entry.node, "camera placement is not imported in M20", .{});
             if (node.skin != null) try self.warnNode(entry.node, "skin placement is not imported until M24", .{});
             const local = try self.nodeMatrix(entry.node, node);
@@ -598,6 +617,7 @@ const Context = struct {
                 var part_matrix = world;
                 if (self.settings.front == .plus_z) part_matrix = Mat4.mul(part_matrix, Mat4.rotationY(std.math.pi));
                 const transform = Transform.fromMat4Exact(part_matrix) catch return self.failNode(entry.node, "has a flattened transform that is not exactly representable as TRS", .{});
+                if (self.settings.collision and !excluded) self.collision_placements[entry.node] = part_matrix;
                 for (self.doc.meshes[mesh_index].primitives, 0..) |primitive, submesh| {
                     const slot: u32 = primitive.material orelse @intCast(self.doc.materials.len);
                     if (slot >= material_ids.len) return self.failMesh(mesh_index, @intCast(submesh), "references material {d}, outside the material array", .{slot});
@@ -607,10 +627,71 @@ const Context = struct {
             var child = node.children.len;
             while (child > 0) {
                 child -= 1;
-                try stack.append(self.gpa, .{ .node = node.children[child], .parent = world, .depth = entry.depth + 1 });
+                try stack.append(self.gpa, .{ .node = node.children[child], .parent = world, .depth = entry.depth + 1, .excluded = excluded });
             }
         }
         try out.appendSlice(self.arena, " ]\n}\n");
+    }
+
+    fn emitCollision(self: *Context, out: *std.ArrayList(u8), generated: *std.ArrayList(GeneratedAsset)) Error!void {
+        var positions: std.ArrayList(Vec3) = .empty;
+        defer positions.deinit(self.gpa);
+        var indices: std.ArrayList(u32) = .empty;
+        defer indices.deinit(self.gpa);
+        var dropped: u64 = 0;
+        // Node array order, not traversal order. Model flattening validated the default
+        // scene already; inactive and excluded subtrees have no placement here.
+        for (self.collision_placements, 0..) |placement, node_index| {
+            const matrix = placement orelse continue;
+            const mesh_index = self.doc.nodes[node_index].mesh.?;
+            var view = asset.mesh_file.read(generated.items[mesh_index].bytes, .default) catch
+                return self.failNode(@intCast(node_index), "has invalid generated collision input", .{});
+            const mesh = view.mesh();
+            if (positions.items.len + mesh.vertex_count > asset.collision_mesh.Limits.default.max_vertices)
+                return self.fail("model_import.collision", null, "exceeds the collision vertex limit", .{});
+            const base: u32 = @intCast(positions.items.len);
+            for (mesh.streams) |stream| {
+                if (stream.semantic != .position) continue;
+                for (std.mem.bytesAsSlice(Vec3, stream.bytes)) |local| {
+                    const p = matrix.mulPoint(local);
+                    if (!asset.collision_mesh.positionValid(p)) return self.failNode(@intCast(node_index), "has collision geometry outside the finite ±8192 m envelope", .{});
+                    try positions.append(self.gpa, p);
+                }
+            }
+            for (mesh.submeshes) |submesh| {
+                var at = submesh.first_index;
+                const end = at + submesh.index_count;
+                while (at < end) : (at += 3) {
+                    var triangle: [3]u32 = undefined;
+                    for (&triangle, 0..) |*index, corner| {
+                        const offset = (@as(usize, at) + corner) * mesh.index_format.size();
+                        index.* = base + switch (mesh.index_format) {
+                            .uint16 => @as(u32, std.mem.readInt(u16, mesh.indices[offset..][0..2], .little)),
+                            .uint32 => std.mem.readInt(u32, mesh.indices[offset..][0..4], .little),
+                        };
+                    }
+                    if (asset.collision_mesh.degenerate(positions.items[triangle[0]], positions.items[triangle[1]], positions.items[triangle[2]])) {
+                        dropped += 1;
+                        continue;
+                    }
+                    if (indices.items.len / 3 >= asset.collision_mesh.Limits.default.max_triangles)
+                        return self.fail("model_import.collision", null, "exceeds the collision triangle limit", .{});
+                    try indices.appendSlice(self.gpa, &triangle);
+                }
+            }
+        }
+        if (dropped != 0) try self.warn("model_import.collision", null, "dropped {d} degenerate triangle(s)", .{dropped});
+        if (indices.items.len == 0) return self.fail("model_import.collision", null, "derives an empty collision mesh", .{});
+        // Private generated path; identity is the model ID plus the unnumbered segment.
+        const numbered = try self.generatedPath("collision", 0, asset.schemas.collision_mesh_extension);
+        const bytes = asset.collision_mesh.write(self.arena, positions.items, indices.items) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return self.fail("model_import.collision", null, "cannot encode collision geometry: {s}", .{@errorName(err)}),
+        };
+        try generated.append(self.arena, .{ .path = numbered, .bytes = bytes });
+        try out.print(self.arena, "{s} {s}.collision {{ source ", .{ asset.schemas.collision_mesh_name, self.settings.model_id });
+        try self.writeString(out, numbered);
+        try out.appendSlice(self.arena, " }\n");
     }
 
     fn nodeMatrix(self: *Context, index: u32, node: document.Node) Error!Mat4 {

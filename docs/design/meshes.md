@@ -270,7 +270,7 @@ or the GPU.
 - `translate.zig`: glTF to rows 3–5.
 
 Nothing in `author/gltf/` is exported past `author`. What leaves it is `.fmesh` bytes, PNG
-bytes and `.fdt` text.
+bytes and `.fdt` text; M23 Step 3 also adds opt-in `.fcol` collision bytes (ADR-0057).
 
 ### 6.2 What an author writes
 
@@ -301,11 +301,19 @@ foundry:model_import sandbox3d:models.table {
   share one oak, and how a material gets an ID a person chose. A mapping that names no material
   in the file is an error: a stale mapping is a silent default otherwise.
 - **An authored record wins over derivation**, as it does for every asset (`assets.md` §3).
+- **Import schema v2's `collision` and `collision_exclude`** (M23 Step 3, ADR-0057) are
+  additive: `collision` defaults to `false`, and exclusions default to an empty list. v1
+  records and bare glTF derive no collision. Enabling it derives one `<model>.collision`
+  in model space; exclusions name every matching glTF node and its subtree, and a name
+  matching nothing is refused. Degenerates produce a counted warning; an empty result is
+  refused. See [`collision3d.md` §8–§9](collision3d.md#8-the-collision-mesh-asset-asset)
+  for the format and derivation contract. Visual products are unchanged.
 
 ### 6.3 What an import generates
 
-For a model with ID `M`, every generated ID is `M` plus one segment, numbered by the glTF
-array it came from (ADR-0055):
+For a model with ID `M`, every generated ID is `M` plus one segment. Meshes, materials and
+textures are numbered by the glTF array they came from (ADR-0055); ADR-0057 adds one unnumbered
+`collision` segment when enabled:
 
 | glTF | Generated | ID | File under `--assets-out` |
 | --- | --- | --- | --- |
@@ -314,6 +322,7 @@ array it came from (ADR-0055):
 | image *i*, if embedded | `foundry:texture` | `M.texture<i>` | `<source dir>/<stem>/texture<i>.png` |
 | image *i*, if an external file in the package | `foundry:texture` | `M.texture<i>` | — (its `source` is that file) |
 | the default scene | `foundry:model` | `M` | — |
+| the default scene, if `collision true` | `foundry:collision_mesh` | `M.collision` | `<source dir>/<stem>/collision0.fcol` |
 
 - **Numbered, not named.** glTF names are optional, may repeat and are rarely valid ID
   segments (`Cube.001`), and derivation transforms nothing (`assets.md` §3). An index is

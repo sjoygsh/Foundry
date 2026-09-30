@@ -365,6 +365,7 @@ pub const engine_schema_names = [_][]const u8{
     mod.schemas.manifest_name,
     asset.schemas.texture_name,
     asset.schemas.mesh_name,
+    asset.schemas.collision_mesh_name,
     asset.schemas.material_name,
     asset.schemas.model_name,
     asset.schemas.model_import_name,
@@ -1047,7 +1048,14 @@ fn importSettings(
             mapping.* = .{ .name = name, .material = spelling };
         }
     }
-    return .{ .model_id = record.text, .source = source, .front = front, .materials = mappings };
+    const collision = record.value(schema, schema.fieldIndex("collision").?).?.bool;
+    var excluded: []const []const u8 = &.{};
+    if (record.value(schema, schema.fieldIndex("collision_exclude").?)) |value| {
+        const names = try arena.alloc([]const u8, value.list.len);
+        for (value.list, names) |entry, *name| name.* = entry.string;
+        excluded = names;
+    }
+    return .{ .model_id = record.text, .source = source, .front = front, .materials = mappings, .collision = collision, .collision_exclude = excluded };
 }
 
 fn namedValue(values: []const data.NamedValue, name: []const u8) ?data.Value {
@@ -2247,6 +2255,28 @@ test "every schema the engine registers has a spelling an author can write" {
     }
 }
 
+test "fpack derives a hand-placed collision asset and loads owned CPU geometry" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    const positions = [_]core.math.Vec3{ .{ .x = 0, .y = 0, .z = 0 }, .{ .x = 1, .y = 0, .z = 0 }, .{ .x = 0, .y = 1, .z = 0 } };
+    const bytes = try asset.collision_mesh.write(testing.allocator, &positions, &.{ 0, 1, 2 });
+    defer testing.allocator.free(bytes);
+    try f.write("geo/triangle.fcol", bytes);
+    try f.compileIt("demo:content");
+    var store = data.Store.init(testing.allocator, .default);
+    defer store.deinit(testing.allocator);
+    const package = try store.add(testing.allocator, "demo:content", f.bytes.items, &f.registry, &f.diags);
+    var assets = asset.Registry.init(testing.allocator, f.os, &store, .{});
+    defer assets.deinit(testing.allocator);
+    try assets.registerLoader(testing.allocator, asset.collisionMeshLoader());
+    try assets.mount(testing.allocator, package, f.root);
+    const handle = try assets.acquire(testing.allocator, core.ContentId.fromString("demo:geo.triangle"));
+    const loaded = asset.collision_mesh.fromPayload(assets.payloadOf(handle).?);
+    try testing.expectEqualSlices(core.math.Vec3, &positions, loaded.positions);
+    try testing.expectEqualSlices(u32, &.{ 0, 1, 2 }, loaded.indices);
+    assets.release(handle);
+}
+
 test "fpack imports an explicit glTF model end to end and deterministically" {
     var f = try Fixture.init();
     defer f.deinit();
@@ -2265,7 +2295,7 @@ test "fpack imports an explicit glTF model end to end and deterministically" {
         \\ "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},{"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}],
         \\ "materials":[{"name":"Mat"}],
         \\ "meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1,"material":0}]}],
-        \\ "nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0}
+        \\ "nodes":[{"name":"Triangle","mesh":0}],"scenes":[{"nodes":[0]}],"scene":0}
     );
     try f.write("models.fdt",
         \\foundry:material demo:shared {}
@@ -2302,4 +2332,62 @@ test "fpack imports an explicit glTF model end to end and deterministically" {
     const second_mesh = try f.readGenerated("models/triangle/mesh0.fmesh");
     defer testing.allocator.free(second_mesh);
     try testing.expectEqualSlices(u8, first_mesh, second_mesh);
+
+    // Opt-in collision is an ordinary generated package asset, while the visual product
+    // remains byte-identical to the v1/default-off path exercised above.
+    try f.write("models.fdt",
+        \\foundry:material demo:shared {}
+        \\foundry:model_import demo:hero {
+        \\    source "models/triangle.gltf" front "+z" collision true
+        \\    collision_exclude []
+        \\    materials [ { name "Mat" material demo:shared } ]
+        \\}
+    );
+    try f.compileIt("demo:content");
+    const collision_bytes = try f.readGenerated("models/triangle/collision0.fcol");
+    defer testing.allocator.free(collision_bytes);
+    _ = try asset.collision_mesh.read(collision_bytes, .default);
+    const collision_mesh = try f.readGenerated("models/triangle/mesh0.fmesh");
+    defer testing.allocator.free(collision_mesh);
+    try testing.expectEqualSlices(u8, first_mesh, collision_mesh);
+    var store = data.Store.init(testing.allocator, .default);
+    defer store.deinit(testing.allocator);
+    const package_handle = try store.add(testing.allocator, "demo:content", f.bytes.items, &f.registry, &f.diags);
+    var assets = asset.Registry.init(testing.allocator, f.os, &store, .{});
+    defer assets.deinit(testing.allocator);
+    try assets.registerLoader(testing.allocator, asset.collisionMeshLoader());
+    try assets.mount(testing.allocator, package_handle, f.gen);
+    const handle = try assets.acquire(testing.allocator, core.ContentId.fromString("demo:hero.collision"));
+    try testing.expectEqual(@as(usize, 3), asset.collision_mesh.fromPayload(assets.payloadOf(handle).?).indices.len);
+    assets.release(handle);
+
+    const refusals = [_]struct { text: []const u8, needle: []const u8 }{
+        .{ .text = "collision true collision_exclude [\"Typo\"]", .needle = "names no node" },
+        .{ .text = "collision true collision_exclude [\"Triangle\"]", .needle = "empty collision mesh" },
+        .{ .text = "collision \"yes\"", .needle = "collision" },
+    };
+    for (refusals) |case| {
+        const text = try std.fmt.allocPrint(
+            testing.allocator,
+            "foundry:material demo:shared {{}}\nfoundry:model_import demo:hero {{ source \"models/triangle.gltf\" materials [ {{ name \"Mat\" material demo:shared }} ] {s} }}",
+            .{case.text},
+        );
+        defer testing.allocator.free(text);
+        try f.write("models.fdt", text);
+        f.diags.deinit(testing.allocator);
+        f.diags = Diagnostics.init(testing.allocator, .default);
+        try testing.expectError(error.ContentInvalid, f.compileIt("demo:content"));
+        var diagnostic: [4096]u8 = undefined;
+        try testing.expect(std.mem.indexOf(u8, try f.rendered(&diagnostic), case.needle) != null);
+    }
+    @memset(&mesh_bin, 0);
+    try f.write("models/mesh.bin", &mesh_bin);
+    try f.write("models.fdt", "foundry:material demo:shared {}\nfoundry:model_import demo:hero { source \"models/triangle.gltf\" collision true materials [ { name \"Mat\" material demo:shared } ] }");
+    f.diags.deinit(testing.allocator);
+    f.diags = Diagnostics.init(testing.allocator, .default);
+    try testing.expectError(error.ContentInvalid, f.compileIt("demo:content"));
+    var diagnostic: [4096]u8 = undefined;
+    const rendered = try f.rendered(&diagnostic);
+    try testing.expect(std.mem.indexOf(u8, rendered, "dropped 1 degenerate") != null);
+    try testing.expect(std.mem.indexOf(u8, rendered, "empty collision mesh") != null);
 }

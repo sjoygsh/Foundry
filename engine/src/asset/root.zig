@@ -24,6 +24,9 @@ const std = @import("std");
 const data = @import("data");
 
 pub const image = @import("image.zig");
+pub const collision_mesh = @import("collision_mesh.zig");
+pub const CollisionMesh = collision_mesh.CollisionMesh;
+pub const collisionMeshLoader = collision_mesh.collisionMeshLoader;
 pub const mesh = @import("mesh.zig");
 pub const mesh_file = @import("mesh_file.zig");
 pub const mips = @import("mips.zig");
@@ -103,6 +106,7 @@ pub const RecordFields = data.fpk.Fields;
 pub const RecordList = data.fpk.List;
 
 test {
+    _ = collision_mesh;
     _ = image;
     _ = mesh;
     _ = mesh_file;

@@ -98,6 +98,14 @@ pub const texture: Schema = .{
 pub const mesh_name = "foundry:mesh";
 pub const mesh_extension = "fmesh";
 
+pub const collision_mesh_name = "foundry:collision_mesh";
+pub const collision_mesh_extension = "fcol";
+pub const collision_mesh: Schema = .{
+    .id = SchemaId.fromStringUnchecked(collision_mesh_name),
+    .version = 1,
+    .fields = &.{.{ .name = source_field, .type = .string }},
+};
+
 /// A canonical runtime mesh. The geometry and bounds are all in its `.fmesh` source.
 pub const mesh: Schema = .{
     .id = SchemaId.fromStringUnchecked(mesh_name),
@@ -191,15 +199,19 @@ const material_mapping_type: data.FieldType = .{ .nested = &.{
     .{ .name = "material", .type = .id },
 } };
 const material_mappings_type: data.FieldType = .{ .list = &material_mapping_type };
+const exclusion_name_type: data.FieldType = .string;
 
-/// An authoring record consumed and replaced by the compiler in Step 4. Registering it now
-/// pins the input contract without making any runtime path understand glTF.
+/// The build-only model authoring form (M20 Step 4); v2 adds opt-in collision (M23 Step 3).
+/// No runtime path understands glTF or this record.
 pub const model_import: Schema = .{
     .id = SchemaId.fromStringUnchecked(model_import_name),
+    .version = 2,
     .fields = &.{
         .{ .name = source_field, .type = .string },
         .{ .name = "front", .type = .string, .presence = .{ .default = .{ .string = "-z" } } },
         .{ .name = "materials", .type = material_mappings_type, .presence = .optional },
+        .{ .name = "collision", .type = .bool, .since = 2, .presence = .{ .default = .{ .bool = false } } },
+        .{ .name = "collision_exclude", .type = .{ .list = &exclusion_name_type }, .since = 2, .presence = .optional },
     },
 };
 
@@ -278,6 +290,7 @@ pub const kinds = [_]Kind{
         .extensions = &.{"lua"},
         .derived_strings = &.{.{ .field = language_field, .value = script_language }},
     },
+    .{ .name = collision_mesh_name, .schema = collision_mesh, .extensions = &.{collision_mesh_extension} },
 };
 
 /// Engine-defined record schemas with no source bytes of their own.
@@ -377,6 +390,7 @@ test "extensions map to kinds, and nothing else does" {
     try testing.expect(kindForExtension("fgrid") == &kinds[3]);
     try testing.expect(kindForExtension("wav") == &kinds[4]);
     try testing.expect(kindForExtension("lua") == &kinds[5]);
+    try testing.expect(kindForExtension("fcol") == &kinds[6]);
     try testing.expect(kindForExtension("PNG") == null);
     try testing.expect(kindForExtension("txt") == null);
     try testing.expect(kindForExtension("") == null);
@@ -513,4 +527,19 @@ test "material version 1 extends to version 2 without changing unlit content" {
     try testing.expectEqual(@as(f64, 1), record.value(material, 7).?.float);
     try testing.expectEqual(@as(f64, 1), record.value(material, 10).?.float);
     try testing.expect(record.value(material, 16).?.bool);
+}
+
+test "model_import v1 extends to v2 with collision disabled and no exclusions" {
+    const gpa = testing.allocator;
+    var registry: Registry = .init(gpa, .default);
+    defer registry.deinit(gpa);
+    _ = try registry.register(gpa, .{ .id = model_import.id, .version = 1, .fields = model_import.fields[0..3] });
+    var package = try data.Package.init(gpa, "test:package", 1, .default);
+    defer package.deinit(gpa);
+    var diags: data.Diagnostics = .init(gpa, .default);
+    defer diags.deinit(gpa);
+    try compileRecords("foundry:model_import test:old { source \"model.gltf\" }", &registry, &package, &diags);
+    _ = try registry.register(gpa, model_import);
+    try testing.expect(!package.records()[0].value(model_import, 3).?.bool);
+    try testing.expect(package.records()[0].value(model_import, 4) == null);
 }

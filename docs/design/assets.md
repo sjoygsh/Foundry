@@ -62,6 +62,13 @@ The engine registers the schemas for the kinds it can load — `foundry:texture`
 uses (I6). They are mechanisms, not content: an engine that can load a texture has not thereby
 hardcoded a game (I5).
 
+M23 Step 3 adds `foundry:collision_mesh` (ADR-0057): a `source` record over canonical `.fcol`
+CPU geometry. The kinds table derives hand-placed files, and a host registers
+`asset.collisionMeshLoader` explicitly. Its payload owns aligned positions and indices;
+the registry's temporary source bytes are not borrowed after loading. `physics3d` sees
+only the arrays its caller supplies, never the asset registry. See
+[`collision3d.md` §8](collision3d.md#8-the-collision-mesh-asset-asset).
+
 `source` is **location, never identity**, and the difference is the whole decision. Nothing
 can be looked up by path: `acquire` takes a `ContentId` and there is no other way in. A record
 found that way may then say where its own bytes live, and the registry reads them — which is

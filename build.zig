@@ -1390,6 +1390,9 @@ pub fn build(b: *std.Build) void {
         if (std.mem.eql(u8, spec.name, "render3d")) {
             b.step("render3d-test", "Run the 3D renderer and lighting reference tests").dependOn(&run.step);
         }
+        if (std.mem.eql(u8, spec.name, "asset") or std.mem.eql(u8, spec.name, "author")) {
+            b.step(b.fmt("{s}-test", .{spec.name}), b.fmt("Run the {s} unit tests", .{spec.name})).dependOn(&run.step);
+        }
     }
 
     if (script_mod) |mod| {
