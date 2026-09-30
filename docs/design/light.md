@@ -1,7 +1,7 @@
 # Design: M22 — Light: the lit model, lights, one shadow, HDR and the light-unit convention
 
-**Status:** Accepted 2026-09-29 when the owner requested Step 1. Steps 1–6 are complete;
-Step 7 is next.
+**Status:** Accepted 2026-09-29 when the owner requested Step 1. Steps 1–7 are complete;
+Step 8 is next.
 **Date:** 2026-09-29
 **Baseline:** `eaefd70`, tag `m21`. M0–M21 are complete.
 **Decisions:**
@@ -797,12 +797,73 @@ accepted: nothing changed that could invalidate it. Linux stays compile-only, an
 lit-room content, user mods, `dusk`, profiler additions and relocated windowed run matrix
 remain Step 7's. No Step 7 implementation was begun.
 
-### Step 7 — `sandbox3d` lit, and the dusk mod
+### Step 7 — `sandbox3d` lit, and the dusk mod — Done 2026-09-30
 §10: lit content, lights and exposure from the config, the user mods root and
 `FOUNDRY_SANDBOX3D_PACKAGES`, `--shadows=off`, the `dusk` mod, the overlay's new stats, and §11's
 mod-pixel integration test. Runs and captures on both platforms.
 **Exit:** from a relocated install on macOS/Metal and Windows/Vulkan, adding `dusk.fpk` to `mods/`
 makes the same room visibly dusk, with no rebuild and no code in the mod.
+
+**Resolution (2026-09-30).** The reproducible scene generator removes the interim
+`KHR_materials_unlit` declaration and writes explicit dielectric metallic/roughness factors.
+Imported faces use white vertex colours rather than the unlit baked face tones; normals now
+provide their shading. Authored glass and the crate override name lit too, retaining blend
+for the glass. The code-built cube adds one normal per vertex and a lit material.
+
+The sample's own config appends EV100, RGB ambient luminance and light entries: kind, RGB
+colour, intensity, range, inner/outer cones, `casts_shadow`, position and a direction vector
+that supplies the pose's −Z. No engine light record is added. `light_settings.zig` copies at
+most sixteen entries in authored order; it validates representable exposure, finite values,
+the renderer's light ranges, nonzero directions and one directional caster. A vertical
+direction uses a nonparallel up hint. An invalid list disables the lighting as a whole with
+one diagnostic at content refresh, never a partially submitted frame. The base config chooses
+EV100 6, ambient (8,10,14) cd/m², a 700-lux directional light and 120/80-candela point lights.
+
+Installed and user roots are passed to `app.ModSet`, preserving its duplicate/dependency
+rules. `FOUNDRY_SANDBOX3D_PACKAGES` is an ordered comma-separated list of content IDs, not paths.
+Headless discovery excludes ambient user state unless this explicit input is present. There
+is no native/script activation or mod-management UI added. `--shadows=off` sets the map size
+to zero; the profiler and exit report show lights, shadow draws and shadow culls.
+
+`testdata/mods/dusk/` is ordinary source compiled against the installed core and sample
+packages. **Overrides replace whole records**, as `content-mods.md` §4 requires; they are not
+partial patches. Dusk supplies the complete config at EV100 4, cooler dimmer ambient and
+directional light, warm interior points, and floor/wall materials with changed colour,
+roughness and wall emission. Its 3,558-byte `.fpk` compares byte for byte between native hosts,
+SHA-256 `8d3cece3af73075d15290e3648161133e1ffd70cd57617696ef386a3fbff2b9a`.
+Copying that package into the player's `mods/` and selecting `dusk:content` changes the room
+without rebuilding the executable, assets or base package. The author guide records the commands.
+
+**Evidence:** the new integration compiles a base and an overriding mod with the package
+compiler, discovers/resolves them through the real mod set, loads that order, draws through
+`render3d.Content` and reads the centre pixel. Both base and mod match `lighting.zig`, and the
+mod changes the pixel at 1×/4×, within ±2/255 on Metal and ±3/255 on Vulkan. Metal integration
+passes 68/72 (four expected skips); Windows integration plus sample tests pass 79/83 (four
+expected skips). The final reader tests pass 11/11 on both hosts. Deliberately removing the
+caster/exposure refusals and turning excess-light refusal into silent acceptance each caused
+the targeted test to fail; all three mutations were restored. `sandbox3d-test` and
+`integration-test` expose existing test artifacts for focused verification and remain in `test`.
+
+Relocated ReleaseSafe installs passed eight captured base/dusk × shadows on/off × MSAA 1/4
+cases on each platform, resized, with a real minimise/restore/window-close case, all exit 0.
+Windows synchronization validation reports no warning or error; normal-integrity loader
+diagnostics show only Khronos validation inserted. The harness initially mixed deprecated and
+current sync-validation settings; that settings warning was fixed and the affected window
+matrix rerun clean. Loader notices about deliberately excluded layers are not validation
+messages. A further dusk run with **all layers disabled**, Zig and SDK off PATH, exits 0.
+
+The Mac's 120-Hz display exposed that FIFO alone did not supply §11's 60-Hz budget. The sample
+now paces to an absolute real-time deadline, resets after a long interruption and never feeds
+this clock into simulation. After that correction an affected Metal timing run measures
+16.665 ms median, 17.254 ms p95; Windows medians are 16.665–16.671 ms. Earlier captures and
+relocation proofs remain accepted. At 4×, shadow-on/off CPU `render.world` medians were
+0.427/0.240 ms on Metal and 2.094/1.488 ms on validated Vulkan: approximately 0.19/0.61 ms
+additional **CPU recording** cost, not a claim of GPU pass timing.
+
+The full nine-command bar passes **1,896 of 1,897 headless tests**, one expected skip;
+**1,979 declared**. Both ad-hoc macOS releases stage. No backend/shader/platform-window code,
+dependency, ABI or architecture changed; Step 6's renderer proofs remain accepted. Linux stays
+compile-only. Step 8's parent-document reconciliation and milestone close have not begun.
 
 ### Step 8 — Close M22
 Resolve the discrepancies this design makes in its parents:

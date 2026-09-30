@@ -1,8 +1,35 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-30
-**Current handoff: M22 Step 6 is complete; stop before Step 7.** M21 is complete (2026-09-29,
+**Current handoff: M22 Step 7 is complete; stop before Step 8.** M21 is complete (2026-09-29,
 tag `m21`). M22's design and ADR-0056 are accepted.
+
+**M22 Step 7 is done (2026-09-30).** `sandbox3d`'s imported room, crates and orrery are
+lit; its code-built cube has normals and a lit material. The sample's config supplies EV100,
+ambient luminance and a bounded ordered light list, with one directional shadow and two point
+lights. Invalid lighting falls back as a whole without reaching the renderer. Installed and
+user packages go through `app.ModSet`; `FOUNDRY_SANDBOX3D_PACKAGES` explicitly selects mods,
+and headless runs ignore ambient user mods unless that selection is present. `--shadows=off`
+disables the map, and the profiler shows lights, shadow draws and shadow culls.
+
+**Dusk is content only:** `samples/sandbox3d/testdata/mods/dusk/` compiles through `fpack`,
+overriding the complete config and floor/wall materials. The 3,558-byte package is byte-identical
+on macOS and Windows. Relocated ReleaseSafe installs on Metal and Vulkan each passed all eight
+base/dusk × shadows on/off × 1×/4× cases, with captures, resizing, minimising/restoring and exit 0.
+The PC's synchronization validation is clean; loader diagnostics show only Khronos validation.
+A separate no-layer run works with Zig/SDK off PATH. Absolute-deadline sample pacing measures
+16.665 ms median on Metal and approximately 16.67 ms on Vulkan. Shadow cost is recorded as CPU
+world-pass recording time, not a GPU timestamp (Resolution: `light.md`, Step 7).
+
+**Verification:** the compiled-mod pixel integration matches the CPU oracle at 1×/4× on both
+GPUs (±2/255 Metal, ±3/255 Vulkan). Metal integration passes 68/72 with four expected skips;
+Windows focused integration/sample tests pass 79/83 with four expected skips. The lighting
+reader's final targeted tests pass 11/11 on both hosts; three deliberate guard mutations failed
+and were restored. The complete nine-command bar passes **1,896 of 1,897 headless tests**,
+one expected skip; **1,979 declared**. Both ad-hoc macOS releases stage successfully.
+No new dependency, ABI change or architectural ADR. Earlier renderer proofs remain accepted.
+
+**Next: Step 8, close M22 and reconcile its parent documents.** No Step 8 work has begun.
 
 **M22 Step 6 is done (2026-09-30).** Windows/Vulkan qualifies Steps 1, 3, 4 and 5 on
 the Intel Arc A750 (driver 101.8991, Vulkan 1.4.356), including the required
@@ -22,8 +49,7 @@ the declaration count remains **1,977**. No code, dependency, ABI or architectur
 was needed. Linux remains compile-only. The PC proof used a fresh archive of `b1c1002`,
 leaving pre-existing checkout edits untouched. Resolution: `light.md`, Step 6.
 
-**Next: Step 7, the lit sample, user mods, dusk and profiler counts.** None of that
-implementation or its relocated sample-run matrix was begun.
+Step 7 followed this handoff and is now complete, as recorded above.
 
 **M22 Step 5 is done (2026-09-30).** One directional light casts into a lazily allocated
 reversed-Z `depth32_float` map. `Config.shadow_size` accepts 0/1024/2048/4096 (default

@@ -1,0 +1,7 @@
+foundry:mod dusk:content {
+    name "Dusk"
+    version 1
+    license "Apache-2.0"
+    summary "The same lit room at dusk: only content overrides, no code."
+    requires [ { id sandbox3d:content } ]
+}

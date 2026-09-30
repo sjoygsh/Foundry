@@ -49,12 +49,11 @@
           1,
           1
         ],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 0.7,
         "baseColorTexture": {
           "index": 0
         }
-      },
-      "extensions": {
-        "KHR_materials_unlit": {}
       }
     }
   ],
@@ -151,9 +150,6 @@
       "byteLength": 72,
       "target": 34963
     }
-  ],
-  "extensionsUsed": [
-    "KHR_materials_unlit"
   ],
   "buffers": [
     {

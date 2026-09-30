@@ -1093,4 +1093,9 @@ CPU oracle and `sandbox3d --shadow-proof` shows the shadow under its orbiting ca
 Step 6 qualifies those passes on Windows/Vulkan: 56/56 renderer/reference tests at 1×/4×
 within ±3/255, the complete Vulkan graph (1,926 of 1,945, nineteen expected skips), no
 validation warnings or errors, and byte-identical full lit import output on both hosts.
-Step 7, the lit sample and dusk content mod, is next.
+Step 7 makes the room, crates and orrery lit, submits content-owned lights/exposure, discovers
+selected user mods and adds `--shadows=off` and profiler light/shadow counts. The content-only
+`dusk` package changes the same room from relocated Metal and Vulkan installs: eight captured
+cases per platform pass, synchronization validation is clean, and compiled-mod pixel readbacks
+match the CPU oracle at 1×/4×. Sample pacing holds the 60-Hz budget. Step 8, the milestone close
+and parent-document reconciliation, is next; M22 is not yet closed.

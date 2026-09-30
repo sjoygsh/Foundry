@@ -19,8 +19,8 @@ What it writes, all beside each other so a `.gltf`'s relative URIs stay inside t
   crate.png              the crates', with an F on each face so a mirrored one reads mirrored
   leaf.png               the plant's, with alpha 0 around the leaves
 
-The unlit shading model draws texture x vertex colour x base colour, so each box face carries
-a baked tone in COLOR_0: without it a box would draw as one flat silhouette.
+M22 imports lit metallic-roughness materials. Normals provide face shading; COLOR_0 is
+white so the former unlit baked tones do not darken the lighting a second time.
 
 Units are metres, +Y is up and -Z forward, as glTF's and Foundry's are (ADR-0048). The walls are
 single-sided and face inward, so from the orbiting camera outside, the near wall's back is
@@ -157,7 +157,7 @@ class Mesh:
 
 
 # Each face's normal and two edges whose cross product is that normal (the sandbox's own
-# box frames), with a tone baked for the face.
+# box frames). The historical tone column is retained; lit faces now use white COLOR_0.
 FACES = [
     ((1, 0, 0), (0, 0, -1), (0, 1, 0), 216),
     ((-1, 0, 0), (0, 0, 1), (0, 1, 0), 178),
@@ -175,7 +175,7 @@ def box(name, hx, hy, hz):
             return tuple(n[i] * (hx, hy, hz)[i] + su * u[i] * (hx, hy, hz)[i]
                          + sv * v[i] * (hx, hy, hz)[i] for i in range(3))
         m.quad([at(-1, -1), at(1, -1), at(1, 1), at(-1, 1)], n,
-               [(0, 1), (1, 1), (1, 0), (0, 0)], [(tone, tone, tone, 255)] * 4)
+               [(0, 1), (1, 1), (1, 0), (0, 0)], [(255, 255, 255, 255)] * 4)
     return m
 
 
@@ -189,7 +189,7 @@ def floor(half, repeats):
 def wall(half_width, height):
     """Facing +Z, standing on y = 0. Two metres of brick per texture repeat."""
     m = Mesh("wall")
-    top, bottom = (255, 255, 255, 255), (150, 150, 150, 255)
+    top, bottom = (255, 255, 255, 255), (255, 255, 255, 255)
     m.quad([(-half_width, 0, 0), (half_width, 0, 0), (half_width, height, 0), (-half_width, height, 0)],
            (0, 0, 1),
            [(0, height), (half_width, height), (half_width, 0), (0, 0)],
@@ -236,9 +236,6 @@ class Gltf:
             "samplers": [{"magFilter": LINEAR, "minFilter": LINEAR_MIPMAP_LINEAR, "wrapS": REPEAT, "wrapT": REPEAT}],
             "accessors": [],
             "bufferViews": [],
-            # M22 Step 2 imports ordinary glTF materials as lit; this sample stays
-            # explicitly unlit until its lit content is authored in Step 7.
-            "extensionsUsed": ["KHR_materials_unlit"],
             "buffers": [],
         }
         self.images = {}
@@ -268,10 +265,10 @@ class Gltf:
         return self.images[uri]
 
     def material(self, name, colour=(1, 1, 1, 1), texture=None, alpha="OPAQUE", cutoff=None, double_sided=False):
-        pbr = {"baseColorFactor": list(colour)}
+        pbr = {"baseColorFactor": list(colour), "metallicFactor": 0.0, "roughnessFactor": 0.7}
         if texture:
             pbr["baseColorTexture"] = {"index": self.texture(texture)}
-        entry = {"name": name, "pbrMetallicRoughness": pbr, "extensions": {"KHR_materials_unlit": {}}}
+        entry = {"name": name, "pbrMetallicRoughness": pbr}
         if alpha != "OPAQUE":
             entry["alphaMode"] = alpha
         if cutoff is not None:

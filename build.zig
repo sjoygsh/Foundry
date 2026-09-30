@@ -1289,7 +1289,9 @@ pub fn build(b: *std.Build) void {
     // above all, a file an earlier build wrote (`mod-management.md` §6).
     for ([_]*std.Build.Module{ sandbox_mod, room_mod, sandbox3d_mod }) |sample_mod| {
         const sample_tests = b.addTest(.{ .root_module = sample_mod });
-        test_step.dependOn(&b.addRunArtifact(sample_tests).step);
+        const run_sample_tests = b.addRunArtifact(sample_tests);
+        test_step.dependOn(&run_sample_tests.step);
+        if (sample_mod == sandbox3d_mod) b.step("sandbox3d-test", "Run the 3D sample's content and workflow tests").dependOn(&run_sample_tests.step);
         check_step.dependOn(&sample_tests.step);
     }
     // The shared markers' codec, and the two halves of their boundary: a source scan for
@@ -1503,7 +1505,9 @@ pub fn build(b: *std.Build) void {
 
     const integration_tests = b.addTest(.{ .root_module = integration_mod });
     check_step.dependOn(&integration_tests.step);
-    test_step.dependOn(&b.addRunArtifact(integration_tests).step);
+    const run_integration_tests = b.addRunArtifact(integration_tests);
+    test_step.dependOn(&run_integration_tests.step);
+    b.step("integration-test", "Run package and subsystem integration tests").dependOn(&run_integration_tests.step);
 
     // Real native windows on this machine's own window system (`vulkan.md` §4, M13 Step 2).
     // Its own step rather than part of `test`: it opens windows, so it needs a desktop

@@ -141,6 +141,40 @@ or more in `mods/` sharing an ID are all skipped, and each warning names both fi
 field you leave out takes its schema default, it does not keep the original's value. §4 says
 what that means in general.
 
+### The 3D sandbox's dusk mod
+
+`sandbox3d` uses the same package path, with application identity `foundry-sandbox3d` and
+selection variable `FOUNDRY_SANDBOX3D_PACKAGES`. Its reference content-only mod is
+`samples/sandbox3d/testdata/mods/dusk/`. It replaces the complete lighting config and two
+materials: EV100 exposure, ambient luminance, directional/point intensities, colour, roughness
+and emission. No code, shader or mesh is added by the mod.
+
+On macOS, after building the sample and compiler once:
+
+```sh
+zig build -Drhi=metal
+MODS_ROOT="$HOME/Library/Application Support/foundry-sandbox3d/mods"
+mkdir -p "$MODS_ROOT"
+zig-out/bin/fpack --out "$MODS_ROOT/dusk.fpk" \
+    --dependency zig-out/content/core.fpk \
+    --dependency zig-out/content/sandbox3d.fpk \
+    samples/sandbox3d/testdata/mods/dusk
+FOUNDRY_SANDBOX3D_PACKAGES=dusk:content zig-out/bin/sandbox3d
+```
+
+The last command runs the installed executable; it does not build anything. Launch without
+the variable to see the base lighting. `--msaa=1` and `--msaa=4` choose the demonstrated MSAA
+configuration; `--shadows=off` measures the same scene without its shadow pass. These are
+host proof switches, not saved game settings. Linux/Windows use the user-data roots above,
+substituting `foundry-sandbox3d`; on Windows the tools are `fpack.exe` and `sandbox3d.exe`,
+and the native build uses `-Drhi=vulkan`. A shipped runtime needs neither compiler nor SDK.
+
+The light fields are the sample's own schema, not an engine `foundry:light` record. They use
+[ADR-0056's](../adr/0056-photometric-light-units-and-pre-exposure.md) units: lux for directional
+lights, candela for points/spots, cd/m² for ambient/emission, and EV100 exposure. `direction`
+names a light's local −Z. As with every override, omitted fields take schema defaults; they
+do not inherit the original record. Copy all values you intend to retain.
+
 ## 3. Names
 
 A content ID is `namespace:name`:

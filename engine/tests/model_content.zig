@@ -12,6 +12,7 @@ const rhi = @import("rhi");
 const asset = @import("asset");
 const author = @import("author");
 const render3d = @import("render3d");
+const app = @import("app");
 
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
@@ -211,6 +212,102 @@ fn quadFile(gpa: Allocator) ![]u8 {
         .submeshes = &submeshes,
         .bounds = try asset.Mesh.computeBounds(&quad_positions),
     });
+}
+
+// `light.md` §11: the compiler, real mod ordering and Content, not a code-material
+// stand-in for an override. Both pixel values are checked against the same CPU oracle.
+test "a compiled content mod changes a lit pixel through resolved package order" {
+    for ([_]u32{ 1, 4 }) |samples| {
+        var before: [4]u8 = undefined;
+        for ([_]bool{ false, true }) |enabled| {
+            const stack = try Stack.init(samples);
+            defer stack.deinit();
+            const normals = [_]Vec3{Vec3.init(0, 0, 1)} ** 4;
+            const mesh = try asset.mesh_file.write(stack.gpa, .{
+                .vertex_count = 4,
+                .streams = &.{
+                    .{ .semantic = .position, .format = .float32x3, .bytes = std.mem.sliceAsBytes(&quad_positions) },
+                    .{ .semantic = .normal, .format = .float32x3, .bytes = std.mem.sliceAsBytes(&normals) },
+                },
+                .index_format = .uint16,
+                .indices = std.mem.sliceAsBytes(&quad_indices),
+                .submeshes = &.{.{ .first_index = 0, .index_count = 6 }},
+                .bounds = try asset.Mesh.computeBounds(&quad_positions),
+            });
+            defer stack.gpa.free(mesh);
+            try stack.install("meshes/lit.fmesh", mesh);
+            try stack.write("content.fdt",
+                \\foundry:mesh demo:meshes.lit { source "meshes/lit.fmesh" }
+                \\foundry:material demo:materials.lit { shading foundry:shading.lit base_color { r 0.7 g 0.2 b 0.1 a 1 } roughness 0.7 }
+                \\foundry:model demo:models.lit {
+                \\ slots [{ name "lit" material demo:materials.lit }]
+                \\ parts [{ mesh demo:meshes.lit submesh 0 slot 0 translation { x 0 y 0 z 0 } rotation { x 0 y 0 z 0 w 1 } scale { x 1 y 1 z 1 } }]
+                \\}
+            );
+            try stack.build();
+            try stack.writeUnder(stack.out, "demo.fpk", stack.bytes.items);
+            const base_path = try platform.os.joinPath(stack.gpa, &.{ stack.out, "demo.fpk" });
+            defer stack.gpa.free(base_path);
+            var deps = try author.dependency.Set.load(stack.gpa, stack.os, &.{.{ .path = base_path }}, .default, &stack.diags);
+            defer deps.deinit();
+            const mod_src = try platform.os.joinPath(stack.gpa, &.{ stack.src, "mod-source" });
+            defer stack.gpa.free(mod_src);
+            try stack.writeUnder(mod_src, "mod.fdt",
+                \\foundry:mod dusk:content { name "Pixel dusk" version 1 license "Apache-2.0" requires [{ id demo:content }] }
+                \\foundry:material demo:materials.lit { shading foundry:shading.lit base_color { r 0.1 g 0.25 b 0.8 a 1 } roughness 0.4 emissive { r 0 g 0 b 0.1 } emissive_strength 2 }
+            );
+            var mod_bytes: std.ArrayList(u8) = .empty;
+            defer mod_bytes.deinit(stack.gpa);
+            const identity = try author.compile(stack.gpa, stack.os, mod_src, .{ .dependencies = &deps }, &stack.schemas, &stack.diags, &mod_bytes);
+            defer stack.gpa.free(identity.name);
+            try stack.writeUnder(stack.out, "dusk.fpk", mod_bytes.items);
+            var set = try app.ModSet.init(stack.gpa, stack.os, &.{.{ .dir = stack.out, .origin = .installed }}, .{ .required = &.{id("demo:content")} }, &stack.diags);
+            defer set.deinit();
+            const order = try set.start(if (enabled) &.{id("dusk:content")} else &.{}, &stack.diags);
+            try testing.expectEqual(@as(usize, if (enabled) 2 else 1), order.order.len);
+            if (enabled) {
+                try testing.expect(order.order[0].id.eql(id("demo:content")));
+            }
+            stack.assets.clearMounts();
+            stack.store.deinit(stack.gpa);
+            stack.store = .init(stack.gpa, .default);
+            for (order.order) |entry| {
+                const bytes = if (entry.id.eql(id("demo:content"))) stack.bytes.items else mod_bytes.items;
+                const handle = try stack.store.add(stack.gpa, entry.name, bytes, &stack.schemas, &stack.diags);
+                try stack.assets.mount(stack.gpa, handle, stack.out);
+            }
+            const material = try stack.content.acquireMaterial(id("demo:materials.lit"));
+            const desc = stack.materialDesc(material);
+            try testing.expect(desc.shading.eql(render3d.lit_id));
+            try testing.expectEqual(@as(f32, if (enabled) 0.1 else 0.7), desc.base_color[0]);
+            const model = try stack.content.acquireModel(id("demo:models.lit"));
+            try stack.renderer.begin(.{ .camera = .{ .vertical_fov = std.math.pi / 2.0, .near = 0.1, .far = 10 }, .target_size = .{ .width = target_size, .height = target_size }, .ambient = .{ 0.5, 0.5, 0.5 } });
+            const light: render3d.Light = .{ .kind = .directional, .intensity = 1, .world = .identity };
+            try stack.renderer.addLight(light);
+            try stack.content.drawModel(.{ .model = model, .world = .identity });
+            var pixels: [target_bytes]u8 = undefined;
+            try stack.finish(&pixels);
+            try testing.expectEqual(@as(usize, 0), stack.violations());
+            if (rhi.backend != .null) {
+                const expected = render3d.lighting.toneMap(render3d.lighting.shade(.{
+                    .base = desc.base_color[0..3].*,
+                    .metallic = desc.metallic,
+                    .roughness = desc.roughness,
+                    .emissive = .{ desc.emissive[0] * desc.emissive_strength, desc.emissive[1] * desc.emissive_strength, desc.emissive[2] * desc.emissive_strength },
+                }, .init(0.0625, -0.0625, -2), .init(0, 0, 1), .zero, &.{light}, .{ 0.5, 0.5, 0.5 }, null));
+                const pixel = pixels[(16 * target_size + 16) * 4 ..][0..4];
+                for (expected, 0..) |linear, c| {
+                    const encoded = if (linear <= 0.0031308) linear * 12.92 else 1.055 * std.math.pow(f32, linear, 1.0 / 2.4) - 0.055;
+                    const byte: i32 = @intFromFloat(@round(std.math.clamp(encoded, 0, 1) * 255));
+                    const channel = if (stack.device.capabilities().surface_format == .bgra8_unorm_srgb) 2 - c else c;
+                    try testing.expect(@abs(@as(i32, pixel[channel]) - byte) <= if (rhi.backend == .vulkan) @as(i32, 3) else 2);
+                }
+                if (!enabled) @memcpy(&before, pixel) else try testing.expect(!std.mem.eql(u8, &before, pixel));
+            }
+            stack.content.releaseModel(model);
+            stack.content.releaseMaterial(material);
+        }
+    }
 }
 
 /// Four texels, each its own colour, so a flipped or resampled texture is visible.

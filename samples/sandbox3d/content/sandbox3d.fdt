@@ -21,6 +21,8 @@ foundry:model_import sandbox3d:models.room {
 }
 
 foundry:material sandbox3d:materials.glass {
+    shading      foundry:shading.lit
+    roughness    0.15
     base_color   { r 0.55  g 0.75  b 0.85  a 0.35 }
     alpha_mode   "blend"
     double_sided true
@@ -29,6 +31,8 @@ foundry:material sandbox3d:materials.glass {
 # One crate in the grid draws with this in place of its own material: a slot override, for one
 # draw, on a model every other crate shares.
 foundry:material sandbox3d:materials.crate_painted {
+    shading            foundry:shading.lit
+    roughness          0.65
     base_color         { r 0.35  g 0.55  b 1.0  a 1.0 }
     base_color_texture sandbox3d:models.crate.texture0
 }
@@ -64,6 +68,22 @@ foundry:material sandbox3d:materials.crate_painted {
 
     # From `foundry:core`: a cross-package reference is an ordinary id.
     font id
+
+    # Photometric units (ADR-0056): EV100, cd/m² ambient; lux for directional,
+    # candela for point/spot. Direction is the light's local −Z, not Euler angles.
+    exposure_ev100 f32 (default 6)
+    ambient { r f32 (default 8) g f32 (default 8) b f32 (default 8) }
+    lights [{
+        kind string
+        color { r f32 (default 1) g f32 (default 1) b f32 (default 1) }
+        intensity f32
+        range f32 (default 0)
+        inner_cone f32 (default 0)
+        outer_cone f32 (default 0.785398)
+        casts_shadow bool (default false)
+        position { x f32 y f32 z f32 }
+        direction { x f32 (default -1) y f32 (default -2) z f32 (default -1) }
+    }]
 }
 
 config sandbox3d:config.main {
@@ -80,6 +100,16 @@ config sandbox3d:config.main {
     crate_grid 9
     crate_spacing 2.4
     font foundry:fonts.debug
+    exposure_ev100 6
+    ambient { r 8 g 10 b 14 }
+    lights [
+        { kind "directional" intensity 700 color { r 1 g 0.94 b 0.8 }
+          position { x 0 y 0 z 0 } direction { x -1 y -2 z -1 } casts_shadow true }
+        { kind "point" intensity 120 range 8 position { x -1.5 y 2 z 1.5 }
+          color { r 1 g 0.72 b 0.45 } direction { x -1 y -2 z -1 } }
+        { kind "point" intensity 80 range 8 position { x 1.5 y 2 z -1.5 }
+          color { r 0.5 g 0.7 b 1 } direction { x -1 y -2 z -1 } }
+    ]
 }
 
 # -- M21: nested moving objects ---------------------------------------------------------

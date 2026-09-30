@@ -41,6 +41,13 @@
 //! - `FOUNDRY_SANDBOX3D_SAVE_DIR=path` redirects F5/F9 for a disposable evidence run;
 //! - `FOUNDRY_SANDBOX3D_KEYS=f5@120,f6@150,...` presses those keys on those frames, as if a
 //!   person had, so a run nobody watches still saves, loads and re-parents.
+//!
+//! **M22's is a lit room a content mod changes** (`light.md` §10). Lights, ambient and
+//! EV100 come from the config; `--shadows=off` disables the shadow map. Player mods live
+//! under `foundry-sandbox3d/mods`, selected by comma-separated content IDs in
+//! `FOUNDRY_SANDBOX3D_PACKAGES`. The ordinary `testdata/mods/dusk` package changes the
+//! complete config and floor/wall materials without code. Headless runs discover user
+//! packages only when that explicit selection is present.
 
 const std = @import("std");
 
@@ -57,6 +64,7 @@ const ui = @import("ui");
 
 const orrery_mod = @import("orrery.zig");
 const Orrery = orrery_mod.Orrery;
+const LightSettings = @import("light_settings.zig").LightSettings;
 
 const Mat4 = core.math.Mat4;
 const Quat = core.math.Quat;
@@ -83,7 +91,7 @@ pub fn main(init: std.process.Init) !void {
         if (!options.parse(arg)) {
             var buffer: [256]u8 = undefined;
             var err = std.Io.File.stderr().writer(init.io, &buffer);
-            err.interface.writeAll("usage: sandbox3d [--msaa=1|4] [--cull=on|off] [--shadow-proof]\n") catch {};
+            err.interface.writeAll("usage: sandbox3d [--msaa=1|4] [--cull=on|off] [--shadows=off] [--shadow-proof]\n") catch {};
             err.interface.flush() catch {};
             // A mistyped command line is the operator's to fix, not a crash to trace.
             std.process.exit(2);
@@ -100,6 +108,7 @@ const Options = struct {
     sample_count: u32 = 4,
     cull: bool = true,
     shadow_proof: bool = false,
+    shadows: bool = true,
 
     /// False for anything this sample does not take.
     fn parse(self: *Options, arg: []const u8) bool {
@@ -113,6 +122,8 @@ const Options = struct {
             self.cull = false;
         } else if (std.mem.eql(u8, arg, "--shadow-proof")) {
             self.shadow_proof = true;
+        } else if (std.mem.eql(u8, arg, "--shadows=off")) {
+            self.shadows = false;
         } else return false;
         return true;
     }
@@ -122,7 +133,8 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     const headless = platform.backend == .null;
 
     // Discovery before the engine, as every host does it (`public-abi.md` §13): the
-    // installation is the one root, and this package and the core one are required.
+    // installation and player's mods are distinct host grants. Headless runs only
+    // discover ambient user packages when explicitly requested, like the 2D samples.
     var os = try platform.os.Os.init(gpa, .{ .env = env, .app_name = app_name });
     defer os.deinit();
     const content_dir = try app.contentDirOf(gpa, os, null);
@@ -130,11 +142,33 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
 
     var diags: data.Diagnostics = .init(gpa, .default);
     defer diags.deinit(gpa);
-    var mods = try app.ModSet.init(gpa, os, &.{.{ .dir = content_dir, .origin = .installed }}, .{
+    const selected_text = os.envVar("FOUNDRY_SANDBOX3D_PACKAGES");
+    const user_dir = if (!headless or selected_text != null) try app.mods.userRoot(gpa, os) else null;
+    defer if (user_dir) |dir| gpa.free(dir);
+    const roots = [_]app.mods.Root{
+        .{ .dir = content_dir, .origin = .installed },
+        .{ .dir = user_dir orelse "", .origin = .user },
+    };
+    var mods = try app.ModSet.init(gpa, os, roots[0..if (user_dir != null) @as(usize, 2) else 1], .{
         .required = &.{ try data.contentId("foundry:core"), try data.contentId("sandbox3d:content") },
     }, &diags);
     defer mods.deinit();
-    _ = mods.start(&.{}, &diags) catch |err| {
+    var selected: std.ArrayList(core.ContentId) = .empty;
+    defer selected.deinit(gpa);
+    if (selected_text) |text| {
+        var names = std.mem.splitScalar(u8, text, ',');
+        while (names.next()) |raw| {
+            const name = std.mem.trim(u8, raw, " ");
+            if (name.len == 0) continue;
+            const id = data.contentId(name) catch {
+                log.warn("FOUNDRY_SANDBOX3D_PACKAGES: '{s}' is not a content id", .{name});
+                continue;
+            };
+            try selected.append(gpa, id);
+            log.info("enabling '{s}'", .{name});
+        }
+    }
+    _ = mods.start(selected.items, &diags) catch |err| {
         for (diags.items.items) |d| log.err("content: {s}", .{d.message});
         return err;
     };
@@ -183,7 +217,9 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
 
     var script = Script.fromEnv(engine);
     var skipped_frames: u64 = 0;
+    var pace_next: u64 = 0;
     while (!engine.shouldQuit()) {
+        const frame_started = if (!headless) engine.os.monotonicNanos() else 0;
         engine.beginFrame();
         if (sample.content_generation != engine.contentGeneration()) sample.refresh(engine);
 
@@ -212,12 +248,24 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         }
         if (skipped) skipped_frames += 1;
 
-        engine.endFrame();
-
         // A skipped frame presented nothing, and would otherwise spin a core. The null
         // backend has no swapchain to wait on either.
         if (skipped) engine.os.sleep(engine.step_delta);
-        if (!headless and platform.backend == .null) engine.os.sleep(.fromMillis(2));
+        if (!headless and !skipped) {
+            // The display may be 120 Hz. Bound this demonstrator to its documented
+            // 60 Hz budget, without changing simulation time or the RHI's FIFO policy.
+            const budget: u64 = @intCast(engine.step_delta.ns);
+            pace_next = if (pace_next == 0) frame_started + budget else pace_next + budget;
+            const now = engine.os.monotonicNanos();
+            if (now < pace_next) {
+                engine.os.sleep(.fromNanos(@intCast(pace_next - now)));
+            } else if (now - pace_next > 250 * core.time.ns_per_ms) {
+                // Resize, minimise and restore must not provoke a catch-up burst.
+                pace_next = now;
+            }
+        }
+        if (skipped) pace_next = 0;
+        engine.endFrame();
 
         if (frame_limit) |limit| {
             if (engine.frame_index >= limit) break;
@@ -231,6 +279,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
 /// each stage of a frame cost.
 fn report(gpa: std.mem.Allocator, engine: *app.Engine, sample: *const Sample, skipped_frames: u64) void {
     const stats = sample.world.frameStats();
+    log.info("lighting: {d} lights, {d} shadow draws, {d} shadow culled", .{ stats.lights, stats.shadow_draws, stats.shadow_culled });
     log.info("stopped after {d} frames ({d} skipped), {d} ticks; last frame {d} draws, {d} culled, {d} blended, {d} triangles", .{
         engine.frame_index, skipped_frames, engine.stepper.tick, stats.draws, stats.culled, stats.blended, stats.triangles,
     });
@@ -303,6 +352,7 @@ const Settings = struct {
     crate: core.ContentId,
     crate_override: core.ContentId,
     grid: Grid,
+    lighting: LightSettings = .{},
 
     const fallback: Settings = .{
         .title = "",
@@ -342,6 +392,10 @@ const Settings = struct {
                 .side = gridField(record) orelse 0,
                 .spacing = distanceField(record, "crate_spacing", 0.5, 100) orelse 0,
                 .clearance = distanceField(record, "crate_clearance", 0, 100) orelse 0,
+            },
+            .lighting = LightSettings.read(record.fields) catch blk: {
+                log.warn("invalid exposure, ambient or lights in '{s}'; lighting disabled", .{config_id});
+                break :blk .{};
             },
         };
     }
@@ -503,12 +557,12 @@ const Sample = struct {
     const focus: Vec3 = .init(0, 0.8, 0);
 
     fn init(gpa: std.mem.Allocator, engine: *app.Engine, options: Options) !Sample {
-        var world = try render3d.Renderer.init(gpa, engine.gpu, .{ .sample_count = options.sample_count, .cull = options.cull });
+        var world = try render3d.Renderer.init(gpa, engine.gpu, .{ .sample_count = options.sample_count, .cull = options.cull, .shadow_size = if (options.shadows) 2048 else 0 });
         errdefer world.deinit();
         var overlay = try render2d.Renderer.init(gpa, engine.gpu, .{ .jobs = engine.jobs() });
         errdefer overlay.deinit();
 
-        const cube_material = try world.createMaterial(.{}, "sandbox3d cube");
+        const cube_material = try world.createMaterial(.{ .shading = render3d.lit_id, .roughness = 0.65 }, "sandbox3d cube");
         errdefer world.destroyMaterial(cube_material);
         const cube = try createBox(&world, .init(0.6, 0.6, 0.6), cube_faces, "sandbox3d cube");
         errdefer world.destroyMesh(cube);
@@ -810,7 +864,8 @@ const Sample = struct {
             },
             .target_size = pixels,
             .clear_color = self.settings.clear_linear,
-            .ambient = if (!self.shadow_ground.isNone()) .{ 0.15, 0.15, 0.15 } else .{ 0, 0, 0 },
+            .ambient = if (!self.shadow_ground.isNone()) .{ 0.15, 0.15, 0.15 } else self.settings.lighting.ambient,
+            .exposure_ev100 = if (!self.shadow_ground.isNone()) null else self.settings.lighting.exposure_ev100,
             .shadow_distance = 20,
         });
 
@@ -821,6 +876,10 @@ const Sample = struct {
             try engine.renderScene(.{}, &self.world, null);
             return true;
         }
+
+        // Lights are content values, submitted in authored order. The reader refused
+        // an invalid list as a whole before it can reach this frame.
+        for (self.settings.lighting.lights[0..self.settings.lighting.len]) |light| try self.world.addLight(light);
 
         self.drawModel(.{ .model = self.room, .world = Mat4.identity });
         const override = [_]render3d.SlotOverride{.{ .slot = 0, .material = self.crate_override }};
@@ -1046,6 +1105,7 @@ const face_frames = [6][3]Vec3{
 
 fn createBox(world: *render3d.Renderer, half: Vec3, faces: Faces, label: []const u8) !render3d.MeshHandle {
     var positions: [24]Vec3 = undefined;
+    var normals: [24]Vec3 = undefined;
     var colours: [24][4]u8 = undefined;
     var indices: [36]u16 = undefined;
     for (face_frames, faces, 0..) |frame, colour, f| {
@@ -1058,9 +1118,10 @@ fn createBox(world: *render3d.Renderer, half: Vec3, faces: Faces, label: []const
         positions[base + 2] = n.add(u).add(v);
         positions[base + 3] = n.sub(u).add(v);
         for (colours[base..][0..4]) |*c| c.* = colour;
+        for (normals[base..][0..4]) |*normal| normal.* = frame[0];
         indices[f * 6 ..][0..6].* = .{ base, base + 1, base + 2, base, base + 2, base + 3 };
     }
-    return createMesh(world, &positions, &colours, &indices, label);
+    return createMesh(world, &positions, &normals, &colours, &indices, label);
 }
 
 fn createShadowGround(world: *render3d.Renderer) !render3d.MeshHandle {
@@ -1080,6 +1141,7 @@ fn scaled(v: Vec3, by: Vec3) Vec3 {
 fn createMesh(
     world: *render3d.Renderer,
     positions: []const Vec3,
+    normals: []const Vec3,
     colours: []const [4]u8,
     indices: []const u16,
     label: []const u8,
@@ -1087,6 +1149,7 @@ fn createMesh(
     const submeshes = [_]asset.Submesh{.{ .first_index = 0, .index_count = @intCast(indices.len) }};
     const streams = [_]asset.MeshStream{
         .{ .semantic = .position, .format = .float32x3, .bytes = std.mem.sliceAsBytes(positions) },
+        .{ .semantic = .normal, .format = .float32x3, .bytes = std.mem.sliceAsBytes(normals) },
         .{ .semantic = .color, .format = .unorm8x4, .bytes = std.mem.sliceAsBytes(colours) },
     };
     return world.createMesh(.{
@@ -1105,6 +1168,7 @@ const testing = std.testing;
 
 test {
     _ = orrery_mod;
+    _ = @import("light_settings.zig");
 }
 
 test "scripted keys are key@frame pairs, and anything else is refused whole" {
@@ -1131,6 +1195,9 @@ test "sample proof switches are explicit and the last setting given wins" {
     var options: Options = .{};
     try testing.expectEqual(@as(u32, 4), options.sample_count);
     try testing.expect(options.cull);
+    try testing.expect(options.shadows);
+    try testing.expect(options.parse("--shadows=off"));
+    try testing.expect(!options.shadows);
     try testing.expect(!options.shadow_proof);
     try testing.expect(options.parse("--shadow-proof"));
     try testing.expect(options.shadow_proof);

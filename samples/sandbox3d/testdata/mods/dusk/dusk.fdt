@@ -1,0 +1,41 @@
+# M22's content-only proof. An override replaces the WHOLE record (content-mods.md §4).
+sandbox3d:config sandbox3d:config.main {
+    title "Foundry Sandbox 3D"
+    width 1280
+    height 720
+    clear_linear [ 0.010 0.012 0.018 1.0 ]
+    orbit_radians_per_second 0.15
+    orbit_radius 4.0
+    orbit_height 2.4
+    room sandbox3d:models.room
+    crate sandbox3d:models.crate
+    crate_override sandbox3d:materials.crate_painted
+    crate_grid 9
+    crate_spacing 2.4
+    crate_clearance 3.5
+    font foundry:fonts.debug
+    exposure_ev100 4
+    ambient { r 0.8 g 1.5 b 4 }
+    lights [
+        { kind "directional" intensity 60 color { r 0.32 g 0.45 b 1 }
+          position { x 0 y 0 z 0 } direction { x -2 y -0.5 z -1 } casts_shadow true }
+        { kind "point" intensity 60 range 8 position { x -1.5 y 2 z 1.5 }
+          color { r 1 g 0.35 b 0.08 } direction { x -1 y -2 z -1 } }
+        { kind "point" intensity 30 range 8 position { x 1.5 y 2 z -1.5 }
+          color { r 1 g 0.4 b 0.12 } direction { x -1 y -2 z -1 } }
+    ]
+}
+foundry:material sandbox3d:models.room.material0 {
+    shading foundry:shading.lit
+    base_color_texture sandbox3d:models.room.texture0
+    base_color { r 0.4 g 0.5 b 0.8 a 1 }
+    roughness 0.25
+}
+foundry:material sandbox3d:models.room.material1 {
+    shading foundry:shading.lit
+    base_color_texture sandbox3d:models.room.texture1
+    base_color { r 0.35 g 0.45 b 0.8 a 1 }
+    roughness 0.4
+    emissive { r 0.2 g 0.4 b 1 }
+    emissive_strength 3
+}
