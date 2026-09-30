@@ -1,7 +1,7 @@
 # Design: M22 — Light: the lit model, lights, one shadow, HDR and the light-unit convention
 
-**Status:** Accepted 2026-09-29 when the owner requested Step 1. Steps 1–3 are complete;
-Step 4 is next.
+**Status:** Accepted 2026-09-29 when the owner requested Step 1. Steps 1–4 are complete;
+Step 5 is next.
 **Date:** 2026-09-29
 **Baseline:** `eaefd70`, tag `m21`. M0–M21 are complete.
 **Decisions:**
@@ -638,10 +638,61 @@ completed 30 frames, and both ad-hoc macOS releases staged with the new attribut
 focused command is `zig build render3d-test`, or `-Drhi=metal` for its GPU readbacks.
 Vulkan runtime proof remains Step 6. Step 4 has not begun.
 
-### Step 4 — `render3d`: the lit model
+### Step 4 — `render3d`: the lit model — Done 2026-09-30
 §8: the registry's variant tables, the five-texture material layout, the lit model's MSL and GLSL,
 `MaterialDesc`'s fields and their validation, `Content`'s resolution of version 2 records.
 **Exit:** the lit reference scene reads back within ±2/255 of `lighting.zig` on Metal.
+
+**Resolution (2026-09-30).** The renderer registers lit beside unlit. Optional subsets are
+indexed in colour, UV0, tangent order, skipping required streams; mask adds fragment bit 0
+and normal mapping bit 1. Registration refuses mismatched slice lengths and a normal-mapping
+model without required normals before creating shaders. It copies the descriptor slices;
+shader bytes and entry names remain borrowed. The built-in descriptors have static storage.
+Resident shader arrays remain bounded at eight/four; no content-ID switch selects a model.
+
+Both models share the material layout: uniform at binding 0, then five texture/sampler pairs
+at bindings 1–10 in §8's order. The uniform is 64 bytes: base colour at 0, alpha cutoff at 16,
+metallic/roughness/normal-scale/occlusion-strength at 32 and emissive/strength at 48.
+Metal static assertions and SPIR-V agreement checks pin the contracts. Absent colour textures
+use sRGB white; data textures use linear white; the normal default is the nearest RGBA8
+representation of (0.5, 0.5, 1). Every actual texture uses its own sampler.
+
+The shaders and `lighting.zig` implement [glTF 2.0 Appendix B](https://github.com/KhronosGroup/glTF/blob/main/specification/2.0/Specification.adoc#appendix-b-brdf-implementation).
+Diffuse is multiplied by one minus the **dielectric** Schlick Fresnel before mixing with
+the metal, not attenuated again by the mixed metallic F0. §7.3's unspecified analytic
+split-sum fit is settled as Brian Karis's
+[2014 ambient DFG approximation](https://www.unrealengine.com/blog/physically-based-shading-on-mobile?lang=en-US).
+The fit can slightly undershoot zero for absorbing black metals; its specular result is
+clamped nonnegative in the oracle and both shaders. The article explicitly permits the
+sample's use and distribution; `THIRD_PARTY_LICENSES/epic-ambient-dfg.md` carries that grant.
+No Unreal Engine source or new runtime dependency enters Foundry.
+
+Normals use §7.2's reflection-corrected cofactor. Tangents use the world basis, are
+orthogonalised against the interpolated normal, and carry the world determinant's sign
+into the bitangent. Back-facing double-sided fragments flip the shading normal. Normal-map
+variants require a tangent stream at draw time. Occlusion affects only ambient; emission
+and direct lighting survive it, and only lit output is exposed.
+
+`MaterialDesc` adds §5.1's fields and range/colour-space refusals. The registry's read set
+controls lit-field validation and acquisition of texture slots; unlit does not acquire a named
+normal map it cannot read. `Content` holds each slot's asset reference, even aliases,
+acquires all replacements before releasing the old slots, and rebuilds the stable material
+handle after any payload changes. Non-default unread authored fields are reported once
+for the material entry's lifetime, not every frame or reload; schema-expanded defaults
+do not produce warnings. Invalid content still becomes the magenta placeholder.
+
+**Evidence:** null and Metal focused renderer/reference tests pass **48/48**. A plane and
+box under directional, point and spot lights match the CPU oracle within ±2/255 at 1×/4×
+for dielectric, metal, emission, ambient, exposure and reflection. All five texture slots,
+normal-map handedness, opaque/mask/blend and mask discard have readbacks. Content tests
+cover five-slot resolution, aliases, stable reload, wrong colour spaces and unread references.
+All **15** deliberate mutations of registration, material guards, shader agreements,
+reflection and mask discard failed and were restored. The bar passes **1,886 of 1,887
+headless tests, one expected skip; 1,969 declared**. The full Metal graph passed **1,896
+of 1,907, eleven expected skips**, followed by the final affected 48/48 renderer checks.
+All five Vulkan compile checks, including optimized Windows, and both ad-hoc macOS releases
+pass; both release notices contain the ambient fit's permission. Runtime Vulkan evidence
+remains Step 6. No shadow or Step 7 sample authoring was added.
 
 ### Step 5 — `render3d`: the shadow
 §9: `Config.shadow_size` and bias fields, the fit and snap, caster selection and culling, the

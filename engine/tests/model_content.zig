@@ -312,6 +312,92 @@ test "a model resolves by content ID, drops what does not load, and draws its pa
     try testing.expectEqual(@as(u32, 1), stack.content.materials.count());
 }
 
+const lit_records =
+    \\foundry:texture demo:textures.base { source "textures/lit.png" color_space "srgb" }
+    \\foundry:texture demo:textures.data { source "textures/lit.png" color_space "linear" }
+    \\foundry:material demo:materials.lit {
+    \\ shading foundry:shading.lit
+    \\ base_color { r 0.2 g 0.3 b 0.4 a 1 }
+    \\ base_color_texture demo:textures.base
+    \\ metallic 0.6 roughness 0.7 metallic_roughness_texture demo:textures.data
+    \\ normal_texture demo:textures.data normal_scale -0.5
+    \\ occlusion_texture demo:textures.data occlusion_strength 0.8
+    \\ emissive { r 0.1 g 0.2 b 0.3 } emissive_texture demo:textures.base emissive_strength 12
+    \\ casts_shadow false
+    \\}
+    \\foundry:material demo:materials.unread { metallic 0.7 normal_texture demo:textures.absent emissive_strength 2 }
+    \\foundry:material demo:materials.bad_mr { shading foundry:shading.lit metallic_roughness_texture demo:textures.base }
+    \\foundry:material demo:materials.bad_normal { shading foundry:shading.lit normal_texture demo:textures.base }
+    \\foundry:material demo:materials.bad_ao { shading foundry:shading.lit occlusion_texture demo:textures.base }
+    \\foundry:material demo:materials.bad_emission { shading foundry:shading.lit emissive_texture demo:textures.data }
+    \\foundry:material demo:materials.bad_value { shading foundry:shading.lit metallic 2 }
+;
+
+test "version 2 lit content resolves five slots with aliases and follows every texture reload" {
+    const stack = try Stack.init(1);
+    defer stack.deinit();
+    const png = try checkerPng(stack.gpa, 8);
+    defer stack.gpa.free(png);
+    try stack.install("textures/lit.png", png);
+    try stack.write("lit.fdt", lit_records);
+    try stack.build();
+    const material = try stack.content.acquireMaterial(id("demo:materials.lit"));
+    const before = stack.materialDesc(material);
+    try testing.expect(before.shading.eql(render3d.lit_id));
+    try testing.expectEqual(@as(f32, 0.6), before.metallic);
+    try testing.expectEqual(@as(f32, 0.7), before.roughness);
+    try testing.expectEqual(@as(f32, -0.5), before.normal_scale);
+    try testing.expectEqual(@as(f32, 0.8), before.occlusion_strength);
+    try testing.expectEqual([3]f32{ 0.1, 0.2, 0.3 }, before.emissive);
+    try testing.expectEqual(@as(f32, 12), before.emissive_strength);
+    try testing.expect(!before.casts_shadow);
+    try testing.expect(!before.base_color_texture.isNone());
+    try testing.expect(before.base_color_texture.eql(before.emissive_texture));
+    try testing.expect(before.metallic_roughness_texture.eql(before.normal_texture));
+    try testing.expect(before.normal_texture.eql(before.occlusion_texture));
+    try testing.expectEqual(@as(u32, 2), stack.assets.count());
+    // Move both texture payloads and re-read the records. Each slot holds its own
+    // reference, even aliases; no old handle remains bound.
+    try stack.reload();
+    const after = stack.materialDesc(material);
+    try testing.expect(!after.base_color_texture.eql(before.base_color_texture));
+    try testing.expect(!after.normal_texture.eql(before.normal_texture));
+    try testing.expect(after.emissive_texture.eql(after.base_color_texture));
+    try testing.expect(after.metallic_roughness_texture.eql(after.occlusion_texture));
+    stack.content.releaseMaterial(material);
+    try testing.expectEqual(@as(u32, 2), stack.assets.evictUnused(stack.gpa));
+    try testing.expectEqual(@as(u32, 0), stack.assets.count());
+    try testing.expectEqual(@as(usize, 0), stack.violations());
+}
+
+test "lit content refuses wrong slot spaces and ranges; unlit ignores unresolved lit references once" {
+    const stack = try Stack.init(1);
+    defer stack.deinit();
+    const png = try checkerPng(stack.gpa, 8);
+    defer stack.gpa.free(png);
+    try stack.install("textures/lit.png", png);
+    try stack.write("lit.fdt", lit_records);
+    try stack.build();
+    const unread = try stack.content.acquireMaterial(id("demo:materials.unread"));
+    try testing.expect(stack.materialDesc(unread).shading.eql(render3d.unlit_id));
+    try testing.expectEqual(@as(f32, 0.7), stack.materialDesc(unread).metallic);
+    try testing.expect(stack.materialDesc(unread).normal_texture.isNone());
+    var entries = stack.content.materials.iterator();
+    const entry = entries.next().?;
+    try testing.expect(entry.value.reported_ignored);
+    try stack.content.contentChanged();
+    try testing.expect(entry.value.reported_ignored);
+    try testing.expectEqual(@as(u32, 0), stack.assets.count());
+    for ([_][]const u8{ "bad_mr", "bad_normal", "bad_ao", "bad_emission", "bad_value" }) |name| {
+        const text = try std.fmt.allocPrint(stack.gpa, "demo:materials.{s}", .{name});
+        defer stack.gpa.free(text);
+        const material = try stack.content.acquireMaterial(id(text));
+        try testing.expectEqual(render3d.content.placeholder.base_color, stack.materialDesc(material).base_color);
+    }
+    try testing.expectEqual(@as(u32, 2), stack.assets.evictUnused(stack.gpa));
+    try testing.expectEqual(@as(usize, 0), stack.violations());
+}
+
 test "a model record that cannot be resolved is refused, and holds nothing afterwards" {
     const stack = try recordStack();
     defer stack.deinit();

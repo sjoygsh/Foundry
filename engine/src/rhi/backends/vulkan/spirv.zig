@@ -36,6 +36,18 @@ pub const Profile = enum {
     unlit_uv_color_vertex,
     unlit_fragment,
     unlit_mask_fragment,
+    lit_vertex_0,
+    lit_vertex_1,
+    lit_vertex_2,
+    lit_vertex_3,
+    lit_vertex_4,
+    lit_vertex_5,
+    lit_vertex_6,
+    lit_vertex_7,
+    lit_fragment_0,
+    lit_fragment_1,
+    lit_fragment_2,
+    lit_fragment_3,
     tone_vertex,
     tone_fragment,
 };
@@ -315,17 +327,21 @@ fn requireUnlitVertex(bytes: []const u8, uv: bool, color: bool) Error!void {
     if (uv) try require(try hasLocatedVariable(bytes, 3, Storage.input));
     if (color) try require(try hasLocatedVariable(bytes, 5, Storage.input));
     inline for (0..2) |location| try require(try hasLocatedVariable(bytes, location, Storage.output));
-    try requireFrameMatrix(bytes);
     try requireConstants(bytes, false);
+    try requireLightFrame(bytes);
+    const constants = try namedId(bytes, "Constants") orelse return error.DecorationMismatch;
+    try require(try hasMemberDecoration(bytes, constants, 1, Decoration.offset, 64));
+    try require(try hasMemberDecoration(bytes, constants, 1, Decoration.matrix_stride, 16));
+}
+
+fn requireLightFrame(bytes: []const u8) Error!void {
+    try requireFrameMatrix(bytes);
     const frame = try namedId(bytes, "Frame") orelse return error.DecorationMismatch;
     inline for (.{ .{ 1, 64 }, .{ 2, 80 }, .{ 3, 96 }, .{ 4, 112 }, .{ 5, 176 }, .{ 6, 192 } }) |field|
         try require(try hasMemberDecoration(bytes, frame, field[0], Decoration.offset, field[1]));
     const light = try namedId(bytes, "PackedLight") orelse return error.DecorationMismatch;
     inline for (0..4) |member|
         try require(try hasMemberDecoration(bytes, light, member, Decoration.offset, member * 16));
-    const constants = try namedId(bytes, "Constants") orelse return error.DecorationMismatch;
-    try require(try hasMemberDecoration(bytes, constants, 1, Decoration.offset, 64));
-    try require(try hasMemberDecoration(bytes, constants, 1, Decoration.matrix_stride, 16));
 }
 
 fn requireUnlitFragment(bytes: []const u8) Error!void {
@@ -346,8 +362,8 @@ fn requireUnlitFragment(bytes: []const u8) Error!void {
 pub fn validateProfile(bytes: []const u8, profile: Profile) Error!void {
     try validate(bytes);
     const stage: Stage = switch (profile) {
-        .sprite_vertex, .quad_vertex, .unlit_vertex, .unlit_color_vertex, .unlit_uv_vertex, .unlit_uv_color_vertex, .tone_vertex => .vertex,
-        .sprite_fragment, .quad_fragment, .unlit_fragment, .unlit_mask_fragment, .tone_fragment => .fragment,
+        .sprite_vertex, .quad_vertex, .unlit_vertex, .unlit_color_vertex, .unlit_uv_vertex, .unlit_uv_color_vertex, .lit_vertex_0, .lit_vertex_1, .lit_vertex_2, .lit_vertex_3, .lit_vertex_4, .lit_vertex_5, .lit_vertex_6, .lit_vertex_7, .tone_vertex => .vertex,
+        .sprite_fragment, .quad_fragment, .unlit_fragment, .unlit_mask_fragment, .lit_fragment_0, .lit_fragment_1, .lit_fragment_2, .lit_fragment_3, .tone_fragment => .fragment,
     };
     try require(try hasEntry(bytes, stage, "main"));
 
@@ -387,6 +403,68 @@ pub fn validateProfile(bytes: []const u8, profile: Profile) Error!void {
         .unlit_uv_vertex => try requireUnlitVertex(bytes, true, false),
         .unlit_uv_color_vertex => try requireUnlitVertex(bytes, true, true),
         .unlit_fragment, .unlit_mask_fragment => try requireUnlitFragment(bytes),
+        .lit_vertex_0 => {
+            try requireUnlitVertex(bytes, false, false);
+            try require(try hasLocatedVariable(bytes, 1, Storage.input));
+
+            inline for (2..5) |location| try require(try hasLocatedVariable(bytes, location, Storage.output));
+        },
+        .lit_vertex_1 => {
+            try requireUnlitVertex(bytes, false, true);
+            try require(try hasLocatedVariable(bytes, 1, Storage.input));
+
+            inline for (2..5) |location| try require(try hasLocatedVariable(bytes, location, Storage.output));
+        },
+        .lit_vertex_2 => {
+            try requireUnlitVertex(bytes, true, false);
+            try require(try hasLocatedVariable(bytes, 1, Storage.input));
+
+            inline for (2..5) |location| try require(try hasLocatedVariable(bytes, location, Storage.output));
+        },
+        .lit_vertex_3 => {
+            try requireUnlitVertex(bytes, true, true);
+            try require(try hasLocatedVariable(bytes, 1, Storage.input));
+
+            inline for (2..5) |location| try require(try hasLocatedVariable(bytes, location, Storage.output));
+        },
+        .lit_vertex_4 => {
+            try requireUnlitVertex(bytes, false, false);
+            try require(try hasLocatedVariable(bytes, 1, Storage.input));
+            try require(try hasLocatedVariable(bytes, 2, Storage.input));
+            inline for (2..5) |location| try require(try hasLocatedVariable(bytes, location, Storage.output));
+        },
+        .lit_vertex_5 => {
+            try requireUnlitVertex(bytes, false, true);
+            try require(try hasLocatedVariable(bytes, 1, Storage.input));
+            try require(try hasLocatedVariable(bytes, 2, Storage.input));
+            inline for (2..5) |location| try require(try hasLocatedVariable(bytes, location, Storage.output));
+        },
+        .lit_vertex_6 => {
+            try requireUnlitVertex(bytes, true, false);
+            try require(try hasLocatedVariable(bytes, 1, Storage.input));
+            try require(try hasLocatedVariable(bytes, 2, Storage.input));
+            inline for (2..5) |location| try require(try hasLocatedVariable(bytes, location, Storage.output));
+        },
+        .lit_vertex_7 => {
+            try requireUnlitVertex(bytes, true, true);
+            try require(try hasLocatedVariable(bytes, 1, Storage.input));
+            try require(try hasLocatedVariable(bytes, 2, Storage.input));
+            inline for (2..5) |location| try require(try hasLocatedVariable(bytes, location, Storage.output));
+        },
+        .lit_fragment_0, .lit_fragment_1, .lit_fragment_2, .lit_fragment_3 => {
+            try requireUnlitFragment(bytes);
+            try requireLightFrame(bytes);
+            inline for (2..5) |location| try require(try hasLocatedVariable(bytes, location, Storage.input));
+            const material = try namedId(bytes, "Material") orelse return error.DecorationMismatch;
+            try require(try hasMemberDecoration(bytes, material, 2, Decoration.offset, 32));
+            try require(try hasMemberDecoration(bytes, material, 3, Decoration.offset, 48));
+            inline for (.{ 3, 5, 7, 9 }) |binding| {
+                // The non-mapped variants do not use the normal slot, but glslang
+                // retains the declared interface; the shared layout pins it too.
+                try require(try bindingHasType(bytes, 2, binding, Storage.uniform_constant, Op.type_image));
+                try require(try bindingHasType(bytes, 2, binding + 1, Storage.uniform_constant, Op.type_sampler));
+            }
+        },
         .tone_vertex => try require(try hasLocatedVariable(bytes, 0, Storage.output)),
         .tone_fragment => {
             try require(try hasLocatedVariable(bytes, 0, Storage.input));

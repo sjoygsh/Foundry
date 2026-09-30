@@ -16,6 +16,8 @@ const Allocator = std.mem.Allocator;
 const Mat4 = core.math.Mat4;
 const Vec3 = core.math.Vec3;
 
+pub const lit_id = core.ContentId.fromString("foundry:shading.lit");
+
 pub const unlit_id = core.ContentId.fromString("foundry:shading.unlit");
 
 pub const StreamSet = struct {
@@ -40,7 +42,11 @@ pub const MaterialFields = packed struct(u8) {
     base_color: bool = false,
     base_color_texture: bool = false,
     alpha: bool = false,
-    _reserved: u5 = 0,
+    metallic_roughness: bool = false,
+    normal: bool = false,
+    occlusion: bool = false,
+    emissive: bool = false,
+    casts_shadow: bool = false,
 };
 
 pub const ShaderStage = struct {
@@ -49,17 +55,21 @@ pub const ShaderStage = struct {
 };
 
 pub const ShadingVariants = struct {
-    /// Indexed by `(has_uv0 << 1) | has_color`.
-    vertex: [4]ShaderStage,
-    /// Opaque/blend share index 0; mask is index 1.
-    fragment: [2]ShaderStage,
+    /// Optional subsets in colour, UV0, tangent order (required streams add no bit).
+    /// Stage byte/entry storage is borrowed; registration copies the descriptor slices.
+    vertex: []const ShaderStage,
+    /// Opaque/blend share index 0; mask is index 1; normal mapping adds 2.
+    fragment: []const ShaderStage,
 };
+
+pub const ShadingFeatures = struct { normal_mapping: bool = false };
 
 pub const ShadingModel = struct {
     id: core.ContentId,
     requires: StreamSet,
     optional: StreamSet = .{},
     reads: MaterialFields = .{},
+    features: ShadingFeatures = .{},
     variants: ShadingVariants,
 };
 
@@ -86,6 +96,17 @@ pub const MaterialDesc = struct {
     alpha_mode: AlphaMode = .@"opaque",
     alpha_cutoff: f32 = 0.5,
     double_sided: bool = false,
+    metallic: f32 = 0,
+    roughness: f32 = 1,
+    metallic_roughness_texture: TextureHandle = .none,
+    normal_texture: TextureHandle = .none,
+    normal_scale: f32 = 1,
+    occlusion_texture: TextureHandle = .none,
+    occlusion_strength: f32 = 1,
+    emissive: [3]f32 = .{ 0, 0, 0 },
+    emissive_texture: TextureHandle = .none,
+    emissive_strength: f32 = 1,
+    casts_shadow: bool = true,
 };
 
 fn builtinStage(comptime name: []const u8, comptime metal_entry: []const u8) ShaderStage {
@@ -111,15 +132,51 @@ fn unlitModel() ShadingModel {
         .optional = StreamSet.of(&.{ .uv0, .color }),
         .reads = .{ .base_color = true, .base_color_texture = true, .alpha = true },
         .variants = .{
-            .vertex = .{
+            .vertex = comptime &.{
                 builtinStage("unlit_vertex_spirv", "vertexMain"),
                 builtinStage("unlit_color_vertex_spirv", "vertexColor"),
                 builtinStage("unlit_uv_vertex_spirv", "vertexUv"),
                 builtinStage("unlit_uv_color_vertex_spirv", "vertexUvColor"),
             },
-            .fragment = .{
+            .fragment = comptime &.{
                 builtinStage("unlit_fragment_spirv", "fragmentMain"),
                 builtinStage("unlit_mask_fragment_spirv", "fragmentMask"),
+            },
+        },
+    };
+}
+
+fn litStage(comptime name: []const u8, comptime entry: []const u8) ShaderStage {
+    return switch (rhi.backend) {
+        .metal => .{ .bytes = @embedFile("lit_metallib"), .entry = entry },
+        .null => .{ .bytes = "null-backend-shader", .entry = entry },
+        .vulkan => .{ .bytes = @embedFile(name), .entry = "main" },
+    };
+}
+
+fn litModel() ShadingModel {
+    return .{
+        .id = lit_id,
+        .requires = StreamSet.of(&.{ .position, .normal }),
+        .optional = StreamSet.of(&.{ .color, .uv0, .tangent }),
+        .reads = .{ .base_color = true, .base_color_texture = true, .alpha = true, .metallic_roughness = true, .normal = true, .occlusion = true, .emissive = true, .casts_shadow = true },
+        .features = .{ .normal_mapping = true },
+        .variants = .{
+            .vertex = comptime &.{
+                litStage("lit_vertex_0_spirv", "vertexLit0"),
+                litStage("lit_vertex_1_spirv", "vertexLit1"),
+                litStage("lit_vertex_2_spirv", "vertexLit2"),
+                litStage("lit_vertex_3_spirv", "vertexLit3"),
+                litStage("lit_vertex_4_spirv", "vertexLit4"),
+                litStage("lit_vertex_5_spirv", "vertexLit5"),
+                litStage("lit_vertex_6_spirv", "vertexLit6"),
+                litStage("lit_vertex_7_spirv", "vertexLit7"),
+            },
+            .fragment = comptime &.{
+                litStage("lit_fragment_0_spirv", "fragmentLit0"),
+                litStage("lit_fragment_1_spirv", "fragmentLit1"),
+                litStage("lit_fragment_2_spirv", "fragmentLit2"),
+                litStage("lit_fragment_3_spirv", "fragmentLit3"),
             },
         },
     };
@@ -223,6 +280,8 @@ const MaterialUniform = extern struct {
     base_color: [4]f32,
     alpha_cutoff: f32,
     _padding: [3]f32 = @splat(0),
+    surface: [4]f32,
+    emissive_strength: [4]f32,
 };
 
 const MaterialState = struct {
@@ -234,20 +293,21 @@ const MaterialState = struct {
 
 const ModelState = struct {
     desc: ShadingModel,
-    vertex: [4]rhi.ShaderModuleHandle,
-    fragment: [2]rhi.ShaderModuleHandle,
+    vertex: [8]rhi.ShaderModuleHandle,
+    fragment: [4]rhi.ShaderModuleHandle,
 };
 
 const Cull = enum { back_ccw, back_cw, none };
 const PipelineKey = struct {
     model: u32,
-    /// bit 0 colour, bit 1 UV0, bit 2 float colour (rather than UNORM8).
-    vertex_layout: u3,
+    /// Colour, UV0, float colour, required normal, tangent; not the variant index.
+    vertex_layout: u5,
+    normal_map: bool = false,
     alpha: AlphaMode,
     cull: Cull,
 
     fn eql(a: PipelineKey, b: PipelineKey) bool {
-        return a.model == b.model and a.vertex_layout == b.vertex_layout and a.alpha == b.alpha and a.cull == b.cull;
+        return a.model == b.model and a.vertex_layout == b.vertex_layout and a.alpha == b.alpha and a.cull == b.cull and a.normal_map == b.normal_map;
     }
 };
 
@@ -262,6 +322,10 @@ const DrawConstants = extern struct {
     world: Mat4,
     cofactor: [3][4]f32,
 };
+
+fn unitValue(value: f32) bool {
+    return std.math.isFinite(value) and value >= 0 and value <= 1;
+}
 
 fn drawConstants(world: Mat4) DrawConstants {
     const x = Vec3.init(world.cols[0][0], world.cols[0][1], world.cols[0][2]);
@@ -312,6 +376,8 @@ pub const Renderer = struct {
     textures: core.HandlePool(Texture, TextureState),
     materials: core.HandlePool(Material, MaterialState),
     white_texture: TextureHandle,
+    linear_white: TextureHandle,
+    flat_normal: TextureHandle,
     draws: std.ArrayList(DrawItem),
     order: std.ArrayList(u32),
     planned_draws: ?u32,
@@ -341,8 +407,12 @@ pub const Renderer = struct {
         var self = try initResources(gpa, device, config);
         errdefer self.deinit();
         try self.registerShadingModel(unlitModel());
+        try self.registerShadingModel(litModel());
         const white = asset.Image{ .width = 1, .height = 1, .pixels = @constCast(&[_]u8{ 255, 255, 255, 255 }) };
         self.white_texture = try self.createTexture(white, .{ .filter = .nearest, .wrap = .clamp, .label = "render3d white" });
+        self.linear_white = try self.createTexture(white, .{ .color_space = .linear, .filter = .nearest, .wrap = .clamp });
+        const normal = asset.Image{ .width = 1, .height = 1, .pixels = @constCast(&[_]u8{ 128, 128, 255, 255 }) };
+        self.flat_normal = try self.createTexture(normal, .{ .color_space = .linear, .filter = .nearest, .wrap = .clamp });
         return self;
     }
 
@@ -370,6 +440,14 @@ pub const Renderer = struct {
                 .{ .binding = 0, .type = .uniform_buffer, .visibility = .{ .fragment = true } },
                 .{ .binding = 1, .type = .sampled_texture, .visibility = .{ .fragment = true } },
                 .{ .binding = 2, .type = .sampler, .visibility = .{ .fragment = true } },
+                .{ .binding = 3, .type = .sampled_texture, .visibility = .{ .fragment = true } },
+                .{ .binding = 4, .type = .sampler, .visibility = .{ .fragment = true } },
+                .{ .binding = 5, .type = .sampled_texture, .visibility = .{ .fragment = true } },
+                .{ .binding = 6, .type = .sampler, .visibility = .{ .fragment = true } },
+                .{ .binding = 7, .type = .sampled_texture, .visibility = .{ .fragment = true } },
+                .{ .binding = 8, .type = .sampler, .visibility = .{ .fragment = true } },
+                .{ .binding = 9, .type = .sampled_texture, .visibility = .{ .fragment = true } },
+                .{ .binding = 10, .type = .sampler, .visibility = .{ .fragment = true } },
             },
         });
         errdefer device.destroyBindGroupLayout(material_layout);
@@ -488,6 +566,8 @@ pub const Renderer = struct {
             .textures = .empty,
             .materials = .empty,
             .white_texture = .none,
+            .linear_white = .none,
+            .flat_normal = .none,
             .draws = .empty,
             .order = .empty,
             .planned_draws = null,
@@ -565,13 +645,26 @@ pub const Renderer = struct {
         for (self.models.items) |existing| if (existing.desc.id.eql(model.id)) return error.DuplicateShadingModel;
         if (model.requires.bits == 0 or model.requires.bits & model.optional.bits != 0 or
             !model.requires.has(.position) or
-            (model.requires.bits | model.optional.bits) & ~StreamSet.of(&.{ .position, .uv0, .color }).bits != 0)
+            (model.requires.bits | model.optional.bits) & ~StreamSet.of(&.{ .position, .normal, .tangent, .uv0, .color }).bits != 0)
         {
             return error.InvalidShadingModel;
         }
 
-        var state: ModelState = .{ .desc = model, .vertex = @splat(.none), .fragment = @splat(.none) };
-        errdefer self.destroyModel(state);
+        if (model.optional.bits & ~StreamSet.of(&.{ .uv0, .color, .tangent }).bits != 0 or
+            model.variants.vertex.len != (@as(usize, 1) << @intCast(@popCount(model.optional.bits))) or
+            model.variants.fragment.len != (if (model.features.normal_mapping) @as(usize, 4) else 2) or
+            (model.features.normal_mapping and !model.requires.has(.normal))) return error.InvalidShadingModel;
+        var owned = model;
+        owned.variants.vertex = try self.gpa.dupe(ShaderStage, model.variants.vertex);
+        errdefer self.gpa.free(owned.variants.vertex);
+        owned.variants.fragment = try self.gpa.dupe(ShaderStage, model.variants.fragment);
+        // destroyModel owns both slices once the state is constructed.
+        var state: ModelState = .{ .desc = owned, .vertex = @splat(.none), .fragment = @splat(.none) };
+        errdefer {
+            for (state.vertex) |shader| if (!shader.isNone()) self.device.destroyShaderModule(shader);
+            for (state.fragment) |shader| if (!shader.isNone()) self.device.destroyShaderModule(shader);
+            self.gpa.free(owned.variants.fragment);
+        }
         for (model.variants.vertex, 0..) |stage, i| {
             state.vertex[i] = try self.device.createShaderModule(.{ .label = "render3d vertex variant", .bytes = stage.bytes });
         }
@@ -635,7 +728,7 @@ pub const Renderer = struct {
     }
 
     pub fn destroyTexture(self: *Self, handle: TextureHandle) void {
-        if (handle.eql(self.white_texture)) return;
+        if (handle.eql(self.white_texture) or handle.eql(self.linear_white) or handle.eql(self.flat_normal)) return;
         const state = self.textures.get(handle) orelse return;
         self.destroyTextureState(state);
         _ = self.textures.remove(handle);
@@ -671,10 +764,29 @@ pub const Renderer = struct {
         for (desc.base_color) |channel| if (!std.math.isFinite(channel) or channel < 0 or channel > 1) return error.InvalidMaterialValue;
         if (!std.math.isFinite(desc.alpha_cutoff) or desc.alpha_cutoff < 0 or desc.alpha_cutoff > 1) return error.InvalidMaterialValue;
 
-        const texture_handle = if (desc.base_color_texture.isNone()) self.white_texture else desc.base_color_texture;
-        const texture = self.textures.get(texture_handle) orelse return error.InvalidTexture;
-        if (texture.color_space != .srgb) return error.WrongColorSpace;
-
+        const reads = self.models.items[model].desc.reads;
+        if (reads.metallic_roughness and (!unitValue(desc.metallic) or !unitValue(desc.roughness))) return error.InvalidMaterialValue;
+        if (reads.normal and !std.math.isFinite(desc.normal_scale)) return error.InvalidMaterialValue;
+        if (reads.occlusion and !unitValue(desc.occlusion_strength)) return error.InvalidMaterialValue;
+        if (reads.emissive) {
+            for (desc.emissive) |channel| if (!unitValue(channel)) return error.InvalidMaterialValue;
+            if (!std.math.isFinite(desc.emissive_strength) or desc.emissive_strength < 0) return error.InvalidMaterialValue;
+        }
+        const requested = [5]TextureHandle{
+            if (reads.base_color_texture) desc.base_color_texture else .none,
+            if (reads.metallic_roughness) desc.metallic_roughness_texture else .none,
+            if (reads.normal) desc.normal_texture else .none,
+            if (reads.occlusion) desc.occlusion_texture else .none,
+            if (reads.emissive) desc.emissive_texture else .none,
+        };
+        const defaults = [5]TextureHandle{ self.white_texture, self.linear_white, self.flat_normal, self.linear_white, self.white_texture };
+        var textures: [5]TextureState = undefined;
+        for (requested, defaults, 0..) |handle, fallback, i| {
+            const texture = self.textures.get(if (handle.isNone()) fallback else handle) orelse return error.InvalidTexture;
+            const expected: asset.ColorSpace = if (i == 0 or i == 4) .srgb else .linear;
+            if (texture.color_space != expected) return error.WrongColorSpace;
+            textures[i] = texture.*;
+        }
         const uniform = try self.device.createBuffer(.{
             .label = label,
             .size = @sizeOf(MaterialUniform),
@@ -683,18 +795,25 @@ pub const Renderer = struct {
         });
         errdefer self.device.destroyBuffer(uniform);
         const mapped = try self.device.mapBuffer(uniform);
-        const value: MaterialUniform = .{ .base_color = desc.base_color, .alpha_cutoff = desc.alpha_cutoff };
+        const value: MaterialUniform = .{
+            .base_color = desc.base_color,
+            .alpha_cutoff = desc.alpha_cutoff,
+            .surface = .{ desc.metallic, desc.roughness, desc.normal_scale, desc.occlusion_strength },
+            .emissive_strength = .{ desc.emissive[0], desc.emissive[1], desc.emissive[2], desc.emissive_strength },
+        };
         @memcpy(mapped[0..@sizeOf(MaterialUniform)], std.mem.asBytes(&value));
         self.device.unmapBuffer(uniform);
 
+        var entries: [11]rhi.pipeline.BindGroupEntry = undefined;
+        entries[0] = .{ .binding = 0, .resource = .{ .uniform_buffer = .{ .buffer = uniform, .size = @sizeOf(MaterialUniform) } } };
+        for (textures, 0..) |texture, i| {
+            entries[1 + 2 * i] = .{ .binding = @intCast(1 + 2 * i), .resource = .{ .sampled_texture = texture.gpu } };
+            entries[2 + 2 * i] = .{ .binding = @intCast(2 + 2 * i), .resource = .{ .sampler = texture.sampler } };
+        }
         const group = try self.device.createBindGroup(.{
             .label = label,
             .layout = self.material_layout,
-            .entries = &.{
-                .{ .binding = 0, .resource = .{ .uniform_buffer = .{ .buffer = uniform, .size = @sizeOf(MaterialUniform) } } },
-                .{ .binding = 1, .resource = .{ .sampled_texture = texture.gpu } },
-                .{ .binding = 2, .resource = .{ .sampler = texture.sampler } },
-            },
+            .entries = &entries,
         });
         return .{ .model = model, .desc = desc, .uniform = uniform, .group = group };
     }
@@ -710,12 +829,18 @@ pub const Renderer = struct {
         self.device.destroyBuffer(state.uniform);
     }
 
+    pub fn materialFields(self: *const Self, id: core.ContentId) ?MaterialFields {
+        return self.models.items[self.modelIndex(id) orelse return null].desc.reads;
+    }
+
     fn modelIndex(self: *const Self, id: core.ContentId) ?u32 {
         for (self.models.items, 0..) |model, i| if (model.desc.id.eql(id)) return @intCast(i);
         return null;
     }
 
     fn destroyModel(self: *Self, model: ModelState) void {
+        self.gpa.free(model.desc.variants.vertex);
+        self.gpa.free(model.desc.variants.fragment);
         for (model.vertex) |shader| if (!shader.isNone()) self.device.destroyShaderModule(shader);
         for (model.fragment) |shader| if (!shader.isNone()) self.device.destroyShaderModule(shader);
     }
@@ -884,12 +1009,18 @@ pub const Renderer = struct {
         if (!matrixFinite(draw.world)) return error.InvalidTransform;
         if (!(StreamSet{ .bits = mesh.stream_mask }).contains(model.requires)) return error.MissingStream;
 
-        const has_uv = model.optional.has(.uv0) and mesh.stream_mask & (@as(u8, 1) << @intFromEnum(asset.MeshSemantic.uv0)) != 0;
-        const has_color = model.optional.has(.color) and mesh.stream_mask & (@as(u8, 1) << @intFromEnum(asset.MeshSemantic.color)) != 0;
+        const has_uv = (model.optional.has(.uv0) or model.requires.has(.uv0)) and mesh.stream_mask & (@as(u8, 1) << @intFromEnum(asset.MeshSemantic.uv0)) != 0;
+        const has_color = (model.optional.has(.color) or model.requires.has(.color)) and mesh.stream_mask & (@as(u8, 1) << @intFromEnum(asset.MeshSemantic.color)) != 0;
         const float_color = has_color and mesh.formats[@intFromEnum(asset.MeshSemantic.color)].? == .float32x4;
-        const vertex_layout: u3 = @as(u3, @intFromBool(has_color)) |
-            (@as(u3, @intFromBool(has_uv)) << 1) |
-            (@as(u3, @intFromBool(float_color)) << 2);
+        const has_normal = model.requires.has(.normal);
+        const has_tangent = (model.optional.has(.tangent) or model.requires.has(.tangent)) and mesh.stream_mask & 4 != 0;
+        const normal_map = model.features.normal_mapping and !material.desc.normal_texture.isNone();
+        if (normal_map and !has_tangent) return error.MissingStream;
+        const vertex_layout: u5 = @as(u5, @intFromBool(has_color)) |
+            (@as(u5, @intFromBool(has_uv)) << 1) |
+            (@as(u5, @intFromBool(float_color)) << 2) |
+            (@as(u5, @intFromBool(has_normal)) << 3) |
+            (@as(u5, @intFromBool(has_tangent)) << 4);
         const cull: Cull = if (material.desc.double_sided)
             .none
         else if (draw.world.determinant() < 0)
@@ -905,7 +1036,7 @@ pub const Renderer = struct {
             .submesh = draw.submesh,
             .world = draw.world,
             .material = draw.material,
-            .pipeline_key = .{ .model = material.model, .vertex_layout = vertex_layout, .alpha = material.desc.alpha_mode, .cull = cull },
+            .pipeline_key = .{ .model = material.model, .vertex_layout = vertex_layout, .normal_map = normal_map, .alpha = material.desc.alpha_mode, .cull = cull },
             .alpha = material.desc.alpha_mode,
             .depth = sort_depth,
             .bounds = bounds,
@@ -1041,6 +1172,8 @@ pub const Renderer = struct {
             const constants = drawConstants(item.world);
             pass.setInlineConstants(std.mem.asBytes(&constants));
             pass.setVertexBuffer(0, mesh.vertex_buffers[0], 0);
+            if (item.pipeline_key.vertex_layout & 8 != 0) pass.setVertexBuffer(1, mesh.vertex_buffers[1], 0);
+            if (item.pipeline_key.vertex_layout & 16 != 0) pass.setVertexBuffer(2, mesh.vertex_buffers[2], 0);
             if (item.pipeline_key.vertex_layout & 2 != 0) pass.setVertexBuffer(3, mesh.vertex_buffers[3], 0);
             if (item.pipeline_key.vertex_layout & 1 != 0) pass.setVertexBuffer(5, mesh.vertex_buffers[5], 0);
             pass.setIndexBuffer(mesh.index_buffer, switch (mesh.index_format) {
@@ -1078,8 +1211,16 @@ pub const Renderer = struct {
     fn ensurePipeline(self: *Self, key: PipelineKey) Error!rhi.RenderPipelineHandle {
         if (self.pipelineFor(key)) |pipeline| return pipeline;
         const model = self.models.items[key.model];
-        const variant: usize = key.vertex_layout & 3;
-        var layouts: [3]rhi.pipeline.VertexBufferLayout = undefined;
+        var variant: usize = 0;
+        var variant_bit: u3 = 0;
+        inline for (.{ .{ asset.MeshSemantic.color, @as(u5, 1) }, .{ asset.MeshSemantic.uv0, @as(u5, 2) }, .{ asset.MeshSemantic.tangent, @as(u5, 16) } }) |item| {
+            if (model.desc.optional.has(item[0])) {
+                if (key.vertex_layout & item[1] != 0) variant |= @as(usize, 1) << variant_bit;
+                variant_bit += 1;
+            }
+        }
+        const fragment_variant: usize = @as(usize, @intFromBool(key.alpha == .mask)) + 2 * @as(usize, @intFromBool(key.normal_map));
+        var layouts: [5]rhi.pipeline.VertexBufferLayout = undefined;
         var count: usize = 0;
         layouts[count] = .{
             .slot = @intFromEnum(asset.MeshSemantic.position),
@@ -1087,6 +1228,14 @@ pub const Renderer = struct {
             .attributes = &.{.{ .location = 0, .offset = 0, .format = .float32x3 }},
         };
         count += 1;
+        if (key.vertex_layout & 8 != 0) {
+            layouts[count] = .{ .slot = 1, .stride = 12, .attributes = &.{.{ .location = 1, .offset = 0, .format = .float32x3 }} };
+            count += 1;
+        }
+        if (key.vertex_layout & 16 != 0) {
+            layouts[count] = .{ .slot = 2, .stride = 16, .attributes = &.{.{ .location = 2, .offset = 0, .format = .float32x4 }} };
+            count += 1;
+        }
         if (key.vertex_layout & 2 != 0) {
             layouts[count] = .{
                 .slot = @intFromEnum(asset.MeshSemantic.uv0),
@@ -1109,8 +1258,8 @@ pub const Renderer = struct {
             .layout = self.pipeline_layout,
             .vertex_shader = model.vertex[variant],
             .vertex_entry = model.desc.variants.vertex[variant].entry,
-            .fragment_shader = model.fragment[if (key.alpha == .mask) 1 else 0],
-            .fragment_entry = model.desc.variants.fragment[if (key.alpha == .mask) 1 else 0].entry,
+            .fragment_shader = model.fragment[fragment_variant],
+            .fragment_entry = model.desc.variants.fragment[fragment_variant].entry,
             .vertex_buffers = layouts[0..count],
             .color_targets = &.{.{
                 .format = .rgba16_float,
@@ -1338,14 +1487,14 @@ test "planning is front-to-back with submission order as the exact tie break" {
 test "shading models are data registrations and duplicate or malformed entries are refused" {
     var fx = try TestFixture.init(1, 32);
     defer fx.deinit();
-    try testing.expectEqual(@as(usize, 1), fx.renderer.models.items.len);
+    try testing.expectEqual(@as(usize, 2), fx.renderer.models.items.len);
     try testing.expectError(error.DuplicateShadingModel, fx.renderer.registerShadingModel(unlitModel()));
 
     var malformed = unlitModel();
     malformed.id = core.ContentId.fromString("test:shading.malformed");
     malformed.requires = .{};
     try testing.expectError(error.InvalidShadingModel, fx.renderer.registerShadingModel(malformed));
-    try testing.expectEqual(@as(usize, 1), fx.renderer.models.items.len);
+    try testing.expectEqual(@as(usize, 2), fx.renderer.models.items.len);
 }
 
 test "material creation validates its model values texture and colour space" {
@@ -1361,7 +1510,7 @@ test "material creation validates its model values texture and colour space" {
         .alpha_cutoff = std.math.nan(f32),
     }, "bad cutoff"));
     try testing.expectError(error.InvalidTexture, fx.renderer.createMaterial(.{
-        .base_color_texture = TextureHandle.fromBits(0x0000_0001_0000_0001),
+        .base_color_texture = TextureHandle.fromBits(0x0000_0001_ffff_ffff),
     }, "stale texture"));
 
     var pixels = [_]u8{ 255, 255, 255, 255 };
@@ -1430,6 +1579,7 @@ test "draw submission refuses stale handles materials submeshes and transforms" 
     uv_model.id = core.ContentId.fromString("test:shading.requires_uv");
     uv_model.requires = StreamSet.of(&.{ .position, .uv0 });
     uv_model.optional = StreamSet.of(&.{.color});
+    uv_model.variants.vertex = uv_model.variants.vertex[0..2];
     try fx.renderer.registerShadingModel(uv_model);
     const uv_material = try fx.renderer.createMaterial(.{ .shading = uv_model.id }, "requires uv");
     defer fx.renderer.destroyMaterial(uv_material);
@@ -1653,6 +1803,112 @@ test "destroying a resident mesh invalidates its handle immediately" {
 const material_test_size = 32;
 const material_test_bytes = material_test_size * material_test_size * 4;
 
+/// Four vertices on a plane, optional semantic subsets in the registry's bit order.
+fn litQuad(renderer: *Renderer, optional: u3) !MeshHandle {
+    const positions = [_]Vec3{ .init(-1, -1, -2), .init(1, -1, -2), .init(1, 1, -2), .init(-1, 1, -2) };
+    const normals = [_]Vec3{.init(0, 0, 1)} ** 4;
+    const tangents = [_][4]f32{.{ 1, 0, 0, 1 }} ** 4;
+    const uvs = [_][2]f32{.{ 0.5, 0.5 }} ** 4;
+    const colors = [_][4]f32{.{ 1, 1, 1, 1 }} ** 4;
+    const indices = [_]u16{ 0, 1, 2, 0, 2, 3 };
+    var streams: [5]asset.MeshStream = undefined;
+    streams[0] = .{ .semantic = .position, .format = .float32x3, .bytes = std.mem.sliceAsBytes(&positions) };
+    streams[1] = .{ .semantic = .normal, .format = .float32x3, .bytes = std.mem.sliceAsBytes(&normals) };
+    var count: usize = 2;
+    if (optional & 1 != 0) {
+        streams[count] = .{ .semantic = .color, .format = .float32x4, .bytes = std.mem.sliceAsBytes(&colors) };
+        count += 1;
+    }
+    if (optional & 2 != 0) {
+        streams[count] = .{ .semantic = .uv0, .format = .float32x2, .bytes = std.mem.sliceAsBytes(&uvs) };
+        count += 1;
+    }
+    if (optional & 4 != 0) {
+        streams[count] = .{ .semantic = .tangent, .format = .float32x4, .bytes = std.mem.sliceAsBytes(&tangents) };
+        count += 1;
+    }
+    return renderer.createMesh(.{
+        .vertex_count = 4,
+        .streams = streams[0..count],
+        .index_format = .uint16,
+        .indices = std.mem.sliceAsBytes(&indices),
+        .submeshes = &.{.{ .first_index = 0, .index_count = 6 }},
+        .bounds = try asset.Mesh.computeBounds(&positions),
+    }, "lit reference plane");
+}
+
+test "lit registration bounds variant slices before creating shaders" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    var model = litModel();
+    model.id = core.ContentId.fromString("test:shading.variant_guard");
+    model.variants.vertex = model.variants.vertex[0..7];
+    try testing.expectError(error.InvalidShadingModel, fx.renderer.registerShadingModel(model));
+    model = litModel();
+    model.id = core.ContentId.fromString("test:shading.variant_guard");
+    model.variants.fragment = model.variants.fragment[0..3];
+    try testing.expectError(error.InvalidShadingModel, fx.renderer.registerShadingModel(model));
+    model = litModel();
+    model.id = core.ContentId.fromString("test:shading.variant_guard");
+    model.requires = StreamSet.of(&.{.position});
+    try testing.expectError(error.InvalidShadingModel, fx.renderer.registerShadingModel(model));
+    try testing.expectEqual(@as(usize, 2), fx.renderer.models.items.len);
+    try testing.expectEqual(@as(usize, 64), @sizeOf(MaterialUniform));
+    try testing.expectEqual(@as(usize, 32), @offsetOf(MaterialUniform, "surface"));
+    try testing.expectEqual(@as(usize, 48), @offsetOf(MaterialUniform, "emissive_strength"));
+}
+
+test "lit values and all texture colour spaces are checked while unlit ignores unread fields" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    inline for (.{ "metallic", "roughness", "occlusion_strength", "emissive_strength", "normal_scale" }) |field| {
+        var desc: MaterialDesc = .{ .shading = lit_id };
+        @field(desc, field) = std.math.nan(f32);
+        try testing.expectError(error.InvalidMaterialValue, fx.renderer.createMaterial(desc, "not finite"));
+    }
+    inline for (.{ "metallic", "roughness", "occlusion_strength" }) |field| {
+        for ([_]f32{ -0.1, 1.1 }) |value| {
+            var desc: MaterialDesc = .{ .shading = lit_id };
+            @field(desc, field) = value;
+            try testing.expectError(error.InvalidMaterialValue, fx.renderer.createMaterial(desc, "not unit"));
+        }
+    }
+    try testing.expectError(error.InvalidMaterialValue, fx.renderer.createMaterial(.{ .shading = lit_id, .emissive_strength = -1 }, "negative emission"));
+    try testing.expectError(error.InvalidMaterialValue, fx.renderer.createMaterial(.{ .shading = lit_id, .emissive = .{ 0, 1.01, 0 } }, "emission factor"));
+    inline for (.{ "base_color_texture", "metallic_roughness_texture", "normal_texture", "occlusion_texture", "emissive_texture" }, 0..) |field, i| {
+        var desc: MaterialDesc = .{ .shading = lit_id };
+        @field(desc, field) = if (i == 0 or i == 4) fx.renderer.linear_white else fx.renderer.white_texture;
+        try testing.expectError(error.WrongColorSpace, fx.renderer.createMaterial(desc, "wrong colour space"));
+        @field(desc, field) = TextureHandle.fromBits(0x0000_0001_ffff_ffff);
+        try testing.expectError(error.InvalidTexture, fx.renderer.createMaterial(desc, "stale slot"));
+    }
+    const ignored = try fx.renderer.createMaterial(.{ .metallic = std.math.nan(f32), .normal_texture = TextureHandle.fromBits(0x0000_0001_ffff_ffff) }, "unread");
+    defer fx.renderer.destroyMaterial(ignored);
+    const valid = try fx.renderer.createMaterial(.{ .shading = lit_id, .roughness = 0, .normal_scale = -1, .emissive_strength = 100000 }, "finite extended ranges");
+    defer fx.renderer.destroyMaterial(valid);
+}
+
+test "lit draws require normals and mapped draws require tangents; every variant records" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    const no_normal = try testMesh(&fx.renderer, false);
+    const material = try fx.renderer.createMaterial(.{ .shading = lit_id }, "lit");
+    const mapped = try fx.renderer.createMaterial(.{ .shading = lit_id, .normal_texture = fx.renderer.flat_normal }, "mapped");
+    defer fx.renderer.destroyMaterial(material);
+    defer fx.renderer.destroyMaterial(mapped);
+    try fx.renderer.begin(testView(32));
+    try testing.expectError(error.MissingStream, fx.renderer.drawMesh(.{ .mesh = no_normal, .material = material, .world = .identity }));
+    for (0..8) |i| {
+        const mesh = try litQuad(&fx.renderer, @intCast(i));
+        if (i & 4 == 0) try testing.expectError(error.MissingStream, fx.renderer.drawMesh(.{ .mesh = mesh, .material = mapped, .world = .identity }));
+        try fx.renderer.drawMesh(.{ .mesh = mesh, .material = material, .world = .identity });
+        if (i & 4 != 0) try fx.renderer.drawMesh(.{ .mesh = mesh, .material = mapped, .world = .identity });
+    }
+    try finishTestFrame(&fx);
+    try testing.expectEqual(@as(usize, 12), fx.renderer.pipelines.items.len);
+    if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
+}
+
 fn materialQuad(renderer: *Renderer) !MeshHandle {
     const positions = [_]Vec3{
         .init(-0.8, -0.8, -2), .init(0.8, -0.8, -2),
@@ -1673,6 +1929,169 @@ fn materialQuad(renderer: *Renderer) !MeshHandle {
         .submeshes = &submeshes,
         .bounds = try asset.Mesh.computeBounds(&positions),
     }, "material readback quad");
+}
+
+fn litBox(renderer: *Renderer) !MeshHandle {
+    var positions: [24]Vec3 = undefined;
+    var normals: [24]Vec3 = undefined;
+    var indices: [36]u16 = undefined;
+    const center = Vec3.init(0, 0, -2.2);
+    const axes = [_]Vec3{ .init(0, 0, 1), .init(0, 0, -1), .init(1, 0, 0), .init(-1, 0, 0), .init(0, 1, 0), .init(0, -1, 0) };
+    for (axes, 0..) |n, face| {
+        const t = if (@abs(n.y) == 1) Vec3.init(1, 0, 0) else Vec3.cross(.init(0, 1, 0), n);
+        const b = Vec3.cross(n, t);
+        for ([_][2]f32{ .{ -1, -1 }, .{ 1, -1 }, .{ 1, 1 }, .{ -1, 1 } }, 0..) |corner, i| {
+            positions[4 * face + i] = Vec3.add(center, Vec3.scale(Vec3.add(n, Vec3.add(Vec3.scale(t, corner[0]), Vec3.scale(b, corner[1]))), 0.4));
+            normals[4 * face + i] = n;
+        }
+        for ([_]u16{ 0, 1, 2, 0, 2, 3 }, 0..) |index, i| indices[6 * face + i] = @intCast(4 * face + index);
+    }
+    return renderer.createMesh(.{
+        .vertex_count = 24,
+        .streams = &.{
+            .{ .semantic = .position, .format = .float32x3, .bytes = std.mem.sliceAsBytes(&positions) },
+            .{ .semantic = .normal, .format = .float32x3, .bytes = std.mem.sliceAsBytes(&normals) },
+        },
+        .index_format = .uint16,
+        .indices = std.mem.sliceAsBytes(&indices),
+        .submeshes = &.{.{ .first_index = 0, .index_count = 36 }},
+        .bounds = try asset.Mesh.computeBounds(&positions),
+    }, "lit reference box");
+}
+
+test "lit reference plane and box match CPU dielectric metal emission ambient and exposure" {
+    if (rhi.backend == .null) return;
+    for ([_]u32{ 1, 4 }) |samples| {
+        var fx = try TestFixture.init(samples, material_test_size);
+        defer fx.deinit();
+        const plane = try litQuad(&fx.renderer, 0);
+        const box = try litBox(&fx.renderer);
+        const readback = try fx.device.createBuffer(.{ .size = material_test_bytes, .usage = .{ .copy_dst = true }, .memory = .readback });
+        defer fx.device.destroyBuffer(readback);
+        const cases = [_]struct { surface: lighting.Surface, ambient: [3]f32 = .{ 0.2, 0.3, 0.4 }, ev: ?f32 = null, mirror: bool = false }{
+            .{ .surface = .{ .base = .{ 0.6, 0.2, 0.1 }, .roughness = 0.7 } },
+            .{ .surface = .{ .base = .{ 0.7, 0.5, 0.2 }, .metallic = 1, .roughness = 0.45 } },
+            .{ .surface = .{ .base = .{ 0.2, 0.5, 0.7 }, .metallic = 0.4, .roughness = 0.8 }, .mirror = true },
+            .{ .surface = .{ .base = .{ 0, 0, 0 }, .emissive = .{ 12, 2, 0.3 } }, .ev = 2 },
+            .{ .surface = .{ .base = .{ 0.5, 0.4, 0.3 }, .metallic = 1 }, .ev = -1 },
+            .{ .surface = .{ .base = .{ 0, 0, 0 }, .metallic = 1 } },
+        };
+        const lights = [_]Light{
+            .{ .kind = .directional, .color = .{ 1, 0.9, 0.8 }, .intensity = 2, .world = .identity },
+            .{ .kind = .point, .color = .{ 0.3, 0.6, 1 }, .intensity = 3, .range = 5, .world = Mat4.translation(.init(0, 0.5, -0.5)) },
+            .{ .kind = .spot, .color = .{ 0.7, 0.2, 0.1 }, .intensity = 2, .range = 4, .world = .identity },
+        };
+        for (cases) |case| {
+            const material = try fx.renderer.createMaterial(.{
+                .shading = lit_id,
+                .base_color = .{ case.surface.base[0], case.surface.base[1], case.surface.base[2], 1 },
+                .metallic = case.surface.metallic,
+                .roughness = case.surface.roughness,
+                .emissive = if (case.surface.emissive[0] != 0) .{ 1, 1.0 / 6.0, 0.025 } else .{ 0, 0, 0 },
+                .emissive_strength = 12,
+            }, "lit reference");
+            defer fx.renderer.destroyMaterial(material);
+            var view = testView(material_test_size);
+            view.ambient = case.ambient;
+            view.exposure_ev100 = case.ev;
+            try fx.renderer.begin(view);
+            for (lights) |light| try fx.renderer.addLight(light);
+            const sign: f32 = if (case.mirror) -1 else 1;
+            try fx.renderer.drawMesh(.{ .mesh = plane, .material = material, .world = Mat4.mul(Mat4.translation(.init(0.65, 0, 0)), Mat4.scaling(.init(0.45 * sign, 0.8, 1))) });
+            try fx.renderer.drawMesh(.{ .mesh = box, .material = material, .world = Mat4.mul(Mat4.translation(.init(-0.65, 0, 0)), Mat4.scaling(.init(sign, 1, 1))) });
+            const frame = try fx.device.beginFrame();
+            const cmd = try fx.device.beginCommandBuffer();
+            try fx.renderer.prepare(cmd, frame);
+            try fx.renderer.recordFrame(cmd, frame, false);
+            try cmd.textureBarrier(&.{.{ .texture = frame.surface_texture, .from = .present, .to = .copy_src }});
+            try cmd.copyTextureToBuffer(.{ .src = frame.surface_texture, .size = .{ .width = material_test_size, .height = material_test_size }, .dst = readback });
+            try cmd.textureBarrier(&.{.{ .texture = frame.surface_texture, .from = .copy_src, .to = .present }});
+            try cmd.submit();
+            try fx.device.endFrame();
+            fx.device.waitIdle();
+            const bytes = try fx.device.mapBuffer(readback);
+            defer fx.device.unmapBuffer(readback);
+            for ([_]struct { x: usize, depth: f32 }{ .{ .x = 22, .depth = 2 }, .{ .x = 10, .depth = 1.8 } }) |pixel| {
+                const p = Vec3.init(((@as(f32, @floatFromInt(pixel.x)) + 0.5) / 16 - 1) * pixel.depth, -pixel.depth / 32, -pixel.depth);
+                const expected = lighting.shade(case.surface, p, .init(0, 0, 1), .zero, &lights, case.ambient, case.ev);
+                try expectDisplayTexel(displayTexel(fx.device.capabilities().surface_format, expected), bytes[(16 * material_test_size + pixel.x) * 4 ..][0..4].*);
+            }
+        }
+    }
+}
+
+test "lit five texture slots and all fragment variants match effective CPU texels" {
+    if (rhi.backend == .null) return;
+    var fx = try TestFixture.init(1, material_test_size);
+    defer fx.deinit();
+    const mesh = try litQuad(&fx.renderer, 7);
+    const pixels = [_][4]u8{ .{ 180, 120, 60, 255 }, .{ 255, 160, 190, 255 }, .{ 128, 190, 240, 255 }, .{ 70, 0, 0, 255 }, .{ 100, 160, 220, 255 } };
+    var textures: [5]TextureHandle = undefined;
+    for (pixels, &textures, 0..) |pixel, *texture, i| {
+        var bytes = pixel;
+        texture.* = try fx.renderer.createTexture(.{ .width = 1, .height = 1, .pixels = &bytes }, .{ .color_space = if (i == 0 or i == 4) .srgb else .linear });
+    }
+    defer for (textures) |texture| fx.renderer.destroyTexture(texture);
+    const readback = try fx.device.createBuffer(.{ .size = material_test_bytes, .usage = .{ .copy_dst = true }, .memory = .readback });
+    defer fx.device.destroyBuffer(readback);
+    const light = Light{ .kind = .directional, .intensity = 2, .world = .identity };
+    for ([_]struct { mode: AlphaMode, coverage: f32 }{
+        .{ .mode = .@"opaque", .coverage = 1 },
+        .{ .mode = .mask, .coverage = 1 },
+        .{ .mode = .mask, .coverage = 0.25 },
+        .{ .mode = .blend, .coverage = 0.4 },
+    }) |alpha_case| for ([_]bool{ false, true }) |mapped| for ([_]bool{ false, true }) |mirror| {
+        const alpha = alpha_case.mode;
+        const material = try fx.renderer.createMaterial(.{
+            .shading = lit_id,
+            .base_color = .{ 0.7, 0.8, 0.9, alpha_case.coverage },
+            .base_color_texture = textures[0],
+            .metallic = 0.6,
+            .roughness = 0.9,
+            .metallic_roughness_texture = textures[1],
+            .normal_texture = if (mapped) textures[2] else .none,
+            .normal_scale = 0.7,
+            .occlusion_texture = textures[3],
+            .occlusion_strength = 0.8,
+            .emissive = .{ 0.2, 0.3, 0.4 },
+            .emissive_texture = textures[4],
+            .emissive_strength = 2,
+            .alpha_mode = alpha,
+        }, "five slot lit");
+        defer fx.renderer.destroyMaterial(material);
+        var view = testView(material_test_size);
+        view.ambient = .{ 0.3, 0.4, 0.5 };
+        try fx.renderer.begin(view);
+        try fx.renderer.addLight(light);
+        try fx.renderer.drawMesh(.{ .mesh = mesh, .material = material, .world = Mat4.scaling(.init(if (mirror) -1 else 1, 1, 1)) });
+        const frame = try fx.device.beginFrame();
+        const cmd = try fx.device.beginCommandBuffer();
+        try fx.renderer.prepare(cmd, frame);
+        try fx.renderer.recordFrame(cmd, frame, false);
+        try cmd.textureBarrier(&.{.{ .texture = frame.surface_texture, .from = .present, .to = .copy_src }});
+        try cmd.copyTextureToBuffer(.{ .src = frame.surface_texture, .size = .{ .width = material_test_size, .height = material_test_size }, .dst = readback });
+        try cmd.textureBarrier(&.{.{ .texture = frame.surface_texture, .from = .copy_src, .to = .present }});
+        try cmd.submit();
+        try fx.device.endFrame();
+        fx.device.waitIdle();
+        var surface: lighting.Surface = .{ .metallic = 0.6 * 190 / 255.0, .roughness = 0.9 * 160 / 255.0, .occlusion = 1 + 0.8 * (70.0 / 255.0 - 1) };
+        for (&surface.base, pixels[0][0..3], [_]f32{ 0.7, 0.8, 0.9 }) |*value, byte, factor| value.* = srgbToLinear(byte) * factor;
+        for (&surface.emissive, pixels[4][0..3], [_]f32{ 0.2, 0.3, 0.4 }) |*value, byte, factor| value.* = srgbToLinear(byte) * factor * 2;
+        const normal: Vec3 = if (mapped) .init((128.0 / 255.0 * 2 - 1) * 0.7 * (if (mirror) @as(f32, -1) else 1), (190.0 / 255.0 * 2 - 1) * 0.7, 240.0 / 255.0 * 2 - 1) else .init(0, 0, 1);
+        var expected = lighting.shade(surface, .init(0.0625, -0.0625, -2), normal, .zero, &.{light}, view.ambient, null);
+        if (alpha == .blend) for (&expected, view.clear_color[0..3]) |*value, clear| {
+            value.* = value.* * 0.4 + clear * 0.6;
+        };
+        if (alpha == .mask and alpha_case.coverage < 0.5) expected = view.clear_color[0..3].*;
+        const bytes = try fx.device.mapBuffer(readback);
+        defer fx.device.unmapBuffer(readback);
+        try expectDisplayTexel(displayTexel(fx.device.capabilities().surface_format, expected), bytes[(16 * material_test_size + 16) * 4 ..][0..4].*);
+    };
+}
+
+fn srgbToLinear(byte: u8) f32 {
+    const v = @as(f32, @floatFromInt(byte)) / 255;
+    return if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
 }
 
 const MaterialCase = enum { mask, blend, mirrored };

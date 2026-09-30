@@ -398,6 +398,9 @@ pub fn build(b: *std.Build) void {
         modules.get("render3d").?.addAnonymousImport("unlit_metallib", .{
             .root_source_file = metalLibrary(b, "unlit", &.{"engine/src/render3d/shaders/unlit.metal"}),
         });
+        modules.get("render3d").?.addAnonymousImport("lit_metallib", .{
+            .root_source_file = metalLibrary(b, "lit", &.{"engine/src/render3d/shaders/lit.metal"}),
+        });
         modules.get("render3d").?.addAnonymousImport("tone_metallib", .{
             .root_source_file = metalLibrary(b, "tone", &.{"engine/src/render3d/shaders/tone.metal"}),
         });
@@ -1613,6 +1616,21 @@ fn vulkanGraph(
     render3d_module.addAnonymousImport("unlit_uv_color_vertex_spirv", .{ .root_source_file = unlit_uv_color_vertex });
     render3d_module.addAnonymousImport("unlit_fragment_spirv", .{ .root_source_file = unlit_fragment });
     render3d_module.addAnonymousImport("unlit_mask_fragment_spirv", .{ .root_source_file = unlit_mask_fragment });
+    inline for (0..8) |i| {
+        const stage = vulkanShaderStageDefines(b, checker, b.fmt("lit-vertex-{d}", .{i}), "engine/src/render3d/shaders/lit.vert.glsl", "vert", b.fmt("lit_vertex_{d}", .{i}), &.{
+            if (i & 1 != 0) "-DCOLOR=1" else "-DNO_COLOR=1",
+            if (i & 2 != 0) "-DUV=1" else "-DNO_UV=1",
+            if (i & 4 != 0) "-DTANGENT=1" else "-DNO_TANGENT=1",
+        });
+        render3d_module.addAnonymousImport(b.fmt("lit_vertex_{d}_spirv", .{i}), .{ .root_source_file = stage });
+    }
+    inline for (0..4) |i| {
+        const stage = vulkanShaderStageDefines(b, checker, b.fmt("lit-fragment-{d}", .{i}), "engine/src/render3d/shaders/lit.frag.glsl", "frag", b.fmt("lit_fragment_{d}", .{i}), &.{
+            if (i & 1 != 0) "-DMASK=1" else "-DNO_MASK=1",
+            if (i & 2 != 0) "-DNORMAL_MAP=1" else "-DNO_NORMAL_MAP=1",
+        });
+        render3d_module.addAnonymousImport(b.fmt("lit_fragment_{d}_spirv", .{i}), .{ .root_source_file = stage });
+    }
     render3d_module.addAnonymousImport("tone_vertex_spirv", .{ .root_source_file = tone_vertex });
     render3d_module.addAnonymousImport("tone_fragment_spirv", .{ .root_source_file = tone_fragment });
 
@@ -1633,8 +1651,21 @@ fn vulkanShaderStage(
     stage: []const u8,
     profile: []const u8,
 ) std.Build.LazyPath {
+    return vulkanShaderStageDefines(b, checker, name, source, stage, profile, &.{});
+}
+
+fn vulkanShaderStageDefines(
+    b: *std.Build,
+    checker: *std.Build.Step.Compile,
+    name: []const u8,
+    source: []const u8,
+    stage: []const u8,
+    profile: []const u8,
+    defines: []const []const u8,
+) std.Build.LazyPath {
     const compile = b.addSystemCommand(&.{ "glslangValidator", "-V", "--target-env", "vulkan1.3", "-S", stage, "-o" });
     const compiled = compile.addOutputFileArg(b.fmt("{s}.unchecked.spv", .{name}));
+    compile.addArgs(defines);
     compile.addFileArg(b.path(source));
 
     const validate = b.addSystemCommand(&.{ "spirv-val", "--target-env", "vulkan1.3" });

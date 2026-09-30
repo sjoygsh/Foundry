@@ -45,6 +45,8 @@ pub const textureLoader = loader.textureLoader;
 pub const textureOf = loader.textureOf;
 pub const Wrap = renderer.Wrap;
 pub const unlit_id = renderer.unlit_id;
+pub const lit_id = renderer.lit_id;
+pub const ShadingFeatures = renderer.ShadingFeatures;
 
 test {
     _ = camera;

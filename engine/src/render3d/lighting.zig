@@ -64,11 +64,11 @@ pub fn packLight(light: Light) PackedLight {
     };
 }
 
-pub fn packFrame(view_projection: Mat4, camera: Vec3, exposure: ?f32, ambient: [3]f32, lights: []const Light) FrameUniform {
+pub fn packFrame(view_projection: Mat4, camera: Vec3, exposure: ?f32, ambient_radiance: [3]f32, lights: []const Light) FrameUniform {
     var uniform = std.mem.zeroes(FrameUniform);
     uniform.view_projection = view_projection;
     uniform.camera_exposure = .{ camera.x, camera.y, camera.z, exposureScale(exposure) };
-    uniform.ambient = .{ ambient[0], ambient[1], ambient[2], 0 };
+    uniform.ambient = .{ ambient_radiance[0], ambient_radiance[1], ambient_radiance[2], 0 };
     uniform.counts[0] = @intCast(lights.len);
     // Shadow rendering arrives in Step 5. The lookup flag stays off until then.
     uniform.shadow_matrix = .identity;
@@ -91,6 +91,114 @@ pub fn attenuation(distance: f32, range: f32) f32 {
 pub fn spotCone(cos_angle: f32, inner: f32, outer: f32) f32 {
     const t = std.math.clamp((cos_angle - @cos(outer)) / (@cos(inner) - @cos(outer)), 0, 1);
     return t * t;
+}
+
+/// Effective texel-times-factor values, all in linear space. §8's CPU oracle
+/// is independent of shader code and resource packing.
+pub const Surface = struct {
+    base: [3]f32 = .{ 1, 1, 1 },
+    metallic: f32 = 0,
+    roughness: f32 = 1,
+    occlusion: f32 = 1,
+    emissive: [3]f32 = .{ 0, 0, 0 },
+};
+
+fn pow5(x: f32) f32 {
+    const x2 = x * x;
+    return x2 * x2 * x;
+}
+
+/// glTF 2.0 Appendix B, including cosine. Diffuse is attenuated by the
+/// dielectric Fresnel before mixing with the metal, not by mixed F0 twice.
+pub fn brdf(surface: Surface, n: Vec3, v: Vec3, l: Vec3) [3]f32 {
+    const nv = @max(Vec3.dot(n, v), 0);
+    const nl = @max(Vec3.dot(n, l), 0);
+    if (nv == 0 or nl == 0) return .{ 0, 0, 0 };
+    const h = Vec3.add(v, l).normalize();
+    const nh = @max(Vec3.dot(n, h), 0);
+    const vh = @max(Vec3.dot(v, h), 0);
+    const rough = std.math.clamp(surface.roughness, 0.045, 1);
+    const alpha = rough * rough;
+    const a2 = alpha * alpha;
+    const denominator = nh * nh * (a2 - 1) + 1;
+    const distribution = a2 / (std.math.pi * denominator * denominator);
+    const visibility = 0.5 / @max(nl * @sqrt(nv * nv * (1 - a2) + a2) + nv * @sqrt(nl * nl * (1 - a2) + a2), 1e-7);
+    const f = pow5(1 - vh);
+    var result: [3]f32 = undefined;
+    for (surface.base, &result) |base, *value| {
+        const f0 = 0.04 * (1 - surface.metallic) + base * surface.metallic;
+        const fresnel = f0 + (1 - f0) * f;
+        value.* = ((1 - (0.04 + 0.96 * f)) * base * (1 - surface.metallic) / std.math.pi +
+            distribution * visibility * fresnel) * nl;
+    }
+    return result;
+}
+
+/// Constant radiance split-sum: analytic DFG fit, Karis (2014),
+/// Physically Based Shading on Mobile, unrealengine.com. No environment map.
+pub fn ambient(surface: Surface, nv: f32, radiance: [3]f32) [3]f32 {
+    const rough = std.math.clamp(surface.roughness, 0.045, 1);
+    const rx = 1 - rough;
+    const ry = 0.0425 - 0.0275 * rough;
+    const rz = 1.04 - 0.572 * rough;
+    const rw = -0.04 + 0.022 * rough;
+    const a = @min(rx * rx, @exp2(-9.28 * @max(nv, 0))) * rx + ry;
+    const ab = [2]f32{ -1.04 * a + rz, 1.04 * a + rw };
+    const dielectric = 0.04 * ab[0] + ab[1];
+    var result: [3]f32 = undefined;
+    for (surface.base, radiance, &result) |base, light, *value| {
+        const f0 = 0.04 * (1 - surface.metallic) + base * surface.metallic;
+        // The fit slightly undershoots zero for an absorbing (black) metal.
+        const specular = @max(f0 * ab[0] + ab[1], 0);
+        value.* = light * ((1 - dielectric) * base * (1 - surface.metallic) + specular) * surface.occlusion;
+    }
+    return result;
+}
+
+pub fn shade(surface: Surface, position: Vec3, normal: Vec3, camera: Vec3, lights: []const Light, ambient_radiance: [3]f32, exposure: ?f32) [3]f32 {
+    const n = normal.normalize();
+    const v = Vec3.sub(camera, position).normalize();
+    var result = ambient(surface, @max(Vec3.dot(n, v), 0), ambient_radiance);
+    for (lights) |light| {
+        var l = Vec3.scale(direction(light.world), -1);
+        var falloff: f32 = 1;
+        if (light.kind != .directional) {
+            const p = Vec3.init(light.world.cols[3][0], light.world.cols[3][1], light.world.cols[3][2]);
+            const delta = Vec3.sub(p, position);
+            const distance = delta.length();
+            l = if (distance == 0) n else delta.normalize();
+            falloff = attenuation(distance, light.range);
+            if (light.kind == .spot) falloff *= spotCone(Vec3.dot(Vec3.scale(l, -1), direction(light.world)), light.inner_cone, light.outer_cone);
+        }
+        const reflected = brdf(surface, n, v, l);
+        for (&result, reflected, light.color) |*value, channel, color|
+            value.* += channel * color * light.intensity * falloff;
+    }
+    for (&result, surface.emissive) |*value, emission| value.* = (value.* + emission) * exposureScale(exposure);
+    return result;
+}
+
+test "BRDF pins normal incidence dielectric metal grazing and roughness floor" {
+    const n = Vec3.init(0, 0, 1);
+    const dielectric = brdf(.{ .base = .{ 0.5, 0.5, 0.5 } }, n, n, n);
+    try std.testing.expectApproxEqAbs(@as(f32, (0.96 * 0.5 + 0.01) / std.math.pi), dielectric[0], 1e-6);
+    const metal = brdf(.{ .base = .{ 0.5, 0.5, 0.5 }, .metallic = 1 }, n, n, n);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.125 / std.math.pi), metal[0], 1e-6);
+    try std.testing.expectEqual([3]f32{ 0, 0, 0 }, brdf(.{}, n, n, .init(1, 0, 0)));
+    try std.testing.expectEqual(brdf(.{ .roughness = 0.045 }, n, n, n), brdf(.{ .roughness = 0 }, n, n, n));
+}
+
+test "occlusion scales ambient alone while emission and direct light survive" {
+    const n = Vec3.init(0, 0, 1);
+    const light = Light{ .kind = .directional, .intensity = 1, .world = .identity };
+    const surface = Surface{ .occlusion = 0, .emissive = .{ 1, 0, 0 } };
+    const result = shade(surface, .zero, n, n, &.{light}, .{ 3, 3, 3 }, null);
+    const direct = brdf(surface, n, n, n);
+    try std.testing.expectApproxEqAbs(direct[0] + 1, result[0], 1e-6);
+    try std.testing.expectApproxEqAbs(direct[1], result[1], 1e-6);
+    const shaded_metal = ambient(.{ .metallic = 1 }, 1, .{ 1, 1, 1 });
+    try std.testing.expect(shaded_metal[0] > 0);
+    try std.testing.expectEqual([3]f32{ 0, 0, 0 }, ambient(.{ .metallic = 1, .base = .{ 0, 0, 0 } }, 1, .{ 1, 1, 1 }));
 }
 
 /// Khronos PBR Neutral curve, evaluated in non-negative linear Rec.709.

@@ -16,7 +16,8 @@ struct Constants { float4x4 world; float3x3 cofactor; };
 static_assert(sizeof(PackedLight) == 64, "PackedLight must match lighting.zig");
 static_assert(sizeof(Frame) == 1216, "Frame must match lighting.zig");
 static_assert(sizeof(Constants) == 112, "Constants must match renderer.zig");
-struct Material { float4 base_color; float alpha_cutoff; float3 padding; };
+struct Material { float4 base_color; float alpha_cutoff; float p0,p1,p2; float4 surface; float4 emissive_strength; };
+static_assert(sizeof(Material) == 64, "Material must match renderer.zig");
 
 struct VertexOut {
     float4 position [[position]];

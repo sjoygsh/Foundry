@@ -77,9 +77,10 @@ const MaterialEntry = struct {
     /// The renderer's, and stable for the entry's life.
     handle: MaterialHandle,
     /// `.none` when the record names no texture, or the entry is the placeholder.
-    texture: asset.AssetHandle,
+    textures: [5]asset.AssetHandle,
     /// The payload the bind group was built from; a different current one means rebuild.
-    built_from: TextureHandle,
+    built_from: [5]TextureHandle,
+    reported_ignored: bool = false,
 };
 
 const Part = struct {
@@ -126,7 +127,7 @@ pub const Content = struct {
         var materials = self.materials.iterator();
         while (materials.next()) |entry| {
             self.renderer.destroyMaterial(entry.value.handle);
-            if (!entry.value.texture.isNone()) self.assets.release(entry.value.texture);
+            for (entry.value.textures) |texture| if (!texture.isNone()) self.assets.release(texture);
         }
         self.materials.deinit(self.gpa);
         var models = self.models.iterator();
@@ -376,8 +377,8 @@ pub const Content = struct {
             .id = id,
             .refs = 1,
             .handle = handle,
-            .texture = .none,
-            .built_from = .none,
+            .textures = @splat(.none),
+            .built_from = @splat(.none),
         });
         errdefer _ = self.materials.remove(entry);
         try self.resolveMaterial(entry);
@@ -390,7 +391,7 @@ pub const Content = struct {
         if (entry.refs != 0) return;
         // The material first: it binds the texture, and does not keep it alive.
         self.renderer.destroyMaterial(entry.handle);
-        if (!entry.texture.isNone()) self.assets.release(entry.texture);
+        for (entry.textures) |texture| if (!texture.isNone()) self.assets.release(texture);
         _ = self.materials.remove(handle);
     }
 
@@ -404,9 +405,14 @@ pub const Content = struct {
     /// or the asset was unloaded — before any draw binds the old one.
     fn refresh(self: *Self, handle: EntryHandle) Error!void {
         const entry = self.materials.getConst(handle).?;
-        if (entry.texture.isNone()) return;
-        const current = loader.textureOf(self.assets, entry.texture, self.renderer) orelse TextureHandle.none;
-        if (!current.eql(entry.built_from)) try self.resolveMaterial(handle);
+        for (entry.textures, entry.built_from) |texture, built_from| {
+            if (texture.isNone()) continue;
+            const current = loader.textureOf(self.assets, texture, self.renderer) orelse TextureHandle.none;
+            if (!current.eql(built_from)) {
+                try self.resolveMaterial(handle);
+                return;
+            }
+        }
     }
 
     /// Reads the record and rebuilds the material behind the entry's stable handle. Only
@@ -415,49 +421,69 @@ pub const Content = struct {
     fn resolveMaterial(self: *Self, handle: EntryHandle) Error!void {
         const id = self.materials.getConst(handle).?.id;
         var desc: MaterialDesc = .{};
-        var texture: asset.AssetHandle = .none;
+        var textures: [5]asset.AssetHandle = @splat(.none);
+        errdefer for (textures) |texture| if (!texture.isNone()) self.assets.release(texture);
         const reason: ?[]const u8 = blk: {
             const record = self.assets.store.lookup(id) orelse break :blk "its record is not in any loaded package";
             if (!record.schema_id.eql(asset.schemas.material.id)) break :blk "its record is not a foundry:material";
-            const texture_id = readMaterial(record.fields, &desc) catch |err| break :blk switch (err) {
+            const texture_ids = readMaterial(record.fields, &desc) catch |err| break :blk switch (err) {
                 error.UnknownAlphaMode => "its alpha_mode is not opaque, mask or blend",
                 error.Unreadable => "its fields cannot be read",
             };
-            if (texture_id) |tid| {
-                texture = self.assets.acquireWith(self.gpa, tid, loader.textureLoader(self.renderer)) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    else => break :blk "its base_color_texture did not load",
-                };
-                desc.base_color_texture = loader.textureOf(self.assets, texture, self.renderer) orelse
-                    break :blk "its base_color_texture did not load";
+            const reads = self.renderer.materialFields(desc.shading) orelse break :blk "its shading model is not registered";
+            const enabled = [5]bool{ reads.base_color_texture, reads.metallic_roughness, reads.normal, reads.occlusion, reads.emissive };
+            var handles: [5]TextureHandle = @splat(.none);
+            for (texture_ids, enabled, 0..) |texture_id, enabled_slot, i| {
+                if (!enabled_slot) continue;
+                if (texture_id) |tid| {
+                    textures[i] = self.assets.acquireWith(self.gpa, tid, loader.textureLoader(self.renderer)) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => break :blk "one of its textures did not load",
+                    };
+                    handles[i] = loader.textureOf(self.assets, textures[i], self.renderer) orelse break :blk "one of its textures did not load";
+                }
             }
-            const entry = self.materials.getConst(handle).?;
+            desc.base_color_texture = handles[0];
+            desc.metallic_roughness_texture = handles[1];
+            desc.normal_texture = handles[2];
+            desc.occlusion_texture = handles[3];
+            desc.emissive_texture = handles[4];
+            const entry = self.materials.get(handle).?;
             self.renderer.updateMaterial(entry.handle, desc, material_label) catch |err| break :blk switch (err) {
                 error.UnknownShadingModel => "its shading model is not registered",
-                error.InvalidMaterialValue => "a value is not finite or is outside [0, 1]",
-                error.WrongColorSpace => "its base_color_texture is linear, and must be sRGB",
-                error.InvalidTexture => "its base_color_texture did not load",
-                else => |e| {
-                    if (!texture.isNone()) self.assets.release(texture);
-                    return e;
-                },
+                error.InvalidMaterialValue => "a value is not finite or outside its material range",
+                error.WrongColorSpace => "a texture has the wrong colour space for its slot",
+                error.InvalidTexture => "one of its textures did not load",
+                else => |e| return e,
             };
+            // Non-default unread values and references are the author's intent, not
+            // schema-expanded defaults. Report once for this entry, never per frame/reload.
+            const ignored = (!reads.metallic_roughness and (desc.metallic != 0 or desc.roughness != 1 or texture_ids[1] != null)) or
+                (!reads.normal and (desc.normal_scale != 1 or texture_ids[2] != null)) or
+                (!reads.occlusion and (desc.occlusion_strength != 1 or texture_ids[3] != null)) or
+                (!reads.emissive and (!std.mem.eql(f32, &desc.emissive, &.{ 0, 0, 0 }) or desc.emissive_strength != 1 or texture_ids[4] != null)) or
+                (!reads.base_color_texture and texture_ids[0] != null) or
+                (!reads.casts_shadow and !desc.casts_shadow) or
+                (desc.alpha_mode == .blend and desc.casts_shadow and reads.casts_shadow);
+            if (ignored and !entry.reported_ignored) {
+                log.warn("material {f}: fields unread by its shading model are ignored", .{id});
+                entry.reported_ignored = true;
+            }
             break :blk null;
         };
 
         const entry = self.materials.get(handle).?;
         if (reason) |why| {
             log.warn("material {f} is drawn as the placeholder: {s}", .{ id, why });
-            if (!texture.isNone()) self.assets.release(texture);
-            texture = .none;
+            for (textures) |texture| if (!texture.isNone()) self.assets.release(texture);
+            textures = @splat(.none);
             desc = placeholder;
             try self.renderer.updateMaterial(entry.handle, placeholder, material_label);
         }
-        // The new texture is held before the old one is let go, so a texture both name is
-        // never evictable in between.
-        if (!entry.texture.isNone()) self.assets.release(entry.texture);
-        entry.texture = texture;
-        entry.built_from = desc.base_color_texture;
+        // Hold all five new slots before releasing any old slot, including aliases.
+        for (entry.textures) |texture| if (!texture.isNone()) self.assets.release(texture);
+        entry.textures = textures;
+        entry.built_from = .{ desc.base_color_texture, desc.metallic_roughness_texture, desc.normal_texture, desc.occlusion_texture, desc.emissive_texture };
     }
 };
 
@@ -468,7 +494,7 @@ fn refuse(record: asset.Record, why: []const u8) error{InvalidModelRecord} {
 
 /// Fills `desc` from a material record and returns the texture it names, if any. A field
 /// the record lacks keeps `MaterialDesc`'s default, which is the schema's.
-fn readMaterial(fields: asset.RecordFields, desc: *MaterialDesc) error{ Unreadable, UnknownAlphaMode }!?ContentId {
+fn readMaterial(fields: asset.RecordFields, desc: *MaterialDesc) error{ Unreadable, UnknownAlphaMode }![5]?ContentId {
     if (indexOf(fields, "shading")) |i| desc.shading = (fields.idAt(i) catch return error.Unreadable) orelse desc.shading;
     if (indexOf(fields, "base_color")) |i| if (fields.nestedAt(i) catch return error.Unreadable) |color| {
         for ([_][]const u8{ "r", "g", "b", "a" }, &desc.base_color) |name, *channel| {
@@ -482,8 +508,20 @@ fn readMaterial(fields: asset.RecordFields, desc: *MaterialDesc) error{ Unreadab
         desc.alpha_cutoff = @floatCast(value);
     };
     if (indexOf(fields, "double_sided")) |i| desc.double_sided = (fields.boolAt(i) catch return error.Unreadable) orelse desc.double_sided;
-    const i = indexOf(fields, "base_color_texture") orelse return null;
-    return fields.idAt(i) catch return error.Unreadable;
+    inline for (.{ "metallic", "roughness", "normal_scale", "occlusion_strength", "emissive_strength" }) |name| {
+        if (indexOf(fields, name)) |i| if (fields.floatAt(i) catch return error.Unreadable) |value| {
+            @field(desc, name) = @floatCast(value);
+        };
+    }
+    if (indexOf(fields, "emissive")) |i| if (fields.nestedAt(i) catch return error.Unreadable) |color| {
+        for ([_][]const u8{ "r", "g", "b" }, &desc.emissive) |name, *channel| channel.* = floatField(color, name) orelse return error.Unreadable;
+    };
+    if (indexOf(fields, "casts_shadow")) |i| desc.casts_shadow = (fields.boolAt(i) catch return error.Unreadable) orelse desc.casts_shadow;
+    var ids: [5]?ContentId = @splat(null);
+    for ([_][]const u8{ "base_color_texture", "metallic_roughness_texture", "normal_texture", "occlusion_texture", "emissive_texture" }, &ids) |name, *id| {
+        if (indexOf(fields, name)) |i| id.* = fields.idAt(i) catch return error.Unreadable;
+    }
+    return ids;
 }
 
 fn indexOf(fields: asset.RecordFields, name: []const u8) ?u32 {

@@ -1,8 +1,36 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-30
-**Current handoff: M22 Step 3 is complete; stop before Step 4.** M21 is complete (2026-09-29,
+**Current handoff: M22 Step 4 is complete; stop before Step 5.** M21 is complete (2026-09-29,
 tag `m21`). M22's design and ADR-0056 are accepted.
+
+**M22 Step 4 is done (2026-09-30).** `foundry:shading.lit` is registered beside unlit,
+without a renderer branch by content ID. Checked, copied variant descriptor slices replace
+the fixed tables: lit has eight optional-stream vertex variants and four fragment variants.
+The shared material layout holds a pinned 64-byte uniform and five independently sampled
+textures, with sRGB/linear white and flat-normal defaults. `MaterialDesc` carries the complete
+version 2 field set; the model's read set gates lit-field validation and texture resolution. Lit draws require
+normals, and normal-mapped draws also require tangents.
+
+The MSL and GLSL models implement glTF Appendix B's metallic-roughness BRDF, directional,
+point and spot lighting, analytic split-sum ambient, ambient-only occlusion, emission and
+pre-exposure. Reflected transforms preserve inverse-transpose normals and tangent handedness.
+The analytic ambient fit's small negative undershoot for black metals is clamped to zero.
+`Content` holds and refreshes all five texture slots, including aliases, keeps material
+handles stable across reload, and reports non-default unread authored fields once per entry.
+Bad values, unknown models and wrong slot colour spaces retain the magenta-placeholder policy.
+
+**Verification:** **1,886 of 1,887 headless tests, one expected skip; 1,969 declared.**
+The full Metal graph passed **1,896 of 1,907, eleven expected skips**; the final affected
+renderer/reference checks passed **48/48** on null and Metal. Plane and box readbacks agree
+with the CPU oracle within ±2/255 at 1× and 4×; textured normal maps, mirrored transforms,
+mask discard and blend pass too. All **15** guard/shader/readback mutations failed as intended
+and were restored. The complete bar, all five Vulkan compile checks and both ad-hoc macOS
+release configurations passed. Both artifacts carry the ambient fit's permission notice in
+`THIRD_PARTY_NOTICES.txt`. Resolution: `light.md`, Step 4.
+
+**Next: Step 5, the directional shadow.** No shadow fit, caster pass or lookup was added;
+Windows runtime proof remains Step 6 and sample lit content remains Step 7. No ABI change.
 
 **M22 Step 3 is done (2026-09-30).** `render3d` accepts at most 16 ordered, validated lights
 per frame, including the single-directional-caster refusal. `FrameView` carries exposure,

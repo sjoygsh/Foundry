@@ -2,6 +2,9 @@
 
 Every third-party component Foundry uses is recorded here, one file per dependency.
 
+`epic-ambient-dfg.md` records the explicitly permitted analytic ambient BRDF fit used by
+M22's lit model; it does not bring in Unreal Engine code or a runtime dependency.
+
 **Rule: a dependency and its license entry land in the same commit.** No exceptions. A
 dependency added "temporarily" without an entry is how a project ends up unable to answer
 what it is actually shipping.
