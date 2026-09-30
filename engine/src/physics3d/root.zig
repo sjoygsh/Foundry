@@ -31,6 +31,16 @@ pub const narrow = @import("narrow.zig");
 pub const shape = @import("shape.zig");
 pub const world = @import("world.zig");
 pub const mesh = @import("mesh.zig");
+pub const character = @import("character.zig");
+pub const Character = character.Character;
+pub const CharacterConfig = character.CharacterConfig;
+pub const CharacterHandle = character.CharacterHandle;
+pub const CharacterMove = character.CharacterMove;
+pub const Ground = character.Ground;
+pub const AddCharacterError = character.AddCharacterError;
+pub const MoveCharacterError = character.MoveCharacterError;
+pub const max_slide_iterations = character.max_slide_iterations;
+pub const max_depenetration_iterations = character.max_depenetration_iterations;
 
 // The names reached for most often. A game sees them today and a mod from M25, so renaming one
 // is a compatibility decision rather than a tidy-up (CLAUDE.md §7).
@@ -79,4 +89,5 @@ test {
     _ = mesh;
     _ = @import("tests.zig");
     _ = @import("mesh_tests.zig");
+    _ = @import("character_tests.zig");
 }

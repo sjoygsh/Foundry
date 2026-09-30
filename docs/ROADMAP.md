@@ -1022,7 +1022,7 @@ and regression coverage in `3d.md` §10:
 - **M22 Light:** the lit model, lights, a shadow, HDR, and a content mod that changes the room.
   Design accepted 2026-09-29: [`light.md`](design/light.md), with ADR-0056.
 - **M23 Collision:** `physics3d` and a first-person walk.
-  Design accepted 2026-09-30: [`collision3d.md`](design/collision3d.md), with ADR-0057; Steps 1–3 done.
+  Design accepted 2026-09-30: [`collision3d.md`](design/collision3d.md), with ADR-0057; Steps 1–4 done.
 - **M24 Animation:** skins and clips, sampled at the fixed step.
 - **M25 Public 3D:** `FoundryApi_v6`, with a content mod and a native one.
 - **M26 A playable 3D sample,** played by someone who did not build it, on macOS, Windows and a
@@ -1110,4 +1110,9 @@ and allocation-free handle/triangle-ordered queries. Step 3 adds the host-regist
 `foundry:collision_mesh`/`.fcol` asset and model-import v2's default-off collision derivation,
 checked subtree exclusions, canonical output and package loading. The bar passes 1,950 of
 1,951 tests (one expected skip); both ad-hoc releases stage, and default-off visual outputs
-are unchanged. Step 4's character controller is next; nothing enters the ABI.
+are unchanged. Step 4 adds validated generational capsule characters, depenetration, continuous
+slide, walkable-only step, snap-down and ground/ceiling reporting, with no pushing or allocation
+in a move. All character scenarios and the 1,200-tick same-process replay pass; the 60-test
+physics suite passes Debug and ReleaseSafe. Ten guards fail deliberate mutations and are
+restored. The final bar passes 1,967 of 1,968 tests (one expected skip). Step 5's Metal sample
+walk is next; nothing enters the ABI. Windows runtime proof remains Step 6, Linux compile-only.

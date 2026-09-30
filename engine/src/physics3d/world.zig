@@ -19,6 +19,7 @@ const body_mod = @import("body.zig");
 const narrow = @import("narrow.zig");
 const shape_mod = @import("shape.zig");
 const mesh_mod = @import("mesh.zig");
+const character_mod = @import("character.zig");
 
 const Aabb = shape_mod.Aabb;
 const Allocator = std.mem.Allocator;
@@ -108,6 +109,7 @@ const Hull = struct {
 };
 
 pub const World = struct {
+    characters: core.HandlePool(character_mod.Characters, character_mod.Character) = .empty,
     bodies: core.HandlePool(Bodies, Body) = .empty,
     hulls: core.HandlePool(Hulls, Hull) = .empty,
     meshes: core.HandlePool(Meshes, mesh_mod.Mesh) = .empty,
@@ -116,6 +118,7 @@ pub const World = struct {
     pub const empty: World = .{};
 
     pub fn deinit(self: *World, gpa: Allocator) void {
+        self.characters.deinit(gpa);
         var it = self.hulls.iterator();
         while (it.next()) |entry| gpa.free(entry.value.points);
         self.hulls.deinit(gpa);
@@ -262,6 +265,46 @@ pub const World = struct {
 
     // -- queries ---------------------------------------------------------------------
 
+    pub const addCharacter = character_mod.add;
+    pub const removeCharacter = character_mod.remove;
+    pub const setCharacterFeet = character_mod.setFeet;
+    pub const moveCharacter = character_mod.move;
+
+    pub fn character(self: *World, handle: character_mod.CharacterHandle) ?*const character_mod.Character {
+        return self.characters.get(handle);
+    }
+
+    /// Controller-only query: pairs are symmetric, unlike public one-sided queries. A resting
+    /// skin contact does not block tangential/away motion. No public query semantics change.
+    pub fn characterCast(self: *World, moving: Convex, displacement: Vec3, source: BodyHandle) ?Hit {
+        return self.characterProbe(moving, displacement, source, null);
+    }
+
+    /// Only downward ground/landing probes prefer a walkable face at a coincident edge.
+    pub fn characterProbe(self: *World, moving: Convex, displacement: Vec3, source: BodyHandle, ground_y: ?f32) ?Hit {
+        const actor = self.bodies.get(source) orelse return null;
+        return self.earliestPair(moving, displacement, narrow.contact_skin, .{ .mask = actor.mask, .ignore = source }, actor.layer, ground_y);
+    }
+
+    /// Deepest contact without a bounded output buffer losing a later, deeper triangle.
+    /// Equal depths keep handle-then-triangle order, just like all other queries.
+    pub fn characterContact(self: *World, query: Convex, source: BodyHandle) ?Contact {
+        const actor = self.bodies.get(source) orelse return null;
+        var best: ?Contact = null;
+        var it = self.bodies.iterator();
+        while (it.next()) |entry| {
+            if (entry.value.mask & actor.layer == 0) continue;
+            var candidates = self.candidate(entry.id, entry.value.*, query.bounds(), .{ .mask = actor.mask, .ignore = source }) orelse continue;
+            while (candidates.next()) |other| {
+                const s = narrow.separation(query, other.convex);
+                if (s.distance >= 0) continue;
+                if (best) |b| if (-s.distance <= b.depth) continue;
+                best = .{ .body = entry.id, .user = entry.value.user, .triangle = other.triangle, .normal = s.normal, .depth = -s.distance, .point = s.point_b };
+            }
+        }
+        return best;
+    }
+
     /// The nearest surface along a ray. `direction` must be unit (to `core.math.Quat`'s loose
     /// tolerance, then normalised); `max_distance` finite and not negative. A ray that starts
     /// inside a shape hits it at distance 0, `started_inside`.
@@ -359,19 +402,58 @@ pub const World = struct {
     /// The earliest hit over every admitted body. **Ties go to the lower handle** because the
     /// scan is in handle order and only a strictly earlier fraction replaces the best (§5.4).
     fn earliest(self: *World, moving: Convex, displacement: Vec3, target: f32, filter: Filter) ?Hit {
+        return self.earliestPair(moving, displacement, target, filter, null, null);
+    }
+
+    fn earliestPair(self: *World, moving: Convex, displacement: Vec3, target: f32, filter: Filter, layer: ?u32, ground_y: ?f32) ?Hit {
         const area = moving.bounds().sweptBy(displacement).expand(target);
         var best: ?Hit = null;
         var it = self.bodies.iterator();
         while (it.next()) |entry| {
+            if (layer) |l| if (entry.value.mask & l == 0) continue;
             var candidates = self.candidate(entry.id, entry.value.*, area, filter) orelse continue;
             while (candidates.next()) |other| {
                 const c = narrow.cast(moving, displacement, other.convex, target) orelse continue;
-                if (best) |b| if (!(c.fraction < b.fraction)) continue;
+                if (layer != null and !c.started_inside and c.fraction == 0 and displacement.dot(c.normal) >= -1e-7) continue;
+                var face = other.convex.surfaceNormal(c.normal);
+                if (ground_y) |up| {
+                    // A box corner belongs to several faces too, but unlike mesh faces
+                    // they are represented by one convex candidate. Select a walkable face
+                    // only when the witness actually lies on it, not a later hidden floor.
+                    if (other.convex.core == .box) {
+                        const local = other.convex.pose.inverseDirection(c.point.sub(other.convex.pose.position));
+                        const he = other.convex.core.box;
+                        const coordinates = [_]f32{ local.x, local.y, local.z };
+                        const extents = [_]f32{ he.x, he.y, he.z };
+                        for (coordinates, extents, 0..) |v, extent, axis| {
+                            if (@abs(@abs(v) - extent) > narrow.cast_tolerance) continue;
+                            const sign: f32 = if (v >= 0) 1 else -1;
+                            const local_face: Vec3 = switch (axis) {
+                                0 => .init(sign, 0, 0),
+                                1 => .init(0, sign, 0),
+                                else => .init(0, 0, sign),
+                            };
+                            const possible = other.convex.pose.applyDirection(local_face);
+                            if (possible.y >= up and possible.dot(c.normal) >= -1e-6) {
+                                face = possible;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (best) |b| {
+                    if (ground_y) |up| {
+                        const coincident = b.body.eql(entry.id) and @abs(c.fraction - b.fraction) * displacement.length() <= narrow.cast_tolerance and
+                            c.point.sub(b.point).lengthSquared() <= narrow.cast_tolerance * narrow.cast_tolerance;
+                        if (coincident and b.surface_normal.y >= up and face.y < up) continue;
+                        if (!(coincident and b.surface_normal.y < up and face.y >= up) and !(c.fraction < b.fraction)) continue;
+                    } else if (!(c.fraction < b.fraction)) continue;
+                }
                 best = .{
                     .fraction = c.fraction,
                     .point = c.point,
                     .normal = c.normal,
-                    .surface_normal = other.convex.surfaceNormal(c.normal),
+                    .surface_normal = face,
                     .body = entry.id,
                     .user = entry.value.user,
                     .triangle = other.triangle,

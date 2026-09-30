@@ -1,7 +1,7 @@
 # Design: M23 — Collision: `physics3d`, collision meshes, the character controller and a first-person walk
 
 **Status:** Accepted 2026-09-30, when the owner requested Step 1, with every §16 choice as
-written. Steps 1–3 are done; Step 4 is next.
+written. Steps 1–4 are done; Step 5 is next.
 **Date:** 2026-09-30
 **Baseline:** `a0f8d73`, tag `m22`. M0–M22 are complete.
 **Decisions:**
@@ -384,6 +384,9 @@ pub const CharacterMove = struct {
 - It returns null for a stale handle.
 - A displacement that is not finite, or longer than `max_move`, is refused as `InvalidMove`, and
   nothing moves.
+- The requested endpoint's feet and capsule centre must also remain inside §3's coordinate
+  envelope, even if a wall could stop the move sooner. Depenetration and the final result obey
+  that envelope too; an invalid result is refused before committing any body/ground change.
 
 **Walkable** means `surface_normal.y ≥ cos(max_slope)`, using the surface normal (§5.3) and the
 world's up, which is +Y (ADR-0048). The up axis is fixed in M23, and a configurable up is
@@ -962,12 +965,76 @@ reported by the compiler with its diagnostic.
 No character, walk input, sample collision content or ABI work was added. Step 4 is next;
 the Windows runtime proof remains Step 6 and Linux remains compile-only.
 
-### Step 4 — `physics3d`: the character controller
+### Step 4 — `physics3d`: the character controller — Done 2026-09-30
 
 This step implements §7: the config, `addCharacter`, `moveCharacter`, `setCharacterFeet` and
 `removeCharacter`; depenetration, slide, step-up, snap-down, ground and ceiling. It adds every
 §11.2 scenario and §11.3's replay, with the walkable-by-`surface_normal` mutation. **Exit:** every
 §11.2 scenario passes, and the 1,200-tick replay is byte-identical in-process.
+
+**Implementation refinement (2026-09-30):** downward ground/landing probes must classify a
+shared riser–tread edge as the tread when both faces hit at the same position (within cast
+tolerance) on the same body. A box probe likewise recognises an adjacent walkable face only
+when its contact witness lies on that face. Otherwise triangle order can select the riser's
+non-walkable face and prevent even a short step from being climbed. Only these controller probes prefer a
+walkable face at that coincident hit; ordinary movement casts and public query tie rules remain
+unchanged. An earlier non-walkable obstruction still stops the probe. This is not permission
+to step onto a steep ramp or to select a later, hidden floor.
+
+**Resolution — Step 4 (2026-09-30): complete.** `character.zig` supplies `CharacterConfig`,
+`CharacterHandle`, `Character`, `Ground` and `CharacterMove`; `World` owns the character pool
+and exposes `addCharacter`, `character` (const inspection), `moveCharacter`, `setCharacterFeet`
+and `removeCharacter`. Each character owns one ordinary kinematic capsule body; characters
+block through symmetric pair filters, and only the moved character changes. Allocation failure
+in the character pool unwinds its newly created body. Removal retires both handles; stale
+characters (including ones whose body was separately removed) cannot move or teleport.
+
+Implementation details that sharpen §7 without changing the architecture:
+- Every config field is finite and range-checked; a zero-segment capsule with zero step/snap
+  is valid. Feet and centre obey the position envelope. Move-length arithmetic uses `f64` to
+  avoid overflow in validation of finite `f32` inputs. Refused moves commit neither pose nor
+  ground. Setters/moves retain explicit allocators but steady-state work allocates nothing.
+- Depenetration scans every admitted body/triangle for the deepest contact without truncating
+  through a fixed output buffer. Equal depths keep body-then-triangle order. Four pushes are
+  allowed; `stuck` commits those pushes but performs no requested movement, step or snap and
+  reports no ground, so the caller can respawn. No other body is moved.
+- Controller casts ignore resting skin contacts only when motion is tangential or separating;
+  closing motion still blocks. Public queries retain their existing semantics. Casts already
+  stop a skin short, so the controller never subtracts a second skin.
+- Slide, step, snap and ground run in the specified order with four slide iterations. Downward
+  ground/landing probes apply the edge refinement above, including the same contact-position
+  check and box-face witness check. Earlier blockers are never skipped to find a hidden floor.
+- Step acceptance bounds both actual feet rise **and the landing witness's surface height**.
+  The feet alone can be below a tread at a rounded edge: bounding only them allowed a 0.40 m
+  step to be climbed in pieces with a 0.35 m limit. `stepped` reports actual rise in that move;
+  a box corner can finish climbing by ordinary walkable slide rather than another step.
+- An upward requested displacement neither steps nor snaps. The ground probe does not move
+  the character. Hit totals cover slide casts and accepted step/snap casts; discarded step
+  candidates and the read-only ground probe do not enter the output buffer.
+
+**Evidence:** seventeen added character tests cover every §11.2 scenario: 30° ascent, 600
+ticks against 50°, falling/sliding on 50°, 0.15/0.30/0.40 m steps on boxes and meshes, tread
+overhang, descending stairs and a 25° ramp, jump, wall tangent progress and stable corners,
+ceiling, box/mesh teleport and sealed-space stuck, maximum-speed casts against a 1 cm box and
+two-sided wall from both sides, no pushing, symmetric masks, truncated hits, all config/move
+refusals, stale handles, ownership and allocation failures. Additional focused guards cover
+coordinate escape, allocation-free movement, hidden floors and a box's unrelated top face.
+The 1,200-tick mesh course reproduces every feet byte and its FNV-1a64 hash in a fresh world;
+no cross-machine physics hash is pinned.
+
+**Ten mutations fail:** config validation, move cap, walkable-by-`surface_normal`, landing
+surface-height cap, jump snap exclusion, symmetric cast filtering, resting tangential-contact
+skip, coincident mesh-face selection, box-face witness and feet/centre validation. The
+box-witness mutation initially passed because a signed-zero-side fixture selected the bottom
+face anyway; moving its witness into the upper half now isolates and fails that guard. All
+mutations are restored. **60/60 physics tests** pass in Debug and ReleaseSafe.
+
+The final nine-command bar passes **1,967 of 1,968 tests**, one expected skip: native and Metal
+graphs, Linux/Windows cross checks and all three headless samples. `physics3d-test` exposes the
+existing module test run as a focused build step, also still included in `test`/`check`. The
+module remains on `core` alone. No ABI, asset-kind, sample, platform, renderer or release change;
+their conditional proofs are not triggered. Native Windows remains Step 6; Linux compile-only.
+Step 5 has not begun.
 
 ### Step 5 — `sandbox3d` walks, on Metal
 

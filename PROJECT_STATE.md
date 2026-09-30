@@ -1,10 +1,34 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-30
-**Current handoff: M23 Steps 1–3 of 7 are complete (`docs/design/collision3d.md`, ADR-0057 accepted);
-stop before Step 4**, the character controller. Static triangle meshes exist in `physics3d`,
-and collision geometry is compiled content; no character controller or sample walk exists yet.
+**Current handoff: M23 Steps 1–4 of 7 are complete (`docs/design/collision3d.md`, ADR-0057 accepted);
+stop before Step 5**, the Metal sample walk. `physics3d` has static triangle meshes and the
+character controller, and collision geometry is compiled content; no sample walk exists yet.
 M0–M22 are complete.
+
+**M23 Step 4 is done (2026-09-30).** Characters are generational handles owning ordinary
+kinematic capsule bodies, with explicit validated dimensions and movement limits. The controller
+depenetrates by the deepest ordered contact, continuously casts and slides, steps only onto
+walkable ground, snaps down, and reports ground/ceiling/walls, actual step rise, depenetration,
+stuck state and truncated hit-buffer totals. Teleport clears ground; removal retires the body.
+Character pairs use symmetric filters and never push or change the other character. Moves
+allocate nothing, own no velocity/time, and refuse invalid moves without changing body state.
+
+**Resolution:** only controller ground/landing probes prefer a walkable face at a coincident
+same-body edge; boxes require a witness on that face. Public queries and movement-cast tie
+rules stay unchanged. A step checks the landing surface height as well as the feet's rise,
+preventing repeated partial climbs onto a too-high tread. Skin is applied once by the cast.
+The full detail is in the dated Step 4 Resolution; no new ADR or architecture redesign.
+
+**Verification:** seventeen added character tests cover every §11.2 scenario and the
+1,200-tick mesh-course replay (both per-tick bytes and hash), lifecycle/allocation failures,
+allocation-free moves, boundaries and edge/hidden-floor regressions. **60/60 physics tests**
+pass in Debug and ReleaseSafe. Ten guard mutations fail and are restored; a passing box-witness
+mutation exposed a fixture that did not isolate that guard, corrected before acceptance.
+The final nine-command bar passes **1,967 of 1,968 tests**, one expected skip, with native,
+Metal, Linux/Windows cross checks and all three headless samples clean. No ABI, sample,
+asset-kind, release, platform or renderer changes; their conditional proofs are not triggered.
+Windows runtime qualification remains Step 6, Linux compile-only. Step 5 has not begun.
 
 **M23 Step 3 is done (2026-09-30).** `asset.collision_mesh` reads borrowed, unaligned `.fcol`
 v1 views, writes canonical geometry, and supplies a host-registered loader whose aligned CPU
