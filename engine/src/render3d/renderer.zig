@@ -130,7 +130,7 @@ fn unlitModel() ShadingModel {
         .id = unlit_id,
         .requires = StreamSet.of(&.{.position}),
         .optional = StreamSet.of(&.{ .uv0, .color }),
-        .reads = .{ .base_color = true, .base_color_texture = true, .alpha = true },
+        .reads = .{ .base_color = true, .base_color_texture = true, .alpha = true, .casts_shadow = true },
         .variants = .{
             .vertex = comptime &.{
                 builtinStage("unlit_vertex_spirv", "vertexMain"),
@@ -152,6 +152,20 @@ fn litStage(comptime name: []const u8, comptime entry: []const u8) ShaderStage {
         .null => .{ .bytes = "null-backend-shader", .entry = entry },
         .vulkan => .{ .bytes = @embedFile(name), .entry = "main" },
     };
+}
+
+fn shadowStage(comptime name: []const u8, comptime entry: []const u8) ShaderStage {
+    return switch (rhi.backend) {
+        .metal => .{ .bytes = @embedFile("shadow_metallib"), .entry = entry },
+        .null => .{ .bytes = "null-backend-shader", .entry = entry },
+        .vulkan => .{ .bytes = @embedFile(name), .entry = "main" },
+    };
+}
+fn shadowVertexStages() [4]ShaderStage {
+    return .{ shadowStage("shadow_vertex_0_spirv", "vertexMain"), shadowStage("shadow_vertex_1_spirv", "vertexColor"), shadowStage("shadow_vertex_2_spirv", "vertexUv"), shadowStage("shadow_vertex_3_spirv", "vertexUvColor") };
+}
+fn shadowFragmentStages() [2]ShaderStage {
+    return .{ shadowStage("shadow_fragment_0_spirv", "fragmentMain"), shadowStage("shadow_fragment_1_spirv", "fragmentMask") };
 }
 
 fn litModel() ShadingModel {
@@ -201,6 +215,13 @@ pub const Config = struct {
     /// Frustum culling (§7.6). Off exists for the equivalence test and a sample's
     /// `--cull=off`; it is not a game setting, because culling never changes a pixel.
     cull: bool = true,
+    shadow_size: u32 = 2048,
+    /// Reversed-Z depth moves away from the light with negative raster bias.
+    shadow_bias_constant: f32 = -1,
+    shadow_bias_slope: f32 = -1,
+    shadow_bias_clamp: f32 = 0,
+    /// Receiver offset in world-space shadow texels, along its geometric normal.
+    shadow_normal_offset: f32 = 1.5,
 };
 
 pub const FrameView = struct {
@@ -303,11 +324,12 @@ const PipelineKey = struct {
     /// Colour, UV0, float colour, required normal, tangent; not the variant index.
     vertex_layout: u5,
     normal_map: bool = false,
+    shadow: bool = false,
     alpha: AlphaMode,
     cull: Cull,
 
     fn eql(a: PipelineKey, b: PipelineKey) bool {
-        return a.model == b.model and a.vertex_layout == b.vertex_layout and a.alpha == b.alpha and a.cull == b.cull and a.normal_map == b.normal_map;
+        return a.model == b.model and a.vertex_layout == b.vertex_layout and a.alpha == b.alpha and a.cull == b.cull and a.normal_map == b.normal_map and a.shadow == b.shadow;
     }
 };
 
@@ -316,6 +338,7 @@ const PipelineState = struct { key: PipelineKey, pipeline: rhi.RenderPipelineHan
 const FrameSlot = struct {
     uniform: rhi.BufferHandle,
     group: rhi.BindGroupHandle,
+    shadow_group: rhi.BindGroupHandle = .none,
 };
 
 const DrawConstants = extern struct {
@@ -361,6 +384,11 @@ pub const Renderer = struct {
     slots: []FrameSlot,
     shadow_fallback: rhi.TextureHandle,
     shadow_sampler: rhi.SamplerHandle,
+    shadow_target: rhi.TextureHandle = .none,
+    shadow_vertex: [4]rhi.ShaderModuleHandle = @splat(.none),
+    shadow_fragment: [2]rhi.ShaderModuleHandle = @splat(.none),
+    shadow_fit: ?lighting.ShadowFit = null,
+    shadow_order: std.ArrayList(u32) = .empty,
     tone_layout: rhi.BindGroupLayoutHandle,
     tone_pipeline_layout: rhi.PipelineLayoutHandle,
     tone_vertex: rhi.ShaderModuleHandle,
@@ -422,6 +450,10 @@ pub const Renderer = struct {
         if (config.frames_in_flight == 0 or !rhi.isValidSampleCount(config.sample_count)) {
             return error.InvalidConfig;
         }
+        if (config.shadow_size != 0 and config.shadow_size != 1024 and config.shadow_size != 2048 and config.shadow_size != 4096) return error.InvalidConfig;
+        for ([_]f32{ config.shadow_bias_constant, config.shadow_bias_slope, config.shadow_bias_clamp, config.shadow_normal_offset }) |value| {
+            if (!std.math.isFinite(value)) return error.InvalidConfig;
+        }
         const surface_format = device.capabilities().surface_format;
 
         const frame_layout = try device.createBindGroupLayout(.{
@@ -466,7 +498,7 @@ pub const Renderer = struct {
             .usage = .{ .depth_stencil = true, .sampled = true },
         });
         errdefer device.destroyTexture(shadow_fallback);
-        const shadow_sampler = try device.createSampler(.{ .label = "render3d shadow comparison", .compare = .greater_equal });
+        const shadow_sampler = try device.createSampler(.{ .label = "render3d shadow comparison", .compare = .greater_equal, .min_filter = .linear, .mag_filter = .linear });
         errdefer device.destroySampler(shadow_sampler);
         // Initialise even though Step 3's uniform always disables shadow lookup.
         const shadow_cmd = try device.beginCommandBuffer();
@@ -613,10 +645,13 @@ pub const Renderer = struct {
         self.meshes.deinit(self.gpa);
         self.draws.deinit(self.gpa);
         self.order.deinit(self.gpa);
+        self.shadow_order.deinit(self.gpa);
         for (self.pipelines.items) |entry| self.device.destroyRenderPipeline(entry.pipeline);
         self.pipelines.deinit(self.gpa);
         for (self.models.items) |model| self.destroyModel(model);
         self.models.deinit(self.gpa);
+        for (self.shadow_vertex) |shader| if (!shader.isNone()) self.device.destroyShaderModule(shader);
+        for (self.shadow_fragment) |shader| if (!shader.isNone()) self.device.destroyShaderModule(shader);
 
         if (!self.color_target.isNone()) self.device.destroyTexture(self.color_target);
         if (!self.tone_group.isNone()) self.device.destroyBindGroup(self.tone_group);
@@ -624,9 +659,11 @@ pub const Renderer = struct {
         if (!self.depth_target.isNone()) self.device.destroyTexture(self.depth_target);
         for (self.slots) |slot| {
             self.device.destroyBindGroup(slot.group);
+            if (!slot.shadow_group.isNone()) self.device.destroyBindGroup(slot.shadow_group);
             self.device.destroyBuffer(slot.uniform);
         }
         self.gpa.free(self.slots);
+        if (!self.shadow_target.isNone()) self.device.destroyTexture(self.shadow_target);
         self.device.destroyTexture(self.shadow_fallback);
         self.device.destroySampler(self.shadow_sampler);
         self.device.destroyRenderPipeline(self.tone_pipeline);
@@ -998,6 +1035,7 @@ pub const Renderer = struct {
         self.light_count += 1;
         self.has_shadow_caster = self.has_shadow_caster or light.casts_shadow;
         self.stats.lights = self.light_count;
+        self.planned_draws = null;
     }
 
     pub fn drawMesh(self: *Self, draw: MeshDraw) Error!void {
@@ -1059,6 +1097,33 @@ pub const Renderer = struct {
         }
         std.mem.sort(u32, self.order.items, self.draws.items, drawLessThan);
         self.stats.culled = culled;
+        self.shadow_fit = null;
+        self.shadow_order.clearRetainingCapacity();
+        self.stats.shadow_culled = 0;
+        if (self.config.shadow_size != 0) for (self.lights[0..self.light_count]) |light| {
+            if (!light.casts_shadow) continue;
+            var fit = lighting.fitShadow(self.view.camera, @as(f32, @floatFromInt(self.view.target_size.width)) / @as(f32, @floatFromInt(self.view.target_size.height)), self.view.shadow_distance, light.world, self.config.shadow_size);
+            // Inspect ALL submissions, not the camera's visible order: off-camera
+            // objects above the receiver volume can still cast into it.
+            for (self.draws.items) |item| {
+                const material = self.materials.getConst(item.material) orelse continue;
+                if (item.alpha != .blend and material.desc.casts_shadow) fit.includeCaster(item.bounds);
+            }
+            if (!matrixFinite(fit.matrix()) or !std.math.isFinite(fit.radius) or !std.math.isFinite(fit.max_z - fit.min_z) or !std.math.isFinite(fit.min_z) or !std.math.isFinite(fit.max_z) or !std.math.isFinite(fit.texel) or fit.texel <= 0) return error.InvalidCamera;
+            if (!std.math.isFinite(self.config.shadow_normal_offset * fit.texel)) return error.InvalidConfig;
+            const light_frustum = frustum_mod.Frustum.fromViewProjection(fit.matrix());
+            try self.shadow_order.ensureTotalCapacity(self.gpa, self.draws.items.len);
+            for (self.draws.items, 0..) |item, i| {
+                const material = self.materials.getConst(item.material) orelse continue;
+                if (item.alpha == .blend or !material.desc.casts_shadow) continue;
+                if (self.config.cull and light_frustum.excludes(item.bounds)) {
+                    self.stats.shadow_culled += 1;
+                    continue;
+                }
+                self.shadow_order.appendAssumeCapacity(@intCast(i));
+            }
+            self.shadow_fit = fit;
+        };
         self.planned_draws = @intCast(self.draws.items.len);
     }
 
@@ -1069,10 +1134,19 @@ pub const Renderer = struct {
         if (self.planned_draws == null or self.planned_draws.? != self.draws.items.len) try self.plan();
         try self.ensureTargets(self.view.target_size);
         for (self.order.items) |draw_index| _ = try self.ensurePipeline(self.draws.items[draw_index].pipeline_key);
+        if (self.shadow_fit != null) {
+            try self.ensureShadowResources();
+            for (self.shadow_order.items) |i| _ = try self.ensurePipeline(self.shadowKey(self.draws.items[i]));
+        }
 
         const slot = self.slots[frame.slot];
         const bytes = try self.device.mapBuffer(slot.uniform);
-        const uniform = lighting.packFrame(self.view_projection, self.view.camera.position, self.view.exposure_ev100, self.view.ambient, self.lights[0..self.light_count]);
+        var uniform = lighting.packFrame(self.view_projection, self.view.camera.position, self.view.exposure_ev100, self.view.ambient, self.lights[0..self.light_count]);
+        if (self.shadow_fit) |fit| {
+            uniform.counts[1] = 1;
+            uniform.shadow_matrix = fit.matrix();
+            uniform.shadow_parameters = .{ 1 / @as(f32, @floatFromInt(self.config.shadow_size)), self.config.shadow_normal_offset * fit.texel, 0, 0 };
+        }
         @memcpy(bytes[0..@sizeOf(lighting.FrameUniform)], std.mem.asBytes(&uniform));
         self.device.unmapBuffer(slot.uniform);
         self.frame = frame;
@@ -1122,6 +1196,15 @@ pub const Renderer = struct {
             self.recording = false;
             self.last_stats = self.stats;
         }
+        if (self.shadow_fit != null) {
+            const shadow_pass = try cmd.beginRenderPass(.{
+                .label = "render3d shadow",
+                .color = &.{},
+                .depth = .{ .texture = self.shadow_target, .load = .{ .clear = .{ .depth_stencil = .{ .depth = 0 } } }, .store = .store, .initial_state = .undefined, .final_state = .shader_read },
+            });
+            defer shadow_pass.end();
+            try self.recordShadow(shadow_pass);
+        }
         {
             const pass = try cmd.beginRenderPass(self.worldPassDesc());
             defer pass.end();
@@ -1163,7 +1246,8 @@ pub const Renderer = struct {
 
             if (!pipeline.eql(bound_pipeline)) {
                 pass.setPipeline(pipeline);
-                pass.setBindGroup(0, self.slots[frame.slot].group);
+                const slot = self.slots[frame.slot];
+                pass.setBindGroup(0, if (self.shadow_fit == null and !slot.shadow_group.isNone()) slot.shadow_group else slot.group);
                 bound_pipeline = pipeline;
                 self.stats.pipeline_binds += 1;
             }
@@ -1187,6 +1271,74 @@ pub const Renderer = struct {
             self.stats.draws += 1;
             self.stats.triangles += submesh.index_count / 3;
             if (item.alpha == .blend) self.stats.blended += 1;
+        }
+    }
+
+    fn shadowKey(self: *const Self, item: DrawItem) PipelineKey {
+        const mesh = self.meshes.getConst(item.mesh).?;
+        const color = item.alpha == .mask and mesh.stream_mask & (1 << 5) != 0;
+        const uv = item.alpha == .mask and mesh.stream_mask & (1 << 3) != 0;
+        return .{ .model = item.pipeline_key.model, .vertex_layout = @as(u5, @intFromBool(color)) | (@as(u5, @intFromBool(uv)) << 1) | (@as(u5, @intFromBool(color and mesh.formats[5].? == .float32x4)) << 2), .alpha = item.alpha, .cull = item.pipeline_key.cull, .shadow = true };
+    }
+
+    fn ensureShadowResources(self: *Self) Error!void {
+        if (!self.shadow_target.isNone()) return;
+        // Build a complete candidate before replacing any live group. The caster
+        // group samples the fallback, avoiding attachment/sampling feedback even
+        // on the strict null backend; the world group samples the real map.
+        const target = try self.device.createTexture(.{ .label = "render3d directional shadow", .size = .{ .width = self.config.shadow_size, .height = self.config.shadow_size }, .format = .depth32_float, .usage = .{ .depth_stencil = true, .sampled = true } });
+        errdefer self.device.destroyTexture(target);
+        const groups = try self.gpa.alloc(rhi.BindGroupHandle, self.slots.len);
+        defer self.gpa.free(groups);
+        var built: usize = 0;
+        errdefer for (groups[0..built]) |group| self.device.destroyBindGroup(group);
+        for (self.slots, groups) |slot, *group| {
+            group.* = try self.device.createBindGroup(.{ .layout = self.frame_layout, .entries = &.{
+                .{ .binding = 0, .resource = .{ .uniform_buffer = .{ .buffer = slot.uniform, .size = @sizeOf(lighting.FrameUniform) } } },
+                .{ .binding = 1, .resource = .{ .sampled_texture = target } },
+                .{ .binding = 2, .resource = .{ .sampler = self.shadow_sampler } },
+            } });
+            built += 1;
+        }
+        var vertex: [4]rhi.ShaderModuleHandle = @splat(.none);
+        var fragment: [2]rhi.ShaderModuleHandle = @splat(.none);
+        errdefer {
+            for (vertex) |shader| if (!shader.isNone()) self.device.destroyShaderModule(shader);
+            for (fragment) |shader| if (!shader.isNone()) self.device.destroyShaderModule(shader);
+        }
+        for (shadowVertexStages(), &vertex) |stage, *shader| shader.* = try self.device.createShaderModule(.{ .bytes = stage.bytes });
+        for (shadowFragmentStages(), &fragment) |stage, *shader| shader.* = try self.device.createShaderModule(.{ .bytes = stage.bytes });
+        for (self.slots, groups) |*slot, group| {
+            slot.shadow_group = slot.group;
+            slot.group = group;
+        }
+        self.shadow_vertex = vertex;
+        self.shadow_fragment = fragment;
+        self.shadow_target = target;
+    }
+
+    fn recordShadow(self: *Self, pass: *rhi.RenderPass) Error!void {
+        const frame = self.frame orelse return error.NotRecording;
+        const size = self.config.shadow_size;
+        pass.setViewport(.{ .width = @floatFromInt(size), .height = @floatFromInt(size) });
+        pass.setScissor(.{ .width = size, .height = size });
+        for (self.shadow_order.items) |i| {
+            const item = self.draws.items[i];
+            const mesh = self.meshes.getConst(item.mesh) orelse continue;
+            const material = self.materials.getConst(item.material) orelse continue;
+            const key = self.shadowKey(item);
+            pass.setPipeline(self.pipelineFor(key).?);
+            pass.setBindGroup(0, self.slots[frame.slot].shadow_group);
+            pass.setBindGroup(2, material.group);
+            const constants = drawConstants(item.world);
+            pass.setInlineConstants(std.mem.asBytes(&constants));
+            pass.setVertexBuffer(0, mesh.vertex_buffers[0], 0);
+            if (key.vertex_layout & 2 != 0) pass.setVertexBuffer(3, mesh.vertex_buffers[3], 0);
+            if (key.vertex_layout & 1 != 0) pass.setVertexBuffer(5, mesh.vertex_buffers[5], 0);
+            pass.setIndexBuffer(mesh.index_buffer, if (mesh.index_format == .uint16) .uint16 else .uint32, 0);
+            const submesh = mesh.submeshes[item.submesh];
+            pass.drawIndexed(.{ .index_count = submesh.index_count, .first_index = submesh.first_index });
+            self.stats.shadow_draws += 1;
         }
     }
 
@@ -1219,6 +1371,7 @@ pub const Renderer = struct {
                 variant_bit += 1;
             }
         }
+        if (key.shadow) variant = @as(usize, key.vertex_layout & 3);
         const fragment_variant: usize = @as(usize, @intFromBool(key.alpha == .mask)) + 2 * @as(usize, @intFromBool(key.normal_map));
         var layouts: [5]rhi.pipeline.VertexBufferLayout = undefined;
         var count: usize = 0;
@@ -1256,12 +1409,12 @@ pub const Renderer = struct {
         const pipeline = try self.device.createRenderPipeline(.{
             .label = "render3d shading variant",
             .layout = self.pipeline_layout,
-            .vertex_shader = model.vertex[variant],
-            .vertex_entry = model.desc.variants.vertex[variant].entry,
-            .fragment_shader = model.fragment[fragment_variant],
-            .fragment_entry = model.desc.variants.fragment[fragment_variant].entry,
+            .vertex_shader = if (key.shadow) self.shadow_vertex[variant] else model.vertex[variant],
+            .vertex_entry = if (key.shadow) shadowVertexStages()[variant].entry else model.desc.variants.vertex[variant].entry,
+            .fragment_shader = if (key.shadow) self.shadow_fragment[fragment_variant] else model.fragment[fragment_variant],
+            .fragment_entry = if (key.shadow) shadowFragmentStages()[fragment_variant].entry else model.desc.variants.fragment[fragment_variant].entry,
             .vertex_buffers = layouts[0..count],
-            .color_targets = &.{.{
+            .color_targets = if (key.shadow) &.{} else &.{.{
                 .format = .rgba16_float,
                 .blend = if (key.alpha == .blend) rhi.pipeline.BlendState.premultiplied_alpha else null,
             }},
@@ -1269,13 +1422,14 @@ pub const Renderer = struct {
                 .format = .depth32_float,
                 .depth_write_enabled = key.alpha != .blend,
                 .depth_compare = .greater_equal,
+                .bias = if (key.shadow) .{ .constant = self.config.shadow_bias_constant, .slope = self.config.shadow_bias_slope, .clamp = self.config.shadow_bias_clamp } else .{},
             },
             .primitive = .{
                 .topology = .triangle_list,
                 .cull_mode = if (key.cull == .none) .none else .back,
                 .front_face = if (key.cull == .back_cw) .clockwise else .counter_clockwise,
             },
-            .sample_count = self.config.sample_count,
+            .sample_count = if (key.shadow) 1 else self.config.sample_count,
         });
         errdefer self.device.destroyRenderPipeline(pipeline);
         try self.pipelines.append(self.gpa, .{ .key = key, .pipeline = pipeline });
@@ -1805,11 +1959,15 @@ const material_test_bytes = material_test_size * material_test_size * 4;
 
 /// Four vertices on a plane, optional semantic subsets in the registry's bit order.
 fn litQuad(renderer: *Renderer, optional: u3) !MeshHandle {
+    return litQuadAlpha(renderer, optional, 1);
+}
+
+fn litQuadAlpha(renderer: *Renderer, optional: u3, alpha: f32) !MeshHandle {
     const positions = [_]Vec3{ .init(-1, -1, -2), .init(1, -1, -2), .init(1, 1, -2), .init(-1, 1, -2) };
     const normals = [_]Vec3{.init(0, 0, 1)} ** 4;
     const tangents = [_][4]f32{.{ 1, 0, 0, 1 }} ** 4;
     const uvs = [_][2]f32{.{ 0.5, 0.5 }} ** 4;
-    const colors = [_][4]f32{.{ 1, 1, 1, 1 }} ** 4;
+    const colors = [_][4]f32{.{ 1, 1, 1, alpha }} ** 4;
     const indices = [_]u16{ 0, 1, 2, 0, 2, 3 };
     var streams: [5]asset.MeshStream = undefined;
     streams[0] = .{ .semantic = .position, .format = .float32x3, .bytes = std.mem.sliceAsBytes(&positions) };
@@ -1929,6 +2087,159 @@ fn materialQuad(renderer: *Renderer) !MeshHandle {
         .submeshes = &submeshes,
         .bounds = try asset.Mesh.computeBounds(&positions),
     }, "material readback quad");
+}
+
+test "shadow configuration accepts only bounded map sizes and finite biases" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    for ([_]u32{ 1, 512, 2049, 8192 }) |size| {
+        try testing.expectError(error.InvalidConfig, Renderer.init(testing.allocator, fx.device, .{ .shadow_size = size }));
+    }
+    inline for (.{ "shadow_bias_constant", "shadow_bias_slope", "shadow_bias_clamp", "shadow_normal_offset" }) |field| {
+        var config: Config = .{};
+        @field(config, field) = std.math.nan(f32);
+        try testing.expectError(error.InvalidConfig, Renderer.init(testing.allocator, fx.device, config));
+    }
+    for ([_]u32{ 0, 1024, 2048, 4096 }) |size| {
+        var renderer = try Renderer.init(testing.allocator, fx.device, .{ .shadow_size = size });
+        renderer.deinit();
+    }
+}
+
+test "disabled shadow map and abandoned caster preparation leave healthy unshadowed frames" {
+    for ([_]u32{ 0, 1024 }) |size| {
+        var fx = try TestFixture.initConfig(.{ .sample_count = 1, .shadow_size = size }, 32);
+        defer fx.deinit();
+        const mesh = try litQuad(&fx.renderer, 0);
+        try fx.renderer.begin(testView(32));
+        try fx.renderer.addLight(.{ .kind = .directional, .intensity = 1, .casts_shadow = true, .world = .identity });
+        try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = .identity });
+        const frame = try fx.device.beginFrame();
+        const cmd = try fx.device.beginCommandBuffer();
+        try fx.renderer.prepare(cmd, frame);
+        cmd.discard();
+        try fx.device.endFrame();
+        try testing.expectEqual(size == 0, fx.renderer.shadow_fit == null);
+        try testing.expectEqual(size == 0, fx.renderer.shadow_target.isNone());
+        try fx.renderer.begin(testView(32));
+        try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = .identity });
+        try finishTestFrame(&fx);
+        if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
+    }
+}
+
+fn shadowAllocationProof(gpa: Allocator) !void {
+    const device = try rhi.Device.init(gpa, .{ .surface_size = .{ .width = 32, .height = 32 } });
+    defer device.deinit();
+    var renderer = try Renderer.init(gpa, device, .{ .sample_count = 1, .shadow_size = 1024 });
+    defer renderer.deinit();
+    // Includes per-slot replacement groups, all shaders, and candidate rollback.
+    try renderer.ensureShadowResources();
+}
+
+test "shadow resource construction releases each partial candidate on allocation failure" {
+    if (rhi.backend != .null) return;
+    try testing.checkAllAllocationFailures(testing.allocator, shadowAllocationProof, .{});
+}
+
+test "unrepresentable shadow fit and receiver offset are refused before upload" {
+    var fx = try TestFixture.initConfig(.{ .sample_count = 1, .shadow_size = 1024, .shadow_normal_offset = std.math.floatMax(f32) }, 32);
+    defer fx.deinit();
+    var view = testView(32);
+    view.camera.far = 1e31;
+    view.shadow_distance = 1e30;
+    try fx.renderer.begin(view);
+    try fx.renderer.addLight(.{ .kind = .directional, .intensity = 1, .casts_shadow = true, .world = .identity });
+    try testing.expectError(error.InvalidCamera, fx.renderer.plan());
+    view.camera.far = 2000;
+    view.shadow_distance = 1000;
+    try fx.renderer.begin(view);
+    try fx.renderer.addLight(.{ .kind = .directional, .intensity = 1, .casts_shadow = true, .world = .identity });
+    try testing.expectError(error.InvalidConfig, fx.renderer.plan());
+}
+
+test "shadow selects off-camera opaque and masked casters but never blend or disabled material" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    const mesh = try litQuad(&fx.renderer, 3);
+    const mask = try fx.renderer.createMaterial(.{ .alpha_mode = .mask }, "mask caster");
+    const blend = try fx.renderer.createMaterial(.{ .alpha_mode = .blend }, "blend not caster");
+    const disabled = try fx.renderer.createMaterial(.{ .casts_shadow = false }, "disabled caster");
+    try fx.renderer.begin(testView(32));
+    // Both are behind the camera; the first reaches the receiver box along light Z.
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = Mat4.translation(.init(0, 0, 100)) });
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = Mat4.translation(.init(1000, 0, 100)) });
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .material = mask, .world = .identity });
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .material = blend, .world = .identity });
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .material = disabled, .world = .identity });
+    try fx.renderer.addLight(.{ .kind = .directional, .intensity = 1, .world = .identity, .casts_shadow = true });
+    try fx.renderer.plan();
+    try finishTestFrame(&fx);
+    try testing.expectEqualSlices(u32, &.{ 0, 2 }, fx.renderer.shadow_order.items);
+    try testing.expectEqual(@as(u32, 2), fx.renderer.frameStats().shadow_draws);
+    try testing.expectEqual(@as(u32, 1), fx.renderer.frameStats().shadow_culled);
+    try testing.expectEqual(@as(u32, 2), fx.renderer.frameStats().culled);
+    if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
+    // No-caster next frame skips both the pass and lookup, even after map creation.
+    try fx.renderer.begin(testView(32));
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = .identity });
+    try finishTestFrame(&fx);
+    try testing.expectEqual(@as(u32, 0), fx.renderer.frameStats().shadow_draws);
+    try testing.expect(fx.renderer.shadow_fit == null);
+}
+
+test "directional shadow readbacks track off-camera masked mirrored moving occluders at 1x and 4x" {
+    if (rhi.backend == .null) return;
+    for ([_]u32{ 1, 4 }) |samples| {
+        var fx = try TestFixture.init(samples, 32);
+        defer fx.deinit();
+        const mesh = try litQuad(&fx.renderer, 3);
+        const vertex_hole = try litQuadAlpha(&fx.renderer, 3, 0.2);
+        const surface: lighting.Surface = .{ .base = .{ 0.6, 0.3, 0.1 }, .roughness = 0.7 };
+        const receiver = try fx.renderer.createMaterial(.{ .shading = lit_id, .base_color = .{ 0.6, 0.3, 0.1, 1 }, .roughness = 0.7 }, "receiver");
+        const light: Light = .{ .kind = .directional, .intensity = 2, .casts_shadow = true, .world = Mat4.fromQuat(core.math.Quat.lookRotation(.init(-1, 0, -1), .up).?) };
+        const readback = try fx.device.createBuffer(.{ .size = material_test_bytes, .usage = .{ .copy_dst = true }, .memory = .readback });
+        defer fx.device.destroyBuffer(readback);
+        var hole_pixel = [_]u8{ 255, 255, 255, 0 };
+        const hole = try fx.renderer.createTexture(.{ .width = 1, .height = 1, .pixels = &hole_pixel }, .{ .filter = .nearest });
+        for ([_]struct { mode: AlphaMode = .@"opaque", hole: bool = false, vertex_hole: bool = false, factor_hole: bool = false, mirror: bool = false, moved: bool = false, casts: bool = true, disabled: bool = false }{
+            .{},                                     .{ .mirror = true },                     .{ .mode = .mask }, .{ .mode = .mask, .hole = true },
+            .{ .mode = .blend },                     .{ .casts = false },                     .{ .moved = true }, .{ .disabled = true },
+            .{ .mode = .mask, .vertex_hole = true }, .{ .mode = .mask, .factor_hole = true },
+        }) |case| {
+            const caster = try fx.renderer.createMaterial(.{ .base_color = .{ 1, 1, 1, if (case.factor_hole) 0.2 else 1 }, .base_color_texture = if (case.hole) hole else .none, .alpha_mode = case.mode, .casts_shadow = case.casts }, "occluder");
+            defer fx.renderer.destroyMaterial(caster);
+            var view = testView(32);
+            view.ambient = .{ 0.2, 0.3, 0.4 };
+            view.shadow_distance = 6;
+            try fx.renderer.begin(view);
+            var submitted = light;
+            submitted.casts_shadow = !case.disabled;
+            try fx.renderer.addLight(submitted);
+            try fx.renderer.drawMesh(.{ .mesh = mesh, .material = receiver, .world = Mat4.mul(Mat4.translation(.init(0, 0, -2)), Mat4.scaling(.init(3, 3, 1))) });
+            // x=3,z=-1 is wholly outside the camera, but casts at x=0,z=-4.
+            try fx.renderer.drawMesh(.{ .mesh = if (case.vertex_hole) vertex_hole else mesh, .material = caster, .world = Mat4.mul(Mat4.translation(.init(if (case.moved) 4.5 else 3, 0, 1)), Mat4.scaling(.init(if (case.mirror) -0.5 else 0.5, 0.8, 1))) });
+            const frame = try fx.device.beginFrame();
+            const cmd = try fx.device.beginCommandBuffer();
+            try fx.renderer.prepare(cmd, frame);
+            try fx.renderer.recordFrame(cmd, frame, false);
+            try cmd.textureBarrier(&.{.{ .texture = frame.surface_texture, .from = .present, .to = .copy_src }});
+            try cmd.copyTextureToBuffer(.{ .src = frame.surface_texture, .size = .{ .width = 32, .height = 32 }, .dst = readback });
+            try cmd.textureBarrier(&.{.{ .texture = frame.surface_texture, .from = .copy_src, .to = .present }});
+            try cmd.submit();
+            try fx.device.endFrame();
+            fx.device.waitIdle();
+            const bytes = try fx.device.mapBuffer(readback);
+            defer fx.device.unmapBuffer(readback);
+            const occluded = !case.hole and !case.vertex_hole and !case.factor_hole and case.mode != .blend and case.casts and !case.disabled;
+            for ([_]usize{ 16, 22 }) |x| {
+                const p = Vec3.init(((@as(f32, @floatFromInt(x)) + 0.5) / 16 - 1) * 4, -4.0 / 32.0, -4);
+                const shadowed = occluded and (if (case.moved) x == 22 else x == 16);
+                const expected = lighting.shade(surface, p, .init(0, 0, 1), .zero, if (shadowed) &.{} else &.{light}, view.ambient, null);
+                try expectDisplayTexel(displayTexel(fx.device.capabilities().surface_format, expected), bytes[(16 * 32 + x) * 4 ..][0..4].*);
+            }
+        }
+    }
 }
 
 fn litBox(renderer: *Renderer) !MeshHandle {

@@ -98,13 +98,15 @@ static float4 shade(VertexOut in,bool front,bool mask,bool normal_map,
     texture2d<float> mr_image,sampler mr_sampler,
     texture2d<float> normal_image,sampler normal_sampler,
     texture2d<float> ao_image,sampler ao_sampler,
-    texture2d<float> emissive_image,sampler emissive_sampler) {
+    texture2d<float> emissive_image,sampler emissive_sampler,
+    depth2d<float> shadow_image,sampler shadow_sampler) {
     float4 base=base_image.sample(base_sampler,in.uv)*material.base_color*in.color;
     if (mask && base.a < material.alpha_cutoff) discard_fragment();
     float4 mr=mr_image.sample(mr_sampler,in.uv);
     float metal=clamp(material.surface.x*mr.b,0.0f,1.0f);
     float rough=clamp(material.surface.y*mr.g,.045f,1.0f);
     float3 n=safe_normalize(in.normal,float3(0,0.0f,1.0f));
+    float3 geometric_normal=front ? n : -n;
     if (normal_map) {
     float3 t=safe_normalize(in.tangent.xyz-n*dot(n,in.tangent.xyz),float3(1,0,0.0f));
     float3 b=cross(n,t)*in.tangent.w;
@@ -131,6 +133,16 @@ static float4 shade(VertexOut in,bool front,bool mask,bool normal_map,
                 falloff*=cone*cone;
             }
         }
+        if (frame.counts.y != 0 && light.cone_shadow.z != 0) {
+            float3 q=(frame.shadow_matrix*float4(in.world+geometric_normal*frame.shadow_parameters.y,1)).xyz;
+            if (all(abs(q.xy)<=float2(1)) && q.z>=0 && q.z<=1) {
+                float2 coord=float2(q.x*.5+.5,.5-q.y*.5);
+                float visibility=0;
+                for (int y=-1;y<=1;y++) for (int x=-1;x<=1;x++)
+                    visibility+=shadow_image.sample_compare(shadow_sampler,coord+float2(x,y)*frame.shadow_parameters.x,q.z);
+                falloff*=visibility/9;
+            }
+        }
         result+=brdf(base.rgb,metal,rough,n,v,l)*light.color_intensity.rgb*light.color_intensity.w*falloff;
     }
     float ao=1+material.surface.w*(ao_image.sample(ao_sampler,in.uv).r-1);
@@ -149,8 +161,9 @@ fragment float4 fragmentLit0(VertexOut in [[stage_in]],bool front [[front_facing
     texture2d<float> mr_image [[texture(2)]],sampler mr_sampler [[sampler(2)]],
     texture2d<float> normal_image [[texture(3)]],sampler normal_sampler [[sampler(3)]],
     texture2d<float> ao_image [[texture(4)]],sampler ao_sampler [[sampler(4)]],
-    texture2d<float> emissive_image [[texture(5)]],sampler emissive_sampler [[sampler(5)]]) {
-    return shade(in,front,false,false,frame,material,base_image,base_sampler,mr_image,mr_sampler,normal_image,normal_sampler,ao_image,ao_sampler,emissive_image,emissive_sampler);
+    texture2d<float> emissive_image [[texture(5)]],sampler emissive_sampler [[sampler(5)]],
+    depth2d<float> shadow_image [[texture(0)]],sampler shadow_sampler [[sampler(0)]]) {
+    return shade(in,front,false,false,frame,material,base_image,base_sampler,mr_image,mr_sampler,normal_image,normal_sampler,ao_image,ao_sampler,emissive_image,emissive_sampler,shadow_image,shadow_sampler);
 }
 fragment float4 fragmentLit1(VertexOut in [[stage_in]],bool front [[front_facing]],
     constant Frame &frame [[buffer(9)]],constant Material &material [[buffer(10)]],
@@ -158,8 +171,9 @@ fragment float4 fragmentLit1(VertexOut in [[stage_in]],bool front [[front_facing
     texture2d<float> mr_image [[texture(2)]],sampler mr_sampler [[sampler(2)]],
     texture2d<float> normal_image [[texture(3)]],sampler normal_sampler [[sampler(3)]],
     texture2d<float> ao_image [[texture(4)]],sampler ao_sampler [[sampler(4)]],
-    texture2d<float> emissive_image [[texture(5)]],sampler emissive_sampler [[sampler(5)]]) {
-    return shade(in,front,true,false,frame,material,base_image,base_sampler,mr_image,mr_sampler,normal_image,normal_sampler,ao_image,ao_sampler,emissive_image,emissive_sampler);
+    texture2d<float> emissive_image [[texture(5)]],sampler emissive_sampler [[sampler(5)]],
+    depth2d<float> shadow_image [[texture(0)]],sampler shadow_sampler [[sampler(0)]]) {
+    return shade(in,front,true,false,frame,material,base_image,base_sampler,mr_image,mr_sampler,normal_image,normal_sampler,ao_image,ao_sampler,emissive_image,emissive_sampler,shadow_image,shadow_sampler);
 }
 fragment float4 fragmentLit2(VertexOut in [[stage_in]],bool front [[front_facing]],
     constant Frame &frame [[buffer(9)]],constant Material &material [[buffer(10)]],
@@ -167,8 +181,9 @@ fragment float4 fragmentLit2(VertexOut in [[stage_in]],bool front [[front_facing
     texture2d<float> mr_image [[texture(2)]],sampler mr_sampler [[sampler(2)]],
     texture2d<float> normal_image [[texture(3)]],sampler normal_sampler [[sampler(3)]],
     texture2d<float> ao_image [[texture(4)]],sampler ao_sampler [[sampler(4)]],
-    texture2d<float> emissive_image [[texture(5)]],sampler emissive_sampler [[sampler(5)]]) {
-    return shade(in,front,false,true,frame,material,base_image,base_sampler,mr_image,mr_sampler,normal_image,normal_sampler,ao_image,ao_sampler,emissive_image,emissive_sampler);
+    texture2d<float> emissive_image [[texture(5)]],sampler emissive_sampler [[sampler(5)]],
+    depth2d<float> shadow_image [[texture(0)]],sampler shadow_sampler [[sampler(0)]]) {
+    return shade(in,front,false,true,frame,material,base_image,base_sampler,mr_image,mr_sampler,normal_image,normal_sampler,ao_image,ao_sampler,emissive_image,emissive_sampler,shadow_image,shadow_sampler);
 }
 fragment float4 fragmentLit3(VertexOut in [[stage_in]],bool front [[front_facing]],
     constant Frame &frame [[buffer(9)]],constant Material &material [[buffer(10)]],
@@ -176,6 +191,7 @@ fragment float4 fragmentLit3(VertexOut in [[stage_in]],bool front [[front_facing
     texture2d<float> mr_image [[texture(2)]],sampler mr_sampler [[sampler(2)]],
     texture2d<float> normal_image [[texture(3)]],sampler normal_sampler [[sampler(3)]],
     texture2d<float> ao_image [[texture(4)]],sampler ao_sampler [[sampler(4)]],
-    texture2d<float> emissive_image [[texture(5)]],sampler emissive_sampler [[sampler(5)]]) {
-    return shade(in,front,true,true,frame,material,base_image,base_sampler,mr_image,mr_sampler,normal_image,normal_sampler,ao_image,ao_sampler,emissive_image,emissive_sampler);
+    texture2d<float> emissive_image [[texture(5)]],sampler emissive_sampler [[sampler(5)]],
+    depth2d<float> shadow_image [[texture(0)]],sampler shadow_sampler [[sampler(0)]]) {
+    return shade(in,front,true,true,frame,material,base_image,base_sampler,mr_image,mr_sampler,normal_image,normal_sampler,ao_image,ao_sampler,emissive_image,emissive_sampler,shadow_image,shadow_sampler);
 }

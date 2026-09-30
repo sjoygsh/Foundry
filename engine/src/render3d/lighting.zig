@@ -70,7 +70,7 @@ pub fn packFrame(view_projection: Mat4, camera: Vec3, exposure: ?f32, ambient_ra
     uniform.camera_exposure = .{ camera.x, camera.y, camera.z, exposureScale(exposure) };
     uniform.ambient = .{ ambient_radiance[0], ambient_radiance[1], ambient_radiance[2], 0 };
     uniform.counts[0] = @intCast(lights.len);
-    // Shadow rendering arrives in Step 5. The lookup flag stays off until then.
+    // The recorder enables lookup only after fitting and recording a caster pass.
     uniform.shadow_matrix = .identity;
     for (lights, 0..) |light, i| uniform.lights[i] = packLight(light);
     return uniform;
@@ -78,6 +78,102 @@ pub fn packFrame(view_projection: Mat4, camera: Vec3, exposure: ?f32, ambient_ra
 
 pub fn exposureScale(ev100: ?f32) f32 {
     return if (ev100) |ev| @exp2(-ev) / 1.2 else 1;
+}
+
+/// Rotation-invariant minimal enclosing sphere of the truncated perspective frustum.
+/// Light-space Z points toward the light, so larger depths are nearer (reversed-Z).
+pub const ShadowFit = struct {
+    right: Vec3,
+    up: Vec3,
+    toward: Vec3,
+    center: Vec3,
+    radius: f32,
+    texel: f32,
+    min_z: f32,
+    max_z: f32,
+
+    pub fn matrix(self: ShadowFit) Mat4 {
+        const depth = self.max_z - self.min_z;
+        return .{ .cols = .{
+            .{ self.right.x / self.radius, self.up.x / self.radius, self.toward.x / depth, 0 },
+            .{ self.right.y / self.radius, self.up.y / self.radius, self.toward.y / depth, 0 },
+            .{ self.right.z / self.radius, self.up.z / self.radius, self.toward.z / depth, 0 },
+            .{ -self.center.x / self.radius, -self.center.y / self.radius, -self.min_z / depth, 1 },
+        } };
+    }
+
+    /// Extend only toward the light and only for bounds overlapping the receiver box.
+    pub fn includeCaster(self: *ShadowFit, bounds: @import("frustum.zig").Bounds) void {
+        const x = Vec3.dot(bounds.center, self.right);
+        const y = Vec3.dot(bounds.center, self.up);
+        const z = Vec3.dot(bounds.center, self.toward);
+        const ex = projectedExtent(bounds.extent, self.right);
+        const ey = projectedExtent(bounds.extent, self.up);
+        const ez = projectedExtent(bounds.extent, self.toward);
+        if (@abs(x - self.center.x) > self.radius + ex or
+            @abs(y - self.center.y) > self.radius + ey or z + ez < self.min_z) return;
+        self.max_z = @max(self.max_z, z + ez);
+    }
+};
+
+fn projectedExtent(extent: Vec3, axis: Vec3) f32 {
+    return @abs(axis.x) * extent.x + @abs(axis.y) * extent.y + @abs(axis.z) * extent.z;
+}
+
+pub fn fitShadow(camera: @import("camera.zig").Camera, aspect: f32, distance: f32, light_world: Mat4, size: u32) ShadowFit {
+    const near = camera.near;
+    const far = @max(near, @min(camera.far, distance));
+    const tangent = @tan(camera.vertical_fov * 0.5);
+    const k = tangent * tangent * (1 + aspect * aspect);
+    const axial_center = @min(far, (near + far) * (1 + k) * 0.5);
+    const radius = @sqrt((far - axial_center) * (far - axial_center) + far * far * k);
+    const world_center = Mat4.fromQuat(camera.rotation).mulPoint(.init(0, 0, -axial_center)).add(camera.position);
+    const toward = direction(light_world).neg();
+    const reference: Vec3 = if (@abs(toward.y) > 0.99) .init(1, 0, 0) else .up;
+    const right = Vec3.cross(reference, toward).normalize();
+    const up = Vec3.cross(toward, right);
+    // Reserve half a texel on each side so snapping cannot clip a frustum corner.
+    const padded = radius * @as(f32, @floatFromInt(size)) / @as(f32, @floatFromInt(size - 1));
+    const texel = 2 * padded / @as(f32, @floatFromInt(size));
+    const center = Vec3.init(@round(Vec3.dot(world_center, right) / texel) * texel, @round(Vec3.dot(world_center, up) / texel) * texel, Vec3.dot(world_center, toward));
+    return .{ .right = right, .up = up, .toward = toward, .center = center, .radius = padded, .texel = texel, .min_z = center.z - padded, .max_z = center.z + padded };
+}
+
+test "shadow sphere is rotation invariant and contains every truncated frustum corner" {
+    const Camera = @import("camera.zig").Camera;
+    const camera: Camera = .{ .near = 0.1, .far = 100 };
+    const base = fitShadow(camera, 1.6, 25, .identity, 2048);
+    for ([_]f32{ 0, 0.7, 1.6, 3.1 }) |angle| {
+        var turned = camera;
+        turned.rotation = core.math.Quat.fromAxisAngle(.up, angle);
+        const fit = fitShadow(turned, 1.6, 25, .identity, 2048);
+        try std.testing.expectEqual(base.radius, fit.radius);
+        for ([_]f32{ camera.near, 25 }) |depth| for ([_]f32{ -1, 1 }) |x| for ([_]f32{ -1, 1 }) |y| {
+            const height = depth * @tan(camera.vertical_fov * 0.5);
+            const p = Mat4.fromQuat(turned.rotation).mulPoint(.init(x * height * 1.6, y * height, -depth));
+            const q = fit.matrix().mulPoint(p);
+            try std.testing.expect(@abs(q.x) <= 1.00001 and @abs(q.y) <= 1.00001 and q.z >= -0.00001 and q.z <= 1.00001);
+        };
+    }
+}
+
+test "shadow snap moves by whole texels and extends only overlapping casters toward light" {
+    var camera: @import("camera.zig").Camera = .{};
+    var fit = fitShadow(camera, 1, 10, .identity, 1024);
+    const base = fit;
+    camera.position.x = fit.texel * 0.4;
+    const subtexel = fitShadow(camera, 1, 10, .identity, 1024);
+    try std.testing.expectEqual(base.center.x, subtexel.center.x);
+    camera.position.x = fit.texel * 1.2;
+    const moved = fitShadow(camera, 1, 10, .identity, 1024);
+    try std.testing.expectApproxEqAbs(base.texel, moved.center.x - base.center.x, 1e-6);
+    fit.includeCaster(.{ .center = .init(10000, 0, 10000), .extent = .one });
+    try std.testing.expectEqual(base.max_z, fit.max_z);
+    fit.includeCaster(.{ .center = .init(0, 0, 100), .extent = .one });
+    try std.testing.expectEqual(@as(f32, 101), fit.max_z);
+    try std.testing.expectEqual(base.min_z, fit.min_z);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), fit.matrix().mulPoint(.init(0, 0, 101)).z, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), fit.matrix().mulPoint(.init(0, 0, fit.min_z)).z, 1e-6);
 }
 
 pub fn attenuation(distance: f32, range: f32) f32 {

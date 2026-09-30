@@ -1084,7 +1084,10 @@ macOS/Metal and Windows/Vulkan: F5 and F9 give back the same poses, F6 re-parent
 jump, and F7's sheared crate is refused. Step 6 closed it. Exit condition met: §7's rules hold,
 and a saved hierarchy loads back to the same world poses. Linux stayed compile-only, and none of
 its triggers fired. M22, Light, is in progress. Its design, [`light.md`](design/light.md) with
-accepted ADR-0056, has eight bounded steps; Steps 1–4 completed the RHI primitives,
+accepted ADR-0056, has eight bounded steps; Steps 1–5 completed the RHI primitives,
 material version 2, tangents, lit glTF import, submitted lights, HDR and the Neutral tone map
 through `render3d.recordFrame`, then the registered lit model, five-texture material resolution
-and CPU-matched Metal lighting readbacks. Step 5, the directional shadow, is next.
+and CPU-matched Metal lighting readbacks, then one texel-snapped directional shadow with
+opaque/masked casters, configurable bias and filtered lookup. Shadow readbacks match the
+CPU oracle and `sandbox3d --shadow-proof` shows the shadow under its orbiting camera.
+Step 6, Vulkan runtime proof on Windows, is next.

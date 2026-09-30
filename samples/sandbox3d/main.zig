@@ -83,7 +83,7 @@ pub fn main(init: std.process.Init) !void {
         if (!options.parse(arg)) {
             var buffer: [256]u8 = undefined;
             var err = std.Io.File.stderr().writer(init.io, &buffer);
-            err.interface.writeAll("usage: sandbox3d [--msaa=1|4] [--cull=on|off]\n") catch {};
+            err.interface.writeAll("usage: sandbox3d [--msaa=1|4] [--cull=on|off] [--shadow-proof]\n") catch {};
             err.interface.flush() catch {};
             // A mistyped command line is the operator's to fix, not a crash to trace.
             std.process.exit(2);
@@ -99,6 +99,7 @@ pub fn main(init: std.process.Init) !void {
 const Options = struct {
     sample_count: u32 = 4,
     cull: bool = true,
+    shadow_proof: bool = false,
 
     /// False for anything this sample does not take.
     fn parse(self: *Options, arg: []const u8) bool {
@@ -110,6 +111,8 @@ const Options = struct {
             self.cull = true;
         } else if (std.mem.eql(u8, arg, "--cull=off")) {
             self.cull = false;
+        } else if (std.mem.eql(u8, arg, "--shadow-proof")) {
+            self.shadow_proof = true;
         } else return false;
         return true;
     }
@@ -459,6 +462,9 @@ const Sample = struct {
 
     cube: render3d.MeshHandle,
     cube_material: render3d.MaterialHandle,
+    /// Step 5's opt-in caster/receiver proof; the ordinary room stays unlit until Step 7.
+    shadow_ground: render3d.MeshHandle = .none,
+    shadow_material: render3d.MaterialHandle = .none,
 
     room: render3d.ModelHandle = .none,
     crate: render3d.ModelHandle = .none,
@@ -506,6 +512,8 @@ const Sample = struct {
         errdefer world.destroyMaterial(cube_material);
         const cube = try createBox(&world, .init(0.6, 0.6, 0.6), cube_faces, "sandbox3d cube");
         errdefer world.destroyMesh(cube);
+        const shadow_ground = if (options.shadow_proof) try createShadowGround(&world) else render3d.MeshHandle.none;
+        const shadow_material = if (options.shadow_proof) try world.createMaterial(.{ .shading = render3d.lit_id, .base_color = .{ 0.6, 0.6, 0.6, 1 }, .roughness = 0.8 }, "shadow proof receiver") else render3d.MaterialHandle.none;
 
         const orrery = try gpa.create(Orrery);
         errdefer gpa.destroy(orrery);
@@ -522,6 +530,8 @@ const Sample = struct {
             .overlay = overlay,
             .cube = cube,
             .cube_material = cube_material,
+            .shadow_ground = shadow_ground,
+            .shadow_material = shadow_material,
             .orrery = orrery,
             .ui = .init(gpa, overlayStyle(.{ .font = placeholderFont() })),
             .panels = panels,
@@ -800,7 +810,17 @@ const Sample = struct {
             },
             .target_size = pixels,
             .clear_color = self.settings.clear_linear,
+            .ambient = if (!self.shadow_ground.isNone()) .{ 0.15, 0.15, 0.15 } else .{ 0, 0, 0 },
+            .shadow_distance = 20,
         });
+
+        if (!self.shadow_ground.isNone()) {
+            try self.world.addLight(.{ .kind = .directional, .intensity = 3, .casts_shadow = true, .world = Mat4.fromQuat(Quat.lookRotation(.init(-1, -2, -1), .up).?) });
+            try self.world.drawMesh(.{ .mesh = self.shadow_ground, .material = self.shadow_material, .world = .identity });
+            try self.world.drawMesh(.{ .mesh = self.cube, .material = self.cube_material, .world = Mat4.translation(.init(0, 1.2, 0)) });
+            try engine.renderScene(.{}, &self.world, null);
+            return true;
+        }
 
         self.drawModel(.{ .model = self.room, .world = Mat4.identity });
         const override = [_]render3d.SlotOverride{.{ .slot = 0, .material = self.crate_override }};
@@ -1043,6 +1063,16 @@ fn createBox(world: *render3d.Renderer, half: Vec3, faces: Faces, label: []const
     return createMesh(world, &positions, &colours, &indices, label);
 }
 
+fn createShadowGround(world: *render3d.Renderer) !render3d.MeshHandle {
+    const positions = [_]Vec3{ .init(-5, 0, 5), .init(5, 0, 5), .init(5, 0, -5), .init(-5, 0, -5) };
+    const normals = [_]Vec3{.up} ** 4;
+    const indices = [_]u16{ 0, 1, 2, 0, 2, 3 };
+    return world.createMesh(.{ .vertex_count = 4, .streams = &.{
+        .{ .semantic = .position, .format = .float32x3, .bytes = std.mem.sliceAsBytes(&positions) },
+        .{ .semantic = .normal, .format = .float32x3, .bytes = std.mem.sliceAsBytes(&normals) },
+    }, .index_format = .uint16, .indices = std.mem.sliceAsBytes(&indices), .submeshes = &.{.{ .first_index = 0, .index_count = 6 }}, .bounds = try asset.Mesh.computeBounds(&positions) }, "shadow proof ground");
+}
+
 fn scaled(v: Vec3, by: Vec3) Vec3 {
     return .init(v.x * by.x, v.y * by.y, v.z * by.z);
 }
@@ -1097,10 +1127,13 @@ test "a box's faces all wind counter-clockwise seen from outside" {
     }
 }
 
-test "only --msaa=1|4 and --cull=on|off are accepted, and the last one given wins" {
+test "sample proof switches are explicit and the last setting given wins" {
     var options: Options = .{};
     try testing.expectEqual(@as(u32, 4), options.sample_count);
     try testing.expect(options.cull);
+    try testing.expect(!options.shadow_proof);
+    try testing.expect(options.parse("--shadow-proof"));
+    try testing.expect(options.shadow_proof);
     try testing.expect(options.parse("--msaa=1"));
     try testing.expect(options.parse("--cull=off"));
     try testing.expectEqual(@as(u32, 1), options.sample_count);

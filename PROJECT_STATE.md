@@ -1,8 +1,38 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-30
-**Current handoff: M22 Step 4 is complete; stop before Step 5.** M21 is complete (2026-09-29,
+**Current handoff: M22 Step 5 is complete; stop before Step 6.** M21 is complete (2026-09-29,
 tag `m21`). M22's design and ADR-0056 are accepted.
+
+**M22 Step 5 is done (2026-09-30).** One directional light casts into a lazily allocated
+reversed-Z `depth32_float` map. `Config.shadow_size` accepts 0/1024/2048/4096 (default
+2048), with finite constant/slope/clamp bias and a 1.5-texel geometric-normal receiver offset.
+`lighting.fitShadow` computes the rotation-invariant minimal frustum sphere, reserves the
+snap margin, rounds its centre to whole light-space texels, and extends depth toward
+overlapping casters. Selection sees all submitted draws, including camera-culled objects;
+opaque and masked materials cast, blend and disabled materials do not. Opaque fetches
+position alone; mask uses texture/factor/vertex alpha, preserving mirroring and cull mode.
+Lit shaders filter nine bilinear comparison taps and shadow only the chosen directional
+light. Shadow, world and tone-map passes leave their resources in the declared states.
+
+Candidate resource creation is refusal-safe. Caster groups bind the fallback rather than
+the depth attachment, and abandoned preparation leaves the next unshadowed frame healthy.
+`sandbox3d --shadow-proof` shows a cube's shadow on a lit plane as its camera orbits;
+the ordinary room stays unlit until Step 7. ReleaseSafe Metal proof runs exited 0 at
+1× (600 frames) and 4× (900 frames), with a 4× capture.
+
+**Verification:** **1,894 of 1,895 headless tests, one expected skip; 1,977 declared.**
+The full Metal graph passed **1,904 of 1,915, eleven expected skips**, including the
+56-test renderer/reference suite. Shadow readbacks match ambient-only/full-light CPU
+values within ±2/255 at 1×/4×; moving off-camera casters, reflection, texture/factor/vertex
+mask holes, non-casters, disabled maps, fit/snap, allocation failure and abandoned-frame
+recovery pass. All **12** guard/reference/shader mutations failed and were restored.
+The complete bar, the explicit headless shadow proof and all five Vulkan compile checks
+passed. No ABI or dependency change; backend execution and presentation are unchanged.
+Resolution: `light.md`, Step 5.
+
+**Next: Step 6, Vulkan runtime proof on Windows.** No Windows runtime check or Step 7
+lit-room/mod/profiler implementation was begun.
 
 **M22 Step 4 is done (2026-09-30).** `foundry:shading.lit` is registered beside unlit,
 without a renderer branch by content ID. Checked, copied variant descriptor slices replace

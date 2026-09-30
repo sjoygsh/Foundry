@@ -1,7 +1,7 @@
 # Design: M22 — Light: the lit model, lights, one shadow, HDR and the light-unit convention
 
-**Status:** Accepted 2026-09-29 when the owner requested Step 1. Steps 1–4 are complete;
-Step 5 is next.
+**Status:** Accepted 2026-09-29 when the owner requested Step 1. Steps 1–5 are complete;
+Step 6 is next.
 **Date:** 2026-09-29
 **Baseline:** `eaefd70`, tag `m21`. M0–M21 are complete.
 **Decisions:**
@@ -448,6 +448,9 @@ exposed (§3).
   (§4.3), and a normal offset of about one and a half texels in the lit shader's lookup. Their values
   are `Config` fields with documented defaults, validated finite, because the right numbers depend on
   scene scale; they are not content.
+  The fields are `shadow_bias_constant = -1`, `shadow_bias_slope = -1`,
+  `shadow_bias_clamp = 0` (unclamped), and `shadow_normal_offset = 1.5` (world-space shadow
+  texels along the receiver's geometric normal, before normal mapping). All are finite.
 - **Filtering:** a 3×3 grid of hardware-bilinear comparison taps, a smooth 4×4-texel footprint.
 - **Receivers** are lit materials. Unlit ones ignore light, and so shadow.
 
@@ -694,11 +697,62 @@ All five Vulkan compile checks, including optimized Windows, and both ad-hoc mac
 pass; both release notices contain the ambient fit's permission. Runtime Vulkan evidence
 remains Step 6. No shadow or Step 7 sample authoring was added.
 
-### Step 5 — `render3d`: the shadow
+### Step 5 — `render3d`: the shadow — Done 2026-09-30
 §9: `Config.shadow_size` and bias fields, the fit and snap, caster selection and culling, the
 shadow pipelines, the lookup and filter.
 **Exit:** the shadow readbacks hold on Metal, and `sandbox3d` shows a stable shadow while the camera
 orbits.
+
+**Resolution (2026-09-30).** `Config` accepts exactly 0/1024/2048/4096 shadow texels,
+defaulting to 2048, and the finite bias fields named in §9. The map and its shaders are
+allocated only when a submitted directional caster needs them. With size 0 or no caster,
+neither the pass nor lookup runs. The uniform's `counts.y` enables lookup;
+`shadow_parameters.xy` are reciprocal map size and normal offset in metres. Existing
+frame/material/constant layouts and the ABI are unchanged.
+
+`lighting.fitShadow` computes the minimal sphere in camera-local coordinates before rotation,
+then pads its radius by `size/(size-1)` to reserve the half-texel margin snapping needs.
+Its light-space X/Y centre is rounded to whole texels. The depth interval starts at the
+sphere and extends toward the light only for caster bounds overlapping its receiver box.
+Unrepresentable fits and offset products are refused before upload. Caster selection uses
+**all submissions**, not the camera's culled order, and reuses the conservative frustum
+test against the final light box. Submission order is retained for shadow draws.
+
+Opaque and mask materials cast when `casts_shadow` is true, including unlit materials;
+unlit still receives no light or shadow. Blend never casts. Depth pipelines preserve the
+material's double-sided and reflected cull mode, clear to zero, test greater-or-equal,
+and carry the configured negative raster bias. Opaque casters fetch position alone;
+masked variants optionally fetch UV0/colour and discard using texture × factor × vertex
+alpha and the existing cutoff. Four vertex and two fragment programs are embedded per
+backend, with SPIR-V agreement checks for their slots, frame/constants, mask fields and
+bindings. Lit lookup uses the geometric-normal offset and nine hardware-bilinear
+comparison taps; it attenuates only the selected directional light, not ambient,
+emission or the other lights. Coordinates outside the fitted box remain fully lit.
+
+Shadow resources are built as a complete candidate before any slot's world group is
+replaced. Each slot retains a fallback-bound caster group to avoid attachment/sampling
+feedback. Unshadowed frames use that fallback too, including after an abandoned first
+shadow preparation. Allocation-failure coverage proves partial candidates are released.
+
+**The interim sample proof:** `sandbox3d --shadow-proof` draws the code-built cube above
+a lit receiver plane while the existing camera orbits. The ordinary room, content lights,
+user-mod discovery, `--shadows=off`, `dusk` and profiler additions remain Step 7's.
+Frame-budgeted ReleaseSafe Metal runs exited 0 at 1× (600 frames) and 4× (900 frames),
+and the 4× orbit was captured. This satisfies Step 5's visible-shadow exit without
+relighting the Step 7 room prematurely.
+
+**Evidence:** the focused renderer/reference suite has **56 tests**, passing on null
+and Metal. Shadowed pixels match ambient-only CPU lighting and outside pixels full
+lighting within ±2/255 at 1×/4×. Moving an off-camera occluder moves those pixels;
+reflection, mask texture/factor/vertex-alpha holes, blend refusal, material disabling,
+no-caster frames, disabled maps and abandoned preparation are covered. Sphere rotation
+invariance, corner containment, texel snapping and depth extension have pure tests.
+All **12** deliberate guard/reference/shader mutations failed and were restored.
+The complete bar passes **1,894 of 1,895 headless tests, one expected skip; 1,977
+declared**. The full Metal graph passes **1,904 of 1,915, eleven expected skips**.
+All five Vulkan compile checks pass, including optimized Windows. Vulkan runtime
+readbacks and validation remain Step 6; Linux remains compile-only. No new dependency
+or architectural ADR was required.
 
 ### Step 6 — Vulkan, proved on Windows
 Every readback of Steps 1, 3, 4 and 5 on the PC, within ±3/255, the whole `-Drhi=vulkan` test graph,

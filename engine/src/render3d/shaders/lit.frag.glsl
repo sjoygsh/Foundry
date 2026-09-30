@@ -16,6 +16,8 @@ layout(set=0,binding=0,std140) uniform Frame {
     layout(offset=176) vec4 shadow_parameters;
     layout(offset=192) PackedLight lights[16];
 } frame;
+layout(set=0,binding=1) uniform texture2D shadow_image;
+layout(set=0,binding=2) uniform samplerShadow shadow_sampler;
 layout(set=2,binding=0,std140) uniform Material {
     layout(offset=0) vec4 base_color;
     layout(offset=16) float alpha_cutoff;
@@ -70,6 +72,7 @@ void main() {
     float metal=clamp(material.surface.x*mr.b,0,1);
     float rough=clamp(material.surface.y*mr.g,.045,1);
     vec3 n=safe_normalize(world_normal,vec3(0,0,1));
+    vec3 geometric_normal=gl_FrontFacing ? n : -n;
 #ifdef NORMAL_MAP
     vec3 t=safe_normalize(world_tangent.xyz-n*dot(n,world_tangent.xyz),vec3(1,0,0));
     vec3 b=cross(n,t)*world_tangent.w;
@@ -94,6 +97,16 @@ void main() {
             if (light.position_kind.w == 2) {
                 float cone=clamp((dot(-l,light.direction_range.xyz)-light.cone_shadow.y)/(light.cone_shadow.x-light.cone_shadow.y),0,1);
                 falloff*=cone*cone;
+            }
+        }
+        if (frame.counts.y != 0 && light.cone_shadow.z != 0) {
+            vec3 q=(frame.shadow_matrix*vec4(world_position+geometric_normal*frame.shadow_parameters.y,1)).xyz;
+            if (all(lessThanEqual(abs(q.xy),vec2(1))) && q.z >= 0 && q.z <= 1) {
+                vec2 coord=vec2(q.x*.5+.5,.5-q.y*.5);
+                float visibility=0;
+                for (int y=-1;y<=1;y++) for (int x=-1;x<=1;x++)
+                    visibility+=texture(sampler2DShadow(shadow_image,shadow_sampler),vec3(coord+vec2(x,y)*frame.shadow_parameters.x,q.z));
+                falloff*=visibility/9;
             }
         }
         result+=brdf(base.rgb,metal,rough,n,v,l)*light.color_intensity.rgb*light.color_intensity.w*falloff;
