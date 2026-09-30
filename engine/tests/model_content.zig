@@ -172,9 +172,7 @@ const Stack = struct {
         const frame = try self.device.beginFrame();
         var cmd = try self.device.beginCommandBuffer();
         try self.renderer.prepare(cmd, frame);
-        var pass = try cmd.beginRenderPass(self.renderer.passDesc(frame, false));
-        try self.renderer.record(pass);
-        pass.end();
+        try self.renderer.recordFrame(cmd, frame, false);
         if (pixels != null) {
             try cmd.textureBarrier(&.{.{ .texture = frame.surface_texture, .from = .present, .to = .copy_src }});
             try cmd.copyTextureToBuffer(.{ .src = frame.surface_texture, .size = .{ .width = target_size, .height = target_size }, .dst = readback });

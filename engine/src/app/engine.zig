@@ -1298,13 +1298,12 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         };
 
         /// Runs one frame of a 3D world with an optional 2D overlay over it
-        /// (`docs/design/render3d.md` §7): **one command buffer, two passes, in ADR-0052's
-        /// fixed order.** `renderFrame` stays as it was for a host that draws only in 2D.
+        /// (`docs/design/render3d.md` §7): one command buffer, renderer-owned world passes
+        /// followed by the overlay. `renderFrame` stays as it was for a 2D host.
         ///
-        /// `world` provides what `renderFrame`'s recorder does — `prepare`, `record` and
-        /// optionally `plan` — and also `passDesc(rhi.FrameContext, overlay: bool)
-        /// rhi.RenderPassDesc`, because only it knows its attachments: a multisampled
-        /// colour target that resolves into the surface, and a depth target. Its pass must
+        /// `world` provides `prepare`, optionally `plan`, and either
+        /// `recordFrame(cmd, frame, overlay)` or the legacy `passDesc`/`record` pair.
+        /// The renderer owns its attachments and pass count. Its final pass must
         /// take the surface from `undefined` and leave it in `render_target` when `overlay`
         /// is true, or in `present` when it is false. `render3d.Renderer` is one; `app`
         /// names no renderer type.
@@ -1360,12 +1359,20 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             self.closeScope();
 
             self.openScope(span.render_world);
-            const world_pass = try cmd.beginRenderPass(world.passDesc(frame, overlay_present));
-            world.record(world_pass) catch |err| {
-                world_pass.end();
-                return err;
+            const World = switch (@typeInfo(@TypeOf(world))) {
+                .pointer => |p| p.child,
+                else => @TypeOf(world),
             };
-            world_pass.end();
+            if (comptime @hasDecl(World, "recordFrame")) {
+                try world.recordFrame(cmd, frame, overlay_present);
+            } else {
+                const world_pass = try cmd.beginRenderPass(world.passDesc(frame, overlay_present));
+                world.record(world_pass) catch |err| {
+                    world_pass.end();
+                    return err;
+                };
+                world_pass.end();
+            }
             self.closeScope();
 
             if (comptime has_overlay) {
@@ -2446,6 +2453,46 @@ const SceneWorld = struct {
 };
 
 const SpanAt = struct { []const u8, u16 };
+
+test "renderScene prefers owned frame passes and closes a failed frame" {
+    const Owned = struct {
+        fail: bool = false,
+        recorded: bool = false,
+        overlay: bool = false,
+        pub fn prepare(_: *@This(), _: *rhi.null_backend.CommandBuffer, _: rhi.FrameContext) !void {}
+        pub fn passDesc(_: *@This(), _: rhi.FrameContext, _: bool) rhi.RenderPassDesc {
+            @compileError("recordFrame must supersede passDesc");
+        }
+        pub fn record(_: *@This(), _: *rhi.null_backend.RenderPass) !void {
+            @compileError("recordFrame must supersede record");
+        }
+        pub fn recordFrame(self: *@This(), cmd: *rhi.null_backend.CommandBuffer, frame: rhi.FrameContext, overlay: bool) !void {
+            self.recorded = true;
+            self.overlay = overlay;
+            const first = try cmd.beginRenderPass(.{ .color = &.{.{ .texture = frame.surface_texture, .initial_state = .undefined, .final_state = .render_target }} });
+            first.end();
+            const second = try cmd.beginRenderPass(.{ .color = &.{.{ .texture = frame.surface_texture, .load = .load, .initial_state = .render_target, .final_state = if (overlay) .render_target else .present }} });
+            defer second.end();
+            if (self.fail) return error.InjectedRecordFailure;
+        }
+    };
+    const engine = try testEngine(.{ .hot_reload = false });
+    defer engine.deinit();
+    var world: Owned = .{};
+    try engine.renderScene(.{}, &world, NothingRecorder{});
+    try testing.expect(world.recorded and world.overlay);
+    try engine.renderScene(.{}, &world, null);
+    try testing.expect(!world.overlay);
+    world.fail = true;
+    const before = engine.gpu.frame_index;
+    try testing.expectError(error.InjectedRecordFailure, engine.renderScene(.{}, &world, null));
+    try testing.expectEqual(before + 1, engine.gpu.frame_index);
+    try testing.expect(!engine.gpu.in_frame);
+    try testing.expectEqual(@as(usize, 0), engine.gpu.timeline.open.items.len);
+    world.fail = false;
+    try engine.renderScene(.{}, &world, @as(?NothingRecorder, null));
+    try testing.expectEqual(@as(usize, 0), engine.gpu.violationCount());
+}
 
 fn expectSpans(engine: *TestEngine, expected: []const SpanAt) !void {
     const recorder = engine.profiler().?;

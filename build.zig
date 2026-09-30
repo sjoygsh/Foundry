@@ -398,6 +398,9 @@ pub fn build(b: *std.Build) void {
         modules.get("render3d").?.addAnonymousImport("unlit_metallib", .{
             .root_source_file = metalLibrary(b, "unlit", &.{"engine/src/render3d/shaders/unlit.metal"}),
         });
+        modules.get("render3d").?.addAnonymousImport("tone_metallib", .{
+            .root_source_file = metalLibrary(b, "tone", &.{"engine/src/render3d/shaders/tone.metal"}),
+        });
     }
 
     // M8 step 1 deliberately keeps the scripting host outside the engine layering table.
@@ -1368,6 +1371,9 @@ pub fn build(b: *std.Build) void {
 
         const run = b.addRunArtifact(unit_tests);
         test_step.dependOn(&run.step);
+        if (std.mem.eql(u8, spec.name, "render3d")) {
+            b.step("render3d-test", "Run the 3D renderer and lighting reference tests").dependOn(&run.step);
+        }
     }
 
     if (script_mod) |mod| {
@@ -1590,6 +1596,8 @@ fn vulkanGraph(
     const unlit_uv_color_vertex = vulkanShaderStage(b, checker, "unlit-uv-color-vertex", "engine/src/render3d/shaders/unlit_uv_color.vert.glsl", "vert", "unlit_uv_color_vertex");
     const unlit_fragment = vulkanShaderStage(b, checker, "unlit-fragment", "engine/src/render3d/shaders/unlit.frag.glsl", "frag", "unlit_fragment");
     const unlit_mask_fragment = vulkanShaderStage(b, checker, "unlit-mask-fragment", "engine/src/render3d/shaders/unlit_mask.frag.glsl", "frag", "unlit_mask_fragment");
+    const tone_vertex = vulkanShaderStage(b, checker, "tone-vertex", "engine/src/render3d/shaders/tone.vert.glsl", "vert", "tone_vertex");
+    const tone_fragment = vulkanShaderStage(b, checker, "tone-fragment", "engine/src/render3d/shaders/tone.frag.glsl", "frag", "tone_fragment");
 
     for ([_]struct { name: []const u8, bytes: std.Build.LazyPath }{
         .{ .name = "sprite_vertex_spirv", .bytes = sprite_vertex },
@@ -1605,6 +1613,8 @@ fn vulkanGraph(
     render3d_module.addAnonymousImport("unlit_uv_color_vertex_spirv", .{ .root_source_file = unlit_uv_color_vertex });
     render3d_module.addAnonymousImport("unlit_fragment_spirv", .{ .root_source_file = unlit_fragment });
     render3d_module.addAnonymousImport("unlit_mask_fragment_spirv", .{ .root_source_file = unlit_mask_fragment });
+    render3d_module.addAnonymousImport("tone_vertex_spirv", .{ .root_source_file = tone_vertex });
+    render3d_module.addAnonymousImport("tone_fragment_spirv", .{ .root_source_file = tone_fragment });
 
     const tests = b.addTest(.{ .name = "rhi-vulkan", .root_module = rhi_module });
     b.step("vulkan-check", "Compile the Vulkan backend's tests without running them").dependOn(&tests.step);

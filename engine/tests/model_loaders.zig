@@ -178,9 +178,7 @@ test "a package's texture and mesh load through render3d's private loaders and d
     const frame = try stack.device.beginFrame();
     var cmd = try stack.device.beginCommandBuffer();
     try stack.renderer.prepare(cmd, frame);
-    var pass = try cmd.beginRenderPass(stack.renderer.passDesc(frame, false));
-    try stack.renderer.record(pass);
-    pass.end();
+    try stack.renderer.recordFrame(cmd, frame, false);
     try cmd.submit();
     try stack.device.endFrame();
     try testing.expectEqual(@as(u32, 1), stack.renderer.frameStats().draws);

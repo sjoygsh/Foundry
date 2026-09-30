@@ -1,7 +1,7 @@
 # Design: M22 — Light: the lit model, lights, one shadow, HDR and the light-unit convention
 
-**Status:** Accepted 2026-09-29 when the owner requested Step 1. Steps 1 and 2 are complete;
-Step 3 is next.
+**Status:** Accepted 2026-09-29 when the owner requested Step 1. Steps 1–3 are complete;
+Step 4 is next.
 **Date:** 2026-09-29
 **Baseline:** `eaefd70`, tag `m21`. M0–M21 are complete.
 **Decisions:**
@@ -344,8 +344,10 @@ pub const FrameView = struct {
 - **Group 1 stays unused.** It remains what `rhi.md` §9's order reserves for a pass.
 - **Inline constants carry the world matrix and its cofactor matrix** (64 + 48 bytes, of 128).
   Normals transform by the inverse transpose (ADR-0048); the cofactor matrix is that times the
-  determinant, which the shader's normalisation removes. It needs no inverse, so it is defined for a
-  singular world and exact for shear and reflection, which M21 made real.
+  determinant. Normalisation removes its magnitude, but not its sign: for a reflected world the
+  lit shader must negate the cofactor-transformed normal before normalising it. It needs no inverse,
+  so the cofactor remains defined for a singular world and handles shear. This sign correction was
+  made explicit by Step 3's Resolution before the lit shader is implemented.
 
 ### 7.3 Ambient
 
@@ -584,6 +586,57 @@ use of it. Unlit only still: the lit model is Step 4's. M19's and M20's readback
 tone map.
 **Exit:** `sandbox3d` draws as before through the HDR target and tone map, and every unlit readback
 matches `lighting.zig`'s tone map within tolerance on Metal.
+
+**Resolution (2026-09-30): complete.** `render3d.Light` is a submitted value in ADR-0056's
+units. `addLight` accepts it between `begin` and `plan`, preserves submission order, caps the
+frame at 16 lights, and refuses invalid values, a zero direction, point/spot shadow casters
+and a second directional caster without changing the frame. Direction normalisation first
+rescales its axis so finite very large or small world scales do not overflow or underflow.
+`FrameView` now carries exposure, ambient and shadow distance. Invalid views are refused before
+resetting any submissions: clear RGB must be non-negative and fit fp16, alpha in [0, 1], ambient
+finite and non-negative, shadow distance finite and positive, and the exposure scale finite and
+positive. These are representability checks, not an artistic exposure range.
+
+`lighting.zig` packs the 1,216-byte frame uniform and its 64-byte light entries, with every
+offset pinned by tests. The frame layout includes an initialised 1×1 reversed-Z depth texture
+and comparison sampler; its shadow-lookup flag remains off until Step 5. The 112-byte draw
+constants contain the world and raw cofactor columns. **Normal-direction clarification:** a
+negative determinant's sign does not disappear under normalisation. Step 4's lit shader must
+account for it, as §7.2 now says, to honour ADR-0048's inverse-transpose rule for reflection.
+The reference provides exposure, attenuation, the spot cone and Neutral now; the BRDF/ambient
+oracle belongs with Step 4, and the shadow fit/snap with Step 5.
+
+Every world pipeline now targets `rgba16_float`. At 1× the world writes the sampled HDR target
+directly; at 4× it resolves into that target. `recordFrame` records world then tone-map passes,
+leaving HDR in `shader_read` and the surface ready for the overlay or presentation. Its passes
+close on error and it refuses a frame other than the one prepared. `app.renderScene` prefers
+this method while keeping its earlier recorder path. `render3d` no longer publishes `passDesc`
+or `record`; all its tests and integration consumers use the new method. Resource construction
+now transfers ownership once, eliminating overlapping error cleanup, and target replacement
+builds all new resources before releasing the old ones.
+
+MSL and GLSL implement the same Neutral curve; Metal pins the uniform/constant sizes, and
+SPIR-V agreement checks pin the new offsets and tone-map bindings. The adapted curve's pinned
+Apache-2.0 provenance and full licence are in `THIRD_PARTY_LICENSES/khronos-neutral.md`, carried
+into both staged releases. No tool or runtime library was added.
+
+**Pixel changes, RGB before surface byte ordering:** the former pure red, green and blue
+expectations `(255,0,0)`, `(0,255,0)`, `(0,0,255)` become `(241,33,33)`, `(33,241,33)`,
+`(33,33,241)`. White becomes `(240,240,240)`. The half-red/half-blue blend remains
+`(188,0,188)`; alpha remains 255. Tests compute these from the reference, rather than
+hardcoding the shifted values, with ±2/255 tolerance on Metal. Depth, mask, blend, mirroring,
+culling and the imported/code-built quad still hold at 1× and 4×. New readbacks cover the toe,
+midtones, bright HDR highlights, vertical orientation and unchanged unlit output/clear colour
+at different EV100 values.
+
+**Evidence:** 41/41 focused tests on null and Metal; 13 deliberate guard/layout mutations
+failed and were restored; allocator-failure and failed-frame recovery proofs passed. The
+required nine-command bar passed: **1,877 of 1,878 headless tests, one expected skip; 1,960
+declared**. The full Metal graph passed **1,887 of 1,898, eleven expected skips**. All five
+Vulkan compile checks passed, including optimized Windows. The real-window Metal sample
+completed 30 frames, and both ad-hoc macOS releases staged with the new attribution. The
+focused command is `zig build render3d-test`, or `-Drhi=metal` for its GPU readbacks.
+Vulkan runtime proof remains Step 6. Step 4 has not begun.
 
 ### Step 4 — `render3d`: the lit model
 §8: the registry's variant tables, the five-texture material layout, the lit model's MSL and GLSL,

@@ -2,8 +2,20 @@
 #include <metal_stdlib>
 using namespace metal;
 
-struct Frame { float4x4 view_projection; };
-struct Constants { float4x4 world; };
+struct PackedLight { float4 position_kind, direction_range, color_intensity, cone_shadow; };
+struct Frame {
+    float4x4 view_projection;
+    float4 camera_exposure;
+    float4 ambient;
+    uint4 counts;
+    float4x4 shadow_matrix;
+    float4 shadow_parameters;
+    PackedLight lights[16];
+};
+struct Constants { float4x4 world; float3x3 cofactor; };
+static_assert(sizeof(PackedLight) == 64, "PackedLight must match lighting.zig");
+static_assert(sizeof(Frame) == 1216, "Frame must match lighting.zig");
+static_assert(sizeof(Constants) == 112, "Constants must match renderer.zig");
 struct Material { float4 base_color; float alpha_cutoff; float3 padding; };
 
 struct VertexOut {
@@ -61,14 +73,14 @@ static float4 shade(VertexOut in, constant Material &material,
 
 fragment float4 fragmentMain(VertexOut in [[stage_in]],
                              constant Material &material [[buffer(10)]],
-                             texture2d<float> image [[texture(0)]],
-                             sampler image_sampler [[sampler(0)]])
+                             texture2d<float> image [[texture(1)]],
+                             sampler image_sampler [[sampler(1)]])
 { return shade(in, material, image, image_sampler); }
 
 fragment float4 fragmentMask(VertexOut in [[stage_in]],
                              constant Material &material [[buffer(10)]],
-                             texture2d<float> image [[texture(0)]],
-                             sampler image_sampler [[sampler(0)]])
+                             texture2d<float> image [[texture(1)]],
+                             sampler image_sampler [[sampler(1)]])
 {
     float4 value = shade(in, material, image, image_sampler);
     if (value.a < material.alpha_cutoff) discard_fragment();

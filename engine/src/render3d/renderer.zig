@@ -9,6 +9,9 @@ const asset = @import("asset");
 
 const camera_mod = @import("camera.zig");
 const frustum_mod = @import("frustum.zig");
+const lighting = @import("lighting.zig");
+pub const Light = lighting.Light;
+pub const max_lights = lighting.max_lights;
 const Allocator = std.mem.Allocator;
 const Mat4 = core.math.Mat4;
 const Vec3 = core.math.Vec3;
@@ -93,6 +96,14 @@ fn builtinStage(comptime name: []const u8, comptime metal_entry: []const u8) Sha
     };
 }
 
+fn toneStage(comptime name: []const u8, comptime metal_entry: []const u8) ShaderStage {
+    return switch (rhi.backend) {
+        .metal => .{ .bytes = @embedFile("tone_metallib"), .entry = metal_entry },
+        .null => .{ .bytes = "null-backend-shader", .entry = metal_entry },
+        .vulkan => .{ .bytes = @embedFile(name), .entry = "main" },
+    };
+}
+
 fn unlitModel() ShadingModel {
     return .{
         .id = unlit_id,
@@ -139,6 +150,9 @@ pub const FrameView = struct {
     camera: camera_mod.Camera,
     target_size: Extent2D,
     clear_color: [4]f32 = .{ 0, 0, 0, 1 },
+    exposure_ev100: ?f32 = null,
+    ambient: [3]f32 = .{ 0, 0, 0 },
+    shadow_distance: f32 = 25,
 };
 
 pub const Mesh = opaque {};
@@ -157,6 +171,9 @@ pub const Stats = struct {
     pipeline_binds: u32 = 0,
     culled: u32 = 0,
     blended: u32 = 0,
+    lights: u32 = 0,
+    shadow_draws: u32 = 0,
+    shadow_culled: u32 = 0,
 };
 
 pub const Error = error{
@@ -168,6 +185,9 @@ pub const Error = error{
     InvalidSubmesh,
     InvalidTransform,
     InvalidFrameSlot,
+    InvalidLight,
+    TooManyLights,
+    InvalidShadowCaster,
     MissingStream,
     UnknownShadingModel,
     DuplicateShadingModel,
@@ -238,6 +258,21 @@ const FrameSlot = struct {
     group: rhi.BindGroupHandle,
 };
 
+const DrawConstants = extern struct {
+    world: Mat4,
+    cofactor: [3][4]f32,
+};
+
+fn drawConstants(world: Mat4) DrawConstants {
+    const x = Vec3.init(world.cols[0][0], world.cols[0][1], world.cols[0][2]);
+    const y = Vec3.init(world.cols[1][0], world.cols[1][1], world.cols[1][2]);
+    const z = Vec3.init(world.cols[2][0], world.cols[2][1], world.cols[2][2]);
+    const columns = [3]Vec3{ Vec3.cross(y, z), Vec3.cross(z, x), Vec3.cross(x, y) };
+    var result: DrawConstants = .{ .world = world, .cofactor = undefined };
+    for (columns, 0..) |column, i| result.cofactor[i] = .{ column.x, column.y, column.z, 0 };
+    return result;
+}
+
 const DrawItem = struct {
     mesh: MeshHandle,
     submesh: u32,
@@ -260,6 +295,15 @@ pub const Renderer = struct {
     material_layout: rhi.BindGroupLayoutHandle,
     pipeline_layout: rhi.PipelineLayoutHandle,
     slots: []FrameSlot,
+    shadow_fallback: rhi.TextureHandle,
+    shadow_sampler: rhi.SamplerHandle,
+    tone_layout: rhi.BindGroupLayoutHandle,
+    tone_pipeline_layout: rhi.PipelineLayoutHandle,
+    tone_vertex: rhi.ShaderModuleHandle,
+    tone_fragment: rhi.ShaderModuleHandle,
+    tone_pipeline: rhi.RenderPipelineHandle,
+    tone_sampler: rhi.SamplerHandle,
+    tone_group: rhi.BindGroupHandle,
 
     models: std.ArrayList(ModelState),
     pipelines: std.ArrayList(PipelineState),
@@ -273,6 +317,7 @@ pub const Renderer = struct {
     planned_draws: ?u32,
 
     color_target: rhi.TextureHandle,
+    hdr_target: rhi.TextureHandle,
     depth_target: rhi.TextureHandle,
     target_size: Extent2D,
     pass_color: [1]rhi.command.ColorAttachment,
@@ -285,12 +330,25 @@ pub const Renderer = struct {
     frame: ?rhi.FrameContext,
     stats: Stats,
     last_stats: Stats,
+    lights: [max_lights]Light,
+    light_count: u32,
+    has_shadow_caster: bool,
 
     const Self = @This();
 
-    /// The colour target is the device's surface format, read here as `render2d` reads it,
-    /// so a game never names an RHI format.
+    /// HDR world targets and a tone map to the device's surface format are renderer-owned.
     pub fn init(gpa: Allocator, device: *rhi.Device, config: Config) Error!Self {
+        var self = try initResources(gpa, device, config);
+        errdefer self.deinit();
+        try self.registerShadingModel(unlitModel());
+        const white = asset.Image{ .width = 1, .height = 1, .pixels = @constCast(&[_]u8{ 255, 255, 255, 255 }) };
+        self.white_texture = try self.createTexture(white, .{ .filter = .nearest, .wrap = .clamp, .label = "render3d white" });
+        return self;
+    }
+
+    /// Resource ownership transfers once: later model/texture failures use `deinit`,
+    /// never both `deinit` and these construction errdefers.
+    fn initResources(gpa: Allocator, device: *rhi.Device, config: Config) Error!Self {
         if (config.frames_in_flight == 0 or !rhi.isValidSampleCount(config.sample_count)) {
             return error.InvalidConfig;
         }
@@ -298,11 +356,11 @@ pub const Renderer = struct {
 
         const frame_layout = try device.createBindGroupLayout(.{
             .label = "render3d frame",
-            .entries = &.{.{
-                .binding = 0,
-                .type = .uniform_buffer,
-                .visibility = .{ .vertex = true },
-            }},
+            .entries = &.{
+                .{ .binding = 0, .type = .uniform_buffer, .visibility = .{ .vertex = true, .fragment = true } },
+                .{ .binding = 1, .type = .sampled_texture, .texture = .depth, .visibility = .{ .fragment = true } },
+                .{ .binding = 2, .type = .sampler, .sampler = .comparison, .visibility = .{ .fragment = true } },
+            },
         });
         errdefer device.destroyBindGroupLayout(frame_layout);
 
@@ -319,9 +377,63 @@ pub const Renderer = struct {
         const pipeline_layout = try device.createPipelineLayout(.{
             .label = "render3d shading model",
             .bind_group_layouts = &.{ frame_layout, .none, material_layout },
-            .inline_constant_bytes = @sizeOf(Mat4),
+            .inline_constant_bytes = @sizeOf(DrawConstants),
         });
         errdefer device.destroyPipelineLayout(pipeline_layout);
+
+        const shadow_fallback = try device.createTexture(.{
+            .label = "render3d empty shadow",
+            .size = .{ .width = 1, .height = 1 },
+            .format = .depth32_float,
+            .usage = .{ .depth_stencil = true, .sampled = true },
+        });
+        errdefer device.destroyTexture(shadow_fallback);
+        const shadow_sampler = try device.createSampler(.{ .label = "render3d shadow comparison", .compare = .greater_equal });
+        errdefer device.destroySampler(shadow_sampler);
+        // Initialise even though Step 3's uniform always disables shadow lookup.
+        const shadow_cmd = try device.beginCommandBuffer();
+        var shadow_consumed = false;
+        errdefer if (!shadow_consumed) shadow_cmd.discard();
+        const shadow_pass = try shadow_cmd.beginRenderPass(.{
+            .label = "render3d empty shadow",
+            .color = &.{},
+            .depth = .{ .texture = shadow_fallback, .load = .{ .clear = .{ .depth_stencil = .{ .depth = 0 } } }, .store = .store, .initial_state = .undefined, .final_state = .shader_read },
+        });
+        shadow_pass.end();
+        shadow_consumed = true;
+        try shadow_cmd.submit();
+
+        const tone_layout = try device.createBindGroupLayout(.{
+            .label = "render3d tone map",
+            .entries = &.{
+                .{ .binding = 0, .type = .sampled_texture, .visibility = .{ .fragment = true } },
+                .{ .binding = 1, .type = .sampler, .visibility = .{ .fragment = true } },
+            },
+        });
+        errdefer device.destroyBindGroupLayout(tone_layout);
+        const tone_pipeline_layout = try device.createPipelineLayout(.{ .label = "render3d tone map", .bind_group_layouts = &.{tone_layout} });
+        errdefer device.destroyPipelineLayout(tone_pipeline_layout);
+        const tone_vertex_stage = toneStage("tone_vertex_spirv", "toneVertex");
+        const tone_fragment_stage = toneStage("tone_fragment_spirv", "toneFragment");
+        const tone_vertex = try device.createShaderModule(.{ .label = "render3d tone vertex", .bytes = tone_vertex_stage.bytes });
+        errdefer device.destroyShaderModule(tone_vertex);
+        const tone_fragment = try device.createShaderModule(.{ .label = "render3d tone fragment", .bytes = tone_fragment_stage.bytes });
+        errdefer device.destroyShaderModule(tone_fragment);
+        const tone_pipeline = try device.createRenderPipeline(.{
+            .label = "render3d tone map",
+            .layout = tone_pipeline_layout,
+            .vertex_shader = tone_vertex,
+            .vertex_entry = tone_vertex_stage.entry,
+            .fragment_shader = tone_fragment,
+            .fragment_entry = tone_fragment_stage.entry,
+            .vertex_buffers = &.{},
+            .color_targets = &.{.{ .format = surface_format }},
+            .primitive = .{ .cull_mode = .none },
+            .sample_count = 1,
+        });
+        errdefer device.destroyRenderPipeline(tone_pipeline);
+        const tone_sampler = try device.createSampler(.{ .label = "render3d HDR sampler" });
+        errdefer device.destroySampler(tone_sampler);
 
         const slots = try gpa.alloc(FrameSlot, config.frames_in_flight);
         errdefer gpa.free(slots);
@@ -333,7 +445,7 @@ pub const Renderer = struct {
         for (slots) |*slot| {
             const uniform = try device.createBuffer(.{
                 .label = "render3d frame uniform",
-                .size = @sizeOf(Mat4),
+                .size = @sizeOf(lighting.FrameUniform),
                 .usage = .{ .uniform = true },
                 .memory = .upload,
             });
@@ -341,16 +453,17 @@ pub const Renderer = struct {
             const group = try device.createBindGroup(.{
                 .label = "render3d frame",
                 .layout = frame_layout,
-                .entries = &.{.{
-                    .binding = 0,
-                    .resource = .{ .uniform_buffer = .{ .buffer = uniform, .size = @sizeOf(Mat4) } },
-                }},
+                .entries = &.{
+                    .{ .binding = 0, .resource = .{ .uniform_buffer = .{ .buffer = uniform, .size = @sizeOf(lighting.FrameUniform) } } },
+                    .{ .binding = 1, .resource = .{ .sampled_texture = shadow_fallback } },
+                    .{ .binding = 2, .resource = .{ .sampler = shadow_sampler } },
+                },
             });
             slot.* = .{ .uniform = uniform, .group = group };
             built_slots += 1;
         }
 
-        var self: Self = .{
+        return .{
             .gpa = gpa,
             .device = device,
             .config = config,
@@ -359,6 +472,15 @@ pub const Renderer = struct {
             .material_layout = material_layout,
             .pipeline_layout = pipeline_layout,
             .slots = slots,
+            .shadow_fallback = shadow_fallback,
+            .shadow_sampler = shadow_sampler,
+            .tone_layout = tone_layout,
+            .tone_pipeline_layout = tone_pipeline_layout,
+            .tone_vertex = tone_vertex,
+            .tone_fragment = tone_fragment,
+            .tone_pipeline = tone_pipeline,
+            .tone_sampler = tone_sampler,
+            .tone_group = .none,
             .models = .empty,
             .pipelines = .empty,
             .samplers = .empty,
@@ -370,6 +492,7 @@ pub const Renderer = struct {
             .order = .empty,
             .planned_draws = null,
             .color_target = .none,
+            .hdr_target = .none,
             .depth_target = .none,
             .target_size = .{ .width = 0, .height = 0 },
             .pass_color = undefined,
@@ -381,12 +504,10 @@ pub const Renderer = struct {
             .frame = null,
             .stats = .{},
             .last_stats = .{},
+            .lights = undefined,
+            .light_count = 0,
+            .has_shadow_caster = false,
         };
-        errdefer self.deinit();
-        try self.registerShadingModel(unlitModel());
-        const white = asset.Image{ .width = 1, .height = 1, .pixels = @constCast(&[_]u8{ 255, 255, 255, 255 }) };
-        self.white_texture = try self.createTexture(white, .{ .filter = .nearest, .wrap = .clamp, .label = "render3d white" });
-        return self;
     }
 
     pub fn deinit(self: *Self) void {
@@ -418,12 +539,22 @@ pub const Renderer = struct {
         self.models.deinit(self.gpa);
 
         if (!self.color_target.isNone()) self.device.destroyTexture(self.color_target);
+        if (!self.tone_group.isNone()) self.device.destroyBindGroup(self.tone_group);
+        if (!self.hdr_target.isNone()) self.device.destroyTexture(self.hdr_target);
         if (!self.depth_target.isNone()) self.device.destroyTexture(self.depth_target);
         for (self.slots) |slot| {
             self.device.destroyBindGroup(slot.group);
             self.device.destroyBuffer(slot.uniform);
         }
         self.gpa.free(self.slots);
+        self.device.destroyTexture(self.shadow_fallback);
+        self.device.destroySampler(self.shadow_sampler);
+        self.device.destroyRenderPipeline(self.tone_pipeline);
+        self.device.destroyShaderModule(self.tone_vertex);
+        self.device.destroyShaderModule(self.tone_fragment);
+        self.device.destroyPipelineLayout(self.tone_pipeline_layout);
+        self.device.destroyBindGroupLayout(self.tone_layout);
+        self.device.destroySampler(self.tone_sampler);
         self.device.destroyPipelineLayout(self.pipeline_layout);
         self.device.destroyBindGroupLayout(self.material_layout);
         self.device.destroyBindGroupLayout(self.frame_layout);
@@ -709,8 +840,15 @@ pub const Renderer = struct {
     pub fn begin(self: *Self, view: FrameView) Error!void {
         if (!view.camera.isValid() or view.target_size.isEmpty()) return error.InvalidCamera;
         for (view.clear_color) |channel| {
-            if (!std.math.isFinite(channel)) return error.InvalidCamera;
+            if (!std.math.isFinite(channel) or channel < 0 or channel > 65504) return error.InvalidCamera;
         }
+        if (view.clear_color[3] > 1) return error.InvalidCamera;
+        if (view.exposure_ev100) |ev| {
+            const scale = lighting.exposureScale(ev);
+            if (!std.math.isFinite(ev) or !std.math.isFinite(scale) or scale <= 0) return error.InvalidCamera;
+        }
+        for (view.ambient) |channel| if (!std.math.isFinite(channel) or channel < 0) return error.InvalidCamera;
+        if (!std.math.isFinite(view.shadow_distance) or view.shadow_distance <= 0) return error.InvalidCamera;
         self.view = view;
         self.view_matrix = view.camera.viewMatrix();
         self.view_projection = view.camera.viewProjection(view.target_size.width, view.target_size.height);
@@ -720,7 +858,21 @@ pub const Renderer = struct {
         self.planned_draws = null;
         self.frame = null;
         self.stats = .{};
+        self.light_count = 0;
+        self.has_shadow_caster = false;
         self.recording = true;
+    }
+
+    /// Submission-order values; every refusal leaves the frame untouched.
+    pub fn addLight(self: *Self, light: Light) Error!void {
+        if (!self.recording or self.planned_draws != null or self.frame != null) return error.NotRecording;
+        if (!lighting.valid(light)) return error.InvalidLight;
+        if (light.casts_shadow and (light.kind != .directional or self.has_shadow_caster)) return error.InvalidShadowCaster;
+        if (self.light_count == max_lights) return error.TooManyLights;
+        self.lights[self.light_count] = light;
+        self.light_count += 1;
+        self.has_shadow_caster = self.has_shadow_caster or light.casts_shadow;
+        self.stats.lights = self.light_count;
     }
 
     pub fn drawMesh(self: *Self, draw: MeshDraw) Error!void {
@@ -789,20 +941,20 @@ pub const Renderer = struct {
 
         const slot = self.slots[frame.slot];
         const bytes = try self.device.mapBuffer(slot.uniform);
-        @memcpy(bytes[0..@sizeOf(Mat4)], std.mem.asBytes(&self.view_projection));
+        const uniform = lighting.packFrame(self.view_projection, self.view.camera.position, self.view.exposure_ev100, self.view.ambient, self.lights[0..self.light_count]);
+        @memcpy(bytes[0..@sizeOf(lighting.FrameUniform)], std.mem.asBytes(&uniform));
         self.device.unmapBuffer(slot.uniform);
         self.frame = frame;
     }
 
-    pub fn passDesc(self: *Self, frame: rhi.FrameContext, overlay: bool) rhi.RenderPassDesc {
-        const surface_final: rhi.ResourceState = if (overlay) .render_target else .present;
+    fn worldPassDesc(self: *Self) rhi.RenderPassDesc {
         if (self.config.sample_count == 1) {
             self.pass_color[0] = .{
-                .texture = frame.surface_texture,
+                .texture = self.hdr_target,
                 .load = .{ .clear = .{ .color = self.view.clear_color } },
                 .store = .store,
                 .initial_state = .undefined,
-                .final_state = surface_final,
+                .final_state = .shader_read,
             };
         } else {
             self.pass_color[0] = .{
@@ -812,9 +964,9 @@ pub const Renderer = struct {
                 .initial_state = .undefined,
                 .final_state = .render_target,
                 .resolve = .{
-                    .texture = frame.surface_texture,
+                    .texture = self.hdr_target,
                     .initial_state = .undefined,
-                    .final_state = surface_final,
+                    .final_state = .shader_read,
                 },
             };
         }
@@ -831,12 +983,32 @@ pub const Renderer = struct {
         };
     }
 
-    pub fn record(self: *Self, pass: *rhi.RenderPass) Error!void {
+    pub fn recordFrame(self: *Self, cmd: *rhi.CommandBuffer, frame: rhi.FrameContext, overlay: bool) Error!void {
         if (!self.recording) return error.NotRecording;
+        const prepared = self.frame orelse return error.NotRecording;
+        if (prepared.slot != frame.slot or prepared.index != frame.index or !prepared.surface_texture.eql(frame.surface_texture)) return error.InvalidFrameSlot;
         defer {
             self.recording = false;
             self.last_stats = self.stats;
         }
+        {
+            const pass = try cmd.beginRenderPass(self.worldPassDesc());
+            defer pass.end();
+            try self.recordWorld(pass);
+        }
+        const tone = try cmd.beginRenderPass(.{
+            .label = "render3d tone map",
+            .color = &.{.{ .texture = frame.surface_texture, .load = .discard, .store = .store, .initial_state = .undefined, .final_state = if (overlay) .render_target else .present }},
+        });
+        defer tone.end();
+        tone.setViewport(.{ .width = @floatFromInt(self.view.target_size.width), .height = @floatFromInt(self.view.target_size.height) });
+        tone.setScissor(.{ .width = self.view.target_size.width, .height = self.view.target_size.height });
+        tone.setPipeline(self.tone_pipeline);
+        tone.setBindGroup(0, self.tone_group);
+        tone.draw(.{ .vertex_count = 3 });
+    }
+
+    fn recordWorld(self: *Self, pass: *rhi.RenderPass) Error!void {
         const frame = self.frame orelse return error.NotRecording;
         if (self.order.items.len == 0) return;
 
@@ -866,7 +1038,8 @@ pub const Renderer = struct {
             }
             pass.setBindGroup(2, material.group);
 
-            pass.setInlineConstants(std.mem.asBytes(&item.world));
+            const constants = drawConstants(item.world);
+            pass.setInlineConstants(std.mem.asBytes(&constants));
             pass.setVertexBuffer(0, mesh.vertex_buffers[0], 0);
             if (item.pipeline_key.vertex_layout & 2 != 0) pass.setVertexBuffer(3, mesh.vertex_buffers[3], 0);
             if (item.pipeline_key.vertex_layout & 1 != 0) pass.setVertexBuffer(5, mesh.vertex_buffers[5], 0);
@@ -940,7 +1113,7 @@ pub const Renderer = struct {
             .fragment_entry = model.desc.variants.fragment[if (key.alpha == .mask) 1 else 0].entry,
             .vertex_buffers = layouts[0..count],
             .color_targets = &.{.{
-                .format = self.surface_format,
+                .format = .rgba16_float,
                 .blend = if (key.alpha == .blend) rhi.pipeline.BlendState.premultiplied_alpha else null,
             }},
             .depth_stencil = .{
@@ -992,13 +1165,34 @@ pub const Renderer = struct {
             try self.device.createTexture(.{
                 .label = "render3d multisampled colour",
                 .size = .{ .width = size.width, .height = size.height },
-                .format = self.surface_format,
+                .format = .rgba16_float,
                 .usage = .{ .render_target = true },
                 .sample_count = self.config.sample_count,
             });
+        errdefer if (!color.isNone()) self.device.destroyTexture(color);
+
+        const hdr = try self.device.createTexture(.{
+            .label = "render3d HDR",
+            .size = .{ .width = size.width, .height = size.height },
+            .format = .rgba16_float,
+            .usage = .{ .render_target = true, .sampled = true },
+        });
+        errdefer self.device.destroyTexture(hdr);
+        const tone_group = try self.device.createBindGroup(.{
+            .label = "render3d tone map",
+            .layout = self.tone_layout,
+            .entries = &.{
+                .{ .binding = 0, .resource = .{ .sampled_texture = hdr } },
+                .{ .binding = 1, .resource = .{ .sampler = self.tone_sampler } },
+            },
+        });
 
         if (!self.color_target.isNone()) self.device.destroyTexture(self.color_target);
         if (!self.depth_target.isNone()) self.device.destroyTexture(self.depth_target);
+        if (!self.tone_group.isNone()) self.device.destroyBindGroup(self.tone_group);
+        if (!self.hdr_target.isNone()) self.device.destroyTexture(self.hdr_target);
+        self.hdr_target = hdr;
+        self.tone_group = tone_group;
         self.color_target = color;
         self.depth_target = depth;
         self.target_size = size;
@@ -1095,14 +1289,12 @@ fn finishTestFrame(fx: *TestFixture) !void {
     const frame = try fx.device.beginFrame();
     var cmd = try fx.device.beginCommandBuffer();
     try fx.renderer.prepare(cmd, frame);
-    var pass = try cmd.beginRenderPass(fx.renderer.passDesc(frame, false));
-    try fx.renderer.record(pass);
-    pass.end();
+    try fx.renderer.recordFrame(cmd, frame, false);
     try cmd.submit();
     try fx.device.endFrame();
 }
 
-test "renderer configuration is bounded, and the colour target is the surface's format" {
+test "renderer configuration is bounded, and the tone map targets the surface's format" {
     const device = try rhi.Device.init(testing.allocator, .{});
     defer device.deinit();
     try testing.expectError(error.InvalidConfig, Renderer.init(testing.allocator, device, .{
@@ -1265,6 +1457,135 @@ test "begin refuses malformed cameras targets and clear colours" {
     view = testView(64);
     view.clear_color[0] = std.math.inf(f32);
     try testing.expectError(error.InvalidCamera, fx.renderer.begin(view));
+    for ([_]f32{ std.math.nan(f32), std.math.inf(f32), -200, 200 }) |ev| {
+        view = testView(64);
+        view.exposure_ev100 = ev;
+        try testing.expectError(error.InvalidCamera, fx.renderer.begin(view));
+    }
+    for ([_]f32{ std.math.nan(f32), std.math.inf(f32), -1 }) |bad| {
+        view = testView(64);
+        view.ambient[1] = bad;
+        try testing.expectError(error.InvalidCamera, fx.renderer.begin(view));
+        view = testView(64);
+        view.shadow_distance = bad;
+        try testing.expectError(error.InvalidCamera, fx.renderer.begin(view));
+    }
+    view = testView(64);
+    view.shadow_distance = 0;
+    try testing.expectError(error.InvalidCamera, fx.renderer.begin(view));
+    view = testView(64);
+    view.clear_color[0] = -1;
+    try testing.expectError(error.InvalidCamera, fx.renderer.begin(view));
+    view.clear_color[0] = 65505;
+    try testing.expectError(error.InvalidCamera, fx.renderer.begin(view));
+    view = testView(64);
+    view.clear_color[3] = 2;
+    try testing.expectError(error.InvalidCamera, fx.renderer.begin(view));
+}
+
+test "light refusals leave the submitted frame unchanged" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    const good: Light = .{ .kind = .directional, .intensity = 400, .world = .identity };
+    try testing.expectError(error.NotRecording, fx.renderer.addLight(good));
+    try fx.renderer.begin(testView(32));
+    try fx.renderer.addLight(good);
+    const saved = fx.renderer.lights[0];
+    const saved_stats = fx.renderer.stats;
+    var cases = [_]Light{good} ** 17;
+    cases[0].color[0] = -1;
+    cases[1].color[1] = 2;
+    cases[2].color[2] = std.math.nan(f32);
+    cases[3].intensity = -1;
+    cases[4].intensity = std.math.inf(f32);
+    cases[5].range = -1;
+    cases[6].range = std.math.nan(f32);
+    cases[7].inner_cone = -1;
+    cases[8].inner_cone = cases[8].outer_cone;
+    cases[9].inner_cone = std.math.nan(f32);
+    cases[10].outer_cone = std.math.pi;
+    cases[11].outer_cone = std.math.inf(f32);
+    cases[12].world.cols[2] = .{ 0, 0, 0, 0 };
+    cases[13].world.cols[3][0] = std.math.inf(f32);
+    cases[14].world.cols[0][1] = std.math.nan(f32);
+    cases[15].outer_cone = 0;
+    cases[16].inner_cone = cases[16].outer_cone + 0.1;
+    for (cases) |bad| {
+        try testing.expectError(error.InvalidLight, fx.renderer.addLight(bad));
+        try testing.expectEqual(@as(u32, 1), fx.renderer.light_count);
+        try testing.expectEqualDeep(saved, fx.renderer.lights[0]);
+        try testing.expectEqual(saved_stats, fx.renderer.stats);
+        try testing.expect(!fx.renderer.has_shadow_caster);
+        try testing.expectEqual(@as(usize, 0), fx.renderer.draws.items.len);
+        try testing.expect(fx.renderer.planned_draws == null);
+    }
+    var shadow = good;
+    shadow.casts_shadow = true;
+    shadow.kind = .point;
+    try testing.expectError(error.InvalidShadowCaster, fx.renderer.addLight(shadow));
+    shadow.kind = .spot;
+    try testing.expectError(error.InvalidShadowCaster, fx.renderer.addLight(shadow));
+    try testing.expectEqual(@as(u32, 1), fx.renderer.light_count);
+    shadow.kind = .directional;
+    try fx.renderer.addLight(shadow);
+    try testing.expectError(error.InvalidShadowCaster, fx.renderer.addLight(shadow));
+    try testing.expectEqual(@as(u32, 2), fx.renderer.light_count);
+    for (2..max_lights) |i| {
+        var light = good;
+        light.intensity = @floatFromInt(i);
+        try fx.renderer.addLight(light);
+    }
+    try testing.expectError(error.TooManyLights, fx.renderer.addLight(good));
+    try testing.expectEqual(@as(u32, max_lights), fx.renderer.light_count);
+    for (2..max_lights) |i| try testing.expectEqual(@as(f32, @floatFromInt(i)), fx.renderer.lights[i].intensity);
+    try fx.renderer.plan();
+    try testing.expectError(error.NotRecording, fx.renderer.addLight(good));
+    try finishTestFrame(&fx);
+    try testing.expectEqual(@as(u32, max_lights), fx.renderer.frameStats().lights);
+    try testing.expectError(error.NotRecording, fx.renderer.addLight(good));
+    try fx.renderer.begin(testView(32));
+    try testing.expectEqual(@as(u32, 0), fx.renderer.light_count);
+    try testing.expect(!fx.renderer.has_shadow_caster);
+}
+
+test "light direction packing survives finite extreme scales" {
+    for ([_]f32{ 1e30, 1e-30 }) |scale| {
+        const light: Light = .{ .kind = .directional, .intensity = 1, .world = Mat4.scaling(.init(scale, scale, scale)) };
+        try testing.expect(lighting.valid(light));
+        try testing.expectEqual(Vec3.forward, lighting.direction(light.world));
+    }
+}
+
+test "frame preparation uploads the pinned lighting uniform" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    var view = testView(32);
+    view.ambient = .{ 3, 4, 5 };
+    view.exposure_ev100 = 15;
+    try fx.renderer.begin(view);
+    try fx.renderer.addLight(.{ .kind = .point, .intensity = 70, .world = Mat4.translation(.init(1, 2, 3)) });
+    const frame = try fx.device.beginFrame();
+    const cmd = try fx.device.beginCommandBuffer();
+    try fx.renderer.prepare(cmd, frame);
+    const mapped = try fx.device.mapBuffer(fx.renderer.slots[frame.slot].uniform);
+    const expected = lighting.packFrame(fx.renderer.view_projection, view.camera.position, 15, view.ambient, fx.renderer.lights[0..1]);
+    try testing.expectEqualSlices(u8, std.mem.asBytes(&expected), mapped[0..@sizeOf(lighting.FrameUniform)]);
+    fx.device.unmapBuffer(fx.renderer.slots[frame.slot].uniform);
+    var wrong = frame;
+    wrong.slot += 1;
+    try testing.expectError(error.InvalidFrameSlot, fx.renderer.recordFrame(cmd, wrong, true));
+    wrong = frame;
+    wrong.index += 1;
+    try testing.expectError(error.InvalidFrameSlot, fx.renderer.recordFrame(cmd, wrong, true));
+    wrong = frame;
+    wrong.surface_texture = .none;
+    try testing.expectError(error.InvalidFrameSlot, fx.renderer.recordFrame(cmd, wrong, true));
+    try fx.renderer.recordFrame(cmd, frame, true);
+    // Loading the surface and sampling HDR proves the two final states on null.
+    const overlay = try cmd.beginRenderPass(.{ .color = &.{.{ .texture = frame.surface_texture, .load = .load, .initial_state = .render_target, .final_state = .present }} });
+    overlay.end();
+    try cmd.submit();
+    try fx.device.endFrame();
 }
 
 test "targets follow sample count and rebuild on resize" {
@@ -1275,6 +1596,7 @@ test "targets follow sample count and rebuild on resize" {
     var single_cmd = try single.device.beginCommandBuffer();
     try single.renderer.prepare(single_cmd, single_frame);
     try testing.expect(single.renderer.color_target.isNone());
+    try testing.expect(!single.renderer.hdr_target.isNone());
     try testing.expect(!single.renderer.depth_target.isNone());
     single_cmd.discard();
     try single.device.endFrame();
@@ -1287,6 +1609,8 @@ test "targets follow sample count and rebuild on resize" {
     try multi.renderer.prepare(first_cmd, first_frame);
     const old_color = multi.renderer.color_target;
     const old_depth = multi.renderer.depth_target;
+    const old_hdr = multi.renderer.hdr_target;
+    const old_group = multi.renderer.tone_group;
     try testing.expect(!old_color.isNone());
     try testing.expect(!old_depth.isNone());
     first_cmd.discard();
@@ -1298,6 +1622,8 @@ test "targets follow sample count and rebuild on resize" {
     try multi.renderer.prepare(second_cmd, second_frame);
     try testing.expect(!multi.renderer.color_target.eql(old_color));
     try testing.expect(!multi.renderer.depth_target.eql(old_depth));
+    try testing.expect(!multi.renderer.hdr_target.eql(old_hdr));
+    try testing.expect(!multi.renderer.tone_group.eql(old_group));
     second_cmd.discard();
     try multi.device.endFrame();
 }
@@ -1404,9 +1730,7 @@ fn renderMaterialCase(samples: u32, case: MaterialCase) !MaterialImage {
     const frame = try fx.device.beginFrame();
     var cmd = try fx.device.beginCommandBuffer();
     try fx.renderer.prepare(cmd, frame);
-    var pass = try cmd.beginRenderPass(fx.renderer.passDesc(frame, false));
-    try fx.renderer.record(pass);
-    pass.end();
+    try fx.renderer.recordFrame(cmd, frame, false);
     try cmd.textureBarrier(&.{.{ .texture = frame.surface_texture, .from = .present, .to = .copy_src }});
     try cmd.copyTextureToBuffer(.{
         .src = frame.surface_texture,
@@ -1430,32 +1754,139 @@ fn materialTexel(image: *const [material_test_bytes]u8, x: usize, y: usize) [4]u
     return image[offset..][0..4].*;
 }
 
+fn displayTexel(format: rhi.TextureFormat, linear: [3]f32) [4]u8 {
+    const mapped = lighting.toneMap(linear);
+    var out: [4]u8 = .{ 0, 0, 0, 255 };
+    const srgb = format == .rgba8_unorm_srgb or format == .bgra8_unorm_srgb;
+    for (mapped, 0..) |v, i| {
+        const encoded = if (!srgb) v else if (v <= 0.0031308) 12.92 * v else 1.055 * std.math.pow(f32, v, 1.0 / 2.4) - 0.055;
+        out[i] = @intFromFloat(@round(std.math.clamp(encoded, 0, 1) * 255));
+    }
+    if (format == .bgra8_unorm or format == .bgra8_unorm_srgb) std.mem.swap(u8, &out[0], &out[2]);
+    return out;
+}
+
+fn texelMatches(expected: [4]u8, actual: [4]u8) bool {
+    const tolerance: i16 = if (rhi.backend == .vulkan) 3 else 2;
+    for (expected[0..3], actual[0..3]) |e, a| if (@abs(@as(i16, e) - @as(i16, a)) > tolerance) return false;
+    return expected[3] == actual[3];
+}
+
+fn expectDisplayTexel(expected: [4]u8, actual: [4]u8) !void {
+    try testing.expect(texelMatches(expected, actual));
+}
+
+test "HDR tone map reads back toe midtones highlights and unexposed unlit output" {
+    if (rhi.backend == .null) return;
+    for ([_]u32{ 1, 4 }) |samples| {
+        var fx = try TestFixture.init(samples, material_test_size);
+        defer fx.deinit();
+        const mesh = try testMesh(&fx.renderer, false);
+        defer fx.renderer.destroyMesh(mesh);
+        const material = try fx.renderer.createMaterial(.{ .base_color = .{ 0.4, 0.2, 0.1, 1 } }, "unexposed unlit");
+        defer fx.renderer.destroyMaterial(material);
+        const readback = try fx.device.createBuffer(.{ .size = material_test_bytes, .usage = .{ .copy_dst = true }, .memory = .readback });
+        defer fx.device.destroyBuffer(readback);
+        const cases = [_]struct { color: [3]f32, ev: ?f32 }{
+            .{ .color = .{ 0.04, 0.04, 0.04 }, .ev = null },
+            .{ .color = .{ 0.5, 0.3, 0.2 }, .ev = 0 },
+            .{ .color = .{ 1, 1, 1 }, .ev = 15 },
+            .{ .color = .{ 100, 10, 1 }, .ev = -4 },
+        };
+        for (cases) |case| {
+            var view = testView(material_test_size);
+            view.clear_color = .{ case.color[0], case.color[1], case.color[2], 1 };
+            view.exposure_ev100 = case.ev;
+            try fx.renderer.begin(view);
+            try fx.renderer.drawMesh(.{ .mesh = mesh, .material = material, .world = .identity });
+            const frame = try fx.device.beginFrame();
+            const cmd = try fx.device.beginCommandBuffer();
+            try fx.renderer.prepare(cmd, frame);
+            try fx.renderer.recordFrame(cmd, frame, false);
+            try cmd.textureBarrier(&.{.{ .texture = frame.surface_texture, .from = .present, .to = .copy_src }});
+            try cmd.copyTextureToBuffer(.{ .src = frame.surface_texture, .size = .{ .width = material_test_size, .height = material_test_size }, .dst = readback });
+            try cmd.textureBarrier(&.{.{ .texture = frame.surface_texture, .from = .copy_src, .to = .present }});
+            try cmd.submit();
+            try fx.device.endFrame();
+            fx.device.waitIdle();
+            const bytes = try fx.device.mapBuffer(readback);
+            defer fx.device.unmapBuffer(readback);
+            const format = fx.device.capabilities().surface_format;
+            try expectDisplayTexel(displayTexel(format, case.color), bytes[0..4].*);
+            const centre = (16 * material_test_size + 16) * 4;
+            try expectDisplayTexel(displayTexel(format, .{ 0.4, 0.2, 0.1 }), bytes[centre..][0..4].*);
+            // The lower wide part of the triangle must not be flipped into its narrow top.
+            const lower = (20 * material_test_size + 21) * 4;
+            const upper = (10 * material_test_size + 21) * 4;
+            try expectDisplayTexel(displayTexel(format, .{ 0.4, 0.2, 0.1 }), bytes[lower..][0..4].*);
+            try expectDisplayTexel(displayTexel(format, case.color), bytes[upper..][0..4].*);
+        }
+    }
+}
+
+test "draw constants pin the world and cofactor columns including singular transforms" {
+    try testing.expectEqual(@as(usize, 112), @sizeOf(DrawConstants));
+    try testing.expectEqual(@as(usize, 64), @offsetOf(DrawConstants, "cofactor"));
+    const reflected = drawConstants(Mat4.scaling(.init(-2, 3, 4)));
+    try testing.expectEqual([3][4]f32{ .{ 12, 0, 0, 0 }, .{ 0, -8, 0, 0 }, .{ 0, 0, -6, 0 } }, reflected.cofactor);
+    const singular = drawConstants(Mat4.scaling(.init(0, 3, 4)));
+    try testing.expectEqual(@as(f32, 12), singular.cofactor[0][0]);
+    for (singular.cofactor) |column| for (column) |v| try testing.expect(std.math.isFinite(v));
+}
+
+fn initAllocationProof(gpa: Allocator) !void {
+    const device = try rhi.Device.init(testing.allocator, .{});
+    defer device.deinit();
+    var renderer = try Renderer.init(gpa, device, .{});
+    defer renderer.deinit();
+}
+
+test "renderer construction releases resources at every allocator failure" {
+    if (rhi.backend != .null) return;
+    try testing.checkAllAllocationFailures(testing.allocator, initAllocationProof, .{});
+}
+
+test "an HDR target rebuild failure preserves the live targets and group" {
+    if (rhi.backend != .null) return;
+    var fx = try TestFixture.init(4, 32);
+    defer fx.deinit();
+    try fx.renderer.ensureTargets(.{ .width = 32, .height = 32 });
+    const old_hdr = fx.renderer.hdr_target;
+    const old_color = fx.renderer.color_target;
+    const old_depth = fx.renderer.depth_target;
+    const old_group = fx.renderer.tone_group;
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    fx.device.gpa = failing.allocator();
+    defer fx.device.gpa = testing.allocator;
+    try testing.expectError(error.OutOfMemory, fx.renderer.ensureTargets(.{ .width = 64, .height = 64 }));
+    try testing.expectEqual(old_hdr, fx.renderer.hdr_target);
+    try testing.expectEqual(old_color, fx.renderer.color_target);
+    try testing.expectEqual(old_depth, fx.renderer.depth_target);
+    try testing.expectEqual(old_group, fx.renderer.tone_group);
+    try testing.expectEqual(Extent2D{ .width = 32, .height = 32 }, fx.renderer.target_size);
+}
+
 test "textured mask blend and mirrored winding read back at 1x and 4x" {
     if (rhi.backend == .null) return;
     for ([_]u32{ 1, 4 }) |samples| {
         const masked = try renderMaterialCase(samples, .mask);
-        const bgra = masked.format == .bgra8_unorm or masked.format == .bgra8_unorm_srgb;
-        const clear: [4]u8 = if (bgra) .{ 255, 0, 0, 255 } else .{ 0, 0, 255, 255 };
-        const green = [4]u8{ 0, 255, 0, 255 };
-        try testing.expectEqual(clear, materialTexel(&masked.pixels, 12, 16));
-        try testing.expectEqual(green, materialTexel(&masked.pixels, 20, 16));
+        const clear = displayTexel(masked.format, .{ 0, 0, 1 });
+        const green = displayTexel(masked.format, .{ 0, 1, 0 });
+        try expectDisplayTexel(clear, materialTexel(&masked.pixels, 12, 16));
+        try expectDisplayTexel(green, materialTexel(&masked.pixels, 20, 16));
         // At 1x a cutout has no edge blend: every pixel is the clear colour or the texel.
         if (samples == 1) for (0..material_test_size) |y| for (0..material_test_size) |x| {
             const texel = materialTexel(&masked.pixels, x, y);
-            try testing.expect(std.mem.eql(u8, &texel, &clear) or std.mem.eql(u8, &texel, &green));
+            try testing.expect(texelMatches(clear, texel) or texelMatches(green, texel));
         };
 
         const blended = try renderMaterialCase(samples, .blend);
         const pixel = materialTexel(&blended.pixels, 16, 16);
-        const red_index: usize = if (bgra) 2 else 0;
-        const blue_index: usize = if (bgra) 0 else 2;
-        try testing.expect(pixel[red_index] >= 187 and pixel[red_index] <= 189);
-        try testing.expect(pixel[blue_index] >= 187 and pixel[blue_index] <= 189);
-        try testing.expectEqual(@as(u8, 255), pixel[3]);
+        try expectDisplayTexel(displayTexel(blended.format, .{ 0.5, 0, 0.5 }), pixel);
 
         const mirrored = try renderMaterialCase(samples, .mirrored);
-        try testing.expectEqual(green, materialTexel(&mirrored.pixels, 16, 16));
-        try testing.expectEqual(clear, materialTexel(&mirrored.pixels, 1, 1));
+        try expectDisplayTexel(green, materialTexel(&mirrored.pixels, 16, 16));
+        try expectDisplayTexel(clear, materialTexel(&mirrored.pixels, 1, 1));
     }
 }
 
@@ -1520,9 +1951,7 @@ fn renderCrossing(samples: u32, red_first: bool) !CrossingImage {
     const frame = try fx.device.beginFrame();
     var cmd = try fx.device.beginCommandBuffer();
     try fx.renderer.prepare(cmd, frame);
-    var pass = try cmd.beginRenderPass(fx.renderer.passDesc(frame, false));
-    try fx.renderer.record(pass);
-    pass.end();
+    try fx.renderer.recordFrame(cmd, frame, false);
     try cmd.textureBarrier(&.{.{
         .texture = frame.surface_texture,
         .from = .present,
@@ -1555,13 +1984,7 @@ fn crossingTexel(image: *const [crossing_bytes]u8, x: usize, y: usize) [4]u8 {
 }
 
 fn solidTexel(format: rhi.TextureFormat, red: bool) [4]u8 {
-    return switch (format) {
-        .bgra8_unorm, .bgra8_unorm_srgb => if (red)
-            .{ 0, 0, 255, 255 }
-        else
-            .{ 255, 0, 0, 255 },
-        else => if (red) .{ 255, 0, 0, 255 } else .{ 0, 0, 255, 255 },
-    };
+    return displayTexel(format, if (red) .{ 1, 0, 0 } else .{ 0, 0, 1 });
 }
 
 test "depth decides the crossing at 1x and 4x independently of submission order" {
@@ -1579,13 +2002,13 @@ test "depth decides the crossing at 1x and 4x independently of submission order"
         const red = solidTexel(surface_format, true);
         const blue = solidTexel(surface_format, false);
         for (0..crossing_size) |y| {
-            try testing.expectEqual(red, crossingTexel(&red_first.pixels, 8, y));
-            try testing.expectEqual(blue, crossingTexel(&red_first.pixels, 55, y));
+            try expectDisplayTexel(red, crossingTexel(&red_first.pixels, 8, y));
+            try expectDisplayTexel(blue, crossingTexel(&red_first.pixels, 55, y));
         }
 
         const crossing = crossingTexel(&red_first.pixels, 32, crossing_size / 2);
         if (samples == 1) {
-            try testing.expectEqual(blue, crossing);
+            try expectDisplayTexel(blue, crossing);
         } else {
             const red_channel: usize = if (surface_format == .bgra8_unorm_srgb) 2 else 0;
             const blue_channel: usize = if (surface_format == .bgra8_unorm_srgb) 0 else 2;
@@ -1671,9 +2094,7 @@ fn renderCullScene(samples: u32, cull: bool) !struct { pixels: [cull_bytes]u8, c
     const frame = try device.beginFrame();
     var cmd = try device.beginCommandBuffer();
     try fx.renderer.prepare(cmd, frame);
-    var pass = try cmd.beginRenderPass(fx.renderer.passDesc(frame, false));
-    try fx.renderer.record(pass);
-    pass.end();
+    try fx.renderer.recordFrame(cmd, frame, false);
     try cmd.textureBarrier(&.{.{ .texture = frame.surface_texture, .from = .present, .to = .copy_src }});
     try cmd.copyTextureToBuffer(.{ .src = frame.surface_texture, .size = .{ .width = cull_size, .height = cull_size }, .dst = readback });
     try cmd.textureBarrier(&.{.{ .texture = frame.surface_texture, .from = .copy_src, .to = .present }});

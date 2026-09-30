@@ -36,6 +36,8 @@ pub const Profile = enum {
     unlit_uv_color_vertex,
     unlit_fragment,
     unlit_mask_fragment,
+    tone_vertex,
+    tone_fragment,
 };
 
 const magic: u32 = 0x0723_0203;
@@ -315,6 +317,15 @@ fn requireUnlitVertex(bytes: []const u8, uv: bool, color: bool) Error!void {
     inline for (0..2) |location| try require(try hasLocatedVariable(bytes, location, Storage.output));
     try requireFrameMatrix(bytes);
     try requireConstants(bytes, false);
+    const frame = try namedId(bytes, "Frame") orelse return error.DecorationMismatch;
+    inline for (.{ .{ 1, 64 }, .{ 2, 80 }, .{ 3, 96 }, .{ 4, 112 }, .{ 5, 176 }, .{ 6, 192 } }) |field|
+        try require(try hasMemberDecoration(bytes, frame, field[0], Decoration.offset, field[1]));
+    const light = try namedId(bytes, "PackedLight") orelse return error.DecorationMismatch;
+    inline for (0..4) |member|
+        try require(try hasMemberDecoration(bytes, light, member, Decoration.offset, member * 16));
+    const constants = try namedId(bytes, "Constants") orelse return error.DecorationMismatch;
+    try require(try hasMemberDecoration(bytes, constants, 1, Decoration.offset, 64));
+    try require(try hasMemberDecoration(bytes, constants, 1, Decoration.matrix_stride, 16));
 }
 
 fn requireUnlitFragment(bytes: []const u8) Error!void {
@@ -335,8 +346,8 @@ fn requireUnlitFragment(bytes: []const u8) Error!void {
 pub fn validateProfile(bytes: []const u8, profile: Profile) Error!void {
     try validate(bytes);
     const stage: Stage = switch (profile) {
-        .sprite_vertex, .quad_vertex, .unlit_vertex, .unlit_color_vertex, .unlit_uv_vertex, .unlit_uv_color_vertex => .vertex,
-        .sprite_fragment, .quad_fragment, .unlit_fragment, .unlit_mask_fragment => .fragment,
+        .sprite_vertex, .quad_vertex, .unlit_vertex, .unlit_color_vertex, .unlit_uv_vertex, .unlit_uv_color_vertex, .tone_vertex => .vertex,
+        .sprite_fragment, .quad_fragment, .unlit_fragment, .unlit_mask_fragment, .tone_fragment => .fragment,
     };
     try require(try hasEntry(bytes, stage, "main"));
 
@@ -376,6 +387,13 @@ pub fn validateProfile(bytes: []const u8, profile: Profile) Error!void {
         .unlit_uv_vertex => try requireUnlitVertex(bytes, true, false),
         .unlit_uv_color_vertex => try requireUnlitVertex(bytes, true, true),
         .unlit_fragment, .unlit_mask_fragment => try requireUnlitFragment(bytes),
+        .tone_vertex => try require(try hasLocatedVariable(bytes, 0, Storage.output)),
+        .tone_fragment => {
+            try require(try hasLocatedVariable(bytes, 0, Storage.input));
+            try require(try hasLocatedVariable(bytes, 0, Storage.output));
+            try require(try bindingHasType(bytes, 0, 0, Storage.uniform_constant, Op.type_image));
+            try require(try bindingHasType(bytes, 0, 1, Storage.uniform_constant, Op.type_sampler));
+        },
     }
 }
 

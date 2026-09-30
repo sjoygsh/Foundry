@@ -1,8 +1,30 @@
 # Foundry Project State
 
-**Last updated:** 2026-09-29
-**Current handoff: M22 Step 2 is complete; stop before Step 3.** M21 is complete (2026-09-29,
+**Last updated:** 2026-09-30
+**Current handoff: M22 Step 3 is complete; stop before Step 4.** M21 is complete (2026-09-29,
 tag `m21`). M22's design and ADR-0056 are accepted.
+
+**M22 Step 3 is done (2026-09-30).** `render3d` accepts at most 16 ordered, validated lights
+per frame, including the single-directional-caster refusal. `FrameView` carries exposure,
+ambient and shadow distance; `lighting.zig` packs the pinned 1,216-byte uniform and provides
+the Neutral/exposure/attenuation/cone reference. The frame layout has a fallback sampled depth
+texture and comparison sampler; shadow lookup is still disabled. World pipelines write
+`rgba16_float`, directly at 1× or resolved at 4×. `recordFrame` records world then tone map,
+with HDR left sampleable and the surface ready for overlay or presentation; `app.renderScene`
+prefers it and retains its legacy recorder path. Construction and resize have refusal-safe
+cleanup. The 112-byte draw constants include raw cofactors; the design now explicitly requires
+Step 4 to preserve the inverse-transpose direction under reflection.
+
+Unlit Metal readbacks pass against the CPU curve, including depth, textures, mask/blend,
+mirroring, culling, bright HDR, orientation and exposure independence, at 1× and 4×. The
+imported and code-built quad still agree. All 13 guard/packing/shader mutations failed and
+were restored. **The bar: 1,877 of 1,878 headless tests, one expected skip; 1,960 declared.**
+The full Metal graph passed **1,887 of 1,898, eleven expected skips**; all five Vulkan compile
+checks, the real-window Metal sample and both release configurations passed. The adapted
+Neutral curve has pinned Apache-2.0 attribution in both artifacts. `zig build render3d-test`
+is the focused check, with `-Drhi=metal` for readbacks. **Next: Step 4, the lit shading model
+and material resolution.** BRDF/ambient reference work belongs to it; shadow fit/snap and
+rendering remain Step 5, Windows runtime proof Step 6. Nothing enters the ABI.
 
 **M22 Step 2 is done (2026-09-29).** `foundry:material` version 2 appends all §5.1 lit fields
 with defaults while preserving version 1's unlit interpretation. `asset.Mesh` validates tangent
@@ -15,7 +37,7 @@ scene is explicitly unlit in its reproducible generator until the lit renderer a
 Mapped authored materials remain validated at draw time, because their shading is not described
 by the imported glTF material. Guard mutations failed and were restored. The required bar passed:
 **1,866 of 1,867 headless tests, one expected skip; 1,949 declared**. Both macOS release
-configurations staged. Step 3 is the HDR frame, lights, and `recordFrame`; it has not begun.
+configurations staged. Step 3's completed HDR frame, lights and `recordFrame` handoff is above.
 
 **M22 Step 1 is done (2026-09-29).**
 - **The RHI can express the light passes:** single-sampled `depth32_float` may be a sampled depth

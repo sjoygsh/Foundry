@@ -1084,5 +1084,6 @@ macOS/Metal and Windows/Vulkan: F5 and F9 give back the same poses, F6 re-parent
 jump, and F7's sheared crate is refused. Step 6 closed it. Exit condition met: §7's rules hold,
 and a saved hierarchy loads back to the same world poses. Linux stayed compile-only, and none of
 its triggers fired. M22, Light, is in progress. Its design, [`light.md`](design/light.md) with
-accepted ADR-0056, has eight bounded steps; Steps 1 and 2 completed the RHI primitives,
-material version 2, tangents and lit glTF import. Step 3 is next.
+accepted ADR-0056, has eight bounded steps; Steps 1–3 completed the RHI primitives,
+material version 2, tangents, lit glTF import, submitted lights, HDR and the Neutral tone map
+through `render3d.recordFrame`. Step 4, the lit model, is next.

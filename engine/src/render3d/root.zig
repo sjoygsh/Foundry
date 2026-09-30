@@ -9,6 +9,7 @@ pub const camera = @import("camera.zig");
 pub const content = @import("content.zig");
 pub const frustum = @import("frustum.zig");
 pub const loader = @import("loader.zig");
+pub const lighting = @import("lighting.zig");
 pub const renderer = @import("renderer.zig");
 
 pub const Camera = camera.Camera;
@@ -20,6 +21,8 @@ pub const Error = renderer.Error;
 pub const Extent2D = renderer.Extent2D;
 pub const Filter = renderer.Filter;
 pub const FrameView = renderer.FrameView;
+pub const Light = lighting.Light;
+pub const max_lights = lighting.max_lights;
 pub const MaterialDesc = renderer.MaterialDesc;
 pub const MaterialHandle = renderer.MaterialHandle;
 pub const MaterialFields = renderer.MaterialFields;
@@ -48,5 +51,6 @@ test {
     _ = content;
     _ = frustum;
     _ = loader;
+    _ = lighting;
     _ = renderer;
 }
