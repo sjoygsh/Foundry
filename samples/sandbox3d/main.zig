@@ -61,6 +61,8 @@ const render2d = @import("render2d");
 const render3d = @import("render3d");
 const scene = @import("scene");
 const ui = @import("ui");
+const walk_mod = @import("walk.zig");
+const Tour = @import("tour.zig").Tour;
 
 const orrery_mod = @import("orrery.zig");
 const Orrery = orrery_mod.Orrery;
@@ -204,6 +206,9 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     var sample = try Sample.init(gpa, engine, options);
     defer sample.deinit(engine);
     try sample.load(engine);
+    // Null normally advances 1 ms/frame. An explicit tour advances fixed simulation time,
+    // not thousands of empty rendered frames, and never changes the engine's timestep.
+    if (headless) if (sample.tour != null) engine.platform.setClockStep(engine.step_delta);
 
     const overlay_on = if (engine.os.envVar("FOUNDRY_SANDBOX3D_OVERLAY")) |v| !std.mem.eql(u8, v, "0") else true;
     const frame_limit = frameLimit(engine, headless);
@@ -232,7 +237,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         try sample.describeUi(engine);
         if (engine.input.wasPressed(.escape)) engine.requestQuit();
         sample.keys(engine, script.pressed(engine.frame_index));
-        while (engine.nextStep()) |step| sample.step(step);
+        while (engine.nextStep()) |step| try sample.step(engine, step);
 
         var skipped = false;
         if (sample.draw(engine, overlay_on)) |drew| {
@@ -266,10 +271,37 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         }
         if (skipped) pace_next = 0;
         engine.endFrame();
+        if (sample.tour) |*tour| if (tour.done()) break;
 
         if (frame_limit) |limit| {
             if (engine.frame_index >= limit) break;
         }
+    }
+
+    if (sample.tour) |*tour| {
+        if (!tour.done() or tour.failed != null) return error.TourFailed;
+        var replay = walk_mod.Walk.init(gpa);
+        defer replay.deinit(&engine.assets);
+        replay.refresh(&engine.store, &engine.assets, engine.step_delta.toSecondsF32());
+        var second: Tour = .{ .emit = false };
+        // The replay runs unpaced, back to back, so its moves are timed at a busy CPU's
+        // clock; the frame loop's are timed between paced frames (collision3d.md Step 5).
+        var replay_times: [Tour.max_ticks]i64 = undefined;
+        var replay_count: usize = 0;
+        while (!second.done()) {
+            const started = engine.os.monotonicNanos(); // Measurement only.
+            try second.advance(&replay, engine.step_delta.toSecondsF32());
+            replay_times[replay_count] = @intCast(engine.os.monotonicNanos() - started);
+            replay_count += 1;
+        }
+        var replay_scratch: [Tour.max_ticks]i64 = undefined;
+        const unpaced = core.profile.summarise(replay_times[0..replay_count], &replay_scratch);
+        if (!tour.replayMatches(&second)) {
+            log.warn("tour: FAIL replay", .{});
+            return error.TourFailed;
+        }
+        log.info("tour: replay pass ({d} ticks, {x:0>16}); unpaced moves median {d:.4}ms p95 {d:.4}ms", .{ tour.len, tour.hash, ms(unpaced.median_ns), ms(unpaced.p95_ns) });
+        log.info("tour: pass", .{});
     }
 
     report(gpa, engine, &sample, skipped_frames);
@@ -278,6 +310,9 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
 /// What a run has to say for itself: how many frames, the pacing of the last ones and what
 /// each stage of a frame cost.
 fn report(gpa: std.mem.Allocator, engine: *app.Engine, sample: *const Sample, skipped_frames: u64) void {
+    var move_scratch: [Tour.max_ticks]i64 = undefined;
+    const moves = core.profile.summarise(sample.move_times[0..sample.move_count], &move_scratch);
+    log.info("character: {d} moves, median {d:.4}ms p95 {d:.4}ms", .{ moves.count, ms(moves.median_ns), ms(moves.p95_ns) });
     const stats = sample.world.frameStats();
     log.info("lighting: {d} lights, {d} shadow draws, {d} shadow culled", .{ stats.lights, stats.shadow_draws, stats.shadow_culled });
     log.info("stopped after {d} frames ({d} skipped), {d} ticks; last frame {d} draws, {d} culled, {d} blended, {d} triangles", .{
@@ -322,7 +357,7 @@ fn frameLimit(engine: *app.Engine, headless: bool) ?u64 {
         }
         log.warn("FOUNDRY_SANDBOX3D_FRAMES is not a positive number; ignoring it", .{});
     }
-    return if (headless) default_headless_frames else null;
+    return if (headless) (if (engine.os.envVar("FOUNDRY_SANDBOX3D_WALK") != null) Tour.max_ticks else default_headless_frames) else null;
 }
 
 fn workersFrom(env: []const platform.os.EnvVar) ?u16 {
@@ -511,6 +546,12 @@ const Sample = struct {
     sample_count: u32,
     world: render3d.Renderer,
     overlay: render2d.Renderer,
+    walk: walk_mod.Walk,
+    course: render3d.ModelHandle = .none,
+    intent: walk_mod.Intent = .{},
+    tour: ?Tour = null,
+    move_times: [Tour.max_ticks]i64 = undefined,
+    move_count: usize = 0,
     /// Created in `load`, once `world` is at its final address, because it borrows it.
     content: ?render3d.Content = null,
 
@@ -582,6 +623,7 @@ const Sample = struct {
             .sample_count = options.sample_count,
             .world = world,
             .overlay = overlay,
+            .walk = walk_mod.Walk.init(gpa),
             .cube = cube,
             .cube_material = cube_material,
             .shadow_ground = shadow_ground,
@@ -596,6 +638,10 @@ const Sample = struct {
     /// sample has reached its final address.
     fn load(self: *Sample, engine: *app.Engine) !void {
         try engine.assets.registerLoader(self.gpa, render2d.textureLoader(&self.overlay));
+        try engine.assets.registerLoader(self.gpa, asset.collisionMeshLoader());
+        if (engine.os.envVar("FOUNDRY_SANDBOX3D_WALK")) |mode| {
+            if (std.mem.eql(u8, mode, "tour")) self.tour = .{} else log.warn("unknown walk mode '{s}'; using keys", .{mode});
+        }
         self.content = render3d.Content.init(self.gpa, &self.world, &engine.assets, .default);
         self.refresh(engine);
 
@@ -610,7 +656,7 @@ const Sample = struct {
         self.panels.toggle("log");
         self.panels.entities.selected = self.orrery.role(.sheared);
         self.panels_open = engine.os.envVar("FOUNDRY_SANDBOX3D_PANELS") != null;
-        log.info("keys: f1 overlay, f5 save, f9 load, f6 move the orbiting crate, f7 try the sheared one, escape quit", .{});
+        log.info("keys: WASD walk, arrows/right mouse look, f3 walk/orbit, f1 overlay, f5 save, f9 load, f6 move the orbiting crate, f7 try the sheared one, escape quit", .{});
     }
 
     /// The user data directory, made if it is not there yet. The file beneath it is opened
@@ -634,6 +680,7 @@ const Sample = struct {
     /// Everything derived from content, derived again whenever content changes.
     fn refresh(self: *Sample, engine: *app.Engine) void {
         const before = self.settings;
+        const previous_course = if (self.walk.settings) |s| s.course else core.ContentId.none;
         const first = self.content_generation == 0 and self.room.isNone() and self.crate.isNone();
         self.settings = Settings.read(engine);
         self.content_generation = engine.contentGeneration();
@@ -658,6 +705,8 @@ const Sample = struct {
         self.room = self.follow(self.room, before.room, self.settings.room, first);
         self.crate = self.follow(self.crate, before.crate, self.settings.crate, first);
         self.crate_override = self.followMaterial(before.crate_override, first);
+        self.walk.refresh(&engine.store, &engine.assets, engine.step_delta.toSecondsF32());
+        self.course = self.follow(self.course, previous_course, if (self.walk.settings) |s| s.course else .none, first);
 
         if (self.settings.font.eql(before.font) and !self.font_asset.isNone()) return;
         const fresh = if (self.settings.font.eql(.none))
@@ -696,12 +745,23 @@ const Sample = struct {
         };
     }
 
-    fn step(self: *Sample, s: app.Step) void {
+    fn step(self: *Sample, engine: *app.Engine, s: app.Step) !void {
         const dt = s.delta.toSecondsF32();
         self.orbit_angle = wrap(self.orbit_angle + self.settings.orbit_radians_per_second * dt);
         // The game translates `app`'s step into `scene`'s tick: the number and the fixed
         // delta, and nothing a system could read a device through.
         self.orrery.step(.{ .tick = s.tick, .delta = s.delta });
+        const scope = engine.beginScope("character");
+        defer scope.end();
+        const started = engine.os.monotonicNanos(); // Measurement only; never affects the move.
+        if (self.tour) |*tour| {
+            if (!tour.done()) try tour.advance(&self.walk, dt);
+        } else try self.walk.step(if (self.walk.orbit) .{} else self.intent, dt);
+        const elapsed: i64 = @intCast(engine.os.monotonicNanos() - started);
+        if (self.move_count < self.move_times.len) {
+            self.move_times[self.move_count] = elapsed;
+            self.move_count += 1;
+        }
     }
 
     fn noteEvent(self: *Sample, ev: platform.Event) void {
@@ -742,6 +802,13 @@ const Sample = struct {
     /// a text field types, so they stay live while the overlay's filter box has focus.
     fn keys(self: *Sample, engine: *app.Engine, scripted: Script.Keys) void {
         const in = &engine.input;
+        if (in.wasPressed(.f3) or scripted.f3) {
+            if (!self.walk.character.isNone()) self.walk.orbit = !self.walk.orbit;
+            log.info("f3: {s} camera", .{if (self.walk.orbit) "orbit" else "walk"});
+        }
+        const typing = self.panels_open and self.ui.wantsKeyboard();
+        self.intent = walk_mod.inputIntent(in.*, typing);
+        if (!self.walk.orbit and !typing and in.mouse.isHeld(.right)) self.walk.look(in.mouse.motion.x, in.mouse.motion.y);
         if (in.wasPressed(.f1) or scripted.f1) {
             self.panels_open = !self.panels_open;
             log.info("debug overlay {s}", .{if (self.panels_open) "shown" else "hidden"});
@@ -839,6 +906,7 @@ const Sample = struct {
     }
 
     fn eye(self: *const Sample) Vec3 {
+        if (!self.walk.orbit) return self.walk.eye();
         const r = self.settings.orbit_radius;
         return .init(r * @cos(self.orbit_angle), self.settings.orbit_height, r * @sin(self.orbit_angle));
     }
@@ -857,7 +925,7 @@ const Sample = struct {
         try self.world.begin(.{
             .camera = .{
                 .position = position,
-                .rotation = Quat.lookRotation(focus.sub(position), Vec3.up) orelse Quat.identity,
+                .rotation = if (!self.walk.orbit) self.walk.rotation() else Quat.lookRotation(focus.sub(position), Vec3.up) orelse Quat.identity,
                 .vertical_fov = std.math.pi / 3.2,
                 .near = 0.1,
                 .far = 80,
@@ -882,6 +950,7 @@ const Sample = struct {
         for (self.settings.lighting.lights[0..self.settings.lighting.len]) |light| try self.world.addLight(light);
 
         self.drawModel(.{ .model = self.room, .world = Mat4.identity });
+        self.drawModel(.{ .model = self.course, .world = Mat4.identity });
         const override = [_]render3d.SlotOverride{.{ .slot = 0, .material = self.crate_override }};
         var placed: u32 = 0;
         const grid = self.settings.grid;
@@ -970,6 +1039,9 @@ const Sample = struct {
     }
 
     fn deinit(self: *Sample, engine: *app.Engine) void {
+        self.walk.deinit(&engine.assets);
+        _ = engine.assets.unregisterLoader(self.gpa, asset.schemas.collision_mesh.id);
+        if (!self.course.isNone()) if (self.content) |*content| content.releaseModel(self.course);
         if (!self.font_asset.isNone()) engine.assets.release(self.font_asset);
         self.releaseModels();
         self.models.deinit(self.gpa);
@@ -1040,13 +1112,13 @@ const Script = struct {
 
     const max = 32;
     const Press = struct { key: Key, frame: u64 };
-    const Key = enum { f1, f5, f6, f7, f9 };
-    const Keys = struct { f1: bool = false, f5: bool = false, f6: bool = false, f7: bool = false, f9: bool = false };
+    const Key = enum { f1, f3, f5, f6, f7, f9 };
+    const Keys = struct { f1: bool = false, f3: bool = false, f5: bool = false, f6: bool = false, f7: bool = false, f9: bool = false };
 
     fn fromEnv(engine: *app.Engine) Script {
         const text = engine.os.envVar("FOUNDRY_SANDBOX3D_KEYS") orelse return .{};
         return parse(text) orelse blk: {
-            log.warn("FOUNDRY_SANDBOX3D_KEYS is not a list of key@frame (f1 f5 f6 f7 f9); ignoring it", .{});
+            log.warn("FOUNDRY_SANDBOX3D_KEYS is not a list of key@frame (f1 f3 f5 f6 f7 f9); ignoring it", .{});
             break :blk .{};
         };
     }
@@ -1169,6 +1241,8 @@ const testing = std.testing;
 test {
     _ = orrery_mod;
     _ = @import("light_settings.zig");
+    _ = walk_mod;
+    _ = @import("walk_tests.zig");
 }
 
 test "scripted keys are key@frame pairs, and anything else is refused whole" {

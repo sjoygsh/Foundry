@@ -110,7 +110,7 @@ pub fn walkable(c: CharacterConfig, hit: Hit) bool {
     return hit.surface_normal.y >= @cos(c.max_slope);
 }
 fn cast(w: *World, c: Character, feet: Vec3, by: Vec3) ?Hit {
-    return w.characterCast(convex(c, feet), by, c.body);
+    return w.characterCast(convex(c, feet), by, c.body, @cos(c.config.max_slope));
 }
 fn ground(w: *World, c: Character, feet: Vec3) ?Ground {
     const h = groundCast(w, c, feet, .init(0, -2 * narrow.contact_skin, 0)) orelse return null;

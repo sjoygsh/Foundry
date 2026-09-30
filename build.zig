@@ -770,6 +770,13 @@ pub fn build(b: *std.Build) void {
         .{ .dir = "tools/editor/content", .stem = "editor", .dependencies = on_core },
     };
 
+    // The tour's test consumes the very same compiled package and generated asset tree as
+    // an install. Cross checks compile it but cannot execute a target-built fpack here.
+    const walk_test_options = b.addOptions();
+    walk_test_options.addOption(bool, "available", target.query.isNative());
+    if (core_compiled) |compiled| walk_test_options.addOptionPath("core_package", compiled.fpk);
+    sandbox3d_mod.addOptions("walk_test_options", walk_test_options);
+
     // **Only when the build target can run here.** `fpack` is built for the target like
     // everything else, so a cross build produces a compiler this machine cannot execute.
     // `zig build check` — the portability obligation from ADR-0008 — does not install and
@@ -783,6 +790,10 @@ pub fn build(b: *std.Build) void {
             // against its output and compiling it twice would be two answers to one
             // question.
             const compiled = if (index == 0) core_compiled.? else release.compilePackage(b, fpack, pkg);
+            if (std.mem.eql(u8, pkg.stem, "sandbox3d")) {
+                walk_test_options.addOptionPath("package", compiled.fpk);
+                walk_test_options.addOptionPath("generated", compiled.generated);
+            }
 
             b.getInstallStep().dependOn(&b.addInstallFileWithDir(
                 compiled.fpk,

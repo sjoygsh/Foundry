@@ -1,7 +1,7 @@
 # Design: M23 — Collision: `physics3d`, collision meshes, the character controller and a first-person walk
 
 **Status:** Accepted 2026-09-30, when the owner requested Step 1, with every §16 choice as
-written. Steps 1–4 are done; Step 5 is next.
+written. Steps 1–5 are done; Step 6 is next.
 **Date:** 2026-09-30
 **Baseline:** `a0f8d73`, tag `m22`. M0–M22 are complete.
 **Decisions:**
@@ -1036,7 +1036,17 @@ module remains on `core` alone. No ABI, asset-kind, sample, platform, renderer o
 their conditional proofs are not triggered. Native Windows remains Step 6; Linux compile-only.
 Step 5 has not begun.
 
-### Step 5 — `sandbox3d` walks, on Metal
+### Step 5 — `sandbox3d` walks, on Metal — Done 2026-09-30
+
+**Implementation refinement (2026-09-30, before the fix):** the real multi-step course
+exposed a resting riser/tread edge that blocked further horizontal movement. The earlier
+Step 4 rule restricted coincident-face preference to ground/landing probes; that is too narrow.
+Controller movement casts may also prefer a coincident walkable face, **only when the contact
+normal itself meets the slope threshold**. This lets a capsule already resting on a tread
+continue, without reclassifying the low, tilted first contact with its riser. Same-body,
+same-time and same-witness tests still apply, and earlier blockers are never skipped. Public
+queries retain their triangle tie order. A multi-riser regression and the package tour prove
+the correction; the architecture, skin, slope limit and step-height limit do not change.
 
 This step implements §10:
 - the `walk` schema and record, and the course from `make_scene.py`;
@@ -1048,6 +1058,119 @@ It pins the course's coordinates in the Resolution, runs the tour windowed on Me
 relocated ReleaseSafe install, exercises the hand checks, and records the cost and both staged
 releases. **Exit:** the tour logs `tour: pass` headless in `zig build test` and windowed on Metal,
 with the dusk mod both off and on.
+
+**Resolution — Step 5 (2026-09-30): complete.** Codex wrote most of this step and ran out
+before finishing it. Claude found a failing test, fixed it, measured the cost and ran the Metal
+runs, and records all of it here. The sample now walks. `walk.zig` owns a `physics3d.World`,
+one character, and the copied collision of every record the walk names. `walk_settings.zig`
+reads and validates `sandbox3d:walk.main`, and `tour.zig` is the scripted tour. `main.zig`
+does the following:
+- adds F3, WASD, the arrow keys, right-mouse look, gravity and the respawn below −10 m;
+- adds the `character` profiler zone;
+- draws the course model;
+- runs a fixed step when the tour is asked for headless.
+
+`walk_tests.zig` runs the tour against the sample's **compiled package**, with the loader
+reading the `.fcol` files the build generated. No course is recreated by hand, so the test
+proves the whole path from package to controller.
+
+**The course, pinned** (`make_scene.py`'s `course()`; `room.gltf` and `crate.gltf` bytes
+unchanged):
+- **Steps:** x ∈ [−1.8, −0.8]. Step i (0–3) has its tread top at 0.15·(i+1) m, from
+  z = −0.4 − 0.3·i to −0.7 − 0.3·i. Each riser is authored before its tread.
+- **Platform:** top at y 0.6 over x [−1.8, −0.8], z [−1.6, −2.6], with side and north faces.
+- **Gentle ramp:** 25°, 1 m wide about z = −2.1. It leaves the platform's east edge
+  (x −0.8, y 0.6) and meets the floor at x ≈ 0.487.
+- **Steep ramp:** 55°, 1 m wide about z = −0.7. It rises west from x ≈ −2.48 to x −2.9, y 0.6,
+  against the west wall at x −3.
+- **Both ramps** are 4 cm-thick rotated boxes whose undersides pass below the floor.
+- **Collision:** the room's import sets `collision true` and `collision_exclude ["Plant"]`; the
+  course sets `collision true`. The walk lists both collision records.
+- **The walk record:** as in §10.1, with a spawn at (1.1, 0.004, 2.5), yaw 0, turn rate
+  1.5 rad/s and look rate 0.004 rad per point.
+
+**The tour, pinned.** Each stage starts with a teleport and one settling tick; after that,
+movement comes only from `Walk.step`. Starts, directions and ticks at 60 Hz:
+
+| Stage | Start | Direction | Ticks |
+| --- | --- | --- | --- |
+| Floor | (1.1, skin, 2.5) | (0, 0, −1) | 80 |
+| Steps | (−1.3, skin, 0.1) | (0, 0, −0.4) | 130 |
+| Ramp | (−1.1, 0.6 + skin, −2.1) | (1, 0, 0) | 40 |
+| Steep slope | (−2.0, skin, −0.7) | (−1, 0, 0) | 120 |
+| Wall slide | (−0.3, 0.65, −2.65) | (0.2, 0, −0.3464) | 120 |
+
+The steps and wall-slide stages walk at 0.4 of full speed. The wall slide's direction is 30° off
+the north wall's normal. Every §10.5 check is as written:
+- **Floor:** it ends at feet (1.1, 0.005, −1.5) after crossing the floor's diagonal seam.
+- **Steps:** at least four stepped moves, ending at y 0.605.
+- **Ramp:** it snaps down to the floor.
+- **Steep slope:** the feet never rise, and it ends at x −2.3211.
+- **Wall slide:** 100% of the tangential progress asked for, ending at z −2.695.
+- **Replay:** 495 ticks with hash `cb99ccfcf2b6d6c3`. Every tick's feet bytes equal a fresh
+  world's, on null and on Metal, with and without dusk.
+
+**Where the implementation sharpened §10:**
+- **Movement casts also prefer a coincident walkable face** (the refinement above). Codex found
+  this on the course's successive risers. **Mutation:** reverting it fails the package tour
+  (`tour: FAIL steps` at y 0.455). The multi-riser `physics3d` unit test added with it still
+  passes under that mutation, so it does not isolate the guard. The tour, which is in
+  `zig build test`, is the evidence. Making the unit test isolate the guard is a Step 6 or
+  Step 7 loose end.
+- **Reload re-adds every listed collision on any content change**, not only a changed record.
+  The result is the same, the code is simpler, and an unchanged character is not teleported.
+  The package test proves the following:
+  - residency is replaced;
+  - a real source edit raising the course by 0.1 m depenetrates the next tick onto it;
+  - a missing named record is left out with a warning;
+  - a missing walk record retires the character and returns to orbit.
+- **A valid walk record requires every field present.** The missing-field and non-finite
+  refusals cover all fields, including formerly defaulted ones. Also refused: empty,
+  over-long and duplicate collision lists, and an eye above the height. **Mutations:**
+  accepting duplicates, and dropping the eye bound, each failed the settings test and were
+  restored.
+- **Headless tours advance the null clock by the fixed step**, so each frame is one tick. A
+  consequence: on null the profiler's `character` span reads 0. The sample therefore times
+  moves itself with the monotonic clock, for measurement only; the time never enters the
+  simulation.
+- **A test fix:** the reload test addressed the walk's `collision` field by a hard-coded
+  index, 16. The field is 14, and the null field crashed the test after the tour had already
+  passed. It now looks the field up by name. `build.zig` also finds the sandbox3d package by
+  its stem, not by its position.
+
+**Runs on macOS/Metal (Apple M5):** relocated ReleaseSafe install, launched from outside the
+repository.
+- `tour: pass` with the base content, and with `dusk:content` enabled from user storage. Both
+  exit 0 with the same replay hash.
+- A scripted F3 at frame 150 switched walk to orbit, and the run exited 0.
+- **What was not done by a person:** walking with WASD, mouse look, a visual look at the
+  course, and a hand-made live reload. The owner can check these; the automated F3, tour and
+  package reload stand in for them here.
+
+**Cost (§11.4), measured, ReleaseSafe:**
+- **Unpaced moves**, the tour's replay run back to back inside the same windowed process:
+  median **0.082 ms**, p95 **0.139 ms** in both runs. On null, headless: 0.052 ms and
+  0.093 ms.
+- **Paced moves**, inside the windowed 60 Hz frame loop: median **0.15 ms**, p95
+  **0.30–0.32 ms**. That is over the 0.25 ms budget.
+- **The difference is the CPU's clock state, not the algorithm.** It is the same 495 moves,
+  with the same work and the same answers, in the same process: between paced frames the CPU
+  has clocked down.
+- **So the §15 trigger was not acted on.** It asks for a profile showing GJK as a move's cost
+  above budget, and the unpaced p95 is about half the budget. Whether the budget means paced
+  or unpaced time is put to the owner, not decided here.
+- One counting run found about 160 separations and 110 casts per move across both runs. Part
+  of this is repeated, identical queries: the overlap scan runs twice when nothing overlaps,
+  and the ground probe runs twice when no snap happens. Removing them would not change an
+  answer. It was not done in this step.
+- The PC's figures are Step 6's.
+
+**Bar and proofs:** both ad-hoc macOS releases (room, sandbox) stage. `sandbox3d-test`
+passes 14 of 14 and `physics3d-test` 61 of 61. The nine-command bar passes **1,971 of 1,972
+tests**, one expected skip: four more than Step 4, which are the riser test, the input test and
+the two package tests. The native, Metal and both cross checks pass, as do all three headless
+samples. There is no ABI change, and the overlay is not granted `physics3d`. The
+Windows runtime is Step 6; Linux is compile-only.
 
 ### Step 6 — Windows/Vulkan on the PC
 

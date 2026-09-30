@@ -114,6 +114,34 @@ test "character stair edge: ground uses face normal rather than tilted contact n
     try t.expectApproxEqAbs(@as(f32, 1), r.ground.?.surface_normal.y, 1e-5);
 }
 
+test "character successive risers: a resting tread edge cannot pin the next horizontal move" {
+    var w: p.World = .empty;
+    defer w.deinit(gpa);
+    _ = try floor(&w);
+    var positions: std.ArrayList(Vec3) = .empty;
+    defer positions.deinit(gpa);
+    var indices: std.ArrayList(u32) = .empty;
+    defer indices.deinit(gpa);
+    for (0..4) |i| {
+        const x = @as(f32, @floatFromInt(i)) * 0.3;
+        const h = @as(f32, @floatFromInt(i + 1)) * 0.15;
+        const base: u32 = @intCast(positions.items.len);
+        try positions.appendSlice(gpa, &.{ .init(x, h - 0.15, -1), .init(x, h, -1), .init(x, h, 1), .init(x, h - 0.15, 1), .init(x + 0.3, h, -1), .init(x + 0.3, h, 1) });
+        for ([_]u32{ 0, 1, 2, 0, 2, 3, 1, 4, 5, 1, 5, 2 }) |index| try indices.append(gpa, base + index);
+    }
+    _ = try mesh(&w, positions.items, indices.items);
+    const c = try standing(&w, .init(-0.5, p.contact_skin, 0));
+    var r: p.CharacterMove = undefined;
+    var steps: usize = 0;
+    for (0..120) |_| {
+        r = try move(&w, c, .init(0.02, -0.002725, 0));
+        try t.expect(!r.stuck);
+        if (r.stepped > 0) steps += 1;
+        if (r.feet.x > 1.05) break;
+    }
+    try t.expect(r.feet.x > 1.05 and @abs(r.feet.y - 0.6) <= 2 * p.contact_skin and steps >= 4);
+}
+
 test "character snap-down: descending stairs stays grounded and jumping never snaps or steps" {
     var w: p.World = .empty;
     defer w.deinit(gpa);

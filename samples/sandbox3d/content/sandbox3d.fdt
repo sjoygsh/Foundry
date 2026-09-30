@@ -17,7 +17,35 @@
 # material someone can find by name and edit, rather than `sandbox3d:models.room.material6`.
 foundry:model_import sandbox3d:models.room {
     source    "models/room.gltf"
+    collision true
+    collision_exclude [ "Plant" ]
     materials [ { name "Glass"  material sandbox3d:materials.glass } ]
+}
+
+foundry:model_import sandbox3d:models.course {
+    source "models/course.gltf"
+    collision true
+}
+
+# M23's independent record: lighting-only whole-record overrides still walk.
+@schema walk {
+    start_camera string (default "walk")
+    spawn { x f32 y f32 z f32 }
+    spawn_yaw f32 (default 0)
+    radius f32 height f32 eye_height f32
+    max_slope f32 step_height f32 snap_distance f32
+    walk_speed f32 gravity f32 turn_rate f32 look_rate f32
+    course id
+    collision [id]
+}
+
+walk sandbox3d:walk.main {
+    spawn { x 1.1 y 0.004 z 2.5 }
+    radius 0.3 height 1.8 eye_height 1.65
+    max_slope 0.785398 step_height 0.35 snap_distance 0.3
+    walk_speed 3 gravity 9.81 turn_rate 1.5 look_rate 0.004
+    course sandbox3d:models.course
+    collision [ sandbox3d:models.room.collision sandbox3d:models.course.collision ]
 }
 
 foundry:material sandbox3d:materials.glass {

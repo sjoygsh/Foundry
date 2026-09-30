@@ -1,10 +1,42 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-30
-**Current handoff: M23 Steps 1–4 of 7 are complete (`docs/design/collision3d.md`, ADR-0057 accepted);
-stop before Step 5**, the Metal sample walk. `physics3d` has static triangle meshes and the
-character controller, and collision geometry is compiled content; no sample walk exists yet.
-M0–M22 are complete.
+**Current handoff: M23 Steps 1–5 of 7 are complete (`docs/design/collision3d.md`, ADR-0057 accepted);
+stop before Step 6**, the native Windows/Vulkan runs on the PC. `sandbox3d` walks the lit room
+and the course on Metal. Nothing has been run on the PC for M23 yet. M0–M22 are complete.
+
+**M23 Step 5 is done (2026-09-30).** Codex wrote most of this step before running out; Claude
+finished it. `sandbox3d` has a first-person walk:
+- **The record:** a separate, validated `walk` record, `sandbox3d:walk.main`. The dusk mod does
+  not override it, so dusk walks as the base does.
+- **Collision:** the room's import (plant excluded) and a new course model. The course is four
+  0.15 m steps to a platform, a 25° ramp and a 55° ramp.
+- **Controls:** F3 walk/orbit, WASD, arrows, right-mouse look, gravity and respawn.
+- **Other:** reload follows the collision records, and the profiler has a `character` zone.
+- **The tour:** `FOUNDRY_SANDBOX3D_WALK=tour` runs floor, steps, ramp, steep slope and wall
+  slide, then a byte-exact fresh-world replay: 495 ticks, hash `cb99ccfcf2b6d6c3`.
+
+**Resolution:**
+- Claude fixed the package test, which read the walk's `collision` field by a wrong hard-coded
+  index; `build.zig` now selects the package by name.
+- **A record correction:** Codex's multi-riser unit test does not isolate the movement-cast
+  refinement. Reverting the refinement passes 61/61 physics tests and fails only the package
+  tour, which is in `zig build test`.
+
+**Verification:**
+- `tour: pass` headless on null, and windowed on Metal from a relocated ReleaseSafe install,
+  with dusk both off and on; the replay hash is identical.
+- A scripted F3 switched cameras. A person has not yet walked, looked or live-reloaded by hand.
+- Both ad-hoc macOS releases stage.
+
+**Cost, measured on the Mac at ReleaseSafe:**
+- Unpaced, the same moves have a median of 0.082 ms and a p95 of 0.139 ms.
+- Inside the paced 60 Hz frame loop: median 0.15 ms, p95 0.30–0.32 ms. **That is above §11.4's
+  0.25 ms budget.** The difference is CPU clock state, so the specialisation trigger was not
+  acted on, and **the reading of the budget is the owner's call.**
+
+The nine-command bar passes **1,971 of 1,972 tests**, one expected skip, with native, Metal, both cross checks and all three headless samples. There is no ABI change and no overlay grant.
+Windows is Step 6; Linux is compile-only.
 
 **M23 Step 4 is done (2026-09-30).** Characters are generational handles owning ordinary
 kinematic capsule bodies, with explicit validated dimensions and movement limits. The controller

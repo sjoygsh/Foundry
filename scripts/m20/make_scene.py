@@ -368,6 +368,56 @@ def crate_model():
     g.write("crate")
 
 
+def course():
+    """M23: independent geometry; never change the room/crate byte pins.
+
+    Steps run north at x [-1.8,-0.8], z [-0.4,-1.6], then a 1x1 platform.
+    The 25 degree ramp descends east; the 55 degree ramp rises toward the west wall.
+    """
+    g = Gltf("course.bin")
+    steps = g.material("Steps", colour=(0.28, 0.42, 0.55, 1))
+    gentle = g.material("Gentle", colour=(0.25, 0.50, 0.30, 1))
+    steep = g.material("Steep", colour=(0.65, 0.25, 0.15, 1))
+    stairs = Mesh("stairs")
+    white = [(255, 255, 255, 255)] * 4
+    uv = [(0, 1), (1, 1), (1, 0), (0, 0)]
+    for i in range(4):
+        h = (i + 1) * 0.15
+        front, back = -0.4 - i * 0.3, -0.7 - i * 0.3
+        # The external shell of the boxes, not buried internal faces. Risers precede
+        # treads at a shared edge to exercise step-up rather than rounded-edge slide.
+        stairs.quad([(-1.8, h - 0.15, front), (-0.8, h - 0.15, front),
+                     (-0.8, h, front), (-1.8, h, front)], (0, 0, 1), uv, white)
+        stairs.quad([(-1.8, h, front), (-0.8, h, front),
+                     (-0.8, h, back), (-1.8, h, back)], (0, 1, 0), uv, white)
+        for x, normal, order in [(-1.8, (-1, 0, 0), False), (-0.8, (1, 0, 0), True)]:
+            corners = [(x, 0, front), (x, h, front), (x, h, back), (x, 0, back)]
+            stairs.quad(corners if order else list(reversed(corners)), normal, uv, white)
+    stairs.quad([(-1.8, 0.6, -1.6), (-0.8, 0.6, -1.6), (-0.8, 0.6, -2.6), (-1.8, 0.6, -2.6)],
+                (0, 1, 0), uv, white)
+    for x, normal, order in [(-1.8, (-1, 0, 0), False), (-0.8, (1, 0, 0), True)]:
+        corners = [(x, 0, -1.6), (x, 0.6, -1.6), (x, 0.6, -2.6), (x, 0, -2.6)]
+        stairs.quad(corners if order else list(reversed(corners)), normal, uv, white)
+    stairs.quad([(-0.8, 0, -2.6), (-1.8, 0, -2.6), (-1.8, 0.6, -2.6), (-0.8, 0.6, -2.6)],
+                (0, 0, -1), uv, white)
+    g.node("StepsAndPlatform", g.mesh(stairs, steps))
+    # Rotated thin boxes: upper surfaces meet the floor/platform at the recorded coordinates.
+    # Their lower faces stay below the floor; collision remains ordinary imported triangles.
+    def ramp(name, angle, top_x, top_y, z, width, material):
+        run = 0.6 / math.tan(abs(angle))
+        length = math.hypot(run, 0.6)
+        # +angle falls toward +X, -angle rises toward -X (both here use +angle).
+        thickness = 0.04
+        x = top_x + run / 2 - thickness * math.sin(angle) / 2
+        y = top_y - 0.3 - thickness * math.cos(angle) / 2
+        rotation = (0, 0, -math.sin(angle / 2), math.cos(angle / 2))
+        g.node(name, g.mesh(box(name, length / 2, thickness / 2, width / 2), material),
+               t=(x, y, z), r=rotation)
+    ramp("GentleRamp", math.radians(25), -0.8, 0.6, -2.1, 1.0, gentle)
+    ramp("SteepRamp", math.radians(55), -2.9, 0.6, -0.7, 1.0, steep)
+    g.write("course")
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     for name, width, height, pixel in [
@@ -380,6 +430,7 @@ def main():
             f.write(png(width, height, pixel))
     room()
     crate_model()
+    course()
 
 
 if __name__ == "__main__":

@@ -276,14 +276,15 @@ pub const World = struct {
 
     /// Controller-only query: pairs are symmetric, unlike public one-sided queries. A resting
     /// skin contact does not block tangential/away motion. No public query semantics change.
-    pub fn characterCast(self: *World, moving: Convex, displacement: Vec3, source: BodyHandle) ?Hit {
-        return self.characterProbe(moving, displacement, source, null);
+    pub fn characterCast(self: *World, moving: Convex, displacement: Vec3, source: BodyHandle, walkable_y: f32) ?Hit {
+        const actor = self.bodies.get(source) orelse return null;
+        return self.earliestPair(moving, displacement, narrow.contact_skin, .{ .mask = actor.mask, .ignore = source }, actor.layer, walkable_y, true);
     }
 
-    /// Only downward ground/landing probes prefer a walkable face at a coincident edge.
+    /// Downward ground/landing probes prefer a walkable face even on an overhanging edge.
     pub fn characterProbe(self: *World, moving: Convex, displacement: Vec3, source: BodyHandle, ground_y: ?f32) ?Hit {
         const actor = self.bodies.get(source) orelse return null;
-        return self.earliestPair(moving, displacement, narrow.contact_skin, .{ .mask = actor.mask, .ignore = source }, actor.layer, ground_y);
+        return self.earliestPair(moving, displacement, narrow.contact_skin, .{ .mask = actor.mask, .ignore = source }, actor.layer, ground_y, false);
     }
 
     /// Deepest contact without a bounded output buffer losing a later, deeper triangle.
@@ -402,10 +403,10 @@ pub const World = struct {
     /// The earliest hit over every admitted body. **Ties go to the lower handle** because the
     /// scan is in handle order and only a strictly earlier fraction replaces the best (§5.4).
     fn earliest(self: *World, moving: Convex, displacement: Vec3, target: f32, filter: Filter) ?Hit {
-        return self.earliestPair(moving, displacement, target, filter, null, null);
+        return self.earliestPair(moving, displacement, target, filter, null, null, false);
     }
 
-    fn earliestPair(self: *World, moving: Convex, displacement: Vec3, target: f32, filter: Filter, layer: ?u32, ground_y: ?f32) ?Hit {
+    fn earliestPair(self: *World, moving: Convex, displacement: Vec3, target: f32, filter: Filter, layer: ?u32, ground_y: ?f32, sliding: bool) ?Hit {
         const area = moving.bounds().sweptBy(displacement).expand(target);
         var best: ?Hit = null;
         var it = self.bodies.iterator();
@@ -420,7 +421,7 @@ pub const World = struct {
                     // A box corner belongs to several faces too, but unlike mesh faces
                     // they are represented by one convex candidate. Select a walkable face
                     // only when the witness actually lies on it, not a later hidden floor.
-                    if (other.convex.core == .box) {
+                    if (other.convex.core == .box and (!sliding or c.normal.y >= up)) {
                         const local = other.convex.pose.inverseDirection(c.point.sub(other.convex.pose.position));
                         const he = other.convex.core.box;
                         const coordinates = [_]f32{ local.x, local.y, local.z };
@@ -443,7 +444,7 @@ pub const World = struct {
                 }
                 if (best) |b| {
                     if (ground_y) |up| {
-                        const coincident = b.body.eql(entry.id) and @abs(c.fraction - b.fraction) * displacement.length() <= narrow.cast_tolerance and
+                        const coincident = (!sliding or (c.normal.y >= up and b.normal.y >= up)) and b.body.eql(entry.id) and @abs(c.fraction - b.fraction) * displacement.length() <= narrow.cast_tolerance and
                             c.point.sub(b.point).lengthSquared() <= narrow.cast_tolerance * narrow.cast_tolerance;
                         if (coincident and b.surface_normal.y >= up and face.y < up) continue;
                         if (!(coincident and b.surface_normal.y < up and face.y >= up) and !(c.fraction < b.fraction)) continue;
