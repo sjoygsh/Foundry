@@ -53,3 +53,12 @@ The renderer changes architecture only when a real workload's measurement shows 
 - A measured scene misses its frame budget because of light count, shadowed lights or overdraw.
 - A second consumer needs to reorder or insert passes.
 - A game's visual target needs a technique forward shading cannot provide.
+
+## Note — 2026-09-30, M22's close
+
+Implemented through M22 without changing the decision. The pass-order shorthand above
+omitted the tone map that its lighting bullet already required: the actual fixed sequence
+is optional shadow, world (opaque/mask then transparent), Neutral tone map, then overlay.
+`render3d.recordFrame` owns the first three; `app.renderScene` retains ownership of the
+overlay and supports legacy single-pass recorders. ADR-0056 fixes photometric units and
+pre-exposure; `light.md` records the implementation and proofs. No render graph was added.

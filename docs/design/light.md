@@ -1,7 +1,7 @@
 # Design: M22 — Light: the lit model, lights, one shadow, HDR and the light-unit convention
 
-**Status:** Accepted 2026-09-29 when the owner requested Step 1. Steps 1–7 are complete;
-Step 8 is next.
+**Status:** Complete 2026-09-30, all eight steps, tag `m22`. Accepted 2026-09-29 when
+the owner requested Step 1.
 **Date:** 2026-09-29
 **Baseline:** `eaefd70`, tag `m21`. M0–M21 are complete.
 **Decisions:**
@@ -9,7 +9,7 @@ Step 8 is next.
   models per backend, behind a registry), ADR-0052 (forward first, fixed passes), ADR-0053 (assets
   are not the renderer), ADR-0054 (fixed vertex slots) and ADR-0055 (imports compile to records)
   constrain this design.
-- It proposes [ADR-0056](../adr/0056-photometric-light-units-and-pre-exposure.md): lights are in
+- Accepted [ADR-0056](../adr/0056-photometric-light-units-and-pre-exposure.md): lights are in
   photometric units with glTF's punctual-light semantics, exposure is applied before the colour
   target is written, and one hue-preserving tone map writes the sRGB surface.
 
@@ -865,7 +865,7 @@ The full nine-command bar passes **1,896 of 1,897 headless tests**, one expected
 dependency, ABI or architecture changed; Step 6's renderer proofs remain accepted. Linux stays
 compile-only. Step 8's parent-document reconciliation and milestone close have not begun.
 
-### Step 8 — Close M22
+### Step 8 — Close M22 — Done 2026-09-30
 Resolve the discrepancies this design makes in its parents:
 - `3d.md` §6's pass list gains the tone map between transparent and overlay, and its lighting
   paragraph names ADR-0056's units; §4's "whatever M22's passes use" becomes what they used;
@@ -877,6 +877,48 @@ Resolve the discrepancies this design makes in its parents:
 Add accepted ADR-0056 to CLAUDE.md §4.1, update §9's 3D row, `AGENTS.md`'s bar if a step changed it,
 the roadmap, the design index and `PROJECT_STATE.md`; confirm the Linux assessment; pack up the PC;
 tag `m22`, push when asked, and stop before M23's design.
+
+**Resolution (2026-09-30).** Documentation and pack-up only: the implementation remains
+Step 7's `b898c09`. The full nine-command pre-commit bar passes **1,896 of 1,897 headless
+tests**, one expected skip; **1,979 declared**. No code, content, shader, build graph or ABI
+changed, so the distinct Metal/Vulkan readback, native import, release and relocated runtime
+proofs recorded in Steps 1–7 remain accepted, without repeating them.
+
+**The milestone exit is met (`3d.md` §10):** a lit room on macOS/Metal and Windows/Vulkan
+is changed by the content-only dusk package, with no runtime rebuild or mod code. Material
+schema extension and range/slot refusals are tested; the lit and shadow reference readbacks
+hold within ±2/255 on Metal and ±3/255 on Vulkan at 1×/4×; the compiled-mod integration
+changes the pixel by the CPU oracle's amount through real dependency ordering and content
+resolution. Vulkan synchronization validation is clean. Shadow-cost figures remain CPU
+recording measurements, not GPU timings.
+
+**Parent contracts reconciled:** `3d.md` §4/§6/§10 now name the implemented RHI capabilities,
+photometric units, pass order and completion. `meshes.md` §5.1/§6.5 record material version 2,
+tangents, lit import, extensions, colour spaces and refusals. `render3d.md` §6/§7 distinguish
+the original single-pass contract from `recordFrame` and describe the HDR/binding changes.
+`rhi.md` rules 4/7/10/11 and §12 record binding kinds, depth-only passes, finite bias and
+sampled-depth usage. `debug-overlay.md` §7.5 names the light/shadow statistics. ADR-0052 gains
+an append-only note clarifying its already-required tone map in the fixed pass order;
+ADR-0056's accepted decision is unchanged and now indexed in CLAUDE.md §4.1. Its §9 row,
+the roadmap, design index and project handoff mark M22 complete. `AGENTS.md`'s nine-command
+bar needs no change; the focused aliases introduced in Step 7 still use its existing graph.
+
+**Linux assessment confirmed: compile only (§12).** Across `m21..b898c09`, no platform,
+native window, surface, swapchain or presentation implementation changed. Vulkan's changes
+are core depth/HDR rendering and the explicit `depthBiasClamp` floor qualified on Windows.
+Filtered-comparison precision is the identified Mesa risk; no penumbra pixel is a readback
+criterion. Linux compile checks passed during implementation and its null cross-check passes
+at the close. No additional Linux-specific runtime trigger arose. This does not claim M22
+runtime qualification on Mesa; M26's fresh Linux proof remains mandatory.
+
+**Packed up:** the two agent-owned Windows M22 source/proof folders and helper are removed
+after their logs, captures, scripts and compiled proof packages are archived to the Mac's
+ignored scratch evidence. The Step 7 interactive task is already unregistered; no proof
+process remains. Pre-existing Windows checkout edits and other milestone folders are left
+untouched. Local evidence stays ignored; no machine configuration or credentials enter Git.
+
+M22 closes at tag `m22` and is pushed at the owner's request. Stop before M23's design;
+§14's deferred items and their triggers remain open.
 
 ## 14. What stays open, deliberately
 

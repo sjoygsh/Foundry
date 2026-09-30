@@ -206,7 +206,7 @@ foundry:material sandbox3d:materials.oak {
   type (`content-schemas.md` §3), and a generic `{ name, value }` list can only be checked once a
   renderer has loaded. A fixed set is checked by `fpack`, and it is glTF's own material model,
   so the importer maps it field for field. M22 appends the lit model's fields (metallic,
-  roughness, normal, occlusion and emissive, as its design names them) with defaults. **A model
+  roughness, normal, occlusion and emissive) with defaults, as implemented in version 2 below. **A model
   ignores a field it does not read, and says so once**: an unlit material with a roughness is not
   an error, and its record still loads on an engine that draws it lit. A generic parameter list
   waits for content-owned shading models (ADR-0015's trigger), and it is additive then.
@@ -214,6 +214,15 @@ foundry:material sandbox3d:materials.oak {
   takes is. The unlit model draws `base_color × texture × vertex colour`, where an absent texture
   or colour stream contributes 1.
 - **The texture must be sRGB.** A linear texture named here is refused, not reinterpreted.
+
+**M22, 2026-09-30:** version 2 appends `metallic` (default 0), `roughness` (1),
+`metallic_roughness_texture`, `normal_texture`, `normal_scale` (1), `occlusion_texture`,
+`occlusion_strength` (1), `emissive` (black), `emissive_texture`, `emissive_strength` (1 cd/m²),
+and `casts_shadow` (true). Optional texture IDs default absent; version 1 extends with these
+defaults and still names unlit by default. The full field set, ranges and per-slot colour
+spaces are authoritative in `light.md` §5.1. Base colour and emission textures are sRGB;
+metallic/roughness, normal and occlusion are linear. Unread non-default fields report once,
+not on every reload. Opaque/mask materials may cast; blend never does.
 
 ### 5.2 `foundry:model`
 
@@ -359,14 +368,15 @@ and, where glTF gives one, its name. Every warning names what is not imported, a
   the package. The path check is `normalizePackagePath`, which `@import` already uses. Export as
   `.glb` instead of embedding base64, which costs a third more bytes and a second decoder.
 - `asset.version` must be `2.x`, and `asset.minVersion` must be no newer than 2.0.
-- **A required extension is refused unless it is supported.** M20 supports one,
-  `KHR_materials_unlit`, which confirms the material is unlit. An extension that is used but not
-  required is ignored with a warning.
+- **A required extension is refused unless it is supported.** Since M22 the supported pair is
+  `KHR_materials_unlit` and `KHR_materials_emissive_strength`. An unsupported extension that
+  is used but not required is ignored with a warning.
 
 **Geometry:**
 - Primitive mode 4, a triangle list. Points, lines, strips and fans are refused.
 - `POSITION` is required. `NORMAL`, `TEXCOORD_0`, `TEXCOORD_1` and `COLOR_0` are imported.
-  `TANGENT` is omitted with a warning until M22. `JOINTS_n` and `WEIGHTS_n` are refused until
+  Since M22 `TANGENT` imports as finite unit `float32x4`, with `w` exactly ±1.
+  `JOINTS_n` and `WEIGHTS_n` are refused until
   M24, and so are morph targets.
 - **Component types are widened only where glTF defines the value exactly:**
   - normalised `UNSIGNED_BYTE` and `UNSIGNED_SHORT` UVs become `float32x2` by glTF's division;
@@ -381,10 +391,15 @@ and, where glTF gives one, its name. Every warning names what is not imported, a
   an index outside the vertex range. Then everything `Mesh.validate` refuses.
 
 **Materials and images:**
-- `pbrMetallicRoughness.baseColorFactor` and `baseColorTexture`, `alphaMode`, `alphaCutoff` and
-  `doubleSided` map to §5.1's fields. Metallic, roughness, normal, occlusion and emissive are
-  ignored with one warning per material until M22.
-- A texture reference with `texCoord` other than 0 is refused, because the unlit model samples
+- Since M22 materials import lit, mapping every metallic-roughness field, normal, occlusion,
+  emission and emissive strength to version 2 (§5.1, `light.md` §6). glTF's metallic/roughness
+  defaults (1/1) are written explicitly. `KHR_materials_unlit` selects unlit and drops lit
+  fields. Lit primitives without normals and normal-mapped primitives without tangents are
+  refused with an export fix; tangents are not generated. An authored material mapping is
+  validated for its required streams at draw time, not guessed from the source material.
+- Slot colour spaces are explicit; an image used in both sRGB and linear slots is refused.
+  Packed occlusion/roughness/metallic data may share one linear record.
+- A texture reference with `texCoord` other than 0 is refused, because both models sample
   UV0. `KHR_texture_transform` is unsupported, so it is refused when required and warned about
   otherwise.
 - **Images must be PNG** (ADR-0018: Foundry decodes its own PNG and has no JPEG decoder). A JPEG

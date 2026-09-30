@@ -1,8 +1,27 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-30
-**Current handoff: M22 Step 7 is complete; stop before Step 8.** M21 is complete (2026-09-29,
-tag `m21`). M22's design and ADR-0056 are accepted.
+**Current handoff: M22 is complete, all eight steps (tag `m22`); stop before M23's design.**
+M0–M22 are complete. M23 is Collision; its design and implementation have not begun.
+
+**M22 Step 8 closes the milestone (2026-09-30).** Documentation and pack-up only; the code
+remains Step 7's `b898c09`. Reconciled the parent 3D, meshes, renderer, RHI and overlay designs
+with the implemented material v2, lit import, photometric units, HDR/tone-map recording,
+sampled depth/comparison/bias contracts and light/shadow statistics. ADR-0052 has an append-only
+pass-order clarification; accepted ADR-0056 is indexed in CLAUDE.md. Roadmap and design index
+mark completion; `AGENTS.md`'s bar is unchanged.
+
+**Exit met:** the content-only dusk mod changes the relocated lit room on Metal and Vulkan
+without code or rebuild, and its compiled override changes a sampled pixel by the reference's
+amount at 1×/4×. The prior native GPU/import/relocation/release proofs remain accepted.
+The full nine-command close bar passes **1,896 of 1,897 headless tests**, one expected skip;
+**1,979 declared**. Linux remains compile-only under `3d.md` §10.2; no Linux-specific runtime
+trigger arose, and this is not a claim of Mesa runtime qualification for M22.
+
+**Packed up:** archived the M22 Windows proof evidence locally, then removed only the two
+agent-owned M22 proof folders and their helper. No proof process or Step 7 scheduled task
+remains. Other Windows folders and pre-existing checkout edits are untouched. Tag `m22`
+and the completion commit are pushed at the owner's request. No M23 work begun.
 
 **M22 Step 7 is done (2026-09-30).** `sandbox3d`'s imported room, crates and orrery are
 lit; its code-built cube has normals and a lit material. The sample's config supplies EV100,
@@ -29,7 +48,7 @@ and were restored. The complete nine-command bar passes **1,896 of 1,897 headles
 one expected skip; **1,979 declared**. Both ad-hoc macOS releases stage successfully.
 No new dependency, ABI change or architectural ADR. Earlier renderer proofs remain accepted.
 
-**Next: Step 8, close M22 and reconcile its parent documents.** No Step 8 work has begun.
+Step 8 followed this handoff and closed M22, as recorded above.
 
 **M22 Step 6 is done (2026-09-30).** Windows/Vulkan qualifies Steps 1, 3, 4 and 5 on
 the Intel Arc A750 (driver 101.8991, Vulkan 1.4.356), including the required

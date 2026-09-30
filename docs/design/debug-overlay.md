@@ -516,6 +516,9 @@ selection; nothing else here changes.
   shown"; this line is how its value is seen.
 * **The last propagation's counts** head the panel, and the profiler adds `render3d`'s frame
   counts when the host passes `Sources.world3d`, which put `render3d` into `debug`'s imports.
+  Since M22 those counts are draws, culled, blended, triangles and pipeline binds, followed
+  by lights, shadow draws and shadow culled (`light.md` §7.4). They are the renderer's
+  read-only last-frame statistics; the overlay does not inspect RHI resources.
 
 Every one of these reads takes a `*const World` and answers by handle, as §3 requires.
 

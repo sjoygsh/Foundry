@@ -584,6 +584,9 @@ forgives:
    is an error.
 4. **Bind group compatibility.** A bind group must have been created with the layout the
    bound pipeline declares.
+   **Extended in M22:** sampled-texture entries declare `.color` or `.depth`; sampler
+   entries declare `.filtering` or `.comparison`. A resource must match its layout's kind,
+   including whether `SamplerDesc.compare` is set; mismatches refuse `InvalidDescriptor`.
 5. **Complete bindings.** A draw with a group the pipeline's layout requires but nothing
    bound to it is an error, and so is a draw whose layout declares inline constants that
    have not been set — including the case where binding a pipeline with a different layout
@@ -599,6 +602,9 @@ forgives:
    - a resolve target is single-sampled, has its source's format and size, and is not also an
      attachment of the same pass;
    - its source is multisampled.
+   **Extended in M22:** a colour-less pass or pipeline is legal when it declares depth.
+   Neither-colour-nor-depth is refused. A depth-only pipeline still names a fragment shader,
+   allowing masked casters to discard; opaque casters use an empty fragment program.
 8. **Encoder discipline.** One pass open at a time; every pass ended; every command buffer
    ended before submission.
 9. **Lifetime.** A destroyed resource's handle is dead at once: recording a command through
@@ -627,6 +633,9 @@ forgives:
       but its declaration count does not make an out-of-range slot legal;
     - a sample count is 1 or 4, and anything else is refused with `InvalidDescriptor`;
     - a multisampled texture has one mip level;
+    - depth bias's constant, slope and clamp are finite; non-finite pipeline bias is refused
+      with `InvalidDescriptor` (M22). The RHI passes the signs unchanged; reversed-Z's
+      negative caster bias belongs to `render3d`;
     - a texture-to-buffer copy's region lies inside the source level it names, and its rows
       lie inside the destination buffer;
     - a nonzero `dst_bytes_per_row` holds a row and is a multiple of the texel size;
@@ -659,6 +668,11 @@ forgives:
     - `copyTextureToBuffer` reads a colour format only. Depth readback waits for a pass that
       needs it.
 
+    **Extended in M22:** a sampled depth texture is single-sampled `depth32_float` with
+    `depth_stencil | sampled` usage. Sampled stencil depth stays refused. Stored shadow depth
+    may transition from `depth_stencil` to `shader_read`; Vulkan uses its depth read-only
+    layout. Depth readback remains unsupported: proofs sample through comparison shaders.
+
 Rules 1, 3, 5 and 9 are the ones that would otherwise be discovered by a second backend
 producing garbage, months later, with no obvious cause. Rules 2 and 6 are the ones that
 would be discovered as *performance* problems on hardware nobody here owns. Rule 11 is the
@@ -677,6 +691,12 @@ The validation backend also draws nothing, which makes rendering-adjacent code t
 headlessly — the same reason the null *platform* backend exists.
 
 ## 12. Deliberately not here
+
+**M22 implemented (`light.md` §4):** sampled depth attachments, comparison samplers,
+pipeline depth bias, depth-only passes, and blended `rgba16_float` targets resolved at 4×
+and sampled. These are present on null, Metal and Vulkan, not deferred capabilities.
+Vulkan requires `depthBiasClamp` explicitly; Windows qualifies that floor. No cubemap,
+stencil sampling or multisampled depth resolve was added.
 
 * **Compute.** Arrives with 3D (ROADMAP Phase 5). `ComputePass` is a natural sibling of
   `RenderPass` and nothing above forecloses it; designing it now would be guessing.

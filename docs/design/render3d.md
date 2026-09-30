@@ -312,6 +312,8 @@ recomputed in place of the check.
 > ADR-0054 allows: normals (`float32x3`, unit length), UV0 and UV1 (`float32x2`) and a
 > `float32x4` colour, each with a named refusal. Tangents still wait for M22, and joints and
 > weights for M24. `meshes.md` §3 is authoritative for the table and the file.
+> **M22, 2026-09-30.** Tangents now accept finite unit `float32x4` with exact ±1 handedness
+> (`light.md` §5.2), without changing `.fmesh`'s version. Joints and weights still wait for M24.
 
 ## 6. `render3d`: the skeleton
 
@@ -322,6 +324,9 @@ so layering stays a build error (I7). `app` (L4) imports it. `debug` does not ye
 does not until M25. CLAUDE.md §4.3's graph gains the line in the step that adds the module.
 
 ### 6.2 The API, in `render2d`'s shape
+
+This is the original M19 skeleton; M20's material additions are in `meshes.md` §7 and
+M22's lights, HDR targets and replacement recording entry point in `light.md` §7 and §7 below.
 
 ```zig
 pub const Config = struct { frames_in_flight: u32 = 2, sample_count: u32 = 4 };
@@ -397,6 +402,12 @@ compile error in exactly one place, which is the intended cost.
   computes `clip = view_projection · world · position`. M22 adds the normal transform, and the
   remaining 64 bytes or a per-draw group hold it.
 
+**Since M22 (`light.md` §7–§8):** group 0 is a 1,216-byte frame uniform visible to both
+stages, a sampled depth texture and a comparison sampler. Group 2 is the 64-byte material
+uniform and five texture/sampler pairs. Inline constants occupy 112 bytes: the world matrix
+and cofactor columns; the lit shader corrects the determinant sign before normalisation.
+Unlit and lit world pipelines target `rgba16_float`, not the surface format.
+
 ### 6.5 The original unlit vertex-colour pipeline
 
 - **Written by hand twice** (ADR-0049) for M19. M20 Step 5 replaced these first shaders with
@@ -452,6 +463,20 @@ has finished, so destroying a mesh with frames in flight is legal. `render3d` ow
 residency, as `render2d` owns its textures (ADR-0052).
 
 ## 7. The frame: the world, then the overlay
+
+**Since M22 (2026-09-30, `light.md` §7.4 and §9):** `render3d` no longer publishes
+`passDesc` or `record`. After `prepare`, its `recordFrame(cmd, frame, overlay)` records the
+optional depth-only shadow pass, the HDR world pass (opaque/mask then blend), and the Neutral
+tone-map pass into the surface. At 1× the world writes a sampled `rgba16_float` target;
+at 4× it resolves into one. HDR and the stored shadow map leave in `shader_read`; the surface
+leaves in `render_target` for an overlay, otherwise `present`. Every opened pass closes on
+failure. Targets are replaced as complete candidates before old resources retire.
+
+`app.renderScene` prefers a world's `recordFrame` when declared and retains the legacy
+`passDesc`/`record` pair for other recorders. `app` still names no renderer type and still
+owns the optional single-sampled overlay, which loads the tone-mapped surface. The following
+two-pass description is M19's original and remains the legacy recorder contract, not
+`render3d`'s current path. No render graph or renderer-specific pass logic entered `app`.
 
 **The engine owns the frame** (`render2d.md` §3), so `app` gains a second entry point.
 `renderFrame` is kept unchanged for 2D-only hosts:

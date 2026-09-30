@@ -1083,7 +1083,7 @@ Step 5 makes it `sandbox3d`'s orrery, nested moving objects inspected live in th
 macOS/Metal and Windows/Vulkan: F5 and F9 give back the same poses, F6 re-parents without a
 jump, and F7's sheared crate is refused. Step 6 closed it. Exit condition met: §7's rules hold,
 and a saved hierarchy loads back to the same world poses. Linux stayed compile-only, and none of
-its triggers fired. M22, Light, is in progress. Its design, [`light.md`](design/light.md) with
+its triggers fired. M22, Light, is complete (2026-09-30, tag `m22`). Its design, [`light.md`](design/light.md) with
 accepted ADR-0056, has eight bounded steps; Steps 1–5 completed the RHI primitives,
 material version 2, tangents, lit glTF import, submitted lights, HDR and the Neutral tone map
 through `render3d.recordFrame`, then the registered lit model, five-texture material resolution
@@ -1097,5 +1097,10 @@ Step 7 makes the room, crates and orrery lit, submits content-owned lights/expos
 selected user mods and adds `--shadows=off` and profiler light/shadow counts. The content-only
 `dusk` package changes the same room from relocated Metal and Vulkan installs: eight captured
 cases per platform pass, synchronization validation is clean, and compiled-mod pixel readbacks
-match the CPU oracle at 1×/4×. Sample pacing holds the 60-Hz budget. Step 8, the milestone close
-and parent-document reconciliation, is next; M22 is not yet closed.
+match the CPU oracle at 1×/4×. Sample pacing holds the 60-Hz budget. Step 8 closes the milestone
+and reconciles its parent documents and ADR index. The exit condition is met: a content-only
+mod changes the lit room, with no code, backed by material validation, lit-reference readbacks
+and a compiled-mod pixel proof. Linux stays compile-only; no Linux-specific runtime trigger
+arose. The close bar passes 1,896 of 1,897 headless tests (one expected skip). The M22 Windows
+proof folders are packed up without disturbing pre-existing work. M23, Collision, is next;
+its design has not begun.
