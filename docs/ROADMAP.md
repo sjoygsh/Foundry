@@ -1090,4 +1090,7 @@ through `render3d.recordFrame`, then the registered lit model, five-texture mate
 and CPU-matched Metal lighting readbacks, then one texel-snapped directional shadow with
 opaque/masked casters, configurable bias and filtered lookup. Shadow readbacks match the
 CPU oracle and `sandbox3d --shadow-proof` shows the shadow under its orbiting camera.
-Step 6, Vulkan runtime proof on Windows, is next.
+Step 6 qualifies those passes on Windows/Vulkan: 56/56 renderer/reference tests at 1×/4×
+within ±3/255, the complete Vulkan graph (1,926 of 1,945, nineteen expected skips), no
+validation warnings or errors, and byte-identical full lit import output on both hosts.
+Step 7, the lit sample and dusk content mod, is next.

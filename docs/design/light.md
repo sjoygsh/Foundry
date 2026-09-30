@@ -1,7 +1,7 @@
 # Design: M22 — Light: the lit model, lights, one shadow, HDR and the light-unit convention
 
-**Status:** Accepted 2026-09-29 when the owner requested Step 1. Steps 1–5 are complete;
-Step 6 is next.
+**Status:** Accepted 2026-09-29 when the owner requested Step 1. Steps 1–6 are complete;
+Step 7 is next.
 **Date:** 2026-09-29
 **Baseline:** `eaefd70`, tag `m21`. M0–M21 are complete.
 **Decisions:**
@@ -754,11 +754,48 @@ All five Vulkan compile checks pass, including optimized Windows. Vulkan runtime
 readbacks and validation remain Step 6; Linux remains compile-only. No new dependency
 or architectural ADR was required.
 
-### Step 6 — Vulkan, proved on Windows
+### Step 6 — Vulkan, proved on Windows — Done 2026-09-30
 Every readback of Steps 1, 3, 4 and 5 on the PC, within ±3/255, the whole `-Drhi=vulkan` test graph,
 validation clean, and the importer's output compared byte for byte with the Mac's.
 **Exit:** the lit reference scene, the shadow and the unlit readbacks pass on Windows/Vulkan with no
 validation message.
+
+**Resolution (2026-09-30).** The Step 5 tree (`b1c1002`) was qualified natively on
+Windows x64, on the Intel Arc A750 with driver 101.8991 and Vulkan 1.4.356, using
+Zig 0.16.0 and LunarG SDK 1.4.357.0. `depthBiasClamp` is supported, satisfying Step 1's
+explicit floor. A fresh source archive, checksum-matched after transfer, kept existing
+checkout edits out of the proof and left them untouched. Native builds use `-j2`.
+
+`zig build render3d-test -Drhi=vulkan` passes **56/56**. Its readbacks exercise the
+Step 1 sampled-depth/comparison and blended fp16 resolve-and-sample capabilities through
+the actual shadow and HDR passes, then Steps 3–5's unlit, lit and shadow references.
+At 1× and 4×, the unlit Neutral curve and exposure independence, dielectric/metal/emission,
+all five texture slots and normal-map handedness, reflection, mask/blend, depth and culling
+hold within **±3/255**. Off-camera and moving shadow casters, mirrored casters,
+texture/factor/vertex mask holes, non-casters and unshadowed recovery pass too.
+No penumbra tolerance was introduced or widened.
+
+The complete `zig build test -Drhi=vulkan -j2` graph passes **1,926 of 1,945 tests**,
+with nineteen expected skips. Required synchronization validation logs **no warnings
+or errors** in either run. Because SSH runs elevated, the installed implicit layers were
+disabled using each manifest's own environment control as well as the loader filter;
+loader diagnostics confirm only `VK_LAYER_KHRONOS_validation` was inserted.
+
+Independent native `fpack` builds compiled the same full lit fixture, including tangents,
+all five texture slots with their respective colour spaces, shared ORM data and emissive
+strength. The exported package and generated mesh compare **byte for byte**, not merely
+by a reported checksum. The 2,803-byte package's SHA-256 is
+`4a81b90b2ce1c2abcbcc190ea6eae396da54089c925b1558bdae652d6a20f583`;
+the `.fmesh`'s is `64e0b780234b93487c331259743c58c183ff32b1a82ae34cec1a5cc889dc92db`.
+The fixture is the full-lit unit fixture's inputs, exported through the ordinary package
+compiler; no alternate import or rendering path was added.
+
+The nine-command local bar passes **1,894 of 1,895 headless tests**, one expected skip;
+the declaration count remains **1,977**. No implementation fix, dependency, ABI change or
+new architectural decision was needed. Earlier Metal and cross-compile evidence remains
+accepted: nothing changed that could invalidate it. Linux stays compile-only, and the
+lit-room content, user mods, `dusk`, profiler additions and relocated windowed run matrix
+remain Step 7's. No Step 7 implementation was begun.
 
 ### Step 7 — `sandbox3d` lit, and the dusk mod
 §10: lit content, lights and exposure from the config, the user mods root and

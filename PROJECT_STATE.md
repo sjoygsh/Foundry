@@ -1,8 +1,29 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-30
-**Current handoff: M22 Step 5 is complete; stop before Step 6.** M21 is complete (2026-09-29,
+**Current handoff: M22 Step 6 is complete; stop before Step 7.** M21 is complete (2026-09-29,
 tag `m21`). M22's design and ADR-0056 are accepted.
+
+**M22 Step 6 is done (2026-09-30).** Windows/Vulkan qualifies Steps 1, 3, 4 and 5 on
+the Intel Arc A750 (driver 101.8991, Vulkan 1.4.356), including the required
+`depthBiasClamp` feature. The renderer/reference suite passes **56/56**: sampled depth
+and hardware comparison, fp16 HDR blending/resolve/sampling, unlit tone mapping, lit
+materials and directional shadows at 1×/4× match the CPU oracle within ±3/255.
+Required synchronization validation reports no warnings or errors; loader diagnostics
+confirm only the Khronos validation layer was inserted, with installed implicit layers
+disabled through their own controls as well as the loader filter.
+
+**Integration:** the PC's complete `zig build test -Drhi=vulkan -j2` graph passes
+**1,926 of 1,945 tests, nineteen expected skips**. Independent native `fpack` builds
+of the full lit fixture (all five texture slots, emissive strength and tangent streams)
+produce a byte-identical 2,803-byte package and `.fmesh` on macOS and Windows.
+The local nine-command bar passes **1,894 of 1,895 headless tests, one expected skip**;
+the declaration count remains **1,977**. No code, dependency, ABI or architectural change
+was needed. Linux remains compile-only. The PC proof used a fresh archive of `b1c1002`,
+leaving pre-existing checkout edits untouched. Resolution: `light.md`, Step 6.
+
+**Next: Step 7, the lit sample, user mods, dusk and profiler counts.** None of that
+implementation or its relocated sample-run matrix was begun.
 
 **M22 Step 5 is done (2026-09-30).** One directional light casts into a lazily allocated
 reversed-Z `depth32_float` map. `Config.shadow_size` accepts 0/1024/2048/4096 (default
@@ -31,8 +52,8 @@ The complete bar, the explicit headless shadow proof and all five Vulkan compile
 passed. No ABI or dependency change; backend execution and presentation are unchanged.
 Resolution: `light.md`, Step 5.
 
-**Next: Step 6, Vulkan runtime proof on Windows.** No Windows runtime check or Step 7
-lit-room/mod/profiler implementation was begun.
+Step 6's completed Windows runtime proof is recorded above. Step 7's lit-room/mod/profiler
+implementation remains next.
 
 **M22 Step 4 is done (2026-09-30).** `foundry:shading.lit` is registered beside unlit,
 without a renderer branch by content ID. Checked, copied variant descriptor slices replace
