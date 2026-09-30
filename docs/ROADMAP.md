@@ -1103,5 +1103,7 @@ and reconciles its parent documents and ADR index. The exit condition is met: a 
 mod changes the lit room, with no code, backed by material validation, lit-reference readbacks
 and a compiled-mod pixel proof. Linux stays compile-only; no Linux-specific runtime trigger
 arose. The close bar passes 1,896 of 1,897 headless tests (one expected skip). The M22 Windows
-proof folders are packed up without disturbing pre-existing work. M23, Collision, is next;
-its design, [`collision3d.md`](design/collision3d.md) with ADR-0057, is accepted and Step 1 is done.
+proof folders are packed up without disturbing pre-existing work. M23, Collision, is in progress;
+its design, [`collision3d.md`](design/collision3d.md) with ADR-0057, is accepted. Steps 1–2 provide
+convex queries and copied static triangle meshes with a deterministic BVH, two-sided normals
+and allocation-free handle/triangle-ordered queries. Step 3's collision asset/import is next.

@@ -58,10 +58,15 @@ pub fn separation(a: Convex, b: Convex) Separation {
         };
     }
     // Cores whose difference has no volume: points and segments exactly meeting, which only
-    // sphere and capsule pairs produce. Push apart along the line between the centres, or up
-    // when they coincide — deterministic, and resolved by the radii alone.
+    // sphere/capsule pairs and points on triangles produce. Push apart along the line between
+    // centres, or up when they coincide; a triangle instead uses its face toward the core's
+    // centre. Deterministic, and resolved by the radii alone.
     var n = a.pose.position.sub(b.pose.position);
     n = if (n.lengthSquared() > 0) n.normalize() else Vec3.up;
+    if (b.core == .triangle) {
+        const pts = b.core.triangle;
+        n = b.surfaceNormal(a.pose.position.sub(b.pose.apply(pts[0])));
+    }
     return .{
         .distance = -radii,
         .normal = n,
@@ -101,7 +106,11 @@ pub fn cast(a: Convex, displacement: Vec3, b: Convex, target: f32) ?Cast {
         if (!(closing > 1e-12)) return null;
         const next_t = t + gap / closing;
         if (next_t > 1) return null;
-        const next = separation(a.translated(displacement.scale(next_t)), b);
+        var next = separation(a.translated(displacement.scale(next_t)), b);
+        // A point exactly on a two-sided triangle has no side. Preserve the approach side
+        // from the last separated iterate rather than choosing the triangle's winding.
+        if (b.core == .triangle and next.distance <= cast_tolerance and target == 0 and a.radius == 0)
+            next.normal = b.surfaceNormal(s.normal);
         // A step aimed exactly at the surface (a raycast's target is 0) lands on it only to
         // rounding, sometimes a hair inside: that is the contact. Anything deeper is not a
         // step convexity allows, and the last safe answer stands.

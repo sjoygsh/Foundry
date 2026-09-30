@@ -1,9 +1,29 @@
 # Foundry Project State
 
 **Last updated:** 2026-09-30
-**Current handoff: M23 Step 1 of 7 is complete (`docs/design/collision3d.md`, ADR-0057 accepted);
-stop before Step 2**, static triangle meshes in `physics3d`. No mesh shape, collision asset,
-character controller or sample walk exists yet. M0–M22 are complete.
+**Current handoff: M23 Steps 1–2 of 7 are complete (`docs/design/collision3d.md`, ADR-0057 accepted);
+stop before Step 3**, the collision-mesh asset and derived import. Static triangle meshes now
+exist in `physics3d`; no collision asset, character controller or sample walk exists yet.
+M0–M22 are complete.
+
+**M23 Step 2 is done (2026-09-30).** `World.addMesh` validates and copies geometry behind a
+generational `MeshHandle`, builds a deterministic median-split BVH, and reserves query scratch.
+`removeMesh` refuses referenced geometry; every body creation/setter path keeps meshes static.
+Raycasts, shape casts, overlaps and contacts query two-sided triangles through the existing
+rounded-core narrowphase, with face normals and original triangle identity. Overlap lists a
+mesh body once; contacts lists each penetrating triangle. Results and ties follow body then
+triangle order, independent of the tree's spatial traversal; steady-state queries allocate nothing.
+
+**Verification:** reconciled Claude's design/Step 1 commits `1de8f11`..`c1ac0ff` against the
+clean handoff and ran the required baseline bar once (1,927/1,928 tests, one skip). Added twelve
+mesh tests: **43/43** focused tests pass in Debug and ReleaseSafe, including rotated analytic
+answers, deep contacts, zero-thickness tunnelling, a 1,024-triangle brute-force oracle/replay,
+ownership, allocation failure, validation, ordering and buffers. Four guard mutations failed
+and were restored. The final nine-command integration bar passes **1,939 of 1,940 tests**, one
+expected skip; Metal and both cross-target checks and all three headless samples pass.
+The dated Step 2 Resolution records scratch ownership, validation diagnostics, `setKind`'s
+named refusal and the exact-plane ray orientation correction. Nothing enters the ABI or assets;
+Windows runtime qualification stays Step 6, Linux compile-only. No Step 3 work begun.
 
 **M23 Step 1 is done (2026-09-30).** The owner's request for Step 1 accepted the design and
 ADR-0057, which are recorded in the design's status, the ADR and CLAUDE.md §4.1/§4.3. The new L1

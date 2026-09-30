@@ -1,4 +1,4 @@
-//! The collision world: bodies, the hulls they share, and what may be asked of them.
+//! The collision world: bodies, shared hulls and static meshes, and what may be asked of them.
 //!
 //! **No time, no velocity, no step** (`collision3d.md` §3). A caller says *put this here*, *move
 //! this by that* or *what is there*; gravity, jumping and speed are the game's.
@@ -18,6 +18,7 @@ const core = @import("core");
 const body_mod = @import("body.zig");
 const narrow = @import("narrow.zig");
 const shape_mod = @import("shape.zig");
+const mesh_mod = @import("mesh.zig");
 
 const Aabb = shape_mod.Aabb;
 const Allocator = std.mem.Allocator;
@@ -28,6 +29,8 @@ const Convex = shape_mod.Convex;
 const Filter = body_mod.Filter;
 const HullHandle = shape_mod.HullHandle;
 const Hulls = shape_mod.Hulls;
+const MeshHandle = shape_mod.MeshHandle;
+const Meshes = shape_mod.Meshes;
 const Pose = shape_mod.Pose;
 const Shape = shape_mod.Shape;
 const Vec3 = core.math.Vec3;
@@ -40,6 +43,8 @@ pub const AddBodyError = error{ OutOfMemory, InvalidShape, InvalidPose };
 pub const SetPoseError = error{ OutOfMemory, InvalidPose };
 pub const SetShapeError = error{ OutOfMemory, InvalidShape };
 pub const RemoveHullError = error{InUse};
+pub const AddMeshError = mesh_mod.AddError;
+pub const RemoveMeshError = error{InUse};
 
 /// What a query refuses. `InvalidQuery` covers what is neither a shape nor a pose: a ray
 /// direction that is not unit, a negative or non-finite reach, a displacement that is not finite.
@@ -52,7 +57,7 @@ pub const Hit = struct {
     point: Vec3,
     /// Out of what was hit, toward the moving shape. Unit.
     normal: Vec3,
-    /// The face's normal where there is one — a box face today — otherwise `normal` (§5.3).
+    /// The two-sided triangle face or closest box face, otherwise `normal` (§5.3).
     surface_normal: Vec3,
     body: BodyHandle,
     user: u64,
@@ -105,6 +110,8 @@ const Hull = struct {
 pub const World = struct {
     bodies: core.HandlePool(Bodies, Body) = .empty,
     hulls: core.HandlePool(Hulls, Hull) = .empty,
+    meshes: core.HandlePool(Meshes, mesh_mod.Mesh) = .empty,
+    triangle_scratch: []u32 = &.{},
 
     pub const empty: World = .{};
 
@@ -112,6 +119,10 @@ pub const World = struct {
         var it = self.hulls.iterator();
         while (it.next()) |entry| gpa.free(entry.value.points);
         self.hulls.deinit(gpa);
+        var meshes = self.meshes.iterator();
+        while (meshes.next()) |entry| entry.value.deinit(gpa);
+        self.meshes.deinit(gpa);
+        gpa.free(self.triangle_scratch);
         self.bodies.deinit(gpa);
         self.* = .empty;
     }
@@ -143,10 +154,37 @@ pub const World = struct {
         return self.hulls.count();
     }
 
+    // -- copied static triangle meshes -----------------------------------------------
+
+    /// Validate before allocating; `mesh.validate` exposes the first offending triangle.
+    /// The world owns the arrays, tree and query scratch after this returns.
+    pub fn addMesh(self: *World, gpa: Allocator, positions: []const Vec3, indices: []const u32) AddMeshError!MeshHandle {
+        var owned = try mesh_mod.Mesh.init(gpa, positions, indices);
+        errdefer owned.deinit(gpa);
+        if (self.triangle_scratch.len < owned.order.len) {
+            const scratch = try gpa.alloc(u32, owned.order.len);
+            gpa.free(self.triangle_scratch);
+            self.triangle_scratch = scratch;
+        }
+        return self.meshes.add(gpa, owned);
+    }
+
+    pub fn removeMesh(self: *World, gpa: Allocator, handle: MeshHandle) RemoveMeshError!bool {
+        const existing = self.meshes.get(handle) orelse return false;
+        if (existing.users > 0) return error.InUse;
+        existing.deinit(gpa);
+        return self.meshes.remove(handle);
+    }
+
+    pub fn meshCount(self: *const World) u32 {
+        return self.meshes.count();
+    }
+
     // -- bodies ----------------------------------------------------------------------
 
     pub fn addBody(self: *World, gpa: Allocator, new: Body) AddBodyError!BodyHandle {
         if (!self.shapeValid(new.shape)) return error.InvalidShape;
+        if (new.shape == .mesh and new.kind != .static) return error.InvalidShape;
         var stored = new;
         stored.pose = try shape_mod.validatePose(new.pose);
         const handle = try self.bodies.add(gpa, stored);
@@ -188,6 +226,7 @@ pub const World = struct {
         _ = gpa;
         if (!self.shapeValid(new)) return error.InvalidShape;
         const existing = self.bodies.get(handle) orelse return false;
+        if (new == .mesh and existing.kind != .static) return error.InvalidShape;
         self.retain(new);
         self.release(existing.shape);
         existing.shape = new;
@@ -207,8 +246,10 @@ pub const World = struct {
         return true;
     }
 
-    pub fn setKind(self: *World, handle: BodyHandle, kind: body_mod.BodyKind) bool {
+    /// A mesh remains static through every setter, not just when added. False for a stale body.
+    pub fn setKind(self: *World, handle: BodyHandle, kind: body_mod.BodyKind) error{InvalidShape}!bool {
         const existing = self.bodies.get(handle) orelse return false;
+        if (existing.shape == .mesh and kind != .static) return error.InvalidShape;
         existing.kind = kind;
         return true;
     }
@@ -216,7 +257,7 @@ pub const World = struct {
     /// World bounds of a body's rounded shape, or null for a stale handle.
     pub fn boundsOf(self: *World, handle: BodyHandle) ?Aabb {
         const existing = self.bodies.get(handle) orelse return null;
-        return self.convexOf(existing.shape, existing.pose).bounds();
+        return self.bodyBounds(existing.*);
     }
 
     // -- queries ---------------------------------------------------------------------
@@ -271,13 +312,16 @@ pub const World = struct {
         var found: Found = .{ .count = 0, .total = 0 };
         var it = self.bodies.iterator();
         while (it.next()) |entry| {
-            const other = self.candidate(entry.id, entry.value.*, area, filter) orelse continue;
-            if (narrow.separation(query, other).distance >= 0) continue;
-            if (found.count < out.len) {
-                out[found.count] = .{ .body = entry.id, .user = entry.value.user };
-                found.count += 1;
+            var candidates = self.candidate(entry.id, entry.value.*, area, filter) orelse continue;
+            while (candidates.next()) |other| {
+                if (narrow.separation(query, other.convex).distance >= 0) continue;
+                if (found.count < out.len) {
+                    out[found.count] = .{ .body = entry.id, .user = entry.value.user, .triangle = other.triangle };
+                    found.count += 1;
+                }
+                found.total += 1;
+                break; // A mesh body appears once, at its first overlapping triangle.
             }
-            found.total += 1;
         }
         return found;
     }
@@ -289,20 +333,23 @@ pub const World = struct {
         var found: Found = .{ .count = 0, .total = 0 };
         var it = self.bodies.iterator();
         while (it.next()) |entry| {
-            const other = self.candidate(entry.id, entry.value.*, area, filter) orelse continue;
-            const s = narrow.separation(query, other);
-            if (s.distance >= 0) continue;
-            if (found.count < out.len) {
-                out[found.count] = .{
-                    .body = entry.id,
-                    .user = entry.value.user,
-                    .normal = s.normal,
-                    .depth = -s.distance,
-                    .point = s.point_b,
-                };
-                found.count += 1;
+            var candidates = self.candidate(entry.id, entry.value.*, area, filter) orelse continue;
+            while (candidates.next()) |other| {
+                const s = narrow.separation(query, other.convex);
+                if (s.distance >= 0) continue;
+                if (found.count < out.len) {
+                    out[found.count] = .{
+                        .body = entry.id,
+                        .user = entry.value.user,
+                        .triangle = other.triangle,
+                        .normal = s.normal,
+                        .depth = -s.distance,
+                        .point = s.point_b,
+                    };
+                    found.count += 1;
+                }
+                found.total += 1;
             }
-            found.total += 1;
         }
         return found;
     }
@@ -316,32 +363,66 @@ pub const World = struct {
         var best: ?Hit = null;
         var it = self.bodies.iterator();
         while (it.next()) |entry| {
-            const other = self.candidate(entry.id, entry.value.*, area, filter) orelse continue;
-            const c = narrow.cast(moving, displacement, other, target) orelse continue;
-            if (best) |b| if (!(c.fraction < b.fraction)) continue;
-            best = .{
-                .fraction = c.fraction,
-                .point = c.point,
-                .normal = c.normal,
-                .surface_normal = other.surfaceNormal(c.normal),
-                .body = entry.id,
-                .user = entry.value.user,
-                .started_inside = c.started_inside,
-            };
+            var candidates = self.candidate(entry.id, entry.value.*, area, filter) orelse continue;
+            while (candidates.next()) |other| {
+                const c = narrow.cast(moving, displacement, other.convex, target) orelse continue;
+                if (best) |b| if (!(c.fraction < b.fraction)) continue;
+                best = .{
+                    .fraction = c.fraction,
+                    .point = c.point,
+                    .normal = c.normal,
+                    .surface_normal = other.convex.surfaceNormal(c.normal),
+                    .body = entry.id,
+                    .user = entry.value.user,
+                    .triangle = other.triangle,
+                    .started_inside = c.started_inside,
+                };
+            }
         }
         return best;
     }
 
-    fn candidate(self: *World, id: BodyHandle, b: Body, area: Aabb, filter: Filter) ?Convex {
+    const Part = struct { convex: Convex, triangle: u32 = none_triangle };
+    const Candidates = struct {
+        convex: ?Convex = null,
+        mesh: ?*const mesh_mod.Mesh = null,
+        pose: Pose = .identity,
+        triangles: []const u32 = &.{},
+        cursor: usize = 0,
+
+        fn next(self: *Candidates) ?Part {
+            if (self.convex) |c| {
+                self.convex = null;
+                return .{ .convex = c };
+            }
+            if (self.cursor == self.triangles.len) return null;
+            const t = self.triangles[self.cursor];
+            self.cursor += 1;
+            return .{ .convex = .{ .core = .{ .triangle = self.mesh.?.triangle(t) }, .radius = 0, .pose = self.pose }, .triangle = t };
+        }
+    };
+
+    fn candidate(self: *World, id: BodyHandle, b: Body, area: Aabb, filter: Filter) ?Candidates {
         if (filter.ignore) |ignored| if (ignored.eql(id)) return null;
         if (!body_mod.maskAdmits(filter.mask, b)) return null;
-        const c = self.convexOf(b.shape, b.pose);
-        if (!c.bounds().overlaps(area)) return null;
-        return c;
+        if (!self.bodyBounds(b).expand(0.002).overlaps(area)) return null;
+        if (b.shape == .mesh) {
+            const m = self.meshes.get(b.shape.mesh).?;
+            return .{ .mesh = m, .pose = b.pose, .triangles = m.candidates(b.pose, area, self.triangle_scratch) };
+        }
+        return .{ .convex = self.convexOf(b.shape, b.pose) };
+    }
+
+    fn bodyBounds(self: *World, b: Body) Aabb {
+        if (b.shape == .mesh) {
+            const c: Convex = .{ .core = .point, .radius = 0, .pose = b.pose };
+            return c.poseBounds(self.meshes.get(b.shape.mesh).?.nodes[0].bounds);
+        }
+        return self.convexOf(b.shape, b.pose).bounds();
     }
 
     fn queryConvex(self: *World, shape: Shape, pose: Pose) QueryError!Convex {
-        if (!self.shapeValid(shape)) return error.InvalidShape;
+        if (!self.shapeValid(shape) or shape == .mesh) return error.InvalidShape;
         const valid = try shape_mod.validatePose(pose);
         return self.convexOf(shape, valid);
     }
@@ -350,6 +431,7 @@ pub const World = struct {
         if (!shape.dimensionsValid()) return false;
         return switch (shape) {
             .hull => |h| self.hulls.contains(h),
+            .mesh => |m| self.meshes.contains(m),
             else => true,
         };
     }
@@ -360,14 +442,17 @@ pub const World = struct {
             .capsule => |c| .{ .core = .{ .segment = c.half_height }, .radius = c.radius, .pose = pose },
             .box => |b| .{ .core = .{ .box = b.half_extents }, .radius = 0, .pose = pose },
             .hull => |h| .{ .core = .{ .points = self.hulls.get(h).?.points }, .radius = 0, .pose = pose },
+            .mesh => unreachable, // Only queryConvex or the convex branch of candidate calls this.
         };
     }
 
     fn retain(self: *World, shape: Shape) void {
         if (shape == .hull) self.hulls.get(shape.hull).?.users += 1;
+        if (shape == .mesh) self.meshes.get(shape.mesh).?.users += 1;
     }
 
     fn release(self: *World, shape: Shape) void {
         if (shape == .hull) self.hulls.get(shape.hull).?.users -= 1;
+        if (shape == .mesh) self.meshes.get(shape.mesh).?.users -= 1;
     }
 };

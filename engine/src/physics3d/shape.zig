@@ -22,6 +22,9 @@ pub const Hulls = opaque {};
 /// kept in a body would be a raw pointer held long-term (I1).
 pub const HullHandle = core.Handle(Hulls);
 
+pub const Meshes = opaque {};
+pub const MeshHandle = core.Handle(Meshes);
+
 /// The farthest a position may be from the origin on any axis. **Numerical, not gameplay**: at
 /// 8,192 m an `f32` still resolves about a millimetre, so the 5 mm contact skin means something.
 pub const max_coordinate: f32 = 8192;
@@ -39,14 +42,16 @@ pub const Shape = union(enum) {
     capsule: struct { radius: f32, half_height: f32 },
     box: struct { half_extents: Vec3 },
     hull: HullHandle,
+    mesh: MeshHandle,
 
-    /// Whether the dimensions describe a solid. A hull's handle is the world's to check.
+    /// Whether dimensions are valid. Geometry handles are the world's to check.
     pub fn dimensionsValid(self: Shape) bool {
         return switch (self) {
             .sphere => |s| positive(s.radius),
             .capsule => |c| positive(c.radius) and std.math.isFinite(c.half_height) and c.half_height >= 0,
             .box => |b| positive(b.half_extents.x) and positive(b.half_extents.y) and positive(b.half_extents.z),
             .hull => |h| !h.isNone(),
+            .mesh => |m| !m.isNone(),
         };
     }
 
@@ -143,6 +148,7 @@ pub const Core = union(enum) {
     box: Vec3, // half-extents
     /// A hull's local points. Borrowed from the world for the length of one query, never held.
     points: []const Vec3,
+    triangle: [3]Vec3,
 };
 
 /// A shape in the form the narrowphase measures: a posed core and a radius.
@@ -181,6 +187,14 @@ pub const Convex = struct {
                 }
                 break :blk self.pose.apply(best);
             },
+            .triangle => |pts| blk: {
+                const d = self.pose.inverseDirection(dir);
+                var best = pts[0];
+                for (pts[1..]) |p| if (p.dot(d) > best.dot(d)) {
+                    best = p;
+                };
+                break :blk self.pose.apply(best);
+            },
         };
     }
 
@@ -212,15 +226,20 @@ pub const Convex = struct {
                 for (pts[1..]) |p| acc = acc.include(self.pose.apply(p));
                 break :blk acc;
             },
+            .triangle => |pts| self.poseBounds(Aabb.around(pts[0]).include(pts[1]).include(pts[2])),
         };
         return b.expand(self.radius);
     }
 
     /// The normal of the face a contact lies on, for `collision3d.md` §5.3: a box's face most
-    /// aligned with the contact normal (ties to the lowest axis), and the contact normal itself
-    /// for the shapes that have no faces in M23.
+    /// aligned with the contact normal (ties to the lowest axis), a two-sided triangle face,
+    /// and the contact normal itself for the shapes that have no faces in M23.
     pub fn surfaceNormal(self: Convex, contact_normal: Vec3) Vec3 {
         switch (self.core) {
+            .triangle => |pts| {
+                const n = self.pose.applyDirection(Vec3.cross(pts[1].sub(pts[0]), pts[2].sub(pts[0])).normalize());
+                return if (n.dot(contact_normal) < 0) n.neg() else n;
+            },
             .box => {
                 const n = self.pose.inverseDirection(contact_normal);
                 const ax = @abs(n.x);
@@ -236,6 +255,17 @@ pub const Convex = struct {
             },
             else => return contact_normal,
         }
+    }
+
+    /// Transform an axis-aligned local box conservatively into world space.
+    pub fn poseBounds(self: Convex, local: Aabb) Aabb {
+        var result = Aabb.around(self.pose.apply(local.min));
+        for (0..8) |i| result = result.include(self.pose.apply(.init(
+            if (i & 1 == 0) local.min.x else local.max.x,
+            if (i & 2 == 0) local.min.y else local.max.y,
+            if (i & 4 == 0) local.min.z else local.max.z,
+        )));
+        return result;
     }
 };
 

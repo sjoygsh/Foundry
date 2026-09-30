@@ -1,7 +1,7 @@
 # Design: M23 — Collision: `physics3d`, collision meshes, the character controller and a first-person walk
 
 **Status:** Accepted 2026-09-30, when the owner requested Step 1, with every §16 choice as
-written. Step 1 is done; Step 2 is next.
+written. Steps 1–2 are done; Step 3 is next.
 **Date:** 2026-09-30
 **Baseline:** `a0f8d73`, tag `m22`. M0–M22 are complete.
 **Decisions:**
@@ -860,13 +860,60 @@ whitespace-only change that was re-checked.
 
 Nothing is in the ABI. Step 2 (triangle meshes) has not begun.
 
-### Step 2 — `physics3d`: static triangle meshes
+### Step 2 — `physics3d`: static triangle meshes — Done 2026-09-30
 
 This step implements §6: `addMesh` and `removeMesh`, with copying, validation and the
 deterministic BVH; triangle cores in the narrowphase; two-sided hits with `surface_normal`; mesh
 bodies in every query. It adds the mesh parts of §11.1, with the two-sided and tie-break
 mutations. **Exit:** every query against a mesh returns the same hit as against the same triangles
 added as separate hulls, in handle-then-triangle order.
+
+**Resolution (2026-09-30): complete.** `mesh.zig` validates and copies positions and indices,
+retains degenerate triangles without ever querying them, and builds an axis-aligned BVH with
+at most four triangles per leaf. Median splits use the longest centroid axis (ties X, Y, Z)
+and `(coordinate, original triangle index)` ordering. A mesh lives in its own generational
+pool; bodies retain it, removal while referenced returns `InUse`, and stale handles are refused.
+`addBody`, `setShape` and `setKind` all enforce static-only meshes. `setKind` now returns
+`error{InvalidShape}!bool` so changing an existing mesh to kinematic is a named refusal too.
+
+All four queries use the same triangle support core and existing rounded-core narrowphase.
+Ray/shape hits carry the triangle index and two-sided face normal, distinct from the contact
+normal at edges. Overlap reports each mesh body once at its first overlapping triangle;
+contacts reports every penetrating triangle, in body-then-triangle order, with buffer totals.
+Static-body teleporting works through `setPose` and queries derive bounds from the current pose.
+
+Implementation details that sharpen the specification:
+- `mesh.validate(positions, indices)` exposes `Validation { valid, triangle }`, identifying
+  the first offending indexed triangle before allocation. Count failures and invalid unused
+  positions have no offending triangle. `addMesh` itself returns `InvalidMesh`.
+- Queries still take no allocator. `addMesh` reserves World-owned candidate scratch for the
+  largest mesh added; a 32-entry fixed-stack walk gathers candidates and an allocation-free
+  heap sort restores original triangle order before narrowphase. Scratch remains until world
+  deinitialisation. This prevents spatial tree order from becoming query or tie order.
+- Transformed broadphase bounds have 2 mm conservative padding for `f32` rounding. This
+  admits extra candidates only; it does not change narrowphase skin or hit distances.
+- A zero-radius ray landing exactly on a triangle preserves the last separated approach side:
+  rounding at the plane otherwise reversed a rotated ray's normal. A core intersection with
+  no volume uses the triangle face toward the core centre rather than the convex-pair fallback.
+- The exit's “separate hulls” oracle is a separate flat **point-set convex core** per triangle,
+  not `addHull`: Step 1 correctly refuses coplanar public hulls. No hull validation is weakened.
+  The oracle compares BVH answers against brute-force independent cores, including misses.
+
+**Evidence:** twelve added tests (43 focused physics tests total) cover every convex kind
+against triangles and triangle–triangle separation/casts in rigid frames, both sides, edge
+normals, core-intersecting depth, fast capsule casts through zero-thickness walls, validation
+and diagnostics, static-only/setter refusals, copied/shared lifetime and teleporting, stale
+generations, degenerates, filters, truncated/empty buffers, exact body/triangle ties, reproducible
+tree construction, a spatially shuffled 1,024-triangle brute-force oracle and same-process
+replay. Every allocation failure in mesh/world creation unwinds without leaks.
+
+Four deliberate mutations failed the intended tests: removing the two-sided normal flip,
+omitting candidate index sorting, admitting kinematic meshes, and querying degenerate triangles.
+All were restored. The 43-test suite passes in Debug and ReleaseSafe. The complete nine-command
+bar passes **1,939 of 1,940 tests**, one expected skip, with Metal and both cross-target checks
+and all three headless sample runs clean. The module remains on `core` alone; no ABI, asset,
+import, platform, renderer or sample change. Native Windows proof remains Step 6 and Linux
+remains compile-only. Step 3 has not begun.
 
 ### Step 3 — `asset` and `author`: `foundry:collision_mesh`, `.fcol`, and derived collision
 

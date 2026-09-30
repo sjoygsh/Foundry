@@ -30,6 +30,7 @@ pub const gjk = @import("gjk.zig");
 pub const narrow = @import("narrow.zig");
 pub const shape = @import("shape.zig");
 pub const world = @import("world.zig");
+pub const mesh = @import("mesh.zig");
 
 // The names reached for most often. A game sees them today and a mod from M25, so renaming one
 // is a compatibility decision rather than a tidy-up (CLAUDE.md §7).
@@ -42,6 +43,7 @@ pub const Filter = body.Filter;
 pub const Found = world.Found;
 pub const Hit = world.Hit;
 pub const HullHandle = shape.HullHandle;
+pub const MeshHandle = shape.MeshHandle;
 pub const Overlap = world.Overlap;
 pub const Pose = shape.Pose;
 pub const RayHit = world.RayHit;
@@ -50,6 +52,8 @@ pub const World = world.World;
 
 pub const AddBodyError = world.AddBodyError;
 pub const AddHullError = world.AddHullError;
+pub const AddMeshError = world.AddMeshError;
+pub const RemoveMeshError = world.RemoveMeshError;
 pub const QueryError = world.QueryError;
 pub const RemoveHullError = world.RemoveHullError;
 pub const SetPoseError = world.SetPoseError;
@@ -72,5 +76,7 @@ test {
     _ = narrow;
     _ = shape;
     _ = world;
+    _ = mesh;
     _ = @import("tests.zig");
+    _ = @import("mesh_tests.zig");
 }
