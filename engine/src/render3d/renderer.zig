@@ -912,6 +912,8 @@ pub const Renderer = struct {
 
     pub fn createMesh(self: *Self, mesh: asset.Mesh, label: []const u8) Error!MeshHandle {
         try mesh.validate();
+        // M24 Step 2 loads skin data; residency and evaluation belong to Step 5.
+        if (mesh.joint_bounds.len != 0) return error.UnsupportedVertexFormat;
         // Owned by `state` from here on; its errdefer frees it, so this one must not.
         const submeshes = try self.gpa.alloc(asset.Submesh, mesh.submeshes.len);
         for (mesh.submeshes, submeshes) |source, *destination| destination.* = source;
@@ -1609,6 +1611,30 @@ test "renderer configuration is bounded, and the tone map targets the surface's 
     var renderer = try Renderer.init(testing.allocator, device, .{});
     defer renderer.deinit();
     try testing.expectEqual(device.capabilities().surface_format, renderer.surface_format);
+}
+
+test "M24 asset skin data is refused until skinned residency exists" {
+    var fx = try TestFixture.init(1, 8);
+    defer fx.deinit();
+    const positions = [_]Vec3{ .init(-1, -1, -2), .init(1, -1, -2), .init(0, 1, -2) };
+    const joints = [_][4]u8{.{ 0, 255, 255, 255 }} ** 3;
+    const weights = [_][4]f32{.{ 1, 0, 0, 0 }} ** 3;
+    const indices = [_]u16{ 0, 1, 2 };
+    const submeshes = [_]asset.Submesh{.{ .first_index = 0, .index_count = 3 }};
+    const bounds = try asset.Mesh.computeBounds(&positions);
+    try testing.expectError(error.UnsupportedVertexFormat, fx.renderer.createMesh(.{
+        .vertex_count = 3,
+        .streams = &.{
+            .{ .semantic = .position, .format = .float32x3, .bytes = std.mem.sliceAsBytes(&positions) },
+            .{ .semantic = .joints, .format = .uint8x4, .bytes = std.mem.sliceAsBytes(&joints) },
+            .{ .semantic = .weights, .format = .float32x4, .bytes = std.mem.sliceAsBytes(&weights) },
+        },
+        .index_format = .uint16,
+        .indices = std.mem.sliceAsBytes(&indices),
+        .submeshes = &submeshes,
+        .bounds = bounds,
+        .joint_bounds = &.{bounds},
+    }, "skin not resident yet"));
 }
 
 test "resident mesh records a depth pass and reports the completed work" {

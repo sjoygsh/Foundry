@@ -22,11 +22,13 @@ comptime {
         @compileError(".fmesh payloads require a little-endian target");
     }
     if (@sizeOf(Submesh) != 8) @compileError(".fmesh submesh layout changed");
+    if (@sizeOf(Aabb) != 24) @compileError(".fmesh joint-bounds layout changed");
 }
 
 pub const magic = "FMSH";
-pub const format_version: u32 = 1;
+pub const format_version: u32 = 2;
 pub const header_size: usize = 48;
+pub const skin_header_size: usize = 56;
 pub const stream_entry_size: usize = 12;
 pub const submesh_entry_size: usize = 8;
 pub const max_streams: usize = 8;
@@ -35,6 +37,7 @@ pub const Limits = struct {
     max_file_bytes: u64 = 256 * 1024 * 1024,
     max_vertices: u32 = 16_777_216,
     max_submeshes: u32 = 65_536,
+    max_joints: u16 = 256,
 
     pub const default: Limits = .{};
 };
@@ -67,6 +70,7 @@ pub const View = struct {
     bounds: Aabb,
     descriptors: [max_streams]Descriptor,
     stream_count: u8,
+    joint_bounds: []align(1) const Aabb = &.{},
     streams: [max_streams]Stream = undefined,
 
     const Descriptor = struct {
@@ -93,6 +97,7 @@ pub const View = struct {
             .indices = self.bytes[self.index_offset .. self.index_offset + self.index_length],
             .submeshes = std.mem.bytesAsSlice(Submesh, submesh_bytes),
             .bounds = self.bounds,
+            .joint_bounds = self.joint_bounds,
         };
     }
 };
@@ -100,9 +105,13 @@ pub const View = struct {
 /// Reads and validates a canonical `.fmesh`, borrowing all payload bytes from `bytes`.
 pub fn read(bytes: []const u8, limits: Limits) ReadError!View {
     const version = versionOf(bytes) orelse return error.NotAMesh;
-    if (version != format_version) return error.UnsupportedVersion;
+    if (version != 1 and version != format_version) return error.UnsupportedVersion;
     if (bytes.len > limits.max_file_bytes) return error.OverLimit;
-    if (bytes.len < header_size) return error.Malformed;
+    const head: usize = if (version == 1) header_size else skin_header_size;
+    if (bytes.len < head) return error.Malformed;
+    const joint_count: u16 = if (version == 1) 0 else readInt(u16, bytes, 48);
+    if (joint_count > @min(limits.max_joints, 256)) return error.OverLimit;
+    if (version == 2 and (joint_count == 0 or readInt(u16, bytes, 50) != 0)) return error.Malformed;
 
     const vertex_count = readInt(u32, bytes, 8);
     if (vertex_count > limits.max_vertices) return error.OverLimit;
@@ -120,7 +129,7 @@ pub fn read(bytes: []const u8, limits: Limits) ReadError!View {
 
     const stream_table_bytes = checkedMul(stream_count, stream_entry_size) orelse return error.Malformed;
     const submesh_table_bytes = checkedMul(submesh_count, submesh_entry_size) orelse return error.Malformed;
-    const submesh_offset = checkedAdd(header_size, stream_table_bytes) orelse return error.Malformed;
+    const submesh_offset = checkedAdd(head, stream_table_bytes) orelse return error.Malformed;
     const payload_offset = checkedAdd(submesh_offset, submesh_table_bytes) orelse return error.Malformed;
     if (payload_offset > bytes.len) return error.Malformed;
 
@@ -136,9 +145,10 @@ pub fn read(bytes: []const u8, limits: Limits) ReadError!View {
     var expected_offset = first_stream_offset;
     var previous_semantic: ?u8 = null;
     for (0..stream_count) |i| {
-        const at = header_size + i * stream_entry_size;
+        const at = head + i * stream_entry_size;
         const semantic = std.enums.fromInt(Semantic, bytes[at]) orelse return error.Malformed;
         const format = std.enums.fromInt(VertexFormat, bytes[at + 1]) orelse return error.Malformed;
+        if (version == 1 and (semantic == .joints or semantic == .weights or format == .uint8x4)) return error.UnsupportedVertexFormat;
         if (readInt(u16, bytes, at + 2) != 0) return error.Malformed;
         if (previous_semantic) |previous| {
             if (@intFromEnum(semantic) <= previous) return error.Malformed;
@@ -151,6 +161,11 @@ pub fn read(bytes: []const u8, limits: Limits) ReadError!View {
         expected_offset = checkedAdd(offset, length) orelse return error.Malformed;
         if (expected_offset > bytes.len) return error.Malformed;
         descriptors[i] = .{ .semantic = semantic, .format = format, .offset = offset, .length = length };
+    }
+    const joint_offset = expected_offset;
+    if (version == 2) {
+        if (readInt(u32, bytes, 52) != joint_offset) return error.Malformed;
+        expected_offset = checkedAdd(joint_offset, @as(usize, joint_count) * 24) orelse return error.Malformed;
     }
     if (expected_offset != bytes.len) return error.Malformed;
 
@@ -169,6 +184,7 @@ pub fn read(bytes: []const u8, limits: Limits) ReadError!View {
         .bounds = bounds,
         .descriptors = descriptors,
         .stream_count = stream_count,
+        .joint_bounds = std.mem.bytesAsSlice(Aabb, bytes[joint_offset..]),
     };
     try view.mesh().validate();
     return view;
@@ -192,18 +208,25 @@ pub fn write(gpa: Allocator, source: Mesh) WriteError![]u8 {
         }
     }.lessThan);
 
-    const submesh_offset = checkedAdd(header_size, checkedMul(source.streams.len, stream_entry_size) orelse return error.TooLarge) orelse return error.TooLarge;
+    const head: usize = if (source.joint_bounds.len == 0) header_size else skin_header_size;
+    const submesh_offset = checkedAdd(head, checkedMul(source.streams.len, stream_entry_size) orelse return error.TooLarge) orelse return error.TooLarge;
     const payload_offset = checkedAdd(submesh_offset, checkedMul(source.submeshes.len, submesh_entry_size) orelse return error.TooLarge) orelse return error.TooLarge;
     const after_indices = checkedAdd(payload_offset, source.indices.len) orelse return error.TooLarge;
     var total = alignForward4(after_indices) orelse return error.TooLarge;
     for (streams[0..source.streams.len]) |stream| total = checkedAdd(total, stream.bytes.len) orelse return error.TooLarge;
+    const joint_offset = total;
+    total = checkedAdd(total, source.joint_bounds.len * 24) orelse return error.TooLarge;
     if (total > std.math.maxInt(u32)) return error.TooLarge;
 
     const bytes = try gpa.alloc(u8, total);
     errdefer gpa.free(bytes);
     @memset(bytes, 0);
     @memcpy(bytes[0..4], magic);
-    writeInt(u32, bytes, 4, format_version);
+    writeInt(u32, bytes, 4, if (source.joint_bounds.len == 0) 1 else format_version);
+    if (head == skin_header_size) {
+        writeInt(u16, bytes, 48, @intCast(source.joint_bounds.len));
+        writeInt(u32, bytes, 52, @intCast(joint_offset));
+    }
     writeInt(u32, bytes, 8, source.vertex_count);
     bytes[12] = @intFromEnum(source.index_format);
     bytes[13] = @intCast(source.streams.len);
@@ -218,7 +241,7 @@ pub fn write(gpa: Allocator, source: Mesh) WriteError![]u8 {
 
     var stream_offset = alignForward4(after_indices).?;
     for (streams[0..source.streams.len], 0..) |stream, i| {
-        const at = header_size + i * stream_entry_size;
+        const at = head + i * stream_entry_size;
         bytes[at] = @intFromEnum(stream.semantic);
         bytes[at + 1] = @intFromEnum(stream.format);
         writeInt(u32, bytes, at + 4, @intCast(stream_offset));
@@ -232,6 +255,15 @@ pub fn write(gpa: Allocator, source: Mesh) WriteError![]u8 {
         writeInt(u32, bytes, at + 4, submesh.index_count);
     }
     @memcpy(bytes[payload_offset .. payload_offset + source.indices.len], source.indices);
+    for (source.joint_bounds, 0..) |box, i| {
+        const at = joint_offset + i * 24;
+        writeF32(bytes, at, box.min.x);
+        writeF32(bytes, at + 4, box.min.y);
+        writeF32(bytes, at + 8, box.min.z);
+        writeF32(bytes, at + 12, box.max.x);
+        writeF32(bytes, at + 16, box.max.y);
+        writeF32(bytes, at + 20, box.max.z);
+    }
     return bytes;
 }
 
@@ -319,9 +351,9 @@ test "fmesh distinguishes identity, version, malformed shape, and limits" {
 
     var changed = try testing.allocator.dupe(u8, valid);
     defer testing.allocator.free(changed);
-    writeInt(u32, changed, 4, 2);
+    writeInt(u32, changed, 4, 3);
     try testing.expectError(error.UnsupportedVersion, read(changed, .default));
-    writeInt(u32, changed, 4, format_version);
+    writeInt(u32, changed, 4, 1);
     try testing.expectError(error.OverLimit, read(changed, .{ .max_file_bytes = changed.len - 1 }));
     try testing.expectError(error.OverLimit, read(changed, .{ .max_vertices = 2 }));
     try testing.expectError(error.OverLimit, read(changed, .{ .max_submeshes = 0 }));

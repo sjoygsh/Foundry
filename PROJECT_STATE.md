@@ -1,9 +1,11 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-01
-**Current handoff: M24 Step 1 is complete. Stop before Step 2.** Step 2 is `asset`'s formats:
-`.fskel`, `.fanim`, `.fmesh` version 2 and `foundry:model` version 2. None of them exists yet,
-and no module is granted `anim`. M0–M23 are complete; M23 closed at tag `m23`, pushed.
+**Current handoff: M24 Steps 1–2 are complete. Stop before Step 3.** Next is `author`'s glTF
+skin/animation import, hierarchy closure/remapping and diagnostics (`animation3d.md` §7).
+The animation asset formats exist; glTF still does not import skins or clips, rendering still
+refuses skin data, and no module is granted `anim`. M0–M23 are complete; M23 closed at tag
+`m23`, pushed.
 
 **M24, Animation, is accepted (2026-10-01):** the owner's request for Step 1 accepted
 `docs/design/animation3d.md` §15 and ADR-0058. A new L1 module, `anim`, samples skeletons and
@@ -12,6 +14,30 @@ skinning is linear-blend on the CPU, drawn by `render3d` with the existing shade
 gains a generated character that patrols the room. Eight steps, the PC in Step 7, nothing in
 the ABI. It corrects `3d.md` §5: no skinned shader variants are built while skinning is on the
 CPU.
+
+**M24 Step 2 is done (2026-10-01), from Claude's verified `3b320ab` baseline.** `asset` has
+canonical, bounded `.fskel`/`.fanim` v1 readers/writers, arbitrary-alignment borrowed views,
+aligned owned copies and host-registered loaders. `foundry:skeleton` and `foundry:animation`
+derive from those extensions through the existing kinds table; an end-to-end package test
+loads them by ID. `.fmesh` v2 carries `uint8x4` joints, `float32x4` weights and joint bounds;
+validation refuses incomplete skin metadata, invalid influences and non-conservative boxes.
+The writer still emits identical v1 mesh bytes for unskinned geometry. `foundry:model` v2
+appends optional `skeleton` and named `clips`, and compiled v1 records still load unchanged.
+
+**Resolution:** joint boxes are in model bind space, not joint-local bind space, because §8's
+skin matrices accept model bind-space points. Recompiled package bytes may change with the
+additive schema; existing mesh bytes and existing compiled model compatibility do not.
+Skin residency/evaluation and model/skeleton/clip pairing remain later steps; nothing in the
+ABI, RHI, sample or glTF importer changed.
+
+**Verification:** 135/135 asset, 92/92 author and 57/57 renderer focused tests pass in Debug
+and ReleaseSafe. Eleven added asset tests cover canonical hashes/round trips, malformed input,
+unaligned views, copied ownership, all allocation failures, maximum joint count and model v1
+compatibility. Thirteen guard mutations fail and are restored. All nine bar commands pass:
+**2,003 of 2,004 tests**, one expected skip; native/Metal/Linux/Windows compile checks and all
+three headless samples are clean. Both ad-hoc macOS releases stage. Claude's baseline proofs
+were accepted, not repeated as a separate audit. Windows runtime remains Step 7; Linux is
+compile-only. Step 3 has not begun.
 
 **M24 Step 1 is done (2026-10-01).** `engine/src/anim/` exists at L1 on `core` alone, with
 `zig build anim-test`:

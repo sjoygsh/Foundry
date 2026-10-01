@@ -36,13 +36,14 @@ pub const VertexFormat = enum(u8) {
     float32x3 = 1,
     float32x4 = 2,
     unorm8x4 = 3,
+    uint8x4 = 4,
 
     pub fn size(self: VertexFormat) u32 {
         return switch (self) {
             .float32x2 => 8,
             .float32x3 => 12,
             .float32x4 => 16,
-            .unorm8x4 => 4,
+            .unorm8x4, .uint8x4 => 4,
         };
     }
 };
@@ -110,6 +111,11 @@ pub const Error = error{
     InvalidTexcoord,
     InvalidColor,
     InvalidBounds,
+    IncompleteSkin,
+    TooManyJoints,
+    InvalidJointBounds,
+    InvalidWeights,
+    JointOutOfRange,
 };
 
 /// A borrowed, validated view of triangle-list geometry.
@@ -123,6 +129,9 @@ pub const Mesh = struct {
     indices: []const u8,
     submeshes: []align(1) const Submesh,
     bounds: Aabb,
+    /// Model bind-space boxes, one per joint. Empty for unskinned meshes.
+    /// A joint with no influenced vertices has a zero box (animation3d.md §6).
+    joint_bounds: []align(1) const Aabb = &.{},
 
     /// Refuses malformed or unsupported geometry without repairing it.
     pub fn validate(self: Mesh) Error!void {
@@ -133,6 +142,8 @@ pub const Mesh = struct {
 
         var seen: u8 = 0;
         var positions: ?[]const u8 = null;
+        var joints: ?[]const u8 = null;
+        var weights: ?[]const u8 = null;
         for (self.streams) |stream| {
             const bit = @as(u8, 1) << @intCast(stream.semantic.slot());
             if (seen & bit != 0) return error.DuplicateSemantic;
@@ -143,13 +154,16 @@ pub const Mesh = struct {
                 .tangent => stream.format == .float32x4,
                 .uv0, .uv1 => stream.format == .float32x2,
                 .color => stream.format == .unorm8x4 or stream.format == .float32x4,
-                .joints, .weights => false,
+                .joints => stream.format == .uint8x4,
+                .weights => stream.format == .float32x4,
             };
             if (!supported) return error.UnsupportedVertexFormat;
 
             const expected = @as(u64, self.vertex_count) * stream.format.size();
             if (stream.bytes.len != expected) return error.InvalidStreamLength;
             if (stream.semantic == .position) positions = stream.bytes;
+            if (stream.semantic == .joints) joints = stream.bytes;
+            if (stream.semantic == .weights) weights = stream.bytes;
 
             switch (stream.semantic) {
                 .normal => {
@@ -193,6 +207,26 @@ pub const Mesh = struct {
             }
         }
         const position_bytes = positions orelse return error.MissingPosition;
+        if ((joints != null) != (weights != null) or
+            (joints != null) != (self.joint_bounds.len != 0)) return error.IncompleteSkin;
+        if (self.joint_bounds.len > 256) return error.TooManyJoints;
+        for (self.joint_bounds) |box| if (!box.isValid()) return error.InvalidJointBounds;
+        if (joints) |joint_bytes| {
+            for (0..self.vertex_count) |vertex| {
+                var sum: f32 = 0;
+                const position = readVec3(position_bytes[vertex * 12 ..][0..12]);
+                for (0..4) |lane| {
+                    const weight = std.mem.bytesToValue(f32, weights.?[vertex * 16 + lane * 4 ..][0..4]);
+                    if (!std.math.isFinite(weight) or weight < 0) return error.InvalidWeights;
+                    sum += weight;
+                    if (weight == 0) continue;
+                    const joint = joint_bytes[vertex * 4 + lane];
+                    if (joint >= self.joint_bounds.len) return error.JointOutOfRange;
+                    if (!self.joint_bounds[joint].contains(position)) return error.InvalidJointBounds;
+                }
+                if (!std.math.isFinite(sum) or @abs(sum - 1) > 1e-3) return error.InvalidWeights;
+            }
+        }
 
         const index_size = self.index_format.size();
         if (self.indices.len % index_size != 0) return error.InvalidIndexCount;

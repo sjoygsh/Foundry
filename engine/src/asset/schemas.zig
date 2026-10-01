@@ -98,6 +98,17 @@ pub const texture: Schema = .{
 pub const mesh_name = "foundry:mesh";
 pub const mesh_extension = "fmesh";
 
+pub const skeleton_name = "foundry:skeleton";
+pub const animation_name = "foundry:animation";
+pub const skeleton: Schema = .{
+    .id = SchemaId.fromStringUnchecked(skeleton_name),
+    .fields = &.{.{ .name = source_field, .type = .string }},
+};
+pub const animation: Schema = .{
+    .id = SchemaId.fromStringUnchecked(animation_name),
+    .fields = &.{.{ .name = source_field, .type = .string }},
+};
+
 pub const collision_mesh_name = "foundry:collision_mesh";
 pub const collision_mesh_extension = "fcol";
 pub const collision_mesh: Schema = .{
@@ -184,12 +195,19 @@ const model_part_type: data.FieldType = .{ .nested = &.{
 } };
 const model_slots_type: data.FieldType = .{ .list = &model_slot_type };
 const model_parts_type: data.FieldType = .{ .list = &model_part_type };
+const model_clip_type: data.FieldType = .{ .nested = &.{
+    .{ .name = "name", .type = .string },
+    .{ .name = "clip", .type = .id },
+} };
 
 pub const model: Schema = .{
     .id = SchemaId.fromStringUnchecked(model_name),
+    .version = 2,
     .fields = &.{
         .{ .name = "slots", .type = model_slots_type },
         .{ .name = "parts", .type = model_parts_type },
+        .{ .name = "skeleton", .type = .id, .since = 2, .presence = .optional },
+        .{ .name = "clips", .type = .{ .list = &model_clip_type }, .since = 2, .presence = .optional },
     },
 };
 
@@ -291,6 +309,8 @@ pub const kinds = [_]Kind{
         .derived_strings = &.{.{ .field = language_field, .value = script_language }},
     },
     .{ .name = collision_mesh_name, .schema = collision_mesh, .extensions = &.{collision_mesh_extension} },
+    .{ .name = skeleton_name, .schema = skeleton, .extensions = &.{"fskel"} },
+    .{ .name = animation_name, .schema = animation, .extensions = &.{"fanim"} },
 };
 
 /// Engine-defined record schemas with no source bytes of their own.

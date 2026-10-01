@@ -1125,4 +1125,8 @@ slope, wall slide) passes headless on null, windowed on Metal and windowed on Wi
 under clean validation, with a byte-identical replay on each machine. A move's paced p95 is
 0.10–0.13 ms on the PC and at the 0.25 ms budget line on the Mac; the reading of that budget
 is left to the owner. A hand-driven walk by a person has not been done. Nothing enters the
-ABI; Linux is compile-only. M24, Animation, is next; its design, [`animation3d.md`](design/animation3d.md) with ADR-0058, is accepted, and its Step 1 is done.
+ABI; Linux is compile-only. M24, Animation, is in progress; its design,
+[`animation3d.md`](design/animation3d.md) with ADR-0058 is accepted, and Steps 1–2 are done.
+Step 2 adds canonical skeleton/clip assets and loaders, skinned `.fmesh` v2 and optional
+model-v2 skeleton/clips, with v1 compatibility. The bar passes 2,003 of 2,004 tests (one skip)
+and both ad-hoc macOS releases stage. glTF skin/animation import is Step 3; it has not begun.

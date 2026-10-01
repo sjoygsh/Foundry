@@ -1,7 +1,7 @@
 # Design: M24 — Animation: skeletons, clips, fixed-step sampling, CPU skinning and a walking character
 
-**Status:** Accepted 2026-10-01, when the owner requested Step 1. Step 1 of eight is complete;
-Step 2 has not begun.
+**Status:** Accepted 2026-10-01, when the owner requested Step 1. Steps 1–2 of eight are complete;
+Step 3 has not begun.
 **Date:** 2026-10-01
 **Baseline:** `9c6bf56`, tag `m23`. M0–M23 are complete.
 **Decisions:**
@@ -169,12 +169,14 @@ reports `UnsupportedVersion`, never "not a skeleton".
   two are paired, since a mod may override either.
 - **`.fmesh` version 2** adds:
   - `VertexFormat.uint8x4`, legal only for `joints`; `weights` is `float32x4`;
-  - a joint-bounds section: per joint, the box, in that joint's bind space, of every vertex it
+  - a joint-bounds section: per joint, the box, in model bind space, of every vertex it
     influences with a non-zero weight. It is what culling uses (§8);
   - the rule that `joints`, `weights` and joint bounds come together or not at all.
 
   Version 1 files still read, byte for byte as before. The writer emits version 1 for a mesh
-  with no skin, so **no existing package's bytes change**, and a test pins the room's hashes.
+  with no skin, so **no existing mesh's bytes change**, and a test pins the room's mesh hashes.
+  Recompiled packages may change because they carry the additive model schema version;
+  existing compiled version-1 records continue to load without recompilation.
 - **`foundry:model` version 2** adds two optional fields: `skeleton`, an ID, and `clips`, a
   list of `{ name, clip }`. A model with a skinned mesh must name a skeleton. The clip list is
   how a game asks for "walk" by name without knowing a generated ID, as slots already map
@@ -378,6 +380,13 @@ passes, with no device and no asset.
 `foundry:model` version 2, and their loaders. **Exit:** each format round-trips with a pinned
 hash, every malformed file is refused by name, and every version-1 file reads unchanged.
 
+**Implementation refinement (2026-10-01, before Step 2 code):** §6 originally put each
+joint's box in joint-local bind space, while §8 transforms it by the skin matrix, which
+accepts model bind-space points. Those spaces disagree. Joint boxes instead bound influenced
+vertices in **model bind space**. Their transformed union conservatively encloses linear-blend
+skinning with non-negative, normalized weights. An uninfluencing joint has a zero box.
+This corrects the space, not the culling algorithm or the CPU-skinning architecture.
+
 ### Step 3 — `author`: glTF skins and animations
 
 §7: the import, its refusals and warnings, and the generated IDs. **Exit:** a skinned glTF
@@ -457,7 +466,7 @@ Every choice is recommended as written. Nothing blocks Step 1 once these are acc
 | 4 | **No skinned shader variants are built, correcting `3d.md` §5,** which lists them for M24 while §9 says skinning is on the CPU. Slots 6 and 7 stay reserved | §8 |
 | 5 | `rhi` gains vertex data written every frame, and nothing else | §8 |
 | 6 | `render3d` is granted `anim`; `debug` is not | §8, §9 |
-| 7 | `.fmesh` version 2 adds `uint8x4` joints, `float32x4` weights and per-joint bounds; unskinned meshes are still written as version 1, so no existing bytes change | §6 |
+| 7 | `.fmesh` version 2 adds `uint8x4` joints, `float32x4` weights and per-joint bounds; unskinned meshes are still written as version 1, so no existing mesh bytes change | §6 |
 | 8 | `foundry:model` version 2 adds `skeleton` and a named `clips` list; one skin per model | §6 |
 | 9 | Generated IDs are `<model>.skeleton` and `<model>.clip<i>`; `foundry:model_import` gains no field | §7 |
 | 10 | Limits: 256 joints, four influences; cubic-spline keys, morph targets and non-joint node animation are refused or dropped with a warning, never converted silently | §7 |
@@ -542,3 +551,68 @@ reference passes, with no device and no asset. The nine-command bar passes, ever
 exiting 0. `anim-test` reports 19 of 19 in Debug and ReleaseSafe on arm64, and in both modes for
 x86_64 under Rosetta. The whole graph's total was not re-counted: the 19 are added to the
 1,972 declared at M23's close.
+
+## Resolution — Step 2: compiled animation assets (2026-10-01)
+
+**What exists.** `asset/skeleton.zig` and `asset/animation.zig` read and write canonical
+little-endian assets. Readers allocate nothing and borrow arbitrary-alignment source bytes;
+their `copy` methods and registered loaders own aligned arrays independent of the registry's
+temporary source. `skeletonLoader`/`animationLoader` are opt-in like `collisionMeshLoader`.
+No module gains `anim`; asset and animation representations meet as values in later steps.
+
+**The wire shapes this step settles:**
+- **FSKL v1:** a 16-byte header (magic, version, u32 joint count, u32 name-byte count), then
+  108 bytes per joint (u16 parent, zero u16 reserved, ten f32 local TRS values, sixteen f32
+  inverse-bind values), the sixteen-f32 root matrix, eight-byte name descriptors (u32 offset
+  and length), then consecutive UTF-8 name bytes. Empty names are legal; NUL/invalid UTF-8
+  are refused. Parents precede children; multiple roots are allowed as in `anim`. Matrices
+  must be finite and affine and rest transforms valid. Limits cap at 256 joints, 65,536 name
+  bytes and 1 MiB; a caller may lower, not raise, those caps.
+- **FANM v1:** a 20-byte header (magic, version, f32 duration, u32 joint count, u32 track
+  count); sixteen-byte track descriptors (u16 joint, u8 path, u8 interpolation, u32 key
+  count, u32 time offset, u32 value offset); then each track's consecutive f32 times and
+  values. Path/interpolation values match Step 1's enums. Limits cap at 256 joints, 768
+  tracks, 65,536 keys per track, 8,388,608 total keys and 256 MiB. Zero tracks are legal;
+  zero keys in a track are not. Times increase within the positive finite duration;
+  duplicate joint/path tracks, non-finite values and non-unit rotations are refused.
+  `checkJointCount` explicitly refuses pairing with a different-sized skeleton.
+- **FMSH v2:** keeps the first 48 bytes of v1's header, adds u16 joint count, zero u16
+  reserved and u32 joint-bounds offset, then the existing stream/submesh/index/stream layout.
+  The tail is one six-f32 box per joint. Skin streams and boxes must appear together; only
+  joints allow the new format value 4 (`uint8x4`). Weighted indices must exist, weights must
+  be non-negative/finite and sum to one within 1e-3 (Step 1's rule), and each box must contain
+  every position it influences. Zero-weight indices are ignored. Bounds are in **model bind
+  space**, correcting the contradiction recorded before implementation above; consumers must
+  account for the influence-normalization tolerance when constructing posed culling bounds.
+
+All layouts reject gaps, overlap, reserved bytes, truncation and trailing payload. A newer
+version yields `UnsupportedVersion`, not an identity refusal. Writers refuse invalid values
+and retain no allocation on refusal. `.fmesh` still writes v1 when unskinned; the independently
+calculated v1 fixture pin is `269a786092e3688b`. Recompiled FPKs may change because they carry
+the model-v2 schema: §6's original "no package bytes change" could only apply to mesh bytes,
+not package schema metadata. Existing compiled model-v1 records still load as v1.
+
+**The records and integration.** `foundry:skeleton` and `foundry:animation` are source-only
+v1 kinds deriving from `.fskel`/`.fanim`; the compiler's schema-name list includes both.
+`foundry:model` v2 appends optional `skeleton` and `clips [{ name, clip }]`, leaving slots/parts
+at their existing indices. Its v1 compiled-package compatibility test and a real compiler/
+store/registry/load-by-ID test pass. Model/mesh/skeleton consistency and clip residency are
+Step 5's consumer work, not a new privileged asset path. Until then `render3d.createMesh`
+explicitly refuses skin data with `UnsupportedVertexFormat` before creating any resource.
+There is no glTF skin import, playback, sample change, RHI change or ABI addition here.
+
+**Evidence.** Eleven new asset tests prove every new read refusal, pinned writer hashes,
+byte-identical write/read/write, unaligned borrowing, independent aligned ownership,
+loader refusal/unload and allocation-failure cleanup, the 256-joint boundary and compiled
+model-v1 compatibility. Pins: FSKL `5440b1836fce2465`, FANM `853e37fc92f939e7`, skinned FMSH
+`c5990a7fc5a89641`. Focused suites pass in Debug and ReleaseSafe: **135/135 asset, 92/92 author,
+57/57 render3d**. Thirteen guard mutations fail and are restored: parent ordering, rest
+validity, affine inverse binds, UTF-8/NUL names, name offsets, joint cap, duplicate tracks,
+time ordering, payload offsets, weight normalization, joint indices, influenced-position
+containment and the pre-Step-5 residency refusal.
+
+**Exit met.** The nine-command bar passes **2,003 of 2,004 tests**, one expected skip; native,
+Metal and Linux/Windows cross checks and all three headless samples exit 0. Both ad-hoc
+macOS releases stage (this is not certified public signing). Claude's Step 1 proof was accepted
+without a separate baseline re-audit. Step 3 has not begun; Windows runtime is Step 7 and
+Linux remains compile-only.

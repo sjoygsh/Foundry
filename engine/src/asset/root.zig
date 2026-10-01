@@ -24,6 +24,12 @@ const std = @import("std");
 const data = @import("data");
 
 pub const image = @import("image.zig");
+pub const skeleton = @import("skeleton.zig");
+pub const animation = @import("animation.zig");
+pub const Skeleton = skeleton.Skeleton;
+pub const Animation = animation.Animation;
+pub const skeletonLoader = skeleton.skeletonLoader;
+pub const animationLoader = animation.animationLoader;
 pub const collision_mesh = @import("collision_mesh.zig");
 pub const CollisionMesh = collision_mesh.CollisionMesh;
 pub const collisionMeshLoader = collision_mesh.collisionMeshLoader;
@@ -106,6 +112,9 @@ pub const RecordFields = data.fpk.Fields;
 pub const RecordList = data.fpk.List;
 
 test {
+    _ = skeleton;
+    _ = animation;
+    _ = @import("animation_asset_tests.zig");
     _ = collision_mesh;
     _ = image;
     _ = mesh;

@@ -69,6 +69,14 @@ the registry's temporary source bytes are not borrowed after loading. `physics3d
 only the arrays its caller supplies, never the asset registry. See
 [`collision3d.md` §8](collision3d.md#8-the-collision-mesh-asset-asset).
 
+M24 Step 2 adds source-only `foundry:skeleton` (`.fskel`) and `foundry:animation` (`.fanim`),
+derived through that same table. Hosts opt into `asset.skeletonLoader` and
+`asset.animationLoader`; both own aligned CPU arrays after loading, while file readers may
+borrow unaligned bytes. `anim` does not load assets or see this module. Skinned `.fmesh` v2
+data and optional model-v2 skeleton/clip metadata are described in
+[`animation3d.md` §6](animation3d.md#6-assets-fskel-fanim-fmesh-version-2-and-the-model-record);
+runtime skin residency and playback are later M24 steps, not capabilities of the loader.
+
 `source` is **location, never identity**, and the difference is the whole decision. Nothing
 can be looked up by path: `acquire` takes a `ContentId` and there is no other way in. A record
 found that way may then say where its own bytes live, and the registry reads them — which is

@@ -366,6 +366,8 @@ pub const engine_schema_names = [_][]const u8{
     asset.schemas.texture_name,
     asset.schemas.mesh_name,
     asset.schemas.collision_mesh_name,
+    asset.schemas.skeleton_name,
+    asset.schemas.animation_name,
     asset.schemas.material_name,
     asset.schemas.model_name,
     asset.schemas.model_import_name,
@@ -2275,6 +2277,52 @@ test "fpack derives a hand-placed collision asset and loads owned CPU geometry" 
     try testing.expectEqualSlices(core.math.Vec3, &positions, loaded.positions);
     try testing.expectEqualSlices(u32, &.{ 0, 1, 2 }, loaded.indices);
     assets.release(handle);
+}
+
+test "fpack derives animation assets and loads them by content ID beside model v2" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    const sb = try asset.skeleton.write(testing.allocator, .{
+        .parents = &.{asset.skeleton.no_parent},
+        .rest = &.{.{}},
+        .inverse_bind = &.{.identity},
+        .names = &.{"root"},
+    });
+    defer testing.allocator.free(sb);
+    const ab = try asset.animation.write(testing.allocator, .{
+        .duration = 1,
+        .joint_count = 1,
+        .tracks = &.{.{ .joint = 0, .path = .translation, .times = &.{ 0, 1 }, .values = &.{ 0, 0, 0, 1, 0, 0 } }},
+    });
+    defer testing.allocator.free(ab);
+    try f.write("rig/body.fskel", sb);
+    try f.write("rig/walk.fanim", ab);
+    try f.write("model.fdt", "foundry:model demo:hero { slots [] parts [] skeleton demo:rig.body clips [{ name \"walk\" clip demo:rig.walk }] }");
+    try f.compileIt("demo:content");
+    var store = data.Store.init(testing.allocator, .default);
+    defer store.deinit(testing.allocator);
+    const package = try store.add(testing.allocator, "demo:content", f.bytes.items, &f.registry, &f.diags);
+    var assets = asset.Registry.init(testing.allocator, f.os, &store, .{});
+    defer assets.deinit(testing.allocator);
+    try assets.registerLoader(testing.allocator, asset.skeletonLoader());
+    try assets.registerLoader(testing.allocator, asset.animationLoader());
+    try assets.mount(testing.allocator, package, f.root);
+    const sk = try assets.acquire(testing.allocator, core.ContentId.fromString("demo:rig.body"));
+    defer assets.release(sk);
+    const clip = try assets.acquire(testing.allocator, core.ContentId.fromString("demo:rig.walk"));
+    defer assets.release(clip);
+    const loaded_skeleton = asset.skeleton.fromPayload(assets.getIfLoader(sk, asset.skeletonLoader()).?.payload);
+    const loaded_clip = asset.animation.fromPayload(assets.getIfLoader(clip, asset.animationLoader()).?.payload);
+    try testing.expectEqualStrings("root", loaded_skeleton.names[0]);
+    try loaded_clip.checkJointCount(loaded_skeleton.parents.len);
+    try testing.expectEqualSlices(f32, &.{ 0, 1 }, loaded_clip.tracks[0].times);
+    const model = store.lookup(core.ContentId.fromString("demo:hero")).?;
+    try testing.expectEqual(@as(u32, 2), model.schema.version);
+    try testing.expectEqual(core.ContentId.fromString("demo:rig.body"), (try model.fields.idAt(2)).?);
+    const clips = (try model.fields.listAt(3)).?;
+    const entry = (try clips.nestedAt(0)).?;
+    try testing.expectEqualStrings("walk", (try entry.stringAt(0)).?);
+    try testing.expectEqual(core.ContentId.fromString("demo:rig.walk"), (try entry.idAt(1)).?);
 }
 
 test "fpack imports an explicit glTF model end to end and deterministically" {

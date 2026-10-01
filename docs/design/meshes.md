@@ -72,6 +72,11 @@ M20 is `3d.md` §10's second milestone:
 
 ## 3. The runtime mesh file (`asset`)
 
+**M24 Step 2, 2026-10-01:** the reader also accepts skinned `.fmesh` v2, adding byte-valued
+joint streams, float weights and validated model bind-space joint bounds. Unskinned writers
+still emit identical v1 bytes; the layout below remains v1's. The v2 layout and named refusals
+are recorded in [`animation3d.md` §6 and Step 2's Resolution](animation3d.md#6-assets-fskel-fanim-fmesh-version-2-and-the-model-record).
+
 `asset/mesh_file.zig` holds `.fmesh`, row 3 on disk. Its reader produces the same `asset.Mesh`
 that code builds, so `render3d` uploads both by one path (`3d.md` §3).
 
@@ -225,6 +230,10 @@ metallic/roughness, normal and occlusion are linear. Unread non-default fields r
 not on every reload. Opaque/mask materials may cast; blend never does.
 
 ### 5.2 `foundry:model`
+
+**M24 Step 2, 2026-10-01:** model v2 appends optional `skeleton` and `clips [{ name, clip }]`.
+Compiled model-v1 records retain their own schema/layout and still load unchanged. Skin
+residency and model/clip pairing are M24 Step 5, not part of the asset-format step.
 
 ```fdt
 foundry:model sandbox3d:models.table {
