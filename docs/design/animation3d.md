@@ -1,7 +1,7 @@
 # Design: M24 — Animation: skeletons, clips, fixed-step sampling, CPU skinning and a walking character
 
-**Status:** Accepted 2026-10-01, when the owner requested Step 1. Steps 1–3 of eight are complete;
-Step 4 has not begun.
+**Status:** Accepted 2026-10-01, when the owner requested Step 1. Steps 1–4 of eight are complete;
+Step 5 has not begun.
 **Date:** 2026-10-01
 **Baseline:** `9c6bf56`, tag `m23`. M0–M23 are complete.
 **Decisions:**
@@ -311,7 +311,9 @@ rebuilds collision.
 - **Windows/Vulkan, on the PC, is needed** for: per-frame vertex data under synchronization
   validation, which is the one new Vulkan path; the native x86_64 run of `anim`; the importer's
   bytes compared with the Mac's; and the walker windowed from a relocated install. The PC
-  rules stand: check it is idle, `-j2` at below-normal priority, background jobs, a worktree.
+  rules stand: check CPU use, `-j2` at below-normal priority, background jobs, a worktree.
+  The owner's M24-only exception below permits testing while playing at CPU use below 90%,
+  instead of the previous 50% cutoff; no foreground interruption is authorized.
 - **Linux: compile only.** Nothing here is Linux-specific: no platform, window or loader
   change. `3d.md` §10.2 owes no run.
 
@@ -410,6 +412,26 @@ uses the imported rest-pose skin matrices, not the ignored mesh-node placement.
 §8's one capability, on null, Metal and Vulkan (compiled and validated by `vulkan-check`).
 **Exit:** a vertex buffer rewritten each frame draws correctly on Metal across frames in
 flight, and the null backend refuses each misuse.
+
+**Implementation refinement (2026-10-01, before Step 4 code):** use the existing staging
+copy, not directly bound upload memory. `rhi.FrameVertexBuffer` owns one bounded upload/
+device-local pair per configured frame slot. `update(frame, bytes)` validates the currently
+open frame's index and slot, a nonempty prefix within capacity, and at most one update per
+buffer per frame; it writes/unmaps staging, records the explicit copy and vertex-read
+barriers, submits before returning the slot's ordinary vertex handle. Call it on the RHI
+thread before opening passes. Collect all instance data before updating; draw offsets select
+the instances. The returned handle is for that frame only, and only the written prefix may
+be drawn. No mapping escapes, no completion timeline is added, and retirement stays with the
+backend. A failed update consumes this frame's update opportunity; cleanup discards an
+unsubmitted recording. Destroying the helper invalidates all its handles immediately.
+The helper is engine-internal and changes neither the backend interface nor the public ABI.
+Metal gains the same internal open-frame bit null/Vulkan already keep, so a stale token is
+refused after `endFrame`, including an end failure; failed acquisition never sets that bit.
+
+**M24-only PC permission:** the owner permits background tests while playing on Windows,
+with the previous CPU-use refusal cutoff raised from 50% to 90%. Keep `-j2`, below-normal
+priority and isolated worktrees; do not take focus or close games. This exception expires
+at M24's close. Step 4's Vulkan evidence is compilation; native qualification remains Step 7.
 
 ### Step 5 — `render3d`: skinned meshes
 
@@ -690,3 +712,51 @@ match all eight room meshes, the crate mesh, all three course meshes and both co
 assets against their pre-step outputs. Both ReleaseSafe ad-hoc macOS releases stage; this
 does not claim public signing/notarization. No RHI, renderer, ABI, sample or playback work
 was added. Step 4 is next; Windows runtime/import-byte comparison remains Step 7.
+
+## Resolution — Step 4: staged per-frame vertex data (2026-10-01)
+
+**What exists.** `rhi/frame_vertices.zig` implements `rhi.FrameVertexBuffer` over the selected
+backend. Initialization allocates a fixed upload/device-local vertex pair for each of the
+device's configured 1–4 slots, refusing invalid capacity and cleaning up partial construction.
+`update(frame, bytes)` checks the open frame's index, slot and surface handle before any
+mapping; it refuses an empty/oversized prefix, a second update in that frame, or a dead owner.
+It copies bytes into staging, unmaps (including Vulkan's non-coherent flush), submits the
+existing explicit copy and copy-destination/vertex-read barriers, and returns the slot's
+ordinary vertex handle. The caller draws only this frame's written prefix and collects all
+instance data before updating. No mapping escapes, buffer capacity never grows, and the
+backend remains the sole completion/retirement owner. Command recording may allocate through
+the device's existing machinery; the helper reserves no second timeline.
+
+**Resolution recorded before code.** Staged copies keep `rhi.md` §5's memory-intent discipline
+and the same path on discrete and unified memory, rather than directly binding upload memory.
+Metal lacked null/Vulkan's internal open-frame bit; it now sets it only after successful
+acquisition and clears it before every end path, including failure. This supplies the live
+token check without a new backend method. No backend interface, public ABI, shader, renderer,
+sample or animation grant changes. A failed update consumes that frame's update opportunity,
+discards an unsubmitted recording and relies on ordinary retirement. The null injected-failure
+test demonstrates cleanup, not real device-loss recovery; that ADR-0035/0037 boundary remains.
+
+**Evidence.** Six new null tests cover every helper refusal, the legal draw protocol,
+premature staging reuse caught by rule 3, 1/2/4-slot reuse, all allocation failures, and
+injected submit failure with no recording left open. Focused `zig build rhi-test` results are
+**174/174 null, 195/195 Metal**, in Debug and ReleaseSafe. This focused target is also part
+of the ordinary module test/check graph. Metal draws twelve frames without a per-frame idle
+wait, alternating half-screen vertex positions and changing colour each frame. Distinct
+images retain every frame's result; both lit and clear pixels match exact expected bytes
+after the final wait. Vertex buffers are retired before that wait, proving their unfinished
+uses retain the backing. Vulkan's new test instantiates the helper for all three tested ring
+sizes; Step 4 compiles it, while native execution remains Step 7.
+
+**Ten mutations fail and are restored:** the live-frame bit check, frame index, slot,
+surface handle, byte-count bound, single-update guard, frame-slot selection, vertex-read
+barrier, full-prefix copy and dead-owner check. The prefix-copy mutation fails Metal's pixel
+proof, not merely a structural assertion. Restored-code focused and integration checks pass.
+
+**Exit met.** All nine bar commands exit 0: **2,021 of 2,022 tests**, one expected skip;
+native/Metal/Linux/Windows checks and the three headless samples pass. All five prescribed
+Vulkan compile checks pass, including Windows/Linux backend tests and whole graphs, and
+optimized Windows. No native Windows job was needed or started. No content, asset kind or
+release description changed, so release restaging was not triggered. Windows synchronization
+validation remains Step 7, Linux compile-only, renderer skinning Step 5. The M24-only 90%
+background CPU permission is recorded above and expires at the milestone close. Step 5 has
+not begun.

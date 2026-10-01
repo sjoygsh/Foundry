@@ -162,6 +162,14 @@ into vertex buffers every frame, and then runs at a fraction of its speed on a d
 where that write crosses PCIe. The cost of the discipline is one copy on a machine that did
 not need it; the cost of skipping it is discovered on hardware you do not own.
 
+**M24 per-frame vertex writes (2026-10-01):** `FrameVertexBuffer` uses §5's staged-copy
+discipline: one upload/device-local vertex pair per frame slot, reused only after
+`beginFrame` waits for that slot. Its `update(frame, bytes)` validates the live frame, bounded
+nonempty bytes and one update per buffer per frame, unmaps staging before copying, and
+submits copy/vertex-read barriers before returning the ordinary vertex handle. Draw only the
+written prefix in that frame. It owns no completion timeline and uses ordinary deferred
+destruction. This adds an internal helper, not a new backend method or memory intent.
+
 ## 6. Resource state, and the trap Metal sets
 
 Metal tracks hazards automatically. Vulkan and D3D12 require every transition to be stated,

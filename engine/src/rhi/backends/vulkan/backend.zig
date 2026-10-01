@@ -2700,6 +2700,10 @@ pub const Device = struct {
 
 // -- command buffer ------------------------------------------------------------------
 
+test "M24: staged per-frame vertex updates use the waited frame ring" {
+    try @import("../../frame_vertices.zig").updateProof(@This());
+}
+
 pub const CommandBuffer = struct {
     device: *Device,
     native: c.VkCommandBuffer,

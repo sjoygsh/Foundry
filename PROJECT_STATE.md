@@ -1,11 +1,38 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-01
-**Current handoff: M24 Steps 1–3 are complete. Stop before Step 4.** Next is RHI vertex
-data written every frame (`animation3d.md` §8 and §13 Step 4).
-glTF imports skeletons, clips and skinned meshes; rendering still refuses skin data, and no
+**Current handoff: M24 Steps 1–4 are complete. Stop before Step 5.** Next is `render3d`
+skin residency, evaluation, posed culling and drawing (`animation3d.md` §8 and §13 Step 5).
+glTF imports skeletons, clips and skinned meshes; safe staged per-frame vertex writes exist
+in the RHI. Rendering still refuses skin data, and no
 production module is granted `anim`. M0–M23 are complete; M23 closed at tag
 `m23`, pushed.
+
+**M24 Step 4 is done (2026-10-01), from `24f06c9`.** `rhi.FrameVertexBuffer` owns a fixed
+upload/device-local vertex pair per configured frame slot. `update(frame, bytes)` refuses
+closed/stale/wrong-slot/wrong-surface frames, empty/oversized prefixes, repeated updates and
+dead owners. It unmaps staging before the copy, records explicit copy/vertex-read barriers,
+and submits before returning the frame's ordinary vertex handle. Capacity never grows;
+no mapping escapes and no completion timeline is duplicated. All frame data is collected
+before the one update; draws select instances by offsets into the written prefix. Failed
+recording consumes the update and discards unsubmitted work; ordinary backend retirement
+owns unfinished uses. Metal now keeps the open-frame bit null/Vulkan already had, clearing
+it before every end path. No backend interface, public ABI, shader, renderer or sample change.
+
+**Verification:** six new null tests cover the contract, all allocation refusals, injected
+submission failure cleanup, supported 1/2/4-slot rings and the legal draw protocol. Focused
+RHI suites pass **174/174 null and 195/195 Metal**, Debug and ReleaseSafe. Metal's twelve-frame
+pixel proof changes positions and colours, reuses two waited slots, and retires vertex buffers
+before the final readback wait. Ten guard/protocol mutations fail and are restored. All nine
+bar commands pass: **2,021 of 2,022 tests**, one expected skip. All five Vulkan compile checks
+pass, including both target backend/whole graphs and optimized Windows. Native Vulkan remains
+Step 7; Linux is compile-only. No Windows jobs ran in Step 4, and releases did not require
+restaging because no content, asset kind or release description changed.
+
+**M24-only owner permission:** background Windows tests may run while the owner plays;
+the CPU-use refusal cutoff is 90%, replacing 50% for this milestone only. Keep below-normal
+priority, `-j2`, isolated worktrees and no focus-taking or game interruption. The exception
+expires at M24's close; it does not change the permanent rules. Step 5 has not begun.
 
 **M24 Step 3 is done (2026-10-01), from `2ca17fb`.** `author/gltf/skin.zig` closes the
 used skin's hierarchy, preserves sibling order, remaps influences, retains joint names and

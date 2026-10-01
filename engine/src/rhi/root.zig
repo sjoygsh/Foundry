@@ -86,6 +86,10 @@ pub const Device = selected.Device;
 pub const CommandBuffer = selected.CommandBuffer;
 pub const RenderPass = selected.RenderPass;
 
+/// Engine-internal staged vertex data, one pair per waited frame slot (M24).
+pub const FrameVertexBuffer = @import("frame_vertices.zig").For(selected);
+pub const VertexUpdateError = @import("frame_vertices.zig").UpdateError;
+
 // The names reached for most often.
 pub const BufferHandle = resource.BufferHandle;
 pub const TextureHandle = resource.TextureHandle;
@@ -130,6 +134,7 @@ test {
     _ = lifetime;
     _ = pipeline;
     _ = resource;
+    _ = @import("frame_vertices.zig");
     // Always tested, whichever backend is selected — a file imported only for its types
     // contributes no tests.
     _ = null_backend;

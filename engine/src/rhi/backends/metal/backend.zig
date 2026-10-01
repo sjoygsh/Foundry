@@ -411,6 +411,8 @@ pub const Device = struct {
 
     frame_index: u64 = 0,
     frame_slot: u32 = 0,
+    /// Current frame tokens may authorize CPU writes only while this frame is open (M24).
+    in_frame: bool = false,
     /// Every submission in queue order, each holding its command buffer until a wait has
     /// covered it: those command buffers are what the waits block on.
     timeline: lifetime.Timeline(*c.FdMtlCommandBuffer) = .{},
@@ -1118,6 +1120,7 @@ pub const Device = struct {
     }
 
     pub fn beginFrame(self: *Device) interface.FrameError!command.FrameContext {
+        assert.debugOnly(!self.in_frame, "beginFrame while frame {d} is still open", .{self.frame_index});
         self.frame_presents = false;
         self.frame_index += 1;
         self.frame_slot = @intCast((self.frame_index - 1) % self.desc.frames_in_flight);
@@ -1157,6 +1160,7 @@ pub const Device = struct {
             }
         }
 
+        self.in_frame = true;
         return .{
             .surface_texture = self.surface_texture,
             .slot = self.frame_slot,
@@ -1165,6 +1169,8 @@ pub const Device = struct {
     }
 
     pub fn endFrame(self: *Device) interface.FrameError!void {
+        if (!self.in_frame) return;
+        self.in_frame = false;
         // A trailing command buffer, which does three jobs at once: it is where the present
         // is scheduled (Metal requires that before commit, and the caller's own command
         // buffers are already committed by then), it is what the slot waits on next time
@@ -2400,6 +2406,10 @@ const m22_shadow_msl =
     \\    float lit = shadow.sample_compare(comparison, in.uv, 0.4); return float4(lit, 0, 0, 1);
     \\}
 ;
+
+test "M24: staged vertex data rewritten every frame draws across two frames in flight" {
+    try @import("../../frame_vertices.zig").drawProof(@This(), true);
+}
 
 test "M22: a depth-only pass is sampled through a comparison sampler" {
     const dev = try headlessDevice();
