@@ -1,12 +1,49 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-01
-**Current handoff: M24 Steps 1–6 are complete. Stop before Step 7.** Next is native Windows/
-Vulkan qualification: animation/import/sample suites, skinned readbacks with synchronization
-validation, Mac/PC asset-byte comparison, relocated tour and paced cost (`animation3d.md`
-§13 Step 7). The generated walker patrols, cross-fades and reloads on Metal; the sample now
-has `anim` and hands explicit jobs to `render3d`.
+**Current handoff: M24 Steps 1–7 are complete. Stop before Step 8.** Next is the milestone
+close: reconcile the parent architecture/documents, settle the recorded exit evidence and
+tag `m24` (`animation3d.md` §13 Step 8). Native Windows/Vulkan qualification is complete.
+The person's watch/walk/turn/stop/cross-fade observation remains unconfirmed; automated tours
+do not substitute for it.
 M0–M23 are complete; M23 closed at tag `m23`, pushed.
+
+**M24 Step 7 is done (2026-10-01), from `3a909e5`.** The exact committed tree ran in a clean,
+isolated Windows worktree with the pinned Zig and Vulkan SDK, below-normal priority and `-j2`.
+CPU checks respected the M24-only 90% cutoff. The owner confirmed the PC was free before any
+desktop tours. No engine, sample, shader, ABI or architectural change was required.
+
+**Native suites:** Debug and ReleaseSafe each pass **270/274**, four platform skips:
+`anim-test` **19/19**, asset **134/135**, author **97/100**, import-to-animation **4/4**,
+sample **16/16**. ReleaseSafe Vulkan passes **293/293**: RHI **225/225**, renderer **65/65**,
+skin/jobs **1/1**, model pairing/reload **2/2**. The sample's ReleaseSafe Vulkan integration
+also passes **16/16**. Synchronization validation is required by the test devices; loader logs
+show only Khronos validation inserted, with no validation errors/warnings or synchronization
+hazards. The native install passes **131/131** build steps.
+
+**Replay and bytes:** native sampling is `41a6ac0f9e3a4e42` in both build modes (a temporary
+hash-print probe was restored exactly). All eighteen compiled model assets—thirteen meshes,
+two collision meshes, one skeleton and two clips—are byte-identical to the accepted Mac
+install; the entire thirty-file models tree agrees. Relocated ReleaseSafe desktop tours,
+outside the worktree with scratch APPDATA and Zig/SDK off PATH, pass base/dusk with
+synchronization validation and base with all layers disabled. All three reach nine waypoints
+in 2,100 ticks, exercise both clips/cross-fades and replay byte-exactly as `62ed8c026c20482c`.
+The player stays `cb99ccfcf2b6d6c3`; no frames skip and no skin draw drops for budget.
+
+**Paced PC costs:** the ordinary layers-off one-walker run has animation median/p95
+**0.0349/0.0509 ms**, skin **0.0925/0.1317 ms**; both budgets pass. Validation-on base has
+skin p95 **0.5157 ms**, above 0.25 ms, and that diagnostic result is retained, not hidden;
+validated dusk has **0.2463 ms**. Sixteen walkers with validation, culling off and no workers,
+600 frames: animation **0.3023/0.3284 ms**, skin **0.3688/0.4017 ms**, all 5,760 vertices,
+zero budget drops. Sixteen has no budget and no GPU-skinning work was authorized.
+
+All nine local bar commands pass: **2,035 of 2,036 tests**, one expected skip. Unchanged
+Metal, release-staging and earlier guard-mutation evidence remains accepted; Linux is
+compile-only. Two PowerShell harness issues (ordinary stderr treated as failure and a missing
+desktop exit code) were corrected, rerunning only the affected incomplete evidence.
+The PC's task, isolated worktree/artifacts and task-owned transfers are removed; its original
+repositories, games and shared tool/cache installs are untouched. Proof logs/assets are retained
+in local ignored scratch. Step 8 has not begun; this completion is local, not pushed.
 
 **M24 Step 6 is done (2026-10-01), from `1dd2ea8`.** `scripts/m24/make_character.py` generates
 a 1.7 m, 19-joint, 360-vertex glTF with blended influences and named idle/walk clips;
@@ -88,7 +125,7 @@ restaging because no content, asset kind or release description changed.
 **M24-only owner permission:** background Windows tests may run while the owner plays;
 the CPU-use refusal cutoff is 90%, replacing 50% for this milestone only. Keep below-normal
 priority, `-j2`, isolated worktrees and no focus-taking or game interruption. The exception
-expires at M24's close; it does not change the permanent rules. Step 7 is next.
+expires at M24's close; it does not change the permanent rules. Step 7 is complete.
 
 **M24 Step 3 is done (2026-10-01), from `2ca17fb`.** `author/gltf/skin.zig` closes the
 used skin's hierarchy, preserves sibling order, remaps influences, retains joint names and

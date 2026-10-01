@@ -1024,10 +1024,11 @@ and regression coverage in `3d.md` §10:
 - **M23 Collision** (done 2026-10-01, tag `m23`): `physics3d` and a first-person walk.
   [`collision3d.md`](design/collision3d.md), with ADR-0057.
 - **M24 Animation:** skins and clips, sampled at the fixed step.
-  Design accepted 2026-10-01: [`animation3d.md`](design/animation3d.md), with ADR-0058; Steps 1–6
+  Design accepted 2026-10-01: [`animation3d.md`](design/animation3d.md), with ADR-0058; Steps 1–7
   of eight (pure animation, asset formats, glTF import, staged RHI vertices, renderer skinning,
-  generated sample walker, replay/reload and paced Metal costs) are done. Native
-  Windows/Vulkan qualification is next.
+  generated sample walker, replay/reload and paced Metal costs, native Windows/Vulkan
+  qualification and import-byte agreement) are done. Step 8 closes M24; the person's
+  walk/turn/stop/cross-fade observation remains unconfirmed.
 - **M25 Public 3D:** `FoundryApi_v6`, with a content mod and a native one.
 - **M26 A playable 3D sample,** played by someone who did not build it, on macOS, Windows and a
   freshly provisioned Linux machine. It is the game
@@ -1128,7 +1129,7 @@ under clean validation, with a byte-identical replay on each machine. A move's p
 0.10–0.13 ms on the PC and at the 0.25 ms budget line on the Mac; the reading of that budget
 is left to the owner. A hand-driven walk by a person has not been done. Nothing enters the
 ABI; Linux is compile-only. M24, Animation, is in progress; its design,
-[`animation3d.md`](design/animation3d.md) with ADR-0058 is accepted, and Steps 1–6 are done.
+[`animation3d.md`](design/animation3d.md) with ADR-0058 is accepted, and Steps 1–7 are done.
 Canonical skeleton/clip assets, skinned `.fmesh` v2 and model-v2 metadata now come from glTF
 with hierarchy closure, remapping and diagnostics; v1 compatibility remains. The bar passes
 2,035 of 2,036 tests (one skip). Step 3's unchanged room/course output
@@ -1140,6 +1141,9 @@ validates current model/rig/clip pairing. Metal lit/shadow readbacks match the C
 1×/4×; serial/reversed/real-worker bytes agree. Step 6 adds the generated 19-joint walker,
 patrol, idle/walk cross-fade, current-asset reload and 2,100-tick fresh-world replay. Metal's
 relocated base/dusk tours pass, the player hash is unchanged, and paced one-walker costs pass
-both budgets; sixteen-walker scaling is recorded. Both ad-hoc releases stage. Native Vulkan
-qualification remains Step 7; Linux remains compile-only. A person's animation watch remains
-unclaimed.
+both budgets; sixteen-walker scaling is recorded. Both ad-hoc releases stage. Step 7 qualifies
+native Windows suites, synchronization-validated Vulkan skin readbacks, eighteen byte-identical
+compiled model assets and relocated base/dusk tours. PC replay is byte-exact; ordinary layers-off
+one-walker costs pass both budgets, while validation-on base skin p95 exceeds 0.25 ms and is
+recorded separately. The PC is packed up. Linux remains compile-only. Step 8's close is next;
+a person's animation watch remains unclaimed.

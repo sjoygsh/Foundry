@@ -1,7 +1,7 @@
 # Design: M24 — Animation: skeletons, clips, fixed-step sampling, CPU skinning and a walking character
 
-**Status:** Accepted 2026-10-01, when the owner requested Step 1. Steps 1–6 of eight are complete;
-Step 7 has not begun.
+**Status:** Accepted 2026-10-01, when the owner requested Step 1. Steps 1–7 of eight are complete;
+Step 8 has not begun. The human animation observation remains unconfirmed.
 **Date:** 2026-10-01
 **Baseline:** `9c6bf56`, tag `m23`. M0–M23 are complete.
 **Decisions:**
@@ -921,3 +921,84 @@ ran; native qualification, asset-byte comparison and PC costs remain Step 7, Lin
 The person's watch/walk/turn/stop/cross-fade check is not claimed and remains to be recorded
 before milestone close. No engine animation component, ABI, shader or later-step work was
 added. Step 7 has not begun.
+
+## Resolution — Step 7: native Windows/Vulkan qualification (2026-10-01)
+
+**Baseline and scope.** The exact Step 6 tree, `3a909e5`, ran from a clean isolated Windows
+worktree, transferred by Git bundle without pushing. Pinned Zig 0.16.0 and SDK 1.4.357.0 were
+used, with `-j2`, below-normal priority and CPU checks below the owner's M24-only 90% cutoff.
+The owner confirmed the PC was free before the interactive desktop task. No engine, sample,
+shader, ABI or architecture change was needed; Step 8's document reconciliation is untouched.
+
+**Focused native tests.** Debug and ReleaseSafe each pass **270/274**, four platform skips:
+
+| Suite | Passed / declared, each mode |
+| --- | --- |
+| `anim-test` | 19 / 19 |
+| `asset-test` | 134 / 135 |
+| `author-test` | 97 / 100 |
+| `animation-import-test` | 4 / 4 |
+| `sandbox3d-test` | 16 / 16 |
+
+ReleaseSafe Vulkan's focused graph passes **293/293**: `rhi-test` **225/225**,
+`render3d-test` **65/65**, `render3d-jobs-test` **1/1**, `model-content-test` **2/2**. This
+executes the staged frame-ring update proof, lit/shadow bent-strip readbacks at 1×/4×,
+multiple ring reuses, distinct-instance stream offsets, real/reversed/serial job equality
+and current model/skeleton/clip pairing across reload. Test devices require synchronization
+validation. The loader's trace shows only Khronos validation inserted: the installed implicit
+layers were disabled individually over elevated SSH, as AGENTS.md requires. No VUID,
+synchronization hazard, validation error or warning appears. The sample's ReleaseSafe Vulkan
+integration then passes **16/16**, and the native ReleaseSafe install passes **131/131** steps.
+No whole-repository Windows audit was added to repeat unrelated systems.
+
+**Replay and import agreement.** A temporary print-only probe records sampling replay hash
+`41a6ac0f9e3a4e42` in native Debug and ReleaseSafe. Its original test source was copied back
+exactly and checked against Git; no probe enters the commit. Same-binary replay is byte-exact.
+The Mac's accepted Step 6 installed models tree and the PC's native output compare byte for
+byte: **13 `.fmesh`, 2 `.fcol`, 1 `.fskel`, 2 `.fanim`**, eighteen compiled assets, including
+the generated walker. All thirty files in that tree agree, including source/image copies.
+This is compiled-byte agreement, not a promise of cross-machine floating-point playback.
+
+**Relocated runtime.** The native install was moved before running and dusk built against its
+installed packages. A normal-integrity interactive scheduled task ran outside the worktree,
+with scratch APPDATA, only Windows system directories on PATH, and `WORKERS=0`. Base/dusk
+with Khronos validation and base with every layer disabled all exit 0. The per-run layer
+logs explicitly report synchronization validation enabled and contain no errors/warnings;
+the loader trace excludes implicit overlays. The layers-off run proves ordinary runtime needs
+neither Zig nor the SDK's layers. Each tour reaches nine waypoints in **2,100 ticks**, uses
+idle/walk/intermediate cross-fades and replays in a fresh world as **`62ed8c026c20482c`**.
+The player remains **`cb99ccfcf2b6d6c3`**. No frame skips, no skin budget drops, one skinned
+draw/360 vertices. These are installed-package runs, not a repeated user-mod discovery audit.
+
+**Measured cost, not an estimate.** Median/p95 milliseconds from the last 240 frames inside
+the paced 60 Hz ReleaseSafe loop, no workers:
+
+| PC run | `animation` median / p95 | `render.skin` median / p95 |
+| --- | --- | --- |
+| One walker, base, synchronization validation | 0.0520 / 0.0881 | 0.2706 / 0.5157 |
+| One walker, dusk, synchronization validation | 0.0286 / 0.0477 | 0.1593 / 0.2463 |
+| One walker, base, all layers disabled | 0.0349 / 0.0509 | 0.0925 / 0.1317 |
+| Sixteen walkers, validation, 600 frames, culling off | 0.3023 / 0.3284 | 0.3688 / 0.4017 |
+
+The ordinary layers-off configuration meets both one-walker budgets. **Validation-on base
+exceeds the skin budget**, and that result is retained alongside the normal runtime result;
+the different configurations are not interchangeable performance claims. No further run was
+made to improve a measured result. Sixteen independently sampled walkers draw **5,760 vertices**
+with no budget drops and no skipped frames; pacing median/p95 is **16.666/16.668 ms**.
+Sixteen has no budget and this proof authorizes no GPU skinning or crowd system.
+
+**Bounded verification and pack-up.** All nine local bar commands pass, **2,035 of 2,036
+tests**, one expected skip; earlier clean Metal, shader/backend compilation, release staging
+and guard-mutation proofs remain accepted. No changed guard needed another mutation audit.
+PowerShell initially treated ordinary Zig stderr as a terminating exception; recording the
+real exit code corrected the harness and only its incomplete batch was resumed. The first
+desktop wrapper failed to retain an exit code; a retained .NET process corrected that harness
+and only its incomplete desktop proof was rerun. Neither finding required an engine change.
+The completed task exits 0. Logs and compared assets left the PC before its task, clean
+worktree/artifacts and task-owned transfers were removed. Existing repositories, games and
+shared tools/caches were untouched. Linux remains compile-only.
+
+**Exit met:** the native suites, validated readbacks, import-byte comparison and relocated
+tours pass; replay is byte-identical on the PC and costs are recorded. A person's watch of
+walking, turning, stopping and cross-fading is still **not claimed** and remains an M24-close
+observation. Step 8 has not begun. No push was requested.
