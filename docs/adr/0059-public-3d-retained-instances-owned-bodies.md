@@ -1,6 +1,6 @@
 # ADR-0059: Public 3D is retained instances by content ID, and mods change only what they own
 
-**Status:** Proposed
+**Status:** Accepted 2026-10-01, when the owner requested M25 Step 1
 **Date:** 2026-10-01
 **Informed by:** ADR-0004, ADR-0026, ADR-0027, ADR-0040, ADR-0050, ADR-0051, ADR-0053, ADR-0058,
 `docs/design/3d.md` §9 and §10, `docs/design/public-abi.md` §5–§8, `docs/design/public3d.md`

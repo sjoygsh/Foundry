@@ -26,6 +26,7 @@ pub const debug_overlay = @import("debug_overlay.zig");
 pub const overlay_batches = @import("overlay_batches.zig");
 pub const render_jobs = @import("render_jobs.zig");
 pub const mod_pipeline = @import("mod_pipeline.zig");
+pub const instances = @import("instances.zig");
 pub const model_content = @import("model_content.zig");
 pub const model_loaders = @import("model_loaders.zig");
 pub const settings_startup = @import("settings_startup.zig");
@@ -46,6 +47,7 @@ test {
     _ = overlay_batches;
     _ = render_jobs;
     _ = mod_pipeline;
+    _ = instances;
     _ = model_content;
     _ = model_loaders;
     _ = settings_startup;

@@ -21,7 +21,7 @@ const Mat4 = core.math.Mat4;
 const Vec3 = core.math.Vec3;
 const rgbaPng = @import("ui_theme.zig").rgbaPng;
 
-const target_size = 32;
+pub const target_size = 32;
 const target_bytes = target_size * target_size * 4;
 
 const manifest =
@@ -33,13 +33,13 @@ const quad_positions = [_]Vec3{ .init(-1, -1, -2), .init(1, -1, -2), .init(1, 1,
 const quad_uvs = [_][2]f32{ .{ 0, 1 }, .{ 1, 1 }, .{ 1, 0 }, .{ 0, 0 } };
 const quad_indices = [_]u16{ 0, 1, 2, 0, 2, 3 };
 
-fn id(text: []const u8) ContentId {
+pub fn id(text: []const u8) ContentId {
     return ContentId.fromString(text);
 }
 
 /// Source tree, install tree, and every module between them, torn down in dependency order:
 /// `Content` hands its assets back through the registry, which calls into the renderer.
-const Stack = struct {
+pub const Stack = struct {
     gpa: Allocator,
     os: *platform.os.Os,
     tmp: std.testing.TmpDir,
@@ -57,7 +57,7 @@ const Stack = struct {
     assets: asset.Registry,
     content: render3d.Content,
 
-    fn init(samples: u32) !*Stack {
+    pub fn init(samples: u32) !*Stack {
         const gpa = testing.allocator;
         const os = try platform.os.Os.init(gpa, .{ .app_name = "foundry-integration", .env = &.{} });
         errdefer os.deinit();
@@ -94,7 +94,7 @@ const Stack = struct {
         return self;
     }
 
-    fn deinit(self: *Stack) void {
+    pub fn deinit(self: *Stack) void {
         self.content.deinit();
         self.assets.deinit(self.gpa);
         self.renderer.deinit();
@@ -110,7 +110,7 @@ const Stack = struct {
         self.gpa.destroy(self);
     }
 
-    fn writeUnder(self: *Stack, root: []const u8, rel: []const u8, contents: []const u8) !void {
+    pub fn writeUnder(self: *Stack, root: []const u8, rel: []const u8, contents: []const u8) !void {
         const path = try platform.os.joinPath(self.gpa, &.{ root, rel });
         defer self.gpa.free(path);
         if (std.fs.path.dirname(path)) |parent| try self.os.createDirPath(parent);
@@ -118,19 +118,19 @@ const Stack = struct {
     }
 
     /// An authoring file only: text, or a glTF and its buffer.
-    fn write(self: *Stack, rel: []const u8, contents: []const u8) !void {
+    pub fn write(self: *Stack, rel: []const u8, contents: []const u8) !void {
         try self.writeUnder(self.src, rel, contents);
     }
 
     /// A runtime file the install carries as it is: a PNG, an `.fmesh`.
-    fn install(self: *Stack, rel: []const u8, contents: []const u8) !void {
+    pub fn install(self: *Stack, rel: []const u8, contents: []const u8) !void {
         try self.writeUnder(self.src, rel, contents);
         try self.writeUnder(self.out, rel, contents);
     }
 
     /// Compiles `src` and loads it in place of whatever was loaded, as `app`'s package reload
     /// does: the store is replaced at the same address, and the registry remounted.
-    fn build(self: *Stack) !void {
+    pub fn build(self: *Stack) !void {
         var next: std.ArrayList(u8) = .empty;
         errdefer next.deinit(self.gpa);
         const identity = try author.compile(self.gpa, self.os, self.src, .{ .assets_out = self.out }, &self.schemas, &self.diags, &next);
@@ -146,13 +146,13 @@ const Stack = struct {
     }
 
     /// `build`, then what a host does when the content generation moves.
-    fn reload(self: *Stack) !void {
+    pub fn reload(self: *Stack) !void {
         try self.build();
         _ = self.assets.reloadAll(self.gpa);
         try self.content.contentChanged();
     }
 
-    fn begin(self: *Stack) !void {
+    pub fn begin(self: *Stack) !void {
         try self.renderer.begin(.{
             .camera = .{ .vertical_fov = std.math.pi / 2.0, .near = 0.1, .far = 10 },
             .target_size = .{ .width = target_size, .height = target_size },
@@ -161,7 +161,7 @@ const Stack = struct {
     }
 
     /// Records what was submitted since `begin`, and reads the surface back when asked.
-    fn finish(self: *Stack, pixels: ?*[target_bytes]u8) !void {
+    pub fn finish(self: *Stack, pixels: ?*[target_bytes]u8) !void {
         const readback = if (pixels != null) try self.device.createBuffer(.{
             .label = "model content readback",
             .size = target_bytes,
@@ -189,16 +189,16 @@ const Stack = struct {
         }
     }
 
-    fn violations(self: *Stack) usize {
+    pub fn violations(self: *Stack) usize {
         return if (rhi.backend == .null) self.device.violationCount() else 0;
     }
 
-    fn materialDesc(self: *Stack, handle: render3d.MaterialHandle) render3d.MaterialDesc {
+    pub fn materialDesc(self: *Stack, handle: render3d.MaterialHandle) render3d.MaterialDesc {
         return self.renderer.materials.getConst(handle).?.desc;
     }
 };
 
-fn quadFile(gpa: Allocator) ![]u8 {
+pub fn quadFile(gpa: Allocator) ![]u8 {
     const submeshes = [_]asset.Submesh{.{ .first_index = 0, .index_count = 6 }};
     const streams = [_]asset.MeshStream{
         .{ .semantic = .position, .format = .float32x3, .bytes = std.mem.sliceAsBytes(&quad_positions) },
@@ -214,7 +214,7 @@ fn quadFile(gpa: Allocator) ![]u8 {
     });
 }
 
-const animation_records =
+pub const animation_records =
     \\foundry:material demo:skin.material { base_color { r 0.6 g 0.3 b 0.1 a 1 } }
     \\foundry:model demo:skin.model {
     \\ slots [ { name "main" material demo:skin.material } ]
@@ -236,7 +236,7 @@ fn clipFile(gpa: Allocator, count: u32) ![]u8 {
     return asset.animation.write(gpa, .{ .duration = 1, .joint_count = count, .tracks = &.{} });
 }
 
-fn animationStack(rig_count: usize, clip_count: u32, text: []const u8) !*Stack {
+pub fn animationStack(rig_count: usize, clip_count: u32, text: []const u8) !*Stack {
     const stack = try Stack.init(1);
     errdefer stack.deinit();
     const joints = [_][4]u8{.{ 0, 255, 255, 255 }} ** 4;
@@ -443,7 +443,7 @@ test "a compiled content mod changes a lit pixel through resolved package order"
 }
 
 /// Four texels, each its own colour, so a flipped or resampled texture is visible.
-fn checkerPng(gpa: Allocator, size: u32) ![]u8 {
+pub fn checkerPng(gpa: Allocator, size: u32) ![]u8 {
     const pixels = try gpa.alloc(u8, @as(usize, size) * size * 4);
     defer gpa.free(pixels);
     const colors = [4][4]u8{ .{ 230, 40, 30, 255 }, .{ 40, 200, 60, 255 }, .{ 30, 60, 220, 255 }, .{ 240, 220, 50, 255 } };
@@ -456,7 +456,7 @@ fn checkerPng(gpa: Allocator, size: u32) ![]u8 {
 
 // -- the records ------------------------------------------------------------------
 
-const records =
+pub const records =
     \\foundry:texture demo:textures.linear { source "textures/mask.png" color_space "linear" }
     \\foundry:mesh demo:meshes.gone { source "meshes/gone.fmesh" }
     \\
@@ -491,7 +491,7 @@ const records =
 ;
 
 /// The package above, with its files: a quad, two PNGs and a mesh the install lacks.
-fn recordStack() !*Stack {
+pub fn recordStack() !*Stack {
     const stack = try Stack.init(1);
     errdefer stack.deinit();
     const quad = try quadFile(stack.gpa);

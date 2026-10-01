@@ -260,6 +260,10 @@ pub const Stats = struct {
     skinned_draws: u32 = 0,
     skinned_vertices: u32 = 0,
     skin_budget_dropped: u32 = 0,
+    /// Retained lights the frame had no room for (`Instances.submit`).
+    instance_lights_dropped: u32 = 0,
+    /// Retained instances a reload left undrawable this frame (`Instances.submit`).
+    instances_refused: u32 = 0,
 };
 
 pub const Error = error{

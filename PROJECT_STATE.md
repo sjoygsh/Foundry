@@ -1,11 +1,22 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-01
-**Current handoff: M25's design is proposed (`docs/design/public3d.md`, ADR-0059); awaiting
-acceptance of §15. Stop before Step 1.** Step 1 is `render3d.Instances`, the retained instance
-set; no v6 call, header type or sample change exists yet. M0–M24 are complete and pushed.
+**Current handoff: M25 Step 1 of 8 is complete (`docs/design/public3d.md`, ADR-0059 accepted).
+Stop before Step 2.** Step 2 is `abi`'s `FoundryApi_v6`: the build grants, the host's lent
+`render3d`/`physics3d` subsystems and ownership tables, the 28 calls, their header types,
+`agreement`, `offered_api_versions` and the sweep. No v6 call, header type or sample change
+exists yet. M0–M24 are complete and pushed.
 
-**M25, Public 3D, designed (2026-10-01).** `FoundryApi_v6` is v5's 233 calls plus 28: mod-owned
+**M25 Step 1 is done (2026-10-01).** `render3d.Instances` (`engine/src/render3d/instances.zig`)
+is a bounded set of models by content ID (world matrix, up to eight slot overrides, visibility)
+and of lights, each carrying an owner tag it never reads. `submit` adds the lights and then draws
+the instances, in slot order, after the host's own. Lights a full frame has no room for, and
+instances a reload made undrawable, are counted in two new `Stats` fields, never fatal. Every
+refusal is named and holds nothing. Beyond §4: affine-only poses, no shadow-casting retained
+lights, and `Content.slotCount`/`isSkinned`. Nine guards were verified by mutation. Bar:
+**2,041 of 2,042 tests**, one expected skip; all four checks and the three headless runs pass.
+
+**M25, Public 3D, designed and accepted (2026-10-01; accepted by the request for Step 1).** `FoundryApi_v6` is v5's 233 calls plus 28: mod-owned
 retained instances and lights by content ID (no per-frame callback, since no mod code runs inside
 the host's frame), the camera read, the engine-declared transform calls, raycast/shape-cast/
 overlap, and mod-owned primitive bodies and characters; a mod may change only what it created.

@@ -1,6 +1,6 @@
 # Design: M25 — Public 3D: `FoundryApi_v6`, a 3D content mod and a native one
 
-**Status:** Proposed 2026-10-01; awaiting the owner's acceptance of §15. No step has begun.
+**Status:** Accepted 2026-10-01, when the owner requested Step 1. Step 1 is done; Step 2 has not begun.
 **Date:** 2026-10-01
 **Baseline:** `211901d`, tag `m24`. M0–M24 are complete.
 **Decisions:**
@@ -9,7 +9,7 @@
   the host's), ADR-0048 (3D conventions), ADR-0050 (the engine-declared hierarchy), ADR-0051
   (collision without dynamics), ADR-0053 (assets are not the renderer) and ADR-0058 (animation
   is the caller's) constrain it.
-- [ADR-0059](../adr/0059-public-3d-retained-instances-owned-bodies.md), proposed: v6 publishes
+- [ADR-0059](../adr/0059-public-3d-retained-instances-owned-bodies.md), accepted: v6 publishes
   3D by content ID through **retained, mod-owned instances and lights** that the host submits
   in its own frame, the engine-declared transforms, and **mod-owned** `physics3d` bodies and
   characters beside world queries. It publishes no camera write, no animation, no runtime mesh
@@ -510,3 +510,73 @@ Every choice is recommended as written. Nothing blocks Step 1 once these are acc
 | 13 | Hostile input is proven by a hostile native mod and a seeded sweep across every v6 call | §12 |
 | 14 | Budget, read inside the paced loop: `abi.instances` p95 under 0.05 ms for the orbiter on both machines; 1,024 instances recorded without a budget | §12 |
 | 15 | The PC is needed (Step 6) with the ordinary 50% CPU rule; Linux is compile-only, since nothing Linux-specific changes | §13 |
+
+## Resolution — Step 1: the retained instance set (2026-10-01)
+
+The owner's request for Step 1 accepted §15 as written, and ADR-0059 with it (CLAUDE.md §4.1
+gains its row). Step 1 added `engine/src/render3d/instances.zig`, exported as
+`render3d.Instances`, `InstanceHandle`, `InstanceLightHandle` and `InstancesLimits`. Nothing in
+`abi`, the header or a sample changed.
+
+**What the step pinned, where §4 left it open:**
+- **The set holds no `Content`.** Every call that acquires or releases takes `*Content`
+  (`create`, `destroy`, `setMaterial`, `submit`, `deinit`). The host owns both, and a set
+  holding a pointer to a sibling would be a second owner of nothing.
+- **Owner is stored, never checked.** `instanceOwner` and `lightOwner` return the tag or null
+  for a stale handle. Step 2's boundary compares it with the caller, as §4 says.
+- **Errors.** `InvalidHandle` covers a stale instance or light. `TooManyOverrides` names
+  §4's eight-override bound, checked only when a new slot is overridden, so replacing one
+  still fits. `Unsupported` is a skinned model. `InvalidTransform` refuses a non-finite world
+  **or one whose last row is not `(0, 0, 0, 1)`**. That check is new here: `drawModel` checks
+  only finiteness, but a projective pose is no pose, and v6's `FoundryMat4` will reach this
+  call unchecked otherwise. The bounds are checked before anything is acquired, and a
+  `setMaterial` acquires the new material before it releases the old, so every refusal holds
+  and changes nothing.
+- **A retained light never casts the shadow** (`InvalidShadowCaster` at create and set). The
+  renderer allows one caster a frame, and §4 puts the host's lights first so they are never the
+  ones a full frame drops. A mod's light claiming the shadow would take it from the host's sun
+  whenever the host had none, so the rule is the same in every frame instead.
+- **`submit` adds lights first, then draws instances**, each in ascending slot order. A light
+  refused for room is counted in `Stats.instance_lights_dropped`. An instance whose draw content
+  has made impossible (`InvalidModel`, `InvalidOverride`, `InvalidMaterial`, `InvalidMesh`,
+  `MissingSkin`, `SkeletonMismatch`, `InvalidSkinCount`, `InvalidSkinMatrix`) is counted in
+  `Stats.instances_refused`. `drawModel` records nothing on those. Anything else, such as
+  `NotRecording`, allocation or the device, is the frame's failure and is returned.
+- **`Limits.max_lights` above `render3d.max_lights` (16) is `InvalidConfig`.** §4's
+  "16 in all" is the frame's capacity, and the set's default of 8 leaves the host the other half.
+- **`Content` gained two reads, `slotCount` and `isSkinned`**, so the set validates an
+  override's slot and refuses a skinned model without reaching into `Content`'s entries.
+- The overlay's 3D line does not show the two new counters yet. Nothing displays them until a
+  host submits a set (Step 5).
+
+**Tests.**
+- In `instances.zig` (unit): light refusals, the bound, owners, and stale handles after slot
+  reuse; and the affine check.
+- In `engine/tests/instances.zig`, against compiled packages through `model_content.zig`'s
+  `Stack`, which is now `pub` for that reuse:
+  - every create and override refusal leaves `Content`'s model, material and asset counts
+    unchanged;
+  - draws come in slot order, with overrides, hiding and moves;
+  - the instance bound and the eight-override bound;
+  - destruction gives every acquisition back, and stale handles stay refused after reuse;
+  - retained lights follow the host's in slot order, with a reused slot keeping its place, and
+    a full frame drops them, counted;
+  - submission outside a frame is `NotRecording`;
+  - a skinned model is `Unsupported`, and a plain one reloaded into a skinned one is counted at
+    `submit` and draws nothing;
+  - another package's override of a material reaches the instance's override at the next frame.
+
+**Guards verified by mutation:** removing each guard below failed a test.
+- the instance bound;
+- the skinned refusal;
+- releasing a replaced override;
+- the affine last-row check;
+- the shadow refusal;
+- counting `MissingSkin`;
+- counting dropped lights;
+- the override cap;
+- releasing on destroy.
+
+**Bar:** `zig fmt --check`; `zig build test` **2,041 of 2,042**, the one expected skip, which is
+six more than M24's close (two unit, four integration); `check` native, `-Drhi=metal`, Linux and
+Windows null; the three 30-frame headless runs. All pass.

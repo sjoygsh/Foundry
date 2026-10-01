@@ -252,6 +252,17 @@ pub const Content = struct {
         return null;
     }
 
+    /// The model's material slots, which overrides index, or null for a stale handle.
+    pub fn slotCount(self: *const Self, handle: ModelHandle) ?u32 {
+        return @intCast((self.models.getConst(handle) orelse return null).slots.len);
+    }
+
+    /// Whether drawing the model needs a palette: it names a skeleton.
+    pub fn isSkinned(self: *const Self, handle: ModelHandle) bool {
+        const model = self.models.getConst(handle) orelse return false;
+        return !model.skeleton.isNone();
+    }
+
     // -- materials ---------------------------------------------------------------------
 
     /// A `foundry:material` record as a renderer material, for code that draws meshes itself
