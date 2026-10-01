@@ -78,7 +78,9 @@ pub const Walk = struct {
             };
         }
         if (self.character.isNone()) {
-            self.character = self.world.addCharacter(self.gpa, config.character, config.spawn, 0) catch |err| {
+            var player = config.character;
+            player.mask &= ~@as(u32, 2); // M24 walkers use layer 2; never affect the player's tour.
+            self.character = self.world.addCharacter(self.gpa, player, config.spawn, 0) catch |err| {
                 log.warn("walk disabled ({t}); orbit camera", .{err});
                 self.orbit = true;
                 return;

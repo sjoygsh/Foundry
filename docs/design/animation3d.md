@@ -1,7 +1,7 @@
 # Design: M24 — Animation: skeletons, clips, fixed-step sampling, CPU skinning and a walking character
 
-**Status:** Accepted 2026-10-01, when the owner requested Step 1. Steps 1–5 of eight are complete;
-Step 6 has not begun.
+**Status:** Accepted 2026-10-01, when the owner requested Step 1. Steps 1–6 of eight are complete;
+Step 7 has not begun.
 **Date:** 2026-10-01
 **Baseline:** `9c6bf56`, tag `m23`. M0–M23 are complete.
 **Decisions:**
@@ -847,3 +847,77 @@ asset kind or release description changed, so no release restaging was required.
 backend interface or public ABI changed, no sample gained animation, and no new ADR was needed.
 Step 6's walker/replay/reload/measurement has not begun; native Vulkan remains Step 7, Linux
 compile-only, and the M24-only background/90% CPU permission remains in force.
+
+## Resolution — Step 6: the generated walker on Metal (2026-10-01)
+
+**What exists.** `scripts/m24/make_character.py` generates `models/walker.gltf`/`.bin`:
+19 parent-first joints, a 1.7 m block figure, 360 vertices with blended influences at joints,
+and named one-second idle/walk clips. It uses no downloaded asset and runs only as a developer
+script. Two regenerations match SHA-256 (`d2fe090b…8c8d81` glTF, `48c337d9…e91652` binary).
+The ordinary import/compiler/model path produces the skeleton, clips and mesh; the sample
+reads none of the interchange representation.
+
+The independent `sandbox3d:walker.main` record names the model, 2–16 bounded waypoints,
+positive bounded speed and cross-fade time. The dusk mod leaves it alone. `walker.zig` owns
+the model handle, collision character, fixed-capacity poses and palettes, and sample playback
+state. Each tick moves through the same room/course collision world, faces actual motion,
+samples at `tick × dt`, and cross-fades at a fixed rate. `animation` measures evaluation only;
+`render.skin` remains the host's Step 5 seam. Asset payloads and converted tracks are borrowed
+only within evaluation, never retained. Current rig/clip values are checked before anim's
+programmer-only assertions. Failed evaluation clears the drawable pose.
+
+**Routine details settled.** The walker uses collision layer 2/mask 1; the player ignores
+layer 2, so neither affects the other. Waypoints pause for sixty ticks. The authored speed is
+0.6 m/s, matching the generated approximate 0.6 m stride; no root motion was added. The first
+trial route ran into the room's existing crate; its content waypoints were moved to the clear
+side of the room, not through a collision exception. An unchanged record retains feet and
+playback across refreshed assets, while a changed record restarts the patrol and proof counters.
+Final review caught the initially retained counters on that restart; affected tests passed
+after the localized fix, without restarting the integration bar. Missing records, named clips
+or incompatible candidates disable the walker; a malformed source reload retains the registry's
+healthy candidate under the established reload policy. No ADR or engine component was needed.
+
+**Executable proof.** The tour now includes 2,100 walker ticks and a fresh-world replay,
+hashing every joint's local TRS, every palette matrix, feet and blend weight without struct
+padding. It reaches nine waypoints and exercises idle, walk and intermediate blends. The Mac
+pins are `62ed8c026c20482c` in Debug and `fa431d9440d4cb2e` in ReleaseSafe, reflecting Step 1's
+recorded math-library distinction, not a cross-binary determinism promise. Every tick's pose
+and matrices match byte-for-byte in a same-binary replay. The player tour remains 495 ticks
+and `cb99ccfcf2b6d6c3`, even with the walker in its world.
+
+`sandbox3d-test` passes **16/16** on null (Debug/ReleaseSafe) and Metal (ReleaseSafe). Two new
+tests consume the compiled sample package, exercise all setting/borrow-validation refusals,
+healthy rig/clip/mesh source replacement, changed-record restart, malformed-source retention,
+missing idle/walk names, incompatible clip pairing and disabled cleanup. **Sixteen mutations
+fail and are restored:** model ID, speed, fade time, waypoint cardinality, finite/bounded points,
+duplicate neighbours, rig validation, clip/rig pairing, failed-pose cleanup, tick-derived time,
+player mask, patrol restart, track capacity, clip validation and missing idle/walk refusals.
+Removing the track bound deliberately reaches a Debug bounds trap; restored input is refused
+normally. A first clip-validation mutation was only a compile failure and was corrected to
+demonstrate the runtime proof. Restored-code focused tests pass.
+
+**Runs and costs.** The null tour passes. A ReleaseSafe Metal install was relocated and run
+from outside the repository with Zig and the SDK off `PATH`; both base and the ordinary dusk
+content package selected from its installed discovery root pass the complete tour/replay.
+There were no skipped frames. This is not a new user-mod discovery proof (M22/M23 already
+proved that). One surviving skinned draw contains 360 vertices, with no budget drops.
+Costs below are median/p95 milliseconds from the last 240 frames inside the paced 60 Hz loop,
+not from the unpaced replay or null's synthetic clock:
+
+| Run | `animation` median / p95 | `render.skin` median / p95 |
+| --- | --- | --- |
+| One walker, base tour | 0.0043 / 0.0050 | 0.0171 / 0.0223 |
+| One walker, dusk tour | 0.0236 / 0.0285 | 0.0853 / 0.1073 |
+| Sixteen walkers, 600 frames, culling off | 0.1872 / 0.2037 | 0.2841 / 0.3155 |
+
+Both one-walker p95 budgets pass. `FOUNDRY_SANDBOX3D_WALKERS=16` is explicit cost-run bootstrap:
+sixteen independent characters/poses, visually fanned out so the instances can be seen. It
+skins all 5,760 vertices with no budget drops. Sixteen has no budget; it does not itself
+authorize GPU skinning or a crowd system. `WORKERS=0` was used for these cost runs.
+
+**Exit met.** The nine-command bar passes **2,035 of 2,036 tests**, one expected skip; both
+ad-hoc macOS releases stage. Neither artifact claims public certification. No Windows work
+ran; native qualification, asset-byte comparison and PC costs remain Step 7, Linux compile-only.
+The person's watch/walk/turn/stop/cross-fade check is not claimed and remains to be recorded
+before milestone close. No engine animation component, ABI, shader or later-step work was
+added. Step 7 has not begun.

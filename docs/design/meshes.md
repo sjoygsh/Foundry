@@ -644,12 +644,18 @@ pub const SlotOverride = struct { slot: u32, material: MaterialHandle };
 ## 9. `sandbox3d`: a glTF scene
 
 **The scene** lives in `samples/sandbox3d/content/models/`:
+
 - `room.gltf` with `room.bin`: a floor with a repeating checker, walls with a brick texture, and
   a table built from a node hierarchy (a top with four child legs), which flattens into parts;
 - `crate.gltf`: one crate. The room places a mirrored copy, with a negative scale in its node;
 - a plant whose leaves are alpha-masked, and a glass pane that blends;
 - textures as PNG files beside them, not embedded, so the textures are editable while the sample
   runs.
+
+M24 Step 6 also adds `walker.gltf`/`walker.bin`, authored by
+`scripts/m24/make_character.py`. Its ordinary imported model, skeleton and named clips drive
+the sample-owned patrol/playback in `walker.zig`; see `animation3d.md` §10 and Step 6's
+Resolution. It uses the same asset/model path, not a runtime glTF reader.
 
 **It is authored in the repository, under the repository's licence** (`3d.md` §10's
 "clean license"). `scripts/m20/make_scene.py` writes every file deterministically, and its output

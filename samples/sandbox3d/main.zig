@@ -37,6 +37,8 @@
 //! - `FOUNDRY_SANDBOX3D_FRAMES=n` stops after `n` frames;
 //! - `FOUNDRY_SANDBOX3D_OVERLAY=0` draws no overlay pass, to measure what that pass costs;
 //! - `FOUNDRY_SANDBOX3D_WORKERS=n` sets the engine's worker count;
+//! - `FOUNDRY_SANDBOX3D_WALKERS=1|16` selects the M24 cost-run instance count;
+//! - `FOUNDRY_SANDBOX3D_WALK=tour` proves the player and the generated walker, then replays;
 //! - `FOUNDRY_SANDBOX3D_PANELS=1` starts with the debug overlay shown;
 //! - `FOUNDRY_SANDBOX3D_SAVE_DIR=path` redirects F5/F9 for a disposable evidence run;
 //! - `FOUNDRY_SANDBOX3D_KEYS=f5@120,f6@150,...` presses those keys on those frames, as if a
@@ -48,6 +50,10 @@
 //! `FOUNDRY_SANDBOX3D_PACKAGES`. The ordinary `testdata/mods/dusk` package changes the
 //! complete config and floor/wall materials without code. Headless runs discover user
 //! packages only when that explicit selection is present.
+//!
+//! **M24's is a generated animated walker** (`animation3d.md` §10). Its independent content
+//! record supplies the model, patrol waypoints, speed and idle/walk cross-fade. Playback and
+//! collision stay sample-owned; poses use tick-derived time and current borrowed assets.
 
 const std = @import("std");
 
@@ -63,6 +69,7 @@ const scene = @import("scene");
 const ui = @import("ui");
 const walk_mod = @import("walk.zig");
 const Tour = @import("tour.zig").Tour;
+const Walker = @import("walker.zig").Walker;
 
 const orrery_mod = @import("orrery.zig");
 const Orrery = orrery_mod.Orrery;
@@ -271,7 +278,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         }
         if (skipped) pace_next = 0;
         engine.endFrame();
-        if (sample.tour) |*tour| if (tour.done()) break;
+        if (sample.tour) |*tour| if (tour.done() and sample.walkers[0].tick >= Walker.proof_ticks) break;
 
         if (frame_limit) |limit| {
             if (engine.frame_index >= limit) break;
@@ -302,6 +309,18 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         }
         log.info("tour: replay pass ({d} ticks, {x:0>16}); unpaced moves median {d:.4}ms p95 {d:.4}ms", .{ tour.len, tour.hash, ms(unpaced.median_ns), ms(unpaced.p95_ns) });
         log.info("tour: pass", .{});
+        const walker = &sample.walkers[0];
+        if (!walker.proofPassed()) return error.WalkerTourFailed;
+        var replay_walker: Walker = .{};
+        defer replay_walker.deinit(gpa, &replay.world, &sample.content.?);
+        try replay_walker.refresh(gpa, &engine.store, &replay.world, &sample.content.?, engine.step_delta.toSecondsF32());
+        while (replay_walker.tick < Walker.proof_ticks) {
+            try replay_walker.move(gpa, &replay.world, engine.step_delta.toSecondsF32());
+            try replay_walker.evaluate(&sample.content.?, engine.step_delta.toSecondsF32());
+            replay_walker.record();
+        }
+        if (!replay_walker.proofPassed() or replay_walker.hash != walker.hash) return error.WalkerReplayFailed;
+        log.info("tour: walker pass ({d} ticks, {d} waypoints, idle/walk/cross-fade, replay {x:0>16}); player hash {x:0>16}", .{ walker.tick, walker.reached, walker.hash, tour.hash });
     }
 
     report(gpa, engine, &sample, skipped_frames);
@@ -314,12 +333,34 @@ fn report(gpa: std.mem.Allocator, engine: *app.Engine, sample: *const Sample, sk
     const moves = core.profile.summarise(sample.move_times[0..sample.move_count], &move_scratch);
     log.info("character: {d} moves, median {d:.4}ms p95 {d:.4}ms", .{ moves.count, ms(moves.median_ns), ms(moves.p95_ns) });
     const stats = sample.world.frameStats();
+    log.info("skinning: {d} draws, {d} vertices, {d} budget drops", .{ stats.skinned_draws, stats.skinned_vertices, stats.skin_budget_dropped });
     log.info("lighting: {d} lights, {d} shadow draws, {d} shadow culled", .{ stats.lights, stats.shadow_draws, stats.shadow_culled });
     log.info("stopped after {d} frames ({d} skipped), {d} ticks; last frame {d} draws, {d} culled, {d} blended, {d} triangles", .{
         engine.frame_index, skipped_frames, engine.stepper.tick, stats.draws, stats.culled, stats.blended, stats.triangles,
     });
 
     const recorder = engine.profiler() orelse return;
+    for ([_][]const u8{ "animation", "render.skin" }) |name| {
+        var values: [240]i64 = undefined;
+        var work: [240]i64 = undefined;
+        var count: usize = 0;
+        var frames = recorder.frames();
+        while (frames.next()) |frame| {
+            if (count == values.len) break;
+            var total: i64 = 0;
+            var found = false;
+            for (frame.spans) |span| if (std.mem.eql(u8, recorder.nameOf(span.name), name)) {
+                total += span.durationNs();
+                found = true;
+            };
+            if (found) {
+                values[count] = total;
+                count += 1;
+            }
+        }
+        const measured = core.profile.summarise(values[0..count], &work);
+        log.info("{s}: {d} walkers, {d} frames, median {d:.4}ms p95 {d:.4}ms", .{ name, sample.walkers.len, measured.count, ms(measured.median_ns), ms(measured.p95_ns) });
+    }
     var totals: [240]i64 = undefined;
     var scratch: [240]i64 = undefined;
     var n: usize = 0;
@@ -357,7 +398,7 @@ fn frameLimit(engine: *app.Engine, headless: bool) ?u64 {
         }
         log.warn("FOUNDRY_SANDBOX3D_FRAMES is not a positive number; ignoring it", .{});
     }
-    return if (headless) (if (engine.os.envVar("FOUNDRY_SANDBOX3D_WALK") != null) Tour.max_ticks else default_headless_frames) else null;
+    return if (headless) (if (engine.os.envVar("FOUNDRY_SANDBOX3D_WALK") != null) Walker.proof_ticks + 60 else default_headless_frames) else null;
 }
 
 fn workersFrom(env: []const platform.os.EnvVar) ?u16 {
@@ -547,6 +588,7 @@ const Sample = struct {
     world: render3d.Renderer,
     overlay: render2d.Renderer,
     walk: walk_mod.Walk,
+    walkers: []Walker,
     course: render3d.ModelHandle = .none,
     intent: walk_mod.Intent = .{},
     tour: ?Tour = null,
@@ -598,7 +640,7 @@ const Sample = struct {
     const focus: Vec3 = .init(0, 0.8, 0);
 
     fn init(gpa: std.mem.Allocator, engine: *app.Engine, options: Options) !Sample {
-        var world = try render3d.Renderer.init(gpa, engine.gpu, .{ .sample_count = options.sample_count, .cull = options.cull, .shadow_size = if (options.shadows) 2048 else 0 });
+        var world = try render3d.Renderer.init(gpa, engine.gpu, .{ .jobs = engine.jobs(), .sample_count = options.sample_count, .cull = options.cull, .shadow_size = if (options.shadows) 2048 else 0 });
         errdefer world.deinit();
         var overlay = try render2d.Renderer.init(gpa, engine.gpu, .{ .jobs = engine.jobs() });
         errdefer overlay.deinit();
@@ -617,6 +659,13 @@ const Sample = struct {
         // Wider than the default column, because the tree's rows are indented.
         const panels = try debug.Overlay.init(gpa, .{ .panel_width = panel_width });
         errdefer panels.deinit();
+        const walker_count: usize = if (engine.os.envVar("FOUNDRY_SANDBOX3D_WALKERS")) |text| blk: {
+            if (std.mem.eql(u8, text, "16")) break :blk 16;
+            if (!std.mem.eql(u8, text, "1")) log.warn("WALKERS must be 1 or 16; using one", .{});
+            break :blk 1;
+        } else 1;
+        const walkers = try gpa.alloc(Walker, walker_count);
+        @memset(walkers, .{});
 
         return .{
             .gpa = gpa,
@@ -624,6 +673,7 @@ const Sample = struct {
             .world = world,
             .overlay = overlay,
             .walk = walk_mod.Walk.init(gpa),
+            .walkers = walkers,
             .cube = cube,
             .cube_material = cube_material,
             .shadow_ground = shadow_ground,
@@ -707,6 +757,10 @@ const Sample = struct {
         self.crate_override = self.followMaterial(before.crate_override, first);
         self.walk.refresh(&engine.store, &engine.assets, engine.step_delta.toSecondsF32());
         self.course = self.follow(self.course, previous_course, if (self.walk.settings) |s| s.course else .none, first);
+        if (self.content) |*content| for (self.walkers) |*walker| {
+            walker.refresh(self.gpa, &engine.store, &self.walk.world, content, engine.step_delta.toSecondsF32()) catch |err|
+                log.warn("walker disabled ({t})", .{err});
+        };
 
         if (self.settings.font.eql(before.font) and !self.font_asset.isNone()) return;
         const fresh = if (self.settings.font.eql(.none))
@@ -761,6 +815,20 @@ const Sample = struct {
         if (self.move_count < self.move_times.len) {
             self.move_times[self.move_count] = elapsed;
             self.move_count += 1;
+        }
+        if (self.content) |*content| {
+            if (self.tour != null and self.walkers[0].tick >= Walker.proof_ticks) return;
+            for (self.walkers) |*walker| {
+                if (self.tour != null and walker.tick >= Walker.proof_ticks) continue;
+                try walker.move(self.gpa, &self.walk.world, dt);
+            }
+            const animation = engine.beginScope("animation");
+            defer animation.end();
+            for (self.walkers) |*walker| {
+                if (self.tour != null and walker.tick > Walker.proof_ticks) continue;
+                try walker.evaluate(content, dt);
+                if (self.tour != null and walker.tick <= Walker.proof_ticks) walker.record();
+            }
         }
     }
 
@@ -951,6 +1019,12 @@ const Sample = struct {
 
         self.drawModel(.{ .model = self.room, .world = Mat4.identity });
         self.drawModel(.{ .model = self.course, .world = Mat4.identity });
+        if (self.content) |*content| for (self.walkers, 0..) |*walker, i| {
+            // The sixteen-walker cost run fans their visual instances out. Each still owns
+            // an independently sampled pose and collision character; no engine crowd API.
+            const offset: Vec3 = if (self.walkers.len == 1) .zero else .init(-@as(f32, @floatFromInt(i % 4)) * 0.65, 0, @as(f32, @floatFromInt(i / 4)) * 0.35);
+            try walker.draw(content, offset);
+        };
         const override = [_]render3d.SlotOverride{.{ .slot = 0, .material = self.crate_override }};
         var placed: u32 = 0;
         const grid = self.settings.grid;
@@ -1039,6 +1113,8 @@ const Sample = struct {
     }
 
     fn deinit(self: *Sample, engine: *app.Engine) void {
+        if (self.content) |*content| for (self.walkers) |*walker| walker.deinit(self.gpa, &self.walk.world, content);
+        self.gpa.free(self.walkers);
         self.walk.deinit(&engine.assets);
         _ = engine.assets.unregisterLoader(self.gpa, asset.schemas.collision_mesh.id);
         if (!self.course.isNone()) if (self.content) |*content| content.releaseModel(self.course);
@@ -1243,6 +1319,7 @@ test {
     _ = @import("light_settings.zig");
     _ = walk_mod;
     _ = @import("walk_tests.zig");
+    _ = @import("walker_tests.zig");
 }
 
 test "scripted keys are key@frame pairs, and anything else is refused whole" {

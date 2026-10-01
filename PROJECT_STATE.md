@@ -1,11 +1,43 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-01
-**Current handoff: M24 Steps 1–5 are complete. Stop before Step 6.** Next is the generated
-`sandbox3d` walker, patrol/cross-fade, replay/reload and paced Metal cost measurements
-(`animation3d.md` §10 and §13 Step 6). glTF skin/clip import, staged per-frame vertices and
-`render3d` CPU skinning exist. The renderer is granted `anim`; the sample is not yet.
+**Current handoff: M24 Steps 1–6 are complete. Stop before Step 7.** Next is native Windows/
+Vulkan qualification: animation/import/sample suites, skinned readbacks with synchronization
+validation, Mac/PC asset-byte comparison, relocated tour and paced cost (`animation3d.md`
+§13 Step 7). The generated walker patrols, cross-fades and reloads on Metal; the sample now
+has `anim` and hands explicit jobs to `render3d`.
 M0–M23 are complete; M23 closed at tag `m23`, pushed.
+
+**M24 Step 6 is done (2026-10-01), from `1dd2ea8`.** `scripts/m24/make_character.py` generates
+a 1.7 m, 19-joint, 360-vertex glTF with blended influences and named idle/walk clips;
+regeneration is SHA-256 identical. An independent `sandbox3d:walker.main` record supplies
+the model, bounded waypoints, 0.6 m/s speed and 0.25 s cross-fade. `walker.zig` owns the patrol
+and pose buffers, borrows current asset values only during evaluation, derives time from
+ticks, and uses a second collision character. Its layer and the player's mask ignore each
+other. Unchanged records preserve playback/feet across asset refresh; changed records reset
+the patrol and proof counters. Missing/invalid assets or named clips disable the walker safely.
+
+**Evidence:** `sandbox3d-test` **16/16**, null Debug/ReleaseSafe and Metal ReleaseSafe.
+Two new package-level tests cover every setting refusal, current-value validation, every-tick
+pose/matrix equality, healthy rig/clip/mesh reloads, missing named clips, failed candidates,
+incompatible clips and disabled cleanup. Sixteen mutations fail and are restored. The
+2,100-tick tour reaches nine waypoints, uses idle/walk/cross-fade and replays in a fresh world.
+Mac hashes are `62ed8c026c20482c` (Debug) and `fa431d9440d4cb2e` (ReleaseSafe); the build-mode
+math distinction from Step 1 still applies. Player replay stays `cb99ccfcf2b6d6c3`.
+The null tour and relocated ReleaseSafe Metal tours (base and dusk, Zig/SDK off PATH) pass.
+
+**Paced Mac costs (median/p95, ms):** one walker, base: animation **0.0043/0.0050**,
+skin **0.0171/0.0223**; dusk: animation **0.0236/0.0285**, skin **0.0853/0.1073**.
+Both single-walker p95 budgets pass. Sixteen independently sampled walkers, culling off,
+600 frames: animation **0.1872/0.2037**, skin **0.2841/0.3155**; all 5,760 vertices draw,
+no budget drops. There is no sixteen-walker budget and no GPU-skinning work was begun.
+
+All nine bar commands pass: **2,035 of 2,036 tests**, one expected skip. Both ad-hoc macOS
+releases stage; this is not public signing/notarization. Final review's localized changed-record
+counter reset passed affected null/Metal tests; the wider bar was not restarted. No Windows
+job ran; Linux remains compile-only. No new ADR, ABI, shader or engine animation component.
+A person's watch/turn/stop/cross-fade check is not claimed. Step 7 has not begun. This commit
+is local; no push was requested.
 
 **M24 Step 5 is done (2026-10-01), from `cca0071`.** Skinned meshes retain aligned CPU bind
 positions/normals/tangents, influences and joint bounds; only static streams and indices are
@@ -56,7 +88,7 @@ restaging because no content, asset kind or release description changed.
 **M24-only owner permission:** background Windows tests may run while the owner plays;
 the CPU-use refusal cutoff is 90%, replacing 50% for this milestone only. Keep below-normal
 priority, `-j2`, isolated worktrees and no focus-taking or game interruption. The exception
-expires at M24's close; it does not change the permanent rules. Step 6 has not begun.
+expires at M24's close; it does not change the permanent rules. Step 7 is next.
 
 **M24 Step 3 is done (2026-10-01), from `2ca17fb`.** `author/gltf/skin.zig` closes the
 used skin's hierarchy, preserves sibling order, remaps influences, retains joint names and

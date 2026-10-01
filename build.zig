@@ -639,7 +639,8 @@ pub fn build(b: *std.Build) void {
     // `scene`, `debug` and `ui` since M21 (`hierarchy.md` §8): a world of nested objects, and
     // the overlay that inspects it, hosted as the room hosts it. `physics3d` since M23
     // (`collision3d.md` §3): the first-person walk. The overlay itself is not granted it (§12).
-    for ([_][]const u8{ "app", "asset", "core", "data", "debug", "physics3d", "render2d", "render3d", "scene", "ui" }) |name| {
+    // `anim` since M24 Step 6: the sample owns patrol/playback, not an engine component.
+    for ([_][]const u8{ "anim", "app", "asset", "core", "data", "debug", "physics3d", "render2d", "render3d", "scene", "ui" }) |name| {
         sandbox3d_mod.addImport(name, modules.get(name).?);
     }
     sandbox3d_mod.addImport("platform", platform_module);
