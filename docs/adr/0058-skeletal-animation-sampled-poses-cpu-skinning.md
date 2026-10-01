@@ -1,6 +1,6 @@
 # ADR-0058: Skeletal animation is sampled poses in an L1 module, skinned on the CPU
 
-**Status:** Accepted 2026-10-01, when the owner requested M24 Step 1
+**Status:** Accepted 2026-10-01, when the owner requested M24 Step 1; implemented in M24 (tag `m24`)
 **Date:** 2026-10-01
 **Informed by:** ADR-0013, ADR-0022, ADR-0036, ADR-0048, ADR-0051, ADR-0053, ADR-0054, ADR-0055,
 ADR-0057, `docs/design/3d.md` §5 and §9, `docs/design/animation3d.md`

@@ -95,3 +95,14 @@ generate one record per model, `<model>.collision`, a `foundry:collision_mesh`. 
 only when the import sets `collision true`, so `collision` joins `mesh<i>`, `material<i>` and
 `texture<i>` as a reserved generated segment. A version-1 import, or `collision false`,
 generates exactly what this ADR describes, byte for byte.
+
+## Note — 2026-10-01: the `skeleton` and `clip<i>` segments (ADR-0058)
+
+Appended at M24's close; nothing above is changed. A glTF file whose default scene uses a skin
+also generates `<model>.skeleton`, a `foundry:skeleton`, and one `<model>.clip<i>` per glTF
+animation, a `foundry:animation`, in the file's animation order. The model record names them
+in its `skeleton` and `clips` fields, each clip under its glTF animation's name, which is how a
+game finds "walk" without knowing `<i>`. So `skeleton` and `clip<i>` join the reserved
+generated segments. `foundry:model_import` gained no field and no version: a file with no skin
+or animation generates exactly what this ADR describes, byte for byte, and M24 checked the
+room's and course's outputs against their earlier hashes.

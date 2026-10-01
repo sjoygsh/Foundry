@@ -45,7 +45,7 @@ M22 is `3d.md` §10's fourth milestone:
 - point-light and spot-light shadows, and cascades (`3d.md` §11);
 - an engine light record or component. Lights are values a game submits each frame, as draws are
   (§7.1). A `foundry:light` record waits for glTF light import or the ABI (§14);
-- `physics3d` (M23), skinned variants (M24) and anything in the public ABI (M25). **`render3d`
+- `physics3d` (M23), skinning (M24, built with no skinned shader variant) and anything in the public ABI (M25). **`render3d`
   still exposes nothing through the ABI**, and `abi` does not import it. `foundry:material`'s new
   fields are content schema, which a Tier 1 mod already writes and overrides, and that is M22's
   whole modding surface;

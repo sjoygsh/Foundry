@@ -1,7 +1,7 @@
 # Design: M24 — Animation: skeletons, clips, fixed-step sampling, CPU skinning and a walking character
 
-**Status:** Accepted 2026-10-01, when the owner requested Step 1. Steps 1–7 of eight are complete;
-Step 8 has not begun. The human animation observation remains unconfirmed.
+**Status:** Accepted 2026-10-01, when the owner requested Step 1. **Complete 2026-10-01, all
+eight steps, tag `m24`.** The human animation observation (§12, "By hand") has not been made.
 **Date:** 2026-10-01
 **Baseline:** `9c6bf56`, tag `m23`. M0–M23 are complete.
 **Decisions:**
@@ -1002,3 +1002,49 @@ shared tools/caches were untouched. Linux remains compile-only.
 tours pass; replay is byte-identical on the PC and costs are recorded. A person's watch of
 walking, turning, stopping and cross-fading is still **not claimed** and remains an M24-close
 observation. Step 8 has not begun. No push was requested.
+
+## Resolution — Step 8: the close (2026-10-01)
+
+**Steps 2–7 were Codex's; this step re-verified them before closing.** Their diffs match their
+Resolutions: every new source file's tests are reached from its module's `test {}` block or a
+named build step, no dependency or ABI change entered, no credential, address or machine path
+is in the tree, and the documents agreed on the next step. The nine-command bar at `5f42362`
+passed with **2,035 of 2,036 tests**, one expected skip, the number Step 7 recorded. The PC
+holds no M24 task, worktree or scratch directory; the worktrees left there predate M24.
+
+**Documents reconciled:**
+- `3d.md` §5 no longer lists skinned variants: none exists while skinning is on the CPU, and
+  its "Variants stay few" rule names (model, alpha mode). §3's table gains row 3a for the
+  skeleton and the clip, row 3 names `.fmesh` version 2's skin streams, and row 5 the model's
+  optional skeleton and named clips. §9 records the implementation, §10's M24 row is done and
+  drops "the skinned variants", and the header names M23 and M24 complete. `light.md`'s M22
+  boundary list says the same.
+- CLAUDE.md §4.3 gains `anim` at L1, `render3d`'s grant of it, and `sandbox3d`'s; the source
+  tree lists `physics3d/` and `anim/`; §4.1's row says implemented; §9's 3D row adds M24.
+- ADR-0058 is marked implemented. ADR-0049 and ADR-0055 gain dated notes: no skinned variant
+  while skinning is on the CPU, and the reserved `skeleton` and `clip<i>` segments. Neither
+  decision above them changed, so neither needs superseding.
+- The roadmap, the design index and `PROJECT_STATE.md` name M24 complete. AGENTS.md's bar did
+  not change in M24: the focused targets Steps 1–5 added (`anim-test`,
+  `animation-import-test`, `render3d-jobs-test`, `model-content-test`) are all inside
+  `zig build test` or `check`.
+
+**What closes open, and is recorded rather than hidden:**
+- **No person has watched the walker** walk, turn, stop and cross-fade (§12, "By hand"). The
+  automated tours prove the patrol, both clips and the cross-fade, and replay; they do not
+  replace a person's look. The owner can do it with
+  `zig build sandbox3d -Drhi=metal` and say so; it is the last §12 item not met.
+- **The PC's validation-on base `render.skin` p95 is 0.5157 ms,** over its 0.25 ms budget,
+  against 0.1317 ms with every layer off. This close reads the budget on the ordinary runtime,
+  as Step 7 did, so §14's GPU-skinning trigger is not opened; whether a validation-layer run
+  should count is the owner's reading, as M23's Mac move budget was.
+- **The `@sin` distinction** stays as Step 1 found it: on the Mac, Debug and ReleaseSafe hashes
+  differ, and the PC's native value equals the Mac's Debug one (`41a6ac0f9e3a4e42` sampling,
+  `62ed8c026c20482c` tour). Tests pin both.
+
+**The M24-only PC permission** (background tests while the owner plays, below 90% CPU) expires
+with this close. The previous rule, 50%, applies again from M25.
+
+**Exit met:** every document names M24 complete, and none names a contract the code does not
+have. The bar was re-run after these document-only edits only as `zig fmt --check`; no code
+changed since the verified run. Tagged `m24`.

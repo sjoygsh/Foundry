@@ -1023,12 +1023,10 @@ and regression coverage in `3d.md` §10:
   Design accepted 2026-09-29: [`light.md`](design/light.md), with ADR-0056.
 - **M23 Collision** (done 2026-10-01, tag `m23`): `physics3d` and a first-person walk.
   [`collision3d.md`](design/collision3d.md), with ADR-0057.
-- **M24 Animation:** skins and clips, sampled at the fixed step.
-  Design accepted 2026-10-01: [`animation3d.md`](design/animation3d.md), with ADR-0058; Steps 1–7
-  of eight (pure animation, asset formats, glTF import, staged RHI vertices, renderer skinning,
-  generated sample walker, replay/reload and paced Metal costs, native Windows/Vulkan
-  qualification and import-byte agreement) are done. Step 8 closes M24; the person's
-  walk/turn/stop/cross-fade observation remains unconfirmed.
+- **M24 Animation** (done 2026-10-01, tag `m24`): skins and clips from glTF, sampled at the
+  fixed step and skinned on the CPU, with a generated character walking the room.
+  [`animation3d.md`](design/animation3d.md), with ADR-0058. A person's
+  walk/turn/stop/cross-fade observation has not been recorded.
 - **M25 Public 3D:** `FoundryApi_v6`, with a content mod and a native one.
 - **M26 A playable 3D sample,** played by someone who did not build it, on macOS, Windows and a
   freshly provisioned Linux machine. It is the game
@@ -1128,8 +1126,11 @@ slope, wall slide) passes headless on null, windowed on Metal and windowed on Wi
 under clean validation, with a byte-identical replay on each machine. A move's paced p95 is
 0.10–0.13 ms on the PC and at the 0.25 ms budget line on the Mac; the reading of that budget
 is left to the owner. A hand-driven walk by a person has not been done. Nothing enters the
-ABI; Linux is compile-only. M24, Animation, is in progress; its design,
-[`animation3d.md`](design/animation3d.md) with ADR-0058 is accepted, and Steps 1–7 are done.
+ABI; Linux is compile-only.
+
+**M24, Animation, is complete (2026-10-01, tag `m24`)**, all eight steps
+([`animation3d.md`](design/animation3d.md), ADR-0058; Step 1 by Claude, Steps 2–7 by Codex,
+Step 8's close by Claude).
 Canonical skeleton/clip assets, skinned `.fmesh` v2 and model-v2 metadata now come from glTF
 with hierarchy closure, remapping and diagnostics; v1 compatibility remains. The bar passes
 2,035 of 2,036 tests (one skip). Step 3's unchanged room/course output
@@ -1145,5 +1146,7 @@ both budgets; sixteen-walker scaling is recorded. Both ad-hoc releases stage. St
 native Windows suites, synchronization-validated Vulkan skin readbacks, eighteen byte-identical
 compiled model assets and relocated base/dusk tours. PC replay is byte-exact; ordinary layers-off
 one-walker costs pass both budgets, while validation-on base skin p95 exceeds 0.25 ms and is
-recorded separately. The PC is packed up. Linux remains compile-only. Step 8's close is next;
-a person's animation watch remains unclaimed.
+recorded separately. The PC is packed up. Linux remains compile-only. Step 8 reconciled
+`3d.md` (no skinned shader variant while skinning is on the CPU; skeleton and clip rows),
+CLAUDE.md's layer table and ADR-0049/0055 by dated notes, and tagged `m24`. A person's
+animation watch remains unclaimed. M25, Public 3D, has no design yet.

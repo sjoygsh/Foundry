@@ -1,12 +1,24 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-01
-**Current handoff: M24 Steps 1–7 are complete. Stop before Step 8.** Next is the milestone
-close: reconcile the parent architecture/documents, settle the recorded exit evidence and
-tag `m24` (`animation3d.md` §13 Step 8). Native Windows/Vulkan qualification is complete.
-The person's watch/walk/turn/stop/cross-fade observation remains unconfirmed; automated tours
-do not substitute for it.
-M0–M23 are complete; M23 closed at tag `m23`, pushed.
+**Current handoff: M24 is complete (2026-10-01, tag `m24`). Stop before M25's design.**
+M25, Public 3D (`FoundryApi_v6`, a 3D content mod and a native one, `3d.md` §10), has no
+design yet. M0–M24 are complete; M23 and M24 are pushed.
+
+**M24, Animation, closed (2026-10-01).** Step 1 was Claude's; Steps 2–7 were Codex's and were
+re-verified before closing: their diffs match their Resolutions, every new test file is in the
+graph, and the nine-command bar at `5f42362` passed with **2,035 of 2,036 tests**, one expected
+skip. Step 8 reconciled `3d.md` (§5 has no skinned variant while skinning is on the CPU; §3's
+table gains skeleton and clip; §9 and §10's row record the implementation), CLAUDE.md (`anim` in
+§4.3's layers, `render3d`'s and `sandbox3d`'s grants, §4.1 and §9), `light.md`, and added dated
+notes to ADR-0049 and ADR-0055. AGENTS.md's bar did not change. The PC holds no M24 work. The
+M24-only 90% PC CPU permission has expired; 50% applies again.
+
+**Left open at the close:** no person has yet watched the walker walk, turn, stop and
+cross-fade (`zig build sandbox3d -Drhi=metal`); the PC's validation-on base `render.skin` p95
+(0.5157 ms) is above budget while the ordinary runtime's (0.1317 ms) is within it, and the close
+reads the latter; on the Mac, Debug and ReleaseSafe replay hashes differ by Step 1's `@sin`
+finding, and both are pinned.
 
 **M24 Step 7 is done (2026-10-01), from `3a909e5`.** The exact committed tree ran in a clean,
 isolated Windows worktree with the pinned Zig and Vulkan SDK, below-normal priority and `-j2`.

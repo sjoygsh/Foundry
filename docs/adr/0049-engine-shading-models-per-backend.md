@@ -50,3 +50,12 @@ mods need to author shaders.
 - A game or mod needs to author shader code or a shading model the engine does not ship.
 - The count of hand-written variants becomes a measured maintenance burden.
 - A third backend makes writing each model per backend clearly worse than one source.
+
+## Note — 2026-10-01: no skinned variants while skinning is on the CPU (ADR-0058)
+
+Appended at M24's close; nothing above is changed. The fixed set's "skinned variants" were not
+written. ADR-0058 skins on the CPU, so a skinned mesh reaches the vertex shader as ordinary
+positions, normals and tangents, and the existing unlit, lit and shadow shaders draw it
+unchanged on both backends. A skinned variant of each model returns with GPU skinning, whose
+trigger is `render.skin` measured over its budget at a character count a game has
+(`animation3d.md` §14). Until then the registry's entries are the models alone.
