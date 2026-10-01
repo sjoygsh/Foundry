@@ -1,17 +1,23 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-01
-**Current handoff: M23 is complete, all seven steps, tag `m23` (`docs/design/collision3d.md`,
-ADR-0057). Stop before M24's design.** M24 is Animation; it has no design document yet, and
-writing one is the next piece of work. M0–M23 are complete.
+**Current handoff: M24's design is proposed (`docs/design/animation3d.md`, ADR-0058); awaiting
+the owner's acceptance of its §15. Stop before Step 1.** No M24 code exists. M0–M23 are
+complete; M23 closed at tag `m23`, pushed.
 
-**Open for the owner, carried out of M23:**
-- **The cost budget's reading.** A move's paced p95 is at the 0.25 ms line on the Mac
-  (0.243–0.254 ms) and well under it on the PC (0.10–0.13 ms); unpaced it is under 0.09 ms on
-  both. Whether the budget means paced or unpaced time is undecided.
-- **The hand check.** Nobody has walked with the keys, looked with the mouse or live-reloaded
-  the course by hand, on either machine. Only the scripted tour, scripted F3 and the reload
-  test have run.
+**M24, Animation, as proposed:** a new L1 module, `anim`, samples skeletons and clips into
+poses at the fixed step; skeletons and clips are compiled assets imported from glTF; skinning
+is linear-blend on the CPU, drawn by `render3d` with the existing shaders; `sandbox3d` gains a
+generated character that patrols the room. Eight steps, the PC in Step 7, nothing in the ABI.
+It corrects `3d.md` §5: no skinned shader variants are built while skinning is on the CPU.
+
+**The owner's answers on M23 (2026-10-01):**
+- **Budgets are read inside the paced frame loop.** On that reading the PC is well under the
+  0.25 ms move budget and the Mac sits on it (p95 0.243–0.254 ms). The trigger for specialised
+  collision routines is therefore at its threshold on the Mac. Nothing was started; scheduling
+  it is still the owner's decision.
+- **The hand check:** the owner walked with the keys and saw it work. Mouse look and a live
+  reload by hand are not recorded.
 
 **M23 Step 7 is done (2026-10-01).** The close:
 - rewrote the multi-riser unit test on the course's stairs, so reverting the movement-cast

@@ -1,0 +1,468 @@
+# Design: M24 — Animation: skeletons, clips, fixed-step sampling, CPU skinning and a walking character
+
+**Status:** Proposed 2026-10-01; awaiting the owner's acceptance of §15. No step has begun.
+**Date:** 2026-10-01
+**Baseline:** `9c6bf56`, tag `m23`. M0–M23 are complete.
+**Decisions:**
+- ADR-0048 (conventions), ADR-0053 (assets are not the renderer), ADR-0054 (fixed vertex
+  slots), ADR-0055 (imports compile to records), ADR-0013 (deterministic-friendly, not
+  bit-exact) and ADR-0036 (explicit jobs) constrain it.
+- Proposes [ADR-0058](../adr/0058-skeletal-animation-sampled-poses-cpu-skinning.md): animation
+  is sampled poses in a new L1 module, `anim`, that sees no asset and no entity; skeletons and
+  clips are compiled assets it is handed as values; skinning is linear-blend, on the CPU, into
+  per-frame vertex data, with no skinned shader variant.
+
+`3d.md` §9 is the architecture of animation in two sentences, and §10's M24 row is the contract.
+M24 spans a new module, `asset`, `author`, `rhi`, `render3d` and the sample, so it writes its
+own document, as M20, M22 and M23 did. `sprite-animation.md` is 2D's flip-book animation and is
+unrelated: nothing here changes it.
+
+## 1. Purpose and boundary
+
+`3d.md` §10's row, quoted:
+- **Milestone:** skins and clips from glTF, sampled at the fixed step, CPU skinning, and the
+  skinned variants.
+- **Runnable result:** an animated character from glTF, walking through the room.
+- **Exit condition:** sampling is deterministic, and skinning matches a reference.
+- **Regression coverage:** sampling replay; skinned pose against a reference; import refusal
+  for bad skins.
+
+**In M24:**
+- a skeleton and a clip as Foundry's own runtime representations and compiled assets;
+- glTF skins and animations imported into them, and refused with diagnostics when malformed;
+- sampling a clip into a pose, looping, and blending two poses;
+- linear-blend skinning on the CPU, drawn through `render3d` lit, unlit and into the shadow map;
+- a generated, in-repo skinned character that patrols the M23 room, colliding, on Metal and on
+  Windows/Vulkan.
+
+**Not in M24** (each has its trigger in §14):
+- GPU skinning of any kind, and so any skinned shader variant (§8 says why the row's "skinned
+  variants" are not built);
+- morph targets, cubic-spline keyframes, and animation of nodes that are not joints;
+- root motion, inverse kinematics, additive layers, state machines and animation events;
+- an engine-declared animation component in `scene`, and anything in the public ABI;
+- a third-person player body. The player stays first-person; the animated character is another
+  walker in the room.
+
+## 2. What exists
+
+Read from the code at `9c6bf56`:
+- **`core/math.zig`** has `Vec3`, `Quat` (with `slerp`), `Transform` and `Mat4`. Nothing knows
+  what a joint is.
+- **`asset/mesh.zig`** names `joints` (slot 6) and `weights` (slot 7) in `Semantic`, and
+  `validate` refuses both as `UnsupportedVertexFormat`. `VertexFormat` has three float formats
+  and `unorm8x4`; there is no integer format. `mesh_file.zig` is `.fmesh` version 1.
+- **`asset/schemas.zig`** declares `foundry:model` as slots and flat parts (mesh, submesh, slot,
+  TRS). A model has no nodes: the importer flattens them (`3d.md` §3).
+- **`author/gltf/`** parses `skins` and `animations` only as opaque JSON. It warns that both
+  "are not imported until M24", warns on a node's `skin`, and **refuses** a primitive with
+  `JOINTS_n` or `WEIGHTS_n`. So no existing import contains skinned geometry, and importing
+  skins cannot change an existing package's bytes.
+- **`render3d/renderer.zig`** uploads a mesh once in `createMesh`, into device-local buffers
+  through a staging copy. Per frame it maps only each frame slot's uniform buffer. `MeshDraw` is
+  a mesh, a submesh, a material and a world matrix. `content.zig` draws a `foundry:model` by
+  handle. Nothing writes vertex data per frame.
+- **`rhi`** has `MemoryIntent` (`device_local`, `upload`, `readback`) and `mapBuffer`. Whether a
+  mapped buffer may be bound as a vertex buffer, and reused across frames in flight, is not a
+  path any code exercises today (§7).
+- **`physics3d`** has characters, and **`samples/sandbox3d`** has M23's walk, course and tour,
+  whose replay hash `cb99ccfcf2b6d6c3` is pinned in a test.
+- **`scripts/m20/make_scene.py`** generates the sample's glTF in-repo, byte-reproducibly.
+
+## 3. `anim`: the module and its values
+
+**A new module, `anim`, at L1, on `core` alone.** It is to animation what `physics3d` is to
+collision, and for the same reasons (ADR-0022, ADR-0051): the deciding issue is I9, and a module
+that can see neither files, entities nor a renderer is a pure function of its inputs, unit-tested
+with no device. It has no time and no playback state. A caller says *sample this clip at this
+time*, and gets a pose.
+
+**Why not inside `asset`, `scene` or `render3d`.** `asset` loads; it should not evaluate.
+`scene` would tie animation to entities before a second consumer shows what a component should
+hold (§10). `render3d` would make a pose a rendering concept, and gameplay will want poses a
+renderer never sees (a hand's position for an attachment, a hit volume). Below all three, each
+can use it.
+
+**Its values are borrowed, never owned assets** (as ADR-0057 has `physics3d` take geometry):
+- **`Skeleton`**: `joint_count` (1 to 256); `parents: []const u16`, where a root holds
+  `no_parent` and **every parent precedes its children**; `rest: []const Transform`, the local
+  rest pose; `inverse_bind: []const Mat4`; and `root: Mat4`, the constant transform from the
+  skeleton's root space to model space.
+- **`Clip`**: `duration` in seconds, positive and finite; and `tracks`, each naming a joint, a
+  path (`translation`, `rotation` or `scale`), an interpolation (`step` or `linear`), strictly
+  increasing key times in `[0, duration]` and their values.
+- **`Pose`**: `local: []Transform`, one per joint, in a caller-owned buffer.
+
+`Skeleton.validate` and `Clip.validate` return named errors for every way untrusted data can be
+wrong (a parent after its child, a non-finite value, a non-unit quaternion, an unsorted time, a
+track naming a joint the skeleton lacks). Sampling a value that has not been validated is a
+programmer error, and asserts.
+
+**Nothing allocates after setup.** Every function writes into buffers the caller passes.
+
+## 4. Sampling, looping and blending
+
+**`sample(skeleton, clip, time, out: *Pose)`** fills every joint:
+- A joint with no track for a path keeps the skeleton's rest value for that path. So a clip
+  that animates only the legs leaves the arms at rest, never at identity.
+- Between two keys, translation and scale interpolate linearly, and rotation by `core`'s
+  `Quat.slerp` along the shorter arc. That is glTF's rule, so an imported clip plays as its
+  authoring tool showed it.
+- Before the first key the first value holds; after the last, the last.
+- `step` holds the earlier key's value.
+
+**Time is the caller's, in seconds, as `f32`.** `anim` reads no clock. `wrap(time, duration)`
+and `clamp(time, duration)` are the two helpers for a looping and a one-shot clip. A simulation
+derives time from its **tick count** (`tick × dt`, wrapped), not by accumulating `dt`, so a long
+run does not drift and a replay from tick zero reproduces every pose (I9). The sample does this
+(§10); the rule is stated in the module's header for every later caller.
+
+**`blend(a, b, weight, out)`** mixes two poses joint by joint: translation and scale linearly,
+rotation by `slerp`. It is what a cross-fade from idle to walk needs, and it is all M24 builds.
+Layers, masks and additive poses are deferred (§14).
+
+**`skinMatrices(skeleton, pose, out: []Mat4)`** walks joints in order (parents first, so one
+pass), composes each joint's model-space matrix, and writes `root · model[j] · inverse_bind[j]`.
+Those are the matrices skinning consumes. `modelMatrices` returns the un-skinned joint matrices,
+for a game that attaches something to a joint.
+
+**Determinism.** Sampling uses no global state, no clock and no pointer value, and visits joints
+and tracks in stored order. The same binary, clip, skeleton and time give the same bytes. Across
+machines the last bits may differ (ADR-0013), which is why §12 asserts against references with
+tolerances and asserts replay byte-exactly only on one machine.
+
+## 5. Skinning: linear blend, on the CPU
+
+**`anim.skin` is one kernel:** given bind-pose positions, normals and tangents, each vertex's
+four joint indices and four weights, and the skin matrices, it writes skinned positions, normals
+and tangents. Each vertex's matrix is the weighted sum of its joints' matrices. Positions use the
+full matrix; normals and tangents use its upper 3×3 and are renormalised; a tangent's `w`
+(handedness) is copied.
+
+**The normal rule is exact for rigid and uniformly scaled joints,** which is what a character
+has. A non-uniformly scaled joint wants the inverse transpose; that is deferred with a trigger
+(§14) and stated here so nobody discovers it.
+
+**It takes a vertex range,** so `render3d` can split one mesh across `core.Jobs` chunks
+(ADR-0036). Each chunk writes only its own vertices, so the result does not depend on the worker
+count, and the inline `Jobs` is the reference a parallel run is compared with.
+
+**Why the CPU.** `3d.md` §9 fixes it: "Skinning runs on the CPU first; GPU skinning is compute's
+trigger." It also buys three things now: the skinned vertices are ordinary vertices, so every
+existing shader, the shadow pass and both backends draw them unchanged; "skinning matches a
+reference" is a CPU test with no readback tolerance; and gameplay can later read a skinned
+position without a GPU round trip.
+
+## 6. Assets: `.fskel`, `.fanim`, `.fmesh` version 2 and the model record
+
+All in `asset`, beside the mesh and the collision mesh, each a versioned little-endian binary
+whose reader borrows the caller's bytes and refuses rather than asserts (I8). A newer version
+reports `UnsupportedVersion`, never "not a skeleton".
+
+- **`foundry:skeleton`**, source `.fskel`, magic `FSKL`, version 1: the joint count, then per
+  joint its parent, rest TRS and inverse bind matrix, then the root matrix, then a name table.
+  **Joint names are kept**: they are how a game finds "hand.R" for an attachment, and how a
+  diagnostic names a joint. They are not identity; a joint is its index within its skeleton.
+- **`foundry:animation`**, source `.fanim`, magic `FANM`, version 1: the duration, the joint
+  count the clip was made for, then the tracks. A clip is checked against a skeleton when the
+  two are paired, since a mod may override either.
+- **`.fmesh` version 2** adds:
+  - `VertexFormat.uint8x4`, legal only for `joints`; `weights` is `float32x4`;
+  - a joint-bounds section: per joint, the box, in that joint's bind space, of every vertex it
+    influences with a non-zero weight. It is what culling uses (§8);
+  - the rule that `joints`, `weights` and joint bounds come together or not at all.
+
+  Version 1 files still read, byte for byte as before. The writer emits version 1 for a mesh
+  with no skin, so **no existing package's bytes change**, and a test pins the room's hashes.
+- **`foundry:model` version 2** adds two optional fields: `skeleton`, an ID, and `clips`, a
+  list of `{ name, clip }`. A model with a skinned mesh must name a skeleton. The clip list is
+  how a game asks for "walk" by name without knowing a generated ID, as slots already map
+  material names.
+
+**Limits, all refused by name when exceeded:** 256 joints per skeleton, four influences per
+vertex, and bounded track and key counts in a clip (`Limits`, as `.fmesh` has).
+
+## 7. Import: glTF skins and animations (`author`)
+
+Import stays the only code that knows glTF (ADR-0053). `foundry:model_import` gains no field
+and no version: a file that has a skin imports it, and one that has none imports exactly as
+before.
+
+**Generated records** take ADR-0055's naming: `<model>.skeleton`, and `<model>.clip<i>` in the
+file's animation order. The model's `clips` list carries each glTF animation's name. An
+unnamed or duplicate-named animation is refused, since the name is how it is found.
+
+**The skeleton** is the skin's joints, plus every node on the path between two joints, so the
+hierarchy is closed. Those added joints influence no vertex. Joints are ordered parents first,
+keeping the file's order among siblings, and vertex joint indices are remapped to match. The
+transforms of nodes above the skeleton's root are baked into `root`; `front` is applied there
+too, once, as M20 applies it to parts. Inverse bind matrices are read from the file, or are the
+inverse of the rest pose when the file omits them, as glTF specifies.
+
+**Clips** keep the file's key times and values. Nothing is resampled. A channel is translated
+into a track when its target is a joint of the model's skeleton.
+
+**Refused, each with a diagnostic naming the object and the fix:**
+- a skinned primitive whose joint or weight accessor is missing, the wrong type, or of unequal
+  count; `JOINTS_1` or `WEIGHTS_1` (more than four influences);
+- a joint index outside the skin; a vertex whose weights are all zero, negative or non-finite;
+- more than one skin used by one model; more than 256 joints after closure;
+- a skin whose joints do not form one tree; a non-invertible bind matrix;
+- `CUBICSPLINE` interpolation ("bake to linear keys on export");
+- key times that are unsorted, negative or non-finite; a rotation key that is not unit length
+  beyond `Quat`'s tolerance.
+
+**Warned and counted, never silent (ADR-0048):**
+- weights that do not sum to one are normalised;
+- a channel that targets a node outside the skeleton, or morph weights, is dropped;
+- a non-joint node above the root that a clip animates is treated as static.
+
+**Output depends on the source bytes alone** (ADR-0055). Two hosts importing the same file
+produce identical `.fskel`, `.fanim` and `.fmesh` bytes, which §12 checks between the Mac and
+the PC.
+
+## 8. `rhi` and `render3d`: drawing a skinned mesh
+
+**No shader changes, and no skinned variant.** `3d.md` §5 lists "the skinned variants of each"
+shading model for M24, and §9 says skinning runs on the CPU. Both cannot be built: a mesh
+skinned on the CPU reaches the vertex shader as plain positions, normals and tangents, which
+the existing unlit, lit and shadow shaders already draw. This design follows §9 and corrects
+§5. ADR-0054's slots 6 and 7 stay reserved for the day GPU skinning has its measured trigger;
+until then `joints` and `weights` are CPU-side streams that are never bound.
+
+**`rhi` gains one capability: vertex data written every frame.** A vertex buffer the CPU fills
+each frame and the GPU reads in that frame, safe with two frames in flight. Step 4 pins the
+exact form after reading both backends (a mappable vertex buffer per frame slot, or the existing
+staging copy into a device-local one), states the null backend's rules for misuse, and proves
+it on Metal and, compiling, on Vulkan. Nothing else in the RHI moves.
+
+**`render3d`:**
+- `createMesh` accepts a mesh with `joints` and `weights`. It keeps a CPU copy of the bind
+  positions, normals, tangents, joints, weights and joint bounds, and uploads the other streams
+  and the indices as today.
+- `MeshDraw` and `ModelDraw` gain `skin: ?[]const Mat4`, the skin matrices for this draw,
+  copied at submission. A skinned mesh drawn without them, or with the wrong count, is refused
+  with a named error; an unskinned mesh given them is refused too.
+- **Culling** uses the union of each joint's bound transformed by its skin matrix and the
+  world matrix. It is conservative and costs eight corners per joint, with no vertex touched.
+- **Skinning runs in `prepare`,** once per submitted instance that the camera or the shadow
+  frustum kept, through `anim.skin` over `core.Jobs`, into the frame slot's vertex data. The
+  colour pass and the shadow pass draw the same skinned vertices.
+- **A per-frame budget,** `Config.max_skinned_vertices` (default 262,144). A draw that would
+  exceed it is not drawn and is counted; it never truncates a mesh.
+- `Stats` gains skinned draws, skinned vertices and draws dropped for budget. The profiler
+  gains a `render.skin` zone.
+
+`render3d` is granted `anim` in the build graph: an L3 module taking an L1 one, downward.
+
+**Blended skinned draws** sort by the instance's bound centre, as unskinned ones do.
+
+## 9. What the public ABI and the overlay gain
+
+**Nothing enters the public ABI in M24.** `3d.md` §9's list for `FoundryApi_v6` (M25) does not
+name animation. Whether v6 publishes poses, and in what shape, is M25's design to decide after
+this Zig API has held for a milestone. The API is drawn for a table regardless: values and
+caller-owned buffers, named refusals, no callbacks.
+
+**The overlay gains two profiler zones and the new `Stats` fields,** through `render3d`, which
+`debug` already sees. `debug` is not granted `anim`.
+
+## 10. `sandbox3d`: a walker in the room
+
+**The character is generated in-repo,** by `scripts/m24/make_character.py`, as M20's scene is:
+a blocky figure of about 1.7 m (torso, head, two-segment arms and legs), around 19 joints and
+under 2,000 vertices, with blended weights at the elbows, knees, hips and shoulders, and two
+clips, `idle` and `walk`. It is authored by the repository, under its licence, and regenerates
+byte-identically. It is deliberately plain: it has to show bending joints, not art.
+
+**The walker is the sample's own record,** `sandbox3d:walker.main`, validated like M23's walk
+record: the model, a list of waypoints in the room, a speed, and a cross-fade time. The dusk
+mod does not override it.
+
+**Each fixed tick,** the sample moves the walker toward its next waypoint with a second
+`physics3d` character (so it collides with the room and the course), turns it to face its
+motion, and chooses `walk` when it moved and `idle` when it is waiting at a waypoint. It
+samples both clips at `tick × dt`, wrapped, blends them by a cross-fade weight that moves at a
+fixed rate per tick, and keeps the pose. Each frame it submits the model with that pose's skin
+matrices. Playback state is two integers and a weight in the sample; **no engine component is
+declared** until a second consumer shows what one should hold (§14).
+
+**The walker and the player do not collide.** They are on layers that ignore each other, so
+M23's tour is untouched and its pinned hash, `cb99ccfcf2b6d6c3`, must not change. A test
+asserts it.
+
+**The tour grows a walker stage.** `FOUNDRY_SANDBOX3D_WALK=tour` also runs the walker for a
+fixed number of ticks, checks that it reached its waypoints and that both clips and a
+cross-fade were used, and hashes every tick's pose bytes and skin matrices. It then replays in
+a fresh world and requires the same hash.
+
+**Speed and stride are authored to agree,** by the generator, so the feet do not visibly slide.
+Root motion is deferred.
+
+**Reload:** a changed skeleton, clip or mesh rebuilds the walker's values, as `Walk.refresh`
+rebuilds collision.
+
+## 11. Platform assessment
+
+- **Metal:** the first backend for per-frame vertex data and the skinned readbacks.
+- **Windows/Vulkan, on the PC, is needed** for: per-frame vertex data under synchronization
+  validation, which is the one new Vulkan path; the native x86_64 run of `anim`; the importer's
+  bytes compared with the Mac's; and the walker windowed from a relocated install. The PC
+  rules stand: check it is idle, `-j2` at below-normal priority, background jobs, a worktree.
+- **Linux: compile only.** Nothing here is Linux-specific: no platform, window or loader
+  change. `3d.md` §10.2 owes no run.
+
+## 12. Verification
+
+**`anim` (unit tests):**
+- every `validate` refusal, for skeletons and clips;
+- sampling: on a key, between keys, before the first and after the last, `step`, a joint with
+  no track keeping rest, the shorter arc across a quaternion sign flip;
+- `wrap` and `clamp`; `blend` at 0, 1 and between;
+- `skinMatrices` on a three-joint chain against hand-computed matrices; a rest pose yielding
+  the identity skin;
+- **the skinning reference:** a bent two-joint strip whose skinned positions and normals are
+  hand-computed, and a randomised fixture compared with an independent `f64` implementation,
+  within 1e-5;
+- skinning the same mesh inline and across chunked `Jobs` gives identical bytes;
+- **the sampling replay:** a 1,200-tick run sampled and blended twice in one process, with
+  every tick's bytes equal and one hash pinned per platform family if they differ;
+- no function allocates.
+
+**Guards verified by mutation,** each named in its step's Resolution: the parent-order check,
+the rest-pose fallback, the shorter-arc choice, weight normalisation, the joint-index bound,
+the skin-count check in `render3d`, and the budget refusal.
+
+**`asset`:** a round trip and a pinned writer hash for `.fskel`, `.fanim` and a version-2
+`.fmesh`; every `ReadError`; a newer version reporting `UnsupportedVersion`; version-1 `.fmesh`
+files reading unchanged; model version 1 records loading unchanged.
+
+**`author`:** fixtures built in-repo for a valid skin and each refusal and warning in §7; the
+hierarchy closure and remapping; `front` applied once; the M20 room's and M23 course's output
+hashes unchanged.
+
+**`rhi` and `render3d`:** the null backend refusing misuse of per-frame vertex data; a skinned
+readback on Metal and on Vulkan where a bent strip's pixel matches the CPU reference at 1× and
+4×, lit and in shadow; a posed mesh culled and kept correctly at the frustum's edge; the budget
+refusal counted.
+
+**The sample:** the tour with its walker stage passes in `zig build test` (null), windowed on
+Metal and windowed on Vulkan from relocated ReleaseSafe installs, dusk off and on; M23's hash
+unchanged; both ad-hoc releases stage, since the sample gains asset kinds.
+
+**Cost, measured and never estimated,** at ReleaseSafe, **inside the paced 60 Hz frame loop**,
+which is how the owner reads a budget (2026-10-01), on the Mac and the PC: the median and p95
+of the sample's `animation` zone (sampling, blending and skin matrices for one walker) and of
+`render.skin`. **Budgets: p95 under 0.10 ms for `animation` and under 0.25 ms for
+`render.skin`.** A run with sixteen walkers is measured and recorded without a budget, to show
+how the cost scales. Exceeding a budget is the trigger in §14, not a reason to redesign.
+
+**By hand:** a person watches the walker walk, turn, stop and cross-fade, and says so.
+
+## 13. Implementation order — eight bounded steps
+
+Each step ends with a Resolution here, an updated `PROJECT_STATE.md`, the bar and a commit. There
+is no automatic chaining.
+
+### Step 1 — `anim`: skeletons, clips, poses, sampling, blending and the skinning kernel
+
+§3, §4 and §5: the module in `build.zig` at L1, its values and validation, `sample`, `wrap`,
+`clamp`, `blend`, `skinMatrices`, `modelMatrices` and `skin`, with §12's `anim` tests.
+**Exit:** the sampling replay is byte-identical in one process, and the skinning reference
+passes, with no device and no asset.
+
+### Step 2 — `asset`: `.fskel`, `.fanim`, `.fmesh` version 2 and the model record
+
+§6: the three formats, `foundry:skeleton` and `foundry:animation`, `uint8x4`, joint bounds,
+`foundry:model` version 2, and their loaders. **Exit:** each format round-trips with a pinned
+hash, every malformed file is refused by name, and every version-1 file reads unchanged.
+
+### Step 3 — `author`: glTF skins and animations
+
+§7: the import, its refusals and warnings, and the generated IDs. **Exit:** a skinned glTF
+fixture compiles to a skeleton, clips and a version-2 mesh that Step 1 samples and skins to the
+fixture's known pose, every §7 refusal has a diagnostic, and the room's and course's hashes are
+unchanged.
+
+### Step 4 — `rhi`: vertex data written every frame
+
+§8's one capability, on null, Metal and Vulkan (compiled and validated by `vulkan-check`).
+**Exit:** a vertex buffer rewritten each frame draws correctly on Metal across frames in
+flight, and the null backend refuses each misuse.
+
+### Step 5 — `render3d`: skinned meshes
+
+§8: residency, `skin` on the draw structs, culling, skinning in `prepare`, the shadow pass, the
+budget and `Stats`. **Exit:** the bent-strip readback matches the CPU reference on Metal, lit
+and in shadow, at 1× and 4×.
+
+### Step 6 — `sandbox3d`: the walker, on Metal
+
+§10: the character generator, the walker record, patrol, cross-fade, the tour's walker stage,
+reload and the measured cost on the Mac. **Exit:** the tour passes headless and windowed on
+Metal from a relocated ReleaseSafe install, the pose replay hash is stable, and M23's hash is
+unchanged.
+
+### Step 7 — Windows/Vulkan on the PC
+
+The native `anim`, asset, import and sample suites; the Vulkan skinned readback under
+validation; the importer's bytes compared with the Mac's; the windowed tour from a relocated
+install; the recorded cost; pack-up. **Exit:** every test and the tour pass natively on the PC
+with validation clean, and replay is byte-identical on that machine.
+
+### Step 8 — Close M24
+
+This step:
+- reconciles `3d.md` §5 (no skinned shader variants while skinning is on the CPU), §3's table
+  (skeleton and clip rows) and §10's M24 row;
+- adds `anim` to CLAUDE.md §4.3's layer table and `render3d`'s grant of it; moves ADR-0058 to
+  Accepted and into §4.1; updates §9's 3D row;
+- appends a dated note to ADR-0055 for the `skeleton` and `clip<i>` segments;
+- updates AGENTS.md's bar if a step changed it, the roadmap, the design index and
+  `PROJECT_STATE.md`;
+- runs the bar and tags `m24`.
+
+It pushes only when asked, and stops before M25's design. **Exit:** every document names M24
+complete, and nothing names a contract the code does not have.
+
+## 14. What stays open, deliberately
+
+| Deferred | Returns when |
+| --- | --- |
+| GPU skinning (vertex-shader palette or compute), and skinned shader variants | `render.skin` measured above its budget at a character count a game has (`3d.md` §4's trigger) |
+| An engine-declared animation component in `scene`, saved with a world | A second consumer of playback state exists, or M26's sample must save a pose |
+| Animation in the public ABI | M25's design decides what `FoundryApi_v6` publishes |
+| Root motion | A game whose character speed must come from its clip |
+| State machines, layers, masks, additive poses, events | A game needs any of them; each is game logic over `sample` and `blend` first |
+| Inverse kinematics (foot placement, look-at) | A game needs feet on M23's steps to look right |
+| Cubic-spline keys | Real assets are refused for it often enough that baking on export is a burden |
+| Morph targets | A game needs faces or blend shapes |
+| Animated nodes that are not joints (rigid part animation) | A game needs an animated prop without a skin; it wants a model that keeps nodes |
+| More than one skin per model; more than four influences; more than 256 joints | A real asset is refused for it |
+| Inverse-transpose normals for non-uniformly scaled joints | A visible shading error on a real asset |
+| Clip compression and key reduction | A shipped package's clip size, or sampling cost, measured as a problem |
+| A third-person player body | M26's sample, if it is third-person |
+| An animation panel in the overlay | Debugging a game's animation needs one |
+
+## 15. Decisions acceptance fixes
+
+Every choice is recommended as written. Nothing blocks Step 1 once these are accepted.
+
+| # | Choice | Where |
+| --- | --- | --- |
+| 1 | A new L1 module, `anim`, on `core` alone: no asset, no entity, no renderer, no clock (ADR-0058) | §3 |
+| 2 | Skeletons and clips are compiled assets, `foundry:skeleton`/`.fskel` and `foundry:animation`/`.fanim`, handed to `anim` as borrowed values | §3, §6 |
+| 3 | Skinning is linear-blend, on the CPU, in `anim.skin`, run by `render3d` over `core.Jobs` | §5, §8 |
+| 4 | **No skinned shader variants are built, correcting `3d.md` §5,** which lists them for M24 while §9 says skinning is on the CPU. Slots 6 and 7 stay reserved | §8 |
+| 5 | `rhi` gains vertex data written every frame, and nothing else | §8 |
+| 6 | `render3d` is granted `anim`; `debug` is not | §8, §9 |
+| 7 | `.fmesh` version 2 adds `uint8x4` joints, `float32x4` weights and per-joint bounds; unskinned meshes are still written as version 1, so no existing bytes change | §6 |
+| 8 | `foundry:model` version 2 adds `skeleton` and a named `clips` list; one skin per model | §6 |
+| 9 | Generated IDs are `<model>.skeleton` and `<model>.clip<i>`; `foundry:model_import` gains no field | §7 |
+| 10 | Limits: 256 joints, four influences; cubic-spline keys, morph targets and non-joint node animation are refused or dropped with a warning, never converted silently | §7 |
+| 11 | Sampling follows glTF: linear translation and scale, shorter-arc slerp, rest pose for untracked paths; time is seconds derived from the tick count | §4 |
+| 12 | Blending is a two-pose cross-fade only | §4 |
+| 13 | Playback state lives in the sample; no engine animation component and nothing in the ABI in M24 | §9, §10 |
+| 14 | The character is generated in-repo; it is a second walker, on layers the player ignores, and the player stays first-person | §10 |
+| 15 | Budgets are read inside the paced frame loop: p95 under 0.10 ms for `animation` and 0.25 ms for `render.skin`, one walker, both machines | §12 |
+| 16 | The PC is needed (Step 7); Linux is compile-only | §11 |

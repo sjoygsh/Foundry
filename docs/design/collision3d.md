@@ -1291,6 +1291,15 @@ cross checks, and the three headless samples. The declared count is unchanged at
 test was rewritten, none added), 1,971 passing with the one expected skip. No ABI change, no
 overlay grant, no new dependency. Linux is compile-only.
 
+**Owner's answers after the close (2026-10-01), appended; nothing above is changed.**
+- **The budget is read inside the paced frame loop.** On that reading the PC is well under
+  0.25 ms (p95 0.10–0.13 ms) and the Mac sits on the line (p95 0.243–0.254 ms: one run under,
+  two a few microseconds over). So §15's trigger for specialised pair routines is at its
+  threshold on the Mac, not clearly past it. Nothing was started; whether to schedule that work
+  is still the owner's decision.
+- **The hand check:** the owner walked with the keys and saw it work. Mouse look and a live
+  reload by hand were not mentioned, and stay unrecorded.
+
 ## 15. What stays open, deliberately
 
 | Deferred | Returns when |
