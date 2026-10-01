@@ -1022,7 +1022,7 @@ and regression coverage in `3d.md` §10:
 - **M22 Light:** the lit model, lights, a shadow, HDR, and a content mod that changes the room.
   Design accepted 2026-09-29: [`light.md`](design/light.md), with ADR-0056.
 - **M23 Collision:** `physics3d` and a first-person walk.
-  Design accepted 2026-09-30: [`collision3d.md`](design/collision3d.md), with ADR-0057; Steps 1–5 done.
+  Design accepted 2026-09-30: [`collision3d.md`](design/collision3d.md), with ADR-0057; Steps 1–6 done.
 - **M24 Animation:** skins and clips, sampled at the fixed step.
 - **M25 Public 3D:** `FoundryApi_v6`, with a content mod and a native one.
 - **M26 A playable 3D sample,** played by someone who did not build it, on macOS, Windows and a

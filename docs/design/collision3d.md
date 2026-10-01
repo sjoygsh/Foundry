@@ -1,7 +1,7 @@
 # Design: M23 — Collision: `physics3d`, collision meshes, the character controller and a first-person walk
 
 **Status:** Accepted 2026-09-30, when the owner requested Step 1, with every §16 choice as
-written. Steps 1–5 are done; Step 6 is next.
+written. Steps 1–6 are done; Step 7, the close, is next.
 **Date:** 2026-09-30
 **Baseline:** `a0f8d73`, tag `m22`. M0–M22 are complete.
 **Decisions:**
@@ -1172,7 +1172,7 @@ the two package tests. The native, Metal and both cross checks pass, as do all t
 samples. There is no ABI change, and the overlay is not granted `physics3d`. The
 Windows runtime is Step 6; Linux is compile-only.
 
-### Step 6 — Windows/Vulkan on the PC
+### Step 6 — Windows/Vulkan on the PC — Done 2026-10-01
 
 This step runs, on x86_64 Windows:
 - the `physics3d` suite, the asset and import tests, and `sandbox3d-test`, natively;
@@ -1182,6 +1182,46 @@ This step runs, on x86_64 Windows:
 It fixes anything x86_64 shows, and records the evidence and pack-up. **Exit:** every scenario
 and the tour pass natively on the PC, with Vulkan validation clean. Replay is byte-identical on
 that machine.
+
+**Resolution — Step 6 (2026-10-01): complete.** The pushed Step 5 tree (`8d5a735`) ran natively
+on Windows x64, from a clean detached checkout with nothing overlaid: Intel Arc A750, Vulkan
+1.4, Zig 0.16.0, LunarG SDK 1.4.357.0. The PC was idle (CPU 15%), and every build used `-j2` at
+below-normal priority. **x86_64 showed nothing to fix; no file changed in this step.**
+
+**Native suites, all exit 0:**
+- `physics3d-test`: **61 of 61** in Debug and again in ReleaseSafe. That is every §11.1 query
+  test, every §11.2 scenario and the 1,200-tick replay.
+- `asset-test` 123 of 124 (one skip), `author-test` 88 of 91 (three skips), `sandbox3d-test`
+  **14 of 14**, which includes the package tour, its replay and the reload.
+- The whole `zig build test` graph, on the default backend (101 steps) and with `-Drhi=vulkan`
+  under required validation (192 steps). Their printed totals, 1,677 of 1,682 and 1,437 of
+  1,456, leave out the test binaries the focused runs had just cached, so they are not
+  comparable with earlier whole-graph counts. The skips are the usual Windows-conditional ones.
+
+**The tour, windowed on Vulkan,** from a ReleaseSafe install moved out of its prefix, started
+in the desktop session at normal integrity with Zig and the SDK off `PATH` and `APPDATA` in a
+scratch root. Five runs, all exit 0 with `tour: pass` on every stage:
+- base and dusk under Khronos validation with synchronization checks: **no error and no
+  warning**; the log holds only the layer's own enabled-checks notice, and the loader shows
+  only `VK_LAYER_KHRONOS_validation` inserted;
+- base twice with no validation;
+- dusk with every layer disabled.
+
+**Replay:** byte-identical on that machine in every run, 495 ticks. Its hash,
+`cb99ccfcf2b6d6c3`, is also the Mac's. ADR-0013 does not promise that across machines, and
+nothing here relies on it. The dusk package built there has the SHA-256 M22 recorded.
+
+**Cost on the PC (§11.4), ReleaseSafe, over ten runs:**
+- **Paced moves**, in the 60 Hz frame loop: median **0.071–0.088 ms**, p95 **0.12–0.13 ms**,
+  with one run at 0.20 ms. Every run is under the 0.25 ms budget.
+- **Unpaced moves**, the replay: median 0.058–0.068 ms, p95 0.106–0.115 ms.
+- So the PC meets the budget either way it is read. The Mac's paced p95 (0.30–0.32 ms)
+  remains over it and its unpaced p95 (0.139 ms) under; the reading stays the owner's call,
+  and the §15 trigger stays unacted on.
+
+**Still not done by a person:** walking, looking and a live reload by hand (§11.4), on either
+machine. **Pack-up:** the install, logs, scripts and the scheduled task are removed from the
+PC; its checkout is left clean at `8d5a735`. Linux stays compile-only.
 
 ### Step 7 — Close M23
 

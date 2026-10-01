@@ -1,9 +1,24 @@
 # Foundry Project State
 
-**Last updated:** 2026-09-30
-**Current handoff: M23 Steps 1–5 of 7 are complete (`docs/design/collision3d.md`, ADR-0057 accepted);
-stop before Step 6**, the native Windows/Vulkan runs on the PC. `sandbox3d` walks the lit room
-and the course on Metal. Nothing has been run on the PC for M23 yet. M0–M22 are complete.
+**Last updated:** 2026-10-01
+**Current handoff: M23 Steps 1–6 of 7 are complete (`docs/design/collision3d.md`, ADR-0057 accepted);
+stop before Step 7**, the close. `sandbox3d` walks the lit room and the course on Metal and on
+Windows/Vulkan. M0–M22 are complete.
+
+**M23 Step 6 is done (2026-10-01).** The pushed Step 5 tree (`8d5a735`) ran natively on the
+Windows PC from a clean checkout; x86_64 showed nothing to fix and no file changed.
+- **Suites:** `physics3d-test` 61 of 61 in Debug and ReleaseSafe; `asset-test` 123 of 124;
+  `author-test` 88 of 91; `sandbox3d-test` 14 of 14; the whole test graph exits 0 on the default
+  backend and on `-Drhi=vulkan` under validation.
+- **The tour:** windowed on Vulkan from a relocated ReleaseSafe install, five runs (base and
+  dusk validated, base twice plain, dusk with all layers off), all exit 0 with `tour: pass`.
+  Validation reports no error or warning. The replay is byte-identical, hash
+  `cb99ccfcf2b6d6c3`, the same as the Mac's.
+- **Cost on the PC:** paced p95 0.12–0.13 ms (one run 0.20 ms), unpaced p95 0.106–0.115 ms,
+  both under the 0.25 ms budget. The Mac's paced p95 stays over it; that reading is still the
+  owner's call.
+- **Not done:** a person has not walked, looked or live-reloaded by hand on either machine.
+- The PC is packed up. Linux is compile-only.
 
 **M23 Step 5 is done (2026-09-30).** Codex wrote most of this step before running out; Claude
 finished it. `sandbox3d` has a first-person walk:
