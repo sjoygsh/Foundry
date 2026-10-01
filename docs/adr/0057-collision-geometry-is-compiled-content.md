@@ -1,6 +1,6 @@
 # ADR-0057: Collision geometry is compiled content, derived at import and copied into `physics3d`
 
-**Status:** Accepted 2026-09-30, when the owner requested M23 Step 1
+**Status:** Accepted 2026-09-30, when the owner requested M23 Step 1 — implemented in M23 (2026-10-01, tag `m23`)
 **Date:** 2026-09-30
 **Informed by:** ADR-0006, ADR-0021, ADR-0048, ADR-0051, ADR-0053, ADR-0055,
 `docs/design/3d.md` §8, `docs/design/collision3d.md` §6, §8 and §9

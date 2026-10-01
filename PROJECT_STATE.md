@@ -1,9 +1,30 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-01
-**Current handoff: M23 Steps 1–6 of 7 are complete (`docs/design/collision3d.md`, ADR-0057 accepted);
-stop before Step 7**, the close. `sandbox3d` walks the lit room and the course on Metal and on
-Windows/Vulkan. M0–M22 are complete.
+**Current handoff: M23 is complete, all seven steps, tag `m23` (`docs/design/collision3d.md`,
+ADR-0057). Stop before M24's design.** M24 is Animation; it has no design document yet, and
+writing one is the next piece of work. M0–M23 are complete.
+
+**Open for the owner, carried out of M23:**
+- **The cost budget's reading.** A move's paced p95 is at the 0.25 ms line on the Mac
+  (0.243–0.254 ms) and well under it on the PC (0.10–0.13 ms); unpaced it is under 0.09 ms on
+  both. Whether the budget means paced or unpaced time is undecided.
+- **The hand check.** Nobody has walked with the keys, looked with the mouse or live-reloaded
+  the course by hand, on either machine. Only the scripted tour, scripted F3 and the reload
+  test have run.
+
+**M23 Step 7 is done (2026-10-01).** The close:
+- rewrote the multi-riser unit test on the course's stairs, so reverting the movement-cast
+  refinement now fails it (60 of 61);
+- removed two repeated, identical queries from a character move, with no answer changed: the
+  tour's replay hash is still `cb99ccfcf2b6d6c3` on both machines;
+- re-ran the changed controller on the PC: `physics3d-test` 61 of 61 in Debug and ReleaseSafe,
+  `sandbox3d-test` 14 of 14 and the five-run validated Vulkan tour, then packed the PC up;
+- reconciled `3d.md` §8 and §10, ADR-0051, ADR-0055 (a dated note) and ADR-0057, CLAUDE.md
+  §4.1/§4.3/§9, the roadmap and the design index.
+
+The nine-command bar passes. The declared count is unchanged at 1,972, with 1,971 passing and
+one expected skip. No ABI change, no overlay grant. Linux is compile-only.
 
 **M23 Step 6 is done (2026-10-01).** The pushed Step 5 tree (`8d5a735`) ran natively on the
 Windows PC from a clean checkout; x86_64 showed nothing to fix and no file changed.

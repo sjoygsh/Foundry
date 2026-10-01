@@ -1021,8 +1021,8 @@ and regression coverage in `3d.md` §10:
 - **M21 Hierarchy:** the transform components and propagation, with 3D in the overlay.
 - **M22 Light:** the lit model, lights, a shadow, HDR, and a content mod that changes the room.
   Design accepted 2026-09-29: [`light.md`](design/light.md), with ADR-0056.
-- **M23 Collision:** `physics3d` and a first-person walk.
-  Design accepted 2026-09-30: [`collision3d.md`](design/collision3d.md), with ADR-0057; Steps 1–6 done.
+- **M23 Collision** (done 2026-10-01, tag `m23`): `physics3d` and a first-person walk.
+  [`collision3d.md`](design/collision3d.md), with ADR-0057.
 - **M24 Animation:** skins and clips, sampled at the fixed step.
 - **M25 Public 3D:** `FoundryApi_v6`, with a content mod and a native one.
 - **M26 A playable 3D sample,** played by someone who did not build it, on macOS, Windows and a
@@ -1116,3 +1116,11 @@ in a move. Step 5 walks `sandbox3d` on Metal, through the room and a compiled co
 physics suite passes Debug and ReleaseSafe. Ten guards fail deliberate mutations and are
 restored. The final bar passes 1,967 of 1,968 tests (one expected skip). Step 5's Metal sample
 walk is next; nothing enters the ABI. Windows runtime proof remains Step 6, Linux compile-only.
+
+**M23, Collision, is complete (2026-10-01, tag `m23`).** Steps 5 to 7 finished it: `sandbox3d`
+walks the lit room and a compiled course, and its scripted tour (floor, steps, ramp, steep
+slope, wall slide) passes headless on null, windowed on Metal and windowed on Windows/Vulkan
+under clean validation, with a byte-identical replay on each machine. A move's paced p95 is
+0.10–0.13 ms on the PC and at the 0.25 ms budget line on the Mac; the reading of that budget
+is left to the owner. A hand-driven walk by a person has not been done. Nothing enters the
+ABI; Linux is compile-only. M24, Animation, is next and has no design yet.

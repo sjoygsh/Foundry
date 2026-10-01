@@ -1,6 +1,6 @@
 # ADR-0051: 3D collision, queries and a character controller; no dynamics
 
-**Status:** Accepted 2026-09-27 (constraint only; M23 implements it)
+**Status:** Accepted 2026-09-27 — implemented in M23 (2026-10-01, tag `m23`)
 **Date:** 2026-09-27
 **Informed by:** ADR-0013, ADR-0022, `docs/design/3d.md` §8
 

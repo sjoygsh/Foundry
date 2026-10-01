@@ -87,3 +87,11 @@ decomposition, and is an import error that names the node.
   cannot express.
 - Real assets are refused for shear often enough that artists cannot reasonably fix them at
   export.
+
+## Note — 2026-10-01: the `collision` segment (ADR-0057)
+
+Appended at M23's close; nothing above is changed. `foundry:model_import` version 2 may also
+generate one record per model, `<model>.collision`, a `foundry:collision_mesh`. It is produced
+only when the import sets `collision true`, so `collision` joins `mesh<i>`, `material<i>` and
+`texture<i>` as a reserved generated segment. A version-1 import, or `collision false`,
+generates exactly what this ADR describes, byte for byte.

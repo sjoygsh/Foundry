@@ -149,13 +149,20 @@ pub fn move(w: *World, gpa: Allocator, handle: CharacterHandle, displacement: Ve
     if (!validFeet(c.config, original.add(displacement))) return error.InvalidMove;
     var r: CharacterMove = .{ .feet = original };
     var iteration: u32 = 0;
+    // A scan that finds nothing is the answer; only running out of iterations needs another.
+    var clear = false;
     while (iteration < max_depenetration_iterations) : (iteration += 1) {
-        const contact = w.characterContact(convex(c, r.feet), c.body) orelse break;
+        const contact = w.characterContact(convex(c, r.feet), c.body) orelse {
+            clear = true;
+            break;
+        };
         r.feet = r.feet.add(contact.normal.scale(contact.depth + narrow.contact_skin));
         if (!validFeet(c.config, r.feet)) return error.InvalidMove;
         r.depenetrated = true;
     }
-    if (w.characterContact(convex(c, r.feet), c.body) != null) {
+    // The ground under the final feet, kept when the snap check already asked for it.
+    var probed: ??Ground = null;
+    if (!clear and w.characterContact(convex(c, r.feet), c.body) != null) {
         r.stuck = true;
     } else {
         const start = r.feet;
@@ -210,19 +217,23 @@ pub fn move(w: *World, gpa: Allocator, handle: CharacterHandle, displacement: Ve
                 }
             }
         }
-        if (c.ground != null and displacement.y <= 0 and ground(w, c, r.feet) == null and c.config.snap_distance > 0) {
-            const down = Vec3.init(0, -c.config.snap_distance, 0);
-            if (groundCast(w, c, r.feet, down)) |h| {
-                if (walkable(c.config, h)) {
-                    r.feet = r.feet.add(down.scale(h.fraction));
-                    r.snapped = true;
-                    record(&r, hits, h);
+        if (c.ground != null and displacement.y <= 0 and c.config.snap_distance > 0) {
+            probed = ground(w, c, r.feet);
+            if (probed.? == null) {
+                const down = Vec3.init(0, -c.config.snap_distance, 0);
+                if (groundCast(w, c, r.feet, down)) |h| {
+                    if (walkable(c.config, h)) {
+                        r.feet = r.feet.add(down.scale(h.fraction));
+                        r.snapped = true;
+                        record(&r, hits, h);
+                        probed = null; // The feet moved.
+                    }
                 }
             }
         }
     }
     if (!validFeet(c.config, r.feet)) return error.InvalidMove;
-    r.ground = if (r.stuck) null else ground(w, c, r.feet);
+    r.ground = if (r.stuck) null else probed orelse ground(w, c, r.feet);
     r.grounded = r.ground != null;
     w.bodies.get(c.body).?.pose = .at(centre(c.config, r.feet));
     stored.ground = r.ground;

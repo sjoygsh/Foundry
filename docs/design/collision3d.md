@@ -1,7 +1,7 @@
 # Design: M23 — Collision: `physics3d`, collision meshes, the character controller and a first-person walk
 
 **Status:** Accepted 2026-09-30, when the owner requested Step 1, with every §16 choice as
-written. Steps 1–6 are done; Step 7, the close, is next.
+written. **Complete 2026-10-01, all seven steps, tag `m23`.**
 **Date:** 2026-09-30
 **Baseline:** `a0f8d73`, tag `m22`. M0–M22 are complete.
 **Decisions:**
@@ -1223,7 +1223,7 @@ nothing here relies on it. The dusk package built there has the SHA-256 M22 reco
 machine. **Pack-up:** the install, logs, scripts and the scheduled task are removed from the
 PC; its checkout is left clean at `8d5a735`. Linux stays compile-only.
 
-### Step 7 — Close M23
+### Step 7 — Close M23 — Done 2026-10-01
 
 This step:
 - reconciles the parent documents:
@@ -1240,6 +1240,56 @@ This step:
 
 It pushes only when asked, and stops before M24's design. **Exit:** every document names M23
 complete, and nothing names a contract the code does not have.
+
+**Resolution — Step 7 (2026-10-01): complete.** M23 is closed at tag `m23`.
+
+**Two loose ends from Step 5 were finished first,** because the owner asked for all pending
+work:
+- **The riser unit test now isolates its guard.** Step 5 recorded that Codex's multi-riser
+  test passed with the movement-cast refinement reverted. It is rewritten on the course's own
+  stairs (risers listed before treads, side walls, climbed toward −Z under gravity at the
+  tour's speed). Reverting the refinement now fails it, 60 of 61, and the guard is restored.
+- **A move no longer repeats two identical queries.** The overlap scan is not run a second
+  time when the first found nothing, and the final ground probe reuses the snap check's when
+  the feet did not move after it. No answer changes: every physics test passes, and the tour's
+  replay hash is still `cb99ccfcf2b6d6c3` on both machines.
+
+**Cost after that change (§11.4), ReleaseSafe, relocated installs:**
+
+| | Paced, in the 60 Hz frame loop | Unpaced, the replay |
+| --- | --- | --- |
+| Mac, Metal, three runs | median 0.095–0.112 ms, p95 **0.243–0.254 ms** | median 0.048–0.053 ms, p95 0.068–0.087 ms |
+| PC, Vulkan, five runs | median 0.059–0.061 ms, p95 **0.100–0.128 ms** | median 0.046–0.050 ms, p95 0.086–0.089 ms |
+
+The PC is under the 0.25 ms budget on every reading. The Mac's paced p95 came down from
+0.30–0.32 ms to the budget line: one run under it and two a few microseconds over. Its unpaced
+p95 is about a third of the budget. **Whether the budget is read paced or unpaced is still the
+owner's call**; the §15 trigger for specialised pair routines stays unacted on, since GJK is
+not what the paced figure measures.
+
+**The PC ran the changed controller too:** `physics3d-test` 61 of 61 in Debug and ReleaseSafe,
+`sandbox3d-test` 14 of 14, and the five-run windowed Vulkan tour from a fresh relocated
+install, all exit 0, validation with no error or warning. The two files were overlaid on the
+clean checkout with matching SHA-256 and restored afterwards; the PC is packed up again.
+
+**Documents reconciled:**
+- `3d.md` §8 says collision derives from a model import (ADR-0057), not "from a mesh or
+  authored separately", and that triggers are overlap queries filtered by layers.
+- `3d.md` §10's M23 row is done, with "on every backend" read as §1 reads it.
+- ADR-0055 has a dated note on the `collision` segment; ADR-0051 and ADR-0057 name M23 as
+  their implementation.
+- CLAUDE.md §4.1 and §9, the roadmap, the design index and `PROJECT_STATE.md` name M23
+  complete. CLAUDE.md §4.3 already held `physics3d` at L1.
+
+**What the exit does not include:** nobody has yet walked the room with the keys, looked
+with the mouse or reloaded the course live by hand (§11.4's hand check). The scripted tour,
+the scripted F3 and the package reload test are what stand in for it. It is recorded as open
+in `PROJECT_STATE.md`, not as passed.
+
+**Bar:** the nine commands pass on the Mac after the change: fmt, test, native, Metal and both
+cross checks, and the three headless samples. The declared count is unchanged at 1,972 (one
+test was rewritten, none added), 1,971 passing with the one expected skip. No ABI change, no
+overlay grant, no new dependency. Linux is compile-only.
 
 ## 15. What stays open, deliberately
 

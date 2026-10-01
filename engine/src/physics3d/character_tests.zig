@@ -118,28 +118,46 @@ test "character successive risers: a resting tread edge cannot pin the next hori
     var w: p.World = .empty;
     defer w.deinit(gpa);
     _ = try floor(&w);
+    // The sample course's stairs, walked as its tour walks them: four 0.15 m risers each
+    // listed before its 0.3 m tread, with side walls, climbed toward -Z under gravity. The
+    // capsule rests on one tread's edge while it meets the next riser.
     var positions: std.ArrayList(Vec3) = .empty;
     defer positions.deinit(gpa);
     var indices: std.ArrayList(u32) = .empty;
     defer indices.deinit(gpa);
     for (0..4) |i| {
-        const x = @as(f32, @floatFromInt(i)) * 0.3;
         const h = @as(f32, @floatFromInt(i + 1)) * 0.15;
-        const base: u32 = @intCast(positions.items.len);
-        try positions.appendSlice(gpa, &.{ .init(x, h - 0.15, -1), .init(x, h, -1), .init(x, h, 1), .init(x, h - 0.15, 1), .init(x + 0.3, h, -1), .init(x + 0.3, h, 1) });
-        for ([_]u32{ 0, 1, 2, 0, 2, 3, 1, 4, 5, 1, 5, 2 }) |index| try indices.append(gpa, base + index);
+        const front = -0.4 - @as(f32, @floatFromInt(i)) * 0.3;
+        const back = front - 0.3;
+        const quads = [_][4]Vec3{
+            .{ .init(-1.8, h - 0.15, front), .init(-0.8, h - 0.15, front), .init(-0.8, h, front), .init(-1.8, h, front) },
+            .{ .init(-1.8, h, front), .init(-0.8, h, front), .init(-0.8, h, back), .init(-1.8, h, back) },
+            .{ .init(-1.8, 0, back), .init(-1.8, h, back), .init(-1.8, h, front), .init(-1.8, 0, front) },
+            .{ .init(-0.8, 0, front), .init(-0.8, h, front), .init(-0.8, h, back), .init(-0.8, 0, back) },
+        };
+        for (quads) |quad| {
+            const base: u32 = @intCast(positions.items.len);
+            try positions.appendSlice(gpa, &quad);
+            for ([_]u32{ 0, 1, 2, 0, 2, 3 }) |index| try indices.append(gpa, base + index);
+        }
     }
+    const base: u32 = @intCast(positions.items.len);
+    try positions.appendSlice(gpa, &.{ .init(-1.8, 0.6, -1.6), .init(-0.8, 0.6, -1.6), .init(-0.8, 0.6, -2.6), .init(-1.8, 0.6, -2.6) });
+    for ([_]u32{ 0, 1, 2, 0, 2, 3 }) |index| try indices.append(gpa, base + index);
     _ = try mesh(&w, positions.items, indices.items);
-    const c = try standing(&w, .init(-0.5, p.contact_skin, 0));
+    const c = try standing(&w, .init(-1.3, p.contact_skin, 0.1));
+    const dt: f32 = 1.0 / 60.0;
+    var velocity: f32 = 0;
     var r: p.CharacterMove = undefined;
     var steps: usize = 0;
-    for (0..120) |_| {
-        r = try move(&w, c, .init(0.02, -0.002725, 0));
+    for (0..130) |_| {
+        velocity -= 9.81 * dt;
+        r = try move(&w, c, .init(0, velocity * dt, -0.4 * 3 * dt));
         try t.expect(!r.stuck);
+        if (r.grounded) velocity = 0;
         if (r.stepped > 0) steps += 1;
-        if (r.feet.x > 1.05) break;
     }
-    try t.expect(r.feet.x > 1.05 and @abs(r.feet.y - 0.6) <= 2 * p.contact_skin and steps >= 4);
+    try t.expect(@abs(r.feet.y - 0.6) <= 2 * p.contact_skin and steps >= 4);
 }
 
 test "character snap-down: descending stairs stays grounded and jumping never snaps or steps" {
