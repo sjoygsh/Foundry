@@ -10,6 +10,7 @@ const asset = @import("asset");
 
 const accessor = @import("accessor.zig");
 const document = @import("document.zig");
+const skin_import = @import("skin.zig");
 
 const Allocator = std.mem.Allocator;
 const Diagnostics = data.Diagnostics;
@@ -85,9 +86,11 @@ const Context = struct {
     limits: document.Limits,
     diags: *Diagnostics,
     collision_placements: []?Mat4 = &.{},
+    rig: ?skin_import.Rig = null,
 
     fn translate(self: *Context) Error!Result {
         try self.validateDocument();
+        self.rig = try (skin_import.Context{ .gpa = self.gpa, .arena = self.arena, .doc = self.doc, .buffers = self.buffers, .source = self.settings.source, .diags = self.diags, .limits = self.limits }).prepare(if (self.settings.front == .plus_z) Mat4.rotationY(std.math.pi) else Mat4.identity);
         var out: std.ArrayList(u8) = .empty;
         var generated: std.ArrayList(GeneratedAsset) = .empty;
 
@@ -105,6 +108,28 @@ const Context = struct {
         try self.emitTextures(&out);
         try self.emitModel(&out, material_ids);
         if (self.settings.collision) try self.emitCollision(&out, &generated);
+        if (self.rig) |rig| {
+            const path = try self.generatedPath("skeleton", 0, "fskel");
+            const bytes = asset.skeleton.write(self.arena, rig.skeleton) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return self.fail("skeleton", null, "cannot encode imported rig: {s}; repair joint transforms or names", .{@errorName(err)}),
+            };
+            try generated.append(self.arena, .{ .path = path, .bytes = bytes });
+            try out.print(self.arena, "{s} {s}.skeleton {{ source ", .{ asset.schemas.skeleton_name, self.settings.model_id });
+            try self.writeString(&out, path);
+            try out.appendSlice(self.arena, " }\n");
+            for (rig.clips, 0..) |clip, i| {
+                const cp = try self.generatedPath("clip", i, "fanim");
+                const cb = asset.animation.write(self.arena, clip.source) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return self.fail("animation", clip.name, "cannot encode imported clip: {s}; repair keys", .{@errorName(err)}),
+                };
+                try generated.append(self.arena, .{ .path = cp, .bytes = cb });
+                try out.print(self.arena, "{s} {s} {{ source ", .{ asset.schemas.animation_name, try self.generatedId("clip", i) });
+                try self.writeString(&out, cp);
+                try out.appendSlice(self.arena, " }\n");
+            }
+        }
 
         // Embedded images are runtime products. External images remain ordinary authored
         // assets and are copied by the package host, not duplicated here.
@@ -148,8 +173,6 @@ const Context = struct {
             if (!required) try self.warn("extensionsUsed", null, "extension '{s}' is used but not imported", .{name});
         }
         if (self.doc.cameras) |values| if (values.len != 0) try self.warn("cameras", null, "cameras are not imported in M20", .{});
-        if (self.doc.animations) |values| if (values.len != 0) try self.warn("animations", null, "animations are not imported until M24", .{});
-        if (self.doc.skins) |values| if (values.len != 0) try self.warn("skins", null, "skins are not imported until M24", .{});
         if (self.doc.buffers.len != self.buffers.len) return self.fail("buffers", null, "the resolved buffer count does not match the document", .{});
         if (self.doc.images.len != self.images.len) return self.fail("images", null, "the resolved image count does not match the document", .{});
     }
@@ -158,7 +181,7 @@ const Context = struct {
         const source_mesh = self.doc.meshes[mesh_index];
         if (source_mesh.primitives.len == 0) return self.failMesh(mesh_index, null, "has no primitives", .{});
 
-        var streams: [6]std.ArrayList(u8) = @splat(.empty);
+        var streams: [8]std.ArrayList(u8) = @splat(.empty);
         defer for (&streams) |*stream| stream.deinit(self.gpa);
         var indices: std.ArrayList(u32) = .empty;
         defer indices.deinit(self.gpa);
@@ -167,11 +190,16 @@ const Context = struct {
         var layout: ?Layout = null;
         var vertex_count: u32 = 0;
         var bounds: ?asset.MeshAabb = null;
+        const skinned = if (self.rig) |rig| rig.mesh_skinned[mesh_index] else false;
+        const joint_bounds = try self.arena.alloc(asset.MeshAabb, if (skinned) self.rig.?.skeleton.parents.len else 0);
+        const influenced = try self.arena.alloc(bool, joint_bounds.len);
+        @memset(influenced, false);
+        @memset(joint_bounds, .{ .min = .zero, .max = .zero });
 
         for (source_mesh.primitives, 0..) |primitive, primitive_index| {
             const at: u32 = @intCast(primitive_index);
             if (primitive.mode != 4) return self.failMesh(mesh_index, at, "uses primitive mode {d}; only triangle lists (4) are supported", .{primitive.mode});
-            if (primitive.targets) |targets| if (targets.len != 0) return self.failMesh(mesh_index, at, "has morph targets, which are not imported until M24", .{});
+            if (primitive.targets) |targets| if (targets.len != 0) return self.failMesh(mesh_index, at, "has morph targets; export a skeletal mesh without morph targets", .{});
             const primitive_layout = try self.primitiveLayout(mesh_index, at, primitive);
             const material_index = primitive.material orelse @as(u32, @intCast(self.doc.materials.len));
             if (material_index > self.doc.materials.len) return self.failMesh(mesh_index, at, "references material {d}, outside the material array", .{material_index});
@@ -218,6 +246,9 @@ const Context = struct {
             try self.appendOptional(mesh_index, at, primitive, "TEXCOORD_0", .uv, positions.count, &streams[2]);
             try self.appendOptional(mesh_index, at, primitive, "TEXCOORD_1", .uv, positions.count, &streams[3]);
             try self.appendOptional(mesh_index, at, primitive, "COLOR_0", .color, positions.count, &streams[4]);
+            if (skinned) {
+                try self.appendSkin(mesh_index, at, primitive, positions, &streams[6], &streams[7], joint_bounds, influenced);
+            } else if (primitive_layout.skin) return self.failMesh(mesh_index, at, "JOINTS_0/WEIGHTS_0 have no used skin; export the mesh with its skin in the default scene", .{});
 
             const first_index: u32 = @intCast(indices.items.len);
             if (primitive.indices) |index_accessor| {
@@ -250,6 +281,10 @@ const Context = struct {
         if (final_layout.uv0) try descriptors.append(self.gpa, .{ .semantic = .uv0, .format = .float32x2, .bytes = streams[2].items });
         if (final_layout.uv1) try descriptors.append(self.gpa, .{ .semantic = .uv1, .format = .float32x2, .bytes = streams[3].items });
         if (final_layout.color) |format| try descriptors.append(self.gpa, .{ .semantic = .color, .format = format, .bytes = streams[4].items });
+        if (skinned) {
+            try descriptors.append(self.gpa, .{ .semantic = .joints, .format = .uint8x4, .bytes = streams[6].items });
+            try descriptors.append(self.gpa, .{ .semantic = .weights, .format = .float32x4, .bytes = streams[7].items });
+        }
 
         const index_format: asset.MeshIndexFormat = if (vertex_count <= 65_536) .uint16 else .uint32;
         var index_bytes: std.ArrayList(u8) = .empty;
@@ -265,6 +300,7 @@ const Context = struct {
             .indices = index_bytes.items,
             .submeshes = submeshes.items,
             .bounds = bounds.?,
+            .joint_bounds = joint_bounds,
         };
         return asset.mesh_file.write(self.arena, mesh) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
@@ -278,9 +314,10 @@ const Context = struct {
         uv0: bool = false,
         uv1: bool = false,
         color: ?asset.MeshVertexFormat = null,
+        skin: bool = false,
 
         fn eql(a: Layout, b: Layout) bool {
-            return a.normal == b.normal and a.tangent == b.tangent and a.uv0 == b.uv0 and a.uv1 == b.uv1 and a.color == b.color;
+            return a.normal == b.normal and a.tangent == b.tangent and a.uv0 == b.uv0 and a.uv1 == b.uv1 and a.color == b.color and a.skin == b.skin;
         }
     };
 
@@ -305,7 +342,8 @@ const Context = struct {
             } else if (std.mem.eql(u8, name, "TANGENT")) {
                 result.tangent = true;
             } else if (std.mem.startsWith(u8, name, "JOINTS_") or std.mem.startsWith(u8, name, "WEIGHTS_")) {
-                return self.failMesh(mesh_index, primitive_index, "attribute '{s}' is not imported until M24", .{name});
+                if (!std.mem.eql(u8, name, "JOINTS_0") and !std.mem.eql(u8, name, "WEIGHTS_0")) return self.failMesh(mesh_index, primitive_index, "attribute '{s}' exceeds four influences; export only JOINTS_0/WEIGHTS_0", .{name});
+                result.skin = true;
             } else {
                 try self.warnMesh(mesh_index, primitive_index, "attribute '{s}' is not imported", .{name});
             }
@@ -314,6 +352,51 @@ const Context = struct {
     }
 
     const AttributeKind = enum { normal, tangent, uv, color };
+
+    fn appendSkin(self: *Context, mesh: u32, primitive_index: u32, primitive: document.Primitive, positions: accessor.View, joints_out: *std.ArrayList(u8), weights_out: *std.ArrayList(u8), boxes: []asset.MeshAabb, influenced: []bool) Error!void {
+        const ji = primitive.attributes.map.get("JOINTS_0") orelse return self.failMesh(mesh, primitive_index, "has no JOINTS_0; export joint indices", .{});
+        const wi = primitive.attributes.map.get("WEIGHTS_0") orelse return self.failMesh(mesh, primitive_index, "has no WEIGHTS_0; export skin weights", .{});
+        const joints = accessor.open(self.doc, self.buffers, ji) catch |err| return self.failAccessor(mesh, primitive_index, "JOINTS_0", ji, err);
+        const weights = accessor.open(self.doc, self.buffers, wi) catch |err| return self.failAccessor(mesh, primitive_index, "WEIGHTS_0", wi, err);
+        if (joints.shape != .vec4 or joints.normalized or !(joints.component == .u8 or joints.component == .u16) or joints.count != positions.count) return self.failMesh(mesh, primitive_index, "JOINTS_0 must be non-normalized UNSIGNED_BYTE/SHORT VEC4 with POSITION's count; repair the accessor", .{});
+        if (weights.shape != .vec4 or weights.count != positions.count or !((weights.component == .f32 and !weights.normalized) or ((weights.component == .u8 or weights.component == .u16) and weights.normalized))) return self.failMesh(mesh, primitive_index, "WEIGHTS_0 must be FLOAT or normalized UNSIGNED_BYTE/SHORT VEC4 with POSITION's count; repair the accessor", .{});
+        var normalized: u32 = 0;
+        const rig = self.rig.?;
+        for (0..positions.count) |v| {
+            var js: [4]u8 = undefined;
+            var ws: [4]f32 = undefined;
+            var sum: f64 = 0;
+            for (0..4) |lane| {
+                const j = try self.readUnsigned(mesh, primitive_index, "JOINTS_0", joints, @intCast(v), @intCast(lane));
+                if (j >= rig.remap.len) return self.failMesh(mesh, primitive_index, "vertex {d} joint {d} is outside the skin; repair joint indices", .{ v, j });
+                js[lane] = rig.remap[j];
+                ws[lane] = try self.readFloat(mesh, primitive_index, "WEIGHTS_0", weights, @intCast(v), @intCast(lane));
+                if (!std.math.isFinite(ws[lane]) or ws[lane] < 0) return self.failMesh(mesh, primitive_index, "vertex {d} has negative or non-finite weights; repair skin weights", .{v});
+                sum += ws[lane];
+                if (ws[lane] > 0) for (0..lane) |previous| {
+                    if (ws[previous] > 0 and js[previous] == js[lane]) return self.failMesh(mesh, primitive_index, "vertex {d} repeats a weighted joint; merge duplicate influences on export", .{v});
+                };
+            }
+            if (sum == 0) return self.failMesh(mesh, primitive_index, "vertex {d} has all-zero weights; assign an influence", .{v});
+            if (@abs(sum - 1) > 1e-6) normalized += 1;
+            const p = Vec3.init(try self.readFloat(mesh, primitive_index, "POSITION", positions, @intCast(v), 0), try self.readFloat(mesh, primitive_index, "POSITION", positions, @intCast(v), 1), try self.readFloat(mesh, primitive_index, "POSITION", positions, @intCast(v), 2));
+            for (&ws, js) |*w, j| {
+                w.* = @floatCast(@as(f64, w.*) / sum);
+                if (w.* > 0) {
+                    if (!influenced[j]) {
+                        boxes[j] = .{ .min = p, .max = p };
+                        influenced[j] = true;
+                    } else {
+                        boxes[j].min = .init(@min(boxes[j].min.x, p.x), @min(boxes[j].min.y, p.y), @min(boxes[j].min.z, p.z));
+                        boxes[j].max = .init(@max(boxes[j].max.x, p.x), @max(boxes[j].max.y, p.y), @max(boxes[j].max.z, p.z));
+                    }
+                }
+            }
+            try joints_out.appendSlice(self.gpa, &js);
+            for (ws) |w| try appendF32(weights_out, self.gpa, w);
+        }
+        if (normalized != 0) try self.warnMesh(mesh, primitive_index, "normalized weights for {d} vertex/vertices", .{normalized});
+    }
 
     fn appendOptional(self: *Context, mesh_index: u32, primitive_index: u32, primitive: document.Primitive, name: []const u8, kind: AttributeKind, expected_count: u32, out: *std.ArrayList(u8)) Error!void {
         const index = primitive.attributes.map.get(name) orelse return;
@@ -609,13 +692,13 @@ const Context = struct {
                 if (std.mem.eql(u8, name, omit)) excluded = true;
             };
             if (node.camera != null) try self.warnNode(entry.node, "camera placement is not imported in M20", .{});
-            if (node.skin != null) try self.warnNode(entry.node, "skin placement is not imported until M24", .{});
             const local = try self.nodeMatrix(entry.node, node);
             const world = Mat4.mul(entry.parent, local);
             if (node.mesh) |mesh_index| {
                 if (mesh_index >= self.doc.meshes.len) return self.failNode(entry.node, "references meshes[{d}], outside the mesh array", .{mesh_index});
                 var part_matrix = world;
                 if (self.settings.front == .plus_z) part_matrix = Mat4.mul(part_matrix, Mat4.rotationY(std.math.pi));
+                if (node.skin != null) part_matrix = .identity;
                 const transform = Transform.fromMat4Exact(part_matrix) catch return self.failNode(entry.node, "has a flattened transform that is not exactly representable as TRS", .{});
                 if (self.settings.collision and !excluded) self.collision_placements[entry.node] = part_matrix;
                 for (self.doc.meshes[mesh_index].primitives, 0..) |primitive, submesh| {
@@ -630,7 +713,17 @@ const Context = struct {
                 try stack.append(self.gpa, .{ .node = node.children[child], .parent = world, .depth = entry.depth + 1, .excluded = excluded });
             }
         }
-        try out.appendSlice(self.arena, " ]\n}\n");
+        try out.appendSlice(self.arena, " ]\n");
+        if (self.rig) |rig| {
+            try out.print(self.arena, "    skeleton {s}.skeleton\n    clips [", .{self.settings.model_id});
+            for (rig.clips, 0..) |clip, i| {
+                try out.appendSlice(self.arena, " { name ");
+                try self.writeString(out, clip.name);
+                try out.print(self.arena, " clip {s} }}", .{try self.generatedId("clip", i)});
+            }
+            try out.appendSlice(self.arena, " ]\n");
+        }
+        try out.appendSlice(self.arena, "}\n");
     }
 
     fn emitCollision(self: *Context, out: *std.ArrayList(u8), generated: *std.ArrayList(GeneratedAsset)) Error!void {
@@ -652,8 +745,22 @@ const Context = struct {
             const base: u32 = @intCast(positions.items.len);
             for (mesh.streams) |stream| {
                 if (stream.semantic != .position) continue;
-                for (std.mem.bytesAsSlice(Vec3, stream.bytes)) |local| {
-                    const p = matrix.mulPoint(local);
+                for (std.mem.bytesAsSlice(Vec3, stream.bytes), 0..) |local, vertex| {
+                    var p = matrix.mulPoint(local);
+                    if (self.doc.nodes[node_index].skin != null) {
+                        var js: []const u8 = &.{};
+                        var ws: []const u8 = &.{};
+                        for (mesh.streams) |skin_stream| switch (skin_stream.semantic) {
+                            .joints => js = skin_stream.bytes,
+                            .weights => ws = skin_stream.bytes,
+                            else => {},
+                        };
+                        p = .zero;
+                        for (0..4) |lane| {
+                            const weight: f32 = @bitCast(std.mem.readInt(u32, ws[(vertex * 4 + lane) * 4 ..][0..4], .little));
+                            if (weight != 0) p = p.add(self.rig.?.bind_matrices[js[vertex * 4 + lane]].mulPoint(local).scale(weight));
+                        }
+                    }
                     if (!asset.collision_mesh.positionValid(p)) return self.failNode(@intCast(node_index), "has collision geometry outside the finite ±8192 m envelope", .{});
                     try positions.append(self.gpa, p);
                 }

@@ -1,7 +1,7 @@
 # Design: M24 — Animation: skeletons, clips, fixed-step sampling, CPU skinning and a walking character
 
-**Status:** Accepted 2026-10-01, when the owner requested Step 1. Steps 1–2 of eight are complete;
-Step 3 has not begun.
+**Status:** Accepted 2026-10-01, when the owner requested Step 1. Steps 1–3 of eight are complete;
+Step 4 has not begun.
 **Date:** 2026-10-01
 **Baseline:** `9c6bf56`, tag `m23`. M0–M23 are complete.
 **Decisions:**
@@ -199,8 +199,8 @@ unnamed or duplicate-named animation is refused, since the name is how it is fou
 hierarchy is closed. Those added joints influence no vertex. Joints are ordered parents first,
 keeping the file's order among siblings, and vertex joint indices are remapped to match. The
 transforms of nodes above the skeleton's root are baked into `root`; `front` is applied there
-too, once, as M20 applies it to parts. Inverse bind matrices are read from the file, or are the
-inverse of the rest pose when the file omits them, as glTF specifies.
+too, once, as M20 applies it to parts. Inverse bind matrices are read from the file, or are
+identity when omitted, as glTF specifies (corrected before Step 3 below).
 
 **Clips** keep the file's key times and values. Nothing is resampled. A channel is translated
 into a track when its target is a joint of the model's skeleton.
@@ -393,6 +393,17 @@ This corrects the space, not the culling algorithm or the CPU-skinning architect
 fixture compiles to a skeleton, clips and a version-2 mesh that Step 1 samples and skins to the
 fixture's known pose, every §7 refusal has a diagnostic, and the room's and course's hashes are
 unchanged.
+
+**Implementation refinement (2026-10-01, before Step 3 code):** §7's claim that glTF
+defaults omitted inverse-bind matrices to inverse rest pose is incorrect. The
+[Khronos glTF 2.0 specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html)
+defaults them to identity. Import follows that default. Skinned mesh-node transforms are
+ignored as glTF requires; their model parts are identity, and the skeleton's root contains
+the static ancestor chain with `front` premultiplied once. Original mesh positions and inverse
+binds are kept in their matching space. Added closure joints influence no vertex and use
+identity inverse binds. A mesh used both rigidly and skinned cannot share one generated
+`.fmesh`; refuse it with a request to duplicate that mesh on export. Collision, when requested,
+uses the imported rest-pose skin matrices, not the ignored mesh-node placement.
 
 ### Step 4 — `rhi`: vertex data written every frame
 
@@ -616,3 +627,66 @@ Metal and Linux/Windows cross checks and all three headless samples exit 0. Both
 macOS releases stage (this is not certified public signing). Claude's Step 1 proof was accepted
 without a separate baseline re-audit. Step 3 has not begun; Windows runtime is Step 7 and
 Linux remains compile-only.
+
+## Resolution — Step 3: glTF skin and animation import (2026-10-01)
+
+**What exists.** `author/gltf/document.zig` reads typed skins, samplers and channels;
+`skin.zig` validates the default scene's hierarchy, selects its one used skin, finds the
+closest common ancestor, closes every path between joints and orders parents before children
+in the file's sibling order. It retains names and remaps all four vertex joint indices.
+`translate.zig` emits skinned `.fmesh` v2, `.fskel` and `.fanim` through the existing asset
+writers, and generated text through the compiler's ordinary parser/checker. Model metadata
+names `<model>.skeleton` and `<model>.clip<i>` in animation-array order. Private output paths
+are `<source dir>/<stem>/skeleton0.fskel` and `clip<i>.fanim`; they are not identity.
+
+**Resolved before implementation:** the glTF specification defaults missing inverse binds
+to identity, not inverse rest pose. Original bind positions and inverse binds are retained;
+added closure joints have identity inverse binds and no influences. Ancestors above the root
+are baked into `root`, with `front` premultiplied once. Skinned mesh-node transforms are
+ignored as glTF requires, and their parts are identity: reapplying placement would move the
+pose twice. Meshes shared by rigid and skinned instances are refused with a request to
+duplicate the mesh on export. Optional collision derives the rest-pose skinned positions;
+it does not pretend to follow later playback.
+
+**Validation and limits.** Diagnostics name the skin, node, primitive or channel and an
+export fix. Missing/wrong/count-mismatched influences, additional influence sets, out-of-skin
+indices (including zero-weight lanes), invalid/all-zero weights and duplicate nonzero
+influences are refused. So are multiple used skins, disconnected joints, duplicate joints,
+closure above 256 joints, invalid bind accessors and non-finite/non-affine/non-invertible
+inverse binds. Clips refuse unnamed/duplicate names, unsupported/CUBICSPLINE interpolation,
+invalid samplers/targets, non-increasing/negative/non-finite times, malformed TRS output,
+duplicate tracks, non-finite values and non-unit rotations. STEP/LINEAR times and values are
+kept without resampling. Non-skeleton channels and morph weights are dropped with counted
+warnings; an animated ancestor above the root is explicitly reported static. Weight sums
+are accumulated in f64 and normalized; deviations over 1e-6 report the affected vertex count.
+Empty-duration clips are refused; a positive-duration clip with only dropped channels may
+have zero tracks, matching Step 2. Unused skins are reported when no skin is used.
+
+Typed JSON adds limits of 4,096 skins, 1,024 animations and 65,536 channels in total, with
+samplers per animation also bounded at 65,536. Import-wide retained keys are capped at
+8,388,608 (a caller may lower the cap), in addition to the format's per-track/clip bounds.
+This prevents many clips sharing an accessor from multiplying retained keys without a bound.
+
+**Evidence.** Seven importer tests cover hierarchy closure/remapping, sibling order, generated
+records, repeat-import identical bytes, every §7 refusal, warning counts, omitted binds,
+quantized weights, u16 joints, count limits and all allocation failures. The compiler adds a
+real package test, proving generated records, asset files and deterministic recompilation.
+`zig build animation-import-test` is a separate cross-layer binary (in `test` and `check`),
+not an `author` import grant: it joins the imported skeleton/clip/mesh to `anim.sample`,
+`skinMatrices` and `skin`, and compares a known pose with `front` off and on. Its four tests
+include the document/accessor checks compiled in that binary. Focused Debug and ReleaseSafe
+results: **100/100 author, 4/4 import-to-animation proof**.
+
+**Fourteen mutations fail and are restored:** joint remapping, closure, bind invertibility,
+duplicate clip names, key times, rotation validity, weight normalization, the import key cap,
+joint indices, invalid weights, duplicate weighted influences, CUBICSPLINE refusal, ignored
+mesh placement and `front` in the skeleton root. Deliberately removing closure or index
+protection hits Debug bounds traps in the hostile-input proof; the restored importer refuses
+those inputs normally. All restored-code checks pass.
+
+**Exit met.** The nine-command bar passes **2,015 of 2,016 tests**, one expected skip;
+native/Metal/Linux/Windows checks and all three headless samples exit 0. SHA-256 comparisons
+match all eight room meshes, the crate mesh, all three course meshes and both collision
+assets against their pre-step outputs. Both ReleaseSafe ad-hoc macOS releases stage; this
+does not claim public signing/notarization. No RHI, renderer, ABI, sample or playback work
+was added. Step 4 is next; Windows runtime/import-byte comparison remains Step 7.

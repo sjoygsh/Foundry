@@ -17,6 +17,10 @@ pub const Limits = struct {
     max_primitives: usize = 65_536,
     max_accessors: usize = 65_536,
     max_images: usize = 1_024,
+    max_skins: usize = 4_096,
+    max_animations: usize = 1_024,
+    max_animation_channels: usize = 65_536,
+    max_animation_keys: usize = 8_388_608,
 
     pub const default: Limits = .{};
 };
@@ -146,6 +150,28 @@ pub const Sampler = struct {
     wrapT: u32 = 10_497,
 };
 
+pub const Skin = struct {
+    name: ?[]const u8 = null,
+    joints: []const u32,
+    inverseBindMatrices: ?u32 = null,
+    skeleton: ?u32 = null,
+};
+pub const AnimationSampler = struct {
+    input: u32,
+    output: u32,
+    interpolation: []const u8 = "LINEAR",
+};
+pub const AnimationTarget = struct {
+    node: ?u32 = null,
+    path: []const u8,
+};
+pub const AnimationChannel = struct { sampler: u32, target: AnimationTarget };
+pub const Animation = struct {
+    name: ?[]const u8 = null,
+    samplers: []const AnimationSampler,
+    channels: []const AnimationChannel,
+};
+
 pub const Document = struct {
     asset: Asset,
     scene: ?u32 = null,
@@ -160,8 +186,8 @@ pub const Document = struct {
     images: []const Image = &.{},
     samplers: []const Sampler = &.{},
     cameras: ?[]const std.json.Value = null,
-    animations: ?[]const std.json.Value = null,
-    skins: ?[]const std.json.Value = null,
+    animations: []const Animation = &.{},
+    skins: []const Skin = &.{},
     extensionsUsed: []const []const u8 = &.{},
     extensionsRequired: []const []const u8 = &.{},
     extensions: ?std.json.ArrayHashMap(std.json.Value) = null,
@@ -216,7 +242,8 @@ fn checkDepth(allocator: Allocator, bytes: []const u8, max_depth: u32) Error!voi
 
 fn checkLimits(doc: Document, limits: Limits) Error!void {
     if (doc.nodes.len > limits.max_nodes or doc.meshes.len > limits.max_meshes or
-        doc.accessors.len > limits.max_accessors or doc.images.len > limits.max_images)
+        doc.accessors.len > limits.max_accessors or doc.images.len > limits.max_images or
+        doc.skins.len > limits.max_skins or doc.animations.len > limits.max_animations)
     {
         return error.OverLimit;
     }
@@ -224,6 +251,11 @@ fn checkLimits(doc: Document, limits: Limits) Error!void {
     for (doc.meshes) |mesh| {
         primitives = std.math.add(usize, primitives, mesh.primitives.len) catch return error.OverLimit;
         if (primitives > limits.max_primitives) return error.OverLimit;
+    }
+    var channels: usize = 0;
+    for (doc.animations) |animation| {
+        channels = std.math.add(usize, channels, animation.channels.len) catch return error.OverLimit;
+        if (channels > limits.max_animation_channels or animation.samplers.len > limits.max_animation_channels) return error.OverLimit;
     }
 }
 

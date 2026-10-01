@@ -1024,8 +1024,8 @@ and regression coverage in `3d.md` §10:
 - **M23 Collision** (done 2026-10-01, tag `m23`): `physics3d` and a first-person walk.
   [`collision3d.md`](design/collision3d.md), with ADR-0057.
 - **M24 Animation:** skins and clips, sampled at the fixed step.
-  Design accepted 2026-10-01: [`animation3d.md`](design/animation3d.md), with ADR-0058; Step 1 of
-  eight (the `anim` module) is done.
+  Design accepted 2026-10-01: [`animation3d.md`](design/animation3d.md), with ADR-0058; Steps 1–3
+  of eight (pure animation, asset formats and glTF import) are done.
 - **M25 Public 3D:** `FoundryApi_v6`, with a content mod and a native one.
 - **M26 A playable 3D sample,** played by someone who did not build it, on macOS, Windows and a
   freshly provisioned Linux machine. It is the game
@@ -1126,7 +1126,8 @@ under clean validation, with a byte-identical replay on each machine. A move's p
 0.10–0.13 ms on the PC and at the 0.25 ms budget line on the Mac; the reading of that budget
 is left to the owner. A hand-driven walk by a person has not been done. Nothing enters the
 ABI; Linux is compile-only. M24, Animation, is in progress; its design,
-[`animation3d.md`](design/animation3d.md) with ADR-0058 is accepted, and Steps 1–2 are done.
-Step 2 adds canonical skeleton/clip assets and loaders, skinned `.fmesh` v2 and optional
-model-v2 skeleton/clips, with v1 compatibility. The bar passes 2,003 of 2,004 tests (one skip)
-and both ad-hoc macOS releases stage. glTF skin/animation import is Step 3; it has not begun.
+[`animation3d.md`](design/animation3d.md) with ADR-0058 is accepted, and Steps 1–3 are done.
+Canonical skeleton/clip assets, skinned `.fmesh` v2 and model-v2 metadata now come from glTF
+with hierarchy closure, remapping and diagnostics; v1 compatibility remains. The bar passes
+2,015 of 2,016 tests (one skip), both ad-hoc macOS releases stage, and existing room/course
+mesh and collision outputs are unchanged. Step 4, per-frame RHI vertex data, has not begun.

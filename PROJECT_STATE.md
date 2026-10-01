@@ -1,11 +1,34 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-01
-**Current handoff: M24 Steps 1–2 are complete. Stop before Step 3.** Next is `author`'s glTF
-skin/animation import, hierarchy closure/remapping and diagnostics (`animation3d.md` §7).
-The animation asset formats exist; glTF still does not import skins or clips, rendering still
-refuses skin data, and no module is granted `anim`. M0–M23 are complete; M23 closed at tag
+**Current handoff: M24 Steps 1–3 are complete. Stop before Step 4.** Next is RHI vertex
+data written every frame (`animation3d.md` §8 and §13 Step 4).
+glTF imports skeletons, clips and skinned meshes; rendering still refuses skin data, and no
+production module is granted `anim`. M0–M23 are complete; M23 closed at tag
 `m23`, pushed.
+
+**M24 Step 3 is done (2026-10-01), from `2ca17fb`.** `author/gltf/skin.zig` closes the
+used skin's hierarchy, preserves sibling order, remaps influences, retains joint names and
+translates named STEP/LINEAR TRS clips without resampling. The compiler emits checked
+`<model>.skeleton` and `<model>.clip<i>` records, `.fskel`/`.fanim` assets and `.fmesh` v2 with
+model-bind-space joint bounds. It diagnoses malformed accessors, influences, rigs and keys;
+weight normalization and dropped non-skeleton/morph/animated-ancestor channels are counted
+warnings. JSON counts and import-wide keys are bounded, and allocation failures clean up.
+
+**Resolution:** glTF's omitted inverse-bind default is identity, correcting §7's mistaken
+inverse-rest claim before implementation. Skinned mesh-node transforms are ignored; the
+skeleton root applies ancestors and `front` once, and skinned parts are identity. A mesh
+shared between rigid and skinned placements is refused with an export fix. Opt-in collision
+uses the rest-pose skin matrices. No RHI, renderer, ABI, sample or playback functionality.
+
+**Verification:** 100/100 author tests and 4/4 `animation-import-test` tests pass in Debug
+and ReleaseSafe. The separate cross-layer test joins imported assets to Step 1's sampling
+and skinning kernel against a known pose, with and without `front`, without granting `author`
+an `anim` dependency. Fourteen guard mutations fail and are restored. All nine bar commands
+pass: **2,015 of 2,016 tests**, one expected skip. Both ad-hoc macOS releases stage (not public
+certification); SHA-256 matches every pre-step room/course/crate mesh and collision asset.
+Windows runtime and cross-host import-byte comparison remain Step 7; Linux is compile-only.
+Step 4 has not begun.
 
 **M24, Animation, is accepted (2026-10-01):** the owner's request for Step 1 accepted
 `docs/design/animation3d.md` §15 and ADR-0058. A new L1 module, `anim`, samples skeletons and

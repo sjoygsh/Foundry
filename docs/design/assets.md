@@ -77,6 +77,11 @@ data and optional model-v2 skeleton/clip metadata are described in
 [`animation3d.md` §6](animation3d.md#6-assets-fskel-fanim-fmesh-version-2-and-the-model-record);
 runtime skin residency and playback are later M24 steps, not capabilities of the loader.
 
+M24 Step 3 generates those ordinary records and files from glTF: `<model>.skeleton` and
+`<model>.clip<i>`, named by the model's optional metadata. `author/gltf/` is still the only
+glTF reader; no runtime asset or loader knows it was imported. See `animation3d.md` §7 and
+its Step 3 Resolution for hierarchy closure, diagnostics and the generated paths.
+
 `source` is **location, never identity**, and the difference is the whole decision. Nothing
 can be looked up by path: `acquire` takes a `ContentId` and there is no other way in. A record
 found that way may then say where its own bytes live, and the registry reads them — which is

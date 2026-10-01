@@ -264,6 +264,12 @@ foundry:model sandbox3d:models.table {
 
 ### 6.1 Where it lives
 
+**M24 Step 3, 2026-10-01:** [`animation3d.md` §7](animation3d.md#7-import-gltf-skins-and-animations-author)
+extends this importer with `skin.zig`, typed skins/animations, hierarchy closure, remapping
+and diagnostics. It emits `.fskel`/`.fanim` and skinned `.fmesh` v2; the historical static
+import rules below remain unchanged. Skinned parts are identity and `front` goes into the
+skeleton root once, rather than onto those parts. Omitted inverse binds are identity.
+
 **In `author`'s compiler, which `fpack` hosts** (ADR-0042). `3d.md` says "`fpack`'s glTF
 import", and that was true of the tool's name, not of the module. There is one package
 compiler, and the editor builds through it too, so an import is the same in both hosts, by
@@ -332,6 +338,8 @@ textures are numbered by the glTF array they came from (ADR-0055); ADR-0057 adds
 | image *i*, if an external file in the package | `foundry:texture` | `M.texture<i>` | — (its `source` is that file) |
 | the default scene | `foundry:model` | `M` | — |
 | the default scene, if `collision true` | `foundry:collision_mesh` | `M.collision` | `<source dir>/<stem>/collision0.fcol` |
+| the used skin (M24 Step 3) | `foundry:skeleton` | `M.skeleton` | `<source dir>/<stem>/skeleton0.fskel` |
+| animation *i* of a skinned model (M24 Step 3) | `foundry:animation` | `M.clip<i>` | `<source dir>/<stem>/clip<i>.fanim` |
 
 - **Numbered, not named.** glTF names are optional, may repeat and are rarely valid ID
   segments (`Cube.001`), and derivation transforms nothing (`assets.md` §3). An index is

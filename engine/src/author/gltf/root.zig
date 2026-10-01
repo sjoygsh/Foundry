@@ -140,6 +140,7 @@ test {
     _ = container;
     _ = document;
     _ = translate;
+    _ = @import("skin_tests.zig");
 }
 
 const TestFile = struct {
@@ -776,8 +777,8 @@ test "unsupported optional glTF features are named warnings, not silent drops" {
     const triangle = makeTriangleBin();
     const json = try makeJson(testing.allocator, .{
         .meshes = "{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"_EXTRA\":0},\"indices\":1,\"material\":0}]}",
-        .nodes = "{\"mesh\":0,\"camera\":0,\"skin\":0}",
-        .tail = ",\"extensionsUsed\":[\"EXT_optional\"],\"cameras\":[{}],\"animations\":[{}],\"skins\":[{}]",
+        .nodes = "{\"mesh\":0,\"camera\":0}",
+        .tail = ",\"extensionsUsed\":[\"EXT_optional\"],\"cameras\":[{}]",
     });
     defer testing.allocator.free(json);
     const files = [_]TestFile{.{ .path = "models/mesh.bin", .bytes = &triangle }};
@@ -791,7 +792,7 @@ test "unsupported optional glTF features are named warnings, not silent drops" {
         .source = "models/warnings.gltf",
     }, reader.interface(), .default, &diags);
     try testing.expect(!diags.failed);
-    const needles = [_][]const u8{ "EXT_optional", "cameras", "animations", "skins", "_EXTRA", "camera placement", "skin placement" };
+    const needles = [_][]const u8{ "EXT_optional", "cameras", "_EXTRA", "camera placement" };
     for (needles) |needle| {
         var found = false;
         for (diags.items.items) |diag| if (std.mem.indexOf(u8, diag.message, needle) != null) {

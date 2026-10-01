@@ -1413,6 +1413,20 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    // The importer consumes asset values, not anim. This separate cross-layer proof joins
+    // its compiled products to the kernel without granting author an implementation edge.
+    const animation_import_mod = b.createModule(.{
+        .root_source_file = b.path("engine/src/author/gltf/skin_proof.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    for ([_][]const u8{ "core", "data", "asset", "anim" }) |name| animation_import_mod.addImport(name, modules.get(name).?);
+    const animation_import_tests = b.addTest(.{ .root_module = animation_import_mod });
+    check_step.dependOn(&animation_import_tests.step);
+    const animation_import_run = b.addRunArtifact(animation_import_tests);
+    test_step.dependOn(&animation_import_run.step);
+    b.step("animation-import-test", "Sample and skin an imported glTF against a known pose").dependOn(&animation_import_run.step);
+
     if (script_mod) |mod| {
         const script_tests = b.addTest(.{ .root_module = mod });
         check_step.dependOn(&script_tests.step);

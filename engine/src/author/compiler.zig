@@ -2325,6 +2325,41 @@ test "fpack derives animation assets and loads them by content ID beside model v
     try testing.expectEqual(core.ContentId.fromString("demo:rig.walk"), (try entry.idAt(1)).?);
 }
 
+test "fpack imports a skinned glTF into ordinary checked model skeleton clip and mesh records" {
+    const fixture = @import("gltf/skin_fixture.zig");
+    const f = try Fixture.init();
+    defer f.deinit();
+    const json = try fixture.json(testing.allocator, .{});
+    defer testing.allocator.free(json);
+    try f.write("rig.gltf", json);
+    try f.write("rig.bin", &fixture.binary());
+    // An authored import uses the same path as derivation, but supplies a stable model ID.
+    try f.write("rig.fdt", "foundry:model_import demo:character { source \"rig.gltf\" }");
+    try f.compileIt("demo:content");
+    var package = try f.open();
+    defer package.deinit();
+    const model = recordNamed(&package, "demo:character").?;
+    try testing.expect(model.schema_id.eql(asset.schemas.model.id));
+    try testing.expect(recordNamed(&package, "demo:character.skeleton").?.schema_id.eql(asset.schemas.skeleton.id));
+    try testing.expect(recordNamed(&package, "demo:character.clip0").?.schema_id.eql(asset.schemas.animation.id));
+    try testing.expect(recordNamed(&package, "demo:character.mesh0").?.schema_id.eql(asset.schemas.mesh.id));
+    const skel_bytes = try f.readGenerated("rig/skeleton0.fskel");
+    defer testing.allocator.free(skel_bytes);
+    const clip_bytes = try f.readGenerated("rig/clip0.fanim");
+    defer testing.allocator.free(clip_bytes);
+    const mesh_bytes = try f.readGenerated("rig/mesh0.fmesh");
+    defer testing.allocator.free(mesh_bytes);
+    const skel = try asset.skeleton.read(skel_bytes, .default);
+    const clip = try asset.animation.read(clip_bytes, .default);
+    var mesh = try asset.mesh_file.read(mesh_bytes, .default);
+    try testing.expectEqual(skel.joint_count, clip.joint_count);
+    try testing.expectEqual(skel.joint_count, mesh.mesh().joint_bounds.len);
+    const first = try testing.allocator.dupe(u8, f.bytes.items);
+    defer testing.allocator.free(first);
+    try f.compileIt("demo:content");
+    try testing.expectEqualSlices(u8, first, f.bytes.items);
+}
+
 test "fpack imports an explicit glTF model end to end and deterministically" {
     var f = try Fixture.init();
     defer f.deinit();
