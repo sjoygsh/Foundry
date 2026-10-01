@@ -1,13 +1,14 @@
 # Design: M24 — Animation: skeletons, clips, fixed-step sampling, CPU skinning and a walking character
 
-**Status:** Proposed 2026-10-01; awaiting the owner's acceptance of §15. No step has begun.
+**Status:** Accepted 2026-10-01, when the owner requested Step 1. Step 1 of eight is complete;
+Step 2 has not begun.
 **Date:** 2026-10-01
 **Baseline:** `9c6bf56`, tag `m23`. M0–M23 are complete.
 **Decisions:**
 - ADR-0048 (conventions), ADR-0053 (assets are not the renderer), ADR-0054 (fixed vertex
   slots), ADR-0055 (imports compile to records), ADR-0013 (deterministic-friendly, not
   bit-exact) and ADR-0036 (explicit jobs) constrain it.
-- Proposes [ADR-0058](../adr/0058-skeletal-animation-sampled-poses-cpu-skinning.md): animation
+- [ADR-0058](../adr/0058-skeletal-animation-sampled-poses-cpu-skinning.md): animation
   is sampled poses in a new L1 module, `anim`, that sees no asset and no entity; skeletons and
   clips are compiled assets it is handed as values; skinning is linear-blend, on the CPU, into
   per-frame vertex data, with no skinned shader variant.
@@ -466,3 +467,78 @@ Every choice is recommended as written. Nothing blocks Step 1 once these are acc
 | 14 | The character is generated in-repo; it is a second walker, on layers the player ignores, and the player stays first-person | §10 |
 | 15 | Budgets are read inside the paced frame loop: p95 under 0.10 ms for `animation` and 0.25 ms for `render.skin`, one walker, both machines | §12 |
 | 16 | The PC is needed (Step 7); Linux is compile-only | §11 |
+
+## Resolution — Step 1: the `anim` module (2026-10-01)
+
+**Acceptance.** The owner's request to begin Step 1 accepted §15 as written. ADR-0058 is
+Accepted and is in CLAUDE.md §4.1. CLAUDE.md §4.3's layer table gains `anim` at the close
+(Step 8), as planned.
+
+**What exists.** `engine/src/anim/` at L1 on `core` alone, in `build.zig`'s layering table, with
+`zig build anim-test`:
+- `skeleton.zig`: `Skeleton` and `validate`;
+- `clip.zig`: `Clip`, `Track`, `Path`, `Interpolation` and `validate`;
+- `pose.zig`: `Pose`, `sample`, `wrap`, `clamp`, `blend`, `modelMatrices` and `skinMatrices`;
+- `skin.zig`: the kernel `skin` and `validateInfluences`.
+
+No module is granted `anim` yet. `render3d`'s grant is Step 5's.
+
+**What the design had not settled, and the answers:**
+- **The joint count is the slices' shared length,** `Skeleton.jointCount()`, not a stored
+  field. §3 listed a `joint_count`; a field that can disagree with three slice lengths is one
+  more thing to refuse.
+- **A skeleton may have several roots here.** `anim` composes any parents-first forest. "One
+  tree" is the importer's refusal (§7), where it has a diagnostic to give.
+- **Inverse bind matrices and `root` must be affine,** with a last row of exactly `(0, 0, 0, 1)`,
+  or `validate` refuses them. glTF requires it of bind matrices, and it lets the kernel skip the
+  perspective divide.
+- **`modelMatrices` includes `root`,** so it returns model space, which is what attaching to a
+  joint needs. `skinMatrices` is then `model[j] · inverse_bind[j]`, in a second pass over the
+  same buffer, with no scratch memory.
+- **A clip's track values are flat `f32`s,** three per key or four for a rotation, so `.fanim`
+  can hand its bytes over without a copy (Step 2).
+- **Two tracks for one joint and path are refused** (`DuplicateTrack`), since the later would
+  win silently. That bounds a clip at 768 tracks. A track holds at most 65,536 keys.
+- **A sampled rotation is always unit:** a held key is normalised, as `slerp`'s result is.
+- **Time outside a track holds; a time that is not a number holds the first key.** `wrap` and
+  `clamp` return 0 for a time that is not finite.
+- **`blend` clamps its weight,** returns the first pose exactly at 0 and the second exactly at
+  1, and may write over either input.
+- **Vertex influences have their own check, `validateInfluences`:** a weight negative or not
+  finite, weights not summing to one within 1e-3, or a weighted joint the skeleton lacks. It
+  lives here because `asset` cannot see `anim`; `render3d` calls it when a mesh is created
+  (Step 5). A joint index beside a zero weight is never read, so it is not checked.
+- **The kernel indexes its output as its input,** over full-length slices, and writes only the
+  requested range.
+- **"No function allocates" is structural:** nothing in `anim` takes an allocator.
+
+**One finding about the toolchain, not about `anim`.** The replay is byte-identical within a
+binary, which is I9's promise and this step's exit. Its hash, though, has **two** values on one
+machine: Debug and ReleaseSafe builds for Apple silicon differ in the last bit of some
+rotations. The cause was isolated: `@sin` is Zig's own routine in a Debug build and in both
+build modes for x86_64, but binds to the system's `sin` in an optimised arm64 macOS build, and
+the two differ by one unit in the last place on some inputs. `acos` and plain multiply-add
+agree everywhere. It affects every caller of `@sin` in the engine equally (`Quat.slerp`,
+`fromAxisAngle`, the rotation matrices), and ADR-0013 already declines to promise the last bit
+across binaries. The test pins both values and names the reason. Nothing was changed in `core`.
+Step 7 records which value the PC produces.
+
+**Tests:** 19 in `anim`, with no device and no asset. Every `validate` refusal; sampling on a
+key, between keys, outside the track, under `step`, with rest kept, and across a quaternion
+sign flip; `wrap`, `clamp` and `blend`; a three-joint chain's model and skin matrices by hand,
+with and without `root`; the bent strip's positions, normals and tangents by hand; three
+randomised 1,000-vertex fixtures against an independent `f64` implementation within 1e-5; one
+call against chunked `Jobs` in both orders at three grains, byte for byte; and the 1,200-tick
+replay.
+
+**Guards verified by mutation,** each restored afterwards: the parent-order check (fails the
+skeleton refusals), the rest-pose fallback (fails the rest test and the replay), the
+shorter-arc interpolation (fails the sign-flip test and the replay), the joint-index bound
+(fails the influence refusals), the order of the skin-matrix product (fails both hand-computed
+matrix tests and the replay), and the duplicate-track refusal (fails the clip refusals).
+
+**The exit is met:** the sampling replay is byte-identical in one process, and the skinning
+reference passes, with no device and no asset. The nine-command bar passes, every command
+exiting 0. `anim-test` reports 19 of 19 in Debug and ReleaseSafe on arm64, and in both modes for
+x86_64 under Rosetta. The whole graph's total was not re-counted: the 19 are added to the
+1,972 declared at M23's close.

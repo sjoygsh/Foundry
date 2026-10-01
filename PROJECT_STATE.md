@@ -1,15 +1,37 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-01
-**Current handoff: M24's design is proposed (`docs/design/animation3d.md`, ADR-0058); awaiting
-the owner's acceptance of its §15. Stop before Step 1.** No M24 code exists. M0–M23 are
-complete; M23 closed at tag `m23`, pushed.
+**Current handoff: M24 Step 1 is complete. Stop before Step 2.** Step 2 is `asset`'s formats:
+`.fskel`, `.fanim`, `.fmesh` version 2 and `foundry:model` version 2. None of them exists yet,
+and no module is granted `anim`. M0–M23 are complete; M23 closed at tag `m23`, pushed.
 
-**M24, Animation, as proposed:** a new L1 module, `anim`, samples skeletons and clips into
-poses at the fixed step; skeletons and clips are compiled assets imported from glTF; skinning
-is linear-blend on the CPU, drawn by `render3d` with the existing shaders; `sandbox3d` gains a
-generated character that patrols the room. Eight steps, the PC in Step 7, nothing in the ABI.
-It corrects `3d.md` §5: no skinned shader variants are built while skinning is on the CPU.
+**M24, Animation, is accepted (2026-10-01):** the owner's request for Step 1 accepted
+`docs/design/animation3d.md` §15 and ADR-0058. A new L1 module, `anim`, samples skeletons and
+clips into poses at the fixed step; skeletons and clips are compiled assets imported from glTF;
+skinning is linear-blend on the CPU, drawn by `render3d` with the existing shaders; `sandbox3d`
+gains a generated character that patrols the room. Eight steps, the PC in Step 7, nothing in
+the ABI. It corrects `3d.md` §5: no skinned shader variants are built while skinning is on the
+CPU.
+
+**M24 Step 1 is done (2026-10-01).** `engine/src/anim/` exists at L1 on `core` alone, with
+`zig build anim-test`:
+- `Skeleton` and `Clip` as borrowed values, each with a `validate` that refuses by name;
+- `sample`, `wrap`, `clamp`, `blend`, `modelMatrices` and `skinMatrices`;
+- the linear-blend kernel `skin`, over a vertex range, and `validateInfluences`.
+
+It has 19 tests with no device and no asset: every refusal, sampling and matrices against
+hand-computed values, skinning against a hand-computed strip and an independent `f64`
+reference within 1e-5, chunked `Jobs` byte-identical to one call, and a 1,200-tick replay that
+is byte-identical within a process. Six guards were verified by mutation.
+
+One toolchain finding is recorded in the Resolution: the replay's hash has two values on the
+Mac, because `@sin` binds to the system's routine in an optimised arm64 macOS build and to
+Zig's own everywhere else, and they differ in the last bit on some inputs. The test pins both.
+Nothing in `core` changed. Step 7 records the PC's value.
+
+The nine-command bar passes, every command exiting 0. `anim-test` reports 19 of 19 in Debug and
+ReleaseSafe, and for x86_64 under Rosetta. The whole graph's total was not re-counted; the 19
+are added to the 1,972 declared at M23's close. No ABI change. Linux is compile-only.
 
 **The owner's answers on M23 (2026-10-01):**
 - **Budgets are read inside the paced frame loop.** On that reading the PC is well under the

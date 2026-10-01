@@ -1024,7 +1024,8 @@ and regression coverage in `3d.md` §10:
 - **M23 Collision** (done 2026-10-01, tag `m23`): `physics3d` and a first-person walk.
   [`collision3d.md`](design/collision3d.md), with ADR-0057.
 - **M24 Animation:** skins and clips, sampled at the fixed step.
-  Design proposed 2026-10-01: [`animation3d.md`](design/animation3d.md), with ADR-0058; no step begun.
+  Design accepted 2026-10-01: [`animation3d.md`](design/animation3d.md), with ADR-0058; Step 1 of
+  eight (the `anim` module) is done.
 - **M25 Public 3D:** `FoundryApi_v6`, with a content mod and a native one.
 - **M26 A playable 3D sample,** played by someone who did not build it, on macOS, Windows and a
   freshly provisioned Linux machine. It is the game
@@ -1124,4 +1125,4 @@ slope, wall slide) passes headless on null, windowed on Metal and windowed on Wi
 under clean validation, with a byte-identical replay on each machine. A move's paced p95 is
 0.10–0.13 ms on the PC and at the 0.25 ms budget line on the Mac; the reading of that budget
 is left to the owner. A hand-driven walk by a person has not been done. Nothing enters the
-ABI; Linux is compile-only. M24, Animation, is next; its design, [`animation3d.md`](design/animation3d.md) with ADR-0058, is proposed and awaits acceptance.
+ABI; Linux is compile-only. M24, Animation, is next; its design, [`animation3d.md`](design/animation3d.md) with ADR-0058, is accepted, and its Step 1 is done.

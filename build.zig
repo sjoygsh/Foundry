@@ -56,6 +56,13 @@ const layering = [_]Module{
     // `physics2d`: the two solve different geometry.
     .{ .name = "physics3d", .deps = &.{"core"} },
 
+    // L1 — skeletal animation as sampled poses (ADR-0058, docs/design/animation3d.md). `core`
+    // alone, for `physics3d`'s reasons: no `asset`, because a skeleton and a clip arrive as
+    // values the caller owns; no `scene`, because playback state is the caller's; no `rhi` or
+    // `render3d`, because a pose is not a rendering concept; no `platform`, so there is no
+    // clock to read (I9). It samples, blends and skins, and allocates nothing.
+    .{ .name = "anim", .deps = &.{"core"} },
+
     // L1 — the immediate-mode UI kernel (ADR-0024, docs/design/ui.md). `platform` for the
     // input snapshot it is handed; `core` for maths and logging. **No `render2d`**, which
     // is the decision rather than an omission: the kernel emits a draw list and something
@@ -1401,7 +1408,7 @@ pub fn build(b: *std.Build) void {
         if (std.mem.eql(u8, spec.name, "render3d")) {
             b.step("render3d-test", "Run the 3D renderer and lighting reference tests").dependOn(&run.step);
         }
-        if (std.mem.eql(u8, spec.name, "asset") or std.mem.eql(u8, spec.name, "author") or std.mem.eql(u8, spec.name, "physics3d")) {
+        if (std.mem.eql(u8, spec.name, "asset") or std.mem.eql(u8, spec.name, "author") or std.mem.eql(u8, spec.name, "physics3d") or std.mem.eql(u8, spec.name, "anim")) {
             b.step(b.fmt("{s}-test", .{spec.name}), b.fmt("Run the {s} unit tests", .{spec.name})).dependOn(&run.step);
         }
     }
