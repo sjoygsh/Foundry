@@ -1,9 +1,18 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-01
-**Current handoff: M24 is complete (2026-10-01, tag `m24`). Stop before M25's design.**
-M25, Public 3D (`FoundryApi_v6`, a 3D content mod and a native one, `3d.md` §10), has no
-design yet. M0–M24 are complete; M23 and M24 are pushed.
+**Current handoff: M25's design is proposed (`docs/design/public3d.md`, ADR-0059); awaiting
+acceptance of §15. Stop before Step 1.** Step 1 is `render3d.Instances`, the retained instance
+set; no v6 call, header type or sample change exists yet. M0–M24 are complete and pushed.
+
+**M25, Public 3D, designed (2026-10-01).** `FoundryApi_v6` is v5's 233 calls plus 28: mod-owned
+retained instances and lights by content ID (no per-frame callback, since no mod code runs inside
+the host's frame), the camera read, the engine-declared transform calls, raycast/shape-cast/
+overlap, and mod-owned primitive bodies and characters; a mod may change only what it created.
+No camera write, animation, runtime meshes/materials, shaders or Lua. `sandbox3d` would host a
+content mod (`plinth`, via a new `prop` schema) and become the first sample to load native code
+(`orbiter`, consented per run by `FOUNDRY_SANDBOX3D_NATIVE`). Eight steps; the PC is Step 6 under
+the ordinary 50% rule; Linux compile-only.
 
 **M24, Animation, closed (2026-10-01).** Step 1 was Claude's; Steps 2–7 were Codex's and were
 re-verified before closing: their diffs match their Resolutions, every new test file is in the

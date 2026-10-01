@@ -1028,6 +1028,8 @@ and regression coverage in `3d.md` §10:
   [`animation3d.md`](design/animation3d.md), with ADR-0058. A person's
   walk/turn/stop/cross-fade observation has not been recorded.
 - **M25 Public 3D:** `FoundryApi_v6`, with a content mod and a native one.
+  Design proposed 2026-10-01: [`public3d.md`](design/public3d.md), with ADR-0059; awaiting
+  acceptance. No step has begun.
 - **M26 A playable 3D sample,** played by someone who did not build it, on macOS, Windows and a
   freshly provisioned Linux machine. It is the game
   certification waits for (ADR-0047).
@@ -1149,4 +1151,6 @@ one-walker costs pass both budgets, while validation-on base skin p95 exceeds 0.
 recorded separately. The PC is packed up. Linux remains compile-only. Step 8 reconciled
 `3d.md` (no skinned shader variant while skinning is on the CPU; skeleton and clip rows),
 CLAUDE.md's layer table and ADR-0049/0055 by dated notes, and tagged `m24`. A person's
-animation watch remains unclaimed. M25, Public 3D, has no design yet.
+animation watch remains unclaimed. M25, Public 3D, is designed and proposed
+([`public3d.md`](design/public3d.md), ADR-0059): v6 publishes retained, mod-owned instances,
+lights, transforms and primitive bodies by content ID; no step has begun.
