@@ -6,6 +6,7 @@ const std = @import("std");
 const core = @import("core");
 const rhi = @import("rhi");
 const asset = @import("asset");
+const skinning = @import("skinning.zig");
 
 const camera_mod = @import("camera.zig");
 const frustum_mod = @import("frustum.zig");
@@ -210,6 +211,8 @@ pub const Extent2D = struct {
 };
 
 pub const Config = struct {
+    jobs: core.Jobs = core.jobs.serial,
+    max_skinned_vertices: u32 = 262_144,
     frames_in_flight: u32 = 2,
     sample_count: u32 = 4,
     /// Frustum culling (§7.6). Off exists for the equivalence test and a sample's
@@ -241,6 +244,8 @@ pub const MeshDraw = struct {
     submesh: u32 = 0,
     material: MaterialHandle,
     world: Mat4,
+    /// Copied at submission; required exactly for a skinned mesh.
+    skin: ?[]const Mat4 = null,
 };
 
 pub const Stats = struct {
@@ -252,6 +257,9 @@ pub const Stats = struct {
     lights: u32 = 0,
     shadow_draws: u32 = 0,
     shadow_culled: u32 = 0,
+    skinned_draws: u32 = 0,
+    skinned_vertices: u32 = 0,
+    skin_budget_dropped: u32 = 0,
 };
 
 pub const Error = error{
@@ -275,7 +283,11 @@ pub const Error = error{
     TextureTooLarge,
     NotRecording,
     DepthFormatUnsupported,
-} || asset.MeshError || rhi.ResourceError || rhi.MapError || rhi.CommandError || Allocator.Error;
+    InvalidSkinCount,
+    InvalidSkinMatrix,
+    UnexpectedSkin,
+    MissingSkin,
+} || asset.MeshError || rhi.ResourceError || rhi.MapError || rhi.CommandError || rhi.VertexUpdateError || Allocator.Error;
 
 const MeshState = struct {
     vertex_buffers: [rhi.pipeline.max_vertex_buffers]rhi.BufferHandle = @splat(.none),
@@ -285,6 +297,7 @@ const MeshState = struct {
     index_format: asset.MeshIndexFormat,
     submeshes: []asset.Submesh,
     bounds: asset.MeshAabb,
+    skin: ?skinning.Bind = null,
 };
 
 const TextureState = struct {
@@ -370,6 +383,10 @@ const DrawItem = struct {
     depth: f32,
     bounds: frustum_mod.Bounds,
     submission: u32,
+    palette_offset: usize = 0,
+    skin_offset: ?u32 = null,
+    kept: bool = false,
+    budget_dropped: bool = false,
 };
 
 pub const Renderer = struct {
@@ -409,6 +426,11 @@ pub const Renderer = struct {
     draws: std.ArrayList(DrawItem),
     order: std.ArrayList(u32),
     planned_draws: ?u32,
+    palettes: std.ArrayList(Mat4) = .empty,
+    skin_buffer: ?rhi.FrameVertexBuffer = null,
+    skin_bytes: []align(16) u8 = &.{},
+    skin_vertex: rhi.BufferHandle = .none,
+    skin_frame: ?u64 = null,
 
     color_target: rhi.TextureHandle,
     hdr_target: rhi.TextureHandle,
@@ -447,7 +469,7 @@ pub const Renderer = struct {
     /// Resource ownership transfers once: later model/texture failures use `deinit`,
     /// never both `deinit` and these construction errdefers.
     fn initResources(gpa: Allocator, device: *rhi.Device, config: Config) Error!Self {
-        if (config.frames_in_flight == 0 or !rhi.isValidSampleCount(config.sample_count)) {
+        if (config.frames_in_flight == 0 or !rhi.isValidSampleCount(config.sample_count) or @as(u64, config.max_skinned_vertices) * 40 > std.math.maxInt(usize)) {
             return error.InvalidConfig;
         }
         if (config.shadow_size != 0 and config.shadow_size != 1024 and config.shadow_size != 2048 and config.shadow_size != 4096) return error.InvalidConfig;
@@ -623,6 +645,9 @@ pub const Renderer = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        if (self.skin_buffer) |*buffer| buffer.deinit();
+        self.gpa.free(self.skin_bytes);
+        self.palettes.deinit(self.gpa);
         while (self.materials.count() != 0) {
             var it = self.materials.iterator();
             self.destroyMaterial(it.next().?.id);
@@ -912,8 +937,6 @@ pub const Renderer = struct {
 
     pub fn createMesh(self: *Self, mesh: asset.Mesh, label: []const u8) Error!MeshHandle {
         try mesh.validate();
-        // M24 Step 2 loads skin data; residency and evaluation belong to Step 5.
-        if (mesh.joint_bounds.len != 0) return error.UnsupportedVertexFormat;
         // Owned by `state` from here on; its errdefer frees it, so this one must not.
         const submeshes = try self.gpa.alloc(asset.Submesh, mesh.submeshes.len);
         for (mesh.submeshes, submeshes) |source, *destination| destination.* = source;
@@ -926,6 +949,10 @@ pub const Renderer = struct {
             .bounds = mesh.bounds,
         };
         errdefer self.destroyMeshState(&state);
+        if (mesh.joint_bounds.len != 0) state.skin = skinning.Bind.init(self.gpa, mesh) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidSkinCount,
+        };
 
         const Upload = struct {
             staging: rhi.BufferHandle,
@@ -938,6 +965,11 @@ pub const Renderer = struct {
 
         for (mesh.streams) |stream| {
             const slot: usize = stream.semantic.slot();
+            state.formats[slot] = stream.format;
+            // Influences never enter a pipeline; bind TRS streams remain CPU-only too.
+            if (stream.semantic == .joints or stream.semantic == .weights) continue;
+            state.stream_mask |= @as(u8, 1) << @intCast(slot);
+            if (state.skin != null and slot <= 2) continue;
             const staging = try self.stagingBuffer(label, stream.bytes);
             const destination = self.device.createBuffer(.{
                 .label = label,
@@ -949,8 +981,6 @@ pub const Renderer = struct {
                 return err;
             };
             state.vertex_buffers[slot] = destination;
-            state.formats[slot] = stream.format;
-            state.stream_mask |= @as(u8, 1) << @intCast(slot);
             uploads[upload_count] = .{ .staging = staging, .destination = destination, .bytes = stream.bytes };
             upload_count += 1;
         }
@@ -977,6 +1007,8 @@ pub const Renderer = struct {
             barriers[i] = .{ .buffer = upload.destination, .from = .undefined, .to = .copy_dst };
         }
         const cmd = try self.device.beginCommandBuffer();
+        var consumed = false;
+        errdefer if (!consumed) cmd.discard();
         try cmd.bufferBarrier(barriers[0..upload_count]);
         for (uploads[0..upload_count]) |upload| {
             try cmd.copyBufferToBuffer(.{
@@ -990,6 +1022,7 @@ pub const Renderer = struct {
             barrier.to = .shader_read;
         }
         try cmd.bufferBarrier(barriers[0..upload_count]);
+        consumed = true;
         try cmd.submit();
 
         return self.meshes.add(self.gpa, state);
@@ -1018,6 +1051,9 @@ pub const Renderer = struct {
         self.view_projection = view.camera.viewProjection(view.target_size.width, view.target_size.height);
         self.frustum = .fromViewProjection(self.view_projection);
         self.draws.clearRetainingCapacity();
+        self.palettes.clearRetainingCapacity();
+        self.skin_frame = null;
+        self.skin_vertex = .none;
         self.order.clearRetainingCapacity();
         self.planned_draws = null;
         self.frame = null;
@@ -1029,7 +1065,7 @@ pub const Renderer = struct {
 
     /// Submission-order values; every refusal leaves the frame untouched.
     pub fn addLight(self: *Self, light: Light) Error!void {
-        if (!self.recording or self.planned_draws != null or self.frame != null) return error.NotRecording;
+        if (!self.recording or self.planned_draws != null or self.frame != null or self.skin_frame != null) return error.NotRecording;
         if (!lighting.valid(light)) return error.InvalidLight;
         if (light.casts_shadow and (light.kind != .directional or self.has_shadow_caster)) return error.InvalidShadowCaster;
         if (self.light_count == max_lights) return error.TooManyLights;
@@ -1041,13 +1077,14 @@ pub const Renderer = struct {
     }
 
     pub fn drawMesh(self: *Self, draw: MeshDraw) Error!void {
-        if (!self.recording) return error.NotRecording;
+        if (!self.recording or self.frame != null or self.skin_frame != null) return error.NotRecording;
         const mesh = self.meshes.getConst(draw.mesh) orelse return error.InvalidMesh;
         const material = self.materials.getConst(draw.material) orelse return error.InvalidMaterial;
         const model = self.models.items[material.model].desc;
         if (draw.submesh >= mesh.submeshes.len) return error.InvalidSubmesh;
         if (!matrixFinite(draw.world)) return error.InvalidTransform;
         if (!(StreamSet{ .bits = mesh.stream_mask }).contains(model.requires)) return error.MissingStream;
+        try self.validateSkin(draw.mesh, draw.skin);
 
         const has_uv = (model.optional.has(.uv0) or model.requires.has(.uv0)) and mesh.stream_mask & (@as(u8, 1) << @intFromEnum(asset.MeshSemantic.uv0)) != 0;
         const has_color = (model.optional.has(.color) or model.requires.has(.color)) and mesh.stream_mask & (@as(u8, 1) << @intFromEnum(asset.MeshSemantic.color)) != 0;
@@ -1068,10 +1105,13 @@ pub const Renderer = struct {
         else
             .back_ccw;
 
-        const bounds = frustum_mod.Bounds.transformed(mesh.bounds, draw.world);
+        const bounds = if (mesh.skin) |bind| skinning.posedBounds(bind.bounds, draw.skin.?, draw.world) else frustum_mod.Bounds.transformed(mesh.bounds, draw.world);
         const view_center = self.view_matrix.mulPoint(bounds.center);
         const sort_depth = if (std.math.isFinite(view_center.z)) -view_center.z else std.math.inf(f32);
-        try self.draws.append(self.gpa, .{
+        try self.draws.ensureUnusedCapacity(self.gpa, 1);
+        const palette_offset = self.palettes.items.len;
+        if (draw.skin) |matrices| try self.palettes.appendSlice(self.gpa, matrices);
+        self.draws.appendAssumeCapacity(.{
             .mesh = draw.mesh,
             .submesh = draw.submesh,
             .world = draw.world,
@@ -1081,12 +1121,18 @@ pub const Renderer = struct {
             .depth = sort_depth,
             .bounds = bounds,
             .submission = @intCast(self.draws.items.len),
+            .palette_offset = palette_offset,
         });
         self.planned_draws = null;
     }
 
     pub fn plan(self: *Self) Error!void {
-        if (!self.recording) return error.NotRecording;
+        if (!self.recording or self.frame != null or self.skin_frame != null) return error.NotRecording;
+        for (self.draws.items) |*item| {
+            item.kept = false;
+            item.skin_offset = null;
+            item.budget_dropped = false;
+        }
         self.order.clearRetainingCapacity();
         try self.order.ensureTotalCapacity(self.gpa, self.draws.items.len);
         var culled: u32 = 0;
@@ -1126,7 +1172,95 @@ pub const Renderer = struct {
             }
             self.shadow_fit = fit;
         };
+        for (self.order.items) |i| self.draws.items[i].kept = true;
+        for (self.shadow_order.items) |i| self.draws.items[i].kept = true;
+        self.stats.skinned_draws = 0;
+        self.stats.skinned_vertices = 0;
+        self.stats.skin_budget_dropped = 0;
+        // Budget order is submission order, never the pipeline/depth sort or worker order.
+        for (self.draws.items) |*item| {
+            if (!item.kept) continue;
+            const mesh = self.meshes.getConst(item.mesh) orelse continue;
+            const bind = mesh.skin orelse continue;
+            const count: u32 = @intCast(bind.positions.len);
+            if (count > self.config.max_skinned_vertices - self.stats.skinned_vertices) {
+                item.budget_dropped = true;
+                self.stats.skin_budget_dropped += 1;
+                continue;
+            }
+            item.skin_offset = self.stats.skinned_vertices;
+            self.stats.skinned_vertices += count;
+            self.stats.skinned_draws += 1;
+        }
+        self.removeBudgetDrops(&self.order);
+        self.removeBudgetDrops(&self.shadow_order);
         self.planned_draws = @intCast(self.draws.items.len);
+    }
+
+    pub fn validateSkin(self: *const Self, handle: MeshHandle, matrices: ?[]const Mat4) Error!void {
+        const mesh = self.meshes.getConst(handle) orelse return error.InvalidMesh;
+        if (mesh.skin) |bind| {
+            try skinning.validate(matrices orelse return error.MissingSkin, bind.bounds.len);
+        } else if (matrices != null) return error.UnexpectedSkin;
+    }
+
+    pub fn meshJointCount(self: *const Self, handle: MeshHandle) ?usize {
+        const mesh = self.meshes.getConst(handle) orelse return null;
+        return if (mesh.skin) |bind| bind.bounds.len else 0;
+    }
+
+    fn removeBudgetDrops(self: *Self, order: *std.ArrayList(u32)) void {
+        var len: usize = 0;
+        for (order.items) |i| if (!self.draws.items[i].budget_dropped) {
+            order.items[len] = i;
+            len += 1;
+        };
+        order.items.len = len;
+    }
+
+    /// Optional host timing seam; `prepare` also calls it, without repeating completed work.
+    /// It joins all jobs and submits copies before any pass is opened.
+    pub fn prepareSkin(self: *Self, frame: rhi.FrameContext) Error!void {
+        if (!self.recording) return error.NotRecording;
+        if (frame.slot >= self.slots.len) return error.InvalidFrameSlot;
+        if (!self.device.in_frame or frame.index != self.device.frame_index or frame.slot != self.device.frame_slot or !frame.surface_texture.eql(self.device.surface_texture)) return error.InvalidFrame;
+        if (self.skin_frame) |index| {
+            if (index != frame.index) return error.InvalidFrame;
+            if (self.stats.skinned_vertices != 0 and self.skin_vertex.isNone()) return error.NotRecording;
+            return;
+        }
+        if (self.planned_draws == null or self.planned_draws.? != self.draws.items.len) try self.plan();
+        const count = self.stats.skinned_vertices;
+        if (count != 0) {
+            if (self.skin_buffer == null) {
+                const bytes = try self.gpa.alignedAlloc(u8, .@"16", @as(usize, self.config.max_skinned_vertices) * 40);
+                errdefer self.gpa.free(bytes);
+                const buffer = try rhi.FrameVertexBuffer.init(self.device, bytes.len);
+                self.skin_bytes = bytes;
+                self.skin_buffer = buffer;
+            }
+            // Separate contiguous streams, packed to this frame's admitted vertex count.
+            const positions = std.mem.bytesAsSlice([3]f32, self.skin_bytes[0 .. @as(usize, count) * 12]);
+            const normals = std.mem.bytesAsSlice([3]f32, @as([]align(4) u8, @alignCast(self.skin_bytes[@as(usize, count) * 12 .. @as(usize, count) * 24])));
+            const tangents = std.mem.bytesAsSlice([4]f32, @as([]align(4) u8, @alignCast(self.skin_bytes[@as(usize, count) * 24 .. @as(usize, count) * 40])));
+            @memset(self.skin_bytes[0 .. @as(usize, count) * 40], 0);
+            for (self.draws.items) |item| {
+                const offset = item.skin_offset orelse continue;
+                const mesh = self.meshes.getConst(item.mesh) orelse continue;
+                const bind = mesh.skin.?;
+                const end = offset + bind.positions.len;
+                const write: skinning.Write = .{
+                    .input = bind.input(),
+                    .matrices = self.palettes.items[item.palette_offset..][0..bind.bounds.len],
+                    .output = .{ .positions = positions[offset..end], .normals = if (bind.normals != null) normals[offset..end] else null, .tangents = if (bind.tangents != null) tangents[offset..end] else null },
+                };
+                self.config.jobs.forChunks(@intCast(bind.positions.len), skinning.grain, &write, skinning.Write.chunk);
+            }
+            // Failure is consumed, just like the underlying frame helper's update.
+            self.skin_frame = frame.index;
+            self.skin_vertex = try self.skin_buffer.?.update(frame, self.skin_bytes[0 .. @as(usize, count) * 40]);
+        }
+        self.skin_frame = frame.index;
     }
 
     pub fn prepare(self: *Self, cmd: *rhi.CommandBuffer, frame: rhi.FrameContext) Error!void {
@@ -1134,6 +1268,7 @@ pub const Renderer = struct {
         if (!self.recording) return error.NotRecording;
         if (frame.slot >= self.slots.len) return error.InvalidFrameSlot;
         if (self.planned_draws == null or self.planned_draws.? != self.draws.items.len) try self.plan();
+        try self.prepareSkin(frame);
         try self.ensureTargets(self.view.target_size);
         for (self.order.items) |draw_index| _ = try self.ensurePipeline(self.draws.items[draw_index].pipeline_key);
         if (self.shadow_fit != null) {
@@ -1257,9 +1392,9 @@ pub const Renderer = struct {
 
             const constants = drawConstants(item.world);
             pass.setInlineConstants(std.mem.asBytes(&constants));
-            pass.setVertexBuffer(0, mesh.vertex_buffers[0], 0);
-            if (item.pipeline_key.vertex_layout & 8 != 0) pass.setVertexBuffer(1, mesh.vertex_buffers[1], 0);
-            if (item.pipeline_key.vertex_layout & 16 != 0) pass.setVertexBuffer(2, mesh.vertex_buffers[2], 0);
+            self.bindStream(pass, mesh, item, 0);
+            if (item.pipeline_key.vertex_layout & 8 != 0) self.bindStream(pass, mesh, item, 1);
+            if (item.pipeline_key.vertex_layout & 16 != 0) self.bindStream(pass, mesh, item, 2);
             if (item.pipeline_key.vertex_layout & 2 != 0) pass.setVertexBuffer(3, mesh.vertex_buffers[3], 0);
             if (item.pipeline_key.vertex_layout & 1 != 0) pass.setVertexBuffer(5, mesh.vertex_buffers[5], 0);
             pass.setIndexBuffer(mesh.index_buffer, switch (mesh.index_format) {
@@ -1334,7 +1469,7 @@ pub const Renderer = struct {
             pass.setBindGroup(2, material.group);
             const constants = drawConstants(item.world);
             pass.setInlineConstants(std.mem.asBytes(&constants));
-            pass.setVertexBuffer(0, mesh.vertex_buffers[0], 0);
+            self.bindStream(pass, mesh, item, 0);
             if (key.vertex_layout & 2 != 0) pass.setVertexBuffer(3, mesh.vertex_buffers[3], 0);
             if (key.vertex_layout & 1 != 0) pass.setVertexBuffer(5, mesh.vertex_buffers[5], 0);
             pass.setIndexBuffer(mesh.index_buffer, if (mesh.index_format == .uint16) .uint16 else .uint32, 0);
@@ -1346,6 +1481,19 @@ pub const Renderer = struct {
 
     pub fn frameStats(self: *const Self) Stats {
         return self.last_stats;
+    }
+
+    fn bindStream(self: *const Self, pass: *rhi.RenderPass, mesh: *const MeshState, item: DrawItem, slot: u32) void {
+        if (item.skin_offset) |offset| {
+            const count: u64 = self.stats.skinned_vertices;
+            const byte_offset: u64 = switch (slot) {
+                0 => @as(u64, offset) * 12,
+                1 => (count + offset) * 12,
+                2 => count * 24 + @as(u64, offset) * 16,
+                else => unreachable,
+            };
+            pass.setVertexBuffer(slot, self.skin_vertex, byte_offset);
+        } else pass.setVertexBuffer(slot, mesh.vertex_buffers[slot], 0);
     }
 
     fn stagingBuffer(self: *Self, label: []const u8, contents: []const u8) Error!rhi.BufferHandle {
@@ -1444,6 +1592,7 @@ pub const Renderer = struct {
     }
 
     fn destroyMeshState(self: *Self, state: *MeshState) void {
+        if (state.skin) |bind| bind.deinit(self.gpa);
         for (state.vertex_buffers) |buffer| if (!buffer.isNone()) self.device.destroyBuffer(buffer);
         if (!state.index_buffer.isNone()) self.device.destroyBuffer(state.index_buffer);
         self.gpa.free(state.submeshes);
@@ -1599,6 +1748,289 @@ fn finishTestFrame(fx: *TestFixture) !void {
     try fx.device.endFrame();
 }
 
+const strip_palette = [2]Mat4{ .identity, .{ .cols = .{ .{ 0.8, 0.6, 0, 0 }, .{ -0.6, 0.8, 0, 0 }, .{ 0, 0, 1, 0 }, .{ 0.5, 0, 0, 1 } } } };
+
+/// Six vertices with a blended middle row. The rigid reference is computed independently
+/// from the two-joint weighted transform, not by calling the skinning kernel under test.
+fn testStrip(renderer: *Renderer, reference: bool) !MeshHandle {
+    var positions = [_][3]f32{ .{ -0.6, -1, -3 }, .{ 0.6, -1, -3 }, .{ -0.6, 0, -3 }, .{ 0.6, 0, -3 }, .{ -0.6, 1, -3 }, .{ 0.6, 1, -3 } };
+    var normals = [_][3]f32{.{ 0, 0.6, 0.8 }} ** 6;
+    var tangents = [_][4]f32{.{ 1, 0, 0, -1 }} ** 6;
+    const joints = [_][4]u8{.{ 0, 1, 0, 0 }} ** 6;
+    const weights = [_][4]f32{ .{ 1, 0, 0, 0 }, .{ 1, 0, 0, 0 }, .{ 0.5, 0.5, 0, 0 }, .{ 0.5, 0.5, 0, 0 }, .{ 0, 1, 0, 0 }, .{ 0, 1, 0, 0 } };
+    if (reference) for (&positions, &normals, &tangents, weights) |*p, *n, *t, w| {
+        const a = 1 - 0.2 * w[1];
+        const b = 0.6 * w[1];
+        const x = p[0];
+        const y = p[1];
+        p.* = .{ a * x - b * y + 0.5 * w[1], b * x + a * y, p[2] };
+        const direction = Vec3.init(-b * 0.6, a * 0.6, 0.8).normalize();
+        n.* = .{ direction.x, direction.y, direction.z };
+        const tangent = Vec3.init(a, b, 0).normalize();
+        t.* = .{ tangent.x, tangent.y, tangent.z, -1 };
+    };
+    const indices = [_]u16{ 0, 1, 2, 1, 3, 2, 2, 3, 4, 3, 5, 4 };
+    const submeshes = [_]asset.Submesh{.{ .first_index = 0, .index_count = indices.len }};
+    const boxes = [_]asset.MeshAabb{
+        .{ .min = .init(-0.6, -1, -3), .max = .init(0.6, 0, -3) },
+        .{ .min = .init(-0.6, 0, -3), .max = .init(0.6, 1, -3) },
+    };
+    var streams = [_]asset.MeshStream{
+        .{ .semantic = .position, .format = .float32x3, .bytes = std.mem.sliceAsBytes(&positions) },
+        .{ .semantic = .normal, .format = .float32x3, .bytes = std.mem.sliceAsBytes(&normals) },
+        .{ .semantic = .tangent, .format = .float32x4, .bytes = std.mem.sliceAsBytes(&tangents) },
+        .{ .semantic = .joints, .format = .uint8x4, .bytes = std.mem.sliceAsBytes(&joints) },
+        .{ .semantic = .weights, .format = .float32x4, .bytes = std.mem.sliceAsBytes(&weights) },
+    };
+    const position_vectors: []const Vec3 = @ptrCast(&positions);
+    return renderer.createMesh(.{ .vertex_count = positions.len, .streams = streams[0..if (reference) 3 else 5], .index_format = .uint16, .indices = std.mem.sliceAsBytes(&indices), .submeshes = &submeshes, .bounds = try asset.Mesh.computeBounds(position_vectors), .joint_bounds = if (reference) &.{} else &boxes }, "bent strip");
+}
+
+test "M24 camera and shadow survivors share one budgeted skin evaluation in submission order" {
+    for ([_]u32{ 0, 6, 12 }) |budget| {
+        var fx = try TestFixture.initConfig(.{ .sample_count = 1, .shadow_size = 1024, .max_skinned_vertices = budget }, 32);
+        defer fx.deinit();
+        const mesh = try testStrip(&fx.renderer, false);
+        try fx.renderer.begin(testView(32));
+        try fx.renderer.addLight(.{ .kind = .directional, .intensity = 1, .world = .identity, .casts_shadow = true });
+        // Shadow-only survivor first; camera-only optimization must not lose it.
+        try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = Mat4.translation(.init(0, 0, 100)), .skin = &strip_palette });
+        try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = .identity, .skin = &strip_palette });
+        try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = Mat4.translation(.init(1000, 0, 0)), .skin = &strip_palette });
+        try finishTestFrame(&fx);
+        const stats = fx.renderer.frameStats();
+        try testing.expectEqual(budget / 6, stats.skinned_draws);
+        try testing.expectEqual(budget, stats.skinned_vertices);
+        try testing.expectEqual(2 - budget / 6, stats.skin_budget_dropped);
+        try testing.expectEqual(budget / 6, stats.shadow_draws);
+        try testing.expectEqual(@as(u32, @intFromBool(budget == 12)), stats.draws);
+        if (budget != 0) {
+            const input = fx.renderer.meshes.getConst(mesh).?.skin.?;
+            var expected: [6][3]f32 = undefined;
+            var expected_n: [6][3]f32 = undefined;
+            var expected_t: [6][4]f32 = undefined;
+            @import("anim").skin(input.input(), &strip_palette, 0, 6, .{ .positions = &expected, .normals = &expected_n, .tangents = &expected_t });
+            try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(&expected), fx.renderer.skin_bytes[0..72]);
+            try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(&expected_n), fx.renderer.skin_bytes[@as(usize, budget) * 12 ..][0..72]);
+            try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(&expected_t), fx.renderer.skin_bytes[@as(usize, budget) * 24 ..][0..96]);
+        } else try testing.expect(fx.renderer.skin_buffer == null);
+        if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
+    }
+}
+
+test "M24 posed culling keeps a skin moved inside and culls one moved outside" {
+    var fx = try TestFixture.initConfig(.{ .sample_count = 1, .shadow_size = 0, .max_skinned_vertices = 12 }, 32);
+    defer fx.deinit();
+    const mesh = try testStrip(&fx.renderer, false);
+    try fx.renderer.begin(testView(32));
+    const to_left = [_]Mat4{Mat4.translation(.init(-10, 0, 0))} ** 2;
+    const to_right = [_]Mat4{Mat4.translation(.init(10, 0, 0))} ** 2;
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = Mat4.translation(.init(10, 0, 0)), .skin = &to_left });
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = .identity, .skin = &to_right });
+    try fx.renderer.plan();
+    try testing.expectEqualSlices(u32, &.{0}, fx.renderer.order.items);
+    // Same bound centre is used for transparent sorting, not the original bind box.
+    try testing.expectApproxEqAbs(@as(f32, 0), fx.renderer.draws.items[0].bounds.center.x, 0.02);
+    try finishTestFrame(&fx);
+    try testing.expectEqual(@as(u32, 6), fx.renderer.frameStats().skinned_vertices);
+}
+
+test "M24 posed bounds cover tolerance endpoints under translated reflected placement" {
+    const box = asset.MeshAabb{ .min = .init(10000, 0, -3), .max = .init(10000, 0, -3) };
+    const world = Mat4.mul(Mat4.translation(.init(-10000, 0, 0)), Mat4.scaling(.init(-1, 2, 1)));
+    const bound = skinning.posedBounds(&.{box}, &.{.identity}, world);
+    for ([_]f32{ 0.999, 1.001 }) |sum| {
+        const p = world.mulPoint(box.min.scale(sum));
+        try testing.expect(@abs(p.x - bound.center.x) <= bound.extent.x);
+        try testing.expect(@abs(p.z - bound.center.z) <= bound.extent.z);
+    }
+}
+
+test "M24 transparent skins sort by posed centres and prepared palettes cannot be changed" {
+    var fx = try TestFixture.initConfig(.{ .sample_count = 1, .shadow_size = 0, .max_skinned_vertices = 12 }, 32);
+    defer fx.deinit();
+    const mesh = try testStrip(&fx.renderer, false);
+    const material = try fx.renderer.createMaterial(.{ .alpha_mode = .blend, .casts_shadow = false }, "skin blend");
+    try fx.renderer.begin(testView(32));
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .material = material, .world = .identity, .skin = &strip_palette });
+    const farther = [_]Mat4{Mat4.translation(.init(0, 0, -3))} ** 2;
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .material = material, .world = .identity, .skin = &farther });
+    try fx.renderer.plan();
+    try testing.expectEqualSlices(u32, &.{ 1, 0 }, fx.renderer.order.items);
+    const frame = try fx.device.beginFrame();
+    const cmd = try fx.device.beginCommandBuffer();
+    try fx.renderer.prepareSkin(frame);
+    try fx.renderer.prepareSkin(frame);
+    try testing.expectError(error.NotRecording, fx.renderer.drawMesh(.{ .mesh = mesh, .material = material, .world = .identity, .skin = &strip_palette }));
+    try testing.expectError(error.NotRecording, fx.renderer.addLight(.{ .kind = .directional, .intensity = 1, .world = .identity }));
+    try fx.renderer.prepare(cmd, frame);
+    try fx.renderer.recordFrame(cmd, frame, false);
+    try cmd.submit();
+    try fx.device.endFrame();
+    try testing.expectEqual(@as(u32, 2), fx.renderer.frameStats().blended);
+    if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
+}
+
+fn skinAllocationProof(gpa: Allocator) !void {
+    const device = try rhi.Device.init(gpa, .{ .surface_size = .{ .width = 8, .height = 8 } });
+    defer device.deinit();
+    var renderer = try Renderer.init(gpa, device, .{ .sample_count = 1, .shadow_size = 0, .max_skinned_vertices = 6 });
+    defer renderer.deinit();
+    const material = try renderer.createMaterial(.{}, "skin OOM");
+    const mesh = try testStrip(&renderer, false);
+    try renderer.begin(testView(8));
+    try renderer.drawMesh(.{ .mesh = mesh, .material = material, .world = .identity, .skin = &strip_palette });
+    const frame = try device.beginFrame();
+    var ended = false;
+    defer if (!ended) device.endFrame() catch {}; // Preserve the allocation refusal.
+    const cmd = try device.beginCommandBuffer();
+    var consumed = false;
+    defer if (!consumed) cmd.discard();
+    try renderer.prepare(cmd, frame);
+    try renderer.recordFrame(cmd, frame, false);
+    consumed = true;
+    try cmd.submit();
+    ended = true;
+    try device.endFrame();
+}
+
+test "M24 skin residency palette and frame storage clean up every allocation refusal" {
+    if (rhi.backend != .null) return;
+    try testing.checkAllAllocationFailures(testing.allocator, skinAllocationProof, .{});
+}
+
+test "M24 a failed vertex submission cannot be retried as a prepared skin" {
+    if (rhi.backend != .null) return;
+    var fx = try TestFixture.initConfig(.{ .sample_count = 1, .shadow_size = 0, .max_skinned_vertices = 6 }, 8);
+    defer fx.deinit();
+    const mesh = try testStrip(&fx.renderer, false);
+    try fx.renderer.begin(testView(8));
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = .identity, .skin = &strip_palette });
+    const frame = try fx.device.beginFrame();
+    const cmd = try fx.device.beginCommandBuffer();
+    defer cmd.discard();
+    fx.device.faults.submit = error.DeviceLost;
+    try testing.expectError(error.DeviceLost, fx.renderer.prepareSkin(frame));
+    try testing.expectError(error.NotRecording, fx.renderer.prepareSkin(frame));
+    try fx.device.endFrame();
+    try fx.renderer.begin(testView(8));
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = .identity, .skin = &strip_palette });
+    try finishTestFrame(&fx);
+    try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
+}
+
+fn stripReadback(fx: *TestFixture, mesh: MeshHandle, reference: bool, shadow: bool, shifted: bool) ![material_test_bytes]u8 {
+    const material = try fx.renderer.createMaterial(.{ .shading = lit_id, .base_color = .{ 0.6, 0.3, 0.1, 1 }, .roughness = 0.7, .double_sided = true }, "strip lit");
+    defer fx.renderer.destroyMaterial(material);
+    const readback = try fx.device.createBuffer(.{ .size = material_test_bytes, .usage = .{ .copy_dst = true }, .memory = .readback });
+    defer fx.device.destroyBuffer(readback);
+    var view = testView(material_test_size);
+    view.ambient = .{ 0.2, 0.3, 0.4 };
+    view.shadow_distance = 6;
+    try fx.renderer.begin(view);
+    const light: Light = .{ .kind = .directional, .intensity = 2, .casts_shadow = shadow, .world = Mat4.fromQuat(core.math.Quat.lookRotation(.init(-1, 0, -1), .up).?) };
+    try fx.renderer.addLight(light);
+    if (shadow) {
+        const receiver = try litQuad(&fx.renderer, 0);
+        defer fx.renderer.destroyMesh(receiver);
+        // Keep it alive through command recording below, so retirement is exercised too.
+        try fx.renderer.drawMesh(.{ .mesh = receiver, .material = material, .world = Mat4.mul(Mat4.translation(.init(0, 0, -2)), Mat4.scaling(.init(3, 3, 1))) });
+        // Cannot destroy a submitted-but-not-yet-recorded handle.
+        try stripFrame(fx, mesh, material, reference, shadow, shifted, readback);
+    } else try stripFrame(fx, mesh, material, reference, shadow, shifted, readback);
+    fx.device.waitIdle();
+    var pixels: [material_test_bytes]u8 = undefined;
+    const mapped = try fx.device.mapBuffer(readback);
+    @memcpy(&pixels, mapped[0..pixels.len]);
+    fx.device.unmapBuffer(readback);
+    return pixels;
+}
+
+fn stripFrame(fx: *TestFixture, mesh: MeshHandle, material: MaterialHandle, reference: bool, shadow: bool, shifted: bool, readback: rhi.BufferHandle) !void {
+    var palette = strip_palette;
+    if (shifted) for (&palette) |*matrix| {
+        matrix.* = Mat4.mul(Mat4.translation(.init(5, 0, 0)), matrix.*);
+    };
+    const world = if (shadow) Mat4.translation(.init(3, 0, 2)) else Mat4.identity;
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .material = material, .world = if (reference and shifted) Mat4.mul(world, Mat4.translation(.init(5, 0, 0))) else world, .skin = if (reference) null else &palette });
+    const frame = try fx.device.beginFrame();
+    const cmd = try fx.device.beginCommandBuffer();
+    try fx.renderer.prepare(cmd, frame);
+    try fx.renderer.recordFrame(cmd, frame, false);
+    try cmd.textureBarrier(&.{.{ .texture = frame.surface_texture, .from = .present, .to = .copy_src }});
+    try cmd.copyTextureToBuffer(.{ .src = frame.surface_texture, .size = .{ .width = material_test_size, .height = material_test_size }, .dst = readback });
+    try cmd.textureBarrier(&.{.{ .texture = frame.surface_texture, .from = .copy_src, .to = .present }});
+    try cmd.submit();
+    try fx.device.endFrame();
+    if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
+}
+
+test "M24 bent strip pixels match the independent CPU reference lit and in shadow at 1x and 4x" {
+    for ([_]u32{ 1, 4 }) |samples| {
+        var fx = try TestFixture.initConfig(.{ .sample_count = samples, .shadow_size = 1024, .max_skinned_vertices = 6 }, material_test_size);
+        defer fx.deinit();
+        const mesh = try testStrip(&fx.renderer, false);
+        const reference = try testStrip(&fx.renderer, true);
+        for ([_]bool{ false, true }) |shadow| {
+            const expected = try stripReadback(&fx, reference, true, shadow, false);
+            const actual = try stripReadback(&fx, mesh, false, shadow, false);
+            const moved = try stripReadback(&fx, mesh, false, shadow, true);
+            if (rhi.backend != .null) {
+                for (0..material_test_size) |y| for (0..material_test_size) |x| {
+                    const e = materialTexel(&expected, x, y);
+                    const a = materialTexel(&actual, x, y);
+                    try expectDisplayTexel(e, a);
+                };
+                // Positive witnesses: a lit strip covers pixels, and its posed shadow
+                // changes receiver pixels. A blank render cannot satisfy this proof.
+                try testing.expect(!std.mem.eql(u8, &actual, &moved));
+            }
+            // More than two frames across both passes reuses the waited ring slots.
+            const again = try stripReadback(&fx, mesh, false, shadow, false);
+            try testing.expectEqualSlices(u8, &actual, &again);
+        }
+    }
+}
+
+test "M24 distinct skin instances bind their own position normal and tangent prefixes" {
+    var fx = try TestFixture.initConfig(.{ .sample_count = 1, .shadow_size = 0, .max_skinned_vertices = 12 }, material_test_size);
+    defer fx.deinit();
+    const mesh = try testStrip(&fx.renderer, false);
+    const reference = try testStrip(&fx.renderer, true);
+    const material = try fx.renderer.createMaterial(.{ .shading = lit_id, .double_sided = true }, "skin instances");
+    const readback = try fx.device.createBuffer(.{ .size = material_test_bytes, .usage = .{ .copy_dst = true }, .memory = .readback });
+    defer fx.device.destroyBuffer(readback);
+    var images: [2][material_test_bytes]u8 = undefined;
+    for ([_]bool{ true, false }, &images) |rigid, *image| {
+        var view = testView(material_test_size);
+        view.ambient = .{ 0.4, 0.3, 0.2 };
+        try fx.renderer.begin(view);
+        try fx.renderer.addLight(.{ .kind = .directional, .intensity = 2, .world = .identity });
+        for ([_]f32{ -1.1, 1.1 }) |x| {
+            var palette = strip_palette;
+            for (&palette) |*matrix| matrix.* = Mat4.mul(Mat4.translation(.init(x, 0, 0)), matrix.*);
+            try fx.renderer.drawMesh(.{ .mesh = if (rigid) reference else mesh, .material = material, .world = if (rigid) Mat4.translation(.init(x, 0, 0)) else .identity, .skin = if (rigid) null else &palette });
+        }
+        const frame = try fx.device.beginFrame();
+        const cmd = try fx.device.beginCommandBuffer();
+        try fx.renderer.prepare(cmd, frame);
+        try fx.renderer.recordFrame(cmd, frame, false);
+        try cmd.textureBarrier(&.{.{ .texture = frame.surface_texture, .from = .present, .to = .copy_src }});
+        try cmd.copyTextureToBuffer(.{ .src = frame.surface_texture, .size = .{ .width = material_test_size, .height = material_test_size }, .dst = readback });
+        try cmd.textureBarrier(&.{.{ .texture = frame.surface_texture, .from = .copy_src, .to = .present }});
+        try cmd.submit();
+        try fx.device.endFrame();
+        fx.device.waitIdle();
+        const bytes = try fx.device.mapBuffer(readback);
+        @memcpy(image, bytes[0..image.len]);
+        fx.device.unmapBuffer(readback);
+    }
+    if (rhi.backend != .null) for (0..material_test_size) |y| for (0..material_test_size) |x| {
+        try expectDisplayTexel(materialTexel(&images[0], x, y), materialTexel(&images[1], x, y));
+    };
+    if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
+}
+
 test "renderer configuration is bounded, and the tone map targets the surface's format" {
     const device = try rhi.Device.init(testing.allocator, .{});
     defer device.deinit();
@@ -1613,7 +2045,7 @@ test "renderer configuration is bounded, and the tone map targets the surface's 
     try testing.expectEqual(device.capabilities().surface_format, renderer.surface_format);
 }
 
-test "M24 asset skin data is refused until skinned residency exists" {
+test "M24 skin residency owns bind data and refuses missing wrong unexpected or invalid palettes" {
     var fx = try TestFixture.init(1, 8);
     defer fx.deinit();
     const positions = [_]Vec3{ .init(-1, -1, -2), .init(1, -1, -2), .init(0, 1, -2) };
@@ -1622,7 +2054,7 @@ test "M24 asset skin data is refused until skinned residency exists" {
     const indices = [_]u16{ 0, 1, 2 };
     const submeshes = [_]asset.Submesh{.{ .first_index = 0, .index_count = 3 }};
     const bounds = try asset.Mesh.computeBounds(&positions);
-    try testing.expectError(error.UnsupportedVertexFormat, fx.renderer.createMesh(.{
+    const mesh = try fx.renderer.createMesh(.{
         .vertex_count = 3,
         .streams = &.{
             .{ .semantic = .position, .format = .float32x3, .bytes = std.mem.sliceAsBytes(&positions) },
@@ -1634,7 +2066,40 @@ test "M24 asset skin data is refused until skinned residency exists" {
         .submeshes = &submeshes,
         .bounds = bounds,
         .joint_bounds = &.{bounds},
-    }, "skin not resident yet"));
+    }, "resident skin");
+    try fx.renderer.begin(testView(8));
+    const base: MeshDraw = .{ .mesh = mesh, .material = fx.material, .world = .identity };
+    try testing.expectError(error.MissingSkin, fx.renderer.drawMesh(base));
+    var draw = base;
+    draw.skin = &.{};
+    try testing.expectError(error.InvalidSkinCount, fx.renderer.drawMesh(draw));
+    var invalid = Mat4.identity;
+    invalid.cols[0][3] = 1;
+    draw.skin = &.{invalid};
+    try testing.expectError(error.InvalidSkinMatrix, fx.renderer.drawMesh(draw));
+    invalid = .identity;
+    invalid.cols[0][0] = std.math.nan(f32);
+    draw.skin = &.{invalid};
+    try testing.expectError(error.InvalidSkinMatrix, fx.renderer.drawMesh(draw));
+    const rigid = try testMesh(&fx.renderer, false);
+    draw.mesh = rigid;
+    draw.skin = &.{.identity};
+    try testing.expectError(error.UnexpectedSkin, fx.renderer.drawMesh(draw));
+    try testing.expectEqual(@as(usize, 0), fx.renderer.draws.items.len);
+    draw.mesh = mesh;
+    const submitted = Mat4.translation(.init(0.5, 0, 0));
+    var palette = [_]Mat4{submitted};
+    draw.skin = &palette;
+    try fx.renderer.drawMesh(draw);
+    palette[0] = Mat4.translation(.init(100, 0, 0));
+    try testing.expectEqual(submitted, fx.renderer.palettes.items[0]);
+    const bind = fx.renderer.meshes.getConst(mesh).?.skin.?;
+    try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(&positions), std.mem.sliceAsBytes(bind.positions));
+    try testing.expect(@intFromPtr(bind.positions.ptr) != @intFromPtr(&positions));
+    for (fx.renderer.meshes.getConst(mesh).?.vertex_buffers) |buffer| try testing.expect(buffer.isNone());
+    try finishTestFrame(&fx);
+    try testing.expectEqual(@as(u32, 3), fx.renderer.frameStats().skinned_vertices);
+    if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
 }
 
 test "resident mesh records a depth pass and reports the completed work" {

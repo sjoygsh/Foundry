@@ -519,6 +519,9 @@ selection; nothing else here changes.
   Since M22 those counts are draws, culled, blended, triangles and pipeline binds, followed
   by lights, shadow draws and shadow culled (`light.md` §7.4). They are the renderer's
   read-only last-frame statistics; the overlay does not inspect RHI resources.
+  M24 Step 5 adds skinned draws, skinned vertices and skin-budget drops, and the host-timed
+  `render.skin` span. These are preparation counts, including shadow-only survivors; `debug`
+  gains no `anim` grant (`animation3d.md` §8–9).
 
 Every one of these reads takes a `*const World` and answers by handle, as §3 requires.
 

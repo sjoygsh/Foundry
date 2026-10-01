@@ -175,6 +175,8 @@ pub const span = struct {
     pub const render_plan = "render.plan";
     /// Inside `render.prepare`, after `render.plan`: writing vertices and recording copies.
     pub const render_write = "render.write";
+    /// CPU skinning and its upload, timed by the host, never by a worker (M24).
+    pub const render_skin = "render.skin";
     /// The render pass, and the draw calls recorded into it.
     pub const render_record = "render.record";
     /// In place of `render.record` in a scene frame (M19): the 3D world's pass, its
@@ -1351,6 +1353,15 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                 self.closeScope();
                 self.openScope(span.render_write);
             }
+            const World = switch (@typeInfo(@TypeOf(world))) {
+                .pointer => |p| p.child,
+                else => @TypeOf(world),
+            };
+            if (comptime @hasDecl(World, "prepareSkin")) {
+                const scope = self.beginScope(span.render_skin);
+                defer scope.end();
+                try world.prepareSkin(frame);
+            }
             try world.prepare(cmd, frame);
             if (comptime has_overlay) {
                 if (maybe_overlay) |o| try o.prepare(cmd, frame);
@@ -1359,10 +1370,6 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             self.closeScope();
 
             self.openScope(span.render_world);
-            const World = switch (@typeInfo(@TypeOf(world))) {
-                .pointer => |p| p.child,
-                else => @TypeOf(world),
-            };
             if (comptime @hasDecl(World, "recordFrame")) {
                 try world.recordFrame(cmd, frame, overlay_present);
             } else {
@@ -2503,6 +2510,42 @@ fn expectSpans(engine: *TestEngine, expected: []const SpanAt) !void {
         try testing.expectEqual(e[1], s.depth);
     }
     try testing.expectEqual(@as(u16, 0), frame.unbalanced);
+}
+
+test "M24 the host times the optional skin seam before ordinary preparation" {
+    const engine = try profiledEngine(.{ .hot_reload = false });
+    defer engine.deinit();
+    const SkinWorld = struct {
+        world: SceneWorld = .{},
+        skinned: bool = false,
+        pub fn plan(self: *@This()) !void {
+            try self.world.plan();
+        }
+        pub fn prepareSkin(self: *@This(), _: rhi.FrameContext) !void {
+            try testing.expect(self.world.planned);
+            self.skinned = true;
+        }
+        pub fn prepare(self: *@This(), cmd: *rhi.null_backend.CommandBuffer, frame: rhi.FrameContext) !void {
+            try testing.expect(self.skinned);
+            try self.world.prepare(cmd, frame);
+        }
+        pub fn passDesc(self: *@This(), frame: rhi.FrameContext, overlay: bool) rhi.RenderPassDesc {
+            return self.world.passDesc(frame, overlay);
+        }
+        pub fn record(self: *@This(), pass: *rhi.null_backend.RenderPass) !void {
+            try self.world.record(pass);
+        }
+    };
+    var world: SkinWorld = .{};
+    engine.beginFrame();
+    try engine.renderScene(.{}, &world, null);
+    engine.endFrame();
+    try expectSpans(engine, &.{
+        .{ span.input, 0 },        .{ span.render_acquire, 0 }, .{ span.render_prepare, 0 },
+        .{ span.render_plan, 1 },  .{ span.render_write, 1 },   .{ span.render_skin, 2 },
+        .{ span.render_world, 0 }, .{ span.render_submit, 0 },  .{ span.render_present, 0 },
+    });
+    try testing.expectEqual(@as(usize, 0), engine.gpu.violationCount());
 }
 
 test "a scene frame is the world's pass, then the overlay's, and the surface ends presentable" {

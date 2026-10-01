@@ -1,12 +1,36 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-01
-**Current handoff: M24 Steps 1–4 are complete. Stop before Step 5.** Next is `render3d`
-skin residency, evaluation, posed culling and drawing (`animation3d.md` §8 and §13 Step 5).
-glTF imports skeletons, clips and skinned meshes; safe staged per-frame vertex writes exist
-in the RHI. Rendering still refuses skin data, and no
-production module is granted `anim`. M0–M23 are complete; M23 closed at tag
-`m23`, pushed.
+**Current handoff: M24 Steps 1–5 are complete. Stop before Step 6.** Next is the generated
+`sandbox3d` walker, patrol/cross-fade, replay/reload and paced Metal cost measurements
+(`animation3d.md` §10 and §13 Step 6). glTF skin/clip import, staged per-frame vertices and
+`render3d` CPU skinning exist. The renderer is granted `anim`; the sample is not yet.
+M0–M23 are complete; M23 closed at tag `m23`, pushed.
+
+**M24 Step 5 is done (2026-10-01), from `cca0071`.** Skinned meshes retain aligned CPU bind
+positions/normals/tangents, influences and joint bounds; only static streams and indices are
+uploaded at residency. Mesh/model draws copy validated affine palettes at submission.
+Posed bounds include the accepted weight-sum tolerance; camera/shadow survivors share one
+submission-ordered budget (`max_skinned_vertices`, default 262,144), one job-based evaluation
+per draw, and the same per-instance stream offsets in both passes. Frame storage is lazy and
+fixed-capacity. Stats and the overlay report skinned draws/vertices and budget drops.
+`app.renderScene` times the idempotent `prepareSkin` seam as `render.skin`; neither renderer
+nor workers read a clock. Models retain skeleton/clip asset handles, expose current borrowed
+payloads, and preflight mesh/rig/clip compatibility after reload. Stale resident handles return
+`InvalidMesh` before any part is submitted. No new ADR, shader, RHI interface, ABI or sample work.
+
+**Verification:** renderer suites **65/65 null and 65/65 Metal**, Debug and ReleaseSafe;
+M24 model pairing/reload tests **2/2** in both modes; the actual renderer's skin output is
+byte-identical under serial, reversed and four real workers (**1/1**, both modes). Metal's
+bent strip matches an independent CPU reference lit and in shadow at 1×/4×, with positive
+pixel witnesses, ring reuse and a separate two-instance offset proof. Allocation refusals,
+budget/culling, copied palettes and failed-upload cleanup pass. Eighteen mutations fail and
+are restored. All nine bar commands pass: **2,033 of 2,034 tests**, one expected skip.
+Vulkan whole-graph Windows/Linux and optimized Windows checks pass (160/160 steps each);
+the unchanged backend/shader proofs from Step 4 remain accepted. A localized stale-handle
+fix passed affected model tests and the cached test graph without restarting unrelated checks.
+No Windows job ran. No content, asset kind or release description changed, so no restaging.
+Native Vulkan remains Step 7; Linux compile-only. Step 6 has not begun.
 
 **M24 Step 4 is done (2026-10-01), from `24f06c9`.** `rhi.FrameVertexBuffer` owns a fixed
 upload/device-local vertex pair per configured frame slot. `update(frame, bytes)` refuses
@@ -32,7 +56,7 @@ restaging because no content, asset kind or release description changed.
 **M24-only owner permission:** background Windows tests may run while the owner plays;
 the CPU-use refusal cutoff is 90%, replacing 50% for this milestone only. Keep below-normal
 priority, `-j2`, isolated worktrees and no focus-taking or game interruption. The exception
-expires at M24's close; it does not change the permanent rules. Step 5 has not begun.
+expires at M24's close; it does not change the permanent rules. Step 6 has not begun.
 
 **M24 Step 3 is done (2026-10-01), from `2ca17fb`.** `author/gltf/skin.zig` closes the
 used skin's hierarchy, preserves sibling order, remaps influences, retains joint names and

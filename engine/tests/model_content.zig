@@ -214,6 +214,138 @@ fn quadFile(gpa: Allocator) ![]u8 {
     });
 }
 
+const animation_records =
+    \\foundry:material demo:skin.material { base_color { r 0.6 g 0.3 b 0.1 a 1 } }
+    \\foundry:model demo:skin.model {
+    \\ slots [ { name "main" material demo:skin.material } ]
+    \\ parts [ { mesh demo:skin.mesh submesh 0 slot 0 translation { x 0 y 0 z 0 } rotation { x 0 y 0 z 0 w 1 } scale { x 1 y 1 z 1 } } ]
+    \\ skeleton demo:skin.rig
+    \\ clips [ { name "walk" clip demo:skin.walk } ]
+    \\}
+;
+
+fn rigFile(gpa: Allocator, count: usize) ![]u8 {
+    const parents = [_]u16{ asset.skeleton.no_parent, 0 };
+    const rest = [_]core.math.Transform{ .{}, .{} };
+    const inverse = [_]Mat4{ .identity, .identity };
+    const names = [_][]const u8{ "root", "child" };
+    return asset.skeleton.write(gpa, .{ .parents = parents[0..count], .rest = rest[0..count], .inverse_bind = inverse[0..count], .names = names[0..count] });
+}
+
+fn clipFile(gpa: Allocator, count: u32) ![]u8 {
+    return asset.animation.write(gpa, .{ .duration = 1, .joint_count = count, .tracks = &.{} });
+}
+
+fn animationStack(rig_count: usize, clip_count: u32, text: []const u8) !*Stack {
+    const stack = try Stack.init(1);
+    errdefer stack.deinit();
+    const joints = [_][4]u8{.{ 0, 255, 255, 255 }} ** 4;
+    const weights = [_][4]f32{.{ 1, 0, 0, 0 }} ** 4;
+    const box = try asset.Mesh.computeBounds(&quad_positions);
+    const mesh = try asset.mesh_file.write(stack.gpa, .{ .vertex_count = 4, .bounds = box, .joint_bounds = &.{box}, .streams = &.{
+        .{ .semantic = .position, .format = .float32x3, .bytes = std.mem.sliceAsBytes(&quad_positions) },
+        .{ .semantic = .joints, .format = .uint8x4, .bytes = std.mem.sliceAsBytes(&joints) },
+        .{ .semantic = .weights, .format = .float32x4, .bytes = std.mem.sliceAsBytes(&weights) },
+    }, .index_format = .uint16, .indices = std.mem.sliceAsBytes(&quad_indices), .submeshes = &.{.{ .first_index = 0, .index_count = 6 }} });
+    defer stack.gpa.free(mesh);
+    try stack.install("skin/mesh.fmesh", mesh);
+    const rig = try rigFile(stack.gpa, rig_count);
+    defer stack.gpa.free(rig);
+    try stack.install("skin/rig.fskel", rig);
+    const clip = try clipFile(stack.gpa, clip_count);
+    defer stack.gpa.free(clip);
+    try stack.install("skin/walk.fanim", clip);
+    try stack.write("skin.fdt", text);
+    try stack.build();
+    return stack;
+}
+
+test "M24 model animation assets are current handle borrows and palette refusals submit no parts" {
+    const stack = try animationStack(1, 1, animation_records);
+    defer stack.deinit();
+    const model = try stack.content.acquireModel(id("demo:skin.model"));
+    try testing.expectEqual(@as(usize, 1), stack.content.skeletonOf(model).?.parents.len);
+    try testing.expectEqual(@as(u32, 1), stack.content.clipOf(model, "walk").?.joint_count);
+    try testing.expect(stack.content.clipOf(model, "missing") == null);
+    try stack.begin();
+    try testing.expectError(error.MissingSkin, stack.content.drawModel(.{ .model = model, .world = .identity }));
+    try testing.expectError(error.InvalidSkinCount, stack.content.drawModel(.{ .model = model, .world = .identity, .skin = &.{ .identity, .identity } }));
+    try testing.expectEqual(@as(usize, 0), stack.renderer.draws.items.len);
+    try stack.content.drawModel(.{ .model = model, .world = .identity, .skin = &.{.identity} });
+    try stack.finish(null);
+    try testing.expectEqual(@as(u32, 4), stack.renderer.frameStats().skinned_vertices);
+    // A separately overridden clip can mismatch the unchanged model's rig. Refuse before
+    // any submission, then follow a healthy reload through the same retained handles.
+    const bad_clip = try clipFile(stack.gpa, 2);
+    defer stack.gpa.free(bad_clip);
+    try stack.writeUnder(stack.out, "skin/walk.fanim", bad_clip);
+    _ = stack.assets.reloadAll(stack.gpa);
+    try stack.begin();
+    try testing.expectError(error.SkeletonMismatch, stack.content.drawModel(.{ .model = model, .world = .identity, .skin = &.{.identity} }));
+    try testing.expectEqual(@as(usize, 0), stack.renderer.draws.items.len);
+    const good_clip = try clipFile(stack.gpa, 1);
+    defer stack.gpa.free(good_clip);
+    try stack.writeUnder(stack.out, "skin/walk.fanim", good_clip);
+    _ = stack.assets.reloadAll(stack.gpa);
+    try stack.content.drawModel(.{ .model = model, .world = .identity, .skin = &.{.identity} });
+    try stack.finish(null);
+    // Skeleton override is checked independently of the clip and mesh.
+    const renamed = try std.mem.replaceOwned(u8, stack.gpa, animation_records, "name \"walk\"", "name \"stride\"");
+    defer stack.gpa.free(renamed);
+    try stack.write("skin.fdt", renamed);
+    try stack.reload();
+    try testing.expect(stack.content.clipOf(model, "walk") == null);
+    try testing.expectEqual(@as(u32, 1), stack.content.clipOf(model, "stride").?.joint_count);
+    const bad_rig = try rigFile(stack.gpa, 2);
+    defer stack.gpa.free(bad_rig);
+    try stack.writeUnder(stack.out, "skin/rig.fskel", bad_rig);
+    _ = stack.assets.reloadAll(stack.gpa);
+    try stack.begin();
+    try testing.expectError(error.SkeletonMismatch, stack.content.drawModel(.{ .model = model, .world = .identity, .skin = &.{ .identity, .identity } }));
+    try testing.expectEqual(@as(usize, 0), stack.renderer.draws.items.len);
+    const good_rig = try rigFile(stack.gpa, 1);
+    defer stack.gpa.free(good_rig);
+    try stack.writeUnder(stack.out, "skin/rig.fskel", good_rig);
+    _ = stack.assets.reloadAll(stack.gpa);
+    // A caller can explicitly retire a resident handle. A still-retained asset payload
+    // must not turn that stale renderer handle into an optional-unwrapping trap.
+    var meshes = stack.renderer.meshes.iterator();
+    stack.renderer.destroyMesh(meshes.next().?.id);
+    try testing.expectError(error.InvalidMesh, stack.content.drawModel(.{ .model = model, .world = .identity, .skin = &.{.identity} }));
+    try testing.expectEqual(@as(usize, 0), stack.renderer.draws.items.len);
+    stack.content.releaseModel(model);
+    try testing.expect(stack.content.skeletonOf(model) == null);
+    try testing.expect(stack.content.clipOf(model, "stride") == null);
+    try testing.expectEqual(@as(usize, 0), stack.violations());
+}
+
+test "M24 models refuse missing rigs incompatible assets duplicate names and clip limits" {
+    for ([_][2]u32{ .{ 2, 1 }, .{ 1, 2 }, .{ 2, 2 } }) |counts| {
+        const stack = try animationStack(counts[0], counts[1], animation_records);
+        defer stack.deinit();
+        try testing.expectError(error.InvalidModelRecord, stack.content.acquireModel(id("demo:skin.model")));
+        try testing.expectEqual(@as(u32, 0), stack.content.models.count());
+    }
+    for ([_]struct { from: []const u8, to: []const u8 }{
+        .{ .from = " skeleton demo:skin.rig", .to = "" },
+        .{ .from = "{ name \"walk\" clip demo:skin.walk }", .to = "{ name \"walk\" clip demo:skin.walk } { name \"walk\" clip demo:skin.walk }" },
+        .{ .from = "name \"walk\"", .to = "name \"\"" },
+    }) |edit| {
+        const text = try std.mem.replaceOwned(u8, testing.allocator, animation_records, edit.from, edit.to);
+        defer testing.allocator.free(text);
+        const stack = try animationStack(1, 1, text);
+        defer stack.deinit();
+        try testing.expectError(error.InvalidModelRecord, stack.content.acquireModel(id("demo:skin.model")));
+    }
+    const stack = try animationStack(1, 1, animation_records);
+    defer stack.deinit();
+    stack.content.limits.max_clips = 0;
+    try testing.expectError(error.InvalidModelRecord, stack.content.acquireModel(id("demo:skin.model")));
+    stack.content.limits.max_clips = 1;
+    stack.content.limits.max_clip_name_bytes = 3;
+    try testing.expectError(error.InvalidModelRecord, stack.content.acquireModel(id("demo:skin.model")));
+}
+
 // `light.md` §11: the compiler, real mod ordering and Content, not a code-material
 // stand-in for an override. Both pixel values are checked against the same CPU oracle.
 test "a compiled content mod changes a lit pixel through resolved package order" {

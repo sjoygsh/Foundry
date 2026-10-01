@@ -41,12 +41,15 @@ pub const ModelDraw = struct {
     world: Mat4,
     /// At most one per slot. Each replaces that slot's material for this draw only.
     overrides: []const SlotOverride = &.{},
+    skin: ?[]const Mat4 = null,
 };
 
 /// Bounds on one model record, because its lists are a package's to choose.
 pub const Limits = struct {
     max_slots: u32 = 256,
     max_parts: u32 = 4096,
+    max_clips: u32 = 1024,
+    max_clip_name_bytes: u32 = 65_536,
 
     pub const default: Limits = .{};
 };
@@ -60,6 +63,7 @@ pub const Error = error{
     /// A stale or never-issued `ModelHandle`.
     InvalidModel,
     InvalidOverride,
+    SkeletonMismatch,
 } || renderer_mod.Error;
 
 /// Magenta, opaque and untextured: visible, and not a colour a real material is taken for.
@@ -100,7 +104,11 @@ const ModelEntry = struct {
     slots: []EntryHandle,
     /// Each distinct mesh acquired once, in first-use order.
     meshes: []asset.AssetHandle,
+    skeleton: asset.AssetHandle = .none,
+    clips: []NamedClip = &.{},
 };
+
+const NamedClip = struct { name: []u8, handle: asset.AssetHandle };
 
 pub const Content = struct {
     gpa: Allocator,
@@ -133,6 +141,7 @@ pub const Content = struct {
         var models = self.models.iterator();
         while (models.next()) |entry| {
             for (entry.value.meshes) |handle| self.assets.release(handle);
+            self.releaseAnimation(entry.value);
             self.freeModel(entry.value);
         }
         self.models.deinit(self.gpa);
@@ -183,6 +192,21 @@ pub const Content = struct {
             for (draw.overrides[0..i]) |earlier| if (earlier.slot == override.slot) return error.InvalidOverride;
             if (!self.renderer.isMaterial(override.material)) return error.InvalidMaterial;
         }
+        // Preflight every current mesh and animation asset before any part is submitted.
+        try self.checkAnimation(model.*);
+        if (model.skeleton.isNone()) {
+            if (draw.skin != null) return error.UnexpectedSkin;
+        } else {
+            const skeleton = self.skeletonOf(draw.model) orelse return error.SkeletonMismatch;
+            const matrices = draw.skin orelse return error.MissingSkin;
+            try @import("skinning.zig").validate(matrices, skeleton.parents.len);
+        }
+        for (model.parts) |part| {
+            if (part.mesh.isNone()) continue;
+            const mesh = loader.meshOf(self.assets, part.mesh, self.renderer) orelse continue;
+            const joint_count = self.renderer.meshJointCount(mesh) orelse return error.InvalidMesh;
+            try self.renderer.validateSkin(mesh, if (joint_count != 0) draw.skin else null);
+        }
 
         for (model.slots) |slot| try self.refresh(slot);
         for (draw.overrides) |override| if (self.entryOf(override.material)) |slot| try self.refresh(slot);
@@ -191,6 +215,7 @@ pub const Content = struct {
         for (parts) |*part| {
             if (part.mesh.isNone()) continue;
             const mesh = loader.meshOf(self.assets, part.mesh, self.renderer) orelse continue;
+            const joint_count = self.renderer.meshJointCount(mesh) orelse return error.InvalidMesh;
             const material = for (draw.overrides) |override| {
                 if (override.slot == part.slot) break override.material;
             } else self.materials.getConst(model.slots[part.slot]).?.handle;
@@ -199,6 +224,7 @@ pub const Content = struct {
                 .submesh = part.submesh,
                 .material = material,
                 .world = Mat4.mul(draw.world, part.local),
+                .skin = if (joint_count != 0) draw.skin else null,
             }) catch |err| switch (err) {
                 error.InvalidSubmesh, error.MissingStream, error.InvalidTransform => {
                     if (!part.reported) log.warn("model {f}: a part cannot be drawn ({t}); it is skipped", .{ model.id, err });
@@ -207,6 +233,23 @@ pub const Content = struct {
                 else => return err,
             };
         }
+    }
+
+    /// Current payloads, borrowed until the next asset/content reload, never retained by us.
+    pub fn skeletonOf(self: *Self, handle: ModelHandle) ?*const asset.skeleton.Skeleton {
+        const model = self.models.getConst(handle) orelse return null;
+        if (model.skeleton.isNone()) return null;
+        const loaded = self.assets.getIfLoader(model.skeleton, asset.skeletonLoader()) orelse return null;
+        return asset.skeleton.fromPayload(loaded.payload);
+    }
+
+    pub fn clipOf(self: *Self, handle: ModelHandle, name: []const u8) ?*const asset.animation.Animation {
+        const model = self.models.getConst(handle) orelse return null;
+        for (model.clips) |clip| if (std.mem.eql(u8, clip.name, name)) {
+            const loaded = self.assets.getIfLoader(clip.handle, asset.animationLoader()) orelse return null;
+            return asset.animation.fromPayload(loaded.payload);
+        };
+        return null;
     }
 
     // -- materials ---------------------------------------------------------------------
@@ -348,14 +391,85 @@ pub const Content = struct {
             }
         }
 
+        var skeleton = asset.AssetHandle.none;
+        if (idField(record.fields, "skeleton")) |skeleton_id| {
+            skeleton = self.assets.acquireWith(gpa, skeleton_id, asset.skeletonLoader()) catch |err| return switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                else => refuse(record, "has a skeleton that cannot be loaded"),
+            };
+        }
+        errdefer if (!skeleton.isNone()) self.assets.release(skeleton);
+        var clips: std.ArrayList(NamedClip) = .empty;
+        errdefer {
+            for (clips.items) |clip| {
+                self.assets.release(clip.handle);
+                gpa.free(clip.name);
+            }
+            clips.deinit(gpa);
+        }
+        if (listField(record.fields, "clips")) |list| {
+            if (list.len > @min(self.limits.max_clips, 1024)) return refuse(record, "has too many clips");
+            var name_bytes: usize = 0;
+            for (0..list.len) |i| {
+                const fields = (list.nestedAt(@intCast(i)) catch null) orelse return refuse(record, "has an unreadable clip");
+                const name = (fields.stringAt(indexOf(fields, "name") orelse return refuse(record, "has an unnamed clip")) catch null) orelse return refuse(record, "has an unnamed clip");
+                if (name.len == 0 or name.len > @min(self.limits.max_clip_name_bytes, 65_536) -| name_bytes) return refuse(record, "has an empty or over-limit clip name");
+                name_bytes += name.len;
+                for (clips.items) |earlier| if (std.mem.eql(u8, name, earlier.name)) return refuse(record, "has duplicate clip names");
+                const clip_id = idField(fields, "clip") orelse return refuse(record, "has a clip with no asset");
+                const owned_name = try gpa.dupe(u8, name);
+                errdefer gpa.free(owned_name);
+                const clip = self.assets.acquireWith(gpa, clip_id, asset.animationLoader()) catch |err| return switch (err) {
+                    error.OutOfMemory => error.OutOfMemory,
+                    else => refuse(record, "has a clip that cannot be loaded"),
+                };
+                errdefer self.assets.release(clip);
+                try clips.append(gpa, .{ .name = owned_name, .handle = clip });
+            }
+        }
+        var built: ModelEntry = .{ .id = record.id, .refs = 1, .parts = parts, .slots = slots, .meshes = meshes.items, .skeleton = skeleton, .clips = clips.items };
+        self.checkAnimation(built) catch return refuse(record, "has incompatible mesh, skeleton or clip joint counts");
+        const owned_clips = try clips.toOwnedSlice(gpa);
+        errdefer {
+            for (owned_clips) |clip| {
+                self.assets.release(clip.handle);
+                gpa.free(clip.name);
+            }
+            gpa.free(owned_clips);
+        }
         const owned_meshes = try meshes.toOwnedSlice(gpa);
         parts_owned = false;
-        return .{ .id = record.id, .refs = 1, .parts = parts, .slots = slots, .meshes = owned_meshes };
+        built.meshes = owned_meshes;
+        built.clips = owned_clips;
+        return built;
+    }
+
+    fn checkAnimation(self: *Self, model: ModelEntry) error{SkeletonMismatch}!void {
+        const count: usize = if (model.skeleton.isNone()) 0 else blk: {
+            const loaded = self.assets.getIfLoader(model.skeleton, asset.skeletonLoader()) orelse return error.SkeletonMismatch;
+            break :blk asset.skeleton.fromPayload(loaded.payload).parents.len;
+        };
+        if (count == 0 and model.clips.len != 0) return error.SkeletonMismatch;
+        for (model.clips) |clip| {
+            const loaded = self.assets.getIfLoader(clip.handle, asset.animationLoader()) orelse return error.SkeletonMismatch;
+            try asset.animation.fromPayload(loaded.payload).checkJointCount(count);
+        }
+        for (model.meshes) |handle| {
+            const mesh = loader.meshOf(self.assets, handle, self.renderer) orelse continue;
+            const joints = self.renderer.meshJointCount(mesh) orelse continue;
+            if (joints != 0 and joints != count) return error.SkeletonMismatch;
+        }
+    }
+
+    fn releaseAnimation(self: *Self, model: *const ModelEntry) void {
+        if (!model.skeleton.isNone()) self.assets.release(model.skeleton);
+        for (model.clips) |clip| self.assets.release(clip.handle);
     }
 
     fn dropModel(self: *Self, model: *ModelEntry) void {
         for (model.slots) |entry| self.releaseEntry(entry);
         for (model.meshes) |handle| self.assets.release(handle);
+        self.releaseAnimation(model);
         self.freeModel(model);
     }
 
@@ -363,6 +477,8 @@ pub const Content = struct {
         self.gpa.free(model.parts);
         self.gpa.free(model.slots);
         self.gpa.free(model.meshes);
+        for (model.clips) |clip| self.gpa.free(clip.name);
+        self.gpa.free(model.clips);
     }
 
     fn retainMaterial(self: *Self, id: ContentId) Error!EntryHandle {

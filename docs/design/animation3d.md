@@ -1,7 +1,7 @@
 # Design: M24 — Animation: skeletons, clips, fixed-step sampling, CPU skinning and a walking character
 
-**Status:** Accepted 2026-10-01, when the owner requested Step 1. Steps 1–4 of eight are complete;
-Step 5 has not begun.
+**Status:** Accepted 2026-10-01, when the owner requested Step 1. Steps 1–5 of eight are complete;
+Step 6 has not begun.
 **Date:** 2026-10-01
 **Baseline:** `9c6bf56`, tag `m23`. M0–M23 are complete.
 **Decisions:**
@@ -439,6 +439,17 @@ at M24's close. Step 4's Vulkan evidence is compilation; native qualification re
 budget and `Stats`. **Exit:** the bent-strip readback matches the CPU reference on Metal, lit
 and in shadow, at 1× and 4×.
 
+**Implementation refinement (2026-10-01, before Step 5 code):** retain aligned CPU bind
+streams and collect palettes in frame-owned storage. Budget admission is in submission order
+over the union of camera/shadow survivors, once per draw; a draw skins its full mesh and both
+passes share its offsets. One lazily allocated, fixed-capacity frame-vertex buffer holds
+separate position/normal/tangent regions, preserving ADR-0054. Bounds include the accepted
+weight-sum tolerance around one (scale the posed model-space union before world placement).
+Models retain skeleton/clip asset handles and validate their current joint counts, including
+after reload. `prepareSkin(frame)` is an idempotent preparation seam called by `prepare`;
+`app.renderScene` may time that seam as `render.skin`, keeping the clock above the renderer
+and workers. No new callback or platform dependency is needed.
+
 ### Step 6 — `sandbox3d`: the walker, on Metal
 
 §10: the character generator, the walker record, patrol, cross-fade, the tour's walker stage,
@@ -760,3 +771,79 @@ release description changed, so release restaging was not triggered. Windows syn
 validation remains Step 7, Linux compile-only, renderer skinning Step 5. The M24-only 90%
 background CPU permission is recorded above and expires at the milestone close. Step 5 has
 not begun.
+
+## Resolution — Step 5: renderer skin residency, preparation and drawing (2026-10-01)
+
+**What exists.** `render3d` is granted `anim`. `skinning.zig` owns aligned copies of bind
+positions, optional normals/tangents, joints, weights and model bind-space boxes; `createMesh`
+uploads only the unchanged streams and indices. Slots 6/7 never enter a pipeline. Residency
+and partial upload recordings clean up on failure, through ordinary backend retirement.
+
+`MeshDraw.skin`/`ModelDraw.skin` are optional borrowed palettes copied at submission. A mesh
+requires exactly its joint count, finite affine matrices, and skin data if and only if it is
+skinned: `MissingSkin`, `InvalidSkinCount`, `InvalidSkinMatrix` and `UnexpectedSkin` are named
+refusals before submission changes. Posed culling transforms joint-box corners and accounts
+for the permitted 1±1e-3 weight sum before world placement, with roundoff padding. Its centre
+also orders transparent draws. No skinned vertex is scanned for culling.
+
+**The frame.** `plan` admits the union of camera/shadow survivors in submission order, charging
+the full mesh once per draw against `Config.max_skinned_vertices` (262,144 by default; zero
+disables skin draws). A refused budget draw is removed from both orders, never truncated.
+`prepareSkin(frame)`, also called by `prepare`, joins `anim.skin` chunks of 1,024 vertices
+through explicit `Config.jobs`. Chunks allocate nothing, read no clock and call no RHI. The
+renderer lazily reserves `40 × max_skinned_vertices` CPU bytes and one Step 4 frame-vertex
+helper; each frame packs separate contiguous position/normal/tangent regions into one bounded
+prefix. Both passes bind each admitted instance's offsets into that same vertex buffer.
+Unused direction regions are zeroed, and capacity never grows. A failed update is consumed,
+not mistaken for successful preparation on retry. New draws/lights cannot change prepared data.
+
+The host times the optional preparation seam as `render.skin`, nested under `render.write`;
+the normal `prepare` call does not repeat it. This preserves the clock's layer rather than
+adding a callback or a platform grant. `Stats.skinned_draws`, `skinned_vertices` and
+`skin_budget_dropped` count preparation work (including shadow-only survivors), and the
+overlay reads them without being granted `anim`.
+
+**Models and reload.** `Content` retains skeleton and named-clip asset handles through the
+ordinary private-loader path. Names are owned, nonempty and unique, with caps of 1,024 clips
+and 65,536 total name bytes (callers may lower them). `skeletonOf`/`clipOf` borrow current
+payloads only until the next reload; no payload pointer is stored. Mesh/rig/clip joint counts
+are checked at acquisition and before drawing, so independent overrides cannot reach a kernel
+assertion. A bad candidate preserves the established reload policy. Stale resident mesh
+handles now return `InvalidMesh` before any parts, rather than unwrapping a missing count.
+
+**Evidence.** Eight new renderer tests plus the replaced pre-Step-5 refusal test cover copied
+residency/palettes, every palette refusal, submission-order budgets across camera/shadow
+survivors, posed culling and transparent ordering, tolerance bounds under translated/reflected
+placement, all allocation failures, consumed upload failure and multi-instance stream offsets.
+Renderer suites pass **65/65 null and 65/65 Metal**, in Debug and ReleaseSafe. Metal draws the
+bent two-joint strip against an independently calculated rigid CPU reference, lit and in shadow
+at 1×/4×, with positive pixel witnesses, multiple ring reuses and a two-instance proof. The
+first comparison caught in-place aliasing in the test's reference formula; preserving its
+original x/y values fixed the reference, not the renderer or the tolerance.
+
+`render3d-jobs-test` compares the actual call site's complete vertex prefixes under serial,
+reversed and a four-worker pool, around the 1,024-vertex boundary, for two different palettes;
+**1/1** passes in both modes. Two new model integration tests prove package-to-residency,
+missing/incompatible rigs/clips, bounded/unique names, no-part palette refusal, healthy and bad
+asset overrides, package reload with renamed clips, and stale handles. `model-content-test`
+runs those **2/2** in both modes; the same tests remain in the normal integration graph.
+This focused target filters M24 because its shared PNG helper also imports UI-theme tests;
+an unrelated exact-colour assertion in the standalone ReleaseSafe binary differs by one ULP.
+No existing test or tolerance was weakened, and the required repository graph is unchanged.
+
+**Eighteen mutations fail and are restored:** palette count, finite and affine matrices,
+budget admission, weight-tolerance bounds, mesh/rig and clip/rig pairing, clip count, duplicate
+and empty/over-limit names, posed culling, position and normal stream offsets (Metal pixels),
+failed-update retry, missing and unexpected skin, palette copying, and stale resident handles.
+Removing count/budget/stale-handle guards reaches Debug traps in their hostile proofs; restored
+code returns the named refusals. These are guard proofs, not device-loss recovery claims.
+
+**Exit met.** All nine bar commands exit 0: **2,033 of 2,034 tests**, one expected skip.
+Vulkan whole-graph Windows/Linux and optimized Windows checks pass (160/160 steps each),
+compiling the new readbacks; Step 4's unchanged backend/shader proofs remain accepted. Final
+review found the localized stale-handle unwrap; its fix passed the affected model tests and
+cached test graph, without restarting unrelated audits. No native Windows job ran. No content,
+asset kind or release description changed, so no release restaging was required. No shader,
+backend interface or public ABI changed, no sample gained animation, and no new ADR was needed.
+Step 6's walker/replay/reload/measurement has not begun; native Vulkan remains Step 7, Linux
+compile-only, and the M24-only background/90% CPU permission remains in force.

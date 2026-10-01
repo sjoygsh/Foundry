@@ -314,6 +314,9 @@ recomputed in place of the check.
 > weights for M24. `meshes.md` §3 is authoritative for the table and the file.
 > **M22, 2026-09-30.** Tangents now accept finite unit `float32x4` with exact ±1 handedness
 > (`light.md` §5.2), without changing `.fmesh`'s version. Joints and weights still wait for M24.
+> **M24 Steps 2–5, 2026-10-01.** `.fmesh` v2 accepts byte joints, float weights and joint
+> bounds; CPU-skinned residency/drawing now exists (`animation3d.md` §8). Slots 6/7 stay
+> unbound: the existing shaders read ordinary posed position/normal/tangent streams.
 
 ## 6. `render3d`: the skeleton
 
@@ -462,6 +465,13 @@ Unlit and lit world pipelines target `rgba16_float`, not the surface format.
 has finished, so destroying a mesh with frames in flight is legal. `render3d` owns this
 residency, as `render2d` owns its textures (ADR-0052).
 
+**M24 Step 5, 2026-10-01:** skinned meshes retain aligned CPU bind streams, influences and
+joint boxes, uploading only other streams and indices here. `MeshDraw.skin` is a copied,
+validated palette. `plan` culls posed bounds and admits camera/shadow survivors against a
+submission-order vertex budget; `prepare` skins them over explicit jobs into staged frame
+vertices. Both passes share the result. Configuration, errors, ownership, stats and proofs
+are specified in `animation3d.md` §8 and its Step 5 Resolution. No shader variant is added.
+
 ## 7. The frame: the world, then the overlay
 
 **Since M22 (2026-09-30, `light.md` §7.4 and §9):** `render3d` no longer publishes
@@ -507,6 +517,11 @@ measured in Step 7, and it is the trigger for revisiting this.
 
 **Profiling:** `render.record` splits into `render.world` and `render.overlay`. The other spans
 are unchanged.
+
+**M24 Step 5:** a world may additionally provide `prepareSkin(frame)`. The host calls it
+before ordinary preparation, under `render.skin` within `render.write`; the renderer's own
+`prepare` calls the same idempotent seam for direct consumers. The host alone supplies timing.
+Per-frame skin uploads submit before either pass; backend completion remains authoritative.
 
 ## 8. `samples/sandbox3d`
 

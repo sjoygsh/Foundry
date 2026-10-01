@@ -106,7 +106,7 @@ const layering = [_]Module{
     // L3 — the game-facing 3D renderer (ADR-0054, docs/design/render3d.md). It owns GPU
     // mesh residency, camera projection and the depth/MSAA targets, while `asset` owns the
     // validated CPU mesh and `rhi` owns every backend object.
-    .{ .name = "render3d", .deps = &.{ "core", "rhi", "asset" } },
+    .{ .name = "render3d", .deps = &.{ "core", "rhi", "asset", "anim" } },
 
     // L3 — entities, components, systems and world state (docs/design/entity-storage.md).
     // ADR-0007 allows `asset` as well; it is not taken, because nothing here acquires one
@@ -1429,6 +1429,20 @@ pub fn build(b: *std.Build) void {
     const animation_import_run = b.addRunArtifact(animation_import_tests);
     test_step.dependOn(&animation_import_run.step);
     b.step("animation-import-test", "Sample and skin an imported glTF against a known pose").dependOn(&animation_import_run.step);
+
+    const skin_jobs_mod = b.createModule(.{ .root_source_file = b.path("engine/tests/render_skin_jobs.zig"), .target = target, .optimize = optimize });
+    for ([_][]const u8{ "core", "asset", "platform", "render3d", "rhi" }) |name| skin_jobs_mod.addImport(name, modules.get(name).?);
+    const skin_jobs_tests = b.addTest(.{ .root_module = skin_jobs_mod });
+    check_step.dependOn(&skin_jobs_tests.step);
+    const skin_jobs_run = b.addRunArtifact(skin_jobs_tests);
+    test_step.dependOn(&skin_jobs_run.step);
+    b.step("render3d-jobs-test", "Compare renderer skin output under serial, reversed and real jobs").dependOn(&skin_jobs_run.step);
+
+    const model_content_mod = b.createModule(.{ .root_source_file = b.path("engine/tests/model_content.zig"), .target = target, .optimize = optimize });
+    for ([_][]const u8{ "core", "data", "platform", "rhi", "asset", "author", "render3d", "render2d", "ui", "app" }) |name| model_content_mod.addImport(name, modules.get(name).?);
+    const model_content_tests = b.addTest(.{ .root_module = model_content_mod, .filters = &.{"M24"} });
+    b.step("model-content-test", "Run M24 model animation residency, reload and pairing proofs").dependOn(&b.addRunArtifact(model_content_tests).step);
+    // The same model tests already belong to integration-test and its check binary.
 
     if (script_mod) |mod| {
         const script_tests = b.addTest(.{ .root_module = mod });

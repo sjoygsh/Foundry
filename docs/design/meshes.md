@@ -121,7 +121,8 @@ slot). M20 reads UVs, and it imports normals so that M22 does not need a re-impo
 | uv0, uv1 | `float32x2` | finite |
 | colour | `unorm8x4`, `float32x4` | linear; a float component is finite and in [0, 1] |
 | tangent | — | refused until M22 |
-| joints, weights | — | refused until M24 |
+| joints (M24) | `uint8x4` | weighted indices within the joint-bounds count |
+| weights (M24) | `float32x4` | finite, non-negative; sum within 1 ± 1e-3; skin streams/boxes together |
 
 `asset.MeshVertexFormat` gains `float32x2` and `float32x4`, which `render3d` maps to the RHI's
 existing formats. Each new refusal has a named error: `InvalidNormal` and `InvalidColor`.
@@ -233,7 +234,10 @@ not on every reload. Opaque/mask materials may cast; blend never does.
 
 **M24 Step 2, 2026-10-01:** model v2 appends optional `skeleton` and `clips [{ name, clip }]`.
 Compiled model-v1 records retain their own schema/layout and still load unchanged. Skin
-residency and model/clip pairing are M24 Step 5, not part of the asset-format step.
+residency and model/clip pairing arrived in M24 Step 5, not in the asset-format step:
+`Content` retains skeleton/clip handles, borrows their current payloads, and checks mesh/rig/
+clip joint counts before any part is submitted. `ModelDraw.skin` is copied per part through
+the same mesh submission path. See `animation3d.md` §8 and its Step 5 Resolution.
 
 ```fdt
 foundry:model sandbox3d:models.table {
