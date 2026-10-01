@@ -83,3 +83,19 @@ hull or mesh shapes, or 3D in the script host. Each is deferred with a trigger i
   component.
 - A mod has a legitimate need to change bodies it did not create (a level-editing tool), which
   would need an explicit host grant rather than a relaxed rule.
+
+## Implementation note — caller identity (2026-10-02)
+
+The owner approved the caller-identity resolution in `public3d.md` before Step 2 implementation.
+The shared v6 table's mutation signatures have no `self`, so its owner checks need host-managed
+thread-local identity around native init/shutdown and registered system/component callbacks,
+with nested restoration. Creation must match the scoped identity; unscoped mutations are
+refused. A scoped callback registration cannot name another mod, preventing it from laundering
+caller identity through the existing registration calls; direct unscoped host registrations
+remain compatible. This adds neither a callback kind nor a per-mod table and leaves v1–v5
+layouts and function prefixes unchanged. Other native entry points require an explicit host
+scope. Native Tier 3 remains unsandboxed; arbitrary memory access is not contained by this guard.
+
+Step 2 also releases owned instances, lights, characters and bodies on mod refusal/unbind.
+Its implementation and focused verification are recorded in `public3d.md`'s Step 2 Resolution;
+the native hostile-input and runtime conformance proof remains Step 3.

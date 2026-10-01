@@ -553,6 +553,62 @@ fn extendV4(v4: Api_v4, tail: Api_v5_tail) Api_v5 {
     return v5;
 }
 
+const d3 = @import("public3d_types.zig");
+const public3d_calls = @import("calls_public3d.zig");
+const Api_v6_tail = extern struct {
+    render3d_instance_create: *const fn (types.Mod, ContentId, ?*const d3.Mat4, ?*d3.Instance) callconv(.c) Result,
+    render3d_instance_destroy: *const fn (d3.Instance) callconv(.c) Result,
+    render3d_instance_set_world: *const fn (d3.Instance, ?*const d3.Mat4) callconv(.c) Result,
+    render3d_instance_set_material: *const fn (d3.Instance, u32, ContentId) callconv(.c) Result,
+    render3d_instance_set_visible: *const fn (d3.Instance, Bool) callconv(.c) Result,
+    render3d_light_create: *const fn (types.Mod, ?*const d3.Light3D, ?*d3.Light) callconv(.c) Result,
+    render3d_light_set: *const fn (d3.Light, ?*const d3.Light3D) callconv(.c) Result,
+    render3d_light_destroy: *const fn (d3.Light) callconv(.c) Result,
+    render3d_camera_get: *const fn (?*d3.Camera3D) callconv(.c) Result,
+    world_transform_get: *const fn (Entity, ?*d3.Transform) callconv(.c) Result,
+    world_transform_set: *const fn (Entity, ?*const d3.Transform) callconv(.c) Result,
+    world_parent_get: *const fn (Entity, ?*Entity) callconv(.c) Result,
+    world_parent_set: *const fn (Entity, Entity, i32) callconv(.c) Result,
+    world_world_transform: *const fn (Entity, ?*d3.Mat4) callconv(.c) Result,
+    physics3d_raycast: *const fn (d3.Vec3, d3.Vec3, f32, ?*const d3.Filter3D, ?*d3.RayHit3D, ?*Bool) callconv(.c) Result,
+    physics3d_shape_cast: *const fn (?*const d3.Shape3D, ?*const d3.Pose3D, d3.Vec3, ?*const d3.Filter3D, ?*d3.Hit3D, ?*Bool) callconv(.c) Result,
+    physics3d_overlap: *const fn (?*const d3.Shape3D, ?*const d3.Pose3D, ?*const d3.Filter3D, ?[*]d3.Overlap3D, u32, ?*u32, ?*u32) callconv(.c) Result,
+    physics3d_body_create: *const fn (types.Mod, ?*const d3.Body3DDesc, ?*d3.Body3D) callconv(.c) Result,
+    physics3d_body_destroy: *const fn (d3.Body3D) callconv(.c) Result,
+    physics3d_body_set_pose: *const fn (d3.Body3D, ?*const d3.Pose3D) callconv(.c) Result,
+    physics3d_body_set_filter: *const fn (d3.Body3D, u32, u32) callconv(.c) Result,
+    physics3d_body_get: *const fn (d3.Body3D, ?*d3.Body3DDesc) callconv(.c) Result,
+    physics3d_character_create: *const fn (types.Mod, ?*const d3.CharacterConfig, d3.Vec3, u64, ?*d3.Character) callconv(.c) Result,
+    physics3d_character_destroy: *const fn (d3.Character) callconv(.c) Result,
+    physics3d_character_move: *const fn (d3.Character, d3.Vec3, ?*d3.CharacterMove) callconv(.c) Result,
+    physics3d_character_set_feet: *const fn (d3.Character, d3.Vec3) callconv(.c) Result,
+    physics3d_character_feet: *const fn (d3.Character, ?*d3.Vec3) callconv(.c) Result,
+    physics3d_character_body: *const fn (d3.Character, ?*d3.Body3D) callconv(.c) Result,
+};
+const api_v5_fields = @typeInfo(Api_v5).@"struct".fields;
+const api_v6_tail_fields = @typeInfo(Api_v6_tail).@"struct".fields;
+pub const Api_v6 = blk: {
+    var names: [api_v5_fields.len + api_v6_tail_fields.len][:0]const u8 = undefined;
+    var field_types: [names.len]type = undefined;
+    for (api_v5_fields, 0..) |f, i| {
+        names[i] = f.name;
+        field_types[i] = f.type;
+    }
+    for (api_v6_tail_fields, api_v5_fields.len..) |f, i| {
+        names[i] = f.name;
+        field_types[i] = f.type;
+    }
+    break :blk @Struct(.@"extern", null, &names, &field_types, &@splat(.{}));
+};
+fn extendV5(v5: Api_v5, tail: Api_v6_tail) Api_v6 {
+    var v6: Api_v6 = undefined;
+    inline for (api_v5_fields) |f| @field(v6, f.name) = @field(v5, f.name);
+    inline for (api_v6_tail_fields) |f| @field(v6, f.name) = @field(tail, f.name);
+    v6.version = types.api_version_6;
+    v6.size = @sizeOf(Api_v6);
+    return v6;
+}
+
 /// The table for one host type, and the `get_api` that hands it out.
 pub fn TableOf(comptime H: type) type {
     const engine = engine_calls.Of(H);
@@ -566,6 +622,7 @@ pub fn TableOf(comptime H: type) type {
     const physics = physics_calls.Of(H);
     const authoring = author_calls.Of(H);
     const networking = net_calls.Of(H);
+    const public3d = public3d_calls.Of(H);
 
     return struct {
         pub const v1: Api_v1 = .{
@@ -847,12 +904,44 @@ pub fn TableOf(comptime H: type) type {
         /// What a native mod is handed (§3). **Never a crash and never a Zig error** — a
         /// version this host does not offer is null, which is a legible refusal on the
         /// mod's side rather than a fault on ours.
+        pub const v6: Api_v6 = extendV5(v5, .{
+            .render3d_instance_create = public3d.render3dInstanceCreate,
+            .render3d_instance_destroy = public3d.render3dInstanceDestroy,
+            .render3d_instance_set_world = public3d.render3dInstanceSetWorld,
+            .render3d_instance_set_material = public3d.render3dInstanceSetMaterial,
+            .render3d_instance_set_visible = public3d.render3dInstanceSetVisible,
+            .render3d_light_create = public3d.render3dLightCreate,
+            .render3d_light_set = public3d.render3dLightSet,
+            .render3d_light_destroy = public3d.render3dLightDestroy,
+            .render3d_camera_get = public3d.render3dCameraGet,
+            .world_transform_get = public3d.worldTransformGet,
+            .world_transform_set = public3d.worldTransformSet,
+            .world_parent_get = public3d.worldParentGet,
+            .world_parent_set = public3d.worldParentSet,
+            .world_world_transform = public3d.worldWorldTransform,
+            .physics3d_raycast = public3d.physics3dRaycast,
+            .physics3d_shape_cast = public3d.physics3dShapeCast,
+            .physics3d_overlap = public3d.physics3dOverlap,
+            .physics3d_body_create = public3d.physics3dBodyCreate,
+            .physics3d_body_destroy = public3d.physics3dBodyDestroy,
+            .physics3d_body_set_pose = public3d.physics3dBodySetPose,
+            .physics3d_body_set_filter = public3d.physics3dBodySetFilter,
+            .physics3d_body_get = public3d.physics3dBodyGet,
+            .physics3d_character_create = public3d.physics3dCharacterCreate,
+            .physics3d_character_destroy = public3d.physics3dCharacterDestroy,
+            .physics3d_character_move = public3d.physics3dCharacterMove,
+            .physics3d_character_set_feet = public3d.physics3dCharacterSetFeet,
+            .physics3d_character_feet = public3d.physics3dCharacterFeet,
+            .physics3d_character_body = public3d.physics3dCharacterBody,
+        });
+
         pub fn getApi(version: u32) callconv(.c) ?*const anyopaque {
             if (version == types.api_version_1) return @ptrCast(&v1);
             if (version == types.api_version_2) return @ptrCast(&v2);
             if (version == types.api_version_3) return @ptrCast(&v3);
             if (version == types.api_version_4) return @ptrCast(&v4);
             if (version == types.api_version_5) return @ptrCast(&v5);
+            if (version == types.api_version_6) return @ptrCast(&v6);
             return null;
         }
     };

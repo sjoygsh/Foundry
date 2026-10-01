@@ -1029,7 +1029,8 @@ and regression coverage in `3d.md` §10:
   walk/turn/stop/cross-fade observation has not been recorded.
 - **M25 Public 3D:** `FoundryApi_v6`, with a content mod and a native one.
   Design accepted 2026-10-01: [`public3d.md`](design/public3d.md), with ADR-0059. Step 1
-  (`render3d.Instances`) is done; Step 2 (`FoundryApi_v6`) has not begun.
+  (`render3d.Instances`) and Step 2 (`FoundryApi_v6`) are done; Step 3's hostile-input and
+  conformance proof is next.
 - **M26 A playable 3D sample,** played by someone who did not build it, on macOS, Windows and a
   freshly provisioned Linux machine. It is the game
   certification waits for (ADR-0047).
@@ -1153,5 +1154,6 @@ recorded separately. The PC is packed up. Linux remains compile-only. Step 8 rec
 CLAUDE.md's layer table and ADR-0049/0055 by dated notes, and tagged `m24`. A person's
 animation watch remains unclaimed. M25, Public 3D, is accepted
 ([`public3d.md`](design/public3d.md), ADR-0059): v6 publishes retained, mod-owned instances,
-lights, transforms and primitive bodies by content ID. Step 1, the retained set in `render3d`,
-is done.
+lights, transforms and primitive bodies by content ID. Steps 1–2 are done: the retained set in
+`render3d` and the 28-call v6 tail, with host-scoped caller identity and owned-object cleanup.
+Step 3's hostile-input and runtime conformance proof is next.

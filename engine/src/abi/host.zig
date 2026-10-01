@@ -33,6 +33,9 @@ const ui = @import("ui");
 const audio = @import("audio");
 const net = @import("net");
 const physics2d = @import("physics2d");
+const physics3d = @import("physics3d");
+const render3d = @import("render3d");
+const public3d = @import("public3d_types.zig");
 
 const author_types = @import("author_types.zig");
 const render_calls = @import("calls_render.zig");
@@ -169,6 +172,14 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
         world: ?*scene.World = null,
 
         renderer: ?*render2d.Renderer = null,
+        /// Lent subsystems; v6 retains no device and owns no simulation.
+        render3d_content: ?*render3d.Content = null,
+        render3d_instances: ?*render3d.Instances = null,
+        render3d_camera: ?public3d.Camera3D = null,
+        collision3d: ?*physics3d.World = null,
+        collision3d_allocator: ?Allocator = null,
+        bodies3d: [256]OwnedBody3D = @splat(.{}),
+        characters3d: [16]OwnedCharacter3D = @splat(.{}),
         /// Applied by the host at its next renderer begin, not to already recorded draws.
         camera: ?*render2d.Camera2D = null,
         render_textures: [max_render_textures]render_calls.RenderTextureSlot = @splat(.{}),
@@ -255,6 +266,36 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
         /// The bound host, which is what a table's functions find. One per process and per
         /// engine type; binding a second replaces the first and says so.
         var bound: ?*Self = null;
+        threadlocal var caller_host: ?*Self = null;
+        threadlocal var caller_mod: types.Mod = .none;
+
+        pub const OwnedBody3D = struct {
+            handle: public3d.Body3D = .none,
+            owner: types.Mod = .none,
+        };
+        pub const OwnedCharacter3D = struct {
+            handle: public3d.Character = .none,
+            owner: types.Mod = .none,
+        };
+        pub const CallerScope = struct {
+            host: ?*Self,
+            mod: types.Mod,
+            pub fn restore(scope: CallerScope) void {
+                caller_host = scope.host;
+                caller_mod = scope.mod;
+            }
+        };
+        /// Host-only scope for entry into native code; nesting restores the prior caller.
+        pub fn enterCaller(self: *Self, owner: types.Mod) CallerScope {
+            const previous: CallerScope = .{ .host = caller_host, .mod = caller_mod };
+            caller_host = self;
+            caller_mod = if (self.modId(owner) != null) owner else .none;
+            return previous;
+        }
+        pub fn caller(self: *const Self) ?types.Mod {
+            if (caller_host != self or self.modId(caller_mod) == null) return null;
+            return caller_mod;
+        }
         /// Shared by every host instance of this type so a handle issued by a replaced host
         /// cannot alias the same slot in its successor.
         var next_mod_generation: u32 = 0;
@@ -525,6 +566,23 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
         /// but lose every foreign pointer. Counters can be unregistered outright.
         pub fn refuseMod(self: *Self, handle: types.Mod) void {
             const mod_slot = @constCast(self.modSlot(handle) orelse return);
+            if (self.render3d_instances) |instances| {
+                instances.releaseOwner(self.render3d_content, handle.bits);
+            }
+            if (self.collision3d) |world| {
+                if (self.collision3d_allocator) |gpa| {
+                    for (&self.characters3d) |*entry| {
+                        if (!entry.owner.eql(handle)) continue;
+                        _ = physics3d.character.remove(world, gpa, entry.handle.unwrap(physics3d.CharacterHandle));
+                        entry.* = .{};
+                    }
+                    for (&self.bodies3d) |*entry| {
+                        if (!entry.owner.eql(handle)) continue;
+                        _ = world.removeBody(gpa, entry.handle.unwrap(physics3d.BodyHandle));
+                        entry.* = .{};
+                    }
+                }
+            }
             for (&self.components) |*component| {
                 if (!component.active or !component.owner.eql(handle)) continue;
                 component.owner = .none;
@@ -592,6 +650,9 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
         /// remains mapped after unbind and may still hold its old `self`; rebinding this
         /// host must not make those bits identify a newly loaded mod.
         fn releaseMods(self: *Self) void {
+            for (self.mods, 0..) |slot, index| {
+                if (slot.active) self.refuseMod(.wrap(core.Handle(ModSlot){ .index = @intCast(index), .generation = slot.generation }));
+            }
             for (&self.mods) |*slot| {
                 const generation = slot.generation;
                 slot.* = .{};
@@ -1015,12 +1076,18 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
         pub fn componentConstruct(ctx: ?*anyopaque, out: [*]u8) void {
             const slot: *Component = @ptrCast(@alignCast(ctx.?));
             const construct = slot.construct orelse return;
+            const h = current() orelse return;
+            const scope = h.enterCaller(slot.owner);
+            defer scope.restore();
             construct(slot.ctx, @ptrCast(out));
         }
 
         pub fn componentDestruct(ctx: ?*anyopaque, bytes: [*]u8) void {
             const slot: *Component = @ptrCast(@alignCast(ctx.?));
             const destruct = slot.destruct orelse return;
+            const h = current() orelse return;
+            const scope = h.enterCaller(slot.owner);
+            defer scope.restore();
             destruct(slot.ctx, @ptrCast(bytes));
         }
 
@@ -1048,6 +1115,9 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
         pub fn systemUpdate(ctx: ?*anyopaque, _: *scene.World, tick: scene.Tick) void {
             const slot: *System = @ptrCast(@alignCast(ctx.?));
             const update = slot.update orelse return;
+            const h = current() orelse return;
+            const scope = h.enterCaller(slot.owner);
+            defer scope.restore();
             const step: types.Step = .{ .tick = tick.tick, .delta_ns = @intCast(tick.delta.ns) };
             update(slot.ctx, &step);
         }

@@ -115,6 +115,21 @@ pub const Instances = struct {
 
     // -- instances ---------------------------------------------------------------------
 
+    /// Removes one owner's retained objects after a refused native initialization.
+    /// The tag remains opaque to render3d.
+    pub fn releaseOwner(self: *Self, content: ?*Content, owner: u64) void {
+        if (content) |lent| {
+            var entries = self.instances.iterator();
+            while (entries.next()) |entry| {
+                if (entry.value.owner == owner) self.destroy(lent, entry.id) catch unreachable;
+            }
+        }
+        var lights = self.lights.iterator();
+        while (lights.next()) |entry| {
+            if (entry.value.owner == owner) self.destroyLight(entry.id) catch unreachable;
+        }
+    }
+
     /// Acquires `model` and draws it at `world` until destroyed. The bound is checked
     /// before anything is acquired, and a refusal holds nothing.
     pub fn create(self: *Self, content: *Content, owner: u64, model: ContentId, world: Mat4) Error!InstanceHandle {

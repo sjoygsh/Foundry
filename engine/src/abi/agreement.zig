@@ -27,6 +27,343 @@ const ui_types = @import("ui_types.zig");
 
 const testing = std.testing;
 
+const d3 = @import("public3d_types.zig");
+comptime {
+    if (@sizeOf(d3.Vec3) != 12) @compileError("v6 Vec3 size");
+}
+comptime {
+    if (@offsetOf(d3.Vec3, "x") != 0 or @sizeOf(@FieldType(d3.Vec3, "x")) != 4) @compileError("v6 Vec3.x layout");
+}
+comptime {
+    if (@offsetOf(d3.Vec3, "y") != 4 or @sizeOf(@FieldType(d3.Vec3, "y")) != 4) @compileError("v6 Vec3.y layout");
+}
+comptime {
+    if (@offsetOf(d3.Vec3, "z") != 8 or @sizeOf(@FieldType(d3.Vec3, "z")) != 4) @compileError("v6 Vec3.z layout");
+}
+comptime {
+    if (@sizeOf(d3.Quat) != 16) @compileError("v6 Quat size");
+}
+comptime {
+    if (@offsetOf(d3.Quat, "x") != 0 or @sizeOf(@FieldType(d3.Quat, "x")) != 4) @compileError("v6 Quat.x layout");
+}
+comptime {
+    if (@offsetOf(d3.Quat, "y") != 4 or @sizeOf(@FieldType(d3.Quat, "y")) != 4) @compileError("v6 Quat.y layout");
+}
+comptime {
+    if (@offsetOf(d3.Quat, "z") != 8 or @sizeOf(@FieldType(d3.Quat, "z")) != 4) @compileError("v6 Quat.z layout");
+}
+comptime {
+    if (@offsetOf(d3.Quat, "w") != 12 or @sizeOf(@FieldType(d3.Quat, "w")) != 4) @compileError("v6 Quat.w layout");
+}
+comptime {
+    if (@sizeOf(d3.Mat4) != 64) @compileError("v6 Mat4 size");
+}
+comptime {
+    if (@offsetOf(d3.Mat4, "elements") != 0 or @sizeOf(@FieldType(d3.Mat4, "elements")) != 64) @compileError("v6 Mat4.elements layout");
+}
+comptime {
+    if (@sizeOf(d3.Transform) != 40) @compileError("v6 Transform size");
+}
+comptime {
+    if (@offsetOf(d3.Transform, "translation") != 0 or @sizeOf(@FieldType(d3.Transform, "translation")) != 12) @compileError("v6 Transform.translation layout");
+}
+comptime {
+    if (@offsetOf(d3.Transform, "rotation") != 12 or @sizeOf(@FieldType(d3.Transform, "rotation")) != 16) @compileError("v6 Transform.rotation layout");
+}
+comptime {
+    if (@offsetOf(d3.Transform, "scale") != 28 or @sizeOf(@FieldType(d3.Transform, "scale")) != 12) @compileError("v6 Transform.scale layout");
+}
+comptime {
+    if (@sizeOf(d3.Pose3D) != 28) @compileError("v6 Pose3D size");
+}
+comptime {
+    if (@offsetOf(d3.Pose3D, "position") != 0 or @sizeOf(@FieldType(d3.Pose3D, "position")) != 12) @compileError("v6 Pose3D.position layout");
+}
+comptime {
+    if (@offsetOf(d3.Pose3D, "rotation") != 12 or @sizeOf(@FieldType(d3.Pose3D, "rotation")) != 16) @compileError("v6 Pose3D.rotation layout");
+}
+comptime {
+    if (@sizeOf(d3.Camera3D) != 48) @compileError("v6 Camera3D size");
+}
+comptime {
+    if (@offsetOf(d3.Camera3D, "position") != 0 or @sizeOf(@FieldType(d3.Camera3D, "position")) != 12) @compileError("v6 Camera3D.position layout");
+}
+comptime {
+    if (@offsetOf(d3.Camera3D, "rotation") != 12 or @sizeOf(@FieldType(d3.Camera3D, "rotation")) != 16) @compileError("v6 Camera3D.rotation layout");
+}
+comptime {
+    if (@offsetOf(d3.Camera3D, "fov_y") != 28 or @sizeOf(@FieldType(d3.Camera3D, "fov_y")) != 4) @compileError("v6 Camera3D.fov_y layout");
+}
+comptime {
+    if (@offsetOf(d3.Camera3D, "near") != 32 or @sizeOf(@FieldType(d3.Camera3D, "near")) != 4) @compileError("v6 Camera3D.near layout");
+}
+comptime {
+    if (@offsetOf(d3.Camera3D, "far") != 36 or @sizeOf(@FieldType(d3.Camera3D, "far")) != 4) @compileError("v6 Camera3D.far layout");
+}
+comptime {
+    if (@offsetOf(d3.Camera3D, "width") != 40 or @sizeOf(@FieldType(d3.Camera3D, "width")) != 4) @compileError("v6 Camera3D.width layout");
+}
+comptime {
+    if (@offsetOf(d3.Camera3D, "height") != 44 or @sizeOf(@FieldType(d3.Camera3D, "height")) != 4) @compileError("v6 Camera3D.height layout");
+}
+comptime {
+    if (@sizeOf(d3.Light3D) != 64) @compileError("v6 Light3D size");
+}
+comptime {
+    if (@offsetOf(d3.Light3D, "kind") != 0 or @sizeOf(@FieldType(d3.Light3D, "kind")) != 4) @compileError("v6 Light3D.kind layout");
+}
+comptime {
+    if (@offsetOf(d3.Light3D, "color") != 4 or @sizeOf(@FieldType(d3.Light3D, "color")) != 12) @compileError("v6 Light3D.color layout");
+}
+comptime {
+    if (@offsetOf(d3.Light3D, "intensity") != 16 or @sizeOf(@FieldType(d3.Light3D, "intensity")) != 4) @compileError("v6 Light3D.intensity layout");
+}
+comptime {
+    if (@offsetOf(d3.Light3D, "range") != 20 or @sizeOf(@FieldType(d3.Light3D, "range")) != 4) @compileError("v6 Light3D.range layout");
+}
+comptime {
+    if (@offsetOf(d3.Light3D, "inner_cone") != 24 or @sizeOf(@FieldType(d3.Light3D, "inner_cone")) != 4) @compileError("v6 Light3D.inner_cone layout");
+}
+comptime {
+    if (@offsetOf(d3.Light3D, "outer_cone") != 28 or @sizeOf(@FieldType(d3.Light3D, "outer_cone")) != 4) @compileError("v6 Light3D.outer_cone layout");
+}
+comptime {
+    if (@offsetOf(d3.Light3D, "position") != 32 or @sizeOf(@FieldType(d3.Light3D, "position")) != 12) @compileError("v6 Light3D.position layout");
+}
+comptime {
+    if (@offsetOf(d3.Light3D, "rotation") != 44 or @sizeOf(@FieldType(d3.Light3D, "rotation")) != 16) @compileError("v6 Light3D.rotation layout");
+}
+comptime {
+    if (@offsetOf(d3.Light3D, "casts_shadow") != 60 or @sizeOf(@FieldType(d3.Light3D, "casts_shadow")) != 1) @compileError("v6 Light3D.casts_shadow layout");
+}
+comptime {
+    if (@offsetOf(d3.Light3D, "reserved") != 61 or @sizeOf(@FieldType(d3.Light3D, "reserved")) != 3) @compileError("v6 Light3D.reserved layout");
+}
+comptime {
+    if (@sizeOf(d3.Shape3D) != 24) @compileError("v6 Shape3D size");
+}
+comptime {
+    if (@offsetOf(d3.Shape3D, "kind") != 0 or @sizeOf(@FieldType(d3.Shape3D, "kind")) != 4) @compileError("v6 Shape3D.kind layout");
+}
+comptime {
+    if (@offsetOf(d3.Shape3D, "radius") != 4 or @sizeOf(@FieldType(d3.Shape3D, "radius")) != 4) @compileError("v6 Shape3D.radius layout");
+}
+comptime {
+    if (@offsetOf(d3.Shape3D, "half_height") != 8 or @sizeOf(@FieldType(d3.Shape3D, "half_height")) != 4) @compileError("v6 Shape3D.half_height layout");
+}
+comptime {
+    if (@offsetOf(d3.Shape3D, "half_extents") != 12 or @sizeOf(@FieldType(d3.Shape3D, "half_extents")) != 12) @compileError("v6 Shape3D.half_extents layout");
+}
+comptime {
+    if (@sizeOf(d3.Filter3D) != 16) @compileError("v6 Filter3D size");
+}
+comptime {
+    if (@offsetOf(d3.Filter3D, "mask") != 0 or @sizeOf(@FieldType(d3.Filter3D, "mask")) != 4) @compileError("v6 Filter3D.mask layout");
+}
+comptime {
+    if (@offsetOf(d3.Filter3D, "reserved") != 4 or @sizeOf(@FieldType(d3.Filter3D, "reserved")) != 4) @compileError("v6 Filter3D.reserved layout");
+}
+comptime {
+    if (@offsetOf(d3.Filter3D, "ignore") != 8 or @sizeOf(@FieldType(d3.Filter3D, "ignore")) != 8) @compileError("v6 Filter3D.ignore layout");
+}
+comptime {
+    if (@sizeOf(d3.Body3DDesc) != 72) @compileError("v6 Body3DDesc size");
+}
+comptime {
+    if (@offsetOf(d3.Body3DDesc, "shape") != 0 or @sizeOf(@FieldType(d3.Body3DDesc, "shape")) != 24) @compileError("v6 Body3DDesc.shape layout");
+}
+comptime {
+    if (@offsetOf(d3.Body3DDesc, "pose") != 24 or @sizeOf(@FieldType(d3.Body3DDesc, "pose")) != 28) @compileError("v6 Body3DDesc.pose layout");
+}
+comptime {
+    if (@offsetOf(d3.Body3DDesc, "kind") != 52 or @sizeOf(@FieldType(d3.Body3DDesc, "kind")) != 4) @compileError("v6 Body3DDesc.kind layout");
+}
+comptime {
+    if (@offsetOf(d3.Body3DDesc, "layer") != 56 or @sizeOf(@FieldType(d3.Body3DDesc, "layer")) != 4) @compileError("v6 Body3DDesc.layer layout");
+}
+comptime {
+    if (@offsetOf(d3.Body3DDesc, "mask") != 60 or @sizeOf(@FieldType(d3.Body3DDesc, "mask")) != 4) @compileError("v6 Body3DDesc.mask layout");
+}
+comptime {
+    if (@offsetOf(d3.Body3DDesc, "user") != 64 or @sizeOf(@FieldType(d3.Body3DDesc, "user")) != 8) @compileError("v6 Body3DDesc.user layout");
+}
+comptime {
+    if (@sizeOf(d3.RayHit3D) != 64) @compileError("v6 RayHit3D size");
+}
+comptime {
+    if (@offsetOf(d3.RayHit3D, "distance") != 0 or @sizeOf(@FieldType(d3.RayHit3D, "distance")) != 4) @compileError("v6 RayHit3D.distance layout");
+}
+comptime {
+    if (@offsetOf(d3.RayHit3D, "point") != 4 or @sizeOf(@FieldType(d3.RayHit3D, "point")) != 12) @compileError("v6 RayHit3D.point layout");
+}
+comptime {
+    if (@offsetOf(d3.RayHit3D, "normal") != 16 or @sizeOf(@FieldType(d3.RayHit3D, "normal")) != 12) @compileError("v6 RayHit3D.normal layout");
+}
+comptime {
+    if (@offsetOf(d3.RayHit3D, "surface_normal") != 28 or @sizeOf(@FieldType(d3.RayHit3D, "surface_normal")) != 12) @compileError("v6 RayHit3D.surface_normal layout");
+}
+comptime {
+    if (@offsetOf(d3.RayHit3D, "body") != 40 or @sizeOf(@FieldType(d3.RayHit3D, "body")) != 8) @compileError("v6 RayHit3D.body layout");
+}
+comptime {
+    if (@offsetOf(d3.RayHit3D, "user") != 48 or @sizeOf(@FieldType(d3.RayHit3D, "user")) != 8) @compileError("v6 RayHit3D.user layout");
+}
+comptime {
+    if (@offsetOf(d3.RayHit3D, "triangle") != 56 or @sizeOf(@FieldType(d3.RayHit3D, "triangle")) != 4) @compileError("v6 RayHit3D.triangle layout");
+}
+comptime {
+    if (@offsetOf(d3.RayHit3D, "started_inside") != 60 or @sizeOf(@FieldType(d3.RayHit3D, "started_inside")) != 1) @compileError("v6 RayHit3D.started_inside layout");
+}
+comptime {
+    if (@offsetOf(d3.RayHit3D, "reserved") != 61 or @sizeOf(@FieldType(d3.RayHit3D, "reserved")) != 3) @compileError("v6 RayHit3D.reserved layout");
+}
+comptime {
+    if (@sizeOf(d3.Hit3D) != 64) @compileError("v6 Hit3D size");
+}
+comptime {
+    if (@offsetOf(d3.Hit3D, "fraction") != 0 or @sizeOf(@FieldType(d3.Hit3D, "fraction")) != 4) @compileError("v6 Hit3D.fraction layout");
+}
+comptime {
+    if (@offsetOf(d3.Hit3D, "point") != 4 or @sizeOf(@FieldType(d3.Hit3D, "point")) != 12) @compileError("v6 Hit3D.point layout");
+}
+comptime {
+    if (@offsetOf(d3.Hit3D, "normal") != 16 or @sizeOf(@FieldType(d3.Hit3D, "normal")) != 12) @compileError("v6 Hit3D.normal layout");
+}
+comptime {
+    if (@offsetOf(d3.Hit3D, "surface_normal") != 28 or @sizeOf(@FieldType(d3.Hit3D, "surface_normal")) != 12) @compileError("v6 Hit3D.surface_normal layout");
+}
+comptime {
+    if (@offsetOf(d3.Hit3D, "body") != 40 or @sizeOf(@FieldType(d3.Hit3D, "body")) != 8) @compileError("v6 Hit3D.body layout");
+}
+comptime {
+    if (@offsetOf(d3.Hit3D, "user") != 48 or @sizeOf(@FieldType(d3.Hit3D, "user")) != 8) @compileError("v6 Hit3D.user layout");
+}
+comptime {
+    if (@offsetOf(d3.Hit3D, "triangle") != 56 or @sizeOf(@FieldType(d3.Hit3D, "triangle")) != 4) @compileError("v6 Hit3D.triangle layout");
+}
+comptime {
+    if (@offsetOf(d3.Hit3D, "started_inside") != 60 or @sizeOf(@FieldType(d3.Hit3D, "started_inside")) != 1) @compileError("v6 Hit3D.started_inside layout");
+}
+comptime {
+    if (@offsetOf(d3.Hit3D, "reserved") != 61 or @sizeOf(@FieldType(d3.Hit3D, "reserved")) != 3) @compileError("v6 Hit3D.reserved layout");
+}
+comptime {
+    if (@sizeOf(d3.Overlap3D) != 24) @compileError("v6 Overlap3D size");
+}
+comptime {
+    if (@offsetOf(d3.Overlap3D, "body") != 0 or @sizeOf(@FieldType(d3.Overlap3D, "body")) != 8) @compileError("v6 Overlap3D.body layout");
+}
+comptime {
+    if (@offsetOf(d3.Overlap3D, "user") != 8 or @sizeOf(@FieldType(d3.Overlap3D, "user")) != 8) @compileError("v6 Overlap3D.user layout");
+}
+comptime {
+    if (@offsetOf(d3.Overlap3D, "triangle") != 16 or @sizeOf(@FieldType(d3.Overlap3D, "triangle")) != 4) @compileError("v6 Overlap3D.triangle layout");
+}
+comptime {
+    if (@offsetOf(d3.Overlap3D, "reserved") != 20 or @sizeOf(@FieldType(d3.Overlap3D, "reserved")) != 4) @compileError("v6 Overlap3D.reserved layout");
+}
+comptime {
+    if (@sizeOf(d3.CharacterConfig) != 32) @compileError("v6 CharacterConfig size");
+}
+comptime {
+    if (@offsetOf(d3.CharacterConfig, "radius") != 0 or @sizeOf(@FieldType(d3.CharacterConfig, "radius")) != 4) @compileError("v6 CharacterConfig.radius layout");
+}
+comptime {
+    if (@offsetOf(d3.CharacterConfig, "height") != 4 or @sizeOf(@FieldType(d3.CharacterConfig, "height")) != 4) @compileError("v6 CharacterConfig.height layout");
+}
+comptime {
+    if (@offsetOf(d3.CharacterConfig, "max_slope") != 8 or @sizeOf(@FieldType(d3.CharacterConfig, "max_slope")) != 4) @compileError("v6 CharacterConfig.max_slope layout");
+}
+comptime {
+    if (@offsetOf(d3.CharacterConfig, "step_height") != 12 or @sizeOf(@FieldType(d3.CharacterConfig, "step_height")) != 4) @compileError("v6 CharacterConfig.step_height layout");
+}
+comptime {
+    if (@offsetOf(d3.CharacterConfig, "snap_distance") != 16 or @sizeOf(@FieldType(d3.CharacterConfig, "snap_distance")) != 4) @compileError("v6 CharacterConfig.snap_distance layout");
+}
+comptime {
+    if (@offsetOf(d3.CharacterConfig, "max_move") != 20 or @sizeOf(@FieldType(d3.CharacterConfig, "max_move")) != 4) @compileError("v6 CharacterConfig.max_move layout");
+}
+comptime {
+    if (@offsetOf(d3.CharacterConfig, "layer") != 24 or @sizeOf(@FieldType(d3.CharacterConfig, "layer")) != 4) @compileError("v6 CharacterConfig.layer layout");
+}
+comptime {
+    if (@offsetOf(d3.CharacterConfig, "mask") != 28 or @sizeOf(@FieldType(d3.CharacterConfig, "mask")) != 4) @compileError("v6 CharacterConfig.mask layout");
+}
+comptime {
+    if (@sizeOf(d3.CharacterMove) != 64) @compileError("v6 CharacterMove size");
+}
+comptime {
+    if (@offsetOf(d3.CharacterMove, "feet") != 0 or @sizeOf(@FieldType(d3.CharacterMove, "feet")) != 12) @compileError("v6 CharacterMove.feet layout");
+}
+comptime {
+    if (@offsetOf(d3.CharacterMove, "ground_normal") != 12 or @sizeOf(@FieldType(d3.CharacterMove, "ground_normal")) != 12) @compileError("v6 CharacterMove.ground_normal layout");
+}
+comptime {
+    if (@offsetOf(d3.CharacterMove, "ground_body") != 24 or @sizeOf(@FieldType(d3.CharacterMove, "ground_body")) != 8) @compileError("v6 CharacterMove.ground_body layout");
+}
+comptime {
+    if (@offsetOf(d3.CharacterMove, "ground_user") != 32 or @sizeOf(@FieldType(d3.CharacterMove, "ground_user")) != 8) @compileError("v6 CharacterMove.ground_user layout");
+}
+comptime {
+    if (@offsetOf(d3.CharacterMove, "ground_triangle") != 40 or @sizeOf(@FieldType(d3.CharacterMove, "ground_triangle")) != 4) @compileError("v6 CharacterMove.ground_triangle layout");
+}
+comptime {
+    if (@offsetOf(d3.CharacterMove, "walls") != 44 or @sizeOf(@FieldType(d3.CharacterMove, "walls")) != 4) @compileError("v6 CharacterMove.walls layout");
+}
+comptime {
+    if (@offsetOf(d3.CharacterMove, "stepped") != 48 or @sizeOf(@FieldType(d3.CharacterMove, "stepped")) != 4) @compileError("v6 CharacterMove.stepped layout");
+}
+comptime {
+    if (@offsetOf(d3.CharacterMove, "grounded") != 52 or @sizeOf(@FieldType(d3.CharacterMove, "grounded")) != 1) @compileError("v6 CharacterMove.grounded layout");
+}
+comptime {
+    if (@offsetOf(d3.CharacterMove, "ceiling") != 53 or @sizeOf(@FieldType(d3.CharacterMove, "ceiling")) != 1) @compileError("v6 CharacterMove.ceiling layout");
+}
+comptime {
+    if (@offsetOf(d3.CharacterMove, "snapped") != 54 or @sizeOf(@FieldType(d3.CharacterMove, "snapped")) != 1) @compileError("v6 CharacterMove.snapped layout");
+}
+comptime {
+    if (@offsetOf(d3.CharacterMove, "depenetrated") != 55 or @sizeOf(@FieldType(d3.CharacterMove, "depenetrated")) != 1) @compileError("v6 CharacterMove.depenetrated layout");
+}
+comptime {
+    if (@offsetOf(d3.CharacterMove, "stuck") != 56 or @sizeOf(@FieldType(d3.CharacterMove, "stuck")) != 1) @compileError("v6 CharacterMove.stuck layout");
+}
+comptime {
+    if (@offsetOf(d3.CharacterMove, "reserved") != 57 or @sizeOf(@FieldType(d3.CharacterMove, "reserved")) != 7) @compileError("v6 CharacterMove.reserved layout");
+}
+comptime {
+    if (@sizeOf(d3.Instance) != 8 or @offsetOf(d3.Instance, "bits") != 0) @compileError("v6 handle layout");
+}
+comptime {
+    if (@sizeOf(d3.Light) != 8 or @offsetOf(d3.Light, "bits") != 0) @compileError("v6 handle layout");
+}
+comptime {
+    if (@sizeOf(d3.Body3D) != 8 or @offsetOf(d3.Body3D, "bits") != 0) @compileError("v6 handle layout");
+}
+comptime {
+    if (@sizeOf(d3.Character) != 8 or @offsetOf(d3.Character, "bits") != 0) @compileError("v6 handle layout");
+}
+extern fn foundry_agreement_api_v6_size() u64;
+extern fn foundry_agreement_api_v6_offset(u64) u64;
+test "v6 header and Zig tails agree; every previous offset is unchanged" {
+    @setEvalBranchQuota(30000);
+    try testing.expectEqual(@as(u64, @sizeOf(api.Api_v6)), foundry_agreement_api_v6_size());
+    inline for (@typeInfo(api.Api_v5).@"struct".fields) |f| {
+        try testing.expectEqual(@offsetOf(api.Api_v5, f.name), @offsetOf(api.Api_v6, f.name));
+    }
+    const tail = @typeInfo(api.Api_v6).@"struct".fields[@typeInfo(api.Api_v5).@"struct".fields.len..];
+    try testing.expectEqual(@as(usize, 28), tail.len);
+    var at = std.mem.indexOf(u8, header, "typedef struct FoundryApi_v6 {").?;
+    inline for (@typeInfo(api.Api_v6).@"struct".fields) |f| {
+        if (comptime @typeInfo(f.type) == .pointer) {
+            at = std.mem.indexOfPos(u8, header, at, "*" ++ f.name ++ ")") orelse return error.TestUnexpectedResult;
+        }
+    }
+    inline for (tail, 0..) |f, i| {
+        try testing.expectEqual(@as(u64, @offsetOf(api.Api_v6, f.name)), foundry_agreement_api_v6_offset(i));
+    }
+}
+
 /// **The header, as a build input.**
 ///
 /// Not decoration: `agreement.c`'s object is cached against the C file, and a change to
@@ -44,7 +381,8 @@ test "the header declares the version and the entry points this build publishes"
     try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_3 3u") != null);
     try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_4 4u") != null);
     try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_5 5u") != null);
-    try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION FOUNDRY_API_VERSION_5") != null);
+    try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_6 6u") != null);
+    try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION FOUNDRY_API_VERSION_6") != null);
     try testing.expect(std.mem.indexOf(u8, header, types.init_symbol) != null);
     try testing.expect(std.mem.indexOf(u8, header, types.shutdown_symbol) != null);
 }

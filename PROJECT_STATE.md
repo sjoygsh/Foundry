@@ -1,11 +1,29 @@
 # Foundry Project State
 
-**Last updated:** 2026-10-01
-**Current handoff: M25 Step 1 of 8 is complete (`docs/design/public3d.md`, ADR-0059 accepted).
-Stop before Step 2.** Step 2 is `abi`'s `FoundryApi_v6`: the build grants, the host's lent
-`render3d`/`physics3d` subsystems and ownership tables, the 28 calls, their header types,
-`agreement`, `offered_api_versions` and the sweep. No v6 call, header type or sample change
-exists yet. M0–M24 are complete and pushed.
+**Last updated:** 2026-10-02
+**Current handoff: M25 Steps 1–2 of 8 are complete (`docs/design/public3d.md`, ADR-0059 accepted).
+Stop before Step 3.** `FoundryApi_v6` now publishes 28 additive calls over host-lent
+`render3d`/`physics3d` services. The approved caller scope enforces mod ownership without changing
+the v1–v5 table prefixes. Step 3's native hostile-input consumer, seeded sweep and runtime
+conformance proof have not begun; neither has the sample integration. M0–M24 are complete and
+pushed. The owner requested this Step 2 handoff be committed and pushed as well.
+
+**M25 Step 2 is done (2026-10-02), from `f81c82e`.** v6 has 261 calls: v5's 233 plus retained
+instances/lights, a camera snapshot, hierarchy reads/writes, collision queries, primitive bodies
+and characters. The host lends the services and owns bounded body/character ownership records.
+Native init/shutdown and registered callbacks establish a host-managed thread-local caller,
+restore nested scopes, and refuse unscoped 3D mutations. A scoped callback registration cannot
+impersonate another mod. Refusal/unbind releases owned objects; character backing bodies cannot
+be mutated through the body calls. Pointer, value, reserved-byte, enum, stale-handle and capacity
+checks preserve outputs on failure; transform/light rotations normalize under ADR-0048.
+
+**Evidence:** 16 focused tests pass in Debug and ReleaseSafe; ABI and focused Debug tests pass
+**150/150**. Eighteen guard mutations fail as intended and are restored. The nine-command bar
+passes; its final affected-area rerun gives **2,058 of 2,059 tests**, one expected skip, with
+native/Metal and Linux/Windows null checks clean. The three headless sample runs passed before
+the localized normalization fix, which changes only v6 calls unused by those samples. The
+installed v6 header consumer compiles as C99 and C++17 on native, Linux and Windows targets.
+No native Windows run or Step 3 proof is claimed.
 
 **M25 Step 1 is done (2026-10-01).** `render3d.Instances` (`engine/src/render3d/instances.zig`)
 is a bounded set of models by content ID (world matrix, up to eight slot overrides, visibility)

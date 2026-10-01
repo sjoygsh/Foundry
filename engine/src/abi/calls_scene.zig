@@ -38,6 +38,9 @@ pub fn Of(comptime H: type) type {
 
             if (self.isNone() or supplied.schema.isNone()) return .invalid_argument;
             if (h.modId(self) == null) return .invalid_handle;
+            // A scoped native callback cannot register code attributed to another mod
+            // and acquire that mod's v6 authority when the callback runs.
+            if (h.caller()) |caller| if (!caller.eql(self)) return .refused;
             const name = supplied.name.utf8() orelse return .invalid_argument;
             if (name.len == 0) return .invalid_argument;
             if (supplied.alignment == 0 or !std.math.isPowerOfTwo(supplied.alignment)) {
@@ -244,6 +247,7 @@ pub fn Of(comptime H: type) type {
 
             if (self.isNone() or supplied.id.isNone() or supplied.update == null) return .invalid_argument;
             if (h.modId(self) == null) return .invalid_handle;
+            if (h.caller()) |caller| if (!caller.eql(self)) return .refused;
             const name = supplied.name.utf8() orelse return .invalid_argument;
             if (name.len == 0) return .invalid_argument;
             const named = data.contentId(name) catch return .invalid_argument;

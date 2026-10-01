@@ -38,6 +38,7 @@ const offered_api_versions = [_]u32{
     types.api_version_3,
     types.api_version_4,
     types.api_version_5,
+    types.api_version_6,
 };
 
 fn acceptsOffered(range: mod.Range) bool {
@@ -142,7 +143,11 @@ pub fn LoaderOf(comptime H: type) type {
                     continue;
                 };
 
-                const result_code = init_callback(api.TableOf(H).getApi, self_handle);
+                const result_code = blk: {
+                    const scope = self.host.enterCaller(self_handle);
+                    defer scope.restore();
+                    break :blk init_callback(api.TableOf(H).getApi, self_handle);
+                };
                 const shutdown_callback = library.symbol(types.ModShutdown, types.shutdown_symbol);
                 const result = types.Result.fromCode(result_code);
 
@@ -179,7 +184,11 @@ pub fn LoaderOf(comptime H: type) type {
             while (i > 0) {
                 i -= 1;
                 const item = &self.loaded.items[i];
-                if (item.shutdown) |callback| callback(item.self);
+                if (item.shutdown) |callback| {
+                    const scope = self.host.enterCaller(item.self);
+                    defer scope.restore();
+                    callback(item.self);
+                }
                 item.shutdown = null;
             }
         }
@@ -235,5 +244,6 @@ test "native compatibility considers every offered table version" {
     // table loads. A version above everything this build hands out still does not.
     try testing.expect(acceptsOffered(.{ .min = 4, .max = 4 }));
     try testing.expect(acceptsOffered(.{ .min = 5, .max = 5 }));
-    try testing.expect(!acceptsOffered(.{ .min = 6 }));
+    try testing.expect(acceptsOffered(.{ .min = 6, .max = 6 }));
+    try testing.expect(!acceptsOffered(.{ .min = 7 }));
 }

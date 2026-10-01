@@ -48,6 +48,7 @@ test {
     _ = render_jobs;
     _ = mod_pipeline;
     _ = instances;
+    _ = @import("public3d.zig");
     _ = model_content;
     _ = model_loaders;
     _ = settings_startup;

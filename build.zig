@@ -199,7 +199,7 @@ const layering = [_]Module{
     // The one module it will **never** have is
     // `rhi` — §4.2's two boundaries, where the renderer API is game-facing and the RHI is
     // not, so this module does not merely decline to publish the RHI, it cannot see it.
-    .{ .name = "abi", .deps = &.{ "core", "data", "platform", "asset", "app", "author", "scene", "mod", "net", "render2d", "ui", "audio", "physics2d" } },
+    .{ .name = "abi", .deps = &.{ "core", "data", "platform", "asset", "app", "author", "scene", "mod", "net", "render2d", "render3d", "ui", "audio", "physics2d", "physics3d" } },
 };
 
 /// Which platform backend to build against.
@@ -1412,6 +1412,9 @@ pub fn build(b: *std.Build) void {
         if (std.mem.eql(u8, spec.name, "rhi")) {
             b.step("rhi-test", "Run the RHI contract and selected backend tests").dependOn(&run.step);
         }
+        if (std.mem.eql(u8, spec.name, "abi")) {
+            b.step("abi-test", "Run the public ABI agreement, refusal and caller-context tests").dependOn(&run.step);
+        }
         if (std.mem.eql(u8, spec.name, "asset") or std.mem.eql(u8, spec.name, "author") or std.mem.eql(u8, spec.name, "physics3d") or std.mem.eql(u8, spec.name, "anim")) {
             b.step(b.fmt("{s}-test", .{spec.name}), b.fmt("Run the {s} unit tests", .{spec.name})).dependOn(&run.step);
         }
@@ -1559,7 +1562,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    for ([_][]const u8{ "core", "data", "platform", "physics2d", "ui", "rhi", "asset", "mod", "render2d", "render3d", "scene", "audio", "app", "author", "debug", "abi" }) |name| {
+    for ([_][]const u8{ "core", "data", "platform", "physics2d", "physics3d", "ui", "rhi", "asset", "mod", "render2d", "render3d", "scene", "audio", "app", "author", "debug", "abi" }) |name| {
         integration_mod.addImport(name, modules.get(name).?);
     }
     integration_mod.addImport("mod_pipeline_options", pipeline_options.createModule());
@@ -1569,6 +1572,11 @@ pub fn build(b: *std.Build) void {
     const run_integration_tests = b.addRunArtifact(integration_tests);
     test_step.dependOn(&run_integration_tests.step);
     b.step("integration-test", "Run package and subsystem integration tests").dependOn(&run_integration_tests.step);
+    const public3d_mod = b.createModule(.{ .root_source_file = b.path("engine/tests/public3d.zig"), .target = target, .optimize = optimize });
+    for ([_][]const u8{ "core", "data", "platform", "rhi", "asset", "author", "render3d", "render2d", "ui", "app", "abi", "scene", "physics3d" }) |name| public3d_mod.addImport(name, modules.get(name).?);
+    const public3d_tests = b.addTest(.{ .root_module = public3d_mod, .filters = &.{"M25 v6"} });
+    check_step.dependOn(&public3d_tests.step);
+    b.step("abi-public3d-test", "Run M25 v6 ownership and per-call refusal proofs").dependOn(&b.addRunArtifact(public3d_tests).step);
 
     // Real native windows on this machine's own window system (`vulkan.md` §4, M13 Step 2).
     // Its own step rather than part of `test`: it opens windows, so it needs a desktop

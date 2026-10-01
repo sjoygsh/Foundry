@@ -34,6 +34,7 @@ pub const api_version_2: u32 = 2;
 pub const api_version_3: u32 = 3;
 pub const api_version_4: u32 = 4;
 pub const api_version_5: u32 = 5;
+pub const api_version_6: u32 = 6;
 
 // == Booleans ==========================================================================
 
@@ -227,7 +228,7 @@ pub const SchemaId = data.SchemaId;
 ///
 /// The *packing* is not published and may change. The width and the opacity are the
 /// contract, and zero is always the null handle.
-fn Opaque(comptime kind: []const u8) type {
+pub fn Opaque(comptime kind: []const u8) type {
     return extern struct {
         const Self = @This();
 

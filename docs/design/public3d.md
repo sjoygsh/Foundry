@@ -1,6 +1,6 @@
 # Design: M25 — Public 3D: `FoundryApi_v6`, a 3D content mod and a native one
 
-**Status:** Accepted 2026-10-01, when the owner requested Step 1. Step 1 is done; Step 2 has not begun.
+**Status:** Accepted 2026-10-01, when the owner requested Step 1. Steps 1–2 are done; Step 3 is next.
 **Date:** 2026-10-01
 **Baseline:** `211901d`, tag `m24`. M0–M24 are complete.
 **Decisions:**
@@ -511,6 +511,21 @@ Every choice is recommended as written. Nothing blocks Step 1 once these are acc
 | 14 | Budget, read inside the paced loop: `abi.instances` p95 under 0.05 ms for the orbiter on both machines; 1,024 instances recorded without a budget | §12 |
 | 15 | The PC is needed (Step 6) with the ordinary 50% CPU rule; Linux is compile-only, since nothing Linux-specific changes | §13 |
 
+## Resolution — Step 2 caller identity, approved before implementation (2026-10-01)
+
+The owner approved host-managed caller identity around native initialization and callbacks.
+The shared table has no context argument, and its mutation signatures omit `self`, so an
+owner tag alone cannot enforce §3. The host scopes identity around init, shutdown, systems
+and component callbacks, restoring the previous identity after nested callbacks. Identity
+is thread-local: another thread cannot inherit the driving thread's authority. Creation
+checks that its explicit `self` matches this identity; mutation outside an identified
+callback is `refused`. Reads and queries need no caller. This is bookkeeping in `abi`,
+not a new callback kind or a change to v1–v5. Hosts invoking other native entry points must
+scope them explicitly through the same host mechanism. Native code remains unsandboxed;
+this prevents misuse through the table, not arbitrary memory writes or a mod directly
+calling another mod's function. Failed initialization releases its new retained objects,
+bodies and characters before invalidating the identity.
+
 ## Resolution — Step 1: the retained instance set (2026-10-01)
 
 The owner's request for Step 1 accepted §15 as written, and ADR-0059 with it (CLAUDE.md §4.1
@@ -580,3 +595,56 @@ gains its row). Step 1 added `engine/src/render3d/instances.zig`, exported as
 **Bar:** `zig fmt --check`; `zig build test` **2,041 of 2,042**, the one expected skip, which is
 six more than M24's close (two unit, four integration); `check` native, `-Drhi=metal`, Linux and
 Windows null; the three 30-frame headless runs. All pass.
+
+## Resolution — Step 2: the public v6 boundary (2026-10-02)
+
+**Implemented from `f81c82e`.** `abi` now receives `render3d` and `physics3d` build grants,
+not `rhi` or `anim`. The host lends content, the retained set, a camera snapshot and the collision
+world/allocator. `public3d_types.zig`, `calls_public3d.zig`, the C header and `Api_v6` publish
+§7's 28 calls: nine renderer, five hierarchy, three queries and eleven body/character calls.
+The 233-call v5 prefix stays intact; v6 has 261 calls. `getApi`, native offered versions and
+the pointer/absent-host sweep include v6. C and Zig agreement check every new value's size,
+field offset and width, every tail offset and the complete v5 prefix.
+
+**Ownership.** The approved caller mechanism above wraps native init/shutdown and registered
+system/component callbacks, restores nested identity and refuses unscoped mutations. Creation's
+explicit `self` must match. Existing component/system registration additionally refuses a
+different explicit `self` when scoped, so a mod cannot manufacture another mod's callback
+identity; direct unscoped host registrations remain compatible. No v1–v5 layout or function
+prefix changes. The host has 256 body and 16 character ownership slots, recycling stale entries
+without occupying the physics `user` value. Foreign live handles are `refused`; stale handles
+are `invalid_handle`. Refusal and unbind release owned retained objects, characters and bodies.
+Character backing bodies are never mutable through the body calls, even by their owner.
+
+**Boundary details.** Null pointers are checked before service lookup; outputs are unchanged on
+failure. Floats must be finite, poses affine and rotations nonzero/unit within ADR-0048's
+tolerance; transform and light rotations normalize before storage. Reserved bytes and unused
+primitive fields must be zero. Primitive kinds are sphere/capsule/box, body kinds static/kinematic,
+light kinds directional/point/spot and parent modes local/keep-world. Hierarchy refusals preserve
+local, parent and derived world state. Camera reads use only the supplied snapshot. Queries
+are caller-independent, bounded at 4,096 output entries and report count/total for truncated
+overlap; misses return a zero hit and false. A nonzero stale `ignore` body is invalid.
+Primitive body reads are open; hull/mesh reads are `unsupported`, since v6 has no representation.
+Skinned models and shadow-casting retained lights remain unsupported/refused as specified.
+
+**Verification.** Sixteen focused table-driven/integration tests cover every pointer parameter,
+each float field poisoned with NaN and both infinities, values/reserved bytes, ownership/stale
+handles, thread isolation and nested callback identity, lifecycle cleanup, capacities, content
+refusals, hierarchy atomicity, normalized rotations, characters and query hits/misses/truncation.
+`abi-test` plus `abi-public3d-test` passes **150/150** in Debug; the focused suite passes
+**16/16** in ReleaseSafe. Eighteen mutations were observed failing and restored: caller/creator
+ownership, unscoped authority, scope restoration, callback scope, body/character/query caps,
+shape enum, instance/light cleanup, C field width, v6 tail order, thread-local isolation,
+stale query ignore, scoped registration ownership, transform normalization and light normalization.
+
+The nine-command bar passes. The integration review exposed the ADR-0048 normalization issue;
+after its localized fix, the affected test/check graphs were rerun, not the unrelated sample
+runs. Final `test`: **2,058 of 2,059**, one expected skip; native, Metal, Linux-null and
+Windows-null checks pass. All three 30-frame headless samples passed and do not use the new v6
+calls. The installed header's `render3d_client.c` compiles as C99 and C++17 on native, Linux and
+Windows targets. This consumer calls every new entry with typed values but is compile-only;
+it does not claim Step 3's external/native runtime conformance. No PC runtime proof was required.
+
+**Stop before Step 3.** No native hostile mod, seeded hostile sweep, sample package/consent path,
+camera mutation, animation or runtime geometry was added. The durable parent architecture and
+author-guide reconciliation remains the milestone's later planned work.

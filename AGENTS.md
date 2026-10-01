@@ -248,14 +248,19 @@ When the ABI surface changed, also compile a C mod against the *installed* heade
 Zig tests cannot see what a C author cannot express. `engine/tests/fixtures/author_client.c`
 is one such consumer, kept for this: it calls every v4 authoring entry point and nothing else.
 `engine/tests/fixtures/net_client.c` does the same for the 22 v5 networking entry points.
+`engine/tests/fixtures/render3d_client.c` constructs the v6 values and calls all 28 public 3D
+entries. It is a compile consumer, not the later external runtime conformance proof. Compile
+the affected consumer as both C99 and C++17 on all three targets.
 
 ```sh
 zig build                                    # installs zig-out/include/foundry.h
-C=engine/tests/fixtures/author_client.c      # or your own mod.c
+C=engine/tests/fixtures/author_client.c      # or net_client.c, render3d_client.c, your mod.c
 zig cc  -std=c99 -pedantic -Wall -Wextra -Werror -Izig-out/include -c $C -o /dev/null
 zig cc  --target=x86_64-linux-gnu   -std=c99 -pedantic -Werror -Izig-out/include -c $C -o /dev/null
 zig cc  --target=x86_64-windows-gnu -std=c99 -pedantic -Werror -Izig-out/include -c $C -o /dev/null
 zig c++ -x c++ -std=c++17 -Wall -Wextra -Werror -Izig-out/include -c $C -o /dev/null
+zig c++ --target=x86_64-linux-gnu -x c++ -std=c++17 -Wall -Wextra -Werror -Izig-out/include -c $C -o /dev/null
+zig c++ --target=x86_64-windows-gnu -x c++ -std=c++17 -Wall -Wextra -Werror -Izig-out/include -c $C -o /dev/null
 ```
 
 This is not ceremony. M7's step 4 found three defects this way and none of them by any other
