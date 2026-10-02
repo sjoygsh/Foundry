@@ -1,10 +1,33 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-02
-**Current handoff: M25 Steps 1–3 of 8 are complete (`docs/design/public3d.md`, ADR-0059 accepted).
-Stop before Step 4.** v6's native hostile-input and runtime conformance proofs are implemented;
-the three seeded sweeps each exercise all 28 entries in 10,000 calls. Sample integration has
-not begun. M0–M24 and M25 Steps 1–2 are pushed. Step 3 is committed locally; no push was requested.
+**Current handoff: M25 Steps 1–4 of 8 are complete (`docs/design/public3d.md`, ADR-0059 accepted).
+Stop before Step 5.** The content-only `plinth` mod draws lit and blocks the player in a
+relocated, read-only ReleaseSafe Metal install. `sandbox3d:prop` records are drawn in hash
+order and their collision assets are copied into static bodies. Native sample hosting has
+not begun. M0–M24 and M25 Steps 1–2 are pushed; Steps 3–4 are local commits, no push requested.
+
+**M25 Step 4 is done (2026-10-02), from `6ea6548`.** `props.zig` follows at most 256 merged
+prop records, validating finite/bounded placement, yaw and positive scale; exceeding the bound
+refuses the whole set. Missing/wrong-kind assets, skinned models and invalid records are omitted
+with diagnostics and partial acquisitions released. Collision is optional and rigid: solid
+props require scale 1, with size baked at import (ADR-0057); decorative props may be scaled.
+Refresh retires old bodies/meshes/model references without resetting player/walker state.
+`scripts/m25/make_props.py` byte-reproducibly generates the stone plinth's glTF; its ordinary
+package declares a lit material, collision import and one prop, with no native/script code.
+The tour checks a real model submission, a capsule cast against that prop and blocked ordinary
+player movement; the existing player/walker replay stages remain unchanged.
+
+**Evidence:** `sandbox3d-test` passes **20/20** on null Debug, null ReleaseSafe and Metal
+ReleaseSafe; `sandbox3d-props-test` passes **5/5**, including its root, and ten meaningful guard
+mutations fail and are restored. Regeneration is SHA-256 identical. Base/plinth null Debug
+and relocated, read-only Metal ReleaseSafe tours pass with Zig/SDK off PATH and scratch user
+data; player hash remains `cb99ccfcf2b6d6c3`, walker Debug `62ed8c026c20482c`, ReleaseSafe
+`fa431d9440d4cb2e`. Plinth stops the player after 0.1950 m; both Metal tours skip no frames.
+All nine bar commands pass: **2,067 of 2,068 tests**, one expected skip; native/Metal and
+Linux/Windows null checks and all three headless runs are clean. Both ad-hoc macOS releases
+stage, not public signed/notarized releases. No ABI/backend/native-consent change, PC runtime
+claim, external-guide proof or person's by-hand watch is claimed. Step 5 remains next.
 
 **M25 Step 3 is done (2026-10-02), from `97f8932`.** `render3d_client.c` is now a real C99
 native mod: it checks all 28 v6 calls and their returned values, then reads a propagated world

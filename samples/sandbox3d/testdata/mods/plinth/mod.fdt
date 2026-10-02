@@ -1,0 +1,7 @@
+foundry:mod plinth:content {
+    name "Stone plinth"
+    version 1
+    license "Apache-2.0"
+    summary "A lit, solid prop added only through content. No native code."
+    requires [ { id sandbox3d:content } ]
+}

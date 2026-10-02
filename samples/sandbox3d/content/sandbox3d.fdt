@@ -35,6 +35,16 @@ foundry:model_import sandbox3d:models.walker { source "models/walker.gltf" }
     speed f32
     cross_fade f32
 }
+
+# M25: Tier 1 packages add props; the base package deliberately adds none.
+# Collision poses are rigid (ADR-0057): bake size at import and keep scale 1 when solid.
+@schema prop {
+    model id
+    position { x f32 y f32 z f32 }
+    yaw f32 (default 0)
+    scale f32 (default 1)
+    collision id (optional)
+}
 walker sandbox3d:walker.main {
     model sandbox3d:models.walker
     waypoints [ { x 1.0 y 0.004 z 2.2 } { x 1.0 y 0.004 z 0.2 }

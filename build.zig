@@ -801,6 +801,13 @@ pub fn build(b: *std.Build) void {
             if (std.mem.eql(u8, pkg.stem, "sandbox3d")) {
                 walk_test_options.addOptionPath("package", compiled.fpk);
                 walk_test_options.addOptionPath("generated", compiled.generated);
+                const plinth = release.compilePackage(b, fpack, .{
+                    .dir = "samples/sandbox3d/testdata/mods/plinth",
+                    .stem = "plinth",
+                    .dependencies = &.{ core_compiled.?.fpk, compiled.fpk },
+                });
+                walk_test_options.addOptionPath("plinth_package", plinth.fpk);
+                walk_test_options.addOptionPath("plinth_generated", plinth.generated);
             }
 
             b.getInstallStep().dependOn(&b.addInstallFileWithDir(
@@ -1318,7 +1325,11 @@ pub fn build(b: *std.Build) void {
         const sample_tests = b.addTest(.{ .root_module = sample_mod });
         const run_sample_tests = b.addRunArtifact(sample_tests);
         test_step.dependOn(&run_sample_tests.step);
-        if (sample_mod == sandbox3d_mod) b.step("sandbox3d-test", "Run the 3D sample's content and workflow tests").dependOn(&run_sample_tests.step);
+        if (sample_mod == sandbox3d_mod) {
+            b.step("sandbox3d-test", "Run the 3D sample's content and workflow tests").dependOn(&run_sample_tests.step);
+            const props_tests = b.addTest(.{ .root_module = sample_mod, .filters = &.{"props:"} });
+            b.step("sandbox3d-props-test", "Run M25's content-prop validation, collision, ordering and reload proofs").dependOn(&b.addRunArtifact(props_tests).step);
+        }
         check_step.dependOn(&sample_tests.step);
     }
     // The shared markers' codec, and the two halves of their boundary: a source scan for

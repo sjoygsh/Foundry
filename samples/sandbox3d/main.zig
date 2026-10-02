@@ -54,6 +54,12 @@
 //! **M24's is a generated animated walker** (`animation3d.md` §10). Its independent content
 //! record supplies the model, patrol waypoints, speed and idle/walk cross-fade. Playback and
 //! collision stay sample-owned; poses use tick-derived time and current borrowed assets.
+//!
+//! **M25 Step 4's is a content-only solid prop** (`public3d.md` §10). Every `sandbox3d:prop`
+//! is drawn in content-ID hash order; optional collision assets are copied into static bodies
+//! at its position/yaw. The `plinth` test package adds a lit stone object, without code. Solid
+//! props keep scale 1 (ADR-0057); decorative props may be scaled. Select `plinth:content`
+//! through the existing PACKAGES bootstrap to include its cast/player-blocking tour check.
 
 const std = @import("std");
 
@@ -70,6 +76,7 @@ const ui = @import("ui");
 const walk_mod = @import("walk.zig");
 const Tour = @import("tour.zig").Tour;
 const Walker = @import("walker.zig").Walker;
+const Props = @import("props.zig").Props;
 
 const orrery_mod = @import("orrery.zig");
 const Orrery = orrery_mod.Orrery;
@@ -290,6 +297,9 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         var replay = walk_mod.Walk.init(gpa);
         defer replay.deinit(&engine.assets);
         replay.refresh(&engine.store, &engine.assets, engine.step_delta.toSecondsF32());
+        var replay_props: Props = .{};
+        defer replay_props.deinit(gpa, &replay.world, &sample.content.?, &engine.assets);
+        try replay_props.refresh(gpa, &engine.store, &replay.world, &sample.content.?, &engine.assets);
         var second: Tour = .{ .emit = false };
         // The replay runs unpaced, back to back, so its moves are timed at a busy CPU's
         // clock; the frame loop's are timed between paced frames (collision3d.md Step 5).
@@ -588,6 +598,8 @@ const Sample = struct {
     world: render3d.Renderer,
     overlay: render2d.Renderer,
     walk: walk_mod.Walk,
+    props: Props = .{},
+    props_proved: bool = false,
     walkers: []Walker,
     course: render3d.ModelHandle = .none,
     intent: walk_mod.Intent = .{},
@@ -756,6 +768,9 @@ const Sample = struct {
         self.crate = self.follow(self.crate, before.crate, self.settings.crate, first);
         self.crate_override = self.followMaterial(before.crate_override, first);
         self.walk.refresh(&engine.store, &engine.assets, engine.step_delta.toSecondsF32());
+        self.props_proved = false;
+        if (self.content) |*content| self.props.refresh(self.gpa, &engine.store, &self.walk.world, content, &engine.assets) catch |err|
+            log.warn("prop set omitted ({t})", .{err});
         self.course = self.follow(self.course, previous_course, if (self.walk.settings) |s| s.course else .none, first);
         if (self.content) |*content| for (self.walkers) |*walker| {
             walker.refresh(self.gpa, &engine.store, &self.walk.world, content, engine.step_delta.toSecondsF32()) catch |err|
@@ -810,6 +825,10 @@ const Sample = struct {
         const started = engine.os.monotonicNanos(); // Measurement only; never affects the move.
         if (self.tour) |*tour| {
             if (!tour.done()) try tour.advance(&self.walk, dt);
+            if (tour.done() and tour.failed == null and !self.props_proved and Props.plinthSelected(&engine.store)) {
+                try self.props.provePlinth(&self.walk, dt);
+                self.props_proved = true;
+            }
         } else try self.walk.step(if (self.walk.orbit) .{} else self.intent, dt);
         const elapsed: i64 = @intCast(engine.os.monotonicNanos() - started);
         if (self.move_count < self.move_times.len) {
@@ -1019,6 +1038,7 @@ const Sample = struct {
 
         self.drawModel(.{ .model = self.room, .world = Mat4.identity });
         self.drawModel(.{ .model = self.course, .world = Mat4.identity });
+        if (self.content) |*content| try self.props.draw(content);
         if (self.content) |*content| for (self.walkers, 0..) |*walker, i| {
             // The sixteen-walker cost run fans their visual instances out. Each still owns
             // an independently sampled pose and collision character; no engine crowd API.
@@ -1113,6 +1133,7 @@ const Sample = struct {
     }
 
     fn deinit(self: *Sample, engine: *app.Engine) void {
+        if (self.content) |*content| self.props.deinit(self.gpa, &self.walk.world, content, &engine.assets);
         if (self.content) |*content| for (self.walkers) |*walker| walker.deinit(self.gpa, &self.walk.world, content);
         self.gpa.free(self.walkers);
         self.walk.deinit(&engine.assets);
@@ -1320,6 +1341,7 @@ test {
     _ = walk_mod;
     _ = @import("walk_tests.zig");
     _ = @import("walker_tests.zig");
+    _ = @import("props_tests.zig");
 }
 
 test "scripted keys are key@frame pairs, and anything else is refused whole" {

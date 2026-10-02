@@ -1,6 +1,6 @@
 # Design: M25 — Public 3D: `FoundryApi_v6`, a 3D content mod and a native one
 
-**Status:** Accepted 2026-10-01, when the owner requested Step 1. Steps 1–3 are done; Step 4 is next.
+**Status:** Accepted 2026-10-01, when the owner requested Step 1. Steps 1–4 are done; Step 5 is next.
 **Date:** 2026-10-01
 **Baseline:** `211901d`, tag `m24`. M0–M24 are complete.
 **Decisions:**
@@ -304,7 +304,7 @@ the compiler emits its `.fcol`. It adds one record of a new sample schema:
     position { x f32 y f32 z f32 }
     yaw f32 (default 0)
     scale f32 (default 1)
-    collision id (default none)
+    collision id (optional)
 }
 ```
 
@@ -312,6 +312,18 @@ the compiler emits its `.fcol`. It adds one record of a new sample schema:
 collision mesh to the walk's world as a static body. That is the Tier 1 pattern any game uses:
 the host enumerates records of a schema it owns, and a mod adds records. The sample's own package
 has none, so a run without the mod is unchanged and M23's and M24's pinned hashes hold.
+
+**Step 4 implementation clarification (2026-10-02):** the sample accepts at most 256 prop
+records, ordered by unsigned content-ID hash. Exceeding that bound refuses the set rather
+than silently truncating it. Invalid records or failed acquisitions are omitted with a
+diagnostic, giving back any partial acquisitions. ADR-0057's rigid collision poses remain
+authoritative: a collidable prop must have `scale 1`, with size baked at import; a decorative
+prop may have a positive finite scale. Non-unit collidable scale refuses the entire prop,
+never draws geometry at one size while colliding at another. No runtime-scaled collision
+feature is introduced.
+The draft's `(default none)` used a literal the FDT grammar does not have. `collision` is
+optional, following the engine's existing optional material/model ID fields; absence reads
+as `ContentId.none`. This corrects the authoring spelling, not the intended semantics.
 
 **The native mod, `orbiter`** (`samples/sandbox3d/testdata/mods/orbiter/`): a C99 library built
 by `build.zig` against the installed header, with a package that carries its own model and
@@ -697,3 +709,67 @@ description or production ABI changes require a PC run or release staging at thi
 
 **Stop before Step 4.** No `prop`, `plinth`, `orbiter`, sample consent/hosting, camera write,
 animation binding, runtime geometry or Lua surface was implemented. No new ADR was required.
+
+## Resolution — Step 4: the content-only plinth, on Metal (2026-10-02)
+
+**Implemented from `6ea6548`.** The base package declares `sandbox3d:prop` but no prop records.
+`samples/sandbox3d/props.zig` enumerates the merged store, orders IDs by unsigned hash, acquires
+each accepted model through `render3d.Content` and draws it in that order. Optional collision
+is an ordinary `foundry:collision_mesh` asset, copied through `World.addMesh` into a static
+body at the record's position/yaw, with the prop's hash as its user value. It holds handles and
+copied settings, never package or payload pointers. The same generation seam refreshes props,
+visual content and the walk; old bodies retire before meshes, and asset/model references are
+released. Player and walker state remain their existing followers' responsibility.
+
+**The bounded contract:** at most 256 records, refusing the set rather than truncating it;
+finite positions within physics' coordinate bound, yaw within ±2π, scale in `(0, 100]`, and
+nonzero model IDs. Missing/wrong-kind models/collision, skinned models and malformed settings
+are omitted with a diagnostic. Failed acquisitions give everything back, including a model
+acquired before a missing collision was discovered. Source reloads use the asset registry's
+current valid payload; a failed candidate preserves that asset's last valid bytes, as before.
+Removing a prop removes its collision, not merely its visible model.
+
+**Design clarification, recorded above before implementing it:** `(default none)` is not FDT
+syntax. `collision id (optional)` gives the intended absent-as-none semantics, matching the
+engine's existing optional ID fields. ADR-0057 is unchanged: collision poses have no scale,
+so a non-unit scale on a solid prop refuses the whole prop; decorative scaling works. No
+runtime-scaled collision or new engine component was added, and no new ADR was required.
+
+**The package:** `testdata/mods/plinth` contains an authored lit stone material, one import with
+`collision true` and one prop at `(-2.2, 0, 1.6)`, out of the existing tour/patrol paths.
+`scripts/m25/make_props.py` generates its 72 vertices/36 triangles in glTF/bin form without
+downloads; regeneration is SHA-256 identical. The normal package compiler emits the model,
+mesh and `.fcol`. `build.zig` compiles the fixture against core and sandbox3d for the tests;
+it is not automatically selected or installed as a required package. The runtime proof builds
+it with `fpack` into the scratch player's mods directory and explicitly selects
+`FOUNDRY_SANDBOX3D_PACKAGES=plinth:content`, using the existing discovery path.
+
+**The tour:** only when the plinth record is present, it checks that a model part was actually
+submitted (an accepted model with missing visual residency is not enough), casts the player's
+capsule into its body and drives 120 ordinary forward moves. The player stops after 0.1950 m;
+a refused step at the broad base need not increment the wall counter, so blocking is checked
+from displacement, not that counter alone. Later frames face the prop. The old tour hash is
+not extended or changed; the replay constructs the same prop collision in its fresh world.
+
+**Tests and evidence:** four package-level tests cover lit drawing and player blocking,
+validation/defaults/decorative scale, every merged prop in sorted submission order, missing/
+wrong-kind/skinned/scaled-solid refusals, partial-acquisition rollback, refresh/removal,
+the set limit, copied collision reload and failed candidates. The focused
+`zig build sandbox3d-props-test -Dplatform=null -Drhi=null` passes **5/5** including the root;
+the full sample suite passes **20/20** on null Debug, null ReleaseSafe and Metal ReleaseSafe.
+Ten meaningful mutations fail and are restored: finiteness, position bounds, scaled collision,
+skinned refusal, capacity, ordering, acquisition rollback, mesh retirement, collision pose,
+and falsely counting a zero-part submission. The ordering mutation exposed an accidentally
+pre-sorted fixture, corrected to reverse its declarations before accepting the test.
+
+Base and plinth tours pass on null Debug and from a **relocated, read-only ReleaseSafe Metal
+install**, with scratch user data and Zig/SDK off PATH. Both Metal tours have zero skipped
+frames. Player replay remains `cb99ccfcf2b6d6c3`; walker replay remains `62ed8c026c20482c`
+in Debug and `fa431d9440d4cb2e` in ReleaseSafe, including with the mod selected. The nine-command
+bar passes: **2,067 of 2,068 tests**, one expected skip; native/Metal and Linux/Windows null
+checks and three headless samples. Both ad-hoc macOS releases stage; none claims public
+signing/notarization. Linux is compile-only and no Windows runtime proof is needed here.
+
+**Stop before Step 5.** No native consent, loader/host binding, orbiter, retained submission
+cost, new ABI, backend/shader, animation binding or guide was added. The milestone's person's
+by-hand walk/watch remains unclaimed, not confused with these executable tours.
