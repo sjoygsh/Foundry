@@ -1,6 +1,6 @@
 # Design: M25 — Public 3D: `FoundryApi_v6`, a 3D content mod and a native one
 
-**Status:** Accepted 2026-10-01, when the owner requested Step 1. Steps 1–5 are done; Step 6 is next.
+**Status:** Accepted 2026-10-01, when the owner requested Step 1. Steps 1–6 are done; Step 7 is next.
 **Date:** 2026-10-01
 **Baseline:** `211901d`, tag `m24`. M0–M24 are complete.
 **Decisions:**
@@ -874,3 +874,57 @@ is required here. The milestone's person's by-hand walk/watch remains unclaimed.
 **Stop before Step 6.** Windows/Vulkan runtime qualification, the outside guide/consumer and
 milestone close remain Steps 6–8. No camera write, animation binding, runtime geometry/material
 creation, shader, Lua or later-step behavior was added.
+
+## Resolution — Step 6: Windows/Vulkan on the PC (2026-10-02)
+
+**Qualified at `d0ec988`, with no engine, sample, ABI or shader change.** The PC held a clean
+linked worktree at that exact commit, transferred by Git bundle and never pushed. Everything
+ran through `scripts/m25/windows.ps1`, a developer harness and not a build prerequisite: it
+gates every child on measured total CPU at or under 50%, runs at below-normal priority on two
+logical processors with `-j2`, and refuses stale output rather than accepting an earlier run.
+An earlier session's attempt was interrupted by that CPU gate and left partial evidence; none
+of it is relied on here. The whole qualification was rerun into a fresh output directory with
+the machine at about 5% CPU, and that run alone is the record.
+
+**Suites, natively on Windows:** `abi-test`, `abi-public3d-test` and `sandbox3d-test` pass
+**178 of 178** on null Debug and again on null ReleaseSafe; `sandbox3d-test -Drhi=vulkan` in
+ReleaseSafe passes **23 of 23**, the same count as Metal's. The real `orbiter.dll` and the
+hostile fixtures are loaded by those suites through the Windows loader.
+
+**The relocated install:** `zig build install -Drhi=vulkan -Doptimize=ReleaseSafe` to a
+staging prefix, moved, then denied write, append, attribute and delete rights through
+inherited ACLs. A write probe into it is refused. `orbiter.dll` sits in `content\orbiter`
+beside its package. The tours run with `PATH` reduced to the system directories, so neither
+Zig nor the Vulkan SDK binaries are reachable, and with a disposable `APPDATA`/`HOME` each.
+
+**The tour, in the desktop session at normal integrity:** three fresh processes on the Intel
+Arc A750 (Vulkan 1.4, 4x MSAA), with plinth and orbiter selected and the orbiter consented.
+Two run under `VK_LAYER_KHRONOS_validation` with synchronization validation; the layer's own
+`CURRENT-VALIDATION-ENABLED` line lists Synchronization, and both logs contain that
+information block and nothing else. The third runs with every layer disabled, and the loader's
+log confirms none was inserted. Each reports the mod's `v6 initialized (instance, override,
+light, hierarchy, solid)`, the plinth pass (blocked after 0.1950 m), the orbiter pass (blocked
+after 0.5450 m), the player replay `cb99ccfcf2b6d6c3`, the walker pass `62ed8c026c20482c` and
+zero skipped frames over 2,098–2,099 paced frames. The three **69,120-byte** traces are
+byte-identical (compared whole; SHA-256 `3c1a53d7…d5c66b`). The in-application native hash is
+`d6ac3adfabc2c0c2`, the same value Metal recorded; that agreement is observed, not a
+cross-machine guarantee (ADR-0013).
+
+**Paced cost on that machine,** over the last 240 frames at 60 Hz: one orbiter instance and
+light cost median/p95 **0.0009/0.0013 ms** and **0.0008/0.0012 ms** under validation and
+**0.0007/0.0012 ms** with layers off, against the 0.05 ms budget. The 1,024-instance run,
+layers off, records **0.1498/0.1518 ms** with no budget and no skipped frames; that is about
+1.4 times Metal's figure and is recorded, not judged.
+
+**Harness guards:** `scripts/m25/windows_tests.ps1` injects a 51% load and existing evidence,
+and the harness refuses all three cases (busy machine, stale build output, stale trace) before
+launching any child: 3 of 3.
+
+**Pack-up:** the proof directories, the worktree, the bundle, the copied scripts and the
+scheduled task are removed from the PC; its older checkouts are untouched. Nothing of the
+machine's identity is recorded here.
+
+The local nine-command bar passes unchanged: **2,070 of 2,071 tests**, one expected skip.
+Linux remains compile-only for this milestone. A person's by-hand watch remains unclaimed.
+
+**Stop before Step 7.** The external consumer, the guide and the close remain Steps 7–8.

@@ -1,11 +1,28 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-02
-**Current handoff: M25 Steps 1–5 of 8 are complete (`docs/design/public3d.md`, ADR-0059 accepted).
-Stop before Step 6.** `sandbox3d` now hosts the C99 `orbiter` through v6, only with per-run,
-per-package native consent and package selection. It turns, lights, blocks and replays from a
-relocated, read-only ReleaseSafe Metal install; an unconsented package loads content but no
-code. M0–M24 and M25 Steps 1–2 are pushed; Steps 3–5 are local commits, no push requested.
+**Current handoff: M25 Steps 1–6 of 8 are complete (`docs/design/public3d.md`, ADR-0059 accepted).
+Stop before Step 7**, the external C99 consumer and the modding guide; neither exists yet.
+`sandbox3d` hosts the C99 `orbiter` through v6, only with per-run, per-package native consent
+and package selection, on Metal and now natively on Windows/Vulkan. M0–M24 and M25 Steps 1–2
+are pushed; Steps 3–6 are local commits, no push requested.
+
+**M25 Step 6 is done (2026-10-02), qualifying `d0ec988` with no engine or API change.** An
+earlier attempt was interrupted by the 50% CPU gate; its partial evidence is not relied on, and
+the whole qualification was rerun fresh with the PC at about 5% CPU. Natively on Windows:
+`abi-test`, `abi-public3d-test` and `sandbox3d-test` pass **178/178** on null Debug and null
+ReleaseSafe, and `sandbox3d-test -Drhi=vulkan` ReleaseSafe passes **23/23**. From a relocated,
+ACL-read-only ReleaseSafe Vulkan install with no Zig or SDK on `PATH`, three fresh desktop
+processes on the Arc A750 run the tour with plinth and consented orbiter: two under
+synchronization validation (logs contain only the enabled-checks information block), one with
+all layers off. All pass every marker with zero skipped frames, and their **69,120-byte**
+native traces are byte-identical (`d6ac3adfabc2c0c2`, the value Metal also recorded; observed,
+not a cross-machine guarantee). Paced `abi.instances` median/p95 is 0.0009/0.0013 and
+0.0008/0.0012 ms validated and 0.0007/0.0012 ms layers-off, below 0.05 ms; 1,024 instances
+record 0.1498/0.1518 ms without a budget. `scripts/m25/windows.ps1` is the developer harness
+and `windows_tests.ps1` proves its three refusals. The PC is packed up. The local nine-command
+bar passes: **2,070 of 2,071 tests**, one expected skip. Linux stays compile-only; a person's
+by-hand watch remains unclaimed.
 
 **M25 Step 5 is done (2026-10-02), from `4ef1dda`.** `native.zig` owns the stable host/loader
 and retained set, lent the existing orrery world, 3D content, camera snapshot and walk world.
@@ -39,8 +56,7 @@ same-binary pose/palette replay is byte-exact; the player remains `cb99ccfcf2b6d
 The nine-command bar passes: **2,070 of 2,071 tests**, one expected skip; native/Metal and
 Linux/Windows null checks and all three headless samples. Both ad-hoc macOS releases stage,
 not public signed/notarized releases. No ABI/backend/shader or animation-arithmetic change,
-Windows runtime proof, external guide or person's by-hand watch is claimed. **Step 6 is next:**
-native Windows/Vulkan qualification on the PC, under the ordinary 50% CPU/background rule.
+Windows runtime proof, external guide or person's by-hand watch is claimed by Step 5.
 
 **M25 Step 4 is done (2026-10-02), from `6ea6548`.** `props.zig` follows at most 256 merged
 prop records, validating finite/bounded placement, yaw and positive scale; exceeding the bound
