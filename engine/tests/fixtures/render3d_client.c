@@ -1,80 +1,116 @@
 #include "foundry.h"
 #include <string.h>
 
-/* Typed compile-time consumer of every v6 call. Native execution is M25 Step 3. */
-FoundryResult foundry_render3d_client(const FoundryApi_v6 *api, FoundryMod self) {
-    FoundryContentId v_ContentId;
-    memset(&v_ContentId, 0, sizeof(v_ContentId));
-    FoundryMat4 v_d3_Mat4;
-    memset(&v_d3_Mat4, 0, sizeof(v_d3_Mat4));
-    FoundryInstance v_d3_Instance;
-    memset(&v_d3_Instance, 0, sizeof(v_d3_Instance));
-    FoundryLight3D v_d3_Light3D;
-    memset(&v_d3_Light3D, 0, sizeof(v_d3_Light3D));
-    FoundryLight v_d3_Light;
-    memset(&v_d3_Light, 0, sizeof(v_d3_Light));
-    FoundryCamera3D v_d3_Camera3D;
-    memset(&v_d3_Camera3D, 0, sizeof(v_d3_Camera3D));
-    FoundryEntity v_Entity;
-    memset(&v_Entity, 0, sizeof(v_Entity));
-    FoundryTransform v_d3_Transform;
-    memset(&v_d3_Transform, 0, sizeof(v_d3_Transform));
-    FoundryVec3 v_d3_Vec3;
-    memset(&v_d3_Vec3, 0, sizeof(v_d3_Vec3));
-    FoundryFilter3D v_d3_Filter3D;
-    memset(&v_d3_Filter3D, 0, sizeof(v_d3_Filter3D));
-    FoundryRayHit3D v_d3_RayHit3D;
-    memset(&v_d3_RayHit3D, 0, sizeof(v_d3_RayHit3D));
-    FoundryBool v_Bool;
-    memset(&v_Bool, 0, sizeof(v_Bool));
-    FoundryShape3D v_d3_Shape3D;
-    memset(&v_d3_Shape3D, 0, sizeof(v_d3_Shape3D));
-    FoundryPose3D v_d3_Pose3D;
-    memset(&v_d3_Pose3D, 0, sizeof(v_d3_Pose3D));
-    FoundryHit3D v_d3_Hit3D;
-    memset(&v_d3_Hit3D, 0, sizeof(v_d3_Hit3D));
-    FoundryOverlap3D v_d3_Overlap3D;
-    memset(&v_d3_Overlap3D, 0, sizeof(v_d3_Overlap3D));
-    uint32_t v_u32;
-    memset(&v_u32, 0, sizeof(v_u32));
-    FoundryBody3DDesc v_d3_Body3DDesc;
-    memset(&v_d3_Body3DDesc, 0, sizeof(v_d3_Body3DDesc));
-    FoundryBody3D v_d3_Body3D;
-    memset(&v_d3_Body3D, 0, sizeof(v_d3_Body3D));
-    FoundryCharacterConfig v_d3_CharacterConfig;
-    memset(&v_d3_CharacterConfig, 0, sizeof(v_d3_CharacterConfig));
-    FoundryCharacter v_d3_Character;
-    memset(&v_d3_Character, 0, sizeof(v_d3_Character));
-    FoundryCharacterMove v_d3_CharacterMove;
-    memset(&v_d3_CharacterMove, 0, sizeof(v_d3_CharacterMove));
-    FoundryResult result = FOUNDRY_OK;
-    result = api->render3d_instance_create(self, v_ContentId, &v_d3_Mat4, &v_d3_Instance);
-    result = api->render3d_instance_destroy(v_d3_Instance);
-    result = api->render3d_instance_set_world(v_d3_Instance, &v_d3_Mat4);
-    result = api->render3d_instance_set_material(v_d3_Instance, 0, v_ContentId);
-    result = api->render3d_instance_set_visible(v_d3_Instance, 0);
-    result = api->render3d_light_create(self, &v_d3_Light3D, &v_d3_Light);
-    result = api->render3d_light_set(v_d3_Light, &v_d3_Light3D);
-    result = api->render3d_light_destroy(v_d3_Light);
-    result = api->render3d_camera_get(&v_d3_Camera3D);
-    result = api->world_transform_get(v_Entity, &v_d3_Transform);
-    result = api->world_transform_set(v_Entity, &v_d3_Transform);
-    result = api->world_parent_get(v_Entity, &v_Entity);
-    result = api->world_parent_set(v_Entity, v_Entity, 0);
-    result = api->world_world_transform(v_Entity, &v_d3_Mat4);
-    result = api->physics3d_raycast(v_d3_Vec3, v_d3_Vec3, 0, &v_d3_Filter3D, &v_d3_RayHit3D, &v_Bool);
-    result = api->physics3d_shape_cast(&v_d3_Shape3D, &v_d3_Pose3D, v_d3_Vec3, &v_d3_Filter3D, &v_d3_Hit3D, &v_Bool);
-    result = api->physics3d_overlap(&v_d3_Shape3D, &v_d3_Pose3D, &v_d3_Filter3D, &v_d3_Overlap3D, 0, &v_u32, &v_u32);
-    result = api->physics3d_body_create(self, &v_d3_Body3DDesc, &v_d3_Body3D);
-    result = api->physics3d_body_destroy(v_d3_Body3D);
-    result = api->physics3d_body_set_pose(v_d3_Body3D, &v_d3_Pose3D);
-    result = api->physics3d_body_set_filter(v_d3_Body3D, 0, 0);
-    result = api->physics3d_body_get(v_d3_Body3D, &v_d3_Body3DDesc);
-    result = api->physics3d_character_create(self, &v_d3_CharacterConfig, v_d3_Vec3, 0, &v_d3_Character);
-    result = api->physics3d_character_destroy(v_d3_Character);
-    result = api->physics3d_character_move(v_d3_Character, v_d3_Vec3, &v_d3_CharacterMove);
-    result = api->physics3d_character_set_feet(v_d3_Character, v_d3_Vec3);
-    result = api->physics3d_character_feet(v_d3_Character, &v_d3_Vec3);
-    result = api->physics3d_character_body(v_d3_Character, &v_d3_Body3D);
-    return result;
+/* C99 runtime conformance: only the installed public vocabulary crosses here. */
+static uint32_t failure_line;
+static uint32_t calls;
+static const FoundryApi_v6 *api;
+static FoundryEntity pending_entity;
+#define CHECK(expr) do { if (!(expr)) { failure_line = __LINE__; return FOUNDRY_ERR_REFUSED; } } while (0)
+#define OK(expr) do { CHECK((expr) == FOUNDRY_OK); ++calls; } while (0)
+FOUNDRY_EXPORT uint32_t foundry_test_failure(void) { return failure_line; }
+FOUNDRY_EXPORT uint32_t foundry_test_calls(void) { return calls; }
+
+static void after_propagation(void *ctx, const FoundryStep *step)
+{
+    FoundryMat4 derived;
+    const FoundryMat4 identity={{1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}};
+    (void)ctx; (void)step;
+    if(pending_entity.bits==0) return;
+    if(api->world_world_transform(pending_entity,&derived)!=FOUNDRY_OK ||
+       memcmp(&derived,&identity,sizeof(identity))!=0 ||
+       api->world_destroy_entity(pending_entity)!=FOUNDRY_OK) failure_line=__LINE__;
+    else ++calls;
+    pending_entity.bits=0;
+}
+
+FoundryResult foundry_render3d_client(const FoundryApi_v6 *a, FoundryMod self)
+{
+    FoundryMat4 world = {{1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}};
+    FoundryTransform local = {{0,0,0}, {0,0,0,1}, {1,1,1}}, read;
+    FoundryPose3D pose = {{0,0,0}, {0,0,0,1}};
+    FoundryShape3D shape = {0,1,0,{0,0,0}};
+    FoundryLight3D lamp;
+    FoundryBody3DDesc desc, body_read;
+    FoundryCharacterConfig config = {0.3f,1.8f,0.7f,0.2f,0.1f,1,2,1};
+    FoundryFilter3D filter = {UINT32_MAX,0,{0}};
+    FoundryInstance instance = {0};
+    FoundryLight light = {0};
+    FoundryBody3D body = {0}, backing = {0};
+    FoundryCharacter character = {0};
+    FoundryEntity entity = {0}, parent = {0};
+    FoundryCamera3D camera;
+    FoundryRayHit3D ray;
+    FoundryHit3D cast;
+    FoundryOverlap3D overlap[1];
+    FoundryCharacterMove move;
+    FoundryVec3 feet;
+    FoundryBool hit = 0;
+    uint32_t count = 0, total = 0;
+    FoundrySystemDesc system;
+    const FoundryContentId model = foundry_content_id("demo:models.pair",16);
+    const FoundryContentId material = foundry_content_id("demo:materials.crate",20);
+    api = a;
+    memset(&lamp,0,sizeof(lamp)); memset(&desc,0,sizeof(desc)); memset(&system,0,sizeof(system));
+    lamp.kind = 1; lamp.color = (FoundryVec3){1,1,1}; lamp.intensity = 10;
+    lamp.range = 4; lamp.outer_cone = 0.7f; lamp.rotation.w = 1;
+    desc.shape = shape; desc.pose = pose; desc.kind = 1;
+    desc.layer = 1; desc.mask = UINT32_MAX; desc.user = UINT64_C(0x123456789abcdef0);
+    OK(api->render3d_instance_create(self,model,&world,&instance));
+    world.elements[12] = 2;
+    OK(api->render3d_instance_set_world(instance,&world));
+    OK(api->render3d_instance_set_material(instance,0,material));
+    OK(api->render3d_instance_set_visible(instance,1));
+    OK(api->render3d_light_create(self,&lamp,&light));
+    lamp.intensity = 20;
+    OK(api->render3d_light_set(light,&lamp));
+    OK(api->render3d_camera_get(&camera));
+    CHECK(camera.width == 32 && camera.height == 32 && camera.rotation.w == 1);
+    CHECK(api->world_create_entity(&entity) == FOUNDRY_OK);
+    OK(api->world_transform_set(entity,&local));
+    OK(api->world_transform_get(entity,&read));
+    CHECK(memcmp(&read,&local,sizeof(read)) == 0);
+    OK(api->world_parent_set(entity,(FoundryEntity){0},0));
+    OK(api->world_parent_get(entity,&parent)); CHECK(parent.bits == 0);
+    /* Derived state is absent until the host propagates, not synthesized by a read. */
+    CHECK(api->world_world_transform(entity,&world) == FOUNDRY_ERR_NOT_FOUND); ++calls;
+    OK(api->physics3d_body_create(self,&desc,&body));
+    OK(api->physics3d_body_get(body,&body_read));
+    CHECK(body_read.user == desc.user && body_read.shape.radius == 1);
+    pose.position.x = 3;
+    OK(api->physics3d_body_set_pose(body,&pose));
+    OK(api->physics3d_body_set_filter(body,1,UINT32_MAX));
+    OK(api->physics3d_raycast((FoundryVec3){3,5,0},(FoundryVec3){0,-1,0},10,&filter,&ray,&hit));
+    CHECK(hit == 1 && ray.body.bits == body.bits && ray.user == desc.user);
+    pose.position.y = 5;
+    OK(api->physics3d_shape_cast(&shape,&pose,(FoundryVec3){0,-8,0},&filter,&cast,&hit));
+    CHECK(hit == 1 && cast.body.bits == body.bits);
+    pose.position.y = 0;
+    OK(api->physics3d_overlap(&shape,&pose,&filter,overlap,1,&count,&total));
+    CHECK(count == 1 && total == 1 && overlap[0].body.bits == body.bits);
+    OK(api->physics3d_character_create(self,&config,(FoundryVec3){10,0,0},345,&character));
+    OK(api->physics3d_character_feet(character,&feet)); CHECK(feet.x == 10);
+    OK(api->physics3d_character_body(character,&backing)); CHECK(backing.bits != 0);
+    OK(api->physics3d_character_set_feet(character,(FoundryVec3){11,0,0}));
+    OK(api->physics3d_character_move(character,(FoundryVec3){0.2f,0,0},&move));
+    CHECK(move.feet.x > 11 && move.feet.x < 12);
+    OK(api->physics3d_character_destroy(character));
+    OK(api->physics3d_body_destroy(body));
+    OK(api->render3d_light_destroy(light));
+    OK(api->render3d_instance_destroy(instance));
+    pending_entity=entity;
+    system.id=foundry_content_id("native:conformance",18);
+    system.name=(FoundryStr){(const uint8_t *)"native:conformance",18};
+    system.update=after_propagation;
+    CHECK(api->world_register_system(self,&system)==FOUNDRY_OK);
+    CHECK(calls == 28);
+    return FOUNDRY_OK;
+}
+
+FOUNDRY_EXPORT FoundryResult foundry_mod_init(FoundryGetApi get_api, FoundryMod self)
+{
+    const FoundryApi_v6 *a = (const FoundryApi_v6 *)get_api(FOUNDRY_API_VERSION_6);
+    failure_line = 0; calls = 0;
+    if (a == NULL || a->version != 6 || a->size != sizeof(*a)) return FOUNDRY_ERR_UNSUPPORTED;
+    return foundry_render3d_client(a,self);
 }

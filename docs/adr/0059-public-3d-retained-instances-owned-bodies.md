@@ -99,3 +99,10 @@ scope. Native Tier 3 remains unsandboxed; arbitrary memory access is not contain
 Step 2 also releases owned instances, lights, characters and bodies on mod refusal/unbind.
 Its implementation and focused verification are recorded in `public3d.md`'s Step 2 Resolution;
 the native hostile-input and runtime conformance proof remains Step 3.
+
+## Verification note — M25 Step 3 (2026-10-02)
+
+The Step 3 Resolution in `public3d.md` records the completed real-loader hostile native and
+C99 conformance proofs and three seeded 10,000-call sweeps. They require no change to this
+decision or the published boundary. Sample hosting and the out-of-repository guide remain
+later steps; native Tier 3 remains unsandboxed.

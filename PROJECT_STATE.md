@@ -1,12 +1,29 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-02
-**Current handoff: M25 Steps 1–2 of 8 are complete (`docs/design/public3d.md`, ADR-0059 accepted).
-Stop before Step 3.** `FoundryApi_v6` now publishes 28 additive calls over host-lent
-`render3d`/`physics3d` services. The approved caller scope enforces mod ownership without changing
-the v1–v5 table prefixes. Step 3's native hostile-input consumer, seeded sweep and runtime
-conformance proof have not begun; neither has the sample integration. M0–M24 are complete and
-pushed. The owner requested this Step 2 handoff be committed and pushed as well.
+**Current handoff: M25 Steps 1–3 of 8 are complete (`docs/design/public3d.md`, ADR-0059 accepted).
+Stop before Step 4.** v6's native hostile-input and runtime conformance proofs are implemented;
+the three seeded sweeps each exercise all 28 entries in 10,000 calls. Sample integration has
+not begun. M0–M24 and M25 Steps 1–2 are pushed. Step 3 is committed locally; no push was requested.
+
+**M25 Step 3 is done (2026-10-02), from `97f8932`.** `render3d_client.c` is now a real C99
+native mod: it checks all 28 v6 calls and their returned values, then reads a propagated world
+matrix from a registered callback. `hostile3d_mod.c` goes through the real loader, checks null
+parameters, each float poisoned with NaN/both infinities, values/enums/reserved bytes, content
+and hierarchy refusals, stale handles, foreign objects and full ownership pools, and deliberately
+refuses init. The loader releases its objects while leaving the host's and another mod's intact.
+Before/after hierarchy snapshots, retained draws/lights, body values and a 120-tick character
+replay agree. Three fixed-seed, reflected sweeps cover every v6 call with random handles, IDs,
+float bits (including denormals), enums, capacities and null/valid pointers; all failed calls
+preserve writable buffers. Native fixture builds explicitly depend on the header bytes.
+
+**Evidence:** the v6 focused suite passes **21/21** in Debug; Step 3's isolated proof passes
+**5/5** in Debug and ReleaseSafe. Four deliberate mutations (ownership, failed-call output
+writes, cleanup owner and sweep coverage) fail and are restored. All nine bar commands pass:
+**2,063 of 2,064 tests**, one expected skip; native/Metal and Linux/Windows null checks and
+three 30-frame headless runs are clean. The installed consumer compiles as C99/C++17 on all
+three targets. No production ABI/architecture change, Windows runtime claim, sample-native
+hosting, external guide proof or Step 4 work was added.
 
 **M25 Step 2 is done (2026-10-02), from `f81c82e`.** v6 has 261 calls: v5's 233 plus retained
 instances/lights, a camera snapshot, hierarchy reads/writes, collision queries, primitive bodies

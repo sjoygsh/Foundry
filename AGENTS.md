@@ -249,8 +249,10 @@ Zig tests cannot see what a C author cannot express. `engine/tests/fixtures/auth
 is one such consumer, kept for this: it calls every v4 authoring entry point and nothing else.
 `engine/tests/fixtures/net_client.c` does the same for the 22 v5 networking entry points.
 `engine/tests/fixtures/render3d_client.c` constructs the v6 values and calls all 28 public 3D
-entries. It is a compile consumer, not the later external runtime conformance proof. Compile
-the affected consumer as both C99 and C++17 on all three targets.
+entries and, since M25 Step 3, runs as a native mod in the integration graph. That in-tree
+proof is not the later out-of-repository guide consumer. Compile the affected consumer as
+both C99 and C++17 on all three targets. `zig build abi-public3d-proof` runs the two native fixtures
+and the three 10,000-call sweeps on their own (also covered by `zig build test`).
 
 ```sh
 zig build                                    # installs zig-out/include/foundry.h

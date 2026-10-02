@@ -1,6 +1,6 @@
 # Design: M25 — Public 3D: `FoundryApi_v6`, a 3D content mod and a native one
 
-**Status:** Accepted 2026-10-01, when the owner requested Step 1. Steps 1–2 are done; Step 3 is next.
+**Status:** Accepted 2026-10-01, when the owner requested Step 1. Steps 1–3 are done; Step 4 is next.
 **Date:** 2026-10-01
 **Baseline:** `211901d`, tag `m24`. M0–M24 are complete.
 **Decisions:**
@@ -648,3 +648,52 @@ it does not claim Step 3's external/native runtime conformance. No PC runtime pr
 **Stop before Step 3.** No native hostile mod, seeded hostile sweep, sample package/consent path,
 camera mutation, animation or runtime geometry was added. The durable parent architecture and
 author-guide reconciliation remains the milestone's later planned work.
+
+## Resolution — Step 3: native hostile input and conformance (2026-10-02)
+
+**Implemented from `97f8932`.** No production table, host, ownership rule or architecture
+changed. Two separately linked C99 libraries consume only `foundry.h` and are copied to a
+package-local directory, then opened by the real native loader with an ABI-6-only entry.
+
+`render3d_client.c` now checks each of the 28 calls rather than merely compiling them. It
+creates/moves/overrides/sets visibility on an instance, creates/changes a light, reads the camera, uses all
+five hierarchy entries, creates/moves/refilters/reads a primitive body, checks query hit values
+and overlap counts, and creates/moves/teleports/reads/removes a character. It checks the
+64-bit physics user value and gives every acquisition back. A derived matrix is `not_found`
+before propagation; after the host propagates, a registered native callback checks its exact
+matrix and destroys the temporary entity. This is the in-tree runtime proof, not Step 7's
+out-of-repository guide consumer.
+
+`hostile3d_mod.c` independently poisons every input float with NaN and both infinities,
+checks every nullable parameter, enums/reserved bytes/dimensions, non-unit rotations,
+non-affine matrices, wrong-schema and skinned content, stale handles and stale query-ignore,
+query capacity, full instance/light/body/character pools, and hierarchy cycle/depth/singular/
+unrepresentable/dead-entity refusals. It tries to impersonate another mod and mutate the
+host's bodies, another mod's instance/light/body/character, and its own character's backing
+body. Successful completion deliberately returns `refused` so the real loader's failed-init
+sweep runs. Its failure-line probe distinguishes that deliberate result from a failed check.
+Every hierarchy component is byte-identical afterwards, protected body values agree, retained
+draw/light fingerprints agree, and the integration host's 120-tick player tour replays exactly.
+The sandbox-native tour cannot run yet: hosting that path is Step 5, and remains there.
+
+**Seeded sweep.** Seeds `0x25`, `0x5eed1234`, `0xdeadbeefcafebabe` each make exactly 10,000
+calls. Reflection cycles all 28 entries (357 or 358 calls each), combining well-formed values
+with random bits for handles/IDs/floats/enums/capacities and frequent NaN/infinity/denormal
+values. Pointers are null or valid, with a full 4,096-element overlap buffer and distinct
+parameter storage. Every refusal preserves all writable storage; iterator/registration/internal
+results are rejected as undocumented for v6. Foreign objects survive; newly created objects
+are swept, then a frame and the character replay pass. Entities remain world-owned, so valid
+hierarchy writes are exercised on a separate test entity, not incorrectly treated as forbidden.
+
+**Build and evidence.** Both fixtures are in `test`/`check`; `abi-public3d-test` now has
+**21/21** passing tests in Debug, and `abi-public3d-proof` selects the five Step 3 proofs,
+passing **5/5** in Debug and ReleaseSafe. Native-fixture compilation includes a header-byte
+digest so a header-only edit cannot leave an old C object accepted. Four mutations were caught
+and restored: foreign-owner acceptance, writing a body output on refusal, sweeping the wrong
+owner, and reducing the seeded coverage. The nine-command bar passes, **2,063 of 2,064 tests**,
+one expected skip. Native/Metal and Linux/Windows null checks, three headless samples and all
+six installed-header C99/C++17 compilations pass. No renderer/backend, sample, content/release
+description or production ABI changes require a PC run or release staging at this step.
+
+**Stop before Step 4.** No `prop`, `plinth`, `orbiter`, sample consent/hosting, camera write,
+animation binding, runtime geometry or Lua surface was implemented. No new ADR was required.

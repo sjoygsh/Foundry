@@ -1543,7 +1543,9 @@ pub fn build(b: *std.Build) void {
     const callback_refused_mod = testNativeLibrary(b, target, optimize, "callback_refused_mod", "engine/tests/fixtures/callback_refused_mod.c", c_mod_flags);
     // An external authoring client that runs, not merely one that compiles (`editor.md` §11).
     const author_mod = testNativeLibrary(b, target, optimize, "author_mod", "engine/tests/fixtures/author_mod.c", c_mod_flags);
-    for ([_]*std.Build.Step.Compile{ pipeline_mod, shutdown_mod, no_init_mod, refused_mod, unknown_mod, no_shutdown_mod, callback_refused_mod, author_mod }) |library| {
+    const hostile3d_mod = testNativeLibrary(b, target, optimize, "hostile3d_mod", "engine/tests/fixtures/hostile3d_mod.c", c_mod_flags);
+    const render3d_client = testNativeLibrary(b, target, optimize, "render3d_client", "engine/tests/fixtures/render3d_client.c", c_mod_flags);
+    for ([_]*std.Build.Step.Compile{ pipeline_mod, shutdown_mod, no_init_mod, refused_mod, unknown_mod, no_shutdown_mod, callback_refused_mod, author_mod, hostile3d_mod, render3d_client }) |library| {
         check_step.dependOn(&library.step);
     }
 
@@ -1556,6 +1558,8 @@ pub fn build(b: *std.Build) void {
     pipeline_options.addOptionPath("no_shutdown_mod_path", no_shutdown_mod.getEmittedBin());
     pipeline_options.addOptionPath("callback_refused_mod_path", callback_refused_mod.getEmittedBin());
     pipeline_options.addOptionPath("author_mod_path", author_mod.getEmittedBin());
+    pipeline_options.addOptionPath("hostile3d_mod_path", hostile3d_mod.getEmittedBin());
+    pipeline_options.addOptionPath("render3d_client_path", render3d_client.getEmittedBin());
 
     const integration_mod = b.createModule(.{
         .root_source_file = b.path("engine/tests/root.zig"),
@@ -1574,9 +1578,13 @@ pub fn build(b: *std.Build) void {
     b.step("integration-test", "Run package and subsystem integration tests").dependOn(&run_integration_tests.step);
     const public3d_mod = b.createModule(.{ .root_source_file = b.path("engine/tests/public3d.zig"), .target = target, .optimize = optimize });
     for ([_][]const u8{ "core", "data", "platform", "rhi", "asset", "author", "render3d", "render2d", "ui", "app", "abi", "scene", "physics3d" }) |name| public3d_mod.addImport(name, modules.get(name).?);
+    public3d_mod.addImport("mod", modules.get("mod").?);
+    public3d_mod.addImport("mod_pipeline_options", pipeline_options.createModule());
     const public3d_tests = b.addTest(.{ .root_module = public3d_mod, .filters = &.{"M25 v6"} });
     check_step.dependOn(&public3d_tests.step);
     b.step("abi-public3d-test", "Run M25 v6 ownership and per-call refusal proofs").dependOn(&b.addRunArtifact(public3d_tests).step);
+    const public3d_proof = b.addTest(.{ .root_module = public3d_mod, .filters = &.{ "M25 v6 C99", "M25 v6 hostile native", "M25 v6 seeded" } });
+    b.step("abi-public3d-proof", "Run M25 native conformance, hostile init and three 10,000-call sweeps").dependOn(&b.addRunArtifact(public3d_proof).step);
 
     // Real native windows on this machine's own window system (`vulkan.md` §4, M13 Step 2).
     // Its own step rather than part of `test`: it opens windows, so it needs a desktop
@@ -1917,6 +1925,9 @@ fn testNativeLibrary(
     flags: []const []const u8,
 ) *std.Build.Step.Compile {
     const module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    // Zig's C object cache can miss a header-only edit (AGENTS.md §4). Make each native
+    // fixture's command depend on the exact header it claims to consume as well.
+    module.addCMacro("FOUNDRY_TEST_HEADER_REVISION", b.fmt("0x{x}ULL", .{std.hash.Wyhash.hash(0, @embedFile("engine/src/abi/foundry.h"))}));
     module.addIncludePath(b.path("engine/src/abi"));
     module.addCSourceFile(.{ .file = b.path(source), .flags = flags });
     return b.addLibrary(.{ .name = name, .linkage = .dynamic, .root_module = module });

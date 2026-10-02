@@ -1,4 +1,4 @@
-//! M25 Step 2. Calls through the actual v6 table; no native loader or seeded sweep (Step 3).
+//! M25 Steps 2–3: per-call refusals, real native consumers and seeded hostile sweeps.
 const std = @import("std");
 const abi = @import("abi");
 const core = @import("core");
@@ -6,6 +6,9 @@ const scene = @import("scene");
 const physics = @import("physics3d");
 const render = @import("render3d");
 const models = @import("model_content.zig");
+const platform = @import("platform");
+const mod = @import("mod");
+const options = @import("mod_pipeline_options");
 const t = std.testing;
 const api = abi.TableOf(abi.Host).v6;
 const d3 = abi.public3d;
@@ -132,6 +135,368 @@ fn argument(comptime T: type, f: *Fixture) T {
         return if (info.size == .many) @as([*]info.child, &Storage.many) else &Storage.one;
     }
     return std.mem.zeroes(T);
+}
+
+fn testCamera() d3.Camera3D {
+    return .{ .position = zero, .rotation = q, .fov_y = 1, .near = 0.1, .far = 100, .width = 32, .height = 32 };
+}
+
+fn stageLibrary(f: *Fixture, source: []const u8, native: []const u8) ![]u8 {
+    const name = try abi.libraryFileNameAlloc(t.allocator, native);
+    defer t.allocator.free(name);
+    const path = try platform.os.joinPath(t.allocator, &.{ f.stack.out, "native", name });
+    errdefer t.allocator.free(path);
+    const bytes = try f.stack.os.readFile(t.allocator, source, 64 << 20);
+    defer t.allocator.free(bytes);
+    const relative = try std.fmt.allocPrint(t.allocator, "native/{s}", .{name});
+    defer t.allocator.free(relative);
+    try f.stack.writeUnder(f.stack.out, relative, bytes);
+    return path;
+}
+
+fn loadNative(f: *Fixture, loader: *abi.NativeLoaderOf(abi.Host), native: []const u8) !void {
+    const entries = [_]mod.Entry{.{ .id = models.id("native:test"), .name = "native:test", .base_dir = f.stack.out, .file = "", .root = "native", .version = 1, .abi = .{ .min = 6, .max = 6 }, .native = native }};
+    try loader.load(&entries, &f.stack.diags);
+    try t.expectEqual(@as(usize, 1), loader.loaded.items.len);
+    const loaded = &loader.loaded.items[0];
+    const Probe = *const fn () callconv(.c) u32;
+    const failed = loaded.library.symbol(Probe, "foundry_test_failure") orelse return error.MissingProbe;
+    try t.expectEqual(@as(u32, 0), failed());
+}
+
+fn drawProtected(f: *Fixture) !u64 {
+    var hash = std.hash.Wyhash.init(0);
+    try f.stack.begin();
+    try f.set.submit(&f.stack.content, &f.stack.renderer);
+    try t.expectEqual(@as(usize, 2), f.stack.renderer.draws.items.len);
+    for (f.stack.renderer.draws.items) |draw| {
+        hash.update(std.mem.asBytes(&draw.world));
+        const material = draw.material.bits();
+        hash.update(std.mem.asBytes(&material));
+    }
+    try t.expectEqual(@as(u32, 1), f.stack.renderer.light_count);
+    const light = f.stack.renderer.lights[0];
+    hash.update(std.mem.asBytes(&light.world));
+    hash.update(std.mem.asBytes(&light.color));
+    hash.update(std.mem.asBytes(&light.intensity));
+    hash.update(std.mem.asBytes(&light.range));
+    try f.stack.finish(null);
+    try t.expectEqual(@as(usize, 0), f.stack.violations());
+    return hash.final();
+}
+
+/// Same-binary character tour before/after the adversary; reset feet between runs.
+/// This is the integration host's tour, not Step 5's not-yet-hosted sandbox mod tour.
+fn playerReplay(f: *Fixture) !u64 {
+    const handle = f.character.unwrap(physics.CharacterHandle);
+    _ = try physics.character.setFeet(&f.collision, t.allocator, handle, .init(4, 0, 0));
+    var hash = std.hash.Wyhash.init(0);
+    for (0..120) |tick| {
+        const dx: f32 = if (tick < 60) 0.025 else -0.025;
+        const moved = (try physics.character.move(&f.collision, t.allocator, handle, .init(dx, -0.01, 0), &.{})).?;
+        hash.update(std.mem.asBytes(&moved.feet));
+        hash.update(&.{ @intFromBool(moved.grounded), @intFromBool(moved.stuck) });
+        hash.update(std.mem.asBytes(&moved.walls));
+    }
+    _ = try physics.character.setFeet(&f.collision, t.allocator, handle, .init(4, 0, 0));
+    return hash.final();
+}
+
+fn hierarchySnapshot(f: *Fixture) ![]u8 {
+    var bytes: std.ArrayList(u8) = .empty;
+    errdefer bytes.deinit(t.allocator);
+    const types = f.world.hierarchy.?.types;
+    var entities = f.world.liveEntities();
+    while (entities.next()) |entity| {
+        const bits = entity.bits();
+        try bytes.appendSlice(t.allocator, std.mem.asBytes(&bits));
+        for ([_]scene.ComponentType{ types.transform, types.parent, types.world_transform }) |kind| {
+            const value = f.world.readComponent(entity, kind);
+            try bytes.append(t.allocator, @intFromBool(value != null));
+            if (value) |payload| try bytes.appendSlice(t.allocator, payload);
+        }
+    }
+    return bytes.toOwnedSlice(t.allocator);
+}
+
+test "M25 v6 C99 conformance client runs all 28 entries through the real native loader" {
+    const f = try Fixture.init();
+    defer f.deinit();
+    f.host.render3d_camera = testCamera();
+    const path = try stageLibrary(f, options.render3d_client_path, "render3d_client");
+    defer t.allocator.free(path);
+    // The registry caches unused assets; warm the same model/material before comparing.
+    const warm_model = try f.stack.content.acquireModel(models.id("demo:models.pair"));
+    f.stack.content.releaseModel(warm_model);
+    const warm_material = try f.stack.content.acquireMaterial(models.id("demo:materials.crate"));
+    f.stack.content.releaseMaterial(warm_material);
+    const held = .{ f.stack.content.models.count(), f.stack.content.materials.count(), f.stack.assets.count() };
+    var loader = abi.NativeLoaderOf(abi.Host).init(t.allocator, &f.host);
+    defer loader.deinit();
+    try loadNative(f, &loader, "render3d_client");
+    try t.expect(f.host.modId(loader.loaded.items[0].self) != null);
+    try t.expectEqual(@as(usize, 0), f.stack.diags.count());
+    const Probe = *const fn () callconv(.c) u32;
+    try t.expectEqual(@as(u32, 28), loader.loaded.items[0].library.symbol(Probe, "foundry_test_calls").?());
+    _ = try scene.hierarchy.propagate(&f.world);
+    f.world.update(.{ .tick = 1, .delta = .fromNanos(16_666_667) });
+    try t.expectEqual(@as(u32, 0), loader.loaded.items[0].library.symbol(Probe, "foundry_test_failure").?());
+    try t.expectEqual(@as(u32, 29), loader.loaded.items[0].library.symbol(Probe, "foundry_test_calls").?());
+    try t.expectEqual(held, .{ f.stack.content.models.count(), f.stack.content.materials.count(), f.stack.assets.count() });
+    try t.expectEqual(@as(u32, 0), f.world.entityCount());
+    for (f.host.bodies3d) |entry| try t.expect(entry.handle.isNone());
+    for (f.host.characters3d) |entry| try t.expect(entry.handle.isNone());
+    try t.expect(f.host.caller() == null);
+}
+
+const v6_fields = @typeInfo(abi.Api_v6).@"struct".fields[@typeInfo(abi.Api_v5).@"struct".fields.len..];
+const Rng = core.rng.Pcg32;
+
+fn randomFloat(rng: *Rng) f32 {
+    // Full bit patterns plus deliberately frequent special/boundary values.
+    return @bitCast(switch (rng.below(8)) {
+        0 => @as(u32, 0x7fc00001),
+        1 => @as(u32, 0x7f800000),
+        2 => @as(u32, 0xff800000),
+        3 => @as(u32, 1), // positive denormal
+        4 => @as(u32, 0x80000001), // negative denormal
+        5 => @as(u32, 0x7f7fffff),
+        else => rng.next(),
+    });
+}
+
+fn sweepValue(comptime T: type, rng: *Rng, f: *Fixture, entity: abi.Entity) T {
+    if (T == f32) return if (rng.boolean()) randomFloat(rng) else 10;
+    if (T == u8) return @truncate(rng.next());
+    if (T == u32) return switch (rng.below(6)) {
+        0 => 0,
+        1 => 1,
+        2 => 4096,
+        3 => 4097,
+        else => rng.next(),
+    };
+    if (T == i32) return if (rng.boolean()) @intCast(rng.below(4)) else @bitCast(rng.next());
+    if (T == u64) return rng.nextU64();
+    if (T == abi.Mod) return switch (rng.below(4)) {
+        0 => f.a,
+        1 => f.b,
+        2 => .none,
+        else => .{ .bits = rng.nextU64() },
+    };
+    if (T == abi.Entity) return if (rng.boolean()) entity else .{ .bits = rng.nextU64() };
+    if (T == core.ContentId) return if (rng.boolean()) models.id("demo:models.pair") else .{ .hash = rng.nextU64() };
+    if (T == d3.Instance) return if (rng.boolean()) f.instance else .{ .bits = rng.nextU64() };
+    if (T == d3.Light) return if (rng.boolean()) f.light else .{ .bits = rng.nextU64() };
+    if (T == d3.Body3D) return if (rng.boolean()) f.body else .{ .bits = rng.nextU64() };
+    if (T == d3.Character) return if (rng.boolean()) f.character else .{ .bits = rng.nextU64() };
+    var value: T = std.mem.zeroes(T);
+    if (T == V) value = .{ .x = 1, .y = 0, .z = 0 };
+    if (T == d3.Mat4) value = identity;
+    if (T == d3.Transform) value = local;
+    if (T == d3.Pose3D) value = at;
+    if (T == d3.Shape3D) value = sphere;
+    if (T == d3.Filter3D) value = filter;
+    if (T == d3.Light3D) value = lamp;
+    if (T == d3.Body3DDesc) value = body_desc;
+    if (T == d3.CharacterConfig) value = config;
+    switch (rng.below(4)) {
+        0 => {}, // well-formed values reach downstream ownership/geometry checks
+        1 => {
+            for (std.mem.asBytes(&value)) |*byte| byte.* = @truncate(rng.next());
+        },
+        else => {
+            const offsets = comptime floatOffsets(T, 0);
+            if (offsets.len != 0) {
+                const offset = offsets[rng.below(@intCast(offsets.len))];
+                const poison = randomFloat(rng);
+                @memcpy(std.mem.asBytes(&value)[offset..][0..4], std.mem.asBytes(&poison));
+            } else for (std.mem.asBytes(&value)) |*byte| byte.* = @truncate(rng.next());
+        },
+    }
+    return value;
+}
+
+fn sweepArgument(comptime T: type, comptime key: []const u8, rng: *Rng, f: *Fixture, entity: abi.Entity) T {
+    if (@typeInfo(T) != .optional) return sweepValue(T, rng, f, entity);
+    const info = @typeInfo(@typeInfo(T).optional.child).pointer;
+    const Slot = struct {
+        const unique = key; // separate storage for count/total and each call parameter
+        var one: info.child = undefined;
+        var many: [4096]info.child = undefined;
+    };
+    if (rng.below(5) == 0) return null;
+    if (info.is_const) Slot.one = sweepValue(info.child, rng, f, entity) else Slot.one = sentinel(info.child);
+    if (info.size == .many) {
+        @memset(std.mem.sliceAsBytes(&Slot.many), 0x5a);
+        return @as([*]info.child, &Slot.many);
+    }
+    return &Slot.one;
+}
+
+/// All writable storage, including the full overlap buffer and distinct count/total.
+fn outputHash(args: anytype) u64 {
+    var hash = std.hash.Wyhash.init(0);
+    inline for (@typeInfo(@TypeOf(args)).@"struct".fields) |param| {
+        if (comptime @typeInfo(param.type) == .optional) {
+            const info = @typeInfo(@typeInfo(param.type).optional.child).pointer;
+            if (comptime !info.is_const) {
+                if (@field(args, param.name)) |ptr| {
+                    if (comptime info.size == .many) hash.update(std.mem.sliceAsBytes(ptr[0..4096])) else hash.update(std.mem.asBytes(ptr));
+                }
+            }
+        }
+    }
+    return hash.final();
+}
+
+fn seededSweep(seed: u64) !void {
+    @setEvalBranchQuota(100000);
+    const f = try Fixture.init();
+    defer f.deinit();
+    try f.create();
+    f.host.render3d_camera = testCamera();
+    const before_body = f.collision.body(f.body.unwrap(physics.BodyHandle)).?.*;
+    const before_feet = try playerReplay(f);
+    const before_draw = try drawProtected(f);
+    const entity: abi.Entity = .wrap(try f.world.create()); // legitimate hierarchy writes allowed
+    var rng = Rng.init(seed, 25);
+    var counts: [v6_fields.len]u32 = @splat(0);
+    var accepted: u32 = 0;
+    {
+        const scope = f.host.enterCaller(f.b);
+        defer scope.restore();
+        for (0..10000) |iteration| {
+            // Cycle entry points: all 28 are guaranteed, not probabilistically, to run.
+            const selected = iteration % v6_fields.len;
+            inline for (v6_fields, 0..) |field, index| {
+                if (selected == index) {
+                    const Fn = @typeInfo(field.type).pointer.child;
+                    var args: std.meta.ArgsTuple(Fn) = undefined;
+                    inline for (@typeInfo(@TypeOf(args)).@"struct".fields) |param| {
+                        @field(args, param.name) = sweepArgument(param.type, field.name ++ param.name, &rng, f, entity);
+                    }
+                    const outputs = outputHash(args);
+                    const result = @call(.auto, @field(api, field.name), args);
+                    counts[index] += 1;
+                    // v6 has no iterator or duplicate-registration result, nor a valid
+                    // internal-error path. A mapping gap is a failure, not accepted noise.
+                    switch (result) {
+                        .ok => accepted += 1,
+                        .invalid_argument, .invalid_handle, .not_found, .unavailable, .unsupported, .limit, .refused, .out_of_memory => try t.expectEqual(outputs, outputHash(args)),
+                        else => return error.UndocumentedSweepResult,
+                    }
+                }
+            }
+        }
+    }
+    for (counts) |count| try t.expect(count >= 357);
+    try t.expect(accepted != 0);
+    f.host.refuseMod(f.b);
+    try t.expectEqual(before_body, f.collision.body(f.body.unwrap(physics.BodyHandle)).?.*);
+    try t.expectEqual(before_feet, try playerReplay(f));
+    try t.expectEqual(@as(?u64, f.a.bits), f.set.instanceOwner(f.instance.unwrap(render.InstanceHandle)));
+    try t.expectEqual(@as(?u64, f.a.bits), f.set.lightOwner(f.light.unwrap(render.InstanceLightHandle)));
+    for (f.host.bodies3d) |entry| if (!entry.handle.isNone()) try t.expect(entry.owner.eql(f.a));
+    for (f.host.characters3d) |entry| if (!entry.handle.isNone()) try t.expect(entry.owner.eql(f.a));
+    try t.expectEqual(before_draw, try drawProtected(f));
+}
+
+test "M25 v6 seeded argument sweep 0x25" {
+    try seededSweep(0x25);
+}
+test "M25 v6 seeded argument sweep 0x5eed1234" {
+    try seededSweep(0x5eed1234);
+}
+test "M25 v6 seeded argument sweep 0xdeadbeefcafebabe" {
+    try seededSweep(0xdeadbeefcafebabe);
+}
+
+test "M25 v6 hostile native init preserves foreign objects and failed init sweeps its own" {
+    const f = try Fixture.init();
+    defer f.deinit();
+    // Reuse the already-proven animation file generator, without publishing animation.
+    const animated = try models.animationStack(1, 1, models.animation_records);
+    defer animated.deinit();
+    for ([_][]const u8{ "skin/mesh.fmesh", "skin/rig.fskel", "skin/walk.fanim" }) |file| {
+        const source = try platform.os.joinPath(t.allocator, &.{ animated.out, file });
+        defer t.allocator.free(source);
+        const bytes = try animated.os.readFile(t.allocator, source, 1 << 20);
+        defer t.allocator.free(bytes);
+        try f.stack.install(file, bytes);
+    }
+    try f.stack.write("skin.fdt", models.animation_records);
+    try f.stack.build();
+    try f.create();
+    f.host.render3d_camera = testCamera();
+    const floor = try f.collision.addBody(t.allocator, .{ .shape = .{ .box = .{ .half_extents = .init(20, 0.5, 20) } }, .pose = .at(.init(0, -0.5, 0)), .layer = 1, .mask = ~@as(u32, 0), .user = 999 });
+    const host_desc = f.collision.body(floor).?.*;
+    const foreign_desc = f.collision.body(f.body.unwrap(physics.BodyHandle)).?.*;
+    const e = try f.world.create();
+    const state = f.world.hierarchy.?;
+    const transform: scene.hierarchy.Transform = .{};
+    _ = try f.world.addComponent(e, state.types.transform, std.mem.asBytes(&transform));
+    var chain: [4]scene.Entity = undefined;
+    for (&chain, 0..) |*node, index| {
+        node.* = try f.world.create();
+        _ = try f.world.addComponent(node.*, state.types.transform, std.mem.asBytes(&transform));
+        if (index != 0) try scene.hierarchy.setParent(&f.world, node.*, chain[index - 1]);
+    }
+    const singular = try f.world.create();
+    var zero_scale = transform;
+    zero_scale.scale.x = 0;
+    _ = try f.world.addComponent(singular, state.types.transform, std.mem.asBytes(&zero_scale));
+    const scaled = try f.world.create();
+    var nonuniform = transform;
+    nonuniform.scale.x = 2;
+    nonuniform.rotation = core.math.Quat.fromAxisAngle(core.math.Vec3.up, std.math.pi / 4.0);
+    _ = try f.world.addComponent(scaled, state.types.transform, std.mem.asBytes(&nonuniform));
+    const sheared = try f.world.create();
+    var rotated = transform;
+    rotated.rotation = core.math.Quat.fromAxisAngle(core.math.Vec3.up, std.math.pi / 4.0);
+    _ = try f.world.addComponent(sheared, state.types.transform, std.mem.asBytes(&rotated));
+    try scene.hierarchy.setParent(&f.world, sheared, scaled);
+    const hull = try f.collision.addHull(t.allocator, &.{ .init(0, 0, 0), .init(1, 0, 0), .init(0, 1, 0), .init(0, 0, 1) });
+    const hull_handle = try f.collision.addBody(t.allocator, .{ .shape = .{ .hull = hull }, .pose = .at(.init(100, 0, 0)) });
+    _ = try scene.hierarchy.propagate(&f.world);
+    const derived = scene.hierarchy.worldTransform(&f.world, e).?;
+    const before_hierarchy = try hierarchySnapshot(f);
+    defer t.allocator.free(before_hierarchy);
+    const before_bodies = f.collision.bodyCount();
+    const held = .{ f.stack.content.models.count(), f.stack.content.materials.count() };
+    const replay = try playerReplay(f);
+    const before_draw = try drawProtected(f);
+    const path = try stageLibrary(f, options.hostile3d_mod_path, "hostile3d_mod");
+    defer t.allocator.free(path);
+    // Configure the real image without invoking an ABI call or granting caller authority.
+    var image = try platform.os.Library.open(t.allocator, path);
+    defer image.close();
+    const Configure = *const fn (d3.Instance, d3.Light, d3.Body3D, d3.Character, d3.Body3D, abi.Entity, abi.Mod) callconv(.c) void;
+    image.symbol(Configure, "foundry_test_targets").?(f.instance, f.light, f.body, f.character, .wrap(floor), .wrap(e), f.a);
+    const Extra = *const fn (abi.Entity, abi.Entity, abi.Entity, d3.Body3D) callconv(.c) void;
+    image.symbol(Extra, "foundry_test_extra").?(.wrap(chain[3]), .wrap(singular), .wrap(sheared), .wrap(hull_handle));
+    var loader = abi.NativeLoaderOf(abi.Host).init(t.allocator, &f.host);
+    defer loader.deinit();
+    try loadNative(f, &loader, "hostile3d_mod");
+    const loaded = &loader.loaded.items[0];
+    try t.expect(f.host.modId(loaded.self) == null); // deliberate refused init
+    try t.expectEqual(@as(usize, 1), f.stack.diags.count());
+    const Probe = *const fn () callconv(.c) u32;
+    try t.expect(loaded.library.symbol(Probe, "foundry_test_calls").?() > 600);
+    try t.expect(f.host.caller() == null);
+    try t.expectEqual(host_desc, f.collision.body(floor).?.*);
+    try t.expectEqual(foreign_desc, f.collision.body(f.body.unwrap(physics.BodyHandle)).?.*);
+    try unchanged(scene.hierarchy.Transform, transform, std.mem.bytesToValue(scene.hierarchy.Transform, f.world.readComponent(e, state.types.transform).?));
+    try t.expectEqual(derived, scene.hierarchy.worldTransform(&f.world, e).?);
+    try t.expect(scene.hierarchy.parentOf(&f.world, e) == null);
+    const after_hierarchy = try hierarchySnapshot(f);
+    defer t.allocator.free(after_hierarchy);
+    try t.expectEqualSlices(u8, before_hierarchy, after_hierarchy);
+    try t.expectEqual(before_bodies, f.collision.bodyCount());
+    try t.expectEqual(held, .{ f.stack.content.models.count(), f.stack.content.materials.count() });
+    for (f.host.bodies3d) |entry| if (!entry.handle.isNone()) try t.expect(entry.owner.eql(f.a));
+    for (f.host.characters3d) |entry| if (!entry.handle.isNone()) try t.expect(entry.owner.eql(f.a));
+    try t.expectEqual(replay, try playerReplay(f));
+    try t.expectEqual(before_draw, try drawProtected(f));
 }
 
 test "M25 v6 every pointer parameter is checked independently before subsystem lookup" {
