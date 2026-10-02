@@ -1,6 +1,6 @@
 # Design: M25 — Public 3D: `FoundryApi_v6`, a 3D content mod and a native one
 
-**Status:** Accepted 2026-10-01, when the owner requested Step 1. Steps 1–6 are done; Step 7 is next.
+**Status:** Accepted 2026-10-01, when the owner requested Step 1. Steps 1–7 are done; Step 8, the close, is next.
 **Date:** 2026-10-01
 **Baseline:** `211901d`, tag `m24`. M0–M24 are complete.
 **Decisions:**
@@ -928,3 +928,53 @@ The local nine-command bar passes unchanged: **2,070 of 2,071 tests**, one expec
 Linux remains compile-only for this milestone. A person's by-hand watch remains unclaimed.
 
 **Stop before Step 7.** The external consumer, the guide and the close remain Steps 7–8.
+
+## Resolution — Step 7: the external consumer and the guide (2026-10-02)
+
+**The consumer.** `beacon` is a package written in a directory outside the checkout: a
+manifest, two authored materials, a `foundry:model_import` of a glTF with `collision true`, one
+`sandbox3d:prop`, and a C99 library that sees only the installed `foundry.h`. Its content half
+adds a solid stone pillar with no code. Its native half raycasts for the floor, checks that
+destroying the host's floor body is `REFUSED`, creates a transform entity, a retained instance
+with a slot-0 material override, a retained point light and a kinematic box, reads the camera,
+and registers a fixed-tick system that reads the propagated pose, moves what it owns and
+confirms by raycast that its own box is hit. It is not committed: the guide is its record, and
+a game's code does not live here (ADR-0017).
+
+**The runs.** Built with the installed `fpack` and `zig cc` against a ReleaseSafe install that
+was moved and made read-only, with `PATH` reduced to the system directories and a disposable
+`HOME` holding the package in the player's mod directory. On Metal, 360 paced frames with none
+skipped: the mod's three log lines, 4 lights and 46 draws against 3 and 44 without it, and
+`abi.instances` median/p95 0.0009/0.0013 ms. On null, the same lines and counts headless. With
+the package selected but not consented, the content pillar appears (45 draws) and the log
+states that no code ran. The library compiles as strict C99 for macOS, Windows and Linux and
+as C++17; the Windows and Linux libraries are compiled, not run. Compiling the package twice
+gives identical bytes.
+
+**From the guide alone.** `docs/modding/3d.md` embeds the three files verbatim. They were then
+extracted from the guide into a fresh directory and built with the guide's commands: the
+package is byte-identical to the original and the Metal run repeats. That is the exit
+criterion checked literally.
+
+**What the outside consumer found.** A zeroed point light is refused with
+`INVALID_ARGUMENT`: `lighting.valid` requires `inner_cone < outer_cone` for every kind, and
+the boundary passes a mod's light to it unchanged. The in-tree orbiter sets a cone on its point
+light and so never showed it. The behaviour is kept, because relaxing it changes what Step 3's
+sweep and Step 6's Windows runs qualified; instead the header's v6 comment now states the rule
+with the colour and range bounds, and the guide lists it first among the light rules. **This
+is for the owner to confirm at the close:** whether v6 should instead supply the cone for
+non-spot lights is the one contract question this step leaves, and it must be settled before
+the table freezes. Two smaller findings went into the guide only: `fpack` refuses an output
+directory that contains the package, and a package must be compiled against every package
+whose schema it uses.
+
+**Documents.** `native-mods.md`'s statement that the sandbox binds no native loader now names
+the 3D sandbox as the exception and gains a v6 section; the modding index counts 261 calls.
+
+**Verification.** The header changed by a comment only, so the installed-header matrix was
+rerun: `render3d_client.c` and the external `beacon.c` compile as C99 and C++17 for macOS,
+Linux and Windows. The nine-command bar passes: **2,070 of 2,071 tests**, one expected skip.
+No engine behaviour, ABI layout, sample or shader changed. A person's by-hand watch of the
+walker and of this mod remains the owner's.
+
+**Stop before Step 8.**

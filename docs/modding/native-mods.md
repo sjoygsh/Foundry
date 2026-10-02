@@ -22,8 +22,10 @@ You need:
   builds its engine, binds the subsystems it owns to `abi.Host`, then calls the native loader.
   A content-only host can still load the package's data while skipping its library.
 
-The sandbox is the content-mod reference host. At this point it does not bind a native loader,
-so `FOUNDRY_SANDBOX_PACKAGES` alone cannot run the C part of this example. Use a host that
+The 2D sandbox is the content-mod reference host. It does not bind a native loader, so
+`FOUNDRY_SANDBOX_PACKAGES` alone cannot run the C part of this example. **The 3D sandbox
+does, since M25:** `sandbox3d` loads a selected package's library when the player consents to
+it for that run, and [`3d.md`](3d.md) is a complete native mod run in it. Use a host that
 implements the lifecycle in [`design/public-abi.md` §13](../design/public-abi.md#13-the-mod-lifecycle),
 or the host's native-mod option when it provides one. This is a host integration choice, not
 a different mod format.
@@ -403,10 +405,24 @@ kept to itself answers `FOUNDRY_ERR_REFUSED`. The contract is
 entry point against the installed header. The guide to running a networked host comes with
 M16's public-internet proof.
 
+## 10. 3D: `FoundryApi_v6`
+
+Version 6 is version 5 unchanged, followed by 28 calls, asked for the same way. A manifest
+whose `abi` range includes 6 loads on a host that offers it. This build offers 1 through 6.
+
+A mod keeps 3D instances and lights that the host draws in its own frame, reads the camera,
+uses the engine's transform hierarchy, queries the host's 3D collision world and creates
+bodies and characters in it. Models, materials and collision meshes are named by content ID.
+A mod may change or destroy only what it created; anything else answers
+`FOUNDRY_ERR_REFUSED`. A host that lends no 3D subsystem answers `FOUNDRY_ERR_UNAVAILABLE`.
+[`3d.md`](3d.md) is the guide, written from a mod built outside this repository, and
+[`engine/tests/fixtures/render3d_client.c`](../../engine/tests/fixtures/render3d_client.c)
+calls every entry point against the installed header.
+
 ## Rules worth keeping visible
 
-* `FoundryApi_v1` is frozen, and so are `FoundryApi_v2`, `FoundryApi_v3`, `FoundryApi_v4` and
-  `FoundryApi_v5`, each added alongside the one before. Do not depend on struct layout beyond the installed header, or call
+* `FoundryApi_v1` is frozen, and so are `FoundryApi_v2` through `FoundryApi_v5`; `FoundryApi_v6`
+  freezes when M25 closes. Each is added alongside the one before. Do not depend on struct layout beyond the installed header, or call
   a version you did not request.
 * All API input is untrusted. Check pointers, capacities, result codes, handle validity and
   enum values in the same way the example checks its own calls. The host validates at the

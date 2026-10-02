@@ -4181,6 +4181,8 @@ typedef struct FoundryApi_v5 {
  * Body: 0 static, 1 kinematic. Parent mode: 0 local, 1 keep-world.
  * Unused shape members and reserved fields must be zero. Capsule half_height may be zero.
  * No retained light may cast a shadow. No animation, runtime geometry or camera writes.
+ * A light of every kind, not only a spot, needs 0 <= inner_cone < outer_cone <= pi/2, each
+ * colour channel in [0, 1], and intensity and range >= 0; a zeroed light is INVALID_ARGUMENT.
  * Mutations require an identified native callback scope and ownership; creation's self
  * must match that scope. Reads/queries need no caller. Stale = INVALID_HANDLE;
  * foreign or unscoped mutations = REFUSED. Character bodies cannot be changed through

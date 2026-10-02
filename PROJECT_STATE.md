@@ -1,11 +1,23 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-02
-**Current handoff: M25 Steps 1–6 of 8 are complete (`docs/design/public3d.md`, ADR-0059 accepted).
-Stop before Step 7**, the external C99 consumer and the modding guide; neither exists yet.
-`sandbox3d` hosts the C99 `orbiter` through v6, only with per-run, per-package native consent
-and package selection, on Metal and now natively on Windows/Vulkan. M0–M24 and M25 Steps 1–2
-are pushed; Steps 3–6 are local commits, no push requested.
+**Current handoff: M25 Steps 1–7 of 8 are complete (`docs/design/public3d.md`, ADR-0059 accepted).
+Stop before Step 8**, the close. One contract question is open for it: whether v6 keeps
+refusing a point or directional light whose cones are zero (Step 7's Resolution). M0–M24 and
+M25 Steps 1–2 are pushed; Steps 3–7 are local commits, no push requested.
+
+**M25 Step 7 is done (2026-10-02).** An external C99 mod, `beacon`, was built outside the
+checkout against a relocated, read-only ReleaseSafe install and its header alone. Its content
+half adds a solid pillar and a material; its native half retains an instance with a material
+override, a light and a kinematic box, turns them from a system, and is refused when it tries
+to destroy the host's floor. It ran on Metal (360 paced frames, none skipped, 4 lights and 46
+draws against 3 and 44) and on null, loads content only without consent, and compiles for
+Windows and Linux as C99 and as C++17. `docs/modding/3d.md` is written from it, and the files
+extracted back out of the guide rebuild a byte-identical package and repeat the run.
+`native-mods.md` and the modding index gained their v6 text. The header gained a comment
+stating the light rules the mod tripped on; nothing else in the engine changed. The header
+matrix and the nine-command bar pass: **2,070 of 2,071 tests**, one expected skip. The mod is
+not committed. A person's by-hand watch remains unclaimed.
 
 **M25 Step 6 is done (2026-10-02), qualifying `d0ec988` with no engine or API change.** An
 earlier attempt was interrupted by the 50% CPU gate; its partial evidence is not relied on, and
