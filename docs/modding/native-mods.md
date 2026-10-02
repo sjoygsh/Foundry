@@ -421,8 +421,7 @@ calls every entry point against the installed header.
 
 ## Rules worth keeping visible
 
-* `FoundryApi_v1` is frozen, and so are `FoundryApi_v2` through `FoundryApi_v5`; `FoundryApi_v6`
-  freezes when M25 closes. Each is added alongside the one before. Do not depend on struct layout beyond the installed header, or call
+* `FoundryApi_v1` is frozen, and so are `FoundryApi_v2` through `FoundryApi_v6`. Each is added alongside the one before. Do not depend on struct layout beyond the installed header, or call
   a version you did not request.
 * All API input is untrusted. Check pointers, capacities, result codes, handle validity and
   enum values in the same way the example checks its own calls. The host validates at the

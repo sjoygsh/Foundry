@@ -185,7 +185,9 @@ set (`TooDeep`), and cut when found in data (§6).
 
 ### 3.5 What the public ABI sees in M21
 
-Nothing is added; the names enter `FoundryApi_v6` in M25 (ADR-0050). What v1–v5 consumers see
+Nothing is added; the names enter `FoundryApi_v6` in M25 (ADR-0050). **Published in M25
+(2026-10-02):** `world_transform_get`/`_set`, `world_parent_get`/`_set` and
+`world_world_transform`, with these names and refusals (`public3d.md` §6). What v1–v5 consumers see
 in a world whose host enabled the hierarchy follows from their generic calls:
 - `foundry:transform` and `foundry:parent` can be read and written by schema ID, as any
   component can. A raw write bypasses the cycle and depth checks, which is why §6 exists.

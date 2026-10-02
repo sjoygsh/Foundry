@@ -761,6 +761,10 @@ must not settle them opportunistically. Question 1 was resolved by the M7 exit p
 > - `net_client.c`;
 > - an external C99 program built outside the repository against the installed header, whose
 >   whole source is `docs/modding/networking.md`.
+>
+> **M25 closed, 2026-10-02:** `FoundryApi_v6` is v5 unchanged plus 28 public 3D calls, 261 in
+> all, and is frozen. Its design, ownership rule and consumers are in
+> [`public3d.md`](public3d.md) (ADR-0059); the author guide is `docs/modding/3d.md`.
 
 ## 19. Implementation order
 

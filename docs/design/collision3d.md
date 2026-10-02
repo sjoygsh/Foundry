@@ -752,6 +752,10 @@ These are the regression list from `3d.md`'s row, each a named test on geometry 
 
 ## 12. The public ABI and the overlay
 
+**Published in M25 (2026-10-02):** raycast, shape cast, overlap, sphere/capsule/box bodies and
+the character are in `FoundryApi_v6`, with ownership enforced at the boundary (`public3d.md`
+§7–§8). Hull and mesh shapes and `contacts` are not published.
+
 **Nothing enters the public ABI in M23.** `3d.md` §9 publishes `physics3d` queries and the
 character in `FoundryApi_v6` in M25, after the Zig API has held for a milestone. The API is
 drawn for that table already:

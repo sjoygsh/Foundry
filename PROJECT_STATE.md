@@ -1,10 +1,17 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-02
-**Current handoff: M25 Steps 1–7 of 8 are complete (`docs/design/public3d.md`, ADR-0059 accepted).
-Stop before Step 8**, the close. One contract question is open for it: whether v6 keeps
-refusing a point or directional light whose cones are zero (Step 7's Resolution). M0–M24 and
-M25 Steps 1–2 are pushed; Steps 3–7 are local commits, no push requested.
+**Current handoff: M25 Public 3D is complete (tag `m25`, `docs/design/public3d.md`, ADR-0059).
+`FoundryApi_v6` is frozen at 261 calls. Stop before M26's design**, the playable 3D sample; it
+has no design document yet. M0–M25 are pushed.
+
+**M25 Step 8, the close, is done (2026-10-02).** `3d.md`, `public-abi.md`, `hierarchy.md`,
+`collision3d.md`, `native-mods.md` and CLAUDE.md (§4.1, §4.3's `abi` and `sandbox3d` lines, §9)
+are reconciled. Step 7's light-cone question is settled by keeping the qualified contract:
+every light kind needs `inner_cone < outer_cone`, stated in the header and the guide, with a
+trigger in public3d.md §14. The owner watched the 3D sandbox and reported the walker very good,
+which closes M24's open by-hand item. The close changes documents only; the bar stands from
+Step 7 at **2,070 of 2,071 tests**, one expected skip.
 
 **M25 Step 7 is done (2026-10-02).** An external C99 mod, `beacon`, was built outside the
 checkout against a relocated, read-only ReleaseSafe install and its header alone. Its content

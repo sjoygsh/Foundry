@@ -1025,12 +1025,12 @@ and regression coverage in `3d.md` §10:
   [`collision3d.md`](design/collision3d.md), with ADR-0057.
 - **M24 Animation** (done 2026-10-01, tag `m24`): skins and clips from glTF, sampled at the
   fixed step and skinned on the CPU, with a generated character walking the room.
-  [`animation3d.md`](design/animation3d.md), with ADR-0058. A person's
-  walk/turn/stop/cross-fade observation has not been recorded.
-- **M25 Public 3D:** `FoundryApi_v6`, with a content mod and a native one.
-  Design accepted 2026-10-01: [`public3d.md`](design/public3d.md), with ADR-0059. Step 1
-  (`render3d.Instances`), Step 2 (`FoundryApi_v6`) and Step 3 (native hostile-input/conformance
-  and three seeded sweeps) are done; Step 4's content mod is next.
+  [`animation3d.md`](design/animation3d.md), with ADR-0058. The owner watched
+  the walker on 2026-10-02 and called it very good.
+- **M25 Public 3D** (done 2026-10-02, tag `m25`): `FoundryApi_v6`, frozen at 261 calls, with a
+  content mod and a consented native one in `sandbox3d` on Metal and Windows/Vulkan, and a
+  guide written from a mod built outside the repository.
+  [`public3d.md`](design/public3d.md), with ADR-0059.
 - **M26 A playable 3D sample,** played by someone who did not build it, on macOS, Windows and a
   freshly provisioned Linux machine. It is the game
   certification waits for (ADR-0047).
@@ -1154,7 +1154,7 @@ recorded separately. The PC is packed up. Linux remains compile-only. Step 8 rec
 CLAUDE.md's layer table and ADR-0049/0055 by dated notes, and tagged `m24`. A person's
 animation watch remains unclaimed. M25, Public 3D, is accepted
 ([`public3d.md`](design/public3d.md), ADR-0059): v6 publishes retained, mod-owned instances,
-lights, transforms and primitive bodies by content ID. Steps 1–7 are done: the retained set in
+lights, transforms and primitive bodies by content ID. All eight steps are done: the retained set in
 `render3d` and the 28-call v6 tail, with host-scoped caller identity and owned-object cleanup.
 Step 3 proves native hostile input, all 28 calls from C99 and three 10,000-call sweeps.
 Step 4 adds bounded, hash-ordered `prop` records and the reproducibly generated content-only
@@ -1167,4 +1167,6 @@ both recorded math variants and exact same-binary replay remain protected. Step 
 it natively on Windows/Vulkan: suites, a relocated read-only install, validated and layers-off
 tours and a byte-identical three-process replay. Step 7 builds a C99 mod
 outside the repository from the installed header and writes
-[`modding/3d.md`](modding/3d.md) from it. **Step 8, the close, is next.**
+[`modding/3d.md`](modding/3d.md) from it. Step 8 reconciled `3d.md`, `public-abi.md`,
+`hierarchy.md`, `collision3d.md` and CLAUDE.md, froze v6 and tagged `m25`. The owner watched
+the walker and reported it very good. **M26, the playable 3D sample, has no design yet.**

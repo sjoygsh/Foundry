@@ -1030,7 +1030,9 @@ holds no M24 task, worktree or scratch directory; the worktrees left there preda
   `zig build test` or `check`.
 
 **What closes open, and is recorded rather than hidden:**
-- **No person has watched the walker** walk, turn, stop and cross-fade (§12, "By hand"). The
+- **Recorded 2026-10-02:** the owner watched the walker in the 3D sandbox and reported its
+  walking around as very good. The item below is met.
+- **No person had watched the walker** walk, turn, stop and cross-fade (§12, "By hand"). The
   automated tours prove the patrol, both clips and the cross-fade, and replay; they do not
   replace a person's look. The owner can do it with
   `zig build sandbox3d -Drhi=metal` and say so; it is the last §12 item not met.

@@ -1,6 +1,6 @@
 # Design: M25 — Public 3D: `FoundryApi_v6`, a 3D content mod and a native one
 
-**Status:** Accepted 2026-10-01, when the owner requested Step 1. Steps 1–7 are done; Step 8, the close, is next.
+**Status:** Complete 2026-10-02, tag `m25`. Accepted 2026-10-01, when the owner requested Step 1. `FoundryApi_v6` is frozen.
 **Date:** 2026-10-01
 **Baseline:** `211901d`, tag `m24`. M0–M24 are complete.
 **Decisions:**
@@ -524,6 +524,7 @@ complete and v6 frozen, and nothing names a contract the code does not have.
 | Immediate-mode drawing through a frame callback | Retained instances measured as a burden for a real mod (thousands of short-lived objects a frame) |
 | Per-mod instance and body quotas | One mod starving another of a shared table in practice |
 | `render3d_stats` for mods | A mod with a use for frame counts |
+| A point or directional light accepted with zero cones | Mod authors keep tripping on it; it would be a later version's relaxation, since v6 refuses it and is frozen (Step 7) |
 
 ## 15. Decisions acceptance fixes
 
@@ -978,3 +979,38 @@ No engine behaviour, ABI layout, sample or shader changed. A person's by-hand wa
 walker and of this mod remains the owner's.
 
 **Stop before Step 8.**
+
+## Resolution — Step 8: M25 closed (2026-10-02)
+
+**`FoundryApi_v6` is frozen from this commit:** v5 unchanged plus 28 calls, 261 in all.
+
+**The one open contract question is settled by leaving the contract as qualified.** Step 7
+asked whether v6 should supply the cone for point and directional lights. The owner asked for
+the close without choosing otherwise, so the behaviour that Step 3's sweep and Step 6's Windows
+runs qualified stands: every light kind needs `inner_cone < outer_cone`. The header states it,
+the guide leads with it, and §14 records the trigger for relaxing it in a later version.
+Relaxing is additive in effect (inputs refused today would be accepted), so it does not need
+v6 to stay open.
+
+**Reconciled where each claim originated:**
+- `3d.md` §9 now says what v6 publishes and what it does not (retained instances, camera read
+  only, ownership, no animation, runtime geometry or shaders); §10's M25 row is done;
+- `public-abi.md` records v6 at 261 calls and points here;
+- `hierarchy.md` §3.5 and `collision3d.md` §12 record that their names are published;
+- `native-mods.md` names the 3D sandbox as the native-loading host and lists v6 as frozen;
+- CLAUDE.md §4.3 adds `physics3d` and `render3d` to `abi`'s line (the build graph has had them
+  since Step 2) and `abi` and `mod` to `sandbox3d`'s grant; §4.1's ADR-0059 row and §9's 3D
+  row name M25 done;
+- AGENTS.md's header matrix has named `render3d_client.c` since Step 3 and needed no change.
+
+**The by-hand watch is recorded.** On 2026-10-02 the owner watched the 3D sandbox and reported
+the walker's walking around as very good. That closes the item M24 left open
+(`animation3d.md`), and it is the person's look this milestone's own steps did not claim.
+
+**What M25 leaves, deliberately:** everything in §14. Linux stayed compile-only, as planned;
+the external mod's Windows and Linux libraries are compiled and not run; no release artifact
+changed.
+
+The close is documentation only, on a tree whose bar passed at Step 7 with **2,070 of 2,071
+tests**, one expected skip; `zig fmt --check` and the links added here were rechecked.
+**Stop before M26's design.**

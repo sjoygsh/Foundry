@@ -210,7 +210,7 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | 3D collision | `physics3d` at L1: shapes, queries and a character controller; no dynamics until a game needs them; one rounded-core GJK/EPA narrowphase for every pair (M23) | [0051](docs/adr/0051-3d-collision-without-dynamics.md) |
 | Collision geometry | `foundry:collision_mesh`/`.fcol` in `asset`, derived opt-in by `foundry:model_import` v2's `collision` and name-checked `collision_exclude`; `physics3d` copies it and builds its own tree; rigid poses, scale baked at import; accepted 2026-09-30, implemented in M23 | [0057](docs/adr/0057-collision-geometry-is-compiled-content.md) |
 | Skeletal animation | `anim` at L1 on `core` alone: skeletons, clips and poses as borrowed values, sampled at a caller's time, blended, and skinned by linear blend on the CPU; skeletons and clips are compiled assets; no skinned shader variant; playback state is the caller's; accepted 2026-10-01, implemented in M24 | [0058](docs/adr/0058-skeletal-animation-sampled-poses-cpu-skinning.md) |
-| Public 3D | `FoundryApi_v6` publishes 3D by content ID through retained, mod-owned instances and lights the host submits in its own frame (`render3d.Instances`); a mod changes or destroys only what it created; no camera write, animation, runtime meshes or materials, or shaders; accepted 2026-10-01, in M25 | [0059](docs/adr/0059-public-3d-retained-instances-owned-bodies.md) |
+| Public 3D | `FoundryApi_v6` publishes 3D by content ID through retained, mod-owned instances and lights the host submits in its own frame (`render3d.Instances`); a mod changes or destroys only what it created; no camera write, animation, runtime meshes or materials, or shaders; accepted 2026-10-01, implemented in M25 and frozen at 261 calls | [0059](docs/adr/0059-public-3d-retained-instances-owned-bodies.md) |
 | 3D rendering | `render3d` starts forward and fixed-pass; it changes architecture only on measurement | [0052](docs/adr/0052-forward-renderer-first.md) |
 | 3D lighting | Photometric lights (lux/candela), ambient/emission in cd/m²; EV100 pre-exposure of lit output only; one Neutral tone map before sRGB; implemented in M22 | [0056](docs/adr/0056-photometric-light-units-and-pre-exposure.md) |
 | 3D assets | Import, runtime mesh, textures and materials, model, scene, submission and GPU resources stay separate; no importer's shape reaches `render3d` | [0053](docs/adr/0053-assets-are-not-the-renderer.md) |
@@ -317,22 +317,24 @@ L5  debug       -> core, data, ui, asset, render2d, render3d, scene, audio, app.
                 opts in by importing it. No `platform`, no `rhi`, no `physics2d` — it
                 reads the engine's answers, not the devices under them. `render3d`
                 joined at M21 for its frame counts (hierarchy.md §7).
-L5  abi         -> core, data, physics2d, platform, ui, asset, render2d, scene,
-                audio, app, author, mod, net.  The public C ABI, and the native mod
-                loader. A peer of `debug`, not a layer over `app` (ADR-0026). No `rhi`,
+L5  abi         -> core, data, physics2d, physics3d, platform, ui, asset, render2d,
+                render3d, scene, audio, app, author, mod, net.  The public C ABI, and
+                the native mod loader. A peer of `debug`, not a layer over `app` (ADR-0026). No `rhi`,
                 ever; `platform` for `Library` alone. Holds no engine state.
                 `author` joined at M15 for ADR-0042's reason: authoring is published
                 through the one table like everything else, and the editor gets no
                 private path (I4). `net` joined at M16 for the same reason. This module
                 still creates no service — a host hands it one, or authoring and
-                networking answer `Unavailable`.
+                networking answer `Unavailable`. `render3d` and `physics3d` joined at M25
+                to publish 3D in `FoundryApi_v6` (ADR-0059); never `anim`.
 ```
 
 Games, samples and tools depend on `app`. A host that loads mods also imports `abi`; a
 native mod itself depends on the C header and never on a Zig module. `samples/sandbox3d` is
-granted `anim`, `app`, `asset`, `core`, `data`, `debug`, `physics3d`, `platform`, `render2d`,
-`render3d`, `scene` and `ui` (the last three and `debug` since M21, `physics3d` since M23, `anim`
-since M24), and never `rhi`, so a 3D game touching the RHI is a
+granted `abi`, `anim`, `app`, `asset`, `core`, `data`, `debug`, `mod`, `physics3d`, `platform`,
+`render2d`, `render3d`, `scene` and `ui` (`render2d`, `scene`, `ui` and `debug` since M21,
+`physics3d` since M23, `anim` since M24, `abi` and `mod` since M25, when it became the first
+sample to load consented native code), and never `rhi`, so a 3D game touching the RHI is a
 build error there.
 
 **`script` sits at L6, as a consumer of the public API rather than a layer of the engine.**
@@ -691,7 +693,7 @@ milestone named below is where `docs/ROADMAP.md` now places it.
 | Networking | **Done in M16** (2026-09-23) | Owner requires internet multiplayer. [networking.md](docs/design/networking.md) and accepted ADR-0044/0045 fix the initial architecture. Mbed TLS and FNET wire v1 are qualified/frozen, authenticated streams exist, sessions admit peers, and active peers exchange tick-admitted commands and complete state, published as `FoundryApi_v5`; the sandbox connects through it alone (Step 6) and holds against hostile peers and the controlled envelope (Step 7); desktops, the public internet and the external consumer are proven (Step 8, [networking guide](docs/modding/networking.md)). What it deliberately left out — relays, NAT traversal, accounts, prediction, lockstep, IPv6 — is networking.md §11's, and each is its own decision. |
 | Certified releases (Developer ID, notarization, Windows code signing) | **After a fully playable 3D game** (ADR-0047) | M17 publishes unsigned, labelled GitHub pre-releases instead. When due, use the implemented Developer ID/notary path and verify the exact quarantined download on a genuinely clean recipient Mac; add Windows signing. No membership is bought before then. |
 | Linux runtime support | **Done in M18** (2026-09-27) | Removed from M13 by ADR-0039; headless servers proven in M16.5 (ADR-0046). The desktop is a runtime claim on one Intel Arc/Mesa machine, under Xorg, sway and GNOME, with its limits in [linux-desktop.md](docs/design/linux-desktop.md). No Linux release artifact exists; that is a distribution decision nothing has asked for yet. |
-| 3D | **Decided** (2026-09-27); **M19 done** (2026-09-27, tag `m19`); **M20 done** (2026-09-29, tag `m20`); **M21 done** (2026-09-29, tag `m21`); **M22 done** (2026-09-30, tag `m22`); **M23 done** (2026-10-01, tag `m23`); **M24 done** (2026-10-01, tag `m24`) | [3d.md](docs/design/3d.md) and ADR-0048 to ADR-0058: conventions, fixed vertex slots, engine shading models per backend, the engine-declared hierarchy, collision without dynamics, forward rendering, assets kept apart from the renderer, photometric lighting with pre-exposure and Neutral, compiled collision geometry copied into physics, and skeletal animation sampled in `anim` and skinned on the CPU. M22's lit room is changed by a content-only mod. M23's [collision design](docs/design/collision3d.md) is implemented: a character walks that room and a course on Metal and Windows/Vulkan. M24's [animation design](docs/design/animation3d.md) is implemented (ADR-0058): a glTF character, skinned on the CPU with no shader variant, patrols the room on both. M19–M26 remain in the proposed order, ending in a playable 3D sample. Linux is a reproducible target, not a kept machine: it runs when a milestone changes something Linux-specific, and at M26 on a freshly provisioned machine (3d.md §10.2). What stays deferred is 3d.md §11's, light.md §14's and collision3d.md §15's and animation3d.md §14's, each item waiting on a game or a measurement. |
+| 3D | **Decided** (2026-09-27); **M19 done** (2026-09-27, tag `m19`); **M20 done** (2026-09-29, tag `m20`); **M21 done** (2026-09-29, tag `m21`); **M22 done** (2026-09-30, tag `m22`); **M23 done** (2026-10-01, tag `m23`); **M24 done** (2026-10-01, tag `m24`); **M25 done** (2026-10-02, tag `m25`) | [3d.md](docs/design/3d.md) and ADR-0048 to ADR-0059: conventions, fixed vertex slots, engine shading models per backend, the engine-declared hierarchy, collision without dynamics, forward rendering, assets kept apart from the renderer, photometric lighting with pre-exposure and Neutral, compiled collision geometry copied into physics, and skeletal animation sampled in `anim` and skinned on the CPU. M22's lit room is changed by a content-only mod. M23's [collision design](docs/design/collision3d.md) is implemented: a character walks that room and a course on Metal and Windows/Vulkan. M24's [animation design](docs/design/animation3d.md) is implemented (ADR-0058): a glTF character, skinned on the CPU with no shader variant, patrols the room on both. M25's [public 3D design](docs/design/public3d.md) is implemented (ADR-0059): `FoundryApi_v6` is frozen, a content mod and a consented C99 mod add lit, solid objects to that room on both, and [the 3D modding guide](docs/modding/3d.md) is written from a mod built outside the repository. Only M26, the playable 3D sample, remains. Linux is a reproducible target, not a kept machine: it runs when a milestone changes something Linux-specific, and at M26 on a freshly provisioned machine (3d.md §10.2). What stays deferred is 3d.md §11's, light.md §14's and collision3d.md §15's, animation3d.md §14's and public3d.md §14's, each item waiting on a game or a measurement. |
 
 **Out of scope indefinitely, not constraining the initial architecture:** consoles, mobile, web,
 VR, x86-64 macOS.
