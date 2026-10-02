@@ -5,8 +5,8 @@
 A modular 2D-first game engine, written in Zig, built to grow into a general-purpose
 2D/3D engine with modding as a first-class feature rather than an afterthought.
 
-Foundry is a long-term, incremental engineering project: **150 planned milestones, of which
-M0 to M25 are done**. It is a gradual ascent, not a sprint, and every milestone is required to
+Foundry is a long-term, incremental engineering project: **150 planned engine milestones and a final
+certified release, of which M0 to M25 are done**. It is a gradual ascent, not a sprint, and every milestone is required to
 leave behind something that runs.
 
 ## Download
@@ -168,7 +168,8 @@ Decisions are recorded before they are built:
 
 ## Project status
 
-**M0 through M25 are complete: 26 of 150 planned milestones.** Foundry is a playable,
+**M0 through M25 are complete: 26 of the 150 planned engine milestones, with
+the certified release as M150 after them.** Foundry is a playable,
 moddable, networked 2D engine with an editor, and a 3D engine with lit, shadowed, animated
 models, collision and a public 3D modding API. It runs on macOS, Windows and Linux (X11 and
 Wayland), and the first game built on it is finished in its own repository.
@@ -177,8 +178,8 @@ Wayland), and the first game built on it is finished in its own repository.
 ([ADR-0060](docs/adr/0060-a-150-milestone-roadmap.md)): a complete game toolkit, dynamics and
 large worlds, the renderer's upper tier, tools, and reach onto more platforms, ending in
 Foundry 1.0 at M149. It is a gradual ascent, not a sprint: the count says how far there is to
-go, not how fast, and nothing is designed before its turn. Signed and notarized releases stay
-deferred ([ADR-0047](docs/adr/0047-unsigned-github-preview-release.md)).
+go, not how fast, and nothing is designed before its turn. Signed and notarized releases are
+the last milestone, M150 ([ADR-0047](docs/adr/0047-unsigned-github-preview-release.md)).
 
 - [docs/ROADMAP.md](docs/ROADMAP.md): every milestone, what it proved and what comes next.
 - [PROJECT_STATE.md](PROJECT_STATE.md): exactly where things stand, updated every session.
@@ -200,7 +201,7 @@ smallest thing that exercises a capability, and a sample is not a game.
 | [CLAUDE.md](CLAUDE.md) | Durable philosophy, invariants, architecture, conventions | Rarely |
 | [AGENTS.md](AGENTS.md) | How to build, verify and work here | As practice changes |
 | [PROJECT_STATE.md](PROJECT_STATE.md) | Current phase, what works, next steps, open questions | Every session |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | All 150 milestones: what is done, and the long roadmap ahead | Occasionally |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Every milestone, M0 to M150: what is done, and the long roadmap ahead | Occasionally |
 | [docs/adr/](docs/adr/) | Numbered architecture decision records | Append-only |
 | [docs/design/](docs/design/) | Per-subsystem design, written before implementation | As needed |
 | [docs/modding/](docs/modding/) | Guides for mod authors and server operators | With the features |

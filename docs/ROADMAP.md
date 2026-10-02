@@ -1,8 +1,9 @@
 # Foundry Roadmap
 
 Staged milestones from a minimal engine toward 2D, then 3D, then an industry-grade
-general-purpose engine: **150 milestones, M0 to M149** (ADR-0060). M0–M25 are done. The plan
-beyond M26 is [the long roadmap](#the-long-roadmap--m27-to-m149) at the end of this file. It is
+general-purpose engine: **150 engine milestones, M0 to M149, and M150, the certified release** (ADR-0060). M0–M25 are
+done. The plan
+beyond M26 is [the long roadmap](#the-long-roadmap--m27-to-m150) at the end of this file. It is
 a gradual ascent, not a sprint.
 
 **Milestones are units of work, not units of time.** No dates. Sessions are bounded by
@@ -929,7 +930,7 @@ machines, open by the documented steps and run.
   The VM is not ADR-0032's clean recipient Mac, and is not claimed as one.
 - **Closed at tag `m17`.**
 
-### Postponed: certified releases — **due after a fully playable 3D game**
+### Postponed: certified releases — **M150, the last milestone** (ADR-0060, 2026-10-02)
 
 This was M17's original content, and it was moved by ADR-0047:
 - Developer ID signing, notarization and stapling through the implemented
@@ -1176,11 +1177,11 @@ the walker and reported it very good. **M26, the playable 3D sample, has no desi
 
 ---
 
-## The long roadmap — M27 to M149
+## The long roadmap — M27 to M150
 
 **Decided 2026-10-02 ([ADR-0060](adr/0060-a-150-milestone-roadmap.md)).** Foundry is planned as
-**150 numbered milestones, M0 to M149**. M0–M25 are done (with M16.5, which was inserted
-between two of them), M26 is designed next, and the 123 below follow it.
+**150 numbered engine milestones, M0 to M149, followed by M150, the certified release**. M0–M25 are done (with M16.5, which was inserted
+between two of them), M26 is designed next, and the 124 below follow it.
 
 **This is a gradual ascent, not a sprint.** The number says how far there is to go, not how
 fast. Milestones are still units of work, not time; each still begins with a design document
@@ -1190,14 +1191,15 @@ when its turn comes, from the code as it then is.
 
 **What the list is, and is not:**
 - It is the order of intent. The owner may reorder it, by a dated note here.
-- The total stays 150. A milestone that proves too large is split, and the split is paid for
+- The total stays as it is: 150 engine milestones and M150. A milestone that proves too large is split, and the split is paid for
   by merging two small ones elsewhere, so the plan cannot grow quietly.
 - It replaces "returns when a game asks" as the *schedule* for the items the design documents
   deferred (`3d.md` §11, `light.md` §14, `collision3d.md` §15, `animation3d.md` §14,
   `public3d.md` §14, `jobs-and-threading.md` §9, `networking.md` §11). Their triggers still
   decide the *shape*: each milestone names the sample that needs the feature and measures
   against the budget its trigger named.
-- **Certified releases are not on it.** Signing and notarization stay deferred under ADR-0047.
+- **Certified releases are the last line, M150** (the owner's decision, 2026-10-02). Signing
+  and notarization stay deferred under ADR-0047 until then; no membership is bought earlier.
 - **Not planned at all:** consoles, iOS, x86-64 macOS.
 
 ### Phase 6 — A complete game toolkit (M27–M50)
@@ -1357,3 +1359,9 @@ More players, more languages, more machines. Ends in 1.0.
 | M147 | Services | Crash reporting, opt-in telemetry and store integration behind a host interface |
 | M148 | Hardening II | Fuzzing every format, performance regression gates, long soaks and a security review |
 | M149 | Foundry 1.0 | A complete game shipped by someone else on every supported platform, and the stability promise written down |
+
+### The last milestone — M150
+
+| | Milestone | Intent |
+| --- | --- | --- |
+| M150 | Certified releases | Developer ID signing and notarization verified on a genuinely clean recipient Mac, and Windows code signing: the first Foundry release published as verified |

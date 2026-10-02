@@ -2,6 +2,9 @@
 
 **Status:** Accepted 2026-10-02, by the owner's instruction
 **Date:** 2026-10-02
+**Revised 2026-10-02 (before any milestone was built against it), by the owner's instruction:**
+certified releases become the final milestone, M150. The 150 engine milestones M0–M149 are
+unchanged; the plan now runs M0 to M150.
 **Informed by:** ADR-0008, ADR-0013, ADR-0017, ADR-0033, ADR-0044, ADR-0047, ADR-0051, ADR-0052,
 `docs/ROADMAP.md`, `docs/design/3d.md` §11
 
@@ -18,9 +21,10 @@ The owner asked for that picture and decided its size.
 
 ## Decision
 
-**Foundry is planned as 150 numbered milestones, M0 to M149.** M0–M25 are complete, M26 is
-next, and M27–M149 are listed in `docs/ROADMAP.md` in five phases: a complete game toolkit,
-dynamics and worlds, the renderer's upper tier, tools, and reach.
+**Foundry is planned as 150 numbered engine milestones, M0 to M149, and one more, M150, the
+certified release.** M0–M25 are complete, M26 is next, and M27–M149 are listed in
+`docs/ROADMAP.md` in five phases: a complete game toolkit, dynamics and worlds, the renderer's
+upper tier, tools, and reach. M150 follows Foundry 1.0.
 
 **It is a gradual ascent, not a sprint.** The count measures distance, never speed. Every rule
 that governed M0–M25 governs the rest: design before implementation, the owner's acceptance
@@ -32,7 +36,7 @@ No milestone is designed before its turn, and no ADR is written for it until the
 line names a choice (a physics solver, a shading language, a second scripting language, a
 decoder, Android's build tooling), that choice is made by that milestone's own ADR.
 
-**The total is held at 150.** A milestone that proves too large is split and the split is paid
+**The total is held: 150 engine milestones and M150.** A milestone that proves too large is split and the split is paid
 for by a merge elsewhere. The owner may reorder or re-scope by a dated note in the roadmap.
 
 **Scope changes this makes:**
@@ -46,15 +50,19 @@ for by a merge elsewhere. The owner may reorder or re-scope by a dated note in t
 - **A voxel module is planned** (M65–M67) as an optional module nothing else depends on.
 - **One milestone changes only how Foundry looks** (M122): the editor, overlay, mod manager and
   samples get one visual language, and no function changes.
-- **Certified releases stay where ADR-0047 put them:** deferred, and not a numbered milestone.
+- **Certified releases are M150, the last milestone.** Developer ID signing, notarization, a
+  quarantined launch on a clean recipient Mac and Windows code signing stay deferred until
+  then, after Foundry 1.0 at M149. This re-dates ADR-0047's "after a fully playable 3D game";
+  its rule that nothing uncertified is published as verified stands, and no membership is
+  bought before M150's turn.
 
 **What it does not change:** the nine invariants, the layering, the two rendering boundaries,
 the dependency and license policy, and the rule that games live in their own repositories.
 
 ## Consequences
 
-- A future session can see the whole plan and where the project stands in it: 26 of 150 numbered
-  milestones at M25's close (M16.5 was inserted between two and is not counted).
+- A future session can see the whole plan and where the project stands in it: 26 of the 151 numbered
+  milestones (M0–M150) at M25's close (M16.5 was inserted between two and is not counted).
 - Deferred items now have a place in an order. Their recorded triggers stop deciding *whether*
   and keep deciding *how*: each milestone still names the sample that needs the feature and
   the budget it is measured against.
@@ -80,7 +88,7 @@ the dependency and license policy, and the rule that games live in their own rep
 ## Revisit if
 
 - A phase ends and its sample shows the next phase is ordered wrongly for real games.
-- The split-and-merge rule fails, that is, the plan cannot hold 150 without dropping
+- The split-and-merge rule fails, that is, the plan cannot hold its total without dropping
   something a game needs.
 - A milestone's design shows its line contradicts an invariant; the invariant wins and the
   line changes.

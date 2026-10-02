@@ -1,5 +1,9 @@
 # ADR-0047: M17 publishes an unsigned preview; paid certification waits for a 3D game
 
+**Re-dated in part (2026-10-02):** ADR-0060 makes certified releases the final milestone,
+M150, after Foundry 1.0. Everything else here stands, including that nothing uncertified is
+published as verified and no membership is bought before then.
+
 **Status:** Accepted 2026-09-23; carried out in M17, complete the same day
 **Date:** 2026-09-23
 **Supersedes:** [ADR-0032](0032-defer-macos-release-certification.md) in its timing only. The
