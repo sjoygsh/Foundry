@@ -1036,8 +1036,9 @@ and regression coverage in `3d.md` §10:
   guide written from a mod built outside the repository.
   [`public3d.md`](design/public3d.md), with ADR-0059.
 - **M26 A playable 3D sample,** played by someone who did not build it, on macOS, Windows and a
-  freshly provisioned Linux machine. It is the game
-  certification waits for (ADR-0047).
+  freshly provisioned Linux machine. Design proposed 2026-10-02:
+  [`playable3d.md`](design/playable3d.md), no ADR. (Certification no longer waits on it:
+  ADR-0060 re-dated that to M150.)
 
 The order is the proposal's. `3d.md` §10.1 records three corrections to what M19, M20 and M22
 contain, each made for a dependency.
@@ -1173,7 +1174,7 @@ tours and a byte-identical three-process replay. Step 7 builds a C99 mod
 outside the repository from the installed header and writes
 [`modding/3d.md`](modding/3d.md) from it. Step 8 reconciled `3d.md`, `public-abi.md`,
 `hierarchy.md`, `collision3d.md` and CLAUDE.md, froze v6 and tagged `m25`. The owner watched
-the walker and reported it very good. **M26, the playable 3D sample, has no design yet.**
+the walker and reported it very good. **M26, the playable 3D sample, is designed and proposed** ([`playable3d.md`](design/playable3d.md)); no step has begun.
 
 ---
 

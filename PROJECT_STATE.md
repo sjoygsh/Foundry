@@ -1,9 +1,18 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-02
-**Current handoff: M25 Public 3D is complete (tag `m25`, `docs/design/public3d.md`, ADR-0059).
-`FoundryApi_v6` is frozen at 261 calls. Stop before M26's design**, the playable 3D sample; it
-has no design document yet. M0–M25 are pushed.
+**Current handoff: M26's design is proposed (`docs/design/playable3d.md`, no ADR); awaiting the
+owner's acceptance of its §14. Stop before Step 1.** M25 Public 3D is complete (tag `m25`,
+ADR-0059) and `FoundryApi_v6` is frozen at 261 calls. M0–M25 are pushed.
+
+**M26's design, proposed 2026-10-02.** A new first-person sample, `samples/court`: light three
+beacons, pass the gate, fail by the warden's touch or by falling, restart; with sound, a HUD
+and menus over the 3D frame, and everything content. The one engine change is pointer capture
+in `platform`, deferred to M26 by `collision3d.md`; nothing enters the ABI. The proof is three
+scripted play-throughs replayed to the same hash on the same binary, run from relocated
+installs on macOS/Metal, Windows/Vulkan and a freshly provisioned Linux machine, plus a
+person's play on each, which only that person's report can claim. Eight steps. Step 7 needs
+the owner to supply or choose the Linux machine. No code has changed.
 
 **The long roadmap is decided (2026-10-02, ADR-0060): 150 numbered engine milestones, M0–M149,
 then M150, the certified release.** 26 are done. M27–M149 are listed in `docs/ROADMAP.md` in five phases (game toolkit, dynamics

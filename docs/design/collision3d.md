@@ -1314,7 +1314,7 @@ overlay grant, no new dependency. Linux is compile-only.
 | --- | --- |
 | Rigid-body dynamics, stacking, joints, ragdolls, vehicles | A game needs a simulated object (ADR-0051; Jolt weighed then) |
 | Moving platforms carrying a character; characters pushing | A game needs either (ADR-0051) |
-| Pointer capture (relative mouse) in `platform` | M26's playable sample, or any sample a person plays with the mouse, with its Linux run |
+| Pointer capture (relative mouse) in `platform` | M26's playable sample, or any sample a person plays with the mouse, with its Linux run. Proposed in [`playable3d.md`](playable3d.md) §4 |
 | Collision authored separately from the visual model (a proxy import, or deriving from a `foundry:mesh`) | A model whose render mesh is measured too dense to collide against within §11.4's budget, or an author asks for a simpler proxy |
 | A model record that names its collision | A game needs to find a model's collision from the model alone |
 | Runtime scale of collision geometry | A game scales a collidable model at runtime |
