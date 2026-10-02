@@ -1,0 +1,16 @@
+foundry:material orbiter:materials.bronze {
+    shading foundry:shading.lit
+    base_color { r 0.6 g 0.28 b 0.06 a 1 }
+    metallic 0.7
+    roughness 0.4
+}
+foundry:material orbiter:materials.blue {
+    shading foundry:shading.lit
+    base_color { r 0.04 g 0.2 b 0.7 a 1 }
+    metallic 0.5
+    roughness 0.35
+}
+foundry:model_import orbiter:models.orbiter {
+    source "models/orbiter.gltf"
+    materials [ { name "Bronze" material orbiter:materials.bronze } ]
+}

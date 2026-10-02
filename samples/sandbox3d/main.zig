@@ -60,6 +60,14 @@
 //! at its position/yaw. The `plinth` test package adds a lit stone object, without code. Solid
 //! props keep scale 1 (ADR-0057); decorative props may be scaled. Select `plinth:content`
 //! through the existing PACKAGES bootstrap to include its cast/player-blocking tour check.
+//!
+//! **M25 Step 5's is a consented native orbiter** (`public3d.md` §10). Select its package
+//! with PACKAGES and consent separately with `FOUNDRY_SANDBOX3D_NATIVE=orbiter:content`.
+//! Its C99 library sees only v6, retains an instance/light and moves matching collision from
+//! its fixed-tick hierarchy system. The host submits them after its own draws. F9 refuses
+//! rebuilding a world containing native registrations; restart to load without native code.
+//! `FOUNDRY_SANDBOX3D_INSTANCES=1024` selects the plinth cost run; NATIVE_TRACE names a
+//! developer proof output for the fresh-process driver in `scripts/m25/tour.py`.
 
 const std = @import("std");
 
@@ -77,6 +85,8 @@ const walk_mod = @import("walk.zig");
 const Tour = @import("tour.zig").Tour;
 const Walker = @import("walker.zig").Walker;
 const Props = @import("props.zig").Props;
+const native_mod = @import("native.zig");
+const Native = native_mod.Native;
 
 const orrery_mod = @import("orrery.zig");
 const Orrery = orrery_mod.Orrery;
@@ -220,6 +230,20 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     var sample = try Sample.init(gpa, engine, options);
     defer sample.deinit(engine);
     try sample.load(engine);
+    const native = try gpa.create(Native);
+    defer gpa.destroy(native);
+    try native.init(engine, &sample.orrery.world, &sample.content.?, &sample.walk.world);
+    defer native.deinit(); // before Sample.deinit and every lent subsystem
+    sample.native = native;
+    const consent = native_mod.Consent.parse(os.envVar("FOUNDRY_SANDBOX3D_NATIVE")) catch |err| blk: {
+        log.warn("FOUNDRY_SANDBOX3D_NATIVE refused ({t}); no native consent granted", .{err});
+        break :blk native_mod.Consent{};
+    };
+    try native.load(mods.loaded().?.order, consent, &diags);
+    if (os.envVar("FOUNDRY_SANDBOX3D_INSTANCES")) |count| {
+        if (!std.mem.eql(u8, count, "1024")) return error.InvalidInstanceCount;
+        try native.fillStress();
+    }
     // Null normally advances 1 ms/frame. An explicit tour advances fixed simulation time,
     // not thousands of empty rendered frames, and never changes the engine's timestep.
     if (headless) if (sample.tour != null) engine.platform.setClockStep(engine.step_delta);
@@ -294,6 +318,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
 
     if (sample.tour) |*tour| {
         if (!tour.done() or tour.failed != null) return error.TourFailed;
+        if (native.orbiter_owner != null and (!native.blocked or native.ticks != Native.proof_ticks)) return error.OrbiterTourFailed;
         var replay = walk_mod.Walk.init(gpa);
         defer replay.deinit(&engine.assets);
         replay.refresh(&engine.store, &engine.assets, engine.step_delta.toSecondsF32());
@@ -334,6 +359,10 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     }
 
     report(gpa, engine, &sample, skipped_frames);
+    if (engine.os.envVar("FOUNDRY_SANDBOX3D_NATIVE_TRACE")) |path| {
+        if (native.ticks != Native.proof_ticks or !native.blocked) return error.IncompleteNativeTrace;
+        try engine.os.writeFile(path, std.mem.sliceAsBytes(&native.trace));
+    }
 }
 
 /// What a run has to say for itself: how many frames, the pacing of the last ones and what
@@ -350,7 +379,7 @@ fn report(gpa: std.mem.Allocator, engine: *app.Engine, sample: *const Sample, sk
     });
 
     const recorder = engine.profiler() orelse return;
-    for ([_][]const u8{ "animation", "render.skin" }) |name| {
+    for ([_][]const u8{ "animation", "render.skin", "abi.instances" }) |name| {
         var values: [240]i64 = undefined;
         var work: [240]i64 = undefined;
         var count: usize = 0;
@@ -369,7 +398,8 @@ fn report(gpa: std.mem.Allocator, engine: *app.Engine, sample: *const Sample, sk
             }
         }
         const measured = core.profile.summarise(values[0..count], &work);
-        log.info("{s}: {d} walkers, {d} frames, median {d:.4}ms p95 {d:.4}ms", .{ name, sample.walkers.len, measured.count, ms(measured.median_ns), ms(measured.p95_ns) });
+        const instances = if (sample.native) |native| native.instances.instances.count() else 0;
+        log.info("{s}: {d} objects, {d} frames, median {d:.4}ms p95 {d:.4}ms", .{ name, if (std.mem.eql(u8, name, "abi.instances")) instances else sample.walkers.len, measured.count, ms(measured.median_ns), ms(measured.p95_ns) });
     }
     var totals: [240]i64 = undefined;
     var scratch: [240]i64 = undefined;
@@ -600,6 +630,7 @@ const Sample = struct {
     walk: walk_mod.Walk,
     props: Props = .{},
     props_proved: bool = false,
+    native: ?*Native = null,
     walkers: []Walker,
     course: render3d.ModelHandle = .none,
     intent: walk_mod.Intent = .{},
@@ -820,6 +851,7 @@ const Sample = struct {
         // The game translates `app`'s step into `scene`'s tick: the number and the fixed
         // delta, and nothing a system could read a device through.
         self.orrery.step(.{ .tick = s.tick, .delta = s.delta });
+        if (self.native) |native| if (self.tour != null) try native.record();
         const scope = engine.beginScope("character");
         defer scope.end();
         const started = engine.os.monotonicNanos(); // Measurement only; never affects the move.
@@ -829,6 +861,9 @@ const Sample = struct {
                 try self.props.provePlinth(&self.walk, dt);
                 self.props_proved = true;
             }
+            if (tour.done() and tour.failed == null) if (self.native) |native| {
+                if (native.orbiter_owner != null and native.ticks == Native.proof_ticks and !native.blocked) try native.proveBlocking(&self.walk, dt);
+            };
         } else try self.walk.step(if (self.walk.orbit) .{} else self.intent, dt);
         const elapsed: i64 = @intCast(engine.os.monotonicNanos() - started);
         if (self.move_count < self.move_times.len) {
@@ -940,6 +975,10 @@ const Sample = struct {
     }
 
     fn loadWorld(self: *Sample, engine: *app.Engine) void {
+        if (self.native) |native| if (!native.canLoadWorld()) {
+            log.warn("f9: native registrations cannot survive a world rebuild; restart without native code to load a save", .{});
+            return;
+        };
         const dir = self.save_dir orelse return;
         const read = engine.os.readFileConfined(self.gpa, dir, save_name, orrery_mod.max_save_bytes) catch |err| {
             log.warn("f9: no save to load ({t})", .{err});
@@ -1009,14 +1048,24 @@ const Sample = struct {
         if (pixels.isEmpty()) return false;
 
         const position = self.eye();
+        const camera: render3d.Camera = .{
+            .position = position,
+            .rotation = if (!self.walk.orbit) self.walk.rotation() else Quat.lookRotation(focus.sub(position), Vec3.up) orelse Quat.identity,
+            .vertical_fov = std.math.pi / 3.2,
+            .near = 0.1,
+            .far = 80,
+        };
+        if (self.native) |native| native.host.render3d_camera = .{
+            .position = .{ .x = position.x, .y = position.y, .z = position.z },
+            .rotation = .{ .x = camera.rotation.x, .y = camera.rotation.y, .z = camera.rotation.z, .w = camera.rotation.w },
+            .fov_y = camera.vertical_fov,
+            .near = camera.near,
+            .far = camera.far,
+            .width = pixels.width,
+            .height = pixels.height,
+        };
         try self.world.begin(.{
-            .camera = .{
-                .position = position,
-                .rotation = if (!self.walk.orbit) self.walk.rotation() else Quat.lookRotation(focus.sub(position), Vec3.up) orelse Quat.identity,
-                .vertical_fov = std.math.pi / 3.2,
-                .near = 0.1,
-                .far = 80,
-            },
+            .camera = camera,
             .target_size = pixels,
             .clear_color = self.settings.clear_linear,
             .ambient = if (!self.shadow_ground.isNone()) .{ 0.15, 0.15, 0.15 } else self.settings.lighting.ambient,
@@ -1075,6 +1124,11 @@ const Sample = struct {
             }
         }
 
+        if (self.native) |native| {
+            const scope = engine.beginScope("abi.instances");
+            defer scope.end();
+            try native.submit(&self.content.?, &self.world);
+        }
         if (!overlay_on) {
             try engine.renderScene(.{}, &self.world, null);
             return true;
@@ -1342,6 +1396,7 @@ test {
     _ = @import("walk_tests.zig");
     _ = @import("walker_tests.zig");
     _ = @import("props_tests.zig");
+    _ = @import("native_tests.zig");
 }
 
 test "scripted keys are key@frame pairs, and anything else is refused whole" {

@@ -80,10 +80,11 @@ test "walker: compiled patrol, both clips, cross-fade, fresh-world replay and un
     try testing.expect(walker.proofPassed() and replay.proofPassed());
     try testing.expect(tour.failed == null and tour.done());
     try testing.expectEqual(@as(u64, 0xcb99ccfcf2b6d6c3), tour.hash);
-    // Same-binary replay is exact. The platform/build-specific pin is recorded after the
-    // sample's generated clips, movement and palette have all contributed.
+    // Same-binary replay above is exact. These are the two already-recorded math-provider
+    // pins (animation3d.md Step 6). Linking v6 also pulls compiler-runtime sin into an
+    // optimized host, so optimization mode alone no longer identifies its provider.
     if (builtin.cpu.arch == .aarch64 and builtin.os.tag == .macos)
-        try testing.expectEqual(@as(u64, if (builtin.mode == .Debug) 0x62ed8c026c20482c else 0xfa431d9440d4cb2e), walker.hash);
+        try testing.expect(walker.hash == 0x62ed8c026c20482c or walker.hash == 0xfa431d9440d4cb2e);
     const feet = walker.feet;
     const tick = walker.tick;
     const old_character = walker.character;

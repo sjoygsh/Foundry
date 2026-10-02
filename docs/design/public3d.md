@@ -1,6 +1,6 @@
 # Design: M25 — Public 3D: `FoundryApi_v6`, a 3D content mod and a native one
 
-**Status:** Accepted 2026-10-01, when the owner requested Step 1. Steps 1–4 are done; Step 5 is next.
+**Status:** Accepted 2026-10-01, when the owner requested Step 1. Steps 1–5 are done; Step 6 is next.
 **Date:** 2026-10-01
 **Baseline:** `211901d`, tag `m24`. M0–M24 are complete.
 **Decisions:**
@@ -350,6 +350,30 @@ orders.
 orbiter's instance, light and body exist and moved for a fixed number of ticks, and that the
 player is stopped by the orbiter's body. It replays in a fresh process and requires the same
 hash of the orbiter's poses. Without mods, the existing tour and its hashes are unchanged.
+
+**Step 5 lifecycle clarification (2026-10-02), before implementation:** native systems
+register after the orrery's existing propagation. The orbiter consumes the last propagated
+child pose, then writes its parent's next local rotation. This deliberately uses §6's
+last-propagation semantics and preserves one propagation per tick. It does not add a phase
+or reorder the engine schedule. F9 rebuilds the sample's world, dropping registrations and
+invalidating a native mod's entity handles: while any native image has run initialization,
+the sample refuses F9 with a restart diagnostic. F5 and ordinary content reload remain
+available; no native unload/reinitialization protocol is invented. An explicit
+`FOUNDRY_SANDBOX3D_INSTANCES=1024` cost run fills the retained set with host-owned plinth
+instances (including any orbiter instance in the total), never runs mod code in a frame,
+and is separate from the ordinary orbiter budget. Fresh-process tour comparison is a
+developer proof driver, not a runtime subprocess or a new ABI.
+
+**Step 5 math-pin correction (2026-10-02), from targeted evidence:** linking the complete
+ABI table pulls compiler-runtime sine/cosine definitions into the sample. `nm` shows the
+Step 4 ReleaseSafe executable importing `_sin`/`_sinf`, while the Step 5 executable defines
+them locally. Its no-mod and mod walker tours both produce the existing Zig-math pin
+`62ed8c026c20482c`, rather than the existing Apple-math pin `fa431d9440d4cb2e`. No new hash
+is accepted. As `anim/tests.zig` already does, the sample test must accept those two recorded
+math variants rather than infer the provider solely from optimization mode. Every tick's
+same-binary pose/palette replay remains byte-exact; the player pin remains unchanged.
+This is ADR-0013's existing cross-binary distinction, not a relaxation of replay determinism,
+a change to animation arithmetic, or a new portability claim.
 
 ## 11. The modding guide and the external consumer
 
@@ -773,3 +797,80 @@ signing/notarization. Linux is compile-only and no Windows runtime proof is need
 **Stop before Step 5.** No native consent, loader/host binding, orbiter, retained submission
 cost, new ABI, backend/shader, animation binding or guide was added. The milestone's person's
 by-hand walk/watch remains unclaimed, not confused with these executable tours.
+
+## Resolution — Step 5: the consented native orbiter, on Metal (2026-10-02)
+
+**Implemented from `4ef1dda`.** `samples/sandbox3d/native.zig` owns a heap-stable `abi.Host`,
+its native loader and `render3d.Instances`; the sample lends its orrery world, content, camera
+snapshot and collision world. The host binds after content and collision are live, loads only
+resolved entries named by `FOUNDRY_SANDBOX3D_NATIVE`, and shuts down/unbinds before the sample
+or engine retires any lent subsystem. The per-run consent list is deduplicated and bounded at
+64 IDs; malformed/overflowing input refuses the whole grant rather than accepting a prefix.
+No content, profile or public call grants consent. A consented but unselected package is absent
+from the resolved entries and cannot run; unconsented native content remains loaded.
+
+**The fixture and installation:** `testdata/mods/orbiter` is an ordinary ABI-6 native package
+with a generated rigid box model, bronze and blue lit materials, and a header-only C99 library.
+`build.zig` compiles it with strict C warnings against the installed `foundry.h`, includes a
+header-byte cache dependency, and installs the library in `content/orbiter` beside its package.
+Plinth and orbiter are optional installed packages, not required or automatically selected.
+The generator now produces both, with plinth unchanged and both byte-reproducible. Cross
+checks also compile the C99 library for Linux/Windows; neither is a runtime claim here.
+
+The mod asks for v6 and refuses without it. Init raycasts the floor, creates parent/child
+transforms, retains its model with the blue slot override, adds a point light and creates a
+kinematic box matching the visible geometry. A registered system reads the child's last
+propagated matrix, writes the instance/body/light placement, then writes the parent's next
+rotation. Placement at `(0, 0.5, 2)` with a 0.15 m child offset leaves the existing player and
+walker routes clear. An earlier trial placement intersected the existing tour and was moved,
+not hidden behind a collision exception. The single propagation and F9 refusal follow the
+pre-implementation lifecycle clarification in §10. F5 and content reload remain available.
+No ABI or engine scheduling change, new callback, unload protocol or ADR was required.
+
+**Submission and executable tour:** retained lights/instances submit after the host's own
+lights and draws, inside a new `abi.instances` profile zone. The tour observes actual native
+objects, requires a material override and matching visual/kinematic pose, records 360 ticks
+of visual/body/light matrices, rejects stationary motion or a light-only submission, casts
+the actual player capsule at the orbiter and drives ordinary player movement into it. The
+player stops after 0.5450 m; plinth still stops it after 0.1950 m. The proof selects a clear
+approach among the four local sides, so the room's table/wall cannot masquerade as this body.
+`FOUNDRY_SANDBOX3D_INSTANCES=1024` fills the retained set with host-owned plinth instances for
+the separate cost run. `FOUNDRY_SANDBOX3D_NATIVE_TRACE` writes the fixed proof matrices only
+after a completed native tour; this is developer evidence, not a save or a public asset format.
+
+`scripts/m25/tour.py <relocated>/bin/sandbox3d <fresh-scratch-output>` runs two actual processes,
+with disposable HOME/APPDATA and Zig/SDK off PATH, checks every tour marker and zero skipped
+frames, and compares the complete **69,120-byte** traces, not just hashes. Both relocated,
+read-only ReleaseSafe Metal and null proofs pass: native hash `d6ac3adfabc2c0c2`, unchanged
+player `cb99ccfcf2b6d6c3`, walker `62ed8c026c20482c`. A separate relocated Metal run with both
+packages selected but no native consent loads all four packages and no code. The no-mod Metal
+tour also passes. The math-provider correction in §10 explains why the optimized walker now
+uses its already-existing Zig-math pin; both old math pins remain accepted, and same-binary
+pose/palette replay is still byte-exact. No animation arithmetic changed.
+
+**Paced Metal cost:** over the last 240 frames of the 60 Hz ReleaseSafe tour, orbiter's one
+instance/light costs median **0.0014 ms**, p95 **0.0020 ms** (second process 0.0003/0.0018 ms),
+below the 0.05 ms budget. The 300-frame cost run with **1,024** plinth instances records
+median **0.0790 ms**, p95 **0.1064 ms**, without a budget; no frames are skipped.
+
+**Tests and verification:** three new tests cover bounded/deduplicated/invalid consent,
+consent without selection, content without consent, real C99 loading, parent/child movement,
+actual material/light submission, absent/hidden/stationary/mismatched-pose proof refusal,
+player blocking, old player replay, native replay, the 1,024-instance bound, cleanup and a safe
+inactive callback after unbind. The focused suite is **4/4**, including the root; the full
+sample suite is **23/23** on null Debug, null ReleaseSafe and Metal ReleaseSafe. Eight guard
+mutations fail and are restored: native consent, malformed-list atomicity, list capacity,
+F9 protection, stationary motion, light-only submission, draw-proof gating and visual/collision
+rotation agreement. The last non-mutating rotation proof check was verified by the affected
+Metal/null suites and the final null process proof; it does not invalidate the already-clean
+Metal submission measurements or earlier trace equality.
+
+The nine-command integration bar passes: **2,070 of 2,071 tests**, one expected skip;
+native/Metal and Linux/Windows null checks and three headless samples. Both ad-hoc macOS
+releases stage; no public signing/notarization is claimed. The published ABI/header did not
+change, so Step 3's installed-header matrix remains accepted. No PC or Linux runtime proof
+is required here. The milestone's person's by-hand walk/watch remains unclaimed.
+
+**Stop before Step 6.** Windows/Vulkan runtime qualification, the outside guide/consumer and
+milestone close remain Steps 6–8. No camera write, animation binding, runtime geometry/material
+creation, shader, Lua or later-step behavior was added.

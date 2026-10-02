@@ -1,11 +1,46 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-02
-**Current handoff: M25 Steps 1–4 of 8 are complete (`docs/design/public3d.md`, ADR-0059 accepted).
-Stop before Step 5.** The content-only `plinth` mod draws lit and blocks the player in a
-relocated, read-only ReleaseSafe Metal install. `sandbox3d:prop` records are drawn in hash
-order and their collision assets are copied into static bodies. Native sample hosting has
-not begun. M0–M24 and M25 Steps 1–2 are pushed; Steps 3–4 are local commits, no push requested.
+**Current handoff: M25 Steps 1–5 of 8 are complete (`docs/design/public3d.md`, ADR-0059 accepted).
+Stop before Step 6.** `sandbox3d` now hosts the C99 `orbiter` through v6, only with per-run,
+per-package native consent and package selection. It turns, lights, blocks and replays from a
+relocated, read-only ReleaseSafe Metal install; an unconsented package loads content but no
+code. M0–M24 and M25 Steps 1–2 are pushed; Steps 3–5 are local commits, no push requested.
+
+**M25 Step 5 is done (2026-10-02), from `4ef1dda`.** `native.zig` owns the stable host/loader
+and retained set, lent the existing orrery world, 3D content, camera snapshot and walk world.
+`FOUNDRY_SANDBOX3D_NATIVE` grants up to 64 deduplicated package IDs for this run; malformed or
+overflowing lists grant nothing. Only resolved selected entries can run code. The C99 fixture
+is built against the installed header, with a header-byte dependency, and installed beside its
+ordinary optional package. Its generated model has two authored materials; v6 creates a parent
+and child, finds the floor, retains an overridden instance and point light, creates a matching
+kinematic box and registers a fixed-tick system. The system reads the last propagated pose,
+then writes the next parent rotation; no extra propagation or frame callback exists. F9 refuses
+a world rebuild while native images have initialized, since their registrations cannot survive
+it. Shutdown runs before all lent subsystems; unbind sweeps remaining owned objects.
+
+**Evidence:** three new sample tests (four with the focused root) cover consent, real loading,
+movement/visual-collision agreement, lit submission, actual player blocking, replay, cleanup,
+and the 1,024-instance cost mode. Eight guard mutations fail and are restored. The complete
+sample suite passes **23/23** on null Debug, null ReleaseSafe and Metal ReleaseSafe. Two fresh
+processes on each of relocated, read-only Metal and null ReleaseSafe installs produce identical
+**69,120-byte** native traces over 360 ticks (`d6ac3adfabc2c0c2`); Metal skips zero frames.
+Orbiter stops the player after 0.5450 m; plinth after 0.1950 m. The relocated unconsented Metal
+run loads four packages but no native code. Metal `abi.instances` median/p95 is 0.0014/0.0020 ms
+for one orbiter (below 0.05 ms); 1,024 plinth instances record 0.0790/0.1064 ms without a budget.
+Both generated assets reproduce byte-identically, with plinth bytes unchanged.
+
+**Math pin, not a simulation change:** the full ABI links compiler-runtime sine definitions
+into the optimized sample (`nm` confirms); base and mod walker tours now both use the existing
+Zig-math pin `62ed8c026c20482c`. The existing Apple-math pin `fa431d9440d4cb2e` remains accepted,
+as animation's tests already accept both providers. No third pin was introduced. Every
+same-binary pose/palette replay is byte-exact; the player remains `cb99ccfcf2b6d6c3`.
+
+The nine-command bar passes: **2,070 of 2,071 tests**, one expected skip; native/Metal and
+Linux/Windows null checks and all three headless samples. Both ad-hoc macOS releases stage,
+not public signed/notarized releases. No ABI/backend/shader or animation-arithmetic change,
+Windows runtime proof, external guide or person's by-hand watch is claimed. **Step 6 is next:**
+native Windows/Vulkan qualification on the PC, under the ordinary 50% CPU/background rule.
 
 **M25 Step 4 is done (2026-10-02), from `6ea6548`.** `props.zig` follows at most 256 merged
 prop records, validating finite/bounded placement, yaw and positive scale; exceeding the bound

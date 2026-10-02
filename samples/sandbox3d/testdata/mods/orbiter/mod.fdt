@@ -1,0 +1,9 @@
+foundry:mod orbiter:content {
+    name "Native orbiter"
+    version 1
+    license "Apache-2.0"
+    summary "Consented C99 v6 instances, hierarchy, light and solid body."
+    requires [ { id sandbox3d:content } ]
+    native "orbiter"
+    abi { min 6 max 6 }
+}

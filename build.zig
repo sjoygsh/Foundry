@@ -640,7 +640,7 @@ pub fn build(b: *std.Build) void {
     // the overlay that inspects it, hosted as the room hosts it. `physics3d` since M23
     // (`collision3d.md` §3): the first-person walk. The overlay itself is not granted it (§12).
     // `anim` since M24 Step 6: the sample owns patrol/playback, not an engine component.
-    for ([_][]const u8{ "anim", "app", "asset", "core", "data", "debug", "physics3d", "render2d", "render3d", "scene", "ui" }) |name| {
+    for ([_][]const u8{ "abi", "anim", "app", "asset", "core", "data", "debug", "mod", "physics3d", "render2d", "render3d", "scene", "ui" }) |name| {
         sandbox3d_mod.addImport(name, modules.get(name).?);
     }
     sandbox3d_mod.addImport("platform", platform_module);
@@ -781,6 +781,16 @@ pub fn build(b: *std.Build) void {
     // The tour's test consumes the very same compiled package and generated asset tree as
     // an install. Cross checks compile it but cannot execute a target-built fpack here.
     const walk_test_options = b.addOptions();
+    // The fixture consumes the installed public header, not a private engine import.
+    const orbiter_header = b.addInstallFileWithDir(b.path("engine/src/abi/foundry.h"), .header, "foundry.h");
+    const orbiter_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    orbiter_module.addIncludePath(.{ .cwd_relative = b.getInstallPath(.header, "") });
+    orbiter_module.addCMacro("FOUNDRY_HEADER_REVISION", b.fmt("0x{x}ULL", .{std.hash.Wyhash.hash(0, @embedFile("engine/src/abi/foundry.h"))}));
+    orbiter_module.addCSourceFile(.{ .file = b.path("samples/sandbox3d/testdata/mods/orbiter/orbiter.c"), .flags = &.{ "-std=c99", "-pedantic", "-Wall", "-Wextra", "-Werror" } });
+    if (target.result.os.tag == .linux) orbiter_module.linkSystemLibrary("m", .{});
+    const orbiter_library = b.addLibrary(.{ .name = "orbiter", .linkage = .dynamic, .root_module = orbiter_module });
+    orbiter_library.step.dependOn(&orbiter_header.step);
+    walk_test_options.addOptionPath("orbiter_library", orbiter_library.getEmittedBin());
     walk_test_options.addOption(bool, "available", target.query.isNative());
     if (core_compiled) |compiled| walk_test_options.addOptionPath("core_package", compiled.fpk);
     sandbox3d_mod.addOptions("walk_test_options", walk_test_options);
@@ -808,6 +818,21 @@ pub fn build(b: *std.Build) void {
                 });
                 walk_test_options.addOptionPath("plinth_package", plinth.fpk);
                 walk_test_options.addOptionPath("plinth_generated", plinth.generated);
+                const orbiter = release.compilePackage(b, fpack, .{
+                    .dir = "samples/sandbox3d/testdata/mods/orbiter",
+                    .stem = "orbiter",
+                    .dependencies = &.{ core_compiled.?.fpk, compiled.fpk },
+                });
+                walk_test_options.addOptionPath("orbiter_package", orbiter.fpk);
+                walk_test_options.addOptionPath("orbiter_generated", orbiter.generated);
+                // Optional packages in the installation, never automatically selected.
+                for ([_]struct { stem: []const u8, compiled: @TypeOf(plinth) }{
+                    .{ .stem = "plinth", .compiled = plinth }, .{ .stem = "orbiter", .compiled = orbiter },
+                }) |fixture| {
+                    b.getInstallStep().dependOn(&b.addInstallFileWithDir(fixture.compiled.fpk, .prefix, b.fmt("content/{s}.fpk", .{fixture.stem})).step);
+                    b.getInstallStep().dependOn(&b.addInstallDirectory(.{ .source_dir = fixture.compiled.generated, .install_dir = .prefix, .install_subdir = b.fmt("content/{s}", .{fixture.stem}) }).step);
+                }
+                b.getInstallStep().dependOn(&b.addInstallFileWithDir(orbiter_library.getEmittedBin(), .prefix, b.fmt("content/orbiter/{s}", .{orbiter_library.out_filename})).step);
             }
 
             b.getInstallStep().dependOn(&b.addInstallFileWithDir(
@@ -1329,6 +1354,8 @@ pub fn build(b: *std.Build) void {
             b.step("sandbox3d-test", "Run the 3D sample's content and workflow tests").dependOn(&run_sample_tests.step);
             const props_tests = b.addTest(.{ .root_module = sample_mod, .filters = &.{"props:"} });
             b.step("sandbox3d-props-test", "Run M25's content-prop validation, collision, ordering and reload proofs").dependOn(&b.addRunArtifact(props_tests).step);
+            const native_tests = b.addTest(.{ .root_module = sample_mod, .filters = &.{"native3d:"} });
+            b.step("sandbox3d-native-test", "Run M25's real-loader consent, movement, submission and cleanup proofs").dependOn(&b.addRunArtifact(native_tests).step);
         }
         check_step.dependOn(&sample_tests.step);
     }

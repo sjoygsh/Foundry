@@ -1154,10 +1154,14 @@ recorded separately. The PC is packed up. Linux remains compile-only. Step 8 rec
 CLAUDE.md's layer table and ADR-0049/0055 by dated notes, and tagged `m24`. A person's
 animation watch remains unclaimed. M25, Public 3D, is accepted
 ([`public3d.md`](design/public3d.md), ADR-0059): v6 publishes retained, mod-owned instances,
-lights, transforms and primitive bodies by content ID. Steps 1–4 are done: the retained set in
+lights, transforms and primitive bodies by content ID. Steps 1–5 are done: the retained set in
 `render3d` and the 28-call v6 tail, with host-scoped caller identity and owned-object cleanup.
 Step 3 proves native hostile input, all 28 calls from C99 and three 10,000-call sweeps.
 Step 4 adds bounded, hash-ordered `prop` records and the reproducibly generated content-only
 plinth: lit drawing, copied static collision and player blocking pass from a relocated,
-read-only Metal install; base replay hashes remain pinned. Step 5's consented sample native
-hosting is next; Windows runtime and the external guide remain later steps.
+read-only Metal install; base replay hashes remain pinned. Step 5 hosts the consented C99
+orbiter: retained model/material/light, hierarchy and kinematic collision, with actual player
+blocking, identical 69,120-byte fresh-process traces and paced Metal submission p95 0.0020 ms.
+Unconsented packages load content only. ABI linking selects the existing Zig-math walker pin;
+both recorded math variants and exact same-binary replay remain protected. **Step 6's Windows
+runtime qualification is next**; the outside guide and milestone close remain Steps 7–8.
