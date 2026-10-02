@@ -922,6 +922,10 @@ M22 closes at tag `m22` and is pushed at the owner's request. Stop before M23's 
 
 ## 14. What stays open, deliberately
 
+> **2026-10-02 (ADR-0060):** these items are now scheduled, in `docs/ROADMAP.md`'s long roadmap
+> (M27–M149). Each trigger below no longer decides whether its item is built; it still names
+> the need and the budget that milestone's design must meet.
+
 - **Image-based lighting, a sky and cubemaps:** when a scene's constant ambient is measurably wrong
   for a game — metals reflecting nothing in an outdoor scene is the likely first — or M26's sample
   needs a sky. Cubemaps enter the RHI then.

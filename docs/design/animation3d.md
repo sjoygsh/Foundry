@@ -481,6 +481,10 @@ complete, and nothing names a contract the code does not have.
 
 ## 14. What stays open, deliberately
 
+> **2026-10-02 (ADR-0060):** these items are now scheduled, in `docs/ROADMAP.md`'s long roadmap
+> (M27–M149). Each trigger below no longer decides whether its item is built; it still names
+> the need and the budget that milestone's design must meet.
+
 | Deferred | Returns when |
 | --- | --- |
 | GPU skinning (vertex-shader palette or compute), and skinned shader variants | `render.skin` measured above its budget at a character count a game has (`3d.md` §4's trigger) |

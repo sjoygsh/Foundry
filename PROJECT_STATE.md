@@ -5,6 +5,16 @@
 `FoundryApi_v6` is frozen at 261 calls. Stop before M26's design**, the playable 3D sample; it
 has no design document yet. M0–M25 are pushed.
 
+**The long roadmap is decided (2026-10-02, ADR-0060): 150 numbered milestones, M0–M149.**
+26 are done. M27–M149 are listed in `docs/ROADMAP.md` in five phases (game toolkit, dynamics
+and worlds, renderer's upper tier, tools, reach), ending in Foundry 1.0. It is a gradual
+ascent, not a sprint: a line is a title and an intent, no milestone is designed before its
+turn, and the total is held at 150 by paying for any split with a merge. Android, web, VR/XR,
+D3D12, an opt-in replication layer and an optional voxel module are now planned; consoles and
+iOS are not; certified releases stay deferred (ADR-0047). M122 changes only how the editor
+and everything else looks. This was a documentation change: CLAUDE.md, README.md, the
+roadmap, ADR-0033's note and the deferred sections of six design documents. No code changed.
+
 **M25 Step 8, the close, is done (2026-10-02).** `3d.md`, `public-abi.md`, `hierarchy.md`,
 `collision3d.md`, `native-mods.md` and CLAUDE.md (§4.1, §4.3's `abi` and `sandbox3d` lines, §9)
 are reconciled. Step 7's light-cone question is settled by keeping the qualified contract:

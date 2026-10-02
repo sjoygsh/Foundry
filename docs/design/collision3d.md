@@ -1306,6 +1306,10 @@ overlay grant, no new dependency. Linux is compile-only.
 
 ## 15. What stays open, deliberately
 
+> **2026-10-02 (ADR-0060):** these items are now scheduled, in `docs/ROADMAP.md`'s long roadmap
+> (M27–M149). Each trigger below no longer decides whether its item is built; it still names
+> the need and the budget that milestone's design must meet.
+
 | Deferred | Returns when |
 | --- | --- |
 | Rigid-body dynamics, stacking, joints, ragdolls, vehicles | A game needs a simulated object (ADR-0051; Jolt weighed then) |

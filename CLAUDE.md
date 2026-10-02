@@ -57,6 +57,11 @@ comparable in scope to Creation Engine, Unity or Godot.
 It is developed incrementally over a long period. Optimize for **actually finishing things**,
 not for producing impressive-looking code quickly.
 
+**The plan is 150 milestones, M0 to M149, and it is a gradual ascent, not a sprint**
+(ADR-0060). `docs/ROADMAP.md` lists them all. The count says how far there is to go, never how
+fast: every milestone is still designed when its turn comes, accepted by the owner, built one
+step at a time and left runnable. The total is fixed; a split is paid for by a merge.
+
 ---
 
 ## 2. Core philosophy
@@ -96,7 +101,8 @@ the game layer.
 4. When a subsystem becomes complex, explain the architectural choices before implementing.
 5. Keep the engine modular.
 6. Every major milestone produces a runnable result.
-7. Avoid overengineering for hypothetical future requirements.
+7. Avoid overengineering for hypothetical future requirements. The long roadmap schedules
+   capabilities; it does not license building past what a milestone's own sample needs.
 8. Always distinguish: what we need **now**, what we should **design for** now, and what should
    be **postponed**.
 9. If the user proposes something architecturally problematic, say so directly and explain why.
@@ -176,7 +182,7 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Platforms | macOS/Apple Silicon primary; Windows x64 runtime-proven on Vulkan in M13; Linux x64 headless/server runtime-proven in M16.5 and desktop (X11 and Wayland) in M18 | [0008](docs/adr/0008-target-platforms.md), with [0033](docs/adr/0033-vulkan-second-backend.md), [0039](docs/adr/0039-linux-after-the-first-game.md) and [0046](docs/adr/0046-linux-headless-servers-before-release.md) |
 | Platform layer | SDL3 behind Foundry's own platform interface, via a Zig package | [0002](docs/adr/0002-platform-layer-sdl3.md) |
 | Rendering | Foundry's own RHI with native backends; Metal first, null backend validates | [0003](docs/adr/0003-renderer-own-rhi-metal-first.md) |
-| Second backend | Vulkan, covering Windows and Linux with one backend; D3D12 not planned. Windows is proven in M13, Linux in M18 | [0033](docs/adr/0033-vulkan-second-backend.md), whose M13 Linux gate [0039](docs/adr/0039-linux-after-the-first-game.md) supersedes |
+| Second backend | Vulkan, covering Windows and Linux with one backend. Windows is proven in M13, Linux in M18. D3D12 was "not planned" and is now a later third backend (M135–M136) | [0033](docs/adr/0033-vulkan-second-backend.md), whose M13 Linux gate [0039](docs/adr/0039-linux-after-the-first-game.md) supersedes, and whose D3D12 line [0060](docs/adr/0060-a-150-milestone-roadmap.md) supersedes |
 | Vulkan execution | Vulkan 1.3, one graphics/present queue, unextended WSI; submission and presentation-resource lifetime kept separate; platform-owned native window payloads | [0037](docs/adr/0037-vulkan-execution-and-presentation.md) |
 | Vulkan shaders and tools | Hand-written GLSL variants compiled to SPIR-V by pinned Vulkan SDK tools; Khronos headers inside `rhi` only; the OS loader opened at runtime | [0038](docs/adr/0038-vulkan-shaders-and-toolchain.md) |
 | RHI hardening | Completion-backed retirement, usage validation and distinct transient/fatal frame outcomes; implemented in M11 | [0035](docs/adr/0035-rhi-lifetime-and-validation.md) |
@@ -227,6 +233,7 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Brand | The marks identify Foundry; an application supplies its own icon | [0034](docs/adr/0034-brand-and-trademark.md) |
 | Repository | Engine is a standalone public repo; games are separate consumers | [0017](docs/adr/0017-repository-scope.md) |
 | Process | CLAUDE.md + PROJECT_STATE.md + numbered ADRs | [0009](docs/adr/0009-documentation-process.md) |
+| Roadmap | 150 numbered milestones, M0–M149, in a fixed total and a gradual ascent; a line fixes intent and order, never a design; Android, web, VR/XR, D3D12, an opt-in replication layer and an optional voxel module are planned; certified releases stay deferred | [0060](docs/adr/0060-a-150-milestone-roadmap.md) |
 
 **Language note.** Zig is pre-1.0 and both the language and `std` break between releases. This
 is an accepted, managed risk: pinned to a stable release, **never master or nightly**, upgraded
@@ -693,10 +700,12 @@ milestone named below is where `docs/ROADMAP.md` now places it.
 | Networking | **Done in M16** (2026-09-23) | Owner requires internet multiplayer. [networking.md](docs/design/networking.md) and accepted ADR-0044/0045 fix the initial architecture. Mbed TLS and FNET wire v1 are qualified/frozen, authenticated streams exist, sessions admit peers, and active peers exchange tick-admitted commands and complete state, published as `FoundryApi_v5`; the sandbox connects through it alone (Step 6) and holds against hostile peers and the controlled envelope (Step 7); desktops, the public internet and the external consumer are proven (Step 8, [networking guide](docs/modding/networking.md)). What it deliberately left out — relays, NAT traversal, accounts, prediction, lockstep, IPv6 — is networking.md §11's, and each is its own decision. |
 | Certified releases (Developer ID, notarization, Windows code signing) | **After a fully playable 3D game** (ADR-0047) | M17 publishes unsigned, labelled GitHub pre-releases instead. When due, use the implemented Developer ID/notary path and verify the exact quarantined download on a genuinely clean recipient Mac; add Windows signing. No membership is bought before then. |
 | Linux runtime support | **Done in M18** (2026-09-27) | Removed from M13 by ADR-0039; headless servers proven in M16.5 (ADR-0046). The desktop is a runtime claim on one Intel Arc/Mesa machine, under Xorg, sway and GNOME, with its limits in [linux-desktop.md](docs/design/linux-desktop.md). No Linux release artifact exists; that is a distribution decision nothing has asked for yet. |
-| 3D | **Decided** (2026-09-27); **M19 done** (2026-09-27, tag `m19`); **M20 done** (2026-09-29, tag `m20`); **M21 done** (2026-09-29, tag `m21`); **M22 done** (2026-09-30, tag `m22`); **M23 done** (2026-10-01, tag `m23`); **M24 done** (2026-10-01, tag `m24`); **M25 done** (2026-10-02, tag `m25`) | [3d.md](docs/design/3d.md) and ADR-0048 to ADR-0059: conventions, fixed vertex slots, engine shading models per backend, the engine-declared hierarchy, collision without dynamics, forward rendering, assets kept apart from the renderer, photometric lighting with pre-exposure and Neutral, compiled collision geometry copied into physics, and skeletal animation sampled in `anim` and skinned on the CPU. M22's lit room is changed by a content-only mod. M23's [collision design](docs/design/collision3d.md) is implemented: a character walks that room and a course on Metal and Windows/Vulkan. M24's [animation design](docs/design/animation3d.md) is implemented (ADR-0058): a glTF character, skinned on the CPU with no shader variant, patrols the room on both. M25's [public 3D design](docs/design/public3d.md) is implemented (ADR-0059): `FoundryApi_v6` is frozen, a content mod and a consented C99 mod add lit, solid objects to that room on both, and [the 3D modding guide](docs/modding/3d.md) is written from a mod built outside the repository. Only M26, the playable 3D sample, remains. Linux is a reproducible target, not a kept machine: it runs when a milestone changes something Linux-specific, and at M26 on a freshly provisioned machine (3d.md §10.2). What stays deferred is 3d.md §11's, light.md §14's and collision3d.md §15's, animation3d.md §14's and public3d.md §14's, each item waiting on a game or a measurement. |
+| Everything the design documents deferred | **Scheduled** (2026-10-02, ADR-0060) | M27–M149 in `docs/ROADMAP.md`: the game toolkit, dynamics and worlds, the renderer's upper tier, tools, and reach. Each item's recorded trigger no longer decides whether it is built; it still decides its shape and budget. A milestone is designed only when its turn comes. |
+| 3D | **Decided** (2026-09-27); **M19 done** (2026-09-27, tag `m19`); **M20 done** (2026-09-29, tag `m20`); **M21 done** (2026-09-29, tag `m21`); **M22 done** (2026-09-30, tag `m22`); **M23 done** (2026-10-01, tag `m23`); **M24 done** (2026-10-01, tag `m24`); **M25 done** (2026-10-02, tag `m25`) | [3d.md](docs/design/3d.md) and ADR-0048 to ADR-0059: conventions, fixed vertex slots, engine shading models per backend, the engine-declared hierarchy, collision without dynamics, forward rendering, assets kept apart from the renderer, photometric lighting with pre-exposure and Neutral, compiled collision geometry copied into physics, and skeletal animation sampled in `anim` and skinned on the CPU. M22's lit room is changed by a content-only mod. M23's [collision design](docs/design/collision3d.md) is implemented: a character walks that room and a course on Metal and Windows/Vulkan. M24's [animation design](docs/design/animation3d.md) is implemented (ADR-0058): a glTF character, skinned on the CPU with no shader variant, patrols the room on both. M25's [public 3D design](docs/design/public3d.md) is implemented (ADR-0059): `FoundryApi_v6` is frozen, a content mod and a consented C99 mod add lit, solid objects to that room on both, and [the 3D modding guide](docs/modding/3d.md) is written from a mod built outside the repository. M26, the playable 3D sample, is next, and M27–M149 follow it (ADR-0060). Linux is a reproducible target, not a kept machine: it runs when a milestone changes something Linux-specific, and at M26 on a freshly provisioned machine (3d.md §10.2). What stays deferred is 3d.md §11's, light.md §14's and collision3d.md §15's, animation3d.md §14's and public3d.md §14's, each item waiting on a game or a measurement. |
 
-**Out of scope indefinitely, not constraining the initial architecture:** consoles, mobile, web,
-VR, x86-64 macOS.
+**Out of scope indefinitely, not constraining the initial architecture:** consoles, iOS,
+x86-64 macOS. Android, the web and VR/XR were on this list until ADR-0060 planned them in
+Phase 10 (M138–M144); none constrains the architecture before its milestone's design.
 
 ---
 
@@ -717,3 +726,5 @@ A future session must not, without explicit discussion:
 * Introduce a dependency that cannot be replaced, or a proprietary one.
 * Skip a milestone's runnable result in order to move faster.
 * Expand `CLAUDE.md` into an implementation diary.
+* Treat the 150-milestone roadmap as a schedule, design a milestone before its turn, or let
+  the total grow without the owner's decision (ADR-0060).

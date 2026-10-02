@@ -335,6 +335,10 @@ repeats it.
 
 ## 9. Deferred, with what brings each back
 
+> **2026-10-02 (ADR-0060):** these items are now scheduled, in `docs/ROADMAP.md`'s long roadmap
+> (M27–M149). Each trigger below no longer decides whether its item is built; it still names
+> the need and the budget that milestone's design must meet.
+
 | Deferred | Why not now | Revisit when |
 | --- | --- | --- |
 | Parallel system scheduling | Needs declared read/write sets from every system, mods' included, and an ABI shape for them | A game's simulation is measured CPU-bound across systems rather than within one |

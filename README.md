@@ -5,7 +5,8 @@
 A modular 2D-first game engine, written in Zig, built to grow into a general-purpose
 2D/3D engine with modding as a first-class feature rather than an afterthought.
 
-Foundry is a long-term, incremental engineering project. Every milestone is required to
+Foundry is a long-term, incremental engineering project: **150 planned milestones, of which
+M0 to M25 are done**. It is a gradual ascent, not a sprint, and every milestone is required to
 leave behind something that runs.
 
 ## Download
@@ -38,7 +39,8 @@ Each release lists the SHA-256 of every file, so you can check a download matche
 ./scripts/install-zig.sh          # the only tool you need: the pinned Zig
 zig build run  -Drhi=metal        # the sandbox, in a window (macOS)
 zig build room -Drhi=metal        # the room, a small game
-zig build test                    # about 1,680 headless tests
+zig build sandbox3d -Drhi=metal   # the 3D sandbox
+zig build test                    # about 2,070 headless tests
 ```
 
 On Windows, use `-Drhi=vulkan` with the pinned Vulkan SDK on `PATH` (see
@@ -49,6 +51,9 @@ On Windows, use `-Drhi=vulkan` with the pinned Vulkan SDK on `PATH` (see
 * **2D rendering** through Foundry's own render hardware interface, with Metal and Vulkan
   backends. A validation backend enforces the strict rules either GPU API would forgive, so
   every rendering test runs headlessly.
+* **3D rendering** on the same interface: models imported from glTF, lit materials with
+  shadows, a transform hierarchy, collision with a character controller, and skeletal
+  animation.
 * **Content as data.** Content lives in Foundry's own `.fdt` text format, compiled to `.fpk`
   packages. Every record has a stable namespaced ID such as `foundry:item.torch`, never a
   load-order index. The engine's own content loads through exactly the path a mod's does.
@@ -60,7 +65,7 @@ On Windows, use `-Drhi=vulkan` with the pinned Vulkan SDK on `PATH` (see
 * **Three modding tiers, all working:**
   - content packages;
   - sandboxed, hot-reloadable Lua 5.5.1 scripts;
-  - native C mods through one versioned C ABI.
+  - native C mods through one versioned C ABI, in 2D and 3D.
 
   Players order their mods in an MO2-style mod screen.
 * **An editor** that authors content through the same public C ABI a mod uses. It has no
@@ -83,7 +88,8 @@ guides are in [docs/modding](docs/modding/):
 - [scripts](docs/modding/script-mods.md);
 - [native](docs/modding/native-mods.md);
 - [authoring](docs/modding/authoring.md);
-- [networking](docs/modding/networking.md).
+- [networking](docs/modding/networking.md);
+- [3D](docs/modding/3d.md).
 
 ## Target platforms
 
@@ -91,11 +97,12 @@ guides are in [docs/modding](docs/modding/):
 | --- | --- | --- |
 | macOS on Apple Silicon | Primary development target, first-class supported | Metal (native) |
 | Windows x64 | Second target, runtime-tested since M13 | Vulkan |
-| Linux x64 | Headless and server runtime proven in M16.5; the desktop comes after the first game, before 3D | None headless; Vulkan compile-checked only |
+| Linux x64 | Headless and server runtime proven in M16.5; desktop (X11 and Wayland) proven in M18 | Vulkan |
 
 Windows runs on one tested Intel Arc machine so far. Linux x64 runs the headless test graph
-and the network authority, proven on a cloud VM serving macOS and Windows clients. No Linux
-window or graphics driver has run yet. See [ADR-0008](docs/adr/0008-target-platforms.md),
+and the network authority, proven on a cloud VM serving macOS and Windows clients, and the
+desktop on one Intel Arc/Mesa machine. There is no Linux release artifact yet. Android, the
+web and VR/XR are planned late in the roadmap; consoles and iOS are not planned. See [ADR-0008](docs/adr/0008-target-platforms.md),
 [ADR-0039](docs/adr/0039-linux-after-the-first-game.md) and
 [ADR-0046](docs/adr/0046-linux-headless-servers-before-release.md).
 
@@ -130,14 +137,16 @@ layer cannot import a higher one.
   handles bytes only; the meaning is the application's.
 * **`render2d`**, **`physics2d`**, **`scene`**, **`audio`** and **`ui`**: sprites and text,
   collision, entities and systems, the mixer, and immediate-mode UI.
+* **`render3d`**, **`physics3d`** and **`anim`**: models, materials, lights and cameras; 3D
+  shapes, queries and a character controller; skeletons, clips and CPU skinning.
 * **`app`**, **`author`** and **`mod`**:
   - `app`: the engine loop, and the player's mod set and settings;
   - `author`: the one content compiler, with bounded source workspaces;
   - `mod`: discovery, dependencies and deterministic load order.
 * **`debug`**: the in-process profiler, memory report, log console, entity inspector and
   content browser.
-* **`abi`**: the installed C99/C++ header, and five additive versions of the public API table
-  (233 calls), for native mods, scripts, tools and the editor alike.
+* **`abi`**: the installed C99/C++ header, and six additive versions of the public API table
+  (261 calls), for native mods, scripts, tools and the editor alike.
 * **`script`**: the optional restricted Lua runtime, built on that same table.
 
 ## How it is built
@@ -159,11 +168,17 @@ Decisions are recorded before they are built:
 
 ## Project status
 
-**M0 through M18 are complete, and the first preview release is published.** Foundry is a
-playable, moddable, networked 2D engine with an editor. It runs on macOS, Windows and Linux
-(X11 and Wayland), and the first game built on it is finished in its own repository. 3D is next,
-and [its design](docs/design/3d.md) is decided (ADR-0048 to ADR-0053); M19 has not begun. Signed and
-notarized releases wait until after a fully playable 3D game ([ADR-0047](docs/adr/0047-unsigned-github-preview-release.md)).
+**M0 through M25 are complete: 26 of 150 planned milestones.** Foundry is a playable,
+moddable, networked 2D engine with an editor, and a 3D engine with lit, shadowed, animated
+models, collision and a public 3D modding API. It runs on macOS, Windows and Linux (X11 and
+Wayland), and the first game built on it is finished in its own repository.
+
+**What comes next** is M26, a playable 3D sample, and then the long roadmap
+([ADR-0060](docs/adr/0060-a-150-milestone-roadmap.md)): a complete game toolkit, dynamics and
+large worlds, the renderer's upper tier, tools, and reach onto more platforms, ending in
+Foundry 1.0 at M149. It is a gradual ascent, not a sprint: the count says how far there is to
+go, not how fast, and nothing is designed before its turn. Signed and notarized releases stay
+deferred ([ADR-0047](docs/adr/0047-unsigned-github-preview-release.md)).
 
 - [docs/ROADMAP.md](docs/ROADMAP.md): every milestone, what it proved and what comes next.
 - [PROJECT_STATE.md](PROJECT_STATE.md): exactly where things stand, updated every session.
@@ -185,7 +200,7 @@ smallest thing that exercises a capability, and a sample is not a game.
 | [CLAUDE.md](CLAUDE.md) | Durable philosophy, invariants, architecture, conventions | Rarely |
 | [AGENTS.md](AGENTS.md) | How to build, verify and work here | As practice changes |
 | [PROJECT_STATE.md](PROJECT_STATE.md) | Current phase, what works, next steps, open questions | Every session |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Staged milestones from minimal engine to 2D to 3D | Occasionally |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | All 150 milestones: what is done, and the long roadmap ahead | Occasionally |
 | [docs/adr/](docs/adr/) | Numbered architecture decision records | Append-only |
 | [docs/design/](docs/design/) | Per-subsystem design, written before implementation | As needed |
 | [docs/modding/](docs/modding/) | Guides for mod authors and server operators | With the features |

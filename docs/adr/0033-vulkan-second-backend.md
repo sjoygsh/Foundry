@@ -1,5 +1,8 @@
 # ADR-0033: Vulkan is the second graphics backend
 
+**Superseded in part (2026-10-02):** ADR-0060 plans Direct3D 12 as a later third backend
+(M135–M136). Vulkan remains the Windows and Linux backend; only "D3D12 not planned" changes.
+
 **Status:** Accepted; implemented in M13, complete 2026-09-19, on Windows x64. Superseded by
 [0039](0039-linux-after-the-first-game.md) in its promise that M13 proves Linux as well; the
 backend choice stands.

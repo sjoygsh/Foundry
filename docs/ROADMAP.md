@@ -1,6 +1,9 @@
 # Foundry Roadmap
 
-Staged milestones from a minimal engine toward 2D, then 3D.
+Staged milestones from a minimal engine toward 2D, then 3D, then an industry-grade
+general-purpose engine: **150 milestones, M0 to M149** (ADR-0060). M0–M25 are done. The plan
+beyond M26 is [the long roadmap](#the-long-roadmap--m27-to-m149) at the end of this file. It is
+a gradual ascent, not a sprint.
 
 **Milestones are units of work, not units of time.** No dates. Sessions are bounded by
 available context, so each milestone is sized to be resumable from `PROJECT_STATE.md` alone,
@@ -1170,3 +1173,187 @@ outside the repository from the installed header and writes
 [`modding/3d.md`](modding/3d.md) from it. Step 8 reconciled `3d.md`, `public-abi.md`,
 `hierarchy.md`, `collision3d.md` and CLAUDE.md, froze v6 and tagged `m25`. The owner watched
 the walker and reported it very good. **M26, the playable 3D sample, has no design yet.**
+
+---
+
+## The long roadmap — M27 to M149
+
+**Decided 2026-10-02 ([ADR-0060](adr/0060-a-150-milestone-roadmap.md)).** Foundry is planned as
+**150 numbered milestones, M0 to M149**. M0–M25 are done (with M16.5, which was inserted
+between two of them), M26 is designed next, and the 123 below follow it.
+
+**This is a gradual ascent, not a sprint.** The number says how far there is to go, not how
+fast. Milestones are still units of work, not time; each still begins with a design document
+the owner accepts, still ends in something that runs, and still stops between steps. Nothing
+here is designed in advance: a line below is a title and an intent, and its design is written
+when its turn comes, from the code as it then is.
+
+**What the list is, and is not:**
+- It is the order of intent. The owner may reorder it, by a dated note here.
+- The total stays 150. A milestone that proves too large is split, and the split is paid for
+  by merging two small ones elsewhere, so the plan cannot grow quietly.
+- It replaces "returns when a game asks" as the *schedule* for the items the design documents
+  deferred (`3d.md` §11, `light.md` §14, `collision3d.md` §15, `animation3d.md` §14,
+  `public3d.md` §14, `jobs-and-threading.md` §9, `networking.md` §11). Their triggers still
+  decide the *shape*: each milestone names the sample that needs the feature and measures
+  against the budget its trigger named.
+- **Certified releases are not on it.** Signing and notarization stay deferred under ADR-0047.
+- **Not planned at all:** consoles, iOS, x86-64 macOS.
+
+### Phase 6 — A complete game toolkit (M27–M50)
+
+What a real 3D game reaches for first. Ends in a second 3D sample that uses all of it.
+
+| # | Milestone | Intent |
+| --- | --- | --- |
+| M27 | Background work | A task graph and background jobs over `core.Jobs`; assets load without stalling a frame |
+| M28 | Runtime geometry | Meshes, materials and textures created at run time in `render3d`, beside compiled content |
+| M29 | Particles I | A CPU particle system with content-defined emitters |
+| M30 | Audio II | Compressed audio and streamed music; the decoder is an ADR |
+| M31 | Audio III | 3D spatialisation, mixer buses and effects |
+| M32 | Navigation I | Navigation meshes built from collision geometry |
+| M33 | Navigation II | Pathfinding, agents and avoidance |
+| M34 | Animation logic I | An engine animation component saved with a world, root motion and events |
+| M35 | Animation logic II | State machines, layers, masks and additive poses |
+| M36 | Animation logic III | Inverse kinematics: foot placement and look-at |
+| M37 | Character and collision extras | Moving platforms, pushing, surface types, one-sided triangles, rotational sweeps, runtime scale, collision proxies |
+| M38 | Collision at scale | A broadphase, the tree baked into `.fcol`, hull assets, and a physics panel in the overlay |
+| M39 | Shadows II | Cascaded shadow maps |
+| M40 | Shadows III | Point and spot shadows; translucent shadows |
+| M41 | Environment | Sky, cubemaps and image-based lighting; an engine light record, glTF light import and tangent generation |
+| M42 | Tone and exposure | A second tone map, auto-exposure, bloom and colour grading |
+| M43 | Text I | Scalable fonts loaded as content |
+| M44 | Game UI | Content-described layouts and a fuller game widget set over the existing kernel |
+| M45 | Input | Action maps, rebinding and gamepads |
+| M46 | Localization | String tables as content, plural rules and locale selection |
+| M47 | Saves II | Saving component types registered by native mods; versioned migration |
+| M48 | Public API v7 | Publishes what M27–M47 built, with a granted camera write, per-mod quotas and jobs for native mods |
+| M49 | 3D in Lua | The script host's binding over v6 and v7 |
+| M50 | The second 3D sample | A game slice built only from the above, played by someone who did not build it |
+
+### Phase 7 — Dynamics and worlds (M51–M68)
+
+Things that move by themselves, and worlds larger than a room. Ends in an open-world sample.
+
+| # | Milestone | Intent |
+| --- | --- | --- |
+| M51 | Dynamics I | Rigid bodies and contacts; own solver or a library is an ADR (ADR-0051's trigger) |
+| M52 | Dynamics II | Stacking, sleeping and continuous collision |
+| M53 | Dynamics III | Joints and constraints |
+| M54 | Dynamics IV | Ragdolls, joining `anim` and physics |
+| M55 | Vehicles | Wheeled vehicles over the constraint solver |
+| M56 | 2D dynamics | Rigid bodies for `physics2d`, which is collision only today |
+| M57 | Cloth and soft bodies | Simulated cloth and deformables |
+| M58 | Destruction | Fracture and debris |
+| M59 | Level of detail | Mesh LOD generation at import and selection at draw |
+| M60 | Streaming | Scenes and assets loaded and unloaded around a point |
+| M61 | Large worlds | World partition, and coordinates beyond single precision's metre range |
+| M62 | Terrain I | Heightfield rendering |
+| M63 | Terrain II | Heightfield collision and layered terrain materials |
+| M64 | Foliage and instancing | A GPU-instanced draw path and scattering |
+| M65 | Voxels I | An optional `voxel` module: chunk storage and meshing. Nothing else depends on it |
+| M66 | Voxels II | A grid collision shape, chunk streaming and saving |
+| M67 | Voxels III | Voxel LOD, editing and a smooth-surface option |
+| M68 | The open-world sample | Terrain, streaming, dynamics and voxels in one runnable world |
+
+### Phase 8 — The renderer's upper tier (M69–M102)
+
+Each step is measured against the forward renderer it changes (ADR-0052). Ends in a showcase with a performance baseline on every platform.
+
+| # | Milestone | Intent |
+| --- | --- | --- |
+| M69 | Shading language I | One shading language for every backend; the choice is an ADR (ADR-0015 and ADR-0049's trigger) |
+| M70 | Shading language II | The engine's shading models ported, with per-backend parity readbacks |
+| M71 | Mod shaders | Mod-authored shaders and shading models, compiled at run time |
+| M72 | Material graphs | Materials as a node graph in content; the editor for it is M109 |
+| M73 | Render graph | Declared passes replace the fixed pass order |
+| M74 | Many lights | Clustered or forward+ shading; more than 16 lights |
+| M75 | GPU compute | Compute in the RHI on every backend |
+| M76 | GPU skinning | Skinning on the GPU, clip compression, and the M24 limits lifted |
+| M77 | Animation formats | Morph targets, cubic-spline keys and animated rigid nodes |
+| M78 | Particles II | GPU particles |
+| M79 | Particles III | Ribbons, mesh particles and particle collision |
+| M80 | Decals | Projected decals |
+| M81 | Ambient occlusion | A depth prepass and screen-space ambient occlusion |
+| M82 | Temporal anti-aliasing | Motion vectors and TAA |
+| M83 | Upscaling | Dynamic resolution and a permissively licensed upscaler |
+| M84 | Lens effects | Depth of field and motion blur |
+| M85 | Atmosphere | Volumetric fog and sky scattering |
+| M86 | Water | Water surfaces |
+| M87 | Reflections | Reflection probes and screen-space reflections |
+| M88 | Baked lighting I | A lightmap baker |
+| M89 | Baked lighting II | Light probes for moving objects |
+| M90 | Global illumination I | Real-time diffuse global illumination |
+| M91 | Global illumination II | Real-time specular, and its limits measured |
+| M92 | Occlusion culling | Culling beyond the frustum |
+| M93 | Texture compression | Block-compressed formats and texture streaming |
+| M94 | HDR output | HDR displays and wide colour |
+| M95 | Virtual geometry I | Meshlets and cluster culling |
+| M96 | Virtual geometry II | Continuous detail over them |
+| M97 | Ray tracing I | Acceleration structures in the RHI |
+| M98 | Ray tracing II | Ray-traced shadows and reflections |
+| M99 | Render thread | A pipelined frame and multi-threaded recording |
+| M100 | Parallel systems | Systems scheduled in parallel from declared access |
+| M101 | Device recovery | Surviving a lost GPU device |
+| M102 | The rendering showcase | Every feature above in one scene, with budgets recorded per platform |
+
+### Phase 9 — Tools (M103–M124)
+
+Every tool stays a client of the public API (I4). Ends with the whole product redesigned to look like one thing.
+
+| # | Milestone | Intent |
+| --- | --- | --- |
+| M103 | Prefabs | Nested, overridable scenes as content |
+| M104 | Scene editor I | A 3D viewport, selection and gizmos |
+| M105 | Scene editor II | Placement, hierarchy editing and saving scenes |
+| M106 | Scene editor III | 2D scenes and tile maps |
+| M107 | Play in editor | A host that runs the game from the editor |
+| M108 | Schema designer | Schemas authored in the editor |
+| M109 | Material editor | Editing M72's graphs |
+| M110 | Particle editor | Editing emitters live |
+| M111 | Animation editor | Clip preview and state-machine editing |
+| M112 | Sequencer | Timelines and cinematics |
+| M113 | World tools | Terrain, foliage and voxel editing |
+| M114 | UI editor | Laying out M44's game UI |
+| M115 | Import breadth I | More model formats; each is a license and dependency decision |
+| M116 | Import breadth II | More image formats, including HDR |
+| M117 | Video | Video playback |
+| M118 | Visual scripting I | A node graph that compiles to the script host |
+| M119 | Visual scripting II | Its editor and debugger |
+| M120 | Script tooling | A Lua debugger and profiler |
+| M121 | Native reload | Unloading and hot-reloading native mods |
+| M122 | The redesign | **The look of everything changes and no function does**: the editor, the overlay, the mod manager and the samples get one visual language, as themes and layout only |
+| M123 | Package distribution | A package repository format, dependency fetching and an in-game mod browser |
+| M124 | Reference and gallery | Generated API reference and a gallery of runnable samples |
+
+### Phase 10 — Reach (M125–M149)
+
+More players, more languages, more machines. Ends in 1.0.
+
+| # | Milestone | Intent |
+| --- | --- | --- |
+| M125 | Networking II | IPv6 and relays |
+| M126 | NAT traversal | Direct connections between players behind routers |
+| M127 | Lobbies and accounts | Matchmaking and operator-hosted identity |
+| M128 | Replication | An opt-in replication layer over channels; ADR-0044's authority is unchanged and the layer gets its own ADR |
+| M129 | Prediction | Client prediction and rollback |
+| M130 | Lockstep | Lockstep sessions over a bit-exact subset (ADR-0013's open question) |
+| M131 | Large sessions | Interest management, resuming a participant and host migration |
+| M132 | Voice | Voice chat |
+| M133 | Second language I | A mainstream scripting language beside Lua; the choice is an ADR |
+| M134 | Second language II | Its binding over the one public table, and its tooling |
+| M135 | Direct3D 12 I | A third backend (this roadmap supersedes ADR-0033's "not planned") |
+| M136 | Direct3D 12 II | Parity readbacks and every sample |
+| M137 | Linux releases | A Linux release artifact |
+| M138 | Android I | Build, packaging and the app lifecycle; the build tooling is an ADR |
+| M139 | Android II | Vulkan and touch input on a device |
+| M140 | Android III | A mobile rendering tier, measured on a device |
+| M141 | Android IV | A sideloadable build with its assets |
+| M142 | Web I | A WebGPU backend |
+| M143 | Web II | The browser runtime: storage, audio and input |
+| M144 | VR and XR | Head-mounted displays through OpenXR |
+| M145 | Text II | Complex shaping, right-to-left text and input methods |
+| M146 | Accessibility | Screen-reader hooks, subtitles, colour-blind modes and full remapping |
+| M147 | Services | Crash reporting, opt-in telemetry and store integration behind a host interface |
+| M148 | Hardening II | Fuzzing every format, performance regression gates, long soaks and a security review |
+| M149 | Foundry 1.0 | A complete game shipped by someone else on every supported platform, and the stability promise written down |
