@@ -693,3 +693,80 @@ the four `check`s including Metal and null Windows/Linux cross-builds, and all f
 headless samples (`run`, `room`, `sandbox3d`, `court`), plus headless scripted runs of `court`
 under `FOUNDRY_COURT_PLAY=win`, `caught`, and `fell`, all exit 0. No HUD, menus, sound, or
 preferences were implemented. Stop before Step 4.
+
+### Correction to Step 3's Resolution (2026-10-03)
+
+Step 3 was verified by a second agent the same day. The game worked and the bar passed, but
+the Resolution above misdescribed it, its tests were weaker than it claimed, and one path was
+wrong. The text above is left as written; where it disagrees with this section, this section
+is the record.
+
+**What the Resolution got wrong.** The gate did not lift to `(0, 3.2, -4.5)` over 3.0 s: the
+content had it slide back along z over 1.5 s. The warden's speed is 1.0 m/s, not 1.8. The exit
+volume is `(-1.2, -0.5, -9.5)` to `(1.2, 2.5, -8.0)`. Beacons were tracked by array index, not
+by content ID. The "headless scripted runs under `FOUNDRY_COURT_PLAY`" proved nothing: a run
+asserted no ending and stopped at 120 frames, mid-walk, with exit 0. Of twelve guards broken
+one at a time, seven still passed all eleven tests, including winning with the gate shut and
+winning with beacons unlit.
+
+**What changed.**
+
+- **A beacon's ray target names its slot.** The collider's `user` was the beacon's place among
+  the sorted records, so one refused record made Use light a neighbour. It is the slot now.
+  Above the bound of eight, the lowest content-ID hashes are kept and the rest are named in a
+  log line; before, which eight survived followed the store's iteration order, silently.
+- **A model that is not a `foundry:model`** leaves its beacon, gate or warden out, with a log
+  line (§10.4). A gate or warden record of the wrong schema is refused the same way.
+- **No gate means no win.** A missing or refused gate used to count as open. §5.5 says such a
+  court cannot be finished, and now it cannot.
+- **One ending a tick, in a fixed order:** the exit, then the pit, then the warden. Before,
+  later checks overwrote earlier ones.
+- **The gate sinks.** `open` is `(0, -1.4, -7.7)`: it drops into the ground under the lintel.
+  Sliding back left it standing in the exit volume, behind the point where the player had
+  already won. A sinking gate still never moves into a character (§5.4).
+- **Sizes left the source (I5).** The beacon's Use box (`use_half`) and light height, the
+  gate's `half_extents`, and the warden's `radius`, `height` and `pause` are record fields.
+  The warden takes the rules' gravity, slope, step and snap. It collides with the level alone.
+- **The script is test data** (§10.2): `samples/court/testdata/play.zig` lists the steps (walk,
+  jump, use a beacon by content ID, wait for the gate, stand) and `scripted.zig` interprets
+  them. A beacon is aimed at where its record puts it.
+- **A scripted run is a proof.** It stops when the script is done, and the process fails on an
+  unknown name, a wrong ending, an unknown beacon, a restart that does not return to `playing`,
+  or a run past its tick limit. Headless, a scripted run has no 120-frame default.
+- **Swallowed errors** now log or carry a comment (CLAUDE.md §7).
+
+**A controller finding, not fixed here.** The player cannot walk off the court floor's edge
+into the gap: the walk stops with the feet exactly on the edge, still grounded. Reading
+`character.zig`, the likely cause is that the edge contact reports the floor box's vertical
+face, which is judged a wall, and the wall response removes the motion even though it points
+away from that face. `physics3d` is M23's and is not changed in a sample's fix. The `fell`
+script therefore jumps short into the gap, which is also how a person falls. It is an open
+question for the owner whether to correct the controller in its own change.
+
+**Tests.** Sixteen court tests, eleven of them the game's:
+the win script, with the second win equal to the first tick for tick and the restart's hash
+equal to a fresh game's (§10.3); the caught and fell scripts, restarting to the initial hash;
+a script that reaches the wrong ending, none, or names an unknown beacon; Use needing the
+press, the look and the reach; a win needing every beacon, the gate fully open and the feet in
+the exit, and an ended game not advancing; the gate's body blocking until it has opened; the
+pit and the catch distance on both sides of their thresholds; the warden's pause, patrol and
+reset; every field of every beacon, gate and warden record refused when absent or non-finite,
+with zero, negative and out-of-bound values, coincident waypoints, an inside-out exit volume
+and the rules fields Step 3 added; and a refused beacon, gate and warden each left out with
+the game standing.
+
+Thirty guards were broken one at a time and each failed a test: the reach, the ray's layer,
+the press, the slot, the gate opening early, each of the four win conditions, a missing gate
+counting as open, the catch removed and widened, the pit inverted, an ended game advancing,
+restart skipping the beacons, gate or warden, the model check, the gate's body not moving,
+each bound, the capsule and waypoint checks, both warden pauses, the exit volume's order and
+the non-finite check. All were restored.
+
+**Not tested:** more than eight beacon records. The test package has three and a store cannot
+be given a ninth without a second package; the selection is read, not proven.
+
+The bar: `fmt`, **2,091 of 2,092 tests** (one expected skip, `court-test` 16 of 16), the four
+`check`s, and the four 30-frame headless samples. `FOUNDRY_COURT_PLAY=win`, `caught` and `fell`
+on null finish in 1,206, 111 and 215 ticks with exit 0, and an unknown name exits 1. The
+generated assets still match byte for byte. No HUD, menu, sound or preference exists yet.
+

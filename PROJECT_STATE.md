@@ -11,21 +11,20 @@ play-throughs (`win`, `caught`, `fell`), and tick-by-tick determinism hashing. T
 Step 1. M25 Public 3D is complete (tag `m25`, ADR-0059) and `FoundryApi_v6` is frozen at 261
 calls. M0–M25 are pushed; M26 Steps 1–3 are committed and not pushed.
 
-**M26 Step 3 is done (2026-10-03).** `samples/court` implements the full game loop: phases
-(`title`, `playing`, `paused`, `won`, `caught`, `fell`), beacons and raycast Use, kinematic gate,
-patrolling warden with CPU skinning, exit volume and pit detection, restart, three scripted
-play-throughs (`win`, `caught`, `fell`), tick-by-tick determinism hashing, and untrusted-input refusal.
-Three beacon props (`court:beacon.open`, `court:beacon.wall`, `court:beacon.ledge`) are placed
-with static box colliders on `beacon_layer`; raycasting from eye position along look direction
-activates photometric point lights upon pressing Use (`E`). When all three are lit, the kinematic
-gate lifts smoothly over 3.0s, allowing passage into the exit volume to win. The warden patrols
-between waypoints along `z = 2.5` with cross-faded animated walk/idle clips and triggers `.caught` on
-proximity (`1.2m`). Falling past `pit_height` (`-2.0m`) triggers `.fell`. Pressing `R` resets state
-cleanly. Eleven court tests pass on null and Metal (11 of 11), including the three scripted
-endings, tick-by-tick FNV-1a hash replay determinism, restart equivalence, and malformed
-record refusal. Four mutation proofs failed as intended and their guards were restored.
-The ten-command bar passes at **2,086 of 2,087 tests**, one expected skip, and all four headless
-samples run 30 frames cleanly. Stop before Step 4.
+**M26 Step 3 is done (2026-10-03), and was corrected the same day.** `samples/court` is a
+game on null: phases, three beacons lit by a Use ray, a kinematic gate that sinks when the last
+one lights, a warden patrolling two waypoints with CPU skinning, the exit volume, the pit,
+restart, and three scripted play-throughs that replay to the same hash at every tick. A second
+agent's verification found the first Resolution misdescribed the content, seven of twelve
+broken guards still passed its tests, and a refused beacon record made Use light the wrong
+beacon. The correction (`playable3d.md`, "Correction to Step 3's Resolution") fixed the slot
+bug, refused non-model models, made a missing gate unwinnable, moved collider sizes and the
+warden's pause into content, moved the waypoints into `samples/court/testdata/play.zig`, and
+made a scripted run fail the process unless it reaches its ending. Thirty broken guards each
+fail a test now. **Open for the owner:** the character controller will not walk off the court
+floor's edge (the `fell` script jumps instead); `physics3d` was not changed. The bar passes at
+**2,091 of 2,092 tests**, one expected skip, `court-test` 16 of 16, and all four headless
+samples run.
 
 **M26 Step 2 is done (2026-10-03).** The court has its own build grants (never RHI or ABI),
 ordinary `court:content` package, `court:config` and `court:rules` schemas, compiled glTF level

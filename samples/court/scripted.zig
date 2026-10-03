@@ -1,10 +1,13 @@
-//! Scripted play-through drivers for samples/court (§10.2).
-//! Produces an Intent each tick from player input mechanisms only:
-//! moving (WASD), looking, jumping (Space), using (E), and restarting (R).
+//! The scripted play-through driver (playable3d.md §10.2).
+//!
+//! It reads the game as a player sees it and answers with the `Intent` a player's input
+//! becomes: move, look, jump, use and restart. It never writes game state, so a script
+//! cannot take a path a player cannot. The waypoints are test data in `testdata/play.zig`.
 const std = @import("std");
 const core = @import("core");
 const walk_mod = @import("walk.zig");
 const game_mod = @import("game.zig");
+const play = @import("testdata/play.zig");
 
 const Vec3 = core.math.Vec3;
 const Quat = core.math.Quat;
@@ -15,214 +18,143 @@ pub const ScriptKind = enum {
     win,
     caught,
     fell,
+
+    pub fn parse(text: []const u8) ?ScriptKind {
+        return std.meta.stringToEnum(ScriptKind, text);
+    }
+
+    pub fn script(self: ScriptKind) *const play.Script {
+        return switch (self) {
+            .win => &play.win,
+            .caught => &play.caught,
+            .fell => &play.fell,
+        };
+    }
 };
 
 pub const ScriptDriver = struct {
-    kind: ScriptKind,
+    script: *const play.Script,
     step: usize = 0,
-    wait_ticks: u32 = 0,
-    wins_completed: u32 = 0,
+    /// How many times the script's ending has been reached.
+    endings: u8 = 0,
+    ticks: u32 = 0,
+    /// The restart that follows the last ending has been sent; the next tick checks it.
+    restarting: bool = false,
     done: bool = false,
+    /// Why the script stopped short, if it did. Null with `done` set means it succeeded.
+    failure: ?Failure = null,
+
+    pub const Failure = enum { wrong_ending, timed_out, unknown_beacon, restart_did_not_play };
 
     pub fn init(kind: ScriptKind) ScriptDriver {
-        return .{ .kind = kind };
+        return .{ .script = kind.script() };
     }
 
-    pub fn nextIntent(self: *ScriptDriver, game: *const Game, dt: f32) Intent {
-        switch (self.kind) {
-            .win => return self.nextWinIntent(game, dt),
-            .caught => return self.nextCaughtIntent(game, dt),
-            .fell => return self.nextFellIntent(game, dt),
+    pub fn succeeded(self: *const ScriptDriver) bool {
+        return self.done and self.failure == null and self.endings == self.script.runs;
+    }
+
+    fn fail(self: *ScriptDriver, why: Failure) Intent {
+        self.failure = why;
+        self.done = true;
+        return .{};
+    }
+
+    /// The intent for the tick about to run. Call once per tick until `done`.
+    pub fn nextIntent(self: *ScriptDriver, game: *const Game) Intent {
+        if (self.done) return .{};
+        self.ticks += 1;
+        if (self.ticks > self.script.tick_limit) return self.fail(.timed_out);
+
+        if (self.restarting) {
+            if (game.phase != .playing) return self.fail(.restart_did_not_play);
+            self.done = true;
+            return .{};
         }
-    }
 
-    fn nextWinIntent(self: *ScriptDriver, game: *const Game, dt: f32) Intent {
-        _ = dt;
-        const feet = game.walk.result.feet;
-        const yaw = game.walk.yaw;
-        const look_rate = if (game.rules) |r| r.look_rate else 0.004;
-
-        if (game.phase == .won) {
-            if (self.wins_completed == 0) {
-                self.wins_completed = 1;
+        const expected: game_mod.Phase = switch (self.script.ending) {
+            .won => .won,
+            .caught => .caught,
+            .fell => .fell,
+        };
+        switch (game.phase) {
+            .playing => {},
+            .won, .caught, .fell => {
+                if (game.phase != expected) return self.fail(.wrong_ending);
+                self.endings += 1;
                 self.step = 0;
+                // A win is left standing after its last run; a failure is restarted, which
+                // is what its screen offers.
+                if (self.endings == self.script.runs and expected == .won) {
+                    self.done = true;
+                    return .{};
+                }
+                if (self.endings == self.script.runs) self.restarting = true;
                 return .{ .restart = true };
-            } else {
-                self.done = true;
-                return .{};
-            }
+            },
+            .title, .paused => return .{},
         }
 
+        if (self.step >= self.script.steps.len) return .{};
         var intent: Intent = .{};
-
-        switch (self.step) {
-            // 0: Walk to Beacon 1 (open courtyard at (3.5, 0, 4.5)). Stop near (2.5, 0, 4.5).
-            0 => {
-                const nav = moveTowards(feet, yaw, .init(2.5, 0, 4.5));
+        const feet = game.walk.result.feet;
+        switch (self.script.steps[self.step]) {
+            .walk => |w| {
+                const nav = moveTowards(game, point(w.to));
                 intent.direction = nav.dir;
-                aimTowards(game.walk.eye(), yaw, game.walk.pitch, .init(3.5, 0.5, 4.5), look_rate, &intent);
-                if (nav.dist < 0.25) self.step = 1;
+                aimTowards(game, point(w.face), &intent);
+                if (nav.dist < w.within) self.step += 1;
             },
-            // 1: Aim at Beacon 1 and Use.
-            1 => {
-                aimTowards(game.walk.eye(), yaw, game.walk.pitch, .init(3.5, 0.5, 4.5), look_rate, &intent);
-                intent.use = true;
-                if (game.isBeaconLit(core.ContentId.fromString("court:beacon.open"))) self.step = 2;
-            },
-            // 2: Walk west along south corridor to (-3.5, 0, 4.5) to bypass warden patrol.
-            2 => {
-                const nav = moveTowards(feet, yaw, .init(-3.5, 0, 4.5));
-                intent.direction = nav.dir;
-                aimTowards(game.walk.eye(), yaw, game.walk.pitch, .init(-3.5, 0.5, 1.4), look_rate, &intent);
-                if (nav.dist < 0.3) self.step = 3;
-            },
-            // 3: Walk north to wall lip (-3.5, 0, 1.4) facing North.
-            3 => {
-                const nav = moveTowards(feet, yaw, .init(-3.5, 0, 1.4));
-                intent.direction = nav.dir;
-                aimTowards(game.walk.eye(), yaw, game.walk.pitch, .init(-3.5, 0.5, 0.0), look_rate, &intent);
-                if (nav.dist < 0.25) self.step = 4;
-            },
-            // 4: Jump forward North over low wall.
-            4 => {
-                const nav = moveTowards(feet, yaw, .init(-3.5, 0, 0.3));
-                intent.direction = nav.dir;
+            .jump => |j| {
+                intent.direction = moveTowards(game, point(j.to)).dir;
                 intent.jump = true;
-                aimTowards(game.walk.eye(), yaw, game.walk.pitch, .init(-3.5, 0.5, 0.0), look_rate, &intent);
-                if (feet.z < 0.8 and game.walk.result.grounded) self.step = 5;
+                aimTowards(game, point(j.face), &intent);
+                if (feet.z < j.land_z and game.walk.result.grounded) self.step += 1;
             },
-            // 5: Walk to Beacon 2 (behind wall at (-3.0, 0, -0.5)). Stop near (-2.2, 0, -0.5).
-            5 => {
-                const nav = moveTowards(feet, yaw, .init(-2.2, 0, -0.5));
-                intent.direction = nav.dir;
-                aimTowards(game.walk.eye(), yaw, game.walk.pitch, .init(-3.0, 0.5, -0.5), look_rate, &intent);
-                if (nav.dist < 0.25) self.step = 6;
-            },
-            // 6: Aim at Beacon 2 and Use.
-            6 => {
-                aimTowards(game.walk.eye(), yaw, game.walk.pitch, .init(-3.0, 0.5, -0.5), look_rate, &intent);
-                intent.use = true;
-                if (game.isBeaconLit(core.ContentId.fromString("court:beacon.wall"))) self.step = 7;
-            },
-            // 7: Walk east onto open courtyard floor at (0.0, 0, -0.5).
-            7 => {
-                const nav = moveTowards(feet, yaw, .init(0.0, 0, -0.5));
-                intent.direction = nav.dir;
-                aimTowards(game.walk.eye(), yaw, game.walk.pitch, .init(0.0, 0.5, -1.8), look_rate, &intent);
-                if (nav.dist < 0.3) self.step = 8;
-            },
-            // 8: Walk to gap edge at (0.0, 0, -1.6).
-            8 => {
-                const nav = moveTowards(feet, yaw, .init(0.0, 0, -1.6));
-                intent.direction = nav.dir;
-                aimTowards(game.walk.eye(), yaw, game.walk.pitch, .init(0.0, 0.5, -3.5), look_rate, &intent);
-                if (nav.dist < 0.2) self.step = 9;
-            },
-            // 9: Jump forward North over gap onto Ledge.
-            9 => {
-                const nav = moveTowards(feet, yaw, .init(0.0, 0, -3.5));
-                intent.direction = nav.dir;
-                intent.jump = true;
-                aimTowards(game.walk.eye(), yaw, game.walk.pitch, .init(0.0, 0.5, -3.5), look_rate, &intent);
-                if (feet.z < -3.3 and game.walk.result.grounded) self.step = 10;
-            },
-            // 10: Walk to Beacon 3 on Ledge at (2.0, 0, -5.5). Stop near (1.2, 0, -5.5).
-            10 => {
-                const nav = moveTowards(feet, yaw, .init(1.2, 0, -5.5));
-                intent.direction = nav.dir;
-                aimTowards(game.walk.eye(), yaw, game.walk.pitch, .init(2.0, 0.5, -5.5), look_rate, &intent);
-                if (nav.dist < 0.25) self.step = 11;
-            },
-            // 11: Aim at Beacon 3 and Use. Gate starts opening!
-            11 => {
-                aimTowards(game.walk.eye(), yaw, game.walk.pitch, .init(2.0, 0.5, -5.5), look_rate, &intent);
-                intent.use = true;
-                if (game.isBeaconLit(core.ContentId.fromString("court:beacon.ledge"))) self.step = 12;
-            },
-            // 12: Walk to front of Gate at (0.0, 0, -7.0).
-            12 => {
-                const nav = moveTowards(feet, yaw, .init(0.0, 0, -7.0));
-                intent.direction = nav.dir;
-                aimTowards(game.walk.eye(), yaw, game.walk.pitch, .init(0.0, 1.25, -9.0), look_rate, &intent);
-                if (nav.dist < 0.25) self.step = 13;
-            },
-            // 13: Wait for gate to open, then walk through into exit volume.
-            13 => {
-                aimTowards(game.walk.eye(), yaw, game.walk.pitch, .init(0.0, 1.25, -9.0), look_rate, &intent);
-                if (game.gate) |g| {
-                    if (g.progress >= 1.0) {
-                        const nav = moveTowards(feet, yaw, .init(0.0, 0, -8.6));
-                        intent.direction = nav.dir;
-                    }
+            .use => |name| {
+                const id = core.ContentId.fromString(name);
+                const beacon = for (game.beacons[0..game.beacon_count]) |*b| {
+                    if (b.id.eql(id)) break b;
+                } else return self.fail(.unknown_beacon);
+                if (beacon.lit) {
+                    self.step += 1;
+                } else {
+                    aimTowards(game, beacon.useCentre(), &intent);
+                    intent.use = true;
                 }
             },
-            else => {},
-        }
-
-        return intent;
-    }
-
-    fn nextCaughtIntent(self: *ScriptDriver, game: *const Game, dt: f32) Intent {
-        _ = dt;
-        const feet = game.walk.result.feet;
-        const yaw = game.walk.yaw;
-
-        if (game.phase == .caught) {
-            self.done = true;
-            return .{ .restart = true };
-        }
-
-        var intent: Intent = .{};
-        // Walk directly into the warden's patrol line at (0.0, 0, 2.5).
-        const nav = moveTowards(feet, yaw, .init(0.0, 0, 2.5));
-        if (nav.dist > 0.2) {
-            intent.direction = nav.dir;
-        }
-        return intent;
-    }
-
-    fn nextFellIntent(self: *ScriptDriver, game: *const Game, dt: f32) Intent {
-        _ = dt;
-        const feet = game.walk.result.feet;
-        const yaw = game.walk.yaw;
-
-        if (game.phase == .fell) {
-            self.done = true;
-            return .{ .restart = true };
-        }
-
-        var intent: Intent = .{};
-        // Walk directly North into the pit gap at (0.0, 0, -2.5).
-        const nav = moveTowards(feet, yaw, .init(0.0, 0, -2.5));
-        intent.direction = nav.dir;
-        if (feet.z < -1.0 and feet.z > -2.0) {
-            intent.jump = true;
+            .wait_gate => if (game.gate) |*g| {
+                if (g.progress >= 1.0) self.step += 1;
+            },
+            .stand => {},
         }
         return intent;
     }
 };
 
-fn moveTowards(feet: Vec3, yaw: f32, target: Vec3) struct { dir: Vec3, dist: f32 } {
-    var delta = target.sub(feet);
+fn point(p: play.Point) Vec3 {
+    return .init(p[0], p[1], p[2]);
+}
+
+/// The move input, relative to the yaw, that walks the player toward `target`.
+fn moveTowards(game: *const Game, target: Vec3) struct { dir: Vec3, dist: f32 } {
+    var delta = target.sub(game.walk.result.feet);
     delta.y = 0;
     const dist = delta.length();
     if (dist < 1e-4) return .{ .dir = .zero, .dist = 0 };
-    const world_dir = delta.scale(1.0 / dist);
-    const local_dir = Quat.fromAxisAngle(.up, -yaw).rotate(world_dir);
-    return .{ .dir = local_dir, .dist = dist };
+    return .{ .dir = Quat.fromAxisAngle(.up, -game.walk.yaw).rotate(delta.scale(1.0 / dist)), .dist = dist };
 }
 
-fn aimTowards(eye: Vec3, yaw: f32, pitch: f32, target: Vec3, look_rate: f32, intent: *Intent) void {
-    const to = target.sub(eye);
+/// The relative look motion that turns the view onto `target` in one tick, as a mouse
+/// flick would.
+fn aimTowards(game: *const Game, target: Vec3, intent: *Intent) void {
+    const look_rate = if (game.rules) |r| r.look_rate else return;
+    const to = target.sub(game.walk.eye());
     const desired_yaw = @mod(std.math.atan2(-to.x, -to.z), 2 * std.math.pi);
-    const h_dist = @sqrt(to.x * to.x + to.z * to.z);
-    const desired_pitch = std.math.clamp(std.math.atan2(to.y, h_dist), -85 * std.math.pi / 180.0, 85 * std.math.pi / 180.0);
-
-    var dyaw = desired_yaw - yaw;
+    const desired_pitch = std.math.atan2(to.y, @sqrt(to.x * to.x + to.z * to.z));
+    var dyaw = desired_yaw - game.walk.yaw;
     while (dyaw > std.math.pi) dyaw -= 2 * std.math.pi;
     while (dyaw < -std.math.pi) dyaw += 2 * std.math.pi;
-    const dpitch = desired_pitch - pitch;
-
     intent.look_dx = -dyaw / look_rate;
-    intent.look_dy = -dpitch / look_rate;
+    intent.look_dy = -(desired_pitch - game.walk.pitch) / look_rate;
 }

@@ -96,7 +96,10 @@ pub const Walk = struct {
         const record = store.lookup(core.ContentId.fromString("court:rules.main"));
         const fresh: ?Settings = if (record) |r| blk: {
             if (!r.schema.id.eql(data.SchemaId.fromStringUnchecked("court:rules"))) break :blk null;
-            break :blk Settings.read(r.fields, dt) catch null;
+            break :blk Settings.read(r.fields, dt) catch |err| {
+                log.warn("'court:rules.main' refused ({t})", .{err});
+                break :blk null;
+            };
         } else null;
         const changed = !std.meta.eql(self.settings, fresh);
         self.clearCollision(assets);

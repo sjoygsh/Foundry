@@ -38,6 +38,9 @@ pub const Game = struct {
     tick: u64 = 0,
 
     pub const max_beacons = 8;
+    /// Level geometry and the gate, which block characters.
+    pub const level_layer: u32 = 1;
+    pub const warden_layer: u32 = 1 << 2;
 
     pub fn init(gpa: std.mem.Allocator) Game {
         return .{
@@ -74,57 +77,50 @@ pub const Game = struct {
         self.clearBeacons(content);
         var it = store.iterate(data.SchemaId.fromStringUnchecked("court:beacon"));
 
+        // Hash order wherever order matters (I9). Above the bound, the lowest hashes are
+        // kept, so which beacons survive never depends on the store's iteration order.
         var found: [max_beacons]data.store.Record = undefined;
         var count: usize = 0;
+        var dropped: usize = 0;
         while (it.next()) |rec| {
-            if (count < max_beacons) {
-                found[count] = rec;
-                count += 1;
+            var at: usize = count;
+            while (at > 0 and rec.id.hash < found[at - 1].id.hash) at -= 1;
+            if (at == max_beacons) {
+                dropped += 1;
+                continue;
             }
+            if (count == max_beacons) dropped += 1 else count += 1;
+            var move = count - 1;
+            while (move > at) : (move -= 1) found[move] = found[move - 1];
+            found[at] = rec;
         }
+        if (dropped != 0) log.warn("{d} beacon(s) above the bound of {d} are ignored", .{ dropped, max_beacons });
 
-        // Sort by content ID hash ascending (Invariant 9).
-        var i: usize = 0;
-        while (i < count) : (i += 1) {
-            var j: usize = i + 1;
-            while (j < count) : (j += 1) {
-                if (found[j].id.hash < found[i].id.hash) {
-                    const tmp = found[i];
-                    found[i] = found[j];
-                    found[j] = tmp;
-                }
-            }
-        }
-
-        for (found[0..count], 0..) |rec, idx| {
+        for (found[0..count]) |rec| {
             const settings = beacon_mod.BeaconSettings.read(rec.fields) catch |err| {
                 log.warn("beacon {f} omitted: {t}", .{ rec.id, err });
                 continue;
             };
-
-            const model_handle = if (content) |c| (c.acquireModel(settings.model) catch render3d.ModelHandle.none) else render3d.ModelHandle.none;
-
-            // Static box collider for Use raycast: centered at y + 0.5.
-            const box_shape = physics.Shape{ .box = .{ .half_extents = .init(0.4, 0.5, 0.4) } };
-            const body = self.walk.world.addBody(self.gpa, .{
-                .shape = box_shape,
-                .pose = .{ .position = settings.position.add(.init(0, 0.5, 0)), .rotation = .identity },
+            if (!isModel(store, settings.model)) {
+                log.warn("beacon {f} omitted: its model is not a 'foundry:model'", .{rec.id});
+                continue;
+            }
+            // `user` is the beacon's slot here, not its place among the records: a refused
+            // record ahead of it must not make Use light a neighbour.
+            const slot = self.beacon_count;
+            var beacon: beacon_mod.Beacon = .{ .id = rec.id, .settings = settings };
+            beacon.body = self.walk.world.addBody(self.gpa, .{
+                .shape = .{ .box = .{ .half_extents = settings.use_half } },
+                .pose = .{ .position = beacon.useCentre(), .rotation = .identity },
                 .kind = .static,
                 .layer = beacon_mod.beacon_layer,
-                .mask = ~@as(u32, 0),
-                .user = @intCast(idx),
+                .user = @intCast(slot),
             }) catch |err| {
-                log.warn("beacon body {f} omitted: {t}", .{ rec.id, err });
+                log.warn("beacon {f} omitted: {t}", .{ rec.id, err });
                 continue;
             };
-
-            self.beacons[self.beacon_count] = .{
-                .id = rec.id,
-                .settings = settings,
-                .model = model_handle,
-                .body = body,
-                .lit = false,
-            };
+            beacon.model = acquire(content, settings.model, rec.id);
+            self.beacons[slot] = beacon;
             self.beacon_count += 1;
         }
     }
@@ -133,23 +129,27 @@ pub const Game = struct {
         if (self.gate) |*g| g.deinit(self.gpa, &self.walk.world, content);
         self.gate = null;
 
-        const record = store.lookup(core.ContentId.fromString("court:gate.main")) orelse {
+        const id = core.ContentId.fromString("court:gate.main");
+        const record = store.lookup(id) orelse {
             log.warn("missing 'court:gate.main'; court cannot be completed", .{});
             return;
         };
+        if (!record.schema.id.eql(data.SchemaId.fromStringUnchecked("court:gate"))) {
+            log.warn("'court:gate.main' is not a 'court:gate'; court cannot be completed", .{});
+            return;
+        }
         const settings = gate_mod.GateSettings.read(record.fields) catch |err| {
             log.warn("invalid 'court:gate.main' ({t}); court cannot be completed", .{err});
             return;
         };
-
-        const model_handle = if (content) |c| (c.acquireModel(settings.model) catch render3d.ModelHandle.none) else render3d.ModelHandle.none;
-        const gate_box = physics.Shape{ .box = .{ .half_extents = .init(1.0, 1.25, 0.08) } };
+        if (!isModel(store, settings.model)) {
+            log.warn("'court:gate.main' names a model that is not a 'foundry:model'; court cannot be completed", .{});
+            return;
+        }
         const body = self.walk.world.addBody(self.gpa, .{
-            .shape = gate_box,
+            .shape = .{ .box = .{ .half_extents = settings.half_extents } },
             .pose = .{ .position = settings.closed, .rotation = .identity },
             .kind = .kinematic,
-            .layer = 1,
-            .mask = ~@as(u32, 0),
             .user = record.id.hash,
         }) catch |err| {
             log.warn("gate body omitted ({t}); court cannot be completed", .{err});
@@ -159,60 +159,71 @@ pub const Game = struct {
         self.gate = .{
             .id = record.id,
             .settings = settings,
-            .model = model_handle,
+            .model = acquire(content, settings.model, id),
             .body = body,
             .current_pos = settings.closed,
-            .progress = 0,
-            .opening = false,
         };
     }
 
     fn refreshWarden(self: *Game, store: *const data.Store, content: ?*render3d.Content, dt: f32) void {
         if (self.warden) |*w| w.deinit(self.gpa, &self.walk.world, content);
         self.warden = null;
+        const rules = self.rules orelse return;
 
-        const record = store.lookup(core.ContentId.fromString("court:warden.main")) orelse {
+        const id = core.ContentId.fromString("court:warden.main");
+        const record = store.lookup(id) orelse {
             log.warn("missing 'court:warden.main'; patrol disabled", .{});
             return;
         };
+        if (!record.schema.id.eql(data.SchemaId.fromStringUnchecked("court:warden"))) {
+            log.warn("'court:warden.main' is not a 'court:warden'; patrol disabled", .{});
+            return;
+        }
         const settings = warden_mod.WardenSettings.read(record.fields) catch |err| {
             log.warn("invalid 'court:warden.main' ({t}); patrol disabled", .{err});
             return;
         };
-
-        const model_handle = if (content) |c| (c.acquireModel(settings.model) catch render3d.ModelHandle.none) else render3d.ModelHandle.none;
-        const character = self.walk.world.addCharacter(self.gpa, .{
-            .radius = 0.22,
-            .height = 1.7,
-            .max_slope = std.math.pi / 4.0,
-            .step_height = 0.35,
-            .snap_distance = 0.3,
-            .max_move = 1,
-            .layer = 2,
-            .mask = 1,
-        }, settings.waypoints[0], 0) catch |err| {
+        if (!isModel(store, settings.model)) {
+            log.warn("'court:warden.main' names a model that is not a 'foundry:model'; patrol disabled", .{});
+            return;
+        }
+        // The player's slope, step and snap, with the warden's own capsule. It collides
+        // with the level alone, so a beacon or the player never blocks its patrol.
+        var config = rules.character;
+        config.radius = settings.radius;
+        config.height = settings.height;
+        config.step_height = @min(config.step_height, settings.height - 2 * settings.radius);
+        config.max_move = warden_mod.max_move;
+        config.layer = warden_layer;
+        config.mask = level_layer;
+        const character = self.walk.world.addCharacter(self.gpa, config, settings.waypoints[0], 0) catch |err| {
             log.warn("warden character omitted ({t}); patrol disabled", .{err});
             return;
         };
 
-        var warden: warden_mod.Warden = .{
+        const pause_ticks: u32 = @intFromFloat(@round(settings.pause / dt));
+        self.warden = .{
             .settings = settings,
-            .model = model_handle,
+            .model = acquire(content, settings.model, id),
             .character = character,
             .feet = settings.waypoints[0],
-            .yaw = 0,
-            .velocity = 0,
-            .tick = 0,
-            .waypoint = 1,
-            .wait_ticks = 60,
-            .weight = 0,
+            .wait_ticks = pause_ticks,
+            .pause_ticks = pause_ticks,
         };
+    }
 
-        if (content) |c| {
-            warden.evaluate(c, dt) catch {};
-        }
+    fn isModel(store: *const data.Store, id: core.ContentId) bool {
+        const record = store.lookup(id) orelse return false;
+        return record.schema.id.eql(asset.schemas.model.id);
+    }
 
-        self.warden = warden;
+    /// A model that fails to load leaves its owner in the game, undrawn, and says so.
+    fn acquire(content: ?*render3d.Content, model: core.ContentId, owner: core.ContentId) render3d.ModelHandle {
+        const c = content orelse return .none;
+        return c.acquireModel(model) catch |err| {
+            log.warn("{f}: model {f} is not drawn ({t})", .{ owner, model, err });
+            return .none;
+        };
     }
 
     pub fn allBeaconsLit(self: *const Game) bool {
@@ -270,52 +281,47 @@ pub const Game = struct {
         // 1. Move player.
         try self.walk.step(intent, dt);
 
-        // 2. Handle Use raycast.
+        // 2. Use: one ray from the eye along the look, against the beacons' layer only.
         if (intent.use) {
-            const eye = self.walk.eye();
             const forward = self.walk.rotation().rotate(.forward);
-            const hit_opt = self.walk.world.raycast(eye, forward, rules.reach, .{ .mask = beacon_mod.beacon_layer }) catch null;
-            if (hit_opt) |hit| {
-                const idx = hit.user;
-                if (idx < self.beacon_count) {
-                    if (!self.beacons[idx].lit) {
-                        self.beacons[idx].lit = true;
-                        if (self.allBeaconsLit() and self.gate != null) {
-                            self.gate.?.opening = true;
-                        }
-                    }
+            const hit_opt = self.walk.world.raycast(self.walk.eye(), forward, rules.reach, .{ .mask = beacon_mod.beacon_layer }) catch |err| blk: {
+                // Validated rules and a unit look direction leave nothing to refuse.
+                log.warn("use ray refused ({t})", .{err});
+                break :blk null;
+            };
+            if (hit_opt) |hit| if (hit.user < self.beacon_count) {
+                const beacon = &self.beacons[@intCast(hit.user)];
+                if (!beacon.lit) {
+                    beacon.lit = true;
+                    if (self.allBeaconsLit()) if (self.gate) |*g| {
+                        g.opening = true;
+                    };
                 }
-            }
+            };
         }
 
         // 3. Step gate.
-        if (self.gate) |*g| {
-            try g.step(self.gpa, &self.walk.world, dt);
-        }
+        if (self.gate) |*g| try g.step(self.gpa, &self.walk.world, dt);
 
         // 4. Step warden.
+        var caught = false;
         if (self.warden) |*w| {
-            try w.step(self.gpa, &self.walk.world, dt);
-            const delta = w.feet.sub(self.walk.result.feet);
-            if (delta.length() < rules.catch_distance) {
-                self.phase = .caught;
-            }
+            try w.step(self.gpa, &self.walk.world, rules.gravity, dt);
+            caught = w.feet.sub(self.walk.result.feet).length() < rules.catch_distance;
         }
 
-        // 5. Check pit fall.
-        if (self.walk.result.feet.y < rules.pit_height) {
+        // 5. One ending a tick, in a fixed order: the exit, then the pit, then the warden.
+        const feet = self.walk.result.feet;
+        const gate_open = if (self.gate) |g| g.progress >= 1.0 else false;
+        const in_exit = feet.x >= rules.exit_min.x and feet.x <= rules.exit_max.x and
+            feet.y >= rules.exit_min.y and feet.y <= rules.exit_max.y and
+            feet.z >= rules.exit_min.z and feet.z <= rules.exit_max.z;
+        if (self.allBeaconsLit() and gate_open and in_exit) {
+            self.phase = .won;
+        } else if (feet.y < rules.pit_height) {
             self.phase = .fell;
-        }
-
-        // 6. Check exit completion.
-        if (self.allBeaconsLit() and (self.gate == null or self.gate.?.progress >= 1.0)) {
-            const feet = self.walk.result.feet;
-            if (feet.x >= rules.exit_min.x and feet.x <= rules.exit_max.x and
-                feet.y >= rules.exit_min.y and feet.y <= rules.exit_max.y and
-                feet.z >= rules.exit_min.z and feet.z <= rules.exit_max.z)
-            {
-                self.phase = .won;
-            }
+        } else if (caught) {
+            self.phase = .caught;
         }
 
         self.tick += 1;
@@ -335,19 +341,20 @@ pub const Game = struct {
             const lit_byte: u8 = if (b.lit) 1 else 0;
             h = hashBytes(h, std.mem.asBytes(&lit_byte));
         }
-        if (self.gate) |g| {
+        if (self.gate) |*g| {
             h = hashBytes(h, std.mem.asBytes(&g.progress));
             h = hashBytes(h, std.mem.asBytes(&g.current_pos.x));
             h = hashBytes(h, std.mem.asBytes(&g.current_pos.y));
             h = hashBytes(h, std.mem.asBytes(&g.current_pos.z));
         }
-        if (self.warden) |w| {
+        if (self.warden) |*w| {
             h = hashBytes(h, std.mem.asBytes(&w.feet.x));
             h = hashBytes(h, std.mem.asBytes(&w.feet.y));
             h = hashBytes(h, std.mem.asBytes(&w.feet.z));
             h = hashBytes(h, std.mem.asBytes(&w.yaw));
             const wp: u32 = @intCast(w.waypoint);
             h = hashBytes(h, std.mem.asBytes(&wp));
+            h = hashBytes(h, std.mem.asBytes(&w.velocity));
             h = hashBytes(h, std.mem.asBytes(&w.wait_ticks));
             h = hashBytes(h, std.mem.asBytes(&w.weight));
             h = hashBytes(h, std.mem.asBytes(&w.tick));

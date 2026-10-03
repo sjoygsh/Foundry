@@ -9,6 +9,7 @@ const Fields = data.fpk.Fields;
 
 pub const GateSettings = struct {
     model: core.ContentId,
+    half_extents: Vec3,
     closed: Vec3,
     open: Vec3,
     travel_time: f32,
@@ -16,6 +17,12 @@ pub const GateSettings = struct {
     pub fn read(fields: Fields) !GateSettings {
         const model = (try fields.idAt(try index(fields, "model"))) orelse return error.InvalidGate;
         if (model.isNone()) return error.InvalidGate;
+        const half_fields = (try fields.nestedAt(try index(fields, "half_extents"))) orelse return error.InvalidGate;
+        const half: Vec3 = .init(
+            try bounded(half_fields, "x", 0.01, 20),
+            try bounded(half_fields, "y", 0.01, 20),
+            try bounded(half_fields, "z", 0.01, 20),
+        );
         const closed_fields = (try fields.nestedAt(try index(fields, "closed"))) orelse return error.InvalidGate;
         const open_fields = (try fields.nestedAt(try index(fields, "open"))) orelse return error.InvalidGate;
         const closed: Vec3 = .init(
@@ -32,6 +39,7 @@ pub const GateSettings = struct {
         const travel = try bounded(fields, "travel_time", 0.05, 60);
         return .{
             .model = model,
+            .half_extents = half,
             .closed = closed,
             .open = open_pos,
             .travel_time = travel,

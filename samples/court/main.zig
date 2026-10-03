@@ -1,4 +1,4 @@
-//! M26 Step 2: level, light and movement. Outcomes, HUD, audio and menus are later steps.
+//! M26 Step 3: the level, the walk and the game. HUD, audio and menus are Step 4.
 //! The build grants no RHI or ABI import; rendering uses the same public renderer as a game.
 const std = @import("std");
 const app = @import("app");
@@ -92,13 +92,15 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     game.refresh(&engine.store, &engine.assets, &content, engine.step_delta.toSecondsF32());
     if (game.walk.character.isNone() or game.walk.collisions[0].body.isNone()) return error.MissingLevelCollision;
 
-    const play_mode: ?scripted.ScriptKind = if (os.envVar("FOUNDRY_COURT_PLAY")) |val| blk: {
-        if (std.mem.eql(u8, val, "win")) break :blk .win;
-        if (std.mem.eql(u8, val, "caught")) break :blk .caught;
-        if (std.mem.eql(u8, val, "fell")) break :blk .fell;
-        log.warn("unknown FOUNDRY_COURT_PLAY '{s}' (expected win|caught|fell)", .{val});
-        break :blk null;
-    } else null;
+    // A scripted play-through is a proof: an unknown name, a wrong ending or a run that
+    // does not finish fails the process instead of leaving a window walking nowhere.
+    const play_mode: ?scripted.ScriptKind = if (os.envVar("FOUNDRY_COURT_PLAY")) |val|
+        scripted.ScriptKind.parse(val) orelse {
+            log.err("unknown FOUNDRY_COURT_PLAY '{s}' (expected win|caught|fell)", .{val});
+            return error.InvalidPlayScript;
+        }
+    else
+        null;
     var script_driver = if (play_mode) |m| scripted.ScriptDriver.init(m) else null;
 
     // Request once. Focus loss releases it; F4 is the skeleton's explicit re-capture.
@@ -109,7 +111,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         const n = std.fmt.parseInt(u64, s, 10) catch return error.InvalidFrameLimit;
         if (n == 0) return error.InvalidFrameLimit;
         break :blk n;
-    } else if (headless) @as(u64, 120) else null;
+    } else if (headless and play_mode == null) @as(u64, 120) else null;
     if (headless) engine.platform.setClockStep(engine.step_delta);
     var skipped: u64 = 0;
     var pace_next: u64 = 0;
@@ -125,7 +127,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         while (engine.nextStep()) |step| {
             const scope = engine.beginScope("character");
             defer scope.end();
-            const intent = if (script_driver) |*d| d.nextIntent(&game, step.delta.toSecondsF32()) else pending.take();
+            const intent = if (script_driver) |*d| d.nextIntent(&game) else pending.take();
             try game.step(intent, step.delta.toSecondsF32());
         }
         const info = engine.windowInfo();
@@ -146,11 +148,19 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         }
         engine.endFrame();
         if (limit) |n| if (engine.frame_index >= n) break;
+        if (script_driver) |d| if (d.done) break;
     }
     const stats = renderer.frameStats();
     log.info("stopped after {d} frames ({d} skipped), {d} ticks; {d} draws, {d} lights; phase {s}; feet ({d:.3}, {d:.3}, {d:.3})", .{
         engine.frame_index, skipped, engine.stepper.tick, stats.draws, stats.lights, @tagName(game.phase), game.walk.result.feet.x, game.walk.result.feet.y, game.walk.result.feet.z,
     });
+    if (script_driver) |d| {
+        log.info("play '{s}': {d} of {d} ending(s) in {d} ticks", .{ @tagName(play_mode.?), d.endings, d.script.runs, d.ticks });
+        if (!d.succeeded()) {
+            if (d.failure) |why| log.err("play '{s}' failed: {s}", .{ @tagName(play_mode.?), @tagName(why) }) else log.err("play '{s}' stopped before it finished", .{@tagName(play_mode.?)});
+            return error.PlayScriptFailed;
+        }
+    }
 }
 
 fn capture(engine: *app.Engine, want: bool) void {
@@ -170,14 +180,14 @@ fn draw(engine: *app.Engine, renderer: *render3d.Renderer, content: *render3d.Co
         .shadow_distance = 20,
     });
     for (settings.lighting.lights[0..settings.lighting.len]) |light| try renderer.addLight(light);
-    for (game.beacons[0..game.beacon_count]) |b| {
+    for (game.beacons[0..game.beacon_count]) |*b| {
         if (b.lit) {
             try renderer.addLight(.{
                 .kind = .point,
                 .color = b.settings.light_color,
                 .intensity = b.settings.light_intensity,
                 .range = b.settings.light_range,
-                .world = core.math.Mat4.translation(b.settings.position.add(.init(0, 1.0, 0))),
+                .world = core.math.Mat4.translation(b.lightPosition()),
             });
         }
     }
@@ -193,7 +203,8 @@ fn draw(engine: *app.Engine, renderer: *render3d.Renderer, content: *render3d.Co
         }
     }
     if (game.warden) |*w| {
-        w.evaluate(content, dt) catch {};
+        // A warden whose skeleton or clips do not resolve is left undrawn; it still patrols.
+        w.evaluate(content, dt) catch |err| log.debug("warden pose skipped ({t})", .{err});
         try w.draw(content);
     }
     try engine.renderScene(.{}, renderer, null);

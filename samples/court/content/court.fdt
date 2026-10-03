@@ -58,53 +58,69 @@ rules court:rules.main {
     exit_max { x 1.2 y 2.5 z -8.0 }
 }
 
+# A beacon is lit by a Use ray against `use_half`, a box standing on `position`.
 @schema beacon {
     model id
     position { x f32 y f32 z f32 }
+    use_half { x f32 y f32 z f32 }
     light {
         color { r f32 g f32 b f32 }
         intensity f32
         range f32
+        height f32
     }
 }
 beacon court:beacon.open {
     model court:models.beacon
     position { x 3.5 y 0 z 4.5 }
-    light { color { r 1 g 0.65 b 0.3 } intensity 150 range 6 }
+    use_half { x 0.4 y 0.5 z 0.4 }
+    light { color { r 1 g 0.65 b 0.3 } intensity 150 range 6 height 1 }
 }
 beacon court:beacon.wall {
     model court:models.beacon
     position { x -3 y 0 z -0.5 }
-    light { color { r 1 g 0.65 b 0.3 } intensity 150 range 6 }
+    use_half { x 0.4 y 0.5 z 0.4 }
+    light { color { r 1 g 0.65 b 0.3 } intensity 150 range 6 height 1 }
 }
 beacon court:beacon.ledge {
     model court:models.beacon
     position { x 2 y 0 z -5.5 }
-    light { color { r 1 g 0.65 b 0.3 } intensity 150 range 6 }
+    use_half { x 0.4 y 0.5 z 0.4 }
+    light { color { r 1 g 0.65 b 0.3 } intensity 150 range 6 height 1 }
 }
 
+# The gate sinks into the ground, so it never moves into a character (ADR-0051).
 @schema gate {
     model id
+    half_extents { x f32 y f32 z f32 }
     closed { x f32 y f32 z f32 }
     open { x f32 y f32 z f32 }
     travel_time f32
 }
 gate court:gate.main {
     model court:models.gate
+    half_extents { x 1 y 1.25 z 0.08 }
     closed { x 0 y 1.25 z -7.7 }
-    open { x 0 y 1.25 z -9.2 }
+    open { x 0 y -1.4 z -7.7 }
     travel_time 1.5
 }
 
+# `pause` is the seconds the warden stands at each waypoint.
 @schema warden {
     model id
     waypoints [{ x f32 y f32 z f32 }]
     speed f32
     cross_fade f32
+    radius f32
+    height f32
+    pause f32
 }
 warden court:warden.main {
     model court:models.warden
     waypoints [ { x -2 y 0.004 z 2.5 } { x 2 y 0.004 z 2.5 } ]
     speed 1.0
     cross_fade 0.25
+    radius 0.22
+    height 1.7
+    pause 1
 }

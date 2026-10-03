@@ -12,12 +12,19 @@ const Transform = core.math.Transform;
 const Quat = core.math.Quat;
 const Fields = data.fpk.Fields;
 
+/// The longest single move the warden's controller is asked for, metres.
+pub const max_move: f32 = 1;
+
 pub const WardenSettings = struct {
     model: core.ContentId,
     waypoints: [max_points]Vec3 = @splat(.zero),
     len: usize = 0,
     speed: f32,
     cross_fade: f32,
+    radius: f32,
+    height: f32,
+    /// Seconds stood at each waypoint, and before the first walk.
+    pause: f32,
     pub const max_points = 16;
 
     pub fn read(fields: Fields) !WardenSettings {
@@ -25,12 +32,19 @@ pub const WardenSettings = struct {
         if (model.isNone()) return error.InvalidWarden;
         const speed = try bounded(fields, "speed", 0.01, 10);
         const cross_fade = try bounded(fields, "cross_fade", 0.01, 5);
+        const radius = try bounded(fields, "radius", 0.05, 2);
+        const height = try bounded(fields, "height", 0.1, 4);
+        if (height < 2 * radius) return error.InvalidWarden;
+        const pause = try bounded(fields, "pause", 0, 60);
         const list = (try fields.listAt(try index(fields, "waypoints"))) orelse return error.InvalidWarden;
         if (list.len < 2 or list.len > max_points) return error.InvalidWarden;
         var out: WardenSettings = .{
             .model = model,
             .speed = speed,
             .cross_fade = cross_fade,
+            .radius = radius,
+            .height = height,
+            .pause = pause,
         };
         for (0..list.len) |i| {
             const point = (try list.nestedAt(@intCast(i))) orelse return error.InvalidWarden;
@@ -55,7 +69,9 @@ pub const Warden = struct {
     velocity: f32 = 0,
     tick: u64 = 0,
     waypoint: usize = 1,
-    wait_ticks: u32 = 60,
+    wait_ticks: u32 = 0,
+    /// `settings.pause` in ticks, fixed when the record is read.
+    pause_ticks: u32 = 0,
     weight: f32 = 0,
     joint_count: usize = 0,
     idle_pose: [256]Transform = undefined,
@@ -77,7 +93,7 @@ pub const Warden = struct {
         const s = self.settings orelse return;
         self.feet = s.waypoints[0];
         self.waypoint = 1;
-        self.wait_ticks = 60;
+        self.wait_ticks = self.pause_ticks;
         self.velocity = 0;
         self.yaw = 0;
         self.weight = 0;
@@ -87,7 +103,8 @@ pub const Warden = struct {
         }
     }
 
-    pub fn step(self: *Warden, gpa: std.mem.Allocator, world: *physics.World, dt: f32) !void {
+    /// One fixed tick. `gravity` is the court's, from its rules.
+    pub fn step(self: *Warden, gpa: std.mem.Allocator, world: *physics.World, gravity: f32, dt: f32) !void {
         const s = self.settings orelse return;
         if (self.character.isNone()) return;
         const before = self.feet;
@@ -100,13 +117,15 @@ pub const Warden = struct {
             const distance = delta.length();
             if (distance <= s.speed * dt + 0.01) {
                 self.waypoint = (self.waypoint + 1) % s.len;
-                self.wait_ticks = 60;
+                self.wait_ticks = self.pause_ticks;
             } else {
                 horizontal = delta.scale(@min(distance, s.speed * dt) / distance);
             }
         }
-        self.velocity = @max(-20, self.velocity - 9.81 * dt);
-        const result = (try world.moveCharacter(gpa, self.character, horizontal.add(.init(0, self.velocity * dt, 0)), &.{})) orelse return error.NoCharacter;
+        self.velocity -= gravity * dt;
+        // The fall is clamped so one move stays inside the controller's bound.
+        const fall_limit = @sqrt(@max(0, max_move * max_move - horizontal.lengthSquared()));
+        const result = (try world.moveCharacter(gpa, self.character, horizontal.add(.init(0, @max(self.velocity * dt, -fall_limit), 0)), &.{})) orelse return error.NoCharacter;
         self.feet = result.feet;
         if (result.grounded) self.velocity = 0;
         const moved = self.feet.sub(before);
