@@ -19,10 +19,17 @@ pub const Settings = struct {
     look_rate: f32,
     collision: [max_collision]core.ContentId = @splat(.none),
     len: usize = 0,
+    reach: f32,
+    catch_distance: f32,
+    pit_height: f32,
+    exit_min: Vec3,
+    exit_max: Vec3,
     pub const max_collision = 8;
 
     pub fn read(fields: Fields, dt: f32) Invalid!Settings {
         const spawn_fields = (fields.nestedAt(try index(fields, "spawn")) catch return error.InvalidWalk) orelse return error.InvalidWalk;
+        const min_fields = (fields.nestedAt(try index(fields, "exit_min")) catch return error.InvalidWalk) orelse return error.InvalidWalk;
+        const max_fields = (fields.nestedAt(try index(fields, "exit_max")) catch return error.InvalidWalk) orelse return error.InvalidWalk;
         const speed = try bounded(fields, "walk_speed", 0.01, 30);
         if (!std.math.isFinite(dt) or dt <= 0 or dt > 1) return error.InvalidWalk;
         var out: Settings = .{
@@ -42,6 +49,11 @@ pub const Settings = struct {
             .jump_speed = try bounded(fields, "jump_speed", 0.01, 30),
             .turn_rate = try bounded(fields, "turn_rate", 0.001, 20),
             .look_rate = try bounded(fields, "look_rate", 0.00001, 1),
+            .reach = try bounded(fields, "reach", 0.1, 20),
+            .catch_distance = try bounded(fields, "catch_distance", 0.1, 10),
+            .pit_height = try bounded(fields, "pit_height", -100, 100),
+            .exit_min = .init(try number(min_fields, "x"), try number(min_fields, "y"), try number(min_fields, "z")),
+            .exit_max = .init(try number(max_fields, "x"), try number(max_fields, "y"), try number(max_fields, "z")),
         };
         if (!out.valid()) return error.InvalidWalk;
         const list = (fields.listAt(try index(fields, "collision")) catch return error.InvalidWalk) orelse return error.InvalidWalk;
@@ -59,7 +71,10 @@ pub const Settings = struct {
     pub fn valid(s: Settings) bool {
         return s.character.valid() and physics.shape.positionValid(s.spawn) and
             physics.shape.positionValid(s.spawn.add(.init(0, s.character.height / 2, 0))) and
-            s.eye_height > 0 and s.eye_height <= s.character.height;
+            s.eye_height > 0 and s.eye_height <= s.character.height and
+            s.reach > 0 and s.catch_distance > 0 and std.math.isFinite(s.pit_height) and
+            physics.shape.positionValid(s.exit_min) and physics.shape.positionValid(s.exit_max) and
+            s.exit_min.x <= s.exit_max.x and s.exit_min.y <= s.exit_max.y and s.exit_min.z <= s.exit_max.z;
     }
 };
 

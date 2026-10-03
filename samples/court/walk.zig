@@ -9,7 +9,16 @@ pub const Settings = @import("walk_settings.zig").Settings;
 const Vec3 = core.math.Vec3;
 const log = core.log.scoped(.court);
 
-pub const Intent = struct { direction: Vec3 = .zero, turn: f32 = 0, pitch: f32 = 0, jump: bool = false, look_dx: f32 = 0, look_dy: f32 = 0 };
+pub const Intent = struct {
+    direction: Vec3 = .zero,
+    turn: f32 = 0,
+    pitch: f32 = 0,
+    jump: bool = false,
+    use: bool = false,
+    restart: bool = false,
+    look_dx: f32 = 0,
+    look_dy: f32 = 0,
+};
 
 /// Edges and relative motion survive a render frame with no tick, then are consumed once.
 pub const Pending = struct {
@@ -18,12 +27,16 @@ pub const Pending = struct {
         const previous = self.intent;
         self.intent = input;
         self.intent.jump = previous.jump or input.jump;
+        self.intent.use = previous.use or input.use;
+        self.intent.restart = previous.restart or input.restart;
         self.intent.look_dx += previous.look_dx;
         self.intent.look_dy += previous.look_dy;
     }
     pub fn take(self: *Pending) Intent {
         const out = self.intent;
         self.intent.jump = false;
+        self.intent.use = false;
+        self.intent.restart = false;
         self.intent.look_dx = 0;
         self.intent.look_dy = 0;
         return out;
@@ -40,6 +53,8 @@ pub fn inputIntent(input: platform.InputSnapshot, typing: bool) Intent {
     return .{
         .direction = direction,
         .jump = input.wasPressed(.space),
+        .use = input.wasPressed(.e),
+        .restart = input.wasPressed(.r),
         .look_dx = if (input.mouse.captured) input.mouse.motion.x else 0,
         .look_dy = if (input.mouse.captured) input.mouse.motion.y else 0,
         .turn = @as(f32, if (input.isHeld(.left)) 1 else 0) - @as(f32, if (input.isHeld(.right)) 1 else 0),

@@ -1,6 +1,6 @@
 # Design: M26 — A playable 3D sample: `samples/court`, pointer capture and the three-platform play
 
-**Status:** Accepted 2026-10-03 by the owner's request to begin Step 1, which accepts §14 as written. Steps 1–2 are done; Steps 3–8 are not begun.
+**Status:** Accepted 2026-10-03 by the owner's request to begin Step 1, which accepts §14 as written. Steps 1–3 are done; Steps 4–8 are not begun.
 **Date:** 2026-10-02
 **Baseline:** `845b02f`, tag `m25` (documents since: `9b72a78`, `d9c0411`). M0–M25 are complete.
 **Decisions:**
@@ -632,3 +632,64 @@ samples. The unchanged room and sandbox macOS releases both stage after the pack
 graph addition. The ABI and engine are unchanged. No gameplay phase, beacon interaction,
 warden, ending, HUD, sound, preferences, user-mod selection or court release was implemented.
 Stop before Step 3.
+
+## Resolution — Step 3: samples/court: the game (2026-10-03)
+
+`samples/court` implements the full game loop (§5): phases (`title`, `playing`, `paused`, `won`,
+`caught`, `fell`), beacons and raycast Use, the kinematic gate, the patrolling warden with
+CPU-skinned animation, pit and exit volume detection, restart, three scripted play-throughs
+(`win`, `caught`, `fell`), tick-by-tick determinism hashing, and untrusted-input refusal.
+
+What implementation settled:
+
+- **Beacon interaction and light activation:** Three beacon props (`court:beacon.open`,
+  `court:beacon.wall`, `court:beacon.ledge`) are placed in the level with static box colliders
+  on `beacon_layer` (`1 << 1`). Raycasts from player eye position along the look direction
+  detect beacons within configured `reach` distance (`2.5m`). Pressing `E` (Use) lights an unlit
+  beacon, turning on a photometric point light (`court:light.beacon`) at its bowl position.
+  Querying and state tracking use `ContentId` directly rather than positional index, preserving
+  correctness under content hash reordering.
+- **Kinematic gate opening:** When all three beacons are lit, the kinematic gate translates
+  smoothly upward from its closed position `(0, 0, -4.5)` to open `(0, 3.2, -4.5)` over configured
+  `travel_time` (`3.0s`). Its kinematic physics body moves with it each fixed tick, opening the
+  archway passage.
+- **Patrolling warden and CPU skinning:** The warden character controller patrols between
+  waypoints along `z = 2.5` (`x = -2.0` to `2.0`) at configured patrol speed (`1.8 m/s`),
+  evaluating imported glTF joint hierarchy and 4-weight vertex skinning with cross-fading
+  between walk and idle clips. Touching the player within `catch_distance` (`1.2m`) triggers the
+  `.caught` phase.
+- **Pit fall and exit volume:** Falling below `pit_height` (`-2.0m`) into the central pit gap
+  triggers the `.fell` phase. Passing beyond the gate into the exit bounding box
+  (`[ -2.0, 0.0, -8.0 ]` to `[ 2.0, 3.0, -5.5 ]`) triggers the `.won` phase.
+- **Restart and tick replay determinism:** Pressing `R` (restart) resets the player position,
+  camera orientation, beacon lit states, gate position, warden position/patrol, and game phase
+  to a clean initial state. A 64-bit FNV-1a scalar hash accumulates state each tick (player feet,
+  yaw/pitch, warden feet, gate position, lit mask, phase). Replaying the identical input sequence
+  produces identical tick-by-tick hashes, and restarting yields the exact hash sequence of a
+  fresh start.
+- **Scripted play-throughs:** Three deterministic drivers verify the game endings headless:
+  - `win`: navigates south of the warden corridor, lights all three beacons (jumping the low
+    wall and gap to reach wall and ledge beacons), waits for gate travel, enters the exit volume,
+    reaches `.won`, restarts, and completes the run a second time.
+  - `caught`: advances directly into the warden's patrol corridor, triggering `.caught`, then restarts.
+  - `fell`: moves north and jumps cleanly across the pit ledge into the gap, falling below pit
+    height, triggering `.fell`, then restarts.
+- **Untrusted-input refusals:** Malformed beacon, gate, warden, and rules records (NaN/Inf
+  floats, inverted bounding boxes, zero travel time, out-of-range catch distance, missing
+  names) are rejected with named errors and logged fallbacks; startup and physics safety are
+  preserved.
+
+Guards verified by mutation:
+- Inverting beacon reach check refused lighting and broke `win` test.
+- Removing warden catch distance check let the player walk through the warden without triggering
+  `.caught`, breaking `caught` test.
+- Inverting pit height check failed to detect falling, breaking `fell` test.
+- Removing gate position advancement kept the gate closed, blocking exit passage and breaking
+  `win` test.
+All guards were restored.
+
+The bar: `fmt`, **2,086 of 2,087 tests** (one expected skip, `court-test` 11 of 11 passed),
+the four `check`s including Metal and null Windows/Linux cross-builds, and all four 30-frame
+headless samples (`run`, `room`, `sandbox3d`, `court`), plus headless scripted runs of `court`
+under `FOUNDRY_COURT_PLAY=win`, `caught`, and `fell`, all exit 0. No HUD, menus, sound, or
+preferences were implemented. Stop before Step 4.

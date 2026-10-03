@@ -1,13 +1,31 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-03
-**Current handoff: M26 Step 2 of 8 is complete. Stop before Step 3**, the game:
-phases, beacons and Use, the gate, the warden, the exit and pit, restart, scripted endings and
-same-binary replay. `samples/court` now draws its lit, collidable courtyard and supports
-first-person walking, captured look, arrow-key fallback and jumping on null and Metal. The design
+**Current handoff: M26 Step 3 of 8 is complete. Stop before Step 4**, HUD, menus, sound and preferences:
+the theme, HUD, title, pause, end and options screens with keyboard and pointer, generated sounds
+and their gain and pan, and `settings.fset`. `samples/court` now implements its full game loop:
+phases (`title`, `playing`, `paused`, `won`, `caught`, `fell`), beacons and raycast Use, kinematic gate,
+patrolling warden with CPU-skinned animation, pit and exit volume detection, restart, three scripted
+play-throughs (`win`, `caught`, `fell`), and tick-by-tick determinism hashing. The design
 (`docs/design/playable3d.md`, no ADR) was accepted on 2026-10-03 by the owner's request to begin
 Step 1. M25 Public 3D is complete (tag `m25`, ADR-0059) and `FoundryApi_v6` is frozen at 261
-calls. M0–M25 are pushed; M26 Steps 1–2 are committed and not pushed.
+calls. M0–M25 are pushed; M26 Steps 1–3 are committed and not pushed.
+
+**M26 Step 3 is done (2026-10-03).** `samples/court` implements the full game loop: phases
+(`title`, `playing`, `paused`, `won`, `caught`, `fell`), beacons and raycast Use, kinematic gate,
+patrolling warden with CPU skinning, exit volume and pit detection, restart, three scripted
+play-throughs (`win`, `caught`, `fell`), tick-by-tick determinism hashing, and untrusted-input refusal.
+Three beacon props (`court:beacon.open`, `court:beacon.wall`, `court:beacon.ledge`) are placed
+with static box colliders on `beacon_layer`; raycasting from eye position along look direction
+activates photometric point lights upon pressing Use (`E`). When all three are lit, the kinematic
+gate lifts smoothly over 3.0s, allowing passage into the exit volume to win. The warden patrols
+between waypoints along `z = 2.5` with cross-faded animated walk/idle clips and triggers `.caught` on
+proximity (`1.2m`). Falling past `pit_height` (`-2.0m`) triggers `.fell`. Pressing `R` resets state
+cleanly. Eleven court tests pass on null and Metal (11 of 11), including the three scripted
+endings, tick-by-tick FNV-1a hash replay determinism, restart equivalence, and malformed
+record refusal. Four mutation proofs failed as intended and their guards were restored.
+The ten-command bar passes at **2,086 of 2,087 tests**, one expected skip, and all four headless
+samples run 30 frames cleanly. Stop before Step 4.
 
 **M26 Step 2 is done (2026-10-03).** The court has its own build grants (never RHI or ABI),
 ordinary `court:content` package, `court:config` and `court:rules` schemas, compiled glTF level

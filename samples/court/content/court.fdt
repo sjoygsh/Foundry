@@ -1,5 +1,7 @@
-# M26 Step 2: the level and movement only. Gameplay records arrive in Step 3.
 foundry:model_import court:models.court { source "models/court.gltf" collision true }
+foundry:model_import court:models.beacon { source "models/beacon.gltf" }
+foundry:model_import court:models.gate { source "models/gate.gltf" }
+foundry:model_import court:models.warden { source "models/warden.gltf" }
 
 @schema config {
     title string
@@ -37,6 +39,11 @@ config court:config.main {
     max_slope f32 step_height f32 snap_distance f32
     walk_speed f32 gravity f32 jump_speed f32 turn_rate f32 look_rate f32
     collision [id]
+    reach f32
+    catch_distance f32
+    pit_height f32
+    exit_min { x f32 y f32 z f32 }
+    exit_max { x f32 y f32 z f32 }
 }
 rules court:rules.main {
     spawn { x 0 y 0.004 z 5 }
@@ -44,4 +51,60 @@ rules court:rules.main {
     max_slope 0.785398 step_height 0.25 snap_distance 0.2
     walk_speed 3 gravity 9.81 jump_speed 5 turn_rate 1.5 look_rate 0.004
     collision [ court:models.court.collision ]
+    reach 2.5
+    catch_distance 1.2
+    pit_height -2.0
+    exit_min { x -1.2 y -0.5 z -9.5 }
+    exit_max { x 1.2 y 2.5 z -8.0 }
+}
+
+@schema beacon {
+    model id
+    position { x f32 y f32 z f32 }
+    light {
+        color { r f32 g f32 b f32 }
+        intensity f32
+        range f32
+    }
+}
+beacon court:beacon.open {
+    model court:models.beacon
+    position { x 3.5 y 0 z 4.5 }
+    light { color { r 1 g 0.65 b 0.3 } intensity 150 range 6 }
+}
+beacon court:beacon.wall {
+    model court:models.beacon
+    position { x -3 y 0 z -0.5 }
+    light { color { r 1 g 0.65 b 0.3 } intensity 150 range 6 }
+}
+beacon court:beacon.ledge {
+    model court:models.beacon
+    position { x 2 y 0 z -5.5 }
+    light { color { r 1 g 0.65 b 0.3 } intensity 150 range 6 }
+}
+
+@schema gate {
+    model id
+    closed { x f32 y f32 z f32 }
+    open { x f32 y f32 z f32 }
+    travel_time f32
+}
+gate court:gate.main {
+    model court:models.gate
+    closed { x 0 y 1.25 z -7.7 }
+    open { x 0 y 1.25 z -9.2 }
+    travel_time 1.5
+}
+
+@schema warden {
+    model id
+    waypoints [{ x f32 y f32 z f32 }]
+    speed f32
+    cross_fade f32
+}
+warden court:warden.main {
+    model court:models.warden
+    waypoints [ { x -2 y 0.004 z 2.5 } { x 2 y 0.004 z 2.5 } ]
+    speed 1.0
+    cross_fade 0.25
 }

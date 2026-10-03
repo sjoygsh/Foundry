@@ -8,6 +8,8 @@ const data = @import("data");
 const platform = @import("platform");
 const render3d = @import("render3d");
 const walk_mod = @import("walk.zig");
+const game_mod = @import("game.zig");
+const scripted = @import("scripted.zig");
 const Settings = @import("settings.zig").Settings;
 const log = core.log.scoped(.court);
 pub const std_options = app.std_options;
@@ -85,13 +87,23 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     try engine.assets.registerLoader(gpa, asset.collisionMeshLoader());
     const level = try content.acquireModel(settings.level);
     defer content.releaseModel(level);
-    var walk = walk_mod.Walk.init(gpa);
-    defer walk.deinit(&engine.assets);
-    walk.refresh(&engine.store, &engine.assets, engine.step_delta.toSecondsF32());
-    if (walk.character.isNone() or walk.collisions[0].body.isNone()) return error.MissingLevelCollision;
+    var game = game_mod.Game.init(gpa);
+    defer game.deinit(&engine.assets, &content);
+    game.refresh(&engine.store, &engine.assets, &content, engine.step_delta.toSecondsF32());
+    if (game.walk.character.isNone() or game.walk.collisions[0].body.isNone()) return error.MissingLevelCollision;
+
+    const play_mode: ?scripted.ScriptKind = if (os.envVar("FOUNDRY_COURT_PLAY")) |val| blk: {
+        if (std.mem.eql(u8, val, "win")) break :blk .win;
+        if (std.mem.eql(u8, val, "caught")) break :blk .caught;
+        if (std.mem.eql(u8, val, "fell")) break :blk .fell;
+        log.warn("unknown FOUNDRY_COURT_PLAY '{s}' (expected win|caught|fell)", .{val});
+        break :blk null;
+    } else null;
+    var script_driver = if (play_mode) |m| scripted.ScriptDriver.init(m) else null;
+
     // Request once. Focus loss releases it; F4 is the skeleton's explicit re-capture.
     capture(engine, true);
-    log.info("WASD walk, Space jump, captured mouse/arrows look, F4 capture/release, Escape quit", .{});
+    log.info("WASD walk, Space jump, E use, R restart, captured mouse/arrows look, F4 capture/release, Escape quit", .{});
     var pending: walk_mod.Pending = .{};
     const limit: ?u64 = if (os.envVar("FOUNDRY_COURT_FRAMES")) |s| blk: {
         const n = std.fmt.parseInt(u64, s, 10) catch return error.InvalidFrameLimit;
@@ -107,15 +119,18 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         while (engine.nextEvent()) |_| {}
         if (engine.input.wasPressed(.escape)) engine.requestQuit();
         if (engine.input.wasPressed(.f4)) capture(engine, !engine.input.mouse.captured);
-        pending.feed(walk_mod.inputIntent(engine.input, false));
+        if (script_driver == null) {
+            pending.feed(walk_mod.inputIntent(engine.input, false));
+        }
         while (engine.nextStep()) |step| {
             const scope = engine.beginScope("character");
             defer scope.end();
-            try walk.step(pending.take(), step.delta.toSecondsF32());
+            const intent = if (script_driver) |*d| d.nextIntent(&game, step.delta.toSecondsF32()) else pending.take();
+            try game.step(intent, step.delta.toSecondsF32());
         }
         const info = engine.windowInfo();
         const extent: render3d.Extent2D = if (info) |i| .{ .width = i.pixel_size.width, .height = i.pixel_size.height } else .{ .width = settings.width, .height = settings.height };
-        const drew = draw(engine, &renderer, &content, level, &walk, settings, extent) catch |err| blk: {
+        const drew = draw(engine, &renderer, &content, level, &game, settings, extent, engine.step_delta.toSecondsF32()) catch |err| blk: {
             if (!app.Engine.frameSkippable(err)) return err;
             break :blk false;
         };
@@ -133,8 +148,8 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         if (limit) |n| if (engine.frame_index >= n) break;
     }
     const stats = renderer.frameStats();
-    log.info("stopped after {d} frames ({d} skipped), {d} ticks; {d} draws, {d} lights; feet ({d:.3}, {d:.3}, {d:.3})", .{
-        engine.frame_index, skipped, engine.stepper.tick, stats.draws, stats.lights, walk.result.feet.x, walk.result.feet.y, walk.result.feet.z,
+    log.info("stopped after {d} frames ({d} skipped), {d} ticks; {d} draws, {d} lights; phase {s}; feet ({d:.3}, {d:.3}, {d:.3})", .{
+        engine.frame_index, skipped, engine.stepper.tick, stats.draws, stats.lights, @tagName(game.phase), game.walk.result.feet.x, game.walk.result.feet.y, game.walk.result.feet.z,
     });
 }
 
@@ -144,10 +159,10 @@ fn capture(engine: *app.Engine, want: bool) void {
     };
 }
 
-fn draw(engine: *app.Engine, renderer: *render3d.Renderer, content: *render3d.Content, level: render3d.ModelHandle, walk: *const walk_mod.Walk, settings: Settings, extent: render3d.Extent2D) !bool {
+fn draw(engine: *app.Engine, renderer: *render3d.Renderer, content: *render3d.Content, level: render3d.ModelHandle, game: *game_mod.Game, settings: Settings, extent: render3d.Extent2D, dt: f32) !bool {
     if (extent.isEmpty()) return false;
     try renderer.begin(.{
-        .camera = .{ .position = walk.eye(), .rotation = walk.rotation(), .vertical_fov = std.math.pi / 3.2, .near = 0.1, .far = 80 },
+        .camera = .{ .position = game.walk.eye(), .rotation = game.walk.rotation(), .vertical_fov = std.math.pi / 3.2, .near = 0.1, .far = 80 },
         .target_size = extent,
         .clear_color = settings.clear,
         .ambient = settings.lighting.ambient,
@@ -155,7 +170,32 @@ fn draw(engine: *app.Engine, renderer: *render3d.Renderer, content: *render3d.Co
         .shadow_distance = 20,
     });
     for (settings.lighting.lights[0..settings.lighting.len]) |light| try renderer.addLight(light);
+    for (game.beacons[0..game.beacon_count]) |b| {
+        if (b.lit) {
+            try renderer.addLight(.{
+                .kind = .point,
+                .color = b.settings.light_color,
+                .intensity = b.settings.light_intensity,
+                .range = b.settings.light_range,
+                .world = core.math.Mat4.translation(b.settings.position.add(.init(0, 1.0, 0))),
+            });
+        }
+    }
     try content.drawModel(.{ .model = level, .world = .identity });
+    for (game.beacons[0..game.beacon_count]) |b| {
+        if (!b.model.isNone()) {
+            try content.drawModel(.{ .model = b.model, .world = core.math.Mat4.trs(b.settings.position, .identity, .one) });
+        }
+    }
+    if (game.gate) |g| {
+        if (!g.model.isNone()) {
+            try content.drawModel(.{ .model = g.model, .world = core.math.Mat4.trs(g.current_pos, .identity, .one) });
+        }
+    }
+    if (game.warden) |*w| {
+        w.evaluate(content, dt) catch {};
+        try w.draw(content);
+    }
     try engine.renderScene(.{}, renderer, null);
     return true;
 }
@@ -164,4 +204,6 @@ test {
     _ = @import("walk.zig");
     _ = @import("light_settings.zig");
     _ = @import("walk_tests.zig");
+    _ = @import("game.zig");
+    _ = @import("game_tests.zig");
 }
