@@ -11,6 +11,8 @@ pub const beacon_layer: u32 = 1 << 1;
 
 pub const BeaconSettings = struct {
     model: core.ContentId,
+    /// Played once when the beacon lights.
+    sound: core.ContentId,
     position: Vec3,
     light_color: [3]f32,
     light_intensity: f32,
@@ -23,6 +25,8 @@ pub const BeaconSettings = struct {
     pub fn read(fields: Fields) !BeaconSettings {
         const model = (try fields.idAt(try index(fields, "model"))) orelse return error.InvalidBeacon;
         if (model.isNone()) return error.InvalidBeacon;
+        const sound = (try fields.idAt(try index(fields, "sound"))) orelse return error.InvalidBeacon;
+        if (sound.isNone()) return error.InvalidBeacon;
         const pos_fields = (try fields.nestedAt(try index(fields, "position"))) orelse return error.InvalidBeacon;
         const pos: Vec3 = .init(
             try number(pos_fields, "x"),
@@ -48,6 +52,7 @@ pub const BeaconSettings = struct {
         const height = try bounded(light_fields, "height", 0, 10);
         return .{
             .model = model,
+            .sound = sound,
             .position = pos,
             .light_color = color,
             .light_intensity = intensity,

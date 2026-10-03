@@ -248,6 +248,132 @@ def generate_warden():
     }
 
 
+def rgba_png(width, height, pixels):
+    """An RGBA8 PNG from a row-major list of (r, g, b, a)."""
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    rows = b"".join(b"\0" + b"".join(bytes(pixels[y * width + x]) for x in range(width)) for y in range(height))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows, 9)) + chunk(b"IEND", b""))
+
+
+# The court's look (the owner's UI reference): near-black surfaces, hairline edges, one mint
+# accent for the focused row and "on" states, small rounded corners.
+INK = (14, 14, 16)
+MINT = (126, 226, 184)
+UI_PATCHES = [
+    # part, fill rgba, edge rgba; 12x12 cells with a 4-pixel border, in this order by row.
+    ("panel", INK + (236,), (40, 40, 46, 255)),
+    ("button", (28, 28, 32, 255), (46, 46, 52, 255)),
+    ("button_hot", (38, 38, 44, 255), (255, 255, 255, 255)),
+    ("button_active", MINT + (255,), MINT + (255,)),
+    ("button_disabled", (20, 20, 22, 255), (30, 30, 34, 255)),
+    ("field", (17, 17, 20, 255), (46, 46, 52, 255)),
+    ("check_off", (17, 17, 20, 255), (86, 86, 94, 255)),
+    ("check_on", MINT + (255,), MINT + (255,)),
+    ("row", (0, 0, 0, 0), (0, 0, 0, 0)),
+    ("row_selected", MINT + (255,), MINT + (255,)),
+    ("tab", (20, 20, 22, 255), (40, 40, 46, 255)),
+    ("tab_on", (38, 38, 44, 255), MINT + (255,)),
+    ("scroll_track", (20, 20, 22, 255), (20, 20, 22, 255)),
+    ("scroll_thumb", (86, 86, 94, 255), (86, 86, 94, 255)),
+]
+UI_COLUMNS = 5
+UI_CELL = 12
+
+
+def generate_ui_atlas():
+    width, height = UI_COLUMNS * UI_CELL, 3 * UI_CELL + 8
+    pixels = [(0, 0, 0, 0)] * (width * height)
+    for n, (_, fill, edge) in enumerate(UI_PATCHES):
+        ox, oy = (n % UI_COLUMNS) * UI_CELL, (n // UI_COLUMNS) * UI_CELL
+        for y in range(UI_CELL):
+            for x in range(UI_CELL):
+                dx, dy = min(x, UI_CELL - 1 - x), min(y, UI_CELL - 1 - y)
+                if dx + dy < 2:
+                    continue  # The rounded corner: three pixels left clear.
+                on_edge = dx == 0 or dy == 0 or dx + dy == 2
+                pixels[(oy + y) * width + ox + x] = edge if on_edge else fill
+    # One solid white block for a round reticle dot, tinted where it is drawn.
+    dot = [".####.", "######", "######", "######", "######", ".####."]
+    for y, row in enumerate(dot):
+        for x, c in enumerate(row):
+            if c == "#":
+                pixels[(3 * UI_CELL + 1 + y) * width + 1 + x] = (255, 255, 255, 255)
+    return rgba_png(width, height, pixels)
+
+
+def wav(rate, samples):
+    """16-bit mono PCM."""
+    data = b"".join(struct.pack("<h", max(-32767, min(32767, int(round(v * 32767))))) for v in samples)
+    return (b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVEfmt " +
+            struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16) + b"data" + struct.pack("<I", len(data)) + data)
+
+
+def noise(seed):
+    """A fixed LCG, so the sounds do not depend on Python's random module."""
+    state = seed & 0xFFFFFFFF
+    while True:
+        state = (state * 1664525 + 1013904223) & 0xFFFFFFFF
+        yield (state >> 8) / float(1 << 23) - 1.0
+
+
+def tone(rate, ms, voice):
+    n = rate * ms // 1000
+    return [voice(i / rate, i / n) for i in range(n)]
+
+
+def generate_sounds():
+    rate = 22050
+    tau = 2 * math.pi
+
+    def filtered(seed, alpha):
+        source, last = noise(seed), 0.0
+        while True:
+            last += alpha * (next(source) - last)
+            yield last
+
+    def burst(seed, ms, alpha, gain, decay):
+        source = filtered(seed, alpha)
+        return tone(rate, ms, lambda t, u: next(source) * gain * math.exp(-decay * u))
+
+    # Two seconds of low wind, whole periods of its swell so it loops without a click.
+    wind = filtered(11, 0.02)
+    ambience = tone(rate, 2000, lambda t, u: next(wind) * (0.55 + 0.25 * math.sin(tau * u)) * 2.2)
+    for i in range(400):  # Cross-fade the tail into the head.
+        k = i / 400
+        ambience[i] = ambience[i] * k + ambience[len(ambience) - 400 + i] * (1 - k)
+    ambience = ambience[:len(ambience) - 400]
+
+    def chime(t, u):
+        return (math.sin(tau * (440 + 440 * u) * t) * 0.45 + math.sin(tau * 1320 * t) * 0.2) * math.exp(-3 * u)
+
+    grind = filtered(23, 0.08)
+
+    def gate(t, u):
+        return (next(grind) * 1.6 + math.sin(tau * 55 * t) * 0.25) * min(1, u * 8) * min(1, (1 - u) * 6)
+
+    def chord(freqs, decay):
+        return lambda t, u: sum(math.sin(tau * f * t) for f in freqs) / len(freqs) * 0.6 * math.exp(-decay * u)
+
+    def slide(start, end, decay):
+        return lambda t, u: math.sin(tau * (start + (end - start) * u) * t) * 0.5 * math.exp(-decay * u)
+
+    return {
+        "ambience": ambience,
+        "step": burst(31, 80, 0.25, 2.2, 6),
+        "jump": tone(rate, 140, slide(220, 420, 3)),
+        "land": burst(37, 150, 0.12, 3.0, 5),
+        "beacon": tone(rate, 700, chime),
+        "gate": tone(rate, 1500, gate),
+        "warden_step": burst(41, 110, 0.1, 3.2, 5),
+        "won": tone(rate, 900, chord((523.25, 659.25, 783.99), 2.5)),
+        "caught": tone(rate, 700, chord((196.0, 207.65, 293.66), 3)),
+        "fell": tone(rate, 800, slide(520, 90, 2)),
+        "click": tone(rate, 40, slide(900, 700, 4)),
+    }, rate
+
+
 def generate():
     products = {}
     products.update(generate_court())
@@ -260,6 +386,11 @@ def generate():
         ((0, 1.25, 0), (1.0, 1.25, 0.08)),
     ], "Gate", [.35, .3, .25, 1], roughness=.7))
     products.update(generate_warden())
+    # Paths are relative to the models directory, where the first assets were written.
+    products["../textures/ui.png"] = generate_ui_atlas()
+    sounds, rate = generate_sounds()
+    for name, samples in sounds.items():
+        products[f"../sounds/{name}.wav"] = wav(rate, samples)
     return products
 
 
@@ -277,6 +408,7 @@ def main():
     else:
         OUT.mkdir(parents=True, exist_ok=True)
         for name, contents in products.items():
+            (OUT / name).parent.mkdir(parents=True, exist_ok=True)
             (OUT / name).write_bytes(contents)
         print(f"court: wrote {len(products)} assets")
 

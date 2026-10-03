@@ -1,15 +1,28 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-03
-**Current handoff: M26 Step 3 of 8 is complete. Stop before Step 4**, HUD, menus, sound and preferences:
-the theme, HUD, title, pause, end and options screens with keyboard and pointer, generated sounds
-and their gain and pan, and `settings.fset`. `samples/court` now implements its full game loop:
-phases (`title`, `playing`, `paused`, `won`, `caught`, `fell`), beacons and raycast Use, kinematic gate,
-patrolling warden with CPU-skinned animation, pit and exit volume detection, restart, three scripted
-play-throughs (`win`, `caught`, `fell`), and tick-by-tick determinism hashing. The design
-(`docs/design/playable3d.md`, no ADR) was accepted on 2026-10-03 by the owner's request to begin
-Step 1. M25 Public 3D is complete (tag `m25`, ADR-0059) and `FoundryApi_v6` is frozen at 261
-calls. M0–M25 are pushed; M26 Steps 1–3 are committed and not pushed.
+**Current handoff: M26 Step 4 of 8 is complete. Stop before Step 5**, macOS/Metal, the mod
+and the release: the court staged and run from a relocated install, the `noon` content mod, the
+paced budgets, and the first person's play. `samples/court` is now a whole small game on null
+and Metal: a title screen, a HUD, pause, end and options screens driven by keyboard and
+pointer, eleven generated sounds placed by distance and direction, and preferences in
+`settings.fset`. The design (`docs/design/playable3d.md`, no ADR) was accepted on 2026-10-03 by
+the owner's request to begin Step 1. M25 Public 3D is complete (tag `m25`, ADR-0059) and
+`FoundryApi_v6` is frozen at 261 calls. M0–M25 and M26 Steps 1–4 are pushed.
+
+**M26 Step 4 is done (2026-10-03).** A menu's choice reaches the game as the tick's
+`Intent.action`, so a phase still changes only inside a tick; the game starts on `title` and a
+paused game is paused exactly. `menus.zig` is plain state, `hud.zig` draws it through the `ui`
+kernel in `court:ui.theme`'s look (the owner's UI reference: near-black, hairlines, one mint
+accent), and every string is `court:text.main`'s. Ticks emit events and `sounds.zig` plays
+them, with gain from distance and pan from direction; the host steps the null audio device so
+a headless run really plays what it asks for. Preferences keep only what the player chose.
+The scripts now press menu keys: `FOUNDRY_COURT_PLAY=win` starts from the title, pauses,
+resumes, wins, restarts, wins the same way tick for tick, and quits, with 73 of 73 sounds
+played and nothing dropped, on null and in a Metal window. Thirty-six broken guards each fail
+a test. The bar passes at **2,109 of 2,110 tests**, one expected skip, `court-test` 34 of 34.
+**For a person:** how the screens look and sound, the pointer in the menus, and a preference
+surviving a real restart. **Still open for the owner:** Step 3's controller question below.
 
 **M26 Step 3 is done (2026-10-03), and was corrected the same day.** `samples/court` is a
 game on null: phases, three beacons lit by a Use ray, a kinematic gate that sinks when the last

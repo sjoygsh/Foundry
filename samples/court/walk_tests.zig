@@ -34,7 +34,7 @@ test "court: compiled level blocks walking, jumps the low wall and lands; airbor
     defer gpa.free(config_block);
     var bad_config = config_record;
     bad_config.fields.block = config_block;
-    const width_offset = fieldOffset(config_record.fields.fields, config_record.schema.fieldIndex("width").?);
+    const width_offset = fieldOffset(config_record.fields.fields, config_record.schema.fieldIndex("window_width").?);
     std.mem.writeInt(u32, config_block[width_offset..][0..4], 0, .little);
     try testing.expectError(error.InvalidConfig, Settings.read(bad_config));
     const clear_list = (try config_record.fields.listAt(config_record.schema.fieldIndex("clear_linear").?)).?;

@@ -5,7 +5,13 @@ foundry:model_import court:models.warden { source "models/warden.gltf" }
 
 @schema config {
     title string
-    width u32 height u32
+    # Defaults a player's settings.fset may replace (ADR-0031).
+    window_width u32 window_height u32
+    master_volume f32
+    look_sensitivity f32
+    invert_look bool
+    # How long the goal line stays on screen at the start of each game, seconds.
+    goal_seconds f32
     clear_linear [f32]
     level id
     exposure_ev100 f32
@@ -22,7 +28,11 @@ foundry:model_import court:models.warden { source "models/warden.gltf" }
 }
 config court:config.main {
     title "Foundry Court"
-    width 1280 height 720
+    window_width 1280 window_height 720
+    master_volume 0.8
+    look_sensitivity 1
+    invert_look false
+    goal_seconds 6
     clear_linear [ 0.004 0.006 0.014 1 ]
     level court:models.court
     exposure_ev100 4
@@ -61,6 +71,7 @@ rules court:rules.main {
 # A beacon is lit by a Use ray against `use_half`, a box standing on `position`.
 @schema beacon {
     model id
+    sound id
     position { x f32 y f32 z f32 }
     use_half { x f32 y f32 z f32 }
     light {
@@ -72,18 +83,21 @@ rules court:rules.main {
 }
 beacon court:beacon.open {
     model court:models.beacon
+    sound court:sounds.beacon
     position { x 3.5 y 0 z 4.5 }
     use_half { x 0.4 y 0.5 z 0.4 }
     light { color { r 1 g 0.65 b 0.3 } intensity 150 range 6 height 1 }
 }
 beacon court:beacon.wall {
     model court:models.beacon
+    sound court:sounds.beacon
     position { x -3 y 0 z -0.5 }
     use_half { x 0.4 y 0.5 z 0.4 }
     light { color { r 1 g 0.65 b 0.3 } intensity 150 range 6 height 1 }
 }
 beacon court:beacon.ledge {
     model court:models.beacon
+    sound court:sounds.beacon
     position { x 2 y 0 z -5.5 }
     use_half { x 0.4 y 0.5 z 0.4 }
     light { color { r 1 g 0.65 b 0.3 } intensity 150 range 6 height 1 }
@@ -123,4 +137,107 @@ warden court:warden.main {
     radius 0.22
     height 1.7
     pause 1
+}
+
+# What the court sounds like (playable3d.md §6.2). The .wav files become `foundry:sound`
+# records from their paths; this names which one each event plays. Distances are metres.
+@schema sound_set {
+    ambience id  ambience_gain f32
+    step id  step_distance f32
+    jump id  land id
+    gate id
+    warden_step id  warden_step_distance f32
+    # A positioned sound is silent at this distance and full at none.
+    hearing_distance f32
+    won id  caught id  fell id
+    click id
+}
+sound_set court:sounds.main {
+    ambience court:sounds.ambience  ambience_gain 0.35
+    step court:sounds.step  step_distance 1.6
+    jump court:sounds.jump  land court:sounds.land
+    gate court:sounds.gate
+    warden_step court:sounds.warden_step  warden_step_distance 0.9
+    hearing_distance 14
+    won court:sounds.won  caught court:sounds.caught  fell court:sounds.fell
+    click court:sounds.click
+}
+
+# Every string the court shows. A translation overrides this one record.
+@schema text {
+    title string  goal string  goal_detail string  controls string
+    play string  options string  quit string
+    paused string  resume string  restart string  to_title string  pointer_released string
+    won string  won_detail string  caught string  caught_detail string  fell string  fell_detail string
+    beacons_lit string  objective string  objective_gate string  pause_hint string
+    use_key string  use_prompt string
+    menu_hints string  options_hints string
+    audio string  master_volume string
+    controls_section string  look_sensitivity string  invert_look string  on string  off string
+    applies_at_once string  back string
+    no_gate string
+}
+text court:text.main {
+    title "The Court"
+    goal "Light the three beacons. The gate opens when all three burn."
+    goal_detail "Walk through the gate to leave. Keep clear of the warden, and of the gap."
+    controls "WASD move   Mouse look   Space jump   E light a beacon   Esc pause"
+    play "Play"  options "Options"  quit "Quit"
+    paused "Paused"  resume "Resume"  restart "Restart"  to_title "Quit to title"
+    pointer_released "Pointer released while paused."
+    won "You left the court."  won_detail "All three beacons burn and the gate stands open."
+    caught "The warden caught you."  caught_detail "It walks the same patrol every time. Go around it."
+    fell "You fell into the gap."  fell_detail "The ledge is a jump away, not a step."
+    beacons_lit "Beacons lit"
+    objective "Light the three beacons"  objective_gate "The gate is open. Walk through it."
+    pause_hint "Esc  Pause"
+    use_key "E"  use_prompt "Light the beacon"
+    menu_hints "Up/Down  Choose     Enter  Select     Esc  Back"
+    options_hints "Up/Down  Choose     Left/Right  Change     Esc  Back"
+    audio "Audio"  master_volume "Master volume"
+    controls_section "Controls"  look_sensitivity "Look sensitivity"  invert_look "Invert look"
+    on "On"  off "Off"
+    applies_at_once "Changes apply at once and are saved."
+    back "Back"
+    no_gate "This court has no gate and cannot be finished."
+}
+
+# How the court's screens look (ADR-0041): near-black surfaces, hairlines, one mint accent.
+# `textures/ui.png` is drawn by scripts/m26/make_court.py. Colours are sRGB, 0xRRGGBBAA.
+foundry:ui_theme court:ui.theme {
+    atlas       court:textures.ui
+    font        { texture foundry:fonts.debug  cell_w 8  cell_h 8  columns 16  count 95 }
+    text_scale  2
+    line_height 34
+    padding_x   14
+    padding_y   8
+    spacing     6
+    separator   1
+    patch_scale 1
+    colors {
+        text     0xf4f4f5ff   text_dim    0x9a9aa2ff   surface        0x0b0b0ce6
+        control  0x1c1c20ff   control_hot 0x26262cff   control_active 0x7ee2b8ff
+        accent   0x7ee2b8ff
+        positive 0x7ee2b8ff   negative    0xf08a7bff   warning        0xf0c050ff
+        selection 0x7ee2b8ff
+    }
+    patches [
+        { part "panel"           x 0   y 0   w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "button"          x 12  y 0   w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "button_hot"      x 24  y 0   w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "button_active"   x 36  y 0   w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "button_disabled" x 48  y 0   w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "field"           x 0   y 12  w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "check_off"       x 12  y 12  w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "check_on"        x 24  y 12  w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "row"             x 36  y 12  w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "row_selected"    x 48  y 12  w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "tab"             x 0   y 24  w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "tab_on"          x 12  y 24  w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "scroll_track"    x 24  y 24  w 12  h 12  left 4  top 4  right 4  bottom 4 }
+        { part "scroll_thumb"    x 36  y 24  w 12  h 12  left 4  top 4  right 4  bottom 4 }
+    ]
+    icons [
+        { name "reticle" x 1  y 37  w 6  h 6 }
+    ]
 }

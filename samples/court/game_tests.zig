@@ -13,12 +13,13 @@ const gate_mod = @import("gate.zig");
 const warden_mod = @import("warden.zig");
 const options = @import("court_test_options");
 const play = @import("testdata/play.zig");
+const menus_mod = @import("menus.zig");
 const testing = std.testing;
 const Vec3 = core.math.Vec3;
 
-const dt: f32 = core.time.Timestep.fromHz(60).elapsedAt(1).toSecondsF32();
+pub const dt: f32 = core.time.Timestep.fromHz(60).elapsedAt(1).toSecondsF32();
 
-const TestEnv = struct {
+pub const TestEnv = struct {
     os: *platform.os.Os,
     diags: data.Diagnostics,
     schemas: data.Registry,
@@ -28,7 +29,8 @@ const TestEnv = struct {
     core_bytes: []u8,
     court_bytes: []u8,
 
-    fn init(gpa: std.mem.Allocator) !TestEnv {
+    /// A game on its title screen, as a fresh process has it.
+    pub fn init(gpa: std.mem.Allocator) !TestEnv {
         const os = try platform.os.Os.init(gpa, .{});
         errdefer os.deinit();
         var diags: data.Diagnostics = .init(gpa, .default);
@@ -68,7 +70,15 @@ const TestEnv = struct {
         };
     }
 
-    fn deinit(self: *TestEnv, gpa: std.mem.Allocator) void {
+    /// A game already in play, for tests of the rules that do not care how it began.
+    pub fn initPlaying(gpa: std.mem.Allocator) !TestEnv {
+        var env = try init(gpa);
+        errdefer env.deinit(gpa);
+        try env.game.restart();
+        return env;
+    }
+
+    pub fn deinit(self: *TestEnv, gpa: std.mem.Allocator) void {
         self.game.deinit(&self.assets, null);
         self.assets.deinit(gpa);
         self.store.deinit(gpa);
@@ -83,38 +93,72 @@ const TestEnv = struct {
 const max_ticks = 3000;
 
 /// One scripted play-through, recorded: the intent of every tick and the hash after it.
-const Recording = struct {
+/// A script's frame goes through the menus exactly as the host sends it: keys in, a
+/// command out, and the command's action on the tick's intent.
+pub const Recording = struct {
     intents: [max_ticks]walk_mod.Intent = undefined,
     hashes: [max_ticks]u64 = undefined,
     phases: [max_ticks]game_mod.Phase = undefined,
+    /// Whether the tick advanced the world.
+    world: [max_ticks]bool = undefined,
     len: usize = 0,
-    /// The ticks whose intent was a restart.
-    restarts: [4]usize = undefined,
-    restart_count: usize = 0,
+    quit: bool = false,
+    events: std.EnumArray(game_mod.Event.Kind, u32) = .initFill(0),
 
-    fn run(self: *Recording, game: *game_mod.Game, kind: scripted.ScriptKind) !scripted.ScriptDriver {
-        var driver = scripted.ScriptDriver.init(kind);
+    pub fn run(self: *Recording, game: *game_mod.Game, script: *const play.Script) !scripted.ScriptDriver {
+        var driver: scripted.ScriptDriver = .{ .script = script };
+        var menus: menus_mod.Menus = .{};
+        var chosen: menus_mod.Options = .{};
         while (!driver.done) {
-            const intent = driver.nextIntent(game);
-            if (driver.done) break;
+            const frame = driver.next(game);
+            if (driver.failure != null) break;
             try testing.expect(self.len < max_ticks);
-            if (intent.restart) {
-                self.restarts[self.restart_count] = self.len;
-                self.restart_count += 1;
-            }
+            const command = menus.update(game.phase, frame.keys, null, null, &chosen);
+            if (command == .quit) self.quit = true;
+            var intent = frame.intent;
+            intent.action = command.action();
+            const before = game.tick;
             self.intents[self.len] = intent;
             try game.step(intent, dt);
+            for (game.tickEvents()) |event| self.events.set(event.kind, self.events.get(event.kind) + 1);
             self.hashes[self.len] = game.hashTick();
             self.phases[self.len] = game.phase;
+            self.world[self.len] = game.tick == before + 1;
             self.len += 1;
         }
         return driver;
+    }
+
+    /// The ticks whose action began a game: Play and Restart.
+    fn starts(self: *const Recording, out: []usize) []usize {
+        var n: usize = 0;
+        for (self.intents[0..self.len], 0..) |intent, i| {
+            if (intent.action == .play or intent.action == .restart) {
+                out[n] = i;
+                n += 1;
+            }
+        }
+        return out[0..n];
+    }
+
+    /// The hashes of the world ticks in `[from, to)`, in order.
+    fn worldHashes(self: *const Recording, gpa: std.mem.Allocator, from: usize, to: usize) ![]u64 {
+        var list: std.ArrayList(u64) = .empty;
+        errdefer list.deinit(gpa);
+        for (from..to) |i| if (self.world[i]) try list.append(gpa, self.hashes[i]);
+        return list.toOwnedSlice(gpa);
+    }
+
+    fn sawPhase(self: *const Recording, phase: game_mod.Phase) bool {
+        return std.mem.indexOfScalar(game_mod.Phase, self.phases[0..self.len], phase) != null;
     }
 
     /// A fresh world fed the same intents reaches the same hash at every tick (§10.3).
     fn expectReplays(self: *const Recording, gpa: std.mem.Allocator) !void {
         var fresh = try TestEnv.init(gpa);
         defer fresh.deinit(gpa);
+        fresh.game.stride = 1.6;
+        fresh.game.warden_stride = 0.9;
         for (self.intents[0..self.len], self.hashes[0..self.len]) |intent, expected| {
             try fresh.game.step(intent, dt);
             try testing.expectEqual(expected, fresh.game.hashTick());
@@ -122,37 +166,58 @@ const Recording = struct {
     }
 };
 
-test "court: the win script lights three beacons, passes the gate, wins, restarts and wins the same way" {
+test "court: the win script plays from the title, pauses, resumes, wins, restarts, wins the same way and quits" {
     if (comptime !options.available) return error.SkipZigTest;
     const gpa = testing.allocator;
     var env = try TestEnv.init(gpa);
     defer env.deinit(gpa);
+    env.game.stride = 1.6;
+    env.game.warden_stride = 0.9;
 
     try testing.expectEqual(@as(usize, 3), env.game.beacon_count);
     try testing.expect(env.game.gate != null and env.game.warden != null);
-    try testing.expectEqual(game_mod.Phase.playing, env.game.phase);
-    const initial = env.game.hashTick();
+    try testing.expectEqual(game_mod.Phase.title, env.game.phase);
 
     const rec = try gpa.create(Recording);
     defer gpa.destroy(rec);
     rec.* = .{};
-    const driver = try rec.run(&env.game, .win);
+    const driver = try rec.run(&env.game, &play.win);
     try testing.expect(driver.succeeded());
-    try testing.expectEqual(@as(u8, 2), driver.endings);
-    try testing.expectEqual(game_mod.Phase.won, env.game.phase);
-    try testing.expectEqual(@as(usize, 3), env.game.litCount());
-    try testing.expect(env.game.gate.?.progress >= 1.0);
+    // Through the menus alone: it ended on the title, by Quit.
+    try testing.expect(rec.quit);
+    try testing.expectEqual(game_mod.Phase.title, env.game.phase);
+    try testing.expect(rec.sawPhase(.paused));
 
-    // Restart returns to the true initial state: its hash is a fresh game's, and the
-    // second win repeats the first tick for tick.
-    try testing.expectEqual(@as(usize, 1), rec.restart_count);
-    const restart = rec.restarts[0];
-    try testing.expectEqual(game_mod.Phase.won, rec.phases[restart - 1]);
-    try testing.expectEqual(initial, rec.hashes[restart]);
-    try testing.expectEqual(restart, rec.len - restart - 1);
-    try testing.expectEqualSlices(u64, rec.hashes[0..restart], rec.hashes[restart + 1 .. rec.len]);
-    // The win is the last tick of each run and of no other.
-    for (rec.phases[0 .. restart - 1]) |phase| try testing.expectEqual(game_mod.Phase.playing, phase);
+    // Two games: Play from the title and Restart from the end screen. Each begins from the
+    // same state, so restart returns to the true initial state (§10.3).
+    var buffer: [8]usize = undefined;
+    const begun = rec.starts(&buffer);
+    try testing.expectEqual(@as(usize, 2), begun.len);
+    try testing.expectEqual(walk_mod.Action.play, rec.intents[begun[0]].action);
+    try testing.expectEqual(walk_mod.Action.restart, rec.intents[begun[1]].action);
+    try testing.expectEqual(rec.hashes[begun[0]], rec.hashes[begun[1]]);
+    try testing.expectEqual(game_mod.Phase.won, rec.phases[begun[1] - 1]);
+
+    // The second win repeats the first tick for tick. The first was paused part-way: a
+    // paused game is paused exactly, so the pause is not in the world's ticks at all.
+    const first = try rec.worldHashes(gpa, begun[0], begun[1]);
+    defer gpa.free(first);
+    const second = try rec.worldHashes(gpa, begun[1], rec.len);
+    defer gpa.free(second);
+    try testing.expect(first.len > 500);
+    try testing.expectEqualSlices(u64, first, second);
+
+    // Every sound event of two wins, and none dropped (§10.2).
+    try testing.expectEqual(@as(u32, 6), rec.events.get(.beacon));
+    try testing.expectEqual(@as(u32, 2), rec.events.get(.gate));
+    try testing.expectEqual(@as(u32, 2), rec.events.get(.won));
+    // The low wall and the gap, in each game, and a landing for each real fall.
+    try testing.expect(rec.events.get(.jump) >= 4 and rec.events.get(.jump) % 2 == 0);
+    try testing.expect(rec.events.get(.land) >= 4 and rec.events.get(.land) % 2 == 0);
+    try testing.expect(rec.events.get(.step) >= 10 and rec.events.get(.step) % 2 == 0);
+    try testing.expect(rec.events.get(.warden_step) >= 10 and rec.events.get(.warden_step) % 2 == 0);
+    try testing.expectEqual(@as(u32, 0), rec.events.get(.caught) + rec.events.get(.fell));
+    try testing.expectEqual(@as(u32, 0), env.game.events_dropped);
 
     try rec.expectReplays(gpa);
 }
@@ -162,23 +227,29 @@ test "court: the caught and fell scripts reach their endings and restart to the 
     const gpa = testing.allocator;
     const rec = try gpa.create(Recording);
     defer gpa.destroy(rec);
-    for ([_]scripted.ScriptKind{ .caught, .fell }, [_]game_mod.Phase{ .caught, .fell }) |kind, ending| {
+    const scripts = [_]*const play.Script{ &play.caught, &play.fell };
+    const endings = [_]game_mod.Phase{ .caught, .fell };
+    const kinds = [_]game_mod.Event.Kind{ .caught, .fell };
+    for (scripts, endings, kinds) |script, ending, kind| {
         var env = try TestEnv.init(gpa);
         defer env.deinit(gpa);
-        const initial = env.game.hashTick();
+        env.game.stride = 1.6;
+        env.game.warden_stride = 0.9;
         rec.* = .{};
-        const driver = try rec.run(&env.game, kind);
+        const driver = try rec.run(&env.game, script);
         try testing.expect(driver.succeeded());
-        try testing.expectEqual(@as(usize, 1), rec.restart_count);
-        const restart = rec.restarts[0];
-        try testing.expectEqual(ending, rec.phases[restart - 1]);
+        try testing.expect(!rec.quit);
+        var buffer: [8]usize = undefined;
+        const begun = rec.starts(&buffer);
+        try testing.expectEqual(@as(usize, 2), begun.len);
+        try testing.expectEqual(ending, rec.phases[begun[1] - 1]);
         try testing.expectEqual(game_mod.Phase.playing, env.game.phase);
         // The warden had walked and the player had moved; restart undoes both.
-        try testing.expect(rec.hashes[restart - 1] != initial);
-        try testing.expectEqual(initial, rec.hashes[restart]);
-        // An ended game does not advance: the tick after the ending changed nothing but
-        // what the restart reset.
+        try testing.expect(rec.hashes[begun[1] - 1] != rec.hashes[begun[0]]);
+        try testing.expectEqual(rec.hashes[begun[0]], rec.hashes[begun[1]]);
         try testing.expectEqual(@as(usize, 0), env.game.litCount());
+        try testing.expectEqual(@as(u32, 1), rec.events.get(kind));
+        try testing.expectEqual(@as(u32, 0), rec.events.get(.won));
         try rec.expectReplays(gpa);
     }
 }
@@ -186,28 +257,41 @@ test "court: the caught and fell scripts reach their endings and restart to the 
 test "court: a script that reaches the wrong ending, or none, fails" {
     if (comptime !options.available) return error.SkipZigTest;
     const gpa = testing.allocator;
-    var env = try TestEnv.init(gpa);
-    defer env.deinit(gpa);
-    // The `fell` waypoints under the `caught` script's expectation.
-    var wrong: play.Script = play.fell;
-    wrong.ending = .caught;
-    var driver: scripted.ScriptDriver = .{ .script = &wrong };
-    while (!driver.done) try env.game.step(driver.nextIntent(&env.game), dt);
-    try testing.expect(!driver.succeeded());
-    try testing.expectEqual(scripted.ScriptDriver.Failure.wrong_ending, driver.failure.?);
+    const rec = try gpa.create(Recording);
+    defer gpa.destroy(rec);
+    const begin = [_]play.Step{ .{ .press = .accept }, .{ .expect = .playing } };
 
-    try env.game.restart();
-    var idle: play.Script = .{ .steps = &.{.stand}, .ending = .won, .runs = 1, .tick_limit = 5 };
-    idle.tick_limit = 5;
-    driver = .{ .script = &idle };
-    while (!driver.done) try env.game.step(driver.nextIntent(&env.game), dt);
-    try testing.expectEqual(scripted.ScriptDriver.Failure.timed_out, driver.failure.?);
+    // The `fell` moves, expecting to be caught.
+    const wrong: play.Script = .{ .tick_limit = 500, .steps = &(begin ++ [_]play.Step{
+        .{ .walk = .{ .to = .{ 0, 0, -1.7 }, .face = .{ 0, 1.65, -5 }, .within = 0.1 } },
+        .{ .jump = .{ .to = .{ 0, 0, -2.6 }, .face = .{ 0, 1.65, -5 }, .land_z = -100 } },
+        .{ .expect = .caught },
+    }) };
+    // Standing at the spawn, waiting for a win that never comes.
+    const idle: play.Script = .{ .tick_limit = 20, .steps = &(begin ++ [_]play.Step{ .stand, .{ .expect = .won } }) };
+    const unknown: play.Script = .{ .tick_limit = 20, .steps = &(begin ++ [_]play.Step{.{ .use = "court:beacon.absent" }}) };
+    // Moves with no ending named after them: the game ended and nothing said it should.
+    const unjudged: play.Script = .{ .tick_limit = 500, .steps = &(begin ++ [_]play.Step{
+        .{ .walk = .{ .to = .{ 0, 0, -1.7 }, .face = .{ 0, 1.65, -5 }, .within = 0.1 } },
+        .{ .jump = .{ .to = .{ 0, 0, -2.6 }, .face = .{ 0, 1.65, -5 }, .land_z = -100 } },
+    }) };
 
-    const unknown: play.Script = .{ .steps = &.{.{ .use = "court:beacon.absent" }}, .ending = .won, .runs = 1, .tick_limit = 5 };
-    driver = .{ .script = &unknown };
-    while (!driver.done) try env.game.step(driver.nextIntent(&env.game), dt);
-    try testing.expectEqual(scripted.ScriptDriver.Failure.unknown_beacon, driver.failure.?);
+    const cases = [_]struct { script: *const play.Script, why: scripted.ScriptDriver.Failure }{
+        .{ .script = &wrong, .why = .wrong_ending },
+        .{ .script = &idle, .why = .timed_out },
+        .{ .script = &unknown, .why = .unknown_beacon },
+        .{ .script = &unjudged, .why = .wrong_ending },
+    };
+    for (cases) |case| {
+        var env = try TestEnv.init(gpa);
+        defer env.deinit(gpa);
+        rec.* = .{};
+        const driver = try rec.run(&env.game, case.script);
+        try testing.expect(!driver.succeeded());
+        try testing.expectEqual(case.why, driver.failure.?);
+    }
     try testing.expectEqual(@as(?scripted.ScriptKind, null), scripted.ScriptKind.parse("bogus"));
+    try testing.expectEqual(@as(?scripted.ScriptKind, .win), scripted.ScriptKind.parse("win"));
 }
 
 /// Stands the player at `feet`, looking at `target`. A test's shortcut, not a player's.
@@ -227,7 +311,7 @@ fn beaconById(game: *game_mod.Game, name: []const u8) *beacon_mod.Beacon {
 test "court: Use needs a beacon in the look and within reach, and lights only that one" {
     if (comptime !options.available) return error.SkipZigTest;
     const gpa = testing.allocator;
-    var env = try TestEnv.init(gpa);
+    var env = try TestEnv.initPlaying(gpa);
     defer env.deinit(gpa);
     const game = &env.game;
     const open = beaconById(game, "court:beacon.open");
@@ -235,10 +319,11 @@ test "court: Use needs a beacon in the look and within reach, and lights only th
     const centre = open.useCentre();
     const near_face = centre.x - open.settings.use_half.x;
 
-    // In the look but just beyond reach: nothing.
+    // In the look but just beyond reach: nothing, and no prompt.
     try standLooking(game, .init(near_face - reach - 0.3, 0.004, centre.z), centre);
     try game.step(.{ .use = true }, dt);
     try testing.expectEqual(@as(usize, 0), game.litCount());
+    try testing.expectEqual(@as(?u8, null), game.aimed);
     // Within reach but looking away: nothing.
     try standLooking(game, .init(near_face - 1, 0.004, centre.z), centre.add(.init(-10, 0, 0)));
     try game.step(.{ .use = true }, dt);
@@ -247,9 +332,15 @@ test "court: Use needs a beacon in the look and within reach, and lights only th
     try standLooking(game, .init(near_face - 1, 0.004, centre.z), centre);
     try game.step(.{}, dt);
     try testing.expectEqual(@as(usize, 0), game.litCount());
+    // That is when the HUD offers the key.
+    try testing.expect(game.aimed != null and &game.beacons[game.aimed.?] == open);
     // With it: that beacon, and no other. The gate waits for all three.
     try game.step(.{ .use = true }, dt);
     try testing.expect(open.lit);
+    try testing.expectEqual(@as(usize, 1), game.tickEvents().len);
+    try testing.expectEqual(game_mod.Event.Kind.beacon, game.tickEvents()[0].kind);
+    // A lit beacon is not offered again.
+    try testing.expectEqual(@as(?u8, null), game.aimed);
     try testing.expectEqual(@as(usize, 1), game.litCount());
     try testing.expect(!game.gate.?.opening);
     // A second press on a lit beacon changes nothing.
@@ -260,7 +351,7 @@ test "court: Use needs a beacon in the look and within reach, and lights only th
 test "court: winning needs every beacon lit, the gate fully open and the feet in the exit" {
     if (comptime !options.available) return error.SkipZigTest;
     const gpa = testing.allocator;
-    var env = try TestEnv.init(gpa);
+    var env = try TestEnv.initPlaying(gpa);
     defer env.deinit(gpa);
     const game = &env.game;
     const rules = game.rules.?;
@@ -306,7 +397,7 @@ test "court: winning needs every beacon lit, the gate fully open and the feet in
 test "court: the gate's body blocks the passage until it has opened" {
     if (comptime !options.available) return error.SkipZigTest;
     const gpa = testing.allocator;
-    var env = try TestEnv.init(gpa);
+    var env = try TestEnv.initPlaying(gpa);
     defer env.deinit(gpa);
     const game = &env.game;
     const closed = game.gate.?.settings.closed;
@@ -324,7 +415,7 @@ test "court: the gate's body blocks the passage until it has opened" {
 test "court: the pit ends the game only below its height, and the warden only within its distance" {
     if (comptime !options.available) return error.SkipZigTest;
     const gpa = testing.allocator;
-    var env = try TestEnv.init(gpa);
+    var env = try TestEnv.initPlaying(gpa);
     defer env.deinit(gpa);
     const game = &env.game;
     const rules = game.rules.?;
@@ -349,7 +440,7 @@ test "court: the pit ends the game only below its height, and the warden only wi
 test "court: the warden waits, patrols between its waypoints and restart puts it back" {
     if (comptime !options.available) return error.SkipZigTest;
     const gpa = testing.allocator;
-    var env = try TestEnv.init(gpa);
+    var env = try TestEnv.initPlaying(gpa);
     defer env.deinit(gpa);
     const game = &env.game;
     const w = &game.warden.?;
@@ -532,7 +623,7 @@ test "court: beacon, gate, warden and rules records refuse missing, non-finite a
 test "court: a refused beacon, gate or warden is left out with the game still standing" {
     if (comptime !options.available) return error.SkipZigTest;
     const gpa = testing.allocator;
-    var env = try TestEnv.init(gpa);
+    var env = try TestEnv.initPlaying(gpa);
     defer env.deinit(gpa);
     const game = &env.game;
 

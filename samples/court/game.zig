@@ -26,17 +26,49 @@ pub const Phase = enum(u8) {
     fell = 5,
 };
 
+/// Something a tick did that a person should hear. Presentation reads these and the ticks
+/// never read anything back, so the audio thread cannot change an outcome (I9).
+pub const Event = struct {
+    kind: Kind,
+    /// Where it happened, for the ones that have a place.
+    position: Vec3 = .zero,
+    /// The beacon's slot, for `.beacon`.
+    beacon: u8 = 0,
+
+    pub const Kind = enum { step, jump, land, beacon, gate, warden_step, won, caught, fell };
+};
+
 pub const Game = struct {
     gpa: std.mem.Allocator,
-    phase: Phase = .playing,
+    phase: Phase = .title,
     walk: walk_mod.Walk,
     rules: ?walk_settings.Settings = null,
     beacons: [max_beacons]beacon_mod.Beacon = undefined,
     beacon_count: usize = 0,
     gate: ?gate_mod.Gate = null,
     warden: ?warden_mod.Warden = null,
+    /// World ticks since the game began: only `playing` ticks count.
     tick: u64 = 0,
+    /// The beacon the Use ray would light now, as of the last world tick. The HUD's prompt.
+    aimed: ?u8 = null,
 
+    /// This tick's events, replaced by the next call to `step`.
+    events: [max_events]Event = undefined,
+    event_count: usize = 0,
+    /// Events that did not fit. A scripted run asserts this stays zero.
+    events_dropped: u32 = 0,
+    /// Ground distance between footstep events, metres; zero for none. Presentation's to
+    /// set, and outside the hash: it decides what is heard, never what happens.
+    stride: f32 = 0,
+    warden_stride: f32 = 0,
+    walked: f32 = 0,
+    /// Ticks since the player last stood on ground.
+    air_ticks: u32 = 0,
+    warden_walked: f32 = 0,
+
+    pub const max_events = 8;
+    /// A tenth of a second off the ground, at sixty ticks a second.
+    pub const landing_air_ticks = 6;
     pub const max_beacons = 8;
     /// Level geometry and the gate, which block characters.
     pub const level_layer: u32 = 1;
@@ -249,9 +281,10 @@ pub const Game = struct {
         return false;
     }
 
-    pub fn restart(self: *Game) !void {
+    /// Back to the initial state, in `phase`.
+    fn reset(self: *Game, phase: Phase) !void {
         const rules = self.rules orelse return;
-        self.phase = .playing;
+        self.phase = phase;
         try self.walk.teleport(rules.spawn);
         self.walk.yaw = rules.spawn_yaw;
         self.walk.pitch = 0;
@@ -266,39 +299,119 @@ pub const Game = struct {
             try w.reset(self.gpa, &self.walk.world);
         }
         self.tick = 0;
+        self.aimed = null;
+        self.walked = 0;
+        self.warden_walked = 0;
+        self.air_ticks = 0;
     }
 
-    pub fn step(self: *Game, intent: Intent, dt: f32) !void {
-        if (intent.restart) {
-            try self.restart();
+    pub fn restart(self: *Game) !void {
+        try self.reset(.playing);
+    }
+
+    pub fn ended(self: *const Game) bool {
+        return self.phase == .won or self.phase == .caught or self.phase == .fell;
+    }
+
+    pub fn tickEvents(self: *const Game) []const Event {
+        return self.events[0..self.event_count];
+    }
+
+    /// Adds one event to this tick's, or counts it when the tick already holds the most
+    /// it can. Public for the test of that bound; the game's own ticks are its callers.
+    pub fn emit(self: *Game, event: Event) void {
+        if (self.event_count == max_events) {
+            self.events_dropped += 1;
             return;
+        }
+        self.events[self.event_count] = event;
+        self.event_count += 1;
+    }
+
+    /// The beacon a Use would light from here, or null.
+    fn aim(self: *Game, reach: f32) ?u8 {
+        const forward = self.walk.rotation().rotate(.forward);
+        const hit_opt = self.walk.world.raycast(self.walk.eye(), forward, reach, .{ .mask = beacon_mod.beacon_layer }) catch |err| blk: {
+            // Validated rules and a unit look direction leave nothing to refuse.
+            log.warn("use ray refused ({t})", .{err});
+            break :blk null;
+        };
+        const hit = hit_opt orelse return null;
+        if (hit.user >= self.beacon_count) return null;
+        return @intCast(hit.user);
+    }
+
+    /// One fixed tick. A menu's action is the whole tick: the world does not also advance.
+    pub fn step(self: *Game, intent: Intent, dt: f32) !void {
+        self.event_count = 0;
+        switch (intent.action) {
+            .none => {},
+            .play => {
+                if (self.phase == .title) try self.reset(.playing);
+                return;
+            },
+            .pause => {
+                if (self.phase == .playing) self.phase = .paused;
+                return;
+            },
+            .unpause => {
+                if (self.phase == .paused) self.phase = .playing;
+                return;
+            },
+            .restart => {
+                if (self.phase == .paused or self.ended()) try self.reset(.playing);
+                return;
+            },
+            .title => {
+                if (self.phase == .paused or self.ended()) try self.reset(.title);
+                return;
+            },
         }
 
         const rules = self.rules orelse return;
 
+        // Ticks do not advance the world outside `playing`, so a paused game is paused exactly.
         if (self.phase != .playing) return;
 
         // 1. Move player.
+        const before = self.walk.result;
+        const rising = self.walk.velocity > 0;
         try self.walk.step(intent, dt);
+        const feet_now = self.walk.result.feet;
+        if (!rising and self.walk.velocity > 0) self.emit(.{ .kind = .jump, .position = feet_now });
+        // A landing is heard after a real fall. A capsule's ground contact flickers for a
+        // tick at a wall's lip, and that is not one.
+        if (self.walk.result.grounded) {
+            if (self.air_ticks >= landing_air_ticks) self.emit(.{ .kind = .land, .position = feet_now });
+            self.air_ticks = 0;
+        } else self.air_ticks += 1;
+        if (self.stride > 0 and before.grounded and self.walk.result.grounded) {
+            var moved = feet_now.sub(before.feet);
+            moved.y = 0;
+            self.walked += moved.length();
+            if (self.walked >= self.stride) {
+                self.walked -= self.stride;
+                self.emit(.{ .kind = .step, .position = feet_now });
+            }
+        }
 
         // 2. Use: one ray from the eye along the look, against the beacons' layer only.
-        if (intent.use) {
-            const forward = self.walk.rotation().rotate(.forward);
-            const hit_opt = self.walk.world.raycast(self.walk.eye(), forward, rules.reach, .{ .mask = beacon_mod.beacon_layer }) catch |err| blk: {
-                // Validated rules and a unit look direction leave nothing to refuse.
-                log.warn("use ray refused ({t})", .{err});
-                break :blk null;
-            };
-            if (hit_opt) |hit| if (hit.user < self.beacon_count) {
-                const beacon = &self.beacons[@intCast(hit.user)];
-                if (!beacon.lit) {
-                    beacon.lit = true;
-                    if (self.allBeaconsLit()) if (self.gate) |*g| {
-                        g.opening = true;
-                    };
-                }
-            };
-        }
+        self.aimed = self.aim(rules.reach);
+        if (intent.use) if (self.aimed) |slot| {
+            const beacon = &self.beacons[slot];
+            if (!beacon.lit) {
+                beacon.lit = true;
+                self.emit(.{ .kind = .beacon, .position = beacon.useCentre(), .beacon = slot });
+                if (self.allBeaconsLit()) if (self.gate) |*g| {
+                    g.opening = true;
+                    self.emit(.{ .kind = .gate, .position = g.current_pos });
+                };
+            }
+        };
+        // A lit beacon is not offered again.
+        if (self.aimed) |slot| if (self.beacons[slot].lit) {
+            self.aimed = null;
+        };
 
         // 3. Step gate.
         if (self.gate) |*g| try g.step(self.gpa, &self.walk.world, dt);
@@ -306,7 +419,17 @@ pub const Game = struct {
         // 4. Step warden.
         var caught = false;
         if (self.warden) |*w| {
+            const was = w.feet;
             try w.step(self.gpa, &self.walk.world, rules.gravity, dt);
+            if (self.warden_stride > 0) {
+                var moved = w.feet.sub(was);
+                moved.y = 0;
+                self.warden_walked += moved.length();
+                if (self.warden_walked >= self.warden_stride) {
+                    self.warden_walked -= self.warden_stride;
+                    self.emit(.{ .kind = .warden_step, .position = w.feet });
+                }
+            }
             caught = w.feet.sub(self.walk.result.feet).length() < rules.catch_distance;
         }
 
@@ -318,11 +441,15 @@ pub const Game = struct {
             feet.z >= rules.exit_min.z and feet.z <= rules.exit_max.z;
         if (self.allBeaconsLit() and gate_open and in_exit) {
             self.phase = .won;
+            self.emit(.{ .kind = .won, .position = feet });
         } else if (feet.y < rules.pit_height) {
             self.phase = .fell;
+            self.emit(.{ .kind = .fell, .position = feet });
         } else if (caught) {
             self.phase = .caught;
+            self.emit(.{ .kind = .caught, .position = feet });
         }
+        if (self.phase != .playing) self.aimed = null;
 
         self.tick += 1;
     }

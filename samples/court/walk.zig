@@ -9,13 +9,17 @@ pub const Settings = @import("walk_settings.zig").Settings;
 const Vec3 = core.math.Vec3;
 const log = core.log.scoped(.court);
 
+/// What a menu asks of the game. A phase changes only inside a tick, from that tick's
+/// `Intent` (playable3d.md §5.2), so a menu's choice travels here like any other input.
+pub const Action = enum { none, play, pause, unpause, restart, title };
+
 pub const Intent = struct {
     direction: Vec3 = .zero,
     turn: f32 = 0,
     pitch: f32 = 0,
     jump: bool = false,
     use: bool = false,
-    restart: bool = false,
+    action: Action = .none,
     look_dx: f32 = 0,
     look_dy: f32 = 0,
 };
@@ -28,7 +32,7 @@ pub const Pending = struct {
         self.intent = input;
         self.intent.jump = previous.jump or input.jump;
         self.intent.use = previous.use or input.use;
-        self.intent.restart = previous.restart or input.restart;
+        if (input.action == .none) self.intent.action = previous.action;
         self.intent.look_dx += previous.look_dx;
         self.intent.look_dy += previous.look_dy;
     }
@@ -36,7 +40,7 @@ pub const Pending = struct {
         const out = self.intent;
         self.intent.jump = false;
         self.intent.use = false;
-        self.intent.restart = false;
+        self.intent.action = .none;
         self.intent.look_dx = 0;
         self.intent.look_dy = 0;
         return out;
@@ -54,7 +58,6 @@ pub fn inputIntent(input: platform.InputSnapshot, typing: bool) Intent {
         .direction = direction,
         .jump = input.wasPressed(.space),
         .use = input.wasPressed(.e),
-        .restart = input.wasPressed(.r),
         .look_dx = if (input.mouse.captured) input.mouse.motion.x else 0,
         .look_dy = if (input.mouse.captured) input.mouse.motion.y else 0,
         .turn = @as(f32, if (input.isHeld(.left)) 1 else 0) - @as(f32, if (input.isHeld(.right)) 1 else 0),
