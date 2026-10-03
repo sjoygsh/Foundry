@@ -648,6 +648,13 @@ pub fn build(b: *std.Build) void {
     const sandbox3d = b.addExecutable(.{ .name = "sandbox3d", .root_module = sandbox3d_mod });
     b.installArtifact(sandbox3d);
 
+    // M26: the playable 3D consumer, with no RHI or ABI import (playable3d.md §12).
+    const court_mod = b.createModule(.{ .root_source_file = b.path("samples/court/main.zig"), .target = target, .optimize = optimize });
+    for ([_][]const u8{ "app", "asset", "audio", "anim", "core", "data", "debug", "mod", "physics3d", "render2d", "render3d", "scene", "ui" }) |name| court_mod.addImport(name, modules.get(name).?);
+    court_mod.addImport("platform", platform_module);
+    const court = b.addExecutable(.{ .name = "court", .root_module = court_mod });
+    b.installArtifact(court);
+
     // `tools/editor` is two consumers with a hard seam between them (`editor.md` §3).
     // The host gets the engine modules it must compose. The client gets only a translation
     // of the installed public header, in a separate module, so an implementation import is
@@ -775,6 +782,7 @@ pub fn build(b: *std.Build) void {
         .{ .dir = "samples/sandbox/content", .stem = "sandbox", .dependencies = on_core },
         .{ .dir = "samples/room/content", .stem = "room", .dependencies = on_core },
         .{ .dir = "samples/sandbox3d/content", .stem = "sandbox3d", .dependencies = on_core },
+        .{ .dir = "samples/court/content", .stem = "court", .dependencies = on_core },
         .{ .dir = "tools/editor/content", .stem = "editor", .dependencies = on_core },
     };
 
@@ -794,6 +802,10 @@ pub fn build(b: *std.Build) void {
     walk_test_options.addOption(bool, "available", target.query.isNative());
     if (core_compiled) |compiled| walk_test_options.addOptionPath("core_package", compiled.fpk);
     sandbox3d_mod.addOptions("walk_test_options", walk_test_options);
+    const court_test_options = b.addOptions();
+    court_test_options.addOption(bool, "available", target.query.isNative());
+    if (core_compiled) |compiled| court_test_options.addOptionPath("core_package", compiled.fpk);
+    court_mod.addOptions("court_test_options", court_test_options);
 
     // **Only when the build target can run here.** `fpack` is built for the target like
     // everything else, so a cross build produces a compiler this machine cannot execute.
@@ -808,6 +820,10 @@ pub fn build(b: *std.Build) void {
             // against its output and compiling it twice would be two answers to one
             // question.
             const compiled = if (index == 0) core_compiled.? else release.compilePackage(b, fpack, pkg);
+            if (std.mem.eql(u8, pkg.stem, "court")) {
+                court_test_options.addOptionPath("package", compiled.fpk);
+                court_test_options.addOptionPath("generated", compiled.generated);
+            }
             if (std.mem.eql(u8, pkg.stem, "sandbox3d")) {
                 walk_test_options.addOptionPath("package", compiled.fpk);
                 walk_test_options.addOptionPath("generated", compiled.generated);
@@ -885,6 +901,10 @@ pub fn build(b: *std.Build) void {
     run_sandbox3d.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_sandbox3d.addArgs(args);
     b.step("sandbox3d", "Build and run samples/sandbox3d (pass --msaa=1|4 after --)").dependOn(&run_sandbox3d.step);
+    const run_court = b.addRunArtifact(court);
+    run_court.step.dependOn(b.getInstallStep());
+    if (b.args) |args| run_court.addArgs(args);
+    b.step("court", "Build and run the M26 court").dependOn(&run_court.step);
 
     const run_fpack = b.addRunArtifact(fpack);
     run_fpack.step.dependOn(b.getInstallStep());
@@ -1342,14 +1362,16 @@ pub fn build(b: *std.Build) void {
     check_step.dependOn(&sandbox.step);
     check_step.dependOn(&room.step);
     check_step.dependOn(&sandbox3d.step);
+    check_step.dependOn(&court.step);
     check_step.dependOn(&editor.step);
 
     // The samples' own tests, since M14: what each keeps on disk, read the way it reads it —
     // above all, a file an earlier build wrote (`mod-management.md` §6).
-    for ([_]*std.Build.Module{ sandbox_mod, room_mod, sandbox3d_mod }) |sample_mod| {
+    for ([_]*std.Build.Module{ sandbox_mod, room_mod, sandbox3d_mod, court_mod }) |sample_mod| {
         const sample_tests = b.addTest(.{ .root_module = sample_mod });
         const run_sample_tests = b.addRunArtifact(sample_tests);
         test_step.dependOn(&run_sample_tests.step);
+        if (sample_mod == court_mod) b.step("court-test", "Run the court's package and movement tests").dependOn(&run_sample_tests.step);
         if (sample_mod == sandbox3d_mod) {
             b.step("sandbox3d-test", "Run the 3D sample's content and workflow tests").dependOn(&run_sample_tests.step);
             const props_tests = b.addTest(.{ .root_module = sample_mod, .filters = &.{"props:"} });

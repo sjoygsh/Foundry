@@ -1,0 +1,47 @@
+# M26 Step 2: the level and movement only. Gameplay records arrive in Step 3.
+foundry:model_import court:models.court { source "models/court.gltf" collision true }
+
+@schema config {
+    title string
+    width u32 height u32
+    clear_linear [f32]
+    level id
+    exposure_ev100 f32
+    ambient { r f32 g f32 b f32 }
+    lights [{
+        kind string
+        color { r f32 g f32 b f32 }
+        intensity f32 range f32 (default 0)
+        inner_cone f32 (default 0) outer_cone f32 (default 0.785398)
+        casts_shadow bool (default false)
+        position { x f32 y f32 z f32 }
+        direction { x f32 y f32 z f32 }
+    }]
+}
+config court:config.main {
+    title "Foundry Court"
+    width 1280 height 720
+    clear_linear [ 0.004 0.006 0.014 1 ]
+    level court:models.court
+    exposure_ev100 4
+    ambient { r 2 g 3 b 5 }
+    lights [{ kind "directional" color { r 0.65 g 0.75 b 1 }
+        intensity 70 casts_shadow true position { x 0 y 0 z 0 }
+        direction { x -1 y -2 z -1 } }]
+}
+
+@schema rules {
+    spawn { x f32 y f32 z f32 }
+    spawn_yaw f32 (default 0)
+    radius f32 height f32 eye_height f32
+    max_slope f32 step_height f32 snap_distance f32
+    walk_speed f32 gravity f32 jump_speed f32 turn_rate f32 look_rate f32
+    collision [id]
+}
+rules court:rules.main {
+    spawn { x 0 y 0.004 z 5 }
+    radius 0.3 height 1.8 eye_height 1.65
+    max_slope 0.785398 step_height 0.25 snap_distance 0.2
+    walk_speed 3 gravity 9.81 jump_speed 5 turn_rate 1.5 look_rate 0.004
+    collision [ court:models.court.collision ]
+}

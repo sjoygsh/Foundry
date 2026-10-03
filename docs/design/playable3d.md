@@ -1,6 +1,6 @@
 # Design: M26 — A playable 3D sample: `samples/court`, pointer capture and the three-platform play
 
-**Status:** Accepted 2026-10-03 by the owner's request to begin Step 1, which accepts §14 as written. Step 1 is done; Steps 2–8 are not begun.
+**Status:** Accepted 2026-10-03 by the owner's request to begin Step 1, which accepts §14 as written. Steps 1–2 are done; Steps 3–8 are not begun.
 **Date:** 2026-10-02
 **Baseline:** `845b02f`, tag `m25` (documents since: `9b72a78`, `d9c0411`). M0–M25 are complete.
 **Decisions:**
@@ -575,3 +575,60 @@ and 7.
 The bar: `fmt`, **2,075 of 2,076 tests** (one expected skip), the four `check`s, the Vulkan
 `check` cross-builds for Windows and Linux (the SDL3 backend changed), and the three headless
 30-frame samples, all exit 0.
+
+## Resolution — Step 2: the court's skeleton, on null and Metal (2026-10-03)
+
+`samples/court` is a separate consumer with exactly §12's grants, never `rhi` or `abi`.
+`zig build court` builds, installs and runs it; `court-test` runs its tests, also in the
+ordinary test/check graphs. Cross checks compile the application and its tests without
+trying to execute a target-built content compiler.
+
+The ordinary `court:content` package defines `court:config` and `court:rules`. The former
+supplies the window, level, clear colour and photometric lighting; the latter supplies spawn,
+character dimensions, movement, gravity, jump speed and look rates. The level is an imported
+glTF with opt-in collision, copied into the sample's physics world. The generated court
+contains its floor, perimeter walls, low jump wall, ledge, gap, pit and gate frame.
+`scripts/m26/make_court.py` emits that glTF, binary and two PNG textures; `--check` regenerates
+in memory and compares all four committed outputs byte for byte. It is not in the build.
+Beacon/gate props and the re-emitted M24 warden belong to Step 3; sounds belong to Step 4.
+
+What implementation settled:
+
+- The court owns its copy of the walk and lighting readers; it imports no sibling sample.
+  Orbit camera, the sandbox's walker mask and its hardcoded fall-respawn policy are absent.
+  The game decides falling and restarting in Step 3.
+- Relative mouse motion joins the tick's `Intent`, rather than changing the yaw in the frame.
+  A pending input retains motion and a jump press across frames without ticks, consumes
+  each once, and keeps held movement for subsequent catch-up ticks.
+- Jumping requires grounding and nonpositive vertical velocity. Grounded ascent at a wall lip
+  is not a landing: only descending ground contact or an ascending ceiling hit cancels velocity.
+  The actual compiled low wall exposed the need for that rule. Both upward and downward
+  displacement are clamped to the controller's configured move bound.
+- Capture is requested once at startup. The snapshot governs mouse look; unsupported capture
+  leaves the arrows usable. F4 explicitly toggles capture and Escape quits this skeleton,
+  pending Step 4's title/pause/resume policy. There is no UI to hit-test yet.
+- Null advances one fixed step per frame, so the bar's court run exercises collision for
+  29 ticks rather than mostly rendering empty simulation frames. Windowed runs are paced
+  at 60 Hz. Headless never resizes a nonexistent window.
+- Invalid essential startup configuration or unavailable level collision is diagnosed and
+  refuses startup, rather than presenting an apparently successful but unwalkable level.
+  Nonessential gameplay-record refusals and their legible fallbacks are Step 3.
+
+Six focused tests pass under null and Metal: actual compiled-package loading, perimeter
+blocking, jumping the low wall and gap, landing, airborne-jump refusal, bounded look,
+refresh retiring copied geometry without teleporting, frame-to-tick input consumption,
+malformed movement fields/jump speed and invalid config size/colour, plus the independent
+lighting reader's refusal coverage. Mutation removed the airborne guard, retained the jump
+edge, and removed jump-speed bounds; each failed its intended test. All were restored.
+
+On macOS/Metal (Apple M5, SDL3 `cocoa`), a real window rendered the lit court for 600 frames,
+599 ticks, zero skipped frames, nine visible draws and one directional light. The compiled
+geometry movement/jump proof also passed in the Metal-selected test graph.
+This does not claim a person's play or close Step 1's by-hand pointer check (§10.5).
+
+The ten-command bar passes: formatting, **2,081 of 2,082 tests** (one expected skip), the four
+checks including Metal and null Windows/Linux cross-builds, and all four 30-frame headless
+samples. The unchanged room and sandbox macOS releases both stage after the package/build
+graph addition. The ABI and engine are unchanged. No gameplay phase, beacon interaction,
+warden, ending, HUD, sound, preferences, user-mod selection or court release was implemented.
+Stop before Step 3.

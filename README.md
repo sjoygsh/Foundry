@@ -40,6 +40,7 @@ Each release lists the SHA-256 of every file, so you can check a download matche
 zig build run  -Drhi=metal        # the sandbox, in a window (macOS)
 zig build room -Drhi=metal        # the room, a small game
 zig build sandbox3d -Drhi=metal   # the 3D sandbox
+zig build court -Drhi=metal       # M26's courtyard: walking/jumping; gameplay is next
 zig build test                    # about 2,070 headless tests
 ```
 
@@ -174,7 +175,7 @@ moddable, networked 2D engine with an editor, and a 3D engine with lit, shadowed
 models, collision and a public 3D modding API. It runs on macOS, Windows and Linux (X11 and
 Wayland), and the first game built on it is finished in its own repository.
 
-**What comes next** is M26, a playable 3D sample (designed and accepted, its first step done, in
+**What comes next** is M26, a playable 3D sample (designed and accepted, its first two steps done, in
 [`playable3d.md`](docs/design/playable3d.md)), and then the long roadmap
 ([ADR-0060](docs/adr/0060-a-150-milestone-roadmap.md)): a complete game toolkit, dynamics and
 large worlds, the renderer's upper tier, tools, and reach onto more platforms, ending in

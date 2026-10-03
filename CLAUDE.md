@@ -344,6 +344,10 @@ granted `abi`, `anim`, `app`, `asset`, `core`, `data`, `debug`, `mod`, `physics3
 sample to load consented native code), and never `rhi`, so a 3D game touching the RHI is a
 build error there.
 
+`samples/court`, M26's playable consumer, is granted `app`, `asset`, `audio`, `anim`,
+`core`, `data`, `debug`, `mod`, `physics3d`, `platform`, `render2d`, `render3d`, `scene`
+and `ui`, never `rhi` or `abi`. Its state and gameplay policy belong to the sample.
+
 **`script` sits at L6, as a consumer of the public API rather than a layer of the engine.**
 It depends on `core`, the pinned Lua library, and declarations from `foundry.h` — never an
 engine implementation module. It reaches the engine only through the `FoundryApi_v2` table
@@ -449,6 +453,8 @@ Foundry/
       content/           and it needs a sample whose HUD is not full of frame times.
     sandbox3d/           3D's capabilities, M19 to M25, as sandbox is 2D's. Not given `rhi`,
       content/           so a game touching the RHI is a build error there.
+    court/               M26's playable 3D consumer, beside the capability demonstrator.
+      content/           Its own level, lighting and rules; no RHI or ABI grant.
 
   content/
     core/                Base content package. Package zero (I3). Engine content

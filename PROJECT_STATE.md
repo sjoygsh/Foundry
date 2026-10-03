@@ -1,12 +1,29 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-03
-**Current handoff: M26 Step 1 of 8 is complete. Stop before Step 2**, the court's skeleton:
-`samples/court`, its build graph and content package, the walk with captured look and a jump,
-on null and Metal. `samples/court` does not exist yet. The design
+**Current handoff: M26 Step 2 of 8 is complete. Stop before Step 3**, the game:
+phases, beacons and Use, the gate, the warden, the exit and pit, restart, scripted endings and
+same-binary replay. `samples/court` now draws its lit, collidable courtyard and supports
+first-person walking, captured look, arrow-key fallback and jumping on null and Metal. The design
 (`docs/design/playable3d.md`, no ADR) was accepted on 2026-10-03 by the owner's request to begin
 Step 1. M25 Public 3D is complete (tag `m25`, ADR-0059) and `FoundryApi_v6` is frozen at 261
-calls. M0–M25 are pushed; Step 1 is committed and not pushed.
+calls. M0–M25 are pushed; M26 Steps 1–2 are committed and not pushed.
+
+**M26 Step 2 is done (2026-10-03).** The court has its own build grants (never RHI or ABI),
+ordinary `court:content` package, `court:config` and `court:rules` schemas, compiled glTF level
+and copied collision mesh. `scripts/m26/make_court.py --check` proves the committed geometry
+and two textures reproducible byte for byte; Python is never a build input. Movement tuning
+and spawn come from content. Mouse deltas and jump presses wait for the next fixed tick and
+are consumed once; rising over a wall lip does not cancel the jump. F4 explicitly toggles
+capture and Escape quits this skeleton; menus replace that policy in Step 4.
+Six court tests pass on null and Metal, including compiled-level wall blocking, low-wall and
+gap jumps, landing, airborne-jump refusal, input latching and malformed rules/configuration.
+Three mutation proofs failed as intended and their guards are restored.
+A Metal window ran 600 frames, 599 ticks, zero skips, nine visible draws and one directional
+light; no person's play is claimed. The ten-command bar passes at **2,081 of 2,082 tests**,
+one expected skip, and the existing room and sandbox macOS releases both stage.
+No engine or ABI code changed. Gameplay, prop/warden assets, sound, UI, preferences, mods,
+court release staging and other-platform runtime proofs remain their planned later steps.
 
 **M26 Step 1 is done (2026-10-03).** `platform` has `setPointerCapture(window, captured)` and
 `MouseState.captured`, in the interface check, the null and SDL3 backends and
@@ -24,7 +41,7 @@ in `platform`, deferred to M26 by `collision3d.md`; nothing enters the ABI. The 
 scripted play-throughs replayed to the same hash on the same binary, run from relocated
 installs on macOS/Metal, Windows/Vulkan and a freshly provisioned Linux machine, plus a
 person's play on each, which only that person's report can claim. Eight steps. Step 7 needs
-the owner to supply or choose the Linux machine. No code has changed.
+the owner to supply or choose the Linux machine. Steps 1–2 are implemented; Steps 3–8 remain.
 
 **The long roadmap is decided (2026-10-02, ADR-0060): 150 numbered engine milestones, M0–M149,
 then M150, the certified release.** 26 are done. M27–M149 are listed in `docs/ROADMAP.md` in five phases (game toolkit, dynamics

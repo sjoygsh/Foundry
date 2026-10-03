@@ -235,6 +235,7 @@ zig build check -Dtarget=x86_64-windows-gnu -Dplatform=null -Drhi=null
 FOUNDRY_SANDBOX_FRAMES=30 zig build run  -Dplatform=null -Drhi=null
 FOUNDRY_ROOM_FRAMES=30    zig build room -Dplatform=null -Drhi=null
 FOUNDRY_SANDBOX3D_FRAMES=30 zig build sandbox3d -Dplatform=null -Drhi=null
+FOUNDRY_COURT_FRAMES=30 zig build court -Dplatform=null -Drhi=null
 ```
 
 `check` compiles everything without running it, including the cross-compiled targets where

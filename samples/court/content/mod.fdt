@@ -1,0 +1,7 @@
+foundry:mod court:content {
+    name "Court"
+    version 1
+    license "Apache-2.0"
+    summary "A first-person courtyard, demonstrating playable 3D."
+    requires [ { id foundry:core } ]
+}
