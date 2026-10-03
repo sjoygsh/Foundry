@@ -1157,6 +1157,18 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             return self.platform.setWindowTitle(self.window, title);
         }
 
+        /// Captures or releases the pointer for a first-person look: hidden, held inside the
+        /// window, `input.mouse.motion` relative and unbounded (`playable3d.md` §4).
+        ///
+        /// **Read `input.mouse.captured` for what is true.** `Unsupported` is a normal answer
+        /// from a window system that cannot capture, and losing keyboard focus releases the
+        /// pointer without asking; the game asks again when the player returns. Headless,
+        /// there is no window to hold a pointer in, which is `Unsupported` too.
+        pub fn setPointerCapture(self: *Self, captured: bool) platform.PointerCaptureError!void {
+            if (self.window.isNone()) return error.Unsupported;
+            return self.platform.setPointerCapture(self.window, captured);
+        }
+
         /// Gives the window the application's icon, from bytes borrowed for the call
         /// (`vulkan.md` §9). The engine has no icon of its own to fall back on.
         ///
@@ -1831,6 +1843,19 @@ test "a window takes a title from content, and refuses one no backend can show" 
         try testing.expectError(error.InvalidWindowTitle, engine.setWindowTitle("a\x00b"));
         try testing.expectError(error.InvalidWindowTitle, engine.setWindowTitle("\xff\xfe"));
     }
+}
+
+test "a pointer capture is read back from the frame's input, and a headless engine has none" {
+    const windowed = try TestEngine.init(testing.allocator, .{});
+    defer windowed.deinit();
+    try windowed.setPointerCapture(true);
+    try testing.expectEqual(@as(?bool, true), windowed.platform.pointerCaptured(windowed.window));
+    try windowed.setPointerCapture(false);
+    try testing.expectEqual(@as(?bool, false), windowed.platform.pointerCaptured(windowed.window));
+
+    const headless = try testEngine(.{});
+    defer headless.deinit();
+    try testing.expectError(error.Unsupported, headless.setPointerCapture(true));
 }
 
 test "a headless engine has no window, and says so rather than pretending" {

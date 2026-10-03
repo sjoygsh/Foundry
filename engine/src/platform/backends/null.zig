@@ -39,6 +39,8 @@ const WindowState = struct {
     scale: f32,
     focused: bool,
     minimized: bool,
+    /// Whether this window holds the pointer. Cleared when it loses keyboard focus.
+    pointer_captured: bool = false,
     /// The size of the last icon accepted. There is no window manager to show it to.
     icon: ?win.Size = null,
 
@@ -126,6 +128,7 @@ pub const Platform = struct {
 
     pub fn closeWindow(self: *Platform, handle: win.WindowHandle) void {
         _ = self.windows.remove(handle);
+        self.syncPointerCapture();
     }
 
     pub fn windowInfo(self: *Platform, handle: win.WindowHandle) ?win.WindowInfo {
@@ -170,6 +173,24 @@ pub const Platform = struct {
         try icon.validate();
         const state = self.windows.get(handle) orelse return error.InvalidWindow;
         state.icon = .{ .width = icon.width, .height = icon.height };
+    }
+
+    /// Records the capture, effective at once: the next snapshot reports it, and motion pushed
+    /// from here on moves no position. There is no window system to refuse, so this backend
+    /// never answers `Unsupported`; a test of that answer names a host's handling, not this.
+    pub fn setPointerCapture(self: *Platform, handle: win.WindowHandle, captured: bool) interface.PointerCaptureError!void {
+        const state = self.windows.get(handle) orelse return error.InvalidWindow;
+        state.pointer_captured = captured;
+        self.syncPointerCapture();
+    }
+
+    /// The accumulator's flag is whether *any* window holds the pointer, recomputed rather
+    /// than toggled so that closing a window or its losing focus cannot leave it stale.
+    fn syncPointerCapture(self: *Platform) void {
+        var any = false;
+        var it = self.windows.iterator();
+        while (it.next()) |entry| any = any or entry.value.pointer_captured;
+        self.accumulator.captured = any;
     }
 
     pub fn nativeSurface(self: *Platform, handle: win.WindowHandle) ?win.NativeSurfaceHandle {
@@ -267,7 +288,12 @@ pub const Platform = struct {
                 if (self.windows.get(e.window)) |state| state.focused = true;
             },
             .window_focus_lost => |e| {
-                if (self.windows.get(e.window)) |state| state.focused = false;
+                if (self.windows.get(e.window)) |state| {
+                    state.focused = false;
+                    // Released, and not taken back when focus returns: the game asks again.
+                    state.pointer_captured = false;
+                }
+                self.syncPointerCapture();
             },
             else => {},
         }
@@ -346,6 +372,12 @@ pub const Platform = struct {
     pub fn windowIconSize(self: *Platform, handle: win.WindowHandle) ?win.Size {
         const state = self.windows.getConst(handle) orelse return null;
         return state.icon;
+    }
+
+    /// Whether a window holds the pointer, as the window system would know it.
+    pub fn pointerCaptured(self: *Platform, handle: win.WindowHandle) ?bool {
+        const state = self.windows.getConst(handle) orelse return null;
+        return state.pointer_captured;
     }
 
     /// Gives or takes keyboard focus, queueing the matching event.
@@ -768,4 +800,86 @@ test "a config no device could serve is refused rather than opened" {
         error.AudioFormatUnsupported,
         p.openAudio(.{ .sample_rate = 0, .callback = Recorder.fill, .ctx = &rec }),
     );
+}
+
+test "a captured pointer reports relative motion and a position that does not move" {
+    const p = try Platform.init(testing.allocator, .{});
+    defer p.deinit();
+    const w = try p.openWindow(.{});
+    try p.setFocus(w, true);
+    try p.pushEvent(.{ .mouse_moved = .{ .position = .init(100, 50), .position_pixels = .init(100, 50), .delta = .init(2, 2) } });
+    p.pumpEvents();
+    const before = p.captureInput();
+    try testing.expect(!before.mouse.captured);
+
+    try p.setPointerCapture(w, true);
+    try testing.expectEqual(@as(?bool, true), p.pointerCaptured(w));
+    // Asking for the state it already has is accepted, not an error.
+    try p.setPointerCapture(w, true);
+
+    // Further than any window is wide: a look that an edge would have stopped.
+    try p.pushEvent(.{ .mouse_moved = .{ .position = .init(5000, 0), .delta = .init(4000, -10) } });
+    try p.pushEvent(.{ .mouse_moved = .{ .position = .init(9000, 0), .delta = .init(4000, -10) } });
+    p.pumpEvents();
+    const held = p.captureInput();
+    try testing.expect(held.mouse.captured);
+    try testing.expectEqual(@as(f32, 8000), held.mouse.motion.x);
+    try testing.expectEqual(@as(f32, -20), held.mouse.motion.y);
+    try testing.expectEqual(before.mouse.position, held.mouse.position);
+    try testing.expectEqual(before.mouse.position_pixels, held.mouse.position_pixels);
+
+    // Plain data still: a snapshot copies and compares, capture included.
+    const copy = held;
+    try testing.expect(std.meta.eql(copy, held));
+
+    try p.setPointerCapture(w, false);
+    try p.setPointerCapture(w, false);
+    try p.pushEvent(.{ .mouse_moved = .{ .position = .init(7, 8), .position_pixels = .init(7, 8), .delta = .init(1, 1) } });
+    p.pumpEvents();
+    const freed = p.captureInput();
+    try testing.expect(!freed.mouse.captured);
+    try testing.expectEqual(@as(f32, 7), freed.mouse.position.x);
+}
+
+test "losing keyboard focus releases the pointer, and regaining it does not take it back" {
+    const p = try Platform.init(testing.allocator, .{});
+    defer p.deinit();
+    const w = try p.openWindow(.{});
+    try p.setFocus(w, true);
+    p.pumpEvents();
+    _ = p.captureInput();
+
+    try p.setPointerCapture(w, true);
+    p.pumpEvents();
+    try testing.expect(p.captureInput().mouse.captured);
+
+    try p.setFocus(w, false);
+    // Motion after the loss, in the same pump, is ordinary motion again.
+    try p.pushEvent(.{ .mouse_moved = .{ .position = .init(33, 44), .position_pixels = .init(33, 44), .delta = .init(3, 4) } });
+    p.pumpEvents();
+    const lost = p.captureInput();
+    try testing.expect(!lost.focused);
+    try testing.expect(!lost.mouse.captured);
+    try testing.expectEqual(@as(f32, 33), lost.mouse.position.x);
+    try testing.expectEqual(@as(?bool, false), p.pointerCaptured(w));
+
+    try p.setFocus(w, true);
+    p.pumpEvents();
+    const back = p.captureInput();
+    try testing.expect(back.focused);
+    try testing.expect(!back.mouse.captured);
+}
+
+test "setPointerCapture validates the window, and a closed window holds nothing" {
+    const p = try Platform.init(testing.allocator, .{});
+    defer p.deinit();
+    try testing.expectError(error.InvalidWindow, p.setPointerCapture(.none, true));
+
+    const w = try p.openWindow(.{});
+    try p.setPointerCapture(w, true);
+    p.closeWindow(w);
+    try testing.expectError(error.InvalidWindow, p.setPointerCapture(w, false));
+    try testing.expectEqual(@as(?bool, null), p.pointerCaptured(w));
+    p.pumpEvents();
+    try testing.expect(!p.captureInput().mouse.captured);
 }

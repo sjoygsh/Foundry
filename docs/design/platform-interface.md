@@ -160,6 +160,16 @@ NUL-terminated copy to `SDL_SetWindowTitle` and logs a window manager's refusal 
 failing; the null backend validates. `app.Engine.setWindowTitle` forwards, or only validates
 when headless. Like the icon, it is host window configuration and the C mod API gains nothing.
 
+**M26 Step 1, implemented 2026-10-03** ([playable3d.md](playable3d.md) §4): `setPointerCapture(
+window, captured)` for a first-person look. Captured, the cursor is hidden and held inside the
+window, `MouseState.motion` is relative and does not stop at an edge, and both positions keep
+the value they had. `MouseState.captured` reports what is true at snapshot time, because the
+window system can refuse (`Unsupported`, a normal answer) and because losing keyboard focus
+releases the capture, which is not taken back when focus returns. The SDL3 backend uses
+`SDL_SetWindowRelativeMouseMode` and clears it on the focus-lost event; the null backend records
+the flag per window. `app.Engine.setPointerCapture` forwards, and answers `Unsupported` when
+headless. It is host window policy and the C mod API gains nothing.
+
 A window asks for the surface the selected graphics backend presents to through
 `app.window_surface` (`rhi.window_surface`): `metal_layer` for Metal, the request-only
 `native_window` for Vulkan, and `none` for the validation backend. No sample names a graphics

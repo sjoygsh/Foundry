@@ -1,11 +1,23 @@
 # Foundry Project State
 
-**Last updated:** 2026-10-02
-**Current handoff: M26's design is proposed (`docs/design/playable3d.md`, no ADR); awaiting the
-owner's acceptance of its §14. Stop before Step 1.** M25 Public 3D is complete (tag `m25`,
-ADR-0059) and `FoundryApi_v6` is frozen at 261 calls. M0–M25 are pushed.
+**Last updated:** 2026-10-03
+**Current handoff: M26 Step 1 of 8 is complete. Stop before Step 2**, the court's skeleton:
+`samples/court`, its build graph and content package, the walk with captured look and a jump,
+on null and Metal. `samples/court` does not exist yet. The design
+(`docs/design/playable3d.md`, no ADR) was accepted on 2026-10-03 by the owner's request to begin
+Step 1. M25 Public 3D is complete (tag `m25`, ADR-0059) and `FoundryApi_v6` is frozen at 261
+calls. M0–M25 are pushed; Step 1 is committed and not pushed.
 
-**M26's design, proposed 2026-10-02.** A new first-person sample, `samples/court`: light three
+**M26 Step 1 is done (2026-10-03).** `platform` has `setPointerCapture(window, captured)` and
+`MouseState.captured`, in the interface check, the null and SDL3 backends and
+`app.Engine.setPointerCapture`; `sandbox3d`'s F4 toggles it. The capture flag is per window in
+the backend and the accumulator's copy is derived from it; SDL3's mode is cleared on focus loss
+so it is not re-acquired; headless, the engine answers `Unsupported`. Nothing entered the ABI.
+A scripted Metal run captured and released through the snapshot. Still to be seen by a person
+at the Mac: the cursor staying in the window, and release on switching away. The bar passed at
+**2,075 of 2,076 tests**, one expected skip, with the Vulkan cross-checks.
+
+**M26's design, proposed 2026-10-02 and accepted 2026-10-03.** A new first-person sample, `samples/court`: light three
 beacons, pass the gate, fail by the warden's touch or by falling, restart; with sound, a HUD
 and menus over the 3D frame, and everything content. The one engine change is pointer capture
 in `platform`, deferred to M26 by `collision3d.md`; nothing enters the ABI. The proof is three

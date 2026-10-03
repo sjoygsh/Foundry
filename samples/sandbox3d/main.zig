@@ -749,7 +749,7 @@ const Sample = struct {
         self.panels.toggle("log");
         self.panels.entities.selected = self.orrery.role(.sheared);
         self.panels_open = engine.os.envVar("FOUNDRY_SANDBOX3D_PANELS") != null;
-        log.info("keys: WASD walk, arrows/right mouse look, f3 walk/orbit, f1 overlay, f5 save, f9 load, f6 move the orbiting crate, f7 try the sheared one, escape quit", .{});
+        log.info("keys: WASD walk, arrows/right mouse look, f4 capture the pointer to look, f3 walk/orbit, f1 overlay, f5 save, f9 load, f6 move the orbiting crate, f7 try the sheared one, escape quit", .{});
     }
 
     /// The user data directory, made if it is not there yet. The file beneath it is opened
@@ -906,7 +906,8 @@ const Sample = struct {
         self.ui.style = overlayStyle(self.uiFont(engine));
         self.ui.begin(.{
             .keys = engine.input,
-            .pointer = engine.input.mouse.position,
+            // A captured pointer has no position; the kernel is given one outside every panel.
+            .pointer = if (engine.input.mouse.captured) .init(-1, -1) else engine.input.mouse.position,
             .wheel = engine.input.mouse.wheel,
             .text = self.typed[0..self.typed_len],
             .frame = engine.frame_index,
@@ -930,7 +931,16 @@ const Sample = struct {
         }
         const typing = self.panels_open and self.ui.wantsKeyboard();
         self.intent = walk_mod.inputIntent(in.*, typing);
-        if (!self.walk.orbit and !typing and in.mouse.isHeld(.right)) self.walk.look(in.mouse.motion.x, in.mouse.motion.y);
+        if (in.wasPressed(.f4) or scripted.f4) {
+            // Asked from what is true, not from what was last asked: focus loss releases it.
+            const want = !in.mouse.captured;
+            if (engine.setPointerCapture(want)) |_| {
+                log.info("f4: pointer {s}", .{if (want) "captured" else "released"});
+            } else |err| {
+                log.warn("f4: the pointer cannot be captured here ({t}); look with the arrows or the right button", .{err});
+            }
+        }
+        if (!self.walk.orbit and !typing and (in.mouse.captured or in.mouse.isHeld(.right))) self.walk.look(in.mouse.motion.x, in.mouse.motion.y);
         if (in.wasPressed(.f1) or scripted.f1) {
             self.panels_open = !self.panels_open;
             log.info("debug overlay {s}", .{if (self.panels_open) "shown" else "hidden"});
@@ -1263,13 +1273,13 @@ const Script = struct {
 
     const max = 32;
     const Press = struct { key: Key, frame: u64 };
-    const Key = enum { f1, f3, f5, f6, f7, f9 };
-    const Keys = struct { f1: bool = false, f3: bool = false, f5: bool = false, f6: bool = false, f7: bool = false, f9: bool = false };
+    const Key = enum { f1, f3, f4, f5, f6, f7, f9 };
+    const Keys = struct { f1: bool = false, f3: bool = false, f4: bool = false, f5: bool = false, f6: bool = false, f7: bool = false, f9: bool = false };
 
     fn fromEnv(engine: *app.Engine) Script {
         const text = engine.os.envVar("FOUNDRY_SANDBOX3D_KEYS") orelse return .{};
         return parse(text) orelse blk: {
-            log.warn("FOUNDRY_SANDBOX3D_KEYS is not a list of key@frame (f1 f3 f5 f6 f7 f9); ignoring it", .{});
+            log.warn("FOUNDRY_SANDBOX3D_KEYS is not a list of key@frame (f1 f3 f4 f5 f6 f7 f9); ignoring it", .{});
             break :blk .{};
         };
     }

@@ -56,6 +56,8 @@ const WindowState = struct {
     /// when the window opened. A separate allocation because pool slots move as the pool
     /// grows, and a `NativeSurfaceHandle` points here until the window closes.
     native: ?*NativeWindow = null,
+    /// Whether this window holds the pointer in SDL's relative mode.
+    pointer_captured: bool = false,
 
     /// What was last reported upward, so that SDL's several overlapping resize events
     /// collapse into one Foundry event only when something actually changed.
@@ -265,6 +267,7 @@ pub const Platform = struct {
         const state = self.windows.get(handle) orelse return;
         destroyWindow(self.gpa, state);
         _ = self.windows.remove(handle);
+        self.syncPointerCapture();
     }
 
     pub fn windowInfo(self: *Platform, handle: win.WindowHandle) ?win.WindowInfo {
@@ -299,6 +302,42 @@ pub const Platform = struct {
         defer self.gpa.free(z);
         // A window manager that ignores a title is not an error worth stopping for.
         if (!c.SDL_SetWindowTitle(state.ptr, z.ptr)) log.warn("SDL_SetWindowTitle failed: {s}", .{sdlError()});
+    }
+
+    /// SDL's relative mouse mode: the cursor hidden, the pointer held in the window, and
+    /// `xrel`/`yrel` no longer stopped by an edge.
+    pub fn setPointerCapture(self: *Platform, handle: win.WindowHandle, captured: bool) interface.PointerCaptureError!void {
+        const state = self.windows.get(handle) orelse return error.InvalidWindow;
+        if (state.pointer_captured == captured) return;
+        if (!c.SDL_SetWindowRelativeMouseMode(state.ptr, captured)) {
+            log.warn("SDL_SetWindowRelativeMouseMode({}) failed: {s}", .{ captured, sdlError() });
+            return error.Unsupported;
+        }
+        state.pointer_captured = captured;
+        self.syncPointerCapture();
+    }
+
+    /// The accumulator's flag is whether *any* window holds the pointer, recomputed rather
+    /// than toggled so that closing a window or its losing focus cannot leave it stale.
+    fn syncPointerCapture(self: *Platform) void {
+        var any = false;
+        var it = self.windows.iterator();
+        while (it.next()) |entry| any = any or entry.value.pointer_captured;
+        self.accumulator.captured = any;
+    }
+
+    /// Losing keyboard focus ends a capture, and it is not taken back when focus returns.
+    /// SDL would re-enter relative mode by itself on the next focus; a player who alt-tabbed
+    /// back into a paused game does not want the cursor gone, so the mode is cleared here and
+    /// the game asks again when it wants it (`playable3d.md` §4.2).
+    fn releasePointerOnFocusLoss(self: *Platform, id: c.SDL_WindowID) void {
+        const state = self.windows.get(self.handleForId(id)) orelse return;
+        if (!state.pointer_captured) return;
+        if (!c.SDL_SetWindowRelativeMouseMode(state.ptr, false)) {
+            log.warn("SDL_SetWindowRelativeMouseMode(false) on focus loss failed: {s}", .{sdlError()});
+        }
+        state.pointer_captured = false;
+        self.syncPointerCapture();
     }
 
     pub fn setWindowIcon(self: *Platform, handle: win.WindowHandle, icon: win.WindowIcon) interface.WindowIconError!void {
@@ -385,9 +424,12 @@ pub const Platform = struct {
             c.SDL_EVENT_WINDOW_FOCUS_GAINED => self.emit(.{
                 .window_focus_gained = .{ .window = self.handleForId(raw.window.windowID) },
             }),
-            c.SDL_EVENT_WINDOW_FOCUS_LOST => self.emit(.{
-                .window_focus_lost = .{ .window = self.handleForId(raw.window.windowID) },
-            }),
+            c.SDL_EVENT_WINDOW_FOCUS_LOST => {
+                self.releasePointerOnFocusLoss(raw.window.windowID);
+                self.emit(.{
+                    .window_focus_lost = .{ .window = self.handleForId(raw.window.windowID) },
+                });
+            },
 
             // SDL reports a logical resize, a pixel-size change and a display-scale
             // change separately, and a single drag between monitors can produce all

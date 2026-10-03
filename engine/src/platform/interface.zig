@@ -83,6 +83,15 @@ pub const WindowIconError = error{
     WindowIconRefused,
 };
 
+pub const PointerCaptureError = error{
+    /// The handle does not name a live window — closed, or from another pool (I1).
+    InvalidWindow,
+    /// The window system cannot capture the pointer, or declined to. A Wayland compositor
+    /// without the relative-pointer and pointer-constraints protocols answers this. **A normal
+    /// answer, not a fault**: the caller carries on with an uncaptured pointer.
+    Unsupported,
+};
+
 pub const AudioError = error{
     OutOfMemory,
     /// No output device, or the OS declined to open one. **Not a programmer error**: a
@@ -141,6 +150,12 @@ pub fn check(comptime Impl: type, comptime label: []const u8) void {
         // The window's title, borrowed for the call. Separate from `openWindow`'s because a
         // host's content, which may name it, loads after its window exists (M19).
         expectFn(P, label, "setWindowTitle", &.{ *P, window.WindowHandle, []const u8 }, WindowTitleError!void);
+
+        // Pointer capture: the cursor hidden and held inside the window, motion relative and
+        // unbounded, positions frozen. `MouseState.captured` reports what is true, since the
+        // window system may refuse, and losing keyboard focus releases it without asking.
+        // Host window policy, so nothing in the public C ABI reaches it (`playable3d.md` §4).
+        expectFn(P, label, "setPointerCapture", &.{ *P, window.WindowHandle, bool }, PointerCaptureError!void);
 
         // The frame's input boundary, in the order it is called:
         //   pumpEvents  — drain the OS queue, once, at one known point in the frame
@@ -262,6 +277,11 @@ test "the check accepts a conforming implementation" {
                 _ = handle;
                 _ = title;
             }
+            pub fn setPointerCapture(self: *@This(), handle: window.WindowHandle, captured: bool) PointerCaptureError!void {
+                _ = self;
+                _ = handle;
+                _ = captured;
+            }
             pub fn pumpEvents(self: *@This()) void {
                 _ = self;
             }
@@ -310,7 +330,7 @@ test "the interface names every call a frame makes" {
         "init",         "deinit",        "openWindow",     "closeWindow",
         "windowInfo",   "nativeSurface", "pumpEvents",     "nextEvent",
         "captureInput", "now",           "setWindowSize",  "openAudio",
-        "closeAudio",   "audioInfo",     "setAudioPaused",
+        "closeAudio",   "audioInfo",     "setAudioPaused", "setPointerCapture",
     };
-    try testing.expectEqual(@as(usize, 15), required.len);
+    try testing.expectEqual(@as(usize, 16), required.len);
 }

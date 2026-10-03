@@ -120,6 +120,7 @@ pub const InitOptions = interface.InitOptions;
 pub const WindowError = interface.WindowError;
 pub const WindowIconError = interface.WindowIconError;
 pub const WindowTitleError = interface.WindowTitleError;
+pub const PointerCaptureError = interface.PointerCaptureError;
 pub const validWindowTitle = interface.validWindowTitle;
 pub const FileError = os.FileError;
 pub const PathError = os.PathError;

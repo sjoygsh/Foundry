@@ -45,6 +45,11 @@ pub const MouseState = struct {
     motion: Vec2 = .{},
     /// Total wheel movement since the previous snapshot, in notches.
     wheel: Vec2 = .{},
+    /// Whether the pointer was captured at snapshot time: hidden, held inside the window,
+    /// with `motion` relative and unbounded and both positions frozen where they were.
+    /// **What is true, not what was asked for**: the window system can refuse a capture or
+    /// end one, and losing keyboard focus always ends it (`playable3d.md` §4.2).
+    captured: bool = false,
 
     buttons_held: key.ButtonSet = key.empty_buttons,
     buttons_pressed: key.ButtonSet = key.empty_buttons,
@@ -116,6 +121,9 @@ pub const Accumulator = struct {
     position: Vec2 = .{},
     position_pixels: Vec2 = .{},
     focused: bool = false,
+    /// Set by the backend, which knows which window holds the pointer and when the window
+    /// system took it back. While it is set, positions do not move.
+    captured: bool = false,
 
     /// Edges and deltas, cleared every `capture`.
     pressed: key.KeySet = key.empty_keys,
@@ -147,19 +155,23 @@ pub const Accumulator = struct {
             },
             .mouse_button_down => |e| {
                 self.modifiers = e.modifiers;
-                self.position = e.position;
+                if (!self.captured) self.position = e.position;
                 key.setButton(&self.buttons_pressed, e.button, true);
                 key.setButton(&self.buttons_held, e.button, true);
             },
             .mouse_button_up => |e| {
                 self.modifiers = e.modifiers;
-                self.position = e.position;
+                if (!self.captured) self.position = e.position;
                 key.setButton(&self.buttons_released, e.button, true);
                 key.setButton(&self.buttons_held, e.button, false);
             },
             .mouse_moved => |e| {
-                self.position = e.position;
-                self.position_pixels = e.position_pixels;
+                // A captured pointer has no position worth reporting: the window system
+                // parks or warps it, and a UI hit-testing that would click on nothing.
+                if (!self.captured) {
+                    self.position = e.position;
+                    self.position_pixels = e.position_pixels;
+                }
                 self.motion = self.motion.add(e.delta);
             },
             .mouse_wheel => |e| self.wheel = self.wheel.add(e.delta),
@@ -205,6 +217,7 @@ pub const Accumulator = struct {
                 .position_pixels = self.position_pixels,
                 .motion = self.motion,
                 .wheel = self.wheel,
+                .captured = self.captured,
                 .buttons_held = self.buttons_held,
                 .buttons_pressed = self.buttons_pressed,
                 .buttons_released = self.buttons_released,
@@ -371,4 +384,30 @@ test "an idle accumulator produces an idle snapshot" {
     const snap = acc.capture();
     try testing.expect(snap.isIdle());
     try testing.expect(!snap.focused);
+}
+
+test "a captured pointer keeps accumulating motion while its position stays put" {
+    var acc: Accumulator = .init;
+    acc.apply(.{ .mouse_moved = .{ .position = .init(40, 30), .position_pixels = .init(80, 60), .delta = .init(4, 3) } });
+    _ = acc.capture();
+
+    acc.captured = true;
+    acc.apply(.{ .mouse_moved = .{ .position = .init(900, 700), .position_pixels = .init(1800, 1400), .delta = .init(500, -20) } });
+    acc.apply(.{ .mouse_moved = .{ .position = .init(0, 0), .delta = .init(700, 5) } });
+    acc.apply(.{ .mouse_button_down = .{ .button = .left, .position = .init(1, 2) } });
+    const held = acc.capture();
+    try testing.expect(held.mouse.captured);
+    try testing.expectEqual(@as(f32, 1200), held.mouse.motion.x);
+    try testing.expectEqual(@as(f32, -15), held.mouse.motion.y);
+    try testing.expectEqual(@as(f32, 40), held.mouse.position.x);
+    try testing.expectEqual(@as(f32, 30), held.mouse.position.y);
+    try testing.expectEqual(@as(f32, 80), held.mouse.position_pixels.x);
+    try testing.expect(held.mouse.isHeld(.left));
+
+    acc.captured = false;
+    acc.apply(.{ .mouse_moved = .{ .position = .init(12, 9), .position_pixels = .init(24, 18), .delta = .init(1, 1) } });
+    const freed = acc.capture();
+    try testing.expect(!freed.mouse.captured);
+    try testing.expectEqual(@as(f32, 12), freed.mouse.position.x);
+    try testing.expectEqual(@as(f32, 18), freed.mouse.position_pixels.y);
 }

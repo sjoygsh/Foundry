@@ -1,6 +1,6 @@
 # Design: M26 — A playable 3D sample: `samples/court`, pointer capture and the three-platform play
 
-**Status:** Proposed 2026-10-02; awaiting the owner's acceptance of §14. No step has begun.
+**Status:** Accepted 2026-10-03 by the owner's request to begin Step 1, which accepts §14 as written. Step 1 is done; Steps 2–8 are not begun.
 **Date:** 2026-10-02
 **Baseline:** `845b02f`, tag `m25` (documents since: `9b72a78`, `d9c0411`). M0–M25 are complete.
 **Decisions:**
@@ -518,3 +518,60 @@ Every choice is recommended as written. Nothing blocks Step 1 once these are acc
 | 14 | Linux runs on a machine built from `scripts/m18/` alone, preferably one with a monitor; the owner supplies or chooses it at Step 7 | §11 |
 | 15 | `dist -Dapp=court` stages macOS and Windows releases; nothing is published, and certification stays at M150 | §11, §1 |
 | 16 | No ADR is proposed | header |
+
+## Resolution — Step 1: pointer capture in `platform` (2026-10-03)
+
+The owner's request to begin this step accepted §14. `platform` gained
+`setPointerCapture(window, captured) PointerCaptureError!void` and `MouseState.captured`, in the
+interface's comptime check, both backends and `app.Engine.setPointerCapture`. `sandbox3d` has F4.
+Nothing entered the ABI; `FoundryApi_v6` is untouched at 261 calls.
+
+What implementation settled that §4 had not:
+
+- **The flag lives in the backend's window state, and the accumulator's copy is derived from
+  it.** §4.3 said the focus-lost event clears "the accumulator's flag". Left to the accumulator,
+  any window's focus loss would clear a capture another window holds, and closing a captured
+  window would leave the flag set. Each backend keeps `pointer_captured` per window and
+  recomputes `Accumulator.captured` as "any window holds it" after a capture call, a focus loss
+  and a close. The accumulator only obeys the flag: while it is set, motion events add to
+  `motion` and move neither position, and button events do not move the position either.
+- **Release happens at the event, not at the snapshot.** Motion that follows a focus loss in
+  the same pump is ordinary motion and moves the position again.
+- **SDL3 would take the pointer back by itself.** `SDL_SetWindowRelativeMouseMode` is a window
+  property that SDL re-applies when the window regains focus. §4.2 says a capture is not
+  re-acquired automatically, so the backend turns the mode off when it sees the focus-lost event,
+  before emitting it.
+- **A request for the state a window already has is accepted** without calling SDL again.
+- **A failed release is `Unsupported` too**, with the same single log line. The error set has no
+  other member for it and no caller would act differently.
+- **Headless, `app.Engine.setPointerCapture` answers `Unsupported`.** There is no window to hold
+  a pointer in. The title and icon wrappers validate and return when headless because they have
+  input to validate; a capture has none, and returning success would let a game believe in a
+  capture its snapshot denies. A headless scripted run therefore plays uncaptured, which is the
+  path §5.3 already requires the court to support.
+- **The null backend never answers `Unsupported`**: it has no window system to refuse. The
+  court's handling of that answer is exercised headless through the engine, as above.
+- **§4.4's "no pointer" is a position outside the window.** `ui.Input.pointer` is not optional,
+  and the frozen position would otherwise sit over whatever panel the cursor was on. `sandbox3d`
+  hands the kernel `(-1, -1)` while captured. The court does the same in Step 2; the kernel is
+  unchanged.
+- **`sandbox3d`'s F4 toggles from `input.mouse.captured`**, not from a flag of its own, so a
+  capture ended by focus loss is asked for again by the next press. While captured the mouse
+  looks without the right button. `FOUNDRY_SANDBOX3D_KEYS` accepts `f4`.
+
+Guards verified by mutation: letting the accumulator move the position while captured failed
+both position tests (`input.zig` and the null backend's); removing the null backend's release
+on focus loss failed the focus test. Both were restored.
+
+Proven: on the null backend every rule of §4.2 is tested (five new tests: the accumulator, three
+in the null backend, one through the engine). On macOS/Metal, SDL3 3.4.14 under the `cocoa`
+driver, a scripted windowed run of `sandbox3d` captured at frame 40 and the F4 at frame 100
+logged a release, which it does only when that frame's snapshot reported `captured`.
+**Not proven by this step:** that the cursor is seen to stay inside the window while looking,
+and that switching away from the window releases it, on a real desktop. Both need a person at
+the Mac; `zig build sandbox3d -Drhi=metal`, then F4, shows them. Windows and Linux are Steps 6
+and 7.
+
+The bar: `fmt`, **2,075 of 2,076 tests** (one expected skip), the four `check`s, the Vulkan
+`check` cross-builds for Windows and Linux (the SDL3 backend changed), and the three headless
+30-frame samples, all exit 0.
