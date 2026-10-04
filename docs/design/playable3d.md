@@ -1,6 +1,6 @@
 # Design: M26 — A playable 3D sample: `samples/court`, pointer capture and the three-platform play
 
-**Status:** Accepted 2026-10-03 by the owner's request to begin Step 1, which accepts §14 as written. Steps 1–5 are done (2026-10-04); Step 6's native suites/install pass, desktop proof pending permission; Steps 7–8 are not begun.
+**Status:** Accepted 2026-10-03 by the owner's request to begin Step 1, which accepts §14 as written. Steps 1–6 are done (2026-10-04); Steps 7–8 are not begun.
 **Date:** 2026-10-02
 **Baseline:** `845b02f`, tag `m25` (documents since: `9b72a78`, `d9c0411`). M0–M25 are complete.
 **Decisions:**
@@ -1005,3 +1005,61 @@ launched and no compiler remains. The isolated task worktree/cache and read-only
 retained for the pending desktop batch, not claimed packed up yet. Resume only the missing
 native-window/Vulkan-window suites, six court processes, capture, paced metrics and final
 pack-up once permission is given. Step 6 remains open; do not begin Step 7.
+
+## Resolution — Step 6 completion: Windows desktop play and capture (2026-10-04)
+
+The owner confirmed the PC free and authorized desktop launches. The CPU-limit exception
+remains explicit and local to this qualification. The checkpoint's native suites/install,
+guard tests and compilation evidence remain accepted over unchanged code; none was repeated.
+No engine, ABI or architecture change was required, and this completion changes documents only.
+
+Through a temporary normal-integrity interactive scheduled task, on the checkpoint's Arc
+A750/Windows target, `native-window-test` passes **8/9** (one platform-specific skip) and
+`vulkan-window-test` passes **10/10**, both with exit 0. From the relocated ACL read-only
+ReleaseSafe install, with Zig/SDK off PATH, scratch user data/preferences, workers zero,
+4× MSAA and shadows, six fresh court processes pass:
+
+| Layer mode / ending | Frames / fresh-replayed ticks | Sounds played / requested |
+| --- | --- | --- |
+| Synchronization validation / win | 1,216 / 1,225 | 73 / 73 |
+| Synchronization validation / caught | 110 / 112 | 5 / 5 |
+| Synchronization validation / fell | 216 / 218 | 11 / 11 |
+| All layers off / win | 1,213 / 1,214 | 73 / 73 |
+| All layers off / caught | 111 / 112 | 5 / 5 |
+| All layers off / fell | 216 / 217 | 11 / 11 |
+
+Every script reached its ending and restarted; each win includes two wins and menu-driven
+quit. Every tick's outcome hash matched a fresh simulation in the same binary. All runs
+counted zero skipped frames and zero sound/command/event/skinning-capacity drops. The three
+validation logs explicitly list synchronization enabled, with no validation warning/error
+or hazard. Layers-off loader logs show no layer insertion. No cross-machine hash is pinned.
+
+Whole-win profiler costs, inside the paced loop, with zero omitted samples:
+
+| Mode | Frame work median / p95 | Gameplay/audio upper bound median / p95 | One-warden skin median / p95 |
+| --- | --- | --- | --- |
+| Shipping runtime, all layers off | 0.3987 / 0.8765 ms | 0.0458 / 0.0961 ms | 0.0798 / 0.1532 ms |
+| Synchronization validation enabled | 16.6486 / 17.4261 ms | 0.0501 / 0.1129 ms | 0.2042 / 0.2995 ms |
+
+The layers-off reference meets §10.6's 16.67 / 0.25 / 0.25 ms budgets. The validation-enabled
+frame and skin p95 exceed them: this diagnostic mode is recorded separately, **not claimed
+to meet the budgets**. Frame work excludes deliberate pacing sleep and includes proof replay;
+the character span remains the conservative whole-game/audio upper bound Step 5 qualified.
+
+The capture helper passes all seven OS readbacks: pointer released at the title; hidden and
+confined while playing; released on Pause; captured on Resume; released on actual focus loss;
+not recaptured merely on regaining focus; captured only by explicit Resume. It observes OS
+cursor visibility/confinement and foreground changes, not a private engine seam. The first
+capture attempt yielded no completion evidence; the capture-only retry, with separate
+stdout/stderr logging, passed all seven and exited 0. Already-clean suites and play-throughs
+were not rerun. This is not a person's report of the feel, goal, screens or sound (§10.5).
+
+Final integration evidence: after all runtime and capture processes, every installed file
+hash is unchanged; scripted preferences remain empty and the frame-budgeted capture writes
+no settings. Evidence is home under ignored `.zig-cache/m26-step6-windows/`. No test/compiler
+process remains. The temporary scheduled task, launchers and task worktree/cache were
+removed; unrelated Windows worktrees were preserved. The read-only install and evidence
+remain for the owner. No release was published and no certification is claimed.
+
+Step 6 is complete. Stop before Step 7, whose freshly provisioned Linux machine needs the
+owner's choice; the three person's-play reports and Step 3's controller question stay open.

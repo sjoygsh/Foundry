@@ -24,13 +24,18 @@ jobs, below-normal priority, explicit affinity and the default CPU cutoff; the o
 `-IgnoreCpuLimit` for this proof. It launches no desktop window. The unsigned artifact is not
 a certification or runtime claim; native play-throughs belong to Step 6.
 
-Step 6's native null/Vulkan tests and relocated, ACL read-only ReleaseSafe install pass.
-Its desktop native-window/presentation suites, court play-throughs and pointer-capture proof
-remain pending permission. `scripts/m26/windows.ps1` separates `build` and `desktop` modes;
+Step 6's native null/Vulkan tests, desktop window/presentation suites and relocated,
+ACL read-only ReleaseSafe play-throughs pass: three endings with synchronization validation,
+and all three with layers off, same-binary replay and zero drops/skips. The seven OS-level
+pointer-capture/focus-loss checks pass. Layers-off costs meet the budgets; higher
+validation-enabled costs are recorded separately in `playable3d.md` and are not claimed to
+meet them. Installation hashes stayed unchanged, and no preferences were written.
+`scripts/m26/windows.ps1` separates `build` and `desktop` modes;
 run desktop mode only in the logged-in interactive session after the PC is confirmed free.
 `capture_windows.ps1` is the separate OS-level capture check, not a person's play report.
 The owner suspended the CPU cutoff for this qualification; `-IgnoreCpuLimit` is explicit,
-not the permanent default. Successful background suites need not be repeated to resume it.
+not the permanent default. The qualification task/worktree were removed; evidence and the
+read-only install remain. No person's play report or certification is inferred.
 
 ## What is in it
 

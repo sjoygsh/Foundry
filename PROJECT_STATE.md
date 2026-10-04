@@ -1,19 +1,15 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-04
-**Current handoff: M26 Step 5 is complete; Step 6's native suites/install pass, but its desktop
-proof is pending permission (2026-10-04).** The owner explicitly
-suspended the 50% CPU cutoff for finishing Windows staging and Step 6. Two build jobs and
-below-normal priority remain; the optional CPU/affinity override is explicit in the staging
-harness, not a permanent change to the default. Native Windows court staging passed from
-`1e637ba` in a fresh detached worktree, producing an unsigned zip; its SHA-256 matched after
-transfer home: `5989bcdf4ac962a9a1a85d9a6e7839cd3d6b20704eb6d5a877af29813f463ee7`.
-The unrelated old Windows checkout remains untouched. No compiler or desktop process remains.
-Step 6's task worktree/cache and relocated read-only install are retained for its pending
-desktop launches, which still need confirmation that the PC is free. The local bar and Metal
-evidence below remain accepted unless later changes invalidate them. No push is requested.
+**Current handoff: M26 Steps 1–6 are complete (2026-10-04). Stop before Step 7.** Linux
+qualification next needs the owner to choose/supply a freshly provisioned machine (§11).
+The owner authorized Windows desktop runs and suspended the 50% CPU cutoff for Steps 5–6;
+that explicit qualification exception does not replace the standing default. No build or
+desktop process remains. The task, temporary launchers and task worktree/cache were removed;
+the read-only install and evidence remain, and unrelated Windows worktrees were preserved.
+No push is requested. M26 remains open: Linux and the three person's-play reports are not done.
 
-**M26 Step 6 checkpoint (2026-10-04), qualifying Step 5's unchanged implementation.** Native
+**M26 Step 6 is done (2026-10-04), qualifying Step 5's unchanged implementation.** Native
 Windows x64, Core i3-10105F / Arc A750, driver `32.0.101.9034`, Zig 0.16.0 and the pinned SDK:
 null Debug whole graph **2,095/2,104** (nine skips); null ReleaseSafe court **40/40**;
 Vulkan Debug whole graph plus backend **2,373/2,392** (19 skips); Vulkan ReleaseSafe court
@@ -21,20 +17,28 @@ and renderer **107/107**. Every batch exits 0. Loader insertion logs name Khrono
 only, with the installed implicit layers disabled. ReleaseSafe install passes **148/148**
 build steps, moved to a new location and made ACL read-only (164 files processed, zero failures).
 
-`scripts/m26/windows.ps1` supplies background/native and separate desktop modes, bounded jobs,
-deadlines, process-tree cleanup, fresh evidence, scratch player data and an explicit CPU
-override. `windows_tests.ps1`: two refusal tests pass; CPU/stale-evidence mutations each fail
-as intended, without a child launch. All PowerShell sources parse on Windows. The prepared
-`capture_windows.ps1`'s Win32 readback compiles and its default CPU refusal passes, but its
-seven title/play/pause/resume/focus-loss checks have **not** run on the desktop.
-Only developer scripts/documents changed; no engine, ABI or architectural change.
+In the normal logged-in desktop: native-window **8/9** (one skip), Vulkan-window **10/10**.
+Six relocated read-only ReleaseSafe court processes ran `win`, `caught`, `fell`, under
+synchronization validation and with all layers off, without Zig/SDK on PATH. Every ending
+and restart passed, every tick matched a fresh replay, and no frame/sound/event/command/skin
+capacity drop occurred. The layers-off win's median/p95 in ms: frame work **0.3987/0.8765**,
+gameplay/audio upper bound **0.0458/0.0961**, skin **0.0798/0.1532**; all shipping-runtime
+budgets pass. Validation-enabled win: **16.6486/17.4261**, **0.0501/0.1129**,
+**0.2042/0.2995** respectively: its frame/skin p95 exceed the budgets, recorded separately,
+not called a passing cost result. No samples were omitted. The logs confirm synchronization
+enabled and no validation warnings/errors; layers-off logs show no layer insertion.
 
-**Remaining Step 6 proof:** desktop native-window and Vulkan-window suites; `win`, `caught`,
-`fell` from the relocated read-only runtime with synchronization validation and with all
-layers off; per-tick replay, zero skips/drops, paced costs, pointer capture/focus-loss checks,
-unchanged installation hashes and final pack-up. No such result or person's play is claimed.
-Successful native suites need not be repeated. Logs/hash inventory are copied home under
-ignored `.zig-cache/m26-step6-windows/`. Stop here until desktop permission; do not begin Step 7.
+All seven OS-level capture checks passed: title release, play confinement/hidden cursor,
+pause release, resume capture, focus-loss release, no automatic recapture on focus return,
+and explicit resume capture. The first capture attempt lacked completion evidence; only that
+proof was retried with separate stdout/stderr logging. The read-only inventory is unchanged
+after all runs, and no preferences were written. Evidence is copied home under ignored
+`.zig-cache/m26-step6-windows/`. No person's play/feel report is inferred.
+
+`windows.ps1`, `windows_tests.ps1` and `capture_windows.ps1` are developer proof harnesses,
+not build prerequisites. Their earlier refusal/mutation/parser/Win32 compilation proofs and
+the local ten-command bar (2,115/2,116, one skip) remain accepted over unchanged code.
+No engine, ABI or architecture change was needed. This completion changes documentation only.
 
 **M26 Step 5 checkpoint (2026-10-04), from `46c0268`.** The court discovers explicitly
 selected installed/user packages through `app.ModSet`, with a bounded, deduplicated selection,
@@ -64,8 +68,8 @@ need repeating solely for reassurance. Evidence/artifacts remain ignored under `
 and `zig-out/dist/court/`. The temporary user-installed noon fixture was removed; its compiled
 copy is retained beside the Metal evidence and its authoring fixture is committed.
 
-**Still unclaimed:** a person's Mac play/capture/menu/preferences report (§10.5),
-and Step 6's desktop runtime proof and every Step 7 proof. Step 3's controller question
+**Still unclaimed:** the three person's-play reports (§10.5) and every Step 7 proof.
+Step 3's controller question
 stands. **Unrelated observed release issue:** the existing editor release description indexes
 `content_packages[3]` (sandbox3d), not `[5]` (editor); it was not changed or qualified in this
 court step and needs its own correction before an editor release.
@@ -131,8 +135,7 @@ in `platform`, deferred to M26 by `collision3d.md`; nothing enters the ABI. The 
 scripted play-throughs replayed to the same hash on the same binary, run from relocated
 installs on macOS/Metal, Windows/Vulkan and a freshly provisioned Linux machine, plus a
 person's play on each, which only that person's report can claim. Eight steps. Step 7 needs
-the owner to supply or choose the Linux machine. Steps 1–5 are complete; Step 6's native
-suites/install pass with its desktop proof pending permission; Steps 7–8 have not begun.
+the owner to supply or choose the Linux machine. Steps 1–6 are complete; Steps 7–8 have not begun.
 
 **The long roadmap is decided (2026-10-02, ADR-0060): 150 numbered engine milestones, M0–M149,
 then M150, the certified release.** 26 are done. M27–M149 are listed in `docs/ROADMAP.md` in five phases (game toolkit, dynamics

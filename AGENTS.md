@@ -444,7 +444,7 @@ children that die without closing their session, so **expect stderr noise from a
 run** — a child that exits 3 on purpose is the test working.
 
 `-Dapp` is `room` (default), `sandbox`, `editor` or `court`; `court`'s macOS staging is
-proven in M26 Step 5, while its native Windows staging remains pending the PC CPU gate.
+proven in M26 Step 5, as is its native Windows staging. Step 6 qualifies its Windows runtime.
 `-Drevision=<sha>` is recorded in the release's
 inventory and is `local` when unstated — the build runs no `git`. The staged tree is
 build-owned and fresh. Local output lands in `zig-out/dist/<app>/` as `<Product>.app`, its
