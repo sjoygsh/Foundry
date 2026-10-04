@@ -24,6 +24,14 @@ jobs, below-normal priority, explicit affinity and the default CPU cutoff; the o
 `-IgnoreCpuLimit` for this proof. It launches no desktop window. The unsigned artifact is not
 a certification or runtime claim; native play-throughs belong to Step 6.
 
+Step 6's native null/Vulkan tests and relocated, ACL read-only ReleaseSafe install pass.
+Its desktop native-window/presentation suites, court play-throughs and pointer-capture proof
+remain pending permission. `scripts/m26/windows.ps1` separates `build` and `desktop` modes;
+run desktop mode only in the logged-in interactive session after the PC is confirmed free.
+`capture_windows.ps1` is the separate OS-level capture check, not a person's play report.
+The owner suspended the CPU cutoff for this qualification; `-IgnoreCpuLimit` is explicit,
+not the permanent default. Successful background suites need not be repeated to resume it.
+
 ## What is in it
 
 ```text

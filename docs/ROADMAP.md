@@ -1174,7 +1174,7 @@ tours and a byte-identical three-process replay. Step 7 builds a C99 mod
 outside the repository from the installed header and writes
 [`modding/3d.md`](modding/3d.md) from it. Step 8 reconciled `3d.md`, `public-abi.md`,
 `hierarchy.md`, `collision3d.md` and CLAUDE.md, froze v6 and tagged `m25`. The owner watched
-the walker and reported it very good. **M26, the playable 3D sample, is designed and accepted** ([`playable3d.md`](design/playable3d.md)); Steps 1–5 of 8 are done (2026-10-04): pointer capture, the court's lit, collidable level, the game, its HUD/menus/sound/preferences, the content mod, both release artifacts and relocated read-only Metal proofs. Native Windows staging passed after the owner's explicit CPU-limit override. Windows runtime qualification is Step 6, next.
+the walker and reported it very good. **M26, the playable 3D sample, is designed and accepted** ([`playable3d.md`](design/playable3d.md)); Steps 1–5 of 8 are done (2026-10-04): pointer capture, the court's lit, collidable level, the game, its HUD/menus/sound/preferences, the content mod, both release artifacts and relocated read-only Metal proofs. Native Windows staging passed after the owner's explicit CPU-limit override. Step 6's native null/Vulkan suites and relocated read-only install pass; its desktop runtime proof awaits permission. Steps 7–8 have not begun.
 
 ---
 

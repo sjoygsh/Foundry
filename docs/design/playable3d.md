@@ -1,6 +1,6 @@
 # Design: M26 — A playable 3D sample: `samples/court`, pointer capture and the three-platform play
 
-**Status:** Accepted 2026-10-03 by the owner's request to begin Step 1, which accepts §14 as written. Steps 1–5 are done (2026-10-04); Steps 6–8 are not begun.
+**Status:** Accepted 2026-10-03 by the owner's request to begin Step 1, which accepts §14 as written. Steps 1–5 are done (2026-10-04); Step 6's native suites/install pass, desktop proof pending permission; Steps 7–8 are not begun.
 **Date:** 2026-10-02
 **Baseline:** `845b02f`, tag `m25` (documents since: `9b72a78`, `d9c0411`). M0–M25 are complete.
 **Decisions:**
@@ -964,3 +964,44 @@ tests, mutation proofs, ten-command bar and room/sandbox staging remain accepted
 unchanged implementation; they were not repeated. Only the developer harness and documents
 changed. No desktop runtime, public certification or person's play is claimed by staging.
 Step 6 follows by the owner's explicit request; Step 7 is not authorized here.
+
+## Checkpoint — Step 6: native Windows suites and relocated install (2026-10-04)
+
+**Not closed.** The owner suspended the CPU cutoff for this work; two jobs and below-normal
+priority remain. Windows x64, Core i3-10105F, Arc A750, driver `32.0.101.9034`, pinned Zig
+0.16.0 and Vulkan SDK 1.4.357.0, qualifying `1e637ba`'s unchanged engine/sample implementation:
+
+| Native batch | Result |
+| --- | --- |
+| Null Debug, whole graph | 2,095/2,104 tests, nine platform-specific skips |
+| Null ReleaseSafe, court | 40/40 tests |
+| Vulkan Debug, whole graph and backend suite | 2,373/2,392 tests, 19 skips |
+| Vulkan ReleaseSafe, court and renderer | 107/107 tests |
+| ReleaseSafe Vulkan install | 148/148 build steps |
+
+All exit 0. Vulkan tests require validation; loader insertion logs name only the pinned
+Khronos layer, with installed implicit layers disabled explicitly for elevated SSH. The
+install is relocated and ACL read-only: 164 files processed, zero failures. Its sorted
+SHA-256 inventory and native logs are copied home into ignored evidence.
+
+`scripts/m26/windows.ps1` separates background qualification from desktop launches, retaining
+fresh evidence, deadlines and failed-child-tree cleanup. Its runtime branch isolates user
+data/preferences, takes Zig/SDK off PATH, runs all three endings under synchronization
+validation and with layers off, checks the replay/zero-drop markers and unchanged installation.
+That branch is prepared, **not executed**. `windows_tests.ps1` passed both CPU/stale-output
+refusals and failed both in-memory guard mutations, with no child launched. PowerShell sources
+parse on Windows. The separate capture helper's Win32 readback compiles; its default CPU
+refusal passes. It is prepared to observe title/play/pause/resume and focus-loss capture
+through the OS, but those desktop checks have **not** run and cannot replace a person's report.
+
+One focused integration/boundary review found no engine, ABI, build-layer or architecture
+change. It corrected the capture helper's cleanup so a form-initialization failure cannot
+leave the launched child uncontrolled; its affected parser check passes. Previously accepted
+Metal/bar/staging evidence remains accepted over unchanged implementation, without repeated
+audits. Only developer scripts and status documents changed.
+
+The PC-free desktop question remains unanswered. No desktop process or scheduled task was
+launched and no compiler remains. The isolated task worktree/cache and read-only install are
+retained for the pending desktop batch, not claimed packed up yet. Resume only the missing
+native-window/Vulkan-window suites, six court processes, capture, paced metrics and final
+pack-up once permission is given. Step 6 remains open; do not begin Step 7.

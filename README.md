@@ -176,7 +176,8 @@ models, collision and a public 3D modding API. It runs on macOS, Windows and Lin
 Wayland), and the first game built on it is finished in its own repository.
 
 **What comes next** is M26, a playable 3D sample (five of its eight steps done; the content mod,
-both release artifacts and Metal qualification are proven, with Windows runtime next, in
+both release artifacts and Metal qualification are proven; Windows native suites pass with
+desktop runtime proof pending permission, in
 [`playable3d.md`](docs/design/playable3d.md)), and then the long roadmap
 ([ADR-0060](docs/adr/0060-a-150-milestone-roadmap.md)): a complete game toolkit, dynamics and
 large worlds, the renderer's upper tier, tools, and reach onto more platforms, ending in
