@@ -29,6 +29,9 @@ const sounds_mod = @import("sounds.zig");
 const Preferences = @import("prefs.zig").Preferences;
 const Text = @import("text.zig").Text;
 const Settings = @import("settings.zig").Settings;
+const build_options = @import("build_options");
+const packages_mod = @import("packages.zig");
+const Costs = @import("timing.zig").Costs;
 const log = core.log.scoped(.court);
 pub const std_options = app.std_options;
 
@@ -238,17 +241,24 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     const headless = platform.backend == .null;
     var os = try platform.os.Os.init(gpa, .{ .env = env, .app_name = "foundry-court" });
     defer os.deinit();
-    const content_dir = try app.contentDirOf(gpa, os, null);
+    const content_dir = try packages_mod.contentDir(gpa, os, build_options.bundle_layout);
     defer gpa.free(content_dir);
     var diags: data.Diagnostics = .init(gpa, .default);
     defer diags.deinit(gpa);
     // Installed package zero uses the ordinary discovery/resolution path (I3).
-    const roots = [_]app.mods.Root{.{ .dir = content_dir, .origin = .installed }};
-    var mods = try app.ModSet.init(gpa, os, &roots, .{
+    const selected_text = os.envVar("FOUNDRY_COURT_PACKAGES");
+    const selected = try packages_mod.Selection.parse(selected_text orelse "");
+    const user_dir = if (!headless or selected_text != null) try app.mods.userRoot(gpa, os) else null;
+    defer if (user_dir) |dir| gpa.free(dir);
+    const roots = [_]app.mods.Root{
+        .{ .dir = content_dir, .origin = .installed },
+        .{ .dir = user_dir orelse "", .origin = .user },
+    };
+    var mods = try app.ModSet.init(gpa, os, roots[0..if (user_dir != null) @as(usize, 2) else 1], .{
         .required = &.{ try data.contentId("foundry:core"), try data.contentId("court:content") },
     }, &diags);
     defer mods.deinit();
-    _ = try mods.start(&.{}, &diags);
+    _ = try mods.start(selected.ids[0..selected.len], &diags);
     for (diags.items.items) |d| log.warn("content: {s}", .{d.message});
     const packages = try mods.contentPackages(gpa);
     defer gpa.free(packages);
@@ -339,6 +349,18 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     const text = Text.read(&engine.store);
     const goal_ticks: u64 = @intFromFloat(@round(settings.goal_seconds / engine.step_delta.toSecondsF32()));
 
+    // The proof replays every admitted tick against a fresh simulation in this binary.
+    // It borrows the same merged content, not the presentation's pose or state.
+    var replay: ?game_mod.Game = if (play_mode != null) game_mod.Game.init(gpa) else null;
+    defer if (replay) |*fresh| fresh.deinit(&engine.assets, null);
+    if (replay) |*fresh| {
+        fresh.refresh(&engine.store, &engine.assets, null, engine.step_delta.toSecondsF32());
+        fresh.stride = game.stride;
+        fresh.warden_stride = game.warden_stride;
+    }
+    var replay_ticks: u64 = 0;
+    var costs: Costs = .{};
+
     var script_driver = if (play_mode) |m| scripted.ScriptDriver.init(m) else null;
     var menus: menus_mod.Menus = .{};
     var chosen = prefs.options();
@@ -348,6 +370,9 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     var skin_dropped: u32 = 0;
 
     log.info("WASD walk, Space jump, E light a beacon, mouse or arrows look, Escape pause; menus: arrows, Enter, Escape or the pointer", .{});
+    log.info("content: '{s}', exposure {d:.1}, warden speed {d:.2}; {d} selected package(s)", .{
+        text.title, settings.lighting.exposure_ev100 orelse 0, if (game.warden) |w| if (w.settings) |s| s.speed else 0 else 0, selected.len,
+    });
     // Headless with neither a budget nor a script would run for ever.
     const limit: ?u64 = frame_budget orelse if (headless and play_mode == null) @as(u64, 120) else null;
     if (headless) engine.platform.setClockStep(engine.step_delta);
@@ -420,10 +445,21 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
 
         // 4. The ticks.
         while (engine.nextStep()) |step| {
-            const scope = engine.beginScope("character");
-            defer scope.end();
-            try game.step(pending.take(), step.delta.toSecondsF32());
-            sounds.onEvents(&game);
+            const intent = pending.take();
+            {
+                // Conservative upper bound: the move plus the other gameplay and audio work.
+                const scope = engine.beginScope("character");
+                defer scope.end();
+                try game.step(intent, step.delta.toSecondsF32());
+                sounds.onEvents(&game);
+            }
+            if (replay) |*fresh| {
+                const scope = engine.beginScope("court.replay");
+                defer scope.end();
+                try fresh.step(intent, step.delta.toSecondsF32());
+                try verifyReplay(game.hashTick(), fresh.hashTick());
+                replay_ticks += 1;
+            }
         }
 
         // 5. Captured while playing, released in every menu (§4.4). Asked once per change.
@@ -445,6 +481,9 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
             _ = engine.platform.stepAudio(m.device, 48_000 / 60) catch |err| log.warn("the null device did not step ({t})", .{err});
         };
         prefs.tick(gpa);
+        // The profiler measures frame work, not the deliberate 60 Hz idle below.
+        engine.endFrame();
+        if (engine.profiler()) |recorder| costs.add(recorder);
         if (!drew) {
             skipped += 1;
             engine.os.sleep(engine.step_delta);
@@ -455,7 +494,6 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
             const now = engine.os.monotonicNanos();
             if (now < pace_next) engine.os.sleep(.fromNanos(@intCast(pace_next - now))) else if (now - pace_next > 250 * core.time.ns_per_ms) pace_next = now;
         }
-        engine.endFrame();
         if (limit) |n| if (engine.frame_index >= n) break;
         if (script_driver) |d| if (d.done) break;
     }
@@ -463,6 +501,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     sounds.silence();
     const stats = renderer.frameStats();
     const commands_dropped = if (mixer) |m| m.commandsDropped() else 0;
+    costs.report();
     log.info("stopped after {d} frames ({d} skipped), {d} ticks; {d} draws, {d} lights; phase {s}; feet ({d:.3}, {d:.3}, {d:.3})", .{
         engine.frame_index, skipped, engine.stepper.tick, stats.draws, stats.lights, @tagName(game.phase), game.walk.result.feet.x, game.walk.result.feet.y, game.walk.result.feet.z,
     });
@@ -470,6 +509,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         sounds.requested, sounds.played, sounds.dropped, commands_dropped, game.events_dropped,
     });
     if (script_driver) |d| {
+        log.info("replay: {d} tick hashes matched a fresh simulation", .{replay_ticks});
         log.info("play '{s}': {d} of {d} step(s) in {d} frames", .{ @tagName(play_mode.?), d.step, d.script.steps.len, d.ticks });
         if (!d.succeeded()) {
             if (d.failure) |why| log.err("play '{s}' failed: {s}", .{ @tagName(play_mode.?), @tagName(why) }) else log.err("play '{s}' stopped before it finished", .{@tagName(play_mode.?)});
@@ -496,6 +536,15 @@ fn capture(engine: *app.Engine, want: bool) void {
         // player, and headless has no pointer to capture.
         if (want) log.info("pointer capture unavailable ({t}); the arrows still look", .{err});
     };
+}
+
+fn verifyReplay(actual: u64, expected: u64) !void {
+    if (actual != expected) return error.ReplayMismatch;
+}
+
+test "court: scripted runtime refuses a different replay hash" {
+    try verifyReplay(1, 1);
+    try std.testing.expectError(error.ReplayMismatch, verifyReplay(1, 2));
 }
 
 fn draw(engine: *app.Engine, renderer: *render3d.Renderer, content: *render3d.Content, screens: *Screens, level: render3d.ModelHandle, game: *game_mod.Game, settings: Settings, extent: render3d.Extent2D, logical: platform.Size, scale: f32) !bool {
@@ -554,4 +603,7 @@ test {
     _ = @import("text.zig");
     _ = @import("hud.zig");
     _ = @import("screen_tests.zig");
+    _ = @import("packages.zig");
+    _ = @import("timing.zig");
+    _ = @import("mod_tests.zig");
 }

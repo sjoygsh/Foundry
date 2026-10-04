@@ -1,0 +1,45 @@
+# Overrides replace whole records; schemas and every asset come from the court/core.
+court:config court:config.main {
+    title "Foundry Court — Noon"
+    window_width 1280 window_height 720
+    master_volume 0.8 look_sensitivity 1 invert_look false goal_seconds 6
+    clear_linear [ 0.35 0.55 0.8 1 ]
+    level court:models.court
+    exposure_ev100 12
+    ambient { r 500 g 600 b 800 }
+    lights [{ kind "directional" color { r 1 g 0.95 b 0.85 }
+        intensity 60000 casts_shadow true position { x 0 y 0 z 0 }
+        direction { x -1 y -3 z -1 } }]
+}
+court:warden court:warden.main {
+    model court:models.warden
+    waypoints [ { x -2 y 0.004 z 2.5 } { x 2 y 0.004 z 2.5 } ]
+    speed 0.75 cross_fade 0.25 radius 0.22 height 1.7 pause 1
+}
+court:beacon court:beacon.open {
+    model court:models.beacon sound court:sounds.beacon
+    position { x 3.8 y 0 z 4.5 }
+    use_half { x 0.4 y 0.5 z 0.4 }
+    light { color { r 1 g 0.65 b 0.3 } intensity 150 range 6 height 1 }
+}
+court:text court:text.main {
+    title "The Court at Noon"
+    goal "Daylight changes the court, not the goal. Light the three beacons."
+    goal_detail "The warden walks more slowly. Light every beacon, then leave through the gate."
+    controls "WASD move   Mouse look   Space jump   E light a beacon   Esc pause"
+    play "Play" options "Options" quit "Quit"
+    paused "Paused" resume "Resume" restart "Restart" to_title "Quit to title"
+    pointer_released "Pointer released while paused."
+    won "You left the sunlit court." won_detail "All three beacons burn and the gate stands open."
+    caught "The warden caught you." caught_detail "Even a slower patrol must be avoided."
+    fell "You fell into the gap." fell_detail "The ledge is a jump away, not a step."
+    beacons_lit "Beacons lit" objective "Light the three beacons"
+    objective_gate "The gate is open. Walk through it." pause_hint "Esc  Pause"
+    use_key "E" use_prompt "Light the beacon"
+    menu_hints "Up/Down  Choose     Enter  Select     Esc  Back"
+    options_hints "Up/Down  Choose     Left/Right  Change     Esc  Back"
+    audio "Audio" master_volume "Master volume"
+    controls_section "Controls" look_sensitivity "Look sensitivity" invert_look "Invert look"
+    on "On" off "Off" applies_at_once "Changes apply at once and are saved." back "Back"
+    no_gate "This court has no gate and cannot be finished."
+}

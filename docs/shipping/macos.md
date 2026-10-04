@@ -87,6 +87,11 @@ It produces the application, a separate matching dSYM and a local transport zip.
 dSYM by the revision recorded in `Contents/Resources/inventory.txt`; do not put it in the
 player archive. Do not change anything inside the application after signing.
 
+M26 also stages `-Dapp=court` through the same helper, under `zig-out/dist/court/`: `Foundry
+Court.app`, its dSYM and `Foundry Court-local.zip`. Its relocated read-only Metal play-throughs
+are recorded in `playable3d.md`'s Step 5 checkpoint. It remains an ad-hoc local artifact, not a
+Developer ID signed/notarized release; nothing is published by staging it.
+
 Before sharing even a local artifact, inspect the outputs the build has already gated:
 
 ```sh

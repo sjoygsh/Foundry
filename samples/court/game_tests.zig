@@ -28,9 +28,14 @@ pub const TestEnv = struct {
     game: game_mod.Game,
     core_bytes: []u8,
     court_bytes: []u8,
+    noon_bytes: ?[]u8 = null,
 
     /// A game on its title screen, as a fresh process has it.
     pub fn init(gpa: std.mem.Allocator) !TestEnv {
+        return initWithNoon(gpa, false);
+    }
+
+    pub fn initWithNoon(gpa: std.mem.Allocator, noon: bool) !TestEnv {
         const os = try platform.os.Os.init(gpa, .{});
         errdefer os.deinit();
         var diags: data.Diagnostics = .init(gpa, .default);
@@ -48,6 +53,10 @@ pub const TestEnv = struct {
         const court_bytes = try os.readFile(gpa, options.package, 16 * 1024 * 1024);
         errdefer gpa.free(court_bytes);
         const package = try store.add(gpa, "court:content", court_bytes, &schemas, &diags);
+
+        const noon_bytes = if (noon) try os.readFile(gpa, options.noon_package, 16 * 1024 * 1024) else null;
+        errdefer if (noon_bytes) |bytes| gpa.free(bytes);
+        if (noon_bytes) |bytes| _ = try store.add(gpa, "noon:content", bytes, &schemas, &diags);
 
         var assets = asset.Registry.init(gpa, os, &store, .{});
         errdefer assets.deinit(gpa);
@@ -67,6 +76,7 @@ pub const TestEnv = struct {
             .game = game,
             .core_bytes = core_bytes,
             .court_bytes = court_bytes,
+            .noon_bytes = noon_bytes,
         };
     }
 
@@ -85,6 +95,7 @@ pub const TestEnv = struct {
         self.schemas.deinit(gpa);
         self.diags.deinit(gpa);
         gpa.free(self.court_bytes);
+        if (self.noon_bytes) |bytes| gpa.free(bytes);
         gpa.free(self.core_bytes);
         self.os.deinit();
     }
@@ -130,7 +141,7 @@ pub const Recording = struct {
     }
 
     /// The ticks whose action began a game: Play and Restart.
-    fn starts(self: *const Recording, out: []usize) []usize {
+    pub fn starts(self: *const Recording, out: []usize) []usize {
         var n: usize = 0;
         for (self.intents[0..self.len], 0..) |intent, i| {
             if (intent.action == .play or intent.action == .restart) {
@@ -142,7 +153,7 @@ pub const Recording = struct {
     }
 
     /// The hashes of the world ticks in `[from, to)`, in order.
-    fn worldHashes(self: *const Recording, gpa: std.mem.Allocator, from: usize, to: usize) ![]u64 {
+    pub fn worldHashes(self: *const Recording, gpa: std.mem.Allocator, from: usize, to: usize) ![]u64 {
         var list: std.ArrayList(u64) = .empty;
         errdefer list.deinit(gpa);
         for (from..to) |i| if (self.world[i]) try list.append(gpa, self.hashes[i]);

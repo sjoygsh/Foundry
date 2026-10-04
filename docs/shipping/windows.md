@@ -18,6 +18,12 @@ Staging is native: it runs the content compiler, so it cannot be cross-built fro
 (`distribution.md` §8). The archive is written by Windows' own `tar.exe`, as macOS uses
 `ditto`, so no archiver is added to the build.
 
+M26 adds the same target with `-Dapp=court`, producing `Foundry Court-windows-x64.zip`.
+**Its native staging proof is pending:** Step 5's attempts were stopped by the PC's 50% CPU
+ceiling. `scripts/m26/stage_windows.ps1` stages only, with bounded jobs, below-normal priority,
+explicit affinity and the CPU cutoff; it launches no desktop window. Do not infer a Windows
+court artifact or runtime claim from the macOS proof. Native play-throughs belong to Step 6.
+
 ## What is in it
 
 ```text

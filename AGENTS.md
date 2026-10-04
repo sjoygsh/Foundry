@@ -443,7 +443,9 @@ zig build dist -Dapp=room -Dplatform=sdl3 -Drhi=metal -Doptimize=ReleaseSafe \
 children that die without closing their session, so **expect stderr noise from a passing
 run** — a child that exits 3 on purpose is the test working.
 
-`-Dapp` is `room` (default) or `sandbox`; `-Drevision=<sha>` is recorded in the release's
+`-Dapp` is `room` (default), `sandbox`, `editor` or `court`; `court`'s macOS staging is
+proven in M26 Step 5, while its native Windows staging remains pending the PC CPU gate.
+`-Drevision=<sha>` is recorded in the release's
 inventory and is `local` when unstated — the build runs no `git`. The staged tree is
 build-owned and fresh. Local output lands in `zig-out/dist/<app>/` as `<Product>.app`, its
 separate `<Product>.app.dSYM`, and `<Product>-local.zip`. The application is ad-hoc signed

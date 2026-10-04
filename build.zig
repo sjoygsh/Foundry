@@ -236,7 +236,7 @@ const RhiBackend = enum {
 ///
 /// A sample rather than a game: Foundry ships no game (ADR-0017), and the release helpers
 /// have to be exercised by something in this repository or nothing here checks them.
-const DistApp = enum { room, sandbox, editor };
+const DistApp = enum { room, sandbox, editor, court };
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -251,7 +251,7 @@ pub fn build(b: *std.Build) void {
     // Which sample `zig build dist` stages, and what revision the release records. Both are
     // read here so that they appear in `zig build --help` beside everything else; neither
     // affects any other step.
-    const dist_app = b.option(DistApp, "app", "Which application `zig build dist` stages: room (default), sandbox or editor") orelse .room;
+    const dist_app = b.option(DistApp, "app", "Which application `zig build dist` stages: room (default), sandbox, editor or court") orelse .room;
     const revision = b.option([]const u8, "revision", "Source revision recorded in a staged release");
     const signing_identity = b.option([]const u8, "signing-identity", "Developer ID Application identity");
     const notary_profile = b.option([]const u8, "notary-profile", "notarytool Keychain profile name");
@@ -652,6 +652,7 @@ pub fn build(b: *std.Build) void {
     const court_mod = b.createModule(.{ .root_source_file = b.path("samples/court/main.zig"), .target = target, .optimize = optimize });
     for ([_][]const u8{ "app", "asset", "audio", "anim", "core", "data", "debug", "mod", "physics3d", "render2d", "render3d", "scene", "ui" }) |name| court_mod.addImport(name, modules.get(name).?);
     court_mod.addImport("platform", platform_module);
+    court_mod.addImport("build_options", build_options_module);
     const court = b.addExecutable(.{ .name = "court", .root_module = court_mod });
     b.installArtifact(court);
 
@@ -823,6 +824,12 @@ pub fn build(b: *std.Build) void {
             if (std.mem.eql(u8, pkg.stem, "court")) {
                 court_test_options.addOptionPath("package", compiled.fpk);
                 court_test_options.addOptionPath("generated", compiled.generated);
+                const noon = release.compilePackage(b, fpack, .{
+                    .dir = "samples/court/testdata/mods/noon",
+                    .stem = "noon",
+                    .dependencies = &.{ core_compiled.?.fpk, compiled.fpk },
+                });
+                court_test_options.addOptionPath("noon_package", noon.fpk);
             }
             if (std.mem.eql(u8, pkg.stem, "sandbox3d")) {
                 walk_test_options.addOptionPath("package", compiled.fpk);
@@ -980,14 +987,19 @@ pub fn build(b: *std.Build) void {
                 .room => "samples/room/main.zig",
                 .sandbox => "samples/sandbox/main.zig",
                 .editor => "tools/editor/main.zig",
+                .court => "samples/court/main.zig",
             }),
             .target = target,
             .optimize = optimize,
         });
-        for ([_][]const u8{
+        const release_imports: []const []const u8 = if (dist_app == .court) &.{
+            "app",       "asset",    "audio",    "anim",  "core", "data", "debug", "mod",
+            "physics3d", "render2d", "render3d", "scene", "ui",
+        } else &.{
             "app",      "asset", "audio", "core", "data", "debug", "mod", "physics2d",
             "render2d", "rhi",   "scene", "ui",
-        }) |name| release_mod.addImport(name, modules.get(name).?);
+        };
+        for (release_imports) |name| release_mod.addImport(name, modules.get(name).?);
         release_mod.addImport("platform", platform_module);
         release_mod.addImport("build_options", bundle_options.createModule());
         // The room's mod screen is built through the public table, as the room's own module is.
@@ -1013,6 +1025,19 @@ pub fn build(b: *std.Build) void {
         });
 
         const description: release.Description = switch (dist_app) {
+            .court => .{
+                .product_name = "Foundry Court",
+                .bundle_id = "dev.foundry.court",
+                .product_version = "0.26.0",
+                .executable = release_executable,
+                .packages = &.{ content_packages[0], content_packages[4] },
+                .license_id = "Apache-2.0",
+                .license_file = b.path("LICENSE"),
+                .notice_file = b.path("NOTICE"),
+                .licenses_dir = "THIRD_PARTY_LICENSES",
+                .icon = b.path("brand/foundry.icns"),
+                .revision = revision,
+            },
             // The room is the default because it is the sample M9's exit criterion names: a
             // small game rather than a page of frame statistics (`distribution.md` §1).
             .room => .{

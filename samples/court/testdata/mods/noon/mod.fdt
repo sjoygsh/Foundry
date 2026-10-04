@@ -1,0 +1,7 @@
+foundry:mod noon:content {
+    name "Court at noon"
+    version 1
+    license "Apache-2.0"
+    summary "Daylight, new words, a slower warden and a moved beacon. Content only."
+    requires [ { id court:content } ]
+}

@@ -1,6 +1,6 @@
 # Design: M26 — A playable 3D sample: `samples/court`, pointer capture and the three-platform play
 
-**Status:** Accepted 2026-10-03 by the owner's request to begin Step 1, which accepts §14 as written. Steps 1–4 are done; Steps 5–8 are not begun.
+**Status:** Accepted 2026-10-03 by the owner's request to begin Step 1, which accepts §14 as written. Steps 1–4 are done; Step 5 is implemented and Metal-qualified, but Windows staging is pending the CPU gate (2026-10-04). Steps 6–8 are not begun.
 **Date:** 2026-10-02
 **Baseline:** `845b02f`, tag `m25` (documents since: `9b72a78`, `d9c0411`). M0–M25 are complete.
 **Decisions:**
@@ -857,3 +857,92 @@ in each menu and taken back on Resume, and a preference surviving a restart of t
 application. No screen was captured. Step 3's open controller question stands. No install,
 mod, staged release, Windows or Linux run exists yet. Stop before Step 5.
 
+## Checkpoint — Step 5: relocated Metal, the content mod and release path (2026-10-04)
+
+**Implemented and Metal-qualified, not closed.** §12 requires both macOS and native Windows
+court releases to stage. macOS passed; three Windows attempts stopped at the standing 50% CPU
+gate (approximately 90–92%), despite two build jobs, below-normal priority and two-logical-
+processor affinity. No completed Windows artifact is claimed. Resume that staging proof when
+the PC workload permits it; do not repeat the successful local evidence without a change that
+invalidates it, and do not begin Step 6.
+
+Routine implementation choices, with no ADR or engine/ABI change:
+
+- `packages.zig` owns the host's explicit installation layout and bootstrap selection. A
+  bundled build admits only `Contents/MacOS → Contents/Resources/content`, never a fallback
+  search. Loose builds retain `app.contentDirOf`. Installed/user roots retain their origins
+  through `app.ModSet`. Headless discovers ambient user packages only with an explicit
+  `FOUNDRY_COURT_PACKAGES` selection. The list keeps order, deduplicates and admits at most 64
+  IDs; a malformed/overflowing list refuses startup. There are no profiles, native consent,
+  code loader or mod screen.
+- `testdata/mods/noon` is ordinary `noon:content`, requiring `court:content`. Four whole-record
+  overrides change exposure to EV100 12, directional sunlight to 60,000 lux, ambient and clear
+  colour, the court's words, warden speed to 0.75 m/s and the open beacon's x to 3.8 m. It ships
+  no asset, script or native code. It is compiled against core/court for tests, not installed or
+  enabled by default; the runtime proof put its precompiled `.fpk` in the ordinary user root.
+- `dist -Dapp=court` uses the existing helpers, product `Foundry Court` version `0.26.0`,
+  required core/court packages, explicit application icon and generated attribution. Its
+  separately compiled entry point has the court's exact import grants, never `rhi` or `abi`.
+  macOS gets an ad-hoc bundle/dSYM/zip; Windows is configured for the existing unsigned loose
+  executable/zip path. No publication, private signing credential or certification is used.
+- Scripted runtime runs replay every admitted tick against a fresh game constructed from the
+  same merged content, with a different simulation's physics ownership. A different hash
+  fails the process. Presentation remains outside the hash. This is same-binary evidence,
+  not a cross-machine hash guarantee.
+- `timing.zig` copies whole-run profiler data into a fixed 4,096-frame collection and reports
+  omissions. The host ends its profiler frame before deliberate pacing sleep. Frame work
+  includes the proof replay; `character` includes the whole gameplay/audio tick, a conservative
+  upper bound on character movement, and `render.skin` measures one warden. These are measured
+  costs at 60 Hz, not unpaced synthetic throughput or the last 240 frames alone.
+- `scripts/m26/stage_windows.ps1` is a developer staging harness, not a build prerequisite.
+  It has fresh-output refusal, a deadline, two jobs, below-normal priority, explicit two-CPU
+  affinity and measured total-CPU checks. On a cutoff/failure it terminates its build process
+  tree. It launches no desktop process. The unrelated older Windows checkout is untouched;
+  the task's detached worktree was removed after copying partial logs home.
+
+**Focused evidence:** `court-test` **40/40** on null Debug and Metal ReleaseSafe. Added tests
+cover ordered/bounded selection, explicit bundle refusal, ordinary installed/user discovery,
+the actual compiled noon overrides, all three modded endings, every replay tick and the two
+modded wins agreeing after restart, runtime replay mismatch refusal and bounded cost
+collection. Six mutations failed: deduplication, both bundle-name guards, the selection bound,
+the cost bound and the replay comparison. All are restored.
+
+**Runtime evidence:** Apple M5, SDL3 `cocoa`, Metal, ReleaseSafe with 4× MSAA and shadows,
+workers zero. The archive was extracted and moved to a read-only application tree. With no
+Zig/Xcode on PATH and a disposable preferences root, the ordinary executable ran:
+
+| Content / script | Frames / replayed ticks | Sounds played / requested |
+| --- | --- | --- |
+| Base / win | 1,215 / 1,221 | 73 / 73 |
+| Base / caught | 110 / 112 | 5 / 5 |
+| Base / fell | 216 / 218 | 11 / 11 |
+| Noon / win | 1,216 / 1,218 | 69 / 69 |
+| Noon / caught | 126 / 128 | 5 / 5 |
+| Noon / fell | 217 / 219 | 11 / 11 |
+
+All six completed their menu-driven scripts, replayed identically at every tick, and counted
+zero skipped frames or sound/command/event/skinning-capacity drops. Each win includes two
+wins and quitting through the menu; each failure restarts to playing. Frame/tick counts need
+not agree because the real loop admits catch-up ticks. Every bundle file hash is unchanged
+after the runs (compare a sorted file inventory; raw enumeration order is not stable). Strict
+ad-hoc codesign integrity passes, the preferences root remains empty, and no authored source
+is needed at runtime. The temporary user-installed noon `.fpk` was removed afterward; its
+compiled copy remains with ignored evidence.
+
+| Win run | Frame work median / p95 | Gameplay/audio upper bound median / p95 | Warden skin median / p95 |
+| --- | --- | --- | --- |
+| Base | 0.7585 / 0.9547 ms | 0.0875 / 0.1300 ms | 0.0887 / 0.1103 ms |
+| Noon | 0.1308 / 0.5524 ms | 0.0160 / 0.0548 ms | 0.0165 / 0.0638 ms |
+
+No samples were omitted. Both runs meet §10.6's 16.67 / 0.25 / 0.25 ms budgets. Artifact
+inventory revision is explicitly `46c0268+m26-step5`, identifying the qualified working
+snapshot rather than falsely calling it unmodified Step 4. Its Mac zip SHA-256 is
+`52cb590a01296a189e4fcb88266c46a954986d390d3cf53fbc21bf659e0242cb`.
+
+**Integration:** the ten-command bar passes **2,115 of 2,116 tests**, one expected skip,
+native/Metal and Windows/Linux null checks, and all four headless sample runs. Room and sandbox
+macOS releases stage. The implementation and focused checks are accepted; the only Step 5
+exit proof remaining is native Windows court staging. An unrelated existing editor release
+package-index error is recorded in `PROJECT_STATE.md`, not silently repaired in this step.
+No person's play/capture/menu/preferences report is inferred; §10.5 and Step 3's controller
+question remain open. No Windows/Linux runtime claim or Step 6 functionality is implemented.

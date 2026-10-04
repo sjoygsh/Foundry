@@ -1,14 +1,49 @@
 # Foundry Project State
 
-**Last updated:** 2026-10-03
-**Current handoff: M26 Step 4 of 8 is complete. Stop before Step 5**, macOS/Metal, the mod
-and the release: the court staged and run from a relocated install, the `noon` content mod, the
-paced budgets, and the first person's play. `samples/court` is now a whole small game on null
-and Metal: a title screen, a HUD, pause, end and options screens driven by keyboard and
-pointer, eleven generated sounds placed by distance and direction, and preferences in
-`settings.fset`. The design (`docs/design/playable3d.md`, no ADR) was accepted on 2026-10-03 by
-the owner's request to begin Step 1. M25 Public 3D is complete (tag `m25`, ADR-0059) and
-`FoundryApi_v6` is frozen at 261 calls. M0–M25 and M26 Steps 1–4 are pushed.
+**Last updated:** 2026-10-04
+**Current handoff: M26 Step 5 is implemented and Metal-qualified, but NOT complete. Stop
+before Step 6.** Resume Step 5 with native Windows `dist -Dapp=court` staging: three attempts
+were stopped by the standing 50% CPU cutoff, reaching approximately 90–92% even with `-j2`,
+below-normal priority and two-logical-processor affinity. Do not override that cutoff or claim
+the Windows artifact passed. No build process or task-owned worktree remains on the PC;
+its unrelated old checkout was preserved. `scripts/m26/stage_windows.ps1` is the bounded,
+staging-only harness; use a fresh worktree/output when the workload permits it.
+The local bar and Metal evidence below remain accepted unless later changes invalidate them.
+M0–M25 and M26 Steps 1–4 are pushed; this Step 5 checkpoint is not pushed.
+
+**M26 Step 5 checkpoint (2026-10-04), from `46c0268`.** The court discovers explicitly
+selected installed/user packages through `app.ModSet`, with a bounded, deduplicated selection,
+and loads its explicit bundle or loose layout. The ordinary `noon:content` package overrides
+daylight, strings, warden speed and one beacon position, with no code/assets. `dist -Dapp=court`
+has the exact sample import grants, never RHI or ABI, and stages a macOS ad-hoc bundle, matching
+dSYM and zip; Windows staging is implemented, not yet proven. No engine/ABI change or ADR.
+
+On Apple M5/Metal, a relocated read-only ReleaseSafe zip extraction ran `win`, `caught` and
+`fell`, each both base and user-installed noon, with Zig/Xcode off PATH. All six passed with
+zero skipped frames and zero sound, command, event or skin-capacity drops. Each admitted tick
+was replayed against a fresh simulation, with every outcome hash equal. Base win: 1,215 frames,
+1,221 replayed ticks, 73/73 sounds; noon win: 1,216 frames, 1,218 replayed ticks, 69/69 sounds.
+Base win median/p95: frame work **0.7585/0.9547 ms**, the whole gameplay/audio tick (a conservative
+character-move upper bound) **0.0875/0.1300 ms**, one-warden skinning **0.0887/0.1103 ms**.
+Noon: **0.1308/0.5524**, **0.0160/0.0548**, **0.0165/0.0638 ms** respectively. Frame work
+excludes deliberate pacing sleep and includes proof replay. All budgets pass. Collection covers
+the whole runs, not just the profiler's last 240 frames. The bundle's hashes stayed unchanged,
+strict ad-hoc integrity passed, and the scratch preferences directory stayed empty.
+
+`court-test`: **40/40** on null Debug and Metal ReleaseSafe, including the mod's three endings,
+per-tick replay, equal first/second wins, ordinary user discovery and explicit selection,
+layout refusal and bounded cost collection. Six guard mutations failed as intended and were
+restored. The final ten-command bar passes **2,115 of 2,116 tests**, one expected skip; all
+four checks and headless samples pass. Room and sandbox macOS releases also stage. No tests
+need repeating solely for reassurance. Evidence/artifacts remain ignored under `.zig-cache/`
+and `zig-out/dist/court/`. The temporary user-installed noon fixture was removed; its compiled
+copy is retained beside the Metal evidence and its authoring fixture is committed.
+
+**Still unclaimed:** a person's Mac play/capture/menu/preferences report (§10.5), Windows
+court release staging, and every Step 6/7 native runtime proof. Step 3's controller question
+stands. **Unrelated observed release issue:** the existing editor release description indexes
+`content_packages[3]` (sandbox3d), not `[5]` (editor); it was not changed or qualified in this
+court step and needs its own correction before an editor release.
 
 **M26 Step 4 is done (2026-10-03).** A menu's choice reaches the game as the tick's
 `Intent.action`, so a phase still changes only inside a tick; the game starts on `title` and a
@@ -71,7 +106,8 @@ in `platform`, deferred to M26 by `collision3d.md`; nothing enters the ABI. The 
 scripted play-throughs replayed to the same hash on the same binary, run from relocated
 installs on macOS/Metal, Windows/Vulkan and a freshly provisioned Linux machine, plus a
 person's play on each, which only that person's report can claim. Eight steps. Step 7 needs
-the owner to supply or choose the Linux machine. Steps 1–2 are implemented; Steps 3–8 remain.
+the owner to supply or choose the Linux machine. Steps 1–4 are complete; Step 5 is implemented
+and Metal-qualified with Windows staging pending; Steps 6–8 have not begun.
 
 **The long roadmap is decided (2026-10-02, ADR-0060): 150 numbered engine milestones, M0–M149,
 then M150, the certified release.** 26 are done. M27–M149 are listed in `docs/ROADMAP.md` in five phases (game toolkit, dynamics
