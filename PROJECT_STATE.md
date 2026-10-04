@@ -1,22 +1,22 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-04
-**Current handoff: M26 Step 5 is implemented and Metal-qualified, but NOT complete. Stop
-before Step 6.** Resume Step 5 with native Windows `dist -Dapp=court` staging: three attempts
-were stopped by the standing 50% CPU cutoff, reaching approximately 90–92% even with `-j2`,
-below-normal priority and two-logical-processor affinity. Do not override that cutoff or claim
-the Windows artifact passed. No build process or task-owned worktree remains on the PC;
-its unrelated old checkout was preserved. `scripts/m26/stage_windows.ps1` is the bounded,
-staging-only harness; use a fresh worktree/output when the workload permits it.
-The local bar and Metal evidence below remain accepted unless later changes invalidate them.
-M0–M25 and M26 Steps 1–4 are pushed; this Step 5 checkpoint is not pushed.
+**Current handoff: M26 Step 5 is complete; Step 6 is next (2026-10-04).** The owner explicitly
+suspended the 50% CPU cutoff for finishing Windows staging and Step 6. Two build jobs and
+below-normal priority remain; the optional CPU/affinity override is explicit in the staging
+harness, not a permanent change to the default. Native Windows court staging passed from
+`1e637ba` in a fresh detached worktree, producing an unsigned zip; its SHA-256 matched after
+transfer home: `5989bcdf4ac962a9a1a85d9a6e7839cd3d6b20704eb6d5a877af29813f463ee7`.
+The unrelated old Windows checkout remains untouched. Step 6's desktop launches still need
+confirmation that the PC is free. The local bar and Metal evidence below remain accepted
+unless later changes invalidate them. No push is requested.
 
 **M26 Step 5 checkpoint (2026-10-04), from `46c0268`.** The court discovers explicitly
 selected installed/user packages through `app.ModSet`, with a bounded, deduplicated selection,
 and loads its explicit bundle or loose layout. The ordinary `noon:content` package overrides
 daylight, strings, warden speed and one beacon position, with no code/assets. `dist -Dapp=court`
 has the exact sample import grants, never RHI or ABI, and stages a macOS ad-hoc bundle, matching
-dSYM and zip; Windows staging is implemented, not yet proven. No engine/ABI change or ADR.
+dSYM and zip; native Windows staging is now proven. No engine/ABI change or ADR.
 
 On Apple M5/Metal, a relocated read-only ReleaseSafe zip extraction ran `win`, `caught` and
 `fell`, each both base and user-installed noon, with Zig/Xcode off PATH. All six passed with
@@ -39,8 +39,8 @@ need repeating solely for reassurance. Evidence/artifacts remain ignored under `
 and `zig-out/dist/court/`. The temporary user-installed noon fixture was removed; its compiled
 copy is retained beside the Metal evidence and its authoring fixture is committed.
 
-**Still unclaimed:** a person's Mac play/capture/menu/preferences report (§10.5), Windows
-court release staging, and every Step 6/7 native runtime proof. Step 3's controller question
+**Still unclaimed:** a person's Mac play/capture/menu/preferences report (§10.5),
+and every Step 6/7 native runtime proof. Step 3's controller question
 stands. **Unrelated observed release issue:** the existing editor release description indexes
 `content_packages[3]` (sandbox3d), not `[5]` (editor); it was not changed or qualified in this
 court step and needs its own correction before an editor release.
@@ -106,8 +106,7 @@ in `platform`, deferred to M26 by `collision3d.md`; nothing enters the ABI. The 
 scripted play-throughs replayed to the same hash on the same binary, run from relocated
 installs on macOS/Metal, Windows/Vulkan and a freshly provisioned Linux machine, plus a
 person's play on each, which only that person's report can claim. Eight steps. Step 7 needs
-the owner to supply or choose the Linux machine. Steps 1–4 are complete; Step 5 is implemented
-and Metal-qualified with Windows staging pending; Steps 6–8 have not begun.
+the owner to supply or choose the Linux machine. Steps 1–5 are complete; Steps 6–8 have not begun.
 
 **The long roadmap is decided (2026-10-02, ADR-0060): 150 numbered engine milestones, M0–M149,
 then M150, the certified release.** 26 are done. M27–M149 are listed in `docs/ROADMAP.md` in five phases (game toolkit, dynamics

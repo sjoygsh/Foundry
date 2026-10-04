@@ -1,6 +1,6 @@
 # Design: M26 — A playable 3D sample: `samples/court`, pointer capture and the three-platform play
 
-**Status:** Accepted 2026-10-03 by the owner's request to begin Step 1, which accepts §14 as written. Steps 1–4 are done; Step 5 is implemented and Metal-qualified, but Windows staging is pending the CPU gate (2026-10-04). Steps 6–8 are not begun.
+**Status:** Accepted 2026-10-03 by the owner's request to begin Step 1, which accepts §14 as written. Steps 1–5 are done (2026-10-04); Steps 6–8 are not begun.
 **Date:** 2026-10-02
 **Baseline:** `845b02f`, tag `m25` (documents since: `9b72a78`, `d9c0411`). M0–M25 are complete.
 **Decisions:**
@@ -946,3 +946,21 @@ exit proof remaining is native Windows court staging. An unrelated existing edit
 package-index error is recorded in `PROJECT_STATE.md`, not silently repaired in this step.
 No person's play/capture/menu/preferences report is inferred; §10.5 and Step 3's controller
 question remain open. No Windows/Linux runtime claim or Step 6 functionality is implemented.
+
+## Resolution — Step 5 completion: native Windows staging (2026-10-04)
+
+The owner explicitly suspended the 50% CPU cutoff for the pending proof and the next step.
+The staging harness retains that cutoff by default; `-IgnoreCpuLimit` is an explicit operator
+override of both the cutoff and its two-logical-processor restriction. Two build jobs,
+below-normal priority, fresh output, the deadline and process-tree cleanup remain in force.
+A focused injected 51% measurement still refuses the default route before launching a child.
+
+From `1e637ba`, in a fresh detached Windows worktree, native ReleaseSafe Vulkan
+`dist -Dapp=court` passed, including package compilation, attribution, inventory, loose
+executable staging and the unsigned zip. SHA-256 before and after transfer home is
+`5989bcdf4ac962a9a1a85d9a6e7839cd3d6b20704eb6d5a877af29813f463ee7`.
+This completes the only missing Step 5 exit proof. The checkpoint's Metal runs, focused
+tests, mutation proofs, ten-command bar and room/sandbox staging remain accepted over
+unchanged implementation; they were not repeated. Only the developer harness and documents
+changed. No desktop runtime, public certification or person's play is claimed by staging.
+Step 6 follows by the owner's explicit request; Step 7 is not authorized here.
