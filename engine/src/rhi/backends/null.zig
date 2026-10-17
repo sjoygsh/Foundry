@@ -589,6 +589,7 @@ pub const Device = struct {
     // -- samplers and shaders ------------------------------------------------------
 
     pub fn createSampler(self: *Device, desc: resource.SamplerDesc) interface.ResourceError!resource.SamplerHandle {
+        if (!desc.valid()) return error.InvalidDescriptor;
         try self.reserveRetirement();
         return self.samplers.add(self.gpa, .{ .desc = desc });
     }
@@ -754,7 +755,11 @@ pub const Device = struct {
     pub fn createRenderPipeline(self: *Device, desc: pipeline.RenderPipelineDesc) interface.ResourceError!pipeline.RenderPipelineHandle {
         const layout = self.pipeline_layouts.getConst(desc.layout) orelse return error.InvalidDescriptor;
         if (self.shaders.getConst(desc.vertex_shader) == null) return error.InvalidDescriptor;
-        if (self.shaders.getConst(desc.fragment_shader) == null) return error.InvalidDescriptor;
+        if (!desc.stagesValid()) {
+            self.violate(.attachment_format, "pipeline '{s}' has no fragment stage but is not depth-only", .{desc.label});
+            return error.InvalidDescriptor;
+        }
+        if (!desc.fragment_shader.isNone() and self.shaders.getConst(desc.fragment_shader) == null) return error.InvalidDescriptor;
         if (desc.color_targets.len == 0 and desc.depth_stencil == null) {
             self.violate(.attachment_format, "pipeline '{s}' declares neither a colour nor a depth attachment", .{desc.label});
             return error.InvalidDescriptor;
@@ -1616,6 +1621,32 @@ const Fixture = struct {
         self.dev.deinit();
     }
 };
+
+test "a pipeline may leave out its fragment stage only when it is depth-only" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const depth: pipeline.DepthStencilState = .{ .format = .depth32_float };
+    const depth_only = try fx.dev.createRenderPipeline(.{ .label = "depth only", .layout = fx.layout, .vertex_shader = fx.vs, .fragment_shader = .none, .depth_stencil = depth });
+    fx.dev.destroyRenderPipeline(depth_only);
+    try std.testing.expectError(error.InvalidDescriptor, fx.dev.createRenderPipeline(.{
+        .label = "colour without a fragment stage",
+        .layout = fx.layout,
+        .vertex_shader = fx.vs,
+        .fragment_shader = .none,
+        .color_targets = &.{.{ .format = .bgra8_unorm_srgb }},
+        .depth_stencil = depth,
+    }));
+    try std.testing.expectError(error.InvalidDescriptor, fx.dev.createRenderPipeline(.{ .label = "no attachment", .layout = fx.layout, .vertex_shader = fx.vs, .fragment_shader = .none }));
+}
+
+test "a sampler outside the anisotropy rule is refused" {
+    const device = try Device.init(std.testing.allocator, .{});
+    defer device.deinit();
+    try std.testing.expectError(error.InvalidDescriptor, device.createSampler(.{ .max_anisotropy = 0 }));
+    try std.testing.expectError(error.InvalidDescriptor, device.createSampler(.{ .max_anisotropy = 4 }));
+    const sampler = try device.createSampler(.{ .min_filter = .linear, .mag_filter = .linear, .mip_filter = .linear, .max_anisotropy = 16 });
+    device.destroySampler(sampler);
+}
 
 test "a complete valid frame produces no violations" {
     // The most important test in the file. If this ever fails, the validation backend has

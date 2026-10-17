@@ -1,9 +1,9 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-17
-**Current handoff: M26 Steps 1–8 are complete (2026-10-18). Step 9 (`render3d` and `rhi`:
-anisotropic filtering, per-submesh bounds, a fragment-less depth-only pipeline) is next, then
-Steps 10–13 without a stop between them, by the owner's instruction of 2026-10-17.** M26 now has thirteen steps (`playable3d.md` §12, revised).
+**Current handoff: M26 Steps 1–9 are complete (2026-10-18). Step 10 (tools: `fdt fmt`, an editor
+grammar, saved profiles and panel state) is next, then Steps 11–13 without a stop between them,
+by the owner's instruction of 2026-10-17.** M26 now has thirteen steps (`playable3d.md` §12, revised).
 CLAUDE.md §2's new rule 17 finishes in M26 what M0–M25 set aside for themselves:
 - the controller's edge and the two Linux budget misses Step 7 found (Step 8);
 - anisotropic filtering, per-submesh bounds and a fragment-less depth-only pipeline (Step 9);
@@ -12,6 +12,13 @@ CLAUDE.md §2's new rule 17 finishes in M26 what M0–M25 set aside for themselv
 Step 12 re-qualifies them on Windows and Linux, and Step 13 closes. Every other set-aside item
 names its roadmap milestone in `docs/ROADMAP.md`'s 2026-10-17 note. §10.6's budgets are read as
 the shipping runtime's. The Linux machine stays up for Steps 8 and 12; no push is requested.
+
+**M26 Step 9 is done (2026-10-18): anisotropic filtering, per-submesh bounds, depth-only
+pipelines.** Samplers take `max_anisotropy` 1–16 on null, Metal and Vulkan, and `render3d`
+asks 8 for linear mipmapped textures: a grazing floor keeps 3.1–3.3× the stripe contrast on
+Metal and Vulkan. Each submesh is culled by its own bounds, computed at upload. A depth-only
+pipeline may have no fragment stage, and opaque shadow casters use one. Bar **2,122/2,123** (one
+skip); Metal renderer+RHI 268/268; Linux Vulkan renderer+backend 298/298, validation required.
 
 **M26 Step 8 is done (2026-10-18): the controller walks off an edge, and the move fits on
 Linux.** A contact whose own normal is walkable now supports the feet on a wall face, which

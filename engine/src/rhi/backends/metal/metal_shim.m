@@ -370,6 +370,7 @@ FdMtlSampler *fd_mtl_sampler_create(FdMtlDevice *dev, const FdMtlSamplerDesc *de
         if (desc->compare_enabled) {
             d.compareFunction = (MTLCompareFunction)desc->compare;
         }
+        d.maxAnisotropy = desc->max_anisotropy;
         if (label != NULL && label[0] != '\0') {
             d.label = [NSString stringWithUTF8String:label];
         }

@@ -363,6 +363,8 @@ pub const Device = struct {
 
     /// The chosen device's limits and memory types, read once when it is chosen.
     limits: c.VkPhysicalDeviceLimits = undefined,
+    /// `samplerAnisotropy`, enabled when the device has it; it is not part of the floor.
+    sampler_anisotropy: bool = false,
     memory_types: [32]memory.TypeFlags = @splat(.{}),
     memory_type_count: u32 = 0,
     /// Live `VkDeviceMemory` allocations, held under `maxMemoryAllocationCount` (§5.2).
@@ -884,7 +886,14 @@ pub const Device = struct {
     }
 
     pub fn createSampler(self: *Device, desc: resource.SamplerDesc) interface.ResourceError!resource.SamplerHandle {
+        if (!desc.valid()) return error.InvalidDescriptor;
         try self.reserveRetirement(1);
+        // A quality request: a device without the feature, or with a lower cap, samples with
+        // what it has (`resource.SamplerDesc.max_anisotropy`).
+        const anisotropy: f32 = if (self.sampler_anisotropy)
+            @min(@as(f32, @floatFromInt(desc.max_anisotropy)), self.limits.maxSamplerAnisotropy)
+        else
+            1;
         const info: c.VkSamplerCreateInfo = .{
             .sType = c.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
             .magFilter = samplerFilter(desc.mag_filter),
@@ -897,6 +906,8 @@ pub const Device = struct {
             .compareOp = compareFunction(desc.compare orelse .always),
             // Every level, as Metal's default clamp allows.
             .maxLod = c.VK_LOD_CLAMP_NONE,
+            .anisotropyEnable = if (anisotropy > 1) c.VK_TRUE else c.VK_FALSE,
+            .maxAnisotropy = anisotropy,
         };
         var native: c.VkSampler = null;
         const created = self.injectedResource(.create_sampler) orelse
@@ -1307,7 +1318,8 @@ pub const Device = struct {
 
     pub fn createRenderPipeline(self: *Device, desc: pipeline.RenderPipelineDesc) interface.ResourceError!pipeline.RenderPipelineHandle {
         const vertex_shader = self.shaders.getConst(desc.vertex_shader) orelse return error.InvalidDescriptor;
-        const fragment_shader = self.shaders.getConst(desc.fragment_shader) orelse return error.InvalidDescriptor;
+        if (!desc.stagesValid()) return error.InvalidDescriptor;
+        const fragment_shader = if (desc.fragment_shader.isNone()) null else self.shaders.getConst(desc.fragment_shader) orelse return error.InvalidDescriptor;
         const layout_backing = (self.pipeline_layouts.getConst(desc.layout) orelse return error.InvalidDescriptor).backing;
         if (!resource.isValidSampleCount(desc.sample_count)) return error.InvalidDescriptor;
         if (desc.color_targets.len == 0 and desc.depth_stencil == null) return error.InvalidDescriptor;
@@ -1317,9 +1329,8 @@ pub const Device = struct {
             return error.UnsupportedFormat;
         }
 
-        if (!(spirv.hasEntry(vertex_shader.bytes, .vertex, desc.vertex_entry) catch false) or
-            !(spirv.hasEntry(fragment_shader.bytes, .fragment, desc.fragment_entry) catch false))
-        {
+        const fragment_found = if (fragment_shader) |shader| spirv.hasEntry(shader.bytes, .fragment, desc.fragment_entry) catch false else true;
+        if (!(spirv.hasEntry(vertex_shader.bytes, .vertex, desc.vertex_entry) catch false) or !fragment_found) {
             log.warn("vulkan: pipeline '{s}' selects a missing or wrong-stage shader entry", .{desc.label});
             return error.InvalidDescriptor;
         }
@@ -1340,10 +1351,12 @@ pub const Device = struct {
             .{
                 .sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                 .stage = c.VK_SHADER_STAGE_FRAGMENT_BIT,
-                .module = fragment_shader.native,
+                .module = if (fragment_shader) |shader| shader.native else null,
                 .pName = fragment_name.ptr,
             },
         };
+        // A depth-only pipeline is the vertex stage alone.
+        const stage_count: u32 = if (fragment_shader == null) 1 else stages.len;
 
         const bindings = try self.gpa.alloc(c.VkVertexInputBindingDescription, desc.vertex_buffers.len);
         defer self.gpa.free(bindings);
@@ -1456,7 +1469,7 @@ pub const Device = struct {
         const info: c.VkGraphicsPipelineCreateInfo = .{
             .sType = c.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
             .pNext = &rendering,
-            .stageCount = stages.len,
+            .stageCount = stage_count,
             .pStages = &stages,
             .pVertexInputState = &vertex_input,
             .pInputAssemblyState = &assembly,
@@ -2450,7 +2463,10 @@ pub const Device = struct {
             .queueCount = 1,
             .pQueuePriorities = &priority,
         };
-        // Exactly the floor's features, and no optional one nothing uses (§5.1).
+        // The floor's features, and one optional one a sampler asks for when the device has it.
+        var supported: c.VkPhysicalDeviceFeatures2 = .{ .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+        self.instance_fns.vkGetPhysicalDeviceFeatures2(self.physical, &supported);
+        self.sampler_anisotropy = supported.features.samplerAnisotropy != 0;
         var v13: c.VkPhysicalDeviceVulkan13Features = .{
             .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
             .synchronization2 = c.VK_TRUE,
@@ -2466,7 +2482,7 @@ pub const Device = struct {
         var features: c.VkPhysicalDeviceFeatures2 = .{
             .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
             .pNext = &v12,
-            .features = .{ .depthBiasClamp = c.VK_TRUE },
+            .features = .{ .depthBiasClamp = c.VK_TRUE, .samplerAnisotropy = if (self.sampler_anisotropy) c.VK_TRUE else c.VK_FALSE },
         };
         const extensions = [_][*:0]const u8{c.VK_KHR_SWAPCHAIN_EXTENSION_NAME};
         const info: c.VkDeviceCreateInfo = .{

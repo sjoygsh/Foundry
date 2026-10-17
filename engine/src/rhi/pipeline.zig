@@ -285,6 +285,8 @@ pub const RenderPipelineDesc = struct {
 
     vertex_shader: resource.ShaderModuleHandle,
     vertex_entry: []const u8 = "vertexMain",
+    /// `.none` for a depth-only pipeline, one with a depth attachment and no colour target:
+    /// nothing is shaded, and every backend then builds it with no fragment stage at all.
     fragment_shader: resource.ShaderModuleHandle,
     fragment_entry: []const u8 = "fragmentMain",
 
@@ -297,6 +299,13 @@ pub const RenderPipelineDesc = struct {
     /// it draws in (rule 7), as Metal's `rasterSampleCount` and Vulkan's
     /// `rasterizationSamples` both require.
     sample_count: u32 = 1,
+
+    /// Whether the stages are a shape every backend can build: a missing fragment stage
+    /// needs a depth attachment and no colour target to write.
+    pub fn stagesValid(self: RenderPipelineDesc) bool {
+        if (!self.fragment_shader.isNone()) return true;
+        return self.color_targets.len == 0 and self.depth_stencil != null;
+    }
 };
 
 // -- tests ---------------------------------------------------------------------------

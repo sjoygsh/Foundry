@@ -270,6 +270,7 @@ typedef struct FdMtlSamplerDesc {
     uint32_t address_v;  /* MTLSamplerAddressMode */
     bool compare_enabled;
     uint32_t compare;    /* MTLCompareFunction */
+    uint32_t max_anisotropy; /* 1 to 16 */
 } FdMtlSamplerDesc;
 
 FdMtlSampler *fd_mtl_sampler_create(FdMtlDevice *dev, const FdMtlSamplerDesc *desc,

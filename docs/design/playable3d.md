@@ -1276,3 +1276,52 @@ loss.
 **The bar:** `zig fmt`, `zig build test` **2,116/2,117** (one skip, one new test), all four
 `check`s, and the four headless samples. `court-test` 40/40; three endings headless; Linux
 `physics3d-test court-test` 102/102 on the Step 7 machine.
+
+## Resolution — Step 9: anisotropic filtering, per-submesh bounds, depth-only pipelines (2026-10-18)
+
+**Anisotropic filtering** (`meshes.md` §13).
+- `rhi.resource.SamplerDesc` gains `max_anisotropy`, 1 to 16 (default 1). Above 1 it needs
+  linear min, mag and mip filters and no comparison. `SamplerDesc.valid` is that rule, and null,
+  Metal and Vulkan all refuse a sampler outside it.
+- It is a quality request. Metal sets `maxAnisotropy`. Vulkan enables `samplerAnisotropy` when
+  the device has it, which is not part of the floor, and clamps to `maxSamplerAnisotropy`; a
+  device without it samples with 1.
+- `render3d.Config.max_anisotropy` (default 8, refused outside 1–16) applies only to linear,
+  mipmapped material textures. A nearest texture is pixel art and keeps its texels.
+
+Tests:
+- the rule's boundaries;
+- the null refusal;
+- the config refusal;
+- which textures ask for anisotropy;
+- a readback of a grazing floor of 2-texel stripes. Contrast across the floor 2.7–8 m away was
+  isotropic 10,662 against 16× 35,586 on Metal, and 10,683 against 32,974 on Linux's Vulkan; the
+  test requires more than double.
+
+Removing Metal's `maxAnisotropy`, the null rule, or the mipmap condition each fails a test.
+
+**Per-submesh bounds** (`meshes.md` §13). `asset.Submesh` is part of the compiled mesh format and
+is unchanged (I8).
+- `render3d` computes each submesh's box at upload, over exactly the positions its indices
+  reach, and culls and sorts a rigid draw by its own submesh. A skinned draw keeps its posed
+  bounds.
+- A test puts two triangles 50 m apart in one mesh. Only the visible one is drawn, and culling
+  by the mesh's box fails the test.
+
+**A depth-only pipeline has no fragment stage** (`light.md` §14).
+- `RenderPipelineDesc.fragment_shader` may be `.none` when the pipeline has a depth attachment
+  and no colour target (`RenderPipelineDesc.stagesValid`).
+- Metal builds it with a nil fragment function, Vulkan with the vertex stage alone, and null
+  validates the rule.
+- An opaque caster's shadow pipeline now uses it: its fragment program was the empty
+  `fragmentMain`. A masked caster keeps its alpha-test fragment.
+- The shadow readbacks at 1× and 4× pass unchanged on Metal and Vulkan. Making the rule always
+  pass fails its test.
+
+**Runs.** On Metal, `sandbox3d`'s tour and walker pass (walker replay `62ed8c026c20482c`, the
+player hash unchanged), and the court's `win` passes windowed (1,218 frames, no focus loss).
+
+**The bar:**
+- Mac: `zig fmt`, `zig build test` **2,122/2,123** (one skip), all four `check`s and the four
+  headless samples; `render3d-test rhi-test -Drhi=metal` **268/268**.
+- Linux, Vulkan with validation required: `render3d-test vulkan-test` **298/298**.

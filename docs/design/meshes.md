@@ -1530,3 +1530,9 @@ M20's. A later Windows timing measurement should still check the PC's clock firs
 This step changed documents only, and the bar passed on them unchanged: Step 8's numbers stand
 for the code (**1,822 of 1,823 headless**, **1,830 of 1,841 on Metal**, **1,854 of 1,873 on
 Windows/Vulkan**). M20 is tagged `m20`. M21's design is next, and it has not been started.
+
+## Note — 2026-10-18, M26 Step 9: anisotropic filtering and per-submesh bounds
+
+Both §13 items are done (`playable3d.md`, Step 9's Resolution). Samplers take `max_anisotropy`
+1–16; `render3d` asks 8 (configurable) for linear, mipmapped material textures. Each submesh's
+bounds are computed at upload and cull its own draw; the compiled `Submesh` is unchanged.

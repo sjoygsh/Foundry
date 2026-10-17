@@ -207,6 +207,20 @@ pub const SamplerDesc = struct {
     address_v: AddressMode = .clamp_to_edge,
     /// Null is an ordinary filtering sampler. A value makes this a depth-comparison sampler.
     compare: ?CompareFunction = null,
+    /// The most texels one anisotropic sample may take along the footprint's long axis: 1 is
+    /// none, up to `max_anisotropy_limit`. More than 1 needs linear min, mag and mip filters and
+    /// no comparison. A device that cannot filter anisotropically, or caps it lower, samples
+    /// with what it has: this is a quality request, never a reason to refuse a frame.
+    max_anisotropy: u8 = 1,
+
+    pub const max_anisotropy_limit = 16;
+
+    /// The rules every backend refuses a sampler by, beyond its own device's.
+    pub fn valid(self: SamplerDesc) bool {
+        if (self.max_anisotropy < 1 or self.max_anisotropy > max_anisotropy_limit) return false;
+        if (self.max_anisotropy == 1) return true;
+        return self.min_filter == .linear and self.mag_filter == .linear and self.mip_filter == .linear and self.compare == null;
+    }
 };
 
 // -- shaders -------------------------------------------------------------------------
@@ -237,6 +251,29 @@ pub const ShaderSourceDesc = struct {
 // -- tests ---------------------------------------------------------------------------
 
 const testing = std.testing;
+
+test "a sampler's anisotropy is 1 to 16, and above 1 only for linear filtering without comparison" {
+    const linear: SamplerDesc = .{ .min_filter = .linear, .mag_filter = .linear, .mip_filter = .linear };
+    try testing.expect((SamplerDesc{}).valid());
+    var d = linear;
+    for ([_]u8{ 1, 2, 8, 16 }) |n| {
+        d.max_anisotropy = n;
+        try testing.expect(d.valid());
+    }
+    for ([_]u8{ 0, 17, 255 }) |n| {
+        d.max_anisotropy = n;
+        try testing.expect(!d.valid());
+    }
+    d.max_anisotropy = 8;
+    inline for (.{ "min_filter", "mag_filter", "mip_filter" }) |field| {
+        var nearest = d;
+        @field(nearest, field) = .nearest;
+        try testing.expect(!nearest.valid());
+    }
+    var compared = d;
+    compared.compare = .less;
+    try testing.expect(!compared.valid());
+}
 
 test "device_local memory is never mappable" {
     // The single rule that keeps unified memory from becoming a habit.

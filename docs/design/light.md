@@ -970,3 +970,9 @@ Each is recommended as written.
 | 18 | Eight steps, Metal before Vulkan-on-Windows, the sample last | §13 |
 
 Once these are accepted nothing blocks Step 1: the RHI's widening depends only on the code as it is.
+
+## Note — 2026-10-18, M26 Step 9: the fragment stage is optional in a depth-only pipeline
+
+§14's item is done (`playable3d.md`, Step 9's Resolution). A pipeline with a depth attachment and
+no colour target may name no fragment shader, and opaque shadow casters now draw that way; masked
+casters keep their alpha test.

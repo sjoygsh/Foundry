@@ -785,6 +785,7 @@ pub const Device = struct {
     // -- samplers --------------------------------------------------------------------
 
     pub fn createSampler(self: *Device, desc: resource.SamplerDesc) interface.ResourceError!resource.SamplerHandle {
+        if (!desc.valid()) return error.InvalidDescriptor;
         try self.reserveRetirement();
         const d: c.FdMtlSamplerDesc = .{
             .min_filter = samplerFilter(desc.min_filter),
@@ -794,6 +795,7 @@ pub const Device = struct {
             .address_v = samplerAddress(desc.address_v),
             .compare_enabled = desc.compare != null,
             .compare = compareFunction(desc.compare orelse .always),
+            .max_anisotropy = desc.max_anisotropy,
         };
 
         var buf: [label_max + 1]u8 = undefined;
@@ -984,7 +986,8 @@ pub const Device = struct {
 
     pub fn createRenderPipeline(self: *Device, desc: pipeline.RenderPipelineDesc) interface.ResourceError!pipeline.RenderPipelineHandle {
         const vertex_lib = self.shaders.getConst(desc.vertex_shader) orelse return error.InvalidDescriptor;
-        const fragment_lib = self.shaders.getConst(desc.fragment_shader) orelse return error.InvalidDescriptor;
+        if (!desc.stagesValid()) return error.InvalidDescriptor;
+        const fragment_lib = if (desc.fragment_shader.isNone()) null else self.shaders.getConst(desc.fragment_shader) orelse return error.InvalidDescriptor;
         const layout = self.pipeline_layouts.getConst(desc.layout) orelse return error.InvalidDescriptor;
         if (desc.color_targets.len == 0 and desc.depth_stencil == null) return error.InvalidDescriptor;
         if (desc.depth_stencil) |depth| {
@@ -1002,11 +1005,12 @@ pub const Device = struct {
         };
         defer c.fd_mtl_function_destroy(vfn);
 
-        const ffn = c.fd_mtl_library_function(fragment_lib.mtl, cLabel(&fname, desc.fragment_entry)) orelse {
+        // A depth-only pipeline has no fragment function; Metal takes nil and shades nothing.
+        const ffn = if (fragment_lib) |lib| c.fd_mtl_library_function(lib.mtl, cLabel(&fname, desc.fragment_entry)) orelse {
             log.warn("pipeline '{s}': no fragment function named '{s}'", .{ desc.label, desc.fragment_entry });
             return error.InvalidDescriptor;
-        };
-        defer c.fd_mtl_function_destroy(ffn);
+        } else null;
+        defer if (ffn) |f| c.fd_mtl_function_destroy(f);
 
         _ = pipeline.vertexBufferMask(desc.vertex_buffers) orelse return error.InvalidDescriptor;
 

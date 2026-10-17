@@ -225,6 +225,10 @@ pub const Config = struct {
     shadow_bias_clamp: f32 = 0,
     /// Receiver offset in world-space shadow texels, along its geometric normal.
     shadow_normal_offset: f32 = 1.5,
+    /// Anisotropic filtering for linear, mipmapped material textures, 1 (none) to 16: a floor
+    /// seen at a grazing angle stays sharp instead of blurring to its smallest level. A device
+    /// that has less samples with what it has (`rhi.resource.SamplerDesc.max_anisotropy`).
+    max_anisotropy: u8 = 8,
 };
 
 pub const FrameView = struct {
@@ -301,8 +305,47 @@ const MeshState = struct {
     index_format: asset.MeshIndexFormat,
     submeshes: []asset.Submesh,
     bounds: asset.MeshAabb,
+    /// One box per submesh, over the positions its indices reach: what a rigid draw is culled
+    /// and sorted by, since one draw is one submesh. Computed at upload (`meshes.md` §13).
+    submesh_bounds: []asset.MeshAabb = &.{},
     skin: ?skinning.Bind = null,
 };
+
+/// Each submesh's box, over exactly the positions its indices reach. `mesh` is validated, so
+/// every index is in range and every position finite.
+fn submeshBounds(gpa: Allocator, mesh: asset.Mesh) Allocator.Error![]asset.MeshAabb {
+    const positions = for (mesh.streams) |stream| {
+        if (stream.semantic == .position) break stream.bytes;
+    } else unreachable; // `validate` requires a position stream.
+    const out = try gpa.alloc(asset.MeshAabb, mesh.submeshes.len);
+    const width = mesh.index_format.size();
+    for (mesh.submeshes, out) |submesh, *box| {
+        var first = true;
+        for (0..submesh.index_count) |n| {
+            const at = (@as(usize, submesh.first_index) + n) * width;
+            const index: usize = switch (mesh.index_format) {
+                .uint16 => std.mem.readInt(u16, mesh.indices[at..][0..2], .little),
+                .uint32 => std.mem.readInt(u32, mesh.indices[at..][0..4], .little),
+            };
+            const bytes = positions[index * 12 ..][0..12];
+            const p = Vec3.init(
+                @bitCast(std.mem.readInt(u32, bytes[0..4], .little)),
+                @bitCast(std.mem.readInt(u32, bytes[4..8], .little)),
+                @bitCast(std.mem.readInt(u32, bytes[8..12], .little)),
+            );
+            if (first) {
+                box.* = .{ .min = p, .max = p };
+                first = false;
+            } else {
+                box.min = Vec3.init(@min(box.min.x, p.x), @min(box.min.y, p.y), @min(box.min.z, p.z));
+                box.max = Vec3.init(@max(box.max.x, p.x), @max(box.max.y, p.y), @max(box.max.z, p.z));
+            }
+        }
+        // A submesh with no index draws nothing; the mesh's box is the safe answer.
+        if (first) box.* = mesh.bounds;
+    }
+    return out;
+}
 
 const TextureState = struct {
     gpu: rhi.TextureHandle,
@@ -477,6 +520,7 @@ pub const Renderer = struct {
             return error.InvalidConfig;
         }
         if (config.shadow_size != 0 and config.shadow_size != 1024 and config.shadow_size != 2048 and config.shadow_size != 4096) return error.InvalidConfig;
+        if (config.max_anisotropy < 1 or config.max_anisotropy > rhi.resource.SamplerDesc.max_anisotropy_limit) return error.InvalidConfig;
         for ([_]f32{ config.shadow_bias_constant, config.shadow_bias_slope, config.shadow_bias_clamp, config.shadow_normal_offset }) |value| {
             if (!std.math.isFinite(value)) return error.InvalidConfig;
         }
@@ -933,6 +977,9 @@ pub const Renderer = struct {
             .mip_filter = if (key.mipmaps) filter else .nearest,
             .address_u = address,
             .address_v = address,
+            // Only a linear, mipmapped texture has a footprint to filter along; a nearest
+            // texture is pixel art and keeps its texels.
+            .max_anisotropy = if (key.filter == .linear and key.mipmaps) self.config.max_anisotropy else 1,
         });
         errdefer self.device.destroySampler(handle);
         try self.samplers.append(self.gpa, .{ .key = key, .handle = handle });
@@ -953,6 +1000,7 @@ pub const Renderer = struct {
             .bounds = mesh.bounds,
         };
         errdefer self.destroyMeshState(&state);
+        state.submesh_bounds = try submeshBounds(self.gpa, mesh);
         if (mesh.joint_bounds.len != 0) state.skin = skinning.Bind.init(self.gpa, mesh) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.InvalidSkinCount,
@@ -1109,7 +1157,7 @@ pub const Renderer = struct {
         else
             .back_ccw;
 
-        const bounds = if (mesh.skin) |bind| skinning.posedBounds(bind.bounds, draw.skin.?, draw.world) else frustum_mod.Bounds.transformed(mesh.bounds, draw.world);
+        const bounds = if (mesh.skin) |bind| skinning.posedBounds(bind.bounds, draw.skin.?, draw.world) else frustum_mod.Bounds.transformed(mesh.submesh_bounds[draw.submesh], draw.world);
         const view_center = self.view_matrix.mulPoint(bounds.center);
         const sort_depth = if (std.math.isFinite(view_center.z)) -view_center.z else std.math.inf(f32);
         try self.draws.ensureUnusedCapacity(self.gpa, 1);
@@ -1448,7 +1496,10 @@ pub const Renderer = struct {
             for (fragment) |shader| if (!shader.isNone()) self.device.destroyShaderModule(shader);
         }
         for (shadowVertexStages(), &vertex) |stage, *shader| shader.* = try self.device.createShaderModule(.{ .bytes = stage.bytes });
-        for (shadowFragmentStages(), &fragment) |stage, *shader| shader.* = try self.device.createShaderModule(.{ .bytes = stage.bytes });
+        // An opaque caster's shadow pipeline is depth-only: its fragment stage shaded nothing
+        // (`fragmentMain` was empty), so it has none, and `fragment[0]` stays `.none`. Only a
+        // masked caster, whose alpha test discards, keeps one (`light.md` §14).
+        fragment[1] = try self.device.createShaderModule(.{ .bytes = shadowFragmentStages()[1].bytes });
         for (self.slots, groups) |*slot, group| {
             slot.shadow_group = slot.group;
             slot.group = group;
@@ -1600,6 +1651,7 @@ pub const Renderer = struct {
         for (state.vertex_buffers) |buffer| if (!buffer.isNone()) self.device.destroyBuffer(buffer);
         if (!state.index_buffer.isNone()) self.device.destroyBuffer(state.index_buffer);
         self.gpa.free(state.submeshes);
+        self.gpa.free(state.submesh_bounds);
     }
 
     fn ensureTargets(self: *Self, size: Extent2D) Error!void {
@@ -2601,6 +2653,33 @@ test "shadow configuration accepts only bounded map sizes and finite biases" {
     }
 }
 
+test "anisotropy is configured 1 to 16 and asked for only by linear mipmapped textures" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    for ([_]u8{ 0, 17 }) |n| {
+        try testing.expectError(error.InvalidConfig, Renderer.init(testing.allocator, fx.device, .{ .max_anisotropy = n }));
+    }
+    for ([_]u8{ 1, 16 }) |n| {
+        var renderer = try Renderer.init(testing.allocator, fx.device, .{ .max_anisotropy = n });
+        renderer.deinit();
+    }
+    if (rhi.backend != .null) return;
+    var renderer = try Renderer.init(testing.allocator, fx.device, .{ .max_anisotropy = 4 });
+    defer renderer.deinit();
+    var pixels = [_]u8{255} ** (4 * 4 * 4);
+    const image = asset.Image{ .width = 4, .height = 4, .pixels = &pixels };
+    const Case = struct { filter: Filter, mipmaps: bool, want: u8 };
+    for ([_]Case{
+        .{ .filter = .linear, .mipmaps = true, .want = 4 },
+        .{ .filter = .linear, .mipmaps = false, .want = 1 },
+        .{ .filter = .nearest, .mipmaps = true, .want = 1 },
+    }) |case| {
+        const handle = try renderer.createTexture(image, .{ .filter = case.filter, .mipmaps = case.mipmaps, .wrap = .repeat });
+        const state = renderer.textures.get(handle).?;
+        try testing.expectEqual(case.want, fx.device.samplers.getConst(state.sampler).?.desc.max_anisotropy);
+    }
+}
+
 test "disabled shadow map and abandoned caster preparation leave healthy unshadowed frames" {
     for ([_]u32{ 0, 1024 }) |size| {
         var fx = try TestFixture.initConfig(.{ .sample_count = 1, .shadow_size = size }, 32);
@@ -3115,6 +3194,93 @@ test "textured mask blend and mirrored winding read back at 1x and 4x" {
     }
 }
 
+const grazing_size = 64;
+const grazing_bytes = grazing_size * grazing_size * 4;
+
+/// A floor running away from the camera, textured with 2-texel stripes across it, read back
+/// at the given anisotropy (`meshes.md` §13). Between 2.7 and 8 m away a pixel covers about
+/// one texel across the stripes and four along the floor.
+fn renderGrazing(max_anisotropy: u8) ![grazing_bytes]u8 {
+    var fx = try TestFixture.initConfig(.{ .sample_count = 1, .max_anisotropy = max_anisotropy }, grazing_size);
+    defer fx.deinit();
+    const positions = [_]Vec3{ .init(-8, -1, -0.5), .init(8, -1, -0.5), .init(8, -1, -40), .init(-8, -1, -40) };
+    // Two repeats over 16 m across (8 texels a metre), and 8 texels a metre along.
+    const uvs = [_][2]f32{ .{ 0, 0.5 / 8.0 }, .{ 2, 0.5 / 8.0 }, .{ 2, 40.0 / 8.0 }, .{ 0, 40.0 / 8.0 } };
+    const indices = [_]u16{ 0, 1, 2, 0, 2, 3 };
+    const submeshes = [_]asset.Submesh{.{ .first_index = 0, .index_count = 6 }};
+    const streams = [_]asset.MeshStream{
+        .{ .semantic = .position, .format = .float32x3, .bytes = std.mem.sliceAsBytes(&positions) },
+        .{ .semantic = .uv0, .format = .float32x2, .bytes = std.mem.sliceAsBytes(&uvs) },
+    };
+    const mesh = try fx.renderer.createMesh(.{
+        .vertex_count = positions.len,
+        .streams = &streams,
+        .index_format = .uint16,
+        .indices = std.mem.sliceAsBytes(&indices),
+        .submeshes = &submeshes,
+        .bounds = try asset.Mesh.computeBounds(&positions),
+    }, "grazing floor");
+    var stripes: [64 * 64 * 4]u8 = undefined;
+    for (0..64) |y| for (0..64) |x| {
+        const v: u8 = if ((x / 2) % 2 == 0) 255 else 0;
+        stripes[(y * 64 + x) * 4 ..][0..4].* = .{ v, v, v, 255 };
+    };
+    const texture = try fx.renderer.createTexture(.{ .width = 64, .height = 64, .pixels = &stripes }, .{
+        .filter = .linear,
+        .mipmaps = true,
+        .wrap = .repeat,
+    });
+    defer fx.renderer.destroyTexture(texture);
+    const material = try fx.renderer.createMaterial(.{ .base_color_texture = texture, .double_sided = true }, "grazing stripes");
+    defer fx.renderer.destroyMaterial(material);
+    const readback = try fx.device.createBuffer(.{ .label = "grazing readback", .size = grazing_bytes, .usage = .{ .copy_dst = true }, .memory = .readback });
+    defer fx.device.destroyBuffer(readback);
+
+    try fx.renderer.begin(.{
+        .camera = .{ .vertical_fov = std.math.pi / 2.0, .near = 0.1, .far = 100 },
+        .target_size = .{ .width = grazing_size, .height = grazing_size },
+        .clear_color = .{ 0, 0, 0, 1 },
+    });
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .material = material, .world = .identity });
+    const frame = try fx.device.beginFrame();
+    var cmd = try fx.device.beginCommandBuffer();
+    try fx.renderer.prepare(cmd, frame);
+    try fx.renderer.recordFrame(cmd, frame, false);
+    try cmd.textureBarrier(&.{.{ .texture = frame.surface_texture, .from = .present, .to = .copy_src }});
+    try cmd.copyTextureToBuffer(.{ .src = frame.surface_texture, .size = .{ .width = grazing_size, .height = grazing_size }, .dst = readback });
+    try cmd.textureBarrier(&.{.{ .texture = frame.surface_texture, .from = .copy_src, .to = .present }});
+    try cmd.submit();
+    try fx.device.endFrame();
+    fx.device.waitIdle();
+    var pixels: [grazing_bytes]u8 = undefined;
+    const mapped = try fx.device.mapBuffer(readback);
+    @memcpy(&pixels, mapped[0..grazing_bytes]);
+    fx.device.unmapBuffer(readback);
+    return pixels;
+}
+
+/// The summed difference between neighbouring pixels' first channel, across rows 36 to 44:
+/// the floor 8 to 2.7 m away, where the stripes are what changes along a row.
+fn grazingContrast(pixels: *const [grazing_bytes]u8) u32 {
+    var total: u32 = 0;
+    for (36..45) |y| for (1..grazing_size) |x| {
+        const a: i32 = pixels[(y * grazing_size + x) * 4];
+        const b: i32 = pixels[(y * grazing_size + x - 1) * 4];
+        total += @abs(a - b);
+    };
+    return total;
+}
+
+test "anisotropic filtering keeps a grazing floor's stripes that isotropic filtering blurs away" {
+    if (rhi.backend == .null) return;
+    const isotropic = try renderGrazing(1);
+    const anisotropic = try renderGrazing(16);
+    const flat = grazingContrast(&isotropic);
+    const sharp = grazingContrast(&anisotropic);
+    std.log.scoped(.render3d).info("grazing stripe contrast: isotropic {d}, anisotropic {d}", .{ flat, sharp });
+    try testing.expect(sharp > flat * 2);
+}
+
 const crossing_size = 64;
 const crossing_bytes = crossing_size * crossing_size * 4;
 
@@ -3270,6 +3436,39 @@ test "culling drops only draws wholly outside the frustum, and counts them" {
         }
         if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
     }
+}
+
+test "a submesh is culled by its own bounds, not the whole mesh's" {
+    var fx = try TestFixture.initConfig(.{ .sample_count = 1 }, 64);
+    defer fx.deinit();
+    // Two triangles in one mesh: one in front of the camera, one 50 m to its left.
+    const positions = [_]Vec3{
+        .init(-1, -1, -2),  .init(1, -1, -2),   .init(0, 1, -2),
+        .init(-51, -1, -2), .init(-49, -1, -2), .init(-50, 1, -2),
+    };
+    const indices = [_]u32{ 0, 1, 2, 3, 4, 5 };
+    const submeshes = [_]asset.Submesh{ .{ .first_index = 0, .index_count = 3 }, .{ .first_index = 3, .index_count = 3 } };
+    var streams = [_]asset.MeshStream{.{ .semantic = .position, .format = .float32x3, .bytes = std.mem.sliceAsBytes(&positions) }};
+    const mesh = try fx.renderer.createMesh(.{
+        .vertex_count = positions.len,
+        .streams = &streams,
+        .index_format = .uint32,
+        .indices = std.mem.sliceAsBytes(&indices),
+        .submeshes = &submeshes,
+        .bounds = try asset.Mesh.computeBounds(&positions),
+    }, "render3d two submeshes");
+    const state = fx.renderer.meshes.get(mesh).?;
+    try testing.expectEqual(Vec3.init(-1, -1, -2), state.submesh_bounds[0].min);
+    try testing.expectEqual(Vec3.init(-49, 1, -2), state.submesh_bounds[1].max);
+
+    try fx.renderer.begin(testView(64));
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .submesh = 0, .material = fx.material, .world = .identity });
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .submesh = 1, .material = fx.material, .world = .identity });
+    try finishTestFrame(&fx);
+    const stats = fx.renderer.frameStats();
+    try testing.expectEqual(@as(u32, 1), stats.culled);
+    try testing.expectEqual(@as(u32, 1), stats.draws);
+    try testing.expectEqualSlices(u32, &.{0}, fx.renderer.order.items);
 }
 
 test "updating a material keeps its handle, and a refused update changes nothing" {
