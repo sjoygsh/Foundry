@@ -1,13 +1,17 @@
 # Foundry Project State
 
-**Last updated:** 2026-10-04
-**Current handoff: M26 Steps 1–6 are complete (2026-10-04). Stop before Step 7.** Linux
-qualification next needs the owner to choose/supply a freshly provisioned machine (§11).
-The owner authorized Windows desktop runs and suspended the 50% CPU cutoff for Steps 5–6;
-that explicit qualification exception does not replace the standing default. No build or
-desktop process remains. The task, temporary launchers and task worktree/cache were removed;
-the read-only install and evidence remain, and unrelated Windows worktrees were preserved.
-No push is requested. M26 remains open: Linux and the three person's-play reports are not done.
+**Last updated:** 2026-10-17
+**Current handoff: M26 Steps 1–6 are complete. Step 7 (Linux) is next, then Steps 8–13 without a
+stop between them, by the owner's instruction of 2026-10-17.** M26 now has thirteen steps
+(`playable3d.md` §12, revised): CLAUDE.md §2's new rule 17 finishes in M26 what M0–M25 set
+aside for themselves: the controller's edge (Step 8), anisotropic filtering, per-submesh bounds
+and a fragment-less depth-only pipeline (Step 9), `fdt fmt`, an editor grammar, saved profiles
+and panel state (Step 10), and file watching (Step 11). Step 12 re-qualifies them on Windows and
+Linux, and Step 13 closes. Every other set-aside item names its roadmap milestone in
+`docs/ROADMAP.md`'s 2026-10-17 note. §10.6's budgets are now read as the shipping runtime's, with
+validation-enabled costs reported as diagnostics. The owner has supplied a Linux machine with a
+monitor (a fresh Ubuntu 26.04 installation on the PC's own drive, dual-booting the Windows target).
+No push is requested.
 
 **M26 Step 6 is done (2026-10-04), qualifying Step 5's unchanged implementation.** Native
 Windows x64, Core i3-10105F / Arc A750, driver `32.0.101.9034`, Zig 0.16.0 and the pinned SDK:

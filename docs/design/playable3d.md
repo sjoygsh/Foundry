@@ -399,10 +399,23 @@ line is reported as on the line and left to the owner to read.
   releases, as the room's are. Linux runs from a relocated `zig build` install prefix, as M18's
   samples did; a Linux release artifact stays the open distribution decision of CLAUDE.md §9.
 
-## 12. Implementation order — eight bounded steps
+## 12. Implementation order — thirteen bounded steps
 
 Each step ends with a Resolution here, an updated `PROJECT_STATE.md`, the bar and a commit. There
 is no automatic chaining.
+
+> **Revised 2026-10-17, by the owner's instruction (CLAUDE.md §2, rule 17).** A milestone no longer
+> closes with its own work deferred. Work that earlier milestones set aside, and that belongs to
+> what they built rather than to a later roadmap line, is finished here, before M26 closes:
+> Steps 8–12 below. Everything else those milestones set aside is placed on a named roadmap
+> milestone in `docs/ROADMAP.md`'s note of the same date. Step 8 (the close) becomes Step 13. The
+> owner asked for Steps 7–13 to run without a stop between them, stopping at the close or when
+> the owner is needed.
+>
+> One reading is fixed at the same time, rather than left open: **§10.6's budgets are for the
+> runtime a player gets**, which loads no validation layer. A validation-enabled cost is a
+> diagnostic, reported beside the budget and never measured against it. Step 6's
+> validation-enabled frame and skin p95 are therefore recorded, not a failed budget.
 
 ### Step 1 — `platform`: pointer capture
 
@@ -456,8 +469,48 @@ the existing samples, and the court under Xorg and Wayland with capture on each;
 the kit lacked in the repository; bring the evidence home. `scripts/m26/` holds what the run
 added, and `RUNBOOK.md` is corrected where it was wrong. **Exit:** on a machine built from the
 kit alone, the graph and the play-throughs pass, and the machine's evidence is in the record.
+*Added 2026-10-17:* M18's two Linux leftovers (`linux-desktop.md` §5) are done here too: GNOME's
+unexplained pacing is measured and explained, and a Wayland pointer is driven from outside
+the window.
 
-### Step 8 — Close M26
+### Step 8 — `physics3d`: walking off an edge
+
+Step 3's controller finding: the walk stops with the feet on a floor box's edge, because the
+edge contact reports the box's vertical face as a wall and the wall response removes motion
+pointing away from it. Fix it in `character.zig`, with M23's tests intact and new ones for a
+walk off a box edge, a mesh edge and a step's edge, and a wall still stopping a walk into it.
+The `fell` script then walks off the ledge instead of jumping short. **Exit:** the character walks
+off an edge on null and Metal, M23's course and every replay hash that does not cross an edge
+are unchanged, and changed hashes are explained.
+
+### Step 9 — `render3d` and `rhi`: the M20 and M22 leftovers
+
+`meshes.md` §13's anisotropic filtering (a sampler field on null, Metal and Vulkan, validated by
+the null backend) and per-submesh bounds in culling, and `light.md` §14's depth-only pipeline
+with no fragment shader. **Exit:** each is tested on null, read back on Metal and on Linux's
+Vulkan, and the court and `sandbox3d` draw unchanged where the change should not show.
+
+### Step 10 — Tools: `fdt fmt`, an editor grammar, saved profiles and panel state
+
+`content-schemas.md` §10's canonical formatter and its editor grammar, and `debug-overlay.md`
+§15's profile written to a versioned file and panels that remember their state in the user
+data directory. **Exit:** `fdt fmt` is idempotent over every `.fdt` in the repository and
+refuses what it cannot keep byte-exact, a saved profile reads back, refuses an unknown version,
+and panel state survives a restart.
+
+### Step 11 — `platform`: file watching for hot reload
+
+`platform-interface.md`'s deferred file watching, on macOS, Linux and Windows, behind one call,
+with the asset hot-reload path driven by it rather than by polling where it polls. **Exit:**
+on each of the three systems an edited source is reloaded from its notification, and a missing
+or unsupported watch is a normal answer.
+
+### Step 12 — Windows and Linux re-qualification
+
+Steps 8–11 on the PC's Windows and on the Step 7 Linux machine: the native suites, the court's
+play-throughs and the changed renderer readbacks. **Exit:** both pass, and the evidence is home.
+
+### Step 13 — Close M26
 
 This step needs §10.5's three reports. It then:
 - corrects `3d.md` §10: the M26 row's "that ADR-0047 made certification wait for" (ADR-0060
@@ -476,25 +529,24 @@ complete, Phase 5 closed, and nothing names a contract the code does not have.
 
 ## 13. What stays open, deliberately
 
-Each item is on the long roadmap or keeps a trigger; ADR-0060 decides when, and the trigger
-still decides the shape.
+Each item names the roadmap milestone that owns it (CLAUDE.md §2, rule 17; revised 2026-10-17).
 
 | Deferred | Returns when |
 | --- | --- |
-| Pointer capture through the public ABI | A mod needs to take the pointer, such as a mod-made minigame; it would need a host grant |
-| Raw-input selection or normalised motion units in `platform` | Players report the look differing between machines beyond what a sensitivity setting corrects |
-| Gamepads | A sample or game needs one; it is an input-device addition with its own Linux run |
-| 3D spatialised audio and a listener | M31; the court's distance-and-pan arithmetic is the budget it must beat |
-| A warden that sees and chases | M32–M33, navigation; the court's fixed patrol is deliberate |
-| An engine-declared "draws this model" component | A second host needs entity-driven drawing a mod can join (`public3d.md` §14); the court did not |
-| A hierarchy authored in content | The first content that needs a parented object (`hierarchy.md` §12); the court's are flat |
-| An animation component saved with a world | M34; the court saves no pose |
-| A third-person player body | A sample that is third-person; the court is first-person |
-| A sky, image-based lighting | A scene whose constant ambient is measurably wrong (`light.md` §14); the court is a night scene and does not ask |
-| A save game | A sample long enough that losing progress matters; the court takes minutes |
-| A mod screen and profiles in a 3D sample | The second 3D sample (M50), or a player needing to choose mods without an environment variable |
-| A Linux release artifact | The owner decides to distribute on Linux (CLAUDE.md §9) |
-| A published pre-release of the court | The owner asks for one; it follows ADR-0047's unsigned, labelled path |
+| Pointer capture through the public ABI | **M48**, Public API v7, with a host grant |
+| Raw-input selection or normalised motion units in `platform` | **M45**, Input |
+| Gamepads | **M45**, Input, with its own Linux run |
+| 3D spatialised audio and a listener | **M31**; the court's distance-and-pan arithmetic is the budget it must beat |
+| A warden that sees and chases | **M32–M33**, navigation; the court's fixed patrol is deliberate |
+| An engine-declared "draws this model" component | **M103**, Prefabs |
+| A hierarchy authored in content | **M103**, Prefabs |
+| An animation component saved with a world | **M34**; the court saves no pose |
+| A third-person player body | **M50**, the second 3D sample |
+| A sky, image-based lighting | **M41**, Environment |
+| A save game | **M47**, Saves II, proved in M50's sample |
+| A mod screen and profiles in a 3D sample | **M50**, the second 3D sample |
+| A Linux release artifact | **M137**, Linux releases |
+| A published pre-release of the court | Asked of the owner at Step 13; if not published then, **M50** publishes the second sample's instead |
 
 ## 14. Decisions acceptance fixes
 
