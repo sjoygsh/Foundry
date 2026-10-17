@@ -857,3 +857,14 @@ two buffers `BlockWriter` produced. Nothing about the format on disk changed, an
 was bumped, because nothing about the bytes changed — only where the code that writes and
 reads them lives. `WriteError.PackageTooLarge` became `BlockError.TooLarge` in the move,
 since the writer is no longer only a package's.
+
+## Note — 2026-10-18, M26 Step 10: §10's formatter and editor support
+
+Questions 4 and 5 are answered (`playable3d.md`, Step 10's Resolution). `data.format` is the
+canonical layout: indentation by the opening line's nesting, trailing whitespace and extra blank
+lines removed, one final line ending in the file's style. Everything inside a line is kept,
+because authors align columns and group fields with spacing. It refuses an unreadable token or
+unbalanced brackets, and checks its result has the source's tokens and comments. `fpack fmt`
+applies it and `zig build fdt-check` holds the repository to it. A TextMate grammar,
+`engine/src/data/fdt.tmLanguage.json`, is installed as `share/foundry/fdt.tmLanguage.json`; the
+lexer's tests check it names every token the lexer makes and every field type.

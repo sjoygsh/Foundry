@@ -41,6 +41,9 @@ pub const State = struct {
             return;
         };
 
+        if (view.frame.save_profile) |save| {
+            if (try ui.button(view.ui, view.ui.childId("save profile"), "save profile")) save.invoke();
+        }
         const frame = recorder.latest() orelse {
             try view.line("profiler on, no frame recorded yet", .{});
             return;

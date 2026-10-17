@@ -1036,6 +1036,80 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             return &self.profile;
         }
 
+        pub const SaveProfileError = platform.os.FileError || platform.os.PathError || error{ProfilerOff};
+
+        /// Writes the profiler's retained frames into `dir`, which is created, as
+        /// `profile-<frame>.fprof` in `core.profile`'s versioned format (`debug-overlay.md`
+        /// §15). Returns the path, caller-owned.
+        pub fn saveProfile(self: *Self, gpa: Allocator, dir: []const u8) SaveProfileError![]u8 {
+            const recorder = self.profiler() orelse return error.ProfilerOff;
+            const bytes = try core.profile.encode(recorder, gpa);
+            defer gpa.free(bytes);
+            try self.os.createDirPath(dir);
+            var name_buf: [64]u8 = undefined;
+            const name = std.fmt.bufPrint(&name_buf, "profile-{d}.fprof", .{self.frame_index}) catch unreachable;
+            const path = try platform.os.joinPath(gpa, &.{ dir, name });
+            errdefer gpa.free(path);
+            try self.os.writeFile(path, bytes);
+            return path;
+        }
+
+        /// `saveProfile` into the user data directory's `profiles`, saying where in the log.
+        /// What the overlay's button calls: a failure is logged, never fatal.
+        pub fn saveProfileToUserData(self: *Self) void {
+            const root = self.os.userDataDirAlloc(self.gpa) catch |err| {
+                log.warn("profile not saved: no user data directory ({t})", .{err});
+                return;
+            };
+            defer self.gpa.free(root);
+            const dir = platform.os.joinPath(self.gpa, &.{ root, "profiles" }) catch |err| {
+                log.warn("profile not saved ({t})", .{err});
+                return;
+            };
+            defer self.gpa.free(dir);
+            const path = self.saveProfile(self.gpa, dir) catch |err| {
+                log.warn("profile not saved to '{s}' ({t})", .{ dir, err });
+                return;
+            };
+            defer self.gpa.free(path);
+            log.info("profile saved to '{s}'", .{path});
+        }
+
+        /// One small file of this application's own, by bare name, in its user data
+        /// directory: what a tool's remembered layout is kept in (`debug-overlay.md` §15).
+        /// Null when there is none, or none can be read; never an error a caller must handle.
+        pub fn readUserFile(self: *Self, gpa: Allocator, name: []const u8, max_bytes: usize) ?[]u8 {
+            const path = self.userFilePath(gpa, name) orelse return null;
+            defer gpa.free(path);
+            return self.os.readFile(gpa, path, max_bytes) catch |err| {
+                if (err != error.FileNotFound) log.warn("'{s}' not read ({t})", .{ path, err });
+                return null;
+            };
+        }
+
+        /// Writes `bytes` as `name` in the user data directory, creating it. A failure is
+        /// logged and otherwise ignored: losing a remembered layout is not worth a frame.
+        pub fn writeUserFile(self: *Self, name: []const u8, bytes: []const u8) void {
+            const path = self.userFilePath(self.gpa, name) orelse return;
+            defer self.gpa.free(path);
+            if (std.fs.path.dirname(path)) |dir| self.os.createDirPath(dir) catch |err| {
+                log.warn("'{s}' not written ({t})", .{ path, err });
+                return;
+            };
+            self.os.writeFile(path, bytes) catch |err| log.warn("'{s}' not written ({t})", .{ path, err });
+        }
+
+        fn userFilePath(self: *Self, gpa: Allocator, name: []const u8) ?[]u8 {
+            // A bare name: a separator or a dot-name would reach outside this directory.
+            if (name.len == 0 or name[0] == '.' or std.mem.indexOfAny(u8, name, "/\\:") != null) {
+                log.warn("'{s}' is not a bare file name", .{name});
+                return null;
+            }
+            const root = self.os.userDataDirAlloc(gpa) catch return null;
+            defer gpa.free(root);
+            return platform.os.joinPath(gpa, &.{ root, name }) catch null;
+        }
+
         // -- memory --------------------------------------------------------------------
 
         /// Adds a named counter to the memory report.
@@ -1641,6 +1715,51 @@ fn spriteSetting(engine: *TestEngine) ?i128 {
     const record = engine.store.lookup(core.ContentId.fromString("foundry:settings.main")) orelse return null;
     const index = record.schema.fieldIndex("sprites") orelse return null;
     return record.fields.intAt(index) catch null;
+}
+
+test "a saved profile is the profiler's frames, read back by core.profile" {
+    var fx = try ContentFixture.init(content_source);
+    defer fx.deinit();
+    const engine = try profiledEngine(.{});
+    defer engine.deinit();
+    const quiet = try testEngine(.{});
+    defer quiet.deinit();
+    try testing.expectError(error.ProfilerOff, quiet.saveProfile(testing.allocator, fx.dir));
+    for (0..3) |_| {
+        engine.beginFrame();
+        engine.endFrame();
+    }
+    const path = try engine.saveProfile(testing.allocator, fx.dir);
+    defer testing.allocator.free(path);
+    const bytes = try fx.os.readFile(testing.allocator, path, 1 << 20);
+    defer testing.allocator.free(bytes);
+    var profile = try core.profile.decode(testing.allocator, bytes);
+    defer profile.deinit();
+    try testing.expectEqual(@as(usize, engine.profiler().?.frameCount()), profile.frames.len);
+    try testing.expect(std.mem.endsWith(u8, path, ".fprof"));
+}
+
+test "a user file round-trips by bare name, and a name that would leave its directory is refused" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const home = buf[0..try tmp.dir.realPath(testing.io, &buf)];
+    const env = [_]platform.os.EnvVar{
+        .{ .name = "HOME", .value = home },
+        .{ .name = "XDG_DATA_HOME", .value = home },
+        .{ .name = "APPDATA", .value = home },
+    };
+    const engine = try testEngine(.{ .env = &env, .app_name = "user-file-test" });
+    defer engine.deinit();
+    try testing.expectEqual(@as(?[]u8, null), engine.readUserFile(testing.allocator, "layout.txt", 64));
+    engine.writeUserFile("layout.txt", "open log\n");
+    const back = engine.readUserFile(testing.allocator, "layout.txt", 64).?;
+    defer testing.allocator.free(back);
+    try testing.expectEqualStrings("open log\n", back);
+    for ([_][]const u8{ "", ".hidden", "../escape", "a/b", "a\\b", "c:d" }) |name| {
+        engine.writeUserFile(name, "x");
+        try testing.expectEqual(@as(?[]u8, null), engine.readUserFile(testing.allocator, name, 64));
+    }
 }
 
 test "a changed package is picked up, and the generation says so" {

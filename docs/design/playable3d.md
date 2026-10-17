@@ -1325,3 +1325,56 @@ player hash unchanged), and the court's `win` passes windowed (1,218 frames, no 
 - Mac: `zig fmt`, `zig build test` **2,122/2,123** (one skip), all four `check`s and the four
   headless samples; `render3d-test rhi-test -Drhi=metal` **268/268**.
 - Linux, Vulkan with validation required: `render3d-test vulkan-test` **298/298**.
+
+## Resolution — Step 10: `fdt fmt`, an editor grammar, saved profiles and panel state (2026-10-18)
+
+**The canonical layout** (`content-schemas.md` §10, question 4) is `data.format`.
+- Each line is indented four spaces past the line that opened the innermost bracket still open,
+  so `lights [{` indents what follows once. A line that begins by closing brackets sits at the
+  line that opened the last of them.
+- Trailing spaces and tabs go, a run of blank lines becomes one, and none lead or trail. The
+  file ends in one line ending, in the style of its first.
+- **Everything inside a line is kept**, because 44 lines of the repository's 21 files align
+  columns or double-space between field groups, and that spacing means something.
+- It refuses an unreadable token (unterminated string, malformed number, stray byte, bare `@`)
+  and brackets that do not balance or match, and it asserts that the result lexes to the
+  source's tokens and comments.
+
+The design's "`fdt fmt`" is `fpack fmt [--check] <file | dir>`, since `fpack` is the `.fdt`
+tool and already links `data`. Two repository files had hand-aligned continuation lines and
+were formatted, whitespace only. `zig build fdt-check` is now in the bar (AGENTS.md §3) and fails
+on a badly laid-out file.
+
+**The editor grammar** (question 5) is a TextMate grammar beside the lexer, installed as
+`share/foundry/fdt.tmLanguage.json`. A lexer test parses it and requires a rule for every
+well-formed token tag, plus every `FieldType` keyword. Its patterns compile, and its number and
+content-ID patterns match what the lexer makes. `docs/modding/content-mods.md` tells authors
+about both.
+
+**Saved profiles** (`debug-overlay.md` §15). `core.profile.encode`/`decode` is a versioned
+little-endian file (`FPRF`, version 1) of the retained frames, oldest first, with the name
+table.
+- Decoding refuses another magic, another version, a cut at every length, trailing bytes, a
+  span naming a missing name, and a count the remaining bytes cannot hold, before it allocates.
+- `app.Engine.saveProfile(gpa, dir)` writes `profile-<frame>.fprof` and returns the path;
+  `saveProfileToUserData` puts it under the user data directory's `profiles`.
+- The profiler panel's "save profile" calls it through `Frame.save_profile`, bound like reload.
+
+**Remembered panels.**
+- `Overlay.encodeState`/`applyState` keep which panels are open, as a versioned line plus
+  `open <title>` lines.
+- An unknown title is skipped; another version or a malformed line refuses the whole layout and
+  changes nothing.
+- `app.Engine.readUserFile`/`writeUserFile` keep one bare-named file in the user data directory,
+  refusing a name that would leave it.
+- `sandbox3d` and the court remember panels only in a person's session: never headless,
+  bounded, keyed, touring or scripted.
+
+Guards broken one at a time, each failing a test:
+- the formatter's trim;
+- the grammar's `directive` rule, and its `f64` type;
+- the layout's line check;
+- the bare-name check.
+
+**The bar:** `zig fmt`, `zig build test` **2,133/2,134** (one skip), all four `check`s, the four
+headless samples and `fdt-check`; the court's three endings headless.

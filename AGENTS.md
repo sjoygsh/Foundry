@@ -236,7 +236,11 @@ FOUNDRY_SANDBOX_FRAMES=30 zig build run  -Dplatform=null -Drhi=null
 FOUNDRY_ROOM_FRAMES=30    zig build room -Dplatform=null -Drhi=null
 FOUNDRY_SANDBOX3D_FRAMES=30 zig build sandbox3d -Dplatform=null -Drhi=null
 FOUNDRY_COURT_FRAMES=30 zig build court -Dplatform=null -Drhi=null
+zig build fdt-check
 ```
+
+`fdt-check` (M26) keeps every `.fdt` in `data.format`'s canonical layout; `zig build fpack -- fmt
+<path>` puts a file there. It changes whitespace only, and refuses a file it cannot keep exactly.
 
 `check` compiles everything without running it, including the cross-compiled targets where
 padding and ABI assumptions differ from macOS. `-Drhi=metal` is the macOS configuration's whole

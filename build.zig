@@ -918,6 +918,16 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run_fpack.addArgs(args);
     b.step("fpack", "Build and run tools/fpack (pass arguments after --)").dependOn(&run_fpack.step);
 
+    // Every `.fdt` in the repository in `data.format`'s canonical layout (M26 Step 10). It
+    // writes nothing; `fpack fmt <path>` is how a file is put into that layout.
+    const fdt_check = b.addRunArtifact(fpack);
+    fdt_check.addArgs(&.{ "fmt", "--check" });
+    for ([_][]const u8{ "content", "samples", "scripts", "tools" }) |dir| fdt_check.addDirectoryArg(b.path(dir));
+    fdt_check.has_side_effects = true;
+    b.step("fdt-check", "Check every .fdt in the repository is in canonical layout").dependOn(&fdt_check.step);
+    // The editor grammar for `.fdt`, for authors (content-schemas.md §10, question 5).
+    b.installFile("engine/src/data/fdt.tmLanguage.json", "share/foundry/fdt.tmLanguage.json");
+
     const run_editor = b.addRunArtifact(editor);
     run_editor.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_editor.addArgs(args);

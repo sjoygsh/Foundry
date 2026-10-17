@@ -447,3 +447,32 @@ test "every byte value is lexable without a panic" {
         try testing.expect(seen <= all.len);
     }
 }
+
+test "the editor grammar names every token this lexer makes, and every field type keyword" {
+    const schema = @import("schema.zig");
+    const grammar = @embedFile("fdt.tmLanguage.json");
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, grammar, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    try std.testing.expectEqualStrings("source.fdt", root.get("scopeName").?.string);
+    try std.testing.expectEqualStrings("fdt", root.get("fileTypes").?.array.items[0].string);
+    const repository = root.get("repository").?.object;
+    // Each well-formed tag has a rule; the malformed ones are what an editor shows as plain.
+    inline for (@typeInfo(Token.Tag).@"enum".fields) |f| {
+        const rule: ?[]const u8 = switch (@as(Token.Tag, @enumFromInt(f.value))) {
+            .eof, .invalid, .invalid_directive, .malformed_number, .unterminated_string => null,
+            .identifier => "identifier",
+            .content_id => "content-id",
+            .directive => "directive",
+            .integer, .float => "number",
+            .string => "string",
+            .lbrace, .rbrace, .lbracket, .rbracket, .lparen, .rparen => "brackets",
+        };
+        if (rule) |name| try std.testing.expect(repository.get(name) != null);
+    }
+    try std.testing.expect(repository.get("comment") != null);
+    const types = repository.get("type").?.object.get("match").?.string;
+    inline for (@typeInfo(schema.FieldType).@"union".fields) |f| {
+        if (f.type == void) try std.testing.expect(std.mem.indexOf(u8, types, f.name) != null);
+    }
+}

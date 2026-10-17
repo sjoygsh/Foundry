@@ -52,6 +52,14 @@ const usage =
     \\  --quiet                   report nothing on success
     \\  --help                    this text
     \\
+    \\usage: fpack fmt [--check] <file.fdt | dir>...
+    \\
+    \\  Lays out .fdt source canonically (data.format): indentation by nesting, no
+    \\  trailing whitespace, single blank lines, one final line ending. Everything inside
+    \\  a line is kept. A directory is searched for .fdt files. --check writes nothing
+    \\  and exits 1 if any file would change. A file that cannot be kept exactly (an
+    \\  unreadable token, unbalanced brackets) is reported and left alone, exit 1.
+    \\
     \\The package's id and version are read from its mod.fdt (ADR-0027).
     \\
     \\Dependencies are named, never searched for: a package nobody names is not read, so
@@ -103,6 +111,8 @@ pub fn main(init: std.process.Init) !u8 {
     var stderr_buf: [4096]u8 = undefined;
     var stderr = std.Io.File.stderr().writer(init.io, &stderr_buf);
     defer stderr.interface.flush() catch {};
+
+    if (argv.items.len > 0 and std.mem.eql(u8, argv.items[0], "fmt")) return formatCommand(gpa, argv.items[1..], &stderr.interface);
 
     var args = parseArgs(gpa, argv.items, &stderr.interface) catch |err| switch (err) {
         error.HelpRequested => {
@@ -339,4 +349,96 @@ test "arguments are read, and a missing one is a usage error rather than a defau
     try testing.expectError(error.BadUsage, parseArgs(gpa, &.{"--out"}, &writer));
     try testing.expectError(error.BadUsage, parseArgs(gpa, &.{ "--nope", "x" }, &writer));
     try testing.expectError(error.HelpRequested, parseArgs(gpa, &.{"--help"}, &writer));
+}
+
+/// `fpack fmt`: canonical layout for every named `.fdt`, or every one under a named directory.
+fn formatCommand(gpa: std.mem.Allocator, args: []const []const u8, out: *std.Io.Writer) !u8 {
+    var check = false;
+    var roots: std.ArrayList([]const u8) = .empty;
+    defer roots.deinit(gpa);
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--check")) {
+            check = true;
+        } else if (std.mem.startsWith(u8, arg, "--")) {
+            try out.print("fpack fmt: unknown option '{s}'\n", .{arg});
+            return 2;
+        } else try roots.append(gpa, arg);
+    }
+    if (roots.items.len == 0) {
+        try out.writeAll(usage);
+        return 2;
+    }
+
+    const os = try platform.os.Os.init(gpa, .{});
+    defer os.deinit();
+    var files: std.ArrayList([]u8) = .empty;
+    defer {
+        for (files.items) |f| gpa.free(f);
+        files.deinit(gpa);
+    }
+    for (roots.items) |root| try collectSources(gpa, os, root, &files);
+
+    var status: u8 = 0;
+    var changed: usize = 0;
+    for (files.items) |path| {
+        const source = os.readFile(gpa, path, data.limits.Limits.default.max_source_bytes) catch |err| {
+            try out.print("{s}: cannot be read ({t})\n", .{ path, err });
+            status = 1;
+            continue;
+        };
+        defer gpa.free(source);
+        const formatted = data.format.format(gpa, source) catch |err| {
+            try out.print("{s}: left alone, it cannot be kept exactly ({t})\n", .{ path, err });
+            status = 1;
+            continue;
+        };
+        defer gpa.free(formatted);
+        if (std.mem.eql(u8, source, formatted)) continue;
+        changed += 1;
+        if (check) {
+            try out.print("{s}: not in canonical layout\n", .{path});
+            status = 1;
+        } else {
+            os.writeFile(path, formatted) catch |err| {
+                try out.print("{s}: cannot be written ({t})\n", .{ path, err });
+                status = 1;
+                continue;
+            };
+            try out.print("{s}: formatted\n", .{path});
+        }
+    }
+    // Silent when everything is already laid out: a run step reads a Debug tool's stderr as
+    // a failure (see `std_options` above).
+    return status;
+}
+
+/// `path` itself if it is a file, or every `.fdt` beneath it, in name order so the output and
+/// the work are the same on every machine.
+fn collectSources(gpa: std.mem.Allocator, os: *platform.os.Os, path: []const u8, files: *std.ArrayList([]u8)) !void {
+    const info = os.statFile(path) catch {
+        try files.append(gpa, try gpa.dupe(u8, path)); // Reported as unreadable later.
+        return;
+    };
+    if (info.kind != .directory) {
+        try files.append(gpa, try gpa.dupe(u8, path));
+        return;
+    }
+    var listing = try os.listDir(gpa, path);
+    defer listing.deinit();
+    const entries = try gpa.dupe(platform.os.DirEntry, listing.entries);
+    defer gpa.free(entries);
+    std.sort.pdq(platform.os.DirEntry, entries, {}, struct {
+        fn lessThan(_: void, a: platform.os.DirEntry, b: platform.os.DirEntry) bool {
+            return std.mem.lessThan(u8, a.name, b.name);
+        }
+    }.lessThan);
+    for (entries) |entry| {
+        const child = try std.fs.path.join(gpa, &.{ path, entry.name });
+        defer gpa.free(child);
+        switch (entry.kind) {
+            .directory => try collectSources(gpa, os, child, files),
+            .file => if (std.mem.endsWith(u8, entry.name, ".fdt")) try files.append(gpa, try gpa.dupe(u8, child)),
+            else => {},
+        }
+    }
 }

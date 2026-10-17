@@ -486,6 +486,136 @@ pub fn spanMedians(recorder: *const Recorder, gpa: Allocator) Allocator.Error![]
 
 // -- tests ---------------------------------------------------------------------------
 
+// -- saved profiles ---------------------------------------------------------------------
+
+/// A profile written to a file, for comparing two builds or attaching to a report
+/// (`debug-overlay.md` §15). Versioned (I8): a reader refuses a version it does not know.
+///
+/// Little-endian throughout. `FPRF`, then `u32` version, `u32` name count, `u32` frame count;
+/// each name a `u16` length and its bytes; each frame `u64` index, `i64` total ns, `u16`
+/// dropped, `u16` unbalanced, `u32` span count, then its spans as `u16` name, `u16` depth,
+/// `u32` begin ns, `u32` end ns. Frames run oldest first. Nothing follows the last frame.
+pub const file_magic = "FPRF";
+pub const file_version: u32 = 1;
+
+/// The recorder's retained frames, encoded. Caller-owned. A disabled recorder encodes an
+/// empty profile, which is a truthful answer rather than an error.
+pub fn encode(recorder: *const Recorder, gpa: Allocator) Allocator.Error![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    try out.appendSlice(gpa, file_magic);
+    try appendInt(gpa, &out, u32, file_version);
+    try appendInt(gpa, &out, u32, recorder.name_count);
+    try appendInt(gpa, &out, u32, recorder.frameCount());
+    for (0..recorder.name_count) |n| {
+        const name = recorder.nameOf(@intCast(n));
+        try appendInt(gpa, &out, u16, @intCast(name.len));
+        try out.appendSlice(gpa, name);
+    }
+    var it = recorder.frames();
+    while (it.next()) |frame| {
+        try appendInt(gpa, &out, u64, frame.index);
+        try appendInt(gpa, &out, i64, frame.total_ns);
+        try appendInt(gpa, &out, u16, frame.dropped);
+        try appendInt(gpa, &out, u16, frame.unbalanced);
+        try appendInt(gpa, &out, u32, @intCast(frame.spans.len));
+        for (frame.spans) |span| {
+            try appendInt(gpa, &out, u16, span.name);
+            try appendInt(gpa, &out, u16, span.depth);
+            try appendInt(gpa, &out, u32, span.begin_ns);
+            try appendInt(gpa, &out, u32, span.end_ns);
+        }
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+fn appendInt(gpa: Allocator, out: *std.ArrayList(u8), comptime T: type, value: T) Allocator.Error!void {
+    var bytes: [@sizeOf(T)]u8 = undefined;
+    std.mem.writeInt(T, &bytes, value, .little);
+    try out.appendSlice(gpa, &bytes);
+}
+
+pub const DecodeError = error{
+    OutOfMemory,
+    /// Not a profile at all: the magic is wrong or missing.
+    NotAProfile,
+    /// A profile from a version this build does not know how to read.
+    UnsupportedVersion,
+    /// Cut short, longer than it says, or a span naming a name that is not there.
+    Malformed,
+};
+
+/// A saved profile, read back. Owns its memory; free with `deinit`.
+pub const Profile = struct {
+    names: []const []const u8,
+    frames: []const Frame,
+    arena: std.heap.ArenaAllocator,
+
+    pub fn deinit(self: *Profile) void {
+        self.arena.deinit();
+        self.* = undefined;
+    }
+
+    pub fn nameOf(self: *const Profile, name: u16) []const u8 {
+        return if (name < self.names.len) self.names[name] else unnamed_text;
+    }
+};
+
+/// Reads a profile `encode` wrote. Untrusted input: every count is checked against the bytes
+/// that remain before anything is allocated for it.
+pub fn decode(gpa: Allocator, bytes: []const u8) DecodeError!Profile {
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    errdefer arena.deinit();
+    const a = arena.allocator();
+    var r: Reader = .{ .bytes = bytes };
+    if (!std.mem.eql(u8, r.take(file_magic.len) catch return error.NotAProfile, file_magic)) return error.NotAProfile;
+    if (try r.int(u32) != file_version) return error.UnsupportedVersion;
+    const name_count = try r.int(u32);
+    const frame_count = try r.int(u32);
+    // Each name takes at least 2 bytes and each frame at least 24, so a count the remaining
+    // bytes cannot hold is refused before it sizes an allocation.
+    if (name_count > r.remaining() / 2 or frame_count > r.remaining() / 24) return error.Malformed;
+    const names = try a.alloc([]const u8, name_count);
+    for (names) |*name| {
+        const len = try r.int(u16);
+        name.* = try a.dupe(u8, try r.take(len));
+    }
+    const frames = try a.alloc(Frame, frame_count);
+    for (frames) |*frame| {
+        const index = try r.int(u64);
+        const total_ns = try r.int(i64);
+        const dropped = try r.int(u16);
+        const unbalanced = try r.int(u16);
+        const span_count = try r.int(u32);
+        if (span_count > r.remaining() / 12) return error.Malformed;
+        const spans = try a.alloc(Span, span_count);
+        for (spans) |*span| {
+            span.* = .{ .name = try r.int(u16), .depth = try r.int(u16), .begin_ns = try r.int(u32), .end_ns = try r.int(u32) };
+            if (span.name >= name_count) return error.Malformed;
+        }
+        frame.* = .{ .index = index, .total_ns = total_ns, .spans = spans, .dropped = dropped, .unbalanced = unbalanced };
+    }
+    if (r.remaining() != 0) return error.Malformed;
+    return .{ .names = names, .frames = frames, .arena = arena };
+}
+
+const Reader = struct {
+    bytes: []const u8,
+    at: usize = 0,
+
+    fn remaining(self: *const Reader) usize {
+        return self.bytes.len - self.at;
+    }
+    fn take(self: *Reader, n: usize) error{Malformed}![]const u8 {
+        if (n > self.remaining()) return error.Malformed;
+        defer self.at += n;
+        return self.bytes[self.at..][0..n];
+    }
+    fn int(self: *Reader, comptime T: type) error{Malformed}!T {
+        return std.mem.readInt(T, (try self.take(@sizeOf(T)))[0..@sizeOf(T)], .little);
+    }
+};
+
 const testing = std.testing;
 
 fn stamp(ns: i64) Instant {
@@ -900,4 +1030,76 @@ test "a recorder with nothing recorded has no span medians" {
     const none = try spanMedians(&off, testing.allocator);
     defer testing.allocator.free(none);
     try testing.expectEqual(@as(usize, 0), none.len);
+}
+
+test "a saved profile reads back exactly, frames oldest first" {
+    var recorder = try Recorder.init(testing.allocator, .{ .history = 3 });
+    defer recorder.deinit(testing.allocator);
+    for (0..5) |i| {
+        const base: i64 = @intCast(i * 100);
+        recorder.beginFrame(i, .{ .ns = base });
+        recorder.open("simulate", .{ .ns = base + 1 });
+        recorder.open("step", .{ .ns = base + 2 });
+        recorder.close(.{ .ns = base + 5 });
+        recorder.close(.{ .ns = base + 9 });
+        recorder.open("render", .{ .ns = base + 10 });
+        recorder.close(.{ .ns = base + 40 });
+        recorder.endFrame(.{ .ns = base + 50 });
+    }
+    const bytes = try encode(&recorder, testing.allocator);
+    defer testing.allocator.free(bytes);
+    var profile = try decode(testing.allocator, bytes);
+    defer profile.deinit();
+    try testing.expectEqual(@as(usize, 3), profile.frames.len);
+    var it = recorder.frames();
+    for (profile.frames) |saved| {
+        const live = it.next().?;
+        try testing.expectEqual(live.index, saved.index);
+        try testing.expectEqual(live.total_ns, saved.total_ns);
+        try testing.expectEqual(live.spans.len, saved.spans.len);
+        for (live.spans, saved.spans) |l, s| {
+            try testing.expectEqual(l, s);
+            try testing.expectEqualStrings(recorder.nameOf(l.name), profile.nameOf(s.name));
+        }
+    }
+    try testing.expectEqual(@as(u64, 2), profile.frames[0].index);
+
+    var off = Recorder.off;
+    const empty = try encode(&off, testing.allocator);
+    defer testing.allocator.free(empty);
+    var nothing = try decode(testing.allocator, empty);
+    defer nothing.deinit();
+    try testing.expectEqual(@as(usize, 0), nothing.frames.len);
+}
+
+test "a saved profile is refused when it is not one, from another version, cut or padded" {
+    var recorder = try Recorder.init(testing.allocator, .{ .history = 2 });
+    defer recorder.deinit(testing.allocator);
+    recorder.beginFrame(0, .{ .ns = 0 });
+    recorder.open("a", .{ .ns = 1 });
+    recorder.close(.{ .ns = 2 });
+    recorder.endFrame(.{ .ns = 3 });
+    const bytes = try encode(&recorder, testing.allocator);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectError(error.NotAProfile, decode(testing.allocator, "FPR"));
+    try testing.expectError(error.NotAProfile, decode(testing.allocator, "XPRF\x01\x00\x00\x00"));
+    const future = try testing.allocator.dupe(u8, bytes);
+    defer testing.allocator.free(future);
+    future[4] = 2;
+    try testing.expectError(error.UnsupportedVersion, decode(testing.allocator, future));
+    for (file_magic.len + 4..bytes.len) |cut| try testing.expectError(error.Malformed, decode(testing.allocator, bytes[0..cut]));
+    const padded = try std.mem.concat(testing.allocator, u8, &.{ bytes, "x" });
+    defer testing.allocator.free(padded);
+    try testing.expectError(error.Malformed, decode(testing.allocator, padded));
+    // A span that names a name past the table.
+    const bad = try testing.allocator.dupe(u8, bytes);
+    defer testing.allocator.free(bad);
+    std.mem.writeInt(u16, bad[bad.len - 12 ..][0..2], 9, .little);
+    try testing.expectError(error.Malformed, decode(testing.allocator, bad));
+    // A frame count the bytes cannot hold, refused before it sizes an allocation.
+    const huge = try testing.allocator.dupe(u8, bytes);
+    defer testing.allocator.free(huge);
+    std.mem.writeInt(u32, huge[12..16], std.math.maxInt(u32), .little);
+    try testing.expectError(error.Malformed, decode(testing.allocator, huge));
 }

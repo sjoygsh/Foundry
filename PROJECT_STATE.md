@@ -1,9 +1,9 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-17
-**Current handoff: M26 Steps 1–9 are complete (2026-10-18). Step 10 (tools: `fdt fmt`, an editor
-grammar, saved profiles and panel state) is next, then Steps 11–13 without a stop between them,
-by the owner's instruction of 2026-10-17.** M26 now has thirteen steps (`playable3d.md` §12, revised).
+**Current handoff: M26 Steps 1–10 are complete (2026-10-18). Step 11 (`platform`: file watching
+for hot reload) is next, then Steps 12–13 without a stop between them, by the owner's
+instruction of 2026-10-17.** M26 now has thirteen steps (`playable3d.md` §12, revised).
 CLAUDE.md §2's new rule 17 finishes in M26 what M0–M25 set aside for themselves:
 - the controller's edge and the two Linux budget misses Step 7 found (Step 8);
 - anisotropic filtering, per-submesh bounds and a fragment-less depth-only pipeline (Step 9);
@@ -12,6 +12,14 @@ CLAUDE.md §2's new rule 17 finishes in M26 what M0–M25 set aside for themselv
 Step 12 re-qualifies them on Windows and Linux, and Step 13 closes. Every other set-aside item
 names its roadmap milestone in `docs/ROADMAP.md`'s 2026-10-17 note. §10.6's budgets are read as
 the shipping runtime's. The Linux machine stays up for Steps 8 and 12; no push is requested.
+
+**M26 Step 10 is done (2026-10-18): `fpack fmt`, an editor grammar, saved profiles and panel
+state.** `data.format` lays `.fdt` out canonically (indentation and blank lines only; every
+line's contents kept) and refuses what it cannot keep; `zig build fdt-check` is in the bar. A
+TextMate grammar is installed as `share/foundry/fdt.tmLanguage.json`, checked against the
+lexer. `core.profile` has a versioned profile file, which the overlay's "save profile" writes.
+The overlay's open panels are remembered between a person's sessions in `sandbox3d` and the
+court. Bar **2,133/2,134** (one skip).
 
 **M26 Step 9 is done (2026-10-18): anisotropic filtering, per-submesh bounds, depth-only
 pipelines.** Samplers take `max_anisotropy` 1–16 on null, Metal and Vulkan, and `render3d`

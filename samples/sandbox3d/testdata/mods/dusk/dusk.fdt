@@ -18,11 +18,11 @@ sandbox3d:config sandbox3d:config.main {
     ambient { r 0.8 g 1.5 b 4 }
     lights [
         { kind "directional" intensity 60 color { r 0.32 g 0.45 b 1 }
-          position { x 0 y 0 z 0 } direction { x -2 y -0.5 z -1 } casts_shadow true }
+            position { x 0 y 0 z 0 } direction { x -2 y -0.5 z -1 } casts_shadow true }
         { kind "point" intensity 60 range 8 position { x -1.5 y 2 z 1.5 }
-          color { r 1 g 0.35 b 0.08 } direction { x -1 y -2 z -1 } }
+            color { r 1 g 0.35 b 0.08 } direction { x -1 y -2 z -1 } }
         { kind "point" intensity 30 range 8 position { x 1.5 y 2 z -1.5 }
-          color { r 1 g 0.4 b 0.12 } direction { x -1 y -2 z -1 } }
+            color { r 1 g 0.4 b 0.12 } direction { x -1 y -2 z -1 } }
     ]
 }
 foundry:material sandbox3d:models.room.material0 {

@@ -1355,3 +1355,14 @@ was diagnosed from inside the running game: the overlay reported the number, tog
 panels moved it, and the tool that produced the question produced the answer. That the answer
 confirms a two-milestone-old suspicion *and* corrects it — a second cause nobody had written
 down — is the argument for having built the instrument rather than reasoning about the number.
+
+## Note — 2026-10-18, M26 Step 10: saved profiles and remembered panels
+
+Two §15 items are done (`playable3d.md`, Step 10's Resolution). `core.profile.encode`/`decode`
+is a versioned file of the recorder's retained frames (`FPRF`, version 1). `app.Engine.saveProfile`
+writes it, and the profiler panel's "save profile" button saves into the user data directory's
+`profiles` through a bound call, as reload is bound. `Overlay.encodeState`/`applyState` keep which
+panels are open as a small versioned text, which `sandbox3d` and the court store with
+`Engine.writeUserFile` in a person's session and never in a bounded, scripted or headless one.
+GPU timing, per-system timing, pause and single-step, and a crash dump of the log ring are on the
+roadmap (M73, M100, M107, M147).

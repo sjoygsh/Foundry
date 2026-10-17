@@ -48,7 +48,7 @@ foundry:model_import sandbox3d:models.walker { source "models/walker.gltf" }
 walker sandbox3d:walker.main {
     model sandbox3d:models.walker
     waypoints [ { x 1.0 y 0.004 z 2.2 } { x 1.0 y 0.004 z 0.2 }
-                { x 2.3 y 0.004 z 0.2 } { x 2.3 y 0.004 z 2.2 } ]
+        { x 2.3 y 0.004 z 0.2 } { x 2.3 y 0.004 z 2.2 } ]
     speed 0.6
     cross_fade 0.25
 }
@@ -158,11 +158,11 @@ config sandbox3d:config.main {
     ambient { r 8 g 10 b 14 }
     lights [
         { kind "directional" intensity 700 color { r 1 g 0.94 b 0.8 }
-          position { x 0 y 0 z 0 } direction { x -1 y -2 z -1 } casts_shadow true }
+            position { x 0 y 0 z 0 } direction { x -1 y -2 z -1 } casts_shadow true }
         { kind "point" intensity 120 range 8 position { x -1.5 y 2 z 1.5 }
-          color { r 1 g 0.72 b 0.45 } direction { x -1 y -2 z -1 } }
+            color { r 1 g 0.72 b 0.45 } direction { x -1 y -2 z -1 } }
         { kind "point" intensity 80 range 8 position { x 1.5 y 2 z -1.5 }
-          color { r 0.5 g 0.7 b 1 } direction { x -1 y -2 z -1 } }
+            color { r 0.5 g 0.7 b 1 } direction { x -1 y -2 z -1 } }
     ]
 }
 

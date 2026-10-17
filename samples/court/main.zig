@@ -47,6 +47,9 @@ const Options = struct {
 };
 
 /// The 2D half of the frame: the overlay renderer, the UI kernel, the theme and the font.
+/// The overlay's remembered layout, in the court's user data directory.
+const panels_file = "overlay-panels.txt";
+
 const Screens = struct {
     gpa: std.mem.Allocator,
     overlay: render2d.Renderer,
@@ -57,6 +60,9 @@ const Screens = struct {
     panels: *debug.Overlay,
     panels_ctx: ui.Context,
     panels_open: bool = false,
+    /// Whether the overlay's open panels are kept between runs: a person's windowed session
+    /// only, never a headless or scripted one, which must write nothing of a player's.
+    remembers_panels: bool = false,
 
     fn init(gpa: std.mem.Allocator, engine: *app.Engine) !Screens {
         var overlay = try render2d.Renderer.init(gpa, engine.gpu, .{ .jobs = engine.jobs() });
@@ -94,10 +100,25 @@ const Screens = struct {
         self.theme = null;
         if (!self.font_asset.isNone()) engine.assets.release(self.font_asset);
         _ = engine.assets.unregisterLoader(self.gpa, asset.schemas.texture.id);
+        if (self.remembers_panels) {
+            if (self.panels.encodeState(self.gpa)) |bytes| {
+                defer self.gpa.free(bytes);
+                engine.writeUserFile(panels_file, bytes);
+            } else |err| log.warn("the overlay's panels are not remembered ({t})", .{err});
+        }
         self.panels.deinit();
         self.panels_ctx.deinit();
         self.ctx.deinit();
         self.overlay.deinit();
+    }
+
+    /// Opens the panels the last session left open (`debug-overlay.md` §15), and keeps them
+    /// at exit.
+    fn rememberPanels(self: *Screens, engine: *app.Engine) void {
+        self.remembers_panels = true;
+        const bytes = engine.readUserFile(self.gpa, panels_file, 4096) orelse return;
+        defer self.gpa.free(bytes);
+        self.panels.applyState(bytes) catch |err| log.info("the remembered panels are not this build's ({t}); using the defaults", .{err});
     }
 
     /// The font the frame is measured and drawn with: the theme's, or the plain fallback.
@@ -313,6 +334,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     defer renderer.deinit();
     var screens = try Screens.init(gpa, engine);
     defer screens.deinit(engine);
+    if (!headless and frame_budget == null and play_mode == null) screens.rememberPanels(engine);
     try screens.load(engine);
     screens.panels_open = engine.os.envVar("FOUNDRY_COURT_OVERLAY") != null;
 

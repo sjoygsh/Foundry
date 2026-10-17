@@ -175,6 +175,19 @@ lights, candela for points/spots, cd/m² for ambient/emission, and EV100 exposur
 names a light's local −Z. As with every override, omitted fields take schema defaults; they
 do not inherit the original record. Copy all values you intend to retain.
 
+### Your editor, and a canonical layout
+
+`share/foundry/fdt.tmLanguage.json`, installed beside the engine, is a TextMate grammar for
+`.fdt`. Editors that read TextMate grammars (VS Code, Sublime Text, the JetBrains IDEs through
+TextMate bundles) colour comments, strings, directives, numbers, content IDs, field types and
+names with it.
+
+`fpack fmt <file.fdt | dir>` lays files out canonically: indentation by nesting, no trailing
+whitespace, single blank lines, one final line ending. It keeps everything inside a line exactly
+as you wrote it, so columns you aligned stay aligned. `fpack fmt --check` writes nothing and
+exits 1 if a file would change. A file it cannot keep exactly, such as one with an unterminated
+string or unbalanced brackets, is reported and left alone.
+
 ## 3. Names
 
 A content ID is `namespace:name`:

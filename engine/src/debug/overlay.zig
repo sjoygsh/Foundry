@@ -115,6 +115,10 @@ pub const Frame = struct {
     assets: ?*const asset.Registry = null,
     content_generation: u64 = 0,
     reload: ?Reload = null,
+    /// A bound `Engine.saveProfileToUserData`, the profiler panel's "save profile"
+    /// (`debug-overlay.md` §15). Not a mutation of anything the overlay introspects: it
+    /// writes the frames it is showing to a file of the application's own.
+    save_profile: ?Reload = null,
 
     /// Reads the engine into a `Frame`.
     ///
@@ -131,6 +135,10 @@ pub const Frame = struct {
                 const e: Engine = @ptrCast(@alignCast(ctx));
                 e.reloadContent();
             }
+            fn save(ctx: *anyopaque) void {
+                const e: Engine = @ptrCast(@alignCast(ctx));
+                e.saveProfileToUserData();
+            }
         };
 
         return .{
@@ -144,6 +152,7 @@ pub const Frame = struct {
             .assets = &engine.assets,
             .content_generation = engine.contentGeneration(),
             .reload = .{ .ctx = engine, .call = bind.call },
+            .save_profile = if (engine.profiler() != null) .{ .ctx = engine, .call = bind.save } else null,
         };
     }
 };
@@ -338,6 +347,51 @@ pub const Overlay = struct {
     pub fn toggle(self: *Overlay, title: []const u8) void {
         for (self.panels.items) |*p| {
             if (std.mem.eql(u8, p.title, title)) p.open = !p.open;
+        }
+    }
+
+    /// The first line of a remembered layout, with its version (I8).
+    pub const state_header = "foundry overlay panels 1";
+
+    /// Which panels are open, as a small text a host keeps between runs (`debug-overlay.md`
+    /// §15): the header, then `open <title>` a line, in registration order. Caller-owned.
+    pub fn encodeState(self: *const Overlay, gpa: Allocator) Allocator.Error![]u8 {
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(gpa);
+        try out.appendSlice(gpa, state_header ++ "\n");
+        for (self.panels.items) |p| if (p.open) {
+            try out.appendSlice(gpa, "open ");
+            try out.appendSlice(gpa, p.title);
+            try out.append(gpa, '\n');
+        };
+        return out.toOwnedSlice(gpa);
+    }
+
+    pub const StateError = error{
+        /// Not a layout this build knows: another version, or not one at all. Nothing changes.
+        UnsupportedState,
+    };
+
+    /// Opens exactly the panels `bytes` names and closes the rest. A title no panel has is
+    /// skipped (it may be a panel a game did not register this run); a malformed line or an
+    /// unknown header refuses the whole layout and changes nothing.
+    pub fn applyState(self: *Overlay, bytes: []const u8) StateError!void {
+        var lines = std.mem.splitScalar(u8, bytes, '\n');
+        const header = std.mem.trimEnd(u8, lines.first(), "\r");
+        if (!std.mem.eql(u8, header, state_header)) return error.UnsupportedState;
+        var rest = lines;
+        while (rest.next()) |raw| {
+            const line = std.mem.trimEnd(u8, raw, "\r");
+            if (line.len != 0 and !std.mem.startsWith(u8, line, "open ")) return error.UnsupportedState;
+        }
+        for (self.panels.items) |*p| p.open = false;
+        while (lines.next()) |raw| {
+            const line = std.mem.trimEnd(u8, raw, "\r");
+            if (line.len == 0) continue;
+            const title = line["open ".len..];
+            for (self.panels.items) |*p| if (std.mem.eql(u8, p.title, title)) {
+                p.open = true;
+            };
         }
     }
 
@@ -649,6 +703,29 @@ test "a panel that fails is a line of text and the rest of the frame survives" {
 
     try testing.expect(findText(&ctx, "panel failed: Refused"));
     try testing.expect(findText(&ctx, "still here"));
+}
+
+test "a remembered layout opens exactly its panels, skips unknown ones and refuses another version" {
+    const o = try Overlay.init(testing.allocator, .{});
+    defer o.deinit();
+    o.toggle("profiler"); // open by default: now closed
+    o.toggle("log");
+    o.toggle("memory");
+    const bytes = try o.encodeState(testing.allocator);
+    defer testing.allocator.free(bytes);
+    try testing.expectEqualStrings(Overlay.state_header ++ "\nopen memory\nopen log\n", bytes);
+
+    const fresh = try Overlay.init(testing.allocator, .{});
+    defer fresh.deinit();
+    try fresh.applyState(bytes);
+    for (fresh.panels.items, o.panels.items) |a, b| try testing.expectEqual(b.open, a.open);
+    try fresh.applyState(Overlay.state_header ++ "\r\nopen a panel nobody registered\r\nopen log\r\n");
+    for (fresh.panels.items) |p| try testing.expectEqual(std.mem.eql(u8, p.title, "log"), p.open);
+
+    for ([_][]const u8{ "", "foundry overlay panels 2\nopen log\n", Overlay.state_header ++ "\nclose log\n" }) |bad| {
+        try testing.expectError(error.UnsupportedState, fresh.applyState(bad));
+        for (fresh.panels.items) |p| try testing.expectEqual(std.mem.eql(u8, p.title, "log"), p.open);
+    }
 }
 
 test "a closed panel is not described and its toggle still is" {

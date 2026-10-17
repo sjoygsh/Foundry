@@ -229,6 +229,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
 
     var sample = try Sample.init(gpa, engine, options);
     defer sample.deinit(engine);
+    if (frameLimit(engine, headless) == null and os.envVar("FOUNDRY_SANDBOX3D_KEYS") == null and os.envVar("FOUNDRY_SANDBOX3D_WALK") == null) sample.rememberPanels(engine);
     try sample.load(engine);
     const native = try gpa.create(Native);
     defer gpa.destroy(native);
@@ -622,6 +623,9 @@ const Grid = struct {
 // ---------------------------------------------------------------------------------------
 // The sample.
 
+/// The overlay's remembered layout, in the sample's user data directory.
+const panels_file = "overlay-panels.txt";
+
 const Sample = struct {
     gpa: std.mem.Allocator,
     sample_count: u32,
@@ -674,6 +678,9 @@ const Sample = struct {
     ui: ui.Context,
     panels: *debug.Overlay,
     panels_open: bool = false,
+    /// Whether the overlay's open panels are kept between runs: a person's session only,
+    /// never one bounded, keyed or touring, which must write nothing of a player's.
+    remembers_panels: bool = false,
     /// The poses F5 last saved, so F9 can say whether it brought back the same ones.
     saved_hash: ?u64 = null,
     typed: [8]platform.event.TextInput = undefined,
@@ -1196,6 +1203,15 @@ const Sample = struct {
         }
     }
 
+    /// Opens the panels the last session left open (`debug-overlay.md` §15), and keeps them
+    /// at exit.
+    fn rememberPanels(self: *Sample, engine: *app.Engine) void {
+        self.remembers_panels = true;
+        const bytes = engine.readUserFile(self.gpa, panels_file, 4096) orelse return;
+        defer self.gpa.free(bytes);
+        self.panels.applyState(bytes) catch |err| log.info("the remembered panels are not this build's ({t}); using the defaults", .{err});
+    }
+
     fn deinit(self: *Sample, engine: *app.Engine) void {
         if (self.content) |*content| self.props.deinit(self.gpa, &self.walk.world, content, &engine.assets);
         if (self.content) |*content| for (self.walkers) |*walker| walker.deinit(self.gpa, &self.walk.world, content);
@@ -1207,6 +1223,12 @@ const Sample = struct {
         self.releaseModels();
         self.models.deinit(self.gpa);
         if (self.save_dir) |dir| self.gpa.free(dir);
+        if (self.remembers_panels) {
+            if (self.panels.encodeState(self.gpa)) |bytes| {
+                defer self.gpa.free(bytes);
+                engine.writeUserFile(panels_file, bytes);
+            } else |err| log.warn("the overlay's panels are not remembered ({t})", .{err});
+        }
         self.panels.deinit();
         self.ui.deinit();
         self.orrery.deinit();

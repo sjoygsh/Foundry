@@ -22,6 +22,7 @@
 pub const check = @import("check.zig");
 pub const diagnostic = @import("diagnostic.zig");
 pub const emit = @import("emit.zig");
+pub const format = @import("format.zig");
 pub const fpk = @import("fpk.zig");
 pub const id = @import("id.zig");
 pub const lexer = @import("lexer.zig");
@@ -67,6 +68,7 @@ test {
     _ = check;
     _ = diagnostic;
     _ = emit;
+    _ = format;
     _ = fpk;
     _ = id;
     _ = lexer;
