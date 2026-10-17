@@ -715,3 +715,12 @@ M16.5 ran the null backend and `platform.Transport` on Linux x64 for the first t
 macOS and Windows clients over the public internet with no change. `Os` on Linux was exercised
 by the whole headless graph, 1,668 tests. The SDL driver, X11, Wayland and the native window
 payloads remain unrun (ADR-0039, M18).
+
+## Note — 2026-10-18, M26 Step 11: file watching
+
+"Deferred, deliberately"'s file watching is done (`playable3d.md`, Step 11's Resolution).
+`platform.watch.Watch` answers one question without waiting: did anything under this directory
+change since the last call? It never says what. That is still the caller's comparison of what it
+read, so a spurious notification costs one comparison. inotify on Linux, kqueue vnode events on
+macOS and a change notification on Windows; elsewhere, or for a tree over `max_entries`, no watch
+is a normal answer and the caller polls.

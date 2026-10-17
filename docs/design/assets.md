@@ -460,3 +460,12 @@ twice a second. The next real edit changes the stamp again and it is retried.
 clock, a restored backup — and a coarse one can miss two edits in the same second. Two
 fields agreeing is a much better answer than either alone, and hashing contents would mean
 reading every watched file on every check.
+
+## Note — 2026-10-18, M26 Step 11: hot reload hears of changes
+
+§6's watcher is no longer only a timer. With hot reload on, `app.Engine` watches each distinct
+package base, which holds the compiled packages and the assets mounted beneath them, through
+`platform.watch`, and compares stamps when a watch reports a change. It also compares them on a
+backstop of ten timer periods, for what a watch can miss. If any base cannot be watched, it keeps
+the timer for all of them. The stamps still decide what reloads, and the order is unchanged:
+packages first, then assets.

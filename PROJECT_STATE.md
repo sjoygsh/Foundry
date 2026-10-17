@@ -1,9 +1,9 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-17
-**Current handoff: M26 Steps 1–10 are complete (2026-10-18). Step 11 (`platform`: file watching
-for hot reload) is next, then Steps 12–13 without a stop between them, by the owner's
-instruction of 2026-10-17.** M26 now has thirteen steps (`playable3d.md` §12, revised).
+**Current handoff: M26 Steps 1–11 are complete (2026-10-18). Step 12 (Windows and Linux
+re-qualification of Steps 8–11) is next, then Step 13 (the close), without a stop between them,
+by the owner's instruction of 2026-10-17.** Step 12 needs the PC booted into Windows. M26 now has thirteen steps (`playable3d.md` §12, revised).
 CLAUDE.md §2's new rule 17 finishes in M26 what M0–M25 set aside for themselves:
 - the controller's edge and the two Linux budget misses Step 7 found (Step 8);
 - anisotropic filtering, per-submesh bounds and a fragment-less depth-only pipeline (Step 9);
@@ -12,6 +12,12 @@ CLAUDE.md §2's new rule 17 finishes in M26 what M0–M25 set aside for themselv
 Step 12 re-qualifies them on Windows and Linux, and Step 13 closes. Every other set-aside item
 names its roadmap milestone in `docs/ROADMAP.md`'s 2026-10-17 note. §10.6's budgets are read as
 the shipping runtime's. The Linux machine stays up for Steps 8 and 12; no push is requested.
+
+**M26 Step 11 is done (2026-10-18): file watching for hot reload.** `platform.watch.Watch`
+uses inotify, kqueue or a Windows change notification and answers "anything changed?" without
+waiting. Hot reload compares stamps on a notification, plus a five-second backstop, and falls
+back to the timer where no watch can be made. Linux and Metal sandboxes reloaded 5 of 5 edits;
+Windows is compiled and runs in Step 12. Bar **2,136/2,137** (one skip).
 
 **M26 Step 10 is done (2026-10-18): `fpack fmt`, an editor grammar, saved profiles and panel
 state.** `data.format` lays `.fdt` out canonically (indentation and blank lines only; every

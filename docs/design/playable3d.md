@@ -1378,3 +1378,43 @@ Guards broken one at a time, each failing a test:
 
 **The bar:** `zig fmt`, `zig build test` **2,133/2,134** (one skip), all four `check`s, the four
 headless samples and `fdt-check`; the court's three endings headless.
+
+## Resolution — Step 11: file watching for hot reload (2026-10-18)
+
+**`platform.watch.Watch`** answers whether anything under a directory changed since it was last
+asked, without waiting. Events are coalesced, and what changed is still decided by the caller's
+stamps.
+- **Linux**: inotify, one non-blocking watch per directory, with a directory created later
+  watched too.
+- **macOS**: kqueue `EVFILT_VNODE` on every directory and file. A directory's events only report
+  entries added or removed, so the registration is rebuilt after any change.
+- **Windows**: `FindFirstChangeNotificationW` over the tree, drained without waiting. It is
+  declared in `platform`, since `std` does not declare it.
+
+Elsewhere `Unsupported` is the answer, and a tree beyond 4,096 entries is `TooManyEntries`.
+
+**Hot reload** (`assets.md` §6) watches each distinct package base when `hot_reload` is on, and
+runs the existing stamp pass on a notification. A backstop pass runs every ten timer periods
+(five seconds at the defaults) for what a watch can miss. A base that cannot be watched leaves
+every base on the timer, and the log says which. `Engine.watchingContent` reports which mode is
+in use.
+
+**Tests:**
+- The watch reports an edit, a new file, a new directory and a file inside it, and is quiet
+  otherwise.
+- A watched engine reloads a rewritten package with its timer at 100,000 frames, which only a
+  notification can explain.
+- The span test states both schedules.
+
+Making the engine ignore its watches fails the notification test.
+
+**Runs:**
+- On Linux natively, the null graph passed 2,124/2,125. The installed sandbox under Xorg logged
+  `watching 1 content directory(ies)` and reloaded its sprite sheet 5 times for 5 edits 1.5 s
+  apart.
+- On Metal, the windowed sandbox did the same, 5 of 5. A first, shorter run ended before most
+  edits.
+- **Windows' watch is compiled, not yet run**: Step 12 runs it on the PC.
+
+**The bar:** `zig fmt`, `zig build test` **2,136/2,137** (one skip), all four `check`s, the four
+headless samples and `fdt-check`.

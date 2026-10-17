@@ -46,6 +46,7 @@ pub const key = @import("key.zig");
 pub const library = @import("library.zig");
 pub const os = @import("os.zig");
 pub const transport = @import("transport.zig");
+pub const watch = @import("watch.zig");
 pub const window = @import("window.zig");
 pub const workers = @import("workers.zig");
 
@@ -139,6 +140,7 @@ test {
     _ = library;
     _ = os;
     _ = transport;
+    _ = watch;
     _ = window;
     _ = workers;
     // Always tested, whichever backend is selected — it is the reference

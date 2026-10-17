@@ -237,6 +237,10 @@ pub const Step = struct {
 /// a particular backend, because neither type is fixed until instantiation.
 ///
 /// Games and tools want `app.Engine`, which is this with the selected backends.
+/// Timer periods between the stamp checks a watched engine makes anyway: five seconds at the
+/// default thirty frames and 60 Hz.
+const backstop_periods = 10;
+
 pub fn EngineOf(comptime P: type, comptime G: type) type {
     return struct {
         const Self = @This();
@@ -283,6 +287,9 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         /// What each package's file looked like when it was loaded. Same order as
         /// `content`.
         package_stamps: std.ArrayList(asset.Registry.Stamp),
+        /// One watch per distinct package base when hot reload could have one for each:
+        /// then a change is noticed by the system's word rather than by the clock.
+        watches: std.ArrayList(platform.watch.Watch) = .empty,
         /// Bumped whenever content changes under the program. **The one signal a game
         /// needs**: anything it derived from content — a string borrowed from a package's
         /// bytes, a `Region` cut from a texture — is derived again when this moves.
@@ -464,6 +471,7 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
 
             errdefer self.deinitOwned();
             try self.loadContent();
+            if (config.hot_reload) self.startWatching();
 
             log.info("engine up: {d}Hz simulation, {s}, rhi backend '{t}', {d} frames in flight", .{
                 config.tick_rate_hz,
@@ -520,6 +528,8 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             for (self.package_bytes.items) |bytes| gpa.free(bytes);
             self.package_bytes.deinit(gpa);
             self.package_stamps.deinit(gpa);
+            for (self.watches.items) |*w| w.deinit();
+            self.watches.deinit(gpa);
             freePackages(gpa, self.content);
             gpa.free(self.content);
             gpa.free(self.content_dir);
@@ -732,6 +742,49 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             });
         }
 
+        /// Whether hot reload hears of changes from the system rather than by the clock.
+        pub fn watchingContent(self: *const Self) bool {
+            return self.watches.items.len != 0;
+        }
+
+        /// A watch on every distinct package base, which holds the packages and the assets
+        /// mounted under them. All or none: a base that cannot be watched leaves hot reload
+        /// on the clock, which is a normal answer (`platform.watch`).
+        fn startWatching(self: *Self) void {
+            for (self.content, 0..) |pkg, i| {
+                const base = self.packageBase(pkg);
+                const seen = for (self.content[0..i]) |earlier| {
+                    if (std.mem.eql(u8, self.packageBase(earlier), base)) break true;
+                } else false;
+                if (seen) continue;
+                const w = platform.watch.Watch.init(self.gpa, self.os, base) catch |err| {
+                    log.info("hot reload: '{s}' cannot be watched ({t}); checking every {d} frames", .{ base, err, self.hot_reload_frames });
+                    for (self.watches.items) |*started| started.deinit();
+                    self.watches.clearRetainingCapacity();
+                    return;
+                };
+                self.watches.append(self.gpa, w) catch {
+                    var lost = w;
+                    lost.deinit();
+                    for (self.watches.items) |*started| started.deinit();
+                    self.watches.clearRetainingCapacity();
+                    return;
+                };
+            }
+            log.info("hot reload: watching {d} content directory(ies)", .{self.watches.items.len});
+        }
+
+        /// Whether the stamps are worth comparing this frame. With watches: when one says
+        /// something changed, and on a slow backstop for what a watch can miss (an overflowed
+        /// queue, a file replaced between two rebuilds). Without: on the clock.
+        fn contentDue(self: *Self) bool {
+            if (self.watches.items.len == 0) return self.frame_index % self.hot_reload_frames == 0;
+            var any = false;
+            // Every watch drained, so one change is never reported over two frames.
+            for (self.watches.items) |*w| any = w.changed() or any;
+            return any or self.frame_index % (@as(u64, self.hot_reload_frames) * backstop_periods) == 0;
+        }
+
         /// One watcher pass. **Packages first, then assets**, which is the documented order
         /// §6's third rule asks for: reloading a package reloads its assets anyway, so
         /// doing it the other way round would load some of them twice.
@@ -869,7 +922,7 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             // Safe against the GPU for a reason worth naming: the RHI keeps a destroyed
             // texture's objects until the work that could use them has finished, so an unload
             // at the top of a frame does not free something in flight (`rhi.md` §3).
-            if (self.hot_reload and self.frame_index % self.hot_reload_frames == 0) {
+            if (self.hot_reload and self.contentDue()) {
                 if (profiling) self.profile.open(span.content, mark);
                 self.pollContent();
                 if (profiling) {
@@ -1855,6 +1908,33 @@ test "the watcher runs at the start of a frame, and only when it is switched on"
     try testing.expectEqual(@as(?i128, 99), spriteSetting(engine));
 }
 
+test "a watched package is reloaded on the system's word, long before the clock" {
+    var fx = try ContentFixture.init(content_source);
+    defer fx.deinit();
+    const engine = try testEngine(.{
+        .content_dir = fx.dir,
+        .content = &.{.{ .file = "core.fpk", .root = "." }},
+        .hot_reload = true,
+        // Far enough that only a notification can explain a reload inside this test.
+        .hot_reload_frames = 100_000,
+    });
+    defer engine.deinit();
+    if (!engine.watchingContent()) return error.SkipZigTest; // This system has no watch.
+    for (0..3) |_| {
+        engine.beginFrame();
+        engine.endFrame();
+    }
+    try testing.expectEqual(@as(?i128, 42), spriteSetting(engine));
+    try fx.rewrite(changed_source);
+    var frames: usize = 0;
+    while (spriteSetting(engine) != 99 and frames < 200) : (frames += 1) {
+        engine.beginFrame();
+        engine.endFrame();
+        std.Io.sleep(testing.io, .fromNanoseconds(5_000_000), .awake) catch {};
+    }
+    try testing.expectEqual(@as(?i128, 99), spriteSetting(engine));
+}
+
 const content_source =
     \\@schema settings { sprites u32 (default 10) }
     \\settings foundry:settings.main { sprites 42 }
@@ -2337,8 +2417,9 @@ test "the content watcher's pass is a span, and only on the frames it runs" {
             if (std.mem.eql(u8, recorder.nameOf(s.name), span.content)) with_content += 1;
         }
     }
-    // Frames 0 and 3 of six, and no others.
-    try testing.expectEqual(@as(u32, 2), with_content);
+    // On the clock: frames 0 and 3 of six, and no others. Watched, with nothing changing:
+    // frame 0's backstop alone.
+    try testing.expectEqual(@as(u32, if (engine.watchingContent()) 1 else 2), with_content);
 }
 
 test "a render frame is four named spans, and acquire is one of them" {
