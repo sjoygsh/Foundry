@@ -131,9 +131,12 @@ now a runtime claim. The RHI's rules survived unchanged.
   NVIDIA, and has not run.
 - **Two compositors,** GNOME 50 and sway 1.11, plus Xorg with openbox. KDE's KWin implements
   `xdg_toplevel_icon_v1` and would take the icon; it was not tried.
-- **GNOME's pacing** (§2) is unexplained. Its trigger is a player reporting it, or a frame-time
-  budget that fails there.
-- **No Wayland pointer was driven from outside** (§2).
+- **GNOME's pacing** (§2) is explained (2026-10-17, M26 Step 7): the session was locked and its
+  monitor off. Every frame was `discarded`, and GNOME paces a client it is not showing at about
+  20 ms. On screen, GNOME 50.1 presents every frame 16.67 ms apart.
+- **A Wayland pointer is driven from outside** (2026-10-17, M26 Step 7): ydotool's uinput mouse on
+  GNOME, and on sway given that device through libinput. Each compositor granted and released the
+  court's pointer lock.
 - **No Linux release artifact.** `dist` stages macOS and Windows only. A Linux desktop release
   is a distribution decision with its own questions (ADR-0030's shape, AppImage or tarball,
   what a player's system must supply), and nothing has asked for one.
@@ -142,3 +145,19 @@ now a runtime claim. The RHI's rules survived unchanged.
   kept: `scripts/m18/` rebuilds the environment on a fresh machine, and 3D's Linux runs use it
   (`3d.md` §10.2). The one piece of state the M18 machine held outside the kit, the user
   package, has since moved into the kit (`scripts/m18/usercfg/`).
+
+## Note — 2026-10-17, M26 Step 7: reproduced from the kit, and §5's two open items closed
+
+A fresh Ubuntu 26.04.1 LTS (kernel 7.0, GNOME 50.1, Mesa 26.0.8, sway 1.11) on the same Arc
+A750 machine was built by `scripts/m18/provision.sh` unchanged. The whole graph, both samples,
+`sandbox3d` and the court passed under Xorg, GNOME and sway (`playable3d.md`, Step 7's
+Resolution). Two findings change this document's claim:
+- **GNOME's 20 ms is a screen that is not showing, not pacing.** With the session locked and its
+  output in power save, mutter answered every `wp_presentation_feedback` with `discarded` and
+  released buffers about every 20 ms. FIFO, immediate and mailbox all showed it. Unlocked and on
+  screen, the same sandbox presented 16.67 ms apart, with a 16.59 ms median frame. The kit now
+  puts GNOME on screen and keeps it there (`scripts/m26/linux.sh desktop`).
+- **A swapchain made while GNOME is on a background console fails** with
+  `VK_ERROR_OUT_OF_DEVICE_MEMORY` from Mesa's WSI; it does not merely wait. GNOME's window tests
+  therefore run before `x11.sh` takes the monitor.
+

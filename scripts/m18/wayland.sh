@@ -1,11 +1,13 @@
 #!/bin/bash
 # Starts or stops a Wayland compositor on the GPU, for M18 runs over SSH.
 #
-#   wayland.sh start [sway|weston] | stop | env | shot <file.png>
+#   wayland.sh start [sway|sway-input|weston] | stop | env | shot <file.png>
 #
 # Sway (wlroots) by default: its headless backend renders with GLES on the GPU's render node,
 # `swaymsg` resizes and hides windows, and `grim` captures the output. Weston is the fallback
-# if sway will not start on this driver. There is no XWayland, so a run here cannot fall back to
+# if sway will not start on this driver. `sway-input` is headless sway that also reads ydotool's
+# uinput device through libinput (M26), so a real pointer reaches a client and can be locked;
+# only that device is opened, never the machine's own keyboard or mouse. There is no XWayland, so a run here cannot fall back to
 # X11: SDL must choose Wayland itself.
 #
 # `eval "$(wayland.sh env)"` gives a shell WAYLAND_DISPLAY and SWAYSOCK, and unsets DISPLAY.
@@ -27,6 +29,14 @@ case "$cmd" in
 start)
     which="${2:-sway}"
     rm -f "$runtime"/wayland-m18 "$runtime"/wayland-m18.lock
+    backends=headless
+    if [ "$which" = sway-input ]; then
+        device="$(grep -l 'ydotoold virtual device' /sys/class/input/event*/device/name | head -1 | cut -d/ -f5)"
+        [ -n "$device" ] || { echo "no ydotoold device: start ydotoold first" >&2; exit 1; }
+        sudo setfacl -m "u:$(id -un):rw" "/dev/input/$device"
+        backends=headless,libinput
+        which=sway
+    fi
     if [ "$which" = sway ]; then
         cat > "$log/sway.conf" <<'EOF'
 xwayland disable
@@ -37,7 +47,7 @@ focus_follows_mouse no
 for_window [app_id=".*"] floating enable
 EOF
         env -u DISPLAY -u WAYLAND_DISPLAY XDG_RUNTIME_DIR="$runtime" \
-            WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=gles2 \
+            WLR_BACKENDS="$backends" WLR_LIBINPUT_NO_DEVICES=1 LIBSEAT_BACKEND=noop WLR_RENDERER=gles2 \
             WLR_RENDER_DRM_DEVICE="$(render_node)" \
             setsid nohup sway --unsupported-gpu -c "$log/sway.conf" >"$log/sway.log" 2>&1 </dev/null &
     else
@@ -74,7 +84,7 @@ shot)
     grim "${2:?shot needs a file name}"
     ;;
 *)
-    echo "usage: wayland.sh start [sway|weston] | stop | env | shot <file.png>" >&2
+    echo "usage: wayland.sh start [sway|sway-input|weston] | stop | env | shot <file.png>" >&2
     exit 2
     ;;
 esac

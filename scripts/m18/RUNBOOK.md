@@ -55,6 +55,16 @@ A desktop that suspends or blanks will drop the connection. Turn off its idle su
 `gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type nothing` and
 `org.gnome.desktop.session idle-delay 0`, in the user's session bus).
 
+**That is not enough for evidence on GNOME** (M26). A GNOME session that locked or blanked
+before those settings, or blanks anyway, keeps its window drawn to nowhere: every frame's
+`wp_presentation_feedback` is `discarded`, the compositor paces the client at about 20 ms, and a
+Wayland swapchain started while it is on a background console fails outright with
+`VK_ERROR_OUT_OF_DEVICE_MEMORY`. That was M18's "unexplained" GNOME pacing. Before any GNOME run,
+`scripts/m26/linux.sh desktop` unlocks the session through logind, holds a
+`gnome-session-inhibit` idle inhibitor, wakes the monitor through mutter's `PowerSaveMode`, sets
+the mouse to a flat acceleration profile and starts `ydotoold`. Ubuntu 26.04.1 (GNOME 50.1) was
+provisioned by this kit unchanged.
+
 ## 2. Sessions
 
 ```sh
@@ -98,8 +108,28 @@ copy's own `fpack`. It overrides `sandbox:config.main` with 960×540, volume 0.5
 - **X11:** xdotool, pointer and keys.
 - **sway:** its virtual keyboard only. Hold one open first with `wtype -s 600000 &`, or the key
   arrives before the client has a keyboard. No pointer reaches a client in headless sway.
-- **GNOME:** nothing. It lets no client drive another, and it gives no focus to a window started
-  over SSH, so synthetic keys go to whatever window had focus.
+- **GNOME:** `ydotool`, a uinput keyboard and mouse that GNOME reads as real devices (M26). An
+  unlocked, on-screen GNOME focuses a window started over SSH by itself. M18's "no focus" was
+  the locked screen. Pointer moves are one-to-one only with the flat profile `desktop` sets, and a
+  move to where the pointer already is sends nothing, so nudge it.
+- **sway with a pointer:** `wayland.sh start sway-input` adds wlroots' libinput backend, opened
+  for ydotool's device alone, so a pointer reaches a client and a lock can be granted.
+
+## 4b. The court (M26)
+
+```sh
+~/m26/kit/linux.sh desktop                  # GNOME on screen and awake; ydotoold
+~/m26/kit/linux.sh suites                   # GNOME's window tests first, then x11.sh and the graph
+~/m26/kit/linux.sh install                  # ReleaseSafe, moved, read-only, hashed
+for s in gnome x11 sway; do ~/m26/kit/linux.sh plays $s; ~/m26/kit/linux.sh sandbox3d $s; done
+~/m26/kit/linux.sh capture gnome; DISPLAY=$(~/m18/x11.sh display) ~/m26/kit/linux.sh capture x11
+~/m18/wayland.sh start sway-input && eval "$(~/m18/wayland.sh env)" && ~/m26/kit/linux.sh capture sway
+```
+
+`scripts/m26/linux.sh` and `capture_linux.py` are copied to `~/m26/kit`. Start x11 for its
+session and stop it before GNOME's, which needs the monitor. A capture check reads each window
+system's own answer: on X11 a refused `XGrabPointer`, XFixes' empty cursor and the pointer inside
+the window; on Wayland the compositor's `locked`/`unlocked` and the client's `destroy` of the lock.
 
 ## 5. RenderDoc and pacing
 

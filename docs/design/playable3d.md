@@ -1115,3 +1115,99 @@ remain for the owner. No release was published and no certification is claimed.
 
 Step 6 is complete. Stop before Step 7, whose freshly provisioned Linux machine needs the
 owner's choice; the three person's-play reports and Step 3's controller question stay open.
+
+## Resolution — Step 7: Linux/Vulkan on a freshly provisioned machine (2026-10-17)
+
+**The machine.** The owner installed Ubuntu 26.04.1 LTS on the Windows target's PC, on a drive
+of its own, with a monitor (§11's first route). `scripts/m18/provision.sh` built it unchanged on
+a release newer than the kit had met. `record-machine.sh`: kernel 7.0.0-38, Core i3-10105F ×8,
+15 GiB; Arc A750 on Mesa 26.0.8 (Vulkan 1.4.335), loader 1.4.341; Xorg 21.1.22 with openbox
+3.6.1; GNOME Shell 50.1 (Xwayland 24.1.10); sway 1.11 (wlroots 0.19.2); weston 14.0.2;
+libwayland 1.24.0; Zig 0.16.0, the pinned SDK 1.4.357.0, RenderDoc 1.46; Foundry `c36f8a9`
+(Steps 1–6). No address, host or user is recorded.
+
+**The whole graph, natively, validation required** (`scripts/m26/linux.sh suites`):
+- null Debug, **2,103/2,104** (one skip); null ReleaseSafe court, **40/40**;
+- Vulkan Debug graph plus backend, **2,381/2,392** (11 OS-conditional skips);
+- Vulkan ReleaseSafe court and renderer, **107/107**;
+- `vulkan-window-test` and `native-window-test` **17/19** under Xorg and under GNOME's Wayland,
+  both skips for other systems.
+
+**The samples, from moved, read-only installs.** Each session ran the court's six play-throughs
+(`win`, `caught`, `fell`; synchronization validation, then every layer off), `sandbox3d`'s tour
+and walker, and M18's five sandbox/room runs:
+- **Xorg** (openbox, on the monitor), **GNOME 50.1** (the logged-in desktop, on screen) and
+  **sway** (headless) all passed. Every ending was reached and restarted, every tick matched a
+  fresh replay, and no frame was skipped. No sound, mixer command or event was dropped (73 of
+  73 sounds in each `win`).
+- Every validation log held no error or warning, and the install's 122 file hashes were
+  unchanged afterwards. No preference was written.
+- M18's runs repeated their results: 29 reloads, resize, minimise/hide and close, the room's
+  4 of 6 lamps, the user package's 960×540/0.50/16×16 icon, and X11's `_NET_WM_ICON`. Wayland
+  still refuses the icon (`xdg_toplevel_icon_v1`).
+
+**Capture, checked on each window system** (`scripts/m26/capture_linux.py`). It runs the same
+seven checks as Windows: title releases, play captures, pause releases, resume captures, focus
+loss releases, regaining focus does not capture, and an explicit resume does. All seven passed
+on Xorg, GNOME and sway. Each reading is the window system's own:
+- on X11, another client's `XGrabPointer` refused, an empty XFixes cursor, and the pointer
+  inside the window;
+- on Wayland, the compositor's `zwp_locked_pointer_v1.locked` until its `unlocked` or the
+  court's `destroy` of the lock (SDL releases by destroying, and no `unlocked` follows).
+
+Input reached the windows as a person's does:
+- xdotool on X11;
+- ydotool's uinput keyboard and mouse on GNOME;
+- on sway, wtype plus the same uinput mouse, given to sway through libinput
+  (`wayland.sh start sway-input`). Headless sway has no pointer of its own.
+
+**M18's two Linux leftovers are closed** (`linux-desktop.md`, Note of this date):
+- **GNOME's pacing was a screen that was not showing.** The session had locked, and its monitor
+  was in power save, before idle blanking was turned off. Mutter answered every
+  `wp_presentation_feedback` with `discarded` (631 of 631) and paced the client at about 20 ms
+  under FIFO, immediate and mailbox alike.
+- Unlocked and on screen, GNOME presented 16.67 ms apart. The sandbox's last 240 frames had a
+  16.59–16.60 ms median, as on Xorg (16.59–16.61) and sway (16.26–16.28).
+- `linux.sh desktop` now unlocks GNOME, holds an idle inhibitor, wakes the output, flattens
+  pointer acceleration and starts ydotoold.
+- A Wayland swapchain made while GNOME was off screen failed with `VK_ERROR_OUT_OF_DEVICE_MEMORY`.
+  This is Mesa's WSI, not Foundry, so GNOME's window tests run before `x11.sh` takes the monitor.
+- **A Wayland pointer is driven from outside the window**, on GNOME and on sway, and each
+  compositor granted and released the court's lock. M18's "GNOME gives no focus to a window
+  started over SSH" was the locked screen too: an unlocked GNOME focuses it itself.
+
+**Costs (§10.6), layers off, the court's `win`.** Values are median/p95 in ms. Frame work
+excludes the pacing sleep.
+
+| Session | Frame work | `character` | `render.skin` |
+| --- | --- | --- | --- |
+| Xorg | 1.61 / 1.79 | 0.205 / **0.257** | 0.195 / 0.219 |
+| GNOME | 16.65 / **16.73** | 0.209 / **0.281** | 0.207 / 0.235 |
+| sway | 1.70 / 1.88 | 0.204 / **0.255** | 0.194 / 0.214 |
+
+Two budgets are missed. Under §12's rule 17 neither is left as a note, and both are Step 8's to
+fix:
+- **The move.** Its p95 is over 0.25 ms in every session, at four times Windows' cost on this
+  same CPU. perf shows the controller's mesh queries: every BVH node's local box is transformed
+  into the world for every query.
+  - It is the CPU's clock, not the code. Under Ubuntu's default `balanced` power profile,
+    `intel_pstate` slows a core that idles most of each frame. Under `performance` the same move
+    costs 0.051 / 0.075 ms, matching Windows (0.046 / 0.096), and skinning 0.146 / 0.156.
+  - A player's machine runs `balanced`, so the move must fit there.
+  - A dummy audio driver changed nothing.
+- **GNOME's frame work.** It counted `render.acquire`, which under Wayland's FIFO is the wait for
+  the display's own interval: the frame is the display's 16.67 ms, not work.
+
+Validation-enabled costs are diagnostics (§12's revision): skin 0.44–0.49 ms median, and frame
+work 16.66 ms on Xorg and GNOME.
+
+**The kit.** `scripts/m26/linux.sh` (desktop, suites, install, plays, sandbox3d, capture) and
+`capture_linux.py` are the run. Two kit changes came from it:
+- `scripts/m18/wayland.sh` gained `sway-input`;
+- `scripts/m18/RUNBOOK.md` gained the GNOME, input and court sections, and lost its wrong claims
+  about GNOME focus and input.
+
+Evidence is home under ignored `.zig-cache/m26-step7-linux/`. The machine stays up for Steps 8
+and 12.
+
+**Not claimed here:** a person's play on Linux. Only the owner's report claims it (§10.5).

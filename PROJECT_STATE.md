@@ -1,17 +1,41 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-17
-**Current handoff: M26 Steps 1–6 are complete. Step 7 (Linux) is next, then Steps 8–13 without a
-stop between them, by the owner's instruction of 2026-10-17.** M26 now has thirteen steps
-(`playable3d.md` §12, revised): CLAUDE.md §2's new rule 17 finishes in M26 what M0–M25 set
-aside for themselves: the controller's edge (Step 8), anisotropic filtering, per-submesh bounds
-and a fragment-less depth-only pipeline (Step 9), `fdt fmt`, an editor grammar, saved profiles
-and panel state (Step 10), and file watching (Step 11). Step 12 re-qualifies them on Windows and
-Linux, and Step 13 closes. Every other set-aside item names its roadmap milestone in
-`docs/ROADMAP.md`'s 2026-10-17 note. §10.6's budgets are now read as the shipping runtime's, with
-validation-enabled costs reported as diagnostics. The owner has supplied a Linux machine with a
-monitor (a fresh Ubuntu 26.04 installation on the PC's own drive, dual-booting the Windows target).
-No push is requested.
+**Current handoff: M26 Steps 1–7 are complete (2026-10-17). Step 8 (`physics3d`: the edge and
+the move's cost) is next, then Steps 9–13 without a stop between them, by the owner's
+instruction of 2026-10-17.** M26 now has thirteen steps (`playable3d.md` §12, revised).
+CLAUDE.md §2's new rule 17 finishes in M26 what M0–M25 set aside for themselves:
+- the controller's edge and the two Linux budget misses Step 7 found (Step 8);
+- anisotropic filtering, per-submesh bounds and a fragment-less depth-only pipeline (Step 9);
+- `fdt fmt`, an editor grammar, saved profiles and panel state (Step 10);
+- file watching (Step 11).
+Step 12 re-qualifies them on Windows and Linux, and Step 13 closes. Every other set-aside item
+names its roadmap milestone in `docs/ROADMAP.md`'s 2026-10-17 note. §10.6's budgets are read as
+the shipping runtime's. The Linux machine stays up for Steps 8 and 12; no push is requested.
+
+**M26 Step 7 is done (2026-10-17): Linux/Vulkan on a machine built from the kit alone.** Ubuntu
+26.04.1 (kernel 7.0, GNOME 50.1, Mesa 26.0.8) on the PC's own drive, Arc A750, provisioned by
+`scripts/m18/provision.sh` unchanged. Natively, validation required:
+- null **2,103/2,104** (one skip); null ReleaseSafe court **40/40**;
+- Vulkan graph plus backend **2,381/2,392** (11 skips); Vulkan ReleaseSafe court/renderer **107/107**;
+- window tests **17/19** under Xorg and GNOME.
+Under Xorg, GNOME and headless sway, from a moved read-only install:
+- the court's six play-throughs (validated and layers off) passed with every tick replayed and
+  nothing skipped or dropped, as did `sandbox3d`'s tour/walker and M18's five sample runs;
+- the seven capture checks passed on each system, read from X11's grab and cursor and from
+  Wayland's `locked`/`unlocked`.
+M18's two leftovers are closed:
+- GNOME's 20 ms was a locked, powered-off screen discarding every frame; on screen it presents
+  at 16.67 ms.
+- A Wayland pointer is driven from outside (ydotool), and each compositor grants and releases
+  the lock.
+Two layers-off budgets missed and go to Step 8:
+- the move's p95 (0.255–0.281 ms), which is the `balanced` power profile's clock (0.075 ms
+  under `performance`);
+- GNOME's frame work (16.73 ms p95), which counted FIFO's image wait.
+Kit changes: `linux.sh`/`capture_linux.py`, `wayland.sh sway-input`, and RUNBOOK corrections.
+Evidence is home in ignored `.zig-cache/m26-step7-linux/`. No person's Linux play is claimed.
+Step 7 changes scripts and documents only; no Zig source changed.
 
 **M26 Step 6 is done (2026-10-04), qualifying Step 5's unchanged implementation.** Native
 Windows x64, Core i3-10105F / Arc A750, driver `32.0.101.9034`, Zig 0.16.0 and the pinned SDK:
