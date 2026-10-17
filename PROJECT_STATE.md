@@ -1,17 +1,30 @@
 # Foundry Project State
 
-**Last updated:** 2026-10-17
-**Current handoff: M26 Steps 1–11 are complete (2026-10-18). Step 12 (Windows and Linux
-re-qualification of Steps 8–11) is next, then Step 13 (the close), without a stop between them,
-by the owner's instruction of 2026-10-17.** Step 12 needs the PC booted into Windows. M26 now has thirteen steps (`playable3d.md` §12, revised).
-CLAUDE.md §2's new rule 17 finishes in M26 what M0–M25 set aside for themselves:
+**Last updated:** 2026-10-18
+**Current handoff: M26 Steps 1–12 are complete (2026-10-18). Step 13, the close, is next and
+follows without a stop, by the owner's instruction of 2026-10-17.** All three of §10.5's play
+reports are in. M26 has thirteen steps (`playable3d.md` §12, revised).
+CLAUDE.md §2's rule 17 finishes in M26 what M0–M25 set aside for themselves:
 - the controller's edge and the two Linux budget misses Step 7 found (Step 8);
 - anisotropic filtering, per-submesh bounds and a fragment-less depth-only pipeline (Step 9);
 - `fdt fmt`, an editor grammar, saved profiles and panel state (Step 10);
 - file watching (Step 11).
-Step 12 re-qualifies them on Windows and Linux, and Step 13 closes. Every other set-aside item
-names its roadmap milestone in `docs/ROADMAP.md`'s 2026-10-17 note. §10.6's budgets are read as
-the shipping runtime's. The Linux machine stays up for Steps 8 and 12; no push is requested.
+Every other set-aside item names its roadmap milestone in `docs/ROADMAP.md`'s 2026-10-17 note.
+§10.6's budgets are read as the shipping runtime's. No push is requested.
+
+**M26 Step 12 is done (2026-10-18): Windows and Linux re-qualification.** Steps 8–11 pass on the
+PC's Ubuntu (GNOME, Xorg, sway) and on its Windows. Four fixes came out of the runs:
+- The warden's skin upload is recorded into the frame's command buffer: GNOME's p95 went from
+  0.25 to 0.11 ms.
+- The court's menu row under the pointer is drawn focused in the same frame.
+- Scripted runs fail `interrupted` on a pause they did not ask for, and take no person's
+  pointer. This explains Step 8's one Metal fall, reproduced exactly by a test.
+- Frame work leaves out the display's wait at present too: Windows reads 0.69/1.05 ms.
+
+Windows: null 2,117/2,127, Vulkan 2,398/2,418, six plays, seven capture checks, and 5 of 5 watched
+reloads. Linux: null 2,125/2,126, Vulkan 2,406/2,417, all plays and capture checks under three
+sessions. Plays by the owner on macOS ("All go"), Linux ("All green works") and Windows ("All
+green"). Bar **2,138/2,139** (one skip).
 
 **M26 Step 11 is done (2026-10-18): file watching for hot reload.** `platform.watch.Watch`
 uses inotify, kqueue or a Windows change notification and answers "anything changed?" without

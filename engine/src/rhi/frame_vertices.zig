@@ -78,20 +78,42 @@ pub fn For(comptime Backend: type) type {
             if (slot.updated == frame.index) return error.AlreadyUpdated;
             slot.updated = frame.index;
 
-            const mapped = try dev.mapBuffer(slot.upload);
-            @memcpy(mapped[0..bytes.len], bytes);
-            dev.unmapBuffer(slot.upload);
-
             const cmd = try dev.beginCommandBuffer();
             var consumed = false;
             defer if (!consumed) cmd.discard();
+            const vertex = try self.recordCopy(cmd, slot, bytes);
+            consumed = true; // submit consumes even on failure
+            try cmd.submit();
+            return vertex;
+        }
+
+        /// `update`, recorded into the caller's command buffer rather than one submitted of
+        /// its own: the copy runs in the frame's submission, ahead of the passes recorded
+        /// after it, and a frame pays for no second queue submission (M26 Step 12). `cmd`
+        /// must not be inside a render pass. Its submission, or discard, is the caller's.
+        pub fn updateIn(self: *Self, cmd: anytype, frame: command.FrameContext, bytes: []const u8) UpdateError!resource.BufferHandle {
+            if (!self.live) return error.InvalidHandle;
+            const dev = self.device;
+            if (!dev.in_frame or frame.index != dev.frame_index or frame.slot != dev.frame_slot or
+                frame.slot >= self.slot_count or !frame.surface_texture.eql(dev.surface_texture))
+                return error.InvalidFrame;
+            if (bytes.len == 0 or bytes.len > self.capacity) return error.InvalidSize;
+            const slot = &self.slots[frame.slot];
+            if (slot.updated == frame.index) return error.AlreadyUpdated;
+            slot.updated = frame.index;
+            return self.recordCopy(cmd, slot, bytes);
+        }
+
+        fn recordCopy(self: *Self, cmd: anytype, slot: *Slot, bytes: []const u8) UpdateError!resource.BufferHandle {
+            const dev = self.device;
+            const mapped = try dev.mapBuffer(slot.upload);
+            @memcpy(mapped[0..bytes.len], bytes);
+            dev.unmapBuffer(slot.upload);
             try cmd.bufferBarrier(&.{.{ .buffer = slot.vertex, .from = slot.state, .to = .copy_dst }});
             slot.state = .copy_dst;
             try cmd.copyBufferToBuffer(.{ .src = slot.upload, .dst = slot.vertex, .size = bytes.len });
             try cmd.bufferBarrier(&.{.{ .buffer = slot.vertex, .from = .copy_dst, .to = .shader_read }});
             slot.state = .shader_read;
-            consumed = true; // submit consumes even on failure
-            try cmd.submit();
             return slot.vertex;
         }
     };

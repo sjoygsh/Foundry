@@ -1272,7 +1272,9 @@ pub const Renderer = struct {
 
     /// Optional host timing seam; `prepare` also calls it, without repeating completed work.
     /// It joins all jobs and submits copies before any pass is opened.
-    pub fn prepareSkin(self: *Self, frame: rhi.FrameContext) Error!void {
+    /// Skins this frame's admitted vertices on the CPU and records their copy into `cmd`, the
+    /// frame's own command buffer, ahead of the passes recorded after it.
+    pub fn prepareSkin(self: *Self, cmd: *rhi.CommandBuffer, frame: rhi.FrameContext) Error!void {
         if (!self.recording) return error.NotRecording;
         if (frame.slot >= self.slots.len) return error.InvalidFrameSlot;
         if (!self.device.in_frame or frame.index != self.device.frame_index or frame.slot != self.device.frame_slot or !frame.surface_texture.eql(self.device.surface_texture)) return error.InvalidFrame;
@@ -1310,17 +1312,16 @@ pub const Renderer = struct {
             }
             // Failure is consumed, just like the underlying frame helper's update.
             self.skin_frame = frame.index;
-            self.skin_vertex = try self.skin_buffer.?.update(frame, self.skin_bytes[0 .. @as(usize, count) * 40]);
+            self.skin_vertex = try self.skin_buffer.?.updateIn(cmd, frame, self.skin_bytes[0 .. @as(usize, count) * 40]);
         }
         self.skin_frame = frame.index;
     }
 
     pub fn prepare(self: *Self, cmd: *rhi.CommandBuffer, frame: rhi.FrameContext) Error!void {
-        _ = cmd;
         if (!self.recording) return error.NotRecording;
         if (frame.slot >= self.slots.len) return error.InvalidFrameSlot;
         if (self.planned_draws == null or self.planned_draws.? != self.draws.items.len) try self.plan();
-        try self.prepareSkin(frame);
+        try self.prepareSkin(cmd, frame);
         try self.ensureTargets(self.view.target_size);
         for (self.order.items) |draw_index| _ = try self.ensurePipeline(self.draws.items[draw_index].pipeline_key);
         if (self.shadow_fit != null) {
@@ -1915,8 +1916,8 @@ test "M24 transparent skins sort by posed centres and prepared palettes cannot b
     try testing.expectEqualSlices(u32, &.{ 1, 0 }, fx.renderer.order.items);
     const frame = try fx.device.beginFrame();
     const cmd = try fx.device.beginCommandBuffer();
-    try fx.renderer.prepareSkin(frame);
-    try fx.renderer.prepareSkin(frame);
+    try fx.renderer.prepareSkin(cmd, frame);
+    try fx.renderer.prepareSkin(cmd, frame);
     try testing.expectError(error.NotRecording, fx.renderer.drawMesh(.{ .mesh = mesh, .material = material, .world = .identity, .skin = &strip_palette }));
     try testing.expectError(error.NotRecording, fx.renderer.addLight(.{ .kind = .directional, .intensity = 1, .world = .identity }));
     try fx.renderer.prepare(cmd, frame);
@@ -1964,10 +1965,14 @@ test "M24 a failed vertex submission cannot be retried as a prepared skin" {
     try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = .identity, .skin = &strip_palette });
     const frame = try fx.device.beginFrame();
     const cmd = try fx.device.beginCommandBuffer();
-    defer cmd.discard();
+    // The copy is recorded into the frame's own command buffer (M26 Step 12), so a submission
+    // that fails is that frame's, and the skin it carried is not prepared a second time.
+    try fx.renderer.prepareSkin(cmd, frame);
+    try fx.renderer.prepareSkin(cmd, frame);
+    try testing.expectError(error.AlreadyUpdated, fx.renderer.skin_buffer.?.updateIn(cmd, frame, fx.renderer.skin_bytes[0..40]));
     fx.device.faults.submit = error.DeviceLost;
-    try testing.expectError(error.DeviceLost, fx.renderer.prepareSkin(frame));
-    try testing.expectError(error.NotRecording, fx.renderer.prepareSkin(frame));
+    try testing.expectError(error.DeviceLost, cmd.submit());
+    fx.device.faults.submit = null;
     try fx.device.endFrame();
     try fx.renderer.begin(testView(8));
     try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = .identity, .skin = &strip_palette });

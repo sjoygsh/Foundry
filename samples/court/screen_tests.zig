@@ -457,6 +457,49 @@ test "court: the pointer reaches every menu row, and a dragged slider changes it
     _ = try describeAt(&ctx, view, &chosen, ui.Input.at(.init(0, row.y), .released));
 }
 
+test "court: the row under the pointer is hovered and drawn focused in the frame it arrives" {
+    const gpa = testing.allocator;
+    var ctx = testContext(gpa);
+    defer ctx.deinit();
+    const text: Text = .{};
+    var menus: menus_mod.Menus = .{};
+    var chosen: menus_mod.Options = .{};
+    _ = menus.update(.title, .{}, null, null, &chosen);
+    const view: hud.View = .{ .phase = .title, .menus = &menus, .text = &text, .pointer_moved = true, .size = size };
+
+    // Play has the keyboard's focus; its label's colour is what a focused row looks like.
+    var still = view;
+    still.pointer_moved = false;
+    _ = try describeAt(&ctx, still, &chosen, .{});
+    const focused = labelColor(&ctx, text.play).?;
+    const quit = rowCentre(&ctx, text.quit).?;
+    try testing.expect(!std.meta.eql(focused, labelColor(&ctx, text.quit).?));
+
+    // One frame: the pointer arrives on Quit, which is hovered and drawn focused at once, and
+    // Play no longer is. It used to take two frames (M26 Step 12, a person's report).
+    const arrived = try describeAt(&ctx, view, &chosen, ui.Input.at(quit, .up));
+    try testing.expectEqual(@as(?menus_mod.Item, .quit), arrived.hovered);
+    try testing.expect(std.meta.eql(focused, labelColor(&ctx, text.quit).?));
+    try testing.expect(!std.meta.eql(focused, labelColor(&ctx, text.play).?));
+
+    // The options screen lays its rows out the same way.
+    _ = menus.update(.title, .{}, .options, .options, &chosen);
+    _ = try describeAt(&ctx, still, &chosen, .{});
+    const back = rowCentre(&ctx, text.back).?;
+    const on_back = try describeAt(&ctx, view, &chosen, ui.Input.at(back, .up));
+    try testing.expectEqual(@as(?menus_mod.Item, .back), on_back.hovered);
+    try testing.expect(std.meta.eql(focused, labelColor(&ctx, text.back).?));
+    try testing.expect(!std.meta.eql(focused, labelColor(&ctx, text.master_volume).?));
+}
+
+fn labelColor(ctx: *const ui.Context, label: []const u8) ?ui.Color {
+    for (ctx.list.items()) |command| switch (command) {
+        .text => |t| if (std.mem.eql(u8, ctx.list.textOf(t.text), label)) return t.color,
+        else => {},
+    };
+    return null;
+}
+
 // -- preferences -----------------------------------------------------------------------
 
 const PrefsFixture = struct {

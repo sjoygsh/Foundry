@@ -305,6 +305,47 @@ test "court: a script that reaches the wrong ending, or none, fails" {
     try testing.expectEqual(@as(?scripted.ScriptKind, .win), scripted.ScriptKind.parse("win"));
 }
 
+test "court: a pause the script did not ask for fails it as interrupted, mid-jump or not" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var env = try TestEnv.init(gpa);
+    defer env.deinit(gpa);
+    env.game.stride = 1.6;
+    env.game.warden_stride = 0.9;
+    // The win script, paused by a lost focus once its player is past the floor's edge over the
+    // gap, then resumed by the person's click: the run M26 Step 8 saw fall on Metal. Without
+    // the refusal the script skips the rest of its route to `expect won` and the player,
+    // resumed in mid-air with no hands on the pad, falls.
+    var driver = scripted.ScriptDriver.init(.win);
+    var menus: menus_mod.Menus = .{};
+    var chosen: menus_mod.Options = .{};
+    var paused_at: ?u32 = null;
+    var ticks: u32 = 0;
+    while (!driver.done) : (ticks += 1) {
+        try testing.expect(ticks < 3000);
+        const frame = driver.next(&env.game);
+        if (driver.done) break;
+        var command = menus.update(env.game.phase, frame.keys, null, null, &chosen);
+        const airborne = env.game.phase == .playing and !env.game.walk.result.grounded and env.game.walk.result.feet.z < -2.1;
+        if (paused_at == null and airborne and command == .none) {
+            command = .pause;
+            paused_at = ticks;
+        }
+        // Thirty frames later, a click on Resume: the person's pointer, not the script's.
+        if (paused_at) |at| if (ticks == at + 30 and env.game.phase == .paused) {
+            command = menus.update(env.game.phase, .{}, null, .resume_game, &chosen);
+        };
+        var intent = frame.intent;
+        intent.action = command.action();
+        try env.game.step(intent, dt);
+    }
+    try testing.expect(paused_at != null);
+    try testing.expectEqual(scripted.ScriptDriver.Failure.interrupted, driver.failure.?);
+    // It stopped at the pause, before the click could take the game anywhere.
+    try testing.expectEqual(game_mod.Phase.paused, env.game.phase);
+    try testing.expect(ticks <= paused_at.? + 2);
+}
+
 /// Stands the player at `feet`, looking at `target`. A test's shortcut, not a player's.
 fn standLooking(game: *game_mod.Game, feet: Vec3, target: Vec3) !void {
     try game.walk.teleport(feet);

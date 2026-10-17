@@ -1499,7 +1499,7 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             if (comptime @hasDecl(World, "prepareSkin")) {
                 const scope = self.beginScope(span.render_skin);
                 defer scope.end();
-                try world.prepareSkin(frame);
+                try world.prepareSkin(cmd, frame);
             }
             try world.prepare(cmd, frame);
             if (comptime has_overlay) {
@@ -2746,7 +2746,7 @@ test "M24 the host times the optional skin seam before ordinary preparation" {
         pub fn plan(self: *@This()) !void {
             try self.world.plan();
         }
-        pub fn prepareSkin(self: *@This(), _: rhi.FrameContext) !void {
+        pub fn prepareSkin(self: *@This(), _: anytype, _: rhi.FrameContext) !void {
             try testing.expect(self.world.planned);
             self.skinned = true;
         }

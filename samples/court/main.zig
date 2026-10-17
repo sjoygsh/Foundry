@@ -440,7 +440,9 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
             .gate_open = if (game.gate) |*g| g.opening else false,
             .has_gate = game.gate != null,
             .show_goal = game.tick < goal_ticks,
-            .pointer_moved = motion.x != 0 or motion.y != 0,
+            // A script's hands are the script's: the person's pointer neither hovers nor
+            // clicks for it, so a run cannot be steered by the mouse resting on the window.
+            .pointer_moved = script_driver == null and (motion.x != 0 or motion.y != 0),
             .size = .init(@floatFromInt(logical.width), @floatFromInt(logical.height)),
         }, &chosen);
 
@@ -449,7 +451,8 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         try screens.describePanels(engine, .init(@floatFromInt(logical.width), @floatFromInt(logical.height)), &renderer, mixer);
 
         // 3. The menu's answer. Only a phase change travels to the tick.
-        var command = menus.update(game.phase, frame.keys, shown.hovered, shown.clicked, &chosen);
+        const by_hand = script_driver == null;
+        var command = menus.update(game.phase, frame.keys, if (by_hand) shown.hovered else null, if (by_hand) shown.clicked else null, &chosen);
         // Losing the window pauses a game in play: the capture is gone, and is asked for
         // again only when the player resumes (§4.2).
         if (lost_focus and game.phase == .playing and command == .none) command = .pause;

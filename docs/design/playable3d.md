@@ -1418,3 +1418,100 @@ Making the engine ignore its watches fails the notification test.
 
 **The bar:** `zig fmt`, `zig build test` **2,136/2,137** (one skip), all four `check`s, the four
 headless samples and `fdt-check`.
+
+## Resolution — Step 12: Windows and Linux re-qualification (2026-10-18)
+
+Steps 8–11 ran on the PC's Ubuntu and then its Windows, and both pass. Re-qualifying found four
+things, each fixed in this step rather than left for later (rule 17).
+
+**What the runs found.**
+- **Skinning upload.** On GNOME the warden's skin p95 was 0.244–0.263 ms, against a 0.25 ms
+  budget. Its vertices were uploaded by a submission of their own each frame.
+  - `FrameVertices.updateIn` now records the copy into the frame's command buffer, and
+    `render3d.Renderer.prepareSkin` takes that buffer (`update` is `updateIn` plus a submit).
+  - GNOME's p95 fell to 0.10–0.11 ms. M24's failed-submission test now drives `AlreadyUpdated`
+    and a lost device through the frame's own submit.
+- **Menu hover.** The owner's Linux play reported a slight lag before a row under the pointer
+  turned green. The row was found from the last frame's layout and drawn focused a frame late.
+  - `hud.OptionsLayout`/`underPointer` now find the row from this frame's layout before drawing,
+    so it is drawn focused in the same frame. A new screen test checks that frame's label
+    colour; drawing from the old focus fails it.
+  - The owner's second Linux play: "All green works".
+- **Step 8's one Metal fall is explained, and scripted runs no longer take a person's input.**
+  - The failed `win` stopped at step 21 of 46. Step 21 is `expect won`, reached with the player
+    at the gap, at feet (−0.018, −2.015, −2.305).
+  - The driver can only get there one way. The game was paused while the player was over the
+    gap, so the driver skipped the route's remaining moves to the next `expect`. A real click on
+    Resume then resumed the game, and the player, mid-air with no hands on the pad, fell.
+  - A lost window focus pauses the game (§4.2). The roughly 900-frame "slow first lap" was that
+    pause.
+  - A new test pauses `win` past the floor's edge and then clicks Resume. With the new refusal
+    removed, it reproduces the run exactly: `wrong_ending`, `fell`, step 21, the same feet.
+  - `ScriptDriver` now fails `interrupted` when the game is paused at a move the script did not
+    pause for. In a scripted run the court gives the menus neither the person's hover nor their
+    clicks.
+  - Eight Metal `win` runs in this step passed: six in a row, starting with the first after a
+    fresh build, and one in each of the two bars.
+- **Frame work counted a blocking present on Windows.** Today the PC's present call blocked for
+  the display interval: the sandbox's `render.present` median was 15.49 ms. So the court's
+  frame work read 16.66 ms.
+  - The code had not regressed: Step 6's own install read 16.66 ms on the same machine today.
+  - Like Step 8's `render.acquire`, `render.present` is now left out of frame work, which is
+    labelled "no pacing sleep, image acquire or present". The timing test gained a present
+    span, and counting it fails the test.
+  - Windows' layers-off frame work is now 0.69/1.05 ms.
+
+**Windows**, Arc A750, from a worktree at `4e31fff` with the Step 12 files overlaid and
+hash-checked. The run was at `-j2`, below-normal priority, under Step 6's explicit
+`-IgnoreCpuLimit`: the first attempt tripped the 50% gate on its own compile load, with the PC
+otherwise idle.
+- Null **2,117/2,127**: 10 skips, Step 6's nine plus the watch's not-a-directory refusal, which
+  leaves that answer to Windows. So the watch test and the engine's notification test ran.
+- Vulkan **2,398/2,418**, ReleaseSafe court **42/42**, Vulkan ReleaseSafe **112/112**.
+- `native-window-test` **8/9**, `vulkan-window-test` **10/10**.
+- The relocated ReleaseSafe install was made read-only by ACL. Six plays ran from it (validation
+  and layers off × win/caught/fell). All reached their endings with zero skipped frames and zero
+  drops, every tick's hash matched a fresh simulation, and the validation logs are clean.
+- All seven OS capture checks pass. The installed hashes are unchanged, and no preferences were
+  written.
+- A Debug install's sandbox logged `watching 1 content directory(ies)` and reloaded its sprite
+  sheet **5 times for 5 edits**. Hot reload is a Debug build's (`app.Config.hot_reload`), so the
+  ReleaseSafe install correctly never watched.
+
+| Windows, whole run | Frame work median / p95 | Move upper bound | One-warden skin |
+| --- | --- | --- | --- |
+| Layers off, `win` | 0.6861 / 1.0506 ms | 0.0646 / 0.1150 ms | 0.0786 / 0.1197 ms |
+| Validation, `win` | 2.1839 / 3.6239 ms | 0.0553 / 0.1023 ms | 0.1288 / 0.1839 ms |
+
+The layers-off runs meet §10.6's budgets. Validation-enabled `caught`'s skin p95 is 0.2766 ms; as
+in Step 6, that diagnostic mode is recorded and not claimed against the budgets.
+
+**Linux** (Ubuntu 26.04.1, balanced profile), on the Step 12 tree before the three court changes
+below:
+- Null **2,125/2,126**, ReleaseSafe court **41/41**.
+- Vulkan **2,406/2,417**, Vulkan ReleaseSafe **111/111**.
+- Window tests **17/19** under GNOME and Xorg.
+- Six plays, `sandbox3d`'s tour and seven capture checks each pass under GNOME, Xorg and sway.
+- Move p95: 0.2007 / 0.1724 / 0.1789 ms. Skin p95: 0.1128 / 0.1021 / 0.0887 ms.
+
+The later changes are to `scripted.zig`, `main.zig` and `timing.zig`, all sample code:
+- `scripted.zig` and `main.zig` change only a scripted run that is interrupted, or that a
+  person's pointer would steer.
+- `timing.zig` leaves one more wait out of a measure.
+
+None touches a Linux path. Each is cross-compiled for Linux in the bar and tested on null, Metal
+and Windows. The Linux figures above were measured with the present included, so they are upper
+bounds.
+
+**Plays by a person**, each claimed only by the owner's own report:
+- **macOS**: "All go on the mac". Won, caught and fell; 7,613 frames, none skipped; 138 sounds,
+  none dropped.
+- **Linux**: "evrything is fanatstic", with the hover lag fixed above, then "All green works".
+- **Windows**: "All green". Won, caught, fell and paused, with no lost focus; 3,232 frames, none
+  skipped; 44 sounds, none dropped.
+
+**The bar:** `zig fmt`; `zig build test` **2,138/2,139** (one skip); all four `check`s;
+`fdt-check`; the four headless samples. Metal `court-test` 42/42; the three Metal endings.
+Evidence is in the ignored `.zig-cache/m26-step12-linux/` and `.zig-cache/m26-step12-windows/`.
+
+Step 12 is complete. Step 13 closes M26.

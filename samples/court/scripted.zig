@@ -47,7 +47,10 @@ pub const ScriptDriver = struct {
     /// Why the script stopped short, if it did. Null with `done` set means it succeeded.
     failure: ?Failure = null,
 
-    pub const Failure = enum { wrong_ending, timed_out, unknown_beacon };
+    /// `interrupted`: the game paused at a move the script had not paused for, as a lost
+    /// window focus pauses it (§4.2). A script never walks on past that, since the steps it
+    /// would skip are the route itself (M26 Step 12).
+    pub const Failure = enum { wrong_ending, timed_out, unknown_beacon, interrupted };
 
     pub fn init(kind: ScriptKind) ScriptDriver {
         return .{ .script = kind.script() };
@@ -105,7 +108,8 @@ pub const ScriptDriver = struct {
                 },
                 else => {},
             }
-            // A move. It needs a game in play; anything else is for the next `expect` to judge.
+            // A move. It needs a game in play; an ending is for the next `expect` to judge.
+            if (game.phase == .paused) return self.fail(.interrupted);
             if (game.phase != .playing) {
                 while (self.step < steps.len and steps[self.step] != .expect) self.step += 1;
                 if (self.step >= steps.len) return self.fail(.wrong_ending);

@@ -176,59 +176,116 @@ fn ended(ctx: *ui.Context, view: View) Allocator.Error!Result {
     return result;
 }
 
+/// Where the options screen's parts go: worked out once, before anything is drawn, so the row
+/// under the pointer is known while the rows are drawn (`underPointer`).
+const OptionsLayout = struct {
+    left: f32,
+    width: f32,
+    heading: f32,
+    audio: f32,
+    volume: Rect,
+    controls: f32,
+    sensitivity: Rect,
+    invert: Rect,
+    note: f32,
+    back: Rect,
+
+    fn of(ctx: *const ui.Context, view: View) OptionsLayout {
+        const style = ctx.style;
+        const width: f32 = 520;
+        const left = (view.size.x - width) / 2;
+        var l: OptionsLayout = undefined;
+        l.left = left;
+        l.width = width;
+        var y = view.size.y * 0.16;
+        l.heading = y;
+        y += style.line_height * 1.8;
+        l.audio = y;
+        y += sectionHeight(ctx);
+        l.volume = .init(left, y, width, style.line_height);
+        y += style.line_height + style.spacing * 3;
+        l.controls = y;
+        y += sectionHeight(ctx);
+        l.sensitivity = .init(left, y, width, style.line_height);
+        y += style.line_height + style.spacing;
+        l.invert = .init(left, y, width, style.line_height);
+        y += style.line_height + style.spacing * 3;
+        l.note = y;
+        y += style.line_height;
+        l.back = .init(left, y, 160, style.line_height);
+        return l;
+    }
+};
+
 fn optionsScreen(ctx: *ui.Context, view: View, options: *Options) Allocator.Error!Result {
     const style = ctx.style;
     const t = view.text;
     try veil(ctx, view);
-    const width: f32 = 520;
-    const left = (view.size.x - width) / 2;
-    var y = view.size.y * 0.16;
-    try text(ctx, t.options, .init(left, y), style.text, 2);
-    y += style.line_height * 1.8;
+    const l = OptionsLayout.of(ctx, view);
+    try text(ctx, t.options, .init(l.left, l.heading), style.text, 2);
     var result: Result = .{};
-    const focused = view.menus.focused(view.phase);
+    const placed = [_]Placed{
+        .{ .item = .volume, .bounds = l.volume },
+        .{ .item = .sensitivity, .bounds = l.sensitivity },
+        .{ .item = .invert, .bounds = l.invert },
+        .{ .item = .back, .bounds = l.back },
+    };
+    const under = underPointer(ctx, view, &placed);
+    result.hovered = under;
+    const focused = under orelse view.menus.focused(view.phase);
 
-    try section(ctx, t.audio, left, &y, width);
+    try section(ctx, t.audio, l.left, l.audio, l.width);
     var buffer: [16]u8 = undefined;
     const volume = std.fmt.bufPrint(&buffer, "{d:.0}%", .{options.volume * 100}) catch buffer[0..0];
-    if (try sliderRow(ctx, view, .volume, t.master_volume, volume, &options.volume, Options.volume_min, Options.volume_max, Options.volume_step, .init(left, y, width, style.line_height), focused == .volume, &result)) result.options_changed = true;
-    y += style.line_height + style.spacing * 3;
+    if (try sliderRow(ctx, .volume, t.master_volume, volume, &options.volume, Options.volume_min, Options.volume_max, Options.volume_step, l.volume, focused == .volume, &result)) result.options_changed = true;
 
-    try section(ctx, t.controls_section, left, &y, width);
+    try section(ctx, t.controls_section, l.left, l.controls, l.width);
     const sensitivity = std.fmt.bufPrint(&buffer, "{d:.1}x", .{options.sensitivity}) catch buffer[0..0];
-    if (try sliderRow(ctx, view, .sensitivity, t.look_sensitivity, sensitivity, &options.sensitivity, Options.sensitivity_min, Options.sensitivity_max, Options.sensitivity_step, .init(left, y, width, style.line_height), focused == .sensitivity, &result)) result.options_changed = true;
-    y += style.line_height + style.spacing;
+    if (try sliderRow(ctx, .sensitivity, t.look_sensitivity, sensitivity, &options.sensitivity, Options.sensitivity_min, Options.sensitivity_max, Options.sensitivity_step, l.sensitivity, focused == .sensitivity, &result)) result.options_changed = true;
     {
-        const bounds: Rect = .init(left, y, width, style.line_height);
-        try row(ctx, view, .invert, t.invert_look, bounds, focused == .invert, &result);
+        const bounds = l.invert;
+        try row(ctx, .invert, t.invert_look, bounds, focused == .invert, &result);
         const state = if (options.invert) t.on else t.off;
         const size = measure(ctx, state, 1);
         const box: Rect = .init(bounds.x + bounds.w - style.padding.x - 18, bounds.y + (bounds.h - 18) / 2, 18, 18);
         try part(ctx, box, if (options.invert) .check_on else .check_off, if (options.invert) style.accent else style.control);
         try text(ctx, state, .init(box.x - 10 - size.x, bounds.y + (bounds.h - size.y) / 2), rowColor(ctx, focused == .invert), 1);
     }
-    y += style.line_height + style.spacing * 3;
 
-    try text(ctx, t.applies_at_once, .init(left, y), style.text_dim, 1);
-    y += style.line_height;
-    try row(ctx, view, .back, t.back, .init(left, y, 160, style.line_height), focused == .back, &result);
+    try text(ctx, t.applies_at_once, .init(l.left, l.note), style.text_dim, 1);
+    try row(ctx, .back, t.back, l.back, focused == .back, &result);
     try centred(ctx, t.options_hints, view.size.x / 2, view.size.y - 40, style.text_dim, 1);
     return result;
 }
 
-/// A section's name over a hairline.
-fn section(ctx: *ui.Context, name: []const u8, left: f32, y: *f32, width: f32) Allocator.Error!void {
+/// A row and where it is drawn.
+const Placed = struct { item: Item, bounds: Rect };
+
+/// The row the pointer is over **this** frame, from the very rectangles the rows are drawn
+/// in. The kernel's hot widget is last frame's, and the menus' focus follows it a frame later
+/// again, so a highlight that waited for both trailed the pointer by two frames; a person
+/// felt it under Wayland's FIFO (M26 Step 12). A resting pointer, or one dragging a slider,
+/// takes nothing.
+fn underPointer(ctx: *const ui.Context, view: View, placed: []const Placed) ?Item {
+    if (!view.pointer_moved or !ctx.active.isNone()) return null;
+    for (placed) |p| if (p.bounds.contains(ctx.input.pointer)) return p.item;
+    return null;
+}
+
+/// A section's name over a hairline, at `y`.
+fn section(ctx: *ui.Context, name: []const u8, left: f32, y: f32, width: f32) Allocator.Error!void {
     const style = ctx.style;
-    try text(ctx, name, .init(left, y.*), style.text_dim, 1);
-    y.* += style.line_height * 0.7;
-    try ctx.list.addRect(ctx.gpa, .init(left, y.*, width, style.separator_thickness), style.control_hot);
-    y.* += style.spacing * 2;
+    try text(ctx, name, .init(left, y), style.text_dim, 1);
+    try ctx.list.addRect(ctx.gpa, .init(left, y + style.line_height * 0.7, width, style.separator_thickness), style.control_hot);
+}
+
+fn sectionHeight(ctx: *const ui.Context) f32 {
+    return ctx.style.line_height * 0.7 + ctx.style.spacing * 2;
 }
 
 /// A row with a track and its value at the right. Returns whether a drag changed `value`.
 fn sliderRow(
     ctx: *ui.Context,
-    view: View,
     item: Item,
     label: []const u8,
     shown: []const u8,
@@ -241,7 +298,7 @@ fn sliderRow(
     result: *Result,
 ) Allocator.Error!bool {
     const style = ctx.style;
-    try row(ctx, view, item, label, bounds, focused, result);
+    try row(ctx, item, label, bounds, focused, result);
     const value_width: f32 = 64;
     const track: Rect = .init(bounds.x + bounds.w - style.padding.x - value_width - 180, bounds.y + (bounds.h - 6) / 2, 180, 6);
     // A taller target than the line that is drawn, so the pointer can find it.
@@ -270,13 +327,24 @@ fn sliderRow(
 /// The current screen's rows, one under another from `top`.
 fn rows(ctx: *ui.Context, view: View, left: f32, top: f32) Allocator.Error!Result {
     var result: Result = .{};
-    const focused = view.menus.focused(view.phase);
-    var y = top;
-    for (view.menus.items(view.phase)) |item| {
-        try row(ctx, view, item, labelOf(view.text, item), .init(left, y, row_width, ctx.style.line_height), focused == item, &result);
-        y += ctx.style.line_height + ctx.style.spacing;
+    const items = view.menus.items(view.phase);
+    var placed: [max_rows]Placed = undefined;
+    for (items, 0..) |item, i| placed[i] = .{ .item = item, .bounds = rowBounds(ctx, left, top, i) };
+    const under = underPointer(ctx, view, placed[0..items.len]);
+    result.hovered = under;
+    const focused = under orelse view.menus.focused(view.phase);
+    for (placed[0..items.len]) |p| {
+        try row(ctx, p.item, labelOf(view.text, p.item), p.bounds, focused == p.item, &result);
     }
     return result;
+}
+
+/// The most rows one screen lists.
+const max_rows = 8;
+
+fn rowBounds(ctx: *const ui.Context, left: f32, top: f32, index: usize) Rect {
+    const step = ctx.style.line_height + ctx.style.spacing;
+    return .init(left, top + step * @as(f32, @floatFromInt(index)), row_width, ctx.style.line_height);
 }
 
 fn rowsHeight(ctx: *ui.Context, view: View) f32 {
@@ -286,10 +354,9 @@ fn rowsHeight(ctx: *ui.Context, view: View) f32 {
 
 /// One menu row: the focused one is filled with the accent and written in the surface's
 /// ink; the others are plain text.
-fn row(ctx: *ui.Context, view: View, item: Item, label: []const u8, bounds: Rect, focused: bool, result: *Result) Allocator.Error!void {
+fn row(ctx: *ui.Context, item: Item, label: []const u8, bounds: Rect, focused: bool, result: *Result) Allocator.Error!void {
     const id = rowId(item);
     if (try ui.selectableIn(ctx, id, "", focused, bounds)) result.clicked = item;
-    if (view.pointer_moved and ctx.isHot(id)) result.hovered = item;
     const size = measure(ctx, label, 1);
     try text(ctx, label, .init(bounds.x + ctx.style.padding.x, bounds.y + (bounds.h - size.y) / 2), rowColor(ctx, focused), 1);
 }
