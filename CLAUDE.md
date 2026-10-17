@@ -115,6 +115,13 @@ the game layer.
 14. Do not add complexity solely because a larger engine does it that way.
 15. When uncertain, investigate and present the tradeoffs. Do not guess.
 16. Keep documentation proportional and useful to future sessions.
+17. **Nothing a milestone takes on is deferred** (the owner's decision, 2026-10-17). The
+    project now has a fixed, estimated size (ADR-0060), so there is no "later" outside it.
+    Everything a milestone's design includes is finished in that milestone before it closes:
+    each step, each exit criterion, and each limit found along the way. A design may leave
+    something out only by naming the roadmap milestone that owns it. "Returns when a game
+    asks", or a trigger with no milestone, is not an answer. A milestone that proves too
+    large is split by ADR-0060's rule, and is never closed with its own work still open.
 
 ---
 
@@ -731,6 +738,8 @@ A future session must not, without explicit discussion:
   under GPL, AGPL or LGPL.
 * Introduce a dependency that cannot be replaced, or a proprietary one.
 * Skip a milestone's runnable result in order to move faster.
+* Close a milestone with any of its own work deferred, or leave anything a design sets aside
+  without naming the roadmap milestone that owns it (§2, rule 17).
 * Expand `CLAUDE.md` into an implementation diary.
 * Treat the 150-milestone roadmap as a schedule, design a milestone before its turn, or let
   the total grow without the owner's decision (ADR-0060).
