@@ -442,3 +442,55 @@ test "character replay: 1200 tick mesh course has byte-identical feet and hashes
     try t.expectEqualSlices(u8, std.mem.asBytes(&first), std.mem.asBytes(&second));
     try t.expect(first[0].sub(first[299]).length() > 1);
 }
+
+/// Walks +X at 4 m/s under gravity for `ticks` and returns the last move.
+fn walkOff(w: *p.World, c: p.CharacterHandle, ticks: usize) !p.CharacterMove {
+    const dt: f32 = 1.0 / 60.0;
+    var velocity: f32 = 0;
+    var r: p.CharacterMove = undefined;
+    for (0..ticks) |_| {
+        velocity -= 9.81 * dt;
+        r = try move(w, c, .init(4.0 * dt, velocity * dt, 0));
+        try t.expect(!r.stuck);
+        if (r.grounded) velocity = 0;
+    }
+    return r;
+}
+
+test "character edges: walks off a box, a mesh drop and a step, and a wall still stops it" {
+    // A box floor's edge.
+    {
+        var w: p.World = .empty;
+        defer w.deinit(gpa);
+        _ = try box(&w, .init(0, -0.5, 0), .init(2, 0.5, 2));
+        const r = try walkOff(&w, try standing(&w, .init(1, p.contact_skin, 0)), 60);
+        try t.expect(!r.grounded and r.feet.x > 4 and r.feet.y < -1);
+    }
+    // A mesh floor whose edge is the top of a drop's wall: the contact under the feet touches
+    // the wall's triangle with a normal pointing almost straight up (M26 Step 3's finding).
+    {
+        var w: p.World = .empty;
+        defer w.deinit(gpa);
+        _ = try mesh(&w, &.{ .init(-2, 0, -2), .init(2, 0, -2), .init(2, 0, 2), .init(-2, 0, 2), .init(2, -3, -2), .init(2, -3, 2) }, &.{ 0, 2, 1, 0, 3, 2, 1, 2, 5, 1, 5, 4 });
+        const r = try walkOff(&w, try standing(&w, .init(1, p.contact_skin, 0)), 60);
+        try t.expect(!r.grounded and r.feet.x > 4 and r.feet.y < -1);
+    }
+    // Down a 0.3 m step: off its edge, then grounded on the floor below.
+    {
+        var w: p.World = .empty;
+        defer w.deinit(gpa);
+        _ = try floor(&w);
+        _ = try stepMesh(&w, 2, -2, 0.3);
+        const r = try walkOff(&w, try standing(&w, .init(0, 0.3 + p.contact_skin, 0)), 60);
+        try t.expect(r.grounded and r.feet.x > 4 and @abs(r.feet.y) <= 2 * p.contact_skin);
+    }
+    // A wall taller than a step still stops the same walk.
+    {
+        var w: p.World = .empty;
+        defer w.deinit(gpa);
+        _ = try floor(&w);
+        _ = try box(&w, .init(3, 1, 0), .init(0.5, 1, 2));
+        const r = try walkOff(&w, try standing(&w, .init(0, p.contact_skin, 0)), 60);
+        try t.expect(r.grounded and r.feet.x < 2.5 - 0.3 + 0.01 and r.walls > 0);
+    }
+}

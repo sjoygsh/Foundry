@@ -1,9 +1,9 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-17
-**Current handoff: M26 Steps 1–7 are complete (2026-10-17). Step 8 (`physics3d`: the edge and
-the move's cost) is next, then Steps 9–13 without a stop between them, by the owner's
-instruction of 2026-10-17.** M26 now has thirteen steps (`playable3d.md` §12, revised).
+**Current handoff: M26 Steps 1–8 are complete (2026-10-18). Step 9 (`render3d` and `rhi`:
+anisotropic filtering, per-submesh bounds, a fragment-less depth-only pipeline) is next, then
+Steps 10–13 without a stop between them, by the owner's instruction of 2026-10-17.** M26 now has thirteen steps (`playable3d.md` §12, revised).
 CLAUDE.md §2's new rule 17 finishes in M26 what M0–M25 set aside for themselves:
 - the controller's edge and the two Linux budget misses Step 7 found (Step 8);
 - anisotropic filtering, per-submesh bounds and a fragment-less depth-only pipeline (Step 9);
@@ -12,6 +12,16 @@ CLAUDE.md §2's new rule 17 finishes in M26 what M0–M25 set aside for themselv
 Step 12 re-qualifies them on Windows and Linux, and Step 13 closes. Every other set-aside item
 names its roadmap milestone in `docs/ROADMAP.md`'s 2026-10-17 note. §10.6's budgets are read as
 the shipping runtime's. The Linux machine stays up for Steps 8 and 12; no push is requested.
+
+**M26 Step 8 is done (2026-10-18): the controller walks off an edge, and the move fits on
+Linux.** A contact whose own normal is walkable now supports the feet on a wall face, which
+stopped walks 2 mm short of a mesh drop. `fell` walks off the ledge, and M23's replay and
+`sandbox3d`'s pinned hashes are unchanged. Mesh queries test BVH nodes in the mesh's own space.
+On the Step 7 machine under Ubuntu's `balanced` profile, the move's p95 is 0.186–0.192 ms (it
+was 0.255–0.281). Frame work leaves out `render.acquire`, so GNOME's is 1.74 ms p95. The court
+logs phase changes and focus loss. One of six windowed Metal `win` runs (the first after a
+build) fell into the gap, unexplained; Step 12 repeats it with the new log. Bar **2,116/2,117**
+(one skip).
 
 **M26 Step 7 is done (2026-10-17): Linux/Vulkan on a machine built from the kit alone.** Ubuntu
 26.04.1 (kernel 7.0, GNOME 50.1, Mesa 26.0.8) on the PC's own drive, Arc A750, provisioned by

@@ -19,9 +19,11 @@ here="$(cd "$(dirname "$0")" && pwd)"
 m18="$HOME/m18"
 # shellcheck disable=SC1091
 . "$m18/env.sh"
-repo="$HOME/Foundry"
-runs="$HOME/m26/runs"
-install="$HOME/m26/moved install"
+# Overridable so a later step's tree is qualified beside an earlier one's record.
+repo="${M26_REPO:-$HOME/Foundry}"
+runs="${M26_RUNS:-$HOME/m26/runs}"
+install="${M26_INSTALL:-$HOME/m26/moved install}"
+record="$install.sha256"
 runtime="/run/user/$(id -u)"
 mkdir -p "$runs"
 
@@ -90,13 +92,13 @@ suites)
     zigrun x11-windows vulkan-window-test native-window-test -Drhi=vulkan
     ;;
 install)
-    stage="$HOME/m26/stage"
+    stage="$install.stage"
     rm -rf "$stage"; [ -d "$install" ] && chmod -R u+w "$install" && rm -rf "$install"
     zigrun install install -Drhi=vulkan -Doptimize=ReleaseSafe --prefix "$stage"
     mv "$stage" "$install"
     chmod -R a-w "$install"
-    hashes > "$HOME/m26/installed.sha256"
-    echo "$(wc -l < "$HOME/m26/installed.sha256") files, read-only, at the moved copy"
+    hashes > "$record"
+    echo "$(wc -l < "$record") files, read-only, at the moved copy"
     ;;
 plays)
     S="${2:?a session}"
@@ -134,7 +136,7 @@ plays)
         done
     done
     [ -z "$(ls -A "$prefs")" ] || fail "a scripted run wrote preferences"
-    diff -q <(hashes) "$HOME/m26/installed.sha256" >/dev/null || fail "the install changed"
+    diff -q <(hashes) "$record" >/dev/null || fail "the install changed"
     echo "$S: six play-throughs passed; the install is unchanged"
     ;;
 sandbox3d)

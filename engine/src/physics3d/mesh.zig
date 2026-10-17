@@ -136,7 +136,17 @@ pub const Mesh = struct {
     /// Fixed-stack walk, then index sort. `out` was reserved for this mesh's full count at
     /// add time; even a query covering the entire mesh performs no allocation.
     pub fn candidates(self: *const Mesh, pose: shape.Pose, area: Aabb, out: []u32) []const u32 {
-        const transform: shape.Convex = .{ .core = .point, .radius = 0, .pose = pose };
+        // The query box is moved into the mesh's own space once, rather than every node's box
+        // into the world: a node that overlaps the area in the world has a point the inverse
+        // pose carries into both its local box and the area's local bounds, so nothing is lost.
+        const inverse: shape.Pose = .{
+            .position = pose.inverseDirection(pose.position.scale(-1)),
+            .rotation = pose.rotation.conjugate(),
+        };
+        const local: shape.Convex = .{ .core = .point, .radius = 0, .pose = inverse };
+        // Expand for rigid-transform f32 rounding at the coordinate bound. A false positive
+        // only costs a narrowphase; a false negative would lose collision.
+        const local_area = local.poseBounds(area).expand(0.002);
         var stack: [stack_capacity]u32 = undefined;
         stack[0] = 0;
         var pending: usize = 1;
@@ -144,9 +154,7 @@ pub const Mesh = struct {
         while (pending > 0) {
             pending -= 1;
             const node = self.nodes[stack[pending]];
-            // Expand for rigid-transform f32 rounding at the coordinate bound. A false
-            // positive only costs a narrowphase; a false negative would lose collision.
-            if (!transform.poseBounds(node.bounds).expand(0.002).overlaps(area)) continue;
+            if (!node.bounds.overlaps(local_area)) continue;
             if (node.count != 0) {
                 for (self.order[node.first..][0..node.count]) |t| {
                     if (!self.usable(t)) continue;

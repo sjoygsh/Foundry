@@ -90,12 +90,11 @@ pub const caught: Script = .{ .tick_limit = 1000, .steps = &(start ++ [_]Step{
     .{ .expect = .playing },
 }) };
 
-/// Jumps short into the gap, then restarts from the end screen. The jump is needed: the
-/// character controller stops a walk at the court floor's edge (recorded in playable3d.md,
-/// Step 3's correction).
+/// Walks off the court floor's edge into the gap, as a person falls, then restarts from the
+/// end screen. (Until M26 Step 8 the controller stopped a walk at that edge, and this script
+/// jumped short instead.)
 pub const fell: Script = .{ .tick_limit = 500, .steps = &(start ++ [_]Step{
-    .{ .walk = .{ .to = .{ 0, 0, -1.7 }, .face = .{ 0, 1.65, -5 }, .within = 0.1 } },
-    .{ .jump = .{ .to = .{ 0, 0, -2.6 }, .face = .{ 0, 1.65, -5 }, .land_z = -100 } },
+    .{ .walk = .{ .to = .{ 0, 0, -2.6 }, .face = .{ 0, 1.65, -5 }, .within = 0.1 } },
     .{ .expect = .fell },
     .{ .press = .accept },
     .{ .expect = .playing },

@@ -180,7 +180,10 @@ pub fn move(w: *World, gpa: Allocator, handle: CharacterHandle, displacement: Ve
                 r.ceiling = true;
                 remaining.y = 0;
             }
-            if (walkable(c.config, h)) {
+            // A contact whose own normal is walkable supports the feet, even where the face
+            // it touches is a wall: the top edge of a drop, met from above. Its tiny horizontal
+            // part is not a wall's direction, and treating it as one stops a walk off the edge.
+            if (walkable(c.config, h) or h.normal.y >= @cos(c.config.max_slope)) {
                 remaining = project(remaining, h.normal);
             } else {
                 r.walls += 1;

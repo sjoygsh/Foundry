@@ -1358,3 +1358,13 @@ overlay grant, no new dependency. Linux is compile-only.
 | 22 | Nothing enters the ABI; the overlay gains nothing, since `debug` is not granted `physics3d` | §12 |
 
 Once these are accepted, nothing blocks Step 1.
+
+## Note — 2026-10-18, M26 Step 8: a walkable contact on a wall face supports the feet
+
+M26's court found that the controller would not walk off a mesh floor's edge where a drop's
+vertical wall meets it. The contact under the feet touches the wall's triangle with a normal
+pointing almost straight up, and the wall response turned that normal's tiny horizontal part
+into a full wall. `move` now treats a contact whose own normal is walkable as support, sliding
+along it, whatever face it touches; grounding is still decided by the face. Mesh queries also now
+test BVH nodes in the mesh's own space, which returns the same candidates and costs less
+(`playable3d.md`, Step 8's Resolution).

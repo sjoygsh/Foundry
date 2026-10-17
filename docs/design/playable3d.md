@@ -483,6 +483,13 @@ The `fell` script then walks off the ledge instead of jumping short. **Exit:** t
 off an edge on null and Metal, M23's course and every replay hash that does not cross an edge
 are unchanged, and changed hashes are explained.
 
+*Added 2026-10-17, from Step 7:* the move's p95 missed 0.25 ms on Linux under Ubuntu's default
+`balanced` power profile, and the court's frame work counted Wayland FIFO's image wait. The
+controller's mesh query is made cheaper without changing its answers, and frame work leaves out
+`render.acquire` as it leaves out the pacing sleep. **Exit, added:** on that machine, under
+`balanced`, the move's p95 is within 0.25 ms in every session, and GNOME's frame work is within
+the frame.
+
 ### Step 9 — `render3d` and `rhi`: the M20 and M22 leftovers
 
 `meshes.md` §13's anisotropic filtering (a sampler field on null, Metal and Vulkan, validated by
@@ -1211,3 +1218,61 @@ Evidence is home under ignored `.zig-cache/m26-step7-linux/`. The machine stays 
 and 12.
 
 **Not claimed here:** a person's play on Linux. Only the owner's report claims it (§10.5).
+
+## Resolution — Step 8: walking off an edge, and the move's cost (2026-10-18)
+
+**The edge.** The finding was reproduced on a mesh, not on a box. A box floor's edge already let
+the character walk off. A mesh floor whose edge is the top of a drop's vertical wall stopped the
+walk 2 mm short, as the court's did:
+- The contact under the feet touches the wall's triangle, with a normal pointing almost straight
+  up.
+- The face is a wall, so `move` took the wall branch. That branch builds its wall direction from
+  the contact normal's horizontal part, which is tiny here and normalised into a full sideways
+  wall facing the walker. It removed all of the forward motion.
+
+The fix is one condition in `character.zig`: a contact whose own normal is walkable supports the
+feet even where the face is a wall, and the move slides along it as on ground. Grounding still
+uses the face (the stair-edge test is unchanged), and a riser too tall to roll over still
+produces a non-walkable contact normal, so steps still step.
+
+New test: walking off a box edge, a mesh drop, and down a 0.3 m step (landing grounded); a wall
+taller than a step still stops the same walk. Reverting the condition fails the mesh-drop case.
+
+The court's `fell` script now walks off the edge (`testdata/play.zig`), as a person falls,
+instead of jumping short: 186 frames on null and Metal, 185 on Linux, every tick replayed.
+`win` and `caught` keep their frame and tick counts on null. M23's 1,200-tick course replay and
+`sandbox3d`'s pinned hashes are unchanged, so no pinned hash crossed an edge.
+
+**The move's cost under Linux's `balanced` profile.** perf put the move's time in mesh queries:
+`Mesh.candidates` transformed every BVH node's local box into the world, eight point transforms
+a node, on every query. It now moves the query box into the mesh's space once, which loses
+nothing: a world overlap has a point the inverse pose carries into both boxes. The f32
+tolerance moves with it.
+- Rotated and far-translated mesh frames are covered by the existing suites, including a
+  brute-force oracle. Substituting the forward pose for its inverse fails four of them.
+- On the Step 7 machine, under `balanced`, the court's layers-off `win` (median/p95 ms) measures:
+  - move: GNOME 0.139/0.192, Xorg 0.136/0.186, sway 0.141/0.191;
+  - skin: 0.209/0.237, 0.193/0.217, 0.196/0.231.
+- Before, the move measured 0.20–0.21/0.255–0.281, so it is now within budget in every session.
+- On Metal the move measures 0.071/0.095.
+
+**Frame work leaves out the image wait.** `timing.zig` subtracts `render.acquire`, as it already
+left out the pacing sleep. Under Wayland's FIFO that span is the display's interval, not work.
+GNOME's layers-off frame work is now 1.59/1.74 ms (it was 16.65/16.73), Xorg's 1.44/1.59 and
+sway's 1.49/1.70. The timing test gained an acquire span; removing the subtraction fails it.
+
+**Diagnostics.** The court now logs every phase change with its tick and feet, and every focus
+loss.
+- Six windowed Metal `win` runs were made after the change: one failed and five passed.
+- The failure was the first run after a build. It fell into the gap at feet (−0.02, −2.02,
+  −2.31), the point where the capsule loses the floor's edge, after a first lap about 900 frames
+  slower than usual.
+- 1,523 ticks over 1,520 frames rules out a hitch, and the log of that run had no line that could
+  say more.
+- The five later runs, all with the new log, passed in 1,215–1,216 frames.
+- The failure is not explained yet. Step 12 repeats Metal `win` with the log and must account for
+  any recurrence before M26 closes.
+
+**The bar:** `zig fmt`, `zig build test` **2,116/2,117** (one skip, one new test), all four
+`check`s, and the four headless samples. `court-test` 40/40; three endings headless; Linux
+`physics3d-test court-test` 102/102 on the Step 7 machine.

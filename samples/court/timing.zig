@@ -19,14 +19,16 @@ pub const Costs = struct {
             self.omitted += 1;
             return;
         }
-        self.frame[self.len] = frame.total_ns;
-        self.len += 1;
         var character: i64 = 0;
         var skin: i64 = 0;
         var moved = false;
         var skinned = false;
+        // Waiting for the compositor to hand back an image is presentation, not work: under
+        // Wayland's FIFO it is the display's own interval (M26 Step 7), as the pacing sleep is.
+        var presenting: i64 = 0;
         for (frame.spans) |span| {
             const name = recorder.nameOf(span.name);
+            if (std.mem.eql(u8, name, "render.acquire")) presenting += span.durationNs();
             if (std.mem.eql(u8, name, "character")) {
                 character += span.durationNs();
                 moved = true;
@@ -36,6 +38,8 @@ pub const Costs = struct {
                 skinned = true;
             }
         }
+        self.frame[self.len] = frame.total_ns - presenting;
+        self.len += 1;
         if (moved) {
             self.character[self.character_len] = character;
             self.character_len += 1;
@@ -49,7 +53,7 @@ pub const Costs = struct {
     pub fn report(self: *const Costs) void {
         var scratch: [capacity]i64 = undefined;
         for ([_]struct { name: []const u8, values: []const i64, budget: f64 }{
-            .{ .name = "frame work (no pacing sleep; includes scripted replay)", .values = self.frame[0..self.len], .budget = 16.67 },
+            .{ .name = "frame work (no pacing sleep or image wait; includes scripted replay)", .values = self.frame[0..self.len], .budget = 16.67 },
             .{ .name = "character (whole game tick and sound dispatch upper bound)", .values = self.character[0..self.character_len], .budget = 0.25 },
             .{ .name = "render.skin (one warden)", .values = self.skin[0..self.skin_len], .budget = 0.25 },
         }) |metric| {
@@ -77,12 +81,15 @@ test "court: costs collect all frames and sum tick spans without exceeding their
     recorder.close(.{ .ns = 9 });
     recorder.open("render.skin", .{ .ns = 10 });
     recorder.close(.{ .ns = 12 });
+    recorder.open("render.acquire", .{ .ns = 13 });
+    recorder.close(.{ .ns = 16 });
     recorder.endFrame(.{ .ns = 20 });
     var costs: Costs = .{};
     for (0..Costs.capacity + 1) |_| costs.add(&recorder);
     try t.expectEqual(Costs.capacity, costs.len);
     try t.expectEqual(@as(usize, 1), costs.omitted);
-    try t.expectEqual(@as(i64, 20), costs.frame[0]);
+    try t.expectEqual(@as(i64, 17), costs.frame[0]); // 20, less the 3 ns image wait
+
     try t.expectEqual(@as(i64, 7), costs.character[0]);
     try t.expectEqual(@as(i64, 2), costs.skin[0]);
 }

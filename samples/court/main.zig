@@ -384,7 +384,10 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         var lost_focus = false;
         while (engine.nextEvent()) |event| switch (event) {
             .window_resized => |resized| prefs.noteResize(resized.logical_size),
-            .window_focus_lost => lost_focus = true,
+            .window_focus_lost => {
+                lost_focus = true;
+                log.info("the window lost focus at tick {d}", .{engine.stepper.tick});
+            },
             else => {},
         };
 
@@ -465,6 +468,10 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         // 5. Captured while playing, released in every menu (§4.4). Asked once per change.
         if (captured_for != game.phase) {
             captured_for = game.phase;
+            // One line per change, so a run that went somewhere else says where and when.
+            log.info("phase {s} at tick {d}, feet ({d:.2}, {d:.2}, {d:.2})", .{
+                @tagName(game.phase), engine.stepper.tick, game.walk.result.feet.x, game.walk.result.feet.y, game.walk.result.feet.z,
+            });
             capture(engine, game.phase == .playing);
         }
 
