@@ -620,7 +620,8 @@ coordinates in its Resolution and checks every scenario against them.
   These are the sample's first letter keys. **They are ignored while a text field in the overlay
   has keyboard focus**, so the filter box keeps typing, which is the reason the F-key comment in
   `main.zig` gives.
-- **Pointer capture is deferred to M26**, which needs it for a person to play. Holding a button to
+- **Pointer capture was left to M26, which added it** (`playable3d.md` §4, M26 Step 1; resolved
+  at M26's close, 2026-10-18). `sandbox3d` turns it on with F4. Holding a button to
   look needs nothing from `platform`. SDL3's relative-mouse mode behaves differently under X11 and
   Wayland, so adding it would be a Linux-specific change, and 3d.md §10.2 would then owe it a
   Linux run in M23. The playable sample, M26, runs on a freshly provisioned Linux machine anyway.
@@ -1306,6 +1307,13 @@ overlay grant, no new dependency. Linux is compile-only.
 
 ## 15. What stays open, deliberately
 
+> **2026-10-18, at M26's close (CLAUDE.md §2, rule 17):** nothing here is deferred without an
+> owner. Each item set aside below is either finished, in M26 Steps 8–11 for those that
+> belonged to what was already built ([`playable3d.md`](playable3d.md) §12), or named by its
+> milestone in [`docs/ROADMAP.md`](../ROADMAP.md)'s intent column (its 2026-10-17 note). A
+> trigger written here still shapes that milestone's design; it no longer decides whether the
+> item is built.
+
 > **2026-10-02 (ADR-0060):** these items are now scheduled, in `docs/ROADMAP.md`'s long roadmap
 > (M27–M149). Each trigger below no longer decides whether its item is built; it still names
 > the need and the budget that milestone's design must meet.
@@ -1314,7 +1322,7 @@ overlay grant, no new dependency. Linux is compile-only.
 | --- | --- |
 | Rigid-body dynamics, stacking, joints, ragdolls, vehicles | A game needs a simulated object (ADR-0051; Jolt weighed then) |
 | Moving platforms carrying a character; characters pushing | A game needs either (ADR-0051) |
-| Pointer capture (relative mouse) in `platform` | M26's playable sample, or any sample a person plays with the mouse, with its Linux run. Implemented in M26 Step 1, 2026-10-03 ([`playable3d.md`](playable3d.md) §4) |
+| ~~Pointer capture (relative mouse) in `platform`~~ | **Done in M26** (Step 1, 2026-10-03; [`playable3d.md`](playable3d.md) §4), run on Linux under Xorg, GNOME and sway in Steps 7 and 12 |
 | Collision authored separately from the visual model (a proxy import, or deriving from a `foundry:mesh`) | A model whose render mesh is measured too dense to collide against within §11.4's budget, or an author asks for a simpler proxy |
 | A model record that names its collision | A game needs to find a model's collision from the model alone |
 | Runtime scale of collision geometry | A game scales a collidable model at runtime |
@@ -1328,7 +1336,7 @@ overlay grant, no new dependency. Linux is compile-only.
 | Configurable up axis | A game with gravity other than −Y |
 | Heightfield terrain | A game with terrain a mesh is measured too large for |
 | A physics panel in the overlay | Debugging a game's collision needs one, and `debug` is granted `physics3d` by the owner's decision |
-| Jump in the sample | M26, which is the sample a person plays |
+| ~~Jump in the sample~~ | **Done in M26**: the court's jump is sample policy over the unchanged controller (`playable3d.md` §5.3); the controller's walk off an edge was finished in M26 Step 8 |
 
 ## 16. Decisions acceptance fixes
 

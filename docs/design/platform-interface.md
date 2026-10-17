@@ -522,6 +522,13 @@ things and confirming the build noticed:
 
 ### Deferred, deliberately
 
+> **2026-10-18, at M26's close (CLAUDE.md §2, rule 17):** nothing here is deferred without an
+> owner. Each item set aside below is either finished, in M26 Steps 8–11 for those that
+> belonged to what was already built ([`playable3d.md`](playable3d.md) §12), or named by its
+> milestone in [`docs/ROADMAP.md`](../ROADMAP.md)'s intent column (its 2026-10-17 note). A
+> trigger written here still shapes that milestone's design; it no longer decides whether the
+> item is built.
+
 * **Gamepads.** Not needed before M5, and exposing them early risks shaping the input
   snapshot around SDL's gamepad model. The snapshot is designed to accept more device
   state without changing what already reads it.

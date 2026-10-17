@@ -867,6 +867,13 @@ same thing to the engine's own overlay, which is what makes it a rule rather tha
 
 ## 16. Deliberately not here
 
+> **2026-10-18, at M26's close (CLAUDE.md §2, rule 17):** nothing here is deferred without an
+> owner. Each item set aside below is either finished, in M26 Steps 8–11 for those that
+> belonged to what was already built ([`playable3d.md`](playable3d.md) §12), or named by its
+> milestone in [`docs/ROADMAP.md`](../ROADMAP.md)'s intent column (its 2026-10-17 note). A
+> trigger written here still shapes that milestone's design; it no longer decides whether the
+> item is built.
+
 A flame graph, which needs a widget the set does not have and a lot of screen. Allocation call-stack
 capture. Remote or networked profiling. Triggering a GPU frame capture from the overlay. Editing
 anything — entities, content, assets, style. Docking, floating or resizable panels (`ui.md` §15

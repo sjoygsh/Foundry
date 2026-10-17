@@ -473,6 +473,13 @@ Linux is recorded as M18's.
 
 ## 12. What stays open
 
+> **2026-10-18, at M26's close (CLAUDE.md §2, rule 17):** nothing here is deferred without an
+> owner. Each item set aside below is either finished, in M26 Steps 8–11 for those that
+> belonged to what was already built ([`playable3d.md`](playable3d.md) §12), or named by its
+> milestone in [`docs/ROADMAP.md`](../ROADMAP.md)'s intent column (its 2026-10-17 note). A
+> trigger written here still shapes that milestone's design; it no longer decides whether the
+> item is built.
+
 The floor and toolchain are accepted and pinned (Step 1). Linux runtime is M18's (ADR-0039).
 Step 1's Resolution keeps its route on record, and no Linux driver or window-system behaviour is
 assumed.

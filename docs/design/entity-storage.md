@@ -576,6 +576,13 @@ Recorded rather than resolved, each with what would force it.
 
 ## 14. Deliberately not here
 
+> **2026-10-18, at M26's close (CLAUDE.md §2, rule 17):** nothing here is deferred without an
+> owner. Each item set aside below is either finished, in M26 Steps 8–11 for those that
+> belonged to what was already built ([`playable3d.md`](playable3d.md) §12), or named by its
+> milestone in [`docs/ROADMAP.md`](../ROADMAP.md)'s intent column (its 2026-10-17 note). A
+> trigger written here still shapes that milestone's design; it no longer decides whether the
+> item is built.
+
 * **Hierarchy and parenting.** A transform hierarchy is a component and a system, and it can be
   added without touching storage. Building it now would fix a policy — dirty flags, traversal
   order, what happens to a child when a parent dies — with no consumer to judge it. *M21 built

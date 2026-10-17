@@ -126,6 +126,10 @@ now a runtime claim. The RHI's rules survived unchanged.
 
 ## 5. What the claim does not cover
 
+> **2026-10-18, at M26's close (CLAUDE.md §2, rule 17):** each limit below that is not closed
+> names its milestone: other GPUs, HiDPI, multi-monitor, KWin and a Linux release artifact are
+> M137's; device and surface loss are M101's.
+
 - **One machine.** One Intel Arc on Mesa ANV and one 60 Hz monitor at scale 1.00. No NVIDIA,
   no AMD, no HiDPI, no multi-monitor. The rented-GPU kit in `scripts/m18/` is ready for
   NVIDIA, and has not run.
@@ -139,9 +143,9 @@ now a runtime claim. The RHI's rules survived unchanged.
   court's pointer lock.
 - **No Linux release artifact.** `dist` stages macOS and Windows only. A Linux desktop release
   is a distribution decision with its own questions (ADR-0030's shape, AppImage or tarball,
-  what a player's system must supply), and nothing has asked for one.
+  what a player's system must supply), and it is M137's.
 - **Device and surface loss** are still sticky (`rhi.md`, open question 6).
-- **The machine is gone.** It was wiped after M18, by design. The claim is reproduced, not
+- **The M18 machine is gone.** It was wiped after M18, by design. The claim is reproduced, not
   kept: `scripts/m18/` rebuilds the environment on a fresh machine, and 3D's Linux runs use it
   (`3d.md` §10.2). The one piece of state the M18 machine held outside the kit, the user
   package, has since moved into the kit (`scripts/m18/usercfg/`).
@@ -161,3 +165,14 @@ Resolution). Two findings change this document's claim:
   `VK_ERROR_OUT_OF_DEVICE_MEMORY` from Mesa's WSI; it does not merely wait. GNOME's window tests
   therefore run before `x11.sh` takes the monitor.
 
+
+## Note — 2026-10-18, M26's close: the claim now includes a person playing 3D
+
+The claim is still one machine, but it is now more than samples that start. On the Ubuntu 26.04.1
+installation that M26 Step 7 provisioned from the kit, the court was installed relocated and was
+played by its owner, on GNOME's Wayland session, to every ending. The owner's report ("evrything is fanatstic"; a
+menu-hover lag they found was fixed and re-played, "All green works") is recorded in
+`playable3d.md`'s Step 12 Resolution. Step 12 re-ran the whole graph and the court under GNOME,
+Xorg and sway after M26's engine changes, and every move and skin budget held there under
+Ubuntu's balanced power profile. That installation is the owner's dual-boot, not a kept target:
+the kit, not the machine, is what reproduces the claim.

@@ -487,6 +487,13 @@ access, report the precise missing evidence; loopback or a fake WAN is not a rep
 
 ## 11. Open decisions and explicit limits
 
+> **2026-10-18, at M26's close (CLAUDE.md §2, rule 17):** nothing here is deferred without an
+> owner. Each item set aside below is either finished, in M26 Steps 8–11 for those that
+> belonged to what was already built ([`playable3d.md`](playable3d.md) §12), or named by its
+> milestone in [`docs/ROADMAP.md`](../ROADMAP.md)'s intent column (its 2026-10-17 note). A
+> trigger written here still shapes that milestone's design; it no longer decides whether the
+> item is built.
+
 Public-internet scope and §1's authority, operator-hosted topology, provisioned-certificate
 admission and initial performance envelope are settled. Mbed TLS 3.6.7 LTS and its exact
 configuration passed Step 1's qualification. No new backlog system is introduced here, and

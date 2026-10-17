@@ -308,6 +308,13 @@ truncating, because silent truncation of a name is how a mod ships with a bug no
 
 ## 10. What it does not publish, and why
 
+> **2026-10-18, at M26's close (CLAUDE.md §2, rule 17):** nothing here is deferred without an
+> owner. Each item set aside below is either finished, in M26 Steps 8–11 for those that
+> belonged to what was already built ([`playable3d.md`](playable3d.md) §12), or named by its
+> milestone in [`docs/ROADMAP.md`](../ROADMAP.md)'s intent column (its 2026-10-17 note). A
+> trigger written here still shapes that milestone's design; it no longer decides whether the
+> item is built.
+
 * **The RHI**, permanently. §4.2 and `rhi.md` §1: the renderer API is the game-facing boundary
   and the RHI is not, so `abi` does not depend on `rhi` at all (ADR-0026) rather than merely
   declining to publish it.

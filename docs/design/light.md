@@ -922,13 +922,22 @@ M22 closes at tag `m22` and is pushed at the owner's request. Stop before M23's 
 
 ## 14. What stays open, deliberately
 
+> **2026-10-18, at M26's close (CLAUDE.md §2, rule 17):** nothing here is deferred without an
+> owner. Each item set aside below is either finished, in M26 Steps 8–11 for those that
+> belonged to what was already built ([`playable3d.md`](playable3d.md) §12), or named by its
+> milestone in [`docs/ROADMAP.md`](../ROADMAP.md)'s intent column (its 2026-10-17 note). A
+> trigger written here still shapes that milestone's design; it no longer decides whether the
+> item is built.
+
 > **2026-10-02 (ADR-0060):** these items are now scheduled, in `docs/ROADMAP.md`'s long roadmap
 > (M27–M149). Each trigger below no longer decides whether its item is built; it still names
 > the need and the budget that milestone's design must meet.
 
 - **Image-based lighting, a sky and cubemaps:** when a scene's constant ambient is measurably wrong
   for a game — metals reflecting nothing in an outdoor scene is the likely first — or M26's sample
-  needs a sky. Cubemaps enter the RHI then.
+  needs a sky. Cubemaps enter the RHI then. **M26 did not fire it** (2026-10-18): the court is lit by its
+  content's constant ambient, one directional light and its beacons' point lights, and needed no
+  sky. It is M41's.
 - **Point and spot shadows, cascades:** `3d.md` §11; the trigger is a scene whose single map shows
   measured aliasing at `shadow_distance` a game needs.
 - **An engine `foundry:light` record, and glTF light import (`KHR_lights_punctual`):** when an
@@ -940,8 +949,8 @@ M22 closes at tag `m22` and is pushed at the owner's request. Stop before M23's 
   is additive (an enum with Neutral as its default).
 - **More than 16 lights, or per-draw light lists:** when a scene needs more; that is also the first
   measurement ADR-0052 says would reconsider forward shading.
-- **Making the fragment shader optional in a depth-only pipeline:** when the empty program is
-  measured to cost anything.
+- ~~**Making the fragment shader optional in a depth-only pipeline**~~: **done in M26 Step 9**
+  (the note below); opaque shadow casters use a pipeline with no fragment stage.
 - **Translucent shadows:** when a game needs glass to cast coloured light.
 
 ## 15. Decisions acceptance fixes

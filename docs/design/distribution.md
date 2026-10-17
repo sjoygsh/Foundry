@@ -385,6 +385,13 @@ null builds cannot. Cross builds remain compile evidence, not runtime support cl
 
 ## 13. Risks and deliberately open work
 
+> **2026-10-18, at M26's close (CLAUDE.md §2, rule 17):** nothing here is deferred without an
+> owner. Each item set aside below is either finished, in M26 Steps 8–11 for those that
+> belonged to what was already built ([`playable3d.md`](playable3d.md) §12), or named by its
+> milestone in [`docs/ROADMAP.md`](../ROADMAP.md)'s intent column (its 2026-10-17 note). A
+> trigger written here still shapes that milestone's design; it no longer decides whether the
+> item is built.
+
 Signing identity, notarization access and a clean recipient Mac are not assumed available.
 Their absence does not block M9 completion; it does block calling any artifact a verified
 public macOS release. Do not buy credentials, upload a release or invent recipient evidence.

@@ -512,6 +512,13 @@ complete and v6 frozen, and nothing names a contract the code does not have.
 
 ## 14. What stays open, deliberately
 
+> **2026-10-18, at M26's close (CLAUDE.md §2, rule 17):** nothing here is deferred without an
+> owner. Each item set aside below is either finished, in M26 Steps 8–11 for those that
+> belonged to what was already built ([`playable3d.md`](playable3d.md) §12), or named by its
+> milestone in [`docs/ROADMAP.md`](../ROADMAP.md)'s intent column (its 2026-10-17 note). A
+> trigger written here still shapes that milestone's design; it no longer decides whether the
+> item is built.
+
 > **2026-10-02 (ADR-0060):** these items are now scheduled, in `docs/ROADMAP.md`'s long roadmap
 > (M27–M149). Each trigger below no longer decides whether its item is built; it still names
 > the need and the budget that milestone's design must meet.
@@ -523,7 +530,7 @@ complete and v6 frozen, and nothing names a contract the code does not have.
 | Runtime meshes, materials and textures from a mod | A mod needs procedural geometry or materials it cannot ship as content |
 | Mod-authored shaders and shading models | ADR-0015's trigger: a mod needs a look the engine's models cannot give |
 | Hull and mesh shapes, and `contacts`, for mod bodies | A mod's object is not a primitive and is not content |
-| An engine-declared "draws this model" component | A second host needs entity-driven drawing that a mod can join, or M26's sample does |
+| An engine-declared "draws this model" component | A second host needs entity-driven drawing that a mod can join, or M26's sample does. **M26 did not fire it**: the court draws its level, beacons, gate and warden from its own state through `render3d`, and its mod is content only. It is M103's |
 | 3D in the Lua script host | A script mod needs 3D; the script host's surface is validation over the table and would grow with it |
 | Immediate-mode drawing through a frame callback | Retained instances measured as a burden for a real mod (thousands of short-lived objects a frame) |
 | Per-mod instance and body quotas | One mod starving another of a shared table in practice |

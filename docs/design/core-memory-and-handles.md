@@ -159,6 +159,13 @@ Any system whose *results* depend on iteration order must say so.
 
 ### What is deliberately not here
 
+> **2026-10-18, at M26's close (CLAUDE.md §2, rule 17):** nothing here is deferred without an
+> owner. Each item set aside below is either finished, in M26 Steps 8–11 for those that
+> belonged to what was already built ([`playable3d.md`](playable3d.md) §12), or named by its
+> milestone in [`docs/ROADMAP.md`](../ROADMAP.md)'s intent column (its 2026-10-17 note). A
+> trigger written here still shapes that milestone's design; it no longer decides whether the
+> item is built.
+
 `HandlePool` is a sparse structure: live values are scattered across slots and iterating
 them touches cold memory. That is the right trade for things that are looked up by identity
 and iterated rarely — textures, buffers, windows, assets, loaded packages.

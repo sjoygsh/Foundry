@@ -1,16 +1,18 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-18
-**Current handoff: M26 Steps 1–12 are complete (2026-10-18). Step 13, the close, is next and
-follows without a stop, by the owner's instruction of 2026-10-17.** All three of §10.5's play
-reports are in. M26 has thirteen steps (`playable3d.md` §12, revised).
-CLAUDE.md §2's rule 17 finishes in M26 what M0–M25 set aside for themselves:
-- the controller's edge and the two Linux budget misses Step 7 found (Step 8);
-- anisotropic filtering, per-submesh bounds and a fragment-less depth-only pipeline (Step 9);
-- `fdt fmt`, an editor grammar, saved profiles and panel state (Step 10);
-- file watching (Step 11).
-Every other set-aside item names its roadmap milestone in `docs/ROADMAP.md`'s 2026-10-17 note.
-§10.6's budgets are read as the shipping runtime's. No push is requested.
+**Current handoff: M26 is complete (2026-10-18, tag `m26`, not pushed), and with it Phase 5.
+Stop before M27's design**, which is not begun: it is designed when the owner asks
+(`foundry-milestone-design`). No push has been requested.
+
+**M26 is closed (2026-10-18): a playable 3D sample, played on three systems.** `samples/court` was
+played from relocated installs by its owner on macOS/Metal ("All go"), Windows/Vulkan ("All
+green") and a freshly provisioned Ubuntu 26.04 ("All green works"). Pointer capture was its one
+engine addition. Under CLAUDE.md §2's rule 17, M26 also finished what M0–M25 had set aside for
+themselves (Steps 8–11) and re-qualified that work on Windows and Linux (Step 12). Step 13
+reconciled the documents. Every design document's deferred section now points to the milestone
+that owns each item. The owner chose not to publish a pre-release of the court; M50 will publish
+the second 3D sample's. Bar **2,138/2,139** (one skip).
 
 **M26 Step 12 is done (2026-10-18): Windows and Linux re-qualification.** Steps 8–11 pass on the
 PC's Ubuntu (GNOME, Xorg, sway) and on its Windows. Four fixes came out of the runs:

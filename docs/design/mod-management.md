@@ -568,6 +568,13 @@ choices survived a schema change.
 
 ## 14. What stays open
 
+> **2026-10-18, at M26's close (CLAUDE.md §2, rule 17):** nothing here is deferred without an
+> owner. Each item set aside below is either finished, in M26 Steps 8–11 for those that
+> belonged to what was already built ([`playable3d.md`](playable3d.md) §12), or named by its
+> milestone in [`docs/ROADMAP.md`](../ROADMAP.md)'s intent column (its 2026-10-17 note). A
+> trigger written here still shapes that milestone's design; it no longer decides whether the
+> item is built.
+
 M14 settles only what its work forces, per the standing instruction. Everything below stays
 open:
 - **From `ui.md` §14:** keyboard navigation and tab order; content-authored layouts and whether

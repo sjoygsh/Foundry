@@ -1,8 +1,8 @@
 # Foundry Roadmap
 
 Staged milestones from a minimal engine toward 2D, then 3D, then an industry-grade
-general-purpose engine: **150 engine milestones, M0 to M149, and M150, the certified release** (ADR-0060). M0–M25 are
-done. The plan
+general-purpose engine: **150 engine milestones, M0 to M149, and M150, the certified release** (ADR-0060). M0–M26 are
+done, and with M26 Phase 5 is closed. The plan
 beyond M26 is [the long roadmap](#the-long-roadmap--m27-to-m150) at the end of this file. It is
 a gradual ascent, not a sprint.
 
@@ -948,7 +948,7 @@ worth trusting.
 
 ---
 
-## Phase 5 — Linux, then 3D
+## Phase 5 — Linux, then 3D — **CLOSED 2026-10-18 (M26, tag `m26`)**
 
 **Nothing in this phase starts before the first game built on Foundry is complete.** That game
 lives in its own repository (ADR-0017) and targets macOS and Windows, the two platforms Phases
@@ -1035,10 +1035,14 @@ and regression coverage in `3d.md` §10:
   content mod and a consented native one in `sandbox3d` on Metal and Windows/Vulkan, and a
   guide written from a mod built outside the repository.
   [`public3d.md`](design/public3d.md), with ADR-0059.
-- **M26 A playable 3D sample,** played by someone who did not build it, on macOS, Windows and a
-  freshly provisioned Linux machine. Design proposed 2026-10-02:
-  [`playable3d.md`](design/playable3d.md), no ADR. (Certification no longer waits on it:
-  ADR-0060 re-dated that to M150.)
+- **M26 A playable 3D sample** (done 2026-10-18, tag `m26`): `samples/court`, played from a
+  relocated install by its owner on macOS/Metal, Windows/Vulkan and a freshly provisioned
+  Ubuntu 26.04, each claimed only by that report. Pointer capture in `platform` was its one
+  engine addition. By rule 17 it also finished M19–M25's own leftovers (Steps 8–11), and
+  re-qualified them on Windows and Linux (Step 12).
+  [`playable3d.md`](design/playable3d.md), no ADR. (Certification never waited on it after
+  ADR-0060, which placed that at M150. No pre-release of the court was published, by the
+  owner's choice at the close; M50 publishes the second 3D sample's.)
 
 The order is the proposal's. `3d.md` §10.1 records three corrections to what M19, M20 and M22
 contain, each made for a dependency.
@@ -1174,15 +1178,15 @@ tours and a byte-identical three-process replay. Step 7 builds a C99 mod
 outside the repository from the installed header and writes
 [`modding/3d.md`](modding/3d.md) from it. Step 8 reconciled `3d.md`, `public-abi.md`,
 `hierarchy.md`, `collision3d.md` and CLAUDE.md, froze v6 and tagged `m25`. The owner watched
-the walker and reported it very good. **M26, the playable 3D sample, is designed and accepted** ([`playable3d.md`](design/playable3d.md)); Steps 1–6 of 8 are done (2026-10-04): pointer capture, the court's lit, collidable level, the game, its HUD/menus/sound/preferences, the content mod, both release artifacts and relocated read-only Metal and Windows/Vulkan proofs. Step 6's native suites, six validated/layers-off play-throughs, per-tick replay and seven OS-level capture checks pass. Layers-off costs meet the budgets; higher validation-enabled costs are reported separately. The Windows task/worktree are packed up. On 2026-10-17 M26 grew to thirteen steps, finishing earlier milestones' own leftovers before it closes (Steps 8–12); Steps 7–13 have not begun.
+the walker and reported it very good. **M26, the playable 3D sample, is complete (2026-10-18, tag `m26`)** ([`playable3d.md`](design/playable3d.md)). Steps 1–6 (2026-10-03 to 10-04) built pointer capture, the court's lit, collidable level, the game, its HUD, menus, sound and preferences, the content mod, both release artifacts, and relocated read-only Metal and Windows/Vulkan proofs. On 2026-10-17 M26 grew to thirteen steps under rule 17. Step 7 played the court on a fresh Ubuntu 26.04 under Xorg, GNOME and sway. Steps 8–11 finished the controller's walk off an edge, anisotropic filtering, per-submesh bounds, a fragment-less depth pipeline, `fdt fmt`, an editor grammar, saved profiles and panel state, and file watching. Step 12 re-qualified all of it on Windows and Linux, and fixed what that found. Step 13 closed it. The owner played the court on all three systems: "All go", "All green works", "All green".
 
 ---
 
 ## The long roadmap — M27 to M150
 
 **Decided 2026-10-02 ([ADR-0060](adr/0060-a-150-milestone-roadmap.md)).** Foundry is planned as
-**150 numbered engine milestones, M0 to M149, followed by M150, the certified release**. M0–M25 are done (with M16.5, which was inserted
-between two of them), M26 is designed next, and the 124 below follow it.
+**150 numbered engine milestones, M0 to M149, followed by M150, the certified release**. M0–M26 are done (with M16.5, which was inserted
+between two of them), and the 124 below follow them, beginning with M27's design.
 
 **This is a gradual ascent, not a sprint.** The number says how far there is to go, not how
 fast. Milestones are still units of work, not time; each still begins with a design document
@@ -1200,7 +1204,8 @@ when its turn comes, from the code as it then is.
   decide the *shape*: each milestone names the sample that needs the feature and measures
   against the budget its trigger named.
 - **Certified releases are the last line, M150** (the owner's decision, 2026-10-02). Signing
-  and notarization stay deferred under ADR-0047 until then; no membership is bought earlier.
+  and notarization are M150's, re-dated from ADR-0047's playable-3D gate by ADR-0060; no
+  membership is bought earlier.
 - **Not planned at all:** consoles, iOS, x86-64 macOS.
 
 > **2026-10-17 — nothing a milestone takes on is deferred (CLAUDE.md §2, rule 17).** Every item

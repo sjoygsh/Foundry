@@ -526,7 +526,7 @@ Per-frame skin uploads submit before either pass; backend completion remains aut
 ## 8. `samples/sandbox3d`
 
 **The name.** The sample that gains each 3D capability from M19 to M25, as `samples/sandbox`
-gained 2D's. M26's playable sample gets its own name in M26.
+gained 2D's. M26's playable sample got its own name in M26: `samples/court`.
 
 **What it shows:**
 - Three meshes, built in the sample, never in the engine: a cube, a thin slab that passes
@@ -681,6 +681,13 @@ relocated installs, and record §9's evidence and the overlay pass's measured co
 Tag `m19`, push, and stop before M20's design. **Exit:** `3d.md` §10's M19 row holds as written.
 
 ## 12. What stays open
+
+> **2026-10-18, at M26's close (CLAUDE.md §2, rule 17):** nothing here is deferred without an
+> owner. Each item set aside below is either finished, in M26 Steps 8–11 for those that
+> belonged to what was already built ([`playable3d.md`](playable3d.md) §12), or named by its
+> milestone in [`docs/ROADMAP.md`](../ROADMAP.md)'s intent column (its 2026-10-17 note). A
+> trigger written here still shapes that milestone's design; it no longer decides whether the
+> item is built.
 
 Nothing blocks Step 1. These are M19's own choices, fixed above unless the owner changes them
 at acceptance:

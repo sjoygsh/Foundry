@@ -509,6 +509,13 @@ No fixed new test count is promised. Keep the actual passing count in PROJECT_ST
 
 ## 15. Open questions and limits kept open
 
+> **2026-10-18, at M26's close (CLAUDE.md §2, rule 17):** nothing here is deferred without an
+> owner. Each item set aside below is either finished, in M26 Steps 8–11 for those that
+> belonged to what was already built ([`playable3d.md`](playable3d.md) §12), or named by its
+> milestone in [`docs/ROADMAP.md`](../ROADMAP.md)'s intent column (its 2026-10-17 note). A
+> trigger written here still shapes that milestone's design; it no longer decides whether the
+> item is built.
+
 1. Script-defined serializable components and durable script saves. Trigger: a real script
    must survive a process restart. Requires ABI serializer/migration design, not VM dumping.
 2. More bindings, especially foreign component writes, input, rendering, UI, collision and

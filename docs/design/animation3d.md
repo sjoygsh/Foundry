@@ -481,6 +481,13 @@ complete, and nothing names a contract the code does not have.
 
 ## 14. What stays open, deliberately
 
+> **2026-10-18, at M26's close (CLAUDE.md §2, rule 17):** nothing here is deferred without an
+> owner. Each item set aside below is either finished, in M26 Steps 8–11 for those that
+> belonged to what was already built ([`playable3d.md`](playable3d.md) §12), or named by its
+> milestone in [`docs/ROADMAP.md`](../ROADMAP.md)'s intent column (its 2026-10-17 note). A
+> trigger written here still shapes that milestone's design; it no longer decides whether the
+> item is built.
+
 > **2026-10-02 (ADR-0060):** these items are now scheduled, in `docs/ROADMAP.md`'s long roadmap
 > (M27–M149). Each trigger below no longer decides whether its item is built; it still names
 > the need and the budget that milestone's design must meet.
@@ -488,7 +495,7 @@ complete, and nothing names a contract the code does not have.
 | Deferred | Returns when |
 | --- | --- |
 | GPU skinning (vertex-shader palette or compute), and skinned shader variants | `render.skin` measured above its budget at a character count a game has (`3d.md` §4's trigger) |
-| An engine-declared animation component in `scene`, saved with a world | A second consumer of playback state exists, or M26's sample must save a pose |
+| An engine-declared animation component in `scene`, saved with a world | A second consumer of playback state exists, or M26's sample must save a pose. **M26 did not fire it**: the court keeps the warden's clock itself and saves no pose. It is M34's |
 | Animation in the public ABI | M25's design decides what `FoundryApi_v6` publishes |
 | Root motion | A game whose character speed must come from its clip |
 | State machines, layers, masks, additive poses, events | A game needs any of them; each is game logic over `sample` and `blend` first |
@@ -499,8 +506,8 @@ complete, and nothing names a contract the code does not have.
 | More than one skin per model; more than four influences; more than 256 joints | A real asset is refused for it |
 | Inverse-transpose normals for non-uniformly scaled joints | A visible shading error on a real asset |
 | Clip compression and key reduction | A shipped package's clip size, or sampling cost, measured as a problem |
-| A third-person player body | M26's sample, if it is third-person |
-| An animation panel in the overlay | Debugging a game's animation needs one |
+| A third-person player body | M26's sample, if it is third-person. **M26 did not fire it**: the court is first person. It is M50's |
+| An animation panel in the overlay | Debugging a game's animation needs one; M34 |
 
 ## 15. Decisions acceptance fixes
 

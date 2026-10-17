@@ -1,6 +1,6 @@
 # Design: M26 — A playable 3D sample: `samples/court`, pointer capture and the three-platform play
 
-**Status:** Accepted 2026-10-03 by the owner's request to begin Step 1, which accepts §14 as written. Steps 1–6 are done (2026-10-04); Steps 7–8 are not begun.
+**Status:** **Complete 2026-10-18 (tag `m26`).** Accepted 2026-10-03 by the owner's request to begin Step 1, which accepts §14 as written; revised to thirteen steps on 2026-10-17 (§12). All thirteen are done, and the three play reports §10.5 requires are in (Step 12's Resolution).
 **Date:** 2026-10-02
 **Baseline:** `845b02f`, tag `m25` (documents since: `9b72a78`, `d9c0411`). M0–M25 are complete.
 **Decisions:**
@@ -553,7 +553,7 @@ Each item names the roadmap milestone that owns it (CLAUDE.md §2, rule 17; revi
 | A save game | **M47**, Saves II, proved in M50's sample |
 | A mod screen and profiles in a 3D sample | **M50**, the second 3D sample |
 | A Linux release artifact | **M137**, Linux releases |
-| A published pre-release of the court | Asked of the owner at Step 13; if not published then, **M50** publishes the second sample's instead |
+| A published pre-release of the court | **M50**: asked at Step 13 (2026-10-18), the owner chose not to publish the court; M50 publishes the second sample's instead |
 
 ## 14. Decisions acceptance fixes
 
@@ -1506,7 +1506,8 @@ bounds.
 **Plays by a person**, each claimed only by the owner's own report:
 - **macOS**: "All go on the mac". Won, caught and fell; 7,613 frames, none skipped; 138 sounds,
   none dropped.
-- **Linux**: "evrything is fanatstic", with the hover lag fixed above, then "All green works".
+- **Linux** (GNOME, Wayland): "evrything is fanatstic", with the hover lag fixed above, then
+  "All green works". Won, caught and fell; 10,700 frames, none skipped; 89 sounds, none dropped.
 - **Windows**: "All green". Won, caught, fell and paused, with no lost focus; 3,232 frames, none
   skipped; 44 sounds, none dropped.
 
@@ -1515,3 +1516,42 @@ bounds.
 Evidence is in the ignored `.zig-cache/m26-step12-linux/` and `.zig-cache/m26-step12-windows/`.
 
 Step 12 is complete. Step 13 closes M26.
+
+## Resolution — Step 13: M26 is closed (2026-10-18)
+
+Step 13 changes documents only. Step 12's tree (`bad36e9`) is the tree M26 closes on, and the bar
+below was run on it.
+
+**§10.5's three reports are in.** Each is the owner's own words about their own play, recorded in
+Step 12's Resolution: macOS "All go on the mac", Linux "All green works" (after the hover fix),
+Windows "All green". Each was played from an install that was not the build tree.
+
+**The reconciliation Step 13 named:**
+- `3d.md` §10: the M26 row is marked done. Its certification wording now says ADR-0060 placed
+  certification at M150. The "uses only what M19–M25 built" sentence names pointer capture as its
+  one recorded exception, and the exit paragraph is marked met.
+- `collision3d.md`: §10.3's pointer-capture bullet and §15's pointer-capture and jump rows are
+  resolved.
+- `hierarchy.md` §12, `animation3d.md` §14, `public3d.md` §14 and `light.md` §14 each record that
+  M26 did not fire their triggers. The court authored no hierarchy, saved no pose, is first
+  person, drew through no engine "draws this model" component, and needed no sky. `light.md`'s
+  optional fragment stage is marked done (Step 9).
+- `render3d.md` §8 names the court. `linux-desktop.md` gains a note: a person played 3D there.
+  Its open limits name M137 and M101.
+- Every design document's deferred section carries a rule-17 note pointing to the roadmap's
+  intent column, 29 documents in all.
+- CLAUDE.md §4.1's distribution row, §4.3's `platform` line (pointer capture and file watching),
+  and §9's Linux, deferred-items and 3D rows. §4.5's sample list already named the court.
+- AGENTS.md's bar already carries `fdt-check` (Step 10); nothing else in it changed.
+- `docs/ROADMAP.md` marks M26 done and Phase 5 closed, and puts certification's line at M150. The
+  design index, the README and `PROJECT_STATE.md` say the same.
+
+**The owner's decision at the close:** no pre-release of the court is published. §13's row names
+M50, whose second 3D sample is published instead. Nothing was pushed.
+
+**Exit.** Every document names M26 complete and Phase 5 closed. The documents describe pointer
+capture, file watching and the court's scripted proof as the code has them.
+
+**The bar:** `zig fmt`; `zig build test` **2,138/2,139** (one skip); all four `check`s;
+`fdt-check`; the four headless samples. Tag `m26`, not pushed. M27's design is next and is not
+begun.
