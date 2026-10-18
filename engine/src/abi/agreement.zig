@@ -364,6 +364,37 @@ test "v6 header and Zig tails agree; every previous offset is unchanged" {
     }
 }
 
+extern fn foundry_agreement_api_v7_size() u64;
+extern fn foundry_agreement_api_v7_offset(u64) u64;
+test "v7 header and Zig tails agree; every previous offset is unchanged" {
+    @setEvalBranchQuota(30000);
+    try testing.expectEqual(@as(u64, @sizeOf(api.Api_v7)), foundry_agreement_api_v7_size());
+    inline for (@typeInfo(api.Api_v6).@"struct".fields) |f| {
+        try testing.expectEqual(@offsetOf(api.Api_v6, f.name), @offsetOf(api.Api_v7, f.name));
+    }
+    const tail = @typeInfo(api.Api_v7).@"struct".fields[@typeInfo(api.Api_v6).@"struct".fields.len..];
+    try testing.expectEqual(@as(usize, 3), tail.len);
+    var at = std.mem.indexOf(u8, header, "typedef struct FoundryApi_v7 {").?;
+    inline for (@typeInfo(api.Api_v7).@"struct".fields) |f| {
+        if (comptime @typeInfo(f.type) == .pointer) {
+            at = std.mem.indexOfPos(u8, header, at, "*" ++ f.name ++ ")") orelse return error.TestUnexpectedResult;
+        }
+    }
+    inline for (tail, 0..) |f, i| {
+        try testing.expectEqual(@as(u64, @offsetOf(api.Api_v7, f.name)), foundry_agreement_api_v7_offset(i));
+    }
+    try testing.expectEqual(@as(u64, std.math.maxInt(u64)), foundry_agreement_api_v7_offset(tail.len));
+}
+
+test "the v7 job values are the shapes and numbers the header states" {
+    try testing.expectEqual(@as(usize, 32), @sizeOf(author_types.JobStatus));
+    try testing.expectEqual(@as(usize, 16), @offsetOf(author_types.JobStatus, "state"));
+    try testing.expectEqual(@as(usize, 20), @offsetOf(author_types.JobStatus, "kind"));
+    try testing.expectEqual(@as(usize, 24), @offsetOf(author_types.JobStatus, "result"));
+    try testing.expect(std.mem.indexOf(u8, header, "FOUNDRY_AUTHOR_JOB_BUILD = 1") != null);
+    try testing.expect(std.mem.indexOf(u8, header, "FOUNDRY_AUTHOR_JOB_FAILED = 2") != null);
+}
+
 /// **The header, as a build input.**
 ///
 /// Not decoration: `agreement.c`'s object is cached against the C file, and a change to
@@ -382,7 +413,8 @@ test "the header declares the version and the entry points this build publishes"
     try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_4 4u") != null);
     try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_5 5u") != null);
     try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_6 6u") != null);
-    try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION FOUNDRY_API_VERSION_6") != null);
+    try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_7 7u") != null);
+    try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION FOUNDRY_API_VERSION_7") != null);
     try testing.expect(std.mem.indexOf(u8, header, types.init_symbol) != null);
     try testing.expect(std.mem.indexOf(u8, header, types.shutdown_symbol) != null);
 }
@@ -568,7 +600,7 @@ test "every handle kind is eight opaque bytes" {
         types.Asset,      types.Entity,    types.ComponentType, types.Texture,
         types.View,       types.Voice,     types.Body,          types.Grid,
         types.Theme,      types.Workspace, types.Document,      types.SourceNode,
-        types.SchemaNode, types.Build,
+        types.SchemaNode, types.Build,     types.AuthorJob,
     }) |Handle| {
         try testing.expectEqual(@as(usize, 8), @sizeOf(Handle));
         try testing.expectEqual(@as(usize, 8), @alignOf(Handle));

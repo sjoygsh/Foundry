@@ -18,6 +18,12 @@
 //!
 //! The service is not thread-safe and is not meant to be: authoring calls run on the host
 //! thread after UI description (§9), which is the same rule every other boundary call obeys.
+//!
+//! **One exception, and it is contained** (`background.md` §9). A background validate or
+//! build compiles on `Options.tasks`, which may be another thread. That compile touches only
+//! its own copies, its own diagnostics and the filesystem; it is started, polled, published
+//! and cancelled here, on the host thread. With a threaded executor, the allocator this
+//! service was given must be thread-safe.
 
 const std = @import("std");
 const core = @import("core");
@@ -166,6 +172,9 @@ pub const OpenOptions = struct {
 pub const Options = struct {
     /// How many workspaces may be open at once. One, until a host says otherwise.
     max_open: u32 = 1,
+    /// Where a background validate or build compiles. Inline unless the host hands over a
+    /// pool, in which case a job's start returns before its compile does.
+    tasks: core.Tasks = core.tasks.immediate,
     /// The bound every operation's diagnostic snapshot is collected under.
     diagnostics: data.Limits = .default,
 };
@@ -185,6 +194,8 @@ pub const Entry = struct {
     /// The last Save All's per-file results, in the order it processed them.
     save_entries: []save.AllEntry = &.{},
     save_entry_count: usize = 0,
+    /// The background job still compiling for this workspace, or none (§9.2: one at a time).
+    job: JobHandle = .none,
 
     /// Clears the diagnostic snapshot so the operation about to run owns it alone.
     pub fn begin(self: *Entry, gpa: Allocator) void {
@@ -206,6 +217,47 @@ pub const Entry = struct {
     }
 };
 
+/// Phantom tag for a background job's handle (I1).
+pub const Jobs = opaque {};
+pub const JobHandle = core.Handle(Jobs);
+
+/// Where a background validate or build is.
+pub const JobStatus = union(enum) {
+    pending,
+    /// A build's handle; a validate's is null.
+    succeeded: ?build_mod.Handle,
+    /// What the synchronous call would have returned.
+    failed: build_mod.Error,
+};
+
+/// One background job, from its start until its client releases it.
+const Running = struct {
+    workspace: Handle,
+    kind: build_mod.Kind,
+    /// The revision it was started at, which its result is stamped with.
+    revision: u64,
+    /// Present while the compile has not been published or discarded.
+    work: ?*Work,
+    status: JobStatus = .pending,
+    /// Released before it finished: invisible to every lookup, and discarded once its
+    /// compile returns.
+    released: bool = false,
+};
+
+/// What the background node owns: the job between its stages, the graph that runs it, and
+/// diagnostics of its own, never the workspace's.
+const Work = struct {
+    job: *build_mod.Job,
+    graph: core.tasks.Graph,
+    diags: Diagnostics,
+
+    fn run(context: *anyopaque, _: *core.tasks.Budget) core.tasks.Outcome {
+        const self: *Work = @ptrCast(@alignCast(context));
+        self.job.run(&self.diags);
+        return .ok;
+    }
+};
+
 const Slot = struct {
     /// Bumped every time the slot is reused, so a handle to a closed workspace fails to
     /// resolve rather than naming its successor (I1). Zero means never used.
@@ -223,12 +275,17 @@ pub const Service = struct {
     /// begun before an edit is refused rather than resynchronised onto a different list.
     generation: u32 = 1,
     next_generation: u32 = 0,
+    jobs: core.HandlePool(Jobs, Running) = .empty,
 
     pub fn init(gpa: Allocator, os: *Os, options: Options) Service {
         return .{ .gpa = gpa, .os = os, .options = options };
     }
 
     pub fn deinit(self: *Service) void {
+        for (&self.slots, 0..) |*slot, i| {
+            if (slot.entry != null) self.dropJobs(.{ .index = @intCast(i), .generation = slot.generation });
+        }
+        self.jobs.deinit(self.gpa);
         for (&self.slots) |*slot| {
             if (slot.entry) |*open_entry| open_entry.deinit(self.gpa);
             slot.entry = null;
@@ -274,6 +331,9 @@ pub const Service = struct {
     /// preview a host published is the host's to release.
     pub fn close(self: *Service, handle: Handle) void {
         const slot = self.slotOf(handle) orelse return;
+        // A job in flight is cancelled and waited for, so nothing still compiles against a
+        // workspace that is gone; its handle, and any finished one's, stops resolving.
+        self.dropJobs(handle);
         slot.entry.?.deinit(self.gpa);
         slot.entry = null;
         self.open_count -= 1;
@@ -375,6 +435,135 @@ pub const Service = struct {
         };
         item.end(item.workspace.revision());
         self.moved();
+    }
+
+    // -- Background jobs (`background.md` §9) -------------------------------------------
+
+    /// Starts a validate or build whose compile runs on `Options.tasks`. Refuses exactly
+    /// what the synchronous call refuses, with the same diagnostics, and `Busy` while this
+    /// workspace has a job. Started, the workspace keeps editing and refuses saves.
+    pub fn startJob(self: *Service, handle: Handle, kind: build_mod.Kind, expected_revision: u64) (Error || build_mod.Error)!JobHandle {
+        self.reap();
+        const item = self.entry(handle) orelse return error.InvalidHandle;
+
+        const work = try self.gpa.create(Work);
+        errdefer self.gpa.destroy(work);
+        work.graph = try core.tasks.Graph.init(self.gpa, self.options.tasks, .{ .nodes = 1 });
+        errdefer work.graph.deinit();
+        work.diags = .init(self.gpa, self.options.diagnostics);
+        errdefer work.diags.deinit(self.gpa);
+
+        // A refusal is this operation's result, readable as a synchronous one's would be.
+        item.begin(self.gpa);
+        work.job = item.workspace.startJob(kind, expected_revision, &item.diags) catch |err| {
+            item.end(item.workspace.revision());
+            return err;
+        };
+        item.end(item.workspace.revision());
+        errdefer item.workspace.cancelJob(work.job, &item.diags);
+
+        // A graph made for one node: this add cannot fail.
+        _ = work.graph.add(.{ .kind = .background, .context = work, .call = Work.run }) catch unreachable;
+        const job = try self.jobs.add(self.gpa, .{ .workspace = handle, .kind = kind, .revision = expected_revision, .work = work });
+        item.job = job;
+        // Starts the compile; an inline executor has finished it by the time this returns.
+        var budget: core.tasks.Budget = .unlimited;
+        _ = work.graph.poll(&budget);
+        self.moved();
+        return job;
+    }
+
+    /// Pending until the compile returns, then published, once, here: a build enters the
+    /// workspace's pool or its candidate is removed, the lock is released, and the job's
+    /// diagnostics become the workspace's. Every later poll answers the same.
+    pub fn pollJob(self: *Service, job: JobHandle) Error!JobStatus {
+        self.reap();
+        const running = self.jobOf(job) orelse return error.InvalidHandle;
+        const work = running.work orelse return running.status;
+        var budget: core.tasks.Budget = .unlimited;
+        if (work.graph.poll(&budget) == .pending) return .pending;
+
+        const item = self.entry(running.workspace).?;
+        item.diags.deinit(self.gpa);
+        item.diags = work.diags;
+        const published = item.workspace.finishJob(work.job, &item.diags);
+        item.end(running.revision);
+        running.status = if (published) |build| .{ .succeeded = build } else |err| .{ .failed = err };
+        work.graph.deinit();
+        self.gpa.destroy(work);
+        running.work = null;
+        item.job = .none;
+        self.moved();
+        return running.status;
+    }
+
+    /// The workspace a job belongs to, and what it is.
+    pub fn jobInfo(self: *Service, job: JobHandle) ?struct { workspace: Handle, kind: build_mod.Kind, revision: u64 } {
+        const running = self.jobOf(job) orelse return null;
+        return .{ .workspace = running.workspace, .kind = running.kind, .revision = running.revision };
+    }
+
+    /// Forgets a finished job, or cancels a pending one. A cancelled compile still runs to
+    /// its end, and its candidate is removed at the first job call after it returns. The
+    /// handle stops resolving at once either way.
+    pub fn releaseJob(self: *Service, job: JobHandle) Error!void {
+        const running = self.jobOf(job) orelse return error.InvalidHandle;
+        if (running.work) |work| {
+            work.graph.cancel();
+            running.released = true;
+        } else _ = self.jobs.remove(job);
+        self.reap();
+        self.moved();
+    }
+
+    fn jobOf(self: *Service, job: JobHandle) ?*Running {
+        const running = self.jobs.get(job) orelse return null;
+        if (running.released) return null;
+        return running;
+    }
+
+    /// Discards every released job whose compile has returned.
+    fn reap(self: *Service) void {
+        while (true) {
+            var it = self.jobs.iterator();
+            const done = while (it.next()) |record| {
+                if (!record.value.released) continue;
+                const work = record.value.work.?;
+                var budget: core.tasks.Budget = .unlimited;
+                if (work.graph.poll(&budget) != .pending) break record.id;
+            } else return;
+            self.discard(done);
+        }
+    }
+
+    /// Every job of one workspace gone: a running one cancelled and waited for.
+    fn dropJobs(self: *Service, workspace_handle: Handle) void {
+        while (true) {
+            var it = self.jobs.iterator();
+            const found = while (it.next()) |record| {
+                if (record.value.workspace.eql(workspace_handle)) break record.id;
+            } else return;
+            if (self.jobs.get(found).?.work) |work| {
+                work.graph.cancel();
+                var budget: core.tasks.Budget = .unlimited;
+                while (work.graph.poll(&budget) == .pending) self.options.tasks.wait();
+            }
+            self.discard(found);
+        }
+    }
+
+    fn discard(self: *Service, job: JobHandle) void {
+        const running = self.jobs.get(job).?;
+        if (running.work) |work| {
+            const item = self.entry(running.workspace).?;
+            // Whatever cleanup says is the cancelled job's own, and goes with it.
+            item.workspace.cancelJob(work.job, &work.diags);
+            work.diags.deinit(self.gpa);
+            work.graph.deinit();
+            self.gpa.destroy(work);
+            item.job = .none;
+        }
+        _ = self.jobs.remove(job);
     }
 
     // -- Export ----------------------------------------------------------------------
@@ -756,4 +945,238 @@ test "export writes a build to a configured destination and never to a path a ca
     // A destination number the host did not configure is the only way to name one.
     try testing.expectError(error.ExportUnavailable, service.exportBuild(handle, build, 1));
     try testing.expectError(error.InvalidHandle, service.exportBuild(.none, build, 0));
+}
+
+// -- background jobs ---------------------------------------------------------------
+
+const compiler_mod = @import("compiler.zig");
+
+/// A package with a generated asset, open with every grant, on `tasks`.
+fn openJobFixture(f: *Fixture, service: *Service) !Handle {
+    try f.write("mod.fdt",
+        \\foundry:mod demo:jobs { name "Jobs" version 1 license "MIT" }
+        \\@schema demo:item { name string }
+        \\
+    );
+    try f.write("records.fdt", "demo:item demo:one { name \"one\" }\n");
+    try f.write("grids/town.grid", "1 1 1\n1 0 1\n1 1 1\n");
+    return service.open(try f.root(), .{ .workspace = .{
+        .output_root = try f.out(),
+        .grants = .{ .edit = true, .save = true, .build = true },
+    } }, &f.diags);
+}
+
+fn readCandidate(f: *Fixture, workspace: *Workspace, build: build_mod.Handle, rel: []const u8) ![]u8 {
+    const info = try workspace.buildInfo(build);
+    const path = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ info.relative_dir, rel });
+    defer testing.allocator.free(path);
+    const read = try f.os.readFileConfined(testing.allocator, try f.out(), path, 1 << 20);
+    return read.bytes;
+}
+
+fn outputEntries(f: *Fixture) !usize {
+    var listing = try f.os.listDir(testing.allocator, try f.out());
+    defer listing.deinit();
+    return listing.entries.len;
+}
+
+test "a background build is the synchronous build's bytes and the compiler's, in any completion order" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init();
+    defer f.deinit();
+    var manual = try core.tasks.Manual.init(gpa, 4);
+    defer manual.deinit();
+    var service: Service = .init(gpa, f.os, .{ .tasks = manual.tasks() });
+    defer service.deinit();
+    const handle = try openJobFixture(f, &service);
+    const item = service.entry(handle).?;
+
+    // The synchronous call, and `fpack`'s compiler over the same tree: the oracles.
+    const sync = try item.workspace.build(item.workspace.revision(), &f.diags);
+    const sync_package = try gpa.dupe(u8, (try item.workspace.buildInfo(sync)).package_bytes);
+    defer gpa.free(sync_package);
+    const sync_grid = try readCandidate(f, &item.workspace, sync, "runtime/assets/grids/town.fgrid");
+    defer gpa.free(sync_grid);
+    var registry = data.Registry.init(gpa, .default);
+    defer registry.deinit(gpa);
+    var direct: std.ArrayList(u8) = .empty;
+    defer direct.deinit(gpa);
+    const identity = try compiler_mod.compile(gpa, f.os, try f.root(), .{ .assets_out = try f.at("direct") }, &registry, &f.diags, &direct);
+    defer gpa.free(identity.name);
+    try testing.expectEqualSlices(u8, direct.items, sync_package);
+
+    for ([_]bool{ false, true }) |held| {
+        // Held by the executor until run, or run as it starts.
+        service.options.tasks = if (held) manual.tasks() else core.tasks.immediate;
+        const revision = item.workspace.revision();
+        const job = try service.startJob(handle, .build, revision);
+        if (held) {
+            try testing.expectEqual(JobStatus.pending, try service.pollJob(job));
+            manual.runAll();
+        }
+        const status = try service.pollJob(job);
+        const build = status.succeeded.?;
+        // Answered again, unchanged.
+        try testing.expectEqualDeep(status, try service.pollJob(job));
+        try testing.expectEqual(revision, (try item.workspace.buildInfo(build)).revision);
+        try testing.expectEqualSlices(u8, sync_package, (try item.workspace.buildInfo(build)).package_bytes);
+        const grid = try readCandidate(f, &item.workspace, build, "runtime/assets/grids/town.fgrid");
+        defer gpa.free(grid);
+        try testing.expectEqualSlices(u8, sync_grid, grid);
+        try service.releaseJob(job);
+        try testing.expectError(error.InvalidHandle, service.pollJob(job));
+        try service.releaseBuild(handle, build);
+    }
+    try service.releaseBuild(handle, sync);
+}
+
+test "a validate job compiles the drafts, and its diagnostics become the workspace's" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init();
+    defer f.deinit();
+    var service: Service = .init(gpa, f.os, .{});
+    defer service.deinit();
+    const handle = try openJobFixture(f, &service);
+    const item = service.entry(handle).?;
+
+    // Valid on disk, invalid in the draft: only a compile of the draft fails.
+    var edit_diags = Diagnostics.init(gpa, .default);
+    defer edit_diags.deinit(gpa);
+    var records: u32 = 0;
+    for (item.workspace.documents, 0..) |document, i| {
+        if (std.mem.eql(u8, document.path, "records.fdt")) records = @intCast(i);
+    }
+    const edited = try item.workspace.unsetField(item.workspace.revision(), .{ .document = records, .record = 0 }, &.{.{ .field = 0 }}, &edit_diags);
+    const job = try service.startJob(handle, .validate, edited.revision);
+    const status = try service.pollJob(job);
+    try testing.expectEqual(build_mod.Error.ContentInvalid, status.failed);
+    try testing.expect(item.diags.failed);
+    try testing.expectEqualStrings("records.fdt", item.diags.items.items[0].location.file);
+    try testing.expectEqual(edited.revision, item.diags_revision);
+    try testing.expectEqual(@as(usize, 0), try outputEntries(f));
+    try service.releaseJob(job);
+}
+
+test "while a job runs, edits land and saves, a second job and synchronous compiles are refused Busy" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init();
+    defer f.deinit();
+    var manual = try core.tasks.Manual.init(gpa, 4);
+    defer manual.deinit();
+    var service: Service = .init(gpa, f.os, .{ .tasks = manual.tasks() });
+    defer service.deinit();
+    const handle = try openJobFixture(f, &service);
+    const item = service.entry(handle).?;
+
+    const started = item.workspace.revision();
+    const job = try service.startJob(handle, .build, started);
+    var diags = Diagnostics.init(gpa, .default);
+    defer diags.deinit(gpa);
+    try testing.expectError(error.Busy, service.startJob(handle, .validate, started));
+    try testing.expectError(error.Busy, item.workspace.saveAll(started, &diags));
+    // Refused for what it is, not as somebody else's lock.
+    try testing.expect(std.mem.indexOf(u8, diags.items.items[diags.items.items.len - 1].message, "in the background") != null);
+    try testing.expectError(error.Busy, item.workspace.saveDocument(started, 0, &diags));
+    try testing.expectError(error.Busy, item.workspace.validate(started, &diags));
+    try testing.expectError(error.Busy, item.workspace.build(started, &diags));
+
+    // An edit is not a save: it lands, and moves the revision past the job's.
+    const edited = try item.workspace.unsetField(started, .{ .document = 1, .record = 0 }, &.{.{ .field = 0 }}, &diags);
+    try testing.expect(edited.revision != started);
+
+    manual.runAll();
+    const build = (try service.pollJob(job)).succeeded.?;
+    // Stamped with the revision it started from, as a synchronous build is, and so are the
+    // diagnostics it left.
+    try testing.expectEqual(started, (try item.workspace.buildInfo(build)).revision);
+    try testing.expectEqual(started, item.diags_revision);
+    try service.releaseJob(job);
+    // Finished: saving is the workspace's again, and its own lock is gone.
+    var saved = try item.workspace.saveAll(edited.revision, &diags);
+    saved.deinit(gpa);
+    try service.releaseBuild(handle, build);
+}
+
+test "a stale revision is refused at start, and a released job's handle and candidate go" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init();
+    defer f.deinit();
+    var manual = try core.tasks.Manual.init(gpa, 4);
+    defer manual.deinit();
+    var service: Service = .init(gpa, f.os, .{ .tasks = manual.tasks() });
+    defer service.deinit();
+    const handle = try openJobFixture(f, &service);
+    const item = service.entry(handle).?;
+
+    try testing.expectError(error.StaleRevision, service.startJob(handle, .build, item.workspace.revision() + 1));
+    try testing.expectError(error.InvalidHandle, service.startJob(.{ .index = 3, .generation = 9 }, .build, 0));
+    try testing.expectError(error.InvalidHandle, service.pollJob(.{ .index = 0, .generation = 7 }));
+    try testing.expectEqual(@as(usize, 0), try outputEntries(f));
+
+    // Cancelled while its compile is held: the handle goes at once, the candidate once the
+    // compile has returned and the next job call has seen it.
+    const job = try service.startJob(handle, .build, item.workspace.revision());
+    try testing.expectEqual(@as(usize, 1), try outputEntries(f));
+    try service.releaseJob(job);
+    try testing.expectError(error.InvalidHandle, service.pollJob(job));
+    try testing.expectError(error.InvalidHandle, service.releaseJob(job));
+    try testing.expectEqual(@as(usize, 1), try outputEntries(f));
+    manual.runAll();
+    try testing.expectError(error.InvalidHandle, service.pollJob(job));
+    try testing.expectEqual(@as(usize, 0), try outputEntries(f));
+    try testing.expectEqual(@as(u32, 0), item.workspace.buildCount());
+    // And the workspace takes another.
+    const again = try service.startJob(handle, .validate, item.workspace.revision());
+    manual.runAll();
+    try testing.expectEqual(JobStatus{ .succeeded = null }, try service.pollJob(again));
+    try service.releaseJob(again);
+}
+
+test "closing a workspace mid-job cancels the job, waits for it and leaves nothing behind" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init();
+    defer f.deinit();
+    var manual = try core.tasks.Manual.init(gpa, 4);
+    defer manual.deinit();
+    var service: Service = .init(gpa, f.os, .{ .tasks = manual.tasks() });
+    defer service.deinit();
+    const handle = try openJobFixture(f, &service);
+    const job = try service.startJob(handle, .build, service.entry(handle).?.workspace.revision());
+    try testing.expectEqual(@as(u32, 1), manual.pending());
+
+    service.close(handle);
+    // Waiting ran it; closing then removed what it made, and its lock.
+    try testing.expectEqual(@as(u32, 0), manual.pending());
+    try testing.expectError(error.InvalidHandle, service.pollJob(job));
+    try testing.expectEqual(@as(usize, 0), try outputEntries(f));
+    try testing.expectError(error.FileNotFound, f.os.statFileConfined(try f.root(), save.lock_file));
+}
+
+test "a job that finds a source changed on disk fails, and leaves its document marked" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init();
+    defer f.deinit();
+    var manual = try core.tasks.Manual.init(gpa, 4);
+    defer manual.deinit();
+    var service: Service = .init(gpa, f.os, .{ .tasks = manual.tasks() });
+    defer service.deinit();
+    const handle = try openJobFixture(f, &service);
+    const item = service.entry(handle).?;
+
+    const job = try service.startJob(handle, .build, item.workspace.revision());
+    // Written by something outside the editor while the compile waits to run.
+    try f.write("records.fdt", "demo:item demo:one { name \"changed\" }\n");
+    manual.runAll();
+    try testing.expectEqual(build_mod.Error.ExternalChange, (try service.pollJob(job)).failed);
+    try service.releaseJob(job);
+    var records: ?*const workspace_mod.Document = null;
+    for (item.workspace.documents) |*document| {
+        if (std.mem.eql(u8, document.path, "records.fdt")) records = document;
+    }
+    try testing.expect(records.?.externally_changed);
+    // So the next build is refused before it compiles anything.
+    var diags = Diagnostics.init(gpa, .default);
+    defer diags.deinit(gpa);
+    try testing.expectError(error.ExternalChange, item.workspace.build(item.workspace.revision(), &diags));
+    try testing.expectEqual(@as(usize, 0), try outputEntries(f));
 }

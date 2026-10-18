@@ -165,6 +165,9 @@ pub const Workspace = struct {
     editing: edit.State,
     builds: build_mod.State = .{},
     build_sequence: u64 = 0,
+    /// A background validate or build is between `startJob` and its finish or cancel
+    /// (`background.md` §9.2). Edits continue; saves, and another compile, are `Busy`.
+    job_active: bool = false,
 
     /// Opens `root`: reads the manifest, loads the granted dependencies, discovers the
     /// sources and reads every one, and reports what the manifest requires that was not
@@ -392,19 +395,53 @@ pub const Workspace = struct {
     }
 
     pub fn saveDocument(self: *Workspace, expected_revision: u64, document: u32, diags: *Diagnostics) save.Error!save.Result {
+        try self.refuseWhileCompiling(diags);
         return save.saveOne(self.saveContext(), expected_revision, document, diags);
     }
 
     pub fn saveAll(self: *Workspace, expected_revision: u64, diags: *Diagnostics) save.Error!save.AllResult {
+        try self.refuseWhileCompiling(diags);
         return save.saveAll(self.saveContext(), expected_revision, diags);
     }
 
     pub fn validate(self: *Workspace, expected_revision: u64, diags: *Diagnostics) build_mod.Error!void {
+        try self.refuseWhileCompiling(diags);
         return build_mod.validate(self.buildContext(), expected_revision, diags);
     }
 
     pub fn build(self: *Workspace, expected_revision: u64, diags: *Diagnostics) build_mod.Error!build_mod.Handle {
+        try self.refuseWhileCompiling(diags);
         return build_mod.build(self.buildContext(), expected_revision, diags);
+    }
+
+    /// The first stage of a background validate or build: checked, locked and copied here,
+    /// on the calling thread. Its `run` may then go to any thread; `finishJob` or
+    /// `cancelJob` ends it, here again.
+    pub fn startJob(self: *Workspace, kind: build_mod.Kind, expected_revision: u64, diags: *Diagnostics) build_mod.Error!*build_mod.Job {
+        try self.refuseWhileCompiling(diags);
+        const job = try build_mod.Job.start(self.buildContext(), kind, expected_revision, diags);
+        self.job_active = true;
+        return job;
+    }
+
+    pub fn finishJob(self: *Workspace, job: *build_mod.Job, diags: *Diagnostics) build_mod.Error!?build_mod.Handle {
+        std.debug.assert(self.job_active);
+        self.job_active = false;
+        return job.finish(self.buildContext(), diags);
+    }
+
+    pub fn cancelJob(self: *Workspace, job: *build_mod.Job, diags: *Diagnostics) void {
+        std.debug.assert(self.job_active);
+        self.job_active = false;
+        job.cancel(self.gpa, diags);
+    }
+
+    /// The build reads saved files, so they must not change under it, and a workspace
+    /// compiles one thing at a time (§9.2).
+    fn refuseWhileCompiling(self: *Workspace, diags: *Diagnostics) error{ Busy, OutOfMemory }!void {
+        if (!self.job_active) return;
+        try diags.addFmt(self.gpa, .err, .whole("."), 1, "", "a validate or build is running in the background; wait for it, or release it, first", .{});
+        return error.Busy;
     }
 
     pub fn buildInfo(self: *Workspace, handle: build_mod.Handle) build_mod.Error!build_mod.Info {

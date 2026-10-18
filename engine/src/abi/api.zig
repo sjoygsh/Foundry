@@ -609,6 +609,37 @@ fn extendV5(v5: Api_v5, tail: Api_v6_tail) Api_v6 {
     return v6;
 }
 
+/// v7 (`background.md` §9.3): a background validate or build, so a client that draws keeps
+/// drawing while its package compiles. Additive; v4's synchronous calls are unchanged.
+const Api_v7_tail = extern struct {
+    author_job_start: *const fn (types.Workspace, u32, u64, ?*types.AuthorJob) callconv(.c) Result,
+    author_job_poll: *const fn (types.AuthorJob, ?*author_types.JobStatus) callconv(.c) Result,
+    author_job_release: *const fn (types.AuthorJob) callconv(.c) Result,
+};
+const api_v6_fields = @typeInfo(Api_v6).@"struct".fields;
+const api_v7_tail_fields = @typeInfo(Api_v7_tail).@"struct".fields;
+pub const Api_v7 = blk: {
+    var names: [api_v6_fields.len + api_v7_tail_fields.len][:0]const u8 = undefined;
+    var field_types: [names.len]type = undefined;
+    for (api_v6_fields, 0..) |f, i| {
+        names[i] = f.name;
+        field_types[i] = f.type;
+    }
+    for (api_v7_tail_fields, api_v6_fields.len..) |f, i| {
+        names[i] = f.name;
+        field_types[i] = f.type;
+    }
+    break :blk @Struct(.@"extern", null, &names, &field_types, &@splat(.{}));
+};
+fn extendV6(v6: Api_v6, tail: Api_v7_tail) Api_v7 {
+    var v7: Api_v7 = undefined;
+    inline for (api_v6_fields) |f| @field(v7, f.name) = @field(v6, f.name);
+    inline for (api_v7_tail_fields) |f| @field(v7, f.name) = @field(tail, f.name);
+    v7.version = types.api_version_7;
+    v7.size = @sizeOf(Api_v7);
+    return v7;
+}
+
 /// The table for one host type, and the `get_api` that hands it out.
 pub fn TableOf(comptime H: type) type {
     const engine = engine_calls.Of(H);
@@ -935,6 +966,12 @@ pub fn TableOf(comptime H: type) type {
             .physics3d_character_body = public3d.physics3dCharacterBody,
         });
 
+        pub const v7: Api_v7 = extendV6(v6, .{
+            .author_job_start = authoring.jobStart,
+            .author_job_poll = authoring.jobPoll,
+            .author_job_release = authoring.jobRelease,
+        });
+
         pub fn getApi(version: u32) callconv(.c) ?*const anyopaque {
             if (version == types.api_version_1) return @ptrCast(&v1);
             if (version == types.api_version_2) return @ptrCast(&v2);
@@ -942,6 +979,7 @@ pub fn TableOf(comptime H: type) type {
             if (version == types.api_version_4) return @ptrCast(&v4);
             if (version == types.api_version_5) return @ptrCast(&v5);
             if (version == types.api_version_6) return @ptrCast(&v6);
+            if (version == types.api_version_7) return @ptrCast(&v7);
             return null;
         }
     };

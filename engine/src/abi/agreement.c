@@ -65,7 +65,8 @@ FOUNDRY_AGREE(FOUNDRY_API_VERSION_3 == 3);
 FOUNDRY_AGREE(FOUNDRY_API_VERSION_4 == 4);
 FOUNDRY_AGREE(FOUNDRY_API_VERSION_5 == 5);
 FOUNDRY_AGREE(FOUNDRY_API_VERSION_6 == 6);
-FOUNDRY_AGREE(FOUNDRY_API_VERSION == FOUNDRY_API_VERSION_6);
+FOUNDRY_AGREE(FOUNDRY_API_VERSION_7 == 7);
+FOUNDRY_AGREE(FOUNDRY_API_VERSION == FOUNDRY_API_VERSION_7);
 
 /* -- Strings ------------------------------------------------------------------------- */
 
@@ -2977,6 +2978,22 @@ FOUNDRY_AGREE(sizeof(FoundryDocument) == 8);
 FOUNDRY_AGREE(sizeof(FoundrySourceNode) == 8);
 FOUNDRY_AGREE(sizeof(FoundrySchemaNode) == 8);
 FOUNDRY_AGREE(sizeof(FoundryBuild) == 8);
+FOUNDRY_AGREE(sizeof(FoundryAuthorJob) == 8);
+FOUNDRY_AGREE(offsetof(FoundryAuthorJob, bits) == 0);
+
+/* v7: a background validate or build. */
+FOUNDRY_AGREE(FOUNDRY_AUTHOR_JOB_VALIDATE == 0);
+FOUNDRY_AGREE(FOUNDRY_AUTHOR_JOB_BUILD == 1);
+FOUNDRY_AGREE(FOUNDRY_AUTHOR_JOB_PENDING == 0);
+FOUNDRY_AGREE(FOUNDRY_AUTHOR_JOB_SUCCEEDED == 1);
+FOUNDRY_AGREE(FOUNDRY_AUTHOR_JOB_FAILED == 2);
+FOUNDRY_AGREE(sizeof(FoundryAuthorJobStatus) == 32);
+FOUNDRY_AGREE(offsetof(FoundryAuthorJobStatus, revision) == 0);
+FOUNDRY_AGREE(offsetof(FoundryAuthorJobStatus, build) == 8);
+FOUNDRY_AGREE(offsetof(FoundryAuthorJobStatus, state) == 16);
+FOUNDRY_AGREE(offsetof(FoundryAuthorJobStatus, kind) == 20);
+FOUNDRY_AGREE(offsetof(FoundryAuthorJobStatus, result) == 24);
+FOUNDRY_AGREE(offsetof(FoundryAuthorJobStatus, reserved) == 28);
 
 /* -- ABI v5 -------------------------------------------------------------------------- */
 /* Positional initialization type-checks every common v5 member against v4, as v4 does
@@ -4250,6 +4267,11 @@ FOUNDRY_AGREE(offsetof(FoundryApi_v6, physics3d_character_move) == sizeof(Foundr
 FOUNDRY_AGREE(offsetof(FoundryApi_v6, physics3d_character_set_feet) == sizeof(FoundryApi_v5) + 25 * sizeof(void (*)(void)));
 FOUNDRY_AGREE(offsetof(FoundryApi_v6, physics3d_character_feet) == sizeof(FoundryApi_v5) + 26 * sizeof(void (*)(void)));
 FOUNDRY_AGREE(offsetof(FoundryApi_v6, physics3d_character_body) == sizeof(FoundryApi_v5) + 27 * sizeof(void (*)(void)));
+uint64_t foundry_agreement_api_v7_size(void) { return sizeof(FoundryApi_v7); }
+uint64_t foundry_agreement_api_v7_offset(uint64_t i) {
+    static const uint64_t offsets[] = { offsetof(FoundryApi_v7, author_job_start), offsetof(FoundryApi_v7, author_job_poll), offsetof(FoundryApi_v7, author_job_release) };
+    return i < 3 ? offsets[i] : UINT64_MAX;
+}
 uint64_t foundry_agreement_api_v6_size(void) { return sizeof(FoundryApi_v6); }
 uint64_t foundry_agreement_api_v6_offset(uint64_t i) {
     static const uint64_t offsets[] = { offsetof(FoundryApi_v6, render3d_instance_create), offsetof(FoundryApi_v6, render3d_instance_destroy), offsetof(FoundryApi_v6, render3d_instance_set_world), offsetof(FoundryApi_v6, render3d_instance_set_material), offsetof(FoundryApi_v6, render3d_instance_set_visible), offsetof(FoundryApi_v6, render3d_light_create), offsetof(FoundryApi_v6, render3d_light_set), offsetof(FoundryApi_v6, render3d_light_destroy), offsetof(FoundryApi_v6, render3d_camera_get), offsetof(FoundryApi_v6, world_transform_get), offsetof(FoundryApi_v6, world_transform_set), offsetof(FoundryApi_v6, world_parent_get), offsetof(FoundryApi_v6, world_parent_set), offsetof(FoundryApi_v6, world_world_transform), offsetof(FoundryApi_v6, physics3d_raycast), offsetof(FoundryApi_v6, physics3d_shape_cast), offsetof(FoundryApi_v6, physics3d_overlap), offsetof(FoundryApi_v6, physics3d_body_create), offsetof(FoundryApi_v6, physics3d_body_destroy), offsetof(FoundryApi_v6, physics3d_body_set_pose), offsetof(FoundryApi_v6, physics3d_body_set_filter), offsetof(FoundryApi_v6, physics3d_body_get), offsetof(FoundryApi_v6, physics3d_character_create), offsetof(FoundryApi_v6, physics3d_character_destroy), offsetof(FoundryApi_v6, physics3d_character_move), offsetof(FoundryApi_v6, physics3d_character_set_feet), offsetof(FoundryApi_v6, physics3d_character_feet), offsetof(FoundryApi_v6, physics3d_character_body) };

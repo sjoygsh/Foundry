@@ -131,6 +131,7 @@ pub const Api_v3 = api.Api_v3;
 pub const Api_v4 = api.Api_v4;
 pub const Api_v5 = api.Api_v5;
 pub const Api_v6 = api.Api_v6;
+pub const Api_v7 = api.Api_v7;
 pub const public3d = @import("public3d_types.zig");
 pub const Vec3 = public3d.Vec3;
 pub const Quat = public3d.Quat;

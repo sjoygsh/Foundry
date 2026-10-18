@@ -1645,9 +1645,11 @@ pub fn build(b: *std.Build) void {
     const callback_refused_mod = testNativeLibrary(b, target, optimize, "callback_refused_mod", "engine/tests/fixtures/callback_refused_mod.c", c_mod_flags);
     // An external authoring client that runs, not merely one that compiles (`editor.md` §11).
     const author_mod = testNativeLibrary(b, target, optimize, "author_mod", "engine/tests/fixtures/author_mod.c", c_mod_flags);
+    // And one that builds through v7's background job (`background.md` §9.3).
+    const author_job_mod = testNativeLibrary(b, target, optimize, "author_job_mod", "engine/tests/fixtures/author_job_mod.c", c_mod_flags);
     const hostile3d_mod = testNativeLibrary(b, target, optimize, "hostile3d_mod", "engine/tests/fixtures/hostile3d_mod.c", c_mod_flags);
     const render3d_client = testNativeLibrary(b, target, optimize, "render3d_client", "engine/tests/fixtures/render3d_client.c", c_mod_flags);
-    for ([_]*std.Build.Step.Compile{ pipeline_mod, shutdown_mod, no_init_mod, refused_mod, unknown_mod, no_shutdown_mod, callback_refused_mod, author_mod, hostile3d_mod, render3d_client }) |library| {
+    for ([_]*std.Build.Step.Compile{ pipeline_mod, shutdown_mod, no_init_mod, refused_mod, unknown_mod, no_shutdown_mod, callback_refused_mod, author_mod, author_job_mod, hostile3d_mod, render3d_client }) |library| {
         check_step.dependOn(&library.step);
     }
 
@@ -1660,6 +1662,7 @@ pub fn build(b: *std.Build) void {
     pipeline_options.addOptionPath("no_shutdown_mod_path", no_shutdown_mod.getEmittedBin());
     pipeline_options.addOptionPath("callback_refused_mod_path", callback_refused_mod.getEmittedBin());
     pipeline_options.addOptionPath("author_mod_path", author_mod.getEmittedBin());
+    pipeline_options.addOptionPath("author_job_mod_path", author_job_mod.getEmittedBin());
     pipeline_options.addOptionPath("hostile3d_mod_path", hostile3d_mod.getEmittedBin());
     pipeline_options.addOptionPath("render3d_client_path", render3d_client.getEmittedBin());
 

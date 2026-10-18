@@ -41,6 +41,7 @@ const Api_v3 = api.Api_v3;
 const Api_v4 = api.Api_v4;
 const Api_v5 = api.Api_v5;
 const Api_v6 = api.Api_v6;
+const Api_v7 = api.Api_v7;
 const Result = types.Result;
 const Str = types.Str;
 const TestEngine = test_engine.TestEngine;
@@ -52,6 +53,7 @@ const table_v3 = api.TableOf(Host).v3;
 const table_v4 = api.TableOf(Host).v4;
 const table_v5 = api.TableOf(Host).v5;
 const table_v6 = api.TableOf(Host).v6;
+const table_v7 = api.TableOf(Host).v7;
 
 const testing = std.testing;
 
@@ -142,13 +144,13 @@ fn callWith(comptime selected: anytype, comptime field: std.builtin.Type.StructF
 test "every entry point refuses a zeroed call when nothing is bound" {
     // The table's own length, walked at comptime four times over. Raised rather than
     // reduced: the point of these sweeps is that they grow with the table.
-    @setEvalBranchQuota(64 * @typeInfo(Api_v6).@"struct".fields.len);
+    @setEvalBranchQuota(64 * @typeInfo(Api_v7).@"struct".fields.len);
 
     Host.unbindAny();
 
-    inline for (@typeInfo(Api_v6).@"struct".fields) |field| {
+    inline for (@typeInfo(Api_v7).@"struct".fields) |field| {
         if (comptime isCall(field.type) and !isExempt(field.name)) {
-            const result = callWith(table_v6, field, zeroed);
+            const result = callWith(table_v7, field, zeroed);
             testing.expect(result.isError()) catch |err| {
                 std.debug.print("{s} answered {s} to a zeroed call\n", .{ field.name, result.name() });
                 return err;
@@ -160,7 +162,7 @@ test "every entry point refuses a zeroed call when nothing is bound" {
 test "every entry point refuses a zeroed call when everything is bound" {
     // The table's own length, walked at comptime four times over. Raised rather than
     // reduced: the point of these sweeps is that they grow with the table.
-    @setEvalBranchQuota(64 * @typeInfo(Api_v6).@"struct".fields.len);
+    @setEvalBranchQuota(64 * @typeInfo(Api_v7).@"struct".fields.len);
 
     var engine: TestEngine = try .init(testing.allocator);
     defer engine.deinit();
@@ -177,9 +179,9 @@ test "every entry point refuses a zeroed call when everything is bound" {
     host.bind();
     defer host.unbind();
 
-    inline for (@typeInfo(Api_v6).@"struct".fields) |field| {
+    inline for (@typeInfo(Api_v7).@"struct".fields) |field| {
         if (comptime isCall(field.type) and !isExempt(field.name)) {
-            const result = callWith(table_v6, field, zeroed);
+            const result = callWith(table_v7, field, zeroed);
             testing.expect(result.isError()) catch |err| {
                 std.debug.print("{s} answered {s} to a zeroed call\n", .{ field.name, result.name() });
                 return err;
@@ -191,7 +193,7 @@ test "every entry point refuses a zeroed call when everything is bound" {
 test "an absent subsystem answers unavailable, not not_found and not a crash" {
     // The table's own length, walked at comptime four times over. Raised rather than
     // reduced: the point of these sweeps is that they grow with the table.
-    @setEvalBranchQuota(64 * @typeInfo(Api_v6).@"struct".fields.len);
+    @setEvalBranchQuota(64 * @typeInfo(Api_v7).@"struct".fields.len);
 
     // A host with nothing in it at all: bound, so the table finds it, and empty, so every
     // capability has to say what it says when its subsystem was never supplied.
@@ -199,10 +201,10 @@ test "an absent subsystem answers unavailable, not not_found and not a crash" {
     host.bind();
     defer host.unbind();
 
-    inline for (@typeInfo(Api_v6).@"struct".fields) |field| {
+    inline for (@typeInfo(Api_v7).@"struct".fields) |field| {
         if (comptime isCall(field.type) and !isExempt(field.name)) {
             if (comptime !nameIn(&no_subsystem, field.name)) {
-                const result = callWith(table_v6, field, wellFormed);
+                const result = callWith(table_v7, field, wellFormed);
                 testing.expectEqual(Result.unavailable, result) catch |err| {
                     std.debug.print("{s} answered {s} on an empty host\n", .{ field.name, result.name() });
                     return err;
@@ -247,9 +249,9 @@ test "the table is one shape: every entry present, none null, and it says its ow
     }
 }
 
-test "get_api hands out v1 to v6 side by side and refuses unknown versions" {
+test "get_api hands out v1 to v7 side by side and refuses unknown versions" {
     // Five tables walked field by field at comptime, and the newest is the longest.
-    @setEvalBranchQuota(64 * @typeInfo(Api_v6).@"struct".fields.len);
+    @setEvalBranchQuota(64 * @typeInfo(Api_v7).@"struct".fields.len);
 
     const Table = api.TableOf(Host);
 
@@ -316,10 +318,28 @@ test "get_api hands out v1 to v6 side by side and refuses unknown versions" {
         }
     }
 
+    const v7 = Table.getApi(7) orelse return error.TestUnexpectedResult;
+    const typed_v7: *const Api_v7 = @ptrCast(@alignCast(v7));
+    try testing.expectEqual(@as(u32, 7), typed_v7.version);
+    try testing.expectEqual(@as(u32, @sizeOf(Api_v7)), typed_v7.size);
+    // v6 unchanged: every entry the same function, at the same offset.
+    inline for (@typeInfo(Api_v6).@"struct".fields) |field| {
+        if (comptime isCall(field.type)) {
+            try testing.expect(@field(table_v6, field.name) == @field(table_v7, field.name));
+            try testing.expectEqual(@offsetOf(Api_v6, field.name), @offsetOf(Api_v7, field.name));
+        }
+    }
+    // Frozen at 264 entries when M27 closes: v6's 261 and three.
+    var calls: usize = 0;
+    inline for (@typeInfo(Api_v7).@"struct".fields) |field| {
+        if (comptime isCall(field.type)) calls += 1;
+    }
+    try testing.expectEqual(@as(usize, 264), calls);
+
     // Refused legibly rather than by crashing, which is the whole reason the entry point
     // takes a query function instead of the table.
     try testing.expectEqual(@as(?*const anyopaque, null), Table.getApi(0));
-    try testing.expectEqual(@as(?*const anyopaque, null), Table.getApi(7));
+    try testing.expectEqual(@as(?*const anyopaque, null), Table.getApi(8));
     try testing.expectEqual(@as(?*const anyopaque, null), Table.getApi(std.math.maxInt(u32)));
 
     // The same pointer every time: the table is static, so a mod may keep it.
@@ -328,4 +348,6 @@ test "get_api hands out v1 to v6 side by side and refuses unknown versions" {
     try testing.expectEqual(Table.getApi(3), Table.getApi(3));
     try testing.expectEqual(Table.getApi(4), Table.getApi(4));
     try testing.expectEqual(Table.getApi(5), Table.getApi(5));
+    try testing.expectEqual(Table.getApi(6), Table.getApi(6));
+    try testing.expectEqual(Table.getApi(7), Table.getApi(7));
 }

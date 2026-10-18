@@ -1,11 +1,28 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-18
-**Current handoff: M27 Step 6 of 11 is complete** ([`docs/design/background.md`](docs/design/background.md)).
-**Stop before Step 7**: `author`'s background validate and build, published as
-`FoundryApi_v7`. No ABI call exists for background work yet, and the editor still builds on
-its frame. Nothing is pushed: local `main` is ahead by M26 Steps 7–13, the `m26` tag and
-M27's commits.
+**Current handoff: M27 Step 7 of 11 is complete** ([`docs/design/background.md`](docs/design/background.md)).
+**Stop before Step 8**: the editor's client building through v7's jobs while it draws. The
+editor still calls v4's synchronous `author_build`. Nothing is pushed: local `main` is ahead
+by M26 Steps 7–13, the `m26` tag and M27's commits.
+
+**M27 Step 7 is done (2026-10-18): `author` builds in the background, and `FoundryApi_v7`
+publishes it.**
+- A validate or build is now a three-stage `author.build_mod.Job`: a main-thread start,
+  a compile on any thread, and a main-thread finish. The synchronous calls are the three run
+  in a row, so there is one path.
+- `author.Service` runs one job per workspace on `Options.tasks`. While one runs, edits
+  continue, and saves, compiles and a second job are refused `Busy`. Closing a workspace
+  cancels its job and waits for it.
+- The three v7 calls are `author_job_start`, `author_job_poll` and `author_job_release`, so
+  the table has 264 entries. The header is at `FOUNDRY_API_VERSION` 7, and v1–v6 are
+  unchanged.
+- The exit proof is `fixtures/author_job_mod.c`, a C99 library that sees only `foundry.h`.
+  Run as a native mod against a two-thread pool, its job's package matches the synchronous
+  build's, and `fpack`'s compiler's, byte for byte.
+
+Bar **2,196/2,197** (one skip). The header compiles as C99 and C++17 on all three targets,
+and `editor-workflow` and `editor-smoke` pass.
 
 **M27 Step 6 is done (2026-10-18): models appear when they are ready.**
 - `render3d.Content.requestModel` requests every part, and `modelState`/`modelReady`

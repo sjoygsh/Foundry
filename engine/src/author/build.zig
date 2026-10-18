@@ -5,6 +5,11 @@
 //! then inventoried and compared again before the one shared compiler sees them. Generated
 //! files cannot enter the source tree, and no handle is published until compilation and an
 //! ordinary load-order/store validation both succeed (ADR-0043).
+//!
+//! **A validate or build is a `Job` in three stages** (`background.md` §9.1): `start` checks
+//! and snapshots on the main thread, `run` compiles on any thread, and `finish` publishes on
+//! the main thread. The synchronous `validate` and `build` are the three run back to back,
+//! so a background build cannot differ from one by construction: there is one path.
 
 const std = @import("std");
 const core = @import("core");
@@ -65,6 +70,35 @@ pub const Context = struct {
     state: *State,
     sequence: *u64,
 };
+
+/// One source document as a compile sees it. **Owned by the job**, copied when it starts,
+/// so nothing the workspace does while it runs — an edit, a new document, a refresh —
+/// reaches the compile.
+const Input = struct {
+    path: []u8,
+    /// The draft for Validate, the saved baseline for Build.
+    bytes: []u8,
+    /// What disk must still hold.
+    baseline: []u8,
+    on_disk: bool,
+    /// Set when disk no longer matches `baseline`. `finish` marks the workspace's document,
+    /// which only the main thread may touch.
+    externally_changed: bool = false,
+};
+
+/// Everything a compile reads, and nothing it could race on. The roots and the dependency
+/// set are borrowed: the workspace outlives every job it starts, because closing one
+/// cancels its job and waits for it.
+const Compile = struct {
+    gpa: Allocator,
+    os: *Os,
+    source_root: []const u8,
+    documents: []Input,
+    dependencies: *const dependency.Set,
+    limits: Limits,
+};
+
+pub const Kind = enum { validate, build };
 
 pub const Info = struct {
     revision: u64,
@@ -139,66 +173,155 @@ pub fn release(ctx: Context, handle: Handle, diags: *Diagnostics) Error!void {
 /// Validates the current drafts through the package compiler but never publishes a build.
 /// Source files may be dirty; disk assets and every on-disk baseline must still be current.
 pub fn validate(ctx: Context, expected_revision: u64, diags: *Diagnostics) Error!void {
-    try begin(ctx, expected_revision);
-    const output_root = ctx.output_root.?;
-    var lock = if (ctx.write_granted)
-        save.Lock.acquire(ctx.gpa, ctx.os, ctx.source_root, expected_revision, diags) catch |err| return mapLockError(err)
-    else
-        save.Lock.unheld;
-    defer releaseLock(ctx.gpa, &lock, diags);
-
-    const candidate = try createCandidate(ctx, output_root);
-    defer {
-        cleanupCandidate(ctx, output_root, candidate.relative, diags);
-        ctx.gpa.free(candidate.absolute);
-        ctx.gpa.free(candidate.relative);
-    }
-
-    var product = try compileCandidate(ctx, candidate.absolute, true, diags);
-    product.deinit(ctx.gpa);
+    const job = try Job.start(ctx, .validate, expected_revision, diags);
+    job.run(diags);
+    _ = try job.finish(ctx, diags);
 }
 
 /// Builds only a clean saved snapshot and publishes a generational build handle after the
 /// candidate passes the ordinary content loader.
 pub fn build(ctx: Context, expected_revision: u64, diags: *Diagnostics) Error!Handle {
-    try begin(ctx, expected_revision);
-    if (ctx.state.pool.count() >= ctx.limits.max_live_builds) return error.BuildLimit;
-    for (ctx.documents) |document| {
-        if (!document.on_disk or document.dirty()) return error.DirtyDocuments;
-        if (document.externally_changed) return error.ExternalChange;
+    const job = try Job.start(ctx, .build, expected_revision, diags);
+    job.run(diags);
+    return (try job.finish(ctx, diags)).?;
+}
+
+/// A validate or build between its stages. Heap-allocated by `start`, and freed by `finish`
+/// or `cancel`, whichever ends it.
+pub const Job = struct {
+    kind: Kind,
+    revision: u64,
+    compile: Compile,
+    output_root: []const u8,
+    candidate: Candidate,
+    lock: save.Lock,
+    /// Written by `run`, read by `finish`.
+    product: ?(Error!Product) = null,
+
+    /// On the main thread: everything a synchronous call checks before it compiles, the
+    /// writer's lock, a fresh candidate, and a copy of what the compile reads. Refuses
+    /// exactly what `validate` and `build` refuse, and a refusal leaves nothing behind.
+    pub fn start(ctx: Context, kind: Kind, expected_revision: u64, diags: *Diagnostics) Error!*Job {
+        try begin(ctx, expected_revision);
+        if (kind == .build) {
+            if (ctx.state.pool.count() >= ctx.limits.max_live_builds) return error.BuildLimit;
+            for (ctx.documents) |document| {
+                if (!document.on_disk or document.dirty()) return error.DirtyDocuments;
+                if (document.externally_changed) return error.ExternalChange;
+            }
+        }
+
+        const inputs = try ctx.gpa.alloc(Input, ctx.documents.len);
+        errdefer ctx.gpa.free(inputs);
+        var copied: usize = 0;
+        errdefer freeInputs(ctx.gpa, inputs[0..copied]);
+        for (ctx.documents, inputs) |document, *input| {
+            const path = try ctx.gpa.dupe(u8, document.path);
+            errdefer ctx.gpa.free(path);
+            const bytes = try ctx.gpa.dupe(u8, if (kind == .validate) document.bytes else document.baseline);
+            errdefer ctx.gpa.free(bytes);
+            input.* = .{ .path = path, .bytes = bytes, .baseline = try ctx.gpa.dupe(u8, document.baseline), .on_disk = document.on_disk };
+            copied += 1;
+        }
+
+        const job = try ctx.gpa.create(Job);
+        errdefer ctx.gpa.destroy(job);
+        const output_root = ctx.output_root.?;
+        var lock = if (ctx.write_granted)
+            save.Lock.acquire(ctx.gpa, ctx.os, ctx.source_root, expected_revision, diags) catch |err| return mapLockError(err)
+        else
+            save.Lock.unheld;
+        errdefer releaseLock(ctx.gpa, &lock, diags);
+        const candidate = try createCandidate(ctx, output_root);
+        job.* = .{
+            .kind = kind,
+            .revision = expected_revision,
+            .compile = .{
+                .gpa = ctx.gpa,
+                .os = ctx.os,
+                .source_root = ctx.source_root,
+                .documents = inputs,
+                .dependencies = ctx.dependencies,
+                .limits = ctx.limits,
+            },
+            .output_root = output_root,
+            .candidate = candidate,
+            .lock = lock,
+        };
+        return job;
     }
-    try ctx.state.pool.ensureUnusedCapacity(ctx.gpa, 1);
 
-    const output_root = ctx.output_root.?;
-    var lock = if (ctx.write_granted)
-        save.Lock.acquire(ctx.gpa, ctx.os, ctx.source_root, expected_revision, diags) catch |err| return mapLockError(err)
-    else
-        save.Lock.unheld;
-    defer releaseLock(ctx.gpa, &lock, diags);
-
-    const candidate = try createCandidate(ctx, output_root);
-    var keep = false;
-    var keep_relative = false;
-    defer {
-        if (!keep) cleanupCandidate(ctx, output_root, candidate.relative, diags);
-        ctx.gpa.free(candidate.absolute);
-        if (!keep_relative) ctx.gpa.free(candidate.relative);
+    /// On any thread: the snapshot, the compiler and the load validation, into the
+    /// candidate. Touches nothing but the job, its diagnostics and the filesystem.
+    pub fn run(self: *Job, diags: *Diagnostics) void {
+        self.product = compileCandidate(self.compile, self.candidate.absolute, diags);
     }
 
-    var product = try compileCandidate(ctx, candidate.absolute, false, diags);
-    errdefer product.deinit(ctx.gpa);
-    const relative_owned = candidate.relative;
-    errdefer ctx.gpa.free(relative_owned);
-    const handle = ctx.state.pool.add(ctx.gpa, .{
-        .relative_dir = relative_owned,
-        .identity = product.identity,
-        .package_bytes = product.package_bytes,
-        .revision = expected_revision,
-    }) catch unreachable; // capacity was reserved before any filesystem mutation
-    product.transferred = true;
-    keep = true;
-    keep_relative = true;
-    return handle;
+    /// On the main thread, after `run`: a build's handle published, or the candidate removed;
+    /// the lock released; documents the compile found changed on disk marked so. Frees the
+    /// job. A validate answers null.
+    pub fn finish(self: *Job, ctx: Context, diags: *Diagnostics) Error!?Handle {
+        defer self.destroy(ctx.gpa, diags);
+        for (self.compile.documents) |input| if (input.externally_changed) {
+            for (ctx.documents) |*document| if (std.mem.eql(u8, document.path, input.path)) {
+                document.externally_changed = true;
+            };
+        };
+        var product = (self.product orelse unreachable) catch |err| {
+            cleanupCandidate(self.compile, self.output_root, self.candidate.relative, diags);
+            return err;
+        };
+        self.product = null;
+        if (self.kind == .validate) {
+            product.deinit(ctx.gpa);
+            cleanupCandidate(self.compile, self.output_root, self.candidate.relative, diags);
+            return null;
+        }
+        // `start` checked the limit, and nothing can add a build while a job runs: the
+        // workspace refuses another compile `Busy`.
+        const handle = ctx.state.pool.add(ctx.gpa, .{
+            .relative_dir = self.candidate.relative,
+            .identity = product.identity,
+            .package_bytes = product.package_bytes,
+            .revision = self.revision,
+        }) catch |err| {
+            product.deinit(ctx.gpa);
+            cleanupCandidate(self.compile, self.output_root, self.candidate.relative, diags);
+            return err;
+        };
+        product.transferred = true;
+        // The pool owns the candidate's name now.
+        self.candidate.relative = &.{};
+        return handle;
+    }
+
+    /// On the main thread, instead of `finish`: whatever `run` made is thrown away with the
+    /// candidate, and the lock released. Frees the job.
+    pub fn cancel(self: *Job, gpa: Allocator, diags: *Diagnostics) void {
+        if (self.product) |*result| {
+            if (result.*) |*product| product.deinit(gpa) else |_| {}
+        }
+        self.product = null;
+        cleanupCandidate(self.compile, self.output_root, self.candidate.relative, diags);
+        self.destroy(gpa, diags);
+    }
+
+    fn destroy(self: *Job, gpa: Allocator, diags: *Diagnostics) void {
+        releaseLock(gpa, &self.lock, diags);
+        freeInputs(gpa, self.compile.documents);
+        gpa.free(self.compile.documents);
+        gpa.free(self.candidate.absolute);
+        gpa.free(self.candidate.relative);
+        gpa.destroy(self);
+    }
+};
+
+fn freeInputs(gpa: Allocator, inputs: []Input) void {
+    for (inputs) |input| {
+        gpa.free(input.path);
+        gpa.free(input.bytes);
+        gpa.free(input.baseline);
+    }
 }
 
 fn begin(ctx: Context, expected_revision: u64) Error!void {
@@ -250,7 +373,7 @@ const Product = struct {
     }
 };
 
-fn compileCandidate(ctx: Context, candidate_root: []const u8, use_drafts: bool, diags: *Diagnostics) Error!Product {
+fn compileCandidate(ctx: Compile, candidate_root: []const u8, diags: *Diagnostics) Error!Product {
     for ([_][]const u8{ "source", "runtime", "runtime/assets", "generated", "dependencies" }) |dir|
         ctx.os.createDirPathConfined(candidate_root, dir) catch return error.IoFailed;
 
@@ -261,10 +384,11 @@ fn compileCandidate(ctx: Context, candidate_root: []const u8, use_drafts: bool, 
     defer walk.deinit(ctx.gpa);
     try checkSourceInventory(ctx, &walk, diags);
 
-    // Source documents come from drafts for Validate and from equal saved baselines for Build.
+    // Source documents come from drafts for Validate and from equal saved baselines for
+    // Build, chosen when the job started.
     for (ctx.documents) |*document| {
         if (document.on_disk) try checkDocumentDisk(ctx, document, diags);
-        const bytes = if (use_drafts) document.bytes else document.baseline;
+        const bytes = document.bytes;
         try account(&budget, bytes.len, ctx.limits.max_snapshot_bytes);
         const source_path = try prefixed(ctx.gpa, "source", document.path);
         defer ctx.gpa.free(source_path);
@@ -359,7 +483,7 @@ fn compileCandidate(ctx: Context, candidate_root: []const u8, use_drafts: bool, 
     };
 }
 
-fn checkSourceInventory(ctx: Context, walk: *const compiler.Walk, diags: *Diagnostics) Error!void {
+fn checkSourceInventory(ctx: Compile, walk: *const compiler.Walk, diags: *Diagnostics) Error!void {
     var disk_count: usize = 0;
     for (ctx.documents) |document| disk_count += @intFromBool(document.on_disk);
     if (walk.sources.items.len != disk_count) {
@@ -375,7 +499,7 @@ fn checkSourceInventory(ctx: Context, walk: *const compiler.Walk, diags: *Diagno
     }
 }
 
-fn checkDocumentDisk(ctx: Context, document: *Document, diags: *Diagnostics) Error!void {
+fn checkDocumentDisk(ctx: Compile, document: *Input, diags: *Diagnostics) Error!void {
     const read = ctx.os.readFileConfined(ctx.gpa, ctx.source_root, document.path, ctx.limits.max_source_bytes) catch |err| {
         document.externally_changed = true;
         try diags.addFmt(ctx.gpa, .err, .whole(document.path), 1, "", "changed while the workspace was open: {s}", .{@errorName(err)});
@@ -389,7 +513,7 @@ fn checkDocumentDisk(ctx: Context, document: *Document, diags: *Diagnostics) Err
     }
 }
 
-fn verifyLocalSnapshot(ctx: Context, candidate_root: []const u8, first: *const compiler.Walk, diags: *Diagnostics) Error!void {
+fn verifyLocalSnapshot(ctx: Compile, candidate_root: []const u8, first: *const compiler.Walk, diags: *Diagnostics) Error!void {
     var arena: core.Arena = .init(ctx.gpa);
     defer arena.deinit();
     var again = compiler.Walk.run(ctx.gpa, arena.allocator(), ctx.os, ctx.source_root, ctx.limits.walk, diags) catch |err| return mapCompilerError(err);
@@ -410,7 +534,7 @@ fn verifyLocalSnapshot(ctx: Context, candidate_root: []const u8, first: *const c
     for (first.auxiliary.items) |path| try compareOriginalToSnapshot(ctx, candidate_root, ctx.source_root, path, diags);
 }
 
-fn snapshotDependencies(ctx: Context, candidate_root: []const u8, budget: *usize, diags: *Diagnostics) Error![]dependency.Source {
+fn snapshotDependencies(ctx: Compile, candidate_root: []const u8, budget: *usize, diags: *Diagnostics) Error![]dependency.Source {
     const packages = ctx.dependencies.items();
     const out = try ctx.gpa.alloc(dependency.Source, packages.len);
     errdefer ctx.gpa.free(out);
@@ -466,7 +590,7 @@ fn snapshotDependencies(ctx: Context, candidate_root: []const u8, budget: *usize
     return out;
 }
 
-fn verifyDependencySnapshot(ctx: Context, candidate_root: []const u8, diags: *Diagnostics) Error!void {
+fn verifyDependencySnapshot(ctx: Compile, candidate_root: []const u8, diags: *Diagnostics) Error!void {
     for (ctx.dependencies.items(), 0..) |package, i| {
         const current = try readHostFile(ctx, package.path, ctx.limits.dependencies.max_package_bytes);
         defer ctx.gpa.free(current);
@@ -501,7 +625,7 @@ fn verifyDependencySnapshot(ctx: Context, candidate_root: []const u8, diags: *Di
     }
 }
 
-fn mergeGenerated(ctx: Context, candidate_root: []const u8, budget: *usize) Error!void {
+fn mergeGenerated(ctx: Compile, candidate_root: []const u8, budget: *usize) Error!void {
     var tree = try FileTree.runAt(ctx, candidate_root, "generated", null);
     defer tree.deinit(ctx.gpa);
     for (tree.files) |path| {
@@ -519,7 +643,7 @@ fn mergeGenerated(ctx: Context, candidate_root: []const u8, budget: *usize) Erro
     }
 }
 
-fn validateLoad(ctx: Context, own_bytes: []const u8, deps: *const dependency.Set, diags: *Diagnostics) Error!void {
+fn validateLoad(ctx: Compile, own_bytes: []const u8, deps: *const dependency.Set, diags: *Diagnostics) Error!void {
     var arena: core.Arena = .init(ctx.gpa);
     defer arena.deinit();
     const a = arena.allocator();
@@ -572,11 +696,11 @@ const FileTree = struct {
     arena: core.Arena,
     files: []const []const u8 = &.{},
 
-    fn run(ctx: Context, root: []const u8, diags: ?*Diagnostics) Error!FileTree {
+    fn run(ctx: Compile, root: []const u8, diags: ?*Diagnostics) Error!FileTree {
         return runAt(ctx, root, "", diags);
     }
 
-    fn runAt(ctx: Context, root: []const u8, start: []const u8, diags: ?*Diagnostics) Error!FileTree {
+    fn runAt(ctx: Compile, root: []const u8, start: []const u8, diags: ?*Diagnostics) Error!FileTree {
         var self: FileTree = .{ .arena = .init(ctx.gpa) };
         errdefer self.arena.deinit();
         var list: std.ArrayList([]const u8) = .empty;
@@ -594,7 +718,7 @@ const FileTree = struct {
     }
 };
 
-fn descendTree(ctx: Context, arena: Allocator, root: []const u8, base: []const u8, prefix: []const u8, files: *std.ArrayList([]const u8), seen: *u32, diags: ?*Diagnostics) Error!void {
+fn descendTree(ctx: Compile, arena: Allocator, root: []const u8, base: []const u8, prefix: []const u8, files: *std.ArrayList([]const u8), seen: *u32, diags: ?*Diagnostics) Error!void {
     const depth = if (prefix.len == 0) 0 else std.mem.count(u8, prefix, "/") + 1;
     if (depth > ctx.limits.walk.max_depth) return error.SnapshotLimit;
     const at = if (base.len == 0) prefix else if (prefix.len == 0) base else try std.fmt.allocPrint(arena, "{s}/{s}", .{ base, prefix });
@@ -621,7 +745,7 @@ fn descendTree(ctx: Context, arena: Allocator, root: []const u8, base: []const u
     }
 }
 
-fn writeNew(ctx: Context, root: []const u8, relative_owned: []const u8, bytes: []const u8) Error!void {
+fn writeNew(ctx: Compile, root: []const u8, relative_owned: []const u8, bytes: []const u8) Error!void {
     if (std.fs.path.dirnamePosix(relative_owned)) |parent| ctx.os.createDirPathConfined(root, parent) catch return error.IoFailed;
     _ = ctx.os.createFileConfined(root, relative_owned, bytes, ctx.limits.max_snapshot_bytes) catch return error.IoFailed;
 }
@@ -630,7 +754,7 @@ fn prefixed(gpa: Allocator, prefix: []const u8, path: []const u8) Allocator.Erro
     return std.fmt.allocPrint(gpa, "{s}/{s}", .{ prefix, path });
 }
 
-fn readSnapshotFile(ctx: Context, root: []const u8, path: []const u8, budget: *usize) Error![]u8 {
+fn readSnapshotFile(ctx: Compile, root: []const u8, path: []const u8, budget: *usize) Error![]u8 {
     const remaining = ctx.limits.max_snapshot_bytes -| budget.*;
     const read = ctx.os.readFileConfined(ctx.gpa, root, path, remaining) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -642,7 +766,7 @@ fn readSnapshotFile(ctx: Context, root: []const u8, path: []const u8, budget: *u
     return read.bytes;
 }
 
-fn readHostFile(ctx: Context, path: []const u8, max: usize) Error![]u8 {
+fn readHostFile(ctx: Compile, path: []const u8, max: usize) Error![]u8 {
     const dir = std.fs.path.dirname(path) orelse ".";
     const leaf = std.fs.path.basename(path);
     const read = ctx.os.readFileConfined(ctx.gpa, dir, leaf, max) catch |err| switch (err) {
@@ -652,7 +776,7 @@ fn readHostFile(ctx: Context, path: []const u8, max: usize) Error![]u8 {
     return read.bytes;
 }
 
-fn compareOriginalToSnapshot(ctx: Context, candidate_root: []const u8, original_root: []const u8, path: []const u8, diags: *Diagnostics) Error!void {
+fn compareOriginalToSnapshot(ctx: Compile, candidate_root: []const u8, original_root: []const u8, path: []const u8, diags: *Diagnostics) Error!void {
     const original = ctx.os.readFileConfined(ctx.gpa, original_root, path, ctx.limits.max_snapshot_bytes) catch return error.ExternalChange;
     defer ctx.gpa.free(original.bytes);
     const rel = try prefixed(ctx.gpa, "source", path);
@@ -676,7 +800,7 @@ fn samePaths(a: []const []const u8, b: []const []const u8) bool {
     return true;
 }
 
-fn findDocument(documents: []Document, path: []const u8) ?*Document {
+fn findDocument(documents: []Input, path: []const u8) ?*Input {
     for (documents) |*document| if (std.mem.eql(u8, document.path, path)) return document;
     return null;
 }
@@ -715,7 +839,7 @@ fn mapLockError(err: anyerror) Error {
     };
 }
 
-fn cleanupCandidate(ctx: Context, output_root: []const u8, relative: []const u8, diags: *Diagnostics) void {
+fn cleanupCandidate(ctx: Compile, output_root: []const u8, relative: []const u8, diags: *Diagnostics) void {
     ctx.os.deleteTreeConfined(output_root, relative) catch |err|
         diags.addFmt(ctx.gpa, .warning, .whole(relative), 1, "", "an incomplete private build could not be removed: {s}", .{@errorName(err)}) catch {};
 }

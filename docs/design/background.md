@@ -1,6 +1,6 @@
 # Design: M27 — Background work: a task graph, assets that load without stalling a frame, and the editor's background compile
 
-**Status:** Accepted 2026-10-18, when the owner asked for Step 1, with §14 as written (including item 1: `FoundryApi_v7` in M27, so M48 publishes v8). **Steps 1–6 of 11 are done**; their Resolutions follow §16.
+**Status:** Accepted 2026-10-18, when the owner asked for Step 1, with §14 as written (including item 1: `FoundryApi_v7` in M27, so M48 publishes v8). **Steps 1–7 of 11 are done**; their Resolutions follow §16.
 **Date:** 2026-10-18
 **Baseline:** `8182188`, tag `m26`. M0–M26 are complete, and with them Phase 5.
 **Decisions:**
@@ -1429,3 +1429,126 @@ gallery that way by default, and the room keeps drawing while it loads.
 
 Step 7 gives `author` its background validate and build, and publishes them as
 `FoundryApi_v7`.
+
+## Resolution — Step 7: background jobs and `FoundryApi_v7` (2026-10-18)
+
+`author` validates and builds off the host's thread, and `FoundryApi_v7` publishes it in three
+calls: `author_job_start`, `author_job_poll` and `author_job_release`. With v6's 261 entries
+that makes the table's 264, as §9.3 planned.
+
+**What it added:**
+- **The build has three stages.** `author.build_mod.Job` divides a validate or build into:
+  - `start`, on the main thread: §9.1's checks, the writer's lock, a fresh candidate, and a
+    copy of what the compile reads;
+  - `run`, on any thread: the snapshot, the one compiler and the load validation;
+  - `finish`, on the main thread: the build published or its candidate removed, the lock
+    released, and documents the compile found changed on disk marked.
+- **The synchronous calls are the same stages run back to back.** `validate` and `build`
+  now call `start`, `run` and `finish` in a row. There is one path, so a background build
+  cannot differ from a synchronous one by construction, and the byte tests below check it.
+- **`author.Service` runs the jobs.**
+  - `Options.tasks` names the executor, inline by default.
+  - Each job is a one-node graph. `startJob`, `pollJob`, `jobInfo` and `releaseJob` drive
+    it, with one job per workspace.
+  - Diagnostics written while the job runs are its own until it is published. Then they
+    become the workspace's, stamped with the job's starting revision.
+- **The workspace, while a job runs:**
+  - Saves, synchronous validates and builds, and a second start are refused `Busy`. The
+    refusal's diagnostic says a background job is running.
+  - Edits, new documents, refresh and discard all continue, because the job compiles its
+    own copies.
+- **The ABI:**
+  - `FoundryAuthorJob` is a new handle, and `FoundryAuthorJobStatus` (32 bytes) carries
+    revision, build, state, kind and result. `FoundryAuthorJobKind` and
+    `FoundryAuthorJobState` are new enums.
+  - The header's `FOUNDRY_API_VERSION` is now 7, and the native loader offers v7.
+  - Both halves of the agreement check the new layouts and the tail's offsets.
+  - The sweeps walk the v7 table, and `get_api` hands it out beside v1–v6, whose entries are
+    the same functions at the same offsets.
+
+**What implementation settled:**
+- **What is copied, and what is borrowed:**
+  - The job owns a copy of each document's path, its compile bytes and its baseline. A
+    validate's compile bytes are the draft; a build's are the baseline.
+  - The dependency set is borrowed, not copied as §9.1 said. It is fixed for the workspace's
+    life, and closing a workspace cancels its job and waits for it, so the borrow cannot
+    outlive the set.
+- **When a cancelled candidate is removed.** §9.3 said "when it finishes". The service has no
+  per-frame call of its own, so a released job is discarded at the first job call (start,
+  poll or release) after its compile returns, or when its workspace closes.
+- **Closing a workspace mid-job cancels it and waits:** it polls the graph, waiting on the
+  executor, until the compile has returned, then discards it. `Service.deinit` does the same
+  for every open workspace.
+- **`finish` does not check the build limit again.** `start` checks it, and while a job runs
+  nothing can add a build: the workspace refuses another compile `Busy`.
+- **With a threaded executor, the service's allocator must be thread-safe.** That is the same
+  rule the engine's `Config.background_workers` states.
+- **The host keeps the job handles, so `abi` holds no state.**
+  - Its four slots (`max_author_jobs`) recycle as jobs are released.
+  - The first poll that sees a build succeed issues its `FoundryBuild`, and every later poll
+    answers that same handle. Releasing the job does not release the build.
+  - If the boundary's build slots are full, the build is released and the job reports
+    failed with `FOUNDRY_ERR_LIMIT`.
+  - A job whose workspace closed is refused `FOUNDRY_ERR_INVALID_HANDLE`, and releasing it
+    still frees its slot.
+- **Errors map as the synchronous calls map them.** A kind other than validate or build is
+  `FOUNDRY_ERR_INVALID_ARGUMENT`, and `Busy` is `FOUNDRY_ERR_REFUSED`, as v4 maps it.
+
+**Tests:**
+- **`author`:**
+  - A background build makes the synchronous build's package and generated `.fgrid` byte
+    for byte, inline and held by `Manual`. Its package is also `fpack`'s compiler's bytes.
+  - A validate job compiles the drafts. Its diagnostics become the workspace's, at the
+    starting revision.
+  - While a job runs, save, save all, validate, build and a second start are `Busy`, and an
+    edit lands. The build and its diagnostics are stamped with the starting revision.
+  - A stale revision is refused at start. A released job's handle goes at once, and its
+    candidate once the compile has returned.
+  - Closing mid-job runs the compile to its end and leaves no candidate and no lock.
+  - A job that finds a source changed on disk fails `ExternalChange` and marks the document,
+    so the next build is refused before it compiles anything.
+- **`abi`:**
+  - The v7 tail agrees with the header, and every earlier offset is unchanged.
+  - The job values' shapes and numbers match.
+  - `get_api(7)`, and 264 entries.
+  - Malformed arguments are refused, and job handles recycle over nine jobs through four
+    slots. A build job's build stays valid after its job is released. A closed workspace's
+    job is refused.
+- **The exit proof, in the integration tests:** `fixtures/author_job_mod.c`, a C99 library
+  that sees only `foundry.h`, runs as a native mod against a service compiling on a
+  two-thread `platform.Background` pool.
+  - It writes a package, then runs a validate job on the unsaved draft. After saving, it
+    builds synchronously to destination 0 and through a job to destination 1, and checks
+    that the job's handle is refused once released.
+  - The host finds the two exported packages, and `fpack`'s compiler's, identical byte for
+    byte.
+
+**Evidence:**
+- **Guards were broken one at a time against the full `zig build test`.** Each source was
+  restored and checked by hash.
+  - **Detected:**
+    - a validate compiling the baseline;
+    - a build stamped with the current revision;
+    - a cancelled job keeping its candidate;
+    - the diagnostics left unpublished;
+    - the diagnostics stamped with the current revision;
+    - a released job never reaped;
+    - close leaving its job;
+    - a released handle still resolving;
+    - a poll issuing a new build each time;
+    - `build` read as validate;
+    - release keeping the boundary's slot.
+  - **Detected after a test was added:**
+    - `finish` forgetting a document changed on disk first survived, because no test
+      changed a source during a job. The disk-change test fails it.
+    - Dropping the explicit save refusal first survived, because the job's writer lock still
+      refused the save `Busy`, under a message blaming another editor. The `Busy` test now
+      checks that the refusal names the background job.
+- **Header compile:** the installed header compiles `author_job_mod.c`, `author_client.c` and
+  `render3d_client.c` as C99 and C++17 for macOS, Linux and Windows.
+- **Editor proofs:** `editor-workflow` and `editor-smoke` pass. The synchronous build under
+  them is now the three stages.
+- **The bar passed: 2,196/2,197 (one skip)**, with ten new tests. fmt, all four `check`
+  variants, the four headless samples and `fdt-check` passed.
+
+Step 8 moves the editor's client onto these calls.

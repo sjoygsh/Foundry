@@ -255,13 +255,14 @@ is one such consumer, kept for this: it calls every v4 authoring entry point and
 `engine/tests/fixtures/net_client.c` does the same for the 22 v5 networking entry points.
 `engine/tests/fixtures/render3d_client.c` constructs the v6 values and calls all 28 public 3D
 entries and, since M25 Step 3, runs as a native mod in the integration graph. That in-tree
-proof is not the later out-of-repository guide consumer. Compile the affected consumer as
-both C99 and C++17 on all three targets. `zig build abi-public3d-proof` runs the two native fixtures
+proof is not the later out-of-repository guide consumer. `engine/tests/fixtures/author_job_mod.c`
+calls the three v7 background-job entries and runs as a native mod in the integration graph
+(M27 Step 7). Compile the affected consumer as both C99 and C++17 on all three targets. `zig build abi-public3d-proof` runs the two native fixtures
 and the three 10,000-call sweeps on their own (also covered by `zig build test`).
 
 ```sh
 zig build                                    # installs zig-out/include/foundry.h
-C=engine/tests/fixtures/author_client.c      # or net_client.c, render3d_client.c, your mod.c
+C=engine/tests/fixtures/author_client.c      # or net_client.c, render3d_client.c, author_job_mod.c, your mod.c
 zig cc  -std=c99 -pedantic -Wall -Wextra -Werror -Izig-out/include -c $C -o /dev/null
 zig cc  --target=x86_64-linux-gnu   -std=c99 -pedantic -Werror -Izig-out/include -c $C -o /dev/null
 zig cc  --target=x86_64-windows-gnu -std=c99 -pedantic -Werror -Izig-out/include -c $C -o /dev/null

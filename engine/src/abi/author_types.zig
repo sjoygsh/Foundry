@@ -88,6 +88,19 @@ pub const PreviewOutcome = enum(i32) {
     failed = 2,
 };
 
+/// `FoundryAuthorJobKind` (v7).
+pub const JobKind = enum(i32) {
+    validate = 0,
+    build = 1,
+};
+
+/// `FoundryAuthorJobState` (v7).
+pub const JobState = enum(i32) {
+    pending = 0,
+    succeeded = 1,
+    failed = 2,
+};
+
 pub const SaveOutcome = enum(i32) {
     /// The draft already matched the file; nothing was written.
     unchanged = 0,
@@ -357,6 +370,21 @@ pub const BuildInfo = extern struct {
     reserved: u32 = 0,
 };
 
+/// What `author_job_poll` answers (v7).
+pub const JobStatus = extern struct {
+    /// The workspace revision the job started at, which a build is stamped with.
+    revision: u64 = 0,
+    /// A succeeded build's, kept until released like any other; none otherwise.
+    build: types.Build = .none,
+    /// `FoundryAuthorJobState`.
+    state: i32 = 0,
+    /// `FoundryAuthorJobKind`.
+    kind: i32 = 0,
+    /// What the synchronous call would have returned: `FOUNDRY_OK` unless it failed.
+    result: types.Result = .ok,
+    reserved: u32 = 0,
+};
+
 pub const PreviewInfo = extern struct {
     /// The content generation the host published, which is the same number
     /// `content_generation` answers once a preview is active.
@@ -404,12 +432,16 @@ test "every authoring struct is the size the header states, with nothing implici
     try testing.expectEqual(@as(usize, 120), @sizeOf(Diagnostic));
     try testing.expectEqual(@as(usize, 40), @sizeOf(BuildInfo));
     try testing.expectEqual(@as(usize, 32), @sizeOf(PreviewInfo));
+    try testing.expectEqual(@as(usize, 32), @sizeOf(JobStatus));
+    try testing.expectEqual(@as(usize, 8), @offsetOf(JobStatus, "build"));
+    try testing.expectEqual(@as(usize, 24), @offsetOf(JobStatus, "result"));
     try testing.expectEqual(@as(usize, 32), @sizeOf(ExportInfo));
 
     inline for (.{
         WorkspaceInfo, Limits,      DocumentInfo, NodeInfo,    SchemaNodeInfo,
         Value,         PackageInfo, Edit,         SaveResult,  SaveAll,
         SaveEntry,     Diagnostic,  BuildInfo,    PreviewInfo, ExportInfo,
+        JobStatus,
     }) |T| {
         try testing.expectEqual(@as(usize, 8), @alignOf(T));
     }
@@ -426,6 +458,8 @@ test "the authoring enumerations are the numbers the header states" {
     try testing.expectEqual(@as(i32, 2), @intFromEnum(PreviewOutcome.failed));
     try testing.expectEqual(@as(i32, 0), @intFromEnum(SaveOutcome.unchanged));
     try testing.expectEqual(@as(i32, 2), @intFromEnum(SaveOutcome.failed));
+    try testing.expectEqual(@as(i32, 1), @intFromEnum(JobKind.build));
+    try testing.expectEqual(@as(i32, 2), @intFromEnum(JobState.failed));
     try testing.expectEqual(@as(i32, 0), @intFromEnum(SaveFailure.none));
     try testing.expectEqual(@as(i32, 4), @intFromEnum(SaveFailure.out_of_memory));
     try testing.expectEqual(@as(i32, 0), @intFromEnum(ExportKind.compiled));

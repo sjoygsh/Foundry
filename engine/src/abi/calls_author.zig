@@ -1463,6 +1463,96 @@ pub fn Of(comptime H: type) type {
             return .ok;
         }
 
+        // -- Background jobs (v7, `background.md` §9.3) ------------------------------
+
+        fn jobStartCode(err: (author.service.Error || author.build_mod.Error)) Result {
+            return switch (err) {
+                error.Limit => .limit,
+                // Never a start's answer; named so the switch says so.
+                error.PreviewUnavailable, error.PreviewRefused, error.PreviewHoldsBuild, error.ExportUnavailable => .internal,
+                else => |e| buildResultCode(@errorCast(e)),
+            };
+        }
+
+        pub fn jobStart(workspace: types.Workspace, kind: u32, expected_revision: u64, out: ?*types.AuthorJob) callconv(.c) Result {
+            const slot = out orelse return .invalid_argument;
+            const a = active() orelse return .unavailable;
+            const which: author.build_mod.Kind = switch (kind) {
+                @intFromEnum(author_types.JobKind.validate) => .validate,
+                @intFromEnum(author_types.JobKind.build) => .build,
+                else => return .invalid_argument,
+            };
+            if (a.entry(workspace) == null) return .invalid_handle;
+            const job = a.service.startJob(workspace.unwrap(author.ServiceHandle), which, expected_revision) catch |err| return jobStartCode(err);
+            slot.* = a.host.issueAuthorJob(job) orelse {
+                // More jobs than this boundary can name: cancelled rather than left running
+                // behind a handle nobody has.
+                a.service.releaseJob(job) catch {};
+                return .limit;
+            };
+            a.host.changedAuthoring();
+            return .ok;
+        }
+
+        pub fn jobPoll(job: types.AuthorJob, out: ?*author_types.JobStatus) callconv(.c) Result {
+            const slot = out orelse return .invalid_argument;
+            const a = active() orelse return .unavailable;
+            const held = a.host.authorJob(job) orelse return .invalid_handle;
+            const info = a.service.jobInfo(held.job) orelse return .invalid_handle;
+            const status = a.service.pollJob(held.job) catch |err| return serviceResultCode(err);
+
+            var answer: author_types.JobStatus = .{
+                .revision = info.revision,
+                .kind = @intFromEnum(switch (info.kind) {
+                    .validate => author_types.JobKind.validate,
+                    .build => author_types.JobKind.build,
+                }),
+            };
+            switch (status) {
+                .pending => answer.state = @intFromEnum(author_types.JobState.pending),
+                .succeeded => |built| {
+                    answer.state = @intFromEnum(author_types.JobState.succeeded);
+                    if (built) |build_handle| {
+                        // Published once, at the first poll that sees it; every later poll
+                        // answers the same handle.
+                        if (held.build.isNone() and !held.refused) {
+                            if (a.host.issueAuthorBuild(info.workspace, build_handle)) |issued| {
+                                held.build = issued;
+                            } else {
+                                const item = a.service.entry(info.workspace).?;
+                                item.workspace.releaseBuild(build_handle, &item.diags) catch {};
+                                held.refused = true;
+                            }
+                            a.service.moved();
+                            a.host.changedAuthoring();
+                        }
+                        answer.build = held.build;
+                    }
+                },
+                .failed => |err| {
+                    answer.state = @intFromEnum(author_types.JobState.failed);
+                    answer.result = buildResultCode(err);
+                },
+            }
+            if (held.refused) {
+                answer.state = @intFromEnum(author_types.JobState.failed);
+                answer.result = .limit;
+            }
+            slot.* = answer;
+            return .ok;
+        }
+
+        pub fn jobRelease(job: types.AuthorJob) callconv(.c) Result {
+            const a = active() orelse return .unavailable;
+            const held = a.host.authorJob(job) orelse return .invalid_handle;
+            const released = a.service.releaseJob(held.job);
+            // A job whose workspace closed is gone already; its handle is forgotten either way.
+            a.host.forgetAuthorJob(job);
+            released catch |err| return serviceResultCode(err);
+            a.host.changedAuthoring();
+            return .ok;
+        }
+
         // -- Products --------------------------------------------------------------
 
         pub fn build(workspace: types.Workspace, expected_revision: u64, out: ?*types.Build) callconv(.c) Result {
@@ -2139,4 +2229,52 @@ test "handles from one workspace mean nothing after it is closed" {
     var cursor: Cursor = .begin;
     var handle: types.Workspace = .none;
     try testing.expectEqual(Result.end, table.author_workspace_next(&cursor, &handle));
+}
+
+const table_v7 = api.TableOf(Host).v7;
+
+test "v7 jobs refuse what is malformed, and their handles recycle as jobs are released" {
+    const f = try Fixture.init(.{});
+    defer f.deinit();
+    var job: types.AuthorJob = .none;
+    var status: author_types.JobStatus = .{};
+
+    // A kind this build has no number for, a missing out-pointer, a stale workspace.
+    try testing.expectEqual(Result.invalid_argument, table_v7.author_job_start(f.workspace, 2, try f.revision(), &job));
+    try testing.expectEqual(Result.invalid_argument, table_v7.author_job_start(f.workspace, 0, try f.revision(), null));
+    try testing.expectEqual(Result.invalid_handle, table_v7.author_job_start(.{ .bits = 0xdead_0000_0001 }, 0, try f.revision(), &job));
+    try testing.expectEqual(Result.invalid_argument, table_v7.author_job_poll(job, null));
+    try testing.expectEqual(Result.invalid_handle, table_v7.author_job_poll(.{ .bits = 0x0000_0001_0000_0000 }, &status));
+
+    // More jobs, one after another, than the boundary has slots: each released one frees
+    // its slot, and its old handle stays refused.
+    var previous: types.AuthorJob = .none;
+    for (0..host_mod.max_author_jobs * 2 + 1) |_| {
+        try testing.expectEqual(Result.ok, table_v7.author_job_start(f.workspace, @intFromEnum(author_types.JobKind.validate), try f.revision(), &job));
+        try testing.expectEqual(Result.ok, table_v7.author_job_poll(job, &status));
+        try testing.expectEqual(@intFromEnum(author_types.JobState.succeeded), status.state);
+        try testing.expectEqual(@intFromEnum(author_types.JobKind.validate), status.kind);
+        try testing.expect(status.build.isNone());
+        try testing.expectEqual(Result.ok, table_v7.author_job_release(job));
+        try testing.expectEqual(Result.invalid_handle, table_v7.author_job_poll(job, &status));
+        if (!previous.isNone()) try testing.expectEqual(Result.invalid_handle, table_v7.author_job_release(previous));
+        previous = job;
+    }
+
+    // A build job's handle is a build like any other, released on its own.
+    try testing.expectEqual(Result.ok, table_v7.author_job_start(f.workspace, @intFromEnum(author_types.JobKind.build), try f.revision(), &job));
+    try testing.expectEqual(Result.ok, table_v7.author_job_poll(job, &status));
+    try testing.expectEqual(@intFromEnum(author_types.JobState.succeeded), status.state);
+    try testing.expectEqual(Result.ok, table_v7.author_job_release(job));
+    var info: author_types.BuildInfo = .{};
+    try testing.expectEqual(Result.ok, table_v7.author_build_info(status.build, &info));
+    try testing.expectEqual(Result.ok, table_v7.author_build_release(status.build));
+
+    // A job whose workspace closed is gone: polling it is refused, and releasing it still
+    // frees the boundary's slot.
+    try testing.expectEqual(Result.ok, table_v7.author_job_start(f.workspace, @intFromEnum(author_types.JobKind.validate), try f.revision(), &job));
+    f.service.close(f.workspace.unwrap(author.ServiceHandle));
+    try testing.expectEqual(Result.invalid_handle, table_v7.author_job_poll(job, &status));
+    try testing.expectEqual(Result.invalid_handle, table_v7.author_job_release(job));
+    try testing.expect(f.host.authorJob(job) == null);
 }

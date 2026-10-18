@@ -107,6 +107,10 @@ pub const max_author_nodes: u32 = 256;
 pub const max_author_schema_nodes: u32 = 128;
 pub const max_author_builds: u32 = 16;
 
+/// How many background jobs this boundary can name at once (v7). A workspace runs one at a
+/// time, and a service holds at most four workspaces.
+pub const max_author_jobs: u32 = 4;
+
 /// How deep a node path this boundary carries. Above `data.Limits`' shipped nesting depth
 /// for a *record* in practice and far above what a form displays; a path deeper than this
 /// is refused rather than truncated.
@@ -207,6 +211,8 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
         author_schema_node_next: u32 = 0,
         author_builds: [max_author_builds]AuthorBuild = @splat(.{}),
         author_build_next: u32 = 0,
+        author_jobs: [max_author_jobs]AuthorJob = @splat(.{}),
+        author_job_next: u32 = 0,
         author_readers: [max_author_readers]AuthorReader = @splat(.{}),
         author_reader_next: u32 = 0,
         author_text: [max_author_text]u8 = @splat(0),
@@ -452,6 +458,18 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
             generation: u32 = 0,
             workspace: author.ServiceHandle = .none,
             build: author.BuildHandle = .none,
+        };
+
+        /// One background job, and the build handle its success was published as. Kept
+        /// here, with the host's other handles, so a poll answers the same build every time
+        /// and `abi` itself holds nothing.
+        pub const AuthorJob = struct {
+            active: bool = false,
+            generation: u32 = 0,
+            job: author.JobHandle = .none,
+            build: types.Build = .none,
+            /// A success this boundary could not name: more live builds than it holds.
+            refused: bool = false,
         };
 
         /// One node of one record's value tree.
@@ -777,6 +795,29 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
             if (unpacked.index >= max_author_builds) return;
             const slot = &self.author_builds[unpacked.index];
             if (!slot.active or slot.generation != unpacked.generation) return;
+            const generation = slot.generation;
+            slot.* = .{ .generation = generation };
+        }
+
+        pub fn issueAuthorJob(self: *Self, job: author.JobHandle) ?types.AuthorJob {
+            const index = freeSlot(AuthorJob, &self.author_jobs, &self.author_job_next, max_author_jobs) orelse return null;
+            const slot = &self.author_jobs[index];
+            slot.job = job;
+            slot.build = .none;
+            slot.refused = false;
+            return .wrap(core.Handle(AuthorJob){ .index = index, .generation = slot.generation });
+        }
+
+        pub fn authorJob(self: *Self, handle: types.AuthorJob) ?*AuthorJob {
+            const unpacked = handle.unwrap(core.Handle(AuthorJob));
+            if (unpacked.index >= max_author_jobs) return null;
+            const slot = &self.author_jobs[unpacked.index];
+            if (!slot.active or slot.generation == 0 or slot.generation != unpacked.generation) return null;
+            return slot;
+        }
+
+        pub fn forgetAuthorJob(self: *Self, handle: types.AuthorJob) void {
+            const slot = self.authorJob(handle) orelse return;
             const generation = slot.generation;
             slot.* = .{ .generation = generation };
         }

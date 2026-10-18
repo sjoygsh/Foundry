@@ -35,6 +35,7 @@ pub const api_version_3: u32 = 3;
 pub const api_version_4: u32 = 4;
 pub const api_version_5: u32 = 5;
 pub const api_version_6: u32 = 6;
+pub const api_version_7: u32 = 7;
 
 // == Booleans ==========================================================================
 
@@ -320,6 +321,9 @@ pub const SourceNode = Opaque("source node");
 pub const SchemaNode = Opaque("schema node");
 /// A successful build, and the private candidate tree behind it.
 pub const Build = Opaque("build");
+/// A background validate or build (v7, `background.md` §9.3), from its start until it is
+/// released.
+pub const AuthorJob = Opaque("author job");
 
 /// `net` — the v5 networking surface (`networking.md` §8). A session exists only by a
 /// grant the host published; a peer is one connection in one session, and neither handle

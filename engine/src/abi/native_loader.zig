@@ -39,6 +39,7 @@ const offered_api_versions = [_]u32{
     types.api_version_4,
     types.api_version_5,
     types.api_version_6,
+    types.api_version_7,
 };
 
 fn acceptsOffered(range: mod.Range) bool {
@@ -245,5 +246,6 @@ test "native compatibility considers every offered table version" {
     try testing.expect(acceptsOffered(.{ .min = 4, .max = 4 }));
     try testing.expect(acceptsOffered(.{ .min = 5, .max = 5 }));
     try testing.expect(acceptsOffered(.{ .min = 6, .max = 6 }));
-    try testing.expect(!acceptsOffered(.{ .min = 7 }));
+    try testing.expect(acceptsOffered(.{ .min = 7, .max = 7 }));
+    try testing.expect(!acceptsOffered(.{ .min = 8 }));
 }

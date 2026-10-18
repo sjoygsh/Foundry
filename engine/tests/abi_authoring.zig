@@ -126,6 +126,94 @@ test "a C client writes, saves, compiles and exports a package through the publi
     try testing.expectEqualStrings("cmod:pack", reader.record(0).?.name);
 }
 
+test "a C client builds through a v7 background job and gets the synchronous build's bytes" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp.dir.realPath(testing.io, &path_buf);
+    const base = path_buf[0..path_len];
+
+    var os = try platform.Os.init(gpa, .{ .app_name = "foundry-abi-author-job", .env = &.{} });
+    defer os.deinit();
+    const source_dir = try platform.os.joinPath(gpa, &.{ base, "src" });
+    defer gpa.free(source_dir);
+    const output_dir = try platform.os.joinPath(gpa, &.{ base, "out" });
+    defer gpa.free(output_dir);
+    const ship_dir = try platform.os.joinPath(gpa, &.{ base, "ship" });
+    defer gpa.free(ship_dir);
+    const library_dir = try platform.os.joinPath(gpa, &.{ base, "lib" });
+    defer gpa.free(library_dir);
+    try os.createDirPath(source_dir);
+    try os.createDirPath(output_dir);
+    try os.createDirPath(ship_dir);
+    try copyLibrary(os, library_dir, "author_job_mod", options.author_job_mod_path);
+
+    var diags: data.Diagnostics = .init(gpa, .default);
+    defer diags.deinit(gpa);
+
+    // The compile really leaves the calling thread: two background workers, as an
+    // engine's default pool has.
+    const pool = try os.startBackground(gpa, .{ .count = 2 });
+    defer pool.deinit();
+    var service: author.Service = .init(gpa, os, .{ .tasks = pool.tasks() });
+    defer service.deinit();
+    const destinations = [_]author.ExportTarget{
+        .{ .name = "synchronous", .kind = .compiled, .package_root = ship_dir, .package_name = "sync.fpk" },
+        .{ .name = "background", .kind = .compiled, .package_root = ship_dir, .package_name = "job.fpk" },
+    };
+    _ = try service.open(source_dir, .{
+        .workspace = .{
+            .output_root = output_dir,
+            .grants = .{ .edit = true, .save = true, .build = true },
+        },
+        .exports = &destinations,
+    }, &diags);
+
+    var host: abi.Host = .{ .author_service = &service };
+    host.bind();
+    defer host.unbind();
+
+    var loader = abi.NativeLoaderOf(abi.Host).init(gpa, &host);
+    defer loader.deinit();
+    const entries = [_]mod.Entry{.{
+        .id = core.ContentId.fromString("cjob:client"),
+        .name = "cjob:client",
+        .base_dir = base,
+        .file = "",
+        .root = "lib",
+        .version = 1,
+        .abi = .{ .min = 7, .max = 7 },
+        .native = "author_job_mod",
+    }};
+    try loader.load(&entries, &diags);
+    for (diags.items.items) |d| std.debug.print("{s}\n", .{d.message});
+    // Loaded means its init answered FOUNDRY_OK: every check in it passed.
+    try testing.expectEqual(@as(usize, 1), loader.loaded.items.len);
+    defer loader.shutdown();
+
+    const sync_path = try platform.os.joinPath(gpa, &.{ ship_dir, "sync.fpk" });
+    defer gpa.free(sync_path);
+    const job_path = try platform.os.joinPath(gpa, &.{ ship_dir, "job.fpk" });
+    defer gpa.free(job_path);
+    const sync_bytes = try os.readFile(gpa, sync_path, 1 << 20);
+    defer gpa.free(sync_bytes);
+    const job_bytes = try os.readFile(gpa, job_path, 1 << 20);
+    defer gpa.free(job_bytes);
+    try testing.expectEqualSlices(u8, sync_bytes, job_bytes);
+
+    // And `fpack`'s compiler over the saved tree.
+    var registry: data.Registry = .init(gpa, .default);
+    defer registry.deinit(gpa);
+    var direct: std.ArrayList(u8) = .empty;
+    defer direct.deinit(gpa);
+    const direct_assets = try platform.os.joinPath(gpa, &.{ base, "direct" });
+    defer gpa.free(direct_assets);
+    const identity = try author.compile(gpa, os, source_dir, .{ .assets_out = direct_assets }, &registry, &diags, &direct);
+    defer gpa.free(identity.name);
+    try testing.expectEqualSlices(u8, direct.items, job_bytes);
+    try testing.expectEqualStrings("cjob:pack", identity.name);
+}
+
 test "a C client handed no authoring service is refused rather than crashing" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
