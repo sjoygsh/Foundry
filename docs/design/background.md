@@ -1,6 +1,6 @@
 # Design: M27 — Background work: a task graph, assets that load without stalling a frame, and the editor's background compile
 
-**Status:** Proposed 2026-10-18; awaiting the owner's acceptance of §14. No step has begun.
+**Status:** Accepted 2026-10-18, when the owner asked for Step 1, with §14 as written (including item 1: `FoundryApi_v7` in M27, so M48 publishes v8). **Step 1 of 11 is done**; its Resolution follows §16.
 **Date:** 2026-10-18
 **Baseline:** `8182188`, tag `m26`. M0–M26 are complete, and with them Phase 5.
 **Decisions:**
@@ -765,3 +765,97 @@ milestones, each listed in §1: M28, M30, M48, M60, M93, M99 and M100. Two quest
 measured rather than decided here, and both are answered before M27 closes:
 1. **The background pool's default size:** Step 9's sweep.
 2. **The pump's budget defaults:** Steps 3 and 9.
+
+## Resolution — Step 1: tasks, the graph and the shared counter (2026-10-18)
+
+`engine/src/core/tasks.zig` holds the interface, the graph and the two executors without
+threads. `core` exports it as `core.tasks`, and `core.Tasks` beside `core.Jobs`.
+`core.mem.SharedCounted` is beside `Counted`. Nothing uses either yet.
+
+**What implementation settled:**
+- **The immediate executor is `core.tasks.immediate`, not `inline`.** `inline` is a Zig keyword.
+  §3.2's text and §14 mean this value.
+- **A node's function returns an `Outcome`, `ok` or `failed`, not an error.** The graph orders
+  work and does not interpret errors. A consumer keeps its own named error in the node's
+  context, which is where Step 4's registry will keep its `LoadError`. This keeps the graph's
+  error set narrow (CLAUDE.md §7) rather than `anyerror`.
+- **One signature for both kinds.** Every node is `fn (context, *Budget) Outcome`. A background
+  node is handed an unlimited budget of its own, which it may ignore.
+- **`poll` is one ascending pass**, and that one pass is the whole scheduling rule:
+  - a running background node whose `Done` is set takes its outcome;
+  - a waiting node whose prerequisites all finished `ok` starts if it is background, or runs if
+    it is main and the budget allows;
+  - a node with a failed or skipped prerequisite is skipped.
+
+  Prerequisites always come earlier, so a node's consequences reach as far as they can within
+  the same pass. A background node that `immediate` ran inside `start` is settled at once, so
+  under `immediate` a whole graph finishes in one poll.
+- **Main nodes ready at one poll run in ascending index**, by construction of the pass.
+  Background completions may arrive in any order. The order test shows both.
+- **A failure skips only what depends on it.** Independent nodes keep running. The registry
+  needs this, so that one broken texture does not stop the others. `firstFailure()` is the
+  lowest failed index, and `status()` is `failed` once nothing is waiting or running.
+- **Cancellation and discard.**
+  - `cancel` stops anything new from starting, and `add` then refuses with `Cancelled`.
+  - At the next poll, every node that had finished `ok` gets its `discard`, and waiting nodes
+    become cancelled.
+  - A node still running is discarded at the poll after it finishes.
+  - `status()` adds `cancelled`, the state §3.3 implied but did not name.
+- **`deinit` asserts `idle`** (a programmer error, not input): a graph freed with a node running
+  would be written into after it was gone.
+- **The budget counts bytes and nodes**, and is `Budget.unlimited` by default. Its "never the
+  first" rule is tested with a budget already spent before the poll begins.
+- **A full executor stops further starts for that poll.** The refused node stays waiting and is
+  started at a later poll.
+- **`Manual`'s capacity is fixed at `init`**, so the full path is testable.
+  - `runNext`, `runLast` and `runAt` choose the order.
+  - `wait` runs everything held, since nothing else would.
+  - `deinit` asserts nothing was left unrun.
+- **`SharedCounted`** keeps `Counted`'s five numbers in atomics.
+  - The peak is kept by `fetchMax`.
+  - A shrink saturates through compare-and-swap, for `Counted`'s underflow reason.
+  - `counts()` returns a reading, exact when nothing is in flight.
+  - It has no owner check, which is the point. Its threaded test spawns threads from a test,
+    which `core`'s code still never does.
+
+**Tests:**
+- Nine in `tasks.zig`:
+  - a graph under `immediate` completes in one poll, in prerequisite order, and nothing runs
+    twice;
+  - under `Manual`, in forward order, reverse order, and with one node held across polls, main
+    nodes still run in index order;
+  - the first failure, its skipped dependants and an independent node that still runs;
+  - cancellation, discard, `idle` and `cancelled`;
+  - byte and node budgets, including a budget spent before the poll;
+  - a full executor;
+  - capacity and prerequisite refusals;
+  - an empty graph;
+  - `Manual` itself.
+- Two in `mem.zig`:
+  - four threads allocate 2,000 blocks and the main thread frees them, and the counts balance;
+  - refusals are counted, and a shrink does not underflow.
+
+**Evidence:**
+- **Breaking the guards one at a time** against `tasks.zig`'s tests failed every time, and the
+  file was restored byte for byte:
+  - ignoring prerequisites failed the order test;
+  - not propagating a failure failed the failure test;
+  - skipping `discard` on cancel failed the cancellation test;
+  - letting the budget block a poll's first node failed the budget test, and so did ignoring the
+    budget;
+  - treating a refused start as started failed the full-executor test;
+  - allowing a node to name itself failed the refusal test;
+  - running the pass in descending order failed three tests.
+
+  Three of these runs ended in `deinit`'s idle assertion, as the failing test unwound with a
+  task still held. That is the assertion doing its job after the expectation had already
+  failed.
+- `core`'s 123 tests pass standalone in Debug and ReleaseSafe.
+- **The bar passed: 2,149/2,150 (one skip)**, eleven new tests. This covered formatting, the
+  four `check` variants, the four headless samples and `fdt-check`. The first `check
+  -Drhi=metal` of the run exited 1 without its output captured. Two reruns on unchanged code
+  passed, so the failure is recorded as unexplained. No file this step changes is
+  Metal-specific.
+
+Step 2 adds `platform.Background`, the pool with threads, and the engine's `tasks()` and
+`taskAllocator()`.

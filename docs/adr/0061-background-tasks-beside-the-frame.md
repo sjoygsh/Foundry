@@ -1,6 +1,6 @@
 # ADR-0061: Background work is a small task graph on its own pool, and its arrival is presentation
 
-**Status:** Proposed
+**Status:** Accepted 2026-10-18 (the owner asked for M27 Step 1); being implemented in M27
 **Date:** 2026-10-18
 
 Amends ADR-0036's decision 2 ("there are no futures, task graph, priorities, cancellation or

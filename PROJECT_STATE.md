@@ -1,10 +1,21 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-18
-**Current handoff: M27's design is proposed** ([`docs/design/background.md`](docs/design/background.md),
-[ADR-0061](docs/adr/0061-background-tasks-beside-the-frame.md),
-[ADR-0062](docs/adr/0062-assets-load-in-two-phases.md)); **awaiting the owner's acceptance of its
-§14. Stop before Step 1.** M26 is complete (tag `m26`); no push has been requested.
+**Current handoff: M27 Step 1 of 11 is complete** ([`docs/design/background.md`](docs/design/background.md),
+accepted 2026-10-18 with §14 as written). **Stop before Step 2**, `platform.Background` and the
+engine's `tasks()`/`taskAllocator()`. No pool with threads, registry change or ABI call exists
+yet. Nothing is pushed: local `main` is ahead by M26 Steps 7–13, the `m26` tag and M27's commits.
+
+**M27 Step 1 is done (2026-10-18): `core.tasks` and `core.mem.SharedCounted`.**
+- `Tasks` is the background capability, with `immediate` as the default executor (`inline` is a
+  Zig keyword) and `Manual`, a test executor that finishes tasks in any chosen order.
+- `Graph` holds background and main-thread nodes. Prerequisites are earlier nodes, `poll` makes
+  one ascending pass, a failure skips only its dependants, and cancellation discards what
+  finished. A budgeted poll always runs its first ready main node.
+- `SharedCounted` keeps `Counted`'s counts in atomics.
+
+Eight guard mutations each failed the tests. Bar **2,149/2,150** (one skip); one `check
+-Drhi=metal` failure did not recur in two reruns and is recorded as unexplained.
 
 **M27's design (2026-10-18): background work.** Eleven steps:
 - `core.tasks`: an explicit task capability, a small graph of background and main-thread nodes,

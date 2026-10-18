@@ -194,6 +194,8 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Vulkan shaders and tools | Hand-written GLSL variants compiled to SPIR-V by pinned Vulkan SDK tools; Khronos headers inside `rhi` only; the OS loader opened at runtime | [0038](docs/adr/0038-vulkan-shaders-and-toolchain.md) |
 | RHI hardening | Completion-backed retirement, usage validation and distinct transient/fatal frame outcomes; implemented in M11 | [0035](docs/adr/0035-rhi-lifetime-and-validation.md) |
 | Threading | Parallelism is an explicit `core.Jobs`; fork-join over data-determined chunks, combined in chunk order; systems keep their order; nothing in the ABI yet | [0036](docs/adr/0036-explicit-deterministic-jobs.md) |
+| Background work | An explicit `core.Tasks` and a minimal graph of background and main-thread nodes on a second pool beside the frame's; arrival is presentation, never simulation; amends ADR-0036's decision 2; accepted 2026-10-18, being implemented in M27 | [0061](docs/adr/0061-background-tasks-beside-the-frame.md) |
+| Asset loading | A loader may split into a pure `decode` off the main thread and a `finish` on it, and `load` is their composition; `acquire` and `asset_acquire` stay synchronous; accepted 2026-10-18, being implemented in M27 | [0062](docs/adr/0062-assets-load-in-two-phases.md) |
 | Metal bridge | Thin Objective-C shim exposing a C API | [0012](docs/adr/0012-metal-objc-shim.md) |
 | Shaders | MSL now; shaders are assets with per-backend variants | [0015](docs/adr/0015-shader-strategy.md) |
 | Shader ownership | Engine-owned shaders embedded; content-owned shaders are assets | [0019](docs/adr/0019-builtin-versus-content-shaders.md) |

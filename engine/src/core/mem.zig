@@ -201,6 +201,155 @@ pub const Counted = struct {
     }
 };
 
+/// `Counted`'s counts, kept in atomics, for an allocator more than one thread uses.
+///
+/// **For background work, and nothing else** (`docs/design/background.md` §4.3). A
+/// background task decodes on one thread and its result is freed by a finish on another,
+/// which `Counted`'s owner check exists to refuse. This keeps the same numbers without the
+/// check, at the price of an atomic add per call, which is why it is not `Counted`.
+///
+/// The child must itself be safe to use from several threads.
+pub const SharedCounted = struct {
+    name: []const u8,
+    child: Allocator,
+
+    live_bytes: std.atomic.Value(usize) = .init(0),
+    peak_bytes: std.atomic.Value(usize) = .init(0),
+    allocations: std.atomic.Value(u64) = .init(0),
+    frees: std.atomic.Value(u64) = .init(0),
+    failures: std.atomic.Value(u64) = .init(0),
+
+    /// The numbers at one moment, in `Counted`'s shape.
+    pub const Counts = struct {
+        live_bytes: usize,
+        peak_bytes: usize,
+        allocations: u64,
+        frees: u64,
+        failures: u64,
+    };
+
+    pub fn init(name: []const u8, child: Allocator) SharedCounted {
+        return .{ .name = name, .child = child };
+    }
+
+    pub fn allocator(self: *SharedCounted) Allocator {
+        return .{ .ptr = self, .vtable = &vtable };
+    }
+
+    /// Each field is read on its own, so a reading taken while other threads allocate may
+    /// mix moments. Taken when nothing is in flight, as at shutdown, it is exact.
+    pub fn counts(self: *const SharedCounted) Counts {
+        return .{
+            .live_bytes = self.live_bytes.load(.monotonic),
+            .peak_bytes = self.peak_bytes.load(.monotonic),
+            .allocations = self.allocations.load(.monotonic),
+            .frees = self.frees.load(.monotonic),
+            .failures = self.failures.load(.monotonic),
+        };
+    }
+
+    const vtable: Allocator.VTable = .{
+        .alloc = allocFn,
+        .resize = resizeFn,
+        .remap = remapFn,
+        .free = freeFn,
+    };
+
+    fn allocFn(ctx: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*]u8 {
+        const self: *SharedCounted = @ptrCast(@alignCast(ctx));
+        const bytes = self.child.rawAlloc(len, alignment, ret_addr) orelse {
+            _ = self.failures.fetchAdd(1, .monotonic);
+            return null;
+        };
+        self.grow(len);
+        _ = self.allocations.fetchAdd(1, .monotonic);
+        return bytes;
+    }
+
+    fn resizeFn(ctx: *anyopaque, memory: []u8, alignment: Alignment, new_len: usize, ret_addr: usize) bool {
+        const self: *SharedCounted = @ptrCast(@alignCast(ctx));
+        if (!self.child.rawResize(memory, alignment, new_len, ret_addr)) return false;
+        self.adjust(memory.len, new_len);
+        return true;
+    }
+
+    fn remapFn(ctx: *anyopaque, memory: []u8, alignment: Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const self: *SharedCounted = @ptrCast(@alignCast(ctx));
+        const bytes = self.child.rawRemap(memory, alignment, new_len, ret_addr) orelse return null;
+        self.adjust(memory.len, new_len);
+        return bytes;
+    }
+
+    fn freeFn(ctx: *anyopaque, memory: []u8, alignment: Alignment, ret_addr: usize) void {
+        const self: *SharedCounted = @ptrCast(@alignCast(ctx));
+        self.child.rawFree(memory, alignment, ret_addr);
+        self.shrink(memory.len);
+        _ = self.frees.fetchAdd(1, .monotonic);
+    }
+
+    fn grow(self: *SharedCounted, len: usize) void {
+        const live = self.live_bytes.fetchAdd(len, .monotonic) + len;
+        _ = self.peak_bytes.fetchMax(live, .monotonic);
+    }
+
+    /// Saturating, for `Counted`'s reason, and by compare-and-swap because a plain
+    /// subtraction would wrap.
+    fn shrink(self: *SharedCounted, len: usize) void {
+        var current = self.live_bytes.load(.monotonic);
+        while (self.live_bytes.cmpxchgWeak(current, current -| len, .monotonic, .monotonic)) |seen| current = seen;
+    }
+
+    fn adjust(self: *SharedCounted, old_len: usize, new_len: usize) void {
+        if (new_len >= old_len) self.grow(new_len - old_len) else self.shrink(old_len - new_len);
+    }
+};
+
+test "a shared counter balances when several threads allocate and others free" {
+    var shared = SharedCounted.init("shared", std.heap.smp_allocator);
+    const gpa = shared.allocator();
+    const per_thread = 500;
+    const threads = 4;
+
+    // Each thread allocates; the main thread frees everything, as a finish frees a decode.
+    var blocks: [threads][per_thread][]u8 = undefined;
+    const Worker = struct {
+        fn run(allocator: Allocator, out: *[per_thread][]u8, seed: usize) void {
+            for (out, 0..) |*slot, i| slot.* = allocator.alloc(u8, 1 + (seed * 31 + i) % 97) catch unreachable;
+        }
+    };
+    var handles: [threads]std.Thread = undefined;
+    for (&handles, 0..) |*h, t| h.* = try std.Thread.spawn(.{}, Worker.run, .{ gpa, &blocks[t], t });
+    for (handles) |h| h.join();
+
+    var expected: usize = 0;
+    for (blocks) |row| for (row) |b| {
+        expected += b.len;
+    };
+    const mid = shared.counts();
+    try std.testing.expectEqual(expected, mid.live_bytes);
+    try std.testing.expectEqual(@as(u64, threads * per_thread), mid.allocations);
+    try std.testing.expect(mid.peak_bytes >= mid.live_bytes);
+
+    for (blocks) |row| for (row) |b| gpa.free(b);
+    const end = shared.counts();
+    try std.testing.expectEqual(@as(usize, 0), end.live_bytes);
+    try std.testing.expectEqual(end.allocations, end.frees);
+    try std.testing.expectEqual(mid.peak_bytes, end.peak_bytes);
+}
+
+test "a shared counter does not underflow and counts refusals" {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    var shared = SharedCounted.init("shared", failing.allocator());
+    const gpa = shared.allocator();
+    const a = try gpa.alloc(u8, 16);
+    try std.testing.expectError(error.OutOfMemory, gpa.alloc(u8, 16));
+    shared.shrink(1000);
+    try std.testing.expectEqual(@as(usize, 0), shared.counts().live_bytes);
+    gpa.free(a);
+    try std.testing.expectEqual(@as(usize, 0), shared.counts().live_bytes);
+    try std.testing.expectEqual(@as(u64, 1), shared.counts().failures);
+}
+
 test "arena hands out memory and reuses it after reset" {
     var arena = Arena.init(std.testing.allocator);
     defer arena.deinit();

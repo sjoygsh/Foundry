@@ -1,6 +1,6 @@
 # ADR-0062: An asset loader may split into a pure decode and a main-thread finish
 
-**Status:** Proposed
+**Status:** Accepted 2026-10-18 (the owner asked for M27 Step 1); being implemented in M27
 **Date:** 2026-10-18
 
 ## Context
