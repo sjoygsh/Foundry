@@ -43,7 +43,8 @@
 //! - `FOUNDRY_SANDBOX3D_SAVE_DIR=path` redirects F5/F9 for a disposable evidence run;
 //! - `FOUNDRY_SANDBOX3D_KEYS=f5@120,f6@150,...` presses those keys on those frames, as if a
 //!   person had, so a run nobody watches still saves, loads and re-parents;
-//! - `FOUNDRY_SANDBOX3D_LOAD=sync` loads M27's gallery on its tick, and measures the frames.
+//! - `FOUNDRY_SANDBOX3D_LOAD=background|sync|off` is how M27's gallery loads on its tick
+//!   (`background` when unset; `off` waits for G), and the frames around it are measured.
 //!
 //! **M22's is a lit room a content mod changes** (`light.md` §10). Lights, ambient and
 //! EV100 come from the config; `--shadows=off` disables the shadow map. Player mods live
@@ -72,9 +73,10 @@
 //!
 //! **M27's is a gallery that loads while the room keeps drawing** (`background.md` §11).
 //! Eight framed panels with 2048×2048 textures stand above the crates, drawn only once they
-//! are asked for: **G** loads or releases them, and `FOUNDRY_SANDBOX3D_LOAD=sync` loads them
-//! on a fixed tick and records the frames around it. Step 3 has only that synchronous path,
-//! which stalls, as the baseline the background path is measured against.
+//! are asked for: on a fixed tick, or by **G**, which loads or releases them. By default they
+//! are requested and appear once every part has finished; `FOUNDRY_SANDBOX3D_LOAD=sync`
+//! loads them on the tick instead, which stalls, as the baseline the background path is
+//! measured against.
 
 const std = @import("std");
 
@@ -875,9 +877,9 @@ const Sample = struct {
     fn step(self: *Sample, engine: *app.Engine, s: app.Step) !void {
         const dt = s.delta.toSecondsF32();
         // On a tick, so every run asks on the same one. What it loads is only drawn.
-        if (self.gallery.mode == .sync and s.tick == gallery_mod.request_tick) {
-            if (self.content) |*content| self.gallery.request(content, engine.frame_index, engine.os);
-        }
+        if (s.tick == gallery_mod.request_tick) if (self.gallery.mode.onTick()) |path| {
+            if (self.content) |*content| self.gallery.request(content, path, engine.frame_index, engine.os);
+        };
         self.orbit_angle = wrap(self.orbit_angle + self.settings.orbit_radians_per_second * dt);
         // The game translates `app`'s step into `scene`'s tick: the number and the fixed
         // delta, and nothing a system could read a device through.
@@ -977,7 +979,7 @@ const Sample = struct {
             log.info("debug overlay {s}", .{if (self.panels_open) "shown" else "hidden"});
         }
         if ((in.wasPressed(.g) and !typing) or scripted.g) if (self.content) |*content| {
-            if (self.gallery.model.isNone()) self.gallery.request(content, engine.frame_index, engine.os) else self.gallery.release(content);
+            if (self.gallery.model.isNone()) self.gallery.request(content, self.gallery.mode.onKey(), engine.frame_index, engine.os) else self.gallery.release(content);
         };
         if (in.wasPressed(.f5) or scripted.f5) self.saveWorld(engine);
         if (in.wasPressed(.f9) or scripted.f9) self.loadWorld(engine);
@@ -1131,6 +1133,8 @@ const Sample = struct {
 
         self.drawModel(.{ .model = self.room, .world = Mat4.identity });
         self.drawModel(.{ .model = self.course, .world = Mat4.identity });
+        // Drawn only once whole: until then the draw submits nothing (`background.md` §8).
+        if (self.content) |*content| self.gallery.poll(content, engine.frame_index, engine.os);
         self.drawModel(.{ .model = self.gallery.model, .world = Mat4.identity });
         if (self.content) |*content| try self.props.draw(content);
         if (self.content) |*content| for (self.walkers, 0..) |*walker, i| {

@@ -182,9 +182,16 @@ pub const State = struct {
             // **Zero references means evictable, not freed**, and nothing evicts on a
             // schedule. This is the first time anybody can see that state, and it is the
             // real answer to "why is this still in memory".
-            try view.line("    {s}  {d} ref(s)", .{
+            // Where it is, too, since M27: a request is visible before it is ready.
+            const where: []const u8 = switch (info.state) {
+                .ready => "",
+                .pending => "  pending",
+                .failed => |err| view.text("  failed ({t})", .{err}),
+            };
+            try view.line("    {s}  {d} ref(s){s}", .{
                 overlay.idText(view.arena, store, info.id),
                 info.refs,
+                where,
             });
         }
     }

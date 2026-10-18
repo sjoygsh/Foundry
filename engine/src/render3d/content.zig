@@ -13,6 +13,12 @@
 //! `acquireModel`. After that, nothing a package does can crash a draw: a material that
 //! fails to resolve draws as the magenta placeholder, and a mesh that fails to load drops
 //! its parts. Each is reported once per resolution, by ID and reason, never per frame.
+//!
+//! **A requested model appears whole or not at all** (`background.md` §8). `requestModel`
+//! requests its parts through the registry's background path, and the model is pending until
+//! every part has finished or failed. That join is checked where readiness is asked, by a
+//! draw or `modelState`, so a model becomes ready on the first frame that asks after its last
+//! part finished. Until then a draw of it submits nothing and is counted as pending.
 
 const std = @import("std");
 const core = @import("core");
@@ -33,6 +39,16 @@ const log = core.log.scoped(.render3d);
 
 pub const Model = opaque {};
 pub const ModelHandle = core.Handle(Model);
+
+/// Where a model is. `acquireModel`'s are always `ready`.
+pub const ModelState = enum {
+    /// A part is still loading. A draw submits nothing.
+    pending,
+    ready,
+    /// A requested model whose skeleton or clips did not load, or do not fit its meshes:
+    /// what `acquireModel` would have refused. Said once; a draw submits nothing.
+    failed,
+};
 
 pub const SlotOverride = struct { slot: u32, material: MaterialHandle };
 
@@ -85,6 +101,9 @@ const MaterialEntry = struct {
     /// The payload the bind group was built from; a different current one means rebuild.
     built_from: [5]TextureHandle,
     reported_ignored: bool = false,
+    /// A requested texture is still loading. The material is the placeholder until it is
+    /// resolved again, and no model waiting on it is drawn, so nobody sees that.
+    pending: bool = false,
 };
 
 const Part = struct {
@@ -106,7 +125,11 @@ const ModelEntry = struct {
     meshes: []asset.AssetHandle,
     skeleton: asset.AssetHandle = .none,
     clips: []NamedClip = &.{},
+    state: ModelState = .ready,
 };
+
+/// How a model's parts are obtained: now, on the calling thread, or requested.
+const Mode = enum { acquire, request };
 
 const NamedClip = struct { name: []u8, handle: asset.AssetHandle };
 
@@ -158,13 +181,46 @@ pub const Content = struct {
     pub fn acquireModel(self: *Self, id: ContentId) Error!ModelHandle {
         var existing = self.models.iterator();
         while (existing.next()) |entry| if (entry.value.id.eql(id)) {
+            if (entry.value.state == .pending) try self.completeModel(entry.id);
             entry.value.refs += 1;
             return entry.id;
         };
         const record = try self.modelRecord(id);
-        var built = try self.buildModel(record);
+        var built = try self.buildModel(record, .acquire);
         errdefer self.dropModel(&built);
         return self.models.add(self.gpa, built);
+    }
+
+    /// `acquireModel`, without waiting (`background.md` §8). The record is read and refused
+    /// now, as `acquireModel` refuses it; every mesh, texture, skeleton and clip it names is
+    /// requested, and the model is pending until all of them have finished.
+    ///
+    /// The same ID is one model either way. Acquiring a model that is still pending completes
+    /// it on the calling thread, as `asset.Registry.acquire` completes a pending asset.
+    pub fn requestModel(self: *Self, id: ContentId) Error!ModelHandle {
+        var existing = self.models.iterator();
+        while (existing.next()) |entry| if (entry.value.id.eql(id)) {
+            entry.value.refs += 1;
+            return entry.id;
+        };
+        const record = try self.modelRecord(id);
+        var built = try self.buildModel(record, .request);
+        errdefer self.dropModel(&built);
+        const handle = try self.models.add(self.gpa, built);
+        // Parts that were already here make a model that is ready at once.
+        _ = try self.settle(handle);
+        return handle;
+    }
+
+    /// Where the model is, the join checked first. Null for a stale handle.
+    pub fn modelState(self: *Self, handle: ModelHandle) Error!?ModelState {
+        if (self.models.getConst(handle) == null) return null;
+        return try self.settle(handle);
+    }
+
+    /// Whether a draw of the model submits its parts.
+    pub fn modelReady(self: *Self, handle: ModelHandle) Error!bool {
+        return (try self.modelState(handle)) == .ready;
     }
 
     pub fn releaseModel(self: *Self, handle: ModelHandle) void {
@@ -182,16 +238,28 @@ pub const Content = struct {
     /// or its override. **A refused draw records nothing**: the handle, the world matrix and
     /// every override are checked before the first part is submitted. A part whose mesh is
     /// missing, or which its current mesh cannot draw, is skipped and reported once.
+    ///
+    /// **A model that is not ready submits nothing and is not an error**: a pending one is
+    /// counted in `Stats.pending_models`, and a failed one was said when it failed.
     pub fn drawModel(self: *Self, draw: ModelDraw) Error!void {
-        const model = self.models.getConst(draw.model) orelse return error.InvalidModel;
+        const slot_count = (self.models.getConst(draw.model) orelse return error.InvalidModel).slots.len;
         for (draw.world.cols) |column| for (column) |value| {
             if (!std.math.isFinite(value)) return error.InvalidTransform;
         };
         for (draw.overrides, 0..) |override, i| {
-            if (override.slot >= model.slots.len) return error.InvalidOverride;
+            if (override.slot >= slot_count) return error.InvalidOverride;
             for (draw.overrides[0..i]) |earlier| if (earlier.slot == override.slot) return error.InvalidOverride;
             if (!self.renderer.isMaterial(override.material)) return error.InvalidMaterial;
         }
+        switch (try self.settle(draw.model)) {
+            .ready => {},
+            .pending => {
+                self.renderer.stats.pending_models += 1;
+                return;
+            },
+            .failed => return,
+        }
+        const model = self.models.getConst(draw.model).?;
         // Preflight every current mesh and animation asset before any part is submitted.
         try self.checkAnimation(model.*);
         if (model.skeleton.isNone()) {
@@ -270,7 +338,7 @@ pub const Content = struct {
     pub fn acquireMaterial(self: *Self, id: ContentId) Error!MaterialHandle {
         const record = self.assets.store.lookup(id) orelse return error.MaterialNotFound;
         if (!record.schema_id.eql(asset.schemas.material.id)) return error.NotAMaterial;
-        const entry = try self.retainMaterial(id);
+        const entry = try self.retainMaterial(id, .acquire);
         return self.materials.getConst(entry).?.handle;
     }
 
@@ -293,7 +361,7 @@ pub const Content = struct {
     /// drawing what it had and says so, as a failed asset reload changes nothing.
     pub fn contentChanged(self: *Self) Error!void {
         var materials = self.materials.iterator();
-        while (materials.next()) |entry| try self.resolveMaterial(entry.id);
+        while (materials.next()) |entry| try self.resolveMaterial(entry.id, if (entry.value.pending) .request else .acquire);
 
         var models = self.models.iterator();
         while (models.next()) |entry| {
@@ -302,7 +370,9 @@ pub const Content = struct {
                 log.warn("model {f} could not be re-read ({t}); keeping what it had", .{ id, err });
                 continue;
             };
-            var built = self.buildModel(record) catch |err| switch (err) {
+            // A model still pending stays requested: the reload is no reason to wait for it.
+            const mode: Mode = if (entry.value.state == .pending) .request else .acquire;
+            var built = self.buildModel(record, mode) catch |err| switch (err) {
                 error.InvalidModelRecord => continue,
                 else => return err,
             };
@@ -311,6 +381,7 @@ pub const Content = struct {
             var old = slot.*;
             slot.* = built;
             self.dropModel(&old);
+            if (mode == .request) _ = try self.settle(entry.id);
         }
     }
 
@@ -323,8 +394,9 @@ pub const Content = struct {
     }
 
     /// Reads and validates the whole record before acquiring anything, so a refusal leaves
-    /// nothing held.
-    fn buildModel(self: *Self, record: asset.Record) Error!ModelEntry {
+    /// nothing held. Requested, it refuses only what needs no bytes, and the rest waits for
+    /// `settle`.
+    fn buildModel(self: *Self, record: asset.Record, mode: Mode) Error!ModelEntry {
         const gpa = self.gpa;
         const slot_list = listField(record.fields, "slots") orelse return refuse(record, "has no readable slots");
         const part_list = listField(record.fields, "parts") orelse return refuse(record, "has no readable parts");
@@ -371,7 +443,7 @@ pub const Content = struct {
             gpa.free(slots);
         }
         for (slot_ids) |slot_id| {
-            slots[retained] = try self.retainMaterial(slot_id);
+            slots[retained] = try self.retainMaterial(slot_id, mode);
             retained += 1;
         }
 
@@ -388,7 +460,12 @@ pub const Content = struct {
                     break;
                 }
             } else {
-                part.mesh = self.assets.acquireWith(gpa, mesh_id, loader.meshLoader(self.renderer)) catch |err| switch (err) {
+                const mesh_loader = loader.meshLoader(self.renderer);
+                const got = switch (mode) {
+                    .acquire => self.assets.acquireWith(gpa, mesh_id, mesh_loader),
+                    .request => self.assets.requestWith(gpa, mesh_id, mesh_loader),
+                };
+                part.mesh = got catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     else => blk: {
                         log.warn("model {f}: mesh {f} did not load ({t}); its parts are dropped", .{ record.id, mesh_id, err });
@@ -404,7 +481,7 @@ pub const Content = struct {
 
         var skeleton = asset.AssetHandle.none;
         if (idField(record.fields, "skeleton")) |skeleton_id| {
-            skeleton = self.assets.acquireWith(gpa, skeleton_id, asset.skeletonLoader()) catch |err| return switch (err) {
+            skeleton = self.obtain(mode, skeleton_id, asset.skeletonLoader()) catch |err| return switch (err) {
                 error.OutOfMemory => error.OutOfMemory,
                 else => refuse(record, "has a skeleton that cannot be loaded"),
             };
@@ -430,7 +507,7 @@ pub const Content = struct {
                 const clip_id = idField(fields, "clip") orelse return refuse(record, "has a clip with no asset");
                 const owned_name = try gpa.dupe(u8, name);
                 errdefer gpa.free(owned_name);
-                const clip = self.assets.acquireWith(gpa, clip_id, asset.animationLoader()) catch |err| return switch (err) {
+                const clip = self.obtain(mode, clip_id, asset.animationLoader()) catch |err| return switch (err) {
                     error.OutOfMemory => error.OutOfMemory,
                     else => refuse(record, "has a clip that cannot be loaded"),
                 };
@@ -438,8 +515,9 @@ pub const Content = struct {
                 try clips.append(gpa, .{ .name = owned_name, .handle = clip });
             }
         }
-        var built: ModelEntry = .{ .id = record.id, .refs = 1, .parts = parts, .slots = slots, .meshes = meshes.items, .skeleton = skeleton, .clips = clips.items };
-        self.checkAnimation(built) catch return refuse(record, "has incompatible mesh, skeleton or clip joint counts");
+        var built: ModelEntry = .{ .id = record.id, .refs = 1, .parts = parts, .slots = slots, .meshes = meshes.items, .skeleton = skeleton, .clips = clips.items, .state = if (mode == .request) .pending else .ready };
+        // A requested model's joint counts are checked once its parts are here.
+        if (mode == .acquire) self.checkAnimation(built) catch return refuse(record, "has incompatible mesh, skeleton or clip joint counts");
         const owned_clips = try clips.toOwnedSlice(gpa);
         errdefer {
             for (owned_clips) |clip| {
@@ -453,6 +531,105 @@ pub const Content = struct {
         built.meshes = owned_meshes;
         built.clips = owned_clips;
         return built;
+    }
+
+    fn obtain(self: *Self, mode: Mode, id: ContentId, with: asset.Loader) asset.AcquireError!asset.AssetHandle {
+        return switch (mode) {
+            .acquire => self.assets.acquireWith(self.gpa, id, with),
+            .request => self.assets.requestWith(self.gpa, id, with),
+        };
+    }
+
+    /// The join: a pending model becomes ready once no part it holds is still loading. What
+    /// failed is then handled as `acquireModel` handles it — a mesh's parts dropped and said,
+    /// a skeleton or clip that did not load, or does not fit, fails the model.
+    fn settle(self: *Self, handle: ModelHandle) Error!ModelState {
+        const model = self.models.get(handle).?;
+        if (model.state != .pending) return model.state;
+        var waiting = false;
+        for (model.slots) |slot| {
+            if (try self.settleMaterial(slot)) waiting = true;
+        }
+        for (model.meshes) |mesh| if (self.isPending(mesh)) {
+            waiting = true;
+        };
+        if (!model.skeleton.isNone() and self.isPending(model.skeleton)) waiting = true;
+        for (model.clips) |clip| if (self.isPending(clip.handle)) {
+            waiting = true;
+        };
+        if (waiting) return .pending;
+
+        // Every part is here or has failed. A failed mesh is released, as one that failed to
+        // acquire was never held, and its parts dropped. The list that remains is made
+        // before anything is released, so running out of memory here changes nothing.
+        var kept: usize = 0;
+        for (model.meshes) |mesh| {
+            if (self.assets.state(mesh).? == .ready) kept += 1;
+        }
+        if (kept != model.meshes.len) {
+            const remaining = try self.gpa.alloc(asset.AssetHandle, kept);
+            var i: usize = 0;
+            for (model.meshes) |mesh| {
+                if (self.assets.state(mesh).? == .ready) {
+                    remaining[i] = mesh;
+                    i += 1;
+                    continue;
+                }
+                log.warn("model {f}: mesh {f} did not load ({t}); its parts are dropped", .{ model.id, self.assets.idOf(mesh).?, self.assets.state(mesh).?.failed });
+                for (model.parts) |*part| if (part.mesh.eql(mesh)) {
+                    part.mesh = .none;
+                };
+                self.assets.release(mesh);
+            }
+            self.gpa.free(model.meshes);
+            model.meshes = remaining;
+        }
+
+        const failed: ?[]const u8 = blk: {
+            if (!model.skeleton.isNone() and self.assets.state(model.skeleton).? != .ready) break :blk "has a skeleton that cannot be loaded";
+            for (model.clips) |clip| if (self.assets.state(clip.handle).? != .ready) break :blk "has a clip that cannot be loaded";
+            self.checkAnimation(model.*) catch break :blk "has incompatible mesh, skeleton or clip joint counts";
+            break :blk null;
+        };
+        if (failed) |why| {
+            log.warn("model {f} {s}; it is not drawn", .{ model.id, why });
+            model.state = .failed;
+        } else model.state = .ready;
+        return model.state;
+    }
+
+    /// `acquireModel` of a model still pending: every part completed on the calling thread.
+    fn completeModel(self: *Self, handle: ModelHandle) Error!void {
+        const model = self.models.get(handle).?;
+        for (model.slots) |slot| {
+            if (self.materials.getConst(slot).?.pending) try self.resolveMaterial(slot, .acquire);
+        }
+        for (model.meshes) |mesh| try self.completeAsset(mesh);
+        if (!model.skeleton.isNone()) try self.completeAsset(model.skeleton);
+        for (model.clips) |clip| try self.completeAsset(clip.handle);
+        _ = try self.settle(handle);
+    }
+
+    /// A failure is the entry's state, which `settle` reads; only memory is an error here.
+    fn completeAsset(self: *Self, handle: asset.AssetHandle) Error!void {
+        self.assets.complete(self.gpa, handle) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {},
+        };
+    }
+
+    fn isPending(self: *Self, handle: asset.AssetHandle) bool {
+        return self.assets.state(handle).? == .pending;
+    }
+
+    /// Whether a material is still waiting for a texture. One whose textures have all
+    /// finished is resolved now, from the entries it already holds.
+    fn settleMaterial(self: *Self, handle: EntryHandle) Error!bool {
+        const entry = self.materials.getConst(handle).?;
+        if (!entry.pending) return false;
+        for (entry.textures) |texture| if (!texture.isNone() and self.isPending(texture)) return true;
+        try self.resolveMaterial(handle, .request);
+        return self.materials.getConst(handle).?.pending;
     }
 
     fn checkAnimation(self: *Self, model: ModelEntry) error{SkeletonMismatch}!void {
@@ -492,9 +669,11 @@ pub const Content = struct {
         self.gpa.free(model.clips);
     }
 
-    fn retainMaterial(self: *Self, id: ContentId) Error!EntryHandle {
+    fn retainMaterial(self: *Self, id: ContentId, mode: Mode) Error!EntryHandle {
         var existing = self.materials.iterator();
         while (existing.next()) |entry| if (entry.value.id.eql(id)) {
+            // Acquired, a material still waiting on a requested texture is completed now.
+            if (mode == .acquire and entry.value.pending) try self.resolveMaterial(entry.id, .acquire);
             entry.value.refs += 1;
             return entry.id;
         };
@@ -508,7 +687,7 @@ pub const Content = struct {
             .built_from = @splat(.none),
         });
         errdefer _ = self.materials.remove(entry);
-        try self.resolveMaterial(entry);
+        try self.resolveMaterial(entry, mode);
         return entry;
     }
 
@@ -536,7 +715,7 @@ pub const Content = struct {
             if (texture.isNone()) continue;
             const current = loader.textureOf(self.assets, texture, self.renderer) orelse TextureHandle.none;
             if (!current.eql(built_from)) {
-                try self.resolveMaterial(handle);
+                try self.resolveMaterial(handle, .acquire);
                 return;
             }
         }
@@ -545,11 +724,16 @@ pub const Content = struct {
     /// Reads the record and rebuilds the material behind the entry's stable handle. Only
     /// allocation and device failures are errors; anything content got wrong becomes the
     /// placeholder, reported once.
-    fn resolveMaterial(self: *Self, handle: EntryHandle) Error!void {
+    ///
+    /// Requested, a texture still loading leaves the entry `pending`, holding what it asked
+    /// for, and this runs again once nothing is: a request of an entry already held only
+    /// counts it, so resolving again loads nothing twice.
+    fn resolveMaterial(self: *Self, handle: EntryHandle, mode: Mode) Error!void {
         const id = self.materials.getConst(handle).?.id;
         var desc: MaterialDesc = .{};
         var textures: [5]asset.AssetHandle = @splat(.none);
         errdefer for (textures) |texture| if (!texture.isNone()) self.assets.release(texture);
+        var waiting = false;
         const reason: ?[]const u8 = blk: {
             const record = self.assets.store.lookup(id) orelse break :blk "its record is not in any loaded package";
             if (!record.schema_id.eql(asset.schemas.material.id)) break :blk "its record is not a foundry:material";
@@ -563,13 +747,19 @@ pub const Content = struct {
             for (texture_ids, enabled, 0..) |texture_id, enabled_slot, i| {
                 if (!enabled_slot) continue;
                 if (texture_id) |tid| {
-                    textures[i] = self.assets.acquireWith(self.gpa, tid, loader.textureLoader(self.renderer)) catch |err| switch (err) {
+                    textures[i] = self.obtain(mode, tid, loader.textureLoader(self.renderer)) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         else => break :blk "one of its textures did not load",
                     };
+                    if (self.isPending(textures[i])) {
+                        waiting = true;
+                        continue;
+                    }
                     handles[i] = loader.textureOf(self.assets, textures[i], self.renderer) orelse break :blk "one of its textures did not load";
                 }
             }
+            // Asked for and not here yet: nothing is built, and nothing is said.
+            if (waiting) break :blk null;
             desc.base_color_texture = handles[0];
             desc.metallic_roughness_texture = handles[1];
             desc.normal_texture = handles[2];
@@ -600,6 +790,7 @@ pub const Content = struct {
         };
 
         const entry = self.materials.get(handle).?;
+        entry.pending = waiting and reason == null;
         if (reason) |why| {
             log.warn("material {f} is drawn as the placeholder: {s}", .{ id, why });
             for (textures) |texture| if (!texture.isNone()) self.assets.release(texture);

@@ -832,8 +832,15 @@ pub fn build(b: *std.Build) void {
                 court_test_options.addOptionPath("noon_package", noon.fpk);
             }
             if (std.mem.eql(u8, pkg.stem, "sandbox3d")) {
-                walk_test_options.addOptionPath("package", compiled.fpk);
-                walk_test_options.addOptionPath("generated", compiled.generated);
+                // Staged as the install stages it: the sources and the compiled assets in the
+                // one tree the registry mounts, beside the package. Since M27 Step 6, whose
+                // gallery's textures are sources the tests load.
+                const staged = b.addWriteFiles();
+                _ = staged.addCopyFile(compiled.fpk, "sandbox3d.fpk");
+                _ = staged.addCopyDirectory(b.path(pkg.dir), "sandbox3d-assets", .{});
+                _ = staged.addCopyDirectory(compiled.generated, "sandbox3d-assets", .{});
+                walk_test_options.addOptionPath("package", staged.getDirectory().path(b, "sandbox3d.fpk"));
+                walk_test_options.addOptionPath("generated", staged.getDirectory().path(b, "sandbox3d-assets"));
                 const plinth = release.compilePackage(b, fpack, .{
                     .dir = "samples/sandbox3d/testdata/mods/plinth",
                     .stem = "plinth",

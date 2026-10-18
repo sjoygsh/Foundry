@@ -1,11 +1,29 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-18
-**Current handoff: M27 Step 5 of 11 is complete** ([`docs/design/background.md`](docs/design/background.md)).
-**Stop before Step 6**: `render3d.Content.requestModel` and `sandbox3d` loading its gallery in
-the background. Nothing in a sample requests yet, so every load a sample makes is still
-synchronous, and no ABI call exists. Nothing is pushed: local `main` is ahead by M26 Steps
-7–13, the `m26` tag and M27's commits.
+**Current handoff: M27 Step 6 of 11 is complete** ([`docs/design/background.md`](docs/design/background.md)).
+**Stop before Step 7**: `author`'s background validate and build, published as
+`FoundryApi_v7`. No ABI call exists for background work yet, and the editor still builds on
+its frame. Nothing is pushed: local `main` is ahead by M26 Steps 7–13, the `m26` tag and
+M27's commits.
+
+**M27 Step 6 is done (2026-10-18): models appear when they are ready.**
+- `render3d.Content.requestModel` requests every part, and `modelState`/`modelReady`
+  answer.
+- A draw of a pending model submits nothing and is counted in `Stats.pending_models`.
+- A failed mesh drops its parts, a failed texture is the placeholder, and a failed skeleton
+  or clip fails the model.
+- `acquireModel` of a pending model completes it on the calling thread.
+- The overlay shows the frame's pump counts and each asset's state.
+- `sandbox3d` requests its gallery on tick 120 by default (`FOUNDRY_SANDBOX3D_LOAD=sync`
+  for the baseline, `off` for G only).
+- On Metal it is ready on frame 140, about 334 ms after the request, with every frame's work
+  at or under 7.8 ms, against a 545 ms stall with `sync`.
+- The pump's p95 is about 6.8 ms, above §12's 2.0 ms, and is recorded for Step 9: one
+  2048² texture is one finish.
+- The tour's hash is unchanged under all three completion orders.
+
+Bar **2,186/2,187** (one skip); integration on null 107/107.
 
 **M27 Step 5 is done (2026-10-18): every engine loader with a decode is split.**
 - Both renderers' textures go through one shared decode (`asset.texture_decode`: PNG and mip

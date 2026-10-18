@@ -268,6 +268,9 @@ pub const Stats = struct {
     instance_lights_dropped: u32 = 0,
     /// Retained instances a reload left undrawable this frame (`Instances.submit`).
     instances_refused: u32 = 0,
+    /// Draws of a requested model whose parts were still loading (`Content.drawModel`), which
+    /// submitted nothing.
+    pending_models: u32 = 0,
 };
 
 pub const Error = error{

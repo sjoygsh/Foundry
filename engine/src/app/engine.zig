@@ -320,6 +320,8 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         hot_reload: bool,
         hot_reload_frames: u32,
         asset_pump: asset.PumpBudget,
+        /// What the last frame's `assets.pump` did, for the overlay's profiler.
+        last_pump: asset.PumpStats = .{},
         max_package_bytes: usize,
         /// The compiled bytes of every loaded package, kept alive because the store reads
         /// records **in place** out of them rather than copying (`content-schemas.md`
@@ -1025,6 +1027,7 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             // happens before simulation reads anything (ADR-0061, decision 4).
             if (profiling) self.profile.open(span.assets_pump, current);
             const pumped = self.assets.pump(self.gpa, self.asset_pump);
+            self.last_pump = pumped;
             // A background reload swapped a payload, which is a content change like any other.
             if (pumped.reloaded > 0) self.content_generation +%= 1;
             if (profiling) self.profile.close(self.platform.now());
@@ -1314,6 +1317,12 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         /// counter answers "how much is this subsystem holding", and an arena that is
         /// emptied every frame holds nothing between them. What it costs is its **peak**,
         /// which is the number that says what per-frame garbage is actually worth.
+        /// What this frame's `assets.pump` finished, failed, left pending and uploaded
+        /// (`background.md` §8): counts only, as the public ABI could give them.
+        pub fn assetPumpStats(self: *const Self) asset.PumpStats {
+            return self.last_pump;
+        }
+
         pub fn frameArenaHighWater(self: *const Self) usize {
             return self.frame_arena.highWater();
         }

@@ -1,14 +1,15 @@
 //! M27's gallery (`docs/design/background.md` §11): eight framed panels whose 2048×2048
 //! textures are the load background work exists to move off the frame.
 //!
-//! Nothing draws it until it is asked for: on `request_tick` when `FOUNDRY_SANDBOX3D_LOAD`
-//! names a path, or when a person presses G. Asking is a fixed tick or an input, so it is the
+//! Nothing draws it until it is asked for: on `request_tick`, unless `FOUNDRY_SANDBOX3D_LOAD`
+//! is `off`, or when a person presses G. Asking is a fixed tick or an input, so it is the
 //! same in every run (I9). Only what is drawn depends on when the load finishes; the gallery
 //! has no body, no collision and no rule.
 //!
-//! **Step 3 has the synchronous path only**: `acquireModel` on the tick, which stalls that
-//! frame. That is the baseline §12 measures, and what the window below records is the
-//! evidence. Step 6 adds `background`, and makes it the default.
+//! **Two paths** (§11). `background`, the default, is `requestModel`: the room keeps drawing
+//! and the gallery appears on the first frame its last part has finished. `sync` is
+//! `acquireModel` on the tick, which stalls that frame, and is the baseline §12 measures it
+//! against. The window below records the frames either way.
 const std = @import("std");
 const core = @import("core");
 const platform = @import("platform");
@@ -23,21 +24,37 @@ pub const request_tick: u64 = 120;
 /// Frames recorded after the gallery is ready, as §12 asks.
 pub const after_ready_frames: u64 = 60;
 
+/// How a load is made.
+pub const Path = enum { sync, background };
+
 /// How the gallery is loaded on its tick. `off` waits for G.
 pub const Mode = enum {
     off,
     sync,
+    background,
 
-    /// `FOUNDRY_SANDBOX3D_LOAD`. Anything else is said and ignored, as the sample's other
-    /// switches are: a measurement run that silently measured the wrong path is worse than
-    /// one that measured nothing.
+    /// `FOUNDRY_SANDBOX3D_LOAD`, `background` when unset. Anything else is said and waits
+    /// for G, as the sample's other switches are: a measurement run that silently measured
+    /// the wrong path is worse than one that measured nothing.
     pub fn parse(text: ?[]const u8) Mode {
-        const value = std.mem.trim(u8, text orelse return .off, " ");
-        if (std.mem.eql(u8, value, "sync")) return .sync;
-        if (std.mem.eql(u8, value, "background")) {
-            log.warn("FOUNDRY_SANDBOX3D_LOAD=background does not exist until M27 Step 6; the gallery waits for G", .{});
-        } else log.warn("FOUNDRY_SANDBOX3D_LOAD='{s}' is not sync; the gallery waits for G", .{value});
+        const value = std.mem.trim(u8, text orelse return .background, " ");
+        if (std.meta.stringToEnum(Mode, value)) |mode| return mode;
+        log.warn("FOUNDRY_SANDBOX3D_LOAD='{s}' is not sync, background or off; the gallery waits for G", .{value});
         return .off;
+    }
+
+    /// The path the tick takes, if it takes one.
+    pub fn onTick(self: Mode) ?Path {
+        return switch (self) {
+            .off => null,
+            .sync => .sync,
+            .background => .background,
+        };
+    }
+
+    /// The path G takes: the default's, unless the run asked for the baseline.
+    pub fn onKey(self: Mode) Path {
+        return if (self == .sync) .sync else .background;
     }
 };
 
@@ -45,20 +62,53 @@ pub const Gallery = struct {
     mode: Mode = .off,
     model: render3d.ModelHandle = .none,
     window: Window = .{},
+    started_ns: u64 = 0,
 
-    /// Loads the gallery now, on the calling thread. Measured, never simulated: the reading
-    /// only goes into the window.
-    pub fn request(self: *Gallery, content: *render3d.Content, frame: u64, os: *platform.Os) void {
+    /// `sync` loads the gallery now, on the calling thread; `background` asks for it and
+    /// returns. Measured, never simulated: the readings only go into the window.
+    pub fn request(self: *Gallery, content: *render3d.Content, path: Path, frame: u64, os: *platform.Os) void {
         if (!self.model.isNone()) return;
+        const id = core.ContentId.fromString(model_id);
         const started = os.monotonicNanos();
-        const handle = content.acquireModel(core.ContentId.fromString(model_id)) catch |err| {
+        const handle = switch (path) {
+            .sync => content.acquireModel(id),
+            .background => content.requestModel(id),
+        } catch |err| {
             log.warn("the gallery is not drawn ({t})", .{err});
             return;
         };
-        const took: i64 = @intCast(os.monotonicNanos() - started);
         self.model = handle;
-        self.window.start(frame, took);
-        log.info("gallery: loaded synchronously in {d:.3}ms on frame {d}", .{ ms(took), frame });
+        self.started_ns = started;
+        self.window.start(frame, path);
+        switch (path) {
+            .sync => self.ready(frame, os),
+            .background => log.info("gallery: requested on frame {d}", .{frame}),
+        }
+    }
+
+    /// Once a frame, before it is drawn: notes the frame a requested gallery became ready.
+    pub fn poll(self: *Gallery, content: *render3d.Content, frame: u64, os: *platform.Os) void {
+        if (self.model.isNone() or self.window.ready != null or self.window.requested == null) return;
+        const state = (content.modelState(self.model) catch |err| {
+            log.warn("the gallery's state could not be read ({t})", .{err});
+            return;
+        }) orelse return;
+        switch (state) {
+            .pending => {},
+            .ready => self.ready(frame, os),
+            .failed => {
+                log.warn("gallery: failed to load; it is not drawn", .{});
+                self.window.requested = null;
+            },
+        }
+    }
+
+    fn ready(self: *Gallery, frame: u64, os: *platform.Os) void {
+        const took: i64 = @intCast(os.monotonicNanos() - self.started_ns);
+        self.window.markReady(frame, took);
+        log.info("gallery: ready {s} in {d:.3}ms on frame {d}", .{
+            if (self.window.path == .sync) "synchronously" else "in the background", ms(took), frame,
+        });
     }
 
     pub fn release(self: *Gallery, content: *render3d.Content) void {
@@ -76,6 +126,7 @@ pub const Window = struct {
 
     requested: ?u64 = null,
     ready: ?u64 = null,
+    path: Path = .sync,
     load_ns: i64 = 0,
     work: [capacity]i64 = undefined,
     pump: [capacity]i64 = undefined,
@@ -83,8 +134,14 @@ pub const Window = struct {
     pump_len: usize = 0,
     reported: bool = false,
 
-    pub fn start(self: *Window, frame: u64, load_ns: i64) void {
-        self.* = .{ .requested = frame, .ready = frame, .load_ns = load_ns };
+    pub fn start(self: *Window, frame: u64, path: Path) void {
+        self.* = .{ .requested = frame, .path = path };
+    }
+
+    /// The window closes `after_ready_frames` after this frame.
+    pub fn markReady(self: *Window, frame: u64, load_ns: i64) void {
+        self.ready = frame;
+        self.load_ns = load_ns;
     }
 
     /// The frame the recorder last finished, less the time it spent waiting rather than
@@ -126,7 +183,9 @@ pub const Window = struct {
         log.info("gallery: assets.pump over {d} frames: median {d:.3}ms p95 {d:.3}ms max {d:.3}ms; budget p95 2.0ms", .{
             pump.count, ms(pump.median_ns), ms(pump.p95_ns), ms(pump.max_ns),
         });
-        log.info("gallery: request to ready {d:.3}ms (sync)", .{ms(self.load_ns)});
+        if (self.ready == null) {
+            log.info("gallery: not ready by the end of the run ({t})", .{self.path});
+        } else log.info("gallery: request to ready {d:.3}ms ({t})", .{ ms(self.load_ns), self.path });
     }
 };
 
@@ -134,12 +193,18 @@ fn ms(ns: i64) f64 {
     return @as(f64, @floatFromInt(ns)) / core.time.ns_per_ms;
 }
 
-test "the load switch names the synchronous path, and anything else waits for G" {
+test "the load switch is background unless it names sync or off, and anything else waits for G" {
     const t = std.testing;
-    try t.expectEqual(Mode.off, Mode.parse(null));
+    try t.expectEqual(Mode.background, Mode.parse(null));
+    try t.expectEqual(Mode.background, Mode.parse("background"));
     try t.expectEqual(Mode.sync, Mode.parse("sync"));
     try t.expectEqual(Mode.sync, Mode.parse(" sync "));
-    for ([_][]const u8{ "", "SYNC", "background", "async" }) |bad| try t.expectEqual(Mode.off, Mode.parse(bad));
+    try t.expectEqual(Mode.off, Mode.parse("off"));
+    for ([_][]const u8{ "", "SYNC", "async" }) |bad| try t.expectEqual(Mode.off, Mode.parse(bad));
+    try t.expectEqual(@as(?Path, null), Mode.off.onTick());
+    try t.expectEqual(@as(?Path, .background), Mode.background.onTick());
+    try t.expectEqual(Path.background, Mode.off.onKey());
+    try t.expectEqual(Path.sync, Mode.sync.onKey());
 }
 
 test "the window counts frame work from the request to sixty frames after ready, less waiting" {
@@ -169,7 +234,8 @@ test "the window counts frame work from the request to sixty frames after ready,
     window.add(&recorder, 0);
     try t.expectEqual(@as(usize, 0), window.len);
 
-    window.start(10, 250);
+    window.start(10, .sync);
+    window.markReady(10, 250);
     Frame.record(&recorder, 9);
     window.add(&recorder, 0);
     try t.expectEqual(@as(usize, 0), window.len); // an earlier frame than the request
@@ -185,4 +251,28 @@ test "the window counts frame work from the request to sixty frames after ready,
     try t.expectEqual(@as(i64, 60), window.work[0]);
     try t.expectEqual(@as(i64, 3), window.pump[0]);
     try t.expectEqual(window.len, window.pump_len);
+}
+
+test "a background window counts from the request, through the pending frames, to sixty after ready" {
+    const t = std.testing;
+    var recorder = try core.profile.Recorder.init(t.allocator, .{ .history = 4 });
+    defer recorder.deinit(t.allocator);
+    var window: Window = .{};
+    window.start(10, .background);
+    for (10..20) |i| {
+        recorder.beginFrame(i, .{ .ns = @intCast(i * 1000) });
+        recorder.endFrame(.{ .ns = @intCast(i * 1000 + 100) });
+        window.add(&recorder, 0);
+    }
+    // Not ready yet: nothing closes the window.
+    try t.expectEqual(@as(usize, 10), window.len);
+    try t.expect(!window.reported);
+    window.markReady(20, 5);
+    for (20..20 + after_ready_frames + 3) |i| {
+        recorder.beginFrame(i, .{ .ns = @intCast(i * 1000) });
+        recorder.endFrame(.{ .ns = @intCast(i * 1000 + 100) });
+        window.add(&recorder, 0);
+    }
+    try t.expectEqual(@as(usize, 10 + after_ready_frames + 1), window.len);
+    try t.expect(window.reported);
 }

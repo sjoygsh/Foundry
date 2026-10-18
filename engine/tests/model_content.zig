@@ -983,3 +983,223 @@ test "a texture's levels and a mesh are the same through a request on the pool a
     try testing.expectEqualDeep(states[0], states[1]);
     try testing.expectEqual(@as(usize, 0), stack.violations());
 }
+
+// -- requested models (M27 Step 6) --------------------------------------------------
+
+/// How a request's background work is completed in a test.
+const Order = enum { immediate, reversed, pool };
+
+/// Runs every request to its end under `order`, one pump at a time, as frames would.
+fn settleUnder(stack: *Stack, order: Order, manual: *core.tasks.Manual, pool: *platform.Background) void {
+    while (stack.assets.busy()) {
+        switch (order) {
+            .immediate => {},
+            // Newest first: the most adversarial order that needs no threads.
+            .reversed => while (manual.pending() > 0) manual.runLast(),
+            .pool => pool.tasks().wait(),
+        }
+        _ = stack.assets.pump(stack.gpa, .{});
+    }
+}
+
+fn tasksFor(order: Order, manual: *core.tasks.Manual, pool: *platform.Background) core.Tasks {
+    return switch (order) {
+        .immediate => core.tasks.immediate,
+        .reversed => manual.tasks(),
+        .pool => pool.tasks(),
+    };
+}
+
+/// What one part's draw submitted, with the handles that differ between two loads of the
+/// same asset left out.
+const Drawn = struct { submesh: u32, world: Mat4, desc: render3d.MaterialDesc, textured: bool };
+
+fn drawn(stack: *Stack, out: []Drawn) []Drawn {
+    for (stack.renderer.draws.items, out[0..stack.renderer.draws.items.len]) |item, *d| {
+        var desc = stack.materialDesc(item.material);
+        const textured = !desc.base_color_texture.isNone();
+        desc.base_color_texture = .none;
+        d.* = .{ .submesh = item.submesh, .world = item.world, .desc = desc, .textured = textured };
+    }
+    return out[0..stack.renderer.draws.items.len];
+}
+
+test "a requested model draws nothing until every part is here, then exactly what an acquired one draws, in any completion order" {
+    const stack = try recordStack();
+    defer stack.deinit();
+    const pool = try stack.os.startBackground(stack.gpa, .{ .count = 2 });
+    defer pool.deinit();
+    var manual = try core.tasks.Manual.init(stack.gpa, 16);
+    defer manual.deinit();
+
+    // The synchronous answer, then everything it loaded handed back, so each request below
+    // loads afresh.
+    var expected_buf: [4]Drawn = undefined;
+    const acquired = try stack.content.acquireModel(id("demo:models.pair"));
+    try testing.expectEqual(render3d.ModelState.ready, (try stack.content.modelState(acquired)).?);
+    try stack.begin();
+    try stack.content.drawModel(.{ .model = acquired, .world = .identity });
+    try stack.finish(null);
+    const expected = drawn(stack, &expected_buf);
+    try testing.expectEqual(@as(usize, 2), expected.len);
+    stack.content.releaseModel(acquired);
+    _ = stack.assets.unloadWith(stack.gpa, render3d.meshLoader(&stack.renderer));
+    _ = stack.assets.unloadWith(stack.gpa, render3d.textureLoader(&stack.renderer));
+
+    for ([_]Order{ .immediate, .reversed, .pool }) |order| {
+        stack.assets.useTasks(tasksFor(order, &manual, pool));
+        defer stack.assets.useTasks(core.tasks.immediate);
+
+        const model = try stack.content.requestModel(id("demo:models.pair"));
+        try testing.expectEqual(render3d.ModelState.pending, (try stack.content.modelState(model)).?);
+        try testing.expect(!try stack.content.modelReady(model));
+        // A pending model is not an error to draw: it submits nothing and is counted.
+        try stack.begin();
+        try stack.content.drawModel(.{ .model = model, .world = .identity });
+        try stack.finish(null);
+        try testing.expectEqual(@as(u32, 0), stack.renderer.frameStats().draws);
+        try testing.expectEqual(@as(u32, 1), stack.renderer.frameStats().pending_models);
+        // The same ID is the same model, pending or not.
+        const again = try stack.content.requestModel(id("demo:models.pair"));
+        try testing.expect(again.eql(model));
+        stack.content.releaseModel(again);
+
+        settleUnder(stack, order, &manual, pool);
+        try testing.expect(try stack.content.modelReady(model));
+        try stack.begin();
+        try stack.content.drawModel(.{ .model = model, .world = .identity });
+        try stack.finish(null);
+        try testing.expectEqual(@as(u32, 0), stack.renderer.frameStats().pending_models);
+        var got_buf: [4]Drawn = undefined;
+        try testing.expectEqualDeep(expected, drawn(stack, &got_buf));
+        try testing.expectEqual(@as(usize, 0), stack.violations());
+        // The mesh whose file is not installed failed, and the join still completed: its
+        // parts were dropped, as `acquireModel` drops them.
+        try testing.expectEqual(@as(usize, 1), stack.content.models.getConst(model).?.meshes.len);
+        // And what failed is not held: a failed part is released, as one never acquired.
+        var listing = stack.assets.assets();
+        while (listing.next()) |info| if (info.state == .failed) try testing.expectEqual(@as(u32, 0), info.refs);
+
+        stack.content.releaseModel(model);
+        try testing.expectEqual(@as(u32, 0), stack.content.models.count());
+        try testing.expectEqual(@as(u32, 0), stack.content.materials.count());
+        _ = stack.assets.unloadWith(stack.gpa, render3d.meshLoader(&stack.renderer));
+        _ = stack.assets.unloadWith(stack.gpa, render3d.textureLoader(&stack.renderer));
+    }
+}
+
+test "a requested model whose texture fails is drawn with the placeholder there, and one whose skeleton fails is never drawn" {
+    {
+        const stack = try recordStack();
+        defer stack.deinit();
+        // The record compiled; the installed file is not a PNG.
+        try stack.writeUnder(stack.out, "textures/crate.png", "not a png");
+        const model = try stack.content.requestModel(id("demo:models.pair"));
+        while (stack.assets.busy()) _ = stack.assets.pump(stack.gpa, .{});
+        try testing.expectEqual(render3d.ModelState.ready, (try stack.content.modelState(model)).?);
+        try stack.begin();
+        try stack.content.drawModel(.{ .model = model, .world = .identity });
+        try stack.finish(null);
+        try testing.expectEqual(@as(u32, 2), stack.renderer.frameStats().draws);
+        try testing.expectEqualDeep(render3d.content.placeholder, stack.materialDesc(stack.renderer.draws.items[1].material));
+        stack.content.releaseModel(model);
+    }
+    {
+        const stack = try animationStack(2, 2, animation_records);
+        defer stack.deinit();
+        try stack.writeUnder(stack.out, "skin/rig.fskel", "not a skeleton");
+        const model = try stack.content.requestModel(id("demo:skin.model"));
+        while (stack.assets.busy()) _ = stack.assets.pump(stack.gpa, .{});
+        try testing.expectEqual(render3d.ModelState.failed, (try stack.content.modelState(model)).?);
+        try stack.begin();
+        // Not drawn, not pending, and not an error: it was said when it failed.
+        try stack.content.drawModel(.{ .model = model, .world = .identity, .skin = &.{ .identity, .identity } });
+        try stack.finish(null);
+        try testing.expectEqual(@as(u32, 0), stack.renderer.frameStats().draws);
+        try testing.expectEqual(@as(u32, 0), stack.renderer.frameStats().pending_models);
+        stack.content.releaseModel(model);
+    }
+}
+
+test "acquiring a model that is still pending completes it on the calling thread" {
+    const stack = try recordStack();
+    defer stack.deinit();
+    var manual = try core.tasks.Manual.init(stack.gpa, 16);
+    defer manual.deinit();
+    stack.assets.useTasks(manual.tasks());
+    defer stack.assets.useTasks(core.tasks.immediate);
+
+    const requested = try stack.content.requestModel(id("demo:models.pair"));
+    // A pump starts the decodes, and the executor holds them unrun.
+    _ = stack.assets.pump(stack.gpa, .{});
+    try testing.expect(manual.pending() > 0);
+    try testing.expectEqual(render3d.ModelState.pending, (try stack.content.modelState(requested)).?);
+    const acquired = try stack.content.acquireModel(id("demo:models.pair"));
+    try testing.expect(acquired.eql(requested));
+    // Nothing the pool held ran: the parts were loaded here.
+    try testing.expectEqual(render3d.ModelState.ready, (try stack.content.modelState(acquired)).?);
+    try stack.begin();
+    try stack.content.drawModel(.{ .model = acquired, .world = .identity });
+    try stack.finish(null);
+    try testing.expectEqual(@as(u32, 2), stack.renderer.frameStats().draws);
+    stack.content.releaseModel(acquired);
+    stack.content.releaseModel(requested);
+    // What was detached is still held by the executor; once run, a pump frees it.
+    manual.runAll();
+    while (stack.assets.busy()) _ = stack.assets.pump(stack.gpa, .{});
+}
+
+test "a content reload keeps a pending model requested, and it is ready once its parts are" {
+    const stack = try recordStack();
+    defer stack.deinit();
+    var manual = try core.tasks.Manual.init(stack.gpa, 16);
+    defer manual.deinit();
+    stack.assets.useTasks(manual.tasks());
+    defer stack.assets.useTasks(core.tasks.immediate);
+
+    const model = try stack.content.requestModel(id("demo:models.pair"));
+    _ = stack.assets.pump(stack.gpa, .{});
+    // What `app` does before it replaces the packages records are borrowed from.
+    stack.assets.quiesce();
+    try stack.reload();
+    // Rebuilt from the new record, and still waiting: a reload is no reason to load here.
+    try testing.expectEqual(render3d.ModelState.pending, (try stack.content.modelState(model)).?);
+    while (stack.assets.busy() or (try stack.content.modelState(model)).? == .pending) {
+        while (manual.pending() > 0) manual.runLast();
+        _ = stack.assets.pump(stack.gpa, .{});
+    }
+    try testing.expectEqual(render3d.ModelState.ready, (try stack.content.modelState(model)).?);
+    try stack.begin();
+    try stack.content.drawModel(.{ .model = model, .world = .identity });
+    try stack.finish(null);
+    try testing.expectEqual(@as(u32, 2), stack.renderer.frameStats().draws);
+    stack.content.releaseModel(model);
+}
+
+test "a requested model waits for its materials' textures as well as its meshes" {
+    const stack = try recordStack();
+    defer stack.deinit();
+    var manual = try core.tasks.Manual.init(stack.gpa, 16);
+    defer manual.deinit();
+    stack.assets.useTasks(manual.tasks());
+    defer stack.assets.useTasks(core.tasks.immediate);
+
+    const model = try stack.content.requestModel(id("demo:models.pair"));
+    _ = stack.assets.pump(stack.gpa, .{});
+    // Requested in record order, slots before parts: the crate's texture, then two meshes.
+    try testing.expectEqual(@as(u32, 3), manual.pending());
+    manual.runLast();
+    manual.runLast();
+    _ = stack.assets.pump(stack.gpa, .{});
+    // Every mesh has finished or failed; the texture has not, so neither has the model.
+    try testing.expectEqual(@as(u32, 1), manual.pending());
+    try testing.expectEqual(render3d.ModelState.pending, (try stack.content.modelState(model)).?);
+    manual.runAll();
+    _ = stack.assets.pump(stack.gpa, .{});
+    try testing.expectEqual(render3d.ModelState.ready, (try stack.content.modelState(model)).?);
+    try stack.begin();
+    try stack.content.drawModel(.{ .model = model, .world = .identity });
+    try stack.finish(null);
+    try testing.expect(!stack.materialDesc(stack.renderer.draws.items[1].material).base_color_texture.isNone());
+    stack.content.releaseModel(model);
+}

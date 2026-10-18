@@ -304,3 +304,65 @@ test "props: collision source reload is copied fresh and failed reload preserves
     try testing.expectEqual(@as(usize, 0), renderer.draws.items.len);
     try testing.expect(!props.entries[0].submitted);
 }
+
+test "props: the tour's hash does not move with the gallery requested on its tick, in any order its loads finish" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gallery = @import("gallery.zig");
+    const gpa = testing.allocator;
+    const engine = try engineInit();
+    defer engine.deinit();
+    var renderer = try render3d.Renderer.init(gpa, engine.gpu, .{ .cull = false });
+    defer renderer.deinit();
+    var content = render3d.Content.init(gpa, &renderer, &engine.assets, .default);
+    defer content.deinit();
+    const pool = try engine.os.startBackground(gpa, .{ .count = 2 });
+    defer pool.deinit();
+    var manual = try core.tasks.Manual.init(gpa, 64);
+    defer manual.deinit();
+
+    const Order = enum { immediate, reversed, pool };
+    for ([_]Order{ .immediate, .reversed, .pool }) |order| {
+        engine.assets.useTasks(switch (order) {
+            .immediate => core.tasks.immediate,
+            .reversed => manual.tasks(),
+            .pool => pool.tasks(),
+        });
+        defer engine.assets.useTasks(core.tasks.immediate);
+        var walk = Walk.init(gpa);
+        defer walk.deinit(&engine.assets);
+        walk.refresh(&engine.store, &engine.assets, dt);
+
+        var model: render3d.ModelHandle = .none;
+        var pending_ticks: usize = 0;
+        var tour: Tour = .{ .emit = false };
+        var tick: u64 = 0;
+        while (!tour.done()) : (tick += 1) {
+            // Where the sample does it: the frame's pump first, then the step.
+            if (order == .reversed) while (manual.pending() > 0) manual.runLast();
+            _ = engine.assets.pump(gpa, .{});
+            if (tick == gallery.request_tick) model = try content.requestModel(core.ContentId.fromString(gallery.model_id));
+            try tour.advance(&walk, dt);
+            if (!model.isNone() and !try content.modelReady(model)) pending_ticks += 1;
+        }
+        try testing.expect(tour.failed == null);
+        try testing.expectEqual(@as(u64, 0xcb99ccfcf2b6d6c3), tour.hash);
+        // It was requested, and was not there at once.
+        try testing.expect(!model.isNone());
+        try testing.expect(pending_ticks > 0);
+
+        while (engine.assets.busy()) {
+            if (order == .reversed) manual.runAll();
+            if (order == .pool) pool.tasks().wait();
+            _ = engine.assets.pump(gpa, .{});
+        }
+        try testing.expect(try content.modelReady(model));
+        // Eight panels, each a frame and a picture.
+        try renderer.begin(.{ .camera = .{}, .target_size = .{ .width = 64, .height = 64 } });
+        try content.drawModel(.{ .model = model, .world = .identity });
+        try testing.expectEqual(@as(usize, 16), renderer.draws.items.len);
+        content.releaseModel(model);
+        // Released is evictable, not gone: handed back, so the next order loads afresh.
+        _ = engine.assets.unloadWith(gpa, render3d.meshLoader(&renderer));
+        _ = engine.assets.unloadWith(gpa, render3d.textureLoader(&renderer));
+    }
+}

@@ -37,6 +37,7 @@ pub const State = struct {
             try self.plotDelta(view);
             try describeRenderer(view);
             try describeRenderer3d(view);
+            try describeAssets(view);
             try describeAudio(view);
             return;
         };
@@ -96,6 +97,7 @@ pub const State = struct {
 
         try describeRenderer(view);
         try describeRenderer3d(view);
+        try describeAssets(view);
         try describeAudio(view);
     }
 
@@ -146,6 +148,16 @@ fn describeStats3d(view: *View, stats: render3d.Stats) Allocator.Error!void {
     try view.line("3D: {d} triangles  {d} pipeline binds", .{ stats.triangles, stats.pipeline_binds });
     try view.line("3D: {d} lights  {d} shadow draws  {d} shadow culled", .{ stats.lights, stats.shadow_draws, stats.shadow_culled });
     try view.line("3D: {d} skinned draws  {d} skinned vertices  {d} skin budget dropped", .{ stats.skinned_draws, stats.skinned_vertices, stats.skin_budget_dropped });
+    try view.line("3D: {d} models pending", .{stats.pending_models});
+}
+
+/// The frame's `assets.pump` (`background.md` §8): what background loading finished on the
+/// main thread this frame, and what is still on its way.
+fn describeAssets(view: *View) Allocator.Error!void {
+    const pump = view.frame.asset_pump orelse return;
+    try view.line("assets: {d} pending  {d} finished  {d} reloaded  {d} failed  {d} KiB uploaded", .{
+        pump.pending, pump.finished, pump.reloaded, pump.failed, pump.bytes / 1024,
+    });
 }
 
 fn describeAudio(view: *View) Allocator.Error!void {
@@ -173,12 +185,14 @@ test "the panel says the profiler is off rather than showing an empty plot" {
     var ctx = ui.Context.init(testing.allocator, overlay.testStyle());
     defer ctx.deinit();
     ctx.begin(.{}, .init(0, 0, 400, 300));
-    var view: View = .{ .ui = &ctx, .arena = test_arena.allocator(), .frame = .{}, .sources = .{} };
+    var view: View = .{ .ui = &ctx, .arena = test_arena.allocator(), .frame = .{ .asset_pump = .{ .pending = 4 } }, .sources = .{} };
     try State.describe(&state, &view);
     ctx.end();
 
     try testing.expect(overlay.findText(&ctx, "profiler off"));
     try testing.expect(overlay.findText(&ctx, "no 3D renderer"));
+    // The pump's line does not depend on the profiler.
+    try testing.expect(overlay.findText(&ctx, "assets: 4 pending"));
 }
 
 test "render3d's frame counts are a line beside render2d's" {
@@ -196,6 +210,23 @@ test "render3d's frame counts are a line beside render2d's" {
     try testing.expect(overlay.findText(&ctx, "3D: 4096 triangles  5 pipeline binds"));
     try testing.expect(overlay.findText(&ctx, "3D: 3 lights  7 shadow draws  9 shadow culled"));
     try testing.expect(overlay.findText(&ctx, "3D: 2 skinned draws  600 skinned vertices  1 skin budget dropped"));
+    try testing.expect(overlay.findText(&ctx, "3D: 0 models pending"));
+}
+
+test "the frame's asset pump is a line of counts, and absent without an answer" {
+    var test_arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer test_arena.deinit();
+    var ctx = ui.Context.init(testing.allocator, overlay.testStyle());
+    defer ctx.deinit();
+    ctx.begin(.{}, .init(0, 0, 400, 300));
+    var view: View = .{ .ui = &ctx, .arena = test_arena.allocator(), .frame = .{}, .sources = .{} };
+    try describeAssets(&view);
+    view.frame.asset_pump = .{ .pending = 7, .finished = 2, .reloaded = 1, .failed = 3, .bytes = 5 << 20 };
+    try describeAssets(&view);
+    ctx.end();
+
+    try testing.expect(overlay.findText(&ctx, "assets: 7 pending  2 finished  1 reloaded  3 failed  5120 KiB uploaded"));
+    try testing.expect(!overlay.findText(&ctx, "assets: 0 pending"));
 }
 
 test "the spans of a recorded frame are listed, nested ones indented" {

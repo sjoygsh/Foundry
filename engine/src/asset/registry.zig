@@ -866,6 +866,11 @@ pub const Registry = struct {
         return entry.payload;
     }
 
+    /// The content ID behind a handle, in whatever state. Null for a stale handle.
+    pub fn idOf(self: *Registry, handle: AssetHandle) ?ContentId {
+        return (self.entries.get(handle) orelse return null).id;
+    }
+
     /// Where a handle's asset is: ready, still loading, or failed and why. Null for a handle
     /// that is stale or was never issued.
     pub fn state(self: *Registry, handle: AssetHandle) ?State {
@@ -1052,6 +1057,8 @@ pub const Registry = struct {
         /// Zero means **evictable, not freed** (§4). The first time this is visible to
         /// anybody, and it is a real answer to "why is this still in memory".
         refs: u32,
+        /// Ready, still loading, or failed (`background.md` §8).
+        state: State,
     };
 
     /// Every loaded asset, **in handle-slot order**. An ID loaded through a registered loader
@@ -1078,6 +1085,7 @@ pub const Registry = struct {
                     .id = entry.id,
                     .schema_id = entry.schema_id,
                     .refs = entry.refs,
+                    .state = entry.state,
                 };
             }
             return null;
@@ -1251,7 +1259,11 @@ pub const Registry = struct {
     /// Makes a pending or failed entry ready on the calling thread, for `acquire` (§6.2).
     /// A decode that already finished is finished here rather than repeated; one that has
     /// not is cancelled and done again now, so `acquire` never waits on the pool's queue.
-    fn complete(self: *Registry, gpa: Allocator, handle: AssetHandle) AcquireError!void {
+    /// What `acquire` does to an entry it already has, without the count: a pending entry
+    /// is finished on the calling thread, never by waiting on the pool, and a failed one is
+    /// tried again there. A ready one is left as it is.
+    pub fn complete(self: *Registry, gpa: Allocator, handle: AssetHandle) AcquireError!void {
+        if (self.entries.get(handle) == null) return error.AssetNotFound;
         if (self.entries.get(handle).?.state == .ready) return;
         if (self.entries.get(handle).?.job) |job| {
             // Polled only if its decode has started: a poll would also start one that has
@@ -2683,6 +2695,39 @@ test "acquire completes a pending entry, from its finished decode or by decoding
     try testing.expectEqual(@as(u32, 0), manual.pending());
     try testing.expect(!fx.registry.busy());
     manual.deinit();
+}
+
+test "complete finishes a pending entry without a count, and the listing says where each entry is" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+    try writeThree(fx);
+    var split: FakeSplit = .{};
+    try fx.registry.registerLoader(fx.gpa, split.loader(schemas.texture.id));
+    var manual = try core.tasks.Manual.init(testing.allocator, 8);
+    defer manual.deinit();
+    fx.registry.useTasks(manual.tasks());
+
+    const a = try fx.registry.request(fx.gpa, texture_ids[0]);
+    const b = try fx.registry.request(fx.gpa, texture_ids[1]);
+    _ = fx.registry.pump(fx.gpa, .{});
+    // The content ID answers in every state; a stale handle has none.
+    try testing.expect(fx.registry.idOf(a).?.eql(texture_ids[0]));
+    var it = fx.registry.assets();
+    while (it.next()) |info| try testing.expectEqual(State.pending, info.state);
+
+    try fx.registry.complete(fx.gpa, a);
+    try testing.expectEqual(State.ready, fx.registry.state(a).?);
+    try testing.expectEqual(@as(u32, 1), fx.registry.refCount(a).?);
+    it = fx.registry.assets();
+    while (it.next()) |info| {
+        try testing.expectEqual(@as(State, if (info.handle.eql(a)) .ready else .pending), info.state);
+    }
+    try testing.expectError(error.AssetNotFound, fx.registry.complete(fx.gpa, .{ .index = 99, .generation = 1 }));
+    try testing.expectEqual(@as(?ContentId, null), fx.registry.idOf(.{ .index = 99, .generation = 1 }));
+
+    manual.runAll();
+    while (fx.registry.busy()) _ = fx.registry.pump(fx.gpa, .{});
+    try testing.expectEqual(State.ready, fx.registry.state(b).?);
 }
 
 test "a pump finishes in request order within its budget, and always finishes its first" {

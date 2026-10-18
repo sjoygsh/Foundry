@@ -18,6 +18,7 @@ pub const AlphaMode = renderer.AlphaMode;
 pub const Config = renderer.Config;
 pub const Content = content.Content;
 pub const ContentLimits = content.Limits;
+pub const ModelState = content.ModelState;
 pub const Error = renderer.Error;
 pub const Extent2D = renderer.Extent2D;
 pub const Filter = renderer.Filter;

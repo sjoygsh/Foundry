@@ -1,6 +1,6 @@
 # Design: M27 — Background work: a task graph, assets that load without stalling a frame, and the editor's background compile
 
-**Status:** Accepted 2026-10-18, when the owner asked for Step 1, with §14 as written (including item 1: `FoundryApi_v7` in M27, so M48 publishes v8). **Steps 1–5 of 11 are done**; their Resolutions follow §16.
+**Status:** Accepted 2026-10-18, when the owner asked for Step 1, with §14 as written (including item 1: `FoundryApi_v7` in M27, so M48 publishes v8). **Steps 1–6 of 11 are done**; their Resolutions follow §16.
 **Date:** 2026-10-18
 **Baseline:** `8182188`, tag `m26`. M0–M26 are complete, and with them Phase 5.
 **Decisions:**
@@ -1275,3 +1275,157 @@ Supporting changes:
 
 Step 6 gives `render3d.Content` its `requestModel`, and loads `sandbox3d`'s gallery in the
 background.
+
+## Resolution — Step 6: models when ready (2026-10-18)
+
+`render3d.Content.requestModel` asks for a model without waiting. `sandbox3d` now loads its
+gallery that way by default, and the room keeps drawing while it loads.
+
+**What it added:**
+- **`requestModel(id)`.** It reads and refuses the record now, exactly as `acquireModel`
+  does. It requests every mesh, texture, skeleton and clip the record names through §6, and
+  the model is pending until all of them have finished or failed.
+- **`modelState(handle)`** answers `pending`, `ready` or `failed`, with the join checked
+  first. **`modelReady(handle)`** is that state compared with `ready`. Both are exported as
+  `render3d.ModelState`.
+- **`drawModel` of a model that is not ready submits nothing and returns ok.** A pending one
+  is counted in the new `Stats.pending_models`. A model is never drawn half loaded, and never
+  with the placeholder standing in for a texture still on its way.
+- **The overlay:**
+  - The profiler panel shows `Engine.assetPumpStats()` as a line: pending, finished,
+    reloaded, failed and KiB uploaded in the frame's pump. Its `render3d` lines add "models
+    pending".
+  - The content browser labels each asset `pending` or `failed (error)`. The registry's
+    listing (`AssetInfo.state`) carries the state, in the listing's documented order.
+- **`sandbox3d`:**
+  - `FOUNDRY_SANDBOX3D_LOAD` is now `background` when unset. `sync` keeps Step 3's
+    baseline, and `off` waits for G.
+  - A value the sample does not know is said, and waits for G, as Step 3's did.
+  - G uses the background path unless the run asked for `sync`.
+  - The window starts at the request and closes sixty frames after the frame the gallery is
+    first ready, which `Gallery.poll` notes before each draw.
+
+**What implementation settled:**
+- **The join is a check, not a graph node.** §8 described "a graph join node" depending on
+  every part's finish.
+  - Each part's load is its own two-node graph inside the registry, and finishes in the pump.
+    A node depending on several of them would need an edge between graphs that the registry
+    does not expose.
+  - Instead, `Content` checks its parts' states where readiness is asked: by a draw, and by
+    `modelState`. A model is ready on the first frame that asks after its last part
+    finished, which is when §11 says the gallery is drawn.
+  - The check costs one state read per part, and only while a model is pending.
+- **What fails, and how:**
+  - A failed mesh is handled as `acquireModel` handles one: its parts are dropped, it is
+    said once, and it is released, so nothing failed stays held.
+  - A failed texture makes its material the placeholder, as it always has. The model is
+    still ready.
+  - A skeleton or clip that failed, or whose joint counts do not fit the meshes, is what
+    `acquireModel` refuses. A requested model cannot be refused after the fact, so it
+    becomes `failed`: said once, never drawn, and no draw of it is an error.
+- **A draw of a pending model still validates its world matrix and overrides.** A draw that
+  would be refused when ready is refused while pending too, so readiness never hides a
+  caller's mistake.
+- **The same ID is one model either way.**
+  - `requestModel` of a model already held counts it.
+  - `acquireModel` of a pending one completes it on the calling thread, as
+    `Registry.acquire` completes a pending asset. For that, the registry's `complete` is now
+    public: `acquire` without the count.
+  - `Registry.idOf(handle)` names a part in any state, for the warning.
+- **Materials wait too.** A material whose requested texture is still loading is marked
+  pending, holds what it asked for, and stays the placeholder until it resolves again. No
+  model waiting on it is drawn, so nobody sees that placeholder.
+  - Resolving again requests the same entries, which only counts them, so nothing loads
+    twice.
+  - `acquireModel` or `acquireMaterial` of a pending material completes it.
+- **A content reload keeps a pending model requested.** `contentChanged` rebuilds it from the
+  new record with requests rather than acquisitions. A reload is no reason to wait.
+- **The sample's tests now mount the package as an install stages it.** Sources and compiled
+  assets are in one tree beside the package, a `WriteFiles` step in `build.zig`. The test
+  tree held only the compiled assets, so the gallery's PNGs, which are sources, were missing
+  from it.
+
+**Tests:**
+- **`model_content`, on any backend:**
+  - A requested `models.pair` draws nothing while pending, is counted, and is ready after
+    its parts finish. It then draws exactly what an acquired one drew: the same parts,
+    submeshes, world matrices and materials, the crate's textured. This holds under
+    `immediate`, `Manual` in newest-first order, and a two-thread pool.
+  - Its missing mesh fails, and the join still completes. The parts are dropped, and no
+    failed entry is still held.
+  - A texture whose file is not a PNG leaves the model ready, drawn with the placeholder in
+    that slot. A skeleton that is not one fails the model: not drawn, not counted pending,
+    not an error.
+  - With the meshes finished and the crate's texture still queued, the model is pending.
+    Once the texture finishes, the model is ready and drawn textured.
+  - `acquireModel` of a pending model completes it without the queued decodes having run.
+  - A content reload during a request leaves the model pending, and it is ready once its
+    parts are.
+- **`sandbox3d` (`props_tests`):** the tour's hash is `cb99ccfcf2b6d6c3` with the gallery
+  requested on tick 120, under all three orders.
+  - The gallery is pending for some ticks in each order, because its parts are unloaded
+    between orders.
+  - Once settled it draws sixteen parts: eight frames and eight pictures.
+- **Unit tests:**
+  - The registry's `complete` finishes without a count and refuses a stale handle, and the
+    listing reports each entry's state.
+  - The profiler's pump line, and its absence without an answer.
+  - The switch's three values, and the background window kept open through the pending
+    frames.
+
+**Evidence:**
+- **The exit, on Metal:** ReleaseSafe, windowed, three runs of 300 frames, with the default
+  load.
+
+  | Run | Requested on frame | Ready on frame | Request to ready (ms) | Frame work median / p95 / max (ms) | `assets.pump` median / p95 / max (ms) |
+  | --- | --- | --- | --- | --- | --- |
+  | 1 | 120 | 140 | 333.9 | 1.018 / 6.981 / 7.694 | 0.000 / 6.750 / 7.490 |
+  | 2 | 120 | 140 | 333.9 | 0.989 / 7.071 / 7.345 | 0.000 / 6.871 / 7.147 |
+  | 3 | 120 | 140 | 333.6 | 1.010 / 7.003 / 7.751 | 0.000 / 6.796 / 7.545 |
+
+  - The same binary with `sync` stalled one frame for 545.1 ms.
+  - The gallery's state reached `ready` and it was drawn from frame 140. I did not look at
+    the window: no screen capture is taken on this machine. Seeing it is the owner's, by
+    running the sample and waiting two seconds.
+- **For Step 9, recorded and not answered here:**
+  - Every frame stayed under 16.67 ms, but the pump's p95 is about 6.8 ms, above §12's
+    2.0 ms.
+  - Each 2048² texture's finish uploads about 21 MiB in one call. The pump always runs its
+    first finish, so the default 8 MiB budget cannot split one. The gallery's eight textures
+    are eight such finishes, each in its own frame's pump.
+  - Step 9 measures the claim and answers it.
+- **Headless:**
+  - The tour passes with hash `cb99ccfcf2b6d6c3` in both modes.
+  - In the background the gallery was ready after 1,480 ms. Headless frames are not paced,
+    so that was frame 1,559.
+  - `sync` took 2,745 ms on its one frame.
+- **Guards were broken one at a time against the full `zig build test`.** Each source was
+  restored and checked by hash.
+  - **Detected:**
+    - a pending draw not counted;
+    - a pending model drawn as if ready;
+    - the join ignoring meshes;
+    - a failed mesh kept held;
+    - `acquireModel` leaving a pending model pending;
+    - a reload acquiring a pending model;
+    - `requestModel` acquiring;
+    - the sample defaulting to `off`;
+    - `complete` accepting a stale handle.
+  - **Detected after a test was added:**
+    - The join ignoring materials first survived, because the crate's texture always
+      finished in the same pump as the meshes. The texture-wait test holds the texture back
+      and fails it.
+    - Dropping the pump line from the profiler-off path survived, because the line's test
+      called it directly. The profiler-off test now expects it.
+  - **Equivalent:**
+    - Dropping the failed-skeleton check still fails the model: `checkAnimation` finds no
+      skeleton payload, and only the wording of the message changes.
+    - Building a material before its pending texture arrives leaves it pending, so it is
+      rebuilt before any model that uses it is drawn. That costs one wasted
+      `updateMaterial`, and nothing visible.
+- **The bar passed: 2,186/2,187 (one skip)**, with nine new tests. fmt, all four `check`
+  variants, the four headless samples and `fdt-check` passed. The integration tests passed
+  on null, 107/107.
+
+Step 7 gives `author` its background validate and build, and publishes them as
+`FoundryApi_v7`.

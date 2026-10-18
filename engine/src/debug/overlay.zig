@@ -113,6 +113,8 @@ pub const Frame = struct {
     /// panel's to make.
     schemas: ?*data.Registry = null,
     assets: ?*const asset.Registry = null,
+    /// What the frame's `assets.pump` did. Null when the engine gave no answer.
+    asset_pump: ?asset.PumpStats = null,
     content_generation: u64 = 0,
     reload: ?Reload = null,
     /// A bound `Engine.saveProfileToUserData`, the profiler panel's "save profile"
@@ -150,6 +152,7 @@ pub const Frame = struct {
             .store = &engine.store,
             .schemas = &engine.schemas,
             .assets = &engine.assets,
+            .asset_pump = engine.assetPumpStats(),
             .content_generation = engine.contentGeneration(),
             .reload = .{ .ctx = engine, .call = bind.call },
             .save_profile = if (engine.profiler() != null) .{ .ctx = engine, .call = bind.save } else null,
