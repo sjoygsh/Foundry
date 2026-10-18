@@ -148,6 +148,15 @@ pub const Config = struct {
     ///
     /// Changes how fast a split runs and never what it computes (ADR-0036).
     workers: ?u16 = null,
+
+    /// Threads behind `Engine.tasks`, for work that outlives a frame. `0` runs every task on
+    /// the thread that starts it; null is `platform.background.defaultCount()`, two, or one on
+    /// a machine with four logical CPUs or fewer (`docs/design/background.md` §4.1).
+    ///
+    /// **Above zero, the allocator handed to `Engine.init` must be thread-safe**, because
+    /// background tasks allocate through `Engine.taskAllocator`, which counts on top of it.
+    /// `std.process.Init`'s `gpa` is, in every build mode; nothing here can check it.
+    background_workers: ?u16 = null,
 };
 
 /// The names the engine gives its own timing spans.
@@ -194,6 +203,12 @@ pub const span = struct {
 
 /// Phantom tag for `MemoryHandle` (I1).
 pub const Memories = opaque {};
+
+/// A registered counter: one thread's, or one several threads allocate through.
+const Counter = union(enum) {
+    single: *core.mem.Counted,
+    shared: *core.mem.SharedCounted,
+};
 
 /// A registered memory counter.
 pub const MemoryHandle = core.Handle(Memories);
@@ -252,6 +267,7 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         // Subsystems, in initialisation order. Teardown is strictly the reverse.
         os: *platform.Os,
         workers: *platform.Workers,
+        background: *platform.Background,
         platform: *P,
         gpu: *G,
 
@@ -312,7 +328,10 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         ///
         /// Each entry is **borrowed**: a counter must outlive its registration, or be
         /// unregistered first. Every current caller keeps one for the process's life.
-        memories: core.HandlePool(Memories, *core.mem.Counted),
+        memories: core.HandlePool(Memories, Counter),
+        /// What background tasks allocate through (`taskAllocator`), counted on top of `gpa`.
+        /// Not in the memory report unless a game registers it, as with any other counter.
+        task_memory: core.mem.SharedCounted,
 
         /// Per-frame timing, or `.off`. **The engine's spans are the frame's skeleton**;
         /// everything inside `simulate` is the game's, opened through `beginScope`.
@@ -356,6 +375,14 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             });
             errdefer workers.deinit();
             log.debug("worker pool: {d} thread(s) besides the caller", .{workers.threadCount()});
+
+            // Beside the frame's pool, never inside it: a frame's join must not wait behind a
+            // decode (ADR-0061).
+            const background = try os.startBackground(gpa, .{
+                .count = config.background_workers orelse platform.background.defaultCount(),
+            });
+            errdefer background.deinit();
+            log.debug("background pool: {d} thread(s)", .{background.threadCount()});
 
             const plat = try P.init(gpa, .{});
             errdefer plat.deinit();
@@ -417,6 +444,7 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                 .frame_arena = .init(gpa),
                 .os = os,
                 .workers = workers,
+                .background = background,
                 .platform = plat,
                 .gpu = gpu,
                 .window = window,
@@ -440,6 +468,7 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                 .max_package_bytes = config.max_package_bytes,
                 .package_bytes = .empty,
                 .memories = .empty,
+                .task_memory = .init("background", gpa),
                 .profile = profile,
                 .schemas = .init(gpa, .default),
                 .store = .init(gpa, .default),
@@ -493,6 +522,9 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             self.deinitOwned();
             self.gpu.deinit();
             self.platform.deinit();
+            // After everything the engine owns, the registry among them, which may have had
+            // background work in flight; it runs whatever is still queued before it stops.
+            self.background.deinit();
             self.workers.deinit();
             self.os.deinit();
             gpa.destroy(self);
@@ -506,6 +538,26 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         /// Design: `docs/design/jobs-and-threading.md` §4.
         pub fn jobs(self: *Self) core.Jobs {
             return self.workers.jobs();
+        }
+
+        /// The engine's background pool, as the capability to hand whatever starts work that
+        /// outlives a frame. As with `jobs`, the game hands it to what it owns, and it must not
+        /// outlive the engine.
+        ///
+        /// Design: `docs/design/background.md` §4.
+        pub fn tasks(self: *Self) core.Tasks {
+            return self.background.tasks();
+        }
+
+        /// The allocator background tasks use, and the finishes that free what they made. Safe
+        /// from any thread, given a thread-safe `gpa` (`Config.background_workers`).
+        pub fn taskAllocator(self: *Self) Allocator {
+            return self.task_memory.allocator();
+        }
+
+        /// Its counter, for a game that wants it in the memory report (`registerSharedMemory`).
+        pub fn taskMemory(self: *Self) *core.mem.SharedCounted {
+            return &self.task_memory;
         }
 
         /// Everything the engine struct itself owns, in reverse order of construction.
@@ -1180,7 +1232,13 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         ///
         /// `counter` is borrowed and must outlive the registration or be unregistered.
         pub fn registerMemory(self: *Self, counter: *core.mem.Counted) Allocator.Error!MemoryHandle {
-            return self.memories.add(self.gpa, counter);
+            return self.memories.add(self.gpa, .{ .single = counter });
+        }
+
+        /// The same, for a counter more than one thread allocates through, such as
+        /// `taskMemory()`. Reported in the same order, beside the others.
+        pub fn registerSharedMemory(self: *Self, counter: *core.mem.SharedCounted) Allocator.Error!MemoryHandle {
+            return self.memories.add(self.gpa, .{ .shared = counter });
         }
 
         /// Removes one. Safe with a handle that is already gone.
@@ -1197,19 +1255,32 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         }
 
         pub const MemoryIterator = struct {
-            inner: core.HandlePool(Memories, *core.mem.Counted).Iterator,
+            inner: core.HandlePool(Memories, Counter).Iterator,
 
             pub fn next(self: *MemoryIterator) ?MemoryReport {
                 const entry = self.inner.next() orelse return null;
-                const counter = entry.value.*;
-                return .{
-                    .handle = entry.id,
-                    .name = counter.name,
-                    .live_bytes = counter.live_bytes,
-                    .peak_bytes = counter.peak_bytes,
-                    .allocations = counter.allocations,
-                    .frees = counter.frees,
-                    .failures = counter.failures,
+                return switch (entry.value.*) {
+                    .single => |counter| .{
+                        .handle = entry.id,
+                        .name = counter.name,
+                        .live_bytes = counter.live_bytes,
+                        .peak_bytes = counter.peak_bytes,
+                        .allocations = counter.allocations,
+                        .frees = counter.frees,
+                        .failures = counter.failures,
+                    },
+                    .shared => |counter| blk: {
+                        const counts = counter.counts();
+                        break :blk .{
+                            .handle = entry.id,
+                            .name = counter.name,
+                            .live_bytes = counts.live_bytes,
+                            .peak_bytes = counts.peak_bytes,
+                            .allocations = counts.allocations,
+                            .frees = counts.frees,
+                            .failures = counts.failures,
+                        };
+                    },
                 };
             }
         };
@@ -2564,6 +2635,44 @@ test "what a frame that failed to finish had submitted is still waited for befor
         try engine.renderFrame(.{}, NothingRecorder{});
         engine.endFrame();
         try testing.expectEqual(retained, gpu.retiredCount());
+    }
+}
+
+test "the engine's background tasks run on their own pool, and zero background workers runs them on the caller" {
+    const Work = struct {
+        allocator: Allocator,
+        thread: std.Thread.Id = 0,
+        bytes: ?[]u8 = null,
+
+        fn call(erased: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(erased));
+            self.thread = std.Thread.getCurrentId();
+            self.bytes = self.allocator.alloc(u8, 1024) catch null;
+        }
+    };
+
+    for ([_]u16{ 0, 2 }) |count| {
+        const engine = try TestEngine.init(testing.allocator, .{ .background_workers = count });
+        defer engine.deinit();
+        try testing.expectEqual(count, engine.background.threadCount());
+
+        var work: Work = .{ .allocator = engine.taskAllocator() };
+        var done: core.tasks.Done = .{};
+        try engine.tasks().start(.{ .context = &work, .call = Work.call }, &done);
+        engine.tasks().wait();
+        try testing.expect(done.isSet());
+        if (count == 0) try testing.expectEqual(std.Thread.getCurrentId(), work.thread);
+
+        // Made on a background thread, freed here, and counted across both.
+        const handle = try engine.registerSharedMemory(engine.taskMemory());
+        var it = engine.memory();
+        const report = it.next().?;
+        try testing.expectEqualStrings("background", report.name);
+        try testing.expectEqual(@as(usize, 1024), report.live_bytes);
+        engine.taskAllocator().free(work.bytes.?);
+        var after = engine.memory();
+        try testing.expectEqual(@as(usize, 0), after.next().?.live_bytes);
+        engine.unregisterMemory(handle);
     }
 }
 

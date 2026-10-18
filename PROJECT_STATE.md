@@ -1,10 +1,21 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-18
-**Current handoff: M27 Step 1 of 11 is complete** ([`docs/design/background.md`](docs/design/background.md),
-accepted 2026-10-18 with §14 as written). **Stop before Step 2**, `platform.Background` and the
-engine's `tasks()`/`taskAllocator()`. No pool with threads, registry change or ABI call exists
-yet. Nothing is pushed: local `main` is ahead by M26 Steps 7–13, the `m26` tag and M27's commits.
+**Current handoff: M27 Step 2 of 11 is complete** ([`docs/design/background.md`](docs/design/background.md)).
+**Stop before Step 3**: the gallery content, `sandbox3d`'s synchronous load and the measured
+baseline. No registry change, loader split or ABI call exists yet. Nothing is pushed: local
+`main` is ahead by M26 Steps 7–13, the `m26` tag and M27's commits.
+
+**M27 Step 2 is done (2026-10-18): `platform.Background`.**
+- A second pool beside the frame's, with a bounded ring and `Full` refusals.
+- Zero threads runs each task on the caller, and `deinit` drains the queue first.
+- `app.Config.background_workers` sizes it (default two, one on four CPUs or fewer), and
+  `engine.tasks()` and `engine.taskAllocator()` hand it out.
+- The memory report stays "only what was registered", so a game adds the background counter
+  with `registerSharedMemory(engine.taskMemory())`.
+
+Background reads through `Os` agree with the main thread's. Two weak tests were exposed by
+mutation and fixed. Bar **2,157/2,158** (one skip).
 
 **M27 Step 1 is done (2026-10-18): `core.tasks` and `core.mem.SharedCounted`.**
 - `Tasks` is the background capability, with `immediate` as the default executor (`inline` is a

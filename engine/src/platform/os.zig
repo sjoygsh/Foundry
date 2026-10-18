@@ -40,6 +40,7 @@ const builtin = @import("builtin");
 const core = @import("core");
 const library = @import("library.zig");
 const workers_mod = @import("workers.zig");
+const background_mod = @import("background.zig");
 
 const Allocator = std.mem.Allocator;
 const log = core.log.scoped(.platform);
@@ -290,6 +291,18 @@ pub const Os = struct {
         options: workers_mod.Options,
     ) Allocator.Error!*workers_mod.Workers {
         return workers_mod.Workers.init(gpa, self.io(), options);
+    }
+
+    /// Starts the background pool, on this `Os`'s `Io`, which still never leaves this module
+    /// (`docs/design/background.md` §4). A background task may call `readFileConfined` and
+    /// `statFileConfined` and nothing else here: both keep no state between calls but the
+    /// `Io`, which is safe to share.
+    pub fn startBackground(
+        self: *Os,
+        gpa: Allocator,
+        options: background_mod.Options,
+    ) Allocator.Error!*background_mod.Background {
+        return background_mod.Background.init(gpa, self.io(), options);
     }
 
     // -- environment ---------------------------------------------------------------
@@ -1283,6 +1296,72 @@ test "a confined read returns bytes and metadata from an ordinary package file" 
     const info = try os.statFileConfined(dir, "scripts/main.lua");
     try testing.expectEqual(read.info.size, info.size);
     try testing.expectEqual(read.info.modified_ns, info.modified_ns);
+}
+
+test "confined reads on a background thread agree with the main thread's, while it reads too" {
+    var os = try testOs(&.{});
+    defer os.deinit();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir = try tmpPath(&tmp, &buf);
+
+    const files = 16;
+    var names: [files][16]u8 = undefined;
+    var lens: [files]usize = undefined;
+    for (0..files) |i| {
+        const name = try std.fmt.bufPrint(&names[i], "f{d}.bin", .{i});
+        lens[i] = name.len;
+        const path = try joinPath(testing.allocator, &.{ dir, name });
+        defer testing.allocator.free(path);
+        const bytes = try testing.allocator.alloc(u8, 1000 + i * 37);
+        defer testing.allocator.free(bytes);
+        for (bytes, 0..) |*b, j| b.* = @truncate(i * 7 + j);
+        try os.writeFile(path, bytes);
+    }
+
+    const pool = try os.startBackground(testing.allocator, .{ .count = 2 });
+    defer pool.deinit();
+
+    const Read = struct {
+        os: *Os,
+        dir: []const u8,
+        name: []const u8,
+        bytes: ?[]u8 = null,
+        info: FileInfo = undefined,
+        stat: FileInfo = undefined,
+        fn call(erased: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(erased));
+            const read = self.os.readFileConfined(testing.allocator, self.dir, self.name, 1 << 20) catch return;
+            self.bytes = read.bytes;
+            self.info = read.info;
+            self.stat = self.os.statFileConfined(self.dir, self.name) catch return;
+        }
+    };
+    var reads: [files]Read = undefined;
+    var done: [files]core.tasks.Done = @splat(.{});
+    for (&reads, &done, 0..) |*r, *d, i| {
+        r.* = .{ .os = os, .dir = dir, .name = names[i][0..lens[i]] };
+        try pool.tasks().start(.{ .context = r, .call = Read.call }, d);
+    }
+    // The main thread reads the same files in reverse while the pool reads them forward.
+    var main_reads: [files]FileRead = undefined;
+    var i: usize = files;
+    while (i > 0) {
+        i -= 1;
+        main_reads[i] = try os.readFileConfined(testing.allocator, dir, names[i][0..lens[i]], 1 << 20);
+    }
+    pool.tasks().wait();
+    for (reads, main_reads, done) |r, m, d| {
+        defer testing.allocator.free(m.bytes);
+        try testing.expect(d.isSet());
+        const bytes = r.bytes orelse return error.TestUnexpectedResult;
+        defer testing.allocator.free(bytes);
+        try testing.expectEqualSlices(u8, m.bytes, bytes);
+        try testing.expectEqual(m.info.size, r.info.size);
+        try testing.expectEqual(m.info.modified_ns, r.stat.modified_ns);
+    }
 }
 
 test "a confined read rejects final and intermediate symlinks" {

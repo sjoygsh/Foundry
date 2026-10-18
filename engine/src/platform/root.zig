@@ -24,6 +24,9 @@
 //! And one pool beside them: `Workers`, the threads behind `core.Jobs`, which `Os` starts so
 //! that its I/O instance never leaves this module. See `workers.zig`.
 //!
+//! And a second pool beside that one (M27): `Background`, the threads behind `core.Tasks`, for
+//! work that outlives a frame. `Os` starts it too. See `background.zig`.
+//!
 //! And, since M16 Step 2, `Transport`: TCP listeners and connections carrying TLS 1.3 with
 //! mandatory mutual authentication. Like `Os`, it does not vary with the window backend, so
 //! a headless server has it too. Its sockets and the TLS provider stay in this module
@@ -49,6 +52,7 @@ pub const transport = @import("transport.zig");
 pub const watch = @import("watch.zig");
 pub const window = @import("window.zig");
 pub const workers = @import("workers.zig");
+pub const background = @import("background.zig");
 
 /// The platform backends Foundry can be built against.
 ///
@@ -113,6 +117,7 @@ pub const WindowHandle = window.WindowHandle;
 pub const WindowIcon = window.WindowIcon;
 pub const WindowInfo = window.WindowInfo;
 pub const Workers = workers.Workers;
+pub const Background = background.Background;
 pub const XlibWindow = window.XlibWindow;
 
 pub const AudioError = interface.AudioError;
@@ -143,6 +148,7 @@ test {
     _ = watch;
     _ = window;
     _ = workers;
+    _ = background;
     // Always tested, whichever backend is selected — it is the reference
     // implementation of the interface and the one CI can always run.
     _ = null_backend;

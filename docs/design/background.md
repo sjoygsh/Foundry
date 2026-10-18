@@ -1,6 +1,6 @@
 # Design: M27 — Background work: a task graph, assets that load without stalling a frame, and the editor's background compile
 
-**Status:** Accepted 2026-10-18, when the owner asked for Step 1, with §14 as written (including item 1: `FoundryApi_v7` in M27, so M48 publishes v8). **Step 1 of 11 is done**; its Resolution follows §16.
+**Status:** Accepted 2026-10-18, when the owner asked for Step 1, with §14 as written (including item 1: `FoundryApi_v7` in M27, so M48 publishes v8). **Steps 1–2 of 11 are done**; their Resolutions follow §16.
 **Date:** 2026-10-18
 **Baseline:** `8182188`, tag `m26`. M0–M26 are complete, and with them Phase 5.
 **Decisions:**
@@ -859,3 +859,79 @@ threads. `core` exports it as `core.tasks`, and `core.Tasks` beside `core.Jobs`.
 
 Step 2 adds `platform.Background`, the pool with threads, and the engine's `tasks()` and
 `taskAllocator()`.
+
+## Resolution — Step 2: the background pool (2026-10-18)
+
+- `engine/src/platform/background.zig` is the pool. `Os.startBackground(gpa, options)` builds
+  it on the process's `Io`, which still never leaves `platform`.
+- `platform.Background` and `platform.background` are exported, and the file imports only
+  `std` and `core`, so its tests also compile standalone.
+- `app.Config.background_workers: ?u16` sizes it. The engine starts it after the frame's pool,
+  stops it after everything the engine owns, the registry included, and before the frame's
+  pool, and returns it as `engine.tasks()`.
+- `engine.taskAllocator()` is a `core.mem.SharedCounted` named `background`, over the engine's
+  `gpa`. Nothing uses either yet.
+
+**What implementation settled:**
+- **The pool's shape mirrors `Workers`.** Threads are fixed at `init`, and an `std.Io` mutex
+  and two conditions do the waiting: `work` for workers, and `settled` for `wait`. A thread that
+  will not start is a warning, and `max_count` is 16.
+- **The queue is a ring of `Options.capacity` entries, default 256.**
+  - `start` refuses `Full` when the ring is full, under the lock, and allocates nothing.
+  - A worker sets a task's `Done` after the task returns, outside the lock, and only then
+    leaves the running count, so `wait` returning means every flag is set.
+- **With no threads, `start` runs the task on the caller**, which is `immediate`'s behaviour.
+  Zero configured workers, or none that started, is therefore exactly `immediate` (§4.1's "the
+  inline executor"). An engine never hands out a pool that silently queues forever.
+- **`deinit` runs what is queued before it joins.** A task whose flag is never set leaves its
+  graph unfreeable (Step 1's idle assertion). Starting a task on a stopping pool is asserted as
+  a programmer error.
+- **`defaultCount()` is two, or one on four logical CPUs or fewer, or one when the count cannot
+  be read.** Step 9 sweeps it.
+- **The memory report is not changed automatically**, correcting §4.3's "registers it with the
+  overlay's memory list". `engine.zig` documents, and a test pins, that the report holds
+  exactly what somebody registered. The engine follows `registerMemory`'s own argument: the
+  game chooses what to count. So the engine exposes `taskMemory()`, and
+  `registerSharedMemory(*SharedCounted)` adds it beside `Counted` counters.
+  - Internally the report's entries became a union of the two kinds, and `MemoryReport` is
+    unchanged.
+  - `debug`'s memory panel and the sandbox's summary read it as before.
+  - A sample that wants the line registers it. Step 6 does so for `sandbox3d`.
+- **Every program's `gpa` is thread-safe** (§4.3's check). `court`, `sandbox3d`, `room`,
+  `sandbox` and the editor hand the engine `std.process.Init`'s `gpa`. In Zig 0.16 that is a
+  `DebugAllocator(.{})` in Debug, whose `thread_safe` defaults to true, and `c_allocator` or
+  `smp_allocator` otherwise. Tests use `std.testing.allocator`, also a default
+  `DebugAllocator`. The requirement is documented on `Config.background_workers`.
+
+**Tests:**
+- Six in `background.zig`:
+  - every task runs exactly once over fifty rounds of 64 starts, at one, two and four threads;
+  - a full queue refuses, and accepts again once a task is taken;
+  - `wait` returns only after a task already taken from the queue has finished;
+  - zero threads runs a task on the caller, inside `start`;
+  - a 33-node graph, 32 background squares joined by a main sum, computes on the pool what it
+    computes under `immediate`, twenty times;
+  - twenty starts and stops, with and without queued work, every queued flag set by `deinit`.
+- One in `os.zig`: sixteen files read and stat'ed on two background threads agree byte for
+  byte with the main thread's reads of the same files, made concurrently in reverse order.
+- One in `app`: with zero and with two background workers, a task allocates through
+  `taskAllocator` and the main thread frees it. The registered `background` counter shows 1,024
+  live bytes and then zero, and with zero workers the task ran on the calling thread.
+
+**Evidence:**
+- **Breaking the pool's guards one at a time,** each restored byte for byte:
+  - stopping without draining the queue failed the stop test;
+  - queueing with no threads failed the zero-thread test;
+  - setting `Done` before the task ran failed the graph test.
+- **Two mutations exposed weak tests, which were fixed and rerun:**
+  - A `wait` that ignored running tasks passed every test. The `wait` test above was added for
+    it, and it fails that mutation.
+  - Removing the queue's bound made the full-queue test hang rather than fail: its gate thread
+    spun forever once the expectation failed. The gate now opens on any exit. With that change
+    the full-queue test fails, and the graph test after it then hangs, because an overwritten
+    task's flag is never set. That is still a detection, but a hang, so the graph test's
+    capacity-8 run is the evidence that the bound matters.
+- **The bar passed: 2,157/2,158 (one skip)**, eight new tests. All four `check` variants, the
+  four headless samples and `fdt-check` passed.
+
+Step 3 builds the gallery and measures the synchronous baseline.
