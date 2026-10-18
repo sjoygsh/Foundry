@@ -1,10 +1,26 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-18
-**Current handoff: M27 Step 8 of 11 is complete** ([`docs/design/background.md`](docs/design/background.md)).
-**Stop before Step 9**: the exit proof on Metal, which is §12's numbers, three runs each way,
-for the gallery and the editor. Nothing is pushed: local `main` is ahead by M26 Steps 7–13,
-the `m26` tag and M27's commits.
+**Current handoff: M27 Step 9 of 11 is complete** ([`docs/design/background.md`](docs/design/background.md)).
+**Stop before Step 10**: the same proof on Windows/Vulkan, on the owner's PC. Nothing is
+pushed: local `main` is ahead by M26 Steps 7–13, the `m26` tag and M27's commits.
+
+**M27 Step 9 is done (2026-10-18): §12's claims hold on Metal.**
+- The pump's miss was not the upload (1.3–1.6 ms). It was returning each decoded 21 MiB
+  chain to the system's `malloc`, at 5.3 ms on the main thread.
+- A finish now borrows its decoded value. `Split.after_finish` frees it on the main thread,
+  frees it on the pool (the textures), or lets the finish adopt it (the parsed kinds and
+  the mixer). That corrects Step 5.
+- **The gallery, three runs each way:**
+  - background: maximum frame work 2.35–2.65 ms, pump p95 1.46–1.53 ms, ready in 334 ms;
+  - sync: 551–574 ms stalls.
+- **The editor:** background builds' longest gap is 17.6–21.0 ms, at start-up, against
+  193–194 ms inline. Step 8's slower set did not recur.
+- **The sweep:** one background thread is ready in 534–550 ms, two in 334 ms, four in
+  250 ms. The default stays two, and the pump budget's defaults are confirmed.
+- The court and `room` run unchanged.
+
+Bar **2,201/2,202** (one skip). Integration on Metal **103/108**.
 
 **M27 Step 8 is done (2026-10-18): the editor keeps drawing while it builds.**
 - The client moves to `FoundryApi_v7`. Validate and Build each start a job, and every frame

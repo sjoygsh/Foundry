@@ -279,7 +279,7 @@ pub fn tilegridLoader() Loader {
         .ctx = null,
         .load = load,
         .unload = unload,
-        .split = .{ .decode = decode, .finish = registry_mod.adoptDecoded, .discard = discard },
+        .split = .{ .decode = decode, .finish = registry_mod.adoptDecoded, .discard = discard, .after_finish = .adopt },
     };
 }
 

@@ -87,6 +87,7 @@ pub const AssetInfo = registry.Registry.AssetInfo;
 /// Two-phase loading (ADR-0062): a loader's optional split, what its decode hands its
 /// finish, the budget a finish charges, and what a request's entry is doing.
 pub const Split = registry.Split;
+pub const AfterFinish = registry.AfterFinish;
 pub const Decoded = registry.Decoded;
 pub const adoptDecoded = registry.adoptDecoded;
 pub const Budget = registry.Budget;

@@ -36,7 +36,8 @@
 //! Environment, for scripted and evidence runs:
 //! - `FOUNDRY_SANDBOX3D_FRAMES=n` stops after `n` frames;
 //! - `FOUNDRY_SANDBOX3D_OVERLAY=0` draws no overlay pass, to measure what that pass costs;
-//! - `FOUNDRY_SANDBOX3D_WORKERS=n` sets the engine's worker count;
+//! - `FOUNDRY_SANDBOX3D_WORKERS=n` sets the engine's worker count, and
+//!   `FOUNDRY_SANDBOX3D_BACKGROUND=n` its background pool's;
 //! - `FOUNDRY_SANDBOX3D_WALKERS=1|16` selects the M24 cost-run instance count;
 //! - `FOUNDRY_SANDBOX3D_WALK=tour` proves the player and the generated walker, then replays;
 //! - `FOUNDRY_SANDBOX3D_PANELS=1` starts with the debug overlay shown;
@@ -221,6 +222,8 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         .log_capture = .info,
         .headless = headless,
         .workers = workersFrom(env),
+        // M27 Step 9's sweep: the background pool's threads, measured at 1, 2 and 4.
+        .background_workers = countFrom(env, "FOUNDRY_SANDBOX3D_BACKGROUND"),
         .tick_rate_hz = 60,
         // On in every build: the frame pacing and the two passes' spans are what this
         // sample's evidence is made of (`render3d.md` §9).
@@ -462,10 +465,14 @@ fn frameLimit(engine: *app.Engine, headless: bool) ?u64 {
 }
 
 fn workersFrom(env: []const platform.os.EnvVar) ?u16 {
+    return countFrom(env, "FOUNDRY_SANDBOX3D_WORKERS");
+}
+
+fn countFrom(env: []const platform.os.EnvVar, comptime name: []const u8) ?u16 {
     for (env) |v| {
-        if (!std.mem.eql(u8, v.name, "FOUNDRY_SANDBOX3D_WORKERS")) continue;
+        if (!std.mem.eql(u8, v.name, name)) continue;
         return std.fmt.parseInt(u16, v.value, 10) catch {
-            log.warn("FOUNDRY_SANDBOX3D_WORKERS='{s}' is not a thread count; the engine chooses", .{v.value});
+            log.warn(name ++ "='{s}' is not a thread count; the engine chooses", .{v.value});
             return null;
         };
     }

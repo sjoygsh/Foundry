@@ -1,6 +1,6 @@
 # Design: M27 — Background work: a task graph, assets that load without stalling a frame, and the editor's background compile
 
-**Status:** Accepted 2026-10-18, when the owner asked for Step 1, with §14 as written (including item 1: `FoundryApi_v7` in M27, so M48 publishes v8). **Steps 1–8 of 11 are done**; their Resolutions follow §16.
+**Status:** Accepted 2026-10-18, when the owner asked for Step 1, with §14 as written (including item 1: `FoundryApi_v7` in M27, so M48 publishes v8). **Steps 1–9 of 11 are done**; their Resolutions follow §16.
 **Date:** 2026-10-18
 **Baseline:** `8182188`, tag `m26`. M0–M26 are complete, and with them Phase 5.
 **Decisions:**
@@ -1652,3 +1652,121 @@ while a package compiles.
   headless samples and `fdt-check` passed.
 
 Step 9 is the exit proof on Metal: §12's numbers, three runs each way.
+
+## Resolution — Step 9: the exit proof on Metal (2026-10-18)
+
+§12's claims hold on Metal, once the step's one fix was made. The pump missed its 2.0 ms p95
+in Step 6, and the cause was not the upload.
+
+**What the step found, and changed:**
+- **Each texture's finish spent 5.3 ms returning its decoded chain to the system.** Measured
+  with probes that were not committed, on the gallery's 21 MiB mip chains:
+  - creating the texture: 15–60 µs;
+  - creating the staging buffer: 9–27 µs;
+  - copying the chain in: 1.26–1.56 ms;
+  - recording and submitting: 34–76 µs;
+  - then freeing the decoded chain: **5.24–5.29 ms**.
+- **The allocator is the system's `malloc`.** `std.process.Init` hands out `c_allocator`
+  wherever libc is linked, and returning a 21 MiB block costs that much on macOS whatever
+  allocator asks. So the free moves off the main thread, rather than the allocator changing.
+- **A finish now borrows its decoded value.** `Split.after_finish` says what happens to it
+  next. This corrects Step 5, whose finishes owned the value:
+  - `free`, the default: discarded on the main thread straight after, for values small
+    enough that a task would cost more than their free;
+  - `free_on_pool`: discarded by a third node of the job, on the pool. Both renderers'
+    texture loaders use it;
+  - `adopt`: the finish keeps it. The parsed kinds (`adoptDecoded`) and the mixer, whose
+    samples become its sounds, use it.
+- **A job that frees on the pool:**
+  - The entry is ready, and detached from the job, the moment its finish installs the
+    payload. The pump counts it then.
+  - The job retires once its free has run.
+  - A free the executor had no room to start is done by `retire` on the main thread, when the
+    job is cancelled or quiesced.
+  - `load`, the synchronous path, discards straight after its finish, on the calling thread.
+- **Tests that waited only for `ready` now wait for nothing to be in flight.** These are the
+  pool loops in `model_content` and `asset_pipeline`, and two `Manual` drains.
+- **New measurement switches:** `FOUNDRY_SANDBOX3D_BACKGROUND=n` sets the sample's background
+  pool for the sweep, and `FOUNDRY_EDITOR_TASKS=inline` compiles the editor's builds on the
+  frame, as the synchronous button did.
+
+**The gallery: ReleaseSafe, windowed, Apple M5. Three runs each way, alternated, 300 frames,
+on the default pool of two:**
+
+| Run | Path | Request to ready | Frame work median / p95 / max (ms) | `assets.pump` p95 / max (ms) |
+| --- | --- | --- | --- | --- |
+| 1 | sync | 573.9 ms, frame 120 | 0.912 / 1.006 / **574.294** | 0.001 / 0.001 |
+| 1 | background | 333.9 ms, frame 140 | 0.893 / 1.680 / **2.349** | **1.457** / 2.140 |
+| 2 | sync | 551.5 ms | 0.940 / 1.018 / **551.913** | 0.000 / 0.001 |
+| 2 | background | 333.8 ms | 0.994 / 1.774 / **2.435** | **1.528** / 2.193 |
+| 3 | sync | 550.2 ms | 0.992 / 1.095 / **550.677** | 0.001 / 0.004 |
+| 3 | background | 333.8 ms | 0.979 / 1.711 / **2.654** | **1.474** / 2.386 |
+
+- **Every claim holds:**
+  - every background maximum is at or under 16.67 ms (worst 2.654 ms);
+  - every background pump p95 is at or under 2.0 ms (worst 1.528 ms);
+  - every synchronous maximum exceeds 16.67 ms (least 550.677 ms).
+- **The pump's maximum is a single frame, above 2.0 ms.** At most 2.39 ms, in the frame a
+  finish shares with another job's free. The claim is the p95, and it holds.
+
+**The worker sweep (background pool threads), three runs each:**
+
+| Threads | Request to ready | Frame work max (ms) | Pump p95 (ms) |
+| --- | --- | --- | --- |
+| 1 | 534–550 ms | 1.82–1.94 | 1.47–1.49 |
+| 2 | 333.8–333.9 ms | 2.35–2.65 | 1.46–1.53 |
+| 4 | 250.4 ms | 2.15–2.46 | 1.62–1.77 |
+
+- **The default stays `platform.background.defaultCount()`:** two threads, or one on four
+  CPUs or fewer.
+  - Four threads gain 84 ms to ready, but bring the pump's p95 nearer its 2.0 ms, as more
+    frees and decodes share the machine with the frame.
+  - One thread costs 200 ms.
+- **The pump budget's defaults are confirmed** (8 MiB and 16 finishes). A 2048² chain is
+  larger than 8 MiB, so the always-run first finish uploads one texture per pump, and that
+  finish now costs about 1.5 ms.
+
+**The editor: the same build, `sandbox3d`'s package with `core.fpk`.** The plan is four idle
+frames, click Build, wait, then five idle frames.
+
+| Run | Path | Build frames | Longest gap between frames |
+| --- | --- | --- | --- |
+| 1 | inline | 6–7 | **192.9 ms**, frame 6 |
+| 1 | background | 6–19 | 21.0 ms, frame 1 (start-up) |
+| 2 | inline | 6–7 | **194.3 ms**, frame 6 |
+| 2 | background | 6–18 | 17.8 ms, frame 1 |
+| 3 | inline | 6–7 | **193.8 ms**, frame 6 |
+| 3 | background | 6–19 | 17.6 ms, frame 1 |
+
+- **The claim holds:** every background run's longest gap is at or under 33.3 ms. It is the
+  start-up frame, not the build. An idle-only plan's longest gap was 20.5 ms, at start-up.
+- **Step 8's plan, with an edit during the build,** ran 12 frames three times again, with
+  gaps of 20.5–21.8 ms, all at start-up.
+- **Step 8's slower set did not recur.** That set saw 60–71-frame builds and 35–41 ms gaps.
+  Nothing has reproduced it in the nine runs since, and its cause is not established. It is
+  recorded in Step 8's Resolution as it was measured.
+
+**The court and `room`,** windowed on Metal, ReleaseSafe, 300 frames:
+- both exited cleanly, with no warning or error line;
+- the court's skin cost was median 0.054 ms and p95 0.073 ms;
+- `room` stopped where it does unattended.
+
+**Evidence:**
+- **Guards were broken one at a time against the full `zig build test`.** Each source was
+  restored and checked by hash.
+  - **Detected:** the free node freeing nothing, the pump counting at retire rather than at
+    the finish, and `load` not discarding.
+  - **Detected after a test was added:**
+    - Retire forgetting a never-started free first survived, because every test's executor
+      had room to start it. A test whose executor is full fails it now.
+    - The entry staying attached to its job first survived. Its effect is that the entry
+      cannot be evicted while its free waits, and the test now evicts it then.
+  - **Not unit-tested:** which loaders free on the pool decides speed, not results. It is what
+    the measurements above show.
+- **The integration tests on Metal passed: 103/108 (five skips),** with every texture's exact
+  readback.
+- **The headless tour passes,** with hash `cb99ccfcf2b6d6c3`.
+- **The bar passed: 2,201/2,202 (one skip).** fmt, all four `check` variants, the four
+  headless samples and `fdt-check` passed.
+
+Step 10 repeats the proof on Windows/Vulkan.

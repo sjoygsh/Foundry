@@ -478,7 +478,9 @@ test "a texture requested on the background pool is the texture acquire makes, l
     stack.assets.useTasks(pool.tasks());
     const requested = try stack.assets.request(stack.gpa, sprites_id);
     defer stack.assets.release(requested);
-    while (stack.assets.state(requested).? == .pending) {
+    // Until nothing is in flight: the texture is ready at its finish, and its chain is
+    // freed on the pool after.
+    while (stack.assets.busy()) {
         _ = stack.assets.pump(stack.gpa, .{});
         pool.tasks().wait();
     }

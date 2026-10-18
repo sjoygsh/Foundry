@@ -157,11 +157,27 @@ pub const Split = struct {
     /// are handed too, so a decoded buffer may become the payload.
     decode: *const fn (decode_ctx: ?*const anyopaque, gpa: Allocator, record: Record, bytes: []const u8) LoadError!Decoded,
     /// On the main thread: makes the payload out of a decoded value, charging `budget` with
-    /// the bytes it uploads. **On success it owns `decoded`**: it keeps it inside the payload
-    /// (a parsed skeleton is its own payload) or frees it. On failure the registry discards it.
+    /// the bytes it uploads. **It borrows `decoded`**; what happens to it afterwards is
+    /// `after_finish`'s.
     finish: *const fn (ctx: ?*anyopaque, gpa: Allocator, record: Record, decoded: Decoded, budget: *Budget) LoadError!Payload,
-    /// Frees a decoded value nobody finished.
+    /// Frees a decoded value: one nobody finished, one a finish failed on, and one a finish
+    /// succeeded with unless the finish adopted it.
     discard: *const fn (gpa: Allocator, decoded: Decoded) void,
+    after_finish: AfterFinish = .free,
+};
+
+/// What becomes of a decoded value once a finish has succeeded with it.
+pub const AfterFinish = enum {
+    /// `discard`, on the main thread, straight after: for a value small enough that a task
+    /// would cost more than its free.
+    free,
+    /// `discard`, by a third node of the job, on the pool. Returning a decoded texture's
+    /// whole chain to the system cost 5.3 ms on the main thread, four times its upload
+    /// (M27 Step 9).
+    free_on_pool,
+    /// The finish keeps it: a parsed skeleton is its own payload (`adoptDecoded`), and a
+    /// sound's samples become the mixer's.
+    adopt,
 };
 
 /// Turns a record plus its source bytes into a payload.
@@ -197,7 +213,7 @@ pub const Loader = struct {
             if (sa.decode_ctx != sb.decode_ctx or
                 @intFromPtr(sa.decode) != @intFromPtr(sb.decode) or
                 @intFromPtr(sa.finish) != @intFromPtr(sb.finish) or
-                @intFromPtr(sa.discard) != @intFromPtr(sb.discard)) return false;
+                @intFromPtr(sa.discard) != @intFromPtr(sb.discard) or sa.after_finish != sb.after_finish) return false;
         }
         return a.schema.eql(b.schema) and a.ctx == b.ctx and
             a.max_source_bytes == b.max_source_bytes and
@@ -211,10 +227,12 @@ pub const Loader = struct {
         const split = self.split orelse return self.load(self.ctx, gpa, record, bytes);
         const decoded = try split.decode(split.decode_ctx, gpa, record, bytes);
         var budget: Budget = .unlimited;
-        return split.finish(self.ctx, gpa, record, decoded, &budget) catch |err| {
+        const payload = split.finish(self.ctx, gpa, record, decoded, &budget) catch |err| {
             split.discard(gpa, decoded);
             return err;
         };
+        if (split.after_finish != .adopt) split.discard(gpa, decoded);
+        return payload;
     }
 };
 
@@ -357,6 +375,12 @@ pub const Registry = struct {
         bytes: ?[]u8 = null,
         decoded: ?Decoded = null,
         stamp: Stamp = .{},
+        /// What the finish left to be freed, moved here on the main thread and freed by the
+        /// third node on the pool. Read by the main thread again only once the graph is idle.
+        trash_bytes: ?[]u8 = null,
+        trash_decoded: ?Decoded = null,
+        /// The finish installed the payload and the pump has counted it.
+        counted: bool = false,
 
         /// Frees whatever the background node made and nobody used.
         fn releaseOutput(self: *Job) void {
@@ -395,19 +419,51 @@ pub const Registry = struct {
         /// The main node, inside `pump`: make the payload and put it behind the handle.
         fn finishNode(context: *anyopaque, budget: *Budget) core.tasks.Outcome {
             const self: *Job = @ptrCast(@alignCast(context));
-            defer self.releaseOutput();
             const payload = self.makePayload(budget) catch |err| {
                 self.failure = err;
+                self.releaseOutput();
                 return .failed;
             };
             self.registry.install(self, payload);
+            if (!self.freesOnPool()) {
+                self.releaseOutput();
+                return .ok;
+            }
+            // The entry is ready and needs nothing more of this job: what is left is freed on
+            // the pool by the next node, and the job retires once that has run.
+            if (self.registry.entries.get(self.handle)) |entry| if (entry.job == self) {
+                entry.job = null;
+            };
+            self.trash_bytes = self.bytes;
+            self.trash_decoded = self.decoded;
+            self.bytes = null;
+            self.decoded = null;
             return .ok;
+        }
+
+        /// The third node, on the pool: frees what the finish was done with.
+        fn freeNode(context: *anyopaque, _: *Budget) core.tasks.Outcome {
+            const self: *Job = @ptrCast(@alignCast(context));
+            self.freeTrash();
+            return .ok;
+        }
+
+        fn freesOnPool(self: *const Job) bool {
+            const split = self.loader.split orelse return false;
+            return split.after_finish == .free_on_pool;
+        }
+
+        fn freeTrash(self: *Job) void {
+            if (self.trash_bytes) |bytes| self.gpa.free(bytes);
+            self.trash_bytes = null;
+            if (self.trash_decoded) |decoded| self.loader.split.?.discard(self.gpa, decoded);
+            self.trash_decoded = null;
         }
 
         fn makePayload(self: *Job, budget: *Budget) LoadError!Payload {
             if (self.loader.split) |split| {
                 const payload = try split.finish(self.loader.ctx, self.gpa, self.record, self.decoded.?, budget);
-                self.decoded = null; // The finish owns it now.
+                if (split.after_finish == .adopt) self.decoded = null; // The finish keeps it.
                 return payload;
             }
             const bytes = self.bytes.?;
@@ -777,16 +833,18 @@ pub const Registry = struct {
         while (i < self.jobs.items.len) {
             const job = self.jobs.items[i];
             const status = job.graph.poll(&budget);
+            // Counted when the payload is installed, which may be a pump before the job's
+            // last node has freed what it was done with.
+            if (!job.counted and job.graph.finished(1)) {
+                job.counted = true;
+                if (job.reload) stats.reloaded += 1 else stats.finished += 1;
+            }
             switch (status) {
                 .pending => {
                     i += 1;
                     continue;
                 },
-                .done => if (job.reload) {
-                    stats.reloaded += 1;
-                } else {
-                    stats.finished += 1;
-                },
+                .done => {},
                 .failed => stats.failed += 1,
                 .cancelled => {},
             }
@@ -1188,11 +1246,12 @@ pub const Registry = struct {
             .max_bytes = @min(self.options.max_source_bytes, loader.max_source_bytes),
             .reload = options.reload,
             .previous_stamp = options.previous_stamp,
-            .graph = try core.tasks.Graph.init(gpa, self.tasks, .{ .nodes = 2, .edges = 1 }),
+            .graph = try core.tasks.Graph.init(gpa, self.tasks, .{ .nodes = 3, .edges = 2 }),
         };
-        // Two nodes into a graph made for exactly two: neither add can fail.
+        // At most three nodes into a graph made for three: no add can fail.
         _ = job.graph.add(.{ .kind = .background, .context = job, .call = Job.readAndDecode, .discard = Job.discardOutput }) catch unreachable;
         _ = job.graph.add(.{ .kind = .main, .context = job, .call = Job.finishNode, .after = &.{0} }) catch unreachable;
+        if (job.freesOnPool()) _ = job.graph.add(.{ .kind = .background, .context = job, .call = Job.freeNode, .after = &.{1} }) catch unreachable;
         self.jobs.appendAssumeCapacity(job);
         self.entries.get(handle).?.job = job;
     }
@@ -1244,6 +1303,8 @@ pub const Registry = struct {
         };
         job.graph.deinit();
         job.releaseOutput();
+        // Idle now, so this is safe on the main thread: a free node that never ran.
+        job.freeTrash();
         job.gpa.destroy(job);
     }
 
@@ -2427,8 +2488,6 @@ const FakeSplit = struct {
         for (image.pixels) |b| sum += b;
         budget.charge(image.pixels.len);
         const made = try gpa.create(FakeImage);
-        // On success the finish owns the decoded image; this one is done with it.
-        defer discard(gpa, decoded);
         made.* = .{
             .width = image.width,
             .height = image.height,
@@ -2725,8 +2784,10 @@ test "complete finishes a pending entry without a count, and the listing says wh
     try testing.expectError(error.AssetNotFound, fx.registry.complete(fx.gpa, .{ .index = 99, .generation = 1 }));
     try testing.expectEqual(@as(?ContentId, null), fx.registry.idOf(.{ .index = 99, .generation = 1 }));
 
-    manual.runAll();
-    while (fx.registry.busy()) _ = fx.registry.pump(fx.gpa, .{});
+    while (fx.registry.busy()) {
+        manual.runAll();
+        _ = fx.registry.pump(fx.gpa, .{});
+    }
     try testing.expectEqual(State.ready, fx.registry.state(b).?);
 }
 
@@ -3130,7 +3191,6 @@ const DecodeProbe = struct {
         const bytes = if (texture.chain) |chain| chain.bytes else texture.image.?.pixels;
         const made = try gpa.create(FakeImage);
         made.* = .{ .width = texture.width, .height = texture.height, .sum = std.hash.Fnv1a_64.hash(bytes), .linear = texture.chain != null };
-        texture_decode.discard(gpa, decoded);
         return .fromPointer(made);
     }
 };
@@ -3171,4 +3231,105 @@ test "the shared texture decode makes the chain mips.generate makes, in the reco
             _ = fx.registry.unloadWith(fx.gpa, probe.loader());
         }
     }
+}
+
+/// `FakeSplit` with its decoded image returned on the pool, counting each return.
+const PoolFreeSplit = struct {
+    inner: FakeSplit = .{},
+    var frees: std.atomic.Value(u32) = .init(0);
+
+    fn loader(self: *PoolFreeSplit) Loader {
+        var made = self.inner.loader(schemas.texture.id);
+        made.split.?.discard = discard;
+        made.split.?.after_finish = .free_on_pool;
+        return made;
+    }
+
+    fn discard(gpa: Allocator, decoded: Decoded) void {
+        _ = frees.fetchAdd(1, .monotonic);
+        FakeSplit.discard(gpa, decoded);
+    }
+};
+
+test "a split that frees on the pool is ready at its finish, and its decoded value goes on the executor" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+    try writeThree(fx);
+    var split: PoolFreeSplit = .{};
+    try fx.registry.registerLoader(fx.gpa, split.loader());
+    var manual = try core.tasks.Manual.init(testing.allocator, 8);
+    defer manual.deinit();
+    fx.registry.useTasks(manual.tasks());
+    PoolFreeSplit.frees.store(0, .monotonic);
+
+    const handle = try fx.registry.request(fx.gpa, texture_ids[0]);
+    _ = fx.registry.pump(fx.gpa, .{});
+    manual.runAll();
+    // The finish installs it and is counted; the free is queued, not done on this thread.
+    const stats = fx.registry.pump(fx.gpa, .{});
+    try testing.expectEqual(@as(u32, 1), stats.finished);
+    try testing.expectEqual(State.ready, fx.registry.state(handle).?);
+    try testing.expectEqual(@as(u32, 1), manual.pending());
+    try testing.expectEqual(@as(u32, 0), PoolFreeSplit.frees.load(.monotonic));
+    try testing.expect(fx.registry.busy());
+    // The entry no longer waits on the job: released, it is evictable at once, while the
+    // free is still queued.
+    fx.registry.release(handle);
+    try testing.expectEqual(@as(u32, 1), fx.registry.evictUnused(fx.gpa));
+    try testing.expect(fx.registry.state(handle) == null);
+    manual.runAll();
+    try testing.expectEqual(@as(u32, 1), PoolFreeSplit.frees.load(.monotonic));
+    // Counted once, at the finish; retired at the next pump.
+    try testing.expectEqual(@as(u32, 0), fx.registry.pump(fx.gpa, .{}).finished);
+    try testing.expect(!fx.registry.busy());
+
+    // A free still queued when everything is cancelled is done here instead, never lost.
+    const other = try fx.registry.request(fx.gpa, texture_ids[1]);
+    _ = fx.registry.pump(fx.gpa, .{});
+    manual.runAll();
+    _ = fx.registry.pump(fx.gpa, .{});
+    try testing.expectEqual(State.ready, fx.registry.state(other).?);
+    try testing.expectEqual(@as(u32, 1), manual.pending());
+    fx.registry.quiesce();
+    try testing.expect(!fx.registry.busy());
+    try testing.expectEqual(@as(u32, 2), PoolFreeSplit.frees.load(.monotonic));
+    try testing.expectEqual(State.ready, fx.registry.state(other).?);
+
+    // Synchronously, `load` frees it at once, on the calling thread.
+    const third = try fx.registry.acquire(fx.gpa, texture_ids[2]);
+    try testing.expectEqual(@as(u32, 3), PoolFreeSplit.frees.load(.monotonic));
+    try testing.expectEqual(State.ready, fx.registry.state(third).?);
+}
+
+test "a pool free the executor had no room to start is done when its job is cancelled" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+    try writeThree(fx);
+    var split: PoolFreeSplit = .{};
+    try fx.registry.registerLoader(fx.gpa, split.loader());
+    // Room for one task, and something else is about to take it.
+    var manual = try core.tasks.Manual.init(testing.allocator, 1);
+    defer manual.deinit();
+    fx.registry.useTasks(manual.tasks());
+    PoolFreeSplit.frees.store(0, .monotonic);
+
+    const handle = try fx.registry.request(fx.gpa, texture_ids[0]);
+    _ = fx.registry.pump(fx.gpa, .{});
+    manual.runAll();
+    const Nothing = struct {
+        fn call(_: *anyopaque) void {}
+    };
+    var done: core.tasks.Done = .{};
+    var unused: u8 = 0;
+    try manual.tasks().start(.{ .context = &unused, .call = Nothing.call }, &done);
+    // The finish runs; its free cannot start, the executor being full.
+    try testing.expectEqual(@as(u32, 1), fx.registry.pump(fx.gpa, .{}).finished);
+    try testing.expectEqual(State.ready, fx.registry.state(handle).?);
+    try testing.expectEqual(@as(u32, 0), PoolFreeSplit.frees.load(.monotonic));
+    // Cancelled before it ever started: the registry frees it itself, on this thread.
+    fx.registry.quiesce();
+    try testing.expect(!fx.registry.busy());
+    try testing.expectEqual(@as(u32, 1), PoolFreeSplit.frees.load(.monotonic));
+    try testing.expectEqual(State.ready, fx.registry.state(handle).?);
+    fx.registry.release(handle);
 }

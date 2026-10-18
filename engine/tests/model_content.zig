@@ -910,7 +910,9 @@ fn loadThrough(stack: *Stack, which: ContentId, loader: asset.Loader, pool: *pla
     stack.assets.useTasks(pool.tasks());
     defer stack.assets.useTasks(core.tasks.immediate);
     const handle = try stack.assets.requestWith(stack.gpa, which, loader);
-    while (stack.assets.state(handle).? == .pending) {
+    // Until nothing is in flight: a texture is ready at its finish, and its chain is freed
+    // on the pool after.
+    while (stack.assets.busy()) {
         _ = stack.assets.pump(stack.gpa, .{});
         pool.tasks().wait();
     }
@@ -1145,8 +1147,10 @@ test "acquiring a model that is still pending completes it on the calling thread
     stack.content.releaseModel(acquired);
     stack.content.releaseModel(requested);
     // What was detached is still held by the executor; once run, a pump frees it.
-    manual.runAll();
-    while (stack.assets.busy()) _ = stack.assets.pump(stack.gpa, .{});
+    while (stack.assets.busy()) {
+        manual.runAll();
+        _ = stack.assets.pump(stack.gpa, .{});
+    }
 }
 
 test "a content reload keeps a pending model requested, and it is ready once its parts are" {
@@ -1201,5 +1205,10 @@ test "a requested model waits for its materials' textures as well as its meshes"
     try stack.content.drawModel(.{ .model = model, .world = .identity });
     try stack.finish(null);
     try testing.expect(!stack.materialDesc(stack.renderer.draws.items[1].material).base_color_texture.isNone());
+    // The texture's chain is still to be freed, on the executor.
+    while (stack.assets.busy()) {
+        manual.runAll();
+        _ = stack.assets.pump(stack.gpa, .{});
+    }
     stack.content.releaseModel(model);
 }

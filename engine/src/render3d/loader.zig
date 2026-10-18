@@ -23,6 +23,8 @@ pub fn textureLoader(renderer: *Renderer) asset.Loader {
             .decode = asset.texture_decode.decode,
             .finish = finishTexture,
             .discard = asset.texture_decode.discard,
+            // A chain is megabytes; returning it is not the main thread's work.
+            .after_finish = .free_on_pool,
         },
     };
 }
@@ -54,7 +56,7 @@ fn loadTexture(ctx: ?*anyopaque, gpa: Allocator, record: asset.Record, bytes: []
     return textureLoader(renderer).loadWhole(gpa, record, bytes);
 }
 
-fn finishTexture(ctx: ?*anyopaque, gpa: Allocator, record: asset.Record, decoded: asset.Decoded, budget: *asset.Budget) asset.LoadError!asset.Payload {
+fn finishTexture(ctx: ?*anyopaque, _: Allocator, record: asset.Record, decoded: asset.Decoded, budget: *asset.Budget) asset.LoadError!asset.Payload {
     const renderer: *Renderer = @ptrCast(@alignCast(ctx orelse return error.LoadFailed));
     const texture = asset.texture_decode.of(decoded);
     const options: renderer_mod.TextureOptions = .{
@@ -73,8 +75,8 @@ fn finishTexture(ctx: ?*anyopaque, gpa: Allocator, record: asset.Record, decoded
         error.OutOfMemory => error.OutOfMemory,
         else => error.LoadFailed,
     };
+    // The chain is the registry's to free, on the pool (`asset.AfterFinish.free_on_pool`).
     budget.charge(texture.byteSize());
-    asset.texture_decode.discard(gpa, decoded);
     return .fromHandle(handle);
 }
 
@@ -106,7 +108,7 @@ fn decodeMesh(_: ?*const anyopaque, gpa: Allocator, _: asset.Record, bytes: []co
     return .fromPointer(decoded);
 }
 
-fn finishMesh(ctx: ?*anyopaque, gpa: Allocator, record: asset.Record, decoded: asset.Decoded, budget: *asset.Budget) asset.LoadError!asset.Payload {
+fn finishMesh(ctx: ?*anyopaque, _: Allocator, record: asset.Record, decoded: asset.Decoded, budget: *asset.Budget) asset.LoadError!asset.Payload {
     const renderer: *Renderer = @ptrCast(@alignCast(ctx orelse return error.LoadFailed));
     const mesh: *DecodedMesh = @ptrCast(@alignCast(decoded.pointer().?));
     const handle = renderer.createMesh(mesh.view.mesh(), record.name) catch |err| return switch (err) {
@@ -114,7 +116,6 @@ fn finishMesh(ctx: ?*anyopaque, gpa: Allocator, record: asset.Record, decoded: a
         else => error.LoadFailed,
     };
     budget.charge(mesh.bytes.len);
-    discardMesh(gpa, decoded);
     return .fromHandle(handle);
 }
 

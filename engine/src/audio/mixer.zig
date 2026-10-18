@@ -369,7 +369,7 @@ pub fn MixerOf(comptime P: type) type {
                 .ctx = self,
                 .load = soundLoad,
                 .unload = soundUnload,
-                .split = .{ .decode = soundDecode, .finish = soundFinish, .discard = soundDiscard },
+                .split = .{ .decode = soundDecode, .finish = soundFinish, .discard = soundDiscard, .after_finish = .adopt },
             };
         }
 

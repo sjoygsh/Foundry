@@ -42,6 +42,8 @@ pub fn textureLoader(renderer: *Renderer) asset.Loader {
             .decode = asset.texture_decode.decode,
             .finish = finish,
             .discard = asset.texture_decode.discard,
+            // A chain is megabytes; returning it is not the main thread's work.
+            .after_finish = .free_on_pool,
         },
     };
 }
@@ -60,7 +62,7 @@ fn load(
 /// after 64 MiB had been allocated to find out; what is left is the upload.
 fn finish(
     ctx: ?*anyopaque,
-    gpa: Allocator,
+    _: Allocator,
     record: asset.Record,
     decoded: asset.Decoded,
     budget: *asset.Budget,
@@ -84,8 +86,8 @@ fn finish(
         // Not the content's fault and not a version: the device said no.
         else => error.LoadFailed,
     };
+    // The chain is the registry's to free, on the pool (`asset.AfterFinish.free_on_pool`).
     budget.charge(texture.byteSize());
-    asset.texture_decode.discard(gpa, decoded);
     return .fromHandle(handle);
 }
 

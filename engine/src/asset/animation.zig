@@ -192,7 +192,7 @@ pub fn write(gpa: Allocator, source: Source) WriteError![]u8 {
     return b;
 }
 pub fn animationLoader() registry.Loader {
-    return .{ .schema = schemas.animation.id, .max_source_bytes = Limits.default.max_file_bytes, .load = load, .unload = unload, .split = .{ .decode = decode, .finish = registry.adoptDecoded, .discard = discard } };
+    return .{ .schema = schemas.animation.id, .max_source_bytes = Limits.default.max_file_bytes, .load = load, .unload = unload, .split = .{ .decode = decode, .finish = registry.adoptDecoded, .discard = discard, .after_finish = .adopt } };
 }
 fn load(_: ?*anyopaque, gpa: Allocator, record: @import("data").store.Record, bytes: []const u8) registry.LoadError!registry.Payload {
     return animationLoader().loadWhole(gpa, record, bytes);

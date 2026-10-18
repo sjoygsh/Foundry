@@ -185,7 +185,11 @@ fn run(
     defer preview.deinit();
     // Builds compile on the engine's background pool, beside the frame (`background.md`
     // §10), so the window keeps drawing while one runs. `init.gpa` is thread-safe.
-    var service: author.Service = .init(gpa, os, .{ .tasks = engine.tasks() });
+    // `FOUNDRY_EDITOR_TASKS=inline` compiles on the frame instead, as the synchronous
+    // button did: the baseline M27 Step 9 measures the background path against.
+    const inline_builds = if (os.envVar("FOUNDRY_EDITOR_TASKS")) |value| std.mem.eql(u8, value, "inline") else false;
+    if (inline_builds) log.info("builds compile on the frame (FOUNDRY_EDITOR_TASKS=inline)", .{});
+    var service: author.Service = .init(gpa, os, .{ .tasks = if (inline_builds) core.tasks.immediate else engine.tasks() });
     defer service.deinit();
     var diagnostics: data.Diagnostics = .init(gpa, .default);
     defer diagnostics.deinit(gpa);
