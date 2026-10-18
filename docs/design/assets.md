@@ -283,7 +283,7 @@ itself.
 1. **Eviction policy.** §4 says zero-count assets become evictable, not freed. *When* eviction
    runs — budgeted, on level transition, never — is unanswered, and answering it before there
    is a memory number to look at would be guessing.
-2. **Streaming and async loading.** Everything here is synchronous. Nothing in the design
+2. **Streaming and async loading.** M27's proposed design, [`background.md`](background.md) §6, answers the async half (2026-10-18). Everything here is synchronous. Nothing in the design
    forecloses async, and the job system is an M12 decision (CLAUDE.md §9); this is a
    deliberate non-answer rather than an omission.
 3. ~~**Asset dependencies.**~~ **Answered by M20** (`meshes.md` §7.4 and §8). A loader does not

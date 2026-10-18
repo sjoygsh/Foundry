@@ -469,7 +469,7 @@ client cannot bind a shortcut for itself and the editor's host supplies the inte
 semantics and per-save package lists. M15 does not need these to meet its exit.
 
 Explicit first-editor limitations: no visual schema authoring, asset creation/conversion,
-multi-file atomic refactors, global ID rename, background compile, autosave/crash restoration,
+multi-file atomic refactors, global ID rename, background compile (M27: [`background.md`](background.md) §9, proposed 2026-10-18), autosave/crash restoration,
 gameplay execution, scene placement or plugin loading. These remain limits with demand as their
 trigger, not new promised milestones. Existing game schemas can be supplied as `.fpk` data.
 

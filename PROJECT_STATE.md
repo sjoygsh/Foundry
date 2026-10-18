@@ -1,9 +1,30 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-18
-**Current handoff: M26 is complete (2026-10-18, tag `m26`, not pushed), and with it Phase 5.
-Stop before M27's design**, which is not begun: it is designed when the owner asks
-(`foundry-milestone-design`). No push has been requested.
+**Current handoff: M27's design is proposed** ([`docs/design/background.md`](docs/design/background.md),
+[ADR-0061](docs/adr/0061-background-tasks-beside-the-frame.md),
+[ADR-0062](docs/adr/0062-assets-load-in-two-phases.md)); **awaiting the owner's acceptance of its
+§14. Stop before Step 1.** M26 is complete (tag `m26`); no push has been requested.
+
+**M27's design (2026-10-18): background work.** Eleven steps:
+- `core.tasks`: an explicit task capability, a small graph of background and main-thread nodes,
+  an inline executor and a test executor;
+- `platform.Background`: a second pool beside the frame pool;
+- two-phase asset loading, with `request`, a budgeted per-frame `pump` and `quiesce`;
+- a decode phase for every engine loader;
+- `render3d.Content.requestModel`, drawing a model only when it is ready;
+- background validate and build in `author`, published as `FoundryApi_v7` (three calls), and
+  the editor building while it draws;
+- `sandbox3d`'s gallery as the workload.
+
+Arrival is presentation: readiness may decide what is drawn, never what is simulated.
+`acquire` and the ABI's `asset_acquire` stay synchronous. The exit:
+- no frame's work over 16.67 ms and `assets.pump` p95 at or under 2.0 ms while the gallery
+  loads in the background, against a synchronous load that exceeds 16.67 ms;
+- the editor's longest frame gap during a build at or under 33.3 ms;
+- identical bytes on both paths, on Metal and Windows/Vulkan.
+
+Linux is compile only. Taking v7 moves M48's table to v8, which is §14's first item.
 
 **M26 is closed (2026-10-18): a playable 3D sample, played on three systems.** `samples/court` was
 played from relocated installs by its owner on macOS/Metal ("All go"), Windows/Vulkan ("All

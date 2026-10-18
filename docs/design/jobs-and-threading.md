@@ -349,7 +349,7 @@ repeats it.
 | Deferred | Why not now | Revisit when |
 | --- | --- | --- |
 | Parallel system scheduling | Needs declared read/write sets from every system, mods' included, and an ABI shape for them | A game's simulation is measured CPU-bound across systems rather than within one |
-| Task graph, futures, background jobs | Nothing in a sample needs work that outlives a call | A consumer needs work across frames — most likely background loading |
+| Task graph, futures, background jobs | Nothing in a sample needs work that outlives a call | A consumer needs work across frames — most likely background loading. **M27 is that consumer; its design is proposed in [`background.md`](background.md) (2026-10-18)** |
 | Render thread, pipelined frame | Overlaps work rather than removing it; simulation is not a measurable cost in either sample; moves renderer state across threads under ADR-0035's retirement | Simulation and rendering are both measured CPU-heavy in the same frame |
 | Multi-threaded command recording | The RHI and its backends are single-threaded by contract | Recording measured as a CPU cost. M13's Vulkan backend did not make it one: on Windows `render.record` took a 0.04 ms median in the sandbox and 0.04–0.06 ms in the room (`vulkan.md`, Step 10) |
 | Chunked draw submission | A new public renderer call and a merge-order contract | Submission is the largest CPU span left after Steps 4–5 |

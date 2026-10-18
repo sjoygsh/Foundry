@@ -1223,7 +1223,7 @@ What a real 3D game reaches for first. Ends in a second 3D sample that uses all 
 
 | # | Milestone | Intent |
 | --- | --- | --- |
-| M27 | Background work | A task graph and background jobs over `core.Jobs`; assets load without stalling a frame; also the editor's background compile |
+| M27 | Background work | A task graph and background jobs over `core.Jobs`; assets load without stalling a frame; also the editor's background compile. **Design proposed 2026-10-18: [`background.md`](design/background.md), ADR-0061/0062** |
 | M28 | Runtime geometry | Meshes, materials and textures created at run time in `render3d`, beside compiled content |
 | M29 | Particles I | A CPU particle system with content-defined emitters |
 | M30 | Audio II | Compressed audio and streamed music; the decoder is an ADR; also music sequencing: playlists, crossfades and stingers |
