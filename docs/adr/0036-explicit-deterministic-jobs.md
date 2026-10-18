@@ -1,6 +1,6 @@
 # ADR-0036: Parallelism is explicit, chunked and order-independent
 
-**Status:** Accepted and implemented (M12 complete)
+**Status:** Accepted and implemented (M12 complete); decision 2 amended by [ADR-0061](0061-background-tasks-beside-the-frame.md) (2026-10-18, M27)
 **Date:** 2026-09-13 (proposed and accepted the same day, with the design's §8 exit workload and
 §6.3 sort rule as proposed)
 

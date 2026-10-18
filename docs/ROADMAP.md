@@ -1,8 +1,8 @@
 # Foundry Roadmap
 
 Staged milestones from a minimal engine toward 2D, then 3D, then an industry-grade
-general-purpose engine: **150 engine milestones, M0 to M149, and M150, the certified release** (ADR-0060). M0–M26 are
-done, and with M26 Phase 5 is closed. The plan
+general-purpose engine: **150 engine milestones, M0 to M149, and M150, the certified release** (ADR-0060). M0–M27 are
+done; M26 closed Phase 5, and M27 opened Phase 6. The plan
 beyond M26 is [the long roadmap](#the-long-roadmap--m27-to-m150) at the end of this file. It is
 a gradual ascent, not a sprint.
 
@@ -1186,7 +1186,8 @@ the walker and reported it very good. **M26, the playable 3D sample, is complete
 
 **Decided 2026-10-02 ([ADR-0060](adr/0060-a-150-milestone-roadmap.md)).** Foundry is planned as
 **150 numbered engine milestones, M0 to M149, followed by M150, the certified release**. M0–M26 are done (with M16.5, which was inserted
-between two of them), and the 124 below follow them, beginning with M27's design.
+between two of them), and the 124 below follow them, beginning with M27's design. M27 is done
+(2026-10-18, tag `m27`).
 
 **This is a gradual ascent, not a sprint.** The number says how far there is to go, not how
 fast. Milestones are still units of work, not time; each still begins with a design document
@@ -1219,11 +1220,16 @@ when its turn comes, from the code as it then is.
 
 ### Phase 6 — A complete game toolkit (M27–M50)
 
+> **2026-10-18, at M27's close:** M27 published the editor's background compile as
+> `FoundryApi_v7` (`background.md` §14, item 1, accepted with the design). M48's table is
+> therefore `FoundryApi_v8`, and M49's binding covers v6 to v8. M48's intent is otherwise
+> unchanged.
+
 What a real 3D game reaches for first. Ends in a second 3D sample that uses all of it.
 
 | # | Milestone | Intent |
 | --- | --- | --- |
-| M27 | Background work | A task graph and background jobs over `core.Jobs`; assets load without stalling a frame; also the editor's background compile. **Design accepted 2026-10-18: [`background.md`](design/background.md), ADR-0061/0062; in progress** |
+| M27 | Background work | A task graph and background jobs over `core.Jobs`; assets load without stalling a frame; also the editor's background compile. **Done 2026-10-18, tag `m27`: [`background.md`](design/background.md), ADR-0061/0062.** A gallery of large textures loads on Metal and Windows/Vulkan with no frame over 16.67 ms; the editor draws and takes edits while it builds; `FoundryApi_v7` adds three job calls (264) |
 | M28 | Runtime geometry | Meshes, materials and textures created at run time in `render3d`, beside compiled content |
 | M29 | Particles I | A CPU particle system with content-defined emitters |
 | M30 | Audio II | Compressed audio and streamed music; the decoder is an ADR; also music sequencing: playlists, crossfades and stingers |
@@ -1244,8 +1250,8 @@ What a real 3D game reaches for first. Ends in a second 3D sample that uses all 
 | M45 | Input | Action maps, rebinding and gamepads; also raw input and normalised mouse motion, and keyboard state published to the table |
 | M46 | Localization | String tables as content, plural rules and locale selection; also multi-line strings in `.fdt` |
 | M47 | Saves II | Saving component types registered by native mods; versioned migration; also script-defined components and saves, a mod's own storage, the package set and load order kept per save, settings migrations, and whether `f64` stays a field type |
-| M48 | Public API v7 | Publishes what M27–M47 built, with a granted camera write, per-mod quotas and jobs for native mods; also pointer capture by grant, frame-callback drawing, `render3d_stats`, hull and mesh shapes and contacts for mod bodies, the zero-cone light relaxation, per-mod tables and policy, and what a mod may learn about its host |
-| M49 | 3D in Lua | The script host's binding over v6 and v7; also several script modules with imports, and Lua bindings for input, UI, collision, audio and networking |
+| M48 | Public API v8 | Publishes what M27–M47 built, with a granted camera write, per-mod quotas and jobs for native mods; also pointer capture by grant, frame-callback drawing, `render3d_stats`, hull and mesh shapes and contacts for mod bodies, the zero-cone light relaxation, per-mod tables and policy, and what a mod may learn about its host |
+| M49 | 3D in Lua | The script host's binding over v6 to v8; also several script modules with imports, and Lua bindings for input, UI, collision, audio and networking |
 | M50 | The second 3D sample | A game slice built only from the above, played by someone who did not build it; also a third-person body, a save game, the mod screen and profiles, and the sample published as a labelled pre-release |
 
 ### Phase 7 — Dynamics and worlds (M51–M68)

@@ -1,9 +1,24 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-18
-**Current handoff: M27 Step 10 of 11 is complete** ([`docs/design/background.md`](docs/design/background.md)).
-**Stop before Step 11**: close M27 (the contract discrepancies, ADR status, CLAUDE.md, the tag).
-Nothing is pushed: local `main` is ahead by M26 Steps 7–13, the `m26` tag and M27's commits.
+**Current handoff: M27 is complete (2026-10-18, tag `m27`)** ([`docs/design/background.md`](docs/design/background.md)).
+**Stop before M28's design** (runtime geometry, `docs/ROADMAP.md` Phase 6). Nothing of M28 exists.
+`main`, the `m26` tag and the `m27` tag are pushed.
+
+**M27 Step 11 is done (2026-10-18): M27 is closed.**
+- §1's exit holds on Metal and Windows/Vulkan: background frames at most 1.6 ms and 8.3 ms,
+  pump p95 0.08 ms and 0.58 ms, against synchronous stalls of 548–841 ms; the editor's gaps
+  during a build were at most 21 ms, against a 33.3 ms limit.
+- The discrepancies are resolved in `jobs-and-threading.md`, `assets.md`, `editor.md`,
+  `public-abi.md` and the ROADMAP, where M48's table is now `FoundryApi_v8`.
+- ADR-0061 and ADR-0062 are implemented, and ADR-0036 names the amendment. `CLAUDE.md` §4.1,
+  §4.3 and §9, the design index and the README are updated.
+- The two new Vulkan skips are identified. Linux stays compile only, because §13's trigger did
+  not fire.
+- The Windows PC is packed up: its worktree is clean at the tag, and M27's evidence and
+  scripts are removed.
+
+Bar **2,204/2,205** (one skip).
 
 **M27 Step 10 is done (2026-10-18): §12's claims hold on Windows/Vulkan, validation-clean.**
 - **The first measurement failed** the gallery claim: pump p95 6.1–7.3 ms, and maxima up to

@@ -772,6 +772,14 @@ must not settle them opportunistically. Question 1 was resolved by the M7 exit p
 > **M25 closed, 2026-10-02:** `FoundryApi_v6` is v5 unchanged plus 28 public 3D calls, 261 in
 > all, and is frozen. Its design, ownership rule and consumers are in
 > [`public3d.md`](public3d.md) (ADR-0059); the author guide is `docs/modding/3d.md`.
+>
+> **M27 closed, 2026-10-18:** `FoundryApi_v7` is v6 unchanged plus three authoring calls,
+> `author_job_start`, `author_job_poll` and `author_job_release`, 264 in all, and is frozen.
+> A job validates or builds a workspace's saved snapshot on the host's background pool, and
+> polling it never blocks. Its design is [`background.md`](background.md) §9, and its consumers
+> are the editor's client and `engine/tests/fixtures/author_job_mod.c`. A mod's `asset_acquire` is unchanged
+> and synchronous; asynchronous acquisition and jobs for native mods are M48's, in
+> `FoundryApi_v8`.
 
 ## 19. Implementation order
 

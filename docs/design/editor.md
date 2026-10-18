@@ -251,6 +251,14 @@ Same saved bytes and options must give the same `.fpk` and generated-asset bytes
 editor and `fpack`. Paths of scratch candidates are not package identity. M15 adds no compiler
 subprocess, background job queue or build tool; synchronous bounded compilation is sufficient.
 
+> **2026-10-18, at M27's close:** synchronous bounded compilation was M15's answer, and M27
+> replaced it for the editor without changing the compiler. Validate and Build now run as
+> `author` jobs on the background pool, published as `FoundryApi_v7`'s `author_job_start`,
+> `author_job_poll` and `author_job_release` ([`background.md`](background.md) §9). While a job
+> runs, the workspace takes edits and refuses saves and a second job with `Busy`. A job builds
+> the saved snapshot it started from, so its bytes equal a synchronous build's. There is still
+> no subprocess and no build tool.
+
 ## 9. The public authoring contract
 
 `FoundryApi_v4` is flat v3 plus the following capability groups. Final C spellings, field
@@ -469,7 +477,7 @@ client cannot bind a shortcut for itself and the editor's host supplies the inte
 semantics and per-save package lists. M15 does not need these to meet its exit.
 
 Explicit first-editor limitations: no visual schema authoring, asset creation/conversion,
-multi-file atomic refactors, global ID rename, background compile (M27: [`background.md`](background.md) §9, proposed 2026-10-18), autosave/crash restoration,
+multi-file atomic refactors, global ID rename, ~~background compile~~ (done in M27: [`background.md`](background.md) §9 and §10), autosave/crash restoration,
 gameplay execution, scene placement or plugin loading. These remain limits with demand as their
 trigger, not new promised milestones. Existing game schemas can be supplied as `.fpk` data.
 

@@ -283,9 +283,15 @@ itself.
 1. **Eviction policy.** §4 says zero-count assets become evictable, not freed. *When* eviction
    runs — budgeted, on level transition, never — is unanswered, and answering it before there
    is a memory number to look at would be guessing.
-2. **Streaming and async loading.** M27's proposed design, [`background.md`](background.md) §6, answers the async half (2026-10-18). Everything here is synchronous. Nothing in the design
-   forecloses async, and the job system is an M12 decision (CLAUDE.md §9); this is a
-   deliberate non-answer rather than an omission.
+2. ~~**Streaming and async loading.**~~ **The async half is answered by M27** (2026-10-18,
+   [`background.md`](background.md) §6, ADR-0062). A loader may split into a pure `decode`
+   run on the background pool and a `finish` on the main thread, optionally staging its upload
+   on the pool between them. `Registry.request` starts a load, `pump` finishes completed ones
+   within a frame's budget, `state` reports progress, and `quiesce` precedes any change to the
+   store. `acquire` stays synchronous, completing a pending entry, and `load` is the
+   composition of the two phases, so both paths share one implementation. Streaming is not
+   answered here: level streaming is M60's, texture streaming by mip level M93's, and
+   asynchronous acquisition for mods M48's.
 3. ~~**Asset dependencies.**~~ **Answered by M20** (`meshes.md` §7.4 and §8). A loader does not
    acquire what its record references. The consumer that composes assets, `render3d.Content`,
    acquires each one and holds the handles, so the registry stays a map from ID to payload with

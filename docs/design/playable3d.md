@@ -540,7 +540,7 @@ Each item names the roadmap milestone that owns it (CLAUDE.md §2, rule 17; revi
 
 | Deferred | Returns when |
 | --- | --- |
-| Pointer capture through the public ABI | **M48**, Public API v7, with a host grant |
+| Pointer capture through the public ABI | **M48**, Public API v8 (renumbered at M27's close, 2026-10-18), with a host grant |
 | Raw-input selection or normalised motion units in `platform` | **M45**, Input |
 | Gamepads | **M45**, Input, with its own Linux run |
 | 3D spatialised audio and a listener | **M31**; the court's distance-and-pan arithmetic is the budget it must beat |

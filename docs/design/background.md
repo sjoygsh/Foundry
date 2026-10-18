@@ -1,6 +1,6 @@
 # Design: M27 — Background work: a task graph, assets that load without stalling a frame, and the editor's background compile
 
-**Status:** Accepted 2026-10-18, when the owner asked for Step 1, with §14 as written (including item 1: `FoundryApi_v7` in M27, so M48 publishes v8). **Steps 1–10 of 11 are done**; their Resolutions follow §16.
+**Status:** Accepted 2026-10-18, when the owner asked for Step 1, with §14 as written (including item 1: `FoundryApi_v7` in M27, so M48 publishes v8). **Complete 2026-10-18, tag `m27`: all eleven steps are done**; their Resolutions follow §16.
 **Date:** 2026-10-18
 **Baseline:** `8182188`, tag `m26`. M0–M26 are complete, and with them Phase 5.
 **Decisions:**
@@ -1943,3 +1943,61 @@ renderer tests passed 176/181 (five skips), their device readbacks equal to the 
 bytes through the staged path.
 
 Step 11 closes M27.
+
+## Resolution — Step 11: M27 is closed (2026-10-18)
+
+**§1's exit holds as written,** on both platforms the milestone names:
+- **Frames:** with the gallery loading in the background, the maximum frame work was
+  1.5–1.6 ms on Metal and 5.7–8.3 ms on Windows/Vulkan. `assets.pump`'s p95 was 0.08 ms and
+  0.56–0.58 ms. The same gallery loaded synchronously stalled one frame for 548–575 ms and
+  834–841 ms (Steps 9 and 10, after Step 10's staged upload).
+- **The editor:** the longest frame gap during a background build was ≤21.0 ms on Metal and
+  ≤16.8 ms on Windows, against 193 ms and 764–802 ms inline. §12's limit is 33.3 ms.
+- **Results:** a background load equals `acquire`'s texture, levels, format and sampler, and the
+  device readbacks equal the pinned CPU bytes on Metal and Vulkan (Steps 5, 9 and 10). A
+  background build's package and assets equal a synchronous build's byte for byte (Step 7).
+  The determinism tests are unchanged and pass. The tour still hashes `cb99ccfcf2b6d6c3`,
+  requested in any finish order (Step 6). The court's three endings replay tick for tick.
+
+**§13's assessment is confirmed.**
+- Windows/Vulkan was runtime-required and was proven natively (Step 10). It also found the one
+  design correction Metal could not: ADR-0062's staged upload.
+- Linux stays compile only. `platform/background.zig` has no OS-specific branch, no priority
+  and no affinity call, so §13's trigger did not fire. The cross-compiled check passes.
+
+**§16's two measured questions are answered.**
+- The background pool's default is two threads (Step 9's sweep: 534–550 ms with one, 334 ms
+  with two, 250 ms with four, with no frame cost).
+- The pump's budget defaults stand (Steps 3 and 9).
+
+**The contract discrepancies are resolved in their originating documents:**
+- `jobs-and-threading.md` §3.2 carries a dated note: the task graph sits beside `forChunks`, on
+  its own pool, under ADR-0061's arrival rule. §9's task-graph row is marked done.
+- `assets.md` §9's second question is answered for asynchronous loading; streaming names M60,
+  M93 and M48.
+- `editor.md` §8 records that validate and build are now v7 jobs, and §13's background-compile
+  limitation is struck.
+- `public-abi.md` records `FoundryApi_v7`, frozen at 264 calls.
+- The ROADMAP's Phase 6 carries a dated note renumbering M48's table to `FoundryApi_v8` (and
+  M49's binding to v6–v8). `playable3d.md`'s pointer-capture row follows.
+
+**Status:**
+- ADR-0061 and ADR-0062 are accepted and implemented. ADR-0036's status names the amendment.
+- `CLAUDE.md` §4.1's rows, §4.3's `core`, `platform` and `asset` lines, and §9's job and
+  deferred-work rows are updated.
+- `AGENTS.md`'s bar did not change in this milestone beyond Step 7's fixture line.
+- The roadmap, the design index, the README and `PROJECT_STATE.md` say M27 is done.
+
+**Every Vulkan skip is identified.** M26's Windows graph had 19, and M27's has 21. The two new ones are:
+- Step 9's texture-request test, which runs on the null backend only;
+- `sandbox3d`'s finish-order props test, which skips like its siblings where the sample's
+  package is not built into that graph.
+
+**What M27 sets aside, each named:** asynchronous acquisition and native jobs (M48, now v8),
+runtime-created resources (M28), streamed audio (M30), level streaming (M60), texture streaming
+(M93), a render thread and thread priority (M99), and parallel system scheduling (M100).
+Nothing M27 took on is open.
+
+The bar passed: **2,204/2,205** (one skip), with fmt, the four `check` variants, the four headless samples and `fdt-check`. This step changes documents only.
+
+M27 is complete and tagged `m27`.

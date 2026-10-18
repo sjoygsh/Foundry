@@ -156,6 +156,14 @@ There are no futures, dependencies between jobs, priorities, cancellation or bac
 general task system is additive later (§9); designing one now would be designing against a
 guess (`CLAUDE.md` §2, rules 7 and 14).
 
+> **2026-10-18, at M27's close:** the general task system arrived beside this primitive, not in
+> it. [`background.md`](background.md) and ADR-0061 add `core.tasks`, a minimal graph of
+> background and main-thread nodes with prerequisites and cooperative cancellation, run by
+> `platform.Background`, a second pool that never shares the frame pool's workers. ADR-0061
+> amends ADR-0036's decision 2 by one rule: a background completion reaches the main thread only
+> at a frame boundary, and only presentation may depend on when it arrives. `forChunks` and its
+> five rules are unchanged, and nothing in a frame's own work moved onto the new pool.
+
 ### 3.3 What a chunk may touch
 
 | A chunk may | A chunk may not |
@@ -349,7 +357,7 @@ repeats it.
 | Deferred | Why not now | Revisit when |
 | --- | --- | --- |
 | Parallel system scheduling | Needs declared read/write sets from every system, mods' included, and an ABI shape for them | A game's simulation is measured CPU-bound across systems rather than within one |
-| Task graph, futures, background jobs | Nothing in a sample needs work that outlives a call | A consumer needs work across frames — most likely background loading. **M27 is that consumer; its design is proposed in [`background.md`](background.md) (2026-10-18)** |
+| Task graph, futures, background jobs | Nothing in a sample needs work that outlives a call | **Done in M27** (2026-10-18): [`background.md`](background.md), ADR-0061. Futures, priorities and work stealing stay out; thread priority is M99's |
 | Render thread, pipelined frame | Overlaps work rather than removing it; simulation is not a measurable cost in either sample; moves renderer state across threads under ADR-0035's retirement | Simulation and rendering are both measured CPU-heavy in the same frame |
 | Multi-threaded command recording | The RHI and its backends are single-threaded by contract | Recording measured as a CPU cost. M13's Vulkan backend did not make it one: on Windows `render.record` took a 0.04 ms median in the sandbox and 0.04–0.06 ms in the room (`vulkan.md`, Step 10) |
 | Chunked draw submission | A new public renderer call and a merge-order contract | Submission is the largest CPU span left after Steps 4–5 |
