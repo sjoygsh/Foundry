@@ -2,7 +2,7 @@
 //!
 //! The host owns paths, grants, windows, rendering, keyboard shortcuts and preview
 //! publication.  Its client is a separate module that receives only a pointer to
-//! `FoundryApi_v4`; no host value or private handle crosses that seam.
+//! `FoundryApi_v7`; no host value or private handle crosses that seam.
 //!
 //! **Shortcuts are host input, not a Foundry capability.**  The public table publishes no
 //! keyboard state — a native mod cannot read a key today — so a client cannot bind Ctrl+S
@@ -43,7 +43,7 @@ const usage =
     \\  --dependency <file>     package granted to the workspace (repeatable, ordered)
     \\  --export <file.fpk>     where Export writes the built package
     \\  --export-assets <dir>   where Export writes the assets the compiler produced
-    \\  --preview               build and activate once through FoundryApi_v4
+    \\  --preview               build and activate once through FoundryApi_v7
     \\  --script                replay the deterministic walkthrough, then exit
     \\  --plan <file>           replay an author's own written plan, then exit
     \\  --frames <count>        exit after a bounded number of frames; never saves
@@ -183,7 +183,9 @@ fn run(
 
     var preview: preview_mod.State = .init(gpa, os);
     defer preview.deinit();
-    var service: author.Service = .init(gpa, os, .{});
+    // Builds compile on the engine's background pool, beside the frame (`background.md`
+    // §10), so the window keeps drawing while one runs. `init.gpa` is thread-safe.
+    var service: author.Service = .init(gpa, os, .{ .tasks = engine.tasks() });
     defer service.deinit();
     var diagnostics: data.Diagnostics = .init(gpa, .default);
     defer diagnostics.deinit(gpa);
@@ -224,7 +226,7 @@ fn run(
     host.bind();
     defer host.unbind();
 
-    const public = abi.TableOf(abi.Host).getApi(abi.api_version_4) orelse return error.ApiUnavailable;
+    const public = abi.TableOf(abi.Host).getApi(abi.api_version_7) orelse return error.ApiUnavailable;
     // The client is large enough — sixty-eight screen strings, twenty-four field buffers —
     // that it belongs on the heap rather than in this frame.  The host owns its memory, as
     // it owns everything else the client is handed.
@@ -277,6 +279,12 @@ fn run(
     var longest_gap_ns: u64 = 0;
     var longest_gap_frame: u64 = 0;
 
+    var replay_finished = false;
+    // When a background validate or build was seen running, and whether the workspace's
+    // revision moved while it did: an edit that landed during it (`background.md` §10).
+    var job_from: ?u64 = null;
+    var job_revision: u64 = 0;
+    var edits_during_job: u32 = 0;
     var typed: [32]platform.event.TextInput = undefined;
     while (true) {
         // The window manager's close is the editor's Close command, not a shortcut past
@@ -315,6 +323,21 @@ fn run(
             };
         const shortcut: editor_client.Shortcut = if (replay != null) .none else shortcutOf(engine.input);
         client.frame(.{ .x = 0, .y = 0, .w = width, .h = height }, shortcut);
+        if (client.has_job) {
+            if (job_from == null) {
+                job_from = engine.frame_index;
+                job_revision = client.revision;
+                edits_during_job = 0;
+            } else if (client.revision != job_revision) {
+                edits_during_job += 1;
+                job_revision = client.revision;
+            }
+        } else if (job_from) |from| {
+            log.info("a background job ran from frame {d} to frame {d}, answering {d}; the revision moved on {d} frame(s) while it did", .{
+                from, engine.frame_index, client.observation.last_result, edits_during_job,
+            });
+            job_from = null;
+        }
 
         if (context.wantsPointer()) pointer_frames += 1;
         if (context.wantsKeyboard()) keyboard_frames += 1;
@@ -343,6 +366,12 @@ fn run(
         last_frame_ns = finished;
 
         if (frame_limit) |limit| if (engine.frame_index >= limit) break;
+        // A replay with no explicit count ends one frame after its last step, which is
+        // where `frames` alone used to end it: a `wait` is only an upper bound.
+        if (replay) |runner| if (args.frames == null and runner.done()) {
+            if (replay_finished) break;
+            replay_finished = true;
+        };
         if (platform.backend == .null) engine.os.sleep(.fromMillis(1));
     }
 

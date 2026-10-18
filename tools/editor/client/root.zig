@@ -2,7 +2,7 @@
 //!
 //! It sees only `foundry.h` through `foundry_api` and `std` utilities.  Every workspace,
 //! document, record, schema, dependency, preview record, diagnostic, save result, build and
-//! widget below crosses `FoundryApi_v4`; paths, service handles and implementation modules
+//! widget below crosses `FoundryApi_v7`; paths, service handles and implementation modules
 //! never do.  If a form here needs something the table does not publish, the answer is a
 //! recorded limit, never a private call (I4, `editor.md` §3).
 //!
@@ -19,6 +19,12 @@
 //!    owns a buffer seeded from the canonical spelling at the current revision; Apply sends
 //!    it, and a refusal leaves both the buffer and the file exactly as they were.
 //!
+//! **Validate and Build are background jobs** (v7, `background.md` §10).  Each starts one,
+//! and every frame polls it once before describing anything, so the window keeps drawing
+//! and accepting edits while a package compiles.  While a job runs, Validate and Build are
+//! disabled, and Save is disabled with the reason in the status bar: a build reads the
+//! saved files, which must not change under it.
+//!
 //! Its regions are `editor.md` §10's, mapped to Unreal Engine 5's editor for layout and
 //! naming only: a main toolbar, an outliner, a details panel, a message log and a status
 //! bar.  Every word it draws is `foundry:editor` content.
@@ -26,7 +32,7 @@
 const std = @import("std");
 const c = @import("foundry_api").c;
 
-pub const Api = c.FoundryApi_v4;
+pub const Api = c.FoundryApi_v7;
 
 const Result = c.FoundryResult;
 const Cursor = c.FoundryCursor;
@@ -155,6 +161,9 @@ const TextKey = enum {
     confirm_discard,
     override_warning,
     read_only,
+    building,
+    validating,
+    saves_wait,
 };
 
 const text_count = @typeInfo(TextKey).@"enum".fields.len;
@@ -230,6 +239,9 @@ pub const Targets = struct {
     confirm_cancel: ?Rect = null,
     document_refresh: ?Rect = null,
     document_discard: ?Rect = null,
+    /// A validate or build is still running, as of the end of the last frame.  A plan's
+    /// `wait` reads it.
+    job_running: bool = false,
 };
 
 /// What one accepted UI action asked for, carried out after the frame.
@@ -354,6 +366,14 @@ pub const Client = struct {
     previewed: Build = .{ .bits = 0 },
     has_previewed: bool = false,
 
+    /// The background validate or build in flight, if any (v7).  One at a time, as the
+    /// workspace allows.
+    job: c.FoundryAuthorJob = .{ .bits = 0 },
+    has_job: bool = false,
+    job_kind: u32 = 0,
+    /// The engine's elapsed time when it started, for the status bar. Display only.
+    job_started_ns: u64 = 0,
+
     /// The last operation's outcome, in words the status bar prints.  A number, never a
     /// borrowed string: everything borrowed expires before the next frame reads it.
     status: [96]u8 = @splat(0),
@@ -364,7 +384,7 @@ pub const Client = struct {
     targets: Targets = .{},
 
     pub fn init(api: *const Api) error{WrongApi}!Client {
-        if (api.version != c.FOUNDRY_API_VERSION_4 or api.size < @sizeOf(Api)) return error.WrongApi;
+        if (api.version != c.FOUNDRY_API_VERSION_7 or api.size < @sizeOf(Api)) return error.WrongApi;
         return .{ .api = api };
     }
 
@@ -491,6 +511,9 @@ pub const Client = struct {
         self.pending = .none;
         self.shortcut = shortcut;
         self.refreshContent();
+        // Before anything is described: a job that finished is published this frame, and
+        // the toolbar below already sees its build.
+        self.pollJob();
         self.revision = if (self.workspaceInfo()) |info| info.revision else 0;
         self.destinations = self.exportCount();
 
@@ -513,6 +536,7 @@ pub const Client = struct {
         self.last_rows = self.targets.row_count;
         self.applyShortcut();
         self.act();
+        self.targets.job_running = self.has_job;
     }
 
     // -- description ------------------------------------------------------------------
@@ -570,8 +594,9 @@ pub const Client = struct {
 
         const busy = self.confirm != .none;
         const can_edit = info != null and info.?.can_edit != c.FOUNDRY_FALSE and !busy;
-        const can_save = info != null and info.?.can_save != c.FOUNDRY_FALSE and !busy;
-        const can_build = info != null and info.?.can_build != c.FOUNDRY_FALSE and !busy;
+        // A job compiles the saved files, so they wait for it; so does another compile.
+        const can_save = info != null and info.?.can_save != c.FOUNDRY_FALSE and !busy and !self.has_job;
+        const can_build = info != null and info.?.can_build != c.FOUNDRY_FALSE and !busy and !self.has_job;
         const dirty = info != null and info.?.dirty != c.FOUNDRY_FALSE;
         const changed = info != null and info.?.externally_changed != c.FOUNDRY_FALSE;
 
@@ -592,7 +617,7 @@ pub const Client = struct {
 
         try self.spacer(12);
         self.targets.validate = try self.remaining();
-        if (try self.command(16, .validate, can_edit or can_build)) self.pending = .validate;
+        if (try self.command(16, .validate, (can_edit or can_build) and !self.has_job)) self.pending = .validate;
         // Build takes the *saved* bytes, so it stays disabled while anything is dirty or
         // has changed under us — the same rule the service enforces (`editor.md` §7).
         self.targets.build = try self.remaining();
@@ -1331,7 +1356,20 @@ pub const Client = struct {
         } else |_| {}
 
         try self.spacer(14);
-        try self.label(if (self.status_len != 0) self.status[0..self.status_len] else self.text.get(.status_ready));
+        if (self.has_job) {
+            // What is running and for how long, and why Save is waiting for it.
+            var elapsed: u64 = self.job_started_ns;
+            _ = self.api.elapsed_ns.?(&elapsed);
+            const seconds = @as(f64, @floatFromInt(elapsed -| self.job_started_ns)) / 1e9;
+            const line = std.fmt.bufPrint(&buffer, "{s} {d:.1}s  {s}", .{
+                self.text.get(if (self.job_kind == c.FOUNDRY_AUTHOR_JOB_BUILD) .building else .validating),
+                seconds,
+                self.text.get(.saves_wait),
+            }) catch "";
+            try self.label(line);
+        } else {
+            try self.label(if (self.status_len != 0) self.status[0..self.status_len] else self.text.get(.status_ready));
+        }
         try self.endRow();
     }
 
@@ -1345,10 +1383,10 @@ pub const Client = struct {
         const info = self.workspaceInfo() orelse return;
         switch (self.shortcut) {
             .none => {},
-            .save => if (info.can_save != c.FOUNDRY_FALSE) {
+            .save => if (info.can_save != c.FOUNDRY_FALSE and !self.has_job) {
                 if (self.currentDocument()) |document| self.pending = .{ .save_document = document };
             },
-            .save_all => if (info.can_save != c.FOUNDRY_FALSE) {
+            .save_all => if (info.can_save != c.FOUNDRY_FALSE and !self.has_job) {
                 self.pending = .save_all;
             },
             .undo => if (info.can_undo != c.FOUNDRY_FALSE) {
@@ -1357,8 +1395,10 @@ pub const Client = struct {
             .redo => if (info.can_redo != c.FOUNDRY_FALSE) {
                 self.pending = .redo;
             },
-            .validate => self.pending = .validate,
-            .build => if (info.can_build != c.FOUNDRY_FALSE and info.dirty == c.FOUNDRY_FALSE) {
+            .validate => if (!self.has_job) {
+                self.pending = .validate;
+            },
+            .build => if (info.can_build != c.FOUNDRY_FALSE and info.dirty == c.FOUNDRY_FALSE and !self.has_job) {
                 self.pending = .build;
             },
             .close => self.requestClose(),
@@ -1431,8 +1471,8 @@ pub const Client = struct {
                 if (code == c.FOUNDRY_OK) self.report("saved", all.published_count);
                 break :blk code;
             },
-            .validate => self.api.author_validate.?(workspace, revision),
-            .build => self.runBuild(workspace, revision),
+            .validate => self.startJob(workspace, c.FOUNDRY_AUTHOR_JOB_VALIDATE, revision),
+            .build => self.startJob(workspace, c.FOUNDRY_AUTHOR_JOB_BUILD, revision),
             .reload => self.runReload(),
             .export_build => blk: {
                 if (!self.has_build) break :blk c.FOUNDRY_ERR_NOT_FOUND;
@@ -1530,10 +1570,44 @@ pub const Client = struct {
         return count;
     }
 
-    fn runBuild(self: *Client, workspace: Workspace, revision: u64) Result {
-        var next: Build = .{ .bits = 0 };
-        const code = self.api.author_build.?(workspace, revision, &next);
+    /// Starts a validate or build in the background.  What `author_validate` or
+    /// `author_build` would refuse is refused here, at once, with the same diagnostics.
+    fn startJob(self: *Client, workspace: Workspace, kind: u32, revision: u64) Result {
+        var job: c.FoundryAuthorJob = .{ .bits = 0 };
+        const code = self.api.author_job_start.?(workspace, kind, revision, &job);
         if (code != c.FOUNDRY_OK) return code;
+        self.job = job;
+        self.has_job = true;
+        self.job_kind = kind;
+        self.job_started_ns = 0;
+        _ = self.api.elapsed_ns.?(&self.job_started_ns);
+        self.status_len = 0;
+        return c.FOUNDRY_OK;
+    }
+
+    /// Once a frame: nothing while the job runs; its result, once, when it has finished.
+    fn pollJob(self: *Client) void {
+        if (!self.has_job) return;
+        var status: c.FoundryAuthorJobStatus = std.mem.zeroes(c.FoundryAuthorJobStatus);
+        const code = self.api.author_job_poll.?(self.job, &status);
+        if (code == c.FOUNDRY_OK and status.state == c.FOUNDRY_AUTHOR_JOB_PENDING) return;
+        _ = self.api.author_job_release.?(self.job);
+        self.has_job = false;
+        if (code != c.FOUNDRY_OK) {
+            _ = self.note(code);
+            self.reportCode(code);
+            return;
+        }
+        if (status.state == c.FOUNDRY_AUTHOR_JOB_FAILED) {
+            _ = self.note(status.result);
+            self.reportCode(status.result);
+            return;
+        }
+        _ = self.note(c.FOUNDRY_OK);
+        if (status.kind == c.FOUNDRY_AUTHOR_JOB_BUILD) self.adoptBuild(status.build);
+    }
+
+    fn adoptBuild(self: *Client, next: Build) void {
         // Two builds may live at once, and a preview is holding one of them.  Release the
         // previous build unless that is the one the loaded content is reading from.
         if (self.has_build and !(self.has_previewed and self.previewed.bits == self.build.bits)) {
@@ -1541,7 +1615,6 @@ pub const Client = struct {
         }
         self.build = next;
         self.has_build = true;
-        return c.FOUNDRY_OK;
     }
 
     fn runReload(self: *Client) Result {
@@ -1917,6 +1990,7 @@ fn boolOut(value: bool) Bool {
 test "the client is compiled against the complete v4 header" {
     try std.testing.expect(@sizeOf(Api) > @sizeOf(c.FoundryApi_v3));
     try std.testing.expectEqual(@as(u32, 4), c.FOUNDRY_API_VERSION_4);
+    try std.testing.expectEqual(@as(u32, 7), c.FOUNDRY_API_VERSION_7);
 }
 
 test "borrowed header strings are read without sentinel assumptions" {

@@ -1490,7 +1490,6 @@ pub fn Of(comptime H: type) type {
                 a.service.releaseJob(job) catch {};
                 return .limit;
             };
-            a.host.changedAuthoring();
             return .ok;
         }
 
@@ -1549,7 +1548,6 @@ pub fn Of(comptime H: type) type {
             // A job whose workspace closed is gone already; its handle is forgotten either way.
             a.host.forgetAuthorJob(job);
             released catch |err| return serviceResultCode(err);
-            a.host.changedAuthoring();
             return .ok;
         }
 

@@ -150,7 +150,14 @@ pub const Action = union(enum) {
     write: []const u8,
     key: platform.Key,
     idle,
+    /// Idle frames until no validate or build is running (M27, `background.md` §10), up to
+    /// `max_wait_frames`, so a plan can edit during a build and then use its result.
+    wait,
 };
+
+/// The most frames one `wait` idles. A build that takes longer is a plan whose next step
+/// sees it still running, which the plan's own checks then report.
+pub const max_wait_frames = 3600;
 
 /// A generic walk of every region, for the windowed proof.  It changes nothing: each step
 /// is a selection, a tab or a filter keystroke, so it is safe to point at a real package.
@@ -196,7 +203,8 @@ pub const ParseError = struct {
     word: []const u8 = "",
 };
 
-/// One action per line: `click <target>[:<row>]`, `write <text>`, `key <name>`, `idle`, or
+/// One action per line: `click <target>[:<row>]`, `write <text>`, `key <name>`, `idle`,
+/// `wait`, or
 /// `enter <target>[:<row>] <text>` — which is the click, the caret, the clearing and the
 /// typing an author performs to replace a control's contents.  A `#` at the start of a line
 /// is a comment, and a blank line is nothing.
@@ -229,6 +237,9 @@ pub fn parse(
         if (std.mem.eql(u8, verb, "idle")) {
             if (rest.len != 0) return badPlan(err, number, rest);
             try actions.append(gpa, .idle);
+        } else if (std.mem.eql(u8, verb, "wait")) {
+            if (rest.len != 0) return badPlan(err, number, rest);
+            try actions.append(gpa, .wait);
         } else if (std.mem.eql(u8, verb, "write")) {
             if (rest.len == 0) return badPlan(err, number, verb);
             try actions.append(gpa, .{ .write = rest });
@@ -276,6 +287,8 @@ pub fn frames(plan: []const Action) u64 {
         .click => 3,
         .write => |bytes| @max(1, (bytes.len + platform.event.max_text_bytes - 1) / platform.event.max_text_bytes),
         .key, .idle => 1,
+        // An upper bound: the host ends a replay one frame after its last step instead.
+        .wait => max_wait_frames,
     };
     return total + 1;
 }
@@ -306,6 +319,12 @@ pub const Runner = struct {
         switch (action) {
             .idle => {
                 self.advance();
+                return idle(frame);
+            },
+            .wait => {
+                // The client says at the end of each frame whether a job is still running.
+                self.phase += 1;
+                if (!targets.job_running or self.phase >= max_wait_frames) self.advance();
                 return idle(frame);
             },
             .key => |k| {
@@ -427,6 +446,22 @@ test "a plan file is the same actions, written down beside the package" {
     try testing.expectEqual(platform.Key.backspace, plan[6 + clear_strokes].key);
     try testing.expectEqual(Action.idle, plan[7 + clear_strokes]);
     try testing.expectEqual(@as(usize, 8 + clear_strokes), plan.len);
+}
+
+test "a wait idles while a job runs, and steps on once it has finished" {
+    var targets: Targets = .{ .job_running = true };
+    var runner: Runner = .init(&.{ .wait, .idle });
+    _ = runner.next(&targets, 1);
+    _ = runner.next(&targets, 2);
+    try testing.expectEqual(@as(usize, 0), runner.step);
+    targets.job_running = false;
+    _ = runner.next(&targets, 3);
+    try testing.expectEqual(@as(usize, 1), runner.step);
+    var err: ParseError = .{};
+    const plan = try parse(testing.allocator, "click build\nwait\n", &err);
+    defer testing.allocator.free(plan);
+    try testing.expectEqual(Action.wait, plan[1]);
+    try testing.expectError(error.BadPlan, parse(testing.allocator, "wait for it", &err));
 }
 
 test "a plan that does not make sense names the line that did not" {

@@ -132,6 +132,12 @@ dirty. It is a prefix, never a transaction, and the log says which files it publ
 **Validate** compiles your drafts and keeps nothing. The diagnostics are the answer; use it
 while you are still editing.
 
+**Validate** and **Build** run in the background (since M27): the window keeps drawing and
+your edits keep landing while the package compiles, and the status bar says what is running
+and for how long. While it runs, Save, Validate and Build wait for it, because a build reads
+the saved files and they must not change under it. The result is the revision you started
+it at, not the one you have edited to since.
+
 **Build** compiles the saved bytes into a private candidate. **Export** writes that candidate
 to the destination `--export` named. **Reload** asks the application to load the build, and
 the Preview tab then shows the loaded records. A preview holds its build; the editor will not
@@ -168,7 +174,9 @@ zig build editor -- --source … --output … --script          # a generic walk
 zig build editor -- --source … --output … --plan plan.txt   # your own actions
 ```
 
-A plan is one action per line. `#` starts a comment and a blank line is nothing:
+A plan is one action per line. `#` starts a comment and a blank line is nothing. `wait`
+idles until a running Validate or Build has finished, so a plan can edit while one compiles
+and then use its result:
 
 ```
 # The first frame has drawn nothing yet, so there is nothing to aim at.

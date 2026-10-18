@@ -75,6 +75,9 @@
     confirm_discard string (default "")
     override_warning string (default "")
     read_only string (default "")
+    building string (default "")
+    validating string (default "")
+    saves_wait string (default "")
 }
 
 screen foundry:editor.screen {
@@ -147,6 +150,9 @@ screen foundry:editor.screen {
     confirm_discard    "Restore this file to its last saved bytes?"
     override_warning   "An override copies stored fields now; later upstream fields are not merged."
     read_only          "(read only)"
+    building           "Building…"
+    validating         "Validating…"
+    saves_wait         "Saving waits for it."
 }
 
 # The icon is both the application's window mark and the flat theme's atlas.  The host embeds

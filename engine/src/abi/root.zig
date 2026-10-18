@@ -221,6 +221,7 @@ pub const api_version_3 = types.api_version_3;
 pub const api_version_4 = types.api_version_4;
 pub const api_version_5 = types.api_version_5;
 pub const api_version_6 = types.api_version_6;
+pub const api_version_7 = types.api_version_7;
 pub const init_symbol = types.init_symbol;
 pub const shutdown_symbol = types.shutdown_symbol;
 

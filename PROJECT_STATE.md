@@ -1,10 +1,25 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-18
-**Current handoff: M27 Step 7 of 11 is complete** ([`docs/design/background.md`](docs/design/background.md)).
-**Stop before Step 8**: the editor's client building through v7's jobs while it draws. The
-editor still calls v4's synchronous `author_build`. Nothing is pushed: local `main` is ahead
-by M26 Steps 7–13, the `m26` tag and M27's commits.
+**Current handoff: M27 Step 8 of 11 is complete** ([`docs/design/background.md`](docs/design/background.md)).
+**Stop before Step 9**: the exit proof on Metal, which is §12's numbers, three runs each way,
+for the gallery and the editor. Nothing is pushed: local `main` is ahead by M26 Steps 7–13,
+the `m26` tag and M27's commits.
+
+**M27 Step 8 is done (2026-10-18): the editor keeps drawing while it builds.**
+- The client moves to `FoundryApi_v7`. Validate and Build each start a job, and every frame
+  polls it once before drawing.
+- While a job runs, Validate and Build are disabled, and Save is disabled with the reason
+  in the status bar. Edits continue.
+- Plans gain `wait`. The editor's workflow test edits during a build and then uses its
+  result.
+- Job calls no longer invalidate walks they do not change, which had lost a failed build's
+  diagnostics. That corrects Step 7.
+- On Metal, the window drew and took an edit during every build.
+- In the later runs the build took about 1.1 s, and the longest gap was 35–41 ms. That is
+  above §12's 33.3 ms, and is recorded for Step 9.
+
+Bar **2,199/2,200** (one skip). `editor-workflow` passes 22/22, and `editor-smoke` passes.
 
 **M27 Step 7 is done (2026-10-18): `author` builds in the background, and `FoundryApi_v7`
 publishes it.**

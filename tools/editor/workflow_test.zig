@@ -1,7 +1,7 @@
 //! The editor's authoring workflow, driven by deterministic input (`editor.md` §12).
 //!
 //! **This is the application, not a model of it.**  A real `author.Service` over a real
-//! temporary package, a real `abi.Host`, the real `FoundryApi_v4` table and the real client
+//! temporary package, a real `abi.Host`, the real `FoundryApi_v7` table and the real client
 //! — described frame by frame, with synthetic pointer and keyboard input aimed at the
 //! rectangles the client recorded while describing itself.  Nothing here calls an authoring
 //! function directly to make something happen: every change below is a click.
@@ -24,7 +24,7 @@ const script = @import("script.zig");
 const ui = @import("ui");
 
 const testing = std.testing;
-const Api = abi.Api_v4;
+const Api = abi.Api_v7;
 const Rect = editor_client.Rect;
 const Vec2 = core.math.Vec2;
 
@@ -252,7 +252,7 @@ const Harness = struct {
 
         host.bind();
         self.bound = true;
-        const table = abi.TableOf(abi.Host).getApi(abi.api_version_4) orelse return error.ApiUnavailable;
+        const table = abi.TableOf(abi.Host).getApi(abi.api_version_7) orelse return error.ApiUnavailable;
         self.api = @ptrCast(@alignCast(table));
         client.* = try editor_client.Client.init(@ptrCast(@alignCast(table)));
         return self;
@@ -766,6 +766,68 @@ test "save, build and reload are three commands with three answers" {
     const bytes = try h.fixture.os.readFile(testing.allocator, shipped, 1 << 20);
     defer testing.allocator.free(bytes);
     try testing.expectEqual(built.package_bytes, @as(u64, bytes.len));
+}
+
+test "a build started from the window runs while an edit lands, and Save waits for it" {
+    var manual = try core.tasks.Manual.init(testing.allocator, 4);
+    defer manual.deinit();
+    const h = try Harness.init();
+    defer h.deinit();
+    // The compile is held until the test lets it run, as a slow one would be.
+    h.service.options.tasks = manual.tasks();
+
+    h.idle();
+    try h.makePackage();
+    try h.makeRecord("demo:one");
+    try h.enter(h.row(0).control, "1");
+    try h.clickRect(h.row(0).apply);
+    try h.enter(h.row(1).control, "2");
+    try h.clickRect(h.row(1).apply);
+    try h.enter(h.row(2).control, "3");
+    try h.clickRect(h.row(2).apply);
+    try h.enter(h.row(3).control, "4");
+    try h.clickRect(h.row(3).apply);
+    try h.enter(h.row(4).control, "5.5");
+    try h.clickRect(h.row(4).apply);
+    try h.clickRect(h.row(8).control);
+    try h.click(.save_all);
+    const saved = (try h.info()).revision;
+
+    try h.click(.build);
+    try testing.expect(h.client.has_job);
+    try testing.expect(h.client.targets.job_running);
+    try testing.expect(!h.client.has_build);
+
+    // The window keeps working: an edit lands while the build is still compiling.
+    var buffer: [64]u8 = undefined;
+    try h.enter(h.row(0).control, "77");
+    try h.clickRect(h.row(0).apply);
+    try testing.expectEqualStrings("77", try h.text("demo.fdt", "demo:one", "count", &buffer));
+    try testing.expect((try h.info()).revision != saved);
+    try testing.expect((try h.info()).dirty != 0);
+
+    // Save, Validate and Build wait for it: disabled, so nothing is even attempted.
+    try h.click(.save_all);
+    try testing.expectEqual(@as(i32, 0), h.last);
+    try h.click(.validate);
+    try testing.expectEqual(@as(i32, 0), h.last);
+    try testing.expect((try h.info()).dirty != 0);
+    try testing.expect(h.client.has_job);
+
+    // The compile finishes; the next frame publishes it, stamped with what was saved.
+    manual.runAll();
+    h.idle();
+    try testing.expect(!h.client.has_job);
+    try testing.expect(!h.client.targets.job_running);
+    try testing.expect(h.client.has_build);
+    var built: abi.AuthorBuildInfo = .{};
+    try testing.expectEqual(abi.Result.ok, h.api.author_build_info(.{ .bits = h.client.build.bits }, &built));
+    try testing.expectEqual(saved, built.revision);
+
+    // And saving is the window's again.
+    try h.click(.save_all);
+    try testing.expect((try h.info()).dirty == 0);
+    try testing.expectEqual(@as(u32, 0), h.duplicates);
 }
 
 test "a build the compiler refuses says why, and succeeds once the draft is complete" {

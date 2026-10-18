@@ -1,6 +1,6 @@
 # Design: M27 — Background work: a task graph, assets that load without stalling a frame, and the editor's background compile
 
-**Status:** Accepted 2026-10-18, when the owner asked for Step 1, with §14 as written (including item 1: `FoundryApi_v7` in M27, so M48 publishes v8). **Steps 1–7 of 11 are done**; their Resolutions follow §16.
+**Status:** Accepted 2026-10-18, when the owner asked for Step 1, with §14 as written (including item 1: `FoundryApi_v7` in M27, so M48 publishes v8). **Steps 1–8 of 11 are done**; their Resolutions follow §16.
 **Date:** 2026-10-18
 **Baseline:** `8182188`, tag `m26`. M0–M26 are complete, and with them Phase 5.
 **Decisions:**
@@ -1552,3 +1552,103 @@ that makes the table's 264, as §9.3 planned.
   variants, the four headless samples and `fdt-check` passed.
 
 Step 8 moves the editor's client onto these calls.
+
+## Resolution — Step 8: the editor's client (2026-10-18)
+
+The editor builds and validates through v7's jobs, and keeps drawing and accepting edits
+while a package compiles.
+
+**What it added:**
+- **The client moves to `FoundryApi_v7`, and still sees only `foundry.h`.**
+  - Validate and Build each start a job (`author_job_start`).
+  - Every frame polls the job once, before anything is described, and publishes its result
+    once.
+  - A build's handle is adopted as the synchronous build's was: the previous build is
+    released unless the preview holds it.
+  - A failure goes to the status bar as before, and its diagnostics stay in the message log.
+- **While a job runs:**
+  - Validate and Build are disabled, and so are their shortcuts. Save and Save All are
+    disabled with the reason in the status bar.
+  - The status bar reads "Building…" or "Validating…", the elapsed time from the table's
+    `elapsed_ns`, and "Saving waits for it."
+  - Those words are three new fields of `foundry:editor.screen`. Everything else — edits,
+    navigation, the browsers and the preview of an earlier build — works as before.
+- **The host** hands the service the engine's background pool, logs each job's frames, result
+  and the edits that landed during it, and asks for v7.
+- **Plans gain `wait`.**
+  - `wait` idles until no job is running, bounded at 3,600 frames.
+  - The client records `Targets.job_running` at the end of every frame, and a plan's `wait`
+    reads it.
+  - A replay given no explicit `--frames` now ends one frame after its last step, which is
+    exactly where the old frame count ended a plan with no `wait` in it. So `wait`'s bound
+    is never idled through.
+- **`docs/modding/editor.md`** says what Validate and Build now do, and documents `wait`.
+
+**What implementation settled:**
+- **Job calls no longer invalidate walks they do not change.** The first workflow run lost a
+  failed build's diagnostics. Two calls caused it:
+  - Starting, polling and releasing a job each marked the service as moved. That made the
+    next frame reopen the document's parse.
+  - Reopening a parse clears the workspace's diagnostics.
+
+  A synchronous validate marks nothing, and a synchronous build marks the service only when
+  it publishes a build. Jobs now do the same: only a published build moves the service. This
+  also corrects Step 7's `author_job_start` and `author_job_release`, which had marked the
+  host's authoring state changed.
+- **The 489-action `--plan` is not in the repository.** It was a throwaway file of M15 Step 8.
+  So §10's new step exists in two other forms:
+  - the editor's own workflow test, which edits while a build runs and then waits for it;
+  - `wait`, for any author's plan.
+- **`requestPreview`** (`--preview`) keeps the synchronous `author_build`, which v7 still
+  carries. It is a one-shot host action, not a frame.
+
+**Tests:**
+- **The editor workflow, 22 tests:**
+  - Under a held executor, Build starts a job, and an edit is applied and lands while the
+    job runs.
+  - Save All and Validate are disabled and attempt nothing.
+  - After the compile, the next frame publishes the build, stamped with the saved revision,
+    and Save works again.
+  - The existing save/build/reload, refused-build and export tests pass on jobs.
+- **The script runner:** `wait` holds while a job runs and steps on after. It parses, and
+  refuses an argument.
+- **The other editor proofs:** `editor-smoke` replays 25 of 25 actions in 48 frames, with its
+  workspace unchanged. The forbidden-import boundary test still holds.
+
+**Evidence, on Metal (the exit):**
+- **Setup:** ReleaseSafe and windowed, over a fresh copy of `samples/sandbox3d/content` with
+  `core.fpk`. The plan selects the first record, clicks Build, edits a field while the build
+  runs, and waits.
+- **Every run:** the job answered `FOUNDRY_OK`, the revision moved during it, and the
+  workspace ended with unsaved changes.
+- **First three runs:**
+  - the job ran from frame 12 to frame 24;
+  - the longest gap between frames was 20.6–38.3 ms, at startup (frames 1–5), not during the
+    build.
+- **Six later runs:**
+  - the job ran 60–71 frames, about 1.1 s;
+  - the longest gap was 35.2–41.0 ms, during the build;
+  - the load average was about 2.9. Nothing in the code changed between the two sets except
+    one log line.
+- **What it shows:** the window drew and took edits throughout the build, against Step 3's
+  single blocked frame of about 190 ms.
+- **For Step 9, recorded and not answered here:** the later runs' gaps exceed §12's 33.3 ms
+  editor claim, and the build is slower on the background thread than on the frame.
+  Possible causes, none tested:
+  - the background thread's scheduling class;
+  - contention on the shared thread-safe allocator.
+- **Guards were broken one at a time against the full `zig build test`**, and each source was
+  restored and checked by hash.
+  - **Detected:**
+    - the job never polled;
+    - Validate allowed while a job runs;
+    - `job_running` never recorded;
+    - a failed job's build adopted;
+    - `wait` never waiting.
+  - **Detected after a test was fixed:** Save allowed while a job runs first survived. The test
+    read the result of the Save All click only after the Validate click, which resets it. Each
+    click is now checked on its own.
+- **The bar passed: 2,199/2,200 (one skip).** fmt, all four `check` variants, the four
+  headless samples and `fdt-check` passed.
+
+Step 9 is the exit proof on Metal: §12's numbers, three runs each way.

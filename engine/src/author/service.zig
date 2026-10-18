@@ -467,9 +467,10 @@ pub const Service = struct {
         const job = try self.jobs.add(self.gpa, .{ .workspace = handle, .kind = kind, .revision = expected_revision, .work = work });
         item.job = job;
         // Starts the compile; an inline executor has finished it by the time this returns.
+        // Nothing a walk reads has changed yet, so no walk is invalidated: a synchronous
+        // validate invalidates none either.
         var budget: core.tasks.Budget = .unlimited;
         _ = work.graph.poll(&budget);
-        self.moved();
         return job;
     }
 
@@ -493,7 +494,8 @@ pub const Service = struct {
         self.gpa.destroy(work);
         running.work = null;
         item.job = .none;
-        self.moved();
+        // Only a published build changes what a walk can see, as a synchronous build's does.
+        if (running.status == .succeeded and running.status.succeeded != null) self.moved();
         return running.status;
     }
 
@@ -513,7 +515,6 @@ pub const Service = struct {
             running.released = true;
         } else _ = self.jobs.remove(job);
         self.reap();
-        self.moved();
     }
 
     fn jobOf(self: *Service, job: JobHandle) ?*Running {
