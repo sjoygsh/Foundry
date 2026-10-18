@@ -42,7 +42,8 @@
 //! - `FOUNDRY_SANDBOX3D_PANELS=1` starts with the debug overlay shown;
 //! - `FOUNDRY_SANDBOX3D_SAVE_DIR=path` redirects F5/F9 for a disposable evidence run;
 //! - `FOUNDRY_SANDBOX3D_KEYS=f5@120,f6@150,...` presses those keys on those frames, as if a
-//!   person had, so a run nobody watches still saves, loads and re-parents.
+//!   person had, so a run nobody watches still saves, loads and re-parents;
+//! - `FOUNDRY_SANDBOX3D_LOAD=sync` loads M27's gallery on its tick, and measures the frames.
 //!
 //! **M22's is a lit room a content mod changes** (`light.md` §10). Lights, ambient and
 //! EV100 come from the config; `--shadows=off` disables the shadow map. Player mods live
@@ -68,6 +69,12 @@
 //! rebuilding a world containing native registrations; restart to load without native code.
 //! `FOUNDRY_SANDBOX3D_INSTANCES=1024` selects the plinth cost run; NATIVE_TRACE names a
 //! developer proof output for the fresh-process driver in `scripts/m25/tour.py`.
+//!
+//! **M27's is a gallery that loads while the room keeps drawing** (`background.md` §11).
+//! Eight framed panels with 2048×2048 textures stand above the crates, drawn only once they
+//! are asked for: **G** loads or releases them, and `FOUNDRY_SANDBOX3D_LOAD=sync` loads them
+//! on a fixed tick and records the frames around it. Step 3 has only that synchronous path,
+//! which stalls, as the baseline the background path is measured against.
 
 const std = @import("std");
 
@@ -86,6 +93,8 @@ const Tour = @import("tour.zig").Tour;
 const Walker = @import("walker.zig").Walker;
 const Props = @import("props.zig").Props;
 const native_mod = @import("native.zig");
+const gallery_mod = @import("gallery.zig");
+const Gallery = gallery_mod.Gallery;
 const Native = native_mod.Native;
 
 const orrery_mod = @import("orrery.zig");
@@ -263,6 +272,8 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     var skipped_frames: u64 = 0;
     var pace_next: u64 = 0;
     while (!engine.shouldQuit()) {
+        // Time this frame spent asleep on purpose, which the gallery's window leaves out.
+        var paced_ns: i64 = 0;
         const frame_started = if (!headless) engine.os.monotonicNanos() else 0;
         engine.beginFrame();
         if (sample.content_generation != engine.contentGeneration()) sample.refresh(engine);
@@ -294,7 +305,10 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
 
         // A skipped frame presented nothing, and would otherwise spin a core. The null
         // backend has no swapchain to wait on either.
-        if (skipped) engine.os.sleep(engine.step_delta);
+        if (skipped) {
+            engine.os.sleep(engine.step_delta);
+            paced_ns = engine.step_delta.ns;
+        }
         if (!headless and !skipped) {
             // The display may be 120 Hz. Bound this demonstrator to its documented
             // 60 Hz budget, without changing simulation time or the RHI's FIFO policy.
@@ -303,6 +317,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
             const now = engine.os.monotonicNanos();
             if (now < pace_next) {
                 engine.os.sleep(.fromNanos(@intCast(pace_next - now)));
+                paced_ns = @intCast(engine.os.monotonicNanos() - now); // Measurement only.
             } else if (now - pace_next > 250 * core.time.ns_per_ms) {
                 // Resize, minimise and restore must not provoke a catch-up burst.
                 pace_next = now;
@@ -310,6 +325,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         }
         if (skipped) pace_next = 0;
         engine.endFrame();
+        if (engine.profiler()) |recorder| sample.gallery.window.add(recorder, paced_ns);
         if (sample.tour) |*tour| if (tour.done() and sample.walkers[0].tick >= Walker.proof_ticks) break;
 
         if (frame_limit) |limit| {
@@ -359,6 +375,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         log.info("tour: walker pass ({d} ticks, {d} waypoints, idle/walk/cross-fade, replay {x:0>16}); player hash {x:0>16}", .{ walker.tick, walker.reached, walker.hash, tour.hash });
     }
 
+    sample.gallery.window.report();
     report(gpa, engine, &sample, skipped_frames);
     if (engine.os.envVar("FOUNDRY_SANDBOX3D_NATIVE_TRACE")) |path| {
         if (native.ticks != Native.proof_ticks or !native.blocked) return error.IncompleteNativeTrace;
@@ -637,6 +654,8 @@ const Sample = struct {
     native: ?*Native = null,
     walkers: []Walker,
     course: render3d.ModelHandle = .none,
+    /// M27's gallery: held only once asked for, on its tick or by G.
+    gallery: Gallery = .{},
     intent: walk_mod.Intent = .{},
     tour: ?Tour = null,
     move_times: [Tour.max_ticks]i64 = undefined,
@@ -743,6 +762,7 @@ const Sample = struct {
             if (std.mem.eql(u8, mode, "tour")) self.tour = .{} else log.warn("unknown walk mode '{s}'; using keys", .{mode});
         }
         self.content = render3d.Content.init(self.gpa, &self.world, &engine.assets, .default);
+        self.gallery.mode = gallery_mod.Mode.parse(engine.os.envVar("FOUNDRY_SANDBOX3D_LOAD"));
         self.refresh(engine);
 
         self.orrery.populate(&engine.store);
@@ -756,7 +776,7 @@ const Sample = struct {
         self.panels.toggle("log");
         self.panels.entities.selected = self.orrery.role(.sheared);
         self.panels_open = engine.os.envVar("FOUNDRY_SANDBOX3D_PANELS") != null;
-        log.info("keys: WASD walk, arrows/right mouse look, f4 capture the pointer to look, f3 walk/orbit, f1 overlay, f5 save, f9 load, f6 move the orbiting crate, f7 try the sheared one, escape quit", .{});
+        log.info("keys: WASD walk, arrows/right mouse look, f4 capture the pointer to look, f3 walk/orbit, f1 overlay, f5 save, f9 load, f6 move the orbiting crate, f7 try the sheared one, g load or release the gallery, escape quit", .{});
     }
 
     /// The user data directory, made if it is not there yet. The file beneath it is opened
@@ -854,6 +874,10 @@ const Sample = struct {
 
     fn step(self: *Sample, engine: *app.Engine, s: app.Step) !void {
         const dt = s.delta.toSecondsF32();
+        // On a tick, so every run asks on the same one. What it loads is only drawn.
+        if (self.gallery.mode == .sync and s.tick == gallery_mod.request_tick) {
+            if (self.content) |*content| self.gallery.request(content, engine.frame_index, engine.os);
+        }
         self.orbit_angle = wrap(self.orbit_angle + self.settings.orbit_radians_per_second * dt);
         // The game translates `app`'s step into `scene`'s tick: the number and the fixed
         // delta, and nothing a system could read a device through.
@@ -928,8 +952,8 @@ const Sample = struct {
         });
     }
 
-    /// The keys, pressed by a person or by `FOUNDRY_SANDBOX3D_KEYS`. None of them is a letter
-    /// a text field types, so they stay live while the overlay's filter box has focus.
+    /// The keys, pressed by a person or by `FOUNDRY_SANDBOX3D_KEYS`. Only G is a letter a text
+    /// field types, so it alone waits while the overlay's filter box has focus.
     fn keys(self: *Sample, engine: *app.Engine, scripted: Script.Keys) void {
         const in = &engine.input;
         if (in.wasPressed(.f3) or scripted.f3) {
@@ -952,6 +976,9 @@ const Sample = struct {
             self.panels_open = !self.panels_open;
             log.info("debug overlay {s}", .{if (self.panels_open) "shown" else "hidden"});
         }
+        if ((in.wasPressed(.g) and !typing) or scripted.g) if (self.content) |*content| {
+            if (self.gallery.model.isNone()) self.gallery.request(content, engine.frame_index, engine.os) else self.gallery.release(content);
+        };
         if (in.wasPressed(.f5) or scripted.f5) self.saveWorld(engine);
         if (in.wasPressed(.f9) or scripted.f9) self.loadWorld(engine);
         if (in.wasPressed(.f6) or scripted.f6) {
@@ -1104,6 +1131,7 @@ const Sample = struct {
 
         self.drawModel(.{ .model = self.room, .world = Mat4.identity });
         self.drawModel(.{ .model = self.course, .world = Mat4.identity });
+        self.drawModel(.{ .model = self.gallery.model, .world = Mat4.identity });
         if (self.content) |*content| try self.props.draw(content);
         if (self.content) |*content| for (self.walkers, 0..) |*walker, i| {
             // The sixteen-walker cost run fans their visual instances out. Each still owns
@@ -1219,6 +1247,7 @@ const Sample = struct {
         self.walk.deinit(&engine.assets);
         _ = engine.assets.unregisterLoader(self.gpa, asset.schemas.collision_mesh.id);
         if (!self.course.isNone()) if (self.content) |*content| content.releaseModel(self.course);
+        if (self.content) |*content| self.gallery.release(content);
         if (!self.font_asset.isNone()) engine.assets.release(self.font_asset);
         self.releaseModels();
         self.models.deinit(self.gpa);
@@ -1295,13 +1324,13 @@ const Script = struct {
 
     const max = 32;
     const Press = struct { key: Key, frame: u64 };
-    const Key = enum { f1, f3, f4, f5, f6, f7, f9 };
-    const Keys = struct { f1: bool = false, f3: bool = false, f4: bool = false, f5: bool = false, f6: bool = false, f7: bool = false, f9: bool = false };
+    const Key = enum { f1, f3, f4, f5, f6, f7, f9, g };
+    const Keys = struct { f1: bool = false, f3: bool = false, f4: bool = false, f5: bool = false, f6: bool = false, f7: bool = false, f9: bool = false, g: bool = false };
 
     fn fromEnv(engine: *app.Engine) Script {
         const text = engine.os.envVar("FOUNDRY_SANDBOX3D_KEYS") orelse return .{};
         return parse(text) orelse blk: {
-            log.warn("FOUNDRY_SANDBOX3D_KEYS is not a list of key@frame (f1 f3 f4 f5 f6 f7 f9); ignoring it", .{});
+            log.warn("FOUNDRY_SANDBOX3D_KEYS is not a list of key@frame (f1 f3 f4 f5 f6 f7 f9 g); ignoring it", .{});
             break :blk .{};
         };
     }
@@ -1429,6 +1458,7 @@ test {
     _ = @import("walker_tests.zig");
     _ = @import("props_tests.zig");
     _ = @import("native_tests.zig");
+    _ = gallery_mod;
 }
 
 test "scripted keys are key@frame pairs, and anything else is refused whole" {

@@ -1,10 +1,21 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-18
-**Current handoff: M27 Step 2 of 11 is complete** ([`docs/design/background.md`](docs/design/background.md)).
-**Stop before Step 3**: the gallery content, `sandbox3d`'s synchronous load and the measured
-baseline. No registry change, loader split or ABI call exists yet. Nothing is pushed: local
-`main` is ahead by M26 Steps 7–13, the `m26` tag and M27's commits.
+**Current handoff: M27 Step 3 of 11 is complete** ([`docs/design/background.md`](docs/design/background.md)).
+**Stop before Step 4**: `asset.Registry`'s `request`, `pump`, `state` and `quiesce`. No loader
+split, background path or ABI call exists yet. Nothing is pushed: local `main` is ahead by M26
+Steps 7–13, the `m26` tag and M27's commits.
+
+**M27 Step 3 is done (2026-10-18): the gallery and the synchronous baseline.**
+- `scripts/m27/make_gallery.py` generates and checks `sandbox3d:models.gallery`: eight 2048²
+  sRGB textures on framed panels in a ring above the crates, 624,507 committed bytes.
+- `FOUNDRY_SANDBOX3D_LOAD=sync` loads it on tick 120, and G loads or releases it.
+- `app` has an empty `assets.pump` span, and the editor logs its longest frame gap.
+
+On Metal, at ReleaseSafe, the synchronous load stalled one frame for 565–594 ms in three runs,
+against frames of about 1.1 ms otherwise, so the exit's baseline holds without resizing. The
+editor's synchronous build of the sandbox package blocked one frame for about 190 ms. The tour
+hash is unchanged. Bar **2,159/2,160** (one skip).
 
 **M27 Step 2 is done (2026-10-18): `platform.Background`.**
 - A second pool beside the frame's, with a bounded ring and `Full` refusals.

@@ -1,6 +1,6 @@
 # Design: M27 — Background work: a task graph, assets that load without stalling a frame, and the editor's background compile
 
-**Status:** Accepted 2026-10-18, when the owner asked for Step 1, with §14 as written (including item 1: `FoundryApi_v7` in M27, so M48 publishes v8). **Steps 1–2 of 11 are done**; their Resolutions follow §16.
+**Status:** Accepted 2026-10-18, when the owner asked for Step 1, with §14 as written (including item 1: `FoundryApi_v7` in M27, so M48 publishes v8). **Steps 1–3 of 11 are done**; their Resolutions follow §16.
 **Date:** 2026-10-18
 **Baseline:** `8182188`, tag `m26`. M0–M26 are complete, and with them Phase 5.
 **Decisions:**
@@ -935,3 +935,112 @@ Step 2 adds `platform.Background`, the pool with threads, and the engine's `task
   four headless samples and `fdt-check` passed.
 
 Step 3 builds the gallery and measures the synchronous baseline.
+
+## Resolution — Step 3: the gallery and the synchronous baseline (2026-10-18)
+
+- `scripts/m27/make_gallery.py` writes the gallery, and `--check` compares it byte for byte,
+  as `make_court.py` does.
+- `samples/sandbox3d/gallery.zig` loads it, and records the frames around the load.
+- `app`'s `beginFrame` has an `assets.pump` span, and it is empty.
+- The editor's host now logs the longest gap between two finished frames.
+
+**What implementation settled:**
+- **The ID is `sandbox3d:models.gallery`**, correcting §11's `sandbox3d:model.gallery` to the
+  package's own `models.` prefix, which the room, the course, the crate and the walker use.
+- **The generator writes the record too.** It writes `content/gallery.fdt`, the package's
+  second record file, holding one `foundry:model_import`, so `--check` covers what the
+  package compiles and not only the files the record names.
+- **The committed total is 624,507 bytes of the 2 MiB bound,** and the generator refuses to
+  write past the bound. There are eleven files:
+  - eight PNGs of 66–79 KB each;
+  - `gallery.gltf` (21.6 KB) and `gallery.bin` (7.8 KB);
+  - the record.
+
+  Each texture is 2048² RGBA, sRGB, with mipmaps, which is what the import gives every image.
+  The texture is stripes inside a border, periodic in each row, so zlib keeps the file small
+  while a load still inflates 16 MiB of pixels before mips.
+- **The place is a ring above the crates** (§11 left it to this step).
+  - Eight panels stand 7 m from the room's centre, centred 2.4 m up and facing in.
+  - Each picture is 1.8 m square, in a frame 0.1 m wider.
+  - The orbiting camera always has some in view, beyond the far wall. From inside the room
+    they show above the 1.2 m walls.
+  - There are nine materials: eight pictures and one untextured frame. The design's "one
+    material per texture" holds.
+- **When and how it loads:**
+  - The request tick is 120, two seconds in. With `FOUNDRY_SANDBOX3D_LOAD=sync`, the step
+    on that tick calls `acquireModel`.
+  - Without the variable, the gallery waits for G. `background` and any other value are
+    said and ignored until Step 6 adds that path.
+  - G loads the gallery, or releases it if it is held. It is the sample's first letter key,
+    so unlike the F keys it is ignored while the overlay's filter box has focus.
+  - `FOUNDRY_SANDBOX3D_KEYS` also takes `g@frame`.
+- **How frame work is counted.** `sandbox3d` sleeps for pacing inside its frame, before
+  `endFrame`, unlike the court. So the sample times its own sleep, and frame work is:
+  - the frame's total;
+  - less `render.acquire` and `render.present`, as the court counts them;
+  - less that sleep.
+
+  §12's window runs from the request's frame to sixty frames after ready. Ready is the same
+  frame on the synchronous path.
+- **`assets.pump` is opened and closed on the reading that ends `input`,** before any step,
+  so it is zero-length until Step 4 gives it work. Four engine tests that pin a frame's span
+  order now include it.
+- **The tick is fixed, and the frame it lands on is not.** In one run, tick 120 fell on frame
+  114, because of the start's catch-up steps. This is decision 4's distinction already
+  visible: what is loaded follows a tick, and when it is seen follows the frame.
+
+**Baseline on Metal:**
+- **Setup:** Apple M5 and SDL3 `cocoa`.
+  - The build is ReleaseSafe, with 4× MSAA and shadows, in a 1280×720 window paced at 60 Hz.
+  - No Metal validation layer is on (`MTL_DEBUG_LAYER` unset).
+  - Each run is `FOUNDRY_SANDBOX3D_LOAD=sync FOUNDRY_SANDBOX3D_FRAMES=300`, over 61 frames.
+
+| Run | Load (ms) | On frame | Frame work median (ms) | p95 (ms) | max (ms) |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 588.4 | 114 | 1.160 | 1.567 | 594.185 |
+| 2 | 564.6 | 120 | 1.078 | 1.387 | 565.110 |
+| 3 | 571.2 | 120 | 1.110 | 1.354 | 571.661 |
+
+- **The exit holds without resizing.** Every synchronous run's maximum is at least 565 ms,
+  thirty-four times the 16.67 ms budget. The other sixty frames of each window stay near
+  1.1 ms.
+- `assets.pump` read 0.000 ms throughout, as an empty span should.
+- **What that is per texture:** about 71 ms each for the eight textures, which is the load's
+  whole cost. Step 5 splits it into a decode and a finish, and Step 9 measures the finish's
+  share against the pump's 2.0 ms.
+- **The tour:** headless in Debug, with `FOUNDRY_SANDBOX3D_LOAD=sync`, the tour loads the
+  gallery (2,778 ms) and passes. Its hash, `cb99ccfcf2b6d6c3`, is unchanged.
+
+**The editor's synchronous build:**
+- **Setup:**
+  - The same ReleaseSafe build, windowed on Metal.
+  - A throwaway copy of `samples/sandbox3d/content`, with `core.fpk` as its dependency.
+  - A plan of four idle frames, `click build`, then five more.
+- **Result:** in three runs, the longest gap between frames was 193.5, 190.0 and 191.9 ms, each
+  ending on frame 6, the frame the build ran in.
+  - An idle plan's longest gap was 9.2 ms.
+  - A build followed by `click export_package` exported a package byte-identical to the
+    20,902-byte `sandbox3d.fpk` that `zig build` makes. So the timed build compiled the whole
+    package, gallery included.
+- This is the synchronous frame §12's 33.3 ms claim is measured against in Step 8.
+
+**Tests:**
+- Two in `gallery.zig`:
+  - the load switch takes `sync` and refuses everything else to "wait for G";
+  - the window records from the request's frame to sixty frames after ready. It subtracts
+    acquire, present and the pacing sleep, sums `assets.pump`, ignores earlier frames, and
+    closes once.
+
+**Evidence:**
+- **Each window guard was broken in turn, and each restored byte for byte:** dropping the
+  lower bound, the pacing subtraction, the close, or the stop after closing each failed the
+  window test. Two first attempts were compile errors, not detections, and were redone.
+- Removing the `assets.pump` span failed four engine tests.
+- **The bar passed: 2,159/2,160 (one skip)**, with two new tests. fmt, all four `check`
+  variants, the four headless samples and `fdt-check` passed.
+- The editor changed, so `editor-workflow`, `editor-smoke` and the windowed `--script` run on
+  Metal also passed.
+- `dist` was not staged. `sandbox3d` is not a released application, and no asset kind
+  changed.
+
+Step 4 gives `asset.Registry` its `request`, `pump`, `state` and `quiesce`.

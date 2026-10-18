@@ -174,6 +174,9 @@ pub const span = struct {
     pub const input = "input";
     /// The hot-reload watcher's pass. Only present on the frames it runs.
     pub const content = "content";
+    /// After `input`, before any step: where the asset registry's main-thread work for the
+    /// frame runs (`background.md` §6.2). Empty until M27 Step 4 gives it that work.
+    pub const assets_pump = "assets.pump";
     /// Waiting for the ring slot and for the display's next drawable.
     pub const render_acquire = "render.acquire";
     /// Sorting, uploads and copies, before the pass opens.
@@ -1005,6 +1008,14 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
 
             const current = self.platform.now();
             if (profiling) self.profile.close(current);
+            // Once a frame, at this one point, before the caller takes a step: what background
+            // work finishes on the main thread is presentation and never simulation, so it
+            // happens before simulation reads anything (ADR-0061, decision 4). Nothing runs
+            // here yet, so it closes on the reading it opened with.
+            if (profiling) {
+                self.profile.open(span.assets_pump, current);
+                self.profile.close(current);
+            }
             // The reading the delta is made of, so the rest of the frame — simulation,
             // rendering, whatever the game logs — carries this frame's time.
             log_sink.setStamp(.{ .frame = self.frame_index, .elapsed = current.since(self.started) });
@@ -2452,15 +2463,17 @@ test "the profiler records the frame's own spans, nested and in order" {
     try testing.expectEqual(@as(u16, 0), frame.dropped);
     try testing.expectEqual(@as(u16, 0), frame.unbalanced);
 
-    // `input` is the engine's; the other two are the game's, and they nest inside the
-    // frame without either side knowing about the other.
-    try testing.expectEqual(@as(usize, 3), frame.spans.len);
+    // `input` and `assets.pump` are the engine's; the other two are the game's, and they
+    // nest inside the frame without either side knowing about the other.
+    try testing.expectEqual(@as(usize, 4), frame.spans.len);
     try testing.expectEqualStrings(span.input, recorder.nameOf(frame.spans[0].name));
     try testing.expectEqual(@as(u16, 0), frame.spans[0].depth);
-    try testing.expectEqualStrings("simulate", recorder.nameOf(frame.spans[1].name));
+    try testing.expectEqualStrings(span.assets_pump, recorder.nameOf(frame.spans[1].name));
     try testing.expectEqual(@as(u16, 0), frame.spans[1].depth);
-    try testing.expectEqualStrings("physics", recorder.nameOf(frame.spans[2].name));
-    try testing.expectEqual(@as(u16, 1), frame.spans[2].depth);
+    try testing.expectEqualStrings("simulate", recorder.nameOf(frame.spans[2].name));
+    try testing.expectEqual(@as(u16, 0), frame.spans[2].depth);
+    try testing.expectEqualStrings("physics", recorder.nameOf(frame.spans[3].name));
+    try testing.expectEqual(@as(u16, 1), frame.spans[3].depth);
 }
 
 test "the content watcher's pass is a span, and only on the frames it runs" {
@@ -2721,6 +2734,7 @@ test "a recorder that plans is timed as render.plan and render.write, inside ren
     const Expected = struct { name: []const u8, depth: u16 };
     const planning = [_]Expected{
         .{ .name = span.input, .depth = 0 },
+        .{ .name = span.assets_pump, .depth = 0 },
         .{ .name = span.render_acquire, .depth = 0 },
         .{ .name = span.render_prepare, .depth = 0 },
         .{ .name = span.render_plan, .depth = 1 },
@@ -2732,6 +2746,7 @@ test "a recorder that plans is timed as render.plan and render.write, inside ren
     // A recorder with no `plan` keeps the frame's shape from before M12.
     const plain = [_]Expected{
         .{ .name = span.input, .depth = 0 },
+        .{ .name = span.assets_pump, .depth = 0 },
         .{ .name = span.render_acquire, .depth = 0 },
         .{ .name = span.render_prepare, .depth = 0 },
         .{ .name = span.render_record, .depth = 0 },
@@ -2875,9 +2890,9 @@ test "M24 the host times the optional skin seam before ordinary preparation" {
     try engine.renderScene(.{}, &world, null);
     engine.endFrame();
     try expectSpans(engine, &.{
-        .{ span.input, 0 },        .{ span.render_acquire, 0 }, .{ span.render_prepare, 0 },
-        .{ span.render_plan, 1 },  .{ span.render_write, 1 },   .{ span.render_skin, 2 },
-        .{ span.render_world, 0 }, .{ span.render_submit, 0 },  .{ span.render_present, 0 },
+        .{ span.input, 0 },         .{ span.assets_pump, 0 },    .{ span.render_acquire, 0 }, .{ span.render_prepare, 0 },
+        .{ span.render_plan, 1 },   .{ span.render_write, 1 },   .{ span.render_skin, 2 },    .{ span.render_world, 0 },
+        .{ span.render_submit, 0 }, .{ span.render_present, 0 },
     });
     try testing.expectEqual(@as(usize, 0), engine.gpu.violationCount());
 }
@@ -2891,9 +2906,9 @@ test "a scene frame is the world's pass, then the overlay's, and the surface end
     try engine.renderScene(.{}, &world, NothingRecorder{});
     engine.endFrame();
     try expectSpans(engine, &.{
-        .{ span.input, 0 },          .{ span.render_acquire, 0 }, .{ span.render_prepare, 0 },
-        .{ span.render_plan, 1 },    .{ span.render_write, 1 },   .{ span.render_world, 0 },
-        .{ span.render_overlay, 0 }, .{ span.render_submit, 0 },  .{ span.render_present, 0 },
+        .{ span.input, 0 },         .{ span.assets_pump, 0 },    .{ span.render_acquire, 0 }, .{ span.render_prepare, 0 },
+        .{ span.render_plan, 1 },   .{ span.render_write, 1 },   .{ span.render_world, 0 },   .{ span.render_overlay, 0 },
+        .{ span.render_submit, 0 }, .{ span.render_present, 0 },
     });
     try testing.expect(world.planned);
 
@@ -2902,9 +2917,9 @@ test "a scene frame is the world's pass, then the overlay's, and the surface end
     try engine.renderScene(.{}, &world, null);
     engine.endFrame();
     const without = [_]SpanAt{
-        .{ span.input, 0 },         .{ span.render_acquire, 0 }, .{ span.render_prepare, 0 },
-        .{ span.render_plan, 1 },   .{ span.render_write, 1 },   .{ span.render_world, 0 },
-        .{ span.render_submit, 0 }, .{ span.render_present, 0 },
+        .{ span.input, 0 },          .{ span.assets_pump, 0 },  .{ span.render_acquire, 0 }, .{ span.render_prepare, 0 },
+        .{ span.render_plan, 1 },    .{ span.render_write, 1 }, .{ span.render_world, 0 },   .{ span.render_submit, 0 },
+        .{ span.render_present, 0 },
     };
     try expectSpans(engine, &without);
     engine.beginFrame();

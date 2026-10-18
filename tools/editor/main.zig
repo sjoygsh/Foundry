@@ -271,6 +271,11 @@ fn run(
     var pointer_frames: u64 = 0;
     var keyboard_frames: u64 = 0;
     var peak_commands: usize = 0;
+    // The longest wall-clock gap between two finished frames, which is what a person sees
+    // when a build blocks the window (`background.md` §12). Measurement only.
+    var last_frame_ns: ?u64 = null;
+    var longest_gap_ns: u64 = 0;
+    var longest_gap_frame: u64 = 0;
 
     var typed: [32]platform.event.TextInput = undefined;
     while (true) {
@@ -330,6 +335,12 @@ fn run(
             if (!app.Engine.frameSkippable(err)) return err;
         };
         engine.endFrame();
+        const finished = engine.os.monotonicNanos();
+        if (last_frame_ns) |last| if (finished - last > longest_gap_ns) {
+            longest_gap_ns = finished - last;
+            longest_gap_frame = engine.frame_index - 1;
+        };
+        last_frame_ns = finished;
 
         if (frame_limit) |limit| if (engine.frame_index >= limit) break;
         if (platform.backend == .null) engine.os.sleep(.fromMillis(1));
@@ -348,6 +359,9 @@ fn run(
         "the interface held the pointer on {d} frame(s) and the keyboard on {d}, and drew up to {d} commands in one",
         .{ pointer_frames, keyboard_frames, peak_commands },
     );
+    log.info("the longest gap between frames was {d:.3}ms, ending frame {d}", .{
+        @as(f64, @floatFromInt(longest_gap_ns)) / core.time.ns_per_ms, longest_gap_frame,
+    });
 
     const seen = client.inspect();
     log.info(
