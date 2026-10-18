@@ -1,10 +1,27 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-18
-**Current handoff: M27 Step 3 of 11 is complete** ([`docs/design/background.md`](docs/design/background.md)).
-**Stop before Step 4**: `asset.Registry`'s `request`, `pump`, `state` and `quiesce`. No loader
-split, background path or ABI call exists yet. Nothing is pushed: local `main` is ahead by M26
-Steps 7–13, the `m26` tag and M27's commits.
+**Current handoff: M27 Step 4 of 11 is complete** ([`docs/design/background.md`](docs/design/background.md)).
+**Stop before Step 5**: splitting the engine's loaders (§7). No engine loader has a `decode`
+yet, so every load still happens on the main thread, and no ABI call exists. Nothing is pushed:
+local `main` is ahead by M26 Steps 7–13, the `m26` tag and M27's commits.
+
+**M27 Step 4 is done (2026-10-18): `asset.Registry` requests, pumps and quiesces.**
+- `request`, `requestOf` and `requestWith` return a counted handle at once.
+  - Each refusal that needs no bytes is made then.
+  - A pending entry is read and decoded on the background pool, and finished in the
+    engine's per-frame `assets.pump` under a byte and count budget.
+  - `state` reports `ready`, `pending` or `failed`.
+- `acquire` stays synchronous, and completes a pending entry without waiting on the pool.
+- A split loader's changed source reloads in the background, keeping the old payload until
+  the new one is swapped in.
+- `quiesce` runs before a content reload. A loader's split is one optional struct
+  (`Loader.split`), so a partial set cannot be written.
+- A finish never keeps its decoded value. That corrects §7's "hand over", and Step 5's
+  parsed kinds copy into their payloads instead.
+
+Eleven guard mutations each failed a test, after two weak tests were strengthened. Bar
+**2,172/2,173** (one skip).
 
 **M27 Step 3 is done (2026-10-18): the gallery and the synchronous baseline.**
 - `scripts/m27/make_gallery.py` generates and checks `sandbox3d:models.gallery`: eight 2048²

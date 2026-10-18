@@ -1,6 +1,6 @@
 # Design: M27 — Background work: a task graph, assets that load without stalling a frame, and the editor's background compile
 
-**Status:** Accepted 2026-10-18, when the owner asked for Step 1, with §14 as written (including item 1: `FoundryApi_v7` in M27, so M48 publishes v8). **Steps 1–3 of 11 are done**; their Resolutions follow §16.
+**Status:** Accepted 2026-10-18, when the owner asked for Step 1, with §14 as written (including item 1: `FoundryApi_v7` in M27, so M48 publishes v8). **Steps 1–4 of 11 are done**; their Resolutions follow §16.
 **Date:** 2026-10-18
 **Baseline:** `8182188`, tag `m26`. M0–M26 are complete, and with them Phase 5.
 **Decisions:**
@@ -1044,3 +1044,139 @@ Step 3 builds the gallery and measures the synchronous baseline.
   changed.
 
 Step 4 gives `asset.Registry` its `request`, `pump`, `state` and `quiesce`.
+
+## Resolution — Step 4: request, pump and state (2026-10-18)
+
+`asset.Registry` gains `request`, `requestOf`, `requestWith`, `state`, `pump`, `quiesce`,
+`busy` and `useTasks`. `asset` exports `Split`, `Decoded`, `Budget`, `State`, `PumpBudget` and
+`PumpStats`.
+
+The engine wiring:
+- the engine hands the registry its background pool and `taskAllocator`;
+- it pumps once in `beginFrame`, inside `assets.pump`, under `Config.asset_pump`;
+- it bumps the content generation when a pump swaps in a background reload;
+- it calls `quiesce` before `reloadContent` adopts new packages.
+
+No engine loader is split yet, so every load the engine does today behaves as before.
+
+**What implementation settled:**
+- **The split is one optional struct, `Loader.split: ?Split`, holding `decode_ctx`, `decode`,
+  `finish` and `discard`.** This corrects §6.1's three optional fields and its "refuse a
+  partial set": with one struct, a partial set cannot be written, so nothing refuses one.
+  `AcquireError` is unchanged, and the three ABI maps and `render3d`'s switches that list its
+  members exhaustively need no new member.
+- **The registry composes a split loader's synchronous load itself.** `Loader.loadWhole` runs
+  `decode`, then `finish` under an unlimited budget, then `discard`, on the calling thread.
+  `acquire`, `acquireWith`, `reload` and the retry of a failed entry all go through it. So a
+  synchronous and a background payload come from one implementation, as ADR-0062 asks, and a
+  split loader's own `load` can be written as `loadWhole` (the test loader's is).
+- **A finish neither frees nor keeps its decoded value.** The registry discards the value
+  through the allocator that decoded it, whatever `finish` returned. The finish makes its
+  payload through the allocator the payload is later unloaded with.
+  - This corrects §4.3's "freed by its `finish` or `discard`".
+  - It also corrects §7's "hand over the decoded value as the payload" for the skeleton,
+    animation, collision-mesh, tile-grid and sound loaders. In Step 5 those copy into their
+    payload instead.
+  - **Why:** a decode allocates through the engine's counted `background` allocator, and a
+    payload is unloaded through the engine's `gpa`. A handed-over buffer would be counted in
+    one and freed past it, so the "background" line would drift for the asset's whole life.
+    The copy is a bounded memcpy on the main thread, charged to the pump's budget.
+- **One small graph per load, in request order.** A request or background reload owns a
+  two-node `core.tasks.Graph`, on the heap because the executor points into it:
+  - a background read, and decode if the loader is split;
+  - a main-thread finish after it.
+
+  `pump` polls the jobs in the order they were requested, with one budget, and retires each
+  one whose graph has nothing left running.
+- **Two changes to Step 1's graph:**
+  - "a budgeted poll always runs its first main node" is now counted by the budget
+    (`Budget.ran`), not per poll. One budget handed to every job's poll then runs a single
+    finish past its limit, the pump's first, rather than one per job. A single poll behaves
+    as before, and Step 1's tests pass unchanged.
+  - `Graph.started(index)` reports whether a node has left waiting.
+- **A request starts nothing.** Its decode starts at the next pump, and its finish runs at a
+  pump after the decode is done. The decode could start sooner, but under `immediate` that
+  would run the finish outside the pump, and decision 4 allows main-thread completions at
+  that one point only. A request therefore costs at most one frame before its decode starts.
+- **`acquire` on a pending entry never waits on the pool**, correcting §6.2's "waits for its
+  decode":
+  - a decode that has finished is finished on the spot;
+  - one that has not started, or is still queued or running, is cancelled, and the asset is
+    decoded again on the calling thread. `Tasks` has no wait for a single task, and waiting
+    behind other queued work would make `asset_acquire`'s latency depend on the queue;
+  - `Graph.started` keeps that path from starting a decode it is about to repeat. Without it,
+    `acquire` on an unstarted request queued a decode it then threw away, which a test
+    caught.
+- **Failures:**
+  - `acquire` on a failed entry tries again synchronously. On failure it returns the error
+    and leaves the count unchanged.
+  - A second `request` of a failed entry only counts it, so a broken file is said once, not
+    on every request.
+- **A release to zero while pending** takes the entry out of the lookups at once, so a new
+  request starts afresh. The entry itself goes at the pump that frees its cancelled job.
+- **`quiesce` leaves held entries pending** and sets a flag, so the next pump starts them
+  again against whatever store is current. A cancelled background reload puts back the
+  entry's previous stamp, so the change is seen again.
+- `unregisterLoader` and `unloadWith` quiesce first if a job uses that loader, because a
+  decode may be running its functions. `deinit` quiesces first too, and unloads only ready
+  entries.
+- **Nothing is logged off the main thread by the registry.** A background read's failure is
+  mapped without logging (`readFailure`) and said by the pump. `Os` still logs its own
+  `IoFailed` cause where it happens, and the log ring is behind a spin lock, so that rare line
+  is safe from a worker.
+- **`get`, `getIfLoader` and `payloadOf` return null unless the entry is ready.**
+  `evictUnused` skips anything with work in flight, and removes a failed entry without
+  unloading it.
+
+**Tests:**
+- **Twelve in `registry.zig`:**
+  - A request makes what `acquire` makes, under `immediate`, under `Manual` completing
+    forwards and backwards with decodes held across pumps, and on the pool at zero, one and
+    two threads.
+  - Every bytes-free refusal is immediate, named, and leaves nothing behind.
+  - Missing and corrupt sources fail in the background, are said once, and are retried by
+    `acquire`.
+  - `acquire` completes a pending entry in all three positions: decoded, queued, unstarted.
+  - The budget finishes in request order and always finishes the first.
+  - Releasing to zero while decoding, and before starting.
+  - `quiesce` with work in three states, then a restart.
+  - A background reload keeps the old payload, is not started twice, is not evicted under,
+    and is retried after a `quiesce`.
+  - A background reload that fails in its decode, and one that fails in its finish.
+  - A loader nobody split, and a private split loader, through requests.
+  - `deinit` and `unregisterLoader` with work in flight.
+- **One in `tasks.zig:`** one budget across three graphs.
+- **One in `engine.zig`:** a tile grid requested through the engine finishes in a later
+  `beginFrame` on a two-thread pool, and one requested just before `reloadContent` is
+  quiesced, restarted and finished.
+- The fixture that builds the engine tests' packages now registers the engine's asset
+  schemas, as `readAll` does.
+- Every existing registry test passes untouched.
+
+**Evidence:**
+- **Eleven guards were each broken in turn against the whole suite,** and each restored byte
+  for byte. Every one failed a test:
+  - a release that does not cancel;
+  - eviction that does not skip work in flight;
+  - `acquire` polling a decode that has not started;
+  - `get` answering while pending;
+  - the first finish not guaranteed;
+  - the first-finish rule counted per poll;
+  - `quiesce` forgetting held entries;
+  - a cancelled reload keeping its new stamp;
+  - a reload started twice;
+  - a reload that does not unload the old payload;
+  - a failure not recorded.
+- **Weak tests found and fixed along the way:**
+  - The first eviction and double-start mutations passed. The eviction check had run while
+    the handle was held, and the double start was hidden by the stamp the first start had
+    already written. The reload test now releases the handle before evicting, and changes
+    the file again mid-reload. Both mutations then failed it.
+  - The first release mutation was a compile error, not a detection, and was redone.
+- **The bar passed: 2,172/2,173 (one skip)**, with thirteen new tests. fmt, all four `check`
+  variants, the four headless samples and `fdt-check` passed.
+- The headless tour with `FOUNDRY_SANDBOX3D_LOAD=sync` still passes, with hash
+  `cb99ccfcf2b6d6c3`.
+
+Step 5 splits the engine's loaders (§7). The skeleton, animation, collision-mesh, tile-grid
+and sound finishes copy into their payloads, by the rule above.

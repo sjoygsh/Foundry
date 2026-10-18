@@ -157,6 +157,10 @@ pub const Config = struct {
     /// background tasks allocate through `Engine.taskAllocator`, which counts on top of it.
     /// `std.process.Init`'s `gpa` is, in every build mode; nothing here can check it.
     background_workers: ?u16 = null,
+
+    /// What `beginFrame`'s pump may spend finishing requested assets on the main thread
+    /// (`background.md` §6.4). The defaults are measured in M27 Step 9.
+    asset_pump: asset.PumpBudget = .{},
 };
 
 /// The names the engine gives its own timing spans.
@@ -175,7 +179,7 @@ pub const span = struct {
     /// The hot-reload watcher's pass. Only present on the frames it runs.
     pub const content = "content";
     /// After `input`, before any step: where the asset registry's main-thread work for the
-    /// frame runs (`background.md` §6.2). Empty until M27 Step 4 gives it that work.
+    /// frame runs (`background.md` §6.2): finishing what background decodes made.
     pub const assets_pump = "assets.pump";
     /// Waiting for the ring slot and for the display's next drawable.
     pub const render_acquire = "render.acquire";
@@ -315,6 +319,7 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         content_generation: u64,
         hot_reload: bool,
         hot_reload_frames: u32,
+        asset_pump: asset.PumpBudget,
         max_package_bytes: usize,
         /// The compiled bytes of every loaded package, kept alive because the store reads
         /// records **in place** out of them rather than copying (`content-schemas.md`
@@ -468,6 +473,7 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                 .content_generation = 1,
                 .hot_reload = config.hot_reload,
                 .hot_reload_frames = @max(config.hot_reload_frames, 1),
+                .asset_pump = config.asset_pump,
                 .max_package_bytes = config.max_package_bytes,
                 .package_bytes = .empty,
                 .memories = .empty,
@@ -484,6 +490,8 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             // `content_dir` and `content` make by not being guarded at all.
             profile = .off;
             self.assets = .init(gpa, os, &self.store, .{});
+            // Requests decode on the background pool, through the counted allocator.
+            self.assets.useTasks(self.background.tasks(), self.task_memory.allocator());
             // The one asset kind the engine can load without help from above. A texture
             // needs a renderer and therefore has to be registered by whoever has one (I6);
             // a tile grid is `[]u16` and needs nothing, and registering it here is the same
@@ -785,6 +793,9 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                 log.warn("content reload failed ({t}); keeping what is loaded", .{err});
                 return;
             };
+            // Records in flight are borrowed from the store `adopt` is about to free (§6.3).
+            // Held entries start again at the next pump, against the new one.
+            self.assets.quiesce();
             self.adopt(&loaded);
 
             // Records may now name different files, different sampler settings, or a
@@ -1010,12 +1021,12 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             if (profiling) self.profile.close(current);
             // Once a frame, at this one point, before the caller takes a step: what background
             // work finishes on the main thread is presentation and never simulation, so it
-            // happens before simulation reads anything (ADR-0061, decision 4). Nothing runs
-            // here yet, so it closes on the reading it opened with.
-            if (profiling) {
-                self.profile.open(span.assets_pump, current);
-                self.profile.close(current);
-            }
+            // happens before simulation reads anything (ADR-0061, decision 4).
+            if (profiling) self.profile.open(span.assets_pump, current);
+            const pumped = self.assets.pump(self.gpa, self.asset_pump);
+            // A background reload swapped a payload, which is a content change like any other.
+            if (pumped.reloaded > 0) self.content_generation +%= 1;
+            if (profiling) self.profile.close(self.platform.now());
             // The reading the delta is made of, so the rest of the frame — simulation,
             // rendering, whatever the game logs — carries this frame's time.
             log_sink.setStamp(.{ .frame = self.frame_index, .elapsed = current.since(self.started) });
@@ -1781,6 +1792,8 @@ const ContentFixture = struct {
 
         var registry: data.Registry = .init(gpa, .default);
         defer registry.deinit(gpa);
+        // The engine's own asset kinds, as `readAll` registers them, so a fixture can name one.
+        try asset.schemas.registerAll(gpa, &registry);
         var diags: data.Diagnostics = .init(gpa, .default);
         defer diags.deinit(gpa);
 
@@ -1814,6 +1827,8 @@ const ContentFixture = struct {
 
         var registry: data.Registry = .init(gpa, .default);
         defer registry.deinit(gpa);
+        // The engine's own asset kinds, as `readAll` registers them, so a fixture can name one.
+        try asset.schemas.registerAll(gpa, &registry);
         var diags: data.Diagnostics = .init(gpa, .default);
         defer diags.deinit(gpa);
 
@@ -2649,6 +2664,63 @@ test "what a frame that failed to finish had submitted is still waited for befor
         engine.endFrame();
         try testing.expectEqual(retained, gpu.retiredCount());
     }
+}
+
+test "a requested asset finishes in a later beginFrame on the background pool, and survives a content reload in flight" {
+    const source =
+        \\foundry:tilegrid foundry:grids.one { source "one.fgrid" }
+        \\foundry:tilegrid foundry:grids.two { source "two.fgrid" }
+    ;
+    var fx = try ContentFixture.init(source);
+    defer fx.deinit();
+    for ([_][]const u8{ "one.fgrid", "two.fgrid" }, [_]u32{ 3, 5 }) |name, width| {
+        var tiles: [15]u16 = @splat(7);
+        const bytes = try asset.tilegrid.write(testing.allocator, width, 3, tiles[0 .. width * 3]);
+        defer testing.allocator.free(bytes);
+        const path = try platform.os.joinPath(testing.allocator, &.{ fx.dir, name });
+        defer testing.allocator.free(path);
+        try fx.os.writeFile(path, bytes);
+    }
+
+    const engine = try profiledEngine(.{
+        .content_dir = fx.dir,
+        .content = &.{.{ .file = "core.fpk", .root = "." }},
+        .background_workers = 2,
+        .hot_reload = false,
+    });
+    defer engine.deinit();
+
+    const one = try engine.assets.request(testing.allocator, .fromString("foundry:grids.one"));
+    defer engine.assets.release(one);
+    try testing.expect(engine.assets.get(one) == null);
+    var frames: u32 = 0;
+    while (engine.assets.state(one).? == .pending) : (frames += 1) {
+        try testing.expect(frames < 10_000);
+        engine.beginFrame();
+        engine.endFrame();
+        engine.os.sleep(.fromMillis(1));
+    }
+    try testing.expectEqual(asset.State.ready, engine.assets.state(one).?);
+    const grid = engine.assets.payloadOf(one).?.pointer().?;
+    try testing.expectEqual(@as(u32, 3), @as(*const asset.TileGrid, @ptrCast(@alignCast(grid))).width);
+    // Its finish ran inside the pump's span, before any step could see it.
+    try testing.expect(frames >= 1);
+
+    // In flight when the packages are replaced: quiesced, then started again and finished.
+    const two = try engine.assets.request(testing.allocator, .fromString("foundry:grids.two"));
+    defer engine.assets.release(two);
+    engine.beginFrame(); // starts its read
+    engine.endFrame();
+    engine.reloadContent();
+    frames = 0;
+    while (engine.assets.state(two).? == .pending) : (frames += 1) {
+        try testing.expect(frames < 10_000);
+        engine.beginFrame();
+        engine.endFrame();
+        engine.os.sleep(.fromMillis(1));
+    }
+    try testing.expectEqual(asset.State.ready, engine.assets.state(two).?);
+    try testing.expect(!engine.assets.busy());
 }
 
 test "the engine's background tasks run on their own pool, and zero background workers runs them on the caller" {

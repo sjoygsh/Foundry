@@ -82,6 +82,14 @@ pub const Loader = registry.Loader;
 pub const Payload = registry.Payload;
 pub const Registry = registry.Registry;
 pub const AssetInfo = registry.Registry.AssetInfo;
+/// Two-phase loading (ADR-0062): a loader's optional split, what its decode hands its
+/// finish, the budget a finish charges, and what a request's entry is doing.
+pub const Split = registry.Split;
+pub const Decoded = registry.Decoded;
+pub const Budget = registry.Budget;
+pub const State = registry.State;
+pub const PumpBudget = registry.PumpBudget;
+pub const PumpStats = registry.PumpStats;
 
 pub const ScriptSource = script.Source;
 pub const ScriptSourceLoader = script.SourceLoader;

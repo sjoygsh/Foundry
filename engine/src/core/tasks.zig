@@ -185,7 +185,9 @@ pub const Outcome = enum { ok, failed };
 
 /// What a poll may spend. A main node charges it; a background node is handed one it may
 /// ignore. `poll` stops running main nodes once it is spent — **but always runs the first
-/// ready one**, so a single large finish cannot wait forever.
+/// ready one under it**, so a single large finish cannot wait forever. "First" is counted by
+/// the budget (`ran`), not by the poll, so one budget handed to several graphs' polls —
+/// the asset registry's pump — runs one finish past its limit, not one per graph.
 pub const Budget = struct {
     bytes: u64 = std.math.maxInt(u64),
     nodes: u32 = std.math.maxInt(u32),
@@ -314,7 +316,6 @@ pub const Graph = struct {
     /// executor stops further starts for this poll, and they are tried at the next.
     pub fn poll(self: *Graph, budget: *Budget) Status {
         var starts_refused = false;
-        var ran_main = false;
         for (self.slots[0..self.node_count]) |*slot| {
             if (slot.state == .running) self.settle(slot);
             if (self.cancelled) {
@@ -344,11 +345,10 @@ pub const Graph = struct {
                     if (slot.done.isSet()) self.settle(slot);
                 },
                 .main => {
-                    if (ran_main and budget.exhausted()) continue;
+                    if (budget.ran > 0 and budget.exhausted()) continue;
                     slot.outcome = slot.node.call(slot.node.context, budget);
                     slot.state = if (slot.outcome == .ok) .ok else .failed;
                     budget.ran += 1;
-                    ran_main = true;
                 },
             }
         }
@@ -388,6 +388,13 @@ pub const Graph = struct {
             if (slot.state == .failed) return @intCast(i);
         }
         return null;
+    }
+
+    /// Whether node `index` has left waiting: started, run, skipped or cancelled. A caller
+    /// that only wants to settle work already begun polls only when this is true, because a
+    /// poll also starts what is ready.
+    pub fn started(self: *const Graph, index: u32) bool {
+        return self.slots[index].state != .waiting;
     }
 
     /// Whether node `index` has finished `ok`.
@@ -707,4 +714,33 @@ test "manual tasks run in whatever order the test chooses, and refuse past capac
     t.wait();
     try testing.expectEqualStrings("bca", log.items);
     try testing.expect(done[0].isSet() and done[2].isSet() and !done[3].isSet());
+}
+
+test "one budget handed to several graphs runs one main node past its limit, not one per graph" {
+    var log: std.ArrayList(u8) = try .initCapacity(testing.allocator, 8);
+    defer log.deinit(testing.allocator);
+    var probes: [3]Probe = .{
+        .{ .tag = 'a', .log = &log, .charge = 10 },
+        .{ .tag = 'b', .log = &log, .charge = 10 },
+        .{ .tag = 'c', .log = &log, .charge = 10 },
+    };
+    var graphs: [3]Graph = undefined;
+    for (&graphs, &probes) |*g, *p| {
+        g.* = try Graph.init(testing.allocator, immediate, .{ .nodes = 1 });
+        _ = try g.add(p.node(.main, &.{}));
+    }
+    defer for (&graphs) |*g| g.deinit();
+
+    // A one-byte budget: the first graph's node runs regardless, and nothing after it.
+    var budget: Budget = .{ .bytes = 1 };
+    for (&graphs) |*g| _ = g.poll(&budget);
+    try testing.expectEqualStrings("a", log.items);
+    try testing.expect(!graphs[1].started(0));
+    // A fresh budget is a fresh "first".
+    budget = .{ .bytes = 1 };
+    for (graphs[1..]) |*g| _ = g.poll(&budget);
+    try testing.expectEqualStrings("ab", log.items);
+    try testing.expect(graphs[0].started(0) and graphs[1].started(0) and !graphs[2].started(0));
+    budget = .unlimited;
+    _ = graphs[2].poll(&budget);
 }

@@ -126,6 +126,45 @@ pub const RegisterError = error{
     LoaderExists,
 } || Allocator.Error;
 
+/// What a loader's `decode` hands its `finish`: one opaque word, as a payload is, owned by
+/// the loader's `discard` until something frees it.
+pub const Decoded = extern struct {
+    bits: u64 = 0,
+
+    pub fn fromPointer(p: *anyopaque) Decoded {
+        return .{ .bits = @intFromPtr(p) };
+    }
+
+    pub fn pointer(self: Decoded) ?*anyopaque {
+        if (self.bits == 0) return null;
+        return @ptrFromInt(@as(usize, @truncate(self.bits)));
+    }
+};
+
+/// What a finish may spend, shared by every finish of one `pump` (`background.md` §6.4).
+pub const Budget = core.tasks.Budget;
+
+/// A loader's work, split where the device begins (ADR-0062).
+///
+/// **One optional struct rather than three optional fields**, correcting §6.1's sketch: "all
+/// or none" is then the type's, and a partial set cannot be written down, so nothing has to
+/// refuse one.
+pub const Split = struct {
+    /// Read-only for the loader's lifetime: a device's limits, never the device.
+    decode_ctx: ?*const anyopaque = null,
+    /// **Pure.** It reads `decode_ctx`, the record and the bytes, and nothing else, on any
+    /// thread. `gpa` is thread-safe, and what it returns is freed by `discard` with the same
+    /// allocator.
+    decode: *const fn (decode_ctx: ?*const anyopaque, gpa: Allocator, record: Record, bytes: []const u8) LoadError!Decoded,
+    /// On the main thread: makes the payload out of a decoded value, through `gpa`, the
+    /// allocator the payload is later unloaded with. It charges `budget` with the bytes it
+    /// uploads. **It neither frees nor keeps `decoded`**: the registry discards it afterwards,
+    /// whatever `finish` returned.
+    finish: *const fn (ctx: ?*anyopaque, gpa: Allocator, record: Record, decoded: Decoded, budget: *Budget) LoadError!Payload,
+    /// Frees a decoded value, finished or not.
+    discard: *const fn (gpa: Allocator, decoded: Decoded) void,
+};
+
 /// Turns a record plus its source bytes into a payload.
 ///
 /// A plain struct of function pointers, which is what I6 asks for: the engine's own loaders
@@ -139,19 +178,75 @@ pub const Loader = struct {
     /// A per-kind bound applied before the source is read. The registry-wide option remains
     /// an upper ceiling; a small text kind need not inherit a texture-sized allowance.
     max_source_bytes: usize = std.math.maxInt(usize),
+    /// The whole load, on the calling thread. **A split loader's `load` is its `decode`, then
+    /// its `finish`, then its `discard`** (ADR-0062), and the registry composes them itself
+    /// (`loadWhole`) rather than trust a second implementation to agree.
     load: *const fn (ctx: ?*anyopaque, gpa: Allocator, record: Record, bytes: []const u8) LoadError!Payload,
     unload: *const fn (ctx: ?*anyopaque, gpa: Allocator, payload: Payload) void,
+    /// Present when this loader's CPU work can leave the main thread. Without it, a request
+    /// still loads: the read happens in the background and `load` runs as the finish.
+    split: ?Split = null,
 
     /// Loader identity is part of an asset payload's provenance. A schema match alone is
     /// insufficient: two renderers can register the same texture schema, and each loader's
     /// context owns the texture handles it creates. Function pointers are compared by their
     /// code addresses rather than with `==`, which Zig does not define for function values.
     pub fn eql(a: Loader, b: Loader) bool {
+        if ((a.split == null) != (b.split == null)) return false;
+        if (a.split) |sa| {
+            const sb = b.split.?;
+            if (sa.decode_ctx != sb.decode_ctx or
+                @intFromPtr(sa.decode) != @intFromPtr(sb.decode) or
+                @intFromPtr(sa.finish) != @intFromPtr(sb.finish) or
+                @intFromPtr(sa.discard) != @intFromPtr(sb.discard)) return false;
+        }
         return a.schema.eql(b.schema) and a.ctx == b.ctx and
             a.max_source_bytes == b.max_source_bytes and
             @intFromPtr(a.load) == @intFromPtr(b.load) and
             @intFromPtr(a.unload) == @intFromPtr(b.unload);
     }
+
+    /// The synchronous load: `load`, or for a split loader its three parts in order on this
+    /// thread, under an unlimited budget. The one place the two paths can differ is here.
+    pub fn loadWhole(self: Loader, gpa: Allocator, record: Record, bytes: []const u8) LoadError!Payload {
+        const split = self.split orelse return self.load(self.ctx, gpa, record, bytes);
+        const decoded = try split.decode(split.decode_ctx, gpa, record, bytes);
+        defer split.discard(gpa, decoded);
+        var budget: Budget = .unlimited;
+        return split.finish(self.ctx, gpa, record, decoded, &budget);
+    }
+};
+
+/// Where an entry's payload is (`background.md` §6.2).
+pub const State = union(enum) {
+    /// `get` answers.
+    ready,
+    /// Requested and not yet finished. `get` returns null.
+    pending,
+    /// The background load failed, with what a synchronous one would have said. `get`
+    /// returns null; a later `acquire` tries again on the calling thread.
+    failed: AcquireError,
+};
+
+/// What one `pump` may spend on the main thread. Only work that moved there is bounded; a
+/// finish that would exceed `upload_bytes` still runs if it is the pump's first, so a single
+/// large texture cannot wait forever.
+pub const PumpBudget = struct {
+    upload_bytes: u64 = 8 << 20,
+    max_finishes: u32 = 16,
+};
+
+pub const PumpStats = struct {
+    /// Loads that became ready.
+    finished: u32 = 0,
+    /// Background reloads swapped in.
+    reloaded: u32 = 0,
+    /// Loads and reloads that failed this pump.
+    failed: u32 = 0,
+    /// Still in flight afterwards.
+    pending: u32 = 0,
+    /// What the finishes charged.
+    bytes: u64 = 0,
 };
 
 /// A loaded asset, as a caller sees it.
@@ -190,6 +285,15 @@ pub const Registry = struct {
     /// Entries a private loader made, by (content ID, loader slot).
     by_private: std.AutoHashMapUnmanaged(PrivateKey, AssetHandle) = .empty,
 
+    /// Where requested work runs, and what it allocates through (`useTasks`).
+    tasks: core.Tasks = core.tasks.immediate,
+    task_gpa: ?Allocator = null,
+    /// In flight, in the order they were requested, which is the order `pump` finishes them
+    /// (I9: the same requests give the same order, whatever the executor did).
+    jobs: std.ArrayList(*Job) = .empty,
+    /// Set when a held entry lost its job to `quiesce`, so the next pump starts it again.
+    restart: bool = false,
+
     const LoaderSlot = struct {
         loader: Loader,
         /// False for a loader only ever passed to `acquireWith`.
@@ -209,6 +313,101 @@ pub const Registry = struct {
         refs: u32,
         /// What the source file looked like when this was loaded, for `reloadChanged`.
         stamp: Stamp,
+        state: State = .ready,
+        /// The load or background reload in flight for this entry. Never two.
+        job: ?*Job = null,
+    };
+
+    /// One requested load or background reload: a two-node graph, a read and decode in the
+    /// background and a finish on the main thread (ADR-0061, ADR-0062).
+    ///
+    /// On the heap and never moved, because an executor holds a pointer into its graph. The
+    /// background node writes only `read`, `bytes`, `decoded` and `stamp`; everything else
+    /// is the main thread's.
+    const Job = struct {
+        registry: *Registry,
+        gpa: Allocator,
+        decode_gpa: Allocator,
+        handle: AssetHandle,
+        loader_index: u32,
+        loader: Loader,
+        /// Borrowed from the store, which does not change while a job exists (`quiesce`).
+        record: Record,
+        location: SourceLocation,
+        max_bytes: usize,
+        /// A reload keeps the entry's payload current until it finishes.
+        reload: bool,
+        /// A reload's entry was stamped when it started, so a watcher does not start it
+        /// twice. A reload that is cancelled puts the old stamp back, so it is tried again.
+        previous_stamp: Stamp,
+        /// The entry's count reached zero while it was pending: remove it once idle.
+        removing: bool = false,
+        /// Set by `pump` before each poll: the allocator a finish makes its payload with.
+        finish_gpa: Allocator,
+        graph: core.tasks.Graph,
+
+        // Written by the background node.
+        failure: ?AcquireError = null,
+        bytes: ?[]u8 = null,
+        decoded: ?Decoded = null,
+        stamp: Stamp = .{},
+
+        /// Frees whatever the background node made and nobody used.
+        fn releaseOutput(self: *Job) void {
+            if (self.bytes) |bytes| self.decode_gpa.free(bytes);
+            self.bytes = null;
+            if (self.decoded) |decoded| self.loader.split.?.discard(self.decode_gpa, decoded);
+            self.decoded = null;
+        }
+
+        /// The background node: read, and decode if the loader can. Logs nothing, because
+        /// it is not on the main thread; the failure is reported when the pump sees it.
+        fn readAndDecode(context: *anyopaque, _: *Budget) core.tasks.Outcome {
+            const self: *Job = @ptrCast(@alignCast(context));
+            const read = self.registry.os.readFileConfined(self.decode_gpa, self.location.root, self.location.relative, self.max_bytes) catch |err| {
+                self.failure = readFailure(err);
+                return .failed;
+            };
+            self.stamp = .{ .modified_ns = read.info.modified_ns, .size = read.info.size };
+            const split = self.loader.split orelse {
+                self.bytes = read.bytes;
+                return .ok;
+            };
+            defer self.decode_gpa.free(read.bytes);
+            self.decoded = split.decode(split.decode_ctx, self.decode_gpa, self.record, read.bytes) catch |err| {
+                self.failure = err;
+                return .failed;
+            };
+            return .ok;
+        }
+
+        fn discardOutput(context: *anyopaque) void {
+            const self: *Job = @ptrCast(@alignCast(context));
+            self.releaseOutput();
+        }
+
+        /// The main node, inside `pump`: make the payload and put it behind the handle.
+        fn finishNode(context: *anyopaque, budget: *Budget) core.tasks.Outcome {
+            const self: *Job = @ptrCast(@alignCast(context));
+            defer self.releaseOutput();
+            const payload = self.makePayload(budget) catch |err| {
+                self.failure = err;
+                return .failed;
+            };
+            self.registry.install(self, payload);
+            return .ok;
+        }
+
+        fn makePayload(self: *Job, budget: *Budget) LoadError!Payload {
+            if (self.loader.split) |split| {
+                return split.finish(self.loader.ctx, self.finish_gpa, self.record, self.decoded.?, budget);
+            }
+            const bytes = self.bytes.?;
+            // A loader nobody split is charged its source, the best measure there is of
+            // what it is about to upload.
+            budget.charge(bytes.len);
+            return self.loader.load(self.loader.ctx, self.finish_gpa, self.record, bytes);
+        }
     };
 
     /// Enough of a file to answer "did this change?" and nothing more.
@@ -234,9 +433,15 @@ pub const Registry = struct {
     ///
     /// A live count at shutdown is a leak on the caller's side, not a reason to keep GPU
     /// memory alive past the device that owns it.
+    ///
+    /// **Quiesces first** (§6.5), so nothing in flight outlives the registry it writes into.
+    /// That is why the background pool is stopped after the registry, never before.
     pub fn deinit(self: *Registry, gpa: Allocator) void {
+        self.quiesce();
+        self.jobs.deinit(gpa);
         var it = self.entries.iterator();
         while (it.next()) |entry| {
+            if (entry.value.state != .ready) continue;
             const loader = self.loaders.items[entry.value.loader].?.loader;
             loader.unload(loader.ctx, gpa, entry.value.payload);
         }
@@ -247,6 +452,15 @@ pub const Registry = struct {
         self.roots.deinit(gpa);
         self.arena.deinit();
         self.* = undefined;
+    }
+
+    /// Where `request`s run, and the thread-safe allocator their decodes use (ADR-0061,
+    /// decision 5). Until this is called, requests run on `core.tasks.immediate` and decode
+    /// through the allocator each request is handed. Nothing may be in flight.
+    pub fn useTasks(self: *Registry, tasks: core.Tasks, decode_gpa: Allocator) void {
+        std.debug.assert(self.jobs.items.len == 0);
+        self.tasks = tasks;
+        self.task_gpa = decode_gpa;
     }
 
     // -- registration ------------------------------------------------------------------
@@ -290,6 +504,13 @@ pub const Registry = struct {
     /// Hands every entry a loader slot made back to it, then vacates the slot.
     fn withdraw(self: *Registry, gpa: Allocator, index: u32) u32 {
         const loader = self.loaders.items[index].?.loader;
+        // A decode may be running through this loader's functions, which are about to go.
+        for (self.jobs.items) |job| {
+            if (job.loader_index == index) {
+                self.quiesce();
+                break;
+            }
+        }
 
         var unloaded: u32 = 0;
         var it = self.entries.iterator();
@@ -298,7 +519,7 @@ pub const Registry = struct {
             if (entry.value.refs != 0) {
                 log.warn("asset {f} is still held; unloading it with its loader", .{entry.value.id});
             }
-            loader.unload(loader.ctx, gpa, entry.value.payload);
+            if (entry.value.state == .ready) loader.unload(loader.ctx, gpa, entry.value.payload);
             self.forget(entry.value.*);
             _ = self.entries.remove(entry.id);
             unloaded += 1;
@@ -374,16 +595,15 @@ pub const Registry = struct {
         // A count that touched zero has not been freed (§4), so this is also the path that
         // brings one back: a texture shared by two levels is not unloaded between them.
         if (self.by_id.get(id.hash)) |existing| {
-            const entry = self.entries.get(existing).?;
-            entry.refs += 1;
+            try self.complete(gpa, existing);
+            self.entries.get(existing).?.refs += 1;
             return existing;
         }
 
         const loader = self.loaders.items[loader_index].?.loader;
         const location = try self.sourceLocation(record);
-        const read = try self.readSource(gpa, record, location, loader.max_source_bytes);
-        defer gpa.free(read.bytes);
-        const payload = try loader.load(loader.ctx, gpa, record, read.bytes);
+        const loaded = try self.loadNow(gpa, record, location, loader);
+        const payload = loaded.payload;
         errdefer loader.unload(loader.ctx, gpa, payload);
 
         // Reserved before the slot is taken, so a failure here cannot leave a loaded
@@ -395,7 +615,7 @@ pub const Registry = struct {
             .loader = loader_index,
             .payload = payload,
             .refs = 1,
-            .stamp = .{ .modified_ns = read.info.modified_ns, .size = read.info.size },
+            .stamp = loaded.stamp,
         });
         self.by_id.putAssumeCapacity(id.hash, handle);
         return handle;
@@ -426,15 +646,15 @@ pub const Registry = struct {
         const existing_slot = self.privateIndex(loader);
         if (existing_slot) |slot| {
             if (self.by_private.get(.{ .id = id.hash, .slot = slot })) |existing| {
+                try self.complete(gpa, existing);
                 self.entries.get(existing).?.refs += 1;
                 return existing;
             }
         }
 
         const location = try self.sourceLocation(record);
-        const read = try self.readSource(gpa, record, location, loader.max_source_bytes);
-        defer gpa.free(read.bytes);
-        const payload = try loader.load(loader.ctx, gpa, record, read.bytes);
+        const loaded = try self.loadNow(gpa, record, location, loader);
+        const payload = loaded.payload;
         errdefer loader.unload(loader.ctx, gpa, payload);
 
         // Everything that can fail is reserved before anything is taken, so a failure here
@@ -448,11 +668,146 @@ pub const Registry = struct {
             .loader = slot,
             .payload = payload,
             .refs = 1,
-            .stamp = .{ .modified_ns = read.info.modified_ns, .size = read.info.size },
+            .stamp = loaded.stamp,
         });
         if (existing_slot == null) self.loaders.appendAssumeCapacity(.{ .loader = loader, .registered = false });
         self.by_private.putAssumeCapacity(.{ .id = id.hash, .slot = slot }, handle);
         return handle;
+    }
+
+    // -- requesting --------------------------------------------------------------------
+
+    /// `acquire`, without waiting (`background.md` §6.2): a counted handle at once, ready if
+    /// the asset is already here and otherwise pending until a `pump` finishes it.
+    ///
+    /// Every refusal that needs no bytes is returned now, named as `acquire` names it: no
+    /// record, the wrong type, no loader, a path a package may not name, an unmounted
+    /// package. What the bytes decide — a missing file, a corrupt one — arrives as the
+    /// entry's `.failed` state, with the error a synchronous load would have returned.
+    pub fn request(self: *Registry, gpa: Allocator, id: ContentId) AcquireError!AssetHandle {
+        return self.requestInner(gpa, id, null);
+    }
+
+    /// `request`, refusing anything that is not the record type asked for.
+    pub fn requestOf(self: *Registry, gpa: Allocator, id: ContentId, schema_id: SchemaId) AcquireError!AssetHandle {
+        return self.requestInner(gpa, id, schema_id);
+    }
+
+    fn requestInner(self: *Registry, gpa: Allocator, id: ContentId, expected: ?SchemaId) AcquireError!AssetHandle {
+        const record = self.store.lookup(id) orelse {
+            log.warn("asset {f} is not in any loaded package", .{id});
+            return error.AssetNotFound;
+        };
+        if (expected) |want| {
+            if (!record.schema_id.eql(want)) {
+                log.warn("asset '{s}' is not the record type that was asked for", .{record.name});
+                return error.WrongSchema;
+            }
+        }
+        const loader_index = self.loaderIndex(record.schema_id) orelse {
+            log.warn("no loader is registered for the record type of '{s}'", .{record.name});
+            return error.NoLoader;
+        };
+        // Whatever state it is in, a second request is a second count on the same entry.
+        if (self.by_id.get(id.hash)) |existing| {
+            self.entries.get(existing).?.refs += 1;
+            return existing;
+        }
+
+        const location = try self.sourceLocation(record);
+        try self.by_id.ensureUnusedCapacity(gpa, 1);
+        const handle = try self.addPending(gpa, id, record, loader_index);
+        errdefer _ = self.entries.remove(handle);
+        try self.startJob(gpa, handle, loader_index, record, location, .{});
+        self.by_id.putAssumeCapacity(id.hash, handle);
+        return handle;
+    }
+
+    /// `acquireWith`, without waiting: `request` through a loader that is not registered.
+    pub fn requestWith(self: *Registry, gpa: Allocator, id: ContentId, loader: Loader) AcquireError!AssetHandle {
+        const record = self.store.lookup(id) orelse {
+            log.warn("asset {f} is not in any loaded package", .{id});
+            return error.AssetNotFound;
+        };
+        if (!record.schema_id.eql(loader.schema)) {
+            log.warn("asset '{s}' is not the record type its loader makes", .{record.name});
+            return error.WrongSchema;
+        }
+        const existing_slot = self.privateIndex(loader);
+        if (existing_slot) |slot| {
+            if (self.by_private.get(.{ .id = id.hash, .slot = slot })) |existing| {
+                self.entries.get(existing).?.refs += 1;
+                return existing;
+            }
+        }
+
+        const location = try self.sourceLocation(record);
+        const slot: u32 = existing_slot orelse @intCast(self.loaders.items.len);
+        try self.loaders.ensureUnusedCapacity(gpa, 1);
+        try self.by_private.ensureUnusedCapacity(gpa, 1);
+        const handle = try self.addPending(gpa, id, record, slot);
+        errdefer _ = self.entries.remove(handle);
+        if (existing_slot == null) self.loaders.appendAssumeCapacity(.{ .loader = loader, .registered = false });
+        errdefer if (existing_slot == null) {
+            _ = self.loaders.pop();
+        };
+        try self.startJob(gpa, handle, slot, record, location, .{});
+        self.by_private.putAssumeCapacity(.{ .id = id.hash, .slot = slot }, handle);
+        return handle;
+    }
+
+    /// Runs what is due on the main thread, once a frame, before any step (ADR-0061,
+    /// decision 4): finishes whose decodes are done, in request order, within `limits`;
+    /// failures, recorded and said once; cancelled work, freed.
+    pub fn pump(self: *Registry, gpa: Allocator, limits: PumpBudget) PumpStats {
+        if (self.restart) self.restartHeld(gpa);
+        var budget: Budget = .{ .bytes = limits.upload_bytes, .nodes = limits.max_finishes };
+        var stats: PumpStats = .{};
+        var i: usize = 0;
+        while (i < self.jobs.items.len) {
+            const job = self.jobs.items[i];
+            job.finish_gpa = gpa;
+            const status = job.graph.poll(&budget);
+            switch (status) {
+                .pending => {
+                    i += 1;
+                    continue;
+                },
+                .done => if (job.reload) {
+                    stats.reloaded += 1;
+                } else {
+                    stats.finished += 1;
+                },
+                .failed => stats.failed += 1,
+                .cancelled => {},
+            }
+            self.retire(job, status);
+        }
+        stats.pending = @intCast(self.jobs.items.len);
+        stats.bytes = budget.spent_bytes;
+        return stats;
+    }
+
+    /// Cancels everything in flight and returns once nothing is (§6.3). What finished is
+    /// discarded. An entry still held stays pending and starts again at the next `pump`, so
+    /// the store may change in between — which is what this is for: `reloadContent` calls it
+    /// before it replaces the packages records are borrowed from.
+    pub fn quiesce(self: *Registry) void {
+        if (self.jobs.items.len == 0) return;
+        for (self.jobs.items) |job| job.graph.cancel();
+        self.tasks.wait();
+        while (self.jobs.items.len > 0) {
+            const job = self.jobs.items[0];
+            var budget: Budget = .unlimited;
+            const status = job.graph.poll(&budget);
+            std.debug.assert(status == .cancelled);
+            self.retire(job, status);
+        }
+    }
+
+    /// Whether anything is in flight.
+    pub fn busy(self: *const Registry) bool {
+        return self.jobs.items.len != 0;
     }
 
     /// Decrements. Reaching zero makes an asset evictable, not freed.
@@ -466,10 +821,20 @@ pub const Registry = struct {
             return;
         }
         entry.refs -= 1;
+        if (entry.refs != 0 or entry.state != .pending) return;
+
+        // Nobody wants what is still loading (§6.5). It leaves the lookups now, so a new
+        // request starts afresh, and the entry itself goes once its job is idle.
+        self.forget(entry.*);
+        if (entry.job) |job| {
+            job.graph.cancel();
+            job.removing = true;
+        } else _ = self.entries.remove(handle);
     }
 
     pub fn get(self: *Registry, handle: AssetHandle) ?Asset {
         const entry = self.entries.get(handle) orelse return null;
+        if (entry.state != .ready) return null;
         return .{ .id = entry.id, .schema_id = entry.schema_id, .payload = entry.payload };
     }
 
@@ -480,6 +845,7 @@ pub const Registry = struct {
     /// payload provenance without exposing the registry's loader table.
     pub fn getIfLoader(self: *Registry, handle: AssetHandle, expected: Loader) ?Asset {
         const entry = self.entries.get(handle) orelse return null;
+        if (entry.state != .ready) return null;
         const actual = self.loaders.items[entry.loader] orelse return null;
         if (!actual.loader.eql(expected)) return null;
         return .{ .id = entry.id, .schema_id = entry.schema_id, .payload = entry.payload };
@@ -487,7 +853,15 @@ pub const Registry = struct {
 
     pub fn payloadOf(self: *Registry, handle: AssetHandle) ?Payload {
         const entry = self.entries.get(handle) orelse return null;
+        if (entry.state != .ready) return null;
         return entry.payload;
+    }
+
+    /// Where a handle's asset is: ready, still loading, or failed and why. Null for a handle
+    /// that is stale or was never issued.
+    pub fn state(self: *Registry, handle: AssetHandle) ?State {
+        const entry = self.entries.get(handle) orelse return null;
+        return entry.state;
     }
 
     // -- reloading ---------------------------------------------------------------------
@@ -506,6 +880,9 @@ pub const Registry = struct {
     /// Callers who derived something from the payload (a `Region`, a size) have to derive
     /// it again: what a handle points at is what follows a swap, not what was copied out of
     /// it. `app` bumps a generation counter so a caller knows when.
+    ///
+    /// Synchronous, as it always was. Work in flight for the entry is cancelled first and
+    /// this load replaces it; an entry that was pending or failed simply becomes ready.
     pub fn reload(self: *Registry, gpa: Allocator, handle: AssetHandle) AcquireError!void {
         const id, const previous = blk: {
             const entry = self.entries.get(handle) orelse {
@@ -521,37 +898,38 @@ pub const Registry = struct {
             log.warn("asset {f} is no longer in any loaded package", .{id});
             return error.AssetNotFound;
         };
-        // A registered entry follows its record to whichever loader now claims its type. A
-        // private one stays with the loader its owner chose, which makes one type only.
-        const previous_slot = self.loaders.items[previous].?;
-        const loader_index = if (previous_slot.registered)
-            self.loaderIndex(record.schema_id) orelse {
-                log.warn("no loader is registered for the record type of '{s}'", .{record.name});
-                return error.NoLoader;
-            }
-        else if (record.schema_id.eql(previous_slot.loader.schema))
-            previous
-        else {
-            log.warn("'{s}' is no longer the record type its loader makes", .{record.name});
-            return error.WrongSchema;
-        };
-
+        const loader_index = try self.reloadLoader(previous, record);
         const loader = self.loaders.items[loader_index].?.loader;
         const location = try self.sourceLocation(record);
-        const read = try self.readSource(gpa, record, location, loader.max_source_bytes);
-        defer gpa.free(read.bytes);
-        const payload = try loader.load(loader.ctx, gpa, record, read.bytes);
-        const stamp: Stamp = .{ .modified_ns = read.info.modified_ns, .size = read.info.size };
+        const loaded = try self.loadNow(gpa, record, location, loader);
 
         // Past every failure. From here nothing can go wrong, which is what makes the swap
         // atomic from the caller's side.
         const entry = self.entries.get(handle).?;
-        const old = self.loaders.items[previous].?.loader;
-        old.unload(old.ctx, gpa, entry.payload);
-        entry.payload = payload;
+        if (entry.job) |job| self.detach(job);
+        if (entry.state == .ready) {
+            const old = self.loaders.items[previous].?.loader;
+            old.unload(old.ctx, gpa, entry.payload);
+        }
+        entry.payload = loaded.payload;
         entry.loader = loader_index;
         entry.schema_id = record.schema_id;
-        entry.stamp = stamp;
+        entry.stamp = loaded.stamp;
+        entry.state = .ready;
+    }
+
+    /// The loader a reload of an entry goes through. A registered entry follows its record
+    /// to whichever loader now claims its type. A private one stays with the loader its
+    /// owner chose, which makes one type only.
+    fn reloadLoader(self: *Registry, previous: u32, record: Record) AcquireError!u32 {
+        const previous_slot = self.loaders.items[previous].?;
+        if (previous_slot.registered) return self.loaderIndex(record.schema_id) orelse {
+            log.warn("no loader is registered for the record type of '{s}'", .{record.name});
+            return error.NoLoader;
+        };
+        if (record.schema_id.eql(previous_slot.loader.schema)) return previous;
+        log.warn("'{s}' is no longer the record type its loader makes", .{record.name});
+        return error.WrongSchema;
     }
 
     /// Reloads every loaded asset whose source file has changed on disk.
@@ -562,15 +940,33 @@ pub const Registry = struct {
     /// Order is ascending slot index, which `core.HandlePool` documents and does not vary
     /// (I9): reloading many files gives the same result as reloading them one at a time.
     /// A failure is reported and skipped, leaving that asset as it was.
+    ///
+    /// **A ready entry whose loader is split reloads in the background** (§6.3): its old
+    /// payload keeps drawing until a later `pump` swaps the new one in, and that is counted
+    /// in `PumpStats.reloaded`, not here. An entry with work in flight is left to it.
     pub fn reloadChanged(self: *Registry, gpa: Allocator) u32 {
         var reloaded: u32 = 0;
         var it = self.entries.iterator();
         while (it.next()) |entry| {
+            if (entry.value.job != null or entry.value.state == .pending) continue;
             const record = self.store.lookup(entry.value.id) orelse continue;
             const location = self.sourceLocation(record) catch continue;
-            if (self.stampOf(location).eql(entry.value.stamp)) continue;
+            const now = self.stampOf(location);
+            if (now.eql(entry.value.stamp)) continue;
 
             const handle = entry.id;
+            if (entry.value.state == .ready) background: {
+                const index = self.reloadLoader(entry.value.loader, record) catch break :background;
+                if (self.loaders.items[index].?.loader.split == null) break :background;
+                const previous = entry.value.stamp;
+                entry.value.stamp = now;
+                self.startJob(gpa, handle, index, record, location, .{ .reload = true, .previous_stamp = previous }) catch |err| {
+                    entry.value.stamp = previous;
+                    log.warn("'{s}' changed on disk but its reload could not start: {t}", .{ record.name, err });
+                    continue;
+                };
+                continue;
+            }
             self.reload(gpa, handle) catch |err| {
                 log.warn("'{s}' changed on disk but did not reload: {t}", .{ record.name, err });
                 // Stamped anyway, so a file that is broken *and* not being edited does not
@@ -664,12 +1060,12 @@ pub const Registry = struct {
         slot: u32 = 0,
 
         pub fn next(self: *Iterator) ?AssetInfo {
-            while (self.registry.entries.slotAt(self.slot)) |state| {
+            while (self.registry.entries.slotAt(self.slot)) |at| {
                 const index = self.slot;
                 self.slot += 1;
-                const entry = state.value orelse continue;
+                const entry = at.value orelse continue;
                 return .{
-                    .handle = .{ .index = index, .generation = state.generation },
+                    .handle = .{ .index = index, .generation = at.generation },
                     .id = entry.id,
                     .schema_id = entry.schema_id,
                     .refs = entry.refs,
@@ -690,13 +1086,15 @@ pub const Registry = struct {
     /// nothing calls this on its own: a caller that knows it has just finished with a
     /// level's worth of content asks, and until one does, an unused asset stays resident —
     /// which is the behaviour §4 asked for.
+    ///
+    /// An entry with work in flight is skipped (§6.5); a failed one has nothing to unload.
     pub fn evictUnused(self: *Registry, gpa: Allocator) u32 {
         var freed: u32 = 0;
         var it = self.entries.iterator();
         while (it.next()) |entry| {
-            if (entry.value.refs != 0) continue;
+            if (entry.value.refs != 0 or entry.value.job != null or entry.value.state == .pending) continue;
             const loader = self.loaders.items[entry.value.loader].?.loader;
-            loader.unload(loader.ctx, gpa, entry.value.payload);
+            if (entry.value.state == .ready) loader.unload(loader.ctx, gpa, entry.value.payload);
             self.forget(entry.value.*);
             _ = self.entries.remove(entry.id);
             freed += 1;
@@ -733,6 +1131,183 @@ pub const Registry = struct {
         }
     }
 
+    fn addPending(self: *Registry, gpa: Allocator, id: ContentId, record: Record, loader_index: u32) Allocator.Error!AssetHandle {
+        return self.entries.add(gpa, .{
+            .id = id,
+            .schema_id = record.schema_id,
+            .loader = loader_index,
+            .payload = .{},
+            .refs = 1,
+            .stamp = .{},
+            .state = .pending,
+        });
+    }
+
+    const JobOptions = struct { reload: bool = false, previous_stamp: Stamp = .{} };
+
+    /// A job for `handle`, its two nodes and its place in the queue. Starts nothing: the
+    /// decode starts at the next `pump`, and its finish runs at one after that.
+    fn startJob(
+        self: *Registry,
+        gpa: Allocator,
+        handle: AssetHandle,
+        loader_index: u32,
+        record: Record,
+        location: SourceLocation,
+        options: JobOptions,
+    ) Allocator.Error!void {
+        const loader = self.loaders.items[loader_index].?.loader;
+        try self.jobs.ensureUnusedCapacity(gpa, 1);
+        const job = try gpa.create(Job);
+        errdefer gpa.destroy(job);
+        job.* = .{
+            .registry = self,
+            .gpa = gpa,
+            .decode_gpa = self.task_gpa orelse gpa,
+            .handle = handle,
+            .loader_index = loader_index,
+            .loader = loader,
+            .record = record,
+            .location = location,
+            .max_bytes = @min(self.options.max_source_bytes, loader.max_source_bytes),
+            .reload = options.reload,
+            .previous_stamp = options.previous_stamp,
+            .finish_gpa = gpa,
+            .graph = try core.tasks.Graph.init(gpa, self.tasks, .{ .nodes = 2, .edges = 1 }),
+        };
+        // Two nodes into a graph made for exactly two: neither add can fail.
+        _ = job.graph.add(.{ .kind = .background, .context = job, .call = Job.readAndDecode, .discard = Job.discardOutput }) catch unreachable;
+        _ = job.graph.add(.{ .kind = .main, .context = job, .call = Job.finishNode, .after = &.{0} }) catch unreachable;
+        self.jobs.appendAssumeCapacity(job);
+        self.entries.get(handle).?.job = job;
+    }
+
+    /// Puts a finished payload behind its handle. A reload hands the old one back to the
+    /// loader that made it in the same breath, so nothing draws a freed texture.
+    fn install(self: *Registry, job: *Job, payload: Payload) void {
+        const entry = self.entries.get(job.handle).?;
+        std.debug.assert(entry.job == job);
+        if (job.reload and entry.state == .ready) {
+            const old = self.loaders.items[entry.loader].?.loader;
+            old.unload(old.ctx, job.finish_gpa, entry.payload);
+        }
+        entry.payload = payload;
+        entry.loader = job.loader_index;
+        entry.schema_id = job.record.schema_id;
+        entry.stamp = job.stamp;
+        entry.state = .ready;
+    }
+
+    /// Takes a job that has nothing left running out of the queue, records what it came to
+    /// on its entry, and frees it.
+    fn retire(self: *Registry, job: *Job, status: core.tasks.Status) void {
+        const index = std.mem.indexOfScalar(*Job, self.jobs.items, job).?;
+        _ = self.jobs.orderedRemove(index);
+        if (self.entries.get(job.handle)) |entry| if (entry.job == job) {
+            entry.job = null;
+            switch (status) {
+                .done => {},
+                .failed => {
+                    const err = job.failure orelse error.LoadFailed;
+                    // Said once, here, which is the only place a background failure is seen.
+                    if (job.reload) {
+                        log.warn("'{s}' changed on disk but did not reload: {t}", .{ job.record.name, err });
+                    } else {
+                        entry.state = .{ .failed = err };
+                        log.warn("asset '{s}' did not load: {t}", .{ job.record.name, err });
+                    }
+                },
+                .cancelled => if (job.removing) {
+                    _ = self.entries.remove(job.handle);
+                } else if (job.reload) {
+                    entry.stamp = job.previous_stamp;
+                } else {
+                    self.restart = true;
+                },
+                .pending => unreachable,
+            }
+        };
+        job.graph.deinit();
+        job.releaseOutput();
+        job.gpa.destroy(job);
+    }
+
+    /// Cuts a job off from its entry, which something synchronous is about to settle. It is
+    /// cancelled, and freed by a later pump once nothing of it is running.
+    fn detach(self: *Registry, job: *Job) void {
+        job.graph.cancel();
+        if (self.entries.get(job.handle)) |entry| {
+            if (entry.job == job) entry.job = null;
+        }
+    }
+
+    /// Makes a pending or failed entry ready on the calling thread, for `acquire` (§6.2).
+    /// A decode that already finished is finished here rather than repeated; one that has
+    /// not is cancelled and done again now, so `acquire` never waits on the pool's queue.
+    fn complete(self: *Registry, gpa: Allocator, handle: AssetHandle) AcquireError!void {
+        if (self.entries.get(handle).?.state == .ready) return;
+        if (self.entries.get(handle).?.job) |job| {
+            // Polled only if its decode has started: a poll would also start one that has
+            // not, which this is about to do itself.
+            const status: core.tasks.Status = if (job.graph.started(0)) settle: {
+                job.finish_gpa = gpa;
+                var budget: Budget = .unlimited;
+                break :settle job.graph.poll(&budget);
+            } else .pending;
+            switch (status) {
+                .done, .failed => self.retire(job, status),
+                .pending, .cancelled => self.detach(job),
+            }
+            if (self.entries.get(handle).?.state == .ready) return;
+        }
+
+        const entry = self.entries.get(handle).?;
+        const record = self.store.lookup(entry.id) orelse {
+            log.warn("asset {f} is no longer in any loaded package", .{entry.id});
+            return error.AssetNotFound;
+        };
+        const loader = self.loaders.items[entry.loader].?.loader;
+        const location = try self.sourceLocation(record);
+        const loaded = self.loadNow(gpa, record, location, loader) catch |err| {
+            self.entries.get(handle).?.state = .{ .failed = err };
+            return err;
+        };
+        const settled = self.entries.get(handle).?;
+        settled.payload = loaded.payload;
+        settled.stamp = loaded.stamp;
+        settled.state = .ready;
+    }
+
+    /// Starts again every held entry that `quiesce` left without its job, against the
+    /// store as it is now. One that can no longer start is failed, as a request would be.
+    fn restartHeld(self: *Registry, gpa: Allocator) void {
+        self.restart = false;
+        var it = self.entries.iterator();
+        while (it.next()) |entry| {
+            if (entry.value.state != .pending or entry.value.job != null) continue;
+            const handle = entry.id;
+            const err = restart: {
+                const record = self.store.lookup(entry.value.id) orelse break :restart error.AssetNotFound;
+                const index = self.reloadLoader(entry.value.loader, record) catch |e| break :restart e;
+                const location = self.sourceLocation(record) catch |e| break :restart e;
+                self.startJob(gpa, handle, index, record, location, .{}) catch |e| break :restart e;
+                continue;
+            };
+            log.warn("asset {f} could not start loading again: {t}", .{ entry.value.id, err });
+            entry.value.state = .{ .failed = err };
+        }
+    }
+
+    const Loaded = struct { payload: Payload, stamp: Stamp };
+
+    /// The synchronous load every path shares: read here, then `Loader.loadWhole`.
+    fn loadNow(self: *Registry, gpa: Allocator, record: Record, location: SourceLocation, loader: Loader) AcquireError!Loaded {
+        const read = try self.readSource(gpa, record, location, loader.max_source_bytes);
+        defer gpa.free(read.bytes);
+        const payload = try loader.loadWhole(gpa, record, read.bytes);
+        return .{ .payload = payload, .stamp = .{ .modified_ns = read.info.modified_ns, .size = read.info.size } };
+    }
+
     const SourceLocation = struct {
         root: []const u8,
         relative: []const u8,
@@ -764,6 +1339,17 @@ pub const Registry = struct {
                 log.warn("'{s}': its source could not be read ({s})", .{ record.name, @errorName(err) });
                 return error.LoadFailed;
             },
+        };
+    }
+
+    /// `readSource`'s mapping, for a read off the main thread, which says nothing: the
+    /// pump reports the failure where it is seen.
+    fn readFailure(err: platform.os.FileError) AcquireError {
+        return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.FileNotFound, error.WrongFileKind => error.SourceMissing,
+            error.InvalidPath => error.SourceRejected,
+            error.AlreadyExists, error.AccessDenied, error.FileTooLarge, error.IoFailed => error.LoadFailed,
         };
     }
 
@@ -825,6 +1411,7 @@ pub const Registry = struct {
 
 const testing = std.testing;
 const png = @import("png.zig");
+const image_mod = @import("image.zig");
 
 /// A 1x1 RGBA PNG whose single pixel is (200, 40, 60, 255).
 const one_pixel_png = [_]u8{
@@ -1757,4 +2344,590 @@ test "deinit unloads what private loaders still hold" {
     // `deinit` freed it through its loader.
     var mine: FakeLoader = .{};
     _ = try fx.registry.acquireWith(fx.gpa, sprites_id, mine.loader(schemas.texture.id));
+}
+
+// -- M27 Step 4: requests, the pump and pending entries ---------------------------------
+
+/// What `FakeSplit` makes: a decoded image's size and the sum of its bytes, so payloads made
+/// by different paths can be compared for equality.
+const FakeImage = struct {
+    width: u32,
+    height: u32,
+    sum: u64,
+    /// Copied out of the record, which belongs to a store that may be gone when compared.
+    linear: bool,
+
+    fn eql(a: FakeImage, b: FakeImage) bool {
+        return a.width == b.width and a.height == b.height and a.sum == b.sum and a.linear == b.linear;
+    }
+};
+
+/// A split loader over the same PNG decoder: decode on any thread, finish on this one.
+const FakeSplit = struct {
+    /// Counted on whatever thread decodes, so atomic. Everything else is the main thread's.
+    decodes: std.atomic.Value(u32) = .init(0),
+    finishes: u32 = 0,
+    discards: u32 = 0,
+    unloads: u32 = 0,
+    /// Set to make the next finish fail.
+    fail_finish: ?LoadError = null,
+
+    fn loader(self: *FakeSplit, schema: SchemaId) Loader {
+        return .{
+            .schema = schema,
+            .ctx = self,
+            .load = load,
+            .unload = unload,
+            .split = .{ .decode_ctx = self, .decode = decode, .finish = finish, .discard = discard },
+        };
+    }
+
+    /// ADR-0062: a split loader's `load` is its parts in order.
+    fn load(ctx: ?*anyopaque, gpa: Allocator, record: Record, bytes: []const u8) LoadError!Payload {
+        const self: *FakeSplit = @ptrCast(@alignCast(ctx.?));
+        return self.loader(record.schema_id).loadWhole(gpa, record, bytes);
+    }
+
+    fn decode(ctx: ?*const anyopaque, gpa: Allocator, _: Record, bytes: []const u8) LoadError!Decoded {
+        const self: *FakeSplit = @ptrCast(@alignCast(@constCast(ctx.?)));
+        _ = self.decodes.fetchAdd(1, .monotonic);
+        const image = try gpa.create(image_mod.Image);
+        errdefer gpa.destroy(image);
+        image.* = png.decode(gpa, bytes, .{}) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.UnsupportedImage => error.UnsupportedVersion,
+            else => error.InvalidAsset,
+        };
+        return .fromPointer(image);
+    }
+
+    fn finish(ctx: ?*anyopaque, gpa: Allocator, record: Record, decoded: Decoded, budget: *Budget) LoadError!Payload {
+        const self: *FakeSplit = @ptrCast(@alignCast(ctx.?));
+        if (self.fail_finish) |err| return err;
+        const image: *const image_mod.Image = @ptrCast(@alignCast(decoded.pointer().?));
+        var sum: u64 = 0;
+        for (image.pixels) |b| sum += b;
+        budget.charge(image.pixels.len);
+        const made = try gpa.create(FakeImage);
+        made.* = .{
+            .width = image.width,
+            .height = image.height,
+            .sum = sum,
+            .linear = std.mem.eql(u8, schemas.stringField(record, schemas.texture, schemas.filter_field) orelse "", "linear"),
+        };
+        self.finishes += 1;
+        return .fromPointer(made);
+    }
+
+    fn discard(gpa: Allocator, decoded: Decoded) void {
+        const image: *image_mod.Image = @ptrCast(@alignCast(decoded.pointer().?));
+        image.deinit(gpa);
+        gpa.destroy(image);
+    }
+
+    fn unload(ctx: ?*anyopaque, gpa: Allocator, payload: Payload) void {
+        const self: *FakeSplit = @ptrCast(@alignCast(ctx.?));
+        gpa.destroy(@as(*FakeImage, @ptrCast(@alignCast(payload.pointer().?))));
+        self.unloads += 1;
+    }
+};
+
+fn imageOf(registry: *Registry, handle: AssetHandle) ?FakeImage {
+    const payload = registry.payloadOf(handle) orelse return null;
+    return @as(*const FakeImage, @ptrCast(@alignCast(payload.pointer().?))).*;
+}
+
+const three_textures =
+    \\foundry:texture foundry:textures.a { source "textures/a.png" }
+    \\foundry:texture foundry:textures.b { source "textures/b.png" filter "linear" }
+    \\foundry:texture foundry:textures.c { source "textures/c.png" }
+;
+const texture_ids = [_]ContentId{
+    .fromString("foundry:textures.a"),
+    .fromString("foundry:textures.b"),
+    .fromString("foundry:textures.c"),
+};
+
+fn writeThree(fx: *Fixture) !void {
+    try fx.writeFile("textures/a.png", &one_pixel_png);
+    try fx.writeFile("textures/b.png", &four_pixel_png);
+    try fx.writeFile("textures/c.png", &four_pixel_png);
+    _ = try fx.addPackage("foundry:core", three_textures);
+}
+
+/// What the synchronous path makes of each of the three, through a fresh registry.
+fn syncImages() ![3]FakeImage {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+    try writeThree(fx);
+    var split: FakeSplit = .{};
+    try fx.registry.registerLoader(fx.gpa, split.loader(schemas.texture.id));
+    var out: [3]FakeImage = undefined;
+    for (texture_ids, &out) |id, *image| {
+        const handle = try fx.registry.acquire(fx.gpa, id);
+        image.* = imageOf(&fx.registry, handle).?;
+    }
+    // One decode, one finish and one discard each, all on this thread: `load` composed.
+    try testing.expectEqual(@as(u32, 3), split.decodes.load(.monotonic));
+    try testing.expectEqual(@as(u32, 3), split.finishes);
+    return out;
+}
+
+const Order = enum { forward, reverse };
+
+/// Requests all three under `Manual`, completes their decodes in `order` across several
+/// pumps, and returns what they became.
+fn manualImages(order: Order) ![3]FakeImage {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+    try writeThree(fx);
+    var split: FakeSplit = .{};
+    try fx.registry.registerLoader(fx.gpa, split.loader(schemas.texture.id));
+    var manual = try core.tasks.Manual.init(testing.allocator, 8);
+    defer manual.deinit();
+    fx.registry.useTasks(manual.tasks(), testing.allocator);
+
+    var handles: [3]AssetHandle = undefined;
+    for (texture_ids, &handles) |id, *h| h.* = try fx.registry.request(fx.gpa, id);
+    for (handles) |h| try testing.expectEqual(State.pending, fx.registry.state(h).?);
+
+    // The first pump starts the three decodes; nothing has run, so nothing finishes.
+    var stats = fx.registry.pump(fx.gpa, .{});
+    try testing.expectEqual(@as(u32, 3), manual.pending());
+    try testing.expectEqual(@as(u32, 0), stats.finished);
+    // One decode completes per pump, held across the others, in the order asked for.
+    var finished: u32 = 0;
+    while (manual.pending() > 0) {
+        switch (order) {
+            .forward => manual.runNext(),
+            .reverse => manual.runLast(),
+        }
+        stats = fx.registry.pump(fx.gpa, .{});
+        try testing.expectEqual(@as(u32, 1), stats.finished);
+        finished += stats.finished;
+    }
+    try testing.expectEqual(@as(u32, 3), finished);
+    try testing.expectEqual(@as(u32, 0), stats.pending);
+    try testing.expect(!fx.registry.busy());
+    // Every decoded value was discarded once its finish had used it.
+    var out: [3]FakeImage = undefined;
+    for (handles, &out) |h, *image| {
+        try testing.expectEqual(State.ready, fx.registry.state(h).?);
+        image.* = imageOf(&fx.registry, h).?;
+    }
+    return out;
+}
+
+fn poolImages(threads: u16) ![3]FakeImage {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+    try writeThree(fx);
+    var split: FakeSplit = .{};
+    try fx.registry.registerLoader(fx.gpa, split.loader(schemas.texture.id));
+    const pool = try fx.os.startBackground(testing.allocator, .{ .count = threads });
+    // After the registry, as the engine orders them: the registry quiesces into the pool.
+    defer pool.deinit();
+    fx.registry.useTasks(pool.tasks(), testing.allocator);
+
+    var handles: [3]AssetHandle = undefined;
+    for (texture_ids, &handles) |id, *h| h.* = try fx.registry.request(fx.gpa, id);
+    while (fx.registry.busy()) {
+        _ = fx.registry.pump(fx.gpa, .{});
+        pool.tasks().wait();
+    }
+    var out: [3]FakeImage = undefined;
+    for (handles, &out) |h, *image| image.* = imageOf(&fx.registry, h).?;
+    // The registry is freed here, before the pool, by the defers' order.
+    fx.registry.quiesce();
+    return out;
+}
+
+test "a request makes what acquire makes, under the inline executor, either order of completion and the pool" {
+    const expected = try syncImages();
+    try testing.expect(!expected[0].eql(expected[1])); // three different answers to compare
+    for ([_]Order{ .forward, .reverse }) |order| {
+        const got = try manualImages(order);
+        for (expected, got) |e, g| try testing.expect(e.eql(g));
+    }
+    for ([_]u16{ 0, 1, 2 }) |threads| {
+        const got = try poolImages(threads);
+        for (expected, got) |e, g| try testing.expect(e.eql(g));
+    }
+
+    // Under `immediate` a request's decode and finish both happen in the first pump.
+    const fx = try Fixture.init();
+    defer fx.deinit();
+    try writeThree(fx);
+    var split: FakeSplit = .{};
+    try fx.registry.registerLoader(fx.gpa, split.loader(schemas.texture.id));
+    var handles: [3]AssetHandle = undefined;
+    for (texture_ids, &handles) |id, *h| h.* = try fx.registry.request(fx.gpa, id);
+    try testing.expectEqual(@as(u32, 0), split.decodes.load(.monotonic)); // nothing yet
+    try testing.expect(fx.registry.get(handles[0]) == null);
+    const stats = fx.registry.pump(fx.gpa, .{});
+    try testing.expectEqual(@as(u32, 3), stats.finished);
+    for (expected, handles) |e, h| try testing.expect(e.eql(imageOf(&fx.registry, h).?));
+}
+
+test "every refusal a request can make without the bytes is made at once, named, and leaves nothing" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+    _ = try fx.addPackage("foundry:core",
+        \\foundry:texture foundry:textures.escape { source "../outside.png" }
+        \\foundry:texture foundry:textures.fine { source "textures/fine.png" }
+        \\@schema thing { size u32 }
+        \\thing foundry:things.one { size 3 }
+    );
+    var split: FakeSplit = .{};
+    const private = split.loader(schemas.texture.id);
+
+    // No loader is registered yet.
+    try testing.expectError(error.NoLoader, fx.registry.request(fx.gpa, .fromString("foundry:textures.fine")));
+    try fx.registry.registerLoader(fx.gpa, private);
+    try testing.expectError(error.AssetNotFound, fx.registry.request(fx.gpa, .fromString("foundry:textures.none")));
+    try testing.expectError(error.WrongSchema, fx.registry.requestOf(fx.gpa, .fromString("foundry:textures.fine"), schemas.mesh.id));
+    try testing.expectError(error.SourceRejected, fx.registry.request(fx.gpa, .fromString("foundry:textures.escape")));
+    try testing.expectError(error.WrongSchema, fx.registry.requestWith(fx.gpa, .fromString("foundry:things.one"), private));
+
+    // An unmounted package: its files cannot be found, which is said before any read.
+    fx.registry.clearMounts();
+    try testing.expectError(error.SourceMissing, fx.registry.request(fx.gpa, .fromString("foundry:textures.fine")));
+
+    try testing.expectEqual(@as(u32, 0), fx.registry.count());
+    try testing.expect(!fx.registry.busy());
+    try testing.expectEqual(@as(u32, 0), split.decodes.load(.monotonic));
+}
+
+test "what only the bytes can refuse fails in the background, is said once, and acquire tries again" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+    try fx.writeFile("textures/b.png", "not a png");
+    _ = try fx.addPackage("foundry:core", three_textures);
+    var split: FakeSplit = .{};
+    try fx.registry.registerLoader(fx.gpa, split.loader(schemas.texture.id));
+
+    const missing = try fx.registry.request(fx.gpa, texture_ids[0]);
+    defer fx.registry.release(missing);
+    const corrupt = try fx.registry.request(fx.gpa, texture_ids[1]);
+    defer fx.registry.release(corrupt);
+    const once = fx.registry.pump(fx.gpa, .{});
+    try testing.expectEqual(@as(u32, 2), once.failed);
+    try testing.expectEqual(State{ .failed = error.SourceMissing }, fx.registry.state(missing).?);
+    try testing.expectEqual(State{ .failed = error.InvalidAsset }, fx.registry.state(corrupt).?);
+    try testing.expect(fx.registry.get(missing) == null);
+    // Nothing is retried on its own, so nothing is said again.
+    try testing.expectEqual(PumpStats{}, fx.registry.pump(fx.gpa, .{}));
+    // A second request counts on the failed entry without loading it.
+    const again = try fx.registry.request(fx.gpa, texture_ids[0]);
+    fx.registry.release(again);
+    try testing.expectEqual(@as(u32, 1), fx.registry.refCount(missing).?);
+
+    // `acquire` keeps its meaning: a synchronous load, now, which succeeds once the file is there.
+    try testing.expectError(error.SourceMissing, fx.registry.acquire(fx.gpa, texture_ids[0]));
+    try testing.expectEqual(@as(u32, 1), fx.registry.refCount(missing).?);
+    try fx.writeFile("textures/a.png", &one_pixel_png);
+    const fixed = try fx.registry.acquire(fx.gpa, texture_ids[0]);
+    defer fx.registry.release(fixed);
+    try testing.expect(fixed.eql(missing));
+    try testing.expectEqual(State.ready, fx.registry.state(missing).?);
+    try testing.expectEqual(@as(u32, 1), imageOf(&fx.registry, missing).?.width);
+}
+
+test "acquire completes a pending entry, from its finished decode or by decoding again on the spot" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+    try writeThree(fx);
+    var split: FakeSplit = .{};
+    try fx.registry.registerLoader(fx.gpa, split.loader(schemas.texture.id));
+    var manual = try core.tasks.Manual.init(testing.allocator, 8);
+    fx.registry.useTasks(manual.tasks(), testing.allocator);
+
+    // Decoded already, not finished: acquire finishes it, and does not decode again.
+    const a = try fx.registry.request(fx.gpa, texture_ids[0]);
+    _ = fx.registry.pump(fx.gpa, .{});
+    manual.runAll();
+    try testing.expectEqual(State.pending, fx.registry.state(a).?);
+    try testing.expect(a.eql(try fx.registry.acquire(fx.gpa, texture_ids[0])));
+    try testing.expectEqual(State.ready, fx.registry.state(a).?);
+    try testing.expectEqual(@as(u32, 1), split.decodes.load(.monotonic));
+    try testing.expectEqual(@as(u32, 2), fx.registry.refCount(a).?);
+    try testing.expect(!fx.registry.busy());
+
+    // Queued and not run: acquire does not wait on the queue, it decodes here.
+    const b = try fx.registry.request(fx.gpa, texture_ids[1]);
+    _ = fx.registry.pump(fx.gpa, .{});
+    try testing.expectEqual(@as(u32, 1), manual.pending());
+    try testing.expect(b.eql(try fx.registry.acquire(fx.gpa, texture_ids[1])));
+    try testing.expectEqual(State.ready, fx.registry.state(b).?);
+    try testing.expectEqual(@as(u32, 4), imageOf(&fx.registry, b).?.width * imageOf(&fx.registry, b).?.height);
+    // The cancelled decode still runs, and the next pump throws its result away.
+    manual.runAll();
+    const after = fx.registry.pump(fx.gpa, .{});
+    try testing.expectEqual(@as(u32, 0), after.finished);
+    try testing.expectEqual(@as(u32, 2), split.finishes);
+    try testing.expectEqual(@as(u32, 0), split.unloads);
+    try testing.expect(!fx.registry.busy());
+
+    // Never started: the same, with nothing in the queue.
+    const c = try fx.registry.request(fx.gpa, texture_ids[2]);
+    try testing.expect(c.eql(try fx.registry.acquire(fx.gpa, texture_ids[2])));
+    _ = fx.registry.pump(fx.gpa, .{});
+    try testing.expectEqual(@as(u32, 0), manual.pending());
+    try testing.expect(!fx.registry.busy());
+    manual.deinit();
+}
+
+test "a pump finishes in request order within its budget, and always finishes its first" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+    try writeThree(fx);
+    var split: FakeSplit = .{};
+    try fx.registry.registerLoader(fx.gpa, split.loader(schemas.texture.id));
+    var manual = try core.tasks.Manual.init(testing.allocator, 8);
+    defer manual.deinit();
+    fx.registry.useTasks(manual.tasks(), testing.allocator);
+
+    var handles: [3]AssetHandle = undefined;
+    for (texture_ids, &handles) |id, *h| h.* = try fx.registry.request(fx.gpa, id);
+    _ = fx.registry.pump(fx.gpa, .{});
+    manual.runAll();
+
+    // One byte of budget: the first finish runs anyway (4 bytes), and nothing after it.
+    var stats = fx.registry.pump(fx.gpa, .{ .upload_bytes = 1 });
+    try testing.expectEqual(@as(u32, 1), stats.finished);
+    try testing.expectEqual(@as(u64, 4), stats.bytes);
+    try testing.expectEqual(State.ready, fx.registry.state(handles[0]).?);
+    try testing.expectEqual(State.pending, fx.registry.state(handles[1]).?);
+    // A finish count of two with bytes to spare: the next two, in order.
+    stats = fx.registry.pump(fx.gpa, .{ .max_finishes = 2 });
+    try testing.expectEqual(@as(u32, 2), stats.finished);
+    try testing.expectEqual(@as(u64, 32), stats.bytes);
+    try testing.expectEqual(@as(u32, 0), stats.pending);
+}
+
+test "a release to zero while pending cancels it, and the entry goes at the next pump" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+    try writeThree(fx);
+    var split: FakeSplit = .{};
+    try fx.registry.registerLoader(fx.gpa, split.loader(schemas.texture.id));
+    var manual = try core.tasks.Manual.init(testing.allocator, 8);
+    defer manual.deinit();
+    fx.registry.useTasks(manual.tasks(), testing.allocator);
+
+    // Decoding when it was let go.
+    const first = try fx.registry.request(fx.gpa, texture_ids[0]);
+    _ = fx.registry.pump(fx.gpa, .{});
+    fx.registry.release(first);
+    try testing.expect(fx.registry.find(texture_ids[0]) == null);
+    try testing.expectEqual(@as(u32, 1), fx.registry.count()); // until its decode is done
+    // A new request is a new entry, not the cancelled one.
+    const second = try fx.registry.request(fx.gpa, texture_ids[0]);
+    try testing.expect(!second.eql(first));
+    manual.runAll();
+    var stats = fx.registry.pump(fx.gpa, .{});
+    try testing.expectEqual(@as(u32, 0), stats.finished); // `second` was started this pump
+    try testing.expect(fx.registry.state(first) == null);
+    try testing.expectEqual(@as(u32, 1), fx.registry.count());
+    // The cancelled decode's image was discarded, never finished; only the second's is.
+    manual.runAll();
+    stats = fx.registry.pump(fx.gpa, .{});
+    try testing.expectEqual(@as(u32, 1), stats.finished);
+    try testing.expectEqual(@as(u32, 1), split.finishes);
+
+    // Let go before it started: gone at the next pump, having decoded nothing.
+    const decodes = split.decodes.load(.monotonic);
+    const third = try fx.registry.request(fx.gpa, texture_ids[1]);
+    fx.registry.release(third);
+    _ = fx.registry.pump(fx.gpa, .{});
+    try testing.expect(fx.registry.state(third) == null);
+    try testing.expectEqual(decodes, split.decodes.load(.monotonic));
+    try testing.expect(!fx.registry.busy());
+    fx.registry.release(second);
+}
+
+test "quiesce discards work in flight, and a held entry starts again at the next pump" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+    try writeThree(fx);
+    var split: FakeSplit = .{};
+    try fx.registry.registerLoader(fx.gpa, split.loader(schemas.texture.id));
+    var manual = try core.tasks.Manual.init(testing.allocator, 8);
+    defer manual.deinit();
+    fx.registry.useTasks(manual.tasks(), testing.allocator);
+
+    const decoded = try fx.registry.request(fx.gpa, texture_ids[0]);
+    const queued = try fx.registry.request(fx.gpa, texture_ids[1]);
+    const unstarted = try fx.registry.request(fx.gpa, texture_ids[2]);
+    _ = fx.registry.pump(fx.gpa, .{}); // starts all three
+    manual.runAt(0); // one decoded, two queued
+    const late = try fx.registry.request(fx.gpa, texture_ids[0]); // a second count
+    fx.registry.release(late);
+    _ = unstarted;
+
+    fx.registry.quiesce();
+    // `wait` ran the queued ones; everything they made was thrown away.
+    try testing.expect(!fx.registry.busy());
+    try testing.expectEqual(@as(u32, 0), manual.pending());
+    try testing.expectEqual(@as(u32, 0), split.finishes);
+    try testing.expectEqual(State.pending, fx.registry.state(decoded).?);
+    try testing.expectEqual(State.pending, fx.registry.state(queued).?);
+
+    // Held, so started again and finished, against the store as it is now.
+    _ = fx.registry.pump(fx.gpa, .{});
+    try testing.expectEqual(@as(u32, 3), manual.pending());
+    manual.runAll();
+    const stats = fx.registry.pump(fx.gpa, .{});
+    try testing.expectEqual(@as(u32, 3), stats.finished);
+    try testing.expectEqual(@as(u32, 1), imageOf(&fx.registry, decoded).?.width);
+}
+
+test "a split loader's changed source reloads in the background, keeping the old payload until the new one" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+    try fx.writeFile("textures/sprites.png", &one_pixel_png);
+    _ = try fx.addPackage("foundry:core", one_texture);
+    var split: FakeSplit = .{};
+    try fx.registry.registerLoader(fx.gpa, split.loader(schemas.texture.id));
+    var manual = try core.tasks.Manual.init(testing.allocator, 8);
+    defer manual.deinit();
+    fx.registry.useTasks(manual.tasks(), testing.allocator);
+
+    const handle = try fx.registry.acquire(fx.gpa, sprites_id);
+    defer fx.registry.release(handle);
+    try testing.expectEqual(@as(u32, 1), imageOf(&fx.registry, handle).?.width);
+
+    try fx.writeFile("textures/sprites.png", &four_pixel_png);
+    try testing.expectEqual(@as(u32, 0), fx.registry.reloadChanged(fx.gpa)); // started, not done
+    try testing.expect(fx.registry.busy());
+    // Changed again while it is in flight: nothing starts twice; the next pass sees it.
+    try fx.writeFile("textures/sprites.png", &one_pixel_png);
+    try testing.expectEqual(@as(u32, 0), fx.registry.reloadChanged(fx.gpa));
+    try fx.writeFile("textures/sprites.png", &four_pixel_png);
+    _ = fx.registry.pump(fx.gpa, .{});
+    try testing.expectEqual(@as(u32, 1), manual.pending());
+    // Still the old one, and still ready, while the new one decodes.
+    try testing.expectEqual(State.ready, fx.registry.state(handle).?);
+    try testing.expectEqual(@as(u32, 1), imageOf(&fx.registry, handle).?.width);
+    // Unused and with a reload in flight, it is not evicted under that reload.
+    const spare = try fx.registry.acquire(fx.gpa, sprites_id);
+    fx.registry.release(spare);
+    fx.registry.release(handle);
+    try testing.expectEqual(@as(u32, 0), fx.registry.evictUnused(fx.gpa));
+    try testing.expect(handle.eql(try fx.registry.acquire(fx.gpa, sprites_id)));
+
+    manual.runAll();
+    const stats = fx.registry.pump(fx.gpa, .{});
+    try testing.expectEqual(@as(u32, 1), stats.reloaded);
+    try testing.expectEqual(@as(u32, 2), imageOf(&fx.registry, handle).?.width);
+    try testing.expectEqual(@as(u32, 1), split.unloads); // the old one, in the same pump
+    try testing.expectEqual(@as(u32, 0), fx.registry.reloadChanged(fx.gpa));
+    try testing.expect(!fx.registry.busy());
+
+    // A reload cancelled by `quiesce` has not happened, so the change is seen again.
+    try fx.writeFile("textures/sprites.png", &one_pixel_png);
+    _ = fx.registry.reloadChanged(fx.gpa);
+    try testing.expect(fx.registry.busy());
+    fx.registry.quiesce();
+    try testing.expect(!fx.registry.busy());
+    try testing.expectEqual(@as(u32, 2), imageOf(&fx.registry, handle).?.width);
+    _ = fx.registry.reloadChanged(fx.gpa);
+    try testing.expect(fx.registry.busy());
+    _ = fx.registry.pump(fx.gpa, .{});
+    manual.runAll();
+    try testing.expectEqual(@as(u32, 1), fx.registry.pump(fx.gpa, .{}).reloaded);
+    try testing.expectEqual(@as(u32, 1), imageOf(&fx.registry, handle).?.width);
+}
+
+test "a background reload that fails keeps the old payload and says so once" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+    try fx.writeFile("textures/sprites.png", &one_pixel_png);
+    _ = try fx.addPackage("foundry:core", one_texture);
+    var split: FakeSplit = .{};
+    try fx.registry.registerLoader(fx.gpa, split.loader(schemas.texture.id));
+
+    const handle = try fx.registry.acquire(fx.gpa, sprites_id);
+    defer fx.registry.release(handle);
+    try fx.writeFile("textures/sprites.png", "rubbish, half-saved");
+    _ = fx.registry.reloadChanged(fx.gpa);
+    const stats = fx.registry.pump(fx.gpa, .{});
+    try testing.expectEqual(@as(u32, 1), stats.failed);
+    try testing.expectEqual(State.ready, fx.registry.state(handle).?);
+    try testing.expectEqual(@as(u32, 1), imageOf(&fx.registry, handle).?.width);
+    // The broken file is not retried, and complained about, every pass.
+    try testing.expectEqual(@as(u32, 0), fx.registry.reloadChanged(fx.gpa));
+    try testing.expect(!fx.registry.busy());
+
+    // A finish that fails is the same: the last payload that worked stays.
+    try fx.writeFile("textures/sprites.png", &four_pixel_png);
+    split.fail_finish = error.LoadFailed;
+    _ = fx.registry.reloadChanged(fx.gpa);
+    try testing.expectEqual(@as(u32, 1), fx.registry.pump(fx.gpa, .{}).failed);
+    try testing.expectEqual(@as(u32, 1), imageOf(&fx.registry, handle).?.width);
+    try testing.expectEqual(@as(u32, 0), split.unloads);
+}
+
+test "a loader nobody split still loads through a request, its load running as the finish" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+    try fx.writeFile("textures/sprites.png", &four_pixel_png);
+    _ = try fx.addPackage("foundry:core", one_texture);
+    try fx.registerTextureLoader();
+    var manual = try core.tasks.Manual.init(testing.allocator, 8);
+    defer manual.deinit();
+    fx.registry.useTasks(manual.tasks(), testing.allocator);
+
+    const handle = try fx.registry.request(fx.gpa, sprites_id);
+    defer fx.registry.release(handle);
+    _ = fx.registry.pump(fx.gpa, .{});
+    manual.runAll();
+    try testing.expectEqual(@as(u32, 0), fx.texture_loader.loads); // only read, so far
+    const stats = fx.registry.pump(fx.gpa, .{});
+    try testing.expectEqual(@as(u32, 1), stats.finished);
+    try testing.expectEqual(@as(u64, four_pixel_png.len), stats.bytes); // charged its source
+    try testing.expectEqual(@as(u32, 1), fx.texture_loader.loads);
+    try testing.expectEqual(@as(u32, 2), fx.payload(handle).width);
+
+    // A private loader is requested the same way, beside it.
+    var mine: FakeSplit = .{};
+    const private = try fx.registry.requestWith(fx.gpa, sprites_id, mine.loader(schemas.texture.id));
+    defer fx.registry.release(private);
+    try testing.expect(!private.eql(handle));
+    try testing.expect(private.eql(try fx.registry.requestWith(fx.gpa, sprites_id, mine.loader(schemas.texture.id))));
+    fx.registry.release(private);
+    _ = fx.registry.pump(fx.gpa, .{});
+    manual.runAll();
+    _ = fx.registry.pump(fx.gpa, .{});
+    try testing.expect(fx.registry.getIfLoader(private, mine.loader(schemas.texture.id)) != null);
+}
+
+test "deinit quiesces what is in flight, and a loader leaving takes its pending work with it" {
+    var split: FakeSplit = .{};
+    var manual = try core.tasks.Manual.init(testing.allocator, 8);
+    {
+        const fx = try Fixture.init();
+        defer fx.deinit();
+        try writeThree(fx);
+        try fx.registry.registerLoader(fx.gpa, split.loader(schemas.texture.id));
+        fx.registry.useTasks(manual.tasks(), testing.allocator);
+        _ = try fx.registry.request(fx.gpa, texture_ids[0]);
+        _ = try fx.registry.request(fx.gpa, texture_ids[1]);
+        _ = fx.registry.pump(fx.gpa, .{});
+        // `testing.allocator` checks that the decodes `deinit` waited for were discarded.
+    }
+    try testing.expectEqual(@as(u32, 0), manual.pending());
+    try testing.expectEqual(@as(u32, 0), split.finishes);
+
+    const fx = try Fixture.init();
+    defer fx.deinit();
+    try writeThree(fx);
+    try fx.registry.registerLoader(fx.gpa, split.loader(schemas.texture.id));
+    fx.registry.useTasks(manual.tasks(), testing.allocator);
+    const pending = try fx.registry.request(fx.gpa, texture_ids[0]);
+    _ = fx.registry.pump(fx.gpa, .{});
+    try testing.expectEqual(@as(u32, 1), fx.registry.unregisterLoader(fx.gpa, schemas.texture.id));
+    try testing.expect(fx.registry.state(pending) == null);
+    try testing.expect(!fx.registry.busy());
+    manual.deinit();
 }
