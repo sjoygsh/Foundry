@@ -153,15 +153,14 @@ pub const Split = struct {
     /// Read-only for the loader's lifetime: a device's limits, never the device.
     decode_ctx: ?*const anyopaque = null,
     /// **Pure.** It reads `decode_ctx`, the record and the bytes, and nothing else, on any
-    /// thread. `gpa` is thread-safe, and what it returns is freed by `discard` with the same
-    /// allocator.
+    /// thread. `gpa` is thread-safe, and is the allocator the finish and the eventual unload
+    /// are handed too, so a decoded buffer may become the payload.
     decode: *const fn (decode_ctx: ?*const anyopaque, gpa: Allocator, record: Record, bytes: []const u8) LoadError!Decoded,
-    /// On the main thread: makes the payload out of a decoded value, through `gpa`, the
-    /// allocator the payload is later unloaded with. It charges `budget` with the bytes it
-    /// uploads. **It neither frees nor keeps `decoded`**: the registry discards it afterwards,
-    /// whatever `finish` returned.
+    /// On the main thread: makes the payload out of a decoded value, charging `budget` with
+    /// the bytes it uploads. **On success it owns `decoded`**: it keeps it inside the payload
+    /// (a parsed skeleton is its own payload) or frees it. On failure the registry discards it.
     finish: *const fn (ctx: ?*anyopaque, gpa: Allocator, record: Record, decoded: Decoded, budget: *Budget) LoadError!Payload,
-    /// Frees a decoded value, finished or not.
+    /// Frees a decoded value nobody finished.
     discard: *const fn (gpa: Allocator, decoded: Decoded) void,
 };
 
@@ -211,11 +210,20 @@ pub const Loader = struct {
     pub fn loadWhole(self: Loader, gpa: Allocator, record: Record, bytes: []const u8) LoadError!Payload {
         const split = self.split orelse return self.load(self.ctx, gpa, record, bytes);
         const decoded = try split.decode(split.decode_ctx, gpa, record, bytes);
-        defer split.discard(gpa, decoded);
         var budget: Budget = .unlimited;
-        return split.finish(self.ctx, gpa, record, decoded, &budget);
+        return split.finish(self.ctx, gpa, record, decoded, &budget) catch |err| {
+            split.discard(gpa, decoded);
+            return err;
+        };
     }
 };
+
+/// The finish of a loader whose decoded value **is** its payload: a parsed skeleton, a grid of
+/// tile ids. It runs nothing on the main thread and hands the value over, which is why a
+/// decode allocates through the allocator its payload is unloaded with.
+pub fn adoptDecoded(_: ?*anyopaque, _: Allocator, _: Record, decoded: Decoded, _: *Budget) LoadError!Payload {
+    return .{ .bits = decoded.bits };
+}
 
 /// Where an entry's payload is (`background.md` §6.2).
 pub const State = union(enum) {
@@ -285,9 +293,8 @@ pub const Registry = struct {
     /// Entries a private loader made, by (content ID, loader slot).
     by_private: std.AutoHashMapUnmanaged(PrivateKey, AssetHandle) = .empty,
 
-    /// Where requested work runs, and what it allocates through (`useTasks`).
+    /// Where requested work runs (`useTasks`).
     tasks: core.Tasks = core.tasks.immediate,
-    task_gpa: ?Allocator = null,
     /// In flight, in the order they were requested, which is the order `pump` finishes them
     /// (I9: the same requests give the same order, whatever the executor did).
     jobs: std.ArrayList(*Job) = .empty,
@@ -326,8 +333,9 @@ pub const Registry = struct {
     /// is the main thread's.
     const Job = struct {
         registry: *Registry,
+        /// Thread-safe: the background node decodes through it, and the finish and the
+        /// payload's eventual unload use it too.
         gpa: Allocator,
-        decode_gpa: Allocator,
         handle: AssetHandle,
         loader_index: u32,
         loader: Loader,
@@ -342,8 +350,6 @@ pub const Registry = struct {
         previous_stamp: Stamp,
         /// The entry's count reached zero while it was pending: remove it once idle.
         removing: bool = false,
-        /// Set by `pump` before each poll: the allocator a finish makes its payload with.
-        finish_gpa: Allocator,
         graph: core.tasks.Graph,
 
         // Written by the background node.
@@ -354,9 +360,9 @@ pub const Registry = struct {
 
         /// Frees whatever the background node made and nobody used.
         fn releaseOutput(self: *Job) void {
-            if (self.bytes) |bytes| self.decode_gpa.free(bytes);
+            if (self.bytes) |bytes| self.gpa.free(bytes);
             self.bytes = null;
-            if (self.decoded) |decoded| self.loader.split.?.discard(self.decode_gpa, decoded);
+            if (self.decoded) |decoded| self.loader.split.?.discard(self.gpa, decoded);
             self.decoded = null;
         }
 
@@ -364,7 +370,7 @@ pub const Registry = struct {
         /// it is not on the main thread; the failure is reported when the pump sees it.
         fn readAndDecode(context: *anyopaque, _: *Budget) core.tasks.Outcome {
             const self: *Job = @ptrCast(@alignCast(context));
-            const read = self.registry.os.readFileConfined(self.decode_gpa, self.location.root, self.location.relative, self.max_bytes) catch |err| {
+            const read = self.registry.os.readFileConfined(self.gpa, self.location.root, self.location.relative, self.max_bytes) catch |err| {
                 self.failure = readFailure(err);
                 return .failed;
             };
@@ -373,8 +379,8 @@ pub const Registry = struct {
                 self.bytes = read.bytes;
                 return .ok;
             };
-            defer self.decode_gpa.free(read.bytes);
-            self.decoded = split.decode(split.decode_ctx, self.decode_gpa, self.record, read.bytes) catch |err| {
+            defer self.gpa.free(read.bytes);
+            self.decoded = split.decode(split.decode_ctx, self.gpa, self.record, read.bytes) catch |err| {
                 self.failure = err;
                 return .failed;
             };
@@ -400,13 +406,15 @@ pub const Registry = struct {
 
         fn makePayload(self: *Job, budget: *Budget) LoadError!Payload {
             if (self.loader.split) |split| {
-                return split.finish(self.loader.ctx, self.finish_gpa, self.record, self.decoded.?, budget);
+                const payload = try split.finish(self.loader.ctx, self.gpa, self.record, self.decoded.?, budget);
+                self.decoded = null; // The finish owns it now.
+                return payload;
             }
             const bytes = self.bytes.?;
             // A loader nobody split is charged its source, the best measure there is of
             // what it is about to upload.
             budget.charge(bytes.len);
-            return self.loader.load(self.loader.ctx, self.finish_gpa, self.record, bytes);
+            return self.loader.load(self.loader.ctx, self.gpa, self.record, bytes);
         }
     };
 
@@ -454,13 +462,15 @@ pub const Registry = struct {
         self.* = undefined;
     }
 
-    /// Where `request`s run, and the thread-safe allocator their decodes use (ADR-0061,
-    /// decision 5). Until this is called, requests run on `core.tasks.immediate` and decode
-    /// through the allocator each request is handed. Nothing may be in flight.
-    pub fn useTasks(self: *Registry, tasks: core.Tasks, decode_gpa: Allocator) void {
+    /// Where `request`s run (ADR-0061). Until this is called, requests run on
+    /// `core.tasks.immediate`. Nothing may be in flight.
+    ///
+    /// A request decodes through the allocator it is handed, the one its payload is made
+    /// and unloaded with, **which must therefore be thread-safe** whenever `tasks` has
+    /// threads (M27 Step 5's Resolution).
+    pub fn useTasks(self: *Registry, tasks: core.Tasks) void {
         std.debug.assert(self.jobs.items.len == 0);
         self.tasks = tasks;
-        self.task_gpa = decode_gpa;
     }
 
     // -- registration ------------------------------------------------------------------
@@ -766,7 +776,6 @@ pub const Registry = struct {
         var i: usize = 0;
         while (i < self.jobs.items.len) {
             const job = self.jobs.items[i];
-            job.finish_gpa = gpa;
             const status = job.graph.poll(&budget);
             switch (status) {
                 .pending => {
@@ -1163,7 +1172,6 @@ pub const Registry = struct {
         job.* = .{
             .registry = self,
             .gpa = gpa,
-            .decode_gpa = self.task_gpa orelse gpa,
             .handle = handle,
             .loader_index = loader_index,
             .loader = loader,
@@ -1172,7 +1180,6 @@ pub const Registry = struct {
             .max_bytes = @min(self.options.max_source_bytes, loader.max_source_bytes),
             .reload = options.reload,
             .previous_stamp = options.previous_stamp,
-            .finish_gpa = gpa,
             .graph = try core.tasks.Graph.init(gpa, self.tasks, .{ .nodes = 2, .edges = 1 }),
         };
         // Two nodes into a graph made for exactly two: neither add can fail.
@@ -1189,7 +1196,7 @@ pub const Registry = struct {
         std.debug.assert(entry.job == job);
         if (job.reload and entry.state == .ready) {
             const old = self.loaders.items[entry.loader].?.loader;
-            old.unload(old.ctx, job.finish_gpa, entry.payload);
+            old.unload(old.ctx, job.gpa, entry.payload);
         }
         entry.payload = payload;
         entry.loader = job.loader_index;
@@ -1250,7 +1257,6 @@ pub const Registry = struct {
             // Polled only if its decode has started: a poll would also start one that has
             // not, which this is about to do itself.
             const status: core.tasks.Status = if (job.graph.started(0)) settle: {
-                job.finish_gpa = gpa;
                 var budget: Budget = .unlimited;
                 break :settle job.graph.poll(&budget);
             } else .pending;
@@ -2409,6 +2415,8 @@ const FakeSplit = struct {
         for (image.pixels) |b| sum += b;
         budget.charge(image.pixels.len);
         const made = try gpa.create(FakeImage);
+        // On success the finish owns the decoded image; this one is done with it.
+        defer discard(gpa, decoded);
         made.* = .{
             .width = image.width,
             .height = image.height,
@@ -2485,7 +2493,7 @@ fn manualImages(order: Order) ![3]FakeImage {
     try fx.registry.registerLoader(fx.gpa, split.loader(schemas.texture.id));
     var manual = try core.tasks.Manual.init(testing.allocator, 8);
     defer manual.deinit();
-    fx.registry.useTasks(manual.tasks(), testing.allocator);
+    fx.registry.useTasks(manual.tasks());
 
     var handles: [3]AssetHandle = undefined;
     for (texture_ids, &handles) |id, *h| h.* = try fx.registry.request(fx.gpa, id);
@@ -2527,7 +2535,7 @@ fn poolImages(threads: u16) ![3]FakeImage {
     const pool = try fx.os.startBackground(testing.allocator, .{ .count = threads });
     // After the registry, as the engine orders them: the registry quiesces into the pool.
     defer pool.deinit();
-    fx.registry.useTasks(pool.tasks(), testing.allocator);
+    fx.registry.useTasks(pool.tasks());
 
     var handles: [3]AssetHandle = undefined;
     for (texture_ids, &handles) |id, *h| h.* = try fx.registry.request(fx.gpa, id);
@@ -2640,7 +2648,7 @@ test "acquire completes a pending entry, from its finished decode or by decoding
     var split: FakeSplit = .{};
     try fx.registry.registerLoader(fx.gpa, split.loader(schemas.texture.id));
     var manual = try core.tasks.Manual.init(testing.allocator, 8);
-    fx.registry.useTasks(manual.tasks(), testing.allocator);
+    fx.registry.useTasks(manual.tasks());
 
     // Decoded already, not finished: acquire finishes it, and does not decode again.
     const a = try fx.registry.request(fx.gpa, texture_ids[0]);
@@ -2685,7 +2693,7 @@ test "a pump finishes in request order within its budget, and always finishes it
     try fx.registry.registerLoader(fx.gpa, split.loader(schemas.texture.id));
     var manual = try core.tasks.Manual.init(testing.allocator, 8);
     defer manual.deinit();
-    fx.registry.useTasks(manual.tasks(), testing.allocator);
+    fx.registry.useTasks(manual.tasks());
 
     var handles: [3]AssetHandle = undefined;
     for (texture_ids, &handles) |id, *h| h.* = try fx.registry.request(fx.gpa, id);
@@ -2713,7 +2721,7 @@ test "a release to zero while pending cancels it, and the entry goes at the next
     try fx.registry.registerLoader(fx.gpa, split.loader(schemas.texture.id));
     var manual = try core.tasks.Manual.init(testing.allocator, 8);
     defer manual.deinit();
-    fx.registry.useTasks(manual.tasks(), testing.allocator);
+    fx.registry.useTasks(manual.tasks());
 
     // Decoding when it was let go.
     const first = try fx.registry.request(fx.gpa, texture_ids[0]);
@@ -2754,7 +2762,7 @@ test "quiesce discards work in flight, and a held entry starts again at the next
     try fx.registry.registerLoader(fx.gpa, split.loader(schemas.texture.id));
     var manual = try core.tasks.Manual.init(testing.allocator, 8);
     defer manual.deinit();
-    fx.registry.useTasks(manual.tasks(), testing.allocator);
+    fx.registry.useTasks(manual.tasks());
 
     const decoded = try fx.registry.request(fx.gpa, texture_ids[0]);
     const queued = try fx.registry.request(fx.gpa, texture_ids[1]);
@@ -2791,7 +2799,7 @@ test "a split loader's changed source reloads in the background, keeping the old
     try fx.registry.registerLoader(fx.gpa, split.loader(schemas.texture.id));
     var manual = try core.tasks.Manual.init(testing.allocator, 8);
     defer manual.deinit();
-    fx.registry.useTasks(manual.tasks(), testing.allocator);
+    fx.registry.useTasks(manual.tasks());
 
     const handle = try fx.registry.acquire(fx.gpa, sprites_id);
     defer fx.registry.release(handle);
@@ -2859,9 +2867,11 @@ test "a background reload that fails keeps the old payload and says so once" {
     try testing.expectEqual(@as(u32, 0), fx.registry.reloadChanged(fx.gpa));
     try testing.expect(!fx.registry.busy());
 
-    // A finish that fails is the same: the last payload that worked stays.
+    // A finish that fails is the same: the last payload that worked stays. Synchronously,
+    // its decoded image is discarded (`testing.allocator` would report it otherwise).
     try fx.writeFile("textures/sprites.png", &four_pixel_png);
     split.fail_finish = error.LoadFailed;
+    try testing.expectError(error.LoadFailed, fx.registry.reload(fx.gpa, handle));
     _ = fx.registry.reloadChanged(fx.gpa);
     try testing.expectEqual(@as(u32, 1), fx.registry.pump(fx.gpa, .{}).failed);
     try testing.expectEqual(@as(u32, 1), imageOf(&fx.registry, handle).?.width);
@@ -2876,7 +2886,7 @@ test "a loader nobody split still loads through a request, its load running as t
     try fx.registerTextureLoader();
     var manual = try core.tasks.Manual.init(testing.allocator, 8);
     defer manual.deinit();
-    fx.registry.useTasks(manual.tasks(), testing.allocator);
+    fx.registry.useTasks(manual.tasks());
 
     const handle = try fx.registry.request(fx.gpa, sprites_id);
     defer fx.registry.release(handle);
@@ -2910,7 +2920,7 @@ test "deinit quiesces what is in flight, and a loader leaving takes its pending 
         defer fx.deinit();
         try writeThree(fx);
         try fx.registry.registerLoader(fx.gpa, split.loader(schemas.texture.id));
-        fx.registry.useTasks(manual.tasks(), testing.allocator);
+        fx.registry.useTasks(manual.tasks());
         _ = try fx.registry.request(fx.gpa, texture_ids[0]);
         _ = try fx.registry.request(fx.gpa, texture_ids[1]);
         _ = fx.registry.pump(fx.gpa, .{});
@@ -2923,11 +2933,197 @@ test "deinit quiesces what is in flight, and a loader leaving takes its pending 
     defer fx.deinit();
     try writeThree(fx);
     try fx.registry.registerLoader(fx.gpa, split.loader(schemas.texture.id));
-    fx.registry.useTasks(manual.tasks(), testing.allocator);
+    fx.registry.useTasks(manual.tasks());
     const pending = try fx.registry.request(fx.gpa, texture_ids[0]);
     _ = fx.registry.pump(fx.gpa, .{});
     try testing.expectEqual(@as(u32, 1), fx.registry.unregisterLoader(fx.gpa, schemas.texture.id));
     try testing.expect(fx.registry.state(pending) == null);
     try testing.expect(!fx.registry.busy());
     manual.deinit();
+}
+
+// -- M27 Step 5: the engine's own split loaders in this module --------------------------
+
+const Executor = enum { immediate, manual_reverse, pool };
+
+/// Requests `id` through `loader` under `executor`, finishes it, and returns the payload
+/// re-encoded by `encode`, so two paths' payloads compare as bytes.
+fn requestedBytes(fx: *Fixture, id: ContentId, loader: Loader, executor: Executor, encode: *const fn (Allocator, Payload) anyerror![]u8) ![]u8 {
+    var manual = try core.tasks.Manual.init(testing.allocator, 4);
+    defer manual.deinit();
+    const pool = try fx.os.startBackground(testing.allocator, .{ .count = 2 });
+    defer pool.deinit();
+    switch (executor) {
+        .immediate => {},
+        .manual_reverse => fx.registry.useTasks(manual.tasks()),
+        .pool => fx.registry.useTasks(pool.tasks()),
+    }
+    const handle = try fx.registry.requestWith(fx.gpa, id, loader);
+    defer fx.registry.release(handle);
+    while (fx.registry.state(handle).? == .pending) {
+        _ = fx.registry.pump(fx.gpa, .{});
+        switch (executor) {
+            .immediate => {},
+            .manual_reverse => while (manual.pending() > 0) manual.runLast(),
+            .pool => pool.tasks().wait(),
+        }
+    }
+    try testing.expectEqual(State.ready, fx.registry.state(handle).?);
+    const bytes = try encode(fx.gpa, fx.registry.payloadOf(handle).?);
+    // Freed here, before the pool and the manual executor it may have used.
+    _ = fx.registry.unloadWith(fx.gpa, loader);
+    fx.registry.useTasks(core.tasks.immediate);
+    return bytes;
+}
+
+const skeleton_mod = @import("skeleton.zig");
+const animation_mod = @import("animation.zig");
+const collision_mod = @import("collision_mesh.zig");
+const tilegrid_mod = @import("tilegrid.zig");
+
+const Encoders = struct {
+    fn skeleton(gpa: Allocator, payload: Payload) anyerror![]u8 {
+        const s = skeleton_mod.fromPayload(payload);
+        return skeleton_mod.write(gpa, .{ .parents = s.parents, .rest = s.rest, .inverse_bind = s.inverse_bind, .root = s.root, .names = s.names });
+    }
+    fn animation(gpa: Allocator, payload: Payload) anyerror![]u8 {
+        const a = animation_mod.fromPayload(payload);
+        return animation_mod.write(gpa, .{ .duration = a.duration, .joint_count = a.joint_count, .tracks = a.tracks });
+    }
+    fn collision(gpa: Allocator, payload: Payload) anyerror![]u8 {
+        const c = collision_mod.fromPayload(payload);
+        return collision_mod.write(gpa, c.positions, c.indices);
+    }
+    fn tilegrid(gpa: Allocator, payload: Payload) anyerror![]u8 {
+        const g = tilegrid_mod.fromPayload(payload);
+        return tilegrid_mod.write(gpa, g.width, g.height, g.tiles);
+    }
+};
+
+test "the skeleton, animation, collision mesh and tile grid loaders make the same payload synchronously and in the background" {
+    const gpa = testing.allocator;
+    const rests = [_]core.math.Transform{ .{}, .{ .translation = .init(0, 1, 0) } };
+    const binds = [_]core.math.Mat4{ .identity, core.math.Mat4.translation(.init(0, -1, 0)) };
+    const skel = try skeleton_mod.write(gpa, .{ .parents = &.{ skeleton_mod.no_parent, 0 }, .rest = &rests, .inverse_bind = &binds, .names = &.{ "root", "hand.R" } });
+    defer gpa.free(skel);
+    const tracks = [_]animation_mod.Track{
+        .{ .joint = 0, .path = .translation, .times = &.{ 0, 1 }, .values = &.{ 0, 0, 0, 1, 0, 0 } },
+        .{ .joint = 1, .path = .rotation, .interpolation = .step, .times = &.{ 0, 1 }, .values = &.{ 0, 0, 0, 1, 0, 0, 1, 0 } },
+    };
+    const clip = try animation_mod.write(gpa, .{ .duration = 1, .joint_count = 2, .tracks = &tracks });
+    defer gpa.free(clip);
+    const positions = [_]core.math.Vec3{ .zero, .init(1, 0, 0), .init(0, 1, 0) };
+    const col = try collision_mod.write(gpa, &positions, &.{ 0, 1, 2 });
+    defer gpa.free(col);
+    const grid = try tilegrid_mod.write(gpa, 3, 2, &.{ 1, 2, 3, 4, 5, 6 });
+    defer gpa.free(grid);
+
+    const fx = try Fixture.init();
+    defer fx.deinit();
+    try fx.writeFile("a.fskel", skel);
+    try fx.writeFile("a.fanim", clip);
+    try fx.writeFile("a.fcol", col);
+    try fx.writeFile("a.fgrid", grid);
+    _ = try fx.addPackage("foundry:core",
+        \\foundry:skeleton foundry:skeletons.a { source "a.fskel" }
+        \\foundry:animation foundry:animations.a { source "a.fanim" }
+        \\foundry:collision_mesh foundry:collision.a { source "a.fcol" }
+        \\foundry:tilegrid foundry:grids.a { source "a.fgrid" }
+    );
+
+    const Case = struct { id: []const u8, loader: Loader, source: []const u8, encode: *const fn (Allocator, Payload) anyerror![]u8 };
+    const cases = [_]Case{
+        .{ .id = "foundry:skeletons.a", .loader = skeleton_mod.skeletonLoader(), .source = skel, .encode = Encoders.skeleton },
+        .{ .id = "foundry:animations.a", .loader = animation_mod.animationLoader(), .source = clip, .encode = Encoders.animation },
+        .{ .id = "foundry:collision.a", .loader = collision_mod.collisionMeshLoader(), .source = col, .encode = Encoders.collision },
+        .{ .id = "foundry:grids.a", .loader = tilegrid_mod.tilegridLoader(), .source = grid, .encode = Encoders.tilegrid },
+    };
+    for (cases) |case| {
+        try testing.expect(case.loader.split != null);
+        const id = ContentId.fromString(case.id);
+        // Synchronous: `acquireWith`, which is `loadWhole`.
+        const held = try fx.registry.acquireWith(fx.gpa, id, case.loader);
+        const sync = try case.encode(gpa, fx.registry.payloadOf(held).?);
+        defer gpa.free(sync);
+        fx.registry.release(held);
+        _ = fx.registry.unloadWith(fx.gpa, case.loader);
+        // The payload is its source, re-encoded: nothing was lost in either path.
+        try testing.expectEqualSlices(u8, case.source, sync);
+        for ([_]Executor{ .immediate, .manual_reverse, .pool }) |executor| {
+            const background = try requestedBytes(fx, id, case.loader, executor, case.encode);
+            defer gpa.free(background);
+            try testing.expectEqualSlices(u8, sync, background);
+        }
+    }
+}
+
+const texture_decode = @import("texture_decode.zig");
+const mips = @import("mips.zig");
+
+/// A finish that keeps only what the shared texture decode made: the bytes it would upload,
+/// hashed, so a test can compare them with `mips.generate`'s.
+const DecodeProbe = struct {
+    limits: texture_decode.Limits = .{ .max_dimension = 4096 },
+
+    fn loader(self: *DecodeProbe) Loader {
+        return .{
+            .schema = schemas.texture.id,
+            .ctx = self,
+            .load = load,
+            .unload = FakeSplit.unload,
+            .split = .{ .decode_ctx = &self.limits, .decode = texture_decode.decode, .finish = finish, .discard = texture_decode.discard },
+        };
+    }
+
+    fn load(ctx: ?*anyopaque, gpa: Allocator, record: Record, bytes: []const u8) LoadError!Payload {
+        const self: *DecodeProbe = @ptrCast(@alignCast(ctx.?));
+        return self.loader().loadWhole(gpa, record, bytes);
+    }
+
+    fn finish(_: ?*anyopaque, gpa: Allocator, _: Record, decoded: Decoded, _: *Budget) LoadError!Payload {
+        const texture = texture_decode.of(decoded);
+        const bytes = if (texture.chain) |chain| chain.bytes else texture.image.?.pixels;
+        const made = try gpa.create(FakeImage);
+        made.* = .{ .width = texture.width, .height = texture.height, .sum = std.hash.Fnv1a_64.hash(bytes), .linear = texture.chain != null };
+        texture_decode.discard(gpa, decoded);
+        return .fromPointer(made);
+    }
+};
+
+test "the shared texture decode makes the chain mips.generate makes, in the record's colour space, either way" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+    try fx.writeFile("textures/b.png", &four_pixel_png);
+    _ = try fx.addPackage("foundry:core",
+        \\foundry:texture foundry:textures.data { source "textures/b.png" color_space "linear" mipmaps true }
+        \\foundry:texture foundry:textures.colour { source "textures/b.png" mipmaps true }
+        \\foundry:texture foundry:textures.flat { source "textures/b.png" }
+    );
+    var image = try png.decode(testing.allocator, &four_pixel_png, .{});
+    defer image.deinit(testing.allocator);
+    var linear = try mips.generate(testing.allocator, image, .linear);
+    defer linear.deinit(testing.allocator);
+    var srgb = try mips.generate(testing.allocator, image, .srgb);
+    defer srgb.deinit(testing.allocator);
+    // The two spaces average to different bytes, or this test could not tell them apart.
+    try testing.expect(!std.mem.eql(u8, linear.bytes, srgb.bytes));
+
+    var probe: DecodeProbe = .{};
+    const Case = struct { id: []const u8, bytes: []const u8, chain: bool };
+    for ([_]Case{
+        .{ .id = "foundry:textures.data", .bytes = linear.bytes, .chain = true },
+        .{ .id = "foundry:textures.colour", .bytes = srgb.bytes, .chain = true },
+        .{ .id = "foundry:textures.flat", .bytes = image.pixels, .chain = false },
+    }) |case| {
+        for ([_]bool{ false, true }) |requested| {
+            const id = ContentId.fromString(case.id);
+            const handle = if (requested) try fx.registry.requestWith(fx.gpa, id, probe.loader()) else try fx.registry.acquireWith(fx.gpa, id, probe.loader());
+            _ = fx.registry.pump(fx.gpa, .{});
+            const made = imageOf(&fx.registry, handle).?;
+            try testing.expectEqual(std.hash.Fnv1a_64.hash(case.bytes), made.sum);
+            try testing.expectEqual(case.chain, made.linear);
+            fx.registry.release(handle);
+            _ = fx.registry.unloadWith(fx.gpa, probe.loader());
+        }
+    }
 }

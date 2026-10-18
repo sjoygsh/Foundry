@@ -206,6 +206,9 @@ pub const Renderer = struct {
     device: *rhi.Device,
     config: Config,
     unified: bool,
+    /// What the texture loader's decode may read off the main thread: this device's limit,
+    /// copied at `init`, so no background thread reaches the device (ADR-0061, decision 5).
+    texture_limits: asset.texture_decode.Limits,
 
     vertex_shader: rhi.ShaderModuleHandle,
     fragment_shader: rhi.ShaderModuleHandle,
@@ -342,6 +345,7 @@ pub const Renderer = struct {
             .device = device,
             .config = config,
             .unified = caps.unified_memory,
+            .texture_limits = .{ .max_dimension = caps.max_texture_dimension },
             .vertex_shader = vertex_shader,
             .fragment_shader = fragment_shader,
             .group_layout = group_layout,
@@ -437,8 +441,26 @@ pub const Renderer = struct {
         if (size.isEmpty()) return error.InvalidDescriptor;
         var chain = try asset.mips.generate(self.gpa, image, options.color_space);
         defer chain.deinit(self.gpa);
+        return self.createTextureFromChain(chain, options);
+    }
 
-        const handle = try self.createEmptyTexture(size, options, chain.levelCount());
+    /// Uploads a chain made by `asset.mips.generate` in `options.color_space`, every level:
+    /// `createTexture`'s second half, and the texture loader's finish (`background.md` §7).
+    /// The chain stays the caller's.
+    pub fn createTextureFromChain(
+        self: *Self,
+        chain: asset.MipChain,
+        options: texture_mod.TextureOptions,
+    ) Error!TextureHandle {
+        const base = chain.level(0);
+        const caps = self.device.capabilities();
+        if (base.width > caps.max_texture_dimension or base.height > caps.max_texture_dimension) {
+            log.warn("texture '{s}' is {d}x{d}, larger than the device's {d}", .{
+                options.label, base.width, base.height, caps.max_texture_dimension,
+            });
+            return error.TextureTooLarge;
+        }
+        const handle = try self.createEmptyTexture(.{ .width = base.width, .height = base.height }, options, chain.levelCount());
         errdefer self.destroyTexture(handle);
         try self.uploadChain(handle, chain);
         return handle;

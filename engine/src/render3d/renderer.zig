@@ -441,6 +441,9 @@ pub const Renderer = struct {
     device: *rhi.Device,
     config: Config,
     surface_format: rhi.TextureFormat,
+    /// What the texture loader's decode may read off the main thread: this device's limit,
+    /// copied at `init`, so no background thread reaches the device (ADR-0061, decision 5).
+    texture_limits: asset.texture_decode.Limits,
 
     frame_layout: rhi.BindGroupLayoutHandle,
     material_layout: rhi.BindGroupLayoutHandle,
@@ -648,6 +651,7 @@ pub const Renderer = struct {
             .device = device,
             .config = config,
             .surface_format = surface_format,
+            .texture_limits = .{ .max_dimension = device.capabilities().max_texture_dimension },
             .frame_layout = frame_layout,
             .material_layout = material_layout,
             .pipeline_layout = pipeline_layout,
@@ -784,28 +788,45 @@ pub const Renderer = struct {
         try self.models.append(self.gpa, state);
     }
 
+    /// Uploads a decoded image, generating its mip chain first if `options.mipmaps` asks:
+    /// `asset.mips.generate` followed by `createTextureFromChain`, which is what the texture
+    /// loader's decode and finish do on their two threads (`background.md` §7).
     pub fn createTexture(self: *Self, image: asset.Image, options: TextureOptions) Error!TextureHandle {
+        try self.checkTextureSize(image.width, image.height);
+        if (!options.mipmaps) return self.uploadTexture(image.width, image.height, image.pixels, null, options);
+        var chain = try asset.mips.generate(self.gpa, image, options.color_space);
+        defer chain.deinit(self.gpa);
+        return self.createTextureFromChain(chain, options);
+    }
+
+    /// Uploads a chain made by `asset.mips.generate` in `options.color_space`: every level,
+    /// one staging copy and one submit. The chain stays the caller's.
+    pub fn createTextureFromChain(self: *Self, chain: asset.MipChain, options: TextureOptions) Error!TextureHandle {
+        const base = chain.level(0);
+        try self.checkTextureSize(base.width, base.height);
+        return self.uploadTexture(base.width, base.height, chain.bytes, chain, options);
+    }
+
+    fn checkTextureSize(self: *Self, width: u32, height: u32) Error!void {
         const caps = self.device.capabilities();
-        if (image.width == 0 or image.height == 0 or image.width > caps.max_texture_dimension or image.height > caps.max_texture_dimension) {
+        if (width == 0 or height == 0 or width > caps.max_texture_dimension or height > caps.max_texture_dimension) {
             return error.TextureTooLarge;
         }
+    }
 
-        var chain: ?asset.MipChain = if (options.mipmaps)
-            try asset.mips.generate(self.gpa, image, options.color_space)
-        else
-            null;
-        defer if (chain) |*value| value.deinit(self.gpa);
-        const pixels = if (chain) |value| value.bytes else image.pixels;
+    fn uploadTexture(self: *Self, width: u32, height: u32, pixels: []const u8, chain: ?asset.MipChain, options: TextureOptions) Error!TextureHandle {
         const levels: u32 = if (chain) |value| value.levelCount() else 1;
 
         const gpu = try self.device.createTexture(.{
             .label = options.label,
-            .size = .{ .width = image.width, .height = image.height },
+            .size = .{ .width = width, .height = height },
             .format = switch (options.color_space) {
                 .srgb => .rgba8_unorm_srgb,
                 .linear => .rgba8_unorm,
             },
-            .usage = .{ .sampled = true, .copy_dst = true },
+            // `copy_src` so a texture's levels can be read back and compared: M27 Step 5 pins
+            // that both loading paths upload the same bytes.
+            .usage = .{ .sampled = true, .copy_dst = true, .copy_src = true },
             .mip_levels = levels,
         });
         errdefer self.device.destroyTexture(gpu);
@@ -824,7 +845,7 @@ pub const Renderer = struct {
                 .size = .{ .width = level.width, .height = level.height },
             });
         } else {
-            try cmd.copyBufferToTexture(.{ .src = staging, .dst = gpu, .size = .{ .width = image.width, .height = image.height } });
+            try cmd.copyBufferToTexture(.{ .src = staging, .dst = gpu, .size = .{ .width = width, .height = height } });
         }
         try cmd.textureBarrier(&.{.{ .texture = gpu, .from = .copy_dst, .to = .shader_read }});
         try cmd.submit();

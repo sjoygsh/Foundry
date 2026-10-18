@@ -723,7 +723,10 @@ test "a reloaded texture, record or model is followed, and handles stay valid" {
     const smaller = try checkerPng(stack.gpa, 4);
     defer stack.gpa.free(smaller);
     try stack.writeUnder(stack.out, "textures/crate.png", smaller);
-    try testing.expect(stack.assets.reloadChanged(stack.gpa) > 0);
+    // Since M27 a texture's loader is split, so the change reloads in the background and a
+    // pump swaps it in; with no executor handed over, the first pump does both.
+    _ = stack.assets.reloadChanged(stack.gpa);
+    try testing.expectEqual(@as(u32, 1), stack.assets.pump(stack.gpa, .{}).reloaded);
     try stack.begin();
     try stack.content.drawModel(.{ .model = pair, .world = .identity });
     try stack.finish(null);
@@ -859,4 +862,124 @@ test "an imported textured quad is the code-built quad, in bytes, in records and
             try testing.expect(!std.mem.eql(u8, imported_pixels[centre..][0..4], imported_pixels[0..4]));
         }
     }
+}
+
+// -- M27 Step 5: the same bytes through a request as through acquire -----------------------
+
+/// A gradient that is different in every texel, so a level copied wrong cannot hide.
+fn gradientPng(gpa: Allocator, width: u32, height: u32) ![]u8 {
+    const pixels = try gpa.alloc(u8, @as(usize, width) * height * 4);
+    defer gpa.free(pixels);
+    for (0..height) |y| for (0..width) |x| {
+        const at = (y * width + x) * 4;
+        pixels[at..][0..4].* = .{ @intCast(x * 255 / (width - 1)), @intCast(y * 255 / (height - 1)), @intCast((x * 7 + y * 13) % 256), 255 };
+    };
+    return rgbaPng(gpa, width, height, pixels);
+}
+
+/// Every level of `texture`, read back from the device into one buffer, largest first.
+fn readTexture(stack: *Stack, texture: render3d.TextureHandle, width: u32, height: u32, levels: u32) ![]u8 {
+    const gpu = stack.renderer.textures.get(texture).?.gpu;
+    var total: u64 = 0;
+    for (0..levels) |i| {
+        const size = asset.mips.levelSize(width, height, @intCast(i));
+        total += @as(u64, size.width) * size.height * 4;
+    }
+    const buffer = try stack.device.createBuffer(.{ .label = "texture readback", .size = total, .usage = .{ .copy_dst = true }, .memory = .readback });
+    defer stack.device.destroyBuffer(buffer);
+    var cmd = try stack.device.beginCommandBuffer();
+    try cmd.textureBarrier(&.{.{ .texture = gpu, .from = .shader_read, .to = .copy_src }});
+    var offset: u64 = 0;
+    for (0..levels) |i| {
+        const size = asset.mips.levelSize(width, height, @intCast(i));
+        try cmd.copyTextureToBuffer(.{ .src = gpu, .src_mip_level = @intCast(i), .size = .{ .width = size.width, .height = size.height }, .dst = buffer, .dst_offset = offset });
+        offset += @as(u64, size.width) * size.height * 4;
+    }
+    try cmd.textureBarrier(&.{.{ .texture = gpu, .from = .copy_src, .to = .shader_read }});
+    try cmd.submit();
+    stack.device.waitIdle();
+    const mapped = try stack.device.mapBuffer(buffer);
+    defer stack.device.unmapBuffer(buffer);
+    return stack.gpa.dupe(u8, mapped[0..@intCast(total)]);
+}
+
+/// Loads `which` through `loader` synchronously or by request on `pool`, and hands it back
+/// with the loader's entries unloaded afterwards by the caller.
+fn loadThrough(stack: *Stack, which: ContentId, loader: asset.Loader, pool: *platform.Background, background: bool) !asset.AssetHandle {
+    if (!background) return stack.assets.acquireWith(stack.gpa, which, loader);
+    stack.assets.useTasks(pool.tasks());
+    defer stack.assets.useTasks(core.tasks.immediate);
+    const handle = try stack.assets.requestWith(stack.gpa, which, loader);
+    while (stack.assets.state(handle).? == .pending) {
+        _ = stack.assets.pump(stack.gpa, .{});
+        pool.tasks().wait();
+    }
+    try testing.expectEqual(asset.State.ready, stack.assets.state(handle).?);
+    return handle;
+}
+
+test "a texture's levels and a mesh are the same through a request on the pool as through acquire, read back from the device" {
+    const stack = try Stack.init(1);
+    defer stack.deinit();
+    const pool = try stack.os.startBackground(stack.gpa, .{ .count = 2 });
+    defer pool.deinit();
+    const png = try gradientPng(stack.gpa, 40, 24);
+    defer stack.gpa.free(png);
+    try stack.install("textures/gradient.png", png);
+    const quad = try quadFile(stack.gpa);
+    defer stack.gpa.free(quad);
+    try stack.install("meshes/quad.fmesh", quad);
+    try stack.write("content.fdt",
+        \\foundry:texture demo:textures.mipped { source "textures/gradient.png" mipmaps true }
+        \\foundry:texture demo:textures.flat { source "textures/gradient.png" color_space "linear" }
+        \\foundry:texture demo:textures.data { source "textures/gradient.png" color_space "linear" mipmaps true }
+        \\foundry:mesh demo:meshes.quad { source "meshes/quad.fmesh" }
+    );
+    try stack.build();
+
+    const textures = render3d.textureLoader(&stack.renderer);
+    const Case = struct { name: []const u8, levels: u32, space: asset.ColorSpace, hash: u64 };
+    // Pinned (M27 Step 5): the bytes the CPU makes of the image, every level, which a device
+    // that keeps texture contents must read back exactly, whichever path uploaded them.
+    const cases = [_]Case{
+        .{ .name = "demo:textures.mipped", .levels = 6, .space = .srgb, .hash = 0x64b56f963c423089 },
+        .{ .name = "demo:textures.flat", .levels = 1, .space = .linear, .hash = 0xd73f519507e3037d },
+        // Averaged as numbers, not as colours: a chain made in the wrong space differs here.
+        .{ .name = "demo:textures.data", .levels = 6, .space = .linear, .hash = 0xdfc24b10be58e500 },
+    };
+    for (cases) |case| {
+        var got: [2][]u8 = undefined;
+        for ([_]bool{ false, true }, &got) |background, *bytes| {
+            const handle = try loadThrough(stack, id(case.name), textures, pool, background);
+            const texture = render3d.textureOf(&stack.assets, handle, &stack.renderer).?;
+            try testing.expectEqual(case.levels > 1, stack.renderer.textures.get(texture).?.mipmaps);
+            bytes.* = try readTexture(stack, texture, 40, 24, case.levels);
+            stack.assets.release(handle);
+            _ = stack.assets.unloadWith(stack.gpa, textures);
+        }
+        defer for (got) |bytes| stack.gpa.free(bytes);
+        try testing.expectEqualSlices(u8, got[0], got[1]);
+        var image = try asset.png.decode(stack.gpa, png, .{});
+        defer image.deinit(stack.gpa);
+        var chain = try asset.mips.generate(stack.gpa, image, case.space);
+        defer chain.deinit(stack.gpa);
+        const cpu = if (case.levels > 1) chain.bytes else image.pixels;
+        try testing.expectEqual(case.hash, std.hash.Fnv1a_64.hash(cpu));
+        // The null backend keeps no texel memory, and reads back zeros; Metal and Vulkan
+        // read back what was uploaded.
+        if (rhi.backend != .null) try testing.expectEqualSlices(u8, cpu, got[0]);
+    }
+
+    // A mesh: the same buffers' layout, bounds and submesh boxes either way.
+    const meshes = render3d.meshLoader(&stack.renderer);
+    var states: [2]struct { bounds: asset.MeshAabb, submeshes: usize, mask: u8, box: asset.MeshAabb } = undefined;
+    for ([_]bool{ false, true }, &states) |background, *state| {
+        const handle = try loadThrough(stack, id("demo:meshes.quad"), meshes, pool, background);
+        const mesh = stack.renderer.meshes.get(render3d.meshOf(&stack.assets, handle, &stack.renderer).?).?;
+        state.* = .{ .bounds = mesh.bounds, .submeshes = mesh.submeshes.len, .mask = mesh.stream_mask, .box = mesh.submesh_bounds[0] };
+        stack.assets.release(handle);
+        _ = stack.assets.unloadWith(stack.gpa, meshes);
+    }
+    try testing.expectEqualDeep(states[0], states[1]);
+    try testing.expectEqual(@as(usize, 0), stack.violations());
 }

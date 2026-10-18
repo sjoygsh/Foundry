@@ -36,6 +36,8 @@ pub const collisionMeshLoader = collision_mesh.collisionMeshLoader;
 pub const mesh = @import("mesh.zig");
 pub const mesh_file = @import("mesh_file.zig");
 pub const mips = @import("mips.zig");
+/// A texture's decode, shared by both renderers' split loaders (M27).
+pub const texture_decode = @import("texture_decode.zig");
 pub const png = @import("png.zig");
 pub const registry = @import("registry.zig");
 pub const schemas = @import("schemas.zig");
@@ -86,6 +88,7 @@ pub const AssetInfo = registry.Registry.AssetInfo;
 /// finish, the budget a finish charges, and what a request's entry is doing.
 pub const Split = registry.Split;
 pub const Decoded = registry.Decoded;
+pub const adoptDecoded = registry.adoptDecoded;
 pub const Budget = registry.Budget;
 pub const State = registry.State;
 pub const PumpBudget = registry.PumpBudget;
@@ -134,6 +137,7 @@ test {
     _ = script;
     _ = sound;
     _ = tilegrid;
+    _ = texture_decode;
     _ = tilemap;
     _ = ui_theme;
     _ = wav;

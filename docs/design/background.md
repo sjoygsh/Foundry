@@ -1,6 +1,6 @@
 # Design: M27 — Background work: a task graph, assets that load without stalling a frame, and the editor's background compile
 
-**Status:** Accepted 2026-10-18, when the owner asked for Step 1, with §14 as written (including item 1: `FoundryApi_v7` in M27, so M48 publishes v8). **Steps 1–4 of 11 are done**; their Resolutions follow §16.
+**Status:** Accepted 2026-10-18, when the owner asked for Step 1, with §14 as written (including item 1: `FoundryApi_v7` in M27, so M48 publishes v8). **Steps 1–5 of 11 are done**; their Resolutions follow §16.
 **Date:** 2026-10-18
 **Baseline:** `8182188`, tag `m26`. M0–M26 are complete, and with them Phase 5.
 **Decisions:**
@@ -1180,3 +1180,98 @@ No engine loader is split yet, so every load the engine does today behaves as be
 
 Step 5 splits the engine's loaders (§7). The skeleton, animation, collision-mesh, tile-grid
 and sound finishes copy into their payloads, by the rule above.
+
+## Resolution — Step 5: the engine's loaders split (2026-10-18)
+
+Every loader in §7's table now has a `split`. The script `SourceLoader` has none, as §7 says.
+
+| Loader | `decode`, on any thread | `finish`, in the pump |
+| --- | --- | --- |
+| `render3d.textureLoader` and `render2d.textureLoader` | `asset.texture_decode.decode`, shared: PNG decode bounded by the device limit, then the whole mip chain if the record asks | `createTextureFromChain`, or `createTexture` for one level |
+| `render3d.meshLoader` | the file copied and fully validated by `mesh_file.read` | `createMesh` from the validated view |
+| skeleton, animation, collision mesh, tile grid | today's whole parse and copy | `asset.adoptDecoded`: the decoded value becomes the payload |
+| the mixer's `soundLoader` | WAV decode and conversion | the samples handed to the mixer |
+
+Supporting changes:
+- **Texture upload:** both renderers gain `createTextureFromChain`. `createTexture` is now
+  `mips.generate` followed by that call.
+- **Device limit:** each renderer keeps `texture_limits`, its device's maximum dimension
+  copied at `init`. A decode reads only that, so no background thread reaches a device.
+- **Composition:** every split loader's own `load` is `loadWhole`, so there is one
+  implementation per kind.
+
+**What implementation settled:**
+- **A finish now owns its decoded value on success, correcting Step 4's Resolution.** Step 4
+  said a finish neither frees nor keeps it, so that the counted `background` allocator would
+  stay balanced. §7 hands the decoded value over as the payload for five loaders, and under
+  that rule each would have parsed and then copied everything a second time.
+  - The balance is kept another way: a request decodes through the allocator it is handed,
+    which is the one its payload is made and unloaded with.
+  - The engine passes its `gpa`, which `Config.background_workers` already requires to be
+    thread-safe. `useTasks` therefore takes only the executor.
+  - `engine.taskAllocator` and the `background` counter remain, for Step 7's builds.
+  - §4.3's "freed by its `finish` or `discard`" stands as written. Only Step 4's narrowing of
+    it is withdrawn.
+- **A texture's decode and finish agree on the colour space.** Both read the same field with
+  the same `srgb` default. The decode stays silent, and the finish warns about an unknown
+  spelling as before.
+- **A mesh's decode copies the file once,** because the view its validation returns borrows
+  the bytes it validated. The finish then builds buffers from that view without reading it
+  again.
+- **Content textures gain `copy_src` usage in `render3d`,** so their levels can be read back
+  for the pinned hash.
+- **The null backend keeps no texel memory, and reads back zeros.** The first hashes pinned
+  in this step were of those zeros, and Metal's run exposed it. The pins are now of the bytes
+  the CPU makes, and every backend checks them:
+  - on any backend, the CPU bytes must match the pin, and the two paths' readbacks must
+    match each other;
+  - on Metal and Vulkan, the readback must also equal the CPU bytes exactly.
+- **One integration test needed updating.** `model_content`'s reload test called
+  `reloadChanged` on a bare registry and expected a synchronous reload. A texture's source
+  change now reloads in the background (§6.3), so the test pumps once and expects one
+  reload. This is the behaviour the design asked for, not a regression.
+
+**Tests:**
+- **Registry, the parsed kinds:** skeleton, animation, collision mesh and tile grid each make
+  a payload that re-encodes to its source file byte for byte. This holds synchronously, under
+  `immediate`, under `Manual` in reverse, and on a two-thread pool.
+- **Registry, the shared texture decode:** it makes exactly `mips.generate`'s chain in the
+  record's colour space, linear and sRGB, or the bare image without mipmaps, both ways.
+- **Registry, a failed finish:** a synchronous reload whose finish fails discards its decoded
+  image.
+- **`model_content`:** three textures (sRGB mipped, linear mipped, linear flat) read back
+  every level identically through `acquireWith` and through `requestWith` on the pool.
+  - Their CPU bytes are pinned: `64b56f963c423089`, `dfc24b10be58e500` and
+    `d73f519507e3037d`.
+  - On Metal the readback equals those bytes.
+  - A mesh's bounds, submesh boxes and streams match either way.
+- **`asset_pipeline`:** a `render2d` texture requested on the pool has the same descriptor,
+  levels and sampler as an acquired one, and draws with no violation.
+- **`sound_pipeline`:** a sound requested on the pool plays exactly the samples a synchronous
+  load plays.
+
+**Evidence:**
+- **The integration tests on Metal (`-Drhi=metal`) passed: 97/102 (five skips),** including
+  every texture's exact readback.
+- **Guards were broken in turn, and each restored byte for byte:**
+  - Detected: a failed finish's decode kept, a finished decode discarded again, mips never
+    made, a sound's box leaked, and the decode ignoring the colour space.
+  - The colour-space mutation first survived, because on null no test read the loader's own
+    bytes. The shared-decode test was added for it and fails it.
+  - Dropping `mipmaps` from the `render3d` finish's options is an equivalent mutant:
+    `createTextureFromChain` uploads every level of its chain whatever that flag says.
+  - The sound mutation's first form was a compile error, and was redone.
+- **The bar passed: 2,177/2,178 (one skip)**, with five new tests. fmt, all four `check`
+  variants, the four headless samples and `fdt-check` passed.
+- **The tour:** the headless tour with `FOUNDRY_SANDBOX3D_LOAD=sync` passes, with hash
+  `cb99ccfcf2b6d6c3`.
+- **Timing, recorded rather than smoothed over:**
+  - The bar's tour logged a synchronous gallery load of 18.7 s, against Step 3's 2.8 s, and
+    one rerun gave 19.3 s. Both ran while the load average was six to seven, straight after
+    the mutation and Metal runs.
+  - Two later reruns of the same command gave 2.73 s and 2.75 s. Step 4's commit in a
+    separate worktree gave 2.74 s, and a directly run binary of this step gave 2.74 s.
+  - So the split adds no cost to the synchronous path, and the outliers were the machine.
+
+Step 6 gives `render3d.Content` its `requestModel`, and loads `sandbox3d`'s gallery in the
+background.

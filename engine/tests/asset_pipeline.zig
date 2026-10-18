@@ -448,3 +448,44 @@ test "a colour space nobody recognises is sRGB, and says so" {
     const texture, _ = describe(stack, handle);
     try testing.expectEqual(rhi.TextureFormat.rgba8_unorm_srgb, texture.format);
 }
+
+test "a texture requested on the background pool is the texture acquire makes, levels, format and sampler" {
+    if (rhi.backend != .null) return error.SkipZigTest;
+    const stack = try Stack.init();
+    defer stack.deinit();
+    const pool = try stack.os.startBackground(stack.gpa, .{ .count = 2 });
+    defer pool.deinit();
+    defer stack.assets.useTasks(core.tasks.immediate);
+
+    const png = try @import("ui_theme.zig").solidPng(stack.gpa, 13, 7);
+    defer stack.gpa.free(png);
+    try stack.writeFile("textures/sprites.png", png);
+    try stack.loadPackage("foundry:core",
+        \\foundry:texture foundry:textures.sprites {
+        \\    source      "textures/sprites.png"
+        \\    filter      "linear"
+        \\    wrap        "mirror"
+        \\    color_space "linear"
+        \\    mipmaps     true
+        \\}
+    );
+
+    const sync = try stack.assets.acquire(stack.gpa, sprites_id);
+    const texture, const sampler = describe(stack, sync);
+    stack.assets.release(sync);
+    try testing.expectEqual(@as(u32, 1), stack.assets.evictUnused(stack.gpa));
+
+    stack.assets.useTasks(pool.tasks());
+    const requested = try stack.assets.request(stack.gpa, sprites_id);
+    defer stack.assets.release(requested);
+    while (stack.assets.state(requested).? == .pending) {
+        _ = stack.assets.pump(stack.gpa, .{});
+        pool.tasks().wait();
+    }
+    const texture_bg, const sampler_bg = describe(stack, requested);
+    try testing.expectEqualDeep(texture, texture_bg);
+    try testing.expectEqualDeep(sampler, sampler_bg);
+    try testing.expectEqual(@as(u32, 4), texture_bg.mip_levels);
+    try stack.frame(spriteOf(textureOf(stack, requested)));
+    try testing.expectEqual(@as(usize, 0), stack.device.violationCount());
+}

@@ -271,12 +271,15 @@ pub fn describeParseError(err: ParseError) []const u8 {
 /// It needs no context, because a grid of numbers needs nothing but an allocator to become
 /// one. The payload is a pointer to a `TileGrid` the loader allocated and the loader frees;
 /// a grid does not fit in the registry's one opaque word the way a texture handle does.
+///
+/// Split (M27): the whole read on any thread, and a finish that adopts the grid it made.
 pub fn tilegridLoader() Loader {
     return .{
         .schema = schemas.tilegrid.id,
         .ctx = null,
         .load = load,
         .unload = unload,
+        .split = .{ .decode = decode, .finish = registry_mod.adoptDecoded, .discard = discard },
     };
 }
 
@@ -287,8 +290,19 @@ fn load(
     bytes: []const u8,
 ) registry_mod.LoadError!Payload {
     _ = ctx;
-    _ = record;
+    return tilegridLoader().loadWhole(gpa, record, bytes);
+}
 
+fn discard(gpa: Allocator, decoded: registry_mod.Decoded) void {
+    unload(null, gpa, .{ .bits = decoded.bits });
+}
+
+fn decode(
+    _: ?*const anyopaque,
+    gpa: Allocator,
+    _: Record,
+    bytes: []const u8,
+) registry_mod.LoadError!registry_mod.Decoded {
     const grid = gpa.create(TileGrid) catch return error.OutOfMemory;
     errdefer gpa.destroy(grid);
 
@@ -300,7 +314,7 @@ fn load(
         error.UnsupportedVersion => error.UnsupportedVersion,
         error.NotAGrid, error.Malformed => error.InvalidAsset,
     };
-    return .fromPointer(grid);
+    return registry_mod.Decoded.fromPointer(grid);
 }
 
 fn unload(ctx: ?*anyopaque, gpa: Allocator, payload: Payload) void {

@@ -1,10 +1,25 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-18
-**Current handoff: M27 Step 4 of 11 is complete** ([`docs/design/background.md`](docs/design/background.md)).
-**Stop before Step 5**: splitting the engine's loaders (§7). No engine loader has a `decode`
-yet, so every load still happens on the main thread, and no ABI call exists. Nothing is pushed:
-local `main` is ahead by M26 Steps 7–13, the `m26` tag and M27's commits.
+**Current handoff: M27 Step 5 of 11 is complete** ([`docs/design/background.md`](docs/design/background.md)).
+**Stop before Step 6**: `render3d.Content.requestModel` and `sandbox3d` loading its gallery in
+the background. Nothing in a sample requests yet, so every load a sample makes is still
+synchronous, and no ABI call exists. Nothing is pushed: local `main` is ahead by M26 Steps
+7–13, the `m26` tag and M27's commits.
+
+**M27 Step 5 is done (2026-10-18): every engine loader with a decode is split.**
+- Both renderers' textures go through one shared decode (`asset.texture_decode`: PNG and mip
+  chain) and a `createTextureFromChain` finish.
+- `render3d`'s meshes are validated off the main thread.
+- Skeletons, animations, collision meshes and tile grids are parsed off it, and adopted as
+  their payloads.
+- The mixer's sounds are decoded off it.
+- A finish now owns its decoded value. That corrects Step 4, and a request decodes through
+  the allocator its payload is unloaded with.
+- Textures read back identically through both paths, against pinned CPU bytes, and exactly
+  on Metal.
+
+Integration on Metal **97/102**. Bar **2,177/2,178** (one skip).
 
 **M27 Step 4 is done (2026-10-18): `asset.Registry` requests, pumps and quiesces.**
 - `request`, `requestOf` and `requestWith` return a counted handle at once.

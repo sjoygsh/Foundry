@@ -490,8 +490,9 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             // `content_dir` and `content` make by not being guarded at all.
             profile = .off;
             self.assets = .init(gpa, os, &self.store, .{});
-            // Requests decode on the background pool, through the counted allocator.
-            self.assets.useTasks(self.background.tasks(), self.task_memory.allocator());
+            // Requests decode on the background pool, through `gpa`, which their payloads are
+            // unloaded with (thread-safe whenever there are background workers).
+            self.assets.useTasks(self.background.tasks());
             // The one asset kind the engine can load without help from above. A texture
             // needs a renderer and therefore has to be registered by whoever has one (I6);
             // a tile grid is `[]u16` and needs nothing, and registering it here is the same

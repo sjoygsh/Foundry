@@ -360,12 +360,16 @@ pub fn MixerOf(comptime P: type) type {
         ///
         /// `self` is borrowed for as long as the loader is registered, so the registry
         /// must be torn down before the mixer is.
+        ///
+        /// Split (M27): the WAV decode and conversion on any thread, and a finish that hands
+        /// the samples to the mixer.
         pub fn soundLoader(self: *Self) asset.Loader {
             return .{
                 .schema = asset.schemas.sound.id,
                 .ctx = self,
                 .load = soundLoad,
                 .unload = soundUnload,
+                .split = .{ .decode = soundDecode, .finish = soundFinish, .discard = soundDiscard },
             };
         }
 
@@ -375,10 +379,19 @@ pub fn MixerOf(comptime P: type) type {
             record: asset.Record,
             bytes: []const u8,
         ) asset.LoadError!asset.Payload {
-            _ = record;
             const self: *Self = @ptrCast(@alignCast(ctx.?));
+            return self.soundLoader().loadWhole(gpa, record, bytes);
+        }
 
-            var decoded = asset.wav.decode(gpa, bytes, .{}) catch |err| return switch (err) {
+        fn soundDecode(
+            _: ?*const anyopaque,
+            gpa: Allocator,
+            _: asset.Record,
+            bytes: []const u8,
+        ) asset.LoadError!asset.Decoded {
+            const boxed = try gpa.create(asset.Sound);
+            errdefer gpa.destroy(boxed);
+            boxed.* = asset.wav.decode(gpa, bytes, .{}) catch |err| return switch (err) {
                 error.OutOfMemory => error.OutOfMemory,
                 // A valid WAV this decoder does not handle. The file is fine and the
                 // answer for the author is different: transcode, do not debug.
@@ -386,9 +399,28 @@ pub fn MixerOf(comptime P: type) type {
                 error.SoundTooLarge => error.LoadFailed,
                 error.InvalidSound => error.InvalidAsset,
             };
-            errdefer decoded.deinit(gpa);
+            return .fromPointer(boxed);
+        }
 
-            return .fromHandle(try self.insertSound(decoded));
+        /// The samples become the mixer's; only the box they came in is freed here.
+        fn soundFinish(
+            ctx: ?*anyopaque,
+            gpa: Allocator,
+            _: asset.Record,
+            decoded: asset.Decoded,
+            _: *asset.Budget,
+        ) asset.LoadError!asset.Payload {
+            const self: *Self = @ptrCast(@alignCast(ctx.?));
+            const boxed: *asset.Sound = @ptrCast(@alignCast(decoded.pointer().?));
+            const handle = try self.insertSound(boxed.*);
+            gpa.destroy(boxed);
+            return .fromHandle(handle);
+        }
+
+        fn soundDiscard(gpa: Allocator, decoded: asset.Decoded) void {
+            const boxed: *asset.Sound = @ptrCast(@alignCast(decoded.pointer().?));
+            boxed.deinit(gpa);
+            gpa.destroy(boxed);
         }
 
         fn soundUnload(ctx: ?*anyopaque, gpa: Allocator, payload: asset.Payload) void {

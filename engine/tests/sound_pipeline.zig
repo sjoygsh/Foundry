@@ -324,3 +324,32 @@ test "a reload while a voice is playing swaps the sound without cutting it off" 
     _ = try s.mixer.play(chirp_id, .{ .looping = true });
     try testing.expectEqualSlices(f32, &[_]f32{ 0.25, 0.25 }, try s.step(2));
 }
+
+test "a sound requested on the background pool plays the same samples as one acquired" {
+    const s = try Stack.init(.{ .channels = 1, .buffer_frames = 4 });
+    defer s.deinit();
+    const pool = try s.os.startBackground(s.gpa, .{ .count = 2 });
+    defer pool.deinit();
+    // Before the pool goes: the registry must not quiesce into a stopped one.
+    defer s.assets.useTasks(core.tasks.immediate);
+    s.assets.useTasks(pool.tasks());
+
+    try s.writeWav("sounds/chirp.wav", &.{ -32768, 0, 16384, 32767 });
+    try s.loadPackage("foundry:core", package_source);
+
+    // Decoded on a worker, handed to the mixer by a pump on this thread.
+    const requested = try s.assets.request(s.gpa, chirp_id);
+    defer s.assets.release(requested);
+    while (s.assets.state(requested).? == .pending) {
+        _ = s.assets.pump(s.gpa, .{});
+        pool.tasks().wait();
+    }
+    try testing.expectEqual(asset.State.ready, s.assets.state(requested).?);
+
+    // `play` acquires the entry the request made ready, and hears exactly what a synchronous
+    // load gives (the test above).
+    const v = try s.mixer.play(chirp_id, .{});
+    try testing.expect(s.mixer.isPlaying(v));
+    try testing.expectEqualSlices(f32, &[_]f32{ -1.0, 0.0, 0.5, 32767.0 / 32768.0 }, try s.step(4));
+    s.mixer.update();
+}

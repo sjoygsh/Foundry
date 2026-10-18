@@ -192,14 +192,21 @@ pub fn write(gpa: Allocator, source: Source) WriteError![]u8 {
     return b;
 }
 pub fn animationLoader() registry.Loader {
-    return .{ .schema = schemas.animation.id, .max_source_bytes = Limits.default.max_file_bytes, .load = load, .unload = unload };
+    return .{ .schema = schemas.animation.id, .max_source_bytes = Limits.default.max_file_bytes, .load = load, .unload = unload, .split = .{ .decode = decode, .finish = registry.adoptDecoded, .discard = discard } };
 }
-fn load(_: ?*anyopaque, gpa: Allocator, _: @import("data").store.Record, bytes: []const u8) registry.LoadError!registry.Payload {
+fn load(_: ?*anyopaque, gpa: Allocator, record: @import("data").store.Record, bytes: []const u8) registry.LoadError!registry.Payload {
+    return animationLoader().loadWhole(gpa, record, bytes);
+}
+/// The whole parse and validation, on any thread; the finish adopts the result (M27).
+fn decode(_: ?*const anyopaque, gpa: Allocator, _: @import("data").store.Record, bytes: []const u8) registry.LoadError!registry.Decoded {
     const view = read(bytes, .default) catch |err| return if (err == error.UnsupportedVersion) error.UnsupportedVersion else error.InvalidAsset;
     const owned = try gpa.create(Animation);
     errdefer gpa.destroy(owned);
     owned.* = try view.copy(gpa);
-    return .fromPointer(owned);
+    return registry.Decoded.fromPointer(owned);
+}
+fn discard(gpa: Allocator, decoded: registry.Decoded) void {
+    unload(null, gpa, .{ .bits = decoded.bits });
 }
 fn unload(_: ?*anyopaque, gpa: Allocator, payload: registry.Payload) void {
     const owned: *Animation = @ptrCast(@alignCast(payload.pointer().?));

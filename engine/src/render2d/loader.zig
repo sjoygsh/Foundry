@@ -28,12 +28,21 @@ const log = core.log.scoped(.render2d);
 ///
 /// `renderer` is borrowed for as long as the loader is registered, so the registry must be
 /// torn down before the renderer is — the registry's `deinit` unloads through this.
+///
+/// Split (ADR-0062): the PNG decode and any mip chain off the main thread, through
+/// `asset.texture_decode`, which `render3d` shares; the upload in the finish.
 pub fn textureLoader(renderer: *Renderer) asset.Loader {
     return .{
         .schema = asset.schemas.texture.id,
         .ctx = renderer,
         .load = load,
         .unload = unload,
+        .split = .{
+            .decode_ctx = &renderer.texture_limits,
+            .decode = asset.texture_decode.decode,
+            .finish = finish,
+            .discard = asset.texture_decode.discard,
+        },
     };
 }
 
@@ -44,34 +53,39 @@ fn load(
     bytes: []const u8,
 ) asset.LoadError!asset.Payload {
     const renderer: *Renderer = @ptrCast(@alignCast(ctx.?));
-    const caps = renderer.device.capabilities();
+    return textureLoader(renderer).loadWhole(gpa, record, bytes);
+}
 
-    // Bounded by what this device can actually hold, rather than by the decoder's generic
-    // ceiling. An image too large to become a texture is refused before it is expanded,
-    // instead of after 64 MiB has been allocated to find out.
-    var image = asset.png.decode(gpa, bytes, .{
-        .max_dimension = caps.max_texture_dimension,
-    }) catch |err| return switch (err) {
-        error.OutOfMemory => error.OutOfMemory,
-        // A valid PNG this decoder does not handle — the file is fine and the answer for
-        // the author is different, which is the distinction `UnsupportedVersion` carries.
-        error.UnsupportedImage => error.UnsupportedVersion,
-        error.ImageTooLarge => error.LoadFailed,
-        error.InvalidImage => error.InvalidAsset,
-    };
-    defer image.deinit(gpa);
-
-    const handle = renderer.createTexture(image, .{
+/// The decode bounded the image by this device's limit before it was expanded, rather than
+/// after 64 MiB had been allocated to find out; what is left is the upload.
+fn finish(
+    ctx: ?*anyopaque,
+    gpa: Allocator,
+    record: asset.Record,
+    decoded: asset.Decoded,
+    budget: *asset.Budget,
+) asset.LoadError!asset.Payload {
+    const renderer: *Renderer = @ptrCast(@alignCast(ctx.?));
+    const texture = asset.texture_decode.of(decoded);
+    const options: texture_mod.TextureOptions = .{
         .filter = filterOf(record),
         .wrap = wrapOf(record),
+        // The decode read the same field with the same default, so its chain is in this space.
         .color_space = sampler(asset.ColorSpace, record, asset.schemas.color_space_field, .srgb),
-        .mipmaps = asset.schemas.boolField(record, asset.schemas.texture, asset.schemas.mipmaps_field) orelse false,
+        .mipmaps = texture.chain != null,
         .label = record.name,
-    }) catch |err| return switch (err) {
+    };
+    const made = if (texture.chain) |chain|
+        renderer.createTextureFromChain(chain, options)
+    else
+        renderer.createTexture(texture.image.?, options);
+    const handle = made catch |err| return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         // Not the content's fault and not a version: the device said no.
         else => error.LoadFailed,
     };
+    budget.charge(texture.byteSize());
+    asset.texture_decode.discard(gpa, decoded);
     return .fromHandle(handle);
 }
 
