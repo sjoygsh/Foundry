@@ -11,7 +11,9 @@ const Allocator = std.mem.Allocator;
 const Renderer = renderer_mod.Renderer;
 
 /// Split (ADR-0062): the PNG decode and the mip chain off the main thread, through
-/// `asset.texture_decode`; the upload in the finish (`background.md` §7).
+/// `asset.texture_decode`; the upload in the finish (`background.md` §7). Staged: the copy into
+/// upload memory is a fill on the pool too, because on Windows/Vulkan that copy alone cost
+/// 1.6–9 ms per 2048² chain (M27 Step 10).
 pub fn textureLoader(renderer: *Renderer) asset.Loader {
     return .{
         .schema = asset.schemas.texture.id,
@@ -25,6 +27,7 @@ pub fn textureLoader(renderer: *Renderer) asset.Loader {
             .discard = asset.texture_decode.discard,
             // A chain is megabytes; returning it is not the main thread's work.
             .after_finish = .free_on_pool,
+            .stage = .{ .prepare = prepareTexture, .fill = asset.texture_decode.fill, .release = releaseTexture },
         },
     };
 }
@@ -67,17 +70,35 @@ fn finishTexture(ctx: ?*anyopaque, _: Allocator, record: asset.Record, decoded: 
         .mipmaps = texture.chain != null,
         .label = record.name,
     };
-    const made = if (texture.chain) |chain|
-        renderer.createTextureFromChain(chain, options)
-    else
-        renderer.createTexture(texture.image.?, options);
-    const handle = made catch |err| return switch (err) {
+    // Staged by the registry whichever path loaded it, and consumed here on every path.
+    const staged = texture.staged.?;
+    texture.staged = null;
+    const reservation: renderer_mod.StagingReservation = .{ .buffer = .fromBits(staged.token), .bytes = staged.bytes };
+    const handle = renderer.createTextureFromStaged(texture.width, texture.height, texture.chain, reservation, options) catch |err| return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         else => error.LoadFailed,
     };
     // The chain is the registry's to free, on the pool (`asset.AfterFinish.free_on_pool`).
     budget.charge(texture.byteSize());
     return .fromHandle(handle);
+}
+
+fn prepareTexture(ctx: ?*anyopaque, decoded: asset.Decoded) asset.LoadError!void {
+    const renderer: *Renderer = @ptrCast(@alignCast(ctx orelse return error.LoadFailed));
+    const texture = asset.texture_decode.of(decoded);
+    const reservation = renderer.reserveStaging("texture staging", texture.byteSize()) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.LoadFailed,
+    };
+    texture.staged = .{ .bytes = reservation.bytes, .token = reservation.buffer.bits() };
+}
+
+fn releaseTexture(ctx: ?*anyopaque, decoded: asset.Decoded) void {
+    const renderer: *Renderer = @ptrCast(@alignCast(ctx.?));
+    const texture = asset.texture_decode.of(decoded);
+    const staged = texture.staged.?;
+    texture.staged = null;
+    renderer.returnStaging(.{ .buffer = .fromBits(staged.token), .bytes = staged.bytes }, false);
 }
 
 fn unloadTexture(ctx: ?*anyopaque, _: Allocator, payload: asset.Payload) void {

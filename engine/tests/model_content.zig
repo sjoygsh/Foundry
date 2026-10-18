@@ -1200,6 +1200,11 @@ test "a requested model waits for its materials' textures as well as its meshes"
     try testing.expectEqual(render3d.ModelState.pending, (try stack.content.modelState(model)).?);
     manual.runAll();
     _ = stack.assets.pump(stack.gpa, .{});
+    // Decoded and its staging reserved, but not yet filled on the executor (M27 Step 10).
+    try testing.expectEqual(@as(u32, 1), manual.pending());
+    try testing.expectEqual(render3d.ModelState.pending, (try stack.content.modelState(model)).?);
+    manual.runAll();
+    _ = stack.assets.pump(stack.gpa, .{});
     try testing.expectEqual(render3d.ModelState.ready, (try stack.content.modelState(model)).?);
     try stack.begin();
     try stack.content.drawModel(.{ .model = model, .world = .identity });

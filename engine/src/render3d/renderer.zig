@@ -300,6 +300,28 @@ pub const Error = error{
     MissingSkin,
 } || asset.MeshError || rhi.ResourceError || rhi.MapError || rhi.CommandError || rhi.VertexUpdateError || Allocator.Error;
 
+/// A kept upload buffer (M27 Step 10). `reusable_from` is the first frame in which no
+/// submitted copy can still be reading it.
+const Staging = struct {
+    buffer: rhi.BufferHandle,
+    size: u64,
+    reserved: bool = false,
+    mapped: bool = false,
+    reusable_from: u64 = 0,
+};
+
+/// Mapped upload memory a staged load holds from its prepare to its finish.
+pub const StagingReservation = struct {
+    buffer: rhi.BufferHandle,
+    bytes: []u8,
+};
+
+/// What the staging buffers kept between loads may hold: a few 2048² chains, which the gallery
+/// loads two at a time on the default pool.
+const max_kept_staging: u64 = 64 << 20;
+/// Frames without a reservation after which every idle staging buffer is given back.
+const staging_idle_frames: u64 = 300;
+
 const MeshState = struct {
     vertex_buffers: [rhi.pipeline.max_vertex_buffers]rhi.BufferHandle = @splat(.none),
     formats: [rhi.pipeline.max_vertex_buffers]?asset.MeshVertexFormat = @splat(null),
@@ -484,6 +506,12 @@ pub const Renderer = struct {
     skin_bytes: []align(16) u8 = &.{},
     skin_vertex: rhi.BufferHandle = .none,
     skin_frame: ?u64 = null,
+    /// Upload buffers a staged texture load copied through, kept for the next (M27 Step 10).
+    staging: std.ArrayList(Staging) = .empty,
+    /// The newest frame this renderer has prepared: what a staging buffer's reuse is timed by.
+    latest_frame: u64 = 0,
+    /// The frame of the last reservation, so a burst's buffers are given back after it.
+    last_reservation: u64 = 0,
 
     color_target: rhi.TextureHandle,
     hdr_target: rhi.TextureHandle,
@@ -703,6 +731,12 @@ pub const Renderer = struct {
         if (self.skin_buffer) |*buffer| buffer.deinit();
         self.gpa.free(self.skin_bytes);
         self.palettes.deinit(self.gpa);
+        for (self.staging.items) |entry| {
+            // The registry is torn down first, and gives back every reservation it held.
+            std.debug.assert(!entry.reserved);
+            self.device.destroyBuffer(entry.buffer);
+        }
+        self.staging.deinit(self.gpa);
         while (self.materials.count() != 0) {
             var it = self.materials.iterator();
             self.destroyMaterial(it.next().?.id);
@@ -796,7 +830,7 @@ pub const Renderer = struct {
     /// loader's decode and finish do on their two threads (`background.md` §7).
     pub fn createTexture(self: *Self, image: asset.Image, options: TextureOptions) Error!TextureHandle {
         try self.checkTextureSize(image.width, image.height);
-        if (!options.mipmaps) return self.uploadTexture(image.width, image.height, image.pixels, null, options);
+        if (!options.mipmaps) return self.uploadTexture(image.width, image.height, image.pixels, null, null, options);
         var chain = try asset.mips.generate(self.gpa, image, options.color_space);
         defer chain.deinit(self.gpa);
         return self.createTextureFromChain(chain, options);
@@ -807,7 +841,90 @@ pub const Renderer = struct {
     pub fn createTextureFromChain(self: *Self, chain: asset.MipChain, options: TextureOptions) Error!TextureHandle {
         const base = chain.level(0);
         try self.checkTextureSize(base.width, base.height);
-        return self.uploadTexture(base.width, base.height, chain.bytes, chain, options);
+        return self.uploadTexture(base.width, base.height, chain.bytes, chain, null, options);
+    }
+
+    /// A texture whose bytes are already in `staged`, which `reserveStaging` made and a fill
+    /// wrote off the main thread (M27 Step 10). The reservation is consumed whatever this
+    /// returns: so is every reservation handed to a finish.
+    pub fn createTextureFromStaged(self: *Self, width: u32, height: u32, chain: ?asset.MipChain, staged: StagingReservation, options: TextureOptions) Error!TextureHandle {
+        self.checkTextureSize(width, height) catch |err| {
+            self.returnStaging(staged, false);
+            return err;
+        };
+        return self.uploadTexture(width, height, &.{}, chain, staged, options);
+    }
+
+    /// Mapped upload memory of at least `size` bytes, for a fill to write on another thread.
+    /// A kept buffer is reused once the frame ring has passed every frame that could have
+    /// read it, and a new one is made only when none is free.
+    pub fn reserveStaging(self: *Self, label: []const u8, size: usize) Error!StagingReservation {
+        self.last_reservation = self.latest_frame;
+        var best: ?usize = null;
+        for (self.staging.items, 0..) |entry, i| {
+            if (entry.reserved or entry.size < size or entry.reusable_from > self.latest_frame) continue;
+            if (best == null or entry.size < self.staging.items[best.?].size) best = i;
+        }
+        const index = best orelse made: {
+            try self.staging.ensureUnusedCapacity(self.gpa, 1);
+            const buffer = try self.device.createBuffer(.{ .label = label, .size = size, .usage = .{ .copy_src = true }, .memory = .upload });
+            self.staging.appendAssumeCapacity(.{ .buffer = buffer, .size = size });
+            break :made self.staging.items.len - 1;
+        };
+        const entry = &self.staging.items[index];
+        // Not reserved if this fails, so it is kept or trimmed like any idle buffer.
+        const mapped = try self.device.mapBuffer(entry.buffer);
+        entry.reserved = true;
+        entry.mapped = true;
+        return .{ .buffer = entry.buffer, .bytes = mapped[0..size] };
+    }
+
+    /// Gives a reservation back. `used` says a submitted copy may read it, so it waits out the
+    /// frame ring; otherwise it is free at once.
+    pub fn returnStaging(self: *Self, staged: StagingReservation, used: bool) void {
+        const entry = for (self.staging.items) |*entry| {
+            if (entry.buffer.eql(staged.buffer)) break entry;
+        } else unreachable; // Only `reserveStaging` makes one.
+        std.debug.assert(entry.reserved);
+        self.unmapStaging(staged);
+        entry.reserved = false;
+        // A copy submitted now is ordered before the submission of the frame after the newest
+        // one prepared, and one queue completes in order (`rhi/lifetime.zig`). That frame's
+        // slot is waited for by the frame `frames_in_flight` after it (`FrameContext.slot`).
+        if (used) entry.reusable_from = self.latest_frame + 1 + self.slots.len;
+        self.trimStaging(max_kept_staging);
+    }
+
+    /// Ends a reservation's mapping, once: before its copy is recorded, or when it is given back.
+    fn unmapStaging(self: *Self, staged: StagingReservation) void {
+        for (self.staging.items) |*entry| if (entry.buffer.eql(staged.buffer)) {
+            if (entry.mapped) self.device.unmapBuffer(entry.buffer);
+            entry.mapped = false;
+        };
+    }
+
+    /// Keeps at most `limit` bytes of buffers nobody has reserved, giving back the ones that
+    /// can be reused last first. A destroy is deferred past their copies (ADR-0035).
+    fn trimStaging(self: *Self, limit: u64) void {
+        while (true) {
+            var kept: u64 = 0;
+            var last: ?usize = null;
+            for (self.staging.items, 0..) |entry, i| {
+                if (entry.reserved) continue;
+                kept += entry.size;
+                if (last == null or entry.reusable_from >= self.staging.items[last.?].reusable_from) last = i;
+            }
+            if (kept <= limit) return;
+            self.device.destroyBuffer(self.staging.items[last.?].buffer);
+            _ = self.staging.swapRemove(last.?);
+        }
+    }
+
+    /// Records the newest frame, and once a burst of reservations is long over gives every
+    /// idle staging buffer back, so a finished load does not hold upload memory for good.
+    fn seeFrame(self: *Self, index: u64) void {
+        self.latest_frame = @max(self.latest_frame, index);
+        if (self.staging.items.len != 0 and self.latest_frame - self.last_reservation > staging_idle_frames) self.trimStaging(0);
     }
 
     fn checkTextureSize(self: *Self, width: u32, height: u32) Error!void {
@@ -817,7 +934,10 @@ pub const Renderer = struct {
         }
     }
 
-    fn uploadTexture(self: *Self, width: u32, height: u32, pixels: []const u8, chain: ?asset.MipChain, options: TextureOptions) Error!TextureHandle {
+    fn uploadTexture(self: *Self, width: u32, height: u32, pixels: []const u8, chain: ?asset.MipChain, staged: ?StagingReservation, options: TextureOptions) Error!TextureHandle {
+        // Consumed on every path: unused if nothing was submitted, used once something was.
+        var submitted = false;
+        defer if (staged) |reservation| self.returnStaging(reservation, submitted);
         const levels: u32 = if (chain) |value| value.levelCount() else 1;
 
         const gpu = try self.device.createTexture(.{
@@ -834,8 +954,9 @@ pub const Renderer = struct {
         });
         errdefer self.device.destroyTexture(gpu);
         const sampler = try self.samplerFor(.{ .filter = options.filter, .wrap = options.wrap, .mipmaps = levels > 1 }, options.label);
-        const staging = try self.stagingBuffer(options.label, pixels);
-        defer self.device.destroyBuffer(staging);
+        const staging = if (staged) |reservation| reservation.buffer else try self.stagingBuffer(options.label, pixels);
+        defer if (staged == null) self.device.destroyBuffer(staging);
+        if (staged) |reservation| self.unmapStaging(reservation);
 
         const cmd = try self.device.beginCommandBuffer();
         try cmd.textureBarrier(&.{.{ .texture = gpu, .from = .undefined, .to = .copy_dst }});
@@ -851,6 +972,8 @@ pub const Renderer = struct {
             try cmd.copyBufferToTexture(.{ .src = staging, .dst = gpu, .size = .{ .width = width, .height = height } });
         }
         try cmd.textureBarrier(&.{.{ .texture = gpu, .from = .copy_dst, .to = .shader_read }});
+        // Whatever `submit` answers, the queue may have the copy.
+        submitted = true;
         try cmd.submit();
 
         return self.textures.add(self.gpa, .{
@@ -1344,6 +1467,7 @@ pub const Renderer = struct {
     pub fn prepare(self: *Self, cmd: *rhi.CommandBuffer, frame: rhi.FrameContext) Error!void {
         if (!self.recording) return error.NotRecording;
         if (frame.slot >= self.slots.len) return error.InvalidFrameSlot;
+        self.seeFrame(frame.index);
         if (self.planned_draws == null or self.planned_draws.? != self.draws.items.len) try self.plan();
         try self.prepareSkin(cmd, frame);
         try self.ensureTargets(self.view.target_size);
@@ -3579,4 +3703,46 @@ test "culling changes no pixel: a scene reads back identically with it on and of
         }
         try testing.expect(lit > 0);
     }
+}
+
+test "a staging buffer is reused only once the frame ring has passed its copy, and idle ones are given back" {
+    var fx = try TestFixture.init(1, 16);
+    defer fx.deinit();
+    const r = &fx.renderer;
+    const ring: u64 = @intCast(r.slots.len);
+
+    // A copy may read the first until the frame after the next one's slot is waited for.
+    const first = try r.reserveStaging("first", 64);
+    r.returnStaging(first, true);
+    const second = try r.reserveStaging("second", 64);
+    try testing.expect(!second.buffer.eql(first.buffer));
+    // Never submitted: free at once.
+    r.returnStaging(second, false);
+    const again = try r.reserveStaging("again", 64);
+    try testing.expect(again.buffer.eql(second.buffer));
+    r.returnStaging(again, true);
+
+    // One frame short of the ring, neither is free; at it, both are, and the smaller of what
+    // fits is taken.
+    r.seeFrame(ring);
+    const third = try r.reserveStaging("third", 64);
+    try testing.expectEqual(@as(usize, 3), r.staging.items.len);
+    r.returnStaging(third, false);
+    r.seeFrame(ring + 1);
+    const reused = try r.reserveStaging("reused", 32);
+    try testing.expectEqual(@as(usize, 3), r.staging.items.len);
+    try testing.expectEqual(@as(usize, 32), reused.bytes.len);
+    r.returnStaging(reused, false);
+
+    // Kept to a byte limit, giving back what would be free last.
+    const big = try r.reserveStaging("big", 256);
+    r.returnStaging(big, true);
+    r.trimStaging(3 * 64);
+    try testing.expectEqual(@as(usize, 3), r.staging.items.len);
+    for (r.staging.items) |entry| try testing.expect(!entry.buffer.eql(big.buffer));
+
+    // And once no load has reserved for long enough, every idle one goes.
+    r.seeFrame(r.last_reservation + staging_idle_frames + 1);
+    try testing.expectEqual(@as(usize, 0), r.staging.items.len);
+    if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
 }

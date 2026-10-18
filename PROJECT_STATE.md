@@ -1,9 +1,31 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-18
-**Current handoff: M27 Step 9 of 11 is complete** ([`docs/design/background.md`](docs/design/background.md)).
-**Stop before Step 10**: the same proof on Windows/Vulkan, on the owner's PC. Nothing is
-pushed: local `main` is ahead by M26 Steps 7–13, the `m26` tag and M27's commits.
+**Current handoff: M27 Step 10 of 11 is complete** ([`docs/design/background.md`](docs/design/background.md)).
+**Stop before Step 11**: close M27 (the contract discrepancies, ADR status, CLAUDE.md, the tag).
+Nothing is pushed: local `main` is ahead by M26 Steps 7–13, the `m26` tag and M27's commits.
+
+**M27 Step 10 is done (2026-10-18): §12's claims hold on Windows/Vulkan, validation-clean.**
+- **The first measurement failed** the gallery claim: pump p95 6.1–7.3 ms, and maxima up to
+  27.9 ms.
+- **The cause:** each 2048² chain's finish allocated its staging (1.1–5.8 ms) and copied into
+  the Arc's uncached upload memory (1.6–9 ms) on the main thread.
+- **The fix, the owner's choice:** a split may stage. `asset.Split.stage` reserves on the
+  main thread, fills on the pool, and the finish consumes the reservation (ADR-0062's
+  revision note). `render3d` keeps and reuses its staging buffers on the frame ring's
+  schedule, with no new RHI call.
+- **Windows, after:**
+  - background maximum frame work 5.7–8.3 ms, pump p95 0.56–0.58 ms, against 834–841 ms sync;
+  - editor gaps ≤16.8 ms, against 764–802 ms inline;
+  - the tour (`cb99ccfcf2b6d6c3`) and the court's three endings are unchanged.
+- **Metal, after:** maximum 1.5–1.6 ms, pump p95 0.08 ms. Readiness moves to 433 ms, from
+  334 ms.
+- **The native suites:** null 2,183/2,193; Vulkan Debug 2,463/2,484; ReleaseSafe 115/115;
+  the window tests 8/9 and 10/10.
+- The harness is `scripts/m27/windows.ps1`.
+
+Bar **2,204/2,205** (one skip). Metal integration, model-content and renderer tests pass
+**176/181**.
 
 **M27 Step 9 is done (2026-10-18): §12's claims hold on Metal.**
 - The pump's miss was not the upload (1.3–1.6 ms). It was returning each decoded 21 MiB

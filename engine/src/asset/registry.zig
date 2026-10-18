@@ -164,6 +164,31 @@ pub const Split = struct {
     /// succeeded with unless the finish adopted it.
     discard: *const fn (gpa: Allocator, decoded: Decoded) void,
     after_finish: AfterFinish = .free,
+    /// Present when the copy into the device's upload memory should leave the main thread too
+    /// (M27 Step 10): decode, then `prepare`, `fill` and the finish, which consumes what
+    /// `prepare` reserved whether it succeeds or fails.
+    stage: ?Stage = null,
+};
+
+/// An upload's staging, split as the load is: reserved on the main thread, filled on the pool
+/// (ADR-0062's revision note). On Windows/Vulkan the copy of a 2048² chain into uncached
+/// upload memory cost 1.6–9 ms, which no main-thread finish could hide.
+pub const Stage = struct {
+    /// On the main thread, after the decode: reserves mapped memory for the upload and records
+    /// it in `decoded`. May use the device; a failure fails the load.
+    prepare: *const fn (ctx: ?*anyopaque, decoded: Decoded) LoadError!void,
+    /// **Any thread.** Copies `decoded` into what `prepare` reserved, and touches nothing else.
+    fill: *const fn (decoded: Decoded) void,
+    /// On the main thread: gives back a reservation that no finish consumed, before `discard`.
+    release: *const fn (ctx: ?*anyopaque, decoded: Decoded) void,
+
+    fn eql(a: ?Stage, b: ?Stage) bool {
+        const sa = a orelse return b == null;
+        const sb = b orelse return false;
+        return @intFromPtr(sa.prepare) == @intFromPtr(sb.prepare) and
+            @intFromPtr(sa.fill) == @intFromPtr(sb.fill) and
+            @intFromPtr(sa.release) == @intFromPtr(sb.release);
+    }
 };
 
 /// What becomes of a decoded value once a finish has succeeded with it.
@@ -213,7 +238,8 @@ pub const Loader = struct {
             if (sa.decode_ctx != sb.decode_ctx or
                 @intFromPtr(sa.decode) != @intFromPtr(sb.decode) or
                 @intFromPtr(sa.finish) != @intFromPtr(sb.finish) or
-                @intFromPtr(sa.discard) != @intFromPtr(sb.discard) or sa.after_finish != sb.after_finish) return false;
+                @intFromPtr(sa.discard) != @intFromPtr(sb.discard) or sa.after_finish != sb.after_finish or
+                !Stage.eql(sa.stage, sb.stage)) return false;
         }
         return a.schema.eql(b.schema) and a.ctx == b.ctx and
             a.max_source_bytes == b.max_source_bytes and
@@ -221,11 +247,18 @@ pub const Loader = struct {
             @intFromPtr(a.unload) == @intFromPtr(b.unload);
     }
 
-    /// The synchronous load: `load`, or for a split loader its three parts in order on this
-    /// thread, under an unlimited budget. The one place the two paths can differ is here.
+    /// The synchronous load: `load`, or for a split loader its parts in order on this thread,
+    /// under an unlimited budget. The one place the two paths can differ is here.
     pub fn loadWhole(self: Loader, gpa: Allocator, record: Record, bytes: []const u8) LoadError!Payload {
         const split = self.split orelse return self.load(self.ctx, gpa, record, bytes);
         const decoded = try split.decode(split.decode_ctx, gpa, record, bytes);
+        if (split.stage) |stage| {
+            stage.prepare(self.ctx, decoded) catch |err| {
+                split.discard(gpa, decoded);
+                return err;
+            };
+            stage.fill(decoded);
+        }
         var budget: Budget = .unlimited;
         const payload = split.finish(self.ctx, gpa, record, decoded, &budget) catch |err| {
             split.discard(gpa, decoded);
@@ -370,11 +403,19 @@ pub const Registry = struct {
         removing: bool = false,
         graph: core.tasks.Graph,
 
+        /// The finish's node: 1, or 3 when a stage puts its prepare and fill before it.
+        finish_index: u32 = 1,
+
         // Written by the background node.
         failure: ?AcquireError = null,
         bytes: ?[]u8 = null,
         decoded: ?Decoded = null,
         stamp: Stamp = .{},
+        /// The decoded value from its prepare to its finish, holding a reservation. Not
+        /// `decoded`, which the decode node's discard frees on a cancel while the fill may
+        /// still be writing: this is given back only by the finish or by `retire`, on the
+        /// main thread, once nothing of the graph runs.
+        staged: ?Decoded = null,
         /// What the finish left to be freed, moved here on the main thread and freed by the
         /// third node on the pool. Read by the main thread again only once the graph is idle.
         trash_bytes: ?[]u8 = null,
@@ -416,9 +457,46 @@ pub const Registry = struct {
             self.releaseOutput();
         }
 
+        /// The stage's main node: reserve, and take the decoded value into `staged`.
+        fn prepareNode(context: *anyopaque, _: *Budget) core.tasks.Outcome {
+            const self: *Job = @ptrCast(@alignCast(context));
+            const split = self.loader.split.?;
+            const decoded = self.decoded.?;
+            split.stage.?.prepare(self.loader.ctx, decoded) catch |err| {
+                self.failure = err;
+                self.releaseOutput();
+                return .failed;
+            };
+            self.decoded = null;
+            self.staged = decoded;
+            return .ok;
+        }
+
+        /// The stage's pool node: the copy into the reservation.
+        fn fillNode(context: *anyopaque, _: *Budget) core.tasks.Outcome {
+            const self: *Job = @ptrCast(@alignCast(context));
+            self.loader.split.?.stage.?.fill(self.staged.?);
+            return .ok;
+        }
+
+        /// Gives back a reservation nothing finished, then the value holding it. Main thread,
+        /// with nothing of the graph running.
+        fn releaseStaged(self: *Job) void {
+            const decoded = self.staged orelse return;
+            const split = self.loader.split.?;
+            split.stage.?.release(self.loader.ctx, decoded);
+            split.discard(self.gpa, decoded);
+            self.staged = null;
+        }
+
         /// The main node, inside `pump`: make the payload and put it behind the handle.
         fn finishNode(context: *anyopaque, budget: *Budget) core.tasks.Outcome {
             const self: *Job = @ptrCast(@alignCast(context));
+            // The fill is done, and the finish consumes the reservation whatever it returns.
+            if (self.staged) |staged| {
+                self.decoded = staged;
+                self.staged = null;
+            }
             const payload = self.makePayload(budget) catch |err| {
                 self.failure = err;
                 self.releaseOutput();
@@ -835,7 +913,7 @@ pub const Registry = struct {
             const status = job.graph.poll(&budget);
             // Counted when the payload is installed, which may be a pump before the job's
             // last node has freed what it was done with.
-            if (!job.counted and job.graph.finished(1)) {
+            if (!job.counted and job.graph.finished(job.finish_index)) {
                 job.counted = true;
                 if (job.reload) stats.reloaded += 1 else stats.finished += 1;
             }
@@ -1246,12 +1324,18 @@ pub const Registry = struct {
             .max_bytes = @min(self.options.max_source_bytes, loader.max_source_bytes),
             .reload = options.reload,
             .previous_stamp = options.previous_stamp,
-            .graph = try core.tasks.Graph.init(gpa, self.tasks, .{ .nodes = 3, .edges = 2 }),
+            .graph = try core.tasks.Graph.init(gpa, self.tasks, .{ .nodes = 5, .edges = 4 }),
         };
-        // At most three nodes into a graph made for three: no add can fail.
+        // At most five nodes into a graph made for five: no add can fail. A chain, each node
+        // after the one before it.
         _ = job.graph.add(.{ .kind = .background, .context = job, .call = Job.readAndDecode, .discard = Job.discardOutput }) catch unreachable;
-        _ = job.graph.add(.{ .kind = .main, .context = job, .call = Job.finishNode, .after = &.{0} }) catch unreachable;
-        if (job.freesOnPool()) _ = job.graph.add(.{ .kind = .background, .context = job, .call = Job.freeNode, .after = &.{1} }) catch unreachable;
+        if (loader.split) |split| if (split.stage != null) {
+            _ = job.graph.add(.{ .kind = .main, .context = job, .call = Job.prepareNode, .after = &.{0} }) catch unreachable;
+            _ = job.graph.add(.{ .kind = .background, .context = job, .call = Job.fillNode, .after = &.{1} }) catch unreachable;
+            job.finish_index = 3;
+        };
+        _ = job.graph.add(.{ .kind = .main, .context = job, .call = Job.finishNode, .after = &.{job.finish_index - 1} }) catch unreachable;
+        if (job.freesOnPool()) _ = job.graph.add(.{ .kind = .background, .context = job, .call = Job.freeNode, .after = &.{job.finish_index} }) catch unreachable;
         self.jobs.appendAssumeCapacity(job);
         self.entries.get(handle).?.job = job;
     }
@@ -1302,6 +1386,7 @@ pub const Registry = struct {
             }
         };
         job.graph.deinit();
+        job.releaseStaged();
         job.releaseOutput();
         // Idle now, so this is safe on the main thread: a free node that never ran.
         job.freeTrash();
@@ -3332,4 +3417,257 @@ test "a pool free the executor had no room to start is done when its job is canc
     try testing.expectEqual(@as(u32, 1), PoolFreeSplit.frees.load(.monotonic));
     try testing.expectEqual(State.ready, fx.registry.state(handle).?);
     fx.registry.release(handle);
+}
+
+/// A split that stages: its reservation is a copy of the image's bytes the fill writes, and the
+/// finish sums the reservation, so a payload made from an unfilled one differs.
+const StagedSplit = struct {
+    gpa: Allocator = testing.allocator,
+    main_thread: std.Thread.Id,
+    prepares: u32 = 0,
+    fills: std.atomic.Value(u32) = .init(0),
+    releases: u32 = 0,
+    finishes: u32 = 0,
+    discards: u32 = 0,
+    fail_prepare: ?LoadError = null,
+    fail_finish: ?LoadError = null,
+
+    const Staged = struct {
+        image: image_mod.Image,
+        reserved: ?[]u8 = null,
+    };
+
+    fn init() StagedSplit {
+        return .{ .main_thread = std.Thread.getCurrentId() };
+    }
+
+    fn loader(self: *StagedSplit) Loader {
+        return .{
+            .schema = schemas.texture.id,
+            .ctx = self,
+            .load = load,
+            .unload = FakeSplit.unload,
+            .split = .{
+                .decode_ctx = self,
+                .decode = decode,
+                .finish = finish,
+                .discard = discard,
+                .stage = .{ .prepare = prepare, .fill = fill, .release = release },
+            },
+        };
+    }
+
+    fn of(decoded: Decoded) *Staged {
+        return @ptrCast(@alignCast(decoded.pointer().?));
+    }
+
+    fn load(ctx: ?*anyopaque, gpa: Allocator, record: Record, bytes: []const u8) LoadError!Payload {
+        const self: *StagedSplit = @ptrCast(@alignCast(ctx.?));
+        return self.loader().loadWhole(gpa, record, bytes);
+    }
+
+    fn decode(_: ?*const anyopaque, gpa: Allocator, _: Record, bytes: []const u8) LoadError!Decoded {
+        const staged = try gpa.create(Staged);
+        errdefer gpa.destroy(staged);
+        staged.* = .{ .image = png.decode(gpa, bytes, .{}) catch return error.InvalidAsset };
+        return .fromPointer(staged);
+    }
+
+    fn prepare(ctx: ?*anyopaque, decoded: Decoded) LoadError!void {
+        const self: *StagedSplit = @ptrCast(@alignCast(ctx.?));
+        std.debug.assert(self.main_thread == std.Thread.getCurrentId());
+        if (self.fail_prepare) |err| return err;
+        const staged = of(decoded);
+        // Zeroed, so a finish that never waited for the fill makes a different sum.
+        const reserved = try self.gpa.alloc(u8, staged.image.pixels.len);
+        @memset(reserved, 0);
+        staged.reserved = reserved;
+        self.prepares += 1;
+    }
+
+    fn fill(decoded: Decoded) void {
+        const staged = of(decoded);
+        @memcpy(staged.reserved.?, staged.image.pixels);
+    }
+
+    fn release(ctx: ?*anyopaque, decoded: Decoded) void {
+        const self: *StagedSplit = @ptrCast(@alignCast(ctx.?));
+        std.debug.assert(self.main_thread == std.Thread.getCurrentId());
+        const staged = of(decoded);
+        self.gpa.free(staged.reserved.?);
+        staged.reserved = null;
+        self.releases += 1;
+    }
+
+    fn finish(ctx: ?*anyopaque, gpa: Allocator, record: Record, decoded: Decoded, budget: *Budget) LoadError!Payload {
+        const self: *StagedSplit = @ptrCast(@alignCast(ctx.?));
+        const staged = of(decoded);
+        // Consumed whatever this returns.
+        const reserved = staged.reserved.?;
+        defer {
+            self.gpa.free(reserved);
+            staged.reserved = null;
+        }
+        if (self.fail_finish) |err| return err;
+        var sum: u64 = 0;
+        for (reserved) |b| sum += b;
+        budget.charge(reserved.len);
+        const made = try gpa.create(FakeImage);
+        made.* = .{
+            .width = staged.image.width,
+            .height = staged.image.height,
+            .sum = sum,
+            .linear = std.mem.eql(u8, schemas.stringField(record, schemas.texture, schemas.filter_field) orelse "", "linear"),
+        };
+        self.finishes += 1;
+        return .fromPointer(made);
+    }
+
+    fn discard(gpa: Allocator, decoded: Decoded) void {
+        const staged = of(decoded);
+        // A reservation is always consumed or released before its value is discarded.
+        std.debug.assert(staged.reserved == null);
+        staged.image.deinit(gpa);
+        gpa.destroy(staged);
+    }
+};
+
+test "a staged split prepares on the main thread, fills on the pool, and makes what acquire makes" {
+    const expected = try syncImages();
+    {
+        // Synchronously: decode, prepare, fill and finish in order, on this thread.
+        const fx = try Fixture.init();
+        defer fx.deinit();
+        try writeThree(fx);
+        var split: StagedSplit = .init();
+        try fx.registry.registerLoader(fx.gpa, split.loader());
+        for (texture_ids, expected) |id, want| {
+            const handle = try fx.registry.acquire(fx.gpa, id);
+            try testing.expectEqual(want, imageOf(&fx.registry, handle).?);
+        }
+        try testing.expectEqual(@as(u32, 3), split.prepares);
+        try testing.expectEqual(@as(u32, 3), split.finishes);
+        try testing.expectEqual(@as(u32, 0), split.releases);
+    }
+    {
+        // Requested, one node at a time: the prepare is a pump's, the fill the executor's.
+        const fx = try Fixture.init();
+        defer fx.deinit();
+        try writeThree(fx);
+        var split: StagedSplit = .init();
+        try fx.registry.registerLoader(fx.gpa, split.loader());
+        var manual = try core.tasks.Manual.init(testing.allocator, 8);
+        defer manual.deinit();
+        fx.registry.useTasks(manual.tasks());
+
+        const handle = try fx.registry.request(fx.gpa, texture_ids[1]);
+        _ = fx.registry.pump(fx.gpa, .{});
+        manual.runAll(); // The decode.
+        try testing.expectEqual(@as(u32, 0), fx.registry.pump(fx.gpa, .{}).finished);
+        try testing.expectEqual(@as(u32, 1), split.prepares);
+        try testing.expectEqual(@as(u32, 1), manual.pending()); // The fill, queued.
+        try testing.expectEqual(@as(u32, 0), fx.registry.pump(fx.gpa, .{}).finished);
+        try testing.expectEqual(State.pending, fx.registry.state(handle).?);
+        manual.runAll();
+        try testing.expectEqual(@as(u32, 1), fx.registry.pump(fx.gpa, .{}).finished);
+        try testing.expectEqual(expected[1], imageOf(&fx.registry, handle).?);
+        try testing.expect(!fx.registry.busy());
+        try testing.expectEqual(@as(u32, 0), split.releases);
+    }
+    {
+        // And on real threads, every one at once.
+        const fx = try Fixture.init();
+        defer fx.deinit();
+        try writeThree(fx);
+        var split: StagedSplit = .init();
+        try fx.registry.registerLoader(fx.gpa, split.loader());
+        const pool = try fx.os.startBackground(testing.allocator, .{ .count = 2 });
+        defer pool.deinit();
+        fx.registry.useTasks(pool.tasks());
+        var handles: [3]AssetHandle = undefined;
+        for (texture_ids, &handles) |id, *h| h.* = try fx.registry.request(fx.gpa, id);
+        while (fx.registry.busy()) {
+            _ = fx.registry.pump(fx.gpa, .{});
+            pool.tasks().wait();
+        }
+        for (handles, expected) |h, want| try testing.expectEqual(want, imageOf(&fx.registry, h).?);
+        fx.registry.quiesce();
+    }
+}
+
+test "a reservation no finish consumed is released once, on the main thread, wherever the job stops" {
+    const fx = try Fixture.init();
+    defer fx.deinit();
+    try writeThree(fx);
+    var split: StagedSplit = .init();
+    try fx.registry.registerLoader(fx.gpa, split.loader());
+    // Room for one task, so a fill can be kept from starting.
+    var manual = try core.tasks.Manual.init(testing.allocator, 1);
+    defer manual.deinit();
+    fx.registry.useTasks(manual.tasks());
+
+    // Released with its fill queued. The cancel discards the decode node's output at once,
+    // which must not be the value the fill is about to write from; the release waits for it.
+    const first = try fx.registry.request(fx.gpa, texture_ids[0]);
+    _ = fx.registry.pump(fx.gpa, .{});
+    manual.runAll();
+    _ = fx.registry.pump(fx.gpa, .{});
+    try testing.expectEqual(@as(u32, 1), manual.pending());
+    fx.registry.release(first);
+    _ = fx.registry.pump(fx.gpa, .{});
+    try testing.expectEqual(@as(u32, 0), split.releases);
+    try testing.expect(fx.registry.busy());
+    manual.runAll();
+    _ = fx.registry.pump(fx.gpa, .{});
+    try testing.expectEqual(@as(u32, 1), split.releases);
+    try testing.expect(!fx.registry.busy());
+
+    // Released with its fill unable to start: released all the same, at the job's retirement.
+    const second = try fx.registry.request(fx.gpa, texture_ids[1]);
+    _ = fx.registry.pump(fx.gpa, .{});
+    manual.runAll();
+    const Nothing = struct {
+        fn call(_: *anyopaque) void {}
+    };
+    var done: core.tasks.Done = .{};
+    var unused: u8 = 0;
+    try manual.tasks().start(.{ .context = &unused, .call = Nothing.call }, &done);
+    _ = fx.registry.pump(fx.gpa, .{});
+    try testing.expectEqual(@as(u32, 2), split.prepares);
+    fx.registry.release(second);
+    _ = fx.registry.pump(fx.gpa, .{});
+    try testing.expectEqual(@as(u32, 2), split.releases);
+    try testing.expect(!fx.registry.busy());
+    manual.runAll();
+
+    // Completed by `acquire` mid-stage: made here, and the abandoned job's reservation goes
+    // back once its fill has run and the job retires.
+    const third = try fx.registry.request(fx.gpa, texture_ids[2]);
+    _ = fx.registry.pump(fx.gpa, .{});
+    manual.runAll();
+    _ = fx.registry.pump(fx.gpa, .{});
+    try testing.expectEqual(@as(u32, 1), manual.pending());
+    _ = try fx.registry.acquire(fx.gpa, texture_ids[2]);
+    try testing.expectEqual(State.ready, fx.registry.state(third).?);
+    try testing.expectEqual(@as(u32, 2), split.releases);
+    manual.runAll();
+    _ = fx.registry.pump(fx.gpa, .{});
+    try testing.expectEqual(@as(u32, 3), split.releases);
+    try testing.expect(!fx.registry.busy());
+
+    // A finish that fails consumed its reservation, and a prepare that fails made none.
+    split.fail_finish = error.LoadFailed;
+    const failed = try fx.registry.request(fx.gpa, texture_ids[1]);
+    while (fx.registry.busy()) {
+        _ = fx.registry.pump(fx.gpa, .{});
+        manual.runAll();
+    }
+    try testing.expect(fx.registry.state(failed).? == .failed);
+    split.fail_finish = null;
+    split.fail_prepare = error.OutOfMemory;
+    try testing.expectError(error.OutOfMemory, fx.registry.acquire(fx.gpa, texture_ids[0]));
+    try testing.expectEqual(@as(u32, 3), split.releases);
+    fx.registry.release(third);
+    fx.registry.release(third);
+    fx.registry.release(failed);
 }

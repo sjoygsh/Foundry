@@ -36,6 +36,9 @@ pub const Decoded = struct {
     image: ?image_mod.Image,
     /// Present with them.
     chain: ?mips.Chain,
+    /// The upload memory a renderer's `Stage.prepare` reserved, which `fill` copies into. A
+    /// renderer that does not stage leaves it null.
+    staged: ?Staged = null,
 
     /// The bytes the finish uploads, every level included.
     pub fn byteSize(self: *const Decoded) usize {
@@ -43,7 +46,15 @@ pub const Decoded = struct {
         return self.image.?.pixels.len;
     }
 
+    /// The bytes the finish uploads, every level included, in upload order.
+    pub fn bytes(self: *const Decoded) []const u8 {
+        if (self.chain) |chain| return chain.bytes;
+        return self.image.?.pixels;
+    }
+
     pub fn deinit(self: *Decoded, gpa: Allocator) void {
+        // A reservation belongs to the renderer, and is consumed or released before this.
+        std.debug.assert(self.staged == null);
         if (self.image) |*image| image.deinit(gpa);
         if (self.chain) |*chain| chain.deinit(gpa);
         self.* = undefined;
@@ -74,6 +85,21 @@ pub fn decode(decode_ctx: ?*const anyopaque, gpa: Allocator, record: Record, byt
         decoded.image = null;
     }
     return .fromPointer(decoded);
+}
+
+/// Mapped upload memory, reserved on the main thread by whichever renderer stages, and
+/// written by `fill` on any thread. `token` is the renderer's own name for it.
+pub const Staged = struct {
+    bytes: []u8,
+    token: u64,
+};
+
+/// The `Stage.fill` a staging renderer names: the upload's bytes into its reservation. Pure
+/// memory work, on whichever thread the registry runs it.
+pub fn fill(decoded: registry.Decoded) void {
+    const value = of(decoded);
+    const source = value.bytes();
+    @memcpy(value.staged.?.bytes[0..source.len], source);
 }
 
 /// The `Split.discard` both renderers name.

@@ -80,3 +80,20 @@ must keep working.
 - The pump's finish cost, rather than the decode it replaced, becomes a frame's largest
   loading cost. That would point at uploads from a transfer queue, which belong to M99.
 - M48 publishes loader registration and mods need the split themselves.
+
+## Revision note — 2026-10-18, in M27 Step 10
+
+This note answers the second "Revisit if". On Windows/Vulkan a texture's finish became the
+frame's largest loading cost. For each 21 MiB chain, the staging allocation took 1.1–5.8 ms and
+the copy into uncached upload memory 1.6–9 ms, against a 2.0 ms pump p95. The owner chose to
+move the copy rather than the queue. A transfer queue stays M99's.
+
+So a split may add an optional **stage**:
+- a main-thread `prepare`, which reserves mapped memory the device reads;
+- a pool `fill`, which copies the decoded value into it and touches nothing else;
+- a main-thread `release`, for a reservation that no finish consumed.
+
+The finish consumes the reservation. Decision 1's three functions are unchanged. Decision 2
+now reads: decode, then prepare, fill and finish when staged, on the calling thread. The RHI
+is still called only on the main thread. A pool thread writes memory that the main thread
+mapped, which is ordinary memory.

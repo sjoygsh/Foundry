@@ -1,6 +1,6 @@
 # Design: M27 — Background work: a task graph, assets that load without stalling a frame, and the editor's background compile
 
-**Status:** Accepted 2026-10-18, when the owner asked for Step 1, with §14 as written (including item 1: `FoundryApi_v7` in M27, so M48 publishes v8). **Steps 1–9 of 11 are done**; their Resolutions follow §16.
+**Status:** Accepted 2026-10-18, when the owner asked for Step 1, with §14 as written (including item 1: `FoundryApi_v7` in M27, so M48 publishes v8). **Steps 1–10 of 11 are done**; their Resolutions follow §16.
 **Date:** 2026-10-18
 **Baseline:** `8182188`, tag `m26`. M0–M26 are complete, and with them Phase 5.
 **Decisions:**
@@ -729,6 +729,35 @@ Tests:
 - `sandbox3d`'s and the court's plays unchanged.
 
 **Exit:** §12's claims hold on Windows/Vulkan, validation-clean.
+
+**Revision 2026-10-18, in Step 10, on the owner's choice: a split may stage its upload.** The
+first Windows measurement failed §12's gallery claim: pump p95 6.1–7.3 ms, and maximum frames of
+25.8 and 27.9 ms. Two costs dominated each 21 MiB texture's finish:
+- **The staging buffer's `vkAllocateMemory`: 1.1–5.8 ms.**
+- **The copy into it: 1.6–9 ms.** A second copy into the same buffer cost the same, because the
+  Arc's upload type is uncached system memory.
+
+So no finish that allocates and fills its staging on the main thread fits 2.0 ms there. Of
+three answers put to the owner, they chose the first:
+1. **Copy into the staging buffer on the pool.**
+2. Spread one texture's copy across several pumps.
+3. Amend the claim.
+
+The change:
+- **`Split` gains an optional `stage`**, of three functions:
+  - `prepare` runs on the main thread after the decode. It reserves mapped memory the device
+    reads, and records the reservation in the decoded value.
+  - `fill` runs on the pool. It copies the decoded value into that memory, and touches nothing
+    else.
+  - `release` runs on the main thread. It gives back a reservation that no finish consumed.
+- **A finish consumes the reservation,** whether it succeeds or fails.
+- **The job grows from decode → finish (→ free) to decode → prepare → fill → finish (→ free).**
+  `loadWhole` runs the same five parts in order on one thread, so the two paths still share
+  one implementation (ADR-0062, decision 2, and its revision note).
+- **`render3d` keeps its staging buffers and reuses them.** A buffer becomes reusable once the
+  frame ring has passed the last frame that could have read it.
+- `render2d`'s textures do not stage. Its sprite sheets are far smaller than a gallery chain,
+  and no claim covers them.
 
 ### Step 11 — Close M27
 
@@ -1770,3 +1799,147 @@ frames, click Build, wait, then five idle frames.
   headless samples and `fdt-check` passed.
 
 Step 10 repeats the proof on Windows/Vulkan.
+
+## Resolution — Step 10: Windows/Vulkan (2026-10-18)
+
+§12's claims hold on Windows/Vulkan and are validation-clean, after the step's one change: a
+split may stage its upload (the dated revision under Step 10, and ADR-0062's revision note).
+The machine is the PC's Arc A750 under Windows 11, with the pinned SDK and `-j2` at
+below-normal priority. It ran from a worktree, synced by a bundle of local `main` plus the
+step's overlay, checked by hash. The harness is `scripts/m27/windows.ps1`. Its `build` mode
+ran over SSH; its `desktop` mode ran in the desktop session, through a scheduled task, from a
+relocated, read-only ReleaseSafe install (148 files, their hashes unchanged afterwards). The
+owner's file transfer had the PC at 60–70% CPU, and the owner said to go ahead regardless.
+
+**The first measurement failed, and why.** On the code as Step 9 left it, the editor and the
+plays passed, but the gallery did not:
+- background pump p95 6.1–7.3 ms;
+- maximum frame work 13.3, 27.9 and 25.8 ms;
+- sync 919–1,279 ms.
+
+Probes, not committed, timed one 21 MiB chain's finish:
+- creating the image: 0.2–1.5 ms;
+- the staging buffer's `vkAllocateMemory`: 1.1–5.8 ms;
+- the copy into it: 1.6–9.3 ms;
+- recording and submitting: 0.1–0.3 ms.
+
+A second copy into the same buffer cost the same as the first. The Arc's memory types show
+why. `.upload` takes type 1, host-visible and coherent but uncached system memory, so the CPU
+writes it combined, at memory bandwidth. Even the best case (about 2.7 ms) misses 2.0 ms, so
+a calmer machine would not have passed. Metal's unified memory had hidden both costs: there,
+the copy was 1.3–1.6 ms and the allocation negligible.
+
+**What changed** (the owner chose option 1 of three):
+- **`asset.Split.stage`:** `prepare` on the main thread, `fill` on the pool, `release` on the
+  main thread. The finish consumes the reservation on every path.
+- **The job is a five-node chain:** decode, prepare, fill, finish, then free.
+  - The pump counts a job at its finish node, now `finish_index`.
+  - The prepare moves the decoded value to `staged`. The decode node's discard, which a
+    cancel runs at once, then cannot free what a fill still being run is reading.
+  - `retire` gives back a reservation nothing consumed, on the main thread, once the graph
+    is idle.
+  - `loadWhole` runs the same parts in order, so `acquire` stages too, and both paths stay
+    one implementation.
+- **`asset.texture_decode`:** `Decoded.staged`, `bytes()` and the shared `fill`.
+- **`render3d` keeps its staging buffers:**
+  - `reserveStaging` takes the smallest free buffer that fits, or makes one.
+  - `returnStaging` marks a used buffer reusable from frame `latest + 1 + frames_in_flight`.
+    The reasoning is in the code: a copy submitted now precedes the next frame's submission,
+    one queue completes in order (`rhi/lifetime.zig`), and that frame's slot is waited for
+    `frames_in_flight` frames later (`FrameContext.slot`). `latest` is the newest frame
+    `prepare` has seen.
+  - What is kept is capped at 64 MiB, and all of it is given back after 300 frames without a
+    reservation.
+  - The RHI gained no call.
+- **`render2d` does not stage.** Its textures are sprite sheets, and no claim covers them.
+- **The pump budget's node count now includes prepares,** which charge no bytes.
+
+**Corrected tests:**
+- `model_content`'s "waits for its materials' textures" expected a texture ready one pump
+  after its decode. Now a fill comes between, and the test says so.
+- Two registry tests and a renderer test were added: the order, equivalence on the inline,
+  manual and real executors, every place a job can stop, and reuse, trimming and idling.
+
+**On Metal, the change helps as well,** in three runs each, alternated:
+- background maximum frame work 1.49–1.59 ms (was 2.35–2.65);
+- pump p95 0.074–0.079 ms (was 1.46–1.53), maximum 0.49–0.57 ms;
+- sync 548–575 ms, unchanged.
+
+The cost is readiness, 433 ms where it was 334, because each texture waits one more pump for
+its fill.
+
+**Windows/Vulkan, after the change. The gallery, §12's conditions (ReleaseSafe, API validation
+off), three runs each, alternated:**
+
+| Run | Path | Request to ready | Frame work median / p95 / max (ms) | `assets.pump` p95 / max (ms) |
+| --- | --- | --- | --- | --- |
+| 1 | sync | 835.9 ms | 0.415 / 0.438 / **841.411** | 0.000 / 0.001 |
+| 1 | background | 550.6 ms | 0.391 / 4.210 / **6.059** | **0.556** / 5.625 |
+| 2 | sync | 833.1 ms | 0.409 / 0.464 / **838.337** | 0.000 / 0.001 |
+| 2 | background | 550.2 ms | 0.479 / 4.124 / **8.348** | **0.575** / 7.867 |
+| 3 | sync | 836.6 ms | 0.404 / 0.458 / **837.723** | 0.000 / 0.000 |
+| 3 | background | 566.8 ms | 0.396 / 3.893 / **5.742** | **0.567** / 3.701 |
+
+- **Every claim holds:**
+  - every background maximum is at or under 16.67 ms (worst 8.348);
+  - every pump p95 is at or under 2.0 ms (worst 0.575);
+  - every synchronous maximum exceeds 16.67 ms (least 837.7).
+- **The pump's maximum, 3.7–7.9 ms, is still single frames.** Those are a prepare that made a
+  buffer, before the first ones are free to reuse. The claim is the p95.
+- **Under synchronization validation,** once each way, both runs were clean:
+  - background: maximum 11.9 ms, pump p95 2.18 ms;
+  - sync: 860 ms.
+
+  The layer slows every call, and §12 measures without it.
+
+**The editor, the same build of `sandbox3d`'s package:**
+
+| Run | Path | Build frames | Longest gap |
+| --- | --- | --- | --- |
+| 1–3 | inline | 6–7 | **801.6, 771.3, 763.5 ms**, frame 6 |
+| 1–3 | background | 6–51 | 16.708, 16.775, 16.672 ms |
+
+- An edit during the build ran frames 12–56, and its longest gap was 16.668 ms.
+- The validated background build's longest gap was 17.215 ms.
+- **The claim, at or under 33.3 ms, holds** with half of it to spare.
+
+**The plays, unchanged, under synchronization validation and then with every layer off:**
+- `sandbox3d`'s tour replayed with hash `cb99ccfcf2b6d6c3`, as on Metal and headless. Its
+  walker replayed `62ed8c026c20482c`.
+- The court's `win`, `caught` and `fell` endings each matched a fresh simulation, tick for
+  tick (1,221, 112 and 189 ticks).
+- No frame was skipped and no sound was dropped.
+- Every validation log held only its one info line. The install was unchanged, and no
+  preference was written.
+
+**The suites, natively, with validation required (synchronization included):**
+
+| Suite | Before the change | After it |
+| --- | --- | --- |
+| null Debug | 2,180/2,190 | **2,183/2,193** |
+| Vulkan Debug, the whole graph, `vulkan-test` and `editor-workflow` | 2,460/2,481 | **2,463/2,484** |
+| Vulkan ReleaseSafe court, renderer and model content | 114/114 | **115/115** |
+| `native-window-test` | | 8/9 |
+| `vulkan-window-test` | | 10/10 |
+
+Every skip is OS- or backend-conditional. M26's Windows graph had 19 skips. One of the two
+new ones is Step 9's null-only texture-request test, and the other is not identified here.
+
+**Guards, broken one at a time against the full `zig build test`, each detected:**
+- the prepare leaving the value with the decode node (a double free under the release test);
+- `retire` forgetting a reservation;
+- the pump counting the prepare as the finish;
+- `load` skipping the fill;
+- a used staging buffer made free at once, and the ring one frame short. The null backend's
+  own rule 3 caught both, in `model_content`'s frame tests, as well as the renderer's test;
+- trimming keeping everything.
+
+Each source was restored and checked by hash.
+
+**The bar passed: 2,204/2,205 (one skip).** It ran fmt, the four `check` variants, the four
+headless samples and `fdt-check`, with `vulkan-check` for Windows and the Linux Vulkan check.
+The headless tour still hashes `cb99ccfcf2b6d6c3`. The Metal integration, model-content and
+renderer tests passed 176/181 (five skips), their device readbacks equal to the pinned CPU
+bytes through the staged path.
+
+Step 11 closes M27.
