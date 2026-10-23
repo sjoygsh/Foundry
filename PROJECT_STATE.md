@@ -1,8 +1,18 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-24
-**Current handoff: M29 Step 2 of 8 is complete** ([`docs/design/particles.md`](docs/design/particles.md), ADR-0064 accepted 2026-10-23). **Stop before Step 3** (`asset`: the `foundry:particle_emitter` record). There is no record, no particle shader and no `render3d.Particles` yet.
+**Current handoff: M29 Step 3 of 8 is complete** ([`docs/design/particles.md`](docs/design/particles.md), ADR-0064 accepted 2026-10-23). **Stop before Step 4** (`render3d`: the `foundry:shading.particle` model and its Metal readbacks). There is no particle shader and no `render3d.Particles` yet.
 M28 is complete (tag `m28`, 2026-10-23; [`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063 implemented). M27 and M28 are pushed; M29's commits are not.
+
+**M29 Step 3 is done (2026-10-24): the `foundry:particle_emitter` record.**
+- `asset.particle_emitter` provides:
+  - the version 1 schema, registered with the engine's other record types;
+  - `ParticleEmitter`, a fixed-size decoded value;
+  - `decode`, with named refusals, including unknown shape, facing and space strings.
+- The compiler gains a step 5. It decodes every emitter in the package it just wrote and reports each refusal at the record's line. `fpack`, the editor and dependency builds therefore refuse exactly as the engine would.
+- `engine/tests/particle_emitter.zig` holds the record's rules and the simulation's equal: limits, defaults, refusal names and verdicts at every boundary.
+
+Bar **2,282/2,283** (one skip, M27's), the full bar and `editor-workflow` (the editor builds through the changed compiler), all exit 0; ten new tests: five in `asset`, two in the compiler, three in the integration suite.
 
 **M29 Step 2 is done (2026-10-24): expansion.**
 - `particles.Expander` writes live particles as world-space quads in fixed per-stream slices of the caller's: position, UV0, premultiplied colour and `u16` indices. There are three facings: `camera`, `velocity` (stretched) and `up`. Sheet frames and exact bounds come with them.

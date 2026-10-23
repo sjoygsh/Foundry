@@ -277,6 +277,7 @@ pub fn compile(
 
     if (failed or diags.failed) return error.ContentInvalid;
 
+    const written_from = out.items.len;
     data.fpk.write(gpa, &pkg, registry, out) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
@@ -285,7 +286,56 @@ pub fn compile(
         },
     };
 
+    // 5. Records whose meaning a schema's types cannot say, decoded from the package as
+    //    written by the decoder the engine runs, so fpack, the editor and a load refuse alike.
+    if (!try checkMeanings(gpa, out.items[written_from..], docs.items, dir, options.limits, diags)) {
+        out.shrinkRetainingCapacity(written_from);
+        return error.ContentInvalid;
+    }
+
     return identity;
+}
+
+/// Whether every `foundry:particle_emitter` in a written package decodes (ADR-0064). A refusal
+/// names the record and its field, at the line that declared it when one did.
+fn checkMeanings(
+    gpa: Allocator,
+    bytes: []const u8,
+    docs: []const Document,
+    dir: []const u8,
+    limits: data.Limits,
+    diags: *Diagnostics,
+) Error!bool {
+    var reader = data.fpk.Reader.open(gpa, bytes, limits) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        // The writer above produced these bytes; a package it cannot reopen is a defect in it.
+        else => unreachable,
+    };
+    defer reader.deinit();
+    var ok = true;
+    var i: u32 = 0;
+    while (reader.record(i)) |view| : (i += 1) {
+        if (!view.schema_id.eql(asset.particle_emitter.particle_emitter.id)) continue;
+        const schema = reader.schemaFor(view.schema_id) orelse continue;
+        _ = asset.particle_emitter.decode(reader.fieldsOf(view, schema.*)) catch |err| {
+            ok = false;
+            const why = asset.particle_emitter.describe(err);
+            if (declarationOf(docs, view.id)) |origin| {
+                try diags.addFmt(gpa, .err, origin.location(), origin.length, origin.line_text, "particle emitter '{s}' {s}", .{ view.name, why });
+            } else {
+                try diags.addFmt(gpa, .err, .whole(dir), 1, "", "particle emitter '{s}' {s}", .{ view.name, why });
+            }
+        };
+    }
+    return ok;
+}
+
+/// Where record `id` was defined in this package's sources, if it was.
+fn declarationOf(docs: []const Document, id: core.ContentId) ?data.parser.Origin {
+    for (docs) |doc| for (doc.records) |record| {
+        if (record.kind == .define and record.id.eql(id)) return record.origin;
+    };
+    return null;
 }
 
 /// Registers the schemas an author can use before the package's own declarations.
@@ -344,6 +394,14 @@ pub fn registerAvailableSchemas(
         },
     };
 
+    asset.particle_emitter.registerAll(gpa, registry) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            try diags.addFmt(gpa, .err, .whole("<engine>"), 1, "", "the engine's particle emitter schema did not register: {s}", .{data.schema.describeRegisterError(err)});
+            return error.ContentInvalid;
+        },
+    };
+
     scene.schemas.registerAll(gpa, registry) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
@@ -378,6 +436,7 @@ pub const engine_schema_names = [_][]const u8{
     asset.tilemap.layer_name,
     asset.tilemap.tilemap_name,
     asset.ui_theme.name,
+    asset.particle_emitter.name,
     scene.schemas.entity_name,
     scene.schemas.scene_name,
     scene.hierarchy.transform_name,
@@ -2239,6 +2298,49 @@ test "fpack's walk is bounded only when a host asks for bounds" {
     var buf: [1024]u8 = undefined;
     const text = try f.rendered(&buf);
     try testing.expect(std.mem.containsAtLeast(u8, text, 1, "one source file more than the 2"));
+}
+
+test "a particle emitter compiles, and one whose field is out of range is refused at its line" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    try f.write("fx.fdt",
+        \\foundry:material demo:flame { alpha_mode "blend" }
+        \\foundry:particle_emitter demo:fire { material demo:flame  rate 40  shape { kind "cone"  angle 0.3 } }
+    );
+    try f.compileIt("demo:content");
+    var reader = try f.open();
+    defer reader.deinit();
+    const view = recordNamed(&reader, "demo:fire").?;
+    const emitter = try asset.particle_emitter.decode(reader.fieldsOf(view, reader.schemaFor(view.schema_id).?.*));
+    try testing.expectEqual(@as(f32, 40), emitter.rate);
+
+    try f.write("fx.fdt",
+        \\foundry:material demo:flame {}
+        \\
+        \\foundry:particle_emitter demo:fire { material demo:flame  sheet { columns 2  rows 2  frames 9 } }
+    );
+    try testing.expectError(error.ContentInvalid, f.compileIt("demo:content"));
+    try testing.expectEqual(@as(usize, 0), f.bytes.items.len);
+    var buf: [2048]u8 = undefined;
+    const text = try f.rendered(&buf);
+    try testing.expect(std.mem.containsAtLeast(u8, text, 1, "fx.fdt:3:"));
+    try testing.expect(std.mem.containsAtLeast(u8, text, 1, "particle emitter 'demo:fire' has a sheet"));
+}
+
+test "an unknown particle facing is refused by name, as the engine would refuse it" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    try f.write("fx.fdt",
+        \\foundry:material demo:m {}
+        \\foundry:particle_emitter demo:a { material demo:m  facing "sideways" }
+        \\foundry:particle_emitter demo:b { material demo:m  space "screen" }
+    );
+    try testing.expectError(error.ContentInvalid, f.compileIt("demo:content"));
+    var buf: [2048]u8 = undefined;
+    const text = try f.rendered(&buf);
+    // Both are reported, not only the first.
+    try testing.expect(std.mem.containsAtLeast(u8, text, 1, "'demo:a' has a facing that is not camera, velocity or up"));
+    try testing.expect(std.mem.containsAtLeast(u8, text, 1, "'demo:b' has a space that is not world or local"));
 }
 
 test "every schema the engine registers has a spelling an author can write" {

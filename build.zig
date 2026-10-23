@@ -1678,7 +1678,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    for ([_][]const u8{ "core", "data", "platform", "physics2d", "physics3d", "ui", "rhi", "asset", "mod", "render2d", "render3d", "scene", "audio", "app", "author", "debug", "abi" }) |name| {
+    for ([_][]const u8{ "core", "data", "platform", "physics2d", "physics3d", "particles", "ui", "rhi", "asset", "mod", "render2d", "render3d", "scene", "audio", "app", "author", "debug", "abi" }) |name| {
         integration_mod.addImport(name, modules.get(name).?);
     }
     integration_mod.addImport("mod_pipeline_options", pipeline_options.createModule());

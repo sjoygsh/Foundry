@@ -48,6 +48,10 @@ pub const tilemap = @import("tilemap.zig");
 /// `foundry:ui_theme`, the record type a game's look is (ADR-0041). Here for `tilemap`'s
 /// reason: `fpack` checks it without a renderer.
 pub const ui_theme = @import("ui_theme.zig");
+/// `foundry:particle_emitter`, an effect as content (ADR-0064). Here for `ui_theme`'s reason:
+/// `fpack` checks it with no renderer, and `particles` at L1 holds no schema.
+pub const particle_emitter = @import("particle_emitter.zig");
+pub const ParticleEmitter = particle_emitter.ParticleEmitter;
 pub const wav = @import("wav.zig");
 
 pub const Image = image.Image;
@@ -144,5 +148,6 @@ test {
     _ = texture_decode;
     _ = tilemap;
     _ = ui_theme;
+    _ = particle_emitter;
     _ = wav;
 }

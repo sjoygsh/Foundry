@@ -1,6 +1,6 @@
 # Design: M29 — Particles I: a CPU particle system with content-defined emitters
 
-**Status:** Accepted 2026-10-23, when the owner asked for Step 1, with §14 as written. Steps 1–2 of §15's eight are done; their Resolutions follow §15.
+**Status:** Accepted 2026-10-23, when the owner asked for Step 1, with §14 as written. Steps 1–3 of §15's eight are done; their Resolutions follow §15.
 **Date:** 2026-10-23
 **Baseline:** `86456c9`, tag `m28`. M0–M28 are complete.
 **Decisions:**
@@ -761,3 +761,62 @@ It matches twice and differs for another instance stream.
 - dropping the premultiplication failed the colour test and the pins.
 
 **Bar:** **2,272/2,273** (one skip, M27's), the full bar, all exit 0; eight of the new tests are the expansion's.
+
+## Resolution — Step 3: `foundry:particle_emitter` (2026-10-24)
+
+**What exists.** `engine/src/asset/particle_emitter.zig` holds:
+- the version 1 schema;
+- `registerAll`;
+- `ParticleEmitter`, a decoded value with fixed arrays, so it owns what it says and needs no
+  allocator;
+- `decode(fields)`, `validate` and `describe`.
+
+The schema is registered where `foundry:ui_theme` is: `app.Engine`'s content load,
+`author.compiler.registerAvailableSchemas`, and `engine_schema_names`. That makes it available
+to every package, the editor and `fpack`. §4's example compiles and decodes to exactly the
+values it says.
+
+**Where the step sharpened §4:**
+- **Defaults.**
+  - Scalars and strings carry their defaults in the schema, so the editor shows them.
+  - The nested fields (`lifetime`, `speed`, `size`, `rotation`, `spin`, `shape`,
+    `acceleration`, `sheet`) are optional, and an absent one takes `ParticleEmitter`'s
+    default, which is the simulation's.
+  - A nested field that is present fills what it omits from its own inner defaults: `shape {
+    kind "sphere" }` is a sphere of radius 0, and `extent` defaults to zero per axis.
+  - `material` is required, so a record without one fails the schema check, before any of
+    this.
+- **"Refused at compile" is a new compiler stage.** The compiler checked types only: a
+  material's `alpha_mode` string is refused only when `render3d` decodes it.
+  - `compile` now has a step 5. After writing the package, it reopens the written bytes and
+    runs the engine's own `decode` on every `foundry:particle_emitter`.
+  - Each refusal is reported at the defining record's line, as "particle emitter '<id>'
+    <describe>", and every bad record is reported, not only the first.
+  - On failure the written bytes are dropped and the compile is `ContentInvalid`.
+  - `fpack`, the editor's workspace builds and the dependency compiler all go through
+    `compile`, so they refuse alike.
+  - `@patch` does not load yet (`check.zig`), so there is nothing to patch-check. Decoding
+    the written package rather than the declarations is what will make a patched result the
+    thing checked when it does.
+- **Two rule sets, and a guard between them.** ADR-0064 keeps `asset` and `particles` apart,
+  so `asset` restates the simulation's limits and rules in `validate`.
+  `engine/tests/particle_emitter.zig` stands above both, with `particles` newly granted to the
+  integration module. It checks four things:
+  - every limit is equal;
+  - every refusal name exists in `particles.Error`;
+  - a record naming only its material converts to `particles.Emitter{}` field for field;
+  - both validators give the same verdict across the boundaries of every numeric field, every
+    sheet shape, bursts, curve shapes and colour alpha.
+
+  The record adds three refusals of its own: `UnknownShape`, `UnknownFacing` and
+  `UnknownSpace`, plus `Unreadable` for a block that disagrees with its schema.
+- **Strings are matched exactly**, as `alpha_mode` is: `"Cone"` is unknown.
+
+**Mutations.** Each was made, watched to fail, and restored byte for byte:
+- loosening the record's duration rule failed the agreement test ("record says '',
+  simulation says 'InvalidDuration'");
+- changing the simulation's rate limit failed the limits test and the agreement test;
+- skipping the compiler stage failed both compiler tests;
+- defaulting an unknown facing failed the refusal test.
+
+**Bar:** **2,282/2,283** (one skip, M27's), the full bar and `editor-workflow` (the editor builds through the changed compiler), all exit 0; ten new tests: five in `asset`, two in the compiler, three in the integration suite.
