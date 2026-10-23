@@ -1230,7 +1230,7 @@ What a real 3D game reaches for first. Ends in a second 3D sample that uses all 
 | # | Milestone | Intent |
 | --- | --- | --- |
 | M27 | Background work | A task graph and background jobs over `core.Jobs`; assets load without stalling a frame; also the editor's background compile. **Done 2026-10-18, tag `m27`: [`background.md`](design/background.md), ADR-0061/0062.** A gallery of large textures loads on Metal and Windows/Vulkan with no frame over 16.67 ms; the editor draws and takes edits while it builds; `FoundryApi_v7` adds three job calls (264) |
-| M28 | Runtime geometry | Meshes, materials and textures created at run time in `render3d`, beside compiled content |
+| M28 | Runtime geometry | Meshes, materials and textures created at run time in `render3d`, beside compiled content. **Proposed 2026-10-23: [`runtime-geometry.md`](design/runtime-geometry.md), ADR-0063; awaiting acceptance** |
 | M29 | Particles I | A CPU particle system with content-defined emitters |
 | M30 | Audio II | Compressed audio and streamed music; the decoder is an ADR; also music sequencing: playlists, crossfades and stingers |
 | M31 | Audio III | 3D spatialisation, mixer buses and effects; also a limiter and compressor |
