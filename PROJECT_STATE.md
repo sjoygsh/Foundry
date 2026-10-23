@@ -1,8 +1,21 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-24
-**Current handoff: M29 Step 5 of 8 is complete** ([`docs/design/particles.md`](docs/design/particles.md), ADR-0064 accepted 2026-10-23). **Stop before Step 6** (`sandbox3d`'s effects corner, the `embers` mod and the Metal measurements). No sample uses particles yet.
+**Current handoff: M29 Step 6 of 8 is complete** ([`docs/design/particles.md`](docs/design/particles.md), ADR-0064 accepted 2026-10-23). **Stop before Step 7** (Windows/Vulkan on the Arc PC). The PC has no Foundry clone since M27's close.
 M28 is complete (tag `m28`, 2026-10-23; [`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063 implemented). M27 and M28 are pushed; M29's commits are not.
+
+**M29 Step 6 is done (2026-10-24): the effects corner, proved on Metal.**
+- `sandbox3d`'s `effects.zig` holds a torch (flame and smoke), sparks (burst on a loop and on **B**), a 10,400-particle fountain, and a trail on the moon. All are records with particle materials and generated textures. **P** faces them from M28's patch.
+- `embers`, a content-only mod, overrides the flame's rate and colour.
+- **Budget:** from a relocated ReleaseSafe install on the M5, step plus prepare is p95 **1.75–1.80 ms** against 2.0 ms at 10,756 live.
+  - The first measurement was 4.7 ms. A radix sort, field-wise compaction and direct reads fixed it with every pin unchanged.
+  - With no workers it is 2.5 ms, so jobs are the lever.
+- **Pin:** the fountain's `0xc5f2d56ba1124b5d` at tick 600 matches in the test, the headless and windowed tours, all runs and `embers`.
+- **Other samples:** the tour and walker are unchanged.
+- **Indices:** about 0.03 ms of upload, so no option.
+- **Found, not M29's:** M28's landmark-digest test fails under ReleaseSafe at `b41ce67` too. Reported to the owner.
+
+Bar **2,295/2,296** (one skip, M27's), the full bar, all exit 0. The whole graph under `-Drhi=metal` is 2,305/2,317, with 12 backend-conditional skips. The content change is staged by the relocated install above, as M28's was, because `dist` stages no `sandbox3d`. No shader or Vulkan code changed.
 
 **M29 Step 5 is done (2026-10-24): `render3d.Particles`.**
 - `render3d.Particles` owns instances by handle:

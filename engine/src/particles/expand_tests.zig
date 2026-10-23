@@ -140,18 +140,19 @@ test "a velocity-facing quad stretches along its screen-space motion" {
 
 test "blended quads draw far to near with ties by serial; unsorted keeps spawn order" {
     const emitter: Emitter = .{};
-    // Depths along −Z: 2, 9, 5, and a second 5 spawned before the first one listed at 5.
+    // Depths along −Z: 2, 9, and 5 twice. A store is in spawn order (Step 1), so serials
+    // ascend with position in it, and the tie between the two at 5 goes to the earlier.
     var system = try holding(&.{
         particle(.{ 0, 0, -2 }, 10),
         particle(.{ 0, 0, -9 }, 11),
-        particle(.{ 3, 0, -5 }, 13),
-        particle(.{ -3, 0, -5 }, 12),
+        particle(.{ 3, 0, -5 }, 12),
+        particle(.{ -3, 0, -5 }, 13),
     }, 0);
     defer system.deinit();
     const buffers = try Buffers.init(4);
     defer buffers.deinit();
     _ = try expandOnce(&system, &emitter, front, .{ .sorted = true }, buffers);
-    const centre_x = [_]f32{ 0, -3, 3, 0 };
+    const centre_x = [_]f32{ 0, 3, -3, 0 };
     const centre_z = [_]f32{ -9, -5, -5, -2 };
     for (0..4) |q| {
         try testing.expectEqual(centre_x[q], (buffers.positions[q * 4][0] + buffers.positions[q * 4 + 2][0]) / 2);

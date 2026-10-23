@@ -49,7 +49,9 @@
 //! - `FOUNDRY_SANDBOX3D_GENERATE=background|inline|off` is how M28's landmark is made on its
 //!   tick, and `off` leaves the generated corner out; `FOUNDRY_SANDBOX3D_PAINT=auto` paints the
 //!   canvas along a fixed stroke every tick, for a run nobody watches, and
-//!   `FOUNDRY_SANDBOX3D_WATER=inline` rewrites the water on the main thread, the baseline.
+//!   `FOUNDRY_SANDBOX3D_WATER=inline` rewrites the water on the main thread, the baseline;
+//! - `FOUNDRY_SANDBOX3D_EFFECTS=on|off` makes M29's effects corner (`effects.zig`) or leaves it
+//!   out; P faces it from the patch and B fires its sparks.
 //!
 //! **M22's is a lit room a content mod changes** (`light.md` §10). Lights, ambient and
 //! EV100 come from the config; `--shadows=off` disables the shadow map. Player mods live
@@ -110,6 +112,7 @@ const native_mod = @import("native.zig");
 const gallery_mod = @import("gallery.zig");
 const Gallery = gallery_mod.Gallery;
 const generated = @import("generated.zig");
+const effects_mod = @import("effects.zig");
 const Native = native_mod.Native;
 
 const orrery_mod = @import("orrery.zig");
@@ -399,6 +402,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
 
     sample.gallery.window.report();
     if (sample.corner) |corner| corner.report();
+    if (sample.effects) |effects| effects.report();
     report(gpa, engine, &sample, skipped_frames);
     if (engine.os.envVar("FOUNDRY_SANDBOX3D_NATIVE_TRACE")) |path| {
         if (native.ticks != Native.proof_ticks or !native.blocked) return error.IncompleteNativeTrace;
@@ -686,6 +690,8 @@ const Sample = struct {
     /// M28's generated corner, made at `load` unless `FOUNDRY_SANDBOX3D_GENERATE=off`. On the
     /// heap, because its CPU canvas and water are large.
     corner: ?*generated.Corner = null,
+    /// M29's effects corner, made at `load` unless `FOUNDRY_SANDBOX3D_EFFECTS=off`.
+    effects: ?*effects_mod.Effects = null,
     intent: walk_mod.Intent = .{},
     tour: ?Tour = null,
     move_times: [Tour.max_ticks]i64 = undefined,
@@ -802,6 +808,12 @@ const Sample = struct {
             try corner.init(engine, generate, &self.world, &self.content.?, &self.walk.world);
             self.corner = corner;
         }
+        if (effects_mod.Mode.parse(engine.os.envVar("FOUNDRY_SANDBOX3D_EFFECTS")) == .on) {
+            const effects = try self.gpa.create(effects_mod.Effects);
+            errdefer self.gpa.destroy(effects);
+            try effects.init(self.gpa, &self.world, &self.content.?);
+            self.effects = effects;
+        }
 
         self.orrery.populate(&engine.store);
         self.save_dir = saveDir(self.gpa, engine);
@@ -814,7 +826,7 @@ const Sample = struct {
         self.panels.toggle("log");
         self.panels.entities.selected = self.orrery.role(.sheared);
         self.panels_open = engine.os.envVar("FOUNDRY_SANDBOX3D_PANELS") != null;
-        log.info("keys: WASD walk, arrows/right mouse look, f4 capture the pointer to look, f3 walk/orbit, f1 overlay, f5 save, f9 load, f6 move the orbiting crate, f7 try the sheared one, g load or release the gallery, t go to the generated corner, c clear its canvas, r reload content, escape quit", .{});
+        log.info("keys: WASD walk, arrows/right mouse look, f4 capture the pointer to look, f3 walk/orbit, f1 overlay, f5 save, f9 load, f6 move the orbiting crate, f7 try the sheared one, g load or release the gallery, t go to the generated corner, c clear its canvas, p face the effects, b fire the sparks, r reload content, escape quit", .{});
     }
 
     /// The user data directory, made if it is not there yet. The file beneath it is opened
@@ -859,6 +871,7 @@ const Sample = struct {
             if (self.content) |*content| content.contentChanged() catch |err|
                 log.warn("the scene could not follow a content change ({t}); drawing what it had", .{err});
             if (self.corner) |corner| corner.noteReload(&self.world);
+            if (self.effects) |effects| effects.contentChanged();
             self.releaseModels();
         }
         self.room = self.follow(self.room, before.room, self.settings.room, first);
@@ -926,6 +939,10 @@ const Sample = struct {
         // The game translates `app`'s step into `scene`'s tick: the number and the fixed
         // delta, and nothing a system could read a device through.
         self.orrery.step(.{ .tick = s.tick, .delta = s.delta });
+        if (self.effects) |effects| {
+            const moon = if (self.orrery.role(.moon)) |m| scene.hierarchy.worldTransform(&self.orrery.world, m) else null;
+            effects.step(engine, s.tick, s.delta.toSecondsF32(), moon);
+        }
         if (self.native) |native| if (self.tour != null) try native.record();
         const scope = engine.beginScope("character");
         defer scope.end();
@@ -1030,6 +1047,21 @@ const Sample = struct {
                     self.walk.pitch = 0;
                     log.info("t: on the generated corner's patch", .{});
                 } else |err| log.warn("t: the player could not be moved ({t})", .{err});
+            }
+        }
+        if (self.effects) |effects| {
+            if ((in.wasPressed(.b) and !typing) or scripted.b) effects.burst();
+            if ((in.wasPressed(.p) and !typing) or scripted.p) {
+                // The patch is M28's: without the generated corner there is nothing to stand on.
+                if (self.corner == null) {
+                    log.warn("p: the effects are watched from the generated corner's patch, which is off", .{});
+                } else if (self.walk.teleport(effects_mod.Effects.teleportTarget())) |_| {
+                    self.walk.orbit = false;
+                    // Facing the effects, along +Z.
+                    self.walk.yaw = std.math.pi;
+                    self.walk.pitch = 0;
+                    log.info("p: facing the effects corner", .{});
+                } else |err| log.warn("p: the player could not be moved ({t})", .{err});
             }
         }
         if ((in.wasPressed(.r) and !typing) or scripted.r) {
@@ -1170,14 +1202,17 @@ const Sample = struct {
         };
         // Rewritten before the window opens, from simulation time (I9), never the clock.
         if (self.corner) |corner| corner.updateWater(engine, &self.world, @as(f32, @floatFromInt(engine.stepper.tick)) * engine.step_delta.toSecondsF32());
-        try self.world.begin(.{
+        const view: render3d.FrameView = .{
             .camera = camera,
             .target_size = pixels,
             .clear_color = self.settings.clear_linear,
             .ambient = if (!self.shadow_ground.isNone()) .{ 0.15, 0.15, 0.15 } else self.settings.lighting.ambient,
             .exposure_ev100 = if (!self.shadow_ground.isNone()) null else self.settings.lighting.exposure_ev100,
             .shadow_distance = 20,
-        });
+        };
+        // Particle meshes are written here, outside the window, for this frame's camera.
+        if (self.effects) |effects| effects.prepare(engine, view);
+        try self.world.begin(view);
 
         if (!self.shadow_ground.isNone()) {
             try self.world.addLight(.{ .kind = .directional, .intensity = 3, .casts_shadow = true, .world = Mat4.fromQuat(Quat.lookRotation(.init(-1, -2, -1), .up).?) });
@@ -1198,6 +1233,7 @@ const Sample = struct {
         self.drawModel(.{ .model = self.gallery.model, .world = Mat4.identity });
         if (self.content) |*content| try self.props.draw(content);
         if (self.corner) |corner| try corner.draw(&self.world, &self.content.?);
+        if (self.effects) |effects| try effects.draw();
         if (self.content) |*content| for (self.walkers, 0..) |*walker, i| {
             // The sixteen-walker cost run fans their visual instances out. Each still owns
             // an independently sampled pose and collision character; no engine crowd API.
@@ -1311,6 +1347,11 @@ const Sample = struct {
             corner.deinit(&self.world, &self.content.?, &self.walk.world);
             self.gpa.destroy(corner);
         }
+        // Before `Content`, whose materials it holds.
+        if (self.effects) |effects| {
+            effects.deinit();
+            self.gpa.destroy(effects);
+        }
         if (self.content) |*content| self.props.deinit(self.gpa, &self.walk.world, content, &engine.assets);
         if (self.content) |*content| for (self.walkers) |*walker| walker.deinit(self.gpa, &self.walk.world, content);
         self.gpa.free(self.walkers);
@@ -1394,13 +1435,13 @@ const Script = struct {
 
     const max = 32;
     const Press = struct { key: Key, frame: u64 };
-    const Key = enum { f1, f3, f4, f5, f6, f7, f9, g, c, r, t };
-    const Keys = struct { f1: bool = false, f3: bool = false, f4: bool = false, f5: bool = false, f6: bool = false, f7: bool = false, f9: bool = false, g: bool = false, c: bool = false, r: bool = false, t: bool = false };
+    const Key = enum { f1, f3, f4, f5, f6, f7, f9, g, c, r, t, b, p };
+    const Keys = struct { f1: bool = false, f3: bool = false, f4: bool = false, f5: bool = false, f6: bool = false, f7: bool = false, f9: bool = false, g: bool = false, c: bool = false, r: bool = false, t: bool = false, b: bool = false, p: bool = false };
 
     fn fromEnv(engine: *app.Engine) Script {
         const text = engine.os.envVar("FOUNDRY_SANDBOX3D_KEYS") orelse return .{};
         return parse(text) orelse blk: {
-            log.warn("FOUNDRY_SANDBOX3D_KEYS is not a list of key@frame (f1 f3 f4 f5 f6 f7 f9 g c r t); ignoring it", .{});
+            log.warn("FOUNDRY_SANDBOX3D_KEYS is not a list of key@frame (f1 f3 f4 f5 f6 f7 f9 g c r t b p); ignoring it", .{});
             break :blk .{};
         };
     }
@@ -1546,6 +1587,8 @@ test {
     _ = @import("native_tests.zig");
     _ = gallery_mod;
     _ = generated;
+    _ = effects_mod;
+    _ = @import("effects_tests.zig");
 }
 
 test "the builder makes the cube and the proof ground byte for byte as M19 wrote them" {

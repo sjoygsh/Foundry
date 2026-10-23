@@ -1,6 +1,6 @@
 # Design: M29 — Particles I: a CPU particle system with content-defined emitters
 
-**Status:** Accepted 2026-10-23, when the owner asked for Step 1, with §14 as written. Steps 1–5 of §15's eight are done; their Resolutions follow §15.
+**Status:** Accepted 2026-10-23, when the owner asked for Step 1, with §14 as written. Steps 1–6 of §15's eight are done; their Resolutions follow §15.
 **Date:** 2026-10-23
 **Baseline:** `86456c9`, tag `m28`. M0–M28 are complete.
 **Decisions:**
@@ -962,3 +962,120 @@ has no `data` to compile a record with.
 - not folding the emitter count failed the counting test.
 
 **Bar:** **2,291/2,292** (one skip, M27's), the full bar, all exit 0. The whole graph under `-Drhi=metal` is 2,301/2,313, with 12 backend-conditional skips; `particles3d` runs there through real Metal staging. No shader or Vulkan code changed, so the Vulkan checks were not due.
+
+## Resolution — Step 6: the effects corner, proved on Metal (2026-10-24)
+
+**What exists:**
+- **`samples/sandbox3d/effects.zig`.** `FOUNDRY_SANDBOX3D_EFFECTS=on|off`, with `on` when
+  unset; an unknown value is said aloud and is `off`. **P** stands the player on M28's patch
+  facing the corner. **B** restarts the sparks' timeline, so their burst at time 0 fires at the
+  next step. Both keys join `FOUNDRY_SANDBOX3D_KEYS`.
+- **Content in `sandbox3d.fdt`:** five emitters, `sandbox3d:effects.torch_flame`,
+  `torch_smoke`, `sparks`, `fountain` and `trail`, and five particle materials.
+- **Textures:** `content/effects/flame.png` (a 4×4 flipbook) and `puff.png`. They are white,
+  with the shape in alpha, and written by `scripts/gen-particle-textures.py`, which produces the
+  same bytes on every run.
+- **`testdata/mods/embers`:** a content-only mod that overrides the flame emitter at rate 180 and
+  the flame material in green. `build.zig` compiles it beside `plinth` and `orbiter`, installs
+  it as an optional package, and hands it to the sample's tests.
+- **`effects_tests.zig`:** four tests.
+
+The sample calls `step` on the tick, with the moon's world transform for the trail.
+`prepare(view)` runs once the frame's `FrameView` is built and before `begin`, and `draw` runs
+after the generated corner's draws.
+
+**Where the step sharpened §8:**
+- **Placement.** The corner is at x = 20, z = 9.5, past the +Z edge of M28's patch. Its ground
+  is the patch, so **P** says so and does nothing when the generated corner is off.
+- **The fountain** has capacity 12,000, rate 6,500 and lifetime 1.5–1.7 s, which holds about
+  10,400 live. With the rest of the corner the peak is 10,756.
+  - Its colour comes from `color_over_life` alone. §8's "varies by each particle's random
+    value" is dropped: §4's record has no field that reads the per-particle random. It is kept
+    in the store (Step 1), and nothing is deferred by not using it.
+- **`casts_shadow false` is not written on particle materials.** The particle model reads no
+  `casts_shadow`, so setting it raised `Content`'s "fields unread" warning. Particles never
+  cast, whatever it says (Step 4).
+- **`app`'s first tick is 1.** The pin is taken at `tick == 600`, after 600 steps, and the test
+  steps ticks 1–600, as the sample does.
+- **A clock for the parts of `prepare`.** `render3d` reads no clock, so
+  `Particles.prepareTimed(view, jobs, clock)` takes a caller's clock, as `core.profile` takes
+  timestamps. It returns the expansions' time, which includes each sort, and the uploads'.
+  Measurement only. The sort cannot be timed apart from the expansion, because it runs inside
+  `particles.Expander` and `particles` has no clock either.
+
+**The first measurement missed the budget, and the fix changed no byte.** Three windowed runs
+from the relocated install measured a step-plus-prepare p95 of 4.67–4.69 ms, with expansion
+and sort 3.7 ms of it. A ReleaseSafe benchmark of the same fountain on a busy core took 0.35 ms
+to expand, 0.35 ms more to sort, and 0.09 ms to step.
+- **The ×6–8 gap is the paced main thread.** It idles between frames and runs on a cooler,
+  slower core, as M28's inline water did. Thread priority and QoS are M99's.
+- **So the work was cut instead:**
+  - The sort is now a stable LSD radix sort on the depth's bits: −0 folded into +0, IEEE order
+    made unsigned, then reversed for far first. A store is in spawn order, so stability gives
+    the same "then earlier spawned" tie-break as before. Step 2's tie test now builds its store
+    in spawn order, as every real store is.
+  - The step's removal moves runs of survivors one field array at a time.
+  - The expansion reads the field arrays directly, skips trig when the angle is exactly 0
+    (`sinCosTurns(0)` is exactly (0, 1)), and keeps plain per-chunk bounds.
+- **Every pin is unchanged:** Step 1's state, Step 2's three facings and the fountain's. The
+  benchmark now expands in 0.14 ms, sorts and expands in 0.25 ms, and steps in 0.09 ms.
+
+**§1's exit on Metal.** These runs used a relocated ReleaseSafe install (`zig build install
+-Drhi=metal -Doptimize=ReleaseSafe` to a staging prefix, moved, then run from the new place).
+They were windowed, on an Apple M5, with 4× MSAA, 600 frames, the gallery off, and **P** at
+frame 30, so the corner is in view throughout:
+
+| Run | Step + prepare median / p95 / max (ms) | Step p95 | Prepare p95 (expand and sort / upload) | Peak live |
+| --- | --- | --- | --- | --- |
+| 1 | 1.655 / **1.799** / 2.025 | 0.391 | 1.415 (1.167 / 0.369) | 10,756 |
+| 2 | 1.618 / **1.758** / 2.078 | 0.400 | 1.368 (1.120 / 0.357) | 10,756 |
+| 3 | 1.606 / **1.751** / 1.933 | 0.394 | 1.371 (1.110 / 0.360) | 10,756 |
+
+1. **The budget holds:** a p95 of 1.75–1.80 ms against 2.0 ms. With `FOUNDRY_SANDBOX3D_WORKERS=0`
+   the p95 is 2.50 ms, so `core.Jobs` is the lever, as §12 planned. The Arc PC decides the
+   criterion in Step 7.
+2. **The pin holds:** `0xc5f2d56ba1124b5d` at tick 600, in all of these:
+   - the test;
+   - the headless tour;
+   - all three windowed runs;
+   - the `embers` run;
+   - the run with no workers;
+   - the windowed tour.
+
+   They differ in frame pacing, worker count and packages, and all give the same ticks and the
+   same bytes.
+3. **and 4. Order, additive, mask and exposure hold**, by Step 4's Metal readbacks.
+5. **`embers` holds.** `FOUNDRY_SANDBOX3D_PACKAGES=embers:content` enables it, and the peak rises
+   to 10,868 from the flame's doubled rate. The test shows the overriding rate and the green
+   emission. A scripted **R** logs "torch flame particles.Emitter(0#1) kept, 116 live", and
+   the pin is unchanged.
+6. **The other samples hold.**
+   - The windowed tour from the install keeps the player's `cb99ccfcf2b6d6c3` and the walker's
+     `62ed8c026c20482c`, as does the headless tour.
+   - The court's endings run in `zig build test`.
+   - M28's water stays near a p95 of 0.11 ms.
+   - The landmark's worst frame is 3.6 ms against its 16.67 ms budget. That is up from M28's
+     2.6 ms by about the particle work, which now shares those frames.
+
+**The index question (§7) is closed:** uploads are about 0.36 ms of a frame, and the indices
+about 8% of those bytes, so about 0.03 ms. No "indices unchanged" option is added.
+
+**Found, not M29's:** M28's "the landmark is the same bytes inline and from a pool task" test
+fails under `-Doptimize=ReleaseSafe`. It fails identically on a clean checkout of `b41ce67`. Its
+digest is pinned for Debug alone; it is the `sinf` variance of `public3d.md` §10 and of this
+milestone's Step 1. The bar runs Debug, where it passes. It is reported to the owner rather
+than changed here.
+
+**Tests.** `sandbox3d-test` passes 37 of 37, four of them new:
+- every record decodes, and the corner makes all five effects;
+- the pin, with 10,000–11,500 live;
+- the mode switch;
+- `embers`: rate and colour overridden, the handle kept, and twice the spawning.
+
+**Mutations.** Each was made, watched to fail, and restored byte for byte:
+- an unknown mode taken as `on` failed the mode test;
+- the effects not following a reload failed the `embers` test;
+- a radix key not reversed failed the sort test and the facing pins;
+- the compaction skipping `spin` failed the state pin and the facing pins.
+
+**Bar:** **2,295/2,296** (one skip, M27's), the full bar, all exit 0. The whole graph under `-Drhi=metal` is 2,305/2,317, with 12 backend-conditional skips. The content change is staged by the relocated install above, as M28's was, because `dist` stages no `sandbox3d`. No shader or Vulkan code changed.

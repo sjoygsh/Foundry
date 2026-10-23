@@ -70,15 +70,25 @@ pub const Expanded = struct {
 /// The sort's workspace, sized once for a store's capacity.
 pub const Expander = struct {
     gpa: Allocator,
-    keys: []SortKey,
+    /// The draw order, as store indices, and the radix sort's other half.
+    order: []u32,
+    order_scratch: []u32,
+    keys: []u32,
+    keys_scratch: []u32,
 
     pub fn init(gpa: Allocator, capacity: u32) Allocator.Error!Expander {
         std.debug.assert(capacity > 0 and capacity <= emitter_mod.max_capacity);
-        return .{ .gpa = gpa, .keys = try gpa.alloc(SortKey, capacity) };
+        var self: Expander = .{ .gpa = gpa, .order = &.{}, .order_scratch = &.{}, .keys = &.{}, .keys_scratch = &.{} };
+        errdefer self.deinit();
+        self.order = try gpa.alloc(u32, capacity);
+        self.order_scratch = try gpa.alloc(u32, capacity);
+        self.keys = try gpa.alloc(u32, capacity);
+        self.keys_scratch = try gpa.alloc(u32, capacity);
+        return self;
     }
 
     pub fn deinit(self: *Expander) void {
-        self.gpa.free(self.keys);
+        for ([_][]u32{ self.order, self.order_scratch, self.keys, self.keys_scratch }) |slice| self.gpa.free(slice);
         self.* = undefined;
     }
 
@@ -93,24 +103,31 @@ pub const Expander = struct {
     /// stepped with `emitter`, and both are unchanged for the call.
     pub fn expand(self: *Expander, system: *const System, emitter: *const Emitter, view: View, options: Options, out: Output, jobs: Jobs) Expanded {
         const live = system.liveCount();
-        std.debug.assert(live <= self.keys.len);
+        std.debug.assert(live <= self.order.len);
         std.debug.assert(out.positions.len >= live * vertices_per_quad and out.uvs.len >= live * vertices_per_quad);
         std.debug.assert(out.colors.len >= live * vertices_per_quad and out.indices.len >= live * indices_per_quad);
         if (live == 0) return .{ .quads = 0, .bounds = null };
 
         const s = system.particles.slice();
-        const keys = self.keys[0..live];
-        for (keys, s.items(.serial), 0..) |*key, serial, i| key.* = .{ .depth = 0, .serial = serial, .index = @intCast(i) };
+        const order = self.order[0..live];
+        for (order, 0..) |*o, i| o.* = @intCast(i);
         if (options.sorted) {
-            for (keys, s.items(.position)) |*key, p| key.depth = carry(emitter, options.transform, p).sub(view.eye).dot(view.forward);
-            std.sort.pdq(SortKey, keys, {}, SortKey.farFirst);
+            const keys = self.keys[0..live];
+            for (keys, s.items(.position)) |*key, p| key.* = farFirst(carry(emitter, options.transform, p).sub(view.eye).dot(view.forward));
+            radixSort(keys, order, self.keys_scratch[0..live], self.order_scratch[0..live]);
         }
 
-        var slots: [max_chunks]?Aabb = @splat(null);
+        var slots: [max_chunks]Aabb = undefined;
         const work: Work = .{
             .emitter = emitter,
-            .particles = s,
-            .keys = keys,
+            .positions = s.items(.position),
+            .velocities = s.items(.velocity),
+            .births = s.items(.birth),
+            .lifetimes = s.items(.lifetime),
+            .sizes = s.items(.size),
+            .rotations = s.items(.rotation),
+            .spins = s.items(.spin),
+            .order = order,
             .view = view,
             .transform = options.transform,
             .now = @as(f64, @floatFromInt(system.last_tick.?)) * @as(f64, system.dt.?),
@@ -119,54 +136,92 @@ pub const Expander = struct {
         };
         jobs.forChunks(live, grain, &work, Work.chunk);
 
-        var bounds: ?Aabb = null;
-        for (slots[0..core.jobs.chunkCount(live, grain)]) |slot| bounds = merge(bounds, slot.?);
+        var bounds = slots[0];
+        for (slots[1..core.jobs.chunkCount(live, grain)]) |slot| bounds = merge(bounds, slot);
         return .{ .quads = live, .bounds = bounds };
     }
 };
 
-pub const SortKey = struct {
-    depth: f32,
-    serial: u64,
-    index: u32,
+/// A depth as a key that sorts farther first when sorted ascending: IEEE order made unsigned,
+/// then reversed. −0 and +0 compare equal, so −0 is folded into +0 first.
+fn farFirst(depth: f32) u32 {
+    const d: f32 = if (depth == 0) 0 else depth;
+    const bits: u32 = @bitCast(d);
+    const ascending = if (bits >> 31 != 0) ~bits else bits | 0x8000_0000;
+    return ~ascending;
+}
 
-    /// Farther first; equal depths by spawn serial, which no two particles share.
-    fn farFirst(_: void, a: SortKey, b: SortKey) bool {
-        if (a.depth != b.depth) return a.depth > b.depth;
-        return a.serial < b.serial;
+/// A stable least-significant-digit radix sort of `order` by `keys`, a byte a pass. Stable, and
+/// `order` arrives in store order, which is spawn order, so equal depths stay in spawn-serial
+/// order: the total order "farther first, then earlier spawned" (§3.3). Four passes leave the
+/// result back in `keys` and `order`.
+fn radixSort(keys: []u32, order: []u32, keys_scratch: []u32, order_scratch: []u32) void {
+    var from_keys = keys;
+    var from_order = order;
+    var to_keys = keys_scratch;
+    var to_order = order_scratch;
+    var shift: u5 = 0;
+    for (0..4) |_| {
+        var counts: [256]u32 = @splat(0);
+        for (from_keys) |key| counts[(key >> shift) & 0xff] += 1;
+        var at: u32 = 0;
+        for (&counts) |*count| {
+            const n = count.*;
+            count.* = at;
+            at += n;
+        }
+        for (from_keys, from_order) |key, index| {
+            const bucket = &counts[(key >> shift) & 0xff];
+            to_keys[bucket.*] = key;
+            to_order[bucket.*] = index;
+            bucket.* += 1;
+        }
+        std.mem.swap([]u32, &from_keys, &to_keys);
+        std.mem.swap([]u32, &from_order, &to_order);
+        shift +%= 8;
     }
-};
+}
 
 const Work = struct {
     emitter: *const Emitter,
-    particles: std.MultiArrayList(system_mod.Particle).Slice,
-    keys: []const SortKey,
+    positions: []const [3]f32,
+    velocities: []const [3]f32,
+    births: []const f64,
+    lifetimes: []const f32,
+    sizes: []const f32,
+    rotations: []const f32,
+    spins: []const f32,
+    order: []const u32,
     view: View,
     transform: Mat4,
     now: f64,
     out: Output,
-    slots: *[max_chunks]?Aabb,
+    slots: *[max_chunks]Aabb,
 
     fn chunk(self: *const Work, piece: core.jobs.Chunk) void {
-        var bounds: ?Aabb = null;
+        var lo: [3]f32 = @splat(std.math.inf(f32));
+        var hi: [3]f32 = @splat(-std.math.inf(f32));
         for (piece.begin..piece.end) |q| {
             const quad = self.writeQuad(@intCast(q));
-            for (quad) |corner| bounds = merge(bounds, .{ .min = corner, .max = corner });
+            for (quad) |corner| for (0..3) |axis| {
+                lo[axis] = @min(lo[axis], corner[axis]);
+                hi[axis] = @max(hi[axis], corner[axis]);
+            };
         }
-        self.slots[piece.index] = bounds;
+        self.slots[piece.index] = .{ .min = lo, .max = hi };
     }
 
     /// Quad `q` of the draw order, at vertices `4q..4q+3` and indices `6q..6q+5`.
     fn writeQuad(self: *const Work, q: u32) [4][3]f32 {
         const emitter = self.emitter;
-        const p = self.particles.get(self.keys[q].index);
-        const age_seconds = self.now - p.birth;
+        const index = self.order[q];
+        const age_seconds = self.now - self.births[index];
         const age: f32 = @floatCast(age_seconds);
-        const t = std.math.clamp(age / p.lifetime, 0, 1);
-        const size = p.size * emitter.sizeAt(t);
-        const centre = carry(emitter, self.transform, p.position);
+        const t = std.math.clamp(age / self.lifetimes[index], 0, 1);
+        const size = self.sizes[index] * emitter.sizeAt(t);
+        const centre = carry(emitter, self.transform, self.positions[index]);
 
-        const half = self.halfAxes(p, age, size);
+        const half = self.halfAxes(index, age, size);
         const corners = [4]Vec3{
             centre.sub(half[0]).sub(half[1]),
             centre.add(half[0]).sub(half[1]),
@@ -202,18 +257,19 @@ const Work = struct {
     }
 
     /// The quad's two half-axes, in world space.
-    fn halfAxes(self: *const Work, p: system_mod.Particle, age: f32, size: f32) [2]Vec3 {
+    fn halfAxes(self: *const Work, index: u32, age: f32, size: f32) [2]Vec3 {
         const half = size / 2;
         const emitter = self.emitter;
+        const angle = self.rotations[index] + self.spins[index] * age;
         switch (emitter.facing) {
-            .camera => return rotated(self.view.right, self.view.up, p.rotation + p.spin * age, half),
+            .camera => return rotated(self.view.right, self.view.up, angle, half),
             .up => {
                 const x = self.transform.mulVec4(.fromDirection(.right)).xyz().normalize();
                 const z = self.transform.mulVec4(.fromDirection(.init(0, 0, 1))).xyz().normalize();
-                return rotated(x, z, p.rotation + p.spin * age, half);
+                return rotated(x, z, angle, half);
             },
             .velocity => {
-                const velocity = carryDirection(emitter, self.transform, p.velocity);
+                const velocity = carryDirection(emitter, self.transform, self.velocities[index]);
                 const forward = self.view.forward;
                 const across = velocity.sub(forward.scale(velocity.dot(forward)));
                 const length = across.length();
@@ -229,6 +285,8 @@ const Work = struct {
 
 /// `a` and `b` turned by `angle` in their own plane, each scaled to `half`.
 fn rotated(a: Vec3, b: Vec3, angle: f32, half: f32) [2]Vec3 {
+    // `sinCosTurns(0)` is exactly (0, 1), so an unturned quad skips it and writes the same bytes.
+    if (angle == 0) return .{ a.scale(half), b.scale(half) };
     const sc = trig.sinCosTurns(@as(f64, angle) / (2 * std.math.pi));
     const s: f32 = @floatCast(sc[0]);
     const c: f32 = @floatCast(sc[1]);
@@ -254,9 +312,7 @@ fn carryDirection(emitter: *const Emitter, transform: Mat4, d: [3]f32) Vec3 {
     return if (emitter.space == .local) transform.mulVec4(.fromDirection(v)).xyz() else v;
 }
 
-fn merge(a: ?Aabb, b: ?Aabb) ?Aabb {
-    const x = a orelse return b;
-    const y = b orelse return a;
+fn merge(x: Aabb, y: Aabb) Aabb {
     var out = x;
     for (0..3) |axis| {
         out.min[axis] = @min(x.min[axis], y.min[axis]);

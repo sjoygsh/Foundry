@@ -499,18 +499,18 @@ pub const uploads_span = "uploads.pump";
 // -- the corner --------------------------------------------------------------------------
 
 /// What the corner times on the main thread: each write's own cost, never what simulation sees.
-const Timings = struct {
+pub const Timings = struct {
     const capacity = 4096;
     values: [capacity]i64 = undefined,
     len: usize = 0,
 
-    fn add(self: *Timings, ns: i64) void {
+    pub fn add(self: *Timings, ns: i64) void {
         if (self.len == capacity) return;
         self.values[self.len] = ns;
         self.len += 1;
     }
 
-    fn summary(self: *const Timings) core.profile.Summary {
+    pub fn summary(self: *const Timings) core.profile.Summary {
         var scratch: [capacity]i64 = undefined;
         return core.profile.summarise(self.values[0..self.len], &scratch);
     }

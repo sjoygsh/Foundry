@@ -1,0 +1,28 @@
+# M29's content-only proof (`particles.md` §8). An override replaces the WHOLE record, so each
+# is written out in full: the emitter's rate doubles, and the material's emission turns green.
+foundry:particle_emitter sandbox3d:effects.torch_flame {
+    material        sandbox3d:materials.flame
+    capacity        256
+    rate            180
+    lifetime        { min 0.5  max 0.8 }
+    shape           { kind "cone"  radius 0.05  angle 0.3 }
+    speed           { min 0.4  max 0.7 }
+    acceleration    { x 0  y 1.2  z 0 }
+    drag            1.5
+    size            { min 0.16  max 0.24 }
+    size_over_life  [ { t 0  value 0.6 } { t 0.3  value 1 } { t 1  value 0.2 } ]
+    rotation        { min 0  max 6.2832 }
+    spin            { min -1  max 1 }
+    color_over_life [ { t 0  color { r 1  g 1  b 1  a 0 } } { t 0.15  color { r 1  g 1  b 1  a 1 } } { t 1  color { r 0.6  g 1  b 0.6  a 0 } } ]
+    additive        1
+    sheet           { columns 4  rows 4  frames 16 }
+    seed            7
+}
+foundry:material sandbox3d:materials.flame {
+    shading            foundry:shading.particle
+    base_color         { r 0  g 0  b 0  a 1 }
+    base_color_texture sandbox3d:effects.flame
+    alpha_mode         "blend"
+    emissive           { r 0.3  g 1  b 0.4 }
+    emissive_strength  150
+}

@@ -865,9 +865,16 @@ pub fn build(b: *std.Build) void {
                 });
                 walk_test_options.addOptionPath("orbiter_package", orbiter.fpk);
                 walk_test_options.addOptionPath("orbiter_generated", orbiter.generated);
+                // M29's content-only effects mod (`particles.md` §8).
+                const embers = release.compilePackage(b, fpack, .{
+                    .dir = "samples/sandbox3d/testdata/mods/embers",
+                    .stem = "embers",
+                    .dependencies = &.{ core_compiled.?.fpk, compiled.fpk },
+                });
+                walk_test_options.addOptionPath("embers_package", embers.fpk);
                 // Optional packages in the installation, never automatically selected.
                 for ([_]struct { stem: []const u8, compiled: @TypeOf(plinth) }{
-                    .{ .stem = "plinth", .compiled = plinth }, .{ .stem = "orbiter", .compiled = orbiter },
+                    .{ .stem = "plinth", .compiled = plinth }, .{ .stem = "orbiter", .compiled = orbiter }, .{ .stem = "embers", .compiled = embers },
                 }) |fixture| {
                     b.getInstallStep().dependOn(&b.addInstallFileWithDir(fixture.compiled.fpk, .prefix, b.fmt("content/{s}.fpk", .{fixture.stem})).step);
                     b.getInstallStep().dependOn(&b.addInstallDirectory(.{ .source_dir = fixture.compiled.generated, .install_dir = .prefix, .install_subdir = b.fmt("content/{s}", .{fixture.stem}) }).step);

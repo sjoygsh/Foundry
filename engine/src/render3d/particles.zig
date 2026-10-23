@@ -190,6 +190,27 @@ pub const Particles = struct {
     /// instance outside the view frustum keeps last frame's mesh and is not drawn; one with no
     /// live particles is not drawn. Counts go to the next frame's `Stats`.
     pub fn prepare(self: *Self, view: FrameView, jobs: core.Jobs) Error!void {
+        _ = try self.prepareTimed(view, jobs, null);
+    }
+
+    /// A caller's clock, for measurement only. `render3d` reads no clock of its own, so a
+    /// caller that has the right to read one hands it in, as `core.profile` takes timestamps.
+    pub const Clock = struct {
+        context: *anyopaque,
+        nanos: *const fn (context: *anyopaque) u64,
+
+        fn now(self: Clock) u64 {
+            return self.nanos(self.context);
+        }
+    };
+
+    /// Where `prepare`'s time went, when it was given a clock: the expansions, which include
+    /// each one's sort, and the uploads' staging and submission.
+    pub const Timing = struct { expand_ns: u64 = 0, upload_ns: u64 = 0 };
+
+    /// `prepare`, timed by `clock` when one is given. Nothing timed changes what is drawn.
+    pub fn prepareTimed(self: *Self, view: FrameView, jobs: core.Jobs, clock: ?Clock) Error!Timing {
+        var timing: Timing = .{};
         if (self.renderer.recording) return error.InFrame;
         if (!view.camera.isValid() or view.target_size.isEmpty()) return error.InvalidCamera;
         const frustum = frustum_mod.Frustum.fromViewProjection(view.camera.viewProjection(view.target_size.width, view.target_size.height));
@@ -217,12 +238,13 @@ pub const Particles = struct {
                 counts.culled += 1;
                 continue;
             }
-            try self.upload(entry, eye, jobs);
+            try self.upload(entry, eye, jobs, clock, &timing);
             entry.ready = true;
             counts.emitters += 1;
             counts.particles += entry.system.liveCount();
         }
         self.renderer.noteParticles(counts);
+        return timing;
     }
 
     /// Submits each prepared instance, inside the frame's window.
@@ -309,7 +331,8 @@ pub const Particles = struct {
     }
 
     /// One instance's quads into a staging reservation, then into its mesh.
-    fn upload(self: *Self, entry: *Entry, eye: particles.View, jobs: core.Jobs) Error!void {
+    fn upload(self: *Self, entry: *Entry, eye: particles.View, jobs: core.Jobs, clock: ?Clock, timing: *Timing) Error!void {
+        const started = if (clock) |c| c.now() else 0;
         const quads = entry.system.liveCount();
         const layout = Layout.of(quads);
         const staged = try self.renderer.reserveStaging("render3d particles", layout.size);
@@ -322,6 +345,12 @@ pub const Particles = struct {
         };
         const emitter = entry.description.emitter();
         const expanded = entry.expander.expand(&entry.system, &emitter, eye, .{ .sorted = entry.sorted, .transform = entry.transform }, out, jobs);
+        const expanded_at = if (clock) |c| c.now() else 0;
+        defer if (clock) |c| {
+            const done = c.now();
+            timing.expand_ns += expanded_at - started;
+            timing.upload_ns += done - expanded_at;
+        };
         const box = expanded.bounds.?;
         const aabb: asset.MeshAabb = .{ .min = vec(box.min), .max = vec(box.max) };
         const submeshes = [_]asset.Submesh{.{ .first_index = 0, .index_count = quads * 6 }};

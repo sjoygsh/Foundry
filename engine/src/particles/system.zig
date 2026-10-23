@@ -184,23 +184,32 @@ pub const System = struct {
 
     /// Removes particles whose age at `now` has reached their lifetime, keeping the order of
     /// the rest.
+    ///
+    /// Survivors move in runs, one field array at a time: the dead are few and mostly the
+    /// oldest, so most of the store is one run and the move is a copy per field rather than
+    /// a particle assembled and scattered back per survivor (Step 6's Resolution).
     fn age(self: *System, now: f64) void {
-        var s = self.particles.slice();
+        const s = self.particles.slice();
         const births = s.items(.birth);
         const lifetimes = s.items(.lifetime);
-        var kept: usize = 0;
-        for (0..s.len) |i| {
-            if (now - births[i] >= lifetimes[i]) continue;
-            if (kept != i) s.set(kept, s.get(i));
-            kept += 1;
+        var write: usize = 0;
+        var i: usize = 0;
+        while (i < s.len) {
+            while (i < s.len and now - births[i] >= lifetimes[i]) i += 1;
+            const start = i;
+            while (i < s.len and now - births[i] < lifetimes[i]) i += 1;
+            if (start == i) break;
+            // Reads are at `start` and after, writes before it, so nothing is read overwritten.
+            if (write != start) moveRun(s, write, start, i - start);
+            write += i - start;
         }
-        self.particles.shrinkRetainingCapacity(kept);
+        self.particles.shrinkRetainingCapacity(write);
     }
 
     /// The first `count` particles are the oldest, because order is spawn order.
     fn removeOldest(self: *System, count: usize) void {
-        var s = self.particles.slice();
-        for (count..s.len) |i| s.set(i - count, s.get(i));
+        const s = self.particles.slice();
+        moveRun(s, 0, count, s.len - count);
         self.particles.shrinkRetainingCapacity(s.len - count);
     }
 
@@ -345,6 +354,14 @@ pub const System = struct {
         self.bounds = .{ .min = lo, .max = hi };
     }
 };
+
+/// `len` particles from `from` down to `to`, which is lower, keeping their order.
+fn moveRun(s: std.MultiArrayList(Particle).Slice, to: usize, from: usize, len: usize) void {
+    inline for (comptime std.enums.values(std.MultiArrayList(Particle).Field)) |field| {
+        const items = s.items(field);
+        std.mem.copyForwards(@TypeOf(items[0]), items[to..][0..len], items[from..][0..len]);
+    }
+}
 
 /// Semi-implicit Euler with linear drag: `v += a·dt`, `v *= 1/(1 + drag·dt)`, `p += v·dt`.
 fn move(emitter: *const Emitter, p: *[3]f32, v: *[3]f32, dt: f32) void {

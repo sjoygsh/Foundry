@@ -1,0 +1,7 @@
+foundry:mod embers:content {
+    name     "Embers"
+    version  1
+    license  "Apache-2.0"
+    summary  "The torch burns green and twice as hard: two record overrides, no code."
+    requires [ { id sandbox3d:content } ]
+}
