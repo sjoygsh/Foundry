@@ -12,7 +12,8 @@ while another binds it.
 
 M28 makes runtime geometry a first-class path: generated meshes, textures written by the CPU,
 and materials made by code. Later milestones build on it:
-- M29's particles;
+- M29's particles (built in M29, 2026-10-24: they stage straight into kept staging and update
+  through `updateMeshFromStaged`, ADR-0064);
 - M62's terrain;
 - M65–M67's voxels;
 - M48, which publishes it to mods.

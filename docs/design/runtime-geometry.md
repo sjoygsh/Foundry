@@ -81,7 +81,9 @@ generates geometry needs next:
 **What M28 does not build**, each with the milestone that owns it:
 - Runtime geometry for mods through the public table: M48, `FoundryApi_v8` (§9).
 - The same for Lua scripts: M49.
-- Particles, which may use these calls or a path of their own (M29's design decides): M29.
+- Particles, which may use these calls or a path of their own (M29's design decides): M29. **Decided
+  and built in M29** (`particles.md` §7): `updateMeshFromStaged`, written straight into kept
+  staging, with no ring of its own.
 - Heightfield terrain as an engine feature: M62. The patch here is the sample's own generator,
   and `render3d` is not told it is terrain.
 - Voxel meshing and chunk remeshing: M65 and M67.
@@ -451,7 +453,7 @@ Each item is named with the milestone that owns it, or the measurement that woul
 | --- | --- |
 | Runtime geometry for mods through the table | M48 (`FoundryApi_v8`) |
 | Runtime geometry from Lua | M49 |
-| Particle geometry | M29 decides whether it uses `updateMesh` or a ring of its own (proposed answer: `updateMeshFromStaged`, no ring; `particles.md` §7) |
+| Particle geometry | M29 decides whether it uses `updateMesh` or a ring of its own. **Decided in M29 (2026-10-24, tag `m29`):** `updateMeshFromStaged`, written straight into kept staging, no ring (`particles.md` §7, ADR-0064) |
 | Heightfield terrain as an engine feature | M62–M63 |
 | Voxel meshing and remeshing | M65, M67 |
 | Tangent generation, and a `tangents` builder setter | M41 |

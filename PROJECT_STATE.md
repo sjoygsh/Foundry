@@ -1,8 +1,21 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-24
-**Current handoff: M29 Step 7 of 8 is complete** ([`docs/design/particles.md`](docs/design/particles.md), ADR-0064 accepted 2026-10-23). **Stop before Step 8** (close M29: the contract discrepancies, ADR-0064 into CLAUDE.md, the roadmap's intent lines, the PC's pack-up, tag `m29`).
-M28 is complete (tag `m28`, 2026-10-23; [`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063 implemented). M27 and M28 are pushed; M29's commits are not.
+**Current handoff: M29 is complete** (tag `m29`, 2026-10-24; [`docs/design/particles.md`](docs/design/particles.md), ADR-0064 implemented). **Stop before M30's design.** M27, M28 and M29 are pushed. The PC and the Mac are cleaned.
+
+**M29 Step 8 is done (2026-10-24): M29 closed.**
+- **Contract discrepancies:**
+  - `runtime-geometry.md` §12 and §1 record particles' path;
+  - ADR-0063's context records it too;
+  - the ROADMAP's intent lines gain M79's, M81's, M103's and M106's "also" clauses.
+- **Decisions:**
+  - ADR-0064 is implemented, in `CLAUDE.md` §4.1;
+  - §4.3's `render3d` line names its `particles` edge;
+  - §9's row records M29 done.
+- The ROADMAP, the design index and the README say M29 is done.
+- **The PC is packed up** by exact path, about 3.7 GB, with its toolchains kept.
+
+Bar **2,295/2,296** (one skip, M27's) at the closing tree, all exit 0.
 
 **M29 Step 7 is done (2026-10-24): Windows/Vulkan on the Arc A750.** The harness is `scripts/m29/windows.ps1`. The clone is `src\Foundry-m29` at `75b2150`, with `-j2` and below-normal priority.
 - **Native suites:**

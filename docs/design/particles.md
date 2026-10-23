@@ -1,6 +1,6 @@
 # Design: M29 — Particles I: a CPU particle system with content-defined emitters
 
-**Status:** Accepted 2026-10-23, when the owner asked for Step 1, with §14 as written. Steps 1–7 of §15's eight are done; their Resolutions follow §15.
+**Status:** Accepted 2026-10-23, when the owner asked for Step 1, with §14 as written. **Complete 2026-10-24, tag `m29`**: all eight of §15's steps are done; their Resolutions follow §15.
 **Date:** 2026-10-23
 **Baseline:** `86456c9`, tag `m28`. M0–M28 are complete.
 **Decisions:**
@@ -1162,3 +1162,58 @@ only the harness and documents, so the bar was not rerun.
 - `%USERPROFILE%\src\Foundry-m29`;
 - `%USERPROFILE%\m29` (the bundle, scripts and evidence in `s7`);
 - `%USERPROFILE%\m29-idle.ps1`.
+
+## Resolution — Step 8: Close M29 (2026-10-24)
+
+M29 is complete. §1's exit holds as written on macOS/Metal (Step 6) and on Windows/Vulkan (Step
+7), validation-clean. The fountain's state is one value on both. Every item of §13 names its
+owner.
+
+**Contract discrepancies, resolved in their documents:**
+- `runtime-geometry.md`:
+  - The §12 row "M29 decides" and §1's particles line now record the answer:
+    `updateMeshFromStaged`, written straight into kept staging, with no ring.
+- ADR-0063:
+  - Its context's "M29's particles" says M29 built them on that path.
+  - The ADR is append-only, and nothing in its decisions changed.
+- `docs/ROADMAP.md`:
+  - The intent lines gain §14 item 10's "also" clauses:
+    - M79, sub-emitters, events on death, and lit and shadow-receiving particles;
+    - M81, soft particles against its depth;
+    - M103, a component that carries an emitter on an entity;
+    - M106, particles drawn by `render2d`.
+  - M78 and M40 already named theirs.
+- **Found by Steps 1–7, already recorded where they belong:**
+  - the module-owned trig (Step 1);
+  - the spawn-order tie-break (Steps 2 and 6);
+  - the dropped per-particle colour variation (Step 6);
+  - the caller's clock for `prepareTimed` (Step 6).
+- M28's landmark test, fixed in `75b2150` and recorded in Step 7.
+
+**Decisions:**
+- ADR-0064 is implemented (tag `m29`), and `CLAUDE.md` §4.1's row says so.
+- `CLAUDE.md` §4.3:
+  - it already has `particles` at L1;
+  - `render3d`'s line now names its `particles` edge and the instances it runs by handle;
+  - §4.5's tree lists `particles/`.
+- §9's deferred row records M29 done.
+- The ROADMAP, the design index and the README say M29 is done.
+
+**§12:** neither revisit condition fired. The budget held on both machines with jobs. On the Arc
+it held without them. No cross-machine difference was recorded. `AGENTS.md`'s bar is unchanged,
+because no step added a build step or a check.
+
+**The PC is packed up.** These were removed by exact path, about 3.7 GB:
+- `src\Foundry-m29`;
+- `%USERPROFILE%\m29`, after the read-only install's ACL was reset;
+- `m29-idle.ps1`;
+- Zig's global cache in `LocalAppData`;
+- the shader-validation cache.
+
+The toolchains (`.local\zig`, `.local\vulkan`, the Vulkan SDK) and everything else on the
+machine are untouched. A later Windows step clones afresh.
+
+**Bar** at the closing tree, in full:
+- `zig fmt --check`, the four `check` variants, the four thirty-frame headless runs and
+  `fdt-check` pass;
+- `zig build test` passes **2,295/2,296**, with one skip (M27's).

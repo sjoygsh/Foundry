@@ -169,16 +169,17 @@ Decisions are recorded before they are built:
 
 ## Project status
 
-**M0 through M28 are complete: 29 of the 150 planned engine milestones, with
+**M0 through M29 are complete: 30 of the 150 planned engine milestones, with
 the certified release as M150 after them.** Foundry is a playable,
 moddable, networked 2D engine with an editor, and a 3D engine with lit, shadowed, animated
 models, collision, a public 3D modding API and a playable first-person sample, the court,
 played on all three desktop systems. Assets load in the background without stalling a
 frame, the editor builds while it keeps drawing, and games make and change meshes, textures
-and materials at run time beside compiled content. It runs on macOS, Windows and Linux (X11
+and materials at run time beside compiled content, and draw
+content-defined particle effects. It runs on macOS, Windows and Linux (X11
 and Wayland), and the first game built on it is finished in its own repository.
 
-**What comes next** is M29's design on the long roadmap
+**What comes next** is M30's design on the long roadmap
 ([ADR-0060](docs/adr/0060-a-150-milestone-roadmap.md)): a complete game toolkit, dynamics and
 large worlds, the renderer's upper tier, tools, and reach onto more platforms, ending in
 Foundry 1.0 at M149. It is a gradual ascent, not a sprint: the count says how far there is to

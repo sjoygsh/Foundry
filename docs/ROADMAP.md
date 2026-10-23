@@ -1,7 +1,7 @@
 # Foundry Roadmap
 
 Staged milestones from a minimal engine toward 2D, then 3D, then an industry-grade
-general-purpose engine: **150 engine milestones, M0 to M149, and M150, the certified release** (ADR-0060). M0–M28 are
+general-purpose engine: **150 engine milestones, M0 to M149, and M150, the certified release** (ADR-0060). M0–M29 are
 done; M26 closed Phase 5, and M27 opened Phase 6. The plan
 beyond M26 is [the long roadmap](#the-long-roadmap--m27-to-m150) at the end of this file. It is
 a gradual ascent, not a sprint.
@@ -1187,7 +1187,7 @@ the walker and reported it very good. **M26, the playable 3D sample, is complete
 **Decided 2026-10-02 ([ADR-0060](adr/0060-a-150-milestone-roadmap.md)).** Foundry is planned as
 **150 numbered engine milestones, M0 to M149, followed by M150, the certified release**. M0–M26 are done (with M16.5, which was inserted
 between two of them), and the 124 below follow them, beginning with M27's design. M27 is done
-(2026-10-18, tag `m27`), and so is M28 (2026-10-23, tag `m28`).
+(2026-10-18, tag `m27`), and so are M28 (2026-10-23, tag `m28`) and M29 (2026-10-24, tag `m29`).
 
 **This is a gradual ascent, not a sprint.** The number says how far there is to go, not how
 fast. Milestones are still units of work, not time; each still begins with a design document
@@ -1231,7 +1231,7 @@ What a real 3D game reaches for first. Ends in a second 3D sample that uses all 
 | --- | --- | --- |
 | M27 | Background work | A task graph and background jobs over `core.Jobs`; assets load without stalling a frame; also the editor's background compile. **Done 2026-10-18, tag `m27`: [`background.md`](design/background.md), ADR-0061/0062.** A gallery of large textures loads on Metal and Windows/Vulkan with no frame over 16.67 ms; the editor draws and takes edits while it builds; `FoundryApi_v7` adds three job calls (264) |
 | M28 | Runtime geometry | Meshes, materials and textures created at run time in `render3d`, beside compiled content. **Done 2026-10-23, tag `m28`: [`runtime-geometry.md`](design/runtime-geometry.md), ADR-0063.** `sandbox3d`'s generated corner — a walked patch, water rewritten every frame, a painted canvas, a 1M-vertex landmark built on the pool, a recoloured crate — holds its budgets on Metal and Windows/Vulkan, validation-clean; no ABI change, M48 publishes it |
-| M29 | Particles I | A CPU particle system with content-defined emitters. **In progress: [`particles.md`](design/particles.md), ADR-0064, accepted 2026-10-23.** |
+| M29 | Particles I | A CPU particle system with content-defined emitters. **Done 2026-10-24, tag `m29`: [`particles.md`](design/particles.md), ADR-0064.** `sandbox3d`'s effects corner — a flipbook torch over lit smoke, bursting sparks, a 10,400-particle sorted fountain and a world-space trail — holds 2.0 ms at about 11,000 particles with one pinned state on Metal and Windows/Vulkan, validation-clean, and the `embers` content mod changes it; no ABI change, M48 publishes it |
 | M30 | Audio II | Compressed audio and streamed music; the decoder is an ADR; also music sequencing: playlists, crossfades and stingers |
 | M31 | Audio III | 3D spatialisation, mixer buses and effects; also a limiter and compressor |
 | M32 | Navigation I | Navigation meshes built from collision geometry |
@@ -1295,9 +1295,9 @@ Each step is measured against the forward renderer it changes (ADR-0052). Ends i
 | M76 | GPU skinning | Skinning on the GPU, clip compression, and the M24 limits lifted; also more than one skin, four influences or 256 joints, and inverse-transpose normals |
 | M77 | Animation formats | Morph targets, cubic-spline keys and animated rigid nodes |
 | M78 | Particles II | GPU particles |
-| M79 | Particles III | Ribbons, mesh particles and particle collision |
+| M79 | Particles III | Ribbons, mesh particles and particle collision; also sub-emitters and events on death, and particles lit by the frame's lights and receiving shadows |
 | M80 | Decals | Projected decals |
-| M81 | Ambient occlusion | A depth prepass and screen-space ambient occlusion |
+| M81 | Ambient occlusion | A depth prepass and screen-space ambient occlusion; also soft particles, faded against that depth |
 | M82 | Temporal anti-aliasing | Motion vectors and TAA; also MSAA beyond 1× and 4×, depth resolve and alpha-to-coverage |
 | M83 | Upscaling | Dynamic resolution and a permissively licensed upscaler |
 | M84 | Lens effects | Depth of field and motion blur |
@@ -1326,10 +1326,10 @@ Every tool stays a client of the public API (I4). Ends with the whole product re
 
 | # | Milestone | Intent |
 | --- | --- | --- |
-| M103 | Prefabs | Nested, overridable scenes as content; also a hierarchy authored in content, `@patch`/`@remove` and per-instance overrides, and an engine "draws this model" component |
+| M103 | Prefabs | Nested, overridable scenes as content; also a hierarchy authored in content, `@patch`/`@remove` and per-instance overrides, and an engine "draws this model" component, and one that carries a particle emitter on an entity |
 | M104 | Scene editor I | A 3D viewport, selection and gizmos; also docking, multiple windows, tables, a colour picker, plots and drag-and-drop |
 | M105 | Scene editor II | Placement, hierarchy editing and saving scenes; also a child index, and editing poses |
-| M106 | Scene editor III | 2D scenes and tile maps; also the tile grid out of `render2d` into its own module, and the 2D layer's depth type |
+| M106 | Scene editor III | 2D scenes and tile maps; also the tile grid out of `render2d` into its own module, the 2D layer's depth type, and particles drawn by `render2d` |
 | M107 | Play in editor | A host that runs the game from the editor; also pause and single-step, a world that owns its registry, and remote editor and debug transport |
 | M108 | Schema designer | Schemas authored in the editor; also global ID rename, multi-file refactors, autosave and crash restoration, asset creation, and a person driving the editor through a whole package |
 | M109 | Material editor | Editing M72's graphs |
