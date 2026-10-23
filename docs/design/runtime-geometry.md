@@ -1177,3 +1177,95 @@ corner tests and the two `render3d` tests. On Metal, `render3d-test` passes 95/9
 `fdt-check` are clean. The package's change is three material records. `dist` stages no
 `sandbox3d`, so the relocated install above is that change's staging proof. There is no ABI,
 shader or Vulkan change.
+
+## Resolution — Step 7: Windows/Vulkan (2026-10-23)
+
+§1's seven criteria hold on Windows/Vulkan, validation-clean, with nothing in the engine
+changed by the step.
+
+**The machine and the setup:**
+- The PC's Intel Arc A750 under Windows 11, Vulkan 1.4, with the pinned SDK 1.4.357.0 and Zig
+  0.16.0.
+- The PC had held no Foundry clone since M27's close. A bundle of local `main` at `1f624e8`
+  was cloned into a fresh `src\Foundry-m28`, its hash checked and its checkout confirmed clean.
+- The harness is `scripts/m28/windows.ps1`, after M27's.
+  - **`build` mode ran over SSH:** the suites, then a ReleaseSafe install moved to `relocated`.
+    That install was denied write, append, attribute and delete rights, and its 148 files were
+    hashed. They were unchanged afterwards.
+  - A writable copy, `reloadable`, holds the one run that edits a texture beneath it.
+  - **`desktop` mode ran in the desktop session** from a scheduled task, at normal integrity,
+    so the loader honours the layer filter. `PATH` was reduced to the system directories, and
+    `APPDATA` and the save directories were disposable.
+- `build` mode started at `-j2` and below-normal priority. With the PC idle, its processes were
+  raised to normal priority in place, at the owner's word, without restarting anything.
+
+**The suites:**
+- null, Debug: **2,230/2,240** (ten skips);
+- Vulkan, Debug, whose test binaries require synchronization validation: **2,511/2,532**
+  (21 skips);
+- Vulkan, ReleaseSafe: `render3d-test`, `sandbox3d-test`, `model-content-test` and
+  `court-test`, **172/172**;
+- in the desktop session: `native-window-test` 8/9 (one skip) and `vulkan-window-test` 10/10.
+
+The skip counts are M27 Step 10's, ten and 21. The Vulkan suite includes Step 3's
+before-and-after readback of a mesh, a region and a chain, and Step 4's comparison of an
+`Uploads` mesh with `createMesh`'s, now on Vulkan as well as Metal. The patch walk's pinned end
+position held on x86_64, to the tolerance pinned on the Mac.
+
+**§1's corner, windowed from the read-only install:** 600 frames, the gallery off, painting
+auto, API validation off. Three runs each way, alternated:
+
+| Run | Landmark path | Frame work median / p95 / max (ms) | `uploads.pump` p95 / max (ms) | Request to ready | Water p95 (ms) | Canvas p95 (ms) |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | background | 0.530 / 0.870 / **4.189** | 0.108 / 3.602 | 167.2 ms | 0.092 | 0.129 |
+| 1 | inline | 0.582 / 0.755 / **172.256** | 0.092 / 0.132 | 154.8 ms | 0.105 | 0.146 |
+| 2 | background | 0.512 / 0.776 / **5.330** | 0.111 / 3.303 | 167.2 ms | 0.088 | 0.125 |
+| 2 | inline | 0.548 / 0.723 / **176.422** | 0.094 / 0.138 | 155.3 ms | 0.104 | 0.147 |
+| 3 | background | 0.628 / 0.876 / **5.310** | 0.164 / 3.445 | 166.8 ms | 0.126 | 0.144 |
+| 3 | inline | 0.659 / 0.866 / **175.934** | 0.117 / 0.200 | 155.0 ms | 0.109 | 0.162 |
+
+1. **The water: holds.** p95 0.088–0.126 ms, pooled. The inline baseline measured p95
+   1.253 ms (`updateMesh` 1.039 ms, generation 0.181 ms). The first attempt's inline run
+   measured 0.951 ms: on the Arc's machine the direct path sits at the budget, where on the
+   Mac it is twice over.
+2. **The landmark: holds.** Every background maximum is at most 5.330 ms. Every inline maximum
+   is at least 172.3 ms, so exceeding 16.67 ms holds here too at the size pinned in Step 6.
+   - The background frame's maximum is the landmark's finish: `uploads.pump` reaches 3.3–3.6 ms
+     in that frame. It creates three device-local buffers totalling about 37 MiB and records
+     their copies. `vkAllocateMemory` is M27 Step 10's known cost on this machine.
+   - A pooled water finish shares that pump, which is why the water's maximum is the same
+     3.3–3.6 ms. Its p95 is unaffected.
+3. **The canvas: holds.** p95 0.125–0.162 ms. One maximum of 3.0 ms is a single frame, and the
+   criterion is the p95.
+4. **The patch walk: holds**, by the pinned test, natively.
+5. **The recolour: holds.** Under synchronization validation, `crate.png` was replaced beneath
+   `reloadable` three seconds into the run, and a scripted **R** reloaded every package. The log
+   reads "recolour: material 18.1 kept, binding texture 13.1 (was 7.1)".
+   - The reload frame's work was 34.3 ms. That is `Engine.reloadContent`'s synchronous
+     re-read, under validation. Nothing in §1 bounds it.
+6. **Tour, walker and court: hold**, each with and without validation:
+   - the tour's player hash stays `cb99ccfcf2b6d6c3` and the walker's `62ed8c026c20482c`;
+   - the court's `win`, `caught` and `fell` replay tick for tick: 1217–1220, 112–113 and
+     189–190 ticks, and 46/46, 7/7 and 6/6 steps.
+7. **Vulkan validation: clean.** It ran with synchronization validation on, over the
+   background and inline corner, the recolour, the tour and the six plays. Every log has zero
+   errors, warnings, VUIDs and hazards, and each carries the layer's own info line, so the log
+   was live.
+
+**One false start, in the harness, not the engine.** The first desktop attempt stopped at its
+own evidence check, after the inline water run, because the pattern expected `129.` for
+"129²". Windows PowerShell reads the UTF-8 log in the system code page, so "²" arrives as two
+characters. The pattern is now `129.+`. A new `-Evidence` folder let the second attempt rerun
+the whole desktop mode against the same install, and the first attempt's logs were kept. Its
+nine completed runs agree with the second's: water p95 0.100–0.150 ms, landmark background
+maximum 5.2–6.4 ms, inline about 175 ms, canvas p95 0.149–0.185 ms.
+
+**Linux:** compile only, as §10 assessed. The Linux null cross-check passes in the Mac bar, and
+nothing Linux-specific changed.
+
+**Left on the PC for Step 8:** `src\Foundry-m28` (clean at `1f624e8`) and the evidence under
+`%USERPROFILE%\m28`. Step 8 removes both, by exact path, when M28 closes.
+
+**Bar:** the Mac bar last ran at `1f624e8` (Step 6), and this step changes no Zig, content or
+build file. Its only files are the harness and these documents, so no Mac bar was re-run. The
+PC ran the full suite natively on that same commit, above.

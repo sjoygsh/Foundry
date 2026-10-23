@@ -1,9 +1,21 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-23
-**Current handoff: M28 Step 6 of 8 is complete** ([`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063, accepted 2026-10-23 and revised at Step 2).
-**Stop before Step 7** (Windows/Vulkan, §10). The PC has had no Foundry clone since M27, so Step 7 re-clones into a fresh worktree: exact paths only, `-j2`, below-normal priority, idle first. §1's criterion 7, Vulkan validation, is Step 7's.
+**Current handoff: M28 Step 7 of 8 is complete** ([`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063, accepted 2026-10-23 and revised at Step 2).
+**Stop before Step 8** (close M28, §14). It resolves the contract discrepancies in their documents (meshes.md's "a material does not track its texture", render3d.md and assets.md where M28 changed them), moves ADR-0063 into `CLAUDE.md` §4.1's implemented wording, updates §9, the roadmap and the design index, packs up the PC (`src\Foundry-m28` and `%USERPROFILE%\m28`, by exact path), and tags `m28`.
 M27 is complete (tag `m27`, pushed). M28's commits are not pushed.
+
+**M28 Step 7 is done (2026-10-23): Windows/Vulkan.**
+- §1's seven criteria hold on the Arc A750, from a relocated, read-only ReleaseSafe install, validation-clean:
+  - water p95 0.088–0.126 ms;
+  - landmark background maximum 4.2–5.3 ms, against an inline maximum of at least 172 ms;
+  - canvas p95 0.125–0.162 ms;
+  - the patch walk pinned natively;
+  - the recolour kept across R, under synchronization validation;
+  - tour `cb99ccfcf2b6d6c3`, walker `62ed8c026c20482c`, and the court's three endings, with and without validation;
+  - zero validation findings in nine validated runs.
+- Suites on the PC: null 2,230/2,240, Vulkan 2,511/2,532 and ReleaseSafe 172/172. The skip counts are M27's.
+- The harness is `scripts/m28/windows.ps1`. The engine is unchanged by this step.
 
 **M28 Step 6 is done (2026-10-23): the generated corner, proved on Metal.**
 - `sandbox3d` has a corner at x = 20:
