@@ -1,6 +1,6 @@
 # Design: M29 — Particles I: a CPU particle system with content-defined emitters
 
-**Status:** Accepted 2026-10-23, when the owner asked for Step 1, with §14 as written. Steps 1–6 of §15's eight are done; their Resolutions follow §15.
+**Status:** Accepted 2026-10-23, when the owner asked for Step 1, with §14 as written. Steps 1–7 of §15's eight are done; their Resolutions follow §15.
 **Date:** 2026-10-23
 **Baseline:** `86456c9`, tag `m28`. M0–M28 are complete.
 **Decisions:**
@@ -1079,3 +1079,86 @@ than changed here.
 - the compaction skipping `spin` failed the state pin and the facing pins.
 
 **Bar:** **2,295/2,296** (one skip, M27's), the full bar, all exit 0. The whole graph under `-Drhi=metal` is 2,305/2,317, with 12 backend-conditional skips. The content change is staged by the relocated install above, as M28's was, because `dist` stages no `sandbox3d`. No shader or Vulkan code changed.
+
+## Resolution — Step 7: Windows/Vulkan on the Arc A750 (2026-10-24)
+
+**How it ran.** The PC had no Foundry clone, so `%USERPROFILE%\src\Foundry-m29` was cloned
+from GitHub and the unpushed commits fetched from a bundle. It was checked out detached at
+`75b2150`, clean, and every build ran at `-j2` and below-normal priority, after an idle check
+(20–22% CPU). The harness is `scripts/m29/windows.ps1`, M28's with this milestone's runs:
+`build` over SSH, then `desktop` from a scheduled task in the console session, at normal
+integrity, so the validation filter is honoured.
+
+**Suites, native on the PC:**
+- `zig build test -Dplatform=null -Drhi=null`: 2,274 of 2,284, 10 Windows-conditional skips.
+- `zig build test vulkan-test -Drhi=vulkan`: 2,555 of 2,576, 21 skips. The whole graph,
+  including Step 4's particle readbacks and the exposure test, ran on the Arc.
+- ReleaseSafe `render3d-test`, `sandbox3d-test`, `court-test` and `integration-test` on Vulkan:
+  292 of 297. They include M28's landmark test, which now accepts both providers (below).
+- `native-window-test` and `vulkan-window-test` in the desktop session.
+
+**§1's exit on Windows/Vulkan.** These ran from a relocated, read-only ReleaseSafe install,
+windowed, with 600 frames, the gallery off, and **P** at frame 30:
+
+| Run | Step + prepare median / p95 / max (ms) | Step p95 | Prepare p95 (expand and sort / upload) | Peak live |
+| --- | --- | --- | --- | --- |
+| 1 | 0.866 / **1.295** / 2.123 | 0.251 | 1.173 (0.702 / 0.528) | 10,756 |
+| 2 | 0.938 / **1.284** / 1.979 | 0.250 | 1.145 (0.704 / 0.580) | 10,756 |
+| 3 | 1.005 / **1.300** / 1.835 | 0.278 | 1.139 (0.697 / 0.533) | 10,756 |
+| no workers | 1.141 / 1.392 / 4.936 | 0.190 | 1.230 (0.921 / 0.415) | 10,756 |
+| validation | 1.417 / 1.842 / 2.603 | 0.248 | 1.729 (0.661 / 1.089) | 10,756 |
+
+1. **The budget holds** on the machine §10 said would decide it: a p95 of 1.28–1.30 ms against
+   2.0 ms. The i3 is faster here than the M5, because its paced main thread is not moved to a
+   slower core. With no workers it is 1.39 ms, so on this machine the jobs are a margin, not
+   the lever.
+2. **The pin holds across machines:** `0xc5f2d56ba1124b5d` at tick 600, the Mac's value, in
+   every one of the twelve runs that reached tick 600. The harness fails if any two disagree.
+   §12 expected a difference might have to be recorded; none arose, because the step owns its
+   trig and the store's order is fixed.
+3. **and 4. Order, additive, mask and exposure hold** by the readbacks under `-Drhi=vulkan`. In
+   a mutation `particle.frag.glsl`'s alpha dropped its `in_color.a`, so additive particles
+   covered. The readback test failed on the Arc and the file was restored byte for byte.
+5. **`embers` holds**, under synchronization validation:
+   - "enabling 'embers:content'" appears, and the peak rises to 10,817.
+   - **R** at frame 300 logs "torch flame particles.Emitter(0#1) kept, 122 live".
+   - The pin is unchanged.
+   - The peak and the live count at the reload differ from the Mac's (10,868 and 116) only
+     because a frame is a different tick on each machine: 700 frames were 705 ticks here.
+6. **The other samples hold:**
+   - **The tour,** with and without validation, keeps the player's `cb99ccfcf2b6d6c3` and the
+     walker's `62ed8c026c20482c`. It also logs the fountain's pin.
+   - **The court's three endings** each matched a fresh simulation, with nothing dropped.
+   - **M28's corner, off validation,** matches M28 Step 7's figures on this machine:
+     - water p95 0.100 and 0.128 ms;
+     - canvas p95 0.131 and 0.143 ms;
+     - the landmark's background maximum 5.7 ms;
+     - inline 175 ms, still over 16.67 ms, as its baseline must be.
+   - In those runs the corner is out of view, so `prepare` culls the emitters, and the
+     particle work is a p95 of 0.36 ms.
+7. **Validation is clean throughout.** Eight runs had synchronization validation on:
+   - the effects;
+   - `embers`;
+   - both landmark paths;
+   - the tour;
+   - the three endings.
+
+   Each log holds only the layer's info lines, which shows it was live.
+
+**M28's landmark test, fixed at the owner's word.** Step 6 found M28's landmark digest pinned
+for one math provider. In `75b2150` it accepts both recorded digests, as the walker's test
+does:
+- `SPIRE_DIGEST`, from compiler-rt;
+- `SPIRE_DIGEST_LIBM`, from an optimized macOS build's libm.
+
+Inline against the pool is the same binary and stays exact. It passes in Debug and ReleaseSafe
+on the Mac and in ReleaseSafe on the Arc. A wrong libm digest failed it under ReleaseSafe and
+was restored.
+
+**Bar:** **2,295/2,296** (one skip, M27's), the full bar on `75b2150`, all exit 0. This step adds
+only the harness and documents, so the bar was not rerun.
+
+**Left on the PC for Step 8 to remove by exact path:**
+- `%USERPROFILE%\src\Foundry-m29`;
+- `%USERPROFILE%\m29` (the bundle, scripts and evidence in `s7`);
+- `%USERPROFILE%\m29-idle.ps1`.

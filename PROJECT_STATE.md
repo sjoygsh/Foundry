@@ -1,8 +1,24 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-24
-**Current handoff: M29 Step 6 of 8 is complete** ([`docs/design/particles.md`](docs/design/particles.md), ADR-0064 accepted 2026-10-23). **Stop before Step 7** (Windows/Vulkan on the Arc PC). The PC has no Foundry clone since M27's close.
+**Current handoff: M29 Step 7 of 8 is complete** ([`docs/design/particles.md`](docs/design/particles.md), ADR-0064 accepted 2026-10-23). **Stop before Step 8** (close M29: the contract discrepancies, ADR-0064 into CLAUDE.md, the roadmap's intent lines, the PC's pack-up, tag `m29`).
 M28 is complete (tag `m28`, 2026-10-23; [`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063 implemented). M27 and M28 are pushed; M29's commits are not.
+
+**M29 Step 7 is done (2026-10-24): Windows/Vulkan on the Arc A750.** The harness is `scripts/m29/windows.ps1`. The clone is `src\Foundry-m29` at `75b2150`, with `-j2` and below-normal priority.
+- **Native suites:**
+  - null: 2,274 of 2,284;
+  - `-Drhi=vulkan`, with the particle readbacks: 2,555 of 2,576;
+  - ReleaseSafe on Vulkan: 292 of 297;
+  - both window suites.
+- **Readback mutation:** a GLSL alpha mutation failed the particle readback on the Arc.
+- **Budget:** from the relocated ReleaseSafe install, the p95 is **1.28–1.30 ms** against 2.0 ms at 10,756 live, and 1.39 ms with no workers.
+- **Pin:** `0xc5f2d56ba1124b5d`, the same as Metal's, in all twelve runs that reached tick 600.
+- **`embers`:** it works, and R keeps the handle.
+- **Other samples:** the tour, the walker, the court's endings and M28's corner are unchanged.
+- **Validation:** clean in all eight validated runs.
+- **M28's landmark test** now accepts both recorded math providers (`75b2150`, at the owner's word). It passes under ReleaseSafe.
+
+Bar **2,295/2,296** (one skip, M27's) on `75b2150`, all exit 0. Step 7 adds only the harness and documents.
 
 **M29 Step 6 is done (2026-10-24): the effects corner, proved on Metal.**
 - `sandbox3d`'s `effects.zig` holds a torch (flame and smoke), sparks (burst on a loop and on **B**), a 10,400-particle fountain, and a trail on the moon. All are records with particle materials and generated textures. **P** faces them from M28's patch.
@@ -13,7 +29,7 @@ M28 is complete (tag `m28`, 2026-10-23; [`docs/design/runtime-geometry.md`](docs
 - **Pin:** the fountain's `0xc5f2d56ba1124b5d` at tick 600 matches in the test, the headless and windowed tours, all runs and `embers`.
 - **Other samples:** the tour and walker are unchanged.
 - **Indices:** about 0.03 ms of upload, so no option.
-- **Found, not M29's:** M28's landmark-digest test fails under ReleaseSafe at `b41ce67` too. Reported to the owner.
+- **Found, not M29's:** M28's landmark-digest test failed under ReleaseSafe at `b41ce67` too. It was fixed in `75b2150` (Step 7).
 
 Bar **2,295/2,296** (one skip, M27's), the full bar, all exit 0. The whole graph under `-Drhi=metal` is 2,305/2,317, with 12 backend-conditional skips. The content change is staged by the relocated install above, as M28's was, because `dist` stages no `sandbox3d`. No shader or Vulkan code changed.
 
