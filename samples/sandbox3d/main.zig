@@ -1398,63 +1398,79 @@ const face_frames = [6][3]Vec3{
     .{ .init(0, 0, -1), .init(-1, 0, 0), .init(0, 1, 0) },
 };
 
-fn createBox(world: *render3d.Renderer, half: Vec3, faces: Faces, label: []const u8) !render3d.MeshHandle {
-    var positions: [24]Vec3 = undefined;
-    var normals: [24]Vec3 = undefined;
-    var colours: [24][4]u8 = undefined;
-    var indices: [36]u16 = undefined;
+/// A box's vertex-coloured faces, as plain arrays: what M19 wrote by hand, kept so the
+/// builder's output can be compared against it (`runtime-geometry.md`, Step 1).
+const BoxArrays = struct {
+    positions: [24]Vec3,
+    normals: [24]Vec3,
+    colours: [24][4]u8,
+    indices: [36]u16,
+};
+
+fn boxArrays(half: Vec3, faces: Faces) BoxArrays {
+    var out: BoxArrays = undefined;
     for (face_frames, faces, 0..) |frame, colour, f| {
         const n = scaled(frame[0], half);
         const u = scaled(frame[1], half);
         const v = scaled(frame[2], half);
         const base: u16 = @intCast(f * 4);
-        positions[base + 0] = n.sub(u).sub(v);
-        positions[base + 1] = n.add(u).sub(v);
-        positions[base + 2] = n.add(u).add(v);
-        positions[base + 3] = n.sub(u).add(v);
-        for (colours[base..][0..4]) |*c| c.* = colour;
-        for (normals[base..][0..4]) |*normal| normal.* = frame[0];
-        indices[f * 6 ..][0..6].* = .{ base, base + 1, base + 2, base, base + 2, base + 3 };
+        out.positions[base + 0] = n.sub(u).sub(v);
+        out.positions[base + 1] = n.add(u).sub(v);
+        out.positions[base + 2] = n.add(u).add(v);
+        out.positions[base + 3] = n.sub(u).add(v);
+        for (out.colours[base..][0..4]) |*c| c.* = colour;
+        for (out.normals[base..][0..4]) |*normal| normal.* = frame[0];
+        out.indices[f * 6 ..][0..6].* = .{ base, base + 1, base + 2, base, base + 2, base + 3 };
     }
-    return createMesh(world, &positions, &normals, &colours, &indices, label);
+    return out;
+}
+
+fn boxMesh(gpa: std.mem.Allocator, half: Vec3, faces: Faces) asset.mesh.BuilderError!asset.OwnedMesh {
+    const box = boxArrays(half, faces);
+    var builder = asset.MeshBuilder.init(gpa, .default);
+    defer builder.deinit();
+    try builder.positions(&box.positions);
+    try builder.normals(&box.normals);
+    try builder.colors8(&box.colours);
+    try builder.indices16(&box.indices);
+    return builder.finish();
+}
+
+fn createBox(world: *render3d.Renderer, half: Vec3, faces: Faces, label: []const u8) !render3d.MeshHandle {
+    var owned = try boxMesh(world.gpa, half, faces);
+    defer owned.deinit(world.gpa);
+    return world.createMesh(owned.mesh, label);
+}
+
+fn shadowGroundMesh(gpa: std.mem.Allocator) asset.mesh.BuilderError!asset.OwnedMesh {
+    var builder = asset.MeshBuilder.init(gpa, .default);
+    defer builder.deinit();
+    try builder.positions(&.{ .init(-5, 0, 5), .init(5, 0, 5), .init(5, 0, -5), .init(-5, 0, -5) });
+    try builder.normals(&([_]Vec3{.up} ** 4));
+    try builder.indices16(&.{ 0, 1, 2, 0, 2, 3 });
+    return builder.finish();
 }
 
 fn createShadowGround(world: *render3d.Renderer) !render3d.MeshHandle {
-    const positions = [_]Vec3{ .init(-5, 0, 5), .init(5, 0, 5), .init(5, 0, -5), .init(-5, 0, -5) };
-    const normals = [_]Vec3{.up} ** 4;
-    const indices = [_]u16{ 0, 1, 2, 0, 2, 3 };
-    return world.createMesh(.{ .vertex_count = 4, .streams = &.{
-        .{ .semantic = .position, .format = .float32x3, .bytes = std.mem.sliceAsBytes(&positions) },
-        .{ .semantic = .normal, .format = .float32x3, .bytes = std.mem.sliceAsBytes(&normals) },
-    }, .index_format = .uint16, .indices = std.mem.sliceAsBytes(&indices), .submeshes = &.{.{ .first_index = 0, .index_count = 6 }}, .bounds = try asset.Mesh.computeBounds(&positions) }, "shadow proof ground");
+    var owned = try shadowGroundMesh(world.gpa);
+    defer owned.deinit(world.gpa);
+    return world.createMesh(owned.mesh, "shadow proof ground");
 }
 
 fn scaled(v: Vec3, by: Vec3) Vec3 {
     return .init(v.x * by.x, v.y * by.y, v.z * by.z);
 }
 
-fn createMesh(
-    world: *render3d.Renderer,
-    positions: []const Vec3,
-    normals: []const Vec3,
-    colours: []const [4]u8,
-    indices: []const u16,
-    label: []const u8,
-) !render3d.MeshHandle {
-    const submeshes = [_]asset.Submesh{.{ .first_index = 0, .index_count = @intCast(indices.len) }};
-    const streams = [_]asset.MeshStream{
-        .{ .semantic = .position, .format = .float32x3, .bytes = std.mem.sliceAsBytes(positions) },
-        .{ .semantic = .normal, .format = .float32x3, .bytes = std.mem.sliceAsBytes(normals) },
-        .{ .semantic = .color, .format = .unorm8x4, .bytes = std.mem.sliceAsBytes(colours) },
-    };
-    return world.createMesh(.{
-        .vertex_count = @intCast(positions.len),
-        .streams = &streams,
-        .index_format = .uint16,
-        .indices = std.mem.sliceAsBytes(indices),
-        .submeshes = &submeshes,
-        .bounds = try asset.Mesh.computeBounds(positions),
-    }, label);
+/// Every stream's bytes and the indices, in order: what the GPU is given.
+fn meshDigest(mesh: asset.Mesh) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    for (mesh.streams) |stream| {
+        hasher.update(&.{ @intFromEnum(stream.semantic), @intFromEnum(stream.format) });
+        hasher.update(stream.bytes);
+    }
+    hasher.update(mesh.indices);
+    hasher.update(std.mem.sliceAsBytes(mesh.submeshes));
+    return hasher.final();
 }
 
 // -- tests -------------------------------------------------------------------------
@@ -1470,6 +1486,36 @@ test {
     _ = @import("props_tests.zig");
     _ = @import("native_tests.zig");
     _ = gallery_mod;
+}
+
+test "the builder makes the cube and the proof ground byte for byte as M19 wrote them" {
+    var cube = try boxMesh(testing.allocator, .init(0.6, 0.6, 0.6), cube_faces);
+    defer cube.deinit(testing.allocator);
+    const box = boxArrays(.init(0.6, 0.6, 0.6), cube_faces);
+    const hand = [_]asset.MeshStream{
+        .{ .semantic = .position, .format = .float32x3, .bytes = std.mem.sliceAsBytes(&box.positions) },
+        .{ .semantic = .normal, .format = .float32x3, .bytes = std.mem.sliceAsBytes(&box.normals) },
+        .{ .semantic = .color, .format = .unorm8x4, .bytes = std.mem.sliceAsBytes(&box.colours) },
+    };
+    try testing.expectEqual(hand.len, cube.mesh.streams.len);
+    for (hand, cube.mesh.streams) |want, have| {
+        try testing.expectEqual(want.semantic, have.semantic);
+        try testing.expectEqual(want.format, have.format);
+        try testing.expectEqualSlices(u8, want.bytes, have.bytes);
+    }
+    try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(&box.indices), cube.mesh.indices);
+    try testing.expectEqual(try asset.Mesh.computeBounds(&box.positions), cube.mesh.bounds);
+    try testing.expectEqual(@as(u64, 16753803297239917816), meshDigest(cube.mesh));
+
+    var ground = try shadowGroundMesh(testing.allocator);
+    defer ground.deinit(testing.allocator);
+    const ground_positions = [_]Vec3{ .init(-5, 0, 5), .init(5, 0, 5), .init(5, 0, -5), .init(-5, 0, -5) };
+    const ground_normals = [_]Vec3{.up} ** 4;
+    const ground_indices = [_]u16{ 0, 1, 2, 0, 2, 3 };
+    try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(&ground_positions), ground.mesh.streams[0].bytes);
+    try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(&ground_normals), ground.mesh.streams[1].bytes);
+    try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(&ground_indices), ground.mesh.indices);
+    try testing.expectEqual(@as(u64, 6219219726740329206), meshDigest(ground.mesh));
 }
 
 test "scripted keys are key@frame pairs, and anything else is refused whole" {

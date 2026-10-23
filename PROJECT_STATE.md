@@ -1,21 +1,18 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-23
-**Current handoff: M28's design is proposed** ([`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063); awaiting the owner's acceptance of §13. **Stop before Step 1.** Nothing of M28's code exists.
-M27 is complete (2026-10-18, tag `m27`), and `main`, `m26` and `m27` are pushed. The M28 design commit is not pushed.
+**Current handoff: M28 Step 1 of 8 is complete** ([`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063, accepted 2026-10-23 with §13 as written).
+**Stop before Step 2** (`render3d`: lifetime and the write window, §4). Nothing in `render3d` has changed yet: there are no bound-texture counts, no `error.InFrame`, no update calls and no `Uploads`.
+M27 is complete (tag `m27`, pushed). M28's commits are not pushed.
 
-**M28's design (2026-10-23): runtime geometry, in eight steps.**
-- **The rule (ADR-0063):** runtime meshes, textures and materials are `render3d` resources, named by handle and never content. They may refer to compiled content, and content never refers to them. They change in place, outside a frame's submission window, and their handles survive. A material keeps alive the textures it binds.
-- **The steps:**
-  1. `asset.mesh.Builder`;
-  2. lifetime and the write window;
-  3. `updateMesh`, `writeTexture` and `writeTextureChain` over M27's kept staging;
-  4. `render3d.Uploads`, with fills on the pool;
-  5. runtime materials in `Content`;
-  6. `sandbox3d`'s generated corner, proved on Metal;
-  7. Windows/Vulkan, which needs a fresh clone on the PC;
-  8. the close.
-- **No ABI change.** M48 publishes it.
+**M28 Step 1 is done (2026-10-23): `asset.mesh.Builder`.**
+- Typed setters take position, normal, UV0, float and unorm8 colour, and 16- or 32-bit indices, plus submeshes; a mesh given none gets one spanning every index.
+- `finish` validates with `Mesh.validate` and moves every byte into an `OwnedMesh`. A refusal leaves the builder owning them.
+- `BuilderLimits` refuses runaway counts before anything is copied.
+- `sandbox3d`'s cube and shadow ground now go through the builder, byte for byte as M19 wrote them, with pinned digests.
+- Each guard was verified by mutation.
+
+Bar **2,218/2,219** (one skip).
 
 **M27 Step 11 is done (2026-10-18): M27 is closed.**
 - §1's exit holds on Metal and Windows/Vulkan: background frames at most 1.6 ms and 8.3 ms,

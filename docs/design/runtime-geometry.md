@@ -1,6 +1,6 @@
 # Design: M28 — Runtime geometry: meshes, textures and materials made and changed at run time, beside compiled content
 
-**Status:** Proposed 2026-10-23; awaiting the owner's acceptance of §13. No step has begun.
+**Status:** Accepted 2026-10-23, when the owner asked for Step 1, with §13 as written. Steps run in §14's order; their Resolutions follow it.
 **Date:** 2026-10-23
 **Baseline:** `7224505`, tag `m27`. M0–M27 are complete.
 **Decisions:**
@@ -539,3 +539,68 @@ again.
 
 **Exit:** §1's exit holds as written on both platforms, and no item of §12 is left without its
 owner.
+
+## Resolution — Step 1: the mesh builder (2026-10-23)
+
+**What exists now.** `asset.mesh.Builder`, `asset.mesh.BuilderLimits`, `BuilderError` and
+`OwnedMesh`, in `engine/src/asset/mesh_builder.zig`, re-exported from `asset` as `MeshBuilder`,
+`MeshBuilderLimits` and `OwnedMesh`.
+- Each setter copies its values into memory the builder owns.
+- `finish` validates with `Mesh.validate`. On success it moves every byte into the returned
+  `OwnedMesh`, which can be moved freely and is freed with the same allocator.
+- A refusal leaves the builder owning the bytes, and `deinit` is safe either way.
+- Streams come out in slot order, whatever order they were given in.
+
+**Where the implementation sharpened §3:**
+- **`colors8` (unorm8x4) joins `colors` (float32x4).** §3 named only float colour, but
+  `sandbox3d`'s vertex-coloured cube is unorm8x4, and moving it onto the builder unchanged is
+  this step's exit. Both are formats `Mesh.validate` already accepted.
+- **Bounds are computed in `positions`,** from the typed values, so a non-finite position is
+  refused at that call (`NonFinitePosition`) rather than at `finish`. Computing them at
+  `finish` would have meant reading `Vec3`s back out of byte storage that is only
+  byte-aligned.
+- **Only the positions set the vertex count.** Every other stream is checked against it by
+  `validate` (`InvalidStreamLength`), whichever was given first.
+- **No submesh means one spanning every index.** An explicit `submesh` replaces that default.
+  With no indices at all, `finish` refuses with `MissingSubmesh`, exactly as a mesh with none
+  would be refused.
+- **New refusals:**
+  - `TooManyVertices`, `TooManyIndices` and `TooManySubmeshes`, checked against
+    `BuilderLimits` before anything is copied. The defaults are `.fmesh`'s 16,777,216 vertices
+    and 65,536 submeshes, plus 67,108,864 indices.
+  - `IndicesAlreadySet` for indices given twice.
+  - `DuplicateSemantic`, which already existed, for a stream given twice.
+- **`OwnedMesh.deinit` frees the submeshes at their allocated alignment.** `Mesh` views
+  submeshes as `align(1)` so that `.fmesh` file bytes can back them, so the slice is cast back
+  before freeing. The debug allocator caught the mismatch on the first run.
+
+**`sandbox3d`** now builds its cube and its shadow-proof ground through the builder (`boxMesh`
+and `shadowGroundMesh`). The M19 arrays are kept as `boxArrays`. A test compares the builder's
+streams, indices and bounds byte for byte against those arrays and against the ground's
+literal arrays, and pins each mesh's digest:
+- the cube: `16753803297239917816`;
+- the ground: `6219219726740329206`.
+
+**Guards verified by mutation**, each failing a named test:
+- the stream vertex limit, the index limit and the submesh limit;
+- indices given twice, and a stream given twice;
+- the default submesh;
+- moving ownership out of the builder at `finish` (removing it double-frees in six tests).
+
+Two mutations caught nothing at first, and both led to changes:
+- The positions' own limit check is shadowed by the stream check after it. It stays only as a
+  precheck before the bounds pass. A test now sends a normal and a colour stream over the
+  limit.
+- The first version let whichever stream came first set the vertex count. Removing that rule
+  changed nothing, which is why only the positions set the count now.
+
+`checkAllAllocationFailures` runs over a full build and leaks nothing.
+
+**Not done, as designed:** UV1, tangents, joints and weights setters, and any normal or tangent
+generation (§3; tangents are M41's). `render3d` is untouched: `sandbox3d` still uploads
+through `createMesh`, whose behaviour Step 3 changes.
+
+**Bar:** `zig build test` **2,218/2,219** (one skip, unchanged), up from 2,204/2,205 by the 13
+builder tests and the `sandbox3d` pin. fmt, the four `check` variants, the four thirty-frame
+headless runs and `fdt-check` are clean. No ABI, shader, Vulkan or content change, so no
+conditional extra applied.

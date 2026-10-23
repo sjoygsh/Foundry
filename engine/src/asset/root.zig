@@ -59,6 +59,9 @@ pub const MipChain = mips.Chain;
 
 pub const Mesh = mesh.Mesh;
 pub const MeshAabb = mesh.Aabb;
+pub const MeshBuilder = mesh.Builder;
+pub const MeshBuilderLimits = mesh.BuilderLimits;
+pub const OwnedMesh = mesh.OwnedMesh;
 pub const MeshError = mesh.Error;
 pub const MeshIndexFormat = mesh.IndexFormat;
 pub const MeshSemantic = mesh.Semantic;

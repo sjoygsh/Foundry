@@ -11,6 +11,13 @@ const core = @import("core");
 
 const Vec3 = core.math.Vec3;
 
+const builder = @import("mesh_builder.zig");
+/// Typed streams in, a validated mesh out (`runtime-geometry.md` §3).
+pub const Builder = builder.Builder;
+pub const BuilderLimits = builder.Limits;
+pub const BuilderError = builder.Error;
+pub const OwnedMesh = builder.OwnedMesh;
+
 /// The fixed shader slot as well as the meaning of one vertex stream (ADR-0054).
 pub const Semantic = enum(u8) {
     position = 0,
@@ -120,8 +127,8 @@ pub const Error = error{
 
 /// A borrowed, validated view of triangle-list geometry.
 ///
-/// A builder owns every slice. M20's loader will own them instead. Nothing here allocates,
-/// opens a file, or knows that a GPU exists.
+/// Whoever made it owns every slice: code, `Builder` (through `OwnedMesh`), or M20's
+/// loader. Nothing here allocates, opens a file, or knows that a GPU exists.
 pub const Mesh = struct {
     vertex_count: u32,
     streams: []const Stream,
@@ -294,6 +301,10 @@ fn readVec3(bytes: *const [@sizeOf(Vec3)]u8) Vec3 {
 // -- tests -------------------------------------------------------------------------
 
 const testing = std.testing;
+
+test {
+    _ = builder;
+}
 
 const TestGeometry = struct {
     positions: [3]Vec3 = .{
