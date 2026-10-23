@@ -1,9 +1,18 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-23
-**Current handoff: M28 Step 3 of 8 is complete** ([`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063, accepted 2026-10-23 and revised at Step 2).
-**Stop before Step 4** (`render3d.Uploads`: the fill on the pool and an ordered pump, §6). There is no `Uploads` yet, and `Content` has no runtime materials.
+**Current handoff: M28 Step 4 of 8 is complete** ([`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063, accepted 2026-10-23 and revised at Step 2).
+**Stop before Step 5** (`render3d.Content`: runtime materials with a `TextureRef`, §7). `Content` has no runtime materials yet, and no sample uses `Uploads`.
 M27 is complete (tag `m27`, pushed). M28's commits are not pushed.
+
+**M28 Step 4 is done (2026-10-23): `render3d.Uploads`.**
+- Requests to create or update a mesh, create a texture, or write a chain are validated and reserved on the main thread. Their staging is filled on the pool.
+- A pump the game calls finishes them strictly in request order, within a budget, and never inside the frame window. The bytes are then freed on the pool.
+- `release`, `failure` and a `cancelled` state were added. `quiesce` and `deinit` drop whatever is pending.
+- Under `core.tasks.Manual`, all 24 fill interleavings finish in request order. Teardown leaks nothing at any stage.
+- On Metal, an `Uploads` mesh reads back byte for byte as `createMesh`'s. Every guard was verified by mutation.
+
+Bar **2,241/2,242** (one skip); `render3d-test -Drhi=metal` 93/93.
 
 **M28 Step 3 is done (2026-10-23): changes that keep the handle.**
 - `updateMesh` copies each stream into its buffer when it fits (same slot and format, enough capacity), and otherwise reallocates. A refusal changes nothing.

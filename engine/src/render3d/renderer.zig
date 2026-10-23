@@ -412,6 +412,55 @@ fn submeshBounds(gpa: Allocator, mesh: asset.Mesh) Allocator.Error![]asset.MeshA
     return out;
 }
 
+/// One stream, or the indices (`slot == null`), and where it starts in a mesh's staging.
+const MeshPiece = struct { slot: ?usize, bytes: []const u8, offset: u64 };
+const MeshPieces = [rhi.pipeline.max_vertex_buffers + 1]MeshPiece;
+
+/// What of `mesh` reaches the GPU, in order, and the staging it needs: every stream but the
+/// influences, and none of a skinned mesh's first three, which skinning writes per frame
+/// (M24); then the indices. A pure function of the mesh, so a fill on another thread lays
+/// out exactly what `uploadMesh` copies (§6).
+fn meshPieces(mesh: asset.Mesh, out: *MeshPieces) struct { count: usize, size: u64 } {
+    var count: usize = 0;
+    var size: u64 = 0;
+    for (mesh.streams) |stream| {
+        const slot: usize = stream.semantic.slot();
+        if (stream.semantic == .joints or stream.semantic == .weights) continue;
+        if (mesh.joint_bounds.len != 0 and slot <= 2) continue;
+        out[count] = .{ .slot = slot, .bytes = stream.bytes, .offset = size };
+        count += 1;
+        size += std.mem.alignForward(u64, stream.bytes.len, staging_alignment);
+    }
+    out[count] = .{ .slot = null, .bytes = mesh.indices, .offset = size };
+    return .{ .count = count + 1, .size = size + mesh.indices.len };
+}
+
+/// Whether each of `chain`'s levels is the size `size`'s level of that index is, with its
+/// bytes inside the chain. A chain is untrusted input: nothing else checks its offsets.
+fn chainShaped(chain: asset.MipChain, size: rhi.resource.Extent2D) bool {
+    for (chain.levels, 0..) |level, i| {
+        const expected = size.mipLevel(@intCast(i));
+        if (level.width != expected.width or level.height != expected.height) return false;
+        if (level.offset > chain.bytes.len or level.byteSize() > chain.bytes.len - level.offset) return false;
+    }
+    return true;
+}
+
+/// The staging bytes a validated mesh's upload needs (§6): what `Uploads` reserves.
+pub fn meshStagingSize(mesh: asset.Mesh) u64 {
+    var pieces: MeshPieces = undefined;
+    return meshPieces(mesh, &pieces).size;
+}
+
+/// Copies a validated mesh into staging laid out as `uploadMesh` reads it. Pure, and safe on
+/// any thread: `Uploads` runs it on the pool.
+pub fn fillMeshStaging(mesh: asset.Mesh, bytes: []u8) void {
+    var pieces: MeshPieces = undefined;
+    const layout = meshPieces(mesh, &pieces);
+    std.debug.assert(bytes.len >= layout.size);
+    for (pieces[0..layout.count]) |piece| @memcpy(bytes[piece.offset..][0..piece.bytes.len], piece.bytes);
+}
+
 const TextureState = struct {
     gpu: rhi.TextureHandle,
     sampler: rhi.SamplerHandle,
@@ -1065,7 +1114,7 @@ pub const Renderer = struct {
         if (region.width == 0 or region.height == 0 or right > state.size.width or bottom > state.size.height) return error.InvalidRegion;
         if (pixels.len != @as(u64, region.width) * region.height * asset.Image.channels) return error.InvalidPixelLength;
         const levels = [1]asset.mips.Level{.{ .width = region.width, .height = region.height, .offset = 0 }};
-        try self.copyIntoTexture(state.*, pixels, &levels, .{ .x = region.x, .y = region.y });
+        try self.copyIntoTexture(state.*, pixels, &levels, .{ .x = region.x, .y = region.y }, null);
     }
 
     /// Replaces every level of a mipmapped texture with `chain`, made by `asset.mips.generate`
@@ -1074,18 +1123,41 @@ pub const Renderer = struct {
     /// submission window (§4.2); a refusal writes nothing.
     pub fn writeTextureChain(self: *Self, handle: TextureHandle, chain: asset.MipChain, color_space: asset.ColorSpace) Error!void {
         if (self.recording) return error.InFrame;
+        const state = try self.checkTextureChain(handle, chain, color_space);
+        try self.copyIntoTexture(state.*, chain.bytes, chain.levels, .{}, null);
+    }
+
+    /// `writeTextureChain` from staging that already holds `chain.bytes` (§6). `staged` is
+    /// consumed whatever this returns.
+    pub fn writeTextureChainFromStaged(self: *Self, handle: TextureHandle, chain: asset.MipChain, color_space: asset.ColorSpace, staged: StagingReservation) Error!void {
+        const state = (if (self.recording) error.InFrame else self.checkTextureChain(handle, chain, color_space)) catch |err| {
+            self.returnStaging(staged, false);
+            return err;
+        };
+        try self.copyIntoTexture(state.*, chain.bytes, chain.levels, .{}, staged);
+    }
+
+    /// What `writeTextureChain` refuses, checked without writing: also what `Uploads` checks
+    /// at a request, before it reserves anything.
+    pub fn checkTextureChain(self: *Self, handle: TextureHandle, chain: asset.MipChain, color_space: asset.ColorSpace) Error!*TextureState {
         const state = self.writableTexture(handle) orelse return error.InvalidTexture;
         if (!state.mipmaps) return error.NoMips;
         if (color_space != state.color_space) return error.WrongColorSpace;
         if (chain.levels.len == 0) return error.InvalidMipChain;
         if (chain.levels[0].width != state.size.width or chain.levels[0].height != state.size.height) return error.TextureSizeMismatch;
-        if (chain.levels.len != state.levels) return error.InvalidMipChain;
-        for (chain.levels, 0..) |level, i| {
-            const expected = state.size.mipLevel(@intCast(i));
-            if (level.width != expected.width or level.height != expected.height) return error.InvalidMipChain;
-            if (level.offset > chain.bytes.len or level.byteSize() > chain.bytes.len - level.offset) return error.InvalidMipChain;
-        }
-        try self.copyIntoTexture(state.*, chain.bytes, chain.levels, .{});
+        if (chain.levels.len != state.levels or !chainShaped(chain, state.size)) return error.InvalidMipChain;
+        return state;
+    }
+
+    /// What a chain for a new texture must be (§6): one level, or every level
+    /// `asset.mips.generate` makes, each the size it should be and inside the chain's bytes.
+    pub fn checkNewTextureChain(self: *Self, chain: asset.MipChain) Error!void {
+        if (chain.levels.len == 0) return error.InvalidMipChain;
+        const size: rhi.resource.Extent2D = .{ .width = chain.levels[0].width, .height = chain.levels[0].height };
+        try self.checkTextureSize(size.width, size.height);
+        const full = std.math.log2_int(u32, @max(size.width, size.height)) + 1;
+        if (chain.levels.len != 1 and chain.levels.len != full) return error.InvalidMipChain;
+        if (!chainShaped(chain, size)) return error.InvalidMipChain;
     }
 
     /// A live texture a caller made: the renderer's own defaults are every material's fallback,
@@ -1097,11 +1169,15 @@ pub const Renderer = struct {
 
     /// Copies `levels` of `bytes` into `state`'s texture through one kept staging buffer. Its
     /// barrier from `shader_read` waits, on one queue, for every earlier submission's reads.
-    fn copyIntoTexture(self: *Self, state: TextureState, bytes: []const u8, levels: []const asset.mips.Level, origin: rhi.resource.Origin2D) Error!void {
-        const staged = try self.reserveStaging("render3d texture write", bytes.len);
+    fn copyIntoTexture(self: *Self, state: TextureState, bytes: []const u8, levels: []const asset.mips.Level, origin: rhi.resource.Origin2D, prefilled: ?StagingReservation) Error!void {
+        const staged = prefilled orelse filled: {
+            const reservation = try self.reserveStaging("render3d texture write", bytes.len);
+            @memcpy(reservation.bytes, bytes);
+            break :filled reservation;
+        };
         var submitted = false;
         defer self.returnStaging(staged, submitted);
-        @memcpy(staged.bytes, bytes);
+        std.debug.assert(staged.bytes.len >= bytes.len);
         self.unmapStaging(staged);
 
         const cmd = try self.device.beginCommandBuffer();
@@ -1317,7 +1393,17 @@ pub const Renderer = struct {
     }
 
     pub fn createMesh(self: *Self, mesh: asset.Mesh, label: []const u8) Error!MeshHandle {
-        var state = try self.uploadMesh(mesh, label, null);
+        return self.createMeshWith(mesh, label, null);
+    }
+
+    /// `createMesh` from staging `fillMeshStaging` already wrote (§6). `staged` is consumed
+    /// whatever this returns.
+    pub fn createMeshFromStaged(self: *Self, mesh: asset.Mesh, label: []const u8, staged: StagingReservation) Error!MeshHandle {
+        return self.createMeshWith(mesh, label, staged);
+    }
+
+    fn createMeshWith(self: *Self, mesh: asset.Mesh, label: []const u8, prefilled: ?StagingReservation) Error!MeshHandle {
+        var state = try self.uploadMesh(mesh, label, null, prefilled);
         errdefer self.destroyMeshState(&state);
         return self.meshes.add(self.gpa, state);
     }
@@ -1329,10 +1415,25 @@ pub const Renderer = struct {
     /// a frame's submission window, where a draw validated against the old contents may still
     /// be recorded (§4.2).
     pub fn updateMesh(self: *Self, handle: MeshHandle, mesh: asset.Mesh, label: []const u8) Error!void {
-        if (self.recording) return error.InFrame;
+        return self.updateMeshWith(handle, mesh, label, null);
+    }
+
+    /// `updateMesh` from staging `fillMeshStaging` already wrote (§6). `staged` is consumed
+    /// whatever this returns.
+    pub fn updateMeshFromStaged(self: *Self, handle: MeshHandle, mesh: asset.Mesh, label: []const u8, staged: StagingReservation) Error!void {
+        return self.updateMeshWith(handle, mesh, label, staged);
+    }
+
+    fn updateMeshWith(self: *Self, handle: MeshHandle, mesh: asset.Mesh, label: []const u8, prefilled: ?StagingReservation) Error!void {
+        // Refusals before the upload give `prefilled` back; the upload consumes it otherwise.
+        const refusal: ?Error = if (self.recording) error.InFrame else if (self.meshes.get(handle) == null) error.InvalidMesh else null;
+        if (refusal) |err| {
+            if (prefilled) |reservation| self.returnStaging(reservation, false);
+            return err;
+        }
         // A mesh is doomed only inside the window, so one reached here never is.
-        const old = self.meshes.get(handle) orelse return error.InvalidMesh;
-        const next = try self.uploadMesh(mesh, label, old);
+        const old = self.meshes.get(handle).?;
+        const next = try self.uploadMesh(mesh, label, old, prefilled);
         for (old.vertex_buffers, next.vertex_buffers) |was, now| {
             if (!was.isNone() and !was.eql(now)) self.device.destroyBuffer(was);
         }
@@ -1346,9 +1447,14 @@ pub const Renderer = struct {
 
     /// A validated mesh's GPU and CPU state, its bytes copied through one kept staging buffer
     /// (§5.3). With `reuse`, a stream that fits that mesh's buffer is copied into it; the
-    /// caller retires the buffers the result no longer names. On failure, only what this made
-    /// is freed, and `reuse` is untouched.
-    fn uploadMesh(self: *Self, mesh: asset.Mesh, label: []const u8, reuse: ?*const MeshState) Error!MeshState {
+    /// caller retires the buffers the result no longer names. `prefilled`, when given, already
+    /// holds `fillMeshStaging`'s bytes (§6) and is consumed whatever this returns. On failure,
+    /// only what this made is freed, and `reuse` is untouched.
+    fn uploadMesh(self: *Self, mesh: asset.Mesh, label: []const u8, reuse: ?*const MeshState, prefilled: ?StagingReservation) Error!MeshState {
+        var staged = prefilled;
+        // Consumed on every path: unused if nothing was submitted, used once something was.
+        var submitted = false;
+        defer if (staged) |reservation| self.returnStaging(reservation, submitted);
         try mesh.validate();
         // Owned by `state` from here on; its errdefer frees it, so this one must not.
         const submeshes = try self.gpa.alloc(asset.Submesh, mesh.submeshes.len);
@@ -1375,50 +1481,42 @@ pub const Renderer = struct {
             else => return error.InvalidSkinCount,
         };
 
-        const Upload = struct {
-            destination: rhi.BufferHandle,
-            bytes: []const u8,
-            offset: u64,
-            /// Reused, so its contents are what earlier frames read.
-            kept: bool,
-        };
-        var uploads: [rhi.pipeline.max_vertex_buffers + 1]Upload = undefined;
-        var upload_count: usize = 0;
-        var staged_size: u64 = 0;
-
+        var pieces: MeshPieces = undefined;
+        const layout = meshPieces(mesh, &pieces);
+        // Whether each piece's destination is reused, so its contents are what earlier frames read.
+        var kept: [rhi.pipeline.max_vertex_buffers + 1]bool = @splat(false);
         for (mesh.streams) |stream| {
             const slot: usize = stream.semantic.slot();
             state.formats[slot] = stream.format;
-            // Influences never enter a pipeline; bind TRS streams remain CPU-only too.
             if (stream.semantic == .joints or stream.semantic == .weights) continue;
             state.stream_mask |= @as(u8, 1) << @intCast(slot);
-            if (state.skin != null and slot <= 2) continue;
+        }
+        for (pieces[0..layout.count]) |piece| {
+            const slot = piece.slot orelse continue;
             const fits = if (reuse) |old|
-                !old.vertex_buffers[slot].isNone() and old.formats[slot] == stream.format and stream.bytes.len <= old.vertex_capacity[slot]
+                !old.vertex_buffers[slot].isNone() and old.formats[slot] == state.formats[slot] and piece.bytes.len <= old.vertex_capacity[slot]
             else
                 false;
             if (fits) {
                 state.vertex_buffers[slot] = reuse.?.vertex_buffers[slot];
                 state.vertex_capacity[slot] = reuse.?.vertex_capacity[slot];
+                kept[slot] = true;
             } else {
                 state.vertex_buffers[slot] = try self.device.createBuffer(.{
                     .label = label,
-                    .size = stream.bytes.len,
+                    .size = piece.bytes.len,
                     .usage = .{ .vertex = true, .copy_dst = true },
                     .memory = .device_local,
                 });
-                state.vertex_capacity[slot] = stream.bytes.len;
+                state.vertex_capacity[slot] = piece.bytes.len;
                 made[slot] = state.vertex_buffers[slot];
             }
-            uploads[upload_count] = .{ .destination = state.vertex_buffers[slot], .bytes = stream.bytes, .offset = staged_size, .kept = fits };
-            upload_count += 1;
-            staged_size += std.mem.alignForward(u64, stream.bytes.len, staging_alignment);
         }
-
-        const index_fits = if (reuse) |old| mesh.indices.len <= old.index_capacity else false;
-        if (index_fits) {
+        const index_at = made.len - 1;
+        if (reuse != null and mesh.indices.len <= reuse.?.index_capacity) {
             state.index_buffer = reuse.?.index_buffer;
             state.index_capacity = reuse.?.index_capacity;
+            kept[index_at] = true;
         } else {
             state.index_buffer = try self.device.createBuffer(.{
                 .label = label,
@@ -1427,47 +1525,47 @@ pub const Renderer = struct {
                 .memory = .device_local,
             });
             state.index_capacity = mesh.indices.len;
-            made[made.len - 1] = state.index_buffer;
+            made[index_at] = state.index_buffer;
         }
-        uploads[upload_count] = .{ .destination = state.index_buffer, .bytes = mesh.indices, .offset = staged_size, .kept = index_fits };
-        upload_count += 1;
-        staged_size += mesh.indices.len;
 
-        const staged = try self.reserveStaging(label, staged_size);
-        // Consumed on every path: unused if nothing was submitted, used once something was.
-        var submitted = false;
-        defer self.returnStaging(staged, submitted);
-        for (uploads[0..upload_count]) |upload| @memcpy(staged.bytes[upload.offset..][0..upload.bytes.len], upload.bytes);
-        self.unmapStaging(staged);
+        if (staged == null) {
+            staged = try self.reserveStaging(label, layout.size);
+            fillMeshStaging(mesh, staged.?.bytes);
+        }
+        const reservation = staged.?;
+        std.debug.assert(reservation.bytes.len >= layout.size);
+        self.unmapStaging(reservation);
 
         // A kept buffer was last left for shaders to read; on one queue its barrier waits for
         // every earlier submission's reads, so a frame already submitted never sees this copy.
         var barriers: [rhi.pipeline.max_vertex_buffers + 1]rhi.command.BufferBarrier = undefined;
-        for (uploads[0..upload_count], 0..) |upload, i| {
-            barriers[i] = .{ .buffer = upload.destination, .from = if (upload.kept) .shader_read else .undefined, .to = .copy_dst };
+        for (pieces[0..layout.count], 0..) |piece, i| {
+            const at = piece.slot orelse index_at;
+            const destination = if (piece.slot) |slot| state.vertex_buffers[slot] else state.index_buffer;
+            barriers[i] = .{ .buffer = destination, .from = if (kept[at]) .shader_read else .undefined, .to = .copy_dst };
         }
         const cmd = try self.device.beginCommandBuffer();
         var consumed = false;
         errdefer if (!consumed) cmd.discard();
-        try cmd.bufferBarrier(barriers[0..upload_count]);
-        for (uploads[0..upload_count]) |upload| {
+        try cmd.bufferBarrier(barriers[0..layout.count]);
+        for (pieces[0..layout.count], barriers[0..layout.count]) |piece, barrier| {
             try cmd.copyBufferToBuffer(.{
-                .src = staged.buffer,
-                .src_offset = upload.offset,
-                .dst = upload.destination,
-                .size = upload.bytes.len,
+                .src = reservation.buffer,
+                .src_offset = piece.offset,
+                .dst = barrier.buffer,
+                .size = piece.bytes.len,
             });
         }
-        for (barriers[0..upload_count]) |*barrier| {
+        for (barriers[0..layout.count]) |*barrier| {
             barrier.from = .copy_dst;
             barrier.to = .shader_read;
         }
-        try cmd.bufferBarrier(barriers[0..upload_count]);
+        try cmd.bufferBarrier(barriers[0..layout.count]);
         consumed = true;
         // Whatever `submit` answers, the queue may have the copy.
         submitted = true;
         try cmd.submit();
-        for (uploads[0..upload_count]) |upload| self.uploads.uploaded_bytes += upload.bytes.len;
+        for (pieces[0..layout.count]) |piece| self.uploads.uploaded_bytes += piece.bytes.len;
         return state;
     }
 

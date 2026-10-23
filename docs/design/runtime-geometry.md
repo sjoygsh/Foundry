@@ -843,3 +843,107 @@ Vulkan's readback of the same three cases is Step 7's.
 85/85. fmt, the four `check` variants, the four thirty-frame headless runs and `fdt-check` are
 clean. The RHI change is to the null backend's test observability only, so no Vulkan check
 applied. There is no ABI, shader or content change.
+
+## Resolution — Step 4: `Uploads` (2026-10-23)
+
+**What exists now.** `render3d.Uploads`, in `engine/src/render3d/uploads.zig`. It is exported as
+`Uploads`, `UploadHandle`, `UploadLimits`, `UploadState` and `UploadResult`.
+
+- **At the request (main thread):** validation, the staging reservation, and the fill started
+  on `tasks`. A refusal reserves nothing it keeps and leaves the bytes the caller's. On
+  success the bytes are the `Uploads`' own.
+- **On the pool:** the fill copies into the reservation. A mesh goes through
+  `Renderer.fillMeshStaging`, at the offsets `uploadMesh` reads.
+- **At the pump (main thread):** the oldest unfinished request finishes through the
+  renderer's new staged entry points:
+  - `createMeshFromStaged` and `updateMeshFromStaged`;
+  - `writeTextureChainFromStaged`;
+  - M27's `createTextureFromStaged`.
+
+  Each entry point consumes the reservation whatever it returns.
+- **Afterwards, on the pool:** the CPU bytes are freed. If the pool is full, they are freed on
+  the main thread instead.
+
+**The order guarantee.** Only the head of the queue may finish, so a filled request waits
+behind an unfilled older one. Under `core.tasks.Manual`, every one of the 24 orders four fills
+can run in, with a pump after each fill, finishes the requests 0, 1, 2, 3. This is the step's
+exit, together with teardown (below).
+
+**Where the implementation settled or corrected §6's sketch:**
+- **One staging layout, shared.** `uploadMesh` now plans its pieces with a pure `meshPieces`.
+  That function also backs `meshStagingSize`, which the request reserves by, and
+  `fillMeshStaging`, which the pool runs. The background fill and the main-thread copy cannot
+  disagree. `createMesh` itself goes through the same function, and it is pinned on Metal
+  below.
+- **Owned bytes.**
+  - A mesh is an `asset.OwnedMesh` made with the `Uploads`' own allocator, because it is freed
+    with it on the pool. That allocator must therefore be thread-safe whenever `tasks` has
+    threads, as the registry's is.
+  - §6's `OwnedChain` is `asset.MipChain`, which already owns its bytes.
+  - `createTexture` takes one level, or every level `asset.mips.generate` makes. A one-level
+    chain is a texture without mips. The new `Renderer.checkNewTextureChain` checks it as
+    untrusted input. `checkTextureChain` shares its shape check (`chainShaped`).
+- **`writeTextureChain` takes `color_space`,** as `Renderer.writeTextureChain` does since
+  Step 3. `updateMesh` takes a label.
+- **`release(handle)`, `failure(handle)` and a fourth state, `cancelled`, were added.** §6 had
+  no way to forget a request. A water sheet updated every frame would have grown the table
+  without bound.
+  - `release` cancels a pending request. Its turn in `pump` drops it without charging the
+    budget, once its fill has run, because the fill writes into its staging.
+  - A finished request's mesh or texture stays the caller's after `release`.
+  - `failure` says why a request is `failed`. Its target went, as in the test, or the device
+    refused.
+- **`Limits`:** `max_requests` (256), counting pending and finished-but-unreleased requests,
+  and `max_pending_bytes` (64 MiB). They are refused with `TooManyUploads` and
+  `TooManyUploadBytes`. A full executor answers `Full`, giving its reservation back. This is
+  the bound M48 sets per mod.
+- **`pump` finishes nothing inside a frame's submission window.** The writes would be refused
+  there (§4.2). Waiting keeps every request's place, where failing it would not.
+- **The budget is M27's `core.tasks.Budget`.** A finish charges its staging bytes. A budget
+  already spent still finishes the first ready request, so a large finish cannot wait forever.
+- **`quiesce`** waits for every pool task, then drops whatever is pending as `cancelled`. Its
+  staging goes back unused, and its bytes are freed. `deinit` runs it, and must come before the
+  renderer's.
+
+**Tests**, eight in `uploads.zig`:
+- the 24 interleavings;
+- budget, always-one and the window;
+- teardown with fills unrun, with fills run but not finished, and with a finish whose free has
+  not run. The testing allocator and the renderer's reservation assertion are the checks;
+- bytes freed on the pool after the finish and not before;
+- a released request dropped while the next finishes;
+- request refusals, including `Full`, both limits, a lying chain, a default texture and a target
+  destroyed before its turn;
+- an update and a chain write through `Uploads` that keep their targets' handles, counted in
+  `Stats`;
+- on Metal, a fan made by `Uploads` reads back byte for byte as the same fan made by
+  `createMesh`.
+
+**Guards verified by mutation**, each caught by a named test failing or crashing, in under a
+minute for the whole round:
+
+| Guard | Caught by |
+| --- | --- |
+| Finishing the first filled request rather than the oldest | the interleaving test |
+| Finishing inside the window | the budget test |
+| The first finish under a spent budget | the budget test, once it began spent |
+| Ignoring the budget | the budget test |
+| Finishing a released request | the release test |
+| Freeing on the main thread | the pool-free test |
+| `quiesce` not waiting, or not dropping | the teardown test |
+| `drop` keeping the staging | the teardown test |
+| The request and byte limits | the refusal test |
+| The new-chain, update-target and written-chain checks | the refusal test |
+| Recording the failure | the refusal test |
+| A full executor keeping its staging | the refusal test |
+
+The always-one mutation survived at first. The test's budget of one byte is not spent until
+something charges it, so the test now starts from a budget of zero.
+
+**Not done, as designed:** no sample uses `Uploads` yet (Step 6). `Content`'s runtime
+materials are Step 5's, and Vulkan's readback is Step 7's.
+
+**Bar:** `zig build test` **2,241/2,242** (one skip, unchanged), up from 2,233/2,234 by the eight
+`Uploads` tests. `render3d-test -Drhi=metal` passes 93/93. fmt, the four `check` variants, the
+four thirty-frame headless runs and `fdt-check` are clean. There is no ABI, shader, Vulkan or
+content change.

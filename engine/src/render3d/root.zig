@@ -12,6 +12,7 @@ pub const instances = @import("instances.zig");
 pub const loader = @import("loader.zig");
 pub const lighting = @import("lighting.zig");
 pub const renderer = @import("renderer.zig");
+pub const uploads = @import("uploads.zig");
 
 pub const Camera = camera.Camera;
 pub const AlphaMode = renderer.AlphaMode;
@@ -50,6 +51,11 @@ pub const TextureOptions = renderer.TextureOptions;
 pub const TextureRegion = renderer.TextureRegion;
 pub const textureLoader = loader.textureLoader;
 pub const textureOf = loader.textureOf;
+pub const UploadHandle = uploads.UploadHandle;
+pub const UploadLimits = uploads.Limits;
+pub const UploadResult = uploads.Result;
+pub const Uploads = uploads.Uploads;
+pub const UploadState = uploads.State;
 pub const Wrap = renderer.Wrap;
 pub const unlit_id = renderer.unlit_id;
 pub const lit_id = renderer.lit_id;
@@ -63,4 +69,5 @@ test {
     _ = loader;
     _ = lighting;
     _ = renderer;
+    _ = uploads;
 }
