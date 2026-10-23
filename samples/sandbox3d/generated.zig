@@ -902,6 +902,9 @@ const PATCH_END_X = 22.390009;
 const PATCH_END_Y = 0.074692;
 const PATCH_END_Z = 1.227917;
 const SPIRE_DIGEST = 17175394173672716032;
+/// The same spire where the binary's `sinf`/`cosf` come from the platform's libm rather than
+/// compiler-rt, as an optimized macOS build's do (public3d.md §10's two math providers).
+const SPIRE_DIGEST_LIBM = 15275284160970677137;
 const WATER_DIGEST = 8743190568358611974;
 
 const testing = std.testing;
@@ -965,7 +968,10 @@ test "the landmark is the same bytes inline and from a pool task, and its digest
     var direct = try spireMesh(testing.allocator, spire_rings, spire_segments);
     defer direct.deinit(testing.allocator);
     try testing.expectEqual(@as(u32, (spire_rings + 1) * (spire_segments + 1)), direct.mesh.vertex_count);
-    try testing.expectEqual(@as(u64, SPIRE_DIGEST), meshDigest(direct.mesh));
+    // The spire is `@sin`/`@cos` of `f32`, so its pin is one of the two recorded math providers;
+    // inline against the pool below is the same binary and is exact.
+    const digest = meshDigest(direct.mesh);
+    try testing.expect(digest == SPIRE_DIGEST or digest == SPIRE_DIGEST_LIBM);
 
     var manual = try core.tasks.Manual.init(testing.allocator, 1);
     defer manual.deinit();
