@@ -139,6 +139,9 @@ const BufferState = struct {
     /// a test can observe. The null backend models the contract, not the silicon.
     storage: []u8,
     mapped: bool = false,
+    /// As `TextureState.discarded`: transitions that declared tracked contents not worth
+    /// keeping, which also drops any wait on what earlier submissions were doing with them.
+    discarded: u32 = 0,
     /// The last recording that referenced this buffer, numbered as `lifetime.Timeline`
     /// numbers them, or 0 for none. Rule 3 turns on whether that recording has finished.
     last_used: u64 = 0,
@@ -424,6 +427,13 @@ pub const Device = struct {
     pub fn contentsDiscarded(self: *Device, handle: resource.TextureHandle) ?u32 {
         const tex = self.textures.get(handle) orelse return null;
         return tex.discarded;
+    }
+
+    /// `contentsDiscarded` for a buffer. Tests only: a caller rewriting a buffer that earlier
+    /// frames read, a mesh updated in place in particular, should leave this at zero.
+    pub fn bufferContentsDiscarded(self: *Device, handle: resource.BufferHandle) ?u32 {
+        const buf = self.buffers.get(handle) orelse return null;
+        return buf.discarded;
     }
 
     fn liveCount(self: *const Device) usize {
@@ -1094,6 +1104,7 @@ pub const CommandBuffer = struct {
                     buf.desc.label, b.from, buf.state,
                 });
             }
+            if (b.from == .undefined and buf.state != .undefined) buf.discarded += 1;
             if (!Device.bufferAllows(buf.desc.usage, b.to)) {
                 dev.violate(.usage, "barrier moves buffer '{s}' to {t}, which its usage does not allow", .{ buf.desc.label, b.to });
             }
@@ -1848,6 +1859,25 @@ test "rule 1: transitioning from undefined is always legal" {
     try cmd.textureBarrier(&.{.{ .texture = tex, .from = .undefined, .to = .shader_read }});
     try cmd.submit();
     try testing.expectEqual(@as(usize, 0), dev.violationCount());
+}
+
+test "rule 1 for buffers: declaring undefined over tracked contents is counted as a discard" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    const buf = try dev.createBuffer(.{ .size = 16, .usage = .{ .vertex = true, .copy_dst = true } });
+
+    var cmd = try dev.beginCommandBuffer();
+    try cmd.bufferBarrier(&.{.{ .buffer = buf, .from = .undefined, .to = .copy_dst }});
+    try cmd.bufferBarrier(&.{.{ .buffer = buf, .from = .copy_dst, .to = .shader_read }});
+    try testing.expectEqual(@as(?u32, 0), dev.bufferContentsDiscarded(buf));
+    try cmd.bufferBarrier(&.{.{ .buffer = buf, .from = .shader_read, .to = .copy_dst }});
+    try testing.expectEqual(@as(?u32, 0), dev.bufferContentsDiscarded(buf));
+    try cmd.bufferBarrier(&.{.{ .buffer = buf, .from = .undefined, .to = .shader_read }});
+    try testing.expectEqual(@as(?u32, 1), dev.bufferContentsDiscarded(buf));
+    try cmd.submit();
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
+    dev.destroyBuffer(buf);
 }
 
 test "rule 1: declaring undefined over tracked contents is legal, and is counted as a discard" {

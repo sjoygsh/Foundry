@@ -253,6 +253,10 @@ Neither may change the size, format or colour space. The GPU texture is the same
 every material's bind group stays valid with nothing rebuilt. A texture that must change size
 is made new, and its materials are moved to it with `updateMaterial`.
 
+> **2026-10-23, Step 3:** `writeTextureChain` also takes the chain's `color_space`, because
+> `asset.MipChain` does not record one and §11's colour-space refusal needs it. Its errors and
+> the others' are listed in Step 3's Resolution.
+
 ### 5.3 Staging is M27's kept buffers
 
 Every write and every `createMesh` reserves from `reserveStaging`, which today only texture
@@ -715,3 +719,127 @@ device's teardown, and makes it fail.
 lifetime tests. fmt, the four `check` variants, the four thirty-frame headless runs and
 `fdt-check` are clean. No ABI, shader, Vulkan or content change, so no conditional extra
 applied.
+
+## Resolution — Step 3: changes that keep the handle (2026-10-23)
+
+**What exists now**, in `engine/src/render3d/renderer.zig`:
+
+- **`updateMesh(handle, mesh, label)` (§5.1).**
+  - `createMesh` and `updateMesh` now share one path, `uploadMesh`. It validates, builds the
+    CPU parts (submeshes, submesh boxes, skin bind), and places each stream.
+  - A stream **fits** when the old mesh has a buffer in that slot, with the same format and at
+    least as many bytes. Fitting streams are copied into their buffer. Any other stream gets a
+    new buffer. The index buffer follows the same rule.
+  - `MeshState` records each buffer's capacity. A mesh that shrinks keeps its larger buffers,
+    and growing back into them makes nothing.
+  - The old mesh's buffers that the new state no longer names are retired behind ADR-0035's
+    deferral, along with its CPU parts. The handle never changes.
+  - A refusal frees only what the call made and leaves the old mesh untouched. If `submit`
+    itself fails, a lost device, the kept buffers may already hold the new bytes while the
+    mesh still describes the old ones. That is the same answer `createMesh` has always given
+    a lost device.
+- **`writeTexture(handle, region, pixels)` (§5.2)** writes an RGBA8 `TextureRegion` into level 0
+  of a texture made without mips.
+- **`writeTextureChain(handle, chain, color_space)`** replaces every level of a mipmapped
+  texture.
+  - The chain is untrusted input. It must have the texture's base size and exactly its level
+    count. Each level must be the size `mipLevel` gives, and its bytes must lie inside the
+    chain.
+  - Both writes copy into the same GPU texture, so every bind group that names it stays
+    valid. `TextureState` now records its size and level count.
+- **Staging (§5.3).** Each upload reserves one kept buffer from `reserveStaging`:
+  - for a mesh, one buffer holding every stream and the indices at 16-byte-aligned offsets;
+  - for a write, one buffer holding the texels.
+
+  The buffer goes back with `returnStaging(used)` on the frame ring's schedule. A mesh
+  rewritten every frame reaches a steady state after the ring turns, and makes no buffer from
+  then on (tested). The one-reservation layout is also what Step 4's `Uploads` fills on the
+  pool: "at offsets `Uploads` computed when it reserved".
+- **Counting.** `mesh_updates`, `texture_writes` and `uploaded_bytes` are counted into the frame
+  after the write, as Step 2 set up.
+
+**New errors** in `render3d.Error`:
+- `InFrame`;
+- `HasMips` (a region write into a chain) and `NoMips` (a chain write into a texture without
+  mips);
+- `InvalidRegion` (empty or outside level 0, overflow-safe);
+- `InvalidPixelLength`;
+- `TextureSizeMismatch`;
+- `InvalidMipChain`.
+
+`WrongColorSpace` is reused. `InvalidTexture` also covers the renderer's three default
+textures: they are every material's fallback, so writing one would recolour materials that
+never named it.
+
+**The window.** `updateMesh`, `writeTexture` and `writeTextureChain` refuse `InFrame` while
+`recording`, from `begin` to the end of `recordFrame`. A frame that is begun and never recorded
+stays in its window until the next `begin`, as Step 2's deferred destroys do. `updateMesh`
+needs no doomed check of its own: a mesh is doomed only inside the window, which the refusal
+already covers. The mutation that removed such a check survived, which is how this was found.
+
+**The ordering promise, proved on Metal.** The test "a frame submitted before a write reads back
+unchanged, and the next one shows it" covers three cases:
+- a mesh moved from the left half of the frame to the right, in the same buffers;
+- a texel of a 2×1 canvas turned green;
+- a mipmapped texture's chain replaced whole.
+
+Each case submits a frame, writes without waiting, submits the next frame, and only then
+waits. Every first frame reads back the old contents, and every second the new.
+`zig build render3d-test -Drhi=metal` passes **85/85**. That includes every existing pixel test,
+which pins `createMesh`'s output across its move onto kept staging, and Step 2's lifetime tests,
+which had run only on null until now.
+
+**Step 2's loose end is closed.** The "`deinit` not freeing doomed resources" mutation hung
+because of how `deinit` emptied its pools. It looped `destroyMesh` (and `destroyMaterial`)
+until each pool was empty, and a destroy passes over a doomed entry. So a doomed entry nobody
+had freed kept the count above zero forever. Nothing was leaking; teardown could never make
+progress.
+
+`deinit` now frees every entry directly, doomed or not. The equivalent mutation ("`deinit`
+skips doomed meshes") is now reported at once by the testing allocator, as "leaked 2
+allocations".
+
+Mutation runs now go through a wrapper that kills the whole process group after a limit. Its
+first version kept its own timer alive after the run, which held the output open for the full
+limit. Fixed, one round of mutations takes seconds.
+
+**A blind spot found and closed in the null backend.** A kept buffer's barrier names
+`shader_read` as its source. That is what makes the copy wait for earlier frames' reads.
+Declaring `undefined` instead skips that wait, and it survived the first mutation round,
+because null does not check a barrier whose source is `undefined`. Textures already counted
+such a transition (`contentsDiscarded`); buffers did not. The null device now counts it for
+buffers too (`bufferContentsDiscarded`, with its own rule-1 test). The fit test and the
+region-write test assert zero discards. Both barrier mutations, for buffers and for textures,
+are now caught.
+
+**Tests.** `render3d` runs 85 tests, up from 79:
+- a mesh update fits, grows, shrinks back into its buffers, and drops a stream;
+- a refused update, and one inside the window, change nothing;
+- kept staging reaches a steady state;
+- region-write refusals;
+- chain-write refusals, including a chain that lies about its levels;
+- the Metal ordering readback.
+
+**Guards verified by mutation**, each failing a named test within seconds:
+
+| Guard | Caught by |
+| --- | --- |
+| The window check on each of the three writes | its own write's test |
+| A fit that is never taken | the fit test |
+| A fit that ignores capacity | the fit and refused-update tests, by a null copy-range violation |
+| An index buffer that always fits | the same two tests |
+| The old buffers not retired | the fit test |
+| `HasMips`; the region bounds; the pixel length; the defaults' refusal | the region test |
+| The chain's colour space, level sizes, level bytes and level count | the chain test |
+| The update and write counts | the fit, region and chain tests |
+| A barrier from `undefined` on a kept buffer or a written texture | the fit and region tests |
+| `deinit` skipping doomed meshes | the testing allocator's leak report |
+
+**Not done, as designed:** `Uploads` (Step 4) and runtime materials in `Content` (Step 5).
+Vulkan's readback of the same three cases is Step 7's.
+
+**Bar:** `zig build test` **2,233/2,234** (one skip, unchanged), up from 2,226/2,227 by the six
+`render3d` tests and the null backend's buffer-discard test. `render3d-test -Drhi=metal` passes
+85/85. fmt, the four `check` variants, the four thirty-frame headless runs and `fdt-check` are
+clean. The RHI change is to the null backend's test observability only, so no Vulkan check
+applied. There is no ABI, shader or content change.

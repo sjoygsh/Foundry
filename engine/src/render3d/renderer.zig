@@ -89,6 +89,14 @@ pub const TextureOptions = struct {
     label: []const u8 = "render3d texture",
 };
 
+/// A rectangle of a texture's level 0, in texels from its top-left corner.
+pub const TextureRegion = struct {
+    x: u32 = 0,
+    y: u32 = 0,
+    width: u32,
+    height: u32,
+};
+
 pub const Material = opaque {};
 pub const MaterialHandle = core.Handle(Material);
 pub const MaterialDesc = struct {
@@ -311,6 +319,16 @@ pub const Error = error{
     InvalidSkinMatrix,
     UnexpectedSkin,
     MissingSkin,
+    /// A write between `begin` and the end of `recordFrame` (`runtime-geometry.md` §4.2).
+    InFrame,
+    /// `writeTexture` on a mipmapped texture, whose chain one region cannot keep consistent.
+    HasMips,
+    /// `writeTextureChain` on a texture made without mips.
+    NoMips,
+    InvalidRegion,
+    InvalidPixelLength,
+    TextureSizeMismatch,
+    InvalidMipChain,
 } || asset.MeshError || rhi.ResourceError || rhi.MapError || rhi.CommandError || rhi.VertexUpdateError || Allocator.Error;
 
 /// A kept upload buffer (M27 Step 10). `reusable_from` is the first frame in which no
@@ -334,12 +352,18 @@ pub const StagingReservation = struct {
 const max_kept_staging: u64 = 64 << 20;
 /// Frames without a reservation after which every idle staging buffer is given back.
 const staging_idle_frames: u64 = 300;
+/// Where each of a mesh's streams starts in its staging buffer: a multiple of every texel and
+/// index size, and of the 4 bytes Vulkan asks of a copy's offset.
+const staging_alignment: u64 = 16;
 
 const MeshState = struct {
     vertex_buffers: [rhi.pipeline.max_vertex_buffers]rhi.BufferHandle = @splat(.none),
+    /// What each vertex buffer holds, which an update may fill with fewer bytes (§5.1).
+    vertex_capacity: [rhi.pipeline.max_vertex_buffers]u64 = @splat(0),
     formats: [rhi.pipeline.max_vertex_buffers]?asset.MeshVertexFormat = @splat(null),
     stream_mask: u8,
     index_buffer: rhi.BufferHandle,
+    index_capacity: u64 = 0,
     index_format: asset.MeshIndexFormat,
     submeshes: []asset.Submesh,
     bounds: asset.MeshAabb,
@@ -393,6 +417,9 @@ const TextureState = struct {
     sampler: rhi.SamplerHandle,
     color_space: asset.ColorSpace,
     mipmaps: bool,
+    /// Fixed for the texture's life: a write changes texels, never these (§5.2).
+    size: rhi.resource.Extent2D,
+    levels: u32,
     /// Live materials whose bind group names this texture (`runtime-geometry.md` §4.1).
     binds: u32 = 0,
     /// Destroyed while bound: its handle answers nothing, and its GPU object goes with the
@@ -756,9 +783,10 @@ pub const Renderer = struct {
         };
     }
 
+    /// Frees every entry directly, doomed or not, rather than through the destroys: a destroy
+    /// passes over a doomed entry, so a teardown built on it would never empty its pool.
     pub fn deinit(self: *Self) void {
         self.recording = false;
-        self.freeDoomed();
         self.doomed_meshes.deinit(self.gpa);
         self.doomed_materials.deinit(self.gpa);
         if (self.skin_buffer) |*buffer| buffer.deinit();
@@ -772,7 +800,9 @@ pub const Renderer = struct {
         self.staging.deinit(self.gpa);
         while (self.materials.count() != 0) {
             var it = self.materials.iterator();
-            self.destroyMaterial(it.next().?.id);
+            const entry = it.next().?;
+            self.destroyMaterialState(entry.value);
+            _ = self.materials.remove(entry.id);
         }
         self.materials.deinit(self.gpa);
         while (self.textures.count() != 0) {
@@ -787,7 +817,8 @@ pub const Renderer = struct {
         while (self.meshes.count() != 0) {
             var it = self.meshes.iterator();
             const entry = it.next().?;
-            self.destroyMesh(entry.id);
+            self.destroyMeshState(entry.value);
+            _ = self.meshes.remove(entry.id);
         }
         self.meshes.deinit(self.gpa);
         self.draws.deinit(self.gpa);
@@ -1015,7 +1046,82 @@ pub const Renderer = struct {
             .sampler = sampler,
             .color_space = options.color_space,
             .mipmaps = levels > 1,
+            .size = .{ .width = width, .height = height },
+            .levels = levels,
         });
+    }
+
+    /// Writes an RGBA8 rectangle into a texture made without mips (`runtime-geometry.md` §5.2).
+    /// `pixels` is exactly `region.width * region.height * 4` bytes, rows top first. The GPU
+    /// texture is the same object afterwards, so every material that binds it stays valid.
+    /// Refused inside a frame's submission window (§4.2); a refusal writes nothing.
+    pub fn writeTexture(self: *Self, handle: TextureHandle, region: TextureRegion, pixels: []const u8) Error!void {
+        if (self.recording) return error.InFrame;
+        const state = self.writableTexture(handle) orelse return error.InvalidTexture;
+        // One region of a chain cannot be kept consistent without regenerating every level.
+        if (state.mipmaps) return error.HasMips;
+        const right = @as(u64, region.x) + region.width;
+        const bottom = @as(u64, region.y) + region.height;
+        if (region.width == 0 or region.height == 0 or right > state.size.width or bottom > state.size.height) return error.InvalidRegion;
+        if (pixels.len != @as(u64, region.width) * region.height * asset.Image.channels) return error.InvalidPixelLength;
+        const levels = [1]asset.mips.Level{.{ .width = region.width, .height = region.height, .offset = 0 }};
+        try self.copyIntoTexture(state.*, pixels, &levels, .{ .x = region.x, .y = region.y });
+    }
+
+    /// Replaces every level of a mipmapped texture with `chain`, made by `asset.mips.generate`
+    /// in `color_space` from an image of the texture's own size (§5.2). Size, format and
+    /// colour space never change; a texture that must is made new. Refused inside a frame's
+    /// submission window (§4.2); a refusal writes nothing.
+    pub fn writeTextureChain(self: *Self, handle: TextureHandle, chain: asset.MipChain, color_space: asset.ColorSpace) Error!void {
+        if (self.recording) return error.InFrame;
+        const state = self.writableTexture(handle) orelse return error.InvalidTexture;
+        if (!state.mipmaps) return error.NoMips;
+        if (color_space != state.color_space) return error.WrongColorSpace;
+        if (chain.levels.len == 0) return error.InvalidMipChain;
+        if (chain.levels[0].width != state.size.width or chain.levels[0].height != state.size.height) return error.TextureSizeMismatch;
+        if (chain.levels.len != state.levels) return error.InvalidMipChain;
+        for (chain.levels, 0..) |level, i| {
+            const expected = state.size.mipLevel(@intCast(i));
+            if (level.width != expected.width or level.height != expected.height) return error.InvalidMipChain;
+            if (level.offset > chain.bytes.len or level.byteSize() > chain.bytes.len - level.offset) return error.InvalidMipChain;
+        }
+        try self.copyIntoTexture(state.*, chain.bytes, chain.levels, .{});
+    }
+
+    /// A live texture a caller made: the renderer's own defaults are every material's fallback,
+    /// so writing one would recolour materials that never named it.
+    fn writableTexture(self: *Self, handle: TextureHandle) ?*TextureState {
+        if (handle.eql(self.white_texture) or handle.eql(self.linear_white) or handle.eql(self.flat_normal)) return null;
+        return self.liveTexture(handle);
+    }
+
+    /// Copies `levels` of `bytes` into `state`'s texture through one kept staging buffer. Its
+    /// barrier from `shader_read` waits, on one queue, for every earlier submission's reads.
+    fn copyIntoTexture(self: *Self, state: TextureState, bytes: []const u8, levels: []const asset.mips.Level, origin: rhi.resource.Origin2D) Error!void {
+        const staged = try self.reserveStaging("render3d texture write", bytes.len);
+        var submitted = false;
+        defer self.returnStaging(staged, submitted);
+        @memcpy(staged.bytes, bytes);
+        self.unmapStaging(staged);
+
+        const cmd = try self.device.beginCommandBuffer();
+        var consumed = false;
+        errdefer if (!consumed) cmd.discard();
+        try cmd.textureBarrier(&.{.{ .texture = state.gpu, .from = .shader_read, .to = .copy_dst }});
+        for (levels, 0..) |level, i| try cmd.copyBufferToTexture(.{
+            .src = staged.buffer,
+            .src_offset = level.offset,
+            .dst = state.gpu,
+            .dst_mip_level = @intCast(i),
+            .dst_origin = origin,
+            .size = .{ .width = level.width, .height = level.height },
+        });
+        try cmd.textureBarrier(&.{.{ .texture = state.gpu, .from = .copy_dst, .to = .shader_read }});
+        consumed = true;
+        submitted = true;
+        try cmd.submit();
+        self.uploads.texture_writes += 1;
+        self.uploads.uploaded_bytes += bytes.len;
     }
 
     /// The handle answers nothing from now on. **A texture a live material binds keeps its GPU
@@ -1211,6 +1317,38 @@ pub const Renderer = struct {
     }
 
     pub fn createMesh(self: *Self, mesh: asset.Mesh, label: []const u8) Error!MeshHandle {
+        var state = try self.uploadMesh(mesh, label, null);
+        errdefer self.destroyMeshState(&state);
+        return self.meshes.add(self.gpa, state);
+    }
+
+    /// Replaces a mesh's contents and keeps its handle (`runtime-geometry.md` §5.1). `mesh` may
+    /// differ in every respect. A stream that fits its buffer — same slot and format, no more
+    /// bytes than it holds — is copied into it; any other is given a new buffer, and the old
+    /// one is retired behind ADR-0035's deferral. **A refusal changes nothing.** Refused inside
+    /// a frame's submission window, where a draw validated against the old contents may still
+    /// be recorded (§4.2).
+    pub fn updateMesh(self: *Self, handle: MeshHandle, mesh: asset.Mesh, label: []const u8) Error!void {
+        if (self.recording) return error.InFrame;
+        // A mesh is doomed only inside the window, so one reached here never is.
+        const old = self.meshes.get(handle) orelse return error.InvalidMesh;
+        const next = try self.uploadMesh(mesh, label, old);
+        for (old.vertex_buffers, next.vertex_buffers) |was, now| {
+            if (!was.isNone() and !was.eql(now)) self.device.destroyBuffer(was);
+        }
+        if (!old.index_buffer.eql(next.index_buffer)) self.device.destroyBuffer(old.index_buffer);
+        if (old.skin) |bind| bind.deinit(self.gpa);
+        self.gpa.free(old.submeshes);
+        self.gpa.free(old.submesh_bounds);
+        old.* = next;
+        self.uploads.mesh_updates += 1;
+    }
+
+    /// A validated mesh's GPU and CPU state, its bytes copied through one kept staging buffer
+    /// (§5.3). With `reuse`, a stream that fits that mesh's buffer is copied into it; the
+    /// caller retires the buffers the result no longer names. On failure, only what this made
+    /// is freed, and `reuse` is untouched.
+    fn uploadMesh(self: *Self, mesh: asset.Mesh, label: []const u8, reuse: ?*const MeshState) Error!MeshState {
         try mesh.validate();
         // Owned by `state` from here on; its errdefer frees it, so this one must not.
         const submeshes = try self.gpa.alloc(asset.Submesh, mesh.submeshes.len);
@@ -1223,7 +1361,14 @@ pub const Renderer = struct {
             .submeshes = submeshes,
             .bounds = mesh.bounds,
         };
-        errdefer self.destroyMeshState(&state);
+        // Buffers this call made, as opposed to ones `reuse` lends it.
+        var made: [rhi.pipeline.max_vertex_buffers + 1]rhi.BufferHandle = @splat(.none);
+        errdefer {
+            for (made) |buffer| if (!buffer.isNone()) self.device.destroyBuffer(buffer);
+            if (state.skin) |bind| bind.deinit(self.gpa);
+            self.gpa.free(state.submeshes);
+            self.gpa.free(state.submesh_bounds);
+        }
         state.submesh_bounds = try submeshBounds(self.gpa, mesh);
         if (mesh.joint_bounds.len != 0) state.skin = skinning.Bind.init(self.gpa, mesh) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
@@ -1231,13 +1376,15 @@ pub const Renderer = struct {
         };
 
         const Upload = struct {
-            staging: rhi.BufferHandle,
             destination: rhi.BufferHandle,
             bytes: []const u8,
+            offset: u64,
+            /// Reused, so its contents are what earlier frames read.
+            kept: bool,
         };
         var uploads: [rhi.pipeline.max_vertex_buffers + 1]Upload = undefined;
         var upload_count: usize = 0;
-        defer for (uploads[0..upload_count]) |upload| self.device.destroyBuffer(upload.staging);
+        var staged_size: u64 = 0;
 
         for (mesh.streams) |stream| {
             const slot: usize = stream.semantic.slot();
@@ -1246,41 +1393,58 @@ pub const Renderer = struct {
             if (stream.semantic == .joints or stream.semantic == .weights) continue;
             state.stream_mask |= @as(u8, 1) << @intCast(slot);
             if (state.skin != null and slot <= 2) continue;
-            const staging = try self.stagingBuffer(label, stream.bytes);
-            const destination = self.device.createBuffer(.{
-                .label = label,
-                .size = stream.bytes.len,
-                .usage = .{ .vertex = true, .copy_dst = true },
-                .memory = .device_local,
-            }) catch |err| {
-                self.device.destroyBuffer(staging);
-                return err;
-            };
-            state.vertex_buffers[slot] = destination;
-            uploads[upload_count] = .{ .staging = staging, .destination = destination, .bytes = stream.bytes };
+            const fits = if (reuse) |old|
+                !old.vertex_buffers[slot].isNone() and old.formats[slot] == stream.format and stream.bytes.len <= old.vertex_capacity[slot]
+            else
+                false;
+            if (fits) {
+                state.vertex_buffers[slot] = reuse.?.vertex_buffers[slot];
+                state.vertex_capacity[slot] = reuse.?.vertex_capacity[slot];
+            } else {
+                state.vertex_buffers[slot] = try self.device.createBuffer(.{
+                    .label = label,
+                    .size = stream.bytes.len,
+                    .usage = .{ .vertex = true, .copy_dst = true },
+                    .memory = .device_local,
+                });
+                state.vertex_capacity[slot] = stream.bytes.len;
+                made[slot] = state.vertex_buffers[slot];
+            }
+            uploads[upload_count] = .{ .destination = state.vertex_buffers[slot], .bytes = stream.bytes, .offset = staged_size, .kept = fits };
             upload_count += 1;
+            staged_size += std.mem.alignForward(u64, stream.bytes.len, staging_alignment);
         }
 
-        const index_staging = try self.stagingBuffer(label, mesh.indices);
-        state.index_buffer = self.device.createBuffer(.{
-            .label = label,
-            .size = mesh.indices.len,
-            .usage = .{ .index = true, .copy_dst = true },
-            .memory = .device_local,
-        }) catch |err| {
-            self.device.destroyBuffer(index_staging);
-            return err;
-        };
-        uploads[upload_count] = .{
-            .staging = index_staging,
-            .destination = state.index_buffer,
-            .bytes = mesh.indices,
-        };
+        const index_fits = if (reuse) |old| mesh.indices.len <= old.index_capacity else false;
+        if (index_fits) {
+            state.index_buffer = reuse.?.index_buffer;
+            state.index_capacity = reuse.?.index_capacity;
+        } else {
+            state.index_buffer = try self.device.createBuffer(.{
+                .label = label,
+                .size = mesh.indices.len,
+                .usage = .{ .index = true, .copy_dst = true },
+                .memory = .device_local,
+            });
+            state.index_capacity = mesh.indices.len;
+            made[made.len - 1] = state.index_buffer;
+        }
+        uploads[upload_count] = .{ .destination = state.index_buffer, .bytes = mesh.indices, .offset = staged_size, .kept = index_fits };
         upload_count += 1;
+        staged_size += mesh.indices.len;
 
+        const staged = try self.reserveStaging(label, staged_size);
+        // Consumed on every path: unused if nothing was submitted, used once something was.
+        var submitted = false;
+        defer self.returnStaging(staged, submitted);
+        for (uploads[0..upload_count]) |upload| @memcpy(staged.bytes[upload.offset..][0..upload.bytes.len], upload.bytes);
+        self.unmapStaging(staged);
+
+        // A kept buffer was last left for shaders to read; on one queue its barrier waits for
+        // every earlier submission's reads, so a frame already submitted never sees this copy.
         var barriers: [rhi.pipeline.max_vertex_buffers + 1]rhi.command.BufferBarrier = undefined;
         for (uploads[0..upload_count], 0..) |upload, i| {
-            barriers[i] = .{ .buffer = upload.destination, .from = .undefined, .to = .copy_dst };
+            barriers[i] = .{ .buffer = upload.destination, .from = if (upload.kept) .shader_read else .undefined, .to = .copy_dst };
         }
         const cmd = try self.device.beginCommandBuffer();
         var consumed = false;
@@ -1288,7 +1452,8 @@ pub const Renderer = struct {
         try cmd.bufferBarrier(barriers[0..upload_count]);
         for (uploads[0..upload_count]) |upload| {
             try cmd.copyBufferToBuffer(.{
-                .src = upload.staging,
+                .src = staged.buffer,
+                .src_offset = upload.offset,
                 .dst = upload.destination,
                 .size = upload.bytes.len,
             });
@@ -1299,10 +1464,11 @@ pub const Renderer = struct {
         }
         try cmd.bufferBarrier(barriers[0..upload_count]);
         consumed = true;
+        // Whatever `submit` answers, the queue may have the copy.
+        submitted = true;
         try cmd.submit();
         for (uploads[0..upload_count]) |upload| self.uploads.uploaded_bytes += upload.bytes.len;
-
-        return self.meshes.add(self.gpa, state);
+        return state;
     }
 
     /// Inside a frame's submission window the mesh is only doomed, as `destroyMaterial`'s is.
@@ -4019,4 +4185,338 @@ test "destroying a material leaves a texture that is still live untouched" {
     fx.renderer.destroyMaterial(try fx.renderer.createMaterial(.{ .base_color_texture = texture }, "again"));
     fx.renderer.destroyTexture(texture);
     try testing.expectEqual(live - 1, fx.device.textures.count());
+}
+
+// -- M28 Step 3: changes that keep the handle (`runtime-geometry.md` §5) --------------
+
+/// A triangle, or with `quad` a square, of positions only, optionally with a colour stream.
+fn shapeMesh(positions: []const Vec3, indices: []const u16, colors: ?[]const [4]u8, streams: *[2]asset.MeshStream, submeshes: *[1]asset.Submesh) !asset.Mesh {
+    streams[0] = .{ .semantic = .position, .format = .float32x3, .bytes = std.mem.sliceAsBytes(positions) };
+    if (colors) |values| streams[1] = .{ .semantic = .color, .format = .unorm8x4, .bytes = std.mem.sliceAsBytes(values) };
+    submeshes[0] = .{ .first_index = 0, .index_count = @intCast(indices.len) };
+    return .{
+        .vertex_count = @intCast(positions.len),
+        .streams = streams[0..if (colors != null) 2 else 1],
+        .index_format = .uint16,
+        .indices = std.mem.sliceAsBytes(indices),
+        .submeshes = submeshes,
+        .bounds = try asset.Mesh.computeBounds(positions),
+    };
+}
+
+const small_triangle = [_]Vec3{ .init(-0.5, -0.5, -2), .init(0.5, -0.5, -2), .init(0, 0.5, -2) };
+const triangle_indices = [_]u16{ 0, 1, 2 };
+const wide_quad = [_]Vec3{ .init(-1, -1, -3), .init(1, -1, -3), .init(1, 1, -3), .init(-1, 1, -3) };
+const quad_indices = [_]u16{ 0, 1, 2, 0, 2, 3 };
+
+test "an updated mesh keeps its handle, fits in place or reallocates, and retires what it replaced" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    const mesh = try testMesh(&fx.renderer, false);
+    const color_slot = asset.MeshSemantic.color.slot();
+    const first = fx.renderer.meshes.getConst(mesh).?.*;
+    var streams: [2]asset.MeshStream = undefined;
+    var submeshes: [1]asset.Submesh = undefined;
+
+    // The same counts fit: the same buffers, the new bounds.
+    try fx.renderer.updateMesh(mesh, try shapeMesh(&small_triangle, &triangle_indices, null, &streams, &submeshes), "fit");
+    var now = fx.renderer.meshes.getConst(mesh).?.*;
+    try testing.expect(now.vertex_buffers[0].eql(first.vertex_buffers[0]));
+    try testing.expect(now.index_buffer.eql(first.index_buffer));
+    try testing.expectEqual(@as(f32, 0.5), now.bounds.max.y);
+    // Copied in place, waiting on what earlier frames read rather than discarding it.
+    if (rhi.backend == .null) {
+        try testing.expectEqual(@as(?u32, 0), fx.device.bufferContentsDiscarded(now.vertex_buffers[0]));
+        try testing.expectEqual(@as(?u32, 0), fx.device.bufferContentsDiscarded(now.index_buffer));
+    }
+
+    // More vertices and indices, and a new stream: new buffers, the old ones retired.
+    const colors = [_][4]u8{@splat(255)} ** 4;
+    try fx.renderer.updateMesh(mesh, try shapeMesh(&wide_quad, &quad_indices, &colors, &streams, &submeshes), "grow");
+    now = fx.renderer.meshes.getConst(mesh).?.*;
+    try testing.expect(!now.vertex_buffers[0].eql(first.vertex_buffers[0]));
+    try testing.expect(!now.index_buffer.eql(first.index_buffer));
+    try testing.expect(fx.device.buffers.getConst(first.vertex_buffers[0]) == null);
+    try testing.expect(fx.device.buffers.getConst(first.index_buffer) == null);
+    try testing.expect(!now.vertex_buffers[color_slot].isNone());
+    try testing.expectEqual(@as(usize, 6), now.submeshes[0].index_count);
+    const grown = now;
+
+    // Fewer again fits into the larger buffers, and a stream left out goes.
+    try fx.renderer.updateMesh(mesh, try shapeMesh(&small_triangle, &triangle_indices, null, &streams, &submeshes), "shrink");
+    now = fx.renderer.meshes.getConst(mesh).?.*;
+    try testing.expect(now.vertex_buffers[0].eql(grown.vertex_buffers[0]));
+    try testing.expect(now.index_buffer.eql(grown.index_buffer));
+    try testing.expectEqual(grown.vertex_capacity[0], now.vertex_capacity[0]);
+    try testing.expect(now.vertex_buffers[color_slot].isNone());
+    try testing.expect(fx.device.buffers.getConst(grown.vertex_buffers[color_slot]) == null);
+    try testing.expect(!StreamSet.has(.{ .bits = now.stream_mask }, .color));
+
+    // A draw of the updated mesh records cleanly, and the next frame counts the updates.
+    try fx.renderer.begin(testView(32));
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = .identity });
+    try finishTestFrame(&fx);
+    try testing.expectEqual(@as(u32, 3), fx.renderer.frameStats().mesh_updates);
+    try testing.expect(fx.renderer.frameStats().uploaded_bytes > 0);
+    if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
+}
+
+test "a refused mesh update changes nothing, and none is accepted inside the window" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    const mesh = try testMesh(&fx.renderer, true);
+    const before = fx.renderer.meshes.getConst(mesh).?.*;
+    const before_submesh = before.submeshes[0];
+    const buffers = fx.device.buffers.count();
+    var streams: [2]asset.MeshStream = undefined;
+    var submeshes: [1]asset.Submesh = undefined;
+    const valid = try shapeMesh(&wide_quad, &quad_indices, null, &streams, &submeshes);
+
+    var broken = valid;
+    const out_of_range = [_]u16{ 0, 1, 9 };
+    broken.indices = std.mem.sliceAsBytes(&out_of_range);
+    broken.submeshes = &.{.{ .first_index = 0, .index_count = 3 }};
+    try testing.expectError(error.IndexOutOfRange, fx.renderer.updateMesh(mesh, broken, "broken"));
+
+    try fx.renderer.begin(testView(32));
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = .identity });
+    try testing.expectError(error.InFrame, fx.renderer.updateMesh(mesh, valid, "in frame"));
+    try finishTestFrame(&fx);
+    try testing.expectEqual(@as(u32, 1), fx.renderer.frameStats().draws);
+
+    // Nothing moved: the same buffers, streams, counts and boxes, and no buffer was made.
+    const after = fx.renderer.meshes.getConst(mesh).?.*;
+    try testing.expect(std.meta.eql(before.vertex_buffers, after.vertex_buffers));
+    try testing.expect(before.index_buffer.eql(after.index_buffer));
+    try testing.expectEqual(before.stream_mask, after.stream_mask);
+    try testing.expectEqual(before_submesh, after.submeshes[0]);
+    try testing.expect(std.meta.eql(before.bounds, after.bounds));
+    try testing.expectEqual(buffers, fx.device.buffers.count());
+
+    // Outside the window the same update is accepted; a gone or doomed handle never is.
+    try fx.renderer.updateMesh(mesh, valid, "after");
+    try testing.expectError(error.InvalidMesh, fx.renderer.updateMesh(.none, valid, "none"));
+    try fx.renderer.begin(testView(32));
+    fx.renderer.destroyMesh(mesh);
+    try finishTestFrame(&fx);
+    try testing.expectError(error.InvalidMesh, fx.renderer.updateMesh(mesh, valid, "gone"));
+    if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
+}
+
+test "kept staging serves a mesh rewritten every frame without making new buffers" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    const mesh = try testMesh(&fx.renderer, false);
+    var streams: [2]asset.MeshStream = undefined;
+    var submeshes: [1]asset.Submesh = undefined;
+    const update = try shapeMesh(&small_triangle, &triangle_indices, null, &streams, &submeshes);
+    var settled: ?usize = null;
+    for (0..12) |frame| {
+        try fx.renderer.updateMesh(mesh, update, "water");
+        try fx.renderer.begin(testView(32));
+        try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = .identity });
+        try finishTestFrame(&fx);
+        // Once the ring has turned, the same few buffers are reused and nothing is made.
+        if (frame == 2 * fx.renderer.slots.len) settled = fx.device.buffers.count();
+        if (settled) |count| try testing.expectEqual(count, fx.device.buffers.count());
+    }
+    try testing.expect(fx.renderer.staging.items.len <= fx.renderer.slots.len + 2);
+}
+
+test "a texture region write keeps the texture and its materials, and refuses what it cannot write" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    var pixels: [4 * 4 * 4]u8 = @splat(255);
+    const texture = try fx.renderer.createTexture(.{ .width = 4, .height = 4, .pixels = &pixels }, .{});
+    const material = try fx.renderer.createMaterial(.{ .base_color_texture = texture }, "canvas");
+    const gpu = fx.renderer.textures.getConst(texture).?.gpu;
+    const group = fx.renderer.materials.getConst(material).?.group;
+    const red = [_]u8{ 255, 0, 0, 255 } ** 4;
+    var mipped_pixels: [4 * 4 * 4]u8 = @splat(255);
+    const mipped = try fx.renderer.createTexture(.{ .width = 4, .height = 4, .pixels = &mipped_pixels }, .{ .mipmaps = true });
+    // A frame, so the next counts the write alone and not the creations' uploads.
+    try fx.renderer.begin(testView(32));
+    try finishTestFrame(&fx);
+
+    try fx.renderer.writeTexture(texture, .{ .x = 2, .y = 2, .width = 2, .height = 2 }, &red);
+    try testing.expect(fx.renderer.textures.getConst(texture).?.gpu.eql(gpu));
+    // The texels outside the region are kept: the write discards nothing.
+    if (rhi.backend == .null) try testing.expectEqual(@as(?u32, 0), fx.device.contentsDiscarded(gpu));
+    try testing.expect(fx.renderer.materials.getConst(material).?.group.eql(group));
+
+    try testing.expectError(error.InvalidRegion, fx.renderer.writeTexture(texture, .{ .x = 3, .y = 2, .width = 2, .height = 2 }, &red));
+    try testing.expectError(error.InvalidRegion, fx.renderer.writeTexture(texture, .{ .x = 0, .y = 3, .width = 1, .height = 2 }, red[0..8]));
+    try testing.expectError(error.InvalidRegion, fx.renderer.writeTexture(texture, .{ .x = std.math.maxInt(u32), .width = 2, .height = 1 }, red[0..8]));
+    try testing.expectError(error.InvalidRegion, fx.renderer.writeTexture(texture, .{ .width = 0, .height = 2 }, &.{}));
+    try testing.expectError(error.InvalidPixelLength, fx.renderer.writeTexture(texture, .{ .width = 2, .height = 2 }, red[0..12]));
+    try testing.expectError(error.InvalidTexture, fx.renderer.writeTexture(fx.renderer.white_texture, .{ .width = 1, .height = 1 }, red[0..4]));
+    try testing.expectError(error.InvalidTexture, fx.renderer.writeTexture(.none, .{ .width = 1, .height = 1 }, red[0..4]));
+
+    try testing.expectError(error.HasMips, fx.renderer.writeTexture(mipped, .{ .width = 1, .height = 1 }, red[0..4]));
+
+    try fx.renderer.begin(testView(32));
+    try testing.expectError(error.InFrame, fx.renderer.writeTexture(texture, .{ .width = 1, .height = 1 }, red[0..4]));
+    try finishTestFrame(&fx);
+    // One write was accepted, and the frame after it counts it.
+    try testing.expectEqual(@as(u32, 1), fx.renderer.frameStats().texture_writes);
+    try testing.expectEqual(@as(u64, red.len), fx.renderer.frameStats().uploaded_bytes);
+
+    // A destroyed texture a material still binds keeps its GPU object, never its writes.
+    fx.renderer.destroyTexture(texture);
+    try testing.expectError(error.InvalidTexture, fx.renderer.writeTexture(texture, .{ .width = 1, .height = 1 }, red[0..4]));
+    fx.renderer.destroyMaterial(material);
+    fx.renderer.destroyTexture(mipped);
+    if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
+}
+
+test "a chain write replaces every level, and refuses another size, colour space or shape" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    var pixels: [4 * 4 * 4]u8 = @splat(255);
+    const texture = try fx.renderer.createTexture(.{ .width = 4, .height = 4, .pixels = &pixels }, .{ .mipmaps = true });
+    const gpu = fx.renderer.textures.getConst(texture).?.gpu;
+    var green: [4 * 4 * 4]u8 = undefined;
+    for (0..16) |i| green[i * 4 ..][0..4].* = .{ 0, 255, 0, 255 };
+    var chain = try asset.mips.generate(testing.allocator, .{ .width = 4, .height = 4, .pixels = &green }, .srgb);
+    defer chain.deinit(testing.allocator);
+    var flat_pixels: [4 * 4 * 4]u8 = @splat(255);
+    const flat = try fx.renderer.createTexture(.{ .width = 4, .height = 4, .pixels = &flat_pixels }, .{});
+    try fx.renderer.begin(testView(32));
+    try finishTestFrame(&fx);
+
+    try fx.renderer.writeTextureChain(texture, chain, .srgb);
+    try testing.expect(fx.renderer.textures.getConst(texture).?.gpu.eql(gpu));
+
+    try testing.expectError(error.WrongColorSpace, fx.renderer.writeTextureChain(texture, chain, .linear));
+    var larger_pixels: [8 * 8 * 4]u8 = @splat(0);
+    var larger = try asset.mips.generate(testing.allocator, .{ .width = 8, .height = 8, .pixels = &larger_pixels }, .srgb);
+    defer larger.deinit(testing.allocator);
+    try testing.expectError(error.TextureSizeMismatch, fx.renderer.writeTextureChain(texture, larger, .srgb));
+
+    // A chain that lies about itself: a level missing, the wrong size, bytes past the end.
+    var short = chain;
+    short.levels = chain.levels[0 .. chain.levels.len - 1];
+    try testing.expectError(error.InvalidMipChain, fx.renderer.writeTextureChain(texture, short, .srgb));
+    var levels: [3]asset.mips.Level = chain.levels[0..3].*;
+    var lying = chain;
+    lying.levels = &levels;
+    levels[1].width = 1;
+    try testing.expectError(error.InvalidMipChain, fx.renderer.writeTextureChain(texture, lying, .srgb));
+    levels[1].width = 2;
+    levels[2].offset = chain.bytes.len;
+    try testing.expectError(error.InvalidMipChain, fx.renderer.writeTextureChain(texture, lying, .srgb));
+    var empty = chain;
+    empty.levels = &.{};
+    try testing.expectError(error.InvalidMipChain, fx.renderer.writeTextureChain(texture, empty, .srgb));
+
+    try testing.expectError(error.NoMips, fx.renderer.writeTextureChain(flat, chain, .srgb));
+
+    try fx.renderer.begin(testView(32));
+    try testing.expectError(error.InFrame, fx.renderer.writeTextureChain(texture, chain, .srgb));
+    try finishTestFrame(&fx);
+    try testing.expectEqual(@as(u32, 1), fx.renderer.frameStats().texture_writes);
+    try testing.expectEqual(@as(u64, chain.bytes.len), fx.renderer.frameStats().uploaded_bytes);
+    fx.renderer.destroyTexture(texture);
+    fx.renderer.destroyTexture(flat);
+    if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
+}
+
+const write_size = 32;
+const write_bytes = write_size * write_size * 4;
+
+/// Records and submits one frame of `mesh` with `material`, copying the surface into
+/// `readback`, and does not wait: the next write lands while this frame may still be running.
+fn submitWriteFrame(fx: *TestFixture, mesh: MeshHandle, material: MaterialHandle, readback: rhi.BufferHandle) !void {
+    try fx.renderer.begin(.{
+        .camera = .{ .vertical_fov = std.math.pi / 2.0, .near = 0.1, .far = 10 },
+        .target_size = .{ .width = write_size, .height = write_size },
+        .clear_color = .{ 0, 0, 1, 1 },
+    });
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .material = material, .world = .identity });
+    const frame = try fx.device.beginFrame();
+    var cmd = try fx.device.beginCommandBuffer();
+    try fx.renderer.prepare(cmd, frame);
+    try fx.renderer.recordFrame(cmd, frame, false);
+    try cmd.textureBarrier(&.{.{ .texture = frame.surface_texture, .from = .present, .to = .copy_src }});
+    try cmd.copyTextureToBuffer(.{ .src = frame.surface_texture, .size = .{ .width = write_size, .height = write_size }, .dst = readback });
+    try cmd.textureBarrier(&.{.{ .texture = frame.surface_texture, .from = .copy_src, .to = .present }});
+    try cmd.submit();
+    try fx.device.endFrame();
+}
+
+fn writeTexel(fx: *TestFixture, readback: rhi.BufferHandle, x: usize, y: usize) ![4]u8 {
+    const mapped = try fx.device.mapBuffer(readback);
+    defer fx.device.unmapBuffer(readback);
+    return mapped[(y * write_size + x) * 4 ..][0..4].*;
+}
+
+test "a frame submitted before a write reads back unchanged, and the next one shows it" {
+    // The null backend proves the commands and refusals above; pixels are Metal's evidence
+    // here, and Vulkan's on the Windows target (Step 7).
+    if (rhi.backend == .null) return;
+    var fx = try TestFixture.init(1, write_size);
+    defer fx.deinit();
+    const format = fx.device.capabilities().surface_format;
+    var readbacks: [6]rhi.BufferHandle = undefined;
+    for (&readbacks) |*readback| readback.* = try fx.device.createBuffer(.{
+        .label = "write readback",
+        .size = write_bytes,
+        .usage = .{ .copy_dst = true },
+        .memory = .readback,
+    });
+    defer for (readbacks) |readback| fx.device.destroyBuffer(readback);
+    const red = try fx.renderer.createMaterial(.{ .base_color = .{ 1, 0, 0, 1 }, .double_sided = true }, "red");
+    var streams: [2]asset.MeshStream = undefined;
+    var submeshes: [1]asset.Submesh = undefined;
+
+    // A mesh: the left half, then the right half, in the same buffers.
+    const left = [_]Vec3{ .init(-2, -2, -1), .init(0, -2, -1), .init(0, 2, -1), .init(-2, 2, -1) };
+    const right = [_]Vec3{ .init(0, -2, -1), .init(2, -2, -1), .init(2, 2, -1), .init(0, 2, -1) };
+    const mesh = try fx.renderer.createMesh(try shapeMesh(&left, &quad_indices, null, &streams, &submeshes), "moving half");
+    try submitWriteFrame(&fx, mesh, red, readbacks[0]);
+    try fx.renderer.updateMesh(mesh, try shapeMesh(&right, &quad_indices, null, &streams, &submeshes), "moving half");
+    try submitWriteFrame(&fx, mesh, red, readbacks[1]);
+
+    // A region: the right texel of a 2×1 white texture turned green.
+    const quad = try materialQuad(&fx.renderer);
+    var white = [_]u8{255} ** 8;
+    const canvas = try fx.renderer.createTexture(.{ .width = 2, .height = 1, .pixels = &white }, .{ .filter = .nearest, .wrap = .clamp });
+    const painted = try fx.renderer.createMaterial(.{ .base_color_texture = canvas, .double_sided = true }, "canvas");
+    try submitWriteFrame(&fx, quad, painted, readbacks[2]);
+    try fx.renderer.writeTexture(canvas, .{ .x = 1, .width = 1, .height = 1 }, &.{ 0, 255, 0, 255 });
+    try submitWriteFrame(&fx, quad, painted, readbacks[3]);
+
+    // A chain: a mipmapped white texture replaced whole by red.
+    var white_square = [_]u8{255} ** (4 * 4 * 4);
+    const mipped = try fx.renderer.createTexture(.{ .width = 4, .height = 4, .pixels = &white_square }, .{ .filter = .nearest, .mipmaps = true });
+    const chained = try fx.renderer.createMaterial(.{ .base_color_texture = mipped, .double_sided = true }, "chained");
+    var red_square: [4 * 4 * 4]u8 = undefined;
+    for (0..16) |i| red_square[i * 4 ..][0..4].* = .{ 255, 0, 0, 255 };
+    var chain = try asset.mips.generate(testing.allocator, .{ .width = 4, .height = 4, .pixels = &red_square }, .srgb);
+    defer chain.deinit(testing.allocator);
+    try submitWriteFrame(&fx, quad, chained, readbacks[4]);
+    try fx.renderer.writeTextureChain(mipped, chain, .srgb);
+    try submitWriteFrame(&fx, quad, chained, readbacks[5]);
+    fx.device.waitIdle();
+
+    const blue = displayTexel(format, .{ 0, 0, 1 });
+    const solid_red = displayTexel(format, .{ 1, 0, 0 });
+    const solid_white = displayTexel(format, .{ 1, 1, 1 });
+    const solid_green = displayTexel(format, .{ 0, 1, 0 });
+    try expectDisplayTexel(solid_red, try writeTexel(&fx, readbacks[0], 4, 16));
+    try expectDisplayTexel(blue, try writeTexel(&fx, readbacks[0], 27, 16));
+    try expectDisplayTexel(blue, try writeTexel(&fx, readbacks[1], 4, 16));
+    try expectDisplayTexel(solid_red, try writeTexel(&fx, readbacks[1], 27, 16));
+    // The quad spans about x 10 to 22; its texture's left texel is drawn left of 16.
+    try expectDisplayTexel(solid_white, try writeTexel(&fx, readbacks[2], 19, 16));
+    try expectDisplayTexel(solid_white, try writeTexel(&fx, readbacks[3], 13, 16));
+    try expectDisplayTexel(solid_green, try writeTexel(&fx, readbacks[3], 19, 16));
+    try expectDisplayTexel(solid_white, try writeTexel(&fx, readbacks[4], 16, 16));
+    try expectDisplayTexel(solid_red, try writeTexel(&fx, readbacks[5], 16, 16));
+
+    fx.renderer.destroyMaterial(painted);
+    fx.renderer.destroyMaterial(chained);
+    fx.renderer.destroyMaterial(red);
+    fx.renderer.destroyTexture(canvas);
+    fx.renderer.destroyTexture(mipped);
 }

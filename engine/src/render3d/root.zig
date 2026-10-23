@@ -47,6 +47,7 @@ pub const Stats = renderer.Stats;
 pub const StreamSet = renderer.StreamSet;
 pub const TextureHandle = renderer.TextureHandle;
 pub const TextureOptions = renderer.TextureOptions;
+pub const TextureRegion = renderer.TextureRegion;
 pub const textureLoader = loader.textureLoader;
 pub const textureOf = loader.textureOf;
 pub const Wrap = renderer.Wrap;

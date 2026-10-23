@@ -1,9 +1,20 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-23
-**Current handoff: M28 Step 2 of 8 is complete** ([`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063, accepted 2026-10-23 and revised at Step 2).
-**Stop before Step 3** (`render3d`: `updateMesh`, `writeTexture` and `writeTextureChain` with `error.InFrame`, §5). There are no update or write calls yet, no `InFrame` and no `Uploads`.
+**Current handoff: M28 Step 3 of 8 is complete** ([`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063, accepted 2026-10-23 and revised at Step 2).
+**Stop before Step 4** (`render3d.Uploads`: the fill on the pool and an ordered pump, §6). There is no `Uploads` yet, and `Content` has no runtime materials.
 M27 is complete (tag `m27`, pushed). M28's commits are not pushed.
+
+**M28 Step 3 is done (2026-10-23): changes that keep the handle.**
+- `updateMesh` copies each stream into its buffer when it fits (same slot and format, enough capacity), and otherwise reallocates. A refusal changes nothing.
+- `writeTexture` writes a region of a texture without mips. `writeTextureChain(handle, chain, color_space)` replaces a mipmapped texture's whole chain. Both keep the same GPU texture, so materials stay valid.
+- All three are refused inside the frame window (`error.InFrame`).
+- `createMesh` and the writes go through M27's kept staging buffers.
+- On Metal, a frame submitted before each kind of write reads back unchanged, and the next one shows the write.
+- Step 2's hang is explained and fixed: `deinit` looped over a destroy that skips doomed entries. It now frees every entry directly.
+- The null device now counts buffer discards, which closes a barrier blind spot. Every guard was verified by time-limited mutation.
+
+Bar **2,233/2,234** (one skip); `render3d-test -Drhi=metal` 85/85.
 
 **M28 Step 2 is done (2026-10-23): lifetime and the write window.**
 - A material keeps alive the textures it binds. Destroying a bound texture invalidates its handle at once and frees its GPU object with its last material.
