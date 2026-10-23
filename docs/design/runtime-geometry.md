@@ -451,7 +451,7 @@ Each item is named with the milestone that owns it, or the measurement that woul
 | --- | --- |
 | Runtime geometry for mods through the table | M48 (`FoundryApi_v8`) |
 | Runtime geometry from Lua | M49 |
-| Particle geometry | M29 decides whether it uses `updateMesh` or a ring of its own |
+| Particle geometry | M29 decides whether it uses `updateMesh` or a ring of its own (proposed answer: `updateMeshFromStaged`, no ring; `particles.md` §7) |
 | Heightfield terrain as an engine feature | M62–M63 |
 | Voxel meshing and remeshing | M65, M67 |
 | Tangent generation, and a `tangents` builder setter | M41 |

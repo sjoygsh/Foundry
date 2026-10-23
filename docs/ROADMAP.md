@@ -1231,7 +1231,7 @@ What a real 3D game reaches for first. Ends in a second 3D sample that uses all 
 | --- | --- | --- |
 | M27 | Background work | A task graph and background jobs over `core.Jobs`; assets load without stalling a frame; also the editor's background compile. **Done 2026-10-18, tag `m27`: [`background.md`](design/background.md), ADR-0061/0062.** A gallery of large textures loads on Metal and Windows/Vulkan with no frame over 16.67 ms; the editor draws and takes edits while it builds; `FoundryApi_v7` adds three job calls (264) |
 | M28 | Runtime geometry | Meshes, materials and textures created at run time in `render3d`, beside compiled content. **Done 2026-10-23, tag `m28`: [`runtime-geometry.md`](design/runtime-geometry.md), ADR-0063.** `sandbox3d`'s generated corner — a walked patch, water rewritten every frame, a painted canvas, a 1M-vertex landmark built on the pool, a recoloured crate — holds its budgets on Metal and Windows/Vulkan, validation-clean; no ABI change, M48 publishes it |
-| M29 | Particles I | A CPU particle system with content-defined emitters |
+| M29 | Particles I | A CPU particle system with content-defined emitters. **Design proposed 2026-10-23: [`particles.md`](design/particles.md), ADR-0064.** |
 | M30 | Audio II | Compressed audio and streamed music; the decoder is an ADR; also music sequencing: playlists, crossfades and stingers |
 | M31 | Audio III | 3D spatialisation, mixer buses and effects; also a limiter and compressor |
 | M32 | Navigation I | Navigation meshes built from collision geometry |

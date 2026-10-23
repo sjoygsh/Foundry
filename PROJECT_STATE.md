@@ -1,9 +1,8 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-23
-**Current handoff: M28 is complete** (tag `m28`, 2026-10-23; [`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063 implemented).
-**Stop before M29's design** (Particles I, `docs/ROADMAP.md`). Nothing of M29 exists yet.
-M27 and M28 are pushed.
+**Current handoff: M29's design is proposed** ([`docs/design/particles.md`](docs/design/particles.md), ADR-0064, 2026-10-23); awaiting the owner's acceptance of §14. **Stop before Step 1** (`particles`: the description and the step). No M29 code exists.
+M28 is complete (tag `m28`, 2026-10-23; [`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063 implemented). M27 and M28 are pushed.
 
 **M28 Step 8 is done (2026-10-23): the close.**
 - Runtime meshes, textures and materials are made and changed in place at run time, beside compiled content, on macOS/Metal and Windows/Vulkan, validation-clean. They are owned by handle and never content (ADR-0063). Nothing is published through the ABI; M48 does that in `FoundryApi_v8`.
