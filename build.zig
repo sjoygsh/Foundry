@@ -63,6 +63,13 @@ const layering = [_]Module{
     // clock to read (I9). It samples, blends and skins, and allocates nothing.
     .{ .name = "anim", .deps = &.{"core"} },
 
+    // L1 — particles as a simulation below the renderers (ADR-0064, docs/design/particles.md).
+    // `core` alone, for `anim`'s reasons: no `asset`, because a description arrives as a value
+    // `render3d` converts from the record `asset` decodes; no `scene`, because a running emitter
+    // is its owner's; no renderer, so `render2d` could draw it as well; no `platform`, so there
+    // is no clock to read (I9).
+    .{ .name = "particles", .deps = &.{"core"} },
+
     // L1 — the immediate-mode UI kernel (ADR-0024, docs/design/ui.md). `platform` for the
     // input snapshot it is handed; `core` for maths and logging. **No `render2d`**, which
     // is the decision rather than an omission: the kernel emits a draw list and something
@@ -1517,7 +1524,7 @@ pub fn build(b: *std.Build) void {
         if (std.mem.eql(u8, spec.name, "abi")) {
             b.step("abi-test", "Run the public ABI agreement, refusal and caller-context tests").dependOn(&run.step);
         }
-        if (std.mem.eql(u8, spec.name, "asset") or std.mem.eql(u8, spec.name, "author") or std.mem.eql(u8, spec.name, "physics3d") or std.mem.eql(u8, spec.name, "anim")) {
+        if (std.mem.eql(u8, spec.name, "asset") or std.mem.eql(u8, spec.name, "author") or std.mem.eql(u8, spec.name, "physics3d") or std.mem.eql(u8, spec.name, "anim") or std.mem.eql(u8, spec.name, "particles")) {
             b.step(b.fmt("{s}-test", .{spec.name}), b.fmt("Run the {s} unit tests", .{spec.name})).dependOn(&run.step);
         }
     }

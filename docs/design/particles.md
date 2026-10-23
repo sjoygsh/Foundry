@@ -1,6 +1,6 @@
 # Design: M29 — Particles I: a CPU particle system with content-defined emitters
 
-**Status:** Proposed 2026-10-23; awaiting the owner's acceptance of §14. No step has begun.
+**Status:** Accepted 2026-10-23, when the owner asked for Step 1, with §14 as written. Step 1 of §15's eight is done; its Resolution follows §15.
 **Date:** 2026-10-23
 **Baseline:** `86456c9`, tag `m28`. M0–M28 are complete.
 **Decisions:**
@@ -623,3 +623,81 @@ Then:
 - pack up the PC by exact path.
 
 Tag `m29`, push when asked, and stop before M30's design.
+
+## Resolution — Step 1: the description and the step (2026-10-23)
+
+**What exists.** `engine/src/particles/`, an L1 module on `core` alone, in `build.zig`'s
+layering, with a `particles-test` step:
+- `emitter.zig`: `Emitter`, with §4's field names, and `validate`, which refuses by name. It
+  also has the curve evaluation (`sizeAt`, `colorAt` and `maxSizeFactor`) that Step 2's
+  expansion reads.
+- `system.zig`: `System`, a `std.MultiArrayList(Particle)` set to its capacity at `init` and
+  never grown. It has `step`, `play`, `stop`, `clear`, `hash` and the `Counts` that Step 5 folds
+  into `Stats`.
+- `trig.zig`: the module's own sine and cosine (below).
+- `tests.zig`.
+
+The module has no expansion, no record, no shader and no `render3d` edge yet; Steps 2–5 add
+them.
+
+**Where the step sharpened §3.2:**
+- **Birth is an exact instant, not a tick and a fraction.** A particle stores `birth`, in `f64`
+  seconds since tick zero:
+  - a continuous spawn `m` is born at exactly `m / rate` on its timeline;
+  - a burst is born at exactly `k·duration + time`.
+
+  Age is `tick·dt − birth`. "Evenly spread fractions" became these exact instants, which are
+  what the closed form already counts.
+- **The interval is `[from, to)`**, so a burst at time 0 and the rate's `m = 0` fire at a
+  timeline's first step. The count due is `ceil(rate·to) − ceil(rate·from)`.
+- **A timeline begins one tick before its first step.** That first step covers `[0, dt)` and
+  ends at its own tick's time. The origin is therefore signed, because a system first stepped
+  at tick 0 starts at −1. A test pins it: the burst and the rate's first spawn are born at
+  −dt.
+- **A gap between steps is one interval.** It spawns exactly what each tick would have spawned,
+  and integrates survivors in one stride. Ticks must increase and `dt` must not change; either
+  mistake is the caller's, and an assertion catches it.
+- **A moving emitter.** A world-space spawn is placed between the previous and the current
+  transform, at its fraction of the interval. It is then integrated from its birth to the end
+  of the tick. A spawn whose life ends inside that remainder is not stored, but it still
+  consumed its draws, so it never shifts the next particle's.
+- **The draw order is fixed per spawn:** lifetime, speed, size, rotation, spin, a 32-bit
+  random, then four shape draws for every shape.
+- **A lower capacity removes the oldest first.** It is counted as `shrunk`. §6 needs this for
+  reload, and it is a property of the step, so it is here rather than in Step 5.
+- **The minimum loop is 1 ms** (`min_duration`). Without it, a hostile record could make one
+  tick walk unbounded loops of bursts.
+- **The tie order cannot be observed.** Which goes first when a burst and a continuous spawn
+  coincide makes no difference: particles born at one instant draw and are stored alike. The
+  mutation that reversed it passed every test, as an equivalent mutant must. The comment no
+  longer claims an order.
+
+**Trig is the module's own.** The first pin differed between Debug and ReleaseSafe on the Mac.
+Bisecting showed that the module's arithmetic agreed with itself in both. The difference was
+the test's own `@sin` input: `@sin` lowers to whichever `sinf` a binary resolves, which is
+`public3d.md`'s Step 5 math-pin finding. Rather than carry two recorded variants, as the walker
+does, `trig.sinCosTurns` computes sine and cosine from `f64` add, multiply and floor alone, and
+the shapes and the pinned test use it. It agrees with `std` to 1e-14 across ±2 turns.
+
+The pin `0xc9fa8e13b9c40c85` holds:
+- in Debug, ReleaseSafe and ReleaseFast on the Mac;
+- in an x86_64-macos build run under Rosetta.
+
+Step 7 checks it natively on the PC.
+
+**The pinned run** is 600 ticks at `dt = 1/64`, which is a power of two, so tick times and the
+closed forms are exact. It uses:
+- a cone;
+- rate and three bursts over 1.5 s loops, one of them at each loop's start;
+- gravity and drag;
+- varied lifetimes, sizes, rotations and spins;
+- a moving transform.
+
+It matches twice and differs for another instance stream.
+
+**Mutations.** Each was made, watched to fail, and restored byte for byte:
+- removal that reorders the survivors failed "removal keeps spawn order" and the pin;
+- `floor` in place of the `ceil` closed form failed the tick-by-tick count and the pin;
+- a full store stealing its oldest particle failed the drop test.
+
+**Bar:** **2,264/2,265** (one skip, M27's), the full bar: `zig fmt --check`, `zig build test`, the four `check` variants, the four 30-frame headless runs and `fdt-check`, all exit 0. Thirteen of the new tests are `particles`'.

@@ -1,6 +1,6 @@
 # ADR-0064: Particles are a simulation below the renderer, defined by content and drawn through runtime meshes
 
-**Status:** Proposed
+**Status:** Accepted 2026-10-23 (the owner asked for M29 Step 1; `docs/design/particles.md`)
 **Date:** 2026-10-23
 
 ## Context

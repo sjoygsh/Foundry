@@ -1,8 +1,18 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-23
-**Current handoff: M29's design is proposed** ([`docs/design/particles.md`](docs/design/particles.md), ADR-0064, 2026-10-23); awaiting the owner's acceptance of §14. **Stop before Step 1** (`particles`: the description and the step). No M29 code exists.
-M28 is complete (tag `m28`, 2026-10-23; [`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063 implemented). M27 and M28 are pushed.
+**Current handoff: M29 Step 1 of 8 is complete** ([`docs/design/particles.md`](docs/design/particles.md), ADR-0064 accepted 2026-10-23). **Stop before Step 2** (`particles`: expansion into sorted quads). There is no expansion, no `foundry:particle_emitter` record, no particle shader and no `render3d.Particles` yet.
+M28 is complete (tag `m28`, 2026-10-23; [`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063 implemented). M27 and M28 are pushed; M29's commits are not.
+
+**M29 Step 1 is done (2026-10-23): the description and the step.**
+- `engine/src/particles/` is a new L1 module on `core` alone. It holds:
+  - `Emitter`, with `validate` refusing by name;
+  - `System`, a fixed-capacity store with a deterministic `step`: ages from ticks, closed-form spawns over `[from, to)`, order-keeping removal, a full store dropping new spawns, and the oldest removed first when capacity shrinks;
+  - `play`, `stop`, `clear` and `hash`.
+- It owns its sine and cosine (`trig.zig`), because `@sin` resolves to a different `sinf` per binary.
+- The pin `0xc9fa8e13b9c40c85` holds in Debug, ReleaseSafe and ReleaseFast, and on x86_64 under Rosetta.
+
+Bar **2,264/2,265** (one skip, M27's), the full bar: `zig fmt --check`, `zig build test`, the four `check` variants, the four 30-frame headless runs and `fdt-check`, all exit 0. Thirteen of the new tests are `particles`'.
 
 **M28 Step 8 is done (2026-10-23): the close.**
 - Runtime meshes, textures and materials are made and changed in place at run time, beside compiled content, on macOS/Metal and Windows/Vulkan, validation-clean. They are owned by handle and never content (ADR-0063). Nothing is published through the ABI; M48 does that in `FoundryApi_v8`.

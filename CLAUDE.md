@@ -197,6 +197,7 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Background work | An explicit `core.Tasks` and a minimal graph of background and main-thread nodes on a second pool beside the frame's; arrival is presentation, never simulation; amends ADR-0036's decision 2; implemented in M27 (2026-10-18) | [0061](docs/adr/0061-background-tasks-beside-the-frame.md) |
 | Asset loading | A loader may split into a pure `decode` off the main thread and a `finish` on it, and `load` is their composition; `acquire` and `asset_acquire` stay synchronous; a split may stage its upload on the pool (Step 10's revision note); implemented in M27 (2026-10-18) | [0062](docs/adr/0062-assets-load-in-two-phases.md) |
 | Runtime geometry | Runtime meshes, textures and materials are `render3d` resources named by handle and owned by their creator, never content (no ID, no override, no save); they may refer to compiled content and never the reverse; they change in place outside a frame's submission window and keep their handles; a material keeps alive what it binds; destroys inside the window are deferred, writes refused; filled on the background pool by `render3d.Uploads` and finished at the game's pump; implemented in M28 (2026-10-23) | [0063](docs/adr/0063-runtime-geometry-is-owned-by-handle.md) |
+| Particles | `particles` at L1 on `core` alone: emitter descriptions as validated values, a fixed-capacity store and a deterministic step from ticks, owning its trig so a pin does not depend on a linked libm; emitters are `foundry:particle_emitter` records naming an ordinary material; running emitters are `render3d.Particles` handles, never content; drawn as runtime meshes staged directly; `foundry:shading.particle` takes premultiplied vertex colour so additive and covering particles share one pipeline; accepted 2026-10-23, being built in M29 | [0064](docs/adr/0064-particles-are-a-simulation-drawn-through-runtime-meshes.md) |
 | Metal bridge | Thin Objective-C shim exposing a C API | [0012](docs/adr/0012-metal-objc-shim.md) |
 | Shaders | MSL now; shaders are assets with per-backend variants | [0015](docs/adr/0015-shader-strategy.md) |
 | Shader ownership | Engine-owned shaders embedded; content-owned shaders are assets | [0019](docs/adr/0019-builtin-versus-content-shaders.md) |
@@ -297,6 +298,9 @@ L1  anim        -> core.        Skeletons, clips and poses as borrowed values:
                                 linear-blend skinning on the CPU (ADR-0058, M24).
                                 No clock, no playback state, no assets, no
                                 entities, no renderer.
+L1  particles   -> core.        Emitter descriptions, the fixed-capacity store
+                                and the deterministic step (ADR-0064, M29). No
+                                assets, no entities, no renderer, no clock.
 L1  ui          -> core, platform.  Immediate-mode UI kernel: widget identity, input
                                 routing, layout, clipping. Emits a draw list; draws
                                 nothing itself and never sees a renderer.
