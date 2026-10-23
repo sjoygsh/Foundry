@@ -2,7 +2,8 @@
 //!
 //! A CPU particle system as a simulation below the renderers (ADR-0064): an emitter's
 //! description as a validated value, a fixed-capacity store per running emitter, and a
-//! deterministic step that ages, moves and spawns. Step 2 adds the expansion into quads.
+//! deterministic step that ages, moves and spawns, and the expansion of live particles into
+//! sorted, camera-facing quads written into the caller's buffers.
 //!
 //! **No assets, no entities, no renderer, no I/O.** `asset` decodes the
 //! `foundry:particle_emitter` record and `render3d` converts it into an `Emitter`; neither is
@@ -19,6 +20,7 @@
 //! Design: `docs/design/particles.md`
 
 pub const emitter = @import("emitter.zig");
+pub const expand = @import("expand.zig");
 pub const system = @import("system.zig");
 
 // A game sees these today and a mod may later, so renaming one is a compatibility decision
@@ -28,6 +30,10 @@ pub const Burst = emitter.Burst;
 pub const ColorKey = emitter.ColorKey;
 pub const Counts = system.Counts;
 pub const Emitter = emitter.Emitter;
+pub const Expanded = expand.Expanded;
+pub const Expander = expand.Expander;
+pub const Output = expand.Output;
+pub const View = expand.View;
 pub const Error = emitter.Error;
 pub const Facing = emitter.Facing;
 pub const Key = emitter.Key;
@@ -44,7 +50,9 @@ pub const max_curve_keys = emitter.max_curve_keys;
 
 test {
     _ = emitter;
+    _ = expand;
     _ = system;
     _ = @import("trig.zig");
     _ = @import("tests.zig");
+    _ = @import("expand_tests.zig");
 }

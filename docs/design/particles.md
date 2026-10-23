@@ -1,6 +1,6 @@
 # Design: M29 — Particles I: a CPU particle system with content-defined emitters
 
-**Status:** Accepted 2026-10-23, when the owner asked for Step 1, with §14 as written. Step 1 of §15's eight is done; its Resolution follows §15.
+**Status:** Accepted 2026-10-23, when the owner asked for Step 1, with §14 as written. Steps 1–2 of §15's eight are done; their Resolutions follow §15.
 **Date:** 2026-10-23
 **Baseline:** `86456c9`, tag `m28`. M0–M28 are complete.
 **Decisions:**
@@ -701,3 +701,63 @@ It matches twice and differs for another instance stream.
 - a full store stealing its oldest particle failed the drop test.
 
 **Bar:** **2,264/2,265** (one skip, M27's), the full bar: `zig fmt --check`, `zig build test`, the four `check` variants, the four 30-frame headless runs and `fdt-check`, all exit 0. Thirteen of the new tests are `particles`'.
+
+## Resolution — Step 2: expansion (2026-10-24)
+
+**What exists.** `engine/src/particles/expand.zig` provides `Expander`, `View`, `Output` and
+`Expanded`, with tests in `expand_tests.zig`:
+- `Expander.init(gpa, capacity)` allocates the sort keys once.
+- `expand(system, emitter, view, .{ .sorted, .transform }, out, jobs)` writes four vertices
+  (position, UV0, colour) and six `u16` indices per live particle. It returns the quad count
+  and the exact bounds of every vertex written.
+- `View.fromCamera(world)` takes a camera's world transform. Forward is its −Z.
+
+**Where the step sharpened §3.3:**
+- **Output is world space.** A `local` emitter's particles are carried by the transform during
+  expansion, so Step 5 draws each mesh with an identity world. Its bounds are the vertices' own
+  rather than the step's padded box.
+- **The expansion reads the time of the system's last step**, `last_tick · dt`, with no
+  interpolation. Expanding a system that holds particles but was never stepped is a
+  programmer error.
+- **The caller chooses `sorted`.** Step 5 sets it from the material's alpha mode: blend sorts,
+  opaque and mask keep spawn order.
+- **Size is the quad's side**, so each half-axis is `size/2`. The step's bounds padding,
+  `size·√½`, is that quad's half-diagonal.
+- **`velocity` facing:**
+  - The long half-axis is `size/2 + stretch·|v|/2`, so the full length is
+    `size + stretch × speed`, with speed the full 3D speed.
+  - The wide axis is `forward × long`.
+  - A particle moving straight along the view, or not at all, has nothing to stretch along. It
+    falls back to an unrotated camera-facing quad.
+- **`up` facing** uses the emitter transform's X and Z axes, normalized, so a tilted emitter
+  tilts its quads. Rotation and spin turn the quad within that plane, as they do for `camera`.
+- **The sheet's top row is v = 0.** Corner 0 (−right, −up) takes the frame's lower-left UV.
+  Frames are row-major from the top left. `fps` 0 is `min(frames−1, floor(t·frames))`;
+  otherwise `floor(age·fps) mod frames`.
+- **Corners** are (−a−b, +a−b, +a+b, −a+b), indexed 0-1-2 and 0-2-3. Winding does not matter,
+  because §5 disables culling.
+- **The split:**
+  - The sort runs first, on the calling thread: `pdq` over `(depth descending, serial
+    ascending)`, a total order, so an unstable sort is deterministic.
+  - `core.Jobs.forChunks` then writes chunks of `grain = 256` quads of that order.
+  - Each chunk writes only its own vertex and index ranges and its own bounds slot, and the
+    slots are merged in chunk order.
+
+**Determinism.**
+- Rotation goes through `trig`, as Step 1's shapes do.
+- The tests compare four executors: `serial`, `reversed`, and a test-only executor with real
+  threads pulling chunks from a shared counter (2 and 4 workers). They agree byte for byte on
+  2,013 quads (8 chunks) for every facing.
+- The pins are FNV-1a over the four streams in order:
+  - `camera` `0x1fd9087640e501cb`;
+  - `velocity` `0xe06311a79d0f8f5e`;
+  - `up` `0x762af06190750a2f`.
+
+  They hold in Debug, ReleaseSafe and ReleaseFast, and on x86_64 under Rosetta.
+
+**Mutations.** Each was made, watched to fail, and restored byte for byte:
+- removing the serial tie-break failed the sort test;
+- merging only the first chunk's bounds failed the bounds check in the worker-count test;
+- dropping the premultiplication failed the colour test and the pins.
+
+**Bar:** **2,272/2,273** (one skip, M27's), the full bar, all exit 0; eight of the new tests are the expansion's.

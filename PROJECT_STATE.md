@@ -1,8 +1,15 @@
 # Foundry Project State
 
-**Last updated:** 2026-10-23
-**Current handoff: M29 Step 1 of 8 is complete** ([`docs/design/particles.md`](docs/design/particles.md), ADR-0064 accepted 2026-10-23). **Stop before Step 2** (`particles`: expansion into sorted quads). There is no expansion, no `foundry:particle_emitter` record, no particle shader and no `render3d.Particles` yet.
+**Last updated:** 2026-10-24
+**Current handoff: M29 Step 2 of 8 is complete** ([`docs/design/particles.md`](docs/design/particles.md), ADR-0064 accepted 2026-10-23). **Stop before Step 3** (`asset`: the `foundry:particle_emitter` record). There is no record, no particle shader and no `render3d.Particles` yet.
 M28 is complete (tag `m28`, 2026-10-23; [`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063 implemented). M27 and M28 are pushed; M29's commits are not.
+
+**M29 Step 2 is done (2026-10-24): expansion.**
+- `particles.Expander` writes live particles as world-space quads in fixed per-stream slices of the caller's: position, UV0, premultiplied colour and `u16` indices. There are three facings: `camera`, `velocity` (stretched) and `up`. Sheet frames and exact bounds come with them.
+- Blended emitters are sorted far to near, with ties broken by spawn serial, before a `core.Jobs` split into 256-quad chunks.
+- `serial`, `reversed` and 2- and 4-thread executors write identical bytes. The per-facing pins hold in every optimize mode and on x86_64 under Rosetta.
+
+Bar **2,272/2,273** (one skip, M27's), the full bar, all exit 0; eight of the new tests are the expansion's.
 
 **M29 Step 1 is done (2026-10-23): the description and the step.**
 - `engine/src/particles/` is a new L1 module on `core` alone. It holds:

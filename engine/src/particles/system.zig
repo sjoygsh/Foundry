@@ -397,10 +397,10 @@ fn narrow(value: f64) f32 {
 
 /// FNV-1a, 64-bit, written out rather than taken from `std` for `core.rng`'s reason: a pinned
 /// hash is a promise, and `std` is not a stability contract.
-const Fnv = struct {
+pub const Fnv = struct {
     state: u64 = 0xcbf29ce484222325,
 
-    fn add(self: *Fnv, bytes: []const u8) void {
+    pub fn add(self: *Fnv, bytes: []const u8) void {
         for (bytes) |b| {
             self.state ^= b;
             self.state *%= 0x100000001b3;
