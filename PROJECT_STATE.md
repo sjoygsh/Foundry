@@ -1,9 +1,17 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-23
-**Current handoff: M28 Step 7 of 8 is complete** ([`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063, accepted 2026-10-23 and revised at Step 2).
-**Stop before Step 8** (close M28, §14). It resolves the contract discrepancies in their documents (meshes.md's "a material does not track its texture", render3d.md and assets.md where M28 changed them), moves ADR-0063 into `CLAUDE.md` §4.1's implemented wording, updates §9, the roadmap and the design index, packs up the PC (`src\Foundry-m28` and `%USERPROFILE%\m28`, by exact path), and tags `m28`.
-M27 is complete (tag `m27`, pushed). M28's commits are not pushed.
+**Current handoff: M28 is complete** (tag `m28`, 2026-10-23; [`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063 implemented).
+**Stop before M29's design** (Particles I, `docs/ROADMAP.md`). Nothing of M29 exists yet.
+M27 and M28 are pushed.
+
+**M28 Step 8 is done (2026-10-23): the close.**
+- Runtime meshes, textures and materials are made and changed in place at run time, beside compiled content, on macOS/Metal and Windows/Vulkan, validation-clean. They are owned by handle and never content (ADR-0063). Nothing is published through the ABI; M48 does that in `FoundryApi_v8`.
+- The contract discrepancies are resolved where they were written: `background.md` §1, `public3d.md` §14, `3d.md`, and `meshes.md` §7.3's reversed "a material does not track its texture", with a pointer in `render3d.md`.
+- `CLAUDE.md` §4.1, §4.3 and §9, the ROADMAP, the design index and the README say M28 is done. `AGENTS.md`'s bar is unchanged.
+- Neither §12 measured trigger fired. The PC is packed up by exact path; only its toolchains remain.
+
+Bar **2,251/2,252** (one skip), the full bar at the closing tree.
 
 **M28 Step 7 is done (2026-10-23): Windows/Vulkan.**
 - §1's seven criteria hold on the Arc A750, from a relocated, read-only ReleaseSafe install, validation-clean:

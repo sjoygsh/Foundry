@@ -400,7 +400,9 @@ compile error in exactly one place, which is the intended cost.
   shading model declares only the locations it reads.
 - **Group 0, per frame:** one uniform block holding `view_projection` (`P · V`, 64 bytes), in a
   per-slot ring, written in `prepare`. Groups 1–3 are unused in M19. Since M20 group 2 is the
-  material's: a 32-byte uniform, its texture and its sampler (`meshes.md` §7.3).
+  material's: a 32-byte uniform, its texture and its sampler (`meshes.md` §7.3). Since M28 a
+  material keeps alive the texture it binds, and meshes and textures change in place outside
+  the frame's submission window ([`runtime-geometry.md`](runtime-geometry.md) §4–§5).
 - **Inline constants, per draw:** the world matrix, 64 bytes of the 128. The vertex shader
   computes `clip = view_projection · world · position`. M22 adds the normal transform, and the
   remaining 64 bytes or a per-draw group hold it.

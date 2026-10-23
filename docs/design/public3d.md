@@ -527,7 +527,7 @@ complete and v6 frozen, and nothing names a contract the code does not have.
 | --- | --- |
 | Animation through the ABI (poses, clips, skinned instances) | A mod needs an animated character; it would publish sampling over a model's named clips and a palette on an instance |
 | A camera a mod writes | A mod needs a spectator or cutscene camera; it needs a host grant like `mods_write` |
-| Runtime meshes, materials and textures from a mod | A mod needs procedural geometry or materials it cannot ship as content |
+| Runtime meshes, materials and textures from a mod | A mod needs procedural geometry or materials it cannot ship as content. **M28 built them in `render3d`** ([`runtime-geometry.md`](runtime-geometry.md), ADR-0063), owned by handle and never content; **M48 publishes them** in `FoundryApi_v8`, with mod-owned handles and per-mod byte quotas |
 | Mod-authored shaders and shading models | ADR-0015's trigger: a mod needs a look the engine's models cannot give |
 | Hull and mesh shapes, and `contacts`, for mod bodies | A mod's object is not a primitive and is not content |
 | An engine-declared "draws this model" component | A second host needs entity-driven drawing that a mod can join, or M26's sample does. **M26 did not fire it**: the court draws its level, beacons, gate and warden from its own state through `render3d`, and its mod is content only. It is M103's |

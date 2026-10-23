@@ -1,6 +1,6 @@
 # Design: M28 — Runtime geometry: meshes, textures and materials made and changed at run time, beside compiled content
 
-**Status:** Accepted 2026-10-23, when the owner asked for Step 1, with §13 as written. Steps run in §14's order; their Resolutions follow it.
+**Status:** Complete 2026-10-23, tag `m28`. Accepted 2026-10-23, when the owner asked for Step 1, with §13 as written; all eight steps of §14 are done, and their Resolutions follow it.
 **Date:** 2026-10-23
 **Baseline:** `7224505`, tag `m27`. M0–M27 are complete.
 **Decisions:**
@@ -1269,3 +1269,43 @@ nothing Linux-specific changed.
 **Bar:** the Mac bar last ran at `1f624e8` (Step 6), and this step changes no Zig, content or
 build file. Its only files are the harness and these documents, so no Mac bar was re-run. The
 PC ran the full suite natively on that same commit, above.
+
+## Resolution — Step 8: Close M28 (2026-10-23)
+
+M28 is complete. §1's exit holds as written on macOS/Metal (Step 6) and Windows/Vulkan (Step 7),
+validation-clean, and every item of §12 names its owner.
+
+**Contract discrepancies, resolved in their documents:**
+- `background.md` §1's M28 line now says what M28 did with the finish path M27 left it:
+  `Uploads` fills on the background pool and finishes at the game's own pump.
+- `public3d.md` §14's runtime-geometry row says M28 built it in `render3d` and M48 publishes it
+  in `FoundryApi_v8`, with mod-owned handles and per-mod byte quotas (ADR-0063, decision 7).
+- `3d.md`'s "code can make a runtime mesh too" now says code can also change one in place,
+  keeping its handle, and that a runtime resource is never content.
+- `meshes.md` §7.3's "a material does not track its texture" carries a dated note reversing it
+  (§4.1): a bound texture's GPU resource lives until its last material goes. `render3d.md`'s
+  group-2 description gains the same pointer, with the write window. Nothing in `render3d.md`
+  had said the material did not track its texture, so the pointer is all it needed.
+- **Found by Steps 1–7, already recorded where they belong:** the Step 2 revision to ADR-0063
+  (destroys deferred inside the window, writes refused), §13 item 4's revised wording,
+  §6's validation moved onto the pool, and §8's water pooled by default. ADR-0053's "code can
+  build the same runtime mesh a file loads" stays true as written. It is append-only, and M28
+  only added to it.
+
+**Decisions:** ADR-0063 is implemented (tag `m28`). `CLAUDE.md` §4.1's row says so, with the
+Step 2 revision and `Uploads`, and §4.3's `asset` and `render3d` lines name the builder and
+runtime resources. §9's deferred row records M28 done. The ROADMAP, the design index and the
+README say M28 is done.
+
+**§12:** neither measured trigger fired on either platform. The mesh capacity option and the
+persistent per-frame ring stay unbuilt, and the other rows each name their milestone.
+`AGENTS.md`'s bar is unchanged, because no step added a build step or a check.
+
+**The PC is packed up.** `src\Foundry-m28`, `%USERPROFILE%\m28`, `m28-idle.ps1`, Zig's global
+cache in `LocalAppData` and the shader-validation cache were removed by exact path, about 3.9 GB.
+The toolchains (`.local\zig`, `.local\vulkan`, the Vulkan SDK) and everything else on the machine
+are untouched. A later Windows step clones afresh.
+
+**Bar** at the closing tree, in full: `zig fmt --check`, the four `check` variants, the four
+thirty-frame headless runs and `fdt-check` pass, and `zig build test` passes **2,251/2,252** (one
+skip), Step 6's count, because nothing outside the documents changed since.

@@ -1122,6 +1122,11 @@ Step 5 implements §7.1–§7.5 in `render3d` and stops before culling and `Cont
   wrap, mipmaps) and live until the renderer does. A material does not track its texture: a
   caller destroys materials before the textures they bind, and Step 6's `Content` is the one
   owner that has to get that order right on reload.
+  > **Reversed in M28, 2026-10-23** ([`runtime-geometry.md`](runtime-geometry.md) §4.1,
+  > ADR-0063): a material keeps alive what it binds. Destroying a bound texture retires its
+  > handle at once, but the GPU texture lives until the last material binding it is destroyed,
+  > so the order no longer matters. Since M28 a material binds a texture no reload can
+  > invalidate, and `Content`'s runtime materials follow compiled textures by content ID.
 - **The loaders are §7.4's, and only `acquireWith` reaches them.** `textureLoader` decodes within
   the device's maximum dimension and reads `filter`, `wrap`, `color_space` and `mipmaps` with the
   schema's defaults, so a record means the same to both renderers. `meshLoader` reads the

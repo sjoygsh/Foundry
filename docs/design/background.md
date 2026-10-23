@@ -66,7 +66,9 @@ section supplies the contract the roadmap line leaves implicit.
 - Streamed music and compressed audio decoded while playing: M30.
 - Texture streaming by mip level and compressed formats: M93.
 - Runtime-created meshes, materials and textures: M28. M27 gives them the finish path they will
-  use.
+  use. **Done in M28** ([`runtime-geometry.md`](runtime-geometry.md), ADR-0063):
+  `render3d.Uploads` fills their staging on this pool and finishes them at the game's own pump,
+  over the staging buffers Step 10 keeps.
 - A render thread, multi-threaded recording and thread priority or QoS: M99.
 - Parallel system scheduling: M100.
 - The court and `room` change nothing visible. They gain the pump through `app`, and every

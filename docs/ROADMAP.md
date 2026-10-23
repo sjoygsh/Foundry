@@ -1,7 +1,7 @@
 # Foundry Roadmap
 
 Staged milestones from a minimal engine toward 2D, then 3D, then an industry-grade
-general-purpose engine: **150 engine milestones, M0 to M149, and M150, the certified release** (ADR-0060). M0–M27 are
+general-purpose engine: **150 engine milestones, M0 to M149, and M150, the certified release** (ADR-0060). M0–M28 are
 done; M26 closed Phase 5, and M27 opened Phase 6. The plan
 beyond M26 is [the long roadmap](#the-long-roadmap--m27-to-m150) at the end of this file. It is
 a gradual ascent, not a sprint.
@@ -1187,7 +1187,7 @@ the walker and reported it very good. **M26, the playable 3D sample, is complete
 **Decided 2026-10-02 ([ADR-0060](adr/0060-a-150-milestone-roadmap.md)).** Foundry is planned as
 **150 numbered engine milestones, M0 to M149, followed by M150, the certified release**. M0–M26 are done (with M16.5, which was inserted
 between two of them), and the 124 below follow them, beginning with M27's design. M27 is done
-(2026-10-18, tag `m27`).
+(2026-10-18, tag `m27`), and so is M28 (2026-10-23, tag `m28`).
 
 **This is a gradual ascent, not a sprint.** The number says how far there is to go, not how
 fast. Milestones are still units of work, not time; each still begins with a design document
@@ -1230,7 +1230,7 @@ What a real 3D game reaches for first. Ends in a second 3D sample that uses all 
 | # | Milestone | Intent |
 | --- | --- | --- |
 | M27 | Background work | A task graph and background jobs over `core.Jobs`; assets load without stalling a frame; also the editor's background compile. **Done 2026-10-18, tag `m27`: [`background.md`](design/background.md), ADR-0061/0062.** A gallery of large textures loads on Metal and Windows/Vulkan with no frame over 16.67 ms; the editor draws and takes edits while it builds; `FoundryApi_v7` adds three job calls (264) |
-| M28 | Runtime geometry | Meshes, materials and textures created at run time in `render3d`, beside compiled content. **Proposed 2026-10-23: [`runtime-geometry.md`](design/runtime-geometry.md), ADR-0063; awaiting acceptance** |
+| M28 | Runtime geometry | Meshes, materials and textures created at run time in `render3d`, beside compiled content. **Done 2026-10-23, tag `m28`: [`runtime-geometry.md`](design/runtime-geometry.md), ADR-0063.** `sandbox3d`'s generated corner — a walked patch, water rewritten every frame, a painted canvas, a 1M-vertex landmark built on the pool, a recoloured crate — holds its budgets on Metal and Windows/Vulkan, validation-clean; no ABI change, M48 publishes it |
 | M29 | Particles I | A CPU particle system with content-defined emitters |
 | M30 | Audio II | Compressed audio and streamed music; the decoder is an ADR; also music sequencing: playlists, crossfades and stingers |
 | M31 | Audio III | 3D spatialisation, mixer buses and effects; also a limiter and compressor |

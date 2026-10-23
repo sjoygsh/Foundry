@@ -1,6 +1,6 @@
 # ADR-0063: Runtime geometry is owned by handle, beside content, and changes in place
 
-**Status:** Accepted 2026-10-23 (the owner asked for M28 Step 1; `docs/design/runtime-geometry.md`)
+**Status:** Accepted 2026-10-23 (the owner asked for M28 Step 1; `docs/design/runtime-geometry.md`); revised at Step 2; implemented in M28 (tag `m28`)
 **Date:** 2026-10-23
 
 ## Context
