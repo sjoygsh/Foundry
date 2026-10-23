@@ -101,6 +101,8 @@ pub const Faults = struct {
 pub const strict_offset_alignment: u32 = 256;
 pub const strict_max_uniform_binding: u64 = 16384;
 pub const strict_max_storage_binding: u64 = 1 << 27;
+/// Where every mapped buffer starts; the smallest the real backends promise.
+pub const map_alignment = 16;
 
 pub const Violation = struct {
     rule: Rule,
@@ -136,8 +138,11 @@ const BufferState = struct {
     desc: resource.BufferDesc,
     state: resource.ResourceState = .undefined,
     /// Real storage, so that `mapBuffer` returns memory a caller can actually write and
-    /// a test can observe. The null backend models the contract, not the silicon.
-    storage: []u8,
+    /// a test can observe. The null backend models the contract, not the silicon: a mapped
+    /// buffer starts on a `map_alignment` boundary, as Metal's page-aligned contents and
+    /// Vulkan's `minMemoryMapAlignment` (at least 64) do, so a caller may write typed values
+    /// at aligned offsets into it (`particles.md`, Step 5's Resolution).
+    storage: []align(map_alignment) u8,
     mapped: bool = false,
     /// As `TextureState.discarded`: transitions that declared tracked contents not worth
     /// keeping, which also drops any wait on what earlier submissions were doing with them.
@@ -191,7 +196,7 @@ const RenderPipelineState = struct {
 /// Every kind is retired, including kinds with nothing to free here, so that retention is
 /// observable the same way for all of them and the list matches the one Metal keeps.
 const Retired = union(enum) {
-    buffer: []u8,
+    buffer: []align(map_alignment) u8,
     texture,
     sampler,
     shader,
@@ -514,7 +519,7 @@ pub const Device = struct {
             return error.InvalidDescriptor;
         }
         try self.reserveRetirement();
-        const storage = try self.gpa.alloc(u8, @intCast(desc.size));
+        const storage = try self.gpa.alignedAlloc(u8, .fromByteUnits(map_alignment), @intCast(desc.size));
         @memset(storage, 0);
         errdefer self.gpa.free(storage);
         return self.buffers.add(self.gpa, .{ .desc = desc, .storage = storage });

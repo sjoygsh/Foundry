@@ -318,6 +318,23 @@ pub const Stats = struct {
     mesh_updates: u32 = 0,
     texture_writes: u32 = 0,
     uploaded_bytes: u64 = 0,
+    /// `Particles.prepare` before `begin` (`particles.md` §6), folded in as uploads are.
+    particle_emitters: u32 = 0,
+    particles: u32 = 0,
+    particle_emitters_culled: u32 = 0,
+    /// Spawns a full store refused since the previous frame.
+    particles_dropped: u32 = 0,
+    /// Instances whose record or material a reload removed or broke.
+    particle_emitters_refused: u32 = 0,
+};
+
+/// What `Particles.prepare` reports for the frame that follows it.
+pub const ParticleCounts = struct {
+    emitters: u32 = 0,
+    particles: u32 = 0,
+    culled: u32 = 0,
+    dropped: u32 = 0,
+    refused: u32 = 0,
 };
 
 /// What `begin` folds into the frame's `Stats`.
@@ -655,6 +672,7 @@ pub const Renderer = struct {
     doomed_meshes: std.ArrayList(MeshHandle) = .empty,
     doomed_materials: std.ArrayList(MaterialHandle) = .empty,
     uploads: UploadCounts = .{},
+    particle_counts: ParticleCounts = .{},
 
     color_target: rhi.TextureHandle,
     hdr_target: rhi.TextureHandle,
@@ -1290,6 +1308,22 @@ pub const Renderer = struct {
     }
 
     /// Issued and not destroyed, so a draw may name it.
+    /// What `Particles` must know of a material: whether it blends, so its quads are sorted,
+    /// and the streams its model requires, which a particle mesh must cover.
+    pub const MaterialShape = struct { alpha_mode: AlphaMode, requires: StreamSet };
+
+    pub fn materialShape(self: *const Self, handle: MaterialHandle) ?MaterialShape {
+        const material = self.materials.getConst(handle) orelse return null;
+        return .{ .alpha_mode = material.desc.alpha_mode, .requires = self.models.items[material.model].desc.requires };
+    }
+
+    /// Particle counters for the next frame's `Stats`, added to any already noted.
+    pub fn noteParticles(self: *Self, counts: ParticleCounts) void {
+        inline for (@typeInfo(ParticleCounts).@"struct".fields) |field| {
+            @field(self.particle_counts, field.name) +|= @field(counts, field.name);
+        }
+    }
+
     /// A material casts only when its model reads `casts_shadow`: the particle model does not,
     /// so no particle material joins the shadow pass, whatever it says (`particles.md` §5).
     fn castsShadow(self: *const Self, material: *const MaterialState) bool {
@@ -1682,8 +1716,14 @@ pub const Renderer = struct {
             .mesh_updates = self.uploads.mesh_updates,
             .texture_writes = self.uploads.texture_writes,
             .uploaded_bytes = self.uploads.uploaded_bytes,
+            .particle_emitters = self.particle_counts.emitters,
+            .particles = self.particle_counts.particles,
+            .particle_emitters_culled = self.particle_counts.culled,
+            .particles_dropped = self.particle_counts.dropped,
+            .particle_emitters_refused = self.particle_counts.refused,
         };
         self.uploads = .{};
+        self.particle_counts = .{};
         self.light_count = 0;
         self.has_shadow_caster = false;
         self.recording = true;

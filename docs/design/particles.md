@@ -1,6 +1,6 @@
 # Design: M29 — Particles I: a CPU particle system with content-defined emitters
 
-**Status:** Accepted 2026-10-23, when the owner asked for Step 1, with §14 as written. Steps 1–4 of §15's eight are done; their Resolutions follow §15.
+**Status:** Accepted 2026-10-23, when the owner asked for Step 1, with §14 as written. Steps 1–5 of §15's eight are done; their Resolutions follow §15.
 **Date:** 2026-10-23
 **Baseline:** `86456c9`, tag `m28`. M0–M28 are complete.
 **Decisions:**
@@ -881,3 +881,84 @@ values it says.
 - letting `casts_shadow` alone decide failed the null test.
 
 **Bar:** **2,285/2,286** (one skip, M27's) on the null bar, all exit 0. The whole graph under `-Drhi=metal` is 2,295/2,307, with 12 backend-conditional skips; the new readbacks ran there. All five Vulkan checks passed on the Mac with the SDK tools on PATH: `vulkan-check` and `check` for Windows and Linux, and `check` for Windows ReleaseSafe. Native Vulkan readbacks are Step 7's, on the PC.
+
+## Resolution — Step 5: `render3d.Particles` (2026-10-24)
+
+**What exists.** `engine/src/render3d/particles.zig` provides `render3d.Particles`, with
+`ParticleEmitterHandle` and `ParticlesLimits`. `build.zig` grants `render3d` the `particles`
+module, one new edge downward. The API is:
+- `init(gpa, renderer, content, limits)` and `deinit`;
+- `create(.{ .emitter, .transform, .stream })` and `destroy`;
+- `setTransform`, `play`, `stop` and `clear`;
+- `step(tick, dt, jobs)`, `prepare(view, jobs)` and `draw`;
+- `contentChanged`;
+- `liveCount` and `stateHash`.
+
+Its tests are in `engine/tests/particles3d.zig`, over compiled packages, because `render3d`
+has no `data` to compile a record with.
+
+**Where the step sharpened §6–§7:**
+- **The instance holds its description, not a pointer to one.** `Description` keeps the
+  decoded `asset.ParticleEmitter` beside the arrays `particles.Emitter` borrows. The view is
+  rebuilt from the entry's own storage at each use, because a `HandlePool` may move entries.
+- **Material compatibility is checked through a new `Renderer.materialShape`.** It reports the
+  alpha mode, which decides `sorted`, and the model's required streams, which must be covered
+  by position, UV0 and colour. A lit material is therefore `InvalidMaterial`. A material record
+  that fails to build is drawn as `Content`'s placeholder, as everywhere else.
+- **Counters are held on the renderer until `begin`.** `prepare` runs before `begin`, which
+  resets `Stats`, so `Renderer.noteParticles` holds them and `begin` folds them in, exactly as
+  M28's upload counters are. `particles_dropped` is the drops gathered by every `step` since
+  the previous `prepare`. The overlay's 3D panel prints a fifth line, "3D: N particles in E
+  emitters  C culled  D dropped  R refused".
+- **Culling uses the step's padded bounds**, in world or local space, against
+  `Camera.viewProjection`'s frustum, and only when `Config.cull` is set. A culled instance is
+  stepped but neither uploaded nor drawn.
+- **`step` splits one instance per chunk.** `prepare` handles instances in order, and each
+  expansion splits its own quads over `jobs`; the two splits are never nested.
+- **Writing straight into staging needs aligned mapped memory.**
+  - Metal maps page-aligned contents, and Vulkan maps each buffer's own memory from offset 0,
+    so at least 64-byte aligned.
+  - The null backend allocated with no alignment, so it now allocates at `map_alignment` (16),
+    modelling the real backends' promise.
+  - Each piece of the layout starts at a multiple of 16, so the typed views of the
+    reservation are aligned on every backend.
+  - The `asset.Mesh` handed to `updateMeshFromStaged` names those same views. The prefilled
+    path reads only their lengths.
+- **The index question (§7) is decided by bytes.** Indices are 12 bytes a quad against 144 for
+  the vertices, about 8% of the upload. That is too small to need an "indices unchanged"
+  option, so none is added. Step 6 times the uploads' share of the frame. If it shows
+  otherwise, the option is added there, inside M29.
+- **Reload.**
+  - A record that is gone, does not decode, names an absent material, or whose material no
+    longer suits a particle mesh, leaves its instance refused: not stepped, not drawn, and
+    counted each frame.
+  - A later reload restores it, with its particles as they were.
+  - A different material is acquired before the old one is released.
+  - A capacity change resizes the store with the new `System.setCapacity`, which removes the
+    oldest first, and resizes the expander's keys.
+  - The caller calls `Content.contentChanged` first.
+- **`InvalidEmitter`** is what an undecodable record gives at `create`. The compiler cannot
+  emit one (Step 3), so it is reached only by a package from elsewhere. The decode tests cover
+  each refusal; this path logs `describe`'s sentence.
+
+**Tests.** There are six in `particles3d.zig`, and the overlay test gains the new line:
+- **Refusals:** every refusal holds nothing.
+- **Frame:** step, `prepare` refused inside the window, two meshes drawn with an identity
+  world, and the counts.
+- **Destroy:** destroying inside the window is clean.
+- **Culling:** an instance behind the camera is stepped but neither uploaded nor drawn.
+- **Drops:** a full store's drops are counted in the next frame.
+- **Jobs:** `serial` and `reversed` steps give identical hashes, and streams differ.
+- **Reload:** a lower capacity and a new material keep the handle and the newest 100
+  particles. A removed record stops, and stays byte-identical across 80 ticks, past every
+  particle's life. Restoring the record draws it again.
+
+**Mutations.** Each was made, watched to fail, and restored byte for byte:
+- removing culling failed the out-of-view test;
+- not refusing a removed record failed the reload test;
+- stepping refused instances first survived. The test stepped one tick into a full store whose
+  particles neither moved nor aged out. Stepping past their lifetime made it fail, as it
+  should.
+- not folding the emitter count failed the counting test.
+
+**Bar:** **2,291/2,292** (one skip, M27's), the full bar, all exit 0. The whole graph under `-Drhi=metal` is 2,301/2,313, with 12 backend-conditional skips; `particles3d` runs there through real Metal staging. No shader or Vulkan code changed, so the Vulkan checks were not due.

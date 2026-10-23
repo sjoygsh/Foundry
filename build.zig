@@ -113,7 +113,7 @@ const layering = [_]Module{
     // L3 — the game-facing 3D renderer (ADR-0054, docs/design/render3d.md). It owns GPU
     // mesh residency, camera projection and the depth/MSAA targets, while `asset` owns the
     // validated CPU mesh and `rhi` owns every backend object.
-    .{ .name = "render3d", .deps = &.{ "core", "rhi", "asset", "anim" } },
+    .{ .name = "render3d", .deps = &.{ "core", "rhi", "asset", "anim", "particles" } },
 
     // L3 — entities, components, systems and world state (docs/design/entity-storage.md).
     // ADR-0007 allows `asset` as well; it is not taken, because nothing here acquires one

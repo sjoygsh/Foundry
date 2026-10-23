@@ -25,6 +25,7 @@ pub const abi_render_pipeline = @import("abi_render_pipeline.zig");
 pub const debug_overlay = @import("debug_overlay.zig");
 pub const overlay_batches = @import("overlay_batches.zig");
 pub const particle_emitter = @import("particle_emitter.zig");
+pub const particles3d = @import("particles3d.zig");
 pub const render_jobs = @import("render_jobs.zig");
 pub const mod_pipeline = @import("mod_pipeline.zig");
 pub const instances = @import("instances.zig");
@@ -47,6 +48,7 @@ test {
     _ = debug_overlay;
     _ = overlay_batches;
     _ = particle_emitter;
+    _ = particles3d;
     _ = render_jobs;
     _ = mod_pipeline;
     _ = instances;

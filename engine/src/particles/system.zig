@@ -85,6 +85,19 @@ pub const System = struct {
         self.* = undefined;
     }
 
+    /// Resizes the store, for a description whose capacity changed on reload. Shrinking
+    /// removes the oldest first, counted as `shrunk`, as a step under a lower capacity does.
+    pub fn setCapacity(self: *System, capacity: u32) Allocator.Error!void {
+        std.debug.assert(capacity > 0 and capacity <= emitter_mod.max_capacity);
+        if (self.particles.len > capacity) {
+            const excess = self.particles.len - capacity;
+            self.removeOldest(excess);
+            self.counts.shrunk += excess;
+        }
+        try self.particles.setCapacity(self.gpa, capacity);
+        self.capacity = capacity;
+    }
+
     pub fn liveCount(self: *const System) u32 {
         return @intCast(self.particles.len);
     }

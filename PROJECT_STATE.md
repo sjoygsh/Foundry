@@ -1,8 +1,21 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-24
-**Current handoff: M29 Step 4 of 8 is complete** ([`docs/design/particles.md`](docs/design/particles.md), ADR-0064 accepted 2026-10-23). **Stop before Step 5** (`render3d.Particles`: instances by handle, `step`, `prepare`, `draw`, culling, reload and counters). There is no `render3d.Particles` and no sample content yet.
+**Current handoff: M29 Step 5 of 8 is complete** ([`docs/design/particles.md`](docs/design/particles.md), ADR-0064 accepted 2026-10-23). **Stop before Step 6** (`sandbox3d`'s effects corner, the `embers` mod and the Metal measurements). No sample uses particles yet.
 M28 is complete (tag `m28`, 2026-10-23; [`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063 implemented). M27 and M28 are pushed; M29's commits are not.
+
+**M29 Step 5 is done (2026-10-24): `render3d.Particles`.**
+- `render3d.Particles` owns instances by handle:
+  - `create` from a `foundry:particle_emitter` record and its material;
+  - `step` on the tick, over jobs, one instance per chunk;
+  - `prepare` before `begin`, which culls, expands straight into kept staging and calls `updateMeshFromStaged`;
+  - `draw` in the window;
+  - `contentChanged`, which keeps handles and particles, resizes oldest first, and refuses a removed or broken record until it returns.
+- Counters fold into `Stats` at `begin`, and the overlay prints them.
+- The null backend's mapped memory is now 16-byte aligned, as the real backends'.
+- Rewriting indices is about 8% of the bytes, so no option was added.
+
+Bar **2,291/2,292** (one skip, M27's), the full bar, all exit 0. The whole graph under `-Drhi=metal` is 2,301/2,313, with 12 backend-conditional skips; `particles3d` runs there through real Metal staging. No shader or Vulkan code changed, so the Vulkan checks were not due.
 
 **M29 Step 4 is done (2026-10-24): the particle shading model.**
 - `foundry:shading.particle` is registered by `Renderer.init`.

@@ -150,6 +150,7 @@ fn describeStats3d(view: *View, stats: render3d.Stats) Allocator.Error!void {
     try view.line("3D: {d} skinned draws  {d} skinned vertices  {d} skin budget dropped", .{ stats.skinned_draws, stats.skinned_vertices, stats.skin_budget_dropped });
     try view.line("3D: {d} models pending", .{stats.pending_models});
     try view.line("3D: {d} mesh updates  {d} texture writes  {d} KiB uploaded", .{ stats.mesh_updates, stats.texture_writes, stats.uploaded_bytes / 1024 });
+    try view.line("3D: {d} particles in {d} emitters  {d} culled  {d} dropped  {d} refused", .{ stats.particles, stats.particle_emitters, stats.particle_emitters_culled, stats.particles_dropped, stats.particle_emitters_refused });
 }
 
 /// The frame's `assets.pump` (`background.md` §8): what background loading finished on the
@@ -204,7 +205,7 @@ test "render3d's frame counts are a line beside render2d's" {
     ctx.begin(.{}, .init(0, 0, 400, 300));
     var view: View = .{ .ui = &ctx, .arena = test_arena.allocator(), .frame = .{}, .sources = .{} };
     // A renderer needs a device, which `debug` has no way to make; the line is its stats.
-    try describeStats3d(&view, .{ .draws = 12, .culled = 3, .blended = 2, .triangles = 4096, .pipeline_binds = 5, .lights = 3, .shadow_draws = 7, .shadow_culled = 9, .skinned_draws = 2, .skinned_vertices = 600, .skin_budget_dropped = 1, .mesh_updates = 1, .texture_writes = 3, .uploaded_bytes = 5 * 1024 });
+    try describeStats3d(&view, .{ .draws = 12, .culled = 3, .blended = 2, .triangles = 4096, .pipeline_binds = 5, .lights = 3, .shadow_draws = 7, .shadow_culled = 9, .skinned_draws = 2, .skinned_vertices = 600, .skin_budget_dropped = 1, .mesh_updates = 1, .texture_writes = 3, .uploaded_bytes = 5 * 1024, .particles = 900, .particle_emitters = 4, .particle_emitters_culled = 1, .particles_dropped = 6, .particle_emitters_refused = 2 });
     ctx.end();
 
     try testing.expect(overlay.findText(&ctx, "3D: 12 draws  3 culled  2 blended"));
@@ -213,6 +214,7 @@ test "render3d's frame counts are a line beside render2d's" {
     try testing.expect(overlay.findText(&ctx, "3D: 2 skinned draws  600 skinned vertices  1 skin budget dropped"));
     try testing.expect(overlay.findText(&ctx, "3D: 0 models pending"));
     try testing.expect(overlay.findText(&ctx, "3D: 1 mesh updates  3 texture writes  5 KiB uploaded"));
+    try testing.expect(overlay.findText(&ctx, "3D: 900 particles in 4 emitters  1 culled  6 dropped  2 refused"));
 }
 
 test "the frame's asset pump is a line of counts, and absent without an answer" {
