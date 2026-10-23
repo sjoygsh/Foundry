@@ -1,9 +1,17 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-23
-**Current handoff: M28 Step 1 of 8 is complete** ([`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063, accepted 2026-10-23 with §13 as written).
-**Stop before Step 2** (`render3d`: lifetime and the write window, §4). Nothing in `render3d` has changed yet: there are no bound-texture counts, no `error.InFrame`, no update calls and no `Uploads`.
+**Current handoff: M28 Step 2 of 8 is complete** ([`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063, accepted 2026-10-23 and revised at Step 2).
+**Stop before Step 3** (`render3d`: `updateMesh`, `writeTexture` and `writeTextureChain` with `error.InFrame`, §5). There are no update or write calls yet, no `InFrame` and no `Uploads`.
 M27 is complete (tag `m27`, pushed). M28's commits are not pushed.
+
+**M28 Step 2 is done (2026-10-23): lifetime and the write window.**
+- A material keeps alive the textures it binds. Destroying a bound texture invalidates its handle at once and frees its GPU object with its last material.
+- Inside the frame's submission window, `destroyMesh` and `destroyMaterial` are deferred to the window's close rather than refused. ADR-0063's revision note gives the reason: the loader unload has no way to receive a refusal. `updateMaterial` stays allowed, and `error.InFrame` arrives with Step 3's writes.
+- `Stats` counts mesh updates, texture writes and uploaded bytes into the frame that follows them, and the overlay prints them.
+- Each guard was verified by mutation. The `deinit` mutation hung instead of failing, and Step 3 looks into why.
+
+Bar **2,226/2,227** (one skip). The full suite also caught a doomed mesh still answering `meshJointCount`, which is now fixed, and a test that retired a doomed mesh instead of the live one.
 
 **M28 Step 1 is done (2026-10-23): `asset.mesh.Builder`.**
 - Typed setters take position, normal, UV0, float and unorm8 colour, and 16- or 32-bit indices, plus submeshes; a mesh given none gets one spanning every index.

@@ -149,8 +149,9 @@ pub const Content = struct {
         return .{ .gpa = gpa, .renderer = renderer, .assets = assets, .limits = limits };
     }
 
-    /// Releases everything, whatever its count. Materials go first, because a material does
-    /// not keep its texture alive (Step 5's Resolution). Each reference this holds is released,
+    /// Releases everything, whatever its count. Materials go first, so each texture is freed
+    /// at its own release rather than with its last material (`runtime-geometry.md` §4.1;
+    /// either order is now safe). Each reference this holds is released,
     /// so a clean teardown leaves nothing held; then every mesh and texture made through
     /// `render3d`'s loaders is handed back with `unloadWith`, which also covers a caller's own
     /// acquisitions through them.

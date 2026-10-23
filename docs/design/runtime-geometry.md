@@ -211,6 +211,10 @@ the next frame's. Two promises follow:
   earlier on the queue. Metal tracks hazards on resources it allocates with tracking. Step 3
   proves both by readback rather than taking them on trust.
 
+> **2026-10-23, Step 2:** destroys inside the window are deferred to its close, not refused,
+> and `updateMaterial` stays allowed there. See Step 2's Resolution and ADR-0063's revision
+> note. §13 item 4 reads accordingly.
+
 ### 4.3 Counted
 
 `Stats` gains `mesh_updates`, `texture_writes` and `uploaded_bytes` per frame, and the overlay
@@ -451,7 +455,7 @@ milestone rather than handed on (rule 17).
 | 1 | Runtime meshes, textures and materials are named only by handle, owned by their creator, never content (no content ID, no override, no save); runtime may refer to compiled, never the reverse (ADR-0063) | §1, §7 |
 | 2 | `asset.mesh.Builder` is pure, in `asset`, with position, normal, UV0 and colour now; no normal or tangent generation | §3 |
 | 3 | A material keeps alive the textures it binds; destroying a bound texture is deferred, not refused | §4.1 |
-| 4 | Writes and destroys of meshes and textures are refused between `begin` and the end of `recordFrame` (`error.InFrame`); a write is seen by the next frame recorded and never by one already submitted | §4.2 |
+| 4 | Writes of meshes and textures are refused between `begin` and the end of `recordFrame` (`error.InFrame`); destroys there are deferred to the window's close (revised at Step 2); a write is seen by the next frame recorded and never by one already submitted | §4.2 |
 | 5 | `updateMesh` keeps the handle and copies in place where a stream fits, else reallocates; no capacity option | §5.1 |
 | 6 | `writeTexture` writes regions only into textures without mips; `writeTextureChain` replaces a mipmapped texture whole; neither changes size, format or colour space | §5.2 |
 | 7 | All runtime uploads reuse M27's kept staging buffers | §5.3 |
@@ -604,3 +608,110 @@ through `createMesh`, whose behaviour Step 3 changes.
 builder tests and the `sandbox3d` pin. fmt, the four `check` variants, the four thirty-frame
 headless runs and `fdt-check` are clean. No ABI, shader, Vulkan or content change, so no
 conditional extra applied.
+
+## Resolution — Step 2: lifetime and the write window (2026-10-23)
+
+**What exists now**, all in `engine/src/render3d/renderer.zig`:
+- **Bound-texture counts (§4.1).** A material records the five textures its group names,
+  defaults included, and each holds one of that texture's `binds`.
+  - `destroyTexture` on a bound texture marks it `released`. The handle answers nothing from
+    then on: `liveTexture` refuses it, so no new material can bind it.
+  - Its GPU object is freed by `unbindTexture` when the last material that binds it is
+    destroyed or rebuilt without it.
+  - An unbound texture goes at once, as before.
+  - A rebuild binds the new textures before it lets go of the old ones. That way a rebuild
+    onto the same texture never frees it in between.
+- **Deferred destroys in the window (§4.2, revised).** Between `begin` and the end of
+  `recordFrame`, `destroyMesh` and `destroyMaterial` only mark their resource `doomed`.
+  - A doomed handle is refused by `drawMesh` at once (`InvalidMesh`, `InvalidMaterial`) and by
+    `updateMaterial`.
+  - A draw submitted before the destroy is still recorded.
+  - `freeDoomed` frees everything doomed at three points: when the window closes in
+    `recordFrame`, at the next `begin` (a frame that was begun and never recorded), and in
+    `deinit`.
+  - If the doomed list cannot grow, the resource is freed at once, with a warning. That is
+    today's behaviour, and recording already skips a gone handle.
+- **Counters (§4.3).** `Stats` gains `mesh_updates`, `texture_writes` and `uploaded_bytes`.
+  - Uploads happen between frames, so they collect in `uploads` and `begin` folds them into
+    the frame that follows them.
+  - `uploaded_bytes` already counts `createMesh`'s and `createTexture`'s bytes, staged or not.
+  - The two update counts stay zero until Step 3 adds the calls they count.
+  - The profiler panel prints them as one line, "3D: … mesh updates … texture writes … KiB
+    uploaded", beside M27's pump line.
+
+**Where the implementation corrected §4.2** (also recorded in ADR-0063's revision note, and in
+§13 item 4):
+- **Destroys inside the window are deferred, not refused.** The three destroys return `void`.
+  The asset registry's loader unload calls them and has nowhere to put a refusal. Changing
+  that would have widened `asset`'s loader contract for a case that deferring handles fully.
+- **A texture needs no deferral.** §4.1 already keeps a bound texture's GPU object alive. An
+  unbound one is named by no submitted draw, because draws name materials.
+- **`updateMaterial` stays allowed inside the window.** This settles the question §4.2 left
+  to this step. `Content.drawModel` rebuilds a model's materials from inside a frame. A
+  submitted draw keeps its pipeline key and records the group current at recording, and the
+  RHI retires the old group behind the frame ring. `destroyMaterial` defers like a mesh does.
+- **`error.InFrame` therefore arrives with Step 3,** on `updateMesh`, `writeTexture` and
+  `writeTextureChain`, the only calls the window still refuses. This step's exit ("every write
+  inside the window is refused") applies to those writes when they exist. M28 adds no write
+  call before Step 3.
+
+**`Content`** is unchanged in behaviour. Its teardown still releases materials first, and the
+`deinit` comment now says why that is an efficiency choice, not a correctness rule. The
+renderer's own tests cover the other order: a texture destroyed before its material, with the
+null device's live count dropping only when the material goes.
+
+**What the full suite caught.** The first bar failed two tests outside `render3d`, both from
+reloads made inside a frame that was begun but never recorded. Such a reload now dooms the old
+mesh instead of freeing it.
+- `sandbox3d`'s walker test expected `meshJointCount` on the retired handle to answer `null`.
+  That was a real gap: a doomed mesh still answered queries. `meshJointCount` and
+  `validateSkin` now go through a `liveMesh`, as `drawMesh` does. A doomed mesh answers
+  nothing, as a destroyed one does, and only recording still reads it. The doomed-records
+  test now checks both queries.
+- `engine/tests/model_content.zig` retired "the first mesh in the pool". That was now the
+  doomed old mesh, so destroying it again was a no-op. The test now retires the first live
+  one, and still proves that `drawModel` refuses a retired handle with `InvalidMesh`.
+
+**Tests.** `render3d` runs 79 tests, up from 71. The new ones:
+- a bound texture outlives its handle until its last material goes, by the null device's live
+  texture count;
+- an unbound texture goes at once, and a refused material counts no binding;
+- a rebuild binds the new texture before releasing the old;
+- destroying a material leaves a texture that is still live untouched;
+- a mesh and a material destroyed in the window still record their submitted draw, and are
+  refused for new ones;
+- a destroy outside the window is immediate, and a frame that is begun but never recorded
+  frees what it doomed;
+- `deinit` frees what a frame left doomed;
+- uploads are counted into the frame that follows them.
+
+Two older tests that compared whole `Stats` or a fixture's upload now check the specific GPU
+objects through the null device, because uploads appear in `Stats` from this step on.
+
+**Guards verified by mutation.** Each mutation below was caught:
+
+| Mutation | Caught by |
+| --- | --- |
+| A bound texture freed at once | panicked on a null GPU object |
+| An unbind frees a texture that is still live | the live-texture test |
+| A released texture still bindable | the outlives-its-handle and rebuild tests |
+| A material destroyed in the window not deferred | the doomed-records and abandoned-frame tests |
+| A doomed mesh still drawable | the stale-handle and doomed-records tests |
+| A doomed material still drawable | the doomed-records test |
+| An abandoned frame does not free its doomed resources | the abandoned-frame test |
+| The window's close does not free its doomed resources | the doomed-records test |
+| Uploads not folded into `Stats` | the resident-mesh and uploads-counted tests |
+| `deinit` not freeing doomed resources | the `deinit` test |
+
+The last one was caught by a hang. That test binary spun until it was killed, rather than
+failing on the testing allocator's leak report. It never passes, so the guard holds, but a
+hang is a poor way to learn of it. Step 3 looks into why the leaked mesh hangs the null
+device's teardown, and makes it fail.
+
+**Not done, as designed:** `updateMesh`, `writeTexture`, `writeTextureChain` and `InFrame`
+(Step 3), `Uploads` (Step 4), and runtime materials in `Content` (Step 5).
+
+**Bar:** `zig build test` **2,226/2,227** (one skip, unchanged), up from 2,218/2,219 by the eight
+lifetime tests. fmt, the four `check` variants, the four thirty-frame headless runs and
+`fdt-check` are clean. No ABI, shader, Vulkan or content change, so no conditional extra
+applied.

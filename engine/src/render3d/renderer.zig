@@ -16,6 +16,7 @@ pub const max_lights = lighting.max_lights;
 const Allocator = std.mem.Allocator;
 const Mat4 = core.math.Mat4;
 const Vec3 = core.math.Vec3;
+const log = core.log.scoped(.render3d);
 
 pub const lit_id = core.ContentId.fromString("foundry:shading.lit");
 
@@ -271,6 +272,18 @@ pub const Stats = struct {
     /// Draws of a requested model whose parts were still loading (`Content.drawModel`), which
     /// submitted nothing.
     pending_models: u32 = 0,
+    /// Since the previous `begin` (`runtime-geometry.md` §4.3): uploads happen between frames,
+    /// so they are counted into the frame that follows them.
+    mesh_updates: u32 = 0,
+    texture_writes: u32 = 0,
+    uploaded_bytes: u64 = 0,
+};
+
+/// What `begin` folds into the frame's `Stats`.
+const UploadCounts = struct {
+    mesh_updates: u32 = 0,
+    texture_writes: u32 = 0,
+    uploaded_bytes: u64 = 0,
 };
 
 pub const Error = error{
@@ -334,6 +347,9 @@ const MeshState = struct {
     /// and sorted by, since one draw is one submesh. Computed at upload (`meshes.md` §13).
     submesh_bounds: []asset.MeshAabb = &.{},
     skin: ?skinning.Bind = null,
+    /// Destroyed inside a frame's submission window: no longer drawable, still recorded for
+    /// the draws already submitted, and freed when the window closes (§4.2).
+    doomed: bool = false,
 };
 
 /// Each submesh's box, over exactly the positions its indices reach. `mesh` is validated, so
@@ -377,6 +393,11 @@ const TextureState = struct {
     sampler: rhi.SamplerHandle,
     color_space: asset.ColorSpace,
     mipmaps: bool,
+    /// Live materials whose bind group names this texture (`runtime-geometry.md` §4.1).
+    binds: u32 = 0,
+    /// Destroyed while bound: its handle answers nothing, and its GPU object goes with the
+    /// last material that binds it.
+    released: bool = false,
 };
 
 const SamplerKey = struct { filter: Filter, wrap: Wrap, mipmaps: bool };
@@ -395,6 +416,10 @@ const MaterialState = struct {
     desc: MaterialDesc,
     uniform: rhi.BufferHandle,
     group: rhi.BindGroupHandle,
+    /// The textures `group` names, defaults included; each holds one of their `binds`.
+    bound: [5]TextureHandle,
+    /// As `MeshState.doomed`.
+    doomed: bool = false,
 };
 
 const ModelState = struct {
@@ -512,6 +537,10 @@ pub const Renderer = struct {
     latest_frame: u64 = 0,
     /// The frame of the last reservation, so a burst's buffers are given back after it.
     last_reservation: u64 = 0,
+    /// Meshes and materials destroyed inside the submission window, freed when it closes.
+    doomed_meshes: std.ArrayList(MeshHandle) = .empty,
+    doomed_materials: std.ArrayList(MaterialHandle) = .empty,
+    uploads: UploadCounts = .{},
 
     color_target: rhi.TextureHandle,
     hdr_target: rhi.TextureHandle,
@@ -728,6 +757,10 @@ pub const Renderer = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        self.recording = false;
+        self.freeDoomed();
+        self.doomed_meshes.deinit(self.gpa);
+        self.doomed_materials.deinit(self.gpa);
         if (self.skin_buffer) |*buffer| buffer.deinit();
         self.gpa.free(self.skin_bytes);
         self.palettes.deinit(self.gpa);
@@ -975,6 +1008,7 @@ pub const Renderer = struct {
         // Whatever `submit` answers, the queue may have the copy.
         submitted = true;
         try cmd.submit();
+        self.uploads.uploaded_bytes += if (staged) |reservation| reservation.bytes.len else if (chain) |value| value.bytes.len else pixels.len;
 
         return self.textures.add(self.gpa, .{
             .gpu = gpu,
@@ -984,9 +1018,31 @@ pub const Renderer = struct {
         });
     }
 
+    /// The handle answers nothing from now on. **A texture a live material binds keeps its GPU
+    /// object** until the last such material is destroyed or rebuilt without it (§4.1), so a
+    /// caller may destroy textures and materials in either order.
     pub fn destroyTexture(self: *Self, handle: TextureHandle) void {
         if (handle.eql(self.white_texture) or handle.eql(self.linear_white) or handle.eql(self.flat_normal)) return;
-        const state = self.textures.get(handle) orelse return;
+        const state = self.liveTexture(handle) orelse return;
+        if (state.binds != 0) {
+            state.released = true;
+            return;
+        }
+        self.destroyTextureState(state);
+        _ = self.textures.remove(handle);
+    }
+
+    /// A texture a caller may still name: issued, and not destroyed.
+    fn liveTexture(self: *Self, handle: TextureHandle) ?*TextureState {
+        const state = self.textures.get(handle) orelse return null;
+        return if (state.released) null else state;
+    }
+
+    /// One material no longer binds `handle`; a released texture goes with its last binding.
+    fn unbindTexture(self: *Self, handle: TextureHandle) void {
+        const state = self.textures.get(handle).?; // A binding keeps its entry.
+        state.binds -= 1;
+        if (!state.released or state.binds != 0) return;
         self.destroyTextureState(state);
         _ = self.textures.remove(handle);
     }
@@ -1005,15 +1061,17 @@ pub const Renderer = struct {
     /// keeps the handle it gave out. A draw already submitted this frame keeps its pipeline
     /// key and binds the new group when it is recorded.
     pub fn updateMaterial(self: *Self, handle: MaterialHandle, desc: MaterialDesc, label: []const u8) Error!void {
-        if (self.materials.getConst(handle) == null) return error.InvalidMaterial;
+        if (!self.isMaterial(handle)) return error.InvalidMaterial;
         const state = try self.buildMaterial(desc, label);
         const slot = self.materials.get(handle).?;
         self.destroyMaterialState(slot);
         slot.* = state;
     }
 
+    /// Issued and not destroyed, so a draw may name it.
     pub fn isMaterial(self: *const Self, handle: MaterialHandle) bool {
-        return self.materials.getConst(handle) != null;
+        const state = self.materials.getConst(handle) orelse return false;
+        return !state.doomed;
     }
 
     fn buildMaterial(self: *Self, desc: MaterialDesc, label: []const u8) Error!MaterialState {
@@ -1038,8 +1096,10 @@ pub const Renderer = struct {
         };
         const defaults = [5]TextureHandle{ self.white_texture, self.linear_white, self.flat_normal, self.linear_white, self.white_texture };
         var textures: [5]TextureState = undefined;
+        var bound: [5]TextureHandle = undefined;
         for (requested, defaults, 0..) |handle, fallback, i| {
-            const texture = self.textures.get(if (handle.isNone()) fallback else handle) orelse return error.InvalidTexture;
+            bound[i] = if (handle.isNone()) fallback else handle;
+            const texture = self.liveTexture(bound[i]) orelse return error.InvalidTexture;
             const expected: asset.ColorSpace = if (i == 0 or i == 4) .srgb else .linear;
             if (texture.color_space != expected) return error.WrongColorSpace;
             textures[i] = texture.*;
@@ -1072,11 +1132,27 @@ pub const Renderer = struct {
             .layout = self.material_layout,
             .entries = &entries,
         });
-        return .{ .model = model, .desc = desc, .uniform = uniform, .group = group };
+        // Nothing after this can fail, so a refusal never leaves a binding counted.
+        for (bound) |handle| self.textures.get(handle).?.binds += 1;
+        return .{ .model = model, .desc = desc, .uniform = uniform, .group = group, .bound = bound };
     }
 
+    /// Inside a frame's submission window the material is only doomed: a draw already
+    /// submitted with it is still recorded, a new one is refused, and it is freed when the
+    /// window closes (§4.2).
     pub fn destroyMaterial(self: *Self, handle: MaterialHandle) void {
         const state = self.materials.get(handle) orelse return;
+        if (state.doomed) return;
+        if (self.recording) {
+            if (self.doomed_materials.append(self.gpa, handle)) |_| {
+                state.doomed = true;
+                return;
+            } else |_| {
+                // No room to remember it: freed now, and a draw already submitted with it is
+                // skipped at recording, as any draw of a gone material is.
+                log.warn("material destroyed mid-frame without room to defer it; freed now", .{});
+            }
+        }
         self.destroyMaterialState(state);
         _ = self.materials.remove(handle);
     }
@@ -1084,6 +1160,7 @@ pub const Renderer = struct {
     fn destroyMaterialState(self: *Self, state: *MaterialState) void {
         self.device.destroyBindGroup(state.group);
         self.device.destroyBuffer(state.uniform);
+        for (state.bound) |texture| self.unbindTexture(texture);
     }
 
     pub fn materialFields(self: *const Self, id: core.ContentId) ?MaterialFields {
@@ -1223,14 +1300,42 @@ pub const Renderer = struct {
         try cmd.bufferBarrier(barriers[0..upload_count]);
         consumed = true;
         try cmd.submit();
+        for (uploads[0..upload_count]) |upload| self.uploads.uploaded_bytes += upload.bytes.len;
 
         return self.meshes.add(self.gpa, state);
     }
 
+    /// Inside a frame's submission window the mesh is only doomed, as `destroyMaterial`'s is.
     pub fn destroyMesh(self: *Self, handle: MeshHandle) void {
         const state = self.meshes.get(handle) orelse return;
+        if (state.doomed) return;
+        if (self.recording) {
+            if (self.doomed_meshes.append(self.gpa, handle)) |_| {
+                state.doomed = true;
+                return;
+            } else |_| {
+                log.warn("mesh destroyed mid-frame without room to defer it; freed now", .{});
+            }
+        }
         self.destroyMeshState(state);
         _ = self.meshes.remove(handle);
+    }
+
+    /// Frees what was destroyed inside the window, once nothing can still record it: when
+    /// `recordFrame` ends, when a frame is abandoned by the next `begin`, and at `deinit`.
+    fn freeDoomed(self: *Self) void {
+        for (self.doomed_materials.items) |handle| {
+            const state = self.materials.get(handle).?;
+            self.destroyMaterialState(state);
+            _ = self.materials.remove(handle);
+        }
+        self.doomed_materials.clearRetainingCapacity();
+        for (self.doomed_meshes.items) |handle| {
+            const state = self.meshes.get(handle).?;
+            self.destroyMeshState(state);
+            _ = self.meshes.remove(handle);
+        }
+        self.doomed_meshes.clearRetainingCapacity();
     }
 
     pub fn begin(self: *Self, view: FrameView) Error!void {
@@ -1245,6 +1350,8 @@ pub const Renderer = struct {
         }
         for (view.ambient) |channel| if (!std.math.isFinite(channel) or channel < 0) return error.InvalidCamera;
         if (!std.math.isFinite(view.shadow_distance) or view.shadow_distance <= 0) return error.InvalidCamera;
+        // A frame begun and never recorded is abandoned: nothing will record its draws.
+        self.freeDoomed();
         self.view = view;
         self.view_matrix = view.camera.viewMatrix();
         self.view_projection = view.camera.viewProjection(view.target_size.width, view.target_size.height);
@@ -1256,7 +1363,12 @@ pub const Renderer = struct {
         self.order.clearRetainingCapacity();
         self.planned_draws = null;
         self.frame = null;
-        self.stats = .{};
+        self.stats = .{
+            .mesh_updates = self.uploads.mesh_updates,
+            .texture_writes = self.uploads.texture_writes,
+            .uploaded_bytes = self.uploads.uploaded_bytes,
+        };
+        self.uploads = .{};
         self.light_count = 0;
         self.has_shadow_caster = false;
         self.recording = true;
@@ -1277,8 +1389,9 @@ pub const Renderer = struct {
 
     pub fn drawMesh(self: *Self, draw: MeshDraw) Error!void {
         if (!self.recording or self.frame != null or self.skin_frame != null) return error.NotRecording;
-        const mesh = self.meshes.getConst(draw.mesh) orelse return error.InvalidMesh;
+        const mesh = self.liveMesh(draw.mesh) orelse return error.InvalidMesh;
         const material = self.materials.getConst(draw.material) orelse return error.InvalidMaterial;
+        if (material.doomed) return error.InvalidMaterial;
         const model = self.models.items[material.model].desc;
         if (draw.submesh >= mesh.submeshes.len) return error.InvalidSubmesh;
         if (!matrixFinite(draw.world)) return error.InvalidTransform;
@@ -1397,15 +1510,21 @@ pub const Renderer = struct {
     }
 
     pub fn validateSkin(self: *const Self, handle: MeshHandle, matrices: ?[]const Mat4) Error!void {
-        const mesh = self.meshes.getConst(handle) orelse return error.InvalidMesh;
+        const mesh = self.liveMesh(handle) orelse return error.InvalidMesh;
         if (mesh.skin) |bind| {
             try skinning.validate(matrices orelse return error.MissingSkin, bind.bounds.len);
         } else if (matrices != null) return error.UnexpectedSkin;
     }
 
     pub fn meshJointCount(self: *const Self, handle: MeshHandle) ?usize {
-        const mesh = self.meshes.getConst(handle) orelse return null;
+        const mesh = self.liveMesh(handle) orelse return null;
         return if (mesh.skin) |bind| bind.bounds.len else 0;
+    }
+
+    /// A doomed mesh answers nothing, as a destroyed one does; only recording still reads it.
+    fn liveMesh(self: *const Self, handle: MeshHandle) ?*const MeshState {
+        const state = self.meshes.getConst(handle) orelse return null;
+        return if (state.doomed) null else state;
     }
 
     fn removeBudgetDrops(self: *Self, order: *std.ArrayList(u32)) void {
@@ -1533,6 +1652,7 @@ pub const Renderer = struct {
         defer {
             self.recording = false;
             self.last_stats = self.stats;
+            self.freeDoomed();
         }
         if (self.shadow_fit != null) {
             const shadow_pass = try cmd.beginRenderPass(.{
@@ -2320,7 +2440,9 @@ test "resident mesh records a depth pass and reports the completed work" {
     try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = .identity });
     try finishTestFrame(&fx);
 
-    try testing.expectEqual(Stats{ .draws = 1, .triangles = 1, .pipeline_binds = 1 }, fx.renderer.frameStats());
+    // The first frame also carries every upload before it: the renderer's three 1×1
+    // defaults and the mesh's position, colour and index bytes (`runtime-geometry.md` §4.3).
+    try testing.expectEqual(Stats{ .draws = 1, .triangles = 1, .pipeline_binds = 1, .uploaded_bytes = 3 * 4 + 36 + 12 + 6 }, fx.renderer.frameStats());
     if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
 }
 
@@ -3745,4 +3867,156 @@ test "a staging buffer is reused only once the frame ring has passed its copy, a
     r.seeFrame(r.last_reservation + staging_idle_frames + 1);
     try testing.expectEqual(@as(usize, 0), r.staging.items.len);
     if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
+}
+
+// -- M28 Step 2: lifetime and the write window (`runtime-geometry.md` §4) -------------
+
+fn whiteTexture(renderer: *Renderer) !TextureHandle {
+    var pixels = [_]u8{ 255, 255, 255, 255 };
+    return renderer.createTexture(.{ .width = 1, .height = 1, .pixels = &pixels }, .{});
+}
+
+test "a texture a material binds outlives its handle until its last material goes" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    const texture = try whiteTexture(&fx.renderer);
+    const first = try fx.renderer.createMaterial(.{ .base_color_texture = texture }, "first");
+    const second = try fx.renderer.createMaterial(.{ .base_color_texture = texture }, "second");
+    const live = fx.device.textures.count();
+
+    fx.renderer.destroyTexture(texture);
+    // The handle answers nothing at once; the GPU object is still there for both materials.
+    try testing.expectError(error.InvalidTexture, fx.renderer.createMaterial(.{ .base_color_texture = texture }, "late"));
+    try testing.expectEqual(live, fx.device.textures.count());
+    fx.renderer.destroyTexture(texture); // Twice is nothing.
+    try testing.expectEqual(live, fx.device.textures.count());
+
+    fx.renderer.destroyMaterial(first);
+    try testing.expectEqual(live, fx.device.textures.count());
+    // Rebuilt without it, the last binding goes, and the texture with it.
+    try fx.renderer.updateMaterial(second, .{}, "second");
+    try testing.expectEqual(live - 1, fx.device.textures.count());
+    fx.renderer.destroyMaterial(second);
+}
+
+test "an unbound texture goes at once, and a refused material counts no binding" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    const texture = try whiteTexture(&fx.renderer);
+    const live = fx.device.textures.count();
+    // Refused after the texture was found: the binding must not have been counted.
+    try testing.expectError(error.InvalidMaterialValue, fx.renderer.createMaterial(.{ .base_color_texture = texture, .alpha_cutoff = 2 }, "refused"));
+    try testing.expectError(error.WrongColorSpace, fx.renderer.createMaterial(.{ .base_color_texture = fx.renderer.linear_white }, "wrong space"));
+    fx.renderer.destroyTexture(texture);
+    try testing.expectEqual(live - 1, fx.device.textures.count());
+}
+
+test "a material rebuilt onto a texture binds the new one before it lets go of the old" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    const texture = try whiteTexture(&fx.renderer);
+    const material = try fx.renderer.createMaterial(.{ .base_color_texture = texture }, "material");
+    fx.renderer.destroyTexture(texture);
+    const live = fx.device.textures.count();
+    // The same released texture cannot be named again, so a rebuild onto it is refused and
+    // changes nothing: the old binding still holds it.
+    try testing.expectError(error.InvalidTexture, fx.renderer.updateMaterial(material, .{ .base_color_texture = texture }, "material"));
+    try testing.expectEqual(live, fx.device.textures.count());
+    fx.renderer.destroyMaterial(material);
+    try testing.expectEqual(live - 1, fx.device.textures.count());
+}
+
+test "a mesh and a material destroyed inside the window still record their submitted draw" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    const mesh = try testMesh(&fx.renderer, false);
+    const material = try fx.renderer.createMaterial(.{}, "doomed");
+    const index_buffer = fx.renderer.meshes.getConst(mesh).?.index_buffer;
+    const group = fx.renderer.materials.getConst(material).?.group;
+
+    try fx.renderer.begin(testView(32));
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .material = material, .world = .identity });
+    fx.renderer.destroyMesh(mesh);
+    fx.renderer.destroyMaterial(material);
+    // No longer drawable, and still present for the draw already submitted.
+    try testing.expectError(error.InvalidMesh, fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = .identity }));
+    try testing.expectError(error.InvalidMaterial, fx.renderer.drawMesh(.{ .mesh = try testMesh(&fx.renderer, false), .material = material, .world = .identity }));
+    try testing.expect(!fx.renderer.isMaterial(material));
+    try testing.expectError(error.InvalidMaterial, fx.renderer.updateMaterial(material, .{}, "doomed"));
+    // A doomed mesh answers queries as a destroyed one does.
+    try testing.expectEqual(@as(?usize, null), fx.renderer.meshJointCount(mesh));
+    try testing.expectError(error.InvalidMesh, fx.renderer.validateSkin(mesh, null));
+    try testing.expect(fx.device.bind_groups.getConst(group) != null);
+    try testing.expect(fx.device.buffers.getConst(index_buffer) != null);
+    try finishTestFrame(&fx);
+    try testing.expectEqual(@as(u32, 1), fx.renderer.frameStats().draws);
+    // Freed when the window closed.
+    try testing.expect(fx.device.bind_groups.getConst(group) == null);
+    try testing.expect(fx.device.buffers.getConst(index_buffer) == null);
+    try testing.expect(fx.renderer.meshes.getConst(mesh) == null);
+    try testing.expect(fx.renderer.materials.getConst(material) == null);
+    // Destroying them again, now gone, is nothing.
+    fx.renderer.destroyMesh(mesh);
+    fx.renderer.destroyMaterial(material);
+}
+
+test "a destroy outside the window is immediate, and an abandoned frame frees what it doomed" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    const material = try fx.renderer.createMaterial(.{}, "now");
+    const now_group = fx.renderer.materials.getConst(material).?.group;
+    fx.renderer.destroyMaterial(material);
+    try testing.expect(fx.device.bind_groups.getConst(now_group) == null);
+
+    const doomed = try fx.renderer.createMaterial(.{}, "abandoned");
+    const group = fx.renderer.materials.getConst(doomed).?.group;
+    try fx.renderer.begin(testView(32));
+    fx.renderer.destroyMaterial(doomed);
+    try testing.expect(fx.device.bind_groups.getConst(group) != null);
+    // Begun again without recording: nothing will record the first frame's draws.
+    try fx.renderer.begin(testView(32));
+    try testing.expect(fx.device.bind_groups.getConst(group) == null);
+    try finishTestFrame(&fx);
+}
+
+test "deinit frees what a frame left doomed" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    const mesh = try testMesh(&fx.renderer, false);
+    try fx.renderer.begin(testView(32));
+    fx.renderer.destroyMesh(mesh);
+    // The testing allocator reports anything `deinit` leaves behind.
+}
+
+test "uploads are counted into the frame that follows them" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    // The first frame carries the renderer's own defaults; the second carries nothing.
+    for ([_]u64{ 3 * 4, 0 }) |want| {
+        try fx.renderer.begin(testView(32));
+        try finishTestFrame(&fx);
+        try testing.expectEqual(want, fx.renderer.frameStats().uploaded_bytes);
+    }
+
+    _ = try testMesh(&fx.renderer, true); // 36 + 12 + 6 bytes
+    _ = try whiteTexture(&fx.renderer); // 4 bytes
+    try fx.renderer.begin(testView(32));
+    try finishTestFrame(&fx);
+    try testing.expectEqual(@as(u64, 36 + 12 + 6 + 4), fx.renderer.frameStats().uploaded_bytes);
+    try fx.renderer.begin(testView(32));
+    try finishTestFrame(&fx);
+    try testing.expectEqual(@as(u64, 0), fx.renderer.frameStats().uploaded_bytes);
+}
+
+test "destroying a material leaves a texture that is still live untouched" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    const texture = try whiteTexture(&fx.renderer);
+    const material = try fx.renderer.createMaterial(.{ .base_color_texture = texture }, "material");
+    const live = fx.device.textures.count();
+    fx.renderer.destroyMaterial(material);
+    try testing.expectEqual(live, fx.device.textures.count());
+    fx.renderer.destroyMaterial(try fx.renderer.createMaterial(.{ .base_color_texture = texture }, "again"));
+    fx.renderer.destroyTexture(texture);
+    try testing.expectEqual(live - 1, fx.device.textures.count());
 }

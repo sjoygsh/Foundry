@@ -65,6 +65,22 @@ keeps that order, and it does so by care.
 7. **Nothing is published before M48.** When M48 publishes this, it publishes these rules,
    with mod-owned handles as ADR-0059's instances are, and per-mod byte quotas.
 
+> **Revision, 2026-10-23 (M28 Step 2, before any code depended on decision 4):** destroys
+> inside the window are **deferred, not refused**. `destroyMesh`, `destroyTexture` and
+> `destroyMaterial` return nothing, and the registry's loader unload, which calls them, has no
+> way to receive a refusal.
+> - A mesh or material destroyed inside the window is no longer drawable at once. It is still
+>   recorded for the draws already submitted, and freed when the window closes.
+> - A texture needs no deferral, because decision 5 already keeps a bound texture alive.
+> - Decision 4's refusal (`error.InFrame`) now applies to writes only: Step 3's
+>   `updateMesh`, `writeTexture` and `writeTextureChain`.
+> - `updateMaterial` stays allowed in the window. `Content.drawModel` rebuilds materials from
+>   inside a frame, and a submitted draw already keeps its pipeline key and binds the new
+>   group.
+>
+> The intent is unchanged: no accepted draw is recorded against a check that no longer holds,
+> and none vanishes.
+
 ## Consequences
 
 - Generation, painting and recolouring work without touching packages, and without giving

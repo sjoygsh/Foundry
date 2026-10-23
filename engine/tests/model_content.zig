@@ -308,9 +308,13 @@ test "M24 model animation assets are current handle borrows and palette refusals
     try stack.writeUnder(stack.out, "skin/rig.fskel", good_rig);
     _ = stack.assets.reloadAll(stack.gpa);
     // A caller can explicitly retire a resident handle. A still-retained asset payload
-    // must not turn that stale renderer handle into an optional-unwrapping trap.
+    // must not turn that stale renderer handle into an optional-unwrapping trap. The reload
+    // inside this frame doomed the old mesh (`runtime-geometry.md` §4.2), so retire the live one.
     var meshes = stack.renderer.meshes.iterator();
-    stack.renderer.destroyMesh(meshes.next().?.id);
+    const live = while (meshes.next()) |entry| {
+        if (!entry.value.doomed) break entry.id;
+    } else unreachable;
+    stack.renderer.destroyMesh(live);
     try testing.expectError(error.InvalidMesh, stack.content.drawModel(.{ .model = model, .world = .identity, .skin = &.{.identity} }));
     try testing.expectEqual(@as(usize, 0), stack.renderer.draws.items.len);
     stack.content.releaseModel(model);
