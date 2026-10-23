@@ -425,6 +425,9 @@ pub fn build(b: *std.Build) void {
         modules.get("render3d").?.addAnonymousImport("shadow_metallib", .{
             .root_source_file = metalLibrary(b, "shadow", &.{"engine/src/render3d/shaders/shadow.metal"}),
         });
+        modules.get("render3d").?.addAnonymousImport("particle_metallib", .{
+            .root_source_file = metalLibrary(b, "particle", &.{"engine/src/render3d/shaders/particle.metal"}),
+        });
         modules.get("render3d").?.addAnonymousImport("tone_metallib", .{
             .root_source_file = metalLibrary(b, "tone", &.{"engine/src/render3d/shaders/tone.metal"}),
         });
@@ -1837,6 +1840,10 @@ fn vulkanGraph(
         render3d_module.addAnonymousImport(b.fmt("shadow_fragment_{d}_spirv", .{i}), .{ .root_source_file = stage });
     }
     render3d_module.addAnonymousImport("tone_fragment_spirv", .{ .root_source_file = tone_fragment });
+    for (0..2) |i| {
+        const stage = vulkanShaderStageDefines(b, checker, b.fmt("particle-fragment-{d}", .{i}), "engine/src/render3d/shaders/particle.frag.glsl", "frag", if (i == 1) "particle_mask_fragment" else "particle_fragment", &.{if (i == 1) "-DMASK=1" else "-DNO_MASK=1"});
+        render3d_module.addAnonymousImport(b.fmt("particle_fragment_{d}_spirv", .{i}), .{ .root_source_file = stage });
+    }
 
     const tests = b.addTest(.{ .name = "rhi-vulkan", .root_module = rhi_module });
     b.step("vulkan-check", "Compile the Vulkan backend's tests without running them").dependOn(&tests.step);

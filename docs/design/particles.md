@@ -1,6 +1,6 @@
 # Design: M29 — Particles I: a CPU particle system with content-defined emitters
 
-**Status:** Accepted 2026-10-23, when the owner asked for Step 1, with §14 as written. Steps 1–3 of §15's eight are done; their Resolutions follow §15.
+**Status:** Accepted 2026-10-23, when the owner asked for Step 1, with §14 as written. Steps 1–4 of §15's eight are done; their Resolutions follow §15.
 **Date:** 2026-10-23
 **Baseline:** `86456c9`, tag `m28`. M0–M28 are complete.
 **Decisions:**
@@ -820,3 +820,64 @@ values it says.
 - defaulting an unknown facing failed the refusal test.
 
 **Bar:** **2,282/2,283** (one skip, M27's), the full bar and `editor-workflow` (the editor builds through the changed compiler), all exit 0; ten new tests: five in `asset`, two in the compiler, three in the integration suite.
+
+## Resolution — Step 4: the particle shading model (2026-10-24)
+
+**What exists.** `Renderer.init` now registers `foundry:shading.particle`
+(`render3d.particle_id`) after unlit and lit:
+- `shaders/particle.metal` and `shaders/particle.frag.glsl` hold `fragmentParticle` and
+  `fragmentParticleMask`. The GLSL is built twice, with `-DMASK=1` and with `-DNO_MASK=1`.
+- `fshadercheck` has two new profiles, `particle_fragment` and `particle_mask_fragment`. They
+  check unlit's fragment interface and material slots, the light frame's offsets, and
+  `emissive_strength` at offset 48.
+
+**Where the step sharpened §5:**
+- **The vertex stage is unlit's `vertexUvColor`, unchanged.** It takes position, UV0 and colour
+  and outputs UV and colour, which is everything the particle fragment reads. So there is no
+  particle vertex shader on either backend.
+  - On Metal, that stage comes from unlit's library and the fragment from
+    `particle_metallib`. The Metal backend already looks up each stage in its own library.
+  - The model requires position, UV0 and colour, with nothing optional, so it has one vertex
+    variant and two fragment variants (blend or opaque, and mask).
+- **The ambient term is `base_color.rgb × frame.ambient`.** Lit's ambient includes a split for
+  reflections off a smooth surface (Fresnel, via the DFG lookup); a camera-facing quad with no
+  normal has nothing to evaluate that against, so the particle model takes only the plain
+  diffuse part. Emission is lit's exactly: `emissive.rgb × emissive_strength`, packed as
+  `emissive_strength.xyz` with the strength in `.w`. The result is multiplied by
+  `camera_exposure.w`, as lit's is.
+- **`base_color.a` scales both the colour and the opacity**, because output is premultiplied.
+  The texel is premultiplied in the shader; the vertex colour is not touched again.
+- **A mask on an additive particle discards it entirely.** Its alpha is 0, so masking only
+  makes sense for covering particles.
+- **"No culling" is a model feature, `ShadingFeatures.two_sided`.** A material's
+  `double_sided` stays as it was, and a two-sided model ignores both it and a reflected world.
+- **"No shadows" is a rule in the renderer, not only a declaration.** The shadow fit and the
+  shadow order now ask `castsShadow`: the material's `casts_shadow` and its model's
+  `reads.casts_shadow`. Unlit and lit both read it, so nothing they do changes. A particle
+  material that says `casts_shadow true`, even masked, is never a caster.
+- **Validation is `buildMaterial`'s.** Because the model reads `emissive`, emissive channels
+  must be in 0–1 and the strength finite and non-negative, as for lit. The base colour is in
+  0–1. A mesh without UV0 or colour is refused with `MissingStream`.
+
+**Tests.**
+- **Null:** the model is registered. A mesh without UV0 is refused. A particle draw is never
+  culled, even with a reflected world. A masked particle claiming `casts_shadow` stays out of
+  the shadow order, while a lit quad beside it is in.
+- **Readbacks** run on Metal now and with `-Drhi=vulkan` on the PC in Step 7:
+  - **Submission order:** two blended particles over an unlit grey backdrop give the same image
+    in either order, and the centre pixel is the CPU's premultiplied composite.
+  - **Additive:** an alpha-0 particle adds its colour to the grey.
+  - **Mask:** a masked particle with a half-empty texture writes depth where it is drawn, so
+    the farther opaque quad shows only through the hole.
+  - **Exposure:** an emissive particle at EV100 8 and 12 equals both the CPU's exposed emission
+    and an emissive lit quad.
+  - **Ambient:** a particle with no emission is ambient times its base colour.
+- Three existing tests counted the built-in models and now expect three.
+
+**Mutations.** Each was made, watched to fail, and restored byte for byte:
+- premultiplying the vertex colour again failed the readback test (the additive pixel);
+- removing exposure failed the light test;
+- ignoring `two_sided` failed the null test;
+- letting `casts_shadow` alone decide failed the null test.
+
+**Bar:** **2,285/2,286** (one skip, M27's) on the null bar, all exit 0. The whole graph under `-Drhi=metal` is 2,295/2,307, with 12 backend-conditional skips; the new readbacks ran there. All five Vulkan checks passed on the Mac with the SDK tools on PATH: `vulkan-check` and `check` for Windows and Linux, and `check` for Windows ReleaseSafe. Native Vulkan readbacks are Step 7's, on the PC.

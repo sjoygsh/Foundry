@@ -21,6 +21,8 @@ const log = core.log.scoped(.render3d);
 pub const lit_id = core.ContentId.fromString("foundry:shading.lit");
 
 pub const unlit_id = core.ContentId.fromString("foundry:shading.unlit");
+/// M29's particle model (`particles.md` §5, ADR-0064).
+pub const particle_id = core.ContentId.fromString("foundry:shading.particle");
 
 pub const StreamSet = struct {
     bits: u8 = 0,
@@ -64,7 +66,12 @@ pub const ShadingVariants = struct {
     fragment: []const ShaderStage,
 };
 
-pub const ShadingFeatures = struct { normal_mapping: bool = false };
+pub const ShadingFeatures = struct {
+    normal_mapping: bool = false,
+    /// Never culled, whatever a material's `double_sided` says: a particle's quad may face
+    /// away (`particles.md` §5).
+    two_sided: bool = false,
+};
 
 pub const ShadingModel = struct {
     id: core.ContentId,
@@ -151,6 +158,32 @@ fn unlitModel() ShadingModel {
             .fragment = comptime &.{
                 builtinStage("unlit_fragment_spirv", "fragmentMain"),
                 builtinStage("unlit_mask_fragment_spirv", "fragmentMask"),
+            },
+        },
+    };
+}
+
+fn particleStage(comptime name: []const u8, comptime entry: []const u8) ShaderStage {
+    return switch (rhi.backend) {
+        .metal => .{ .bytes = @embedFile("particle_metallib"), .entry = entry },
+        .null => .{ .bytes = "null-backend-shader", .entry = entry },
+        .vulkan => .{ .bytes = @embedFile(name), .entry = "main" },
+    };
+}
+
+/// Premultiplied vertex colour, emission plus ambient, pre-exposed; no shadows, no culling
+/// (`particles.md` §5). Its vertex stage is unlit's position-UV-colour one, unchanged.
+fn particleModel() ShadingModel {
+    return .{
+        .id = particle_id,
+        .requires = StreamSet.of(&.{ .position, .uv0, .color }),
+        .reads = .{ .base_color = true, .base_color_texture = true, .alpha = true, .emissive = true },
+        .features = .{ .two_sided = true },
+        .variants = .{
+            .vertex = comptime &.{builtinStage("unlit_uv_color_vertex_spirv", "vertexUvColor")},
+            .fragment = comptime &.{
+                particleStage("particle_fragment_0_spirv", "fragmentParticle"),
+                particleStage("particle_fragment_1_spirv", "fragmentParticleMask"),
             },
         },
     };
@@ -649,6 +682,7 @@ pub const Renderer = struct {
         errdefer self.deinit();
         try self.registerShadingModel(unlitModel());
         try self.registerShadingModel(litModel());
+        try self.registerShadingModel(particleModel());
         const white = asset.Image{ .width = 1, .height = 1, .pixels = @constCast(&[_]u8{ 255, 255, 255, 255 }) };
         self.white_texture = try self.createTexture(white, .{ .filter = .nearest, .wrap = .clamp, .label = "render3d white" });
         self.linear_white = try self.createTexture(white, .{ .color_space = .linear, .filter = .nearest, .wrap = .clamp });
@@ -1256,6 +1290,12 @@ pub const Renderer = struct {
     }
 
     /// Issued and not destroyed, so a draw may name it.
+    /// A material casts only when its model reads `casts_shadow`: the particle model does not,
+    /// so no particle material joins the shadow pass, whatever it says (`particles.md` §5).
+    fn castsShadow(self: *const Self, material: *const MaterialState) bool {
+        return material.desc.casts_shadow and self.models.items[material.model].desc.reads.casts_shadow;
+    }
+
     pub fn isMaterial(self: *const Self, handle: MaterialHandle) bool {
         const state = self.materials.getConst(handle) orelse return false;
         return !state.doomed;
@@ -1685,7 +1725,7 @@ pub const Renderer = struct {
             (@as(u5, @intFromBool(float_color)) << 2) |
             (@as(u5, @intFromBool(has_normal)) << 3) |
             (@as(u5, @intFromBool(has_tangent)) << 4);
-        const cull: Cull = if (material.desc.double_sided)
+        const cull: Cull = if (material.desc.double_sided or model.features.two_sided)
             .none
         else if (draw.world.determinant() < 0)
             .back_cw
@@ -1742,7 +1782,7 @@ pub const Renderer = struct {
             // objects above the receiver volume can still cast into it.
             for (self.draws.items) |item| {
                 const material = self.materials.getConst(item.material) orelse continue;
-                if (item.alpha != .blend and material.desc.casts_shadow) fit.includeCaster(item.bounds);
+                if (item.alpha != .blend and self.castsShadow(material)) fit.includeCaster(item.bounds);
             }
             if (!matrixFinite(fit.matrix()) or !std.math.isFinite(fit.radius) or !std.math.isFinite(fit.max_z - fit.min_z) or !std.math.isFinite(fit.min_z) or !std.math.isFinite(fit.max_z) or !std.math.isFinite(fit.texel) or fit.texel <= 0) return error.InvalidCamera;
             if (!std.math.isFinite(self.config.shadow_normal_offset * fit.texel)) return error.InvalidConfig;
@@ -1750,7 +1790,7 @@ pub const Renderer = struct {
             try self.shadow_order.ensureTotalCapacity(self.gpa, self.draws.items.len);
             for (self.draws.items, 0..) |item, i| {
                 const material = self.materials.getConst(item.material) orelse continue;
-                if (item.alpha == .blend or !material.desc.casts_shadow) continue;
+                if (item.alpha == .blend or !self.castsShadow(material)) continue;
                 if (self.config.cull and light_frustum.excludes(item.bounds)) {
                     self.stats.shadow_culled += 1;
                     continue;
@@ -2738,14 +2778,14 @@ test "planning is front-to-back with submission order as the exact tie break" {
 test "shading models are data registrations and duplicate or malformed entries are refused" {
     var fx = try TestFixture.init(1, 32);
     defer fx.deinit();
-    try testing.expectEqual(@as(usize, 2), fx.renderer.models.items.len);
+    try testing.expectEqual(@as(usize, 3), fx.renderer.models.items.len); // unlit, lit and particle
     try testing.expectError(error.DuplicateShadingModel, fx.renderer.registerShadingModel(unlitModel()));
 
     var malformed = unlitModel();
     malformed.id = core.ContentId.fromString("test:shading.malformed");
     malformed.requires = .{};
     try testing.expectError(error.InvalidShadingModel, fx.renderer.registerShadingModel(malformed));
-    try testing.expectEqual(@as(usize, 2), fx.renderer.models.items.len);
+    try testing.expectEqual(@as(usize, 3), fx.renderer.models.items.len);
 }
 
 test "material creation validates its model values texture and colour space" {
@@ -3107,7 +3147,7 @@ test "lit registration bounds variant slices before creating shaders" {
     model.id = core.ContentId.fromString("test:shading.variant_guard");
     model.requires = StreamSet.of(&.{.position});
     try testing.expectError(error.InvalidShadingModel, fx.renderer.registerShadingModel(model));
-    try testing.expectEqual(@as(usize, 2), fx.renderer.models.items.len);
+    try testing.expectEqual(@as(usize, 3), fx.renderer.models.items.len);
     try testing.expectEqual(@as(usize, 64), @sizeOf(MaterialUniform));
     try testing.expectEqual(@as(usize, 32), @offsetOf(MaterialUniform, "surface"));
     try testing.expectEqual(@as(usize, 48), @offsetOf(MaterialUniform, "emissive_strength"));
@@ -4651,4 +4691,175 @@ test "a prepared mesh whose boxes do not match its submeshes is refused, and its
     try testing.expectEqualSlices(asset.MeshAabb, boxes, fx.renderer.meshes.getConst(handle).?.submesh_bounds);
     fx.renderer.destroyMesh(handle);
     if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
+}
+
+// -- M29: the particle shading model (`particles.md` §5) -------------------------------
+
+/// A square quad of `particles.Expander`'s shape: position, UV0 and premultiplied float
+/// colour, centred at (x, 0, z) with half-side `half`.
+fn particleQuad(renderer: *Renderer, x: f32, z: f32, half: f32, color: [4]f32) !MeshHandle {
+    const positions = [_]Vec3{ .init(x - half, -half, z), .init(x + half, -half, z), .init(x + half, half, z), .init(x - half, half, z) };
+    const uvs = [_][2]f32{ .{ 0, 1 }, .{ 1, 1 }, .{ 1, 0 }, .{ 0, 0 } };
+    const colors = [_][4]f32{color} ** 4;
+    const indices = [_]u16{ 0, 1, 2, 0, 2, 3 };
+    const submeshes = [_]asset.Submesh{.{ .first_index = 0, .index_count = 6 }};
+    return renderer.createMesh(.{
+        .vertex_count = 4,
+        .streams = &.{
+            .{ .semantic = .position, .format = .float32x3, .bytes = std.mem.sliceAsBytes(&positions) },
+            .{ .semantic = .uv0, .format = .float32x2, .bytes = std.mem.sliceAsBytes(&uvs) },
+            .{ .semantic = .color, .format = .float32x4, .bytes = std.mem.sliceAsBytes(&colors) },
+        },
+        .index_format = .uint16,
+        .indices = std.mem.sliceAsBytes(&indices),
+        .submeshes = &submeshes,
+        .bounds = try asset.Mesh.computeBounds(&positions),
+    }, "particle quad");
+}
+
+/// Emission of exactly 1 and no ambient, so a particle's output is its vertex colour.
+const plain_particle: MaterialDesc = .{ .shading = particle_id, .alpha_mode = .blend, .emissive = .{ 1, 1, 1 }, .emissive_strength = 1, .casts_shadow = false };
+
+/// One frame of `draws` at the test size, read back.
+fn particleFrame(fx: *TestFixture, view: FrameView, draws: []const MeshDraw) ![material_test_bytes]u8 {
+    const readback = try fx.device.createBuffer(.{ .size = material_test_bytes, .usage = .{ .copy_dst = true }, .memory = .readback });
+    defer fx.device.destroyBuffer(readback);
+    try fx.renderer.begin(view);
+    for (draws) |draw| try fx.renderer.drawMesh(draw);
+    const frame = try fx.device.beginFrame();
+    const cmd = try fx.device.beginCommandBuffer();
+    try fx.renderer.prepare(cmd, frame);
+    try fx.renderer.recordFrame(cmd, frame, false);
+    try cmd.textureBarrier(&.{.{ .texture = frame.surface_texture, .from = .present, .to = .copy_src }});
+    try cmd.copyTextureToBuffer(.{ .src = frame.surface_texture, .size = .{ .width = material_test_size, .height = material_test_size }, .dst = readback });
+    try cmd.textureBarrier(&.{.{ .texture = frame.surface_texture, .from = .copy_src, .to = .present }});
+    try cmd.submit();
+    try fx.device.endFrame();
+    fx.device.waitIdle();
+    var pixels: [material_test_bytes]u8 = undefined;
+    const mapped = try fx.device.mapBuffer(readback);
+    @memcpy(&pixels, mapped[0..pixels.len]);
+    fx.device.unmapBuffer(readback);
+    return pixels;
+}
+
+test "the particle model is registered, needs UV0 and colour, is never culled and never casts" {
+    var fx = try TestFixture.initConfig(.{ .frames_in_flight = 2, .sample_count = 1, .shadow_size = 1024 }, material_test_size);
+    defer fx.deinit();
+    try testing.expect(fx.renderer.modelIndex(particle_id) != null);
+    const mask = try fx.renderer.createMaterial(.{ .shading = particle_id, .alpha_mode = .mask, .casts_shadow = true }, "masked particle");
+    defer fx.renderer.destroyMaterial(mask);
+    const quad = try particleQuad(&fx.renderer, 0, -2, 1, .{ 1, 1, 1, 1 });
+    defer fx.renderer.destroyMesh(quad);
+    const no_uv = try testMesh(&fx.renderer, true);
+    defer fx.renderer.destroyMesh(no_uv);
+    const caster = try litQuad(&fx.renderer, 0);
+    defer fx.renderer.destroyMesh(caster);
+    const lit = try fx.renderer.createMaterial(.{ .shading = lit_id }, "lit caster");
+    defer fx.renderer.destroyMaterial(lit);
+
+    try fx.renderer.begin(testView(material_test_size));
+    try fx.renderer.addLight(.{ .kind = .directional, .intensity = 2, .casts_shadow = true, .world = .identity });
+    try testing.expectError(error.MissingStream, fx.renderer.drawMesh(.{ .mesh = no_uv, .material = mask, .world = .identity }));
+    try fx.renderer.drawMesh(.{ .mesh = quad, .material = mask, .world = .identity });
+    try fx.renderer.drawMesh(.{ .mesh = caster, .material = lit, .world = Mat4.translation(.init(0, 0, -3)) });
+    // Neither its material nor a reflected world culls it.
+    try testing.expectEqual(Cull.none, fx.renderer.draws.items[0].pipeline_key.cull);
+    try fx.renderer.drawMesh(.{ .mesh = quad, .material = mask, .world = Mat4.scaling(.init(-1, 1, 1)) });
+    try testing.expectEqual(Cull.none, fx.renderer.draws.items[2].pipeline_key.cull);
+    try fx.renderer.plan();
+    // A masked particle saying `casts_shadow` is still not a caster; the lit quad is.
+    try testing.expectEqual(@as(usize, 1), fx.renderer.shadow_order.items.len);
+    try testing.expectEqual(@as(u32, 1), fx.renderer.shadow_order.items[0]);
+    try finishTestFrame(&fx);
+}
+
+test "particle readbacks: nearer covers farther in either order, additive adds, mask writes depth" {
+    if (rhi.backend == .null) return;
+    var fx = try TestFixture.init(1, material_test_size);
+    defer fx.deinit();
+    const format = fx.device.capabilities().surface_format;
+    const blended = try fx.renderer.createMaterial(plain_particle, "blended particle");
+    defer fx.renderer.destroyMaterial(blended);
+    const backdrop_material = try fx.renderer.createMaterial(.{ .base_color = .{ 0.5, 0.5, 0.5, 1 } }, "grey backdrop");
+    defer fx.renderer.destroyMaterial(backdrop_material);
+    const backdrop = try particleQuad(&fx.renderer, 0, -5, 6, .{ 1, 1, 1, 1 });
+    defer fx.renderer.destroyMesh(backdrop);
+    const far = try particleQuad(&fx.renderer, 0, -3, 1.5, .{ 0, 0, 0.5, 0.5 });
+    defer fx.renderer.destroyMesh(far);
+    const near = try particleQuad(&fx.renderer, 0, -2, 1, .{ 0.6, 0, 0, 0.6 });
+    defer fx.renderer.destroyMesh(near);
+    const glow = try particleQuad(&fx.renderer, 0, -2, 1, .{ 0.3, 0.1, 0, 0 });
+    defer fx.renderer.destroyMesh(glow);
+    const view = testView(material_test_size);
+    const centre = (16 * material_test_size + 16) * 4;
+
+    // Premultiplied composite over the unlit grey: far blue, then near red.
+    const behind = [3]f32{ 0 + 0.5 * 0.5, 0 + 0.5 * 0.5, 0.5 + 0.5 * 0.5 };
+    const expected = [3]f32{ 0.6 + 0.4 * behind[0], 0.4 * behind[1], 0.4 * behind[2] };
+    const backdrop_draw: MeshDraw = .{ .mesh = backdrop, .material = backdrop_material, .world = .identity };
+    const far_draw: MeshDraw = .{ .mesh = far, .material = blended, .world = .identity };
+    const near_draw: MeshDraw = .{ .mesh = near, .material = blended, .world = .identity };
+    const near_last = try particleFrame(&fx, view, &.{ backdrop_draw, far_draw, near_draw });
+    const near_first = try particleFrame(&fx, view, &.{ backdrop_draw, near_draw, far_draw });
+    try testing.expectEqualSlices(u8, &near_last, &near_first);
+    try expectDisplayTexel(displayTexel(format, expected), near_last[centre..][0..4].*);
+
+    // Alpha zero keeps its colour: it adds to the grey.
+    const added = try particleFrame(&fx, view, &.{ backdrop_draw, .{ .mesh = glow, .material = blended, .world = .identity } });
+    try expectDisplayTexel(displayTexel(format, .{ 0.8, 0.6, 0.5 }), added[centre..][0..4].*);
+
+    // A masked particle whose texture is opaque on the left and empty on the right: it writes
+    // depth where it is drawn, so the farther opaque quad shows only through the hole.
+    var texels = [_]u8{ 255, 255, 255, 255, 255, 255, 255, 0 };
+    const half_hole = try fx.renderer.createTexture(.{ .width = 2, .height = 1, .pixels = &texels }, .{ .filter = .nearest });
+    defer fx.renderer.destroyTexture(half_hole);
+    var masked_desc = plain_particle;
+    masked_desc.alpha_mode = .mask;
+    masked_desc.base_color_texture = half_hole;
+    const masked = try fx.renderer.createMaterial(masked_desc, "masked particle");
+    defer fx.renderer.destroyMaterial(masked);
+    const red = try particleQuad(&fx.renderer, 0, -2, 1.5, .{ 1, 0, 0, 1 });
+    defer fx.renderer.destroyMesh(red);
+    const green_material = try fx.renderer.createMaterial(.{ .base_color = .{ 0, 1, 0, 1 } }, "green");
+    defer fx.renderer.destroyMaterial(green_material);
+    const masked_frame = try particleFrame(&fx, view, &.{ .{ .mesh = backdrop, .material = green_material, .world = .identity }, .{ .mesh = red, .material = masked, .world = .identity } });
+    try expectDisplayTexel(displayTexel(format, .{ 1, 0, 0 }), masked_frame[(16 * material_test_size + 10) * 4 ..][0..4].*);
+    try expectDisplayTexel(displayTexel(format, .{ 0, 1, 0 }), masked_frame[(16 * material_test_size + 22) * 4 ..][0..4].*);
+}
+
+test "particle light is exposed emission plus ambient times base colour, as lit emission is" {
+    if (rhi.backend == .null) return;
+    var fx = try TestFixture.init(1, material_test_size);
+    defer fx.deinit();
+    const format = fx.device.capabilities().surface_format;
+    const quad = try particleQuad(&fx.renderer, 0, -2, 1.5, .{ 1, 1, 1, 1 });
+    defer fx.renderer.destroyMesh(quad);
+    const plane = try litQuad(&fx.renderer, 0);
+    defer fx.renderer.destroyMesh(plane);
+    const emission = [3]f32{ 1, 0.5, 0.25 };
+    const strength: f32 = 200;
+    const particle = try fx.renderer.createMaterial(.{ .shading = particle_id, .base_color = .{ 0, 0, 0, 1 }, .emissive = emission, .emissive_strength = strength }, "emissive particle");
+    defer fx.renderer.destroyMaterial(particle);
+    const surface = try fx.renderer.createMaterial(.{ .shading = lit_id, .base_color = .{ 0, 0, 0, 1 }, .emissive = emission, .emissive_strength = strength }, "emissive surface");
+    defer fx.renderer.destroyMaterial(surface);
+    const centre = (16 * material_test_size + 16) * 4;
+    for ([_]f32{ 8, 12 }) |ev| {
+        var view = testView(material_test_size);
+        view.exposure_ev100 = ev;
+        const scale = lighting.exposureScale(ev);
+        const expected = displayTexel(format, .{ emission[0] * strength * scale, emission[1] * strength * scale, emission[2] * strength * scale });
+        const from_particle = try particleFrame(&fx, view, &.{.{ .mesh = quad, .material = particle, .world = .identity }});
+        const from_surface = try particleFrame(&fx, view, &.{.{ .mesh = plane, .material = surface, .world = Mat4.mul(Mat4.translation(.init(0, 0, -2)), Mat4.scaling(.init(3, 3, 1))) }});
+        try expectDisplayTexel(expected, from_particle[centre..][0..4].*);
+        try expectDisplayTexel(from_surface[centre..][0..4].*, from_particle[centre..][0..4].*);
+    }
+
+    // No emission: the frame's ambient times the base colour, which darkens with the room.
+    const smoke = try fx.renderer.createMaterial(.{ .shading = particle_id, .base_color = .{ 0.5, 0.25, 1, 1 } }, "smoke");
+    defer fx.renderer.destroyMaterial(smoke);
+    var view = testView(material_test_size);
+    view.ambient = .{ 0.4, 0.8, 0.2 };
+    const lit_by_room = try particleFrame(&fx, view, &.{.{ .mesh = quad, .material = smoke, .world = .identity }});
+    try expectDisplayTexel(displayTexel(format, .{ 0.2, 0.2, 0.2 }), lit_by_room[centre..][0..4].*);
 }

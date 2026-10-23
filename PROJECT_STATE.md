@@ -1,8 +1,23 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-24
-**Current handoff: M29 Step 3 of 8 is complete** ([`docs/design/particles.md`](docs/design/particles.md), ADR-0064 accepted 2026-10-23). **Stop before Step 4** (`render3d`: the `foundry:shading.particle` model and its Metal readbacks). There is no particle shader and no `render3d.Particles` yet.
+**Current handoff: M29 Step 4 of 8 is complete** ([`docs/design/particles.md`](docs/design/particles.md), ADR-0064 accepted 2026-10-23). **Stop before Step 5** (`render3d.Particles`: instances by handle, `step`, `prepare`, `draw`, culling, reload and counters). There is no `render3d.Particles` and no sample content yet.
 M28 is complete (tag `m28`, 2026-10-23; [`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063 implemented). M27 and M28 are pushed; M29's commits are not.
+
+**M29 Step 4 is done (2026-10-24): the particle shading model.**
+- `foundry:shading.particle` is registered by `Renderer.init`.
+  - Its vertex stage is unlit's position, UV0 and colour one.
+  - New fragments are in MSL and GLSL, with a mask variant. They take premultiplied vertex colour, with no second premultiply, so alpha 0 adds.
+  - Its light is emission plus ambient times base colour, pre-exposed like lit.
+- A new `two_sided` model feature means particle draws never cull. The shadow pass now also requires the model to read `casts_shadow`, so particles never cast.
+- Metal readbacks prove five things:
+  - the nearer blended particle covers the farther in either submission order;
+  - additive adds;
+  - mask writes depth;
+  - exposed emission matches lit emission at EV100 8 and 12;
+  - with no emission, a particle is ambient times its base colour.
+
+Bar **2,285/2,286** (one skip, M27's) on the null bar, all exit 0. The whole graph under `-Drhi=metal` is 2,295/2,307, with 12 backend-conditional skips; the new readbacks ran there. All five Vulkan checks passed on the Mac with the SDK tools on PATH: `vulkan-check` and `check` for Windows and Linux, and `check` for Windows ReleaseSafe. Native Vulkan readbacks are Step 7's, on the PC.
 
 **M29 Step 3 is done (2026-10-24): the `foundry:particle_emitter` record.**
 - `asset.particle_emitter` provides:
