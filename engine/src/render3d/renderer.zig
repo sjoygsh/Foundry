@@ -377,8 +377,9 @@ const MeshState = struct {
 };
 
 /// Each submesh's box, over exactly the positions its indices reach. `mesh` is validated, so
-/// every index is in range and every position finite.
-fn submeshBounds(gpa: Allocator, mesh: asset.Mesh) Allocator.Error![]asset.MeshAabb {
+/// every index is in range and every position finite. Pure: `Uploads` runs it on the pool,
+/// with `validate`, so a large mesh's finish does neither on the main thread (§6).
+pub fn submeshBounds(gpa: Allocator, mesh: asset.Mesh) Allocator.Error![]asset.MeshAabb {
     const positions = for (mesh.streams) |stream| {
         if (stream.semantic == .position) break stream.bytes;
     } else unreachable; // `validate` requires a position stream.
@@ -411,6 +412,10 @@ fn submeshBounds(gpa: Allocator, mesh: asset.Mesh) Allocator.Error![]asset.MeshA
     }
     return out;
 }
+
+/// What a caller has already worked out about a mesh, off the main thread: that it validates,
+/// and its submeshes' boxes (`submeshBounds`). `uploadMesh` then does neither again.
+pub const PreparedMesh = struct { submesh_bounds: []const asset.MeshAabb };
 
 /// One stream, or the indices (`slot == null`), and where it starts in a mesh's staging.
 const MeshPiece = struct { slot: ?usize, bytes: []const u8, offset: u64 };
@@ -1396,13 +1401,13 @@ pub const Renderer = struct {
         return self.createMeshWith(mesh, label, null);
     }
 
-    /// `createMesh` from staging `fillMeshStaging` already wrote (§6). `staged` is consumed
-    /// whatever this returns.
-    pub fn createMeshFromStaged(self: *Self, mesh: asset.Mesh, label: []const u8, staged: StagingReservation) Error!MeshHandle {
-        return self.createMeshWith(mesh, label, staged);
+    /// `createMesh` from staging `fillMeshStaging` already wrote (§6), for a mesh `prepared`
+    /// says was validated and measured. `staged` is consumed whatever this returns.
+    pub fn createMeshFromStaged(self: *Self, mesh: asset.Mesh, label: []const u8, staged: StagingReservation, prepared: PreparedMesh) Error!MeshHandle {
+        return self.createMeshWith(mesh, label, .{ .staged = staged, .prepared = prepared });
     }
 
-    fn createMeshWith(self: *Self, mesh: asset.Mesh, label: []const u8, prefilled: ?StagingReservation) Error!MeshHandle {
+    fn createMeshWith(self: *Self, mesh: asset.Mesh, label: []const u8, prefilled: ?Prefilled) Error!MeshHandle {
         var state = try self.uploadMesh(mesh, label, null, prefilled);
         errdefer self.destroyMeshState(&state);
         return self.meshes.add(self.gpa, state);
@@ -1418,17 +1423,20 @@ pub const Renderer = struct {
         return self.updateMeshWith(handle, mesh, label, null);
     }
 
-    /// `updateMesh` from staging `fillMeshStaging` already wrote (§6). `staged` is consumed
-    /// whatever this returns.
-    pub fn updateMeshFromStaged(self: *Self, handle: MeshHandle, mesh: asset.Mesh, label: []const u8, staged: StagingReservation) Error!void {
-        return self.updateMeshWith(handle, mesh, label, staged);
+    /// `updateMesh` from staging `fillMeshStaging` already wrote (§6), as
+    /// `createMeshFromStaged`. `staged` is consumed whatever this returns.
+    pub fn updateMeshFromStaged(self: *Self, handle: MeshHandle, mesh: asset.Mesh, label: []const u8, staged: StagingReservation, prepared: PreparedMesh) Error!void {
+        return self.updateMeshWith(handle, mesh, label, .{ .staged = staged, .prepared = prepared });
     }
 
-    fn updateMeshWith(self: *Self, handle: MeshHandle, mesh: asset.Mesh, label: []const u8, prefilled: ?StagingReservation) Error!void {
+    /// Staging already filled, and what was worked out alongside it.
+    const Prefilled = struct { staged: StagingReservation, prepared: PreparedMesh };
+
+    fn updateMeshWith(self: *Self, handle: MeshHandle, mesh: asset.Mesh, label: []const u8, prefilled: ?Prefilled) Error!void {
         // Refusals before the upload give `prefilled` back; the upload consumes it otherwise.
         const refusal: ?Error = if (self.recording) error.InFrame else if (self.meshes.get(handle) == null) error.InvalidMesh else null;
         if (refusal) |err| {
-            if (prefilled) |reservation| self.returnStaging(reservation, false);
+            if (prefilled) |p| self.returnStaging(p.staged, false);
             return err;
         }
         // A mesh is doomed only inside the window, so one reached here never is.
@@ -1448,14 +1456,17 @@ pub const Renderer = struct {
     /// A validated mesh's GPU and CPU state, its bytes copied through one kept staging buffer
     /// (§5.3). With `reuse`, a stream that fits that mesh's buffer is copied into it; the
     /// caller retires the buffers the result no longer names. `prefilled`, when given, already
-    /// holds `fillMeshStaging`'s bytes (§6) and is consumed whatever this returns. On failure,
-    /// only what this made is freed, and `reuse` is untouched.
-    fn uploadMesh(self: *Self, mesh: asset.Mesh, label: []const u8, reuse: ?*const MeshState, prefilled: ?StagingReservation) Error!MeshState {
-        var staged = prefilled;
+    /// holds `fillMeshStaging`'s bytes (§6) and is consumed whatever this returns; its mesh was
+    /// validated where it was prepared, so it is not validated again. On failure, only what
+    /// this made is freed, and `reuse` is untouched.
+    fn uploadMesh(self: *Self, mesh: asset.Mesh, label: []const u8, reuse: ?*const MeshState, prefilled: ?Prefilled) Error!MeshState {
+        var staged: ?StagingReservation = if (prefilled) |p| p.staged else null;
         // Consumed on every path: unused if nothing was submitted, used once something was.
         var submitted = false;
         defer if (staged) |reservation| self.returnStaging(reservation, submitted);
-        try mesh.validate();
+        if (prefilled) |p| {
+            if (p.prepared.submesh_bounds.len != mesh.submeshes.len) return error.InvalidSubmesh;
+        } else try mesh.validate();
         // Owned by `state` from here on; its errdefer frees it, so this one must not.
         const submeshes = try self.gpa.alloc(asset.Submesh, mesh.submeshes.len);
         for (mesh.submeshes, submeshes) |source, *destination| destination.* = source;
@@ -1475,7 +1486,7 @@ pub const Renderer = struct {
             self.gpa.free(state.submeshes);
             self.gpa.free(state.submesh_bounds);
         }
-        state.submesh_bounds = try submeshBounds(self.gpa, mesh);
+        state.submesh_bounds = if (prefilled) |p| try self.gpa.dupe(asset.MeshAabb, p.prepared.submesh_bounds) else try submeshBounds(self.gpa, mesh);
         if (mesh.joint_bounds.len != 0) state.skin = skinning.Bind.init(self.gpa, mesh) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.InvalidSkinCount,
@@ -4617,4 +4628,27 @@ test "a frame submitted before a write reads back unchanged, and the next one sh
     fx.renderer.destroyMaterial(red);
     fx.renderer.destroyTexture(canvas);
     fx.renderer.destroyTexture(mipped);
+}
+
+test "a prepared mesh whose boxes do not match its submeshes is refused, and its staging given back" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    var streams: [2]asset.MeshStream = undefined;
+    var submeshes: [1]asset.Submesh = undefined;
+    const mesh = try shapeMesh(&wide_quad, &quad_indices, null, &streams, &submeshes);
+    const meshes = fx.renderer.meshes.count();
+    const staged = try fx.renderer.reserveStaging("prepared", meshStagingSize(mesh));
+    fillMeshStaging(mesh, staged.bytes);
+    try testing.expectError(error.InvalidSubmesh, fx.renderer.createMeshFromStaged(mesh, "prepared", staged, .{ .submesh_bounds = &.{} }));
+    try testing.expectEqual(meshes, fx.renderer.meshes.count());
+    for (fx.renderer.staging.items) |entry| try testing.expect(!entry.reserved);
+    // Matching boxes, as `Uploads` measures them on the pool, are used as they are.
+    const boxes = try submeshBounds(testing.allocator, mesh);
+    defer testing.allocator.free(boxes);
+    const again = try fx.renderer.reserveStaging("prepared", meshStagingSize(mesh));
+    fillMeshStaging(mesh, again.bytes);
+    const handle = try fx.renderer.createMeshFromStaged(mesh, "prepared", again, .{ .submesh_bounds = boxes });
+    try testing.expectEqualSlices(asset.MeshAabb, boxes, fx.renderer.meshes.getConst(handle).?.submesh_bounds);
+    fx.renderer.destroyMesh(handle);
+    if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
 }

@@ -91,6 +91,27 @@ foundry:material sandbox3d:materials.crate_painted {
     base_color_texture sandbox3d:models.crate.texture0
 }
 
+# M28's generated corner (`runtime-geometry.md` §8): its geometry is made by the sample at run
+# time, and only its look is content. A package after this one may change any of these.
+foundry:material sandbox3d:materials.patch {
+    shading    foundry:shading.lit
+    roughness  0.9
+    base_color { r 0.32  g 0.42  b 0.22  a 1.0 }
+}
+foundry:material sandbox3d:materials.water {
+    shading      foundry:shading.lit
+    roughness    0.08
+    base_color   { r 0.10  g 0.30  b 0.45  a 0.6 }
+    alpha_mode   "blend"
+    double_sided true
+    casts_shadow false
+}
+foundry:material sandbox3d:materials.landmark {
+    shading    foundry:shading.lit
+    roughness  0.7
+    base_color { r 0.62  g 0.58  b 0.52  a 1.0 }
+}
+
 @schema config {
     # The window, in logical points. The window exists before content loads, so the sample
     # applies these once this record has been read.

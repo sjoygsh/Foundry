@@ -310,6 +310,12 @@ frame and under the same rule M27 set: what finishes on the main thread is prese
 Simulation never reads `state`. §8's patch shows what a game does when simulation needs the
 geometry.
 
+> **2026-10-23, Step 6:** a mesh's validation and submesh boxes, both linear in its indices,
+> move from the request and the finish to the fill on the pool. A mesh that does not validate
+> now fails at its finish (`failure` names why), rather than being refused at the request. The
+> finish trusts the boxes the fill measured (`Renderer.PreparedMesh`). Measured on the landmark,
+> the finish had cost 12.2 ms on the main thread. See Step 6's Resolution.
+
 **Inline, for the baseline and the tests.** `Uploads` over `core.tasks.immediate` fills during
 the request and finishes at the next pump. That is the path §1's exit criterion 2 compares
 against, and it needs no thread.
@@ -356,6 +362,12 @@ path, so the tour's hash is a check that nothing else moved.
 - **The water.** A 129×129 sheet, with its heights and normals from a sum of sines of the
   tick (not the wall clock, I9). It is rewritten with `updateMesh` every frame, outside the
   window, and drawn with a blended lit material.
+> **2026-10-23, Step 6:** the water's default is to generate each frame's sheet on
+> `Engine.tasks()` and update it through `Uploads.updateMesh`, so its validation, boxes and
+> copy run on the pool. Rewriting it with `Renderer.updateMesh` on the main thread is kept as
+> `FOUNDRY_SANDBOX3D_WATER=inline`, the baseline. That path measured 2.0 ms at p95 in the paced
+> sample. See Step 6's Resolution.
+
 - **The canvas.** A 1024² linear-filtered texture without mips, on a wall. While the player
   looks at it within reach, a 64² brush stamp is written with `writeTexture` at the ray's hit,
   at most once per tick. `C` clears it, which writes the whole texture once.
@@ -1024,3 +1036,144 @@ and Vulkan's readbacks are Step 7's.
 tests. `integration-test -Drhi=metal` passes 106/111, with five skips. M27 Step 9 also recorded five,
 but the two sets were not compared one by one. fmt, the four `check` variants, the four thirty-frame headless runs and `fdt-check`
 are clean. There is no ABI, shader, Vulkan or content change.
+
+## Resolution — Step 6: the generated corner, proved on Metal (2026-10-23)
+
+**What exists now:** `samples/sandbox3d/generated.zig`, wired into `main.zig`. The corner is
+centred at x = 20, past the crate grid's last row (±9.6 m) and away from every tour position.
+`FOUNDRY_SANDBOX3D_GENERATE=background|inline|off` chooses how the landmark is made.
+
+- **The patch.** A 65×65 heightfield from two octaves of seeded value noise, 0.2 m apart.
+  - Its normals are analytic, from the noise's own derivatives. Every normal is within 45° of
+    up, and a test checks that.
+  - It is generated before the first tick. One set of world-space triangles goes both to the
+    renderer, through the builder, and to the walk's `physics3d.World` as a static mesh body.
+  - A pinned headless test walks it: it settles for 30 ticks, then moves for 150 ticks along
+    (1, 0, 0.3), ending grounded at (22.390009, 0.074692, 1.227917). The patch's digest is
+    pinned (`11729102987930533220`).
+- **The water.** 129×129 vertices, 12 × 6 m, a sum of three sines of simulation time (I9).
+  - Each wave's phase is split into a column term and a row term, so a fill takes one sine and
+    one cosine per row and per column (about 800 calls) rather than per vertex (about
+    100,000). Generation alone fell from about 3.5 ms to 0.47 ms on the Mac.
+  - Its bytes at t = 1.5 s are pinned (`8743190568358611974`).
+- **The canvas.** 1024², linear-filtered, without mips, bound by a `Content.createMaterial`
+  with a `runtime` texture.
+  - A soft 64² stamp is blended into a CPU copy of the canvas and written with `writeTexture`,
+    at most once a tick, where the player's look meets it within 5 m. **C** clears it.
+  - `FOUNDRY_SANDBOX3D_PAINT=auto` paints a fixed figure-of-eight every tick instead, so a run
+    nobody watches still measures §1's criterion 3. This switch is new here: §8 assumed a
+    person would be looking.
+  - Tests cover stamp clipping, and a look that misses or is out of reach. They also cover a
+    look from behind and an eye on the canvas's plane; the mutation round below found both
+    untested.
+- **The landmark.** A 1024 × 1024-segment spire of revolved, fluted rings: 1,050,625 vertices
+  and 6,291,456 indices, with its digest pinned (`17175394173672716032`). A test checks the
+  bytes are the same from a `Manual` pool task as from a direct call. It is requested on tick
+  240, two seconds after the gallery's tick, and the frames around it are measured with M27's
+  `gallery.Window`, which now takes a label and a pump span.
+- **The recoloured crate.** The compiled crate model, with slot 0 overridden by a
+  `Content.createMaterial` that tints and binds `sandbox3d:models.crate.texture0` by content ID.
+- **New keys:** **T** puts the player on the patch, facing the canvas. **R** calls
+  `Engine.reloadContent`. Both join `FOUNDRY_SANDBOX3D_KEYS`, with C.
+- **Package additions:** three materials for the patch, the water (blended, `casts_shadow
+  false`) and the landmark.
+
+**What measurement changed in M28's code**, both recorded as dated notes in §6 and §8:
+1. **`Uploads` validates on the pool.**
+   - The landmark's first background run kept every frame under 16.67 ms. But its
+     `uploads.pump` reached 12.15 ms, because the finish re-ran `Mesh.validate` and computed
+     `submeshBounds`, both linear in 6.3M indices, on the main thread.
+   - The fill now does both. The finish takes the measured boxes through
+     `Renderer.PreparedMesh`, whose count is checked, and does not validate again.
+   - The cost is that a mesh that does not validate fails at its finish (`failure`), rather
+     than being refused at the request. Uploads exist for geometry too big to validate on the
+     frame, so this is the trade §6's own argument makes for the copy.
+   - The pump's maximum fell to 0.15–0.39 ms.
+2. **The water is pooled by default.**
+   - The direct `Renderer.updateMesh` path measured 2.0 ms at p95 in the paced sample, against
+     the 1.0 ms budget. A probe split it: validation 576 µs, the boxes 379 µs, the copy 93 µs,
+     the staging reservation 1 µs and the submission 60 µs.
+   - **The same call takes 0.21 ms back to back, and 1.37 ms with a 14 ms sleep between calls**
+     (a `render3d` probe on the Metal device, not committed). Removing the sample's pacing
+     sleep did not help, because it then waits on the drawable. The cost is what the frame's
+     idle time does to the core and its caches, not the renderer's code.
+   - The pooled default generates each sheet on `Engine.tasks()` and requests
+     `Uploads.updateMesh`. That leaves the main thread the request, the next generation's
+     start and the finish: p95 0.14–0.26 ms.
+   - The sheet arrives a frame or two after its tick, which is presentation (ADR-0061). 597
+     updates land in 600 frames.
+   - `FOUNDRY_SANDBOX3D_WATER=inline` keeps the direct path as the baseline.
+
+**§12's two measured triggers:**
+- **A mesh capacity or reserve option: not fired.** Every water update fits its buffers, so no
+  update reallocated at all, against a trigger of 10% of an update's p95. The landmark is a
+  create.
+- **A persistently mapped per-frame ring: not fired.** The pooled water's p95 is under 1.0 ms.
+  The inline path's 2.0 ms is validation and boxes on an idle-cooled core. Staging reservation
+  measured 1 µs and the copy 93 µs, and a ring removes neither validation nor boxes. A ring
+  answers GPU-wait or allocation stalls, and neither was measured.
+
+**§1's exit on Metal** from a relocated ReleaseSafe install: `zig build install -Drhi=metal
+-Doptimize=ReleaseSafe` to a staging prefix, moved, then run from the new place. Windowed, on
+an Apple M5, 4x MSAA, 600 frames with the gallery off. Three runs each way, alternated:
+
+| Run | Landmark path | Frame work median / p95 / max (ms) | `uploads.pump` p95 / max (ms) | Request to ready | Water p95 (ms) | Canvas p95 (ms) |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | background | 1.345 / 1.578 / **2.582** | 0.151 / 0.198 | 133.3 ms | 0.150 | 0.208 |
+| 1 | inline | 1.290 / 1.753 / **132.801** | 0.150 / 0.164 | 120.9 ms | 0.143 | 0.205 |
+| 2 | background | 1.282 / 1.671 / **2.553** | 0.139 / 0.145 | 133.4 ms | 0.151 | 0.261 |
+| 2 | inline | 1.389 / 1.665 / **132.639** | 0.221 / 0.387 | 120.4 ms | 0.256 | 0.290 |
+| 3 | background | 1.375 / 1.578 / **2.498** | 0.162 / 0.209 | 133.2 ms | 0.151 | 0.200 |
+| 3 | inline | 1.400 / 1.545 / **131.005** | 0.144 / 0.151 | 119.1 ms | 0.141 | 0.206 |
+
+1. **The water: holds.** p95 0.141–0.256 ms against 1.0 ms, pooled. The inline baseline
+   measured p95 2.026 ms, of which `updateMesh` was 1.492 ms.
+2. **The landmark: holds.** Every background maximum is at most 2.582 ms. Every inline maximum
+   is at least 131.0 ms, so the inline frame exceeds 16.67 ms as §1 requires, and the
+   1024 × 1024 size is pinned.
+3. **The canvas: holds.** p95 0.200–0.290 ms against 0.5 ms.
+4. **The patch walk: holds**, by the pinned headless test.
+5. **The recolour: holds.** During a run, the installed `crate.png` was replaced, and a
+   scripted **R** reloaded every package. The log reads "recolour: material 18.1 kept, binding
+   texture 13.1 (was 7.1)". The file was restored afterwards and checked byte for byte.
+6. **Tour, walker and court: hold.**
+   - **The tour:** headless and windowed from the install, the player's hash stays
+     `cb99ccfcf2b6d6c3` and the walker's `62ed8c026c20482c`, with the landmark arriving during
+     the run.
+   - **The court:** the `win`, `caught` and `fell` endings replay tick for tick headless, over
+     1213, 112 and 185 ticks. The windowed `win` replays 1216 ticks.
+
+Criterion 7, Vulkan validation, is Step 7's.
+
+**One pre-existing warning is not M28's:** `content(0xdf3a2f1da5dcb6c5)`, "fields unread by its
+shading model are ignored". It appears with the corner off too. The water's own warning, for
+blending while casting shadows, was fixed by `casts_shadow false`.
+
+**Guards verified by mutation**, with the round time-limited:
+
+| Mutation | Caught by |
+| --- | --- |
+| The prepared boxes' count unchecked | the new renderer test |
+| The fill not validating | `Uploads`' fails-at-its-finish test |
+| A fill error ignored at the finish | the same test |
+| A stamp not clipped at the left | the canvas test, which crashed on the out-of-range write |
+| A look beyond reach painting | the canvas test |
+| An unknown generate mode taken as `background` | the switch test |
+| The patch's normals not analytic | the patch test, by its digest |
+| A look from behind painting | the canvas test, once its from-behind case was added |
+| The water's phase reversed | the water test, once its bytes were pinned |
+
+The last two survived the first round and led to the tests that catch them.
+
+**Tests:**
+- `sandbox3d-test`: 33 of 33, with five new.
+- `render3d`: 95, adding the prepared-mesh refusal and the fill-validation failure.
+
+**Not done, as designed:** Windows/Vulkan and criterion 7 (Step 7), and the close (Step 8).
+
+**Bar:** `zig build test` **2,251/2,252** (one skip, unchanged), up from 2,244/2,245 by the five
+corner tests and the two `render3d` tests. On Metal, `render3d-test` passes 95/95 and
+`sandbox3d-test` 33/33. fmt, the four `check` variants, the four thirty-frame headless runs and
+`fdt-check` are clean. The package's change is three material records. `dist` stages no
+`sandbox3d`, so the relocated install above is that change's staging proof. There is no ABI,
+shader or Vulkan change.

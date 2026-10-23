@@ -1,11 +1,13 @@
 //! Runtime meshes and textures whose staging fill runs on the background pool, finished in
 //! request order at a pump the game calls (`docs/design/runtime-geometry.md` §6).
 //!
-//! **Main thread, at the request:** validation, where a refusal changes nothing and leaves the
-//! bytes the caller's, and the staging reservation. **Pool:** the fill, a copy into that
-//! reservation at the offsets `Renderer.uploadMesh` reads. **Main thread, at the pump:** the
-//! copy's command buffer and, for a create, the handle. **Pool, afterwards:** freeing the CPU
-//! bytes, which is M27 Step 9's `free_on_pool` reason.
+//! **Main thread, at the request:** what costs nothing to check, where a refusal changes
+//! nothing and leaves the bytes the caller's, and the staging reservation. **Pool:** the fill.
+//! A mesh is validated and its submesh boxes measured there, both linear in its indices, then
+//! copied into the reservation at the offsets `Renderer.uploadMesh` reads; a mesh that does not
+//! validate fails at its finish, and `failure` says why (Step 6's Resolution). **Main thread,
+//! at the pump:** the copy's command buffer and, for a create, the handle. **Pool,
+//! afterwards:** freeing the CPU bytes, which is M27 Step 9's `free_on_pool` reason.
 //!
 //! **Order is the request's, never the pool's.** Only the oldest unfinished request may finish,
 //! so the same requests finish in the same order under any interleaving of fills
@@ -90,6 +92,10 @@ const Request = struct {
     target_texture: TextureHandle = .none,
     staged: ?StagingReservation,
     bytes: u64,
+    /// A mesh's submesh boxes, measured by the fill on the pool, with this `Uploads`' allocator.
+    prepared: []asset.MeshAabb = &.{},
+    /// Why the fill refused the mesh: then it fails at its finish, uploading nothing.
+    fill_error: ?renderer_mod.Error = null,
     filled: core.tasks.Done = .{},
     freed: core.tasks.Done = .{},
     /// The CPU bytes are still held: until the free task has run.
@@ -104,7 +110,17 @@ const Request = struct {
         const self: *Request = @ptrCast(@alignCast(context));
         const staged = self.staged.?;
         switch (self.kind) {
-            .create_mesh, .update_mesh => renderer_mod.fillMeshStaging(self.mesh.mesh, staged.bytes),
+            .create_mesh, .update_mesh => {
+                self.mesh.mesh.validate() catch |err| {
+                    self.fill_error = err;
+                    return;
+                };
+                self.prepared = renderer_mod.submeshBounds(self.gpa, self.mesh.mesh) catch |err| {
+                    self.fill_error = err;
+                    return;
+                };
+                renderer_mod.fillMeshStaging(self.mesh.mesh, staged.bytes);
+            },
             .create_texture, .write_chain => @memcpy(staged.bytes[0..self.chain.bytes.len], self.chain.bytes),
         }
     }
@@ -154,9 +170,9 @@ pub const Uploads = struct {
 
     /// A new mesh from `mesh`, which must have been made with this `Uploads`' allocator, as
     /// `asset.mesh.Builder` makes one. On success the bytes are this `Uploads`' to free; a
-    /// refusal leaves them the caller's.
+    /// refusal leaves them the caller's. It is validated on the pool, and fails at its finish
+    /// if it does not validate.
     pub fn createMesh(self: *Self, mesh: asset.OwnedMesh, label: []const u8) Error!UploadHandle {
-        try mesh.mesh.validate();
         return self.request(.{ .kind = .create_mesh, .gpa = self.gpa, .mesh = mesh, .label = undefined, .staged = null, .bytes = renderer_mod.meshStagingSize(mesh.mesh) }, label);
     }
 
@@ -164,7 +180,6 @@ pub const Uploads = struct {
     /// then; the request then fails rather than finishing.
     pub fn updateMesh(self: *Self, target: MeshHandle, mesh: asset.OwnedMesh, label: []const u8) Error!UploadHandle {
         if (self.renderer.meshJointCount(target) == null) return error.InvalidMesh;
-        try mesh.mesh.validate();
         return self.request(.{ .kind = .update_mesh, .gpa = self.gpa, .mesh = mesh, .target_mesh = target, .label = undefined, .staged = null, .bytes = renderer_mod.meshStagingSize(mesh.mesh) }, label);
     }
 
@@ -240,9 +255,18 @@ pub const Uploads = struct {
         const staged = r.staged.?;
         // Each call consumes the reservation whatever it returns.
         r.staged = null;
-        const outcome: renderer_mod.Error!Result = switch (r.kind) {
-            .create_mesh => if (self.renderer.createMeshFromStaged(r.mesh.mesh, r.label, staged)) |mesh| .{ .mesh = mesh } else |err| err,
-            .update_mesh => if (self.renderer.updateMeshFromStaged(r.target_mesh, r.mesh.mesh, r.label, staged)) |_| .{ .mesh = r.target_mesh } else |err| err,
+        // The boxes are copied by the renderer; this `Uploads`' copy goes with the finish.
+        defer {
+            self.gpa.free(r.prepared);
+            r.prepared = &.{};
+        }
+        const prepared: renderer_mod.PreparedMesh = .{ .submesh_bounds = r.prepared };
+        const outcome: renderer_mod.Error!Result = if (r.fill_error) |err| refused: {
+            self.renderer.returnStaging(staged, false);
+            break :refused err;
+        } else switch (r.kind) {
+            .create_mesh => if (self.renderer.createMeshFromStaged(r.mesh.mesh, r.label, staged, prepared)) |mesh| .{ .mesh = mesh } else |err| err,
+            .update_mesh => if (self.renderer.updateMeshFromStaged(r.target_mesh, r.mesh.mesh, r.label, staged, prepared)) |_| .{ .mesh = r.target_mesh } else |err| err,
             .create_texture => if (self.renderer.createTextureFromStaged(r.chain.levels[0].width, r.chain.levels[0].height, r.chain, staged, r.options)) |texture| .{ .texture = texture } else |err| err,
             .write_chain => if (self.renderer.writeTextureChainFromStaged(r.target_texture, r.chain, r.color_space, staged)) |_| .{ .texture = r.target_texture } else |err| err,
         };
@@ -294,6 +318,8 @@ pub const Uploads = struct {
         self.pending_bytes -= r.bytes;
         if (r.staged) |staged| self.renderer.returnStaging(staged, false);
         r.staged = null;
+        self.gpa.free(r.prepared);
+        r.prepared = &.{};
         Request.freeBytes(r);
         r.holds_bytes = false;
         r.state = .cancelled;
@@ -619,10 +645,6 @@ test "requests are refused before anything is reserved, and a gone target fails 
     // Each refusal leaves the bytes the caller's.
     var invalid = try fan(3, -2);
     defer invalid.deinit(testing.allocator);
-    const saved = invalid.mesh.vertex_count;
-    invalid.mesh.vertex_count = 99;
-    try testing.expectError(error.InvalidStreamLength, uploads.createMesh(invalid, "invalid"));
-    invalid.mesh.vertex_count = saved;
     try testing.expectError(error.InvalidMesh, uploads.updateMesh(.none, invalid, "no target"));
     var pixels = [_]u8{255} ** 16;
     var chain = try asset.mips.generate(testing.allocator, .{ .width = 2, .height = 2, .pixels = &pixels }, .srgb);
@@ -672,6 +694,30 @@ test "requests are refused before anything is reserved, and a gone target fails 
     manual.runAll();
     fx.renderer.destroyMesh(uploads.result(a).?.mesh);
     uploads.release(a);
+}
+
+test "a mesh that does not validate fails at its finish, measured on the pool, and gives everything back" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var manual = try core.tasks.Manual.init(testing.allocator, 4);
+    defer manual.deinit();
+    var uploads = Uploads.init(testing.allocator, &fx.renderer, manual.tasks(), .{});
+    defer uploads.deinit();
+    const meshes = fx.renderer.meshes.count();
+    var broken = try fan(3, -2);
+    // Its streams no longer match its count: only a linear check over it can tell.
+    broken.mesh.vertex_count = 99;
+    const handle = try uploads.createMesh(broken, "broken");
+    manual.runNext();
+    var budget: core.tasks.Budget = .unlimited;
+    try testing.expectEqual(@as(u32, 1), uploads.pump(&budget).failed);
+    try testing.expectEqual(State.failed, uploads.state(handle).?);
+    try testing.expectEqual(@as(?renderer_mod.Error, error.InvalidStreamLength), uploads.failure(handle));
+    try testing.expectEqual(meshes, fx.renderer.meshes.count());
+    manual.runAll();
+    uploads.release(handle);
+    for (fx.renderer.staging.items) |entry| try testing.expect(!entry.reserved);
 }
 
 test "an update and a chain write through Uploads keep their targets' handles" {

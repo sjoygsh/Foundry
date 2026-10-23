@@ -124,6 +124,10 @@ pub const Gallery = struct {
 pub const Window = struct {
     const capacity = 512;
 
+    /// What the summary lines are said as, and the span counted as the pump: the gallery's,
+    /// or M28's landmark's (`generated.zig`).
+    label: []const u8 = "gallery",
+    pump_span: []const u8 = "assets.pump",
     requested: ?u64 = null,
     ready: ?u64 = null,
     path: Path = .sync,
@@ -135,7 +139,7 @@ pub const Window = struct {
     reported: bool = false,
 
     pub fn start(self: *Window, frame: u64, path: Path) void {
-        self.* = .{ .requested = frame, .path = path };
+        self.* = .{ .label = self.label, .pump_span = self.pump_span, .requested = frame, .path = path };
     }
 
     /// The window closes `after_ready_frames` after this frame.
@@ -157,7 +161,7 @@ pub const Window = struct {
         for (frame.spans) |span| {
             const name = recorder.nameOf(span.name);
             if (std.mem.eql(u8, name, "render.acquire") or std.mem.eql(u8, name, "render.present")) waiting += span.durationNs();
-            if (std.mem.eql(u8, name, "assets.pump")) pump = (pump orelse 0) + span.durationNs();
+            if (std.mem.eql(u8, name, self.pump_span)) pump = (pump orelse 0) + span.durationNs();
         }
         if (self.len < capacity) {
             self.work[self.len] = frame.total_ns - waiting;
@@ -176,16 +180,16 @@ pub const Window = struct {
         self.reported = true;
         var scratch: [capacity]i64 = undefined;
         const work = core.profile.summarise(self.work[0..self.len], &scratch);
-        log.info("gallery: frame work (no pacing sleep, image acquire or present) over {d} frames from the request: median {d:.3}ms p95 {d:.3}ms max {d:.3}ms; budget 16.67ms", .{
-            work.count, ms(work.median_ns), ms(work.p95_ns), ms(work.max_ns),
+        log.info("{s}: frame work (no pacing sleep, image acquire or present) over {d} frames from the request: median {d:.3}ms p95 {d:.3}ms max {d:.3}ms; budget 16.67ms", .{
+            self.label, work.count, ms(work.median_ns), ms(work.p95_ns), ms(work.max_ns),
         });
         const pump = core.profile.summarise(self.pump[0..self.pump_len], &scratch);
-        log.info("gallery: assets.pump over {d} frames: median {d:.3}ms p95 {d:.3}ms max {d:.3}ms; budget p95 2.0ms", .{
-            pump.count, ms(pump.median_ns), ms(pump.p95_ns), ms(pump.max_ns),
+        log.info("{s}: {s} over {d} frames: median {d:.3}ms p95 {d:.3}ms max {d:.3}ms; budget p95 2.0ms", .{
+            self.label, self.pump_span, pump.count, ms(pump.median_ns), ms(pump.p95_ns), ms(pump.max_ns),
         });
         if (self.ready == null) {
-            log.info("gallery: not ready by the end of the run ({t})", .{self.path});
-        } else log.info("gallery: request to ready {d:.3}ms ({t})", .{ ms(self.load_ns), self.path });
+            log.info("{s}: not ready by the end of the run ({t})", .{ self.label, self.path });
+        } else log.info("{s}: request to ready {d:.3}ms ({t})", .{ self.label, ms(self.load_ns), self.path });
     }
 };
 

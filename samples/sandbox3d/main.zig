@@ -45,7 +45,11 @@
 //! - `FOUNDRY_SANDBOX3D_KEYS=f5@120,f6@150,...` presses those keys on those frames, as if a
 //!   person had, so a run nobody watches still saves, loads and re-parents;
 //! - `FOUNDRY_SANDBOX3D_LOAD=background|sync|off` is how M27's gallery loads on its tick
-//!   (`background` when unset; `off` waits for G), and the frames around it are measured.
+//!   (`background` when unset; `off` waits for G), and the frames around it are measured;
+//! - `FOUNDRY_SANDBOX3D_GENERATE=background|inline|off` is how M28's landmark is made on its
+//!   tick, and `off` leaves the generated corner out; `FOUNDRY_SANDBOX3D_PAINT=auto` paints the
+//!   canvas along a fixed stroke every tick, for a run nobody watches, and
+//!   `FOUNDRY_SANDBOX3D_WATER=inline` rewrites the water on the main thread, the baseline.
 //!
 //! **M22's is a lit room a content mod changes** (`light.md` §10). Lights, ambient and
 //! EV100 come from the config; `--shadows=off` disables the shadow map. Player mods live
@@ -78,6 +82,13 @@
 //! are requested and appear once every part has finished; `FOUNDRY_SANDBOX3D_LOAD=sync`
 //! loads them on the tick instead, which stalls, as the baseline the background path is
 //! measured against.
+//!
+//! **M28's is geometry made at run time, beside compiled content** (`runtime-geometry.md` §8),
+//! in a corner past the crates (`generated.zig`): a seeded patch that is drawn and walked on, a
+//! water sheet rewritten every frame, a canvas painted by looking at it, a large landmark
+//! generated on the pool, and a crate recoloured by a runtime material binding its compiled
+//! texture. **T** puts the player on the patch, **C** clears the canvas and **R** reloads
+//! every package.
 
 const std = @import("std");
 
@@ -98,6 +109,7 @@ const Props = @import("props.zig").Props;
 const native_mod = @import("native.zig");
 const gallery_mod = @import("gallery.zig");
 const Gallery = gallery_mod.Gallery;
+const generated = @import("generated.zig");
 const Native = native_mod.Native;
 
 const orrery_mod = @import("orrery.zig");
@@ -282,6 +294,8 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         const frame_started = if (!headless) engine.os.monotonicNanos() else 0;
         engine.beginFrame();
         if (sample.content_generation != engine.contentGeneration()) sample.refresh(engine);
+        // Beside the engine's asset pump, before simulation: what the pool filled finishes.
+        if (sample.corner) |corner| corner.pump(engine, @as(f32, @floatFromInt(engine.stepper.tick)) * engine.step_delta.toSecondsF32());
 
         // Drained so the window keeps answering; the engine acts on a close itself. Text is
         // kept for the overlay's filter box.
@@ -330,7 +344,10 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         }
         if (skipped) pace_next = 0;
         engine.endFrame();
-        if (engine.profiler()) |recorder| sample.gallery.window.add(recorder, paced_ns);
+        if (engine.profiler()) |recorder| {
+            sample.gallery.window.add(recorder, paced_ns);
+            if (sample.corner) |corner| corner.landmark.window.add(recorder, paced_ns);
+        }
         if (sample.tour) |*tour| if (tour.done() and sample.walkers[0].tick >= Walker.proof_ticks) break;
 
         if (frame_limit) |limit| {
@@ -381,6 +398,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     }
 
     sample.gallery.window.report();
+    if (sample.corner) |corner| corner.report();
     report(gpa, engine, &sample, skipped_frames);
     if (engine.os.envVar("FOUNDRY_SANDBOX3D_NATIVE_TRACE")) |path| {
         if (native.ticks != Native.proof_ticks or !native.blocked) return error.IncompleteNativeTrace;
@@ -665,6 +683,9 @@ const Sample = struct {
     course: render3d.ModelHandle = .none,
     /// M27's gallery: held only once asked for, on its tick or by G.
     gallery: Gallery = .{},
+    /// M28's generated corner, made at `load` unless `FOUNDRY_SANDBOX3D_GENERATE=off`. On the
+    /// heap, because its CPU canvas and water are large.
+    corner: ?*generated.Corner = null,
     intent: walk_mod.Intent = .{},
     tour: ?Tour = null,
     move_times: [Tour.max_ticks]i64 = undefined,
@@ -773,6 +794,14 @@ const Sample = struct {
         self.content = render3d.Content.init(self.gpa, &self.world, &engine.assets, .default);
         self.gallery.mode = gallery_mod.Mode.parse(engine.os.envVar("FOUNDRY_SANDBOX3D_LOAD"));
         self.refresh(engine);
+        // After the walk world exists and before the first tick: the patch is simulation.
+        const generate = generated.Mode.parse(engine.os.envVar("FOUNDRY_SANDBOX3D_GENERATE"));
+        if (generate != .off) {
+            const corner = try self.gpa.create(generated.Corner);
+            errdefer self.gpa.destroy(corner);
+            try corner.init(engine, generate, &self.world, &self.content.?, &self.walk.world);
+            self.corner = corner;
+        }
 
         self.orrery.populate(&engine.store);
         self.save_dir = saveDir(self.gpa, engine);
@@ -785,7 +814,7 @@ const Sample = struct {
         self.panels.toggle("log");
         self.panels.entities.selected = self.orrery.role(.sheared);
         self.panels_open = engine.os.envVar("FOUNDRY_SANDBOX3D_PANELS") != null;
-        log.info("keys: WASD walk, arrows/right mouse look, f4 capture the pointer to look, f3 walk/orbit, f1 overlay, f5 save, f9 load, f6 move the orbiting crate, f7 try the sheared one, g load or release the gallery, escape quit", .{});
+        log.info("keys: WASD walk, arrows/right mouse look, f4 capture the pointer to look, f3 walk/orbit, f1 overlay, f5 save, f9 load, f6 move the orbiting crate, f7 try the sheared one, g load or release the gallery, t go to the generated corner, c clear its canvas, r reload content, escape quit", .{});
     }
 
     /// The user data directory, made if it is not there yet. The file beneath it is opened
@@ -829,6 +858,7 @@ const Sample = struct {
         if (!first) {
             if (self.content) |*content| content.contentChanged() catch |err|
                 log.warn("the scene could not follow a content change ({t}); drawing what it had", .{err});
+            if (self.corner) |corner| corner.noteReload(&self.world);
             self.releaseModels();
         }
         self.room = self.follow(self.room, before.room, self.settings.room, first);
@@ -887,6 +917,11 @@ const Sample = struct {
         if (s.tick == gallery_mod.request_tick) if (self.gallery.mode.onTick()) |path| {
             if (self.content) |*content| self.gallery.request(content, path, engine.frame_index, engine.os);
         };
+        // Writes happen here, outside the frame's window (`runtime-geometry.md` §4.2).
+        if (self.corner) |corner| {
+            const look: ?[2]Vec3 = if (!self.walk.orbit and self.walk.settings != null) .{ self.walk.eye(), self.walk.rotation().rotate(.init(0, 0, -1)) } else null;
+            corner.step(engine, &self.world, s.tick, look);
+        }
         self.orbit_angle = wrap(self.orbit_angle + self.settings.orbit_radians_per_second * dt);
         // The game translates `app`'s step into `scene`'s tick: the number and the fixed
         // delta, and nothing a system could read a device through.
@@ -984,6 +1019,22 @@ const Sample = struct {
         if (in.wasPressed(.f1) or scripted.f1) {
             self.panels_open = !self.panels_open;
             log.info("debug overlay {s}", .{if (self.panels_open) "shown" else "hidden"});
+        }
+        if (self.corner) |corner| {
+            if ((in.wasPressed(.c) and !typing) or scripted.c) corner.clearCanvas(&self.world);
+            if ((in.wasPressed(.t) and !typing) or scripted.t) {
+                if (self.walk.teleport(generated.Corner.teleportTarget())) |_| {
+                    self.walk.orbit = false;
+                    // Facing the canvas, along −X.
+                    self.walk.yaw = std.math.pi / 2.0;
+                    self.walk.pitch = 0;
+                    log.info("t: on the generated corner's patch", .{});
+                } else |err| log.warn("t: the player could not be moved ({t})", .{err});
+            }
+        }
+        if ((in.wasPressed(.r) and !typing) or scripted.r) {
+            log.info("r: reloading every package", .{});
+            engine.reloadContent();
         }
         if ((in.wasPressed(.g) and !typing) or scripted.g) if (self.content) |*content| {
             if (self.gallery.model.isNone()) self.gallery.request(content, self.gallery.mode.onKey(), engine.frame_index, engine.os) else self.gallery.release(content);
@@ -1117,6 +1168,8 @@ const Sample = struct {
             .width = pixels.width,
             .height = pixels.height,
         };
+        // Rewritten before the window opens, from simulation time (I9), never the clock.
+        if (self.corner) |corner| corner.updateWater(engine, &self.world, @as(f32, @floatFromInt(engine.stepper.tick)) * engine.step_delta.toSecondsF32());
         try self.world.begin(.{
             .camera = camera,
             .target_size = pixels,
@@ -1144,6 +1197,7 @@ const Sample = struct {
         if (self.content) |*content| self.gallery.poll(content, engine.frame_index, engine.os);
         self.drawModel(.{ .model = self.gallery.model, .world = Mat4.identity });
         if (self.content) |*content| try self.props.draw(content);
+        if (self.corner) |corner| try corner.draw(&self.world, &self.content.?);
         if (self.content) |*content| for (self.walkers, 0..) |*walker, i| {
             // The sixteen-walker cost run fans their visual instances out. Each still owns
             // an independently sampled pose and collision character; no engine crowd API.
@@ -1252,6 +1306,11 @@ const Sample = struct {
     }
 
     fn deinit(self: *Sample, engine: *app.Engine) void {
+        // First: it waits for its work on the pool, and holds content, renderer and walk.
+        if (self.corner) |corner| {
+            corner.deinit(&self.world, &self.content.?, &self.walk.world);
+            self.gpa.destroy(corner);
+        }
         if (self.content) |*content| self.props.deinit(self.gpa, &self.walk.world, content, &engine.assets);
         if (self.content) |*content| for (self.walkers) |*walker| walker.deinit(self.gpa, &self.walk.world, content);
         self.gpa.free(self.walkers);
@@ -1335,13 +1394,13 @@ const Script = struct {
 
     const max = 32;
     const Press = struct { key: Key, frame: u64 };
-    const Key = enum { f1, f3, f4, f5, f6, f7, f9, g };
-    const Keys = struct { f1: bool = false, f3: bool = false, f4: bool = false, f5: bool = false, f6: bool = false, f7: bool = false, f9: bool = false, g: bool = false };
+    const Key = enum { f1, f3, f4, f5, f6, f7, f9, g, c, r, t };
+    const Keys = struct { f1: bool = false, f3: bool = false, f4: bool = false, f5: bool = false, f6: bool = false, f7: bool = false, f9: bool = false, g: bool = false, c: bool = false, r: bool = false, t: bool = false };
 
     fn fromEnv(engine: *app.Engine) Script {
         const text = engine.os.envVar("FOUNDRY_SANDBOX3D_KEYS") orelse return .{};
         return parse(text) orelse blk: {
-            log.warn("FOUNDRY_SANDBOX3D_KEYS is not a list of key@frame (f1 f3 f4 f5 f6 f7 f9 g); ignoring it", .{});
+            log.warn("FOUNDRY_SANDBOX3D_KEYS is not a list of key@frame (f1 f3 f4 f5 f6 f7 f9 g c r t); ignoring it", .{});
             break :blk .{};
         };
     }
@@ -1486,6 +1545,7 @@ test {
     _ = @import("props_tests.zig");
     _ = @import("native_tests.zig");
     _ = gallery_mod;
+    _ = generated;
 }
 
 test "the builder makes the cube and the proof ground byte for byte as M19 wrote them" {

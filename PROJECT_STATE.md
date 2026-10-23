@@ -1,9 +1,28 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-23
-**Current handoff: M28 Step 5 of 8 is complete** ([`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063, accepted 2026-10-23 and revised at Step 2).
-**Stop before Step 6** (`sandbox3d`: the generated corner, proved on Metal, §8). No sample uses runtime geometry, `Uploads` or runtime materials yet.
+**Current handoff: M28 Step 6 of 8 is complete** ([`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063, accepted 2026-10-23 and revised at Step 2).
+**Stop before Step 7** (Windows/Vulkan, §10). The PC has had no Foundry clone since M27, so Step 7 re-clones into a fresh worktree: exact paths only, `-j2`, below-normal priority, idle first. §1's criterion 7, Vulkan validation, is Step 7's.
 M27 is complete (tag `m27`, pushed). M28's commits are not pushed.
+
+**M28 Step 6 is done (2026-10-23): the generated corner, proved on Metal.**
+- `sandbox3d` has a corner at x = 20:
+  - a seeded patch that is drawn and walked on;
+  - 129² water rewritten every frame;
+  - a 1024² canvas painted by looking at it;
+  - a 1M-vertex landmark generated on the pool;
+  - a crate recoloured by a runtime material binding its compiled texture.
+- §1's criteria 1–6 hold on Metal from a relocated ReleaseSafe install, three runs each way:
+  - water p95 0.14–0.26 ms;
+  - landmark background maximum 2.58 ms, against an inline maximum of at least 131 ms;
+  - canvas p95 0.20–0.29 ms;
+  - the patch walk pinned;
+  - the recolour's handle kept across R;
+  - tour `cb99ccfcf2b6d6c3`, walker `62ed8c026c20482c`, and the court's three endings unchanged.
+- Measurement changed two things, recorded in §6 and §8. `Uploads` now validates and measures meshes on the pool, because the landmark's finish had cost 12 ms. The water is pooled by default, because the direct `updateMesh` path costs 2.0 ms at p95 in the paced sample: validation passes on an idle-cooled core. A probe measured 0.21 ms back to back against 1.37 ms with sleeps.
+- Neither §12 trigger fired.
+
+Bar **2,251/2,252** (one skip); Metal `render3d-test` 95/95, `sandbox3d-test` 33/33.
 
 **M28 Step 5 is done (2026-10-23): runtime materials.**
 - `Content.createMaterial(RuntimeMaterial)` makes a material whose five textures are each a `TextureRef`: none, a runtime handle, or a compiled texture by content ID.
