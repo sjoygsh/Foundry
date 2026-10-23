@@ -70,7 +70,67 @@ pub const Limits = struct {
     pub const default: Limits = .{};
 };
 
+/// A runtime material's texture (`runtime-geometry.md` §7): none, one a caller made, or a
+/// compiled one by content ID, followed across its reloads as a record's is.
+pub const TextureRef = union(enum) {
+    none,
+    runtime: TextureHandle,
+    content: ContentId,
+};
+
+/// A material no record describes: `MaterialDesc`'s values, with each of the five textures a
+/// `TextureRef`. `Content` owns it and rebuilds it as it rebuilds a record's (ADR-0063: it may
+/// refer to compiled content, and nothing compiled can refer to it).
+pub const RuntimeMaterial = struct {
+    shading: ContentId = renderer_mod.unlit_id,
+    base_color: [4]f32 = .{ 1, 1, 1, 1 },
+    base_color_texture: TextureRef = .none,
+    alpha_mode: renderer_mod.AlphaMode = .@"opaque",
+    alpha_cutoff: f32 = 0.5,
+    double_sided: bool = false,
+    metallic: f32 = 0,
+    roughness: f32 = 1,
+    metallic_roughness_texture: TextureRef = .none,
+    normal_texture: TextureRef = .none,
+    normal_scale: f32 = 1,
+    occlusion_texture: TextureRef = .none,
+    occlusion_strength: f32 = 1,
+    emissive: [3]f32 = .{ 0, 0, 0 },
+    emissive_texture: TextureRef = .none,
+    emissive_strength: f32 = 1,
+    casts_shadow: bool = true,
+
+    fn refs(self: RuntimeMaterial) [5]TextureRef {
+        return .{ self.base_color_texture, self.metallic_roughness_texture, self.normal_texture, self.occlusion_texture, self.emissive_texture };
+    }
+
+    /// The renderer's description, with `textures` in the five slots' order.
+    fn desc(self: RuntimeMaterial, textures: [5]TextureHandle) MaterialDesc {
+        return .{
+            .shading = self.shading,
+            .base_color = self.base_color,
+            .base_color_texture = textures[0],
+            .alpha_mode = self.alpha_mode,
+            .alpha_cutoff = self.alpha_cutoff,
+            .double_sided = self.double_sided,
+            .metallic = self.metallic,
+            .roughness = self.roughness,
+            .metallic_roughness_texture = textures[1],
+            .normal_texture = textures[2],
+            .normal_scale = self.normal_scale,
+            .occlusion_texture = textures[3],
+            .occlusion_strength = self.occlusion_strength,
+            .emissive = self.emissive,
+            .emissive_texture = textures[4],
+            .emissive_strength = self.emissive_strength,
+            .casts_shadow = self.casts_shadow,
+        };
+    }
+};
+
 pub const Error = error{
+    /// A runtime material names a content ID that is no loadable `foundry:texture`.
+    TextureNotFound,
     ModelNotFound,
     NotAModel,
     InvalidModelRecord,
@@ -92,7 +152,11 @@ const MaterialTag = opaque {};
 const EntryHandle = core.Handle(MaterialTag);
 
 const MaterialEntry = struct {
+    /// `ContentId.none` for a runtime material, which no ID can find: the compiler refuses any
+    /// name that hashes to it, so no record lookup ever matches one.
     id: ContentId,
+    /// A runtime material's own description, which a rebuild reads in place of a record.
+    runtime: ?RuntimeMaterial = null,
     refs: u32,
     /// The renderer's, and stable for the entry's life.
     handle: MaterialHandle,
@@ -341,6 +405,48 @@ pub const Content = struct {
         if (!record.schema_id.eql(asset.schemas.material.id)) return error.NotAMaterial;
         const entry = try self.retainMaterial(id, .acquire);
         return self.materials.getConst(entry).?.handle;
+    }
+
+    /// A runtime material (`runtime-geometry.md` §7), followed across texture and package
+    /// reloads as a record's material is, behind a handle that survives every rebuild. It
+    /// overrides a compiled model's slot through `SlotOverride`, and `releaseMaterial` gives it
+    /// back. A `runtime` texture stays bound after it is destroyed, until this is released or
+    /// rebuilt (§4.1). **A refusal holds nothing**: its values and textures are the caller's
+    /// code, so they are refused here rather than drawn as the placeholder.
+    pub fn createMaterial(self: *Self, material: RuntimeMaterial) Error!MaterialHandle {
+        var textures: [5]asset.AssetHandle = @splat(.none);
+        errdefer for (textures) |texture| if (!texture.isNone()) self.assets.release(texture);
+        const handles = try self.bindRuntime(material, &textures);
+        const handle = try self.renderer.createMaterial(material.desc(handles), material_label);
+        errdefer self.renderer.destroyMaterial(handle);
+        _ = try self.materials.add(self.gpa, .{
+            .id = .none,
+            .runtime = material,
+            .refs = 1,
+            .handle = handle,
+            .textures = textures,
+            .built_from = handles,
+        });
+        return handle;
+    }
+
+    /// A runtime material's five textures as the renderer binds them, acquiring each content
+    /// one into `textures`. Whatever was acquired is the caller's to release on failure.
+    fn bindRuntime(self: *Self, material: RuntimeMaterial, textures: *[5]asset.AssetHandle) Error![5]TextureHandle {
+        var handles: [5]TextureHandle = @splat(.none);
+        for (material.refs(), &handles, textures) |ref, *handle, *texture| switch (ref) {
+            .none => {},
+            .runtime => |runtime| handle.* = runtime,
+            .content => |texture_id| {
+                // The registry refuses an ID with no record, or one that is not a texture.
+                texture.* = self.assets.acquireWith(self.gpa, texture_id, loader.textureLoader(self.renderer)) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return error.TextureNotFound,
+                };
+                handle.* = loader.textureOf(self.assets, texture.*, self.renderer) orelse return error.TextureNotFound;
+            },
+        };
+        return handles;
     }
 
     pub fn releaseMaterial(self: *Self, handle: MaterialHandle) void {
@@ -730,6 +836,7 @@ pub const Content = struct {
     /// for, and this runs again once nothing is: a request of an entry already held only
     /// counts it, so resolving again loads nothing twice.
     fn resolveMaterial(self: *Self, handle: EntryHandle, mode: Mode) Error!void {
+        if (self.materials.getConst(handle).?.runtime != null) return self.resolveRuntime(handle);
         const id = self.materials.getConst(handle).?.id;
         var desc: MaterialDesc = .{};
         var textures: [5]asset.AssetHandle = @splat(.none);
@@ -803,6 +910,45 @@ pub const Content = struct {
         for (entry.textures) |texture| if (!texture.isNone()) self.assets.release(texture);
         entry.textures = textures;
         entry.built_from = .{ desc.base_color_texture, desc.metallic_roughness_texture, desc.normal_texture, desc.occlusion_texture, desc.emissive_texture };
+    }
+
+    /// Rebuilds a runtime material behind its stable handle, its content textures acquired
+    /// afresh. It was valid when made, so what fails now is content's doing: a texture whose
+    /// record went, or a `runtime` texture destroyed since. It is then the placeholder, said
+    /// once per rebuild, as a record's material is.
+    fn resolveRuntime(self: *Self, handle: EntryHandle) Error!void {
+        const material = self.materials.getConst(handle).?.runtime.?;
+        // Nothing a reload changes is named: rebuilding would only drop a `runtime` texture
+        // destroyed since, which the material keeps drawing until it is released (§4.1).
+        for (material.refs()) |ref| {
+            if (ref == .content) break;
+        } else return;
+        var textures: [5]asset.AssetHandle = @splat(.none);
+        errdefer for (textures) |texture| if (!texture.isNone()) self.assets.release(texture);
+        var handles: [5]TextureHandle = @splat(.none);
+        const failed: ?Error = blk: {
+            handles = self.bindRuntime(material, &textures) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => break :blk err,
+            };
+            self.renderer.updateMaterial(self.materials.getConst(handle).?.handle, material.desc(handles), material_label) catch |err| switch (err) {
+                error.InvalidTexture, error.WrongColorSpace, error.UnknownShadingModel, error.InvalidMaterialValue => break :blk err,
+                else => |e| return e,
+            };
+            break :blk null;
+        };
+        const entry = self.materials.get(handle).?;
+        if (failed) |err| {
+            log.warn("a runtime material is drawn as the placeholder: {t}", .{err});
+            for (textures) |texture| if (!texture.isNone()) self.assets.release(texture);
+            textures = @splat(.none);
+            handles = @splat(.none);
+            try self.renderer.updateMaterial(entry.handle, placeholder, material_label);
+        }
+        // Hold the new textures before releasing the old, as `resolveMaterial` does.
+        for (entry.textures) |texture| if (!texture.isNone()) self.assets.release(texture);
+        entry.textures = textures;
+        entry.built_from = handles;
     }
 };
 

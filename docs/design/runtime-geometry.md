@@ -947,3 +947,80 @@ materials are Step 5's, and Vulkan's readback is Step 7's.
 `Uploads` tests. `render3d-test -Drhi=metal` passes 93/93. fmt, the four `check` variants, the
 four thirty-frame headless runs and `fdt-check` are clean. There is no ABI, shader, Vulkan or
 content change.
+
+## Resolution — Step 5: runtime materials (2026-10-23)
+
+**What exists now.** `Content.createMaterial(RuntimeMaterial) Error!MaterialHandle`, in
+`engine/src/render3d/content.zig`, with `RuntimeMaterial` and `TextureRef` exported from
+`render3d`.
+
+- **`RuntimeMaterial`** has `MaterialDesc`'s values. Each of its five textures is a
+  `TextureRef`: `none`, `runtime` (a `TextureHandle`) or `content` (a `ContentId`).
+- **A runtime material is an ordinary `MaterialEntry`** with `id = ContentId.none` and its own
+  description kept in a new `runtime` field.
+  - `refresh` follows its content textures across texture reloads by the same `built_from`
+    check a record's uses.
+  - `contentChanged` rebuilds it with `resolveRuntime`, acquiring its content textures afresh.
+  - `releaseMaterial` and `deinit` handle it like any other entry.
+  - Its handle survives every rebuild, and it overrides a compiled model's slot through
+    `SlotOverride`, unchanged.
+
+**Where the implementation settled §7:**
+- **A refusal at `createMaterial` is an error, not the placeholder.** A record is content and
+  untrusted, so its mistakes draw magenta. A runtime material's values are the caller's code,
+  so they are refused, and nothing is held:
+  - `TextureNotFound` (new) for a content ID with no texture record, or one naming another
+    schema. The registry already refuses both;
+  - `WrongColorSpace`, `InvalidMaterialValue`, `UnknownShadingModel`, and `InvalidTexture`
+    for a destroyed runtime texture, all from the renderer.
+
+  A rebuild that fails later is content's doing: a texture record gone, or a runtime texture
+  destroyed since. It then draws the placeholder behind the same handle, said once.
+- **A rebuild happens only when something content-owned is named.** A runtime material with no
+  `content` texture is skipped by `contentChanged`, because no reload can change it. Rebuilding
+  it anyway would drop a `runtime` texture destroyed since, which §4.1 promises it keeps
+  drawing until it is released.
+- **No ID finds a runtime material.** Hash 0 is reserved, and the content compiler refuses any
+  name that hashes to it, so the record lookup needs no extra check. A first draft had one. Its
+  mutation survived, which showed it could never matter, so it was removed.
+
+**Tests**, three in `engine/tests/model_content.zig`, over the real compiler, store, registry
+and renderer:
+- **A runtime material binds the compiled crate texture by ID, and overrides the pair model's
+  slot.** A draw with nothing changed keeps its bind group. It follows the PNG edited on disk,
+  rebinding before the draw, with no null violation. It keeps its handle, values and single
+  reference across a package reload. It becomes the placeholder behind the same handle once
+  the texture's record is gone.
+- **A runtime material binding a destroyed runtime texture** still draws, across a package
+  reload, with no violation. Its GPU texture goes only when the material is released, by the
+  null device's live count.
+- **Refusals hold nothing:** `TextureNotFound` twice, `WrongColorSpace` for an sRGB texture in
+  a lit material's metallic-roughness slot, `InvalidMaterialValue`, `InvalidTexture` and
+  `UnknownShadingModel`. Neither `Content`'s entries, the renderer's materials, nor the
+  registry's reference counts move. A record's acquire never returns a runtime material.
+
+**Guards verified by mutation** against `zig build integration-test`, about a minute per
+mutation:
+
+| Mutation | Caught by |
+| --- | --- |
+| Rebuilt as a record | the reload test, and the destroyed-texture test |
+| Rebuilt with nothing content-owned named | the destroyed-texture test |
+| Never rebuilt | the reload test, at the gone record |
+| A refused create keeping its textures | the refusal test |
+| A rebuild keeping the old textures | the reload test, by the reference count |
+| `built_from` not recorded at create | the reload test, by the bind group |
+| A failed rebuild not made the placeholder | the reload test |
+
+The `built_from` mutation survived at first. It costs only a needless rebuild at the first
+draw, and the test now asserts the bind group is unchanged. A schema check written before the
+registry's acquire also survived. The registry already refuses a record of another schema, so
+the duplicate was removed.
+
+**Not done, as designed:** no sample uses runtime materials yet (Step 6, the recoloured model),
+and Vulkan's readbacks are Step 7's.
+
+**Bar:** `zig build test` **2,244/2,245** (one skip, unchanged), up from 2,241/2,242 by the three
+tests. `integration-test -Drhi=metal` passes 106/111, with five skips. M27 Step 9 also recorded five,
+but the two sets were not compared one by one. fmt, the four `check` variants, the four thirty-frame headless runs and `fdt-check`
+are clean. There is no ABI, shader, Vulkan or content change.

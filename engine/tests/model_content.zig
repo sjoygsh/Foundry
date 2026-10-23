@@ -773,6 +773,130 @@ test "a reloaded texture, record or model is followed, and handles stay valid" {
     stack.content.releaseMaterial(crate);
 }
 
+// -- M28 Step 5: runtime materials beside records (`runtime-geometry.md` §7) --------
+
+/// The compiled texture `Content` holds for a material's slot: what its references count.
+fn boundTexture(stack: *Stack, material: render3d.MaterialHandle, slot: usize) asset.AssetHandle {
+    var it = stack.content.materials.iterator();
+    while (it.next()) |entry| if (entry.value.handle.eql(material)) return entry.value.textures[slot];
+    unreachable;
+}
+
+test "a runtime material binds a compiled texture by ID, overrides a slot, and keeps its handle across reloads" {
+    const stack = try recordStack();
+    defer stack.deinit();
+    const pair = try stack.content.acquireModel(id("demo:models.pair"));
+    defer stack.content.releaseModel(pair);
+    const runtime = try stack.content.createMaterial(.{ .base_color = .{ 0, 1, 0, 1 }, .base_color_texture = .{ .content = id("demo:textures.crate") } });
+    // One reference for the model's crate material, and one for this.
+    try testing.expectEqual(@as(?u32, 2), stack.assets.refCount(boundTexture(stack, runtime, 0)));
+    const before = stack.materialDesc(runtime).base_color_texture;
+    try testing.expect(!before.isNone());
+
+    // Beside compiled content: it recolours the model's second slot for one draw, and a draw
+    // with nothing changed rebuilds nothing.
+    const group = stack.renderer.materials.getConst(runtime).?.group;
+    try stack.begin();
+    try stack.content.drawModel(.{ .model = pair, .world = .identity, .overrides = &.{.{ .slot = 1, .material = runtime }} });
+    try testing.expect(stack.renderer.draws.items[1].material.eql(runtime));
+    try stack.finish(null);
+    try testing.expect(stack.renderer.materials.getConst(runtime).?.group.eql(group));
+
+    // The PNG edited on disk: the registry swaps the texture, and the next draw rebinds the
+    // runtime material first, or the null backend reports binding a destroyed texture.
+    const smaller = try checkerPng(stack.gpa, 4);
+    defer stack.gpa.free(smaller);
+    try stack.writeUnder(stack.out, "textures/crate.png", smaller);
+    _ = stack.assets.reloadChanged(stack.gpa);
+    try testing.expectEqual(@as(u32, 1), stack.assets.pump(stack.gpa, .{}).reloaded);
+    try stack.begin();
+    try stack.content.drawModel(.{ .model = pair, .world = .identity, .overrides = &.{.{ .slot = 1, .material = runtime }} });
+    try stack.finish(null);
+    try testing.expectEqual(@as(usize, 0), stack.violations());
+    const reloaded = stack.materialDesc(runtime).base_color_texture;
+    try testing.expect(!reloaded.eql(before));
+    try testing.expect(stack.renderer.isMaterial(runtime));
+
+    // A package reload re-reads every material; this one keeps its handle, its values and
+    // its texture, and holds it exactly once.
+    try stack.reload();
+    try testing.expect(stack.renderer.isMaterial(runtime));
+    try testing.expectEqual([4]f32{ 0, 1, 0, 1 }, stack.materialDesc(runtime).base_color);
+    try testing.expect(!stack.materialDesc(runtime).base_color_texture.isNone());
+    try testing.expectEqual(@as(?u32, 2), stack.assets.refCount(boundTexture(stack, runtime, 0)));
+
+    // A texture record gone in a reload: the placeholder behind the same handle.
+    const without = try std.mem.replaceOwned(u8, stack.gpa, records, "foundry:material demo:materials.crate { base_color_texture demo:textures.crate }\n", "");
+    defer stack.gpa.free(without);
+    try stack.write("content.fdt", without);
+    // The PNG leaves the source tree, so the compiler no longer makes its texture record.
+    try stack.os.deleteFileConfined(stack.src, "textures/crate.png");
+    try stack.reload();
+    try testing.expect(stack.renderer.isMaterial(runtime));
+    try testing.expectEqual(render3d.content.placeholder.base_color, stack.materialDesc(runtime).base_color);
+
+    const entries = stack.content.materials.count();
+    stack.content.releaseMaterial(runtime);
+    try testing.expectEqual(entries - 1, stack.content.materials.count());
+    try testing.expectEqual(@as(usize, 0), stack.violations());
+}
+
+test "a runtime material binding a destroyed runtime texture still draws until it is released" {
+    const stack = try recordStack();
+    defer stack.deinit();
+    const pair = try stack.content.acquireModel(id("demo:models.pair"));
+    defer stack.content.releaseModel(pair);
+    var green = [_]u8{ 0, 255, 0, 255 } ** 4;
+    const texture = try stack.renderer.createTexture(.{ .width = 2, .height = 2, .pixels = &green }, .{});
+    const runtime = try stack.content.createMaterial(.{ .base_color_texture = .{ .runtime = texture } });
+    stack.renderer.destroyTexture(texture);
+    // A package reload names nothing this material binds, so it is not rebuilt off its texture.
+    try stack.reload();
+    try stack.begin();
+    try stack.content.drawModel(.{ .model = pair, .world = .identity, .overrides = &.{.{ .slot = 0, .material = runtime }} });
+    try stack.finish(null);
+    try testing.expectEqual(@as(u32, 2), stack.renderer.frameStats().draws);
+    try testing.expect(stack.materialDesc(runtime).base_color_texture.eql(texture));
+    try testing.expectEqual(@as(usize, 0), stack.violations());
+    // Counted after the draw, which resolves the model's own textures after the reload.
+    const live = if (rhi.backend == .null) stack.device.textures.count() else 0;
+
+    // Released, its last binding goes, and the texture with it.
+    stack.content.releaseMaterial(runtime);
+    if (rhi.backend == .null) try testing.expectEqual(live - 1, stack.device.textures.count());
+}
+
+test "a runtime material is refused before anything is held" {
+    const stack = try recordStack();
+    defer stack.deinit();
+    // The record's crate material holds the crate texture once; a refusal must leave it so.
+    const crate = try stack.content.acquireMaterial(id("demo:materials.crate"));
+    defer stack.content.releaseMaterial(crate);
+    const crate_texture = boundTexture(stack, crate, 0);
+    const materials = stack.content.materials.count();
+    const renderer_materials = stack.renderer.materials.count();
+    try testing.expectError(error.TextureNotFound, stack.content.createMaterial(.{ .base_color_texture = .{ .content = id("demo:textures.absent") } }));
+    try testing.expectError(error.TextureNotFound, stack.content.createMaterial(.{ .base_color_texture = .{ .content = id("demo:materials.red") } }));
+    // A compiled sRGB texture in a slot that reads linear data: acquired, refused, released.
+    try testing.expectError(error.WrongColorSpace, stack.content.createMaterial(.{ .shading = render3d.lit_id, .metallic_roughness_texture = .{ .content = id("demo:textures.crate") } }));
+    try testing.expectEqual(@as(?u32, 1), stack.assets.refCount(crate_texture));
+    try testing.expectError(error.InvalidMaterialValue, stack.content.createMaterial(.{ .base_color = .{ 1.5, 0, 0, 1 }, .base_color_texture = .{ .content = id("demo:textures.crate") } }));
+    try testing.expectEqual(@as(?u32, 1), stack.assets.refCount(crate_texture));
+    var pixels = [_]u8{255} ** 4;
+    const gone = try stack.renderer.createTexture(.{ .width = 1, .height = 1, .pixels = &pixels }, .{});
+    stack.renderer.destroyTexture(gone);
+    try testing.expectError(error.InvalidTexture, stack.content.createMaterial(.{ .base_color_texture = .{ .runtime = gone } }));
+    try testing.expectError(error.UnknownShadingModel, stack.content.createMaterial(.{ .shading = id("demo:shading.absent") }));
+    try testing.expectEqual(materials, stack.content.materials.count());
+    try testing.expectEqual(renderer_materials, stack.renderer.materials.count());
+    // No ID finds a runtime material, so a record's never resolves to one.
+    const runtime = try stack.content.createMaterial(.{});
+    const red = try stack.content.acquireMaterial(id("demo:materials.red"));
+    try testing.expect(!red.eql(runtime));
+    stack.content.releaseMaterial(red);
+    stack.content.releaseMaterial(runtime);
+}
+
 // -- §11 item 4: nothing downstream knows it was glTF ------------------------------
 
 const gltf_json =

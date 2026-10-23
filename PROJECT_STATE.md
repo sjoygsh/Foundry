@@ -1,9 +1,18 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-23
-**Current handoff: M28 Step 4 of 8 is complete** ([`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063, accepted 2026-10-23 and revised at Step 2).
-**Stop before Step 5** (`render3d.Content`: runtime materials with a `TextureRef`, §7). `Content` has no runtime materials yet, and no sample uses `Uploads`.
+**Current handoff: M28 Step 5 of 8 is complete** ([`docs/design/runtime-geometry.md`](docs/design/runtime-geometry.md), ADR-0063, accepted 2026-10-23 and revised at Step 2).
+**Stop before Step 6** (`sandbox3d`: the generated corner, proved on Metal, §8). No sample uses runtime geometry, `Uploads` or runtime materials yet.
 M27 is complete (tag `m27`, pushed). M28's commits are not pushed.
+
+**M28 Step 5 is done (2026-10-23): runtime materials.**
+- `Content.createMaterial(RuntimeMaterial)` makes a material whose five textures are each a `TextureRef`: none, a runtime handle, or a compiled texture by content ID.
+- `Content` follows it across texture and package reloads behind a stable handle, and it overrides a compiled model's slot.
+- A refusal at creation is an error and holds nothing. A later failed rebuild draws the placeholder.
+- A runtime material binding a destroyed runtime texture keeps drawing until it is released, even across a package reload.
+- Every guard was verified by mutation. Two dead checks the mutations exposed were removed.
+
+Bar **2,244/2,245** (one skip); `integration-test -Drhi=metal` 106/111 (five skips).
 
 **M28 Step 4 is done (2026-10-23): `render3d.Uploads`.**
 - Requests to create or update a mesh, create a texture, or write a chain are validated and reserved on the main thread. Their staging is filled on the pool.
